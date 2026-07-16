@@ -124,50 +124,49 @@ function openapiSchemaToJsonSchema(node: unknown): unknown {
 const ajv = new Ajv({ strict: false, allErrors: true });
 addFormats(ajv);
 
+/**
+ * Loads the contract with the given id from packages/contracts/openapi/ and
+ * registers it with ajv as a named schema (`$id` = docId) so that
+ * `${docId}#/components/schemas/<Name>` refs resolve. Registration is
+ * idempotent — safe to call from every slice's beforeAll regardless of suite
+ * ordering. Returns the raw contract document for callers that need to
+ * inspect it.
+ */
+function registerContractSchema(docId: string): object {
+  const contracts = loadOpenApiContracts();
+  const contract = contracts.find((c) => c.id === docId);
+  if (!contract) {
+    throw new Error(`${docId} contract not found — check packages/contracts/openapi/`);
+  }
+  if (!ajv.getSchema(docId)) {
+    const processedDoc = openapiSchemaToJsonSchema(contract.document) as object;
+    ajv.addSchema({ ...processedDoc, $id: docId });
+  }
+  return contract.document as object;
+}
+
+/** Compiles a validator for `${docId}#/components/schemas/<schemaName>`. */
+function compileComponentValidator(docId: string, schemaName: string): ValidateFunction {
+  return ajv.compile({ $ref: `${docId}#/components/schemas/${schemaName}` });
+}
+
 let validateSignInResponse: ValidateFunction;
 let validateError: ValidateFunction;
 
-/**
- * Build ajv validators for the SignInResponse and Error schemas.
- *
- * ajv resolves `$ref` pointers relative to the schema's `$id`. To make
- * `#/components/schemas/UserSummary` (and sibling refs) resolvable, we
- * add the entire auth document as a named schema. Each component schema is
- * then compiled by reference from that root document.
- */
+/** Build ajv validators for the SignInResponse and Error schemas. */
 function buildValidators(): void {
-  const contracts = loadOpenApiContracts();
-  const authContract = contracts.find((c) => c.id === "auth.openapi");
-  if (!authContract) {
-    throw new Error("auth.openapi contract not found — check packages/contracts/openapi/");
-  }
-
-  const doc = authContract.document as {
-    components: { schemas: Record<string, unknown> };
+  const doc = registerContractSchema("auth.openapi") as {
+    components?: { schemas?: Record<string, unknown> };
   };
   const schemas = doc.components?.schemas;
   if (!schemas) {
     throw new Error("auth.openapi contract has no components.schemas");
   }
-
   if (!schemas["SignInResponse"]) throw new Error("SignInResponse schema not found in auth.openapi");
   if (!schemas["Error"]) throw new Error("Error schema not found in auth.openapi");
 
-  // Add the full document as a named schema so that $ref resolution works.
-  // All component schemas become reachable as #/components/schemas/<Name>.
-  const processedDoc = openapiSchemaToJsonSchema(authContract.document) as object & { $id?: string };
-  const DOC_ID = "auth.openapi";
-  if (!ajv.getSchema(DOC_ID)) {
-    ajv.addSchema({ ...processedDoc, $id: DOC_ID });
-  }
-
-  // Build inline schemas that reference the named root document.
-  validateSignInResponse = ajv.compile({
-    $ref: `${DOC_ID}#/components/schemas/SignInResponse`,
-  });
-  validateError = ajv.compile({
-    $ref: `${DOC_ID}#/components/schemas/Error`,
-  });
+  validateSignInResponse = compileComponentValidator("auth.openapi", "SignInResponse");
+  validateError = compileComponentValidator("auth.openapi", "Error");
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +314,49 @@ function assertConformsTo(validate: ValidateFunction, body: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
+// Shared scripted guards
+//
+// Most slices override DashboardAuthGuard / TenantContextGuard / RolesGuard
+// with stateless doubles that differ only in the ids they inject. Build them
+// via these factories instead of one bespoke class per slice.
+// ---------------------------------------------------------------------------
+
+/** Builds a guard that populates request.principal (AuthGuard contract). */
+function makePrincipalGuard(sessionId: string, userId: string): CanActivate {
+  return {
+    canActivate(ctx: ExecutionContext): boolean {
+      const req = ctx.switchToHttp().getRequest();
+      req.principal = { kind: "session", sessionId, userId };
+      return true;
+    },
+  };
+}
+
+/**
+ * Builds a guard that populates request.context (TenantContextGuard contract)
+ * for a tenant-wide (storeId: null), non-admin session principal. Controllers
+ * read context.tenantId etc. and throw a defensive 401 when fields are missing.
+ */
+function makeTenantContextGuard(userId: string, tenantId: string): CanActivate {
+  return {
+    canActivate(ctx: ExecutionContext): boolean {
+      const req = ctx.switchToHttp().getRequest();
+      req.context = {
+        userId,
+        tenantId,
+        storeId: null,
+        isPlatformAdmin: false,
+        source: "session" as const,
+      };
+      return true;
+    },
+  };
+}
+
+/** No-op guard — always allows (RolesGuard stand-in). */
+const ALLOW_ALL_GUARD: CanActivate = { canActivate: () => true };
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -414,19 +456,7 @@ const AUDIT_200_REF =
 let validateListAuditEventsResponse: ValidateFunction;
 
 function buildAuditValidators(): void {
-  const contracts = loadOpenApiContracts();
-  const auditContract = contracts.find((c) => c.id === "audit.openapi");
-  if (!auditContract) {
-    throw new Error("audit.openapi contract not found — check packages/contracts/openapi/");
-  }
-
-  const DOC_ID = "audit.openapi";
-  // Guard against re-registration if the ajv instance is shared across suites.
-  if (!ajv.getSchema(DOC_ID)) {
-    const processedDoc = openapiSchemaToJsonSchema(auditContract.document) as object;
-    ajv.addSchema({ ...processedDoc, $id: DOC_ID });
-  }
-
+  registerContractSchema("audit.openapi");
   // The 200 schema is inline (not a named component), referenced via JSON Pointer.
   // AuditEvent lives in components.schemas and is reached transitively via $ref.
   validateListAuditEventsResponse = ajv.compile({ $ref: AUDIT_200_REF });
@@ -449,45 +479,6 @@ class FakeAuditService {
   }
 }
 
-/** Populates request.principal (AuthGuard contract). */
-class AuditScriptedAuthGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
-    const req = ctx.switchToHttp().getRequest();
-    req.principal = {
-      kind: "session",
-      sessionId: FAKE_AUDIT_SESSION_ID,
-      userId: FAKE_AUDIT_USER_ID,
-    };
-    return true;
-  }
-}
-
-/**
- * Populates request.context (TenantContextGuard contract).
- * AuditController reads context.tenantId and context.isPlatformAdmin directly;
- * missing these fields causes a defensive 401 throw in the controller.
- */
-class AuditScriptedTenantContextGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
-    const req = ctx.switchToHttp().getRequest();
-    req.context = {
-      userId: FAKE_AUDIT_USER_ID,
-      tenantId: FAKE_TENANT_ID,
-      storeId: null,
-      isPlatformAdmin: false,
-      source: "session" as const,
-    };
-    return true;
-  }
-}
-
-/** No-op RolesGuard — always allows. */
-class AuditScriptedRolesGuard implements CanActivate {
-  canActivate(_ctx: ExecutionContext): boolean {
-    return true;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Fixture — audit app
 // ---------------------------------------------------------------------------
@@ -507,11 +498,11 @@ beforeAll(async () => {
     ],
   })
     .overrideGuard(DashboardAuthGuard)
-    .useValue(new AuditScriptedAuthGuard())
+    .useValue(makePrincipalGuard(FAKE_AUDIT_SESSION_ID, FAKE_AUDIT_USER_ID))
     .overrideGuard(TenantContextGuard)
-    .useValue(new AuditScriptedTenantContextGuard())
+    .useValue(makeTenantContextGuard(FAKE_AUDIT_USER_ID, FAKE_TENANT_ID))
     .overrideGuard(RolesGuard)
-    .useValue(new AuditScriptedRolesGuard())
+    .useValue(ALLOW_ALL_GUARD)
     .compile();
 
   auditApp = moduleRef.createNestApplication({ bufferLogs: true });
@@ -681,23 +672,9 @@ let validatePosAuditSyncResponse: ValidateFunction;
 let validatePosAuditError: ValidateFunction;
 
 function buildPosAuditValidators(): void {
-  const contracts = loadOpenApiContracts();
-  const contract = contracts.find((c) => c.id === POS_AUDIT_DOC_ID);
-  if (!contract) {
-    throw new Error(`${POS_AUDIT_DOC_ID} contract not found — check packages/contracts/openapi/`);
-  }
-
-  if (!ajv.getSchema(POS_AUDIT_DOC_ID)) {
-    const processedDoc = openapiSchemaToJsonSchema(contract.document) as object;
-    ajv.addSchema({ ...processedDoc, $id: POS_AUDIT_DOC_ID });
-  }
-
-  validatePosAuditSyncResponse = ajv.compile({
-    $ref: `${POS_AUDIT_DOC_ID}#/components/schemas/PosAuditEventsSyncResponse`,
-  });
-  validatePosAuditError = ajv.compile({
-    $ref: `${POS_AUDIT_DOC_ID}#/components/schemas/Error`,
-  });
+  registerContractSchema(POS_AUDIT_DOC_ID);
+  validatePosAuditSyncResponse = compileComponentValidator(POS_AUDIT_DOC_ID, "PosAuditEventsSyncResponse");
+  validatePosAuditError = compileComponentValidator(POS_AUDIT_DOC_ID, "Error");
 }
 
 // ---------------------------------------------------------------------------
@@ -935,35 +912,27 @@ let validatePosActiveSessionResponse: ValidateFunction;
 let validatePosRosterResponse: ValidateFunction;
 
 function buildPosOperatorsValidators(): void {
-  const contracts = loadOpenApiContracts();
-  const contract = contracts.find((c) => c.id === POS_OPERATORS_DOC_ID);
-  if (!contract) {
-    throw new Error(
-      `${POS_OPERATORS_DOC_ID} contract not found — check packages/contracts/openapi/`,
-    );
-  }
-  if (!ajv.getSchema(POS_OPERATORS_DOC_ID)) {
-    const processedDoc = openapiSchemaToJsonSchema(contract.document) as object;
-    ajv.addSchema({ ...processedDoc, $id: POS_OPERATORS_DOC_ID });
-  }
-  validatePosSignOutResponse = ajv.compile({
-    $ref: `${POS_OPERATORS_DOC_ID}#/components/schemas/PosOperatorSignOutResponse`,
+  registerContractSchema(POS_OPERATORS_DOC_ID);
+  validatePosSignOutResponse = compileComponentValidator(POS_OPERATORS_DOC_ID, "PosOperatorSignOutResponse");
+  validatePosOperatorsError = compileComponentValidator(POS_OPERATORS_DOC_ID, "Error");
+  validatePosSignInSucceeded = compileComponentValidator(POS_OPERATORS_DOC_ID, "PosOperatorSignInSucceeded");
+  validatePosTakeoverRequired = compileComponentValidator(POS_OPERATORS_DOC_ID, "PosOperatorTakeoverRequired");
+  validatePosActiveSessionResponse = compileComponentValidator(POS_OPERATORS_DOC_ID, "PosActiveSessionResponse");
+  validatePosRosterResponse = compileComponentValidator(POS_OPERATORS_DOC_ID, "PosRosterResponse");
+}
+
+/**
+ * Shared 401 assertion for the pos-operators surface: the envelope must
+ * carry error.code + error.message and conform to the contract Error schema.
+ */
+function expectPosOperatorsUnauthorizedEnvelope(body: unknown): void {
+  expect(body).toMatchObject({
+    error: {
+      code: expect.any(String),
+      message: expect.any(String),
+    },
   });
-  validatePosOperatorsError = ajv.compile({
-    $ref: `${POS_OPERATORS_DOC_ID}#/components/schemas/Error`,
-  });
-  validatePosSignInSucceeded = ajv.compile({
-    $ref: `${POS_OPERATORS_DOC_ID}#/components/schemas/PosOperatorSignInSucceeded`,
-  });
-  validatePosTakeoverRequired = ajv.compile({
-    $ref: `${POS_OPERATORS_DOC_ID}#/components/schemas/PosOperatorTakeoverRequired`,
-  });
-  validatePosActiveSessionResponse = ajv.compile({
-    $ref: `${POS_OPERATORS_DOC_ID}#/components/schemas/PosActiveSessionResponse`,
-  });
-  validatePosRosterResponse = ajv.compile({
-    $ref: `${POS_OPERATORS_DOC_ID}#/components/schemas/PosRosterResponse`,
-  });
+  assertConformsTo(validatePosOperatorsError, body);
 }
 
 // ---------------------------------------------------------------------------
@@ -1118,13 +1087,7 @@ describe("POST /api/pos/v1/operators/sign-out — contract conformance (T300)", 
         .send({ session_id: FAKE_POS_OPERATORS_SESSION_ID })
         .expect(401);
 
-      expect(res.body).toMatchObject({
-        error: {
-          code: expect.any(String),
-          message: expect.any(String),
-        },
-      });
-      assertConformsTo(validatePosOperatorsError, res.body);
+      expectPosOperatorsUnauthorizedEnvelope(res.body);
     });
   });
 
@@ -1278,13 +1241,7 @@ describe("POST /api/pos/v1/operators/sign-in — contract conformance (T300)", (
         .send(makeSignInBody())
         .expect(401);
 
-      expect(res.body).toMatchObject({
-        error: {
-          code: expect.any(String),
-          message: expect.any(String),
-        },
-      });
-      assertConformsTo(validatePosOperatorsError, res.body);
+      expectPosOperatorsUnauthorizedEnvelope(res.body);
     });
   });
 
@@ -1386,13 +1343,7 @@ describe("GET /api/pos/v1/operators/active-session — contract conformance (T30
         .get(`/api/pos/v1/operators/active-session?${FAKE_ACTIVE_SESSION_QUERY}`)
         .expect(401);
 
-      expect(res.body).toMatchObject({
-        error: {
-          code: expect.any(String),
-          message: expect.any(String),
-        },
-      });
-      assertConformsTo(validatePosOperatorsError, res.body);
+      expectPosOperatorsUnauthorizedEnvelope(res.body);
     });
   });
 
@@ -1479,13 +1430,7 @@ describe("POST /api/pos/v1/operators/takeover/confirm — contract conformance (
         .send(makeConfirmBody())
         .expect(401);
 
-      expect(res.body).toMatchObject({
-        error: {
-          code: expect.any(String),
-          message: expect.any(String),
-        },
-      });
-      assertConformsTo(validatePosOperatorsError, res.body);
+      expectPosOperatorsUnauthorizedEnvelope(res.body);
     });
   });
 
@@ -1599,13 +1544,7 @@ describe("GET /api/pos/v1/operators/roster — contract conformance (T300)", () 
         .get(`/api/pos/v1/operators/roster?branch_id=${FAKE_ROSTER_BRANCH_ID}`)
         .expect(401);
 
-      expect(res.body).toMatchObject({
-        error: {
-          code: expect.any(String),
-          message: expect.any(String),
-        },
-      });
-      assertConformsTo(validatePosOperatorsError, res.body);
+      expectPosOperatorsUnauthorizedEnvelope(res.body);
     });
   });
 
@@ -1643,20 +1582,8 @@ const CONTEXT_DOC_ID = "context.openapi";
 let validateContextResponse: ValidateFunction;
 
 function buildContextValidators(): void {
-  const contracts = loadOpenApiContracts();
-  const contract = contracts.find((c) => c.id === CONTEXT_DOC_ID);
-  if (!contract) {
-    throw new Error(
-      `${CONTEXT_DOC_ID} contract not found — check packages/contracts/openapi/`,
-    );
-  }
-  if (!ajv.getSchema(CONTEXT_DOC_ID)) {
-    const processedDoc = openapiSchemaToJsonSchema(contract.document) as object;
-    ajv.addSchema({ ...processedDoc, $id: CONTEXT_DOC_ID });
-  }
-  validateContextResponse = ajv.compile({
-    $ref: `${CONTEXT_DOC_ID}#/components/schemas/ContextResponse`,
-  });
+  registerContractSchema(CONTEXT_DOC_ID);
+  validateContextResponse = compileComponentValidator(CONTEXT_DOC_ID, "ContextResponse");
 }
 
 // ---------------------------------------------------------------------------
@@ -1787,19 +1714,6 @@ class FakeContextService {
   }
 }
 
-/** Populates request.principal (AuthGuard contract). */
-class ContextScriptedAuthGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
-    const req = ctx.switchToHttp().getRequest();
-    req.principal = {
-      kind: "session",
-      sessionId: FAKE_CONTEXT_SESSION_ID,
-      userId: FAKE_CONTEXT_USER_ID,
-    };
-    return true;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Fixture — context app
 // ---------------------------------------------------------------------------
@@ -1819,7 +1733,7 @@ beforeAll(async () => {
     ],
   })
     .overrideGuard(DashboardAuthGuard)
-    .useValue(new ContextScriptedAuthGuard())
+    .useValue(makePrincipalGuard(FAKE_CONTEXT_SESSION_ID, FAKE_CONTEXT_USER_ID))
     .compile();
 
   contextApp = moduleRef.createNestApplication({ bufferLogs: true });
@@ -2114,18 +2028,8 @@ const MEMBERSHIPS_DOC_ID = "memberships.openapi";
 let validateInvitation: ValidateFunction;
 
 function buildMembershipsValidators(): void {
-  const contracts = loadOpenApiContracts();
-  const contract = contracts.find((c) => c.id === MEMBERSHIPS_DOC_ID);
-  if (!contract) {
-    throw new Error(`${MEMBERSHIPS_DOC_ID} contract not found — check packages/contracts/openapi/`);
-  }
-  if (!ajv.getSchema(MEMBERSHIPS_DOC_ID)) {
-    const processedDoc = openapiSchemaToJsonSchema(contract.document) as object;
-    ajv.addSchema({ ...processedDoc, $id: MEMBERSHIPS_DOC_ID });
-  }
-  validateInvitation = ajv.compile({
-    $ref: `${MEMBERSHIPS_DOC_ID}#/components/schemas/Invitation`,
-  });
+  registerContractSchema(MEMBERSHIPS_DOC_ID);
+  validateInvitation = compileComponentValidator(MEMBERSHIPS_DOC_ID, "Invitation");
 }
 
 // ---------------------------------------------------------------------------
@@ -2159,32 +2063,6 @@ class FakeMembershipsInvitationsService {
   }
 }
 
-class MembershipsScriptedAuthGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
-    const req = ctx.switchToHttp().getRequest();
-    req.principal = { kind: "session", sessionId: "memberships-session-1", userId: MEMBERSHIPS_USER_ID };
-    return true;
-  }
-}
-
-class MembershipsScriptedTenantContextGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
-    const req = ctx.switchToHttp().getRequest();
-    req.context = {
-      userId: MEMBERSHIPS_USER_ID,
-      tenantId: MEMBERSHIPS_TENANT_ID,
-      storeId: null,
-      isPlatformAdmin: false,
-      source: "session" as const,
-    };
-    return true;
-  }
-}
-
-class MembershipsScriptedRolesGuard implements CanActivate {
-  canActivate(_ctx: ExecutionContext): boolean { return true; }
-}
-
 // ---------------------------------------------------------------------------
 // Fixture — memberships invite app
 // ---------------------------------------------------------------------------
@@ -2200,9 +2078,9 @@ beforeAll(async () => {
       { provide: InvitationsService, useValue: new FakeMembershipsInvitationsService() },
     ],
   })
-    .overrideGuard(DashboardAuthGuard).useValue(new MembershipsScriptedAuthGuard())
-    .overrideGuard(TenantContextGuard).useValue(new MembershipsScriptedTenantContextGuard())
-    .overrideGuard(RolesGuard).useValue(new MembershipsScriptedRolesGuard())
+    .overrideGuard(DashboardAuthGuard).useValue(makePrincipalGuard("memberships-session-1", MEMBERSHIPS_USER_ID))
+    .overrideGuard(TenantContextGuard).useValue(makeTenantContextGuard(MEMBERSHIPS_USER_ID, MEMBERSHIPS_TENANT_ID))
+    .overrideGuard(RolesGuard).useValue(ALLOW_ALL_GUARD)
     .compile();
 
   membershipsApp = moduleRef.createNestApplication({ bufferLogs: true });
@@ -2280,20 +2158,8 @@ let validateStoreArray: ValidateFunction;
 let validateStore: ValidateFunction;
 
 function buildStoresValidators(): void {
-  const contracts = loadOpenApiContracts();
-  const contract = contracts.find((c) => c.id === STORES_DOC_ID);
-  if (!contract) {
-    throw new Error(
-      `${STORES_DOC_ID} contract not found — check packages/contracts/openapi/`,
-    );
-  }
-  if (!ajv.getSchema(STORES_DOC_ID)) {
-    const processedDoc = openapiSchemaToJsonSchema(contract.document) as object;
-    ajv.addSchema({ ...processedDoc, $id: STORES_DOC_ID });
-  }
-  validateStore = ajv.compile({
-    $ref: `${STORES_DOC_ID}#/components/schemas/Store`,
-  });
+  registerContractSchema(STORES_DOC_ID);
+  validateStore = compileComponentValidator(STORES_DOC_ID, "Store");
   validateStoreArray = ajv.compile({
     type: "array",
     items: { $ref: `${STORES_DOC_ID}#/components/schemas/Store` },
@@ -2330,37 +2196,6 @@ class FakeStoresService {
   }
 }
 
-/** Populates request.principal (AuthGuard contract). */
-class StoresScriptedAuthGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
-    const req = ctx.switchToHttp().getRequest();
-    req.principal = {
-      kind: "session",
-      sessionId: "stores-session-1",
-      userId: STORES_USER_ID,
-    };
-    return true;
-  }
-}
-
-/**
- * Populates request.context (TenantContextGuard contract).
- * StoresController reads ctx = request.context and throws 401 when absent.
- */
-class StoresScriptedTenantContextGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
-    const req = ctx.switchToHttp().getRequest();
-    req.context = {
-      userId: STORES_USER_ID,
-      tenantId: STORES_TENANT_ID,
-      storeId: null,
-      isPlatformAdmin: false,
-      source: "session" as const,
-    };
-    return true;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Fixture — stores app
 // ---------------------------------------------------------------------------
@@ -2376,9 +2211,9 @@ beforeAll(async () => {
       { provide: StoresService, useValue: new FakeStoresService() },
     ],
   })
-    .overrideGuard(DashboardAuthGuard).useValue(new StoresScriptedAuthGuard())
-    .overrideGuard(TenantContextGuard).useValue(new StoresScriptedTenantContextGuard())
-    .overrideGuard(RolesGuard).useValue({ canActivate: () => true })
+    .overrideGuard(DashboardAuthGuard).useValue(makePrincipalGuard("stores-session-1", STORES_USER_ID))
+    .overrideGuard(TenantContextGuard).useValue(makeTenantContextGuard(STORES_USER_ID, STORES_TENANT_ID))
+    .overrideGuard(RolesGuard).useValue(ALLOW_ALL_GUARD)
     .compile();
 
   storesApp = moduleRef.createNestApplication({ bufferLogs: true });
@@ -2473,20 +2308,8 @@ let validateTenantSummaryArray: ValidateFunction;
 let validateTenant: ValidateFunction;
 
 function buildTenantsValidators(): void {
-  const contracts = loadOpenApiContracts();
-  const contract = contracts.find((c) => c.id === TENANTS_DOC_ID);
-  if (!contract) {
-    throw new Error(
-      `${TENANTS_DOC_ID} contract not found — check packages/contracts/openapi/`,
-    );
-  }
-  if (!ajv.getSchema(TENANTS_DOC_ID)) {
-    const processedDoc = openapiSchemaToJsonSchema(contract.document) as object;
-    ajv.addSchema({ ...processedDoc, $id: TENANTS_DOC_ID });
-  }
-  validateTenant = ajv.compile({
-    $ref: `${TENANTS_DOC_ID}#/components/schemas/Tenant`,
-  });
+  registerContractSchema(TENANTS_DOC_ID);
+  validateTenant = compileComponentValidator(TENANTS_DOC_ID, "Tenant");
   validateTenantSummaryArray = ajv.compile({
     type: "array",
     items: { $ref: `${TENANTS_DOC_ID}#/components/schemas/TenantSummary` },
@@ -2518,19 +2341,6 @@ class FakeTenantsService {
   }
 }
 
-/** Populates request.principal (AuthGuard contract). */
-class TenantsScriptedAuthGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
-    const req = ctx.switchToHttp().getRequest();
-    req.principal = {
-      kind: "session",
-      sessionId: "tenants-session-1",
-      userId: TENANTS_USER_ID,
-    };
-    return true;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Fixture — tenants app
 // ---------------------------------------------------------------------------
@@ -2546,8 +2356,8 @@ beforeAll(async () => {
       { provide: TenantsService, useValue: new FakeTenantsService() },
     ],
   })
-    .overrideGuard(DashboardAuthGuard).useValue(new TenantsScriptedAuthGuard())
-    .overrideGuard(RolesGuard).useValue({ canActivate: () => true })
+    .overrideGuard(DashboardAuthGuard).useValue(makePrincipalGuard("tenants-session-1", TENANTS_USER_ID))
+    .overrideGuard(RolesGuard).useValue(ALLOW_ALL_GUARD)
     .compile();
 
   tenantsApp = moduleRef.createNestApplication({ bufferLogs: true });
@@ -2648,20 +2458,10 @@ import type { MembershipDetail } from "../src/context/membership.repository";
 let validateMembership: ValidateFunction;
 
 function buildMembershipUpdateValidator(): void {
-  // Guard: if memberships.openapi was not yet registered (test isolation),
-  // register it now. In the normal full-suite run Slice 10 already did this.
-  if (!ajv.getSchema(MEMBERSHIPS_DOC_ID)) {
-    const contracts = loadOpenApiContracts();
-    const contract = contracts.find((c) => c.id === MEMBERSHIPS_DOC_ID);
-    if (!contract) {
-      throw new Error(`${MEMBERSHIPS_DOC_ID} contract not found — check packages/contracts/openapi/`);
-    }
-    const processedDoc = openapiSchemaToJsonSchema(contract.document) as object;
-    ajv.addSchema({ ...processedDoc, $id: MEMBERSHIPS_DOC_ID });
-  }
-  validateMembership = ajv.compile({
-    $ref: `${MEMBERSHIPS_DOC_ID}#/components/schemas/Membership`,
-  });
+  // In the normal full-suite run Slice 10 already registered the document;
+  // registerContractSchema is idempotent so test isolation still works.
+  registerContractSchema(MEMBERSHIPS_DOC_ID);
+  validateMembership = compileComponentValidator(MEMBERSHIPS_DOC_ID, "Membership");
 }
 
 // ---------------------------------------------------------------------------
@@ -2691,32 +2491,6 @@ class FakeMembershipsUpdateService {
   async revoke(_ctx: unknown, _membershipId: string): Promise<void> {}
 }
 
-class PatchMembershipsScriptedAuthGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
-    const req = ctx.switchToHttp().getRequest();
-    req.principal = { kind: "session", sessionId: "patch-memberships-session-1", userId: PATCH_USER_ID };
-    return true;
-  }
-}
-
-class PatchMembershipsScriptedTenantContextGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
-    const req = ctx.switchToHttp().getRequest();
-    req.context = {
-      userId: PATCH_USER_ID,
-      tenantId: PATCH_TENANT_ID,
-      storeId: null,
-      isPlatformAdmin: false,
-      source: "session" as const,
-    };
-    return true;
-  }
-}
-
-class PatchMembershipsScriptedRolesGuard implements CanActivate {
-  canActivate(_ctx: ExecutionContext): boolean { return true; }
-}
-
 // ---------------------------------------------------------------------------
 // Fixture — memberships PATCH app
 // ---------------------------------------------------------------------------
@@ -2735,9 +2509,9 @@ beforeAll(async () => {
       { provide: MembershipsService, useValue: fakeMembershipsUpdateService },
     ],
   })
-    .overrideGuard(DashboardAuthGuard).useValue(new PatchMembershipsScriptedAuthGuard())
-    .overrideGuard(TenantContextGuard).useValue(new PatchMembershipsScriptedTenantContextGuard())
-    .overrideGuard(RolesGuard).useValue(new PatchMembershipsScriptedRolesGuard())
+    .overrideGuard(DashboardAuthGuard).useValue(makePrincipalGuard("patch-memberships-session-1", PATCH_USER_ID))
+    .overrideGuard(TenantContextGuard).useValue(makeTenantContextGuard(PATCH_USER_ID, PATCH_TENANT_ID))
+    .overrideGuard(RolesGuard).useValue(ALLOW_ALL_GUARD)
     .compile();
 
   membershipsUpdateApp = moduleRef.createNestApplication({ bufferLogs: true });

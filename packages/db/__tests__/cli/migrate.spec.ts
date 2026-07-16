@@ -63,6 +63,50 @@ afterAll(async () => {
   if (env) await stopPgEnv(env);
 }, 60_000);
 
+// --- schema-introspection helpers (shared by the up/down assertions) --------
+
+async function queryCount(sql: string, params: unknown[] = []): Promise<string> {
+  if (!env) throw new Error("env not initialized");
+  const r = await env.admin.query<{ count: string }>(sql, params);
+  return r.rows[0]?.count ?? "";
+}
+
+/** How many of the named public-schema tables currently exist. */
+function countPublicTables(names: string[]): Promise<string> {
+  return queryCount(
+    `SELECT COUNT(*)::text AS count FROM information_schema.tables
+     WHERE table_schema = 'public' AND table_name = ANY($1::text[])`,
+    [names],
+  );
+}
+
+/** "1" when the named column exists on the public-schema table, else "0". */
+function countPublicColumn(table: string, column: string): Promise<string> {
+  return queryCount(
+    `SELECT COUNT(*)::text AS count FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2`,
+    [table, column],
+  );
+}
+
+/** How many RLS policies exist on the named public-schema tables. */
+function countPolicies(names: string[]): Promise<string> {
+  return queryCount(
+    `SELECT COUNT(*)::text AS count FROM pg_policies
+     WHERE schemaname = 'public' AND tablename = ANY($1::text[])`,
+    [names],
+  );
+}
+
+/** The applied-migration ids from the ledger, lex-ascending. */
+async function ledgerIds(): Promise<string[]> {
+  if (!env) throw new Error("env not initialized");
+  const r = await env.admin.query<{ id: string }>(
+    "SELECT id FROM _drizzle_migrations ORDER BY id ASC",
+  );
+  return r.rows.map((row) => row.id);
+}
+
 describe("data-pulse-migrate CLI", () => {
   // --- argv / env validation paths (do not need a fresh DB) ----------------
 
@@ -144,6 +188,28 @@ describe("data-pulse-migrate CLI", () => {
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
   const SECOND_LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 2]!;
 
+  /** The seven tables created by 0027_settlement_receivables. */
+  const SETTLEMENT_TABLES = [
+    "payer_account",
+    "receivable",
+    "payment_application",
+    "claim",
+    "claim_receivables",
+    "remittance",
+    "reconciliation_result",
+  ];
+
+  /** The seven catalog tables introduced by 0007_catalog. */
+  const CATALOG_TABLES = [
+    "global_products",
+    "tenant_products",
+    "tenant_product_categories",
+    "store_product_overrides",
+    "product_aliases",
+    "price_history",
+    "unknown_items",
+  ];
+
   it("up applies all pending migrations and writes the ledger", async () => {
     if (!env) throw new Error("env not initialized");
     const r = await runCli(["up"], { DATABASE_URL: env.adminUri });
@@ -153,47 +219,23 @@ describe("data-pulse-migrate CLI", () => {
       expect(r.stdout).toMatch(new RegExp(`up: applied ${id}`));
     }
 
-    const ledger = await env.admin.query<{ id: string }>(
-      "SELECT id FROM _drizzle_migrations ORDER BY id ASC",
-    );
-    expect(ledger.rows.map((row) => row.id)).toEqual([...EXPECTED_MIGRATIONS]);
-
-    const tables = await env.admin.query<{ count: string }>(`
-      SELECT COUNT(*)::text AS count FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_name = ANY($1::text[])
-    `, [["tenants", "devices", "shifts"]]);
-    expect(tables.rows[0]?.count).toBe("3");
+    expect(await ledgerIds()).toEqual([...EXPECTED_MIGRATIONS]);
+    expect(await countPublicTables(["tenants", "devices", "shifts"])).toBe("3");
 
     // 0026_sale_sync_status artifacts are present after up (CodeRabbit #6):
     // (a) the sales.sync_status column, (b) the idx_sales_needs_repair partial
-    // index, (c) the sale_sync_deadletters table, (d) its three RLS policies.
-    const syncCol = await env.admin.query<{ count: string }>(`
-      SELECT COUNT(*)::text AS count FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = 'sales'
-        AND column_name = 'sync_status'
-    `);
-    expect(syncCol.rows[0]?.count).toBe("1");
-
-    const needsRepairIdx = await env.admin.query<{ count: string }>(`
-      SELECT COUNT(*)::text AS count FROM pg_indexes
-      WHERE schemaname = 'public' AND indexname = 'idx_sales_needs_repair'
-    `);
-    expect(needsRepairIdx.rows[0]?.count).toBe("1");
-
-    const deadletterTable = await env.admin.query<{ count: string }>(`
-      SELECT COUNT(*)::text AS count FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_name = 'sale_sync_deadletters'
-    `);
-    expect(deadletterTable.rows[0]?.count).toBe("1");
-
-    const deadletterPolicies = await env.admin.query<{ count: string }>(`
-      SELECT COUNT(*)::text AS count FROM pg_policies
-      WHERE schemaname = 'public' AND tablename = 'sale_sync_deadletters'
-    `);
-    // tenant_select + tenant_insert + tenant_update (no DELETE — resolved rows
-    // are retained for audit).
-    expect(deadletterPolicies.rows[0]?.count).toBe("3");
+    // index, (c) the sale_sync_deadletters table, (d) its three RLS policies
+    // (tenant_select + tenant_insert + tenant_update; no DELETE — resolved
+    // rows are retained for audit).
+    expect(await countPublicColumn("sales", "sync_status")).toBe("1");
+    expect(
+      await queryCount(`
+        SELECT COUNT(*)::text AS count FROM pg_indexes
+        WHERE schemaname = 'public' AND indexname = 'idx_sales_needs_repair'
+      `),
+    ).toBe("1");
+    expect(await countPublicTables(["sale_sync_deadletters"])).toBe("1");
+    expect(await countPolicies(["sale_sync_deadletters"])).toBe("3");
   });
 
   it("up is idempotent on a second run", async () => {
@@ -201,10 +243,7 @@ describe("data-pulse-migrate CLI", () => {
     const r = await runCli(["up"], { DATABASE_URL: env.adminUri });
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/no pending migrations/);
-    const ledger = await env.admin.query<{ count: string }>(
-      "SELECT COUNT(*)::text AS count FROM _drizzle_migrations",
-    );
-    expect(ledger.rows[0]?.count).toBe(String(EXPECTED_MIGRATIONS.length));
+    expect((await ledgerIds()).length).toBe(EXPECTED_MIGRATIONS.length);
   });
 
   it(`status reports applied=${EXPECTED_MIGRATIONS.length}, pending=0`, async () => {
@@ -230,115 +269,37 @@ describe("data-pulse-migrate CLI", () => {
       expect(r.code).toBe(0);
       expect(r.stdout).toMatch(new RegExp(`down: rolled back ${LATEST_MIGRATION}`));
 
-      const ledger = await env.admin.query<{ id: string }>(
-        "SELECT id FROM _drizzle_migrations ORDER BY id ASC",
-      );
-      expect(ledger.rows.map((row) => row.id)).toEqual(
-        EXPECTED_MIGRATIONS.slice(0, -1),
-      );
+      expect(await ledgerIds()).toEqual(EXPECTED_MIGRATIONS.slice(0, -1));
 
       // LATEST_MIGRATION is 0027_settlement_receivables, so this single down
-      // fully reverses it: the six settlement tables (payer_account, receivable,
-      // payment_application, claim, claim_receivables, remittance,
-      // reconciliation_result) and their RLS policies are ABSENT afterwards.
-      const settlementTablesAfter = await env.admin.query<{ count: string }>(`
-        SELECT COUNT(*)::text AS count FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = ANY($1::text[])
-      `, [[
-        "payer_account",
-        "receivable",
-        "payment_application",
-        "claim",
-        "claim_receivables",
-        "remittance",
-        "reconciliation_result",
-      ]]);
-      expect(settlementTablesAfter.rows[0]?.count).toBe("0");
+      // fully reverses it: the settlement tables are ABSENT afterwards, and
+      // dropping the tables drops their RLS policies with them.
+      expect(await countPublicTables(SETTLEMENT_TABLES)).toBe("0");
+      expect(await countPolicies(SETTLEMENT_TABLES)).toBe("0");
 
-      // Dropping the tables drops their policies — pg_policies has no rows.
-      const settlementPoliciesAfter = await env.admin.query<{ count: string }>(`
-        SELECT COUNT(*)::text AS count FROM pg_policies
-        WHERE schemaname = 'public' AND tablename = ANY($1::text[])
-      `, [[
-        "payer_account",
-        "receivable",
-        "payment_application",
-        "claim",
-        "claim_receivables",
-        "remittance",
-        "reconciliation_result",
-      ]]);
-      expect(settlementPoliciesAfter.rows[0]?.count).toBe("0");
-
-      // Sanity: the 0026 artifacts SURVIVE the 0027 rollback (down reverses only
-      // the latest migration). The sync_status column and sale_sync_deadletters
-      // table remain present.
-      const syncColSurvives = await env.admin.query<{ count: string }>(`
-        SELECT COUNT(*)::text AS count FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'sales'
-          AND column_name = 'sync_status'
-      `);
-      expect(syncColSurvives.rows[0]?.count).toBe("1");
-
-      const deadletterSurvives = await env.admin.query<{ count: string }>(`
-        SELECT COUNT(*)::text AS count FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = 'sale_sync_deadletters'
-      `);
-      expect(deadletterSurvives.rows[0]?.count).toBe("1");
-
-      // The `sales` table itself survives (0027 only adds new tables; it does
-      // not alter `sales`).
-      const salesTableAfter = await env.admin.query<{ count: string }>(`
-        SELECT COUNT(*)::text AS count FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = 'sales'
-      `);
-      expect(salesTableAfter.rows[0]?.count).toBe("1");
-
-      // Rolling back the latest migration does not touch the catalog: all seven
-      // catalog tables introduced by 0007 are still present afterwards.
-      const catalogCount = await env.admin.query<{ count: string }>(`
-        SELECT COUNT(*)::text AS count FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = ANY($1::text[])
-      `, [[
-        "global_products",
-        "tenant_products",
-        "tenant_product_categories",
-        "store_product_overrides",
-        "product_aliases",
-        "price_history",
-        "unknown_items",
-      ]]);
-      expect(catalogCount.rows[0]?.count).toBe("7");
-
-      // outbox_events from 0006 is still present.
-      const outboxTable = await env.admin.query<{ count: string }>(`
-        SELECT COUNT(*)::text AS count FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = 'outbox_events'
-      `);
-      expect(outboxTable.rows[0]?.count).toBe("1");
-
-      // retention_marked_at column is still present.
-      const column = await env.admin.query<{ count: string }>(`
-        SELECT COUNT(*)::text AS count FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'audit_events'
-          AND column_name = 'retention_marked_at'
-      `);
-      expect(column.rows[0]?.count).toBe("1");
-
-      // The 0003 trigger, shifts, and foundation tables are still here.
-      const trigger = await env.admin.query<{ count: string }>(`
-        SELECT COUNT(*)::text AS count FROM pg_trigger
-        WHERE tgname = 'sessions_active_store_tenant_check'
-      `);
-      expect(trigger.rows[0]?.count).toBe("1");
-
-      const remaining = await env.admin.query<{ count: string }>(`
-        SELECT COUNT(*)::text AS count FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = ANY($1::text[])
-      `, [["tenants", "users", "devices", "shifts"]]);
-      expect(remaining.rows[0]?.count).toBe("4");
+      // Sanity: everything older SURVIVES the 0027 rollback (down reverses
+      // only the latest migration) —
+      // 0026's sync_status column + sale_sync_deadletters table;
+      expect(await countPublicColumn("sales", "sync_status")).toBe("1");
+      expect(await countPublicTables(["sale_sync_deadletters"])).toBe("1");
+      // the `sales` table itself (0027 only adds new tables, never alters it);
+      expect(await countPublicTables(["sales"])).toBe("1");
+      // all seven catalog tables introduced by 0007;
+      expect(await countPublicTables(CATALOG_TABLES)).toBe("7");
+      // outbox_events from 0006;
+      expect(await countPublicTables(["outbox_events"])).toBe("1");
+      // 0004's retention_marked_at column;
+      expect(await countPublicColumn("audit_events", "retention_marked_at")).toBe("1");
+      // the 0003 trigger and the foundation tables.
+      expect(
+        await queryCount(`
+          SELECT COUNT(*)::text AS count FROM pg_trigger
+          WHERE tgname = 'sessions_active_store_tenant_check'
+        `),
+      ).toBe("1");
+      expect(
+        await countPublicTables(["tenants", "users", "devices", "shifts"]),
+      ).toBe("4");
     },
   );
 
@@ -349,19 +310,7 @@ describe("data-pulse-migrate CLI", () => {
     expect(r.stdout).toMatch(new RegExp(`up: applying ${LATEST_MIGRATION}`));
     // Re-applying the latest migration leaves all seven catalog tables from
     // 0007 intact; the catalog set is unaffected by the latest migration.
-    const catalogCount = await env.admin.query<{ count: string }>(`
-      SELECT COUNT(*)::text AS count FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_name = ANY($1::text[])
-    `, [[
-      "global_products",
-      "tenant_products",
-      "tenant_product_categories",
-      "store_product_overrides",
-      "product_aliases",
-      "price_history",
-      "unknown_items",
-    ]]);
-    expect(catalogCount.rows[0]?.count).toBe("7");
+    expect(await countPublicTables(CATALOG_TABLES)).toBe("7");
   });
 
   it(
