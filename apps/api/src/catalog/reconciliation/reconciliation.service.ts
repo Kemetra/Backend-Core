@@ -66,7 +66,7 @@ import {
   Injectable,
   Optional,
 } from "@nestjs/common";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 import { runWithTenantContext } from "@data-pulse-2/db";
 import { newId } from "@data-pulse-2/shared";
@@ -243,6 +243,108 @@ export class ReconciliationService {
    *      — rowCount=0 is impossible (FOR UPDATE locked pending row), but
    *        guard is kept for defensive correctness.
    */
+  /**
+   * Sets the app.current_store GUC (required by the unknown_items_store_read
+   * RLS policy; tenant-wide actors pass storeId=null → "*", 003 0009
+   * carve-out) and locks the target unknown_items row FOR UPDATE. The lock
+   * prevents the FR-052 monotonicity race (T626, exercised by
+   * link-already-reconciled.spec.ts). RLS filters a cross-tenant /
+   * out-of-scope row to zero rows → undefined.
+   */
+  private async lockUnknownItem(
+    client: PoolClient,
+    storeId: string | null,
+    unknownItemId: string,
+  ): Promise<UnknownItemDbRow | undefined> {
+    await client.query("SELECT set_config('app.current_store', $1, true)", [storeId ?? "*"]);
+    const lockResult = await client.query<UnknownItemDbRow>(
+      `SELECT ${UNKNOWN_ITEM_COLUMNS}
+         FROM unknown_items
+        WHERE id = $1
+          FOR UPDATE`,
+      [unknownItemId],
+    );
+    return lockResult.rows[0];
+  }
+
+  /**
+   * Shared link/create step: INSERT the product_aliases row carrying the
+   * unknown item's identifier. Returns false on a unique violation (23505)
+   * without swallowing other errors. store_id carries the item's store to
+   * preserve the store-scoped partial unique index semantics (FR-040);
+   * source_system follows the source unknown_items row per the
+   * product_aliases_source_system_required check in 0007_catalog.sql.
+   */
+  private async insertProductAlias(
+    client: PoolClient,
+    args: {
+      tenantId: string;
+      productId: string;
+      item: UnknownItemDbRow;
+      actorUserId: string;
+    },
+  ): Promise<boolean> {
+    try {
+      await client.query(
+        `INSERT INTO product_aliases
+           (tenant_id, product_id, identifier_type, value,
+            source_system, store_id, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          args.tenantId,
+          args.productId,
+          args.item.identifier_type,
+          args.item.value,
+          args.item.source_system,
+          args.item.store_id,
+          args.actorUserId,
+        ],
+      );
+      return true;
+    } catch (err: unknown) {
+      // PostgreSQL unique-violation: 23505
+      if (
+        typeof err === "object" &&
+        err !== null &&
+        "code" in err &&
+        (err as { code: unknown }).code === "23505"
+      ) {
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Shared link/create step: flip the locked pending row to resolved. The
+   * monotonicity guard keeps resolution_status='pending' in the WHERE to be
+   * defensive; the FOR UPDATE lock means 0 rows here indicates a logic error
+   * (not a race) — callers throw to abort the transaction.
+   */
+  private async markUnknownItemResolved(
+    client: PoolClient,
+    args: {
+      unknownItemId: string;
+      actorUserId: string;
+      productId: string;
+      action: "linked" | "created";
+    },
+  ): Promise<UnknownItemDbRow | undefined> {
+    const updateResult = await client.query<UnknownItemDbRow>(
+      `UPDATE unknown_items
+          SET resolution_status   = 'resolved',
+              resolution_action   = $4,
+              resolved_at         = now(),
+              resolved_by         = $2,
+              resolved_product_id = $3
+        WHERE id                = $1
+          AND resolution_status = 'pending'
+       RETURNING ${UNKNOWN_ITEM_COLUMNS}`,
+      [args.unknownItemId, args.actorUserId, args.productId, args.action],
+    );
+    return updateResult.rows[0];
+  }
+
   async linkUnknownItem(input: {
     readonly tenantId: string;
     readonly storeId: string | null;
@@ -254,44 +356,8 @@ export class ReconciliationService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<LinkResult> => {
-        // Set app.current_store GUC — required by the
-        // unknown_items_store_read RLS policy (same pattern as
-        // UnknownItemsService.dismissUnknownItem).
-        await client.query(
-          "SELECT set_config('app.current_store', $1, true)",
-          [input.storeId ?? "*"],
-        );
-
         // Step 1+2: lock the unknown_items row and discriminate lifecycle.
-        const lockResult = await client.query<{
-          id: string;
-          tenant_id: string;
-          store_id: string;
-          identifier_type: string;
-          value: string;
-          source_system: string | null;
-          resolution_status: "pending" | "resolved" | "dismissed";
-          resolution_action: "linked" | "created" | "dismissed" | null;
-          resolved_at: Date | null;
-          resolved_by: string | null;
-          resolved_product_id: string | null;
-          encountered_at: Date;
-          sale_context: Record<string, unknown> | null;
-        }>(
-          // T626 race-safety verification: this FOR UPDATE lock prevents the
-          // FR-052 monotonicity race exercised by link-already-reconciled.spec.ts.
-          `SELECT id, tenant_id, store_id, identifier_type, value,
-                  source_system, resolution_status, resolution_action,
-                  resolved_at, resolved_by, resolved_product_id,
-                  encountered_at, sale_context
-             FROM unknown_items
-            WHERE id = $1
-              FOR UPDATE`,
-          [input.unknownItemId],
-        );
-
-        const existing = lockResult.rows[0];
-
+        const existing = await this.lockUnknownItem(client, input.storeId, input.unknownItemId);
         if (!existing) {
           return { kind: "not_found" };
         }
@@ -323,104 +389,37 @@ export class ReconciliationService {
         }
 
         // Step 4: INSERT product_aliases — unique constraint 23505 surfaces
-        // as alias_conflict. store_id carries the item's store to preserve
-        // the store-scoped partial unique index semantics (FR-040).
-        // source_system is NULL for barcode/sku/plu/supplier_code rows per
-        // the product_aliases_source_system_required check in 0007_catalog.sql.
-        try {
-          await client.query(
-            `INSERT INTO product_aliases
-               (tenant_id, product_id, identifier_type, value,
-                source_system, store_id, created_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-            [
-              input.tenantId,
-              input.productId,
-              existing.identifier_type,
-              existing.value,
-              existing.source_system,
-              existing.store_id,
-              input.actorUserId,
-            ],
-          );
-        } catch (err: unknown) {
-          // PostgreSQL unique-violation: 23505
-          if (
-            typeof err === "object" &&
-            err !== null &&
-            "code" in err &&
-            (err as { code: unknown }).code === "23505"
-          ) {
-            return { kind: "alias_conflict" };
-          }
-          throw err;
+        // as alias_conflict.
+        const aliasInserted = await this.insertProductAlias(client, {
+          tenantId: input.tenantId,
+          productId: input.productId,
+          item: existing,
+          actorUserId: input.actorUserId,
+        });
+        if (!aliasInserted) {
+          return { kind: "alias_conflict" };
         }
 
-        // Step 5: UPDATE unknown_items — monotonicity guard keeps
-        // resolution_status='pending' in the WHERE to be defensive.
-        // The FOR UPDATE lock means rowCount=0 here indicates a logic
-        // error (not a race), so we treat it as already_reconciled.
-        const updateResult = await client.query<{
-          id: string;
-          tenant_id: string;
-          store_id: string;
-          identifier_type: string;
-          value: string;
-          source_system: string | null;
-          resolution_status: "pending" | "resolved" | "dismissed";
-          resolution_action: "linked" | "created" | "dismissed" | null;
-          resolved_at: Date | null;
-          resolved_by: string | null;
-          resolved_product_id: string | null;
-          encountered_at: Date;
-          sale_context: Record<string, unknown> | null;
-        }>(
-          `UPDATE unknown_items
-              SET resolution_status   = 'resolved',
-                  resolution_action   = 'linked',
-                  resolved_at         = now(),
-                  resolved_by         = $2,
-                  resolved_product_id = $3
-            WHERE id                = $1
-              AND resolution_status = 'pending'
-           RETURNING id, tenant_id, store_id, identifier_type, value,
-                     source_system, resolution_status, resolution_action,
-                     resolved_at, resolved_by, resolved_product_id,
-                     encountered_at, sale_context`,
-          [input.unknownItemId, input.actorUserId, input.productId],
-        );
-
-        const updated = updateResult.rows[0];
+        // Step 5: flip the row to resolved (shared monotonicity-guarded UPDATE).
+        const updated = await this.markUnknownItemResolved(client, {
+          unknownItemId: input.unknownItemId,
+          actorUserId: input.actorUserId,
+          productId: input.productId,
+          action: "linked",
+        });
         if (!updated) {
           // FOR UPDATE lock + 'pending' status was confirmed at the top of
           // this transaction (see step 2 above). Reaching this branch means
           // the alias INSERT succeeded but the unknown_items UPDATE matched
-          // zero rows — a logic error per the comment at the start of
-          // step 5. Throw to abort the transaction and roll back the alias
-          // INSERT rather than committing inconsistent state.
+          // zero rows — a logic error per markUnknownItemResolved's contract.
+          // Throw to abort the transaction and roll back the alias INSERT
+          // rather than committing inconsistent state.
           throw new Error(
             "reconciliation.linkUnknownItem invariant: unknown_items UPDATE returned 0 rows after FOR UPDATE lock + pending check",
           );
         }
 
-        return {
-          kind: "ok",
-          row: {
-            id: updated.id,
-            tenantId: updated.tenant_id,
-            storeId: updated.store_id,
-            identifierType: updated.identifier_type,
-            identifierValue: updated.value,
-            sourceSystem: updated.source_system,
-            resolutionStatus: updated.resolution_status,
-            resolutionAction: updated.resolution_action,
-            resolvedAt: updated.resolved_at,
-            resolvedBy: updated.resolved_by,
-            resolvedProductId: updated.resolved_product_id,
-            encounteredAt: updated.encountered_at,
-            saleContext: updated.sale_context,
-          },
-        };
+        return { kind: "ok", row: toUnknownItemRow(updated) };
       },
     );
 
@@ -491,42 +490,8 @@ export class ReconciliationService {
         this.pool,
         { tenantId: input.tenantId, isPlatformAdmin: false },
         async (client): Promise<CreateResult> => {
-        // Set app.current_store GUC — required by the
-        // unknown_items_store_read RLS policy (same pattern as
-        // linkUnknownItem).
-        await client.query(
-          "SELECT set_config('app.current_store', $1, true)",
-          [input.storeId ?? "*"],
-        );
-
         // Step 1+2: lock the unknown_items row and discriminate lifecycle.
-        const lockResult = await client.query<{
-          id: string;
-          tenant_id: string;
-          store_id: string;
-          identifier_type: string;
-          value: string;
-          source_system: string | null;
-          resolution_status: "pending" | "resolved" | "dismissed";
-          resolution_action: "linked" | "created" | "dismissed" | null;
-          resolved_at: Date | null;
-          resolved_by: string | null;
-          resolved_product_id: string | null;
-          encountered_at: Date;
-          sale_context: Record<string, unknown> | null;
-        }>(
-          `SELECT id, tenant_id, store_id, identifier_type, value,
-                  source_system, resolution_status, resolution_action,
-                  resolved_at, resolved_by, resolved_product_id,
-                  encountered_at, sale_context
-             FROM unknown_items
-            WHERE id = $1
-              FOR UPDATE`,
-          [input.unknownItemId],
-        );
-
-        const existing = lockResult.rows[0];
-
+        const existing = await this.lockUnknownItem(client, input.storeId, input.unknownItemId);
         if (!existing) {
           return { kind: "not_found" };
         }
@@ -562,78 +527,27 @@ export class ReconciliationService {
         );
 
         // Step 4: INSERT product_aliases — 23505 surfaces as alias_conflict.
-        // The PG-level rollback aborts the tenant_products INSERT as well
-        // as the unknown_items UPDATE (this entire callback is the work of
-        // a single transaction; an error rolls the lot back).
-        // source_system follows the source unknown_items row.
-        try {
-          await client.query(
-            `INSERT INTO product_aliases
-               (tenant_id, product_id, identifier_type, value,
-                source_system, store_id, created_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-            [
-              input.tenantId,
-              productId,
-              existing.identifier_type,
-              existing.value,
-              existing.source_system,
-              existing.store_id,
-              input.actorUserId,
-            ],
-          );
-        } catch (err: unknown) {
-          // PostgreSQL unique-violation: 23505
-          if (
-            typeof err === "object" &&
-            err !== null &&
-            "code" in err &&
-            (err as { code: unknown }).code === "23505"
-          ) {
-            // Throw to abort runWithTenantContext — the prior
-            // INSERT INTO tenant_products MUST roll back to satisfy
-            // FR-062 atomicity. Caught outside the transaction and
-            // mapped to { kind: "alias_conflict" }.
-            throw new AliasConflictSentinel();
-          }
-          throw err;
+        // Throw the sentinel to abort runWithTenantContext — the prior
+        // INSERT INTO tenant_products MUST roll back to satisfy FR-062
+        // atomicity. Caught outside the transaction and mapped to
+        // { kind: "alias_conflict" }.
+        const aliasInserted = await this.insertProductAlias(client, {
+          tenantId: input.tenantId,
+          productId,
+          item: existing,
+          actorUserId: input.actorUserId,
+        });
+        if (!aliasInserted) {
+          throw new AliasConflictSentinel();
         }
 
-        // Step 5: UPDATE unknown_items — monotonicity guard keeps
-        // resolution_status='pending' in the WHERE to be defensive.
-        // The FOR UPDATE lock means rowCount=0 here indicates a logic
-        // error (not a race), so we throw to abort the transaction.
-        const updateResult = await client.query<{
-          id: string;
-          tenant_id: string;
-          store_id: string;
-          identifier_type: string;
-          value: string;
-          source_system: string | null;
-          resolution_status: "pending" | "resolved" | "dismissed";
-          resolution_action: "linked" | "created" | "dismissed" | null;
-          resolved_at: Date | null;
-          resolved_by: string | null;
-          resolved_product_id: string | null;
-          encountered_at: Date;
-          sale_context: Record<string, unknown> | null;
-        }>(
-          `UPDATE unknown_items
-              SET resolution_status   = 'resolved',
-                  resolution_action   = 'created',
-                  resolved_at         = now(),
-                  resolved_by         = $2,
-                  resolved_product_id = $3
-            WHERE id                = $1
-              AND resolution_status = 'pending'
-           RETURNING id, tenant_id, store_id, identifier_type, value,
-                     source_system, resolution_status, resolution_action,
-                     resolved_at, resolved_by, resolved_product_id,
-                     encountered_at, sale_context`,
-          [input.unknownItemId, input.actorUserId, productId],
-        );
-
-        const updated = updateResult.rows[0];
+        // Step 5: flip the row to resolved (shared monotonicity-guarded UPDATE).
+        const updated = await this.markUnknownItemResolved(client, {
+          unknownItemId: input.unknownItemId,
+          actorUserId: input.actorUserId,
+          productId,
+          action: "created",
+        });
         if (!updated) {
           // FOR UPDATE lock + 'pending' status was confirmed at the top
           // of this transaction. Reaching this branch means the
@@ -646,25 +560,7 @@ export class ReconciliationService {
           );
         }
 
-        return {
-          kind: "ok",
-          productId,
-          row: {
-            id: updated.id,
-            tenantId: updated.tenant_id,
-            storeId: updated.store_id,
-            identifierType: updated.identifier_type,
-            identifierValue: updated.value,
-            sourceSystem: updated.source_system,
-            resolutionStatus: updated.resolution_status,
-            resolutionAction: updated.resolution_action,
-            resolvedAt: updated.resolved_at,
-            resolvedBy: updated.resolved_by,
-            resolvedProductId: updated.resolved_product_id,
-            encounteredAt: updated.encountered_at,
-            saleContext: updated.sale_context,
-          },
-        };
+        return { kind: "ok", productId, row: toUnknownItemRow(updated) };
       },
     );
     } catch (err: unknown) {
@@ -770,42 +666,9 @@ export class ReconciliationService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<ReopenResult> => {
-        // Set app.current_store GUC — required by the unknown_items_store_read
-        // RLS policy branch (same pattern as link/dismiss). Tenant-wide actors
-        // pass storeId=null → "*" (003 0009 carve-out); store-scoped pass UUID.
-        await client.query(
-          "SELECT set_config('app.current_store', $1, true)",
-          [input.storeId ?? "*"],
-        );
-
         // Lock the target row and discriminate lifecycle. RLS filters a
         // cross-tenant / out-of-scope row to zero rows.
-        const lockResult = await client.query<{
-          id: string;
-          tenant_id: string;
-          store_id: string;
-          identifier_type: string;
-          value: string;
-          source_system: string | null;
-          resolution_status: "pending" | "resolved" | "dismissed";
-          resolution_action: "linked" | "created" | "dismissed" | null;
-          resolved_at: Date | null;
-          resolved_by: string | null;
-          resolved_product_id: string | null;
-          encountered_at: Date;
-          sale_context: Record<string, unknown> | null;
-        }>(
-          `SELECT id, tenant_id, store_id, identifier_type, value,
-                  source_system, resolution_status, resolution_action,
-                  resolved_at, resolved_by, resolved_product_id,
-                  encountered_at, sale_context
-             FROM unknown_items
-            WHERE id = $1
-              FOR UPDATE`,
-          [input.unknownItemId],
-        );
-
-        const target = lockResult.rows[0];
+        const target = await this.lockUnknownItem(client, input.storeId, input.unknownItemId);
 
         // Non-disclosing 404 — RLS-filtered (cross-tenant / out-of-scope) or
         // absent. Decided BEFORE the authority check so an out-of-scope actor
@@ -839,25 +702,8 @@ export class ReconciliationService {
         // 005 FR-032). source_system uses IS NOT DISTINCT FROM to match the
         // NULL (barcode/sku/plu/supplier_code) and NOT-NULL (external_pos_id)
         // branches uniformly — same predicate as captureItem's dedup.
-        const siblingResult = await client.query<{
-          id: string;
-          tenant_id: string;
-          store_id: string;
-          identifier_type: string;
-          value: string;
-          source_system: string | null;
-          resolution_status: "pending" | "resolved" | "dismissed";
-          resolution_action: "linked" | "created" | "dismissed" | null;
-          resolved_at: Date | null;
-          resolved_by: string | null;
-          resolved_product_id: string | null;
-          encountered_at: Date;
-          sale_context: Record<string, unknown> | null;
-        }>(
-          `SELECT id, tenant_id, store_id, identifier_type, value,
-                  source_system, resolution_status, resolution_action,
-                  resolved_at, resolved_by, resolved_product_id,
-                  encountered_at, sale_context
+        const siblingResult = await client.query<UnknownItemDbRow>(
+          `SELECT ${UNKNOWN_ITEM_COLUMNS}
              FROM unknown_items
             WHERE tenant_id       = $1
               AND store_id        = $2
@@ -890,30 +736,13 @@ export class ReconciliationService {
         // Mirrors UnknownItemsService.captureItem's INSERT. correlation_id is
         // NOT NULL per 0007_catalog.sql; the controller derives it from the
         // request id (no POS correlation exists on a reopen).
-        const insertResult = await client.query<{
-          id: string;
-          tenant_id: string;
-          store_id: string;
-          identifier_type: string;
-          value: string;
-          source_system: string | null;
-          resolution_status: "pending";
-          resolution_action: null;
-          resolved_at: null;
-          resolved_by: null;
-          resolved_product_id: null;
-          encountered_at: Date;
-          sale_context: Record<string, unknown> | null;
-        }>(
+        const insertResult = await client.query<UnknownItemDbRow>(
           `INSERT INTO unknown_items
              (id, tenant_id, store_id, identifier_type, value,
               source_system, resolution_status, sale_context, correlation_id)
            VALUES
              ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)
-           RETURNING id, tenant_id, store_id, identifier_type, value,
-                     source_system, resolution_status, resolution_action,
-                     resolved_at, resolved_by, resolved_product_id,
-                     encountered_at, sale_context`,
+           RETURNING ${UNKNOWN_ITEM_COLUMNS}`,
           [
             freshRowId,
             target.tenant_id,
@@ -1035,12 +864,8 @@ export class ReconciliationService {
   }
 }
 
-/**
- * Adapter — raw snake_case row (FOR UPDATE / sibling / INSERT RETURNING) to the
- * camelCase {@link UnknownItemRow} the controller projects. Shared by the
- * reopen branches so the mapping lives in exactly one place.
- */
-function toUnknownItemRow(row: {
+/** Raw snake_case unknown_items row (FOR UPDATE / sibling / UPDATE / INSERT RETURNING). */
+interface UnknownItemDbRow {
   id: string;
   tenant_id: string;
   store_id: string;
@@ -1054,7 +879,20 @@ function toUnknownItemRow(row: {
   resolved_product_id: string | null;
   encountered_at: Date;
   sale_context: Record<string, unknown> | null;
-}): UnknownItemRow {
+}
+
+/** Column list matching {@link UnknownItemDbRow} for SELECT / RETURNING clauses. */
+const UNKNOWN_ITEM_COLUMNS = `id, tenant_id, store_id, identifier_type, value,
+                  source_system, resolution_status, resolution_action,
+                  resolved_at, resolved_by, resolved_product_id,
+                  encountered_at, sale_context`;
+
+/**
+ * Adapter — raw snake_case row (FOR UPDATE / sibling / INSERT RETURNING) to the
+ * camelCase {@link UnknownItemRow} the controller projects. Shared by all
+ * reconciliation branches so the mapping lives in exactly one place.
+ */
+function toUnknownItemRow(row: UnknownItemDbRow): UnknownItemRow {
   return {
     id: row.id,
     tenantId: row.tenant_id,

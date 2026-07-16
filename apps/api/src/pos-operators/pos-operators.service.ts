@@ -84,6 +84,30 @@ function mapInternalRoleToPos(internalCode: string): PosOperatorRole | null {
   return null;
 }
 
+/**
+ * Refusals producible by pipeline steps 2–5 (user → device → membership →
+ * role → store eligibility). A strict subset of both SignInRefusalReason
+ * and TakeoverRefusalReason.
+ */
+type DeviceAuthzRefusalReason =
+  | "user_unmapped"
+  | "user_disabled"
+  | "device_invalid"
+  | "membership_missing"
+  | "membership_revoked"
+  | "role_ineligible"
+  | "store_not_in_access_set";
+
+type DeviceRow = NonNullable<Awaited<ReturnType<DeviceRepository["findActiveByAttestation"]>>>;
+
+/** Successful device-scoped operator authorization (pipeline steps 2–5). */
+interface DeviceOperatorAuthz {
+  userRow: UserLookupRow;
+  deviceRow: DeviceRow;
+  membership: MembershipLookupRow;
+  posRole: PosOperatorRole;
+}
+
 export type SignInResult =
   | {
       kind: "signed_in";
@@ -315,20 +339,20 @@ export class PosOperatorsService {
     return result;
   }
 
-  private async runPipeline(
-    rawJwt: string,
-    body: PosOperatorSignInInput,
-  ): Promise<SignInResult> {
-    // 1. Clerk JWT verification.
-    let claims;
-    try {
-      claims = await this.clerkVerifier.verify(rawJwt);
-    } catch {
-      return { kind: "refused", reason: "clerk_jwt_invalid" };
-    }
-
+  /**
+   * Pipeline steps 2–5 shared by sign-in and takeover-confirm: resolve the
+   * local user, the attested device, the membership in the device's tenant,
+   * role eligibility, and store eligibility. Step order is behavior — each
+   * step's refusal reason is logged server-side keyed by request_id (ADR D10).
+   */
+  private async authorizeOperatorOnDevice(
+    sub: string,
+    deviceTokenAttestation: string,
+  ): Promise<
+    { kind: "refused"; reason: DeviceAuthzRefusalReason } | ({ kind: "ok" } & DeviceOperatorAuthz)
+  > {
     // 2. Map Clerk subject → local user.
-    const userRow = await this.findUserByClerkSubject(claims.sub);
+    const userRow = await this.findUserByClerkSubject(sub);
     if (!userRow) return { kind: "refused", reason: "user_unmapped" };
     if (userRow.deleted_at !== null) {
       return { kind: "refused", reason: "user_disabled" };
@@ -336,7 +360,7 @@ export class PosOperatorsService {
 
     // 3. Device — hash the attestation, look up active row.
     const deviceRow = await this.deviceRepository.findActiveByAttestation(
-      body.device_token_attestation,
+      deviceTokenAttestation,
     );
     if (!deviceRow) return { kind: "refused", reason: "device_invalid" };
 
@@ -363,6 +387,26 @@ export class PosOperatorsService {
       );
       if (!ok) return { kind: "refused", reason: "store_not_in_access_set" };
     }
+
+    return { kind: "ok", userRow, deviceRow, membership, posRole };
+  }
+
+  private async runPipeline(
+    rawJwt: string,
+    body: PosOperatorSignInInput,
+  ): Promise<SignInResult> {
+    // 1. Clerk JWT verification.
+    let claims;
+    try {
+      claims = await this.clerkVerifier.verify(rawJwt);
+    } catch {
+      return { kind: "refused", reason: "clerk_jwt_invalid" };
+    }
+
+    // 2–5. Shared device-scoped authorization.
+    const authz = await this.authorizeOperatorOnDevice(claims.sub, body.device_token_attestation);
+    if (authz.kind === "refused") return authz;
+    const { userRow, deviceRow, posRole } = authz;
 
     // 6. Active operator session check → takeover_required (minimum disclosure).
     const hasActiveSession = await this.activeOperatorSessionExists(
@@ -449,30 +493,9 @@ export class PosOperatorsService {
       return { kind: "refused", reason: "operator_id_mismatch" };
     }
 
-    const userRow = await this.findUserByClerkSubject(claims.sub);
-    if (!userRow) return { kind: "refused", reason: "user_unmapped" };
-    if (userRow.deleted_at !== null) return { kind: "refused", reason: "user_disabled" };
-
-    const deviceRow = await this.deviceRepository.findActiveByAttestation(
-      body.device_token_attestation,
-    );
-    if (!deviceRow) return { kind: "refused", reason: "device_invalid" };
-
-    const membership = await this.findActiveMembership(deviceRow.tenantId, userRow.id);
-    if (!membership) return { kind: "refused", reason: "membership_missing" };
-    if (membership.revoked_at !== null || membership.deleted_at !== null) {
-      return { kind: "refused", reason: "membership_revoked" };
-    }
-    if (!ELIGIBLE_INTERNAL_ROLES.has(membership.role_code)) {
-      return { kind: "refused", reason: "role_ineligible" };
-    }
-    const posRole = mapInternalRoleToPos(membership.role_code);
-    if (posRole === null) return { kind: "refused", reason: "role_ineligible" };
-
-    if (membership.store_access_kind === "specific") {
-      const ok = await this.storeIsInAccessSet(membership.id, deviceRow.storeId);
-      if (!ok) return { kind: "refused", reason: "store_not_in_access_set" };
-    }
+    const authz = await this.authorizeOperatorOnDevice(claims.sub, body.device_token_attestation);
+    if (authz.kind === "refused") return authz;
+    const { deviceRow } = authz;
 
     // Idempotency check via idempotency_keys. client_id = NULL, key = event_id.
     // UNIQUE on (tenant_id, store_id, client_id, key) NULLS NOT DISTINCT guarantees
@@ -489,39 +512,66 @@ export class PosOperatorsService {
     }
 
     if (idempotencyCheck.type === "duplicate") {
-      // Exact replay — return the original session row.
-      const session = await this.findOperatorSessionWithIssuedAt(idempotencyCheck.sessionId);
-      if (!session || session.revoked_at !== null || session.expires_at.getTime() <= Date.now()) {
-        // Session was revoked or expired after idempotency key was stored.
-        return { kind: "refused", reason: "no_active_session_to_supersede" };
-      }
-      return {
-        kind: "signed_in",
-        operator: {
-          id: userRow.clerk_user_id ?? "",
-          // 033: provider-neutral identity key (users.id). Present even on an
-          // idempotent replay (envelope is null here, but user_id is identity,
-          // not a hash-once secret) — SC-033-2 path 4.
-          user_id: userRow.id,
-          display_name: userRow.display_name ?? userRow.email,
-          role: posRole,
-          tenant_id: deviceRow.tenantId,
-          branch_id: deviceRow.storeId,
-        },
-        operator_session: {
-          id: session.id,
-          issued_at: session.issued_at.toISOString(),
-          // Idempotent replay: the raw envelope is hash-once and not
-          // recoverable from the stored row. The original confirm returned it
-          // to this same client; a replay does not re-mint (would break the
-          // hash-once invariant). Null signals "use the envelope you already
-          // hold from the first confirm."
-          envelope: null,
-        },
-      };
+      return this.replayTakeoverConfirm(idempotencyCheck.sessionId, authz);
     }
 
-    // First-time confirm: revoke the existing session for this (device, store).
+    return this.confirmTakeoverFirstTime(body, requestId, authz);
+  }
+
+  /**
+   * Exact replay of a confirmed takeover (same event_id + operator): return
+   * the original session row if it is still live.
+   */
+  private async replayTakeoverConfirm(
+    sessionId: string,
+    authz: DeviceOperatorAuthz,
+  ): Promise<TakeoverConfirmResult> {
+    const { userRow, deviceRow, posRole } = authz;
+
+    const session = await this.findOperatorSessionById(sessionId);
+    if (!session || session.revoked_at !== null || session.expires_at.getTime() <= Date.now()) {
+      // Session was revoked or expired after idempotency key was stored.
+      return { kind: "refused", reason: "no_active_session_to_supersede" };
+    }
+    return {
+      kind: "signed_in",
+      operator: {
+        id: userRow.clerk_user_id ?? "",
+        // 033: provider-neutral identity key (users.id). Present even on an
+        // idempotent replay (envelope is null here, but user_id is identity,
+        // not a hash-once secret) — SC-033-2 path 4.
+        user_id: userRow.id,
+        display_name: userRow.display_name ?? userRow.email,
+        role: posRole,
+        tenant_id: deviceRow.tenantId,
+        branch_id: deviceRow.storeId,
+      },
+      operator_session: {
+        id: session.id,
+        issued_at: session.issued_at.toISOString(),
+        // Idempotent replay: the raw envelope is hash-once and not
+        // recoverable from the stored row. The original confirm returned it
+        // to this same client; a replay does not re-mint (would break the
+        // hash-once invariant). Null signals "use the envelope you already
+        // hold from the first confirm."
+        envelope: null,
+      },
+    };
+  }
+
+  /**
+   * First-time confirm: revoke the existing session for this (device, store),
+   * issue the incoming operator's session, persist the session id on the
+   * idempotency key, and emit the takeover audit event.
+   */
+  private async confirmTakeoverFirstTime(
+    body: PosTakeoverConfirmInput,
+    requestId: string,
+    authz: DeviceOperatorAuthz,
+  ): Promise<TakeoverConfirmResult> {
+    const { userRow, deviceRow, posRole } = authz;
+
+    // Revoke the existing session for this (device, store).
     const revokedSessionId = await this.revokeActiveOperatorSession(
       deviceRow.id,
       deviceRow.storeId,
@@ -741,24 +791,11 @@ export class PosOperatorsService {
     return { kind: "signed_out" };
   }
 
-  private async findOperatorSessionWithIssuedAt(
+  private async findOperatorSessionById(
     sessionId: string,
   ): Promise<OperatorSessionWithIssuedAtRow | null> {
     const r = await this.pool.query<OperatorSessionWithIssuedAtRow>(
       `SELECT id, user_id, scope, revoked_at, expires_at, issued_at
-         FROM auth_tokens
-        WHERE id = $1
-        LIMIT 1`,
-      [sessionId],
-    );
-    return r.rows[0] ?? null;
-  }
-
-  private async findOperatorSessionById(
-    sessionId: string,
-  ): Promise<OperatorSessionLookupRow | null> {
-    const r = await this.pool.query<OperatorSessionLookupRow>(
-      `SELECT id, user_id, scope, revoked_at, expires_at
          FROM auth_tokens
         WHERE id = $1
         LIMIT 1`,
@@ -1068,14 +1105,6 @@ interface MembershipLookupRow {
   revoked_at: Date | null;
   deleted_at: Date | null;
   role_code: string;
-}
-
-interface OperatorSessionLookupRow {
-  id: string;
-  user_id: string;
-  scope: string;
-  revoked_at: Date | null;
-  expires_at: Date;
 }
 
 interface OperatorSessionWithIssuedAtRow {
