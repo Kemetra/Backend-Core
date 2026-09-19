@@ -10,7 +10,7 @@
     "start": "node dist/main.js",
     "start:dev": "tsc -p tsconfig.build.json --watch",
     "test": "jest --passWithNoTests",
-    "lint": "echo \"api: lint runs at the repo root\""
+    "lint": "tsc -p tsconfig.build.json --noEmit --incremental false"
   },
   "dependencies": {
     "@data-pulse-2/auth": "workspace:*",

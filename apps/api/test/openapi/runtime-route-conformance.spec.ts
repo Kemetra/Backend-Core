@@ -3,7 +3,8 @@ import "reflect-metadata";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { NestFactory, type INestApplication } from "@nestjs/core";
+import { type INestApplication } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
 import { load as parseYaml } from "js-yaml";
 
 import { AppModule } from "../../src/app.module";

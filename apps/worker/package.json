@@ -9,7 +9,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "test": "jest --passWithNoTests",
-    "lint": "echo \"worker: lint runs at the repo root\""
+    "lint": "tsc -p tsconfig.build.json --noEmit --incremental false"
   },
   "dependencies": {
     "@data-pulse-2/db": "workspace:*",

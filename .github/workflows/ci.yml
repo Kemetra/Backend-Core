@@ -1,7 +1,7 @@
 # Backend-Core CI (T305).
 #
 # Two-job split:
-#   - fast            : no Docker. Build all workspaces (acts as typecheck via tsc) plus
+#   - fast            : no Docker. Static checks + build all workspaces plus
 #                       Docker-free unit tests for worker / shared / auth.
 #   - db-integration  : Docker/Testcontainers. Real Postgres 16-alpine boots for
 #                       packages/db migration UP/DOWN cycles and apps/api RLS suites.
@@ -10,8 +10,8 @@
 #   - MIGRATION_TEST_ALLOW_SKIP is intentionally NOT set anywhere. CI must fail if
 #     Testcontainers cannot start (the soft-skip is a local-Docker-less escape hatch
 #     only, per constitution.md).
-#   - Lint and coverage thresholds are not wired here. ESLint is not installed in
-#     the repo today; adding it would require package.json changes outside this slice.
+#   - `pnpm lint` is the repository's no-emit TypeScript static-analysis gate.
+#     ESLint is not installed, so the name does not imply ESLint or formatting.
 
 name: CI
 
@@ -52,6 +52,14 @@ jobs:
 
       - name: Build all workspaces
         run: pnpm -r run build
+
+      # MUST run after the build: `lint` is a --noEmit typecheck, and each
+      # workspace resolves its siblings through their published `types`
+      # entrypoints under dist/. On a cold checkout those .d.ts files only
+      # exist once `build` has emitted them, so linting first fails with
+      # TS2307 "Cannot find module '@data-pulse-2/shared'".
+      - name: Static checks
+        run: pnpm lint
 
       - name: Test @data-pulse-2/worker (Docker-free suites)
         # The Testcontainers-backed outbox suites

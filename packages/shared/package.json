@@ -43,7 +43,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "jest --passWithNoTests",
-    "lint": "echo \"shared: lint runs at the repo root\""
+    "lint": "tsc -p tsconfig.build.json --noEmit --incremental false"
   },
   "dependencies": {
     "@opentelemetry/api": "1.9.1",

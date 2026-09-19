@@ -27,7 +27,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "jest --passWithNoTests",
-    "lint": "echo \"auth: lint runs at the repo root\""
+    "lint": "tsc -p tsconfig.build.json --noEmit --incremental false"
   },
   "dependencies": {
     "@clerk/backend": "3.4.5",
