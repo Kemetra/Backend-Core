@@ -28,6 +28,7 @@ import { newId } from "@data-pulse-2/shared";
 import { PG_POOL } from "../auth/auth.module";
 import { recordSettlementReceivable } from "../observability/metrics/api.metrics";
 import { decideReconciliation } from "./reconcile-decision";
+import { insertSettlementAudit } from "./transactional-audit";
 import type {
   ClaimBody,
   ReconciliationResultBody,
@@ -35,6 +36,8 @@ import type {
 
 export interface SubmitClaimInput {
   readonly tenantId: string;
+  readonly actorUserId: string;
+  readonly requestId: string | null;
   readonly payerRef: string;
   readonly receivableRefs: readonly string[];
 }
@@ -46,6 +49,8 @@ export type SubmitClaimResult =
 
 export interface ReconcileInput {
   readonly tenantId: string;
+  readonly actorUserId: string;
+  readonly requestId: string | null;
   readonly claimRef: string;
   readonly remittedAmount: string;
   readonly remittanceRef?: string | null;
@@ -147,6 +152,17 @@ export class ClaimService {
             WHERE id = ANY($1::uuid[])`,
           [refs],
         );
+
+        await insertSettlementAudit(client, {
+          tenantId: input.tenantId,
+          storeId,
+          actorUserId: input.actorUserId,
+          requestId: input.requestId,
+          action: "settlement.claim.submitted",
+          targetType: "claim",
+          targetId: claimId,
+          metadata: { receivable_ids: refs },
+        });
 
         return {
           kind: "ok",
@@ -279,6 +295,21 @@ export class ClaimService {
             WHERE id = $1::uuid`,
           [input.claimRef],
         );
+
+        await insertSettlementAudit(client, {
+          tenantId: input.tenantId,
+          storeId: c.store_id,
+          actorUserId: input.actorUserId,
+          requestId: input.requestId,
+          action: "settlement.remittance.reconciled",
+          targetType: "claim",
+          targetId: input.claimRef,
+          metadata: {
+            remitted_amount: input.remittedAmount,
+            variance: decision.variance,
+            outcome: decision.outcome,
+          },
+        });
 
         return {
           kind: "ok",

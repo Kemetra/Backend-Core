@@ -118,7 +118,6 @@ export class SettlementController {
   @UseGuards(PosOperatorEnvelopeSaleGuard, PosWriteRateLimitGuard)
   @PosWriteRateLimitBucket("posWriteSettlementIntent")
   @Idempotent("required")
-  @Auditable("settlement.intent.recorded")
   async recordIntent(
     @Req() request: TenantContextRequest,
     @Headers("idempotency-key") idempotencyKey: string,
@@ -129,7 +128,11 @@ export class SettlementController {
     const result = await this.service.openFromIntent({
       tenantId,
       storeId,
-      operation: { idempotencyKey, actorUserId: userId },
+      operation: {
+        idempotencyKey,
+        actorUserId: userId,
+        requestId: request.requestId ?? null,
+      },
       saleRef: body.saleRef,
       payers: body.payers.map((p) => ({
         payerRef: p.payerRef,
@@ -224,17 +227,18 @@ export class SettlementController {
   @UseGuards(DashboardAuthGuard, TenantContextGuard, RolesGuard)
   @Roles("owner", "tenant_admin")
   @Idempotent("required")
-  @Auditable("settlement.payment.applied")
   async applyPayment(
     @Req() request: TenantContextRequest,
     @Param("receivableRef") receivableRef: string,
     @Body(new ZodValidationPipe(ApplyPaymentRequestSchema))
     body: ApplyPaymentRequestDto,
   ): Promise<ReceivableBody> {
-    const tenantId = this.requireTenant(request);
+    const { tenantId, userId } = this.requireMutationContext(request);
     this.assertUuid(receivableRef, "receivableRef");
     const result = await this.service.applyPayment({
       tenantId,
+      actorUserId: userId,
+      requestId: request.requestId ?? null,
       receivableRef,
       amount: body.amount,
       version: body.version,
@@ -268,15 +272,16 @@ export class SettlementController {
   @UseGuards(DashboardAuthGuard, TenantContextGuard, RolesGuard)
   @Roles("owner", "tenant_admin")
   @Idempotent("required")
-  @Auditable("settlement.claim.submitted")
   async submitClaim(
     @Req() request: TenantContextRequest,
     @Body(new ZodValidationPipe(ClaimCreateSchema))
     body: ClaimCreateDto,
   ): Promise<ClaimBody> {
-    const tenantId = this.requireTenant(request);
+    const { tenantId, userId } = this.requireMutationContext(request);
     const result = await this.claims.submitClaim({
       tenantId,
+      actorUserId: userId,
+      requestId: request.requestId ?? null,
       payerRef: body.payerRef,
       receivableRefs: body.receivableRefs,
     });
@@ -304,17 +309,18 @@ export class SettlementController {
   @UseGuards(DashboardAuthGuard, TenantContextGuard, RolesGuard)
   @Roles("owner", "tenant_admin")
   @Idempotent("required")
-  @Auditable("settlement.remittance.reconciled")
   async reconcileRemittance(
     @Req() request: TenantContextRequest,
     @Param("claimRef") claimRef: string,
     @Body(new ZodValidationPipe(RemittanceReconcileSchema))
     body: RemittanceReconcileDto,
   ): Promise<ReconciliationResultBody> {
-    const tenantId = this.requireTenant(request);
+    const { tenantId, userId } = this.requireMutationContext(request);
     this.assertUuid(claimRef, "claimRef");
     const result = await this.claims.reconcileRemittance({
       tenantId,
+      actorUserId: userId,
+      requestId: request.requestId ?? null,
       claimRef,
       remittedAmount: body.remittedAmount,
       remittanceRef: body.remittanceRef ?? null,
@@ -355,6 +361,18 @@ export class SettlementController {
       throw new UnauthorizedException("Unauthorized");
     }
     return ctx.tenantId;
+  }
+
+  /** Actor + tenant required by integrity-sensitive transactional audit writes. */
+  private requireMutationContext(request: TenantContextRequest): {
+    tenantId: string;
+    userId: string;
+  } {
+    const ctx = request.context;
+    if (!ctx || ctx.tenantId === null || ctx.userId === null) {
+      throw new UnauthorizedException("Unauthorized");
+    }
+    return { tenantId: ctx.tenantId, userId: ctx.userId };
   }
 
   /**

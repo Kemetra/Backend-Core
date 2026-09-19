@@ -13,11 +13,12 @@ function result(rows: unknown[] = [], rowCount = rows.length): QueryResult {
   return { rows, rowCount, command: "", oid: 0, fields: [] } as QueryResult;
 }
 
-function harness(options: { saleExists?: boolean } = {}) {
+function harness(options: { saleExists?: boolean; auditFails?: boolean } = {}) {
   let durableFingerprint: Buffer | null = null;
   let durableBody: unknown = null;
   let operationExists = false;
   let receivableInsertCount = 0;
+  let auditInsertCount = 0;
   const commands: string[] = [];
 
   const query = jest.fn(async (sql: string, params?: unknown[]) => {
@@ -60,6 +61,11 @@ function harness(options: { saleExists?: boolean } = {}) {
       durableBody = JSON.parse(params?.[0] as string) as unknown;
       return result([], 1);
     }
+    if (text.includes("INSERT INTO audit_events")) {
+      auditInsertCount += 1;
+      if (options.auditFails) throw new Error("injected audit failure");
+      return result([], 1);
+    }
     throw new Error(`unexpected SQL: ${text}`);
   });
   const client = { query, release: jest.fn() } as unknown as PoolClient;
@@ -73,6 +79,9 @@ function harness(options: { saleExists?: boolean } = {}) {
     get receivableInsertCount() {
       return receivableInsertCount;
     },
+    get auditInsertCount() {
+      return auditInsertCount;
+    },
   };
 }
 
@@ -83,6 +92,7 @@ function input(owedAmount = "12.00") {
     operation: {
       idempotencyKey: "settlement-unit-idempotency-key",
       actorUserId: ACTOR_ID,
+      requestId: "b3000000-0000-4000-8000-000000000001",
     },
     saleRef: SALE_ID,
     payers: [{ payerRef: PAYER_ID, owedAmount }],
@@ -97,6 +107,7 @@ describe("ReceivableService durable settlement idempotency", () => {
 
     expect(first).toEqual(retry);
     expect(h.receivableInsertCount).toBe(1);
+    expect(h.auditInsertCount).toBe(1);
     expect(h.commands.filter((sql) => sql === "COMMIT")).toHaveLength(2);
   });
 
@@ -113,6 +124,16 @@ describe("ReceivableService durable settlement idempotency", () => {
     const h = harness({ saleExists: false });
     expect((await h.service.openFromIntent(input())).kind).toBe("conflict");
     expect(h.receivableInsertCount).toBe(0);
+    expect(h.commands).toContain("ROLLBACK");
+    expect(h.commands).not.toContain("COMMIT");
+  });
+
+  it("rolls back the financial facts when the required audit insert fails", async () => {
+    const h = harness({ auditFails: true });
+    await expect(h.service.openFromIntent(input())).rejects.toThrow(
+      "injected audit failure",
+    );
+    expect(h.auditInsertCount).toBe(1);
     expect(h.commands).toContain("ROLLBACK");
     expect(h.commands).not.toContain("COMMIT");
   });

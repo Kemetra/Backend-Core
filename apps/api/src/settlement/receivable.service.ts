@@ -30,6 +30,7 @@ import { recordSettlementReceivable } from "../observability/metrics/api.metrics
 import { decideApplication } from "./apply-payment-decision";
 import type { ReceivableRow } from "./dto/receivable.dto";
 import { INITIAL_RECEIVABLE_STATE, type ReceivableState } from "./receivable-state-machine";
+import { insertSettlementAudit } from "./transactional-audit";
 
 // ---------------------------------------------------------------------------
 // DB row shape (snake_case) → service row (camelCase)
@@ -87,6 +88,7 @@ export interface OpenIntentInput {
   readonly operation: {
     readonly idempotencyKey: string;
     readonly actorUserId: string;
+    readonly requestId: string | null;
   };
   readonly saleRef: string;
   readonly payers: readonly IntentPayerInput[];
@@ -157,6 +159,8 @@ export type GetResult = { kind: "ok"; row: ReceivableRow } | { kind: "not_found"
 
 export interface ApplyPaymentInput {
   readonly tenantId: string;
+  readonly actorUserId: string;
+  readonly requestId: string | null;
   readonly receivableRef: string;
   readonly amount: string;
   readonly version: number;
@@ -328,6 +332,17 @@ export class ReceivableService {
             );
           }
 
+          await insertSettlementAudit(client, {
+            tenantId: input.tenantId,
+            storeId: input.storeId,
+            actorUserId: input.operation.actorUserId,
+            requestId: input.operation.requestId,
+            action: "settlement.intent.recorded",
+            targetType: "sales",
+            targetId: input.saleRef,
+            metadata: { receivable_ids: dbRows.map((row) => row.id) },
+          });
+
           return { kind: "ok", rows: dbRows.map(toRow) };
         },
       );
@@ -412,9 +427,19 @@ export class ReceivableService {
           [input.receivableRef, decision.newBalance, decision.newState, input.version],
         );
         // The FOR UPDATE lock makes a 0-row result here impossible, but guard.
-        return updated.rows[0]
-          ? { kind: "ok", row: toRow(updated.rows[0]) }
-          : { kind: "conflict" };
+        const updatedRow = updated.rows[0];
+        if (!updatedRow) return { kind: "conflict" };
+        await insertSettlementAudit(client, {
+          tenantId: input.tenantId,
+          storeId: row.store_id,
+          actorUserId: input.actorUserId,
+          requestId: input.requestId,
+          action: "settlement.payment.applied",
+          targetType: "receivable",
+          targetId: input.receivableRef,
+          metadata: { payment_amount: input.amount, version: updatedRow.version },
+        });
+        return { kind: "ok", row: toRow(updatedRow) };
       },
     );
     // Post-commit signal — one increment per successful cash application (035 §7).

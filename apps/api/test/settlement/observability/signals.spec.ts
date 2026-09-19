@@ -101,6 +101,7 @@ async function openOne(owed: string): Promise<string> {
     operation: {
       idempotencyKey: `signals-open-${owed}-${Date.now()}`,
       actorUserId: SETTLEMENT_FIXTURE_IDS.actorA,
+      requestId: "b2000000-0000-4000-8000-000000000001",
     },
     saleRef: SALE_A,
     payers: [{ payerRef: PAYER_A_STORE, owedAmount: owed }],
@@ -124,6 +125,7 @@ describe("035 T034 — settlement_receivable_total signal", () => {
       operation: {
         idempotencyKey: "signals-rejected-intent",
         actorUserId: SETTLEMENT_FIXTURE_IDS.actorA,
+        requestId: "b2000000-0000-4000-8000-000000000002",
       },
       saleRef: SALE_A,
       payers: [{ payerRef: PAYER_ABSENT, owedAmount: "10.00" }],
@@ -138,6 +140,8 @@ describe("035 T034 — settlement_receivable_total signal", () => {
     record.mockClear();
     const r = await receivables.applyPayment({
       tenantId: TENANT_A,
+      actorUserId: SETTLEMENT_FIXTURE_IDS.actorA,
+      requestId: "b2000000-0000-4000-8000-000000000003",
       receivableRef: ref,
       amount: "50.00",
       version: 0,
@@ -152,6 +156,8 @@ describe("035 T034 — settlement_receivable_total signal", () => {
     record.mockClear();
     const r = await claims.submitClaim({
       tenantId: TENANT_A,
+      actorUserId: SETTLEMENT_FIXTURE_IDS.actorA,
+      requestId: "b2000000-0000-4000-8000-000000000004",
       payerRef: PAYER_A_STORE,
       receivableRefs: [ref],
     });
@@ -164,6 +170,8 @@ describe("035 T034 — settlement_receivable_total signal", () => {
     const ref = await openOne("120.00");
     const claim = await claims.submitClaim({
       tenantId: TENANT_A,
+      actorUserId: SETTLEMENT_FIXTURE_IDS.actorA,
+      requestId: "b2000000-0000-4000-8000-000000000005",
       payerRef: PAYER_A_STORE,
       receivableRefs: [ref],
     });
@@ -171,6 +179,8 @@ describe("035 T034 — settlement_receivable_total signal", () => {
     record.mockClear();
     const r = await claims.reconcileRemittance({
       tenantId: TENANT_A,
+      actorUserId: SETTLEMENT_FIXTURE_IDS.actorA,
+      requestId: "b2000000-0000-4000-8000-000000000006",
       claimRef: claim.claim.claimRef,
       remittedAmount: "120.00",
     });

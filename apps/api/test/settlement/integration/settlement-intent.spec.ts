@@ -479,7 +479,11 @@ describe("035 T030 §4 — idempotent replay", () => {
     const committed = await service.openFromIntent({
       tenantId: TENANT_A,
       storeId: STORE_A_X,
-      operation: { idempotencyKey: key, actorUserId: ACTOR_A },
+      operation: {
+        idempotencyKey: key,
+        actorUserId: ACTOR_A,
+        requestId: "b1000000-0000-4000-8000-000000000001",
+      },
       saleRef: SALE_A,
       payers: [{ payerRef: PAYER_A_STORE, owedAmount: "41.00" }],
     });
