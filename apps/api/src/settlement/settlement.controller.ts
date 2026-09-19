@@ -24,7 +24,8 @@
  * never the body/query (§XII; strict Zod DTOs reject smuggled fields → 400).
  * Every response is a `toReceivable` projection (no raw DB entity, §IV).
  * The intent route is `@Idempotent("required")` — replay-safety (FR-020/G5) is
- * the interceptor's job (the service has no per-row dedup key).
+ * accelerated by the interceptor and durably enforced in the service's
+ * PostgreSQL transaction.
  */
 import {
   BadRequestException,
@@ -32,6 +33,7 @@ import {
   ConflictException,
   Controller,
   Get,
+  Headers,
   HttpCode,
   HttpStatus,
   NotFoundException,
@@ -119,13 +121,15 @@ export class SettlementController {
   @Auditable("settlement.intent.recorded")
   async recordIntent(
     @Req() request: TenantContextRequest,
+    @Headers("idempotency-key") idempotencyKey: string,
     @Body(new ZodValidationPipe(SettlementIntentCreateSchema))
     body: SettlementIntentCreateDto,
   ): Promise<SettlementIntentResultBody> {
-    const { tenantId, storeId } = this.requirePosContext(request);
+    const { tenantId, storeId, userId } = this.requirePosContext(request);
     const result = await this.service.openFromIntent({
       tenantId,
       storeId,
+      operation: { idempotencyKey, actorUserId: userId },
       saleRef: body.saleRef,
       payers: body.payers.map((p) => ({
         payerRef: p.payerRef,
@@ -133,6 +137,13 @@ export class SettlementController {
         claimMetadata: p.claimMetadata ?? null,
       })),
     });
+    if (result.kind === "idempotency_conflict") {
+      throw new ConflictException({
+        code: "idempotency_key_conflict",
+        message:
+          "The provided Idempotency-Key has already been used for a different request body. Generate a new key.",
+      });
+    }
     if (result.kind === "conflict") {
       // Unknown / cross-tenant payer OR sale — deterministic, side-effect-free.
       throw new ConflictException({
@@ -328,12 +339,13 @@ export class SettlementController {
   private requirePosContext(request: TenantContextRequest): {
     tenantId: string;
     storeId: string;
+    userId: string;
   } {
     const ctx = request.context;
-    if (!ctx || ctx.tenantId === null || ctx.storeId === null) {
+    if (!ctx || ctx.userId === null || ctx.tenantId === null || ctx.storeId === null) {
       throw new UnauthorizedException("Unauthorized");
     }
-    return { tenantId: ctx.tenantId, storeId: ctx.storeId };
+    return { tenantId: ctx.tenantId, storeId: ctx.storeId, userId: ctx.userId };
   }
 
   /** Tenant from the dashboard session context. */

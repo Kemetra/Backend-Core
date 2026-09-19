@@ -98,6 +98,10 @@ async function openOne(owed: string): Promise<string> {
   const r = await receivables.openFromIntent({
     tenantId: TENANT_A,
     storeId: STORE_A_X,
+    operation: {
+      idempotencyKey: `signals-open-${owed}-${Date.now()}`,
+      actorUserId: SETTLEMENT_FIXTURE_IDS.actorA,
+    },
     saleRef: SALE_A,
     payers: [{ payerRef: PAYER_A_STORE, owedAmount: owed }],
   });
@@ -117,6 +121,10 @@ describe("035 T034 — settlement_receivable_total signal", () => {
     const r = await receivables.openFromIntent({
       tenantId: TENANT_A,
       storeId: STORE_A_X,
+      operation: {
+        idempotencyKey: "signals-rejected-intent",
+        actorUserId: SETTLEMENT_FIXTURE_IDS.actorA,
+      },
       saleRef: SALE_A,
       payers: [{ payerRef: PAYER_ABSENT, owedAmount: "10.00" }],
     });
