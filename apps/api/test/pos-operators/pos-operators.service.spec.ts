@@ -23,10 +23,20 @@ import type { ClerkVerifier } from "../../src/pos-operators/clerk-verifier";
 
 interface MockPool {
   query: jest.Mock;
+  connect: jest.Mock;
 }
 
 function makePool(): MockPool {
-  return { query: jest.fn() };
+  const query = jest.fn();
+  const transactionControl = /^(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|SELECT set_config|SELECT pg_advisory_xact_lock)/i;
+  const client = {
+    query: jest.fn(async (sql: string) => {
+      if (transactionControl.test(sql.trimStart())) return { rows: [] };
+      return query(sql);
+    }),
+    release: jest.fn(),
+  };
+  return { query, connect: jest.fn(async () => client) };
 }
 
 function makeVerifier(sub: string | Error = "user_test_sub"): ClerkVerifier {

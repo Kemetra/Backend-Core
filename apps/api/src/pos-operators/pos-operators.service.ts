@@ -39,8 +39,8 @@ import { Injectable } from "@nestjs/common";
 import { newId } from "@data-pulse-2/shared";
 import type { Logger } from "@data-pulse-2/shared";
 import { generateRawToken, hashToken } from "@data-pulse-2/auth";
-import { insertAuditEvent, runWithTenantContext } from "@data-pulse-2/db";
-import type { Pool } from "pg";
+import { runWithTenantContext } from "@data-pulse-2/db";
+import type { Pool, PoolClient } from "pg";
 
 import type { ClerkVerifier } from "./clerk-verifier";
 import { DeviceRepository } from "./device.repository";
@@ -296,7 +296,8 @@ export class PosOperatorsService {
    * Wave 3 — confirm a POS operator takeover.
    *
    * Idempotency via `event_id`: stored in `idempotency_keys` with
-   * `client_id = NULL`, keyed on `(tenant_id, store_id, NULL, event_id)`.
+   * `client_id = 'pos_takeover'`, keyed on
+   * `(tenant_id, store_id, 'pos_takeover', event_id)`.
    * Collision with the same `operator_id` → return the original signed-in
    * envelope. Collision with a different `operator_id` → generic 401.
    * Emits `operator.session.takeover` audit event on the first successful confirm.
@@ -410,21 +411,26 @@ export class PosOperatorsService {
     if (authz.kind === "refused") return authz;
     const { userRow, deviceRow, posRole } = authz;
 
-    // 6. Active operator session check → takeover_required (minimum disclosure).
-    const hasActiveSession = await this.activeOperatorSessionExists(
-      deviceRow.tenantId,
-      deviceRow.id,
-      deviceRow.storeId,
+    // 6–7. Serialize the decision and insert for this terminal. Without a
+    // PostgreSQL-backed lock, two concurrent sign-ins can both observe no
+    // session and independently insert live operator tokens.
+    const session = await runWithTenantContext(
+      this.pool,
+      { tenantId: deviceRow.tenantId, isPlatformAdmin: false },
+      async (client) => {
+        await this.lockDeviceSession(client, deviceRow.tenantId, deviceRow.id, deviceRow.storeId);
+        if (await this.activeOperatorSessionExists(client, deviceRow.id, deviceRow.storeId)) {
+          return null;
+        }
+        return this.issueOperatorSessionRow(client, {
+          tenantId: deviceRow.tenantId,
+          storeId: deviceRow.storeId,
+          userId: userRow.id,
+          deviceId: deviceRow.id,
+        });
+      },
     );
-    if (hasActiveSession) return { kind: "takeover_required" };
-
-    // 7. Issue server-side operator session row.
-    const session = await this.issueOperatorSessionRow({
-      tenantId: deviceRow.tenantId,
-      storeId: deviceRow.storeId,
-      userId: userRow.id,
-      deviceId: deviceRow.id,
-    });
+    if (session === null) return { kind: "takeover_required" };
 
     return {
       kind: "signed_in",
@@ -504,25 +510,31 @@ export class PosOperatorsService {
     if (authz.kind === "refused") return authz;
     const { deviceRow } = authz;
 
-    // Idempotency check via idempotency_keys. client_id = NULL, key = event_id.
-    // UNIQUE on (tenant_id, store_id, client_id, key) NULLS NOT DISTINCT guarantees
-    // collision on the same event_id within the same (tenant, store).
-    const idempotencyCheck = await this.upsertTakeoverIdempotencyKey(
-      body.event_id,
-      body.operator_id,
-      deviceRow.tenantId,
-      deviceRow.storeId,
+    return runWithTenantContext(
+      this.pool,
+      { tenantId: deviceRow.tenantId, isPlatformAdmin: false },
+      async (client): Promise<TakeoverConfirmResult> => {
+        // One transaction owns the device/store mutex, idempotency reservation,
+        // prior-session revoke, replacement insert, response persistence, and
+        // audit fact. Concurrent replays cannot observe a committed reservation
+        // whose session_id is still null.
+        await this.lockDeviceSession(client, deviceRow.tenantId, deviceRow.id, deviceRow.storeId);
+        const idempotencyCheck = await this.upsertTakeoverIdempotencyKey(
+          client,
+          body.event_id,
+          body.operator_id,
+          deviceRow.tenantId,
+          deviceRow.storeId,
+        );
+        if (idempotencyCheck.type === "conflict") {
+          return { kind: "refused", reason: "event_id_operator_conflict" };
+        }
+        if (idempotencyCheck.type === "duplicate") {
+          return this.replayTakeoverConfirm(client, idempotencyCheck.sessionId, authz);
+        }
+        return this.confirmTakeoverFirstTime(client, body, requestId, authz);
+      },
     );
-    if (idempotencyCheck.type === "conflict") {
-      // Same event_id, different operator_id → refuse (prevents probing).
-      return { kind: "refused", reason: "event_id_operator_conflict" };
-    }
-
-    if (idempotencyCheck.type === "duplicate") {
-      return this.replayTakeoverConfirm(idempotencyCheck.sessionId, authz);
-    }
-
-    return this.confirmTakeoverFirstTime(body, requestId, authz);
   }
 
   /**
@@ -530,12 +542,13 @@ export class PosOperatorsService {
    * the original session row if it is still live.
    */
   private async replayTakeoverConfirm(
+    client: PoolClient,
     sessionId: string,
     authz: DeviceOperatorAuthz,
   ): Promise<TakeoverConfirmResult> {
     const { userRow, deviceRow, posRole } = authz;
 
-    const session = await this.findOperatorSessionById(sessionId);
+    const session = await this.findOperatorSessionById(sessionId, client);
     if (!session || session.revoked_at !== null || session.expires_at.getTime() <= Date.now()) {
       // Session was revoked or expired after idempotency key was stored.
       return { kind: "refused", reason: "no_active_session_to_supersede" };
@@ -572,6 +585,7 @@ export class PosOperatorsService {
    * idempotency key, and emit the takeover audit event.
    */
   private async confirmTakeoverFirstTime(
+    client: PoolClient,
     body: PosTakeoverConfirmInput,
     requestId: string,
     authz: DeviceOperatorAuthz,
@@ -580,7 +594,7 @@ export class PosOperatorsService {
 
     // Revoke the existing session for this (device, store).
     const revokedSessionId = await this.revokeActiveOperatorSession(
-      deviceRow.tenantId,
+      client,
       deviceRow.id,
       deviceRow.storeId,
     );
@@ -590,7 +604,7 @@ export class PosOperatorsService {
     }
 
     // Issue new session row for incoming operator.
-    const session = await this.issueOperatorSessionRow({
+    const session = await this.issueOperatorSessionRow(client, {
       tenantId: deviceRow.tenantId,
       storeId: deviceRow.storeId,
       userId: userRow.id,
@@ -599,33 +613,34 @@ export class PosOperatorsService {
 
     // Store the new session id in the idempotency key so replays return the right row.
     await this.updateIdempotencyKeyWithSession(
+      client,
       body.event_id,
       deviceRow.tenantId,
       deviceRow.storeId,
       session.id,
     );
 
-    // Emit audit event.
-    const actorUserId = userRow.id;
-    await insertAuditEvent(this.pool, {
-      id: newId(),
-      actor_user_id: actorUserId,
-      actor_label: null,
-      tenant_id: deviceRow.tenantId,
-      store_id: deviceRow.storeId,
-      action: "operator.session.takeover",
-      target_type: "auth_tokens",
-      target_id: session.id,
-      request_id: requestId,
-      metadata: {
-        superseded_session_id: revokedSessionId,
-        new_session_id: session.id,
-      },
-    }).catch((err: unknown) => {
-      // Non-fatal: audit failure does not roll back a successful takeover.
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.warn({ request_id: requestId, err: msg }, "pos-operator takeover: audit emit failed");
-    });
+    // Security-sensitive takeover provenance is part of the same transaction:
+    // either the replacement session and audit fact both commit, or neither does.
+    await client.query(
+      `INSERT INTO audit_events
+         (id, actor_user_id, actor_label, tenant_id, store_id, action,
+          target_type, target_id, request_id, metadata)
+       VALUES ($1, $2, NULL, $3, $4, 'operator.session.takeover',
+               'auth_tokens', $5, $6, $7::jsonb)`,
+      [
+        newId(),
+        userRow.id,
+        deviceRow.tenantId,
+        deviceRow.storeId,
+        session.id,
+        requestId,
+        JSON.stringify({
+          superseded_session_id: revokedSessionId,
+          new_session_id: session.id,
+        }),
+      ],
+    );
 
     return {
       kind: "signed_in",
@@ -725,6 +740,8 @@ export class PosOperatorsService {
              JOIN roles r ON r.id = m.role_id
             WHERE m.tenant_id = $1
               AND m.user_id = $2
+              AND m.revoked_at IS NULL
+              AND m.deleted_at IS NULL
             LIMIT 1`,
           [tenantId, userId],
         );
@@ -756,27 +773,38 @@ export class PosOperatorsService {
   }
 
   private async activeOperatorSessionExists(
-    tenantId: string,
+    client: PoolClient,
     deviceId: string,
     storeId: string,
   ): Promise<boolean> {
-    return runWithTenantContext(
-      this.pool,
-      { tenantId, isPlatformAdmin: false },
-      async (client) => {
-        const r = await client.query<{ one: number }>(
-          `SELECT 1 AS one
-             FROM auth_tokens
-            WHERE scope = 'pos_operator'
-              AND device_id = $1
-              AND store_id = $2
-              AND revoked_at IS NULL
-              AND expires_at > now()
-            LIMIT 1`,
-          [deviceId, storeId],
-        );
-        return r.rows.length > 0;
-      },
+    const r = await client.query<{ one: number }>(
+      `SELECT 1 AS one
+         FROM auth_tokens
+        WHERE scope = 'pos_operator'
+          AND device_id = $1
+          AND store_id = $2
+          AND revoked_at IS NULL
+          AND expires_at > now()
+        LIMIT 1`,
+      [deviceId, storeId],
+    );
+    return r.rows.length > 0;
+  }
+
+  /**
+   * Transaction-scoped mutex for the one-live-session invariant. The key is
+   * tenant-qualified even though device ids are globally unique, which keeps
+   * the lock domain explicit and stable across all session-creation paths.
+   */
+  private async lockDeviceSession(
+    client: PoolClient,
+    tenantId: string,
+    deviceId: string,
+    storeId: string,
+  ): Promise<void> {
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`pos_operator:${tenantId}:${deviceId}:${storeId}`],
     );
   }
 
@@ -829,8 +857,10 @@ export class PosOperatorsService {
 
   private async findOperatorSessionById(
     sessionId: string,
+    client?: PoolClient,
   ): Promise<OperatorSessionWithIssuedAtRow | null> {
-    const r = await this.lookupPool.query<OperatorSessionWithIssuedAtRow>(
+    const executor = client ?? this.lookupPool;
+    const r = await executor.query<OperatorSessionWithIssuedAtRow>(
       `SELECT id, user_id, scope, revoked_at, expires_at, issued_at
          FROM auth_tokens
         WHERE id = $1
@@ -927,6 +957,7 @@ export class PosOperatorsService {
    *   - `{ type: "conflict" }` → same event_id, different operator_id.
    */
   private async upsertTakeoverIdempotencyKey(
+    client: PoolClient,
     eventId: string,
     operatorId: string,
     tenantId: string,
@@ -938,103 +969,91 @@ export class PosOperatorsService {
   > {
     const expiresAt = new Date(Date.now() + OPERATOR_SESSION_TTL_MS);
     const requestHashBuf = hashToken(operatorId);
-    return runWithTenantContext(
-      this.pool,
-      { tenantId, isPlatformAdmin: false },
-      async (client): Promise<
-        | { type: "fresh" }
-        | { type: "duplicate"; sessionId: string }
-        | { type: "conflict" }
-      > => {
-        // Attempt insert; on conflict read back the existing row.
-        const insertResult = await client.query<{
-          id: string;
-          response_body: string | null;
-        }>(
-          `INSERT INTO idempotency_keys
-             (id, tenant_id, store_id, client_id, key, request_hash,
-              response_status, response_body, expires_at)
-           VALUES
-             ($1, $2, $3, 'pos_takeover', $4, $5, 200, $6::jsonb, $7)
-           ON CONFLICT (tenant_id, store_id, client_id, key) DO NOTHING
-           RETURNING id, response_body`,
-          [
-            newId(),
-            tenantId,
-            storeId,
-            eventId,
-            requestHashBuf,
-            JSON.stringify({ operator_id: operatorId, session_id: null }),
-            expiresAt,
-          ],
-        );
-
-        if (insertResult.rows.length > 0) {
-          return { type: "fresh" };
-        }
-
-        // Collision: read the existing row.
-        const existingResult = await client.query<{
-          request_hash: Buffer;
-          response_body: { session_id?: string | null } | null;
-        }>(
-          `SELECT request_hash, response_body
-             FROM idempotency_keys
-            WHERE tenant_id = $1
-              AND store_id = $2
-              AND client_id = 'pos_takeover'
-              AND key = $3
-            LIMIT 1`,
-          [tenantId, storeId, eventId],
-        );
-
-        const existing = existingResult.rows[0];
-        if (!existing) {
-          // Race: row was deleted between insert conflict and this read.
-          return { type: "fresh" };
-        }
-
-        if (!existing.request_hash.equals(requestHashBuf)) {
-          // Different operator_id for the same event_id.
-          return { type: "conflict" };
-        }
-
-        // node-pg deserialises JSONB → JS object automatically; no JSON.parse needed.
-        const sessionId = existing.response_body?.session_id ?? null;
-        if (!sessionId) {
-          // Idempotency key was inserted but session_id not yet written (concurrent).
-          return { type: "fresh" };
-        }
-
-        return { type: "duplicate", sessionId };
-      },
+    // Attempt insert; on conflict read back the existing row.
+    const insertResult = await client.query<{
+      id: string;
+      response_body: string | null;
+    }>(
+      `INSERT INTO idempotency_keys
+         (id, tenant_id, store_id, client_id, key, request_hash,
+          response_status, response_body, expires_at)
+       VALUES
+         ($1, $2, $3, 'pos_takeover', $4, $5, 200, $6::jsonb, $7)
+       ON CONFLICT (tenant_id, store_id, client_id, key) DO NOTHING
+       RETURNING id, response_body`,
+      [
+        newId(),
+        tenantId,
+        storeId,
+        eventId,
+        requestHashBuf,
+        JSON.stringify({ operator_id: operatorId, session_id: null }),
+        expiresAt,
+      ],
     );
+
+      if (insertResult.rows.length > 0) {
+        return { type: "fresh" };
+      }
+
+    // Collision: lock and read the existing response in this transaction.
+    const existingResult = await client.query<{
+      request_hash: Buffer;
+      response_body: { session_id?: string | null } | null;
+    }>(
+      `SELECT request_hash, response_body
+         FROM idempotency_keys
+        WHERE tenant_id = $1
+          AND store_id = $2
+          AND client_id = 'pos_takeover'
+          AND key = $3
+        LIMIT 1
+        FOR UPDATE`,
+      [tenantId, storeId, eventId],
+    );
+
+      const existing = existingResult.rows[0];
+      if (!existing) {
+        // A concurrent expiry sweep may delete a key between conflict and
+        // lookup. Retrying as fresh is safe while the device lock is held.
+        return { type: "fresh" };
+      }
+
+      if (!existing.request_hash.equals(requestHashBuf)) {
+        return { type: "conflict" };
+      }
+
+      // node-pg deserialises JSONB → JS object automatically; no JSON.parse needed.
+      const sessionId = existing.response_body?.session_id ?? null;
+      if (!sessionId) {
+        // Legacy recovery: older releases could commit the reservation before
+        // the session update. The device lock still preserves one live session.
+        return { type: "fresh" };
+      }
+
+    return { type: "duplicate", sessionId };
   }
 
   /** Updates the idempotency key row to record the new session id. */
   private async updateIdempotencyKeyWithSession(
+    client: PoolClient,
     eventId: string,
     tenantId: string,
     storeId: string,
     sessionId: string,
   ): Promise<void> {
-    await runWithTenantContext(
-      this.pool,
-      { tenantId, isPlatformAdmin: false },
-      (client) =>
-        client.query(
-          `UPDATE idempotency_keys
-              SET response_body = jsonb_set(
-                COALESCE(response_body, '{}'::jsonb),
-                '{session_id}',
-                to_jsonb($1::text)
-              )
-            WHERE tenant_id = $2
-              AND store_id = $3
-              AND client_id = 'pos_takeover'
-              AND key = $4`,
-          [sessionId, tenantId, storeId, eventId],
-        ),
+    await client.query(
+      `UPDATE idempotency_keys
+          SET response_body = jsonb_set(
+            COALESCE(response_body, '{}'::jsonb),
+            '{session_id}',
+            to_jsonb($1::text)
+          )
+        WHERE tenant_id = $2
+          AND store_id = $3
+          AND client_id = 'pos_takeover'
+          AND key = $4`,
+      [sessionId, tenantId, storeId, eventId],
     );
   }
 
@@ -1043,28 +1062,22 @@ export class PosOperatorsService {
    * and returns the revoked session id. Returns null if no active session.
    */
   private async revokeActiveOperatorSession(
-    tenantId: string,
+    client: PoolClient,
     deviceId: string,
     storeId: string,
   ): Promise<string | null> {
-    return runWithTenantContext(
-      this.pool,
-      { tenantId, isPlatformAdmin: false },
-      async (client) => {
-        const r = await client.query<{ id: string }>(
-          `UPDATE auth_tokens
-              SET revoked_at = now()
-            WHERE scope = 'pos_operator'
-              AND device_id = $1
-              AND store_id = $2
-              AND revoked_at IS NULL
-              AND expires_at > now()
-            RETURNING id`,
-          [deviceId, storeId],
-        );
-        return r.rows[0]?.id ?? null;
-      },
+    const r = await client.query<{ id: string }>(
+      `UPDATE auth_tokens
+          SET revoked_at = now()
+        WHERE scope = 'pos_operator'
+          AND device_id = $1
+          AND store_id = $2
+          AND revoked_at IS NULL
+          AND expires_at > now()
+        RETURNING id`,
+      [deviceId, storeId],
     );
+    return r.rows[0]?.id ?? null;
   }
 
   /**
@@ -1109,7 +1122,7 @@ export class PosOperatorsService {
     return r.rows.length > 0;
   }
 
-  private async issueOperatorSessionRow(input: {
+  private async issueOperatorSessionRow(client: PoolClient, input: {
     tenantId: string;
     storeId: string;
     userId: string;
@@ -1126,21 +1139,15 @@ export class PosOperatorsService {
     const opaqueRaw = generateRawToken();
     const tokenHash = hashToken(opaqueRaw);
     const expiresAt = new Date(Date.now() + OPERATOR_SESSION_TTL_MS);
-    const row = await runWithTenantContext(
-      this.pool,
-      { tenantId: input.tenantId, isPlatformAdmin: false },
-      async (client) => {
-        const r = await client.query<{ id: string; issued_at: Date }>(
-          `INSERT INTO auth_tokens
-             (id, token_hash, tenant_id, user_id, device_id, store_id,
-              scope, expires_at)
-           VALUES ($1, $2, $3, $4, $5, $6, 'pos_operator', $7)
-           RETURNING id, issued_at`,
-          [id, tokenHash, input.tenantId, input.userId, input.deviceId, input.storeId, expiresAt],
-        );
-        return r.rows[0];
-      },
+    const result = await client.query<{ id: string; issued_at: Date }>(
+      `INSERT INTO auth_tokens
+         (id, token_hash, tenant_id, user_id, device_id, store_id,
+          scope, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'pos_operator', $7)
+       RETURNING id, issued_at`,
+      [id, tokenHash, input.tenantId, input.userId, input.deviceId, input.storeId, expiresAt],
     );
+    const row = result.rows[0];
     if (!row) throw new Error("PosOperatorsService.issueOperatorSessionRow: insert returned no row");
     return { id: row.id, issuedAt: row.issued_at, envelope: opaqueRaw };
   }

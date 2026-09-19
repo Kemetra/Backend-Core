@@ -28,7 +28,7 @@ interface MockPool {
 
 function makePool(): MockPool {
   const queryFn = jest.fn();
-  const TX_CTRL = /^(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|SELECT set_config)/i;
+  const TX_CTRL = /^(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|SELECT set_config|SELECT pg_advisory_xact_lock)/i;
   const clientQueryFn = jest.fn(async (sql: string) => {
     if (TX_CTRL.test(sql.trimStart())) return { rows: [] };
     return queryFn(sql);
