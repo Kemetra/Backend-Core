@@ -1,4 +1,4 @@
-# Agent OS v1 — Agent Profiles for Data-Pulse-2
+# Agent OS v1 — Agent Profiles for Backend-Core
 #
 # Each profile describes a role, not a specific model. Maestro selects the
 # profile that fits the slice's `agent:` field. Models can change as

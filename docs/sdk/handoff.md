@@ -7,14 +7,14 @@
 | Audience | Maintainers of downstream-repo CI |
 
 This document is the operating handoff for any repo that needs a typed client
-for the Data-Pulse-2 API. The full design rationale lives in
+for the Backend-Core API. The full design rationale lives in
 [`docs/sdk/strategy.md`](./strategy.md).
 
 ---
 
 ## 1. Where the OpenAPI contracts live
 
-- **Source**: `packages/contracts/openapi/` in this repo (Data-Pulse-2).
+- **Source**: `packages/contracts/openapi/` in this repo ([`Kemetra/Backend-Core`](https://github.com/Kemetra/Backend-Core)).
 - **Files** (current as of 2026-05-16):
   - `auth.openapi.yaml`
   - `context.openapi.yaml`
@@ -91,7 +91,7 @@ Pseudocode for a downstream-repo CI job. Adapt to your CI runner of choice.
 
 1. Fetch the pinned contracts:
    ```
-   git clone --depth 1 https://github.com/<org>/Data-Pulse-2 contracts-src
+   git clone --depth 1 https://github.com/Kemetra/Backend-Core contracts-src
    ```
    (or download a pinned contract artifact — see §5.)
 2. Regenerate against the pinned source:

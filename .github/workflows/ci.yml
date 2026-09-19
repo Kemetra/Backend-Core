@@ -1,4 +1,4 @@
-# Data-Pulse-2 CI (T305).
+# Backend-Core CI (T305).
 #
 # Two-job split:
 #   - fast            : no Docker. Build all workspaces (acts as typecheck via tsc) plus

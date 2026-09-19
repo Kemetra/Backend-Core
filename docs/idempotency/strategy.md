@@ -24,7 +24,7 @@
 ## 1. Scope of HTTP idempotency  (T500)
 
 This document defines the **HTTP-layer** retry-safety contract for selected
-mutating endpoints exposed by the Data-Pulse-2 SaaS API. It is the design
+mutating endpoints exposed by the Backend-Core SaaS API. It is the design
 basis for the future NestJS interceptor (T520), the `@Idempotent` decorator
 (T521), and the in-progress marker (T522), all building on the existing
 `packages/shared/src/idempotency/store.ts::IdempotencyKeyStore`.

@@ -87,6 +87,10 @@ paths:
     post:
       summary: Create a payer account (credit / corporate / insurer).
       operationId: consoleCreatePayerAccount
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        Payer-account management belongs to the separately gated Console 017
+        work package. The table is present, but no Backend-Core route is shipped.
       x-idempotency: required
       tags: [settlement-console]
       security:
@@ -122,6 +126,10 @@ paths:
     get:
       summary: List payer accounts (tenant-scoped, newest-first, keyset paginated).
       operationId: consoleListPayerAccounts
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        Payer-account management belongs to the separately gated Console 017
+        work package. The table is present, but no Backend-Core route is shipped.
       tags: [settlement-console]
       security:
         - cookieAuth: []
@@ -838,7 +846,7 @@ components:
 
   responses:
     ValidationFailure:
-      description: validation_failure (400) — malformed body/query/path, unknown key (strict), bad cursor.
+      description: validation_error (400) — malformed body/query/path, unknown key (strict), bad cursor.
       content:
         application/json:
           schema:

@@ -316,7 +316,7 @@ components:
           enum: [retryable, needs-repair]
         reasonCode:
           type: string
-          description: Redacted machine label (e.g. auth_revoked, validation_failure).
+          description: Redacted machine label (e.g. auth_revoked, validation_error).
         retryCount:
           type: integer
           minimum: 0
@@ -438,7 +438,7 @@ components:
 
   responses:
     ValidationFailure:
-      description: validation_failure (400) — malformed query/path, unknown key (strict), bad cursor.
+      description: validation_error (400) — malformed query/path, unknown key (strict), bad cursor.
       content:
         application/json:
           schema:

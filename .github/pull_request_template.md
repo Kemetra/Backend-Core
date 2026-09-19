@@ -1,5 +1,5 @@
 <!--
-Data-Pulse-2 PR template
+Backend-Core PR template
 Constitution: .specify/memory/constitution.md v3.0.0
 
 Every PR must be tied to a spec-backed task or explicitly explain why it is not.

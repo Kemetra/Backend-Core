@@ -18,9 +18,8 @@
  *                                               category_id?: UUID | null }
  *   Both schemas use `additionalProperties: false`; enforced via `.strict()`
  *   on the Zod definitions below. The body-supplied `tenantId` (if any)
- *   is rejected with 400 `validation_error` — Constitution §III. (OpenAPI
- *   prose says `validation_failure`; that is documented drift — the
- *   enforced wire code is `validation_error` / ErrorCodes.VALIDATION.)
+ *   is rejected with 400 `validation_error` — Constitution §III. OpenAPI and
+ *   runtime use the same `validation_error` / ErrorCodes.VALIDATION wire code.
  *
  * Authentication & authorization (wired by 005-WAVE2-AUTH-GUARD-WIRING):
  *   Class-level `@UseGuards(DashboardAuthGuard, TenantContextGuard)`

@@ -26,7 +26,7 @@
  *      `tenantAdminCreateProductFromUnknownItem` → 201 (new resource).
  *   8. Both new ops declare the four Wave 2 error codes per research.md §R2:
  *      `alias_conflict`, `target_unavailable`, `already_reconciled`,
- *      `validation_failure`.
+ *      `validation_error`.
  *
  * The spec is structural / load-only (no app boot, no HTTP requests). The
  * service implementation for the Wave 2 reconciliation path is authored

@@ -1,4 +1,4 @@
-# Data-Pulse-2 production image — multi-stage build for a pnpm workspace.
+# Backend-Core production image — multi-stage build for a pnpm workspace.
 #
 # Targets:
 #   - api      : NestJS HTTP API (node dist/main.js), listens PORT(3000) + METRICS_PORT(9464)

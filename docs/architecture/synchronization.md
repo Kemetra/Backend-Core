@@ -1,15 +1,15 @@
-# Synchronization — Data-Pulse-2 at the Core
+# Synchronization — Backend-Core at the Core
 
-> Data-Pulse-2 is the **single contract boundary** of Retail Tower OS. Every edge syncs through
+> Backend-Core is the **single contract boundary** of Retail Tower OS. Every edge syncs through
 > it; only the connector ever reaches ERPNext.
 
 <p align="center">
-  <img src="../assets/architecture/retail-tower-sync-flow.svg" alt="Animated Retail Tower OS synchronization diagram, Data-Pulse-2 at the core" width="100%"/>
+  <img src="../assets/architecture/retail-tower-sync-flow.svg" alt="Animated Retail Tower OS synchronization diagram, Backend-Core at the core" width="100%"/>
 </p>
 
 ```text
 POS-Pulse ─┐
-           ├─▶  Data-Pulse-2  ─▶  ERPNext Connector  ─▶  ERPNext / Frappe
+           ├─▶  Backend-Core  ─▶  ERPNext-Connector  ─▶  ERPNext / Frappe
 Console  ──┘        ▲ the only contract boundary
 ```
 
@@ -29,7 +29,7 @@ flowchart LR
 
     POS["🖥️ POS-Pulse"]:::edge
     CON["📊 Console"]:::edge
-    DP2["🛡️ Data-Pulse-2<br/><small>contract boundary · RLS · outbox</small>"]:::hub
+    DP2["🛡️ Backend-Core<br/><small>contract boundary · RLS · outbox</small>"]:::hub
     CONN["🔌 ERPNext Connector"]:::conn
     ERP["🏛️ ERPNext / Frappe"]:::erp
 
@@ -47,7 +47,7 @@ flowchart LR
 sequenceDiagram
     autonumber
     participant POS as POS-Pulse
-    participant DP2 as Data-Pulse-2
+    participant DP2 as Backend-Core
     participant CN as Connector
     participant ERP as ERPNext
     ERP->>CN: product master / prices
@@ -70,7 +70,7 @@ sequenceDiagram
 | Money | Integer minor units / value objects — never floats |
 
 Program-wide view: the
-[Retail-Tower-Orchestrator](https://github.com/ahmed-shaaban-94/Retail-Tower-Orchestrator)
+[Orchestrator](https://github.com/Kemetra/Orchestrator)
 control plane.
 
 > Architecture is stable; this document does not assert feature/merge status. See `specs/**`,

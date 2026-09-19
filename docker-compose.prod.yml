@@ -1,4 +1,4 @@
-# Data-Pulse-2 — public deploy compose template.
+# Backend-Core — public deploy compose template.
 #
 # PostgreSQL is expected to be an external managed service — NOT a container here.
 # Bring up on <app-host>, with secrets injected in-memory by a secret manager:
@@ -101,10 +101,10 @@ services:
       NODE_ENV: production
     networks: [dp2]
     healthcheck:
-      # Worker has no HTTP server, and the slim image has no procps (no pgrep).
-      # Use node (always present) to verify the worker can reach Redis — its job
-      # source and real lifeline. A live worker that can dial redis:6379 is healthy.
-      test: ["CMD-SHELL", "node -e \"const u=new URL(process.env.REDIS_URL||'redis://redis:6379');const s=require('net').connect(+u.port||6379,u.hostname);s.on('connect',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),3000)\""]
+      # Authenticate with the configured URL and require an application-level
+      # Redis PING. Errors stay silent so credentials embedded in REDIS_URL are
+      # never copied into healthcheck output.
+      test: ["CMD-SHELL", "node -e \"const M=require('ioredis');const Redis=M.default||M;const r=new Redis(process.env.REDIS_URL,{lazyConnect:true,enableOfflineQueue:false,maxRetriesPerRequest:0,connectTimeout:3000});r.connect().then(()=>r.ping()).then(v=>{r.disconnect();process.exit(v==='PONG'?0:1)}).catch(()=>{r.disconnect();process.exit(1)})\""]
       interval: 20s
       timeout: 5s
       retries: 5

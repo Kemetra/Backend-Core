@@ -1,6 +1,6 @@
 # @data-pulse-2/contracts
 
-OpenAPI 3.1 contracts of record for the Data-Pulse-2 backend.
+OpenAPI 3.1 contracts of record for the Backend-Core backend.
 
 ## Contents
 

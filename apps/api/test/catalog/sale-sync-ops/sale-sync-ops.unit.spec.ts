@@ -302,7 +302,7 @@ describe("032 §9 — controller guard / rethrow (T016/T020)", () => {
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
-  it("maps a malformed saleRef to a 400 validation_failure before any DB hit (CodeRabbit #1)", async () => {
+  it("maps a malformed saleRef to a 400 validation_error before any DB hit (CodeRabbit #1)", async () => {
     // A syntactically malformed ref is a request-shape error → 400, NOT a
     // safe-404 (the safe-404 is reserved for valid-but-out-of-scope refs, which
     // could otherwise disclose existence). The check runs before any DB hit, so
@@ -315,7 +315,7 @@ describe("032 §9 — controller guard / rethrow (T016/T020)", () => {
     await expect(
       c.getStatus(ctxReq(), "not-a-uuid"),
     ).rejects.toMatchObject({
-      response: { code: "validation_failure" },
+      response: { code: "validation_error" },
     });
     expect(getSaleSyncStatus).not.toHaveBeenCalled();
   });

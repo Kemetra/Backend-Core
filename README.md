@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/brand/data-pulse-2-logo.svg" alt="Retail Tower OS (Data-Pulse-2) logo" width="120" height="120"/>
+<img src="docs/assets/brand/data-pulse-2-logo.svg" alt="Retail Tower OS Backend-Core logo" width="120" height="120"/>
 
 # Retail Tower OS
 
@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="docs/brand/retail-tower-os.md"><img alt="Product: Retail Tower OS" src="https://img.shields.io/badge/product-Retail%20Tower%20OS-0f766e?style=flat-square"></a>
-  <a href="README.md"><img alt="Repo: Data-Pulse-2" src="https://img.shields.io/badge/repo-Data--Pulse--2-181717?style=flat-square&logo=github&logoColor=white"></a>
+  <a href="https://github.com/Kemetra/Backend-Core"><img alt="Repo: Backend-Core" src="https://img.shields.io/badge/repo-Backend--Core-181717?style=flat-square&logo=github&logoColor=white"></a>
   <a href="apps/api"><img alt="Platform: backend-first" src="https://img.shields.io/badge/platform-backend--first-334155?style=flat-square"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-059669?style=flat-square"></a>
 </p>
@@ -34,7 +34,7 @@
 
 </div>
 
-> **Retail Tower OS** is the external product identity for this platform. The implementation repository is `Data-Pulse-2` — the backend-first codename. No repository names, package names, OpenAPI titles, or deployment configuration have been changed.
+> **Retail Tower OS** is the external product identity for this platform. The canonical backend repository is [`Kemetra/Backend-Core`](https://github.com/Kemetra/Backend-Core). Legacy internal namespaces such as `@data-pulse-2/*`, `data_pulse_2`, and `dp2-*` remain intentionally stable.
 >
 > The image above represents **product vision**. It does not imply that a dashboard frontend, POS application, or production operations UI is implemented in this repository. The POS application is a separate repository that integrates through the OpenAPI contracts in `packages/contracts/openapi/`.
 
@@ -42,36 +42,36 @@ See [`docs/brand/retail-tower-os.md`](docs/brand/retail-tower-os.md) for the ful
 
 ---
 
-## 🔗 Synchronization — Data-Pulse-2 at the Core
+## 🔗 Synchronization — Backend-Core at the Core
 
-Data-Pulse-2 is the **single contract boundary** of Retail Tower OS. Every edge (POS-Pulse,
+Backend-Core is the **single contract boundary** of Retail Tower OS. Every edge (POS-Pulse,
 Console) syncs through it; only the ERPNext Connector ever reaches ERPNext. Resolved catalog
 flows **down** to the edges; sales & inventory rise **up** toward ERPNext via the connector
 posting feed.
 
 <p align="center">
-  <img src="docs/assets/architecture/retail-tower-sync-flow.svg" alt="Animated Retail Tower OS synchronization diagram, Data-Pulse-2 at the core" width="100%"/>
+  <img src="docs/assets/architecture/retail-tower-sync-flow.svg" alt="Animated Retail Tower OS synchronization diagram, Backend-Core at the core" width="100%"/>
 </p>
 
 ```text
 POS-Pulse ─┐
-           ├─▶  Data-Pulse-2  ─▶  ERPNext Connector  ─▶  ERPNext / Frappe
+           ├─▶  Backend-Core  ─▶  ERPNext Connector  ─▶  ERPNext / Frappe
 Console  ──┘        ▲ the only contract boundary
 ```
 
-### Where Data-Pulse-2 sits — the full ecosystem
+### Where Backend-Core sits — the full ecosystem
 
-Zooming out from the sync flow above, the diagram below places **Data-Pulse-2** within the complete five-repository Retail Tower OS ecosystem, governed by the Retail Tower Orchestrator control plane on top.
+Zooming out from the sync flow above, the diagram below places **Backend-Core** within the complete five-repository Retail Tower OS ecosystem, governed by the Retail Tower Orchestrator control plane on top.
 
 <p align="center">
-  <img src="docs/assets/architecture/retail-tower-ecosystem.svg" alt="Retail Tower OS ecosystem: the Retail Tower Orchestrator control plane governs five repositories; POS-Pulse and Retail-Tower-Console synchronize through Data-Pulse-2, the single contract boundary, which reaches ERPNext only through the ERPNext Connector" width="100%"/>
+  <img src="docs/assets/architecture/retail-tower-ecosystem.svg" alt="Retail Tower OS ecosystem: the Retail Tower Orchestrator control plane governs five repositories; POS and Admin-Console synchronize through Backend-Core, the single contract boundary, which reaches ERPNext only through the ERPNext-Connector" width="100%"/>
 </p>
 
-<p align="center"><sub>Data-Pulse-2 (the gold <strong>★ THIS REPO</strong> node) is the highlighted contract-boundary hub. Live animated SVG; motion is suppressed under <code>prefers-reduced-motion</code>.</sub></p>
+<p align="center"><sub>Backend-Core (the gold <strong>★ THIS REPO</strong> node) is the highlighted contract-boundary hub. Live animated SVG; motion is suppressed under <code>prefers-reduced-motion</code>.</sub></p>
 
 Full detail (flow + sequence + boundary guarantees):
 [docs/architecture/synchronization.md](docs/architecture/synchronization.md) ·
-Program control plane: [Retail-Tower-Orchestrator](https://github.com/ahmed-shaaban-94/Retail-Tower-Orchestrator).
+Program control plane: [Orchestrator](https://github.com/Kemetra/Orchestrator).
 
 ---
 
@@ -217,7 +217,7 @@ The platform that stands behind every branch — multi-tenant architecture, cata
 
 ![Retail Tower OS animated system map](docs/assets/architecture/retail-tower-os-system-map.svg)
 
-Retail Tower OS is implemented here as the `Data-Pulse-2` backend platform: a NestJS API, BullMQ worker runtime, OpenAPI contracts, PostgreSQL source of truth, Redis coordination, and shared platform packages. The diagram above renders animated data tokens travelling each authenticated path — clients to gateway, gateway to system of record, gateway to queue, queue to async runtime.
+Retail Tower OS is implemented here as the `Backend-Core` backend platform: a NestJS API, BullMQ worker runtime, OpenAPI contracts, PostgreSQL source of truth, Redis coordination, and shared platform packages. The diagram above renders animated data tokens travelling each authenticated path — clients to gateway, gateway to system of record, gateway to queue, queue to async runtime.
 
 See [Architecture](docs/ARCHITECTURE.md) for request flow, tenant boundaries, worker flow, and catalog source-of-truth layers.
 
@@ -261,7 +261,7 @@ Retail data systems become expensive when tenant boundaries, store ownership, au
 
 ## Platform shape
 
-`Data-Pulse-2` is a pnpm workspace with two deployable services and four internal packages. The API owns synchronous HTTP behavior; the worker owns asynchronous processing; PostgreSQL owns durable state; Redis coordinates queues.
+`Backend-Core` is a pnpm workspace with two deployable services and four internal packages. The API owns synchronous HTTP behavior; the worker owns asynchronous processing; PostgreSQL owns durable state; Redis coordinates queues.
 
 ```mermaid
 flowchart LR

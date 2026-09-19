@@ -27,7 +27,7 @@ security boundary, or team ownership** clearly diverges from that host.
 START: a new capability or feature
 │
 ├─ Is it backend logic, data/schema, security/authorization, or an API contract?
-│     └─ YES ──▶ Data-Pulse-2  (as a module)
+│     └─ YES ──▶ Backend-Core  (as a module)
 │
 ├─ Is it cashier / terminal / hardware / offline-sale behavior?
 │     └─ YES ──▶ POS-Pulse  (as a module)
@@ -54,7 +54,7 @@ boundaries.
 
 | If the work is mainly… | It belongs in… | As a… |
 |---|---|---|
-| API, DB, RLS, tenancy, contracts, workers, outbox | Data-Pulse-2 | module |
+| API, DB, RLS, tenancy, contracts, workers, outbox | Backend-Core | module |
 | Cashier UI, offline queue, receipts, hardware | POS-Pulse | module |
 | Admin/manager/support/reporting screens | Retail-Tower-Console | module |
 | Something with a genuinely independent lifecycle | future repo | repo (with ADR) |
@@ -63,33 +63,33 @@ boundaries.
 
 ## Worked examples
 
-- **Billing** → Data-Pulse-2 module. Billing truth is tenant-coupled and PII-
+- **Billing** → Backend-Core module. Billing truth is tenant-coupled and PII-
   sensitive; it stays with the backend (see [ADR 0005](../../.specify/memory/decisions/0005-billing-and-usage-live-in-data-pulse.md)).
   Billing *screens* → Retail-Tower-Console.
-- **Inventory** → Data-Pulse-2 module. Source-of-truth data; the backend owns it.
+- **Inventory** → Backend-Core module. Source-of-truth data; the backend owns it.
   Inventory *screens* → Retail-Tower-Console.
-- **Analytics** → Data-Pulse-2 module *while lightweight* (API-query reporting).
+- **Analytics** → Backend-Core module *while lightweight* (API-query reporting).
   Becomes `Retail-Tower-Analytics` only under warehouse pressure (see
   [ADR 0006](../../.specify/memory/decisions/0006-analytics-module-before-analytics-repo.md)).
-- **Integrations / webhooks** → Data-Pulse-2 module to start. Extract
+- **Integrations / webhooks** → Backend-Core module to start. Extract
   `Retail-Tower-Integrations` when connector lifecycle, DLQ/retry, and external
   credential management become substantial (split-criteria).
-- **Device registry** → Data-Pulse-2 module (backend truth; `devices` table
+- **Device registry** → Backend-Core module (backend truth; `devices` table
   already exists from spec 002). Device pairing *screens* → Retail-Tower-Console;
   pairing *flow* on the terminal → POS-Pulse. No dedicated repo.
 - **Demo tenant** → a tenant *configuration*, not a feature. Backend module +
   Retail-Tower-Console management UI. Never its own repo.
-- **Feature flags** → Data-Pulse-2 module (backend-evaluated so the backend stays
+- **Feature flags** → Backend-Core module (backend-evaluated so the backend stays
   the authority). Flag-management *screens* → Retail-Tower-Console.
 - **Design system** → start as a module/package inside Retail-Tower-Console.
   Promote to a shared package/repo only when POS-Pulse and Console genuinely
   co-consume the same components.
-- **Event model / outbox** → Data-Pulse-2 module. Backend-internal plumbing
+- **Event model / outbox** → Backend-Core module. Backend-internal plumbing
   (§V async work in workers); no UI, no repo split.
-- **Support console** → support *APIs* in Data-Pulse-2 (cross-tenant actions
+- **Support console** → support *APIs* in Backend-Core (cross-tenant actions
   must be audited, §II); support *UI* in Retail-Tower-Console.
 - **Generated API clients** → generated *from* the OpenAPI contract of record in
-  Data-Pulse-2 (see [ADR 0003](../../.specify/memory/decisions/0003-openapi-as-contract-source.md))
+  Backend-Core (see [ADR 0003](../../.specify/memory/decisions/0003-openapi-as-contract-source.md))
   and distributed as a package consumed by Console and POS-Pulse. The contract
   source never leaves the backend.
 

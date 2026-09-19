@@ -1,6 +1,6 @@
-# Data Pulse Architecture
+# Backend-Core Architecture
 
-Data Pulse (`Data-Pulse-2`) is the backend-first implementation of **Retail Tower OS** — the
+Backend-Core is the backend-first implementation of **Retail Tower OS** — the
 command layer for multi-branch retail operations. This repository owns the API, worker runtime,
 contracts, database schema, and shared platform primitives. Dashboard UI work is deferred to a
 separate feature, and POS applications remain external repositories.
@@ -9,7 +9,7 @@ separate feature, and POS applications remain external repositories.
 
 ## Executive Summary
 
-Data Pulse separates synchronous platform behavior from asynchronous processing.
+Backend-Core separates synchronous platform behavior from asynchronous processing.
 `apps/api` handles authenticated HTTP requests, tenant/store context selection,
 validation, logging, contract loading, and database access. `apps/worker`
 handles background jobs through Redis and BullMQ. Internal packages hold the

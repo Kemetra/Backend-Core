@@ -13,7 +13,7 @@
  *   - POST /repairs (confirm)             → 201 outcome=mapped
  *   - POST /repairs (re-confirm)          → 200 outcome=no_op_echo + Idempotent-Replayed
  *   - POST /repairs (stale version)       → 409 { error.code: conflict }
- *   - POST /repairs (runId XOR resultId)  → 400 validation_failure
+ *   - POST /repairs (runId XOR resultId)  → 400 validation_error
  */
 import "reflect-metadata";
 
@@ -302,7 +302,7 @@ describe("021 HTTP — repair envelopes", () => {
     expect(res.body.error?.code).toBe("conflict");
   });
 
-  it("POST /repairs (runId without resultId) → 400 validation_failure", async () => {
+  it("POST /repairs (runId without resultId) → 400 validation_error", async () => {
     if (skip) return;
     const res = await http()
       .post(`${BASE}/repairs`)
@@ -315,6 +315,6 @@ describe("021 HTTP — repair envelopes", () => {
         runId: "0f000000-0000-7000-8000-0000000000aa",
       })
       .expect(400);
-    expect(res.body.error?.code).toBe("validation_failure");
+    expect(res.body.error?.code).toBe("validation_error");
   });
 });

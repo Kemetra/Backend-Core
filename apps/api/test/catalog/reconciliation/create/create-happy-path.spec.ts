@@ -418,9 +418,7 @@ describe("T630 / 005-WAVE2-CREATE-HAPPY — tenant admin creates product from un
       // rather than silently stripping. The envelope code is
       // `validation_error` (ErrorCodes.VALIDATION) — the operating
       // convention emitted by ZodValidationPipe -> GlobalExceptionFilter.
-      // The OpenAPI prose says "validation_failure" but that is documented
-      // drift (research.md §R2; see capture-validation.spec.ts:26-29) — the
-      // enforced wire code is `validation_error`.
+      // OpenAPI and runtime both use the platform `validation_error` code.
       expect(res.status).toBe(400);
       expect(res.body?.error?.code).toBe("validation_error");
 

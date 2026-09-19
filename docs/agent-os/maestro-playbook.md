@@ -1,4 +1,4 @@
-# Maestro Playbook — Data-Pulse-2 Agent OS v1
+# Maestro Playbook — Backend-Core Agent OS v1
 
 > Maestro is the Opus orchestrator role. It does not write product code
 > directly; it reads the execution map, picks the next slice, dispatches a

@@ -2,7 +2,7 @@
   "name": "data-pulse-2",
   "version": "0.1.0-foundation",
   "private": true,
-  "description": "Data-Pulse-2 — multi-tenant SaaS rebuild. Backend + workers monorepo. Dashboard UI is a separate feature.",
+  "description": "Backend-Core — Retail Tower OS multi-tenant backend and workers monorepo.",
   "license": "MIT",
   "engines": {
     "node": ">=20.0.0",

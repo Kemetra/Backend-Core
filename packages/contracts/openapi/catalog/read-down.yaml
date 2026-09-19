@@ -62,7 +62,7 @@ info:
 
     Failure vocabulary: a single canonical `Error` envelope matching
     `auth.openapi.yaml` / `outbox.openapi.yaml`. The closed `error.code` set on
-    this surface is `validation_failure`, `store_context_required` (unresolved
+    this surface is `validation_error`, `store_context_required` (unresolved
     store context, 400), `snapshot_required` (stale/unservable cursor, 409),
     `not_found` (non-disclosing 404-class for cross-tenant / cross-store / scope
     mismatch — no exists/not-exists leak, §II/§XII), the standard device-auth
@@ -431,7 +431,7 @@ components:
               type: string
               description: >
                 Stable machine-readable error code. Closed set on this surface:
-                validation_failure | store_context_required | snapshot_required |
+                validation_error | store_context_required | snapshot_required |
                 not_found | system_failure (plus the generic 401 refusal).
             message:
               type: string
@@ -444,7 +444,7 @@ components:
   responses:
     ValidationFailure:
       description: >
-        `validation_failure` — malformed query, bad/opaque cursor format, or a
+        `validation_error` — malformed query, bad/opaque cursor format, or a
         bad parameter. OR `store_context_required` — the device principal has no
         resolved store context (FR-005). Deterministic; no record created (this is
         a read surface).

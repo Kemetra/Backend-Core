@@ -40,7 +40,7 @@ it a module". See the *do-not-split-too-early* warning in the operating model.
 infrastructure-as-code, or disaster recovery need an independent lifecycle from
 the application code.
 
-- Until then, infra/deployment config lives in Data-Pulse-2 (Constitution
+- Until then, infra/deployment config lives in Backend-Core (Constitution
   §Repository Scope lists deployment/infrastructure configuration as owned here).
 - Triggering boundary: **deployment** and/or **security**.
 - Governing decision: [ADR 0007](../../.specify/memory/decisions/0007-infra-repo-split-conditions.md).
@@ -94,7 +94,7 @@ contributors).
    contract surface, and its data ownership.
 3. Get the decision accepted (Constitution §Governance / standing rules).
 4. Only then create the repository and migrate the module — preserving the
-   OpenAPI contract boundary with Data-Pulse-2.
+   OpenAPI contract boundary with Backend-Core.
 
 No split happens by drift. If a module is quietly growing, that is a prompt to
 *evaluate* against these criteria — not a reason to split automatically.

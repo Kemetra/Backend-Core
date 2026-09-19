@@ -17,9 +17,7 @@
  * `tenant_products.tenant_id` is always the resolved principal tenant from
  * `request.context` — the body never has a chance to override it.
  *
- * (The OpenAPI prose says the 400 code is `validation_failure`; that string
- * is documented drift — research.md §R2 — and the enforced wire code is
- * `validation_error`. See apps/api/test/.../capture/capture-validation.spec.ts.)
+ * OpenAPI and runtime both use the platform `validation_error` wire code.
  */
 import { z } from "zod";
 

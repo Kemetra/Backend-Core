@@ -76,6 +76,10 @@ paths:
     post:
       summary: Validate a voucher code for a specific payment attempt + amount.
       operationId: posValidateVoucher
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        Contract V-A is approved as a design boundary only. Backend-Core has no
+        voucher controller, guard, service, or persistence path for this route.
       x-idempotency: required
       tags: [pos-payments-vouchers]
       security:
@@ -193,6 +197,10 @@ paths:
     post:
       summary: Atomically consume a redemption-intent token at confirm time.
       operationId: posRedeemVoucher
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        Contract V-A is approved as a design boundary only. Backend-Core has no
+        voucher controller, guard, service, or persistence path for this route.
       x-idempotency: required
       tags: [pos-payments-vouchers]
       security:
@@ -298,6 +306,10 @@ paths:
     post:
       summary: Reverse a previously-committed voucher redemption.
       operationId: posReverseVoucher
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        Contract V-A is approved as a design boundary only. Backend-Core has no
+        voucher controller, guard, service, or persistence path for this route.
       x-idempotency: required
       tags: [pos-payments-vouchers]
       security:

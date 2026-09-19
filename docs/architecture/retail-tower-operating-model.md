@@ -36,11 +36,11 @@ Today the product spans three repositories:
 
 | Repository | Role | Owns |
 |---|---|---|
-| **Data-Pulse-2** | Backend / source-of-truth | APIs, PostgreSQL schema, RLS/tenancy/security, OpenAPI contracts, workers, outbox/event model, billing & usage backend, analytics v1 APIs, POS sync APIs |
+| **Backend-Core** | Backend / source-of-truth | APIs, PostgreSQL schema, RLS/tenancy/security, OpenAPI contracts, workers, outbox/event model, billing & usage backend, analytics v1 APIs, POS sync APIs |
 | **POS-Pulse** | Cashier terminal | Cashier UI, local-first/offline behavior, local SQLite state, offline queue, receipt/printer/cash-drawer integration, terminal health client |
 | **Retail-Tower-Console** | Admin / management UI | Tenant/store/user management, catalog/inventory/billing/reports/support/demo-tenant screens, terminal-health dashboard |
 
-> **Note on sibling repos.** This document is authored from inside Data-Pulse-2,
+> **Note on sibling repos.** This document is authored from inside Backend-Core,
 > whose evidence (the [Constitution §Repository Scope](../../.specify/memory/constitution.md),
 > [README](../../README.md), and specs `001`–`006`) is authoritative for the
 > backend boundary. The POS-Pulse and Retail-Tower-Console boundaries below are
@@ -52,7 +52,7 @@ Today the product spans three repositories:
 
 ## Current repo model
 
-### Data-Pulse-2 — backend and source of truth
+### Backend-Core — backend and source of truth
 
 The authoritative core. Constitution §Repository Scope already designates this
 repository as owner of the SaaS backend API, central PostgreSQL database
@@ -69,14 +69,14 @@ cashier UI, the local cart/tender/receipt flow, local device storage, the
 offline queue and its sync client, and physical hardware (receipt printer, cash
 drawer). It owns terminal-side health reporting but not the authoritative record
 of any of it. It holds **no** authoritative catalog, pricing, tenancy, billing,
-or authorization truth — those are resolved against Data-Pulse-2 contracts.
+or authorization truth — those are resolved against Backend-Core contracts.
 
 ### Retail-Tower-Console — admin / management UI
 
 The management surface for humans. Owns the operator-facing screens for managing
 tenants, stores, users, catalog, inventory, billing, reports, support, the
 terminal-health dashboard, and demo-tenant management. It is a **client** of
-Data-Pulse-2 APIs; it owns presentation and workflow, never business logic, DB
+Backend-Core APIs; it owns presentation and workflow, never business logic, DB
 schema, workers, or the OpenAPI source.
 
 ---
@@ -124,7 +124,7 @@ work. See [product-capability-map.md](product-capability-map.md).)
 ## Recommended operating model
 
 1. **Place by domain owner, not by size.** New work lands as a module in the repo
-   that owns its domain. Backend/data/security/contract work → Data-Pulse-2;
+   that owns its domain. Backend/data/security/contract work → Backend-Core;
    cashier/terminal/hardware/offline work → POS-Pulse; admin/manager/support/
    reporting UI → Retail-Tower-Console.
 2. **One contract of record.** OpenAPI in `packages/contracts/openapi/` is the
@@ -132,7 +132,7 @@ work. See [product-capability-map.md](product-capability-map.md).)
    consume generated clients; they never reach into the database or undocumented
    endpoints.
 3. **Backend holds the truth.** Authorization, tenancy, pricing, catalog,
-   inventory, billing, and audit truth live in Data-Pulse-2 (Constitution §III).
+   inventory, billing, and audit truth live in Backend-Core (Constitution §III).
    UIs and terminals render and request; they do not decide.
 4. **Split only on a real boundary.** Extract a repository only when deployment,
    data lifecycle, security, or team ownership genuinely diverge — and record the

@@ -1,10 +1,10 @@
-# Roadmap: Path to a Meaningful Retail ERP — Backend (Data-Pulse-2)
+# Roadmap: Path to a Meaningful Retail ERP — Backend-Core
 
 > **Planning / roadmap document. Advisory only.** This is a durable sequencing artifact, not an approval to implement. No slice here is green-lit. Each spec listed below must still go through its own Spec-Kit planning chain (`spec.md` -> `plan.md` -> Constitution Check -> `[GATED]` OpenAPI contract -> `tasks.md` -> `execution-map.yaml`) and the standing Agent OS gates before any code is written. Numbers `008`-`012` are proposed identifiers, not reserved.
 
 > **Erratum (2026-06-03) — numbering superseded for `011`+.** The 008→012 chain below is partly stale: the repo actually shipped **008=Sales**, **009=Inventory-Stock-Ledger**, **010=POS-Catalogue-Read-Down**. The identifiers **011–017 are now claimed for the ERPNext integration arc** — see [`specs/011-erpnext-pos-reference-and-integration-foundation/`](../specs/011-erpnext-pos-reference-and-integration-foundation/spec.md). The retail-loop capabilities named here (Payments, Purchasing, Reporting) are re-homed onto the ERPNext backbone or take free numbers after 017 in their own future specs. This document is retained as the pre-ERPNext reasoning record.
 
-Product: **Retail Tower OS** — backend = this repo (Data-Pulse-2), admin UI = `Retail-Tower-Console` (separate repo), POS = `POS-Pulse` (separate repo).
+Product: **Retail Tower OS** — backend = this repo (`Kemetra/Backend-Core`), admin UI = `Kemetra/Admin-Console` (separate repo), POS = `Kemetra/POS` (separate repo).
 
 "**Meaningful ERP**" here means the **retail operations loop** only: *sell -> record money -> move stock -> restock -> see the numbers.* It explicitly does **not** mean generic ERP — no manufacturing, HR, payroll, or a full general ledger.
 

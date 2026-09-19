@@ -1,4 +1,4 @@
-# Agent OS v1 — Slice Schema for Data-Pulse-2
+# Agent OS v1 — Slice Schema for Backend-Core
 #
 # Every entry under `slices:` in an execution-map.yaml MUST conform to this
 # schema. Maestro composes per-slice dispatch prompts directly from these
