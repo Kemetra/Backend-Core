@@ -61,6 +61,8 @@ services:
       METRICS_PORT: "9464"
       LOG_LEVEL: ${LOG_LEVEL:-info}
       NODE_ENV: production
+      # Exactly one trusted reverse-proxy hop (the Caddy service).
+      TRUST_PROXY: "1"
       # Migration-status gauge reads the drizzle SQL dir (shipped into the image).
       DB_MIGRATIONS_DIR: /packages/db/drizzle
       # Clerk POS-operator JWT verification — CLERK_SECRET_KEY is required in production.
