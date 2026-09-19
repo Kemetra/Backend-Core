@@ -27,7 +27,7 @@ import { Module } from "@nestjs/common";
 import type { Pool } from "pg";
 
 import { AuditModule } from "../audit/audit.module";
-import { AuthModule, PG_POOL } from "../auth/auth.module";
+import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../auth/auth.module";
 import { AuthTokenRepository } from "../auth/auth-token.repository";
 import { clerkIdentityProviderFactory } from "../auth/clerk-identity-provider.adapter";
 import {
@@ -58,12 +58,12 @@ import { SettlementController } from "./settlement.controller";
       provide: IDENTITY_PROVIDER_PORT,
       useFactory: (pool: Pool): IdentityProviderPort =>
         clerkIdentityProviderFactory(pool),
-      inject: [PG_POOL],
+      inject: [AUTH_LOOKUP_POOL],
     },
     {
       provide: DeviceRepository,
       useFactory: (pool: Pool): DeviceRepository => new DeviceRepository(pool),
-      inject: [PG_POOL],
+      inject: [AUTH_LOOKUP_POOL],
     },
     {
       provide: OPERATOR_CONTEXT_RESOLVER,
@@ -71,9 +71,10 @@ import { SettlementController } from "./settlement.controller";
         pool: Pool,
         identityProvider: IdentityProviderPort,
         devices: DeviceRepository,
+        lookupPool: Pool,
       ): PgOperatorContextResolver =>
-        new PgOperatorContextResolver(pool, identityProvider, devices),
-      inject: [PG_POOL, IDENTITY_PROVIDER_PORT, DeviceRepository],
+        new PgOperatorContextResolver(pool, identityProvider, devices, undefined, lookupPool),
+      inject: [PG_POOL, IDENTITY_PROVIDER_PORT, DeviceRepository, AUTH_LOOKUP_POOL],
     },
     {
       provide: PosOperatorEnvelopeSaleGuard,

@@ -49,7 +49,10 @@ const CODE_COLS =
 
 @Injectable()
 export class PairingRepository {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly lookupPool: Pool = pool,
+  ) {}
 
   /**
    * Resolve a pairing code by its raw value (hashed here). Bare admin pool — the
@@ -59,7 +62,7 @@ export class PairingRepository {
   async findByCode(rawCode: string): Promise<PairingCodeRow | null> {
     if (rawCode.length === 0) return null;
     const codeHash = hashToken(rawCode);
-    const res = await this.pool.query<PairingCodeRow>(
+    const res = await this.lookupPool.query<PairingCodeRow>(
       `SELECT ${CODE_COLS} FROM pairing_codes WHERE code_hash = $1 LIMIT 1`,
       [codeHash],
     );

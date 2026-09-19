@@ -27,7 +27,7 @@ import { Module } from "@nestjs/common";
 import type { Pool } from "pg";
 
 import { AuditModule } from "../../audit/audit.module";
-import { AuthModule, PG_POOL } from "../../auth/auth.module";
+import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../../auth/auth.module";
 import { ContextModule } from "../../context/context.module";
 import { IdempotencyModule } from "../../idempotency/idempotency.module";
 import { SalesController } from "./sales.controller";
@@ -65,12 +65,12 @@ import { AuthTokenRepository } from "../../auth/auth-token.repository";
       provide: IDENTITY_PROVIDER_PORT,
       useFactory: (pool: Pool): IdentityProviderPort =>
         clerkIdentityProviderFactory(pool),
-      inject: [PG_POOL],
+      inject: [AUTH_LOOKUP_POOL],
     },
     {
       provide: DeviceRepository,
       useFactory: (pool: Pool): DeviceRepository => new DeviceRepository(pool),
-      inject: [PG_POOL],
+      inject: [AUTH_LOOKUP_POOL],
     },
     {
       provide: OPERATOR_CONTEXT_RESOLVER,
@@ -78,9 +78,10 @@ import { AuthTokenRepository } from "../../auth/auth-token.repository";
         pool: Pool,
         identityProvider: IdentityProviderPort,
         devices: DeviceRepository,
+        lookupPool: Pool,
       ): PgOperatorContextResolver =>
-        new PgOperatorContextResolver(pool, identityProvider, devices),
-      inject: [PG_POOL, IDENTITY_PROVIDER_PORT, DeviceRepository],
+        new PgOperatorContextResolver(pool, identityProvider, devices, undefined, lookupPool),
+      inject: [PG_POOL, IDENTITY_PROVIDER_PORT, DeviceRepository, AUTH_LOOKUP_POOL],
     },
     // 031 (D1+D2, Option B): the sale-write routes are guarded by
     // PosOperatorEnvelopeSaleGuard — canonical envelope auth (bearer →

@@ -204,6 +204,7 @@ export class PosOperatorsService {
     private readonly clerkVerifier: ClerkVerifier,
     private readonly deviceRepository: DeviceRepository,
     private readonly logger: Logger,
+    private readonly lookupPool: Pool = pool,
   ) {}
 
   /**
@@ -382,6 +383,7 @@ export class PosOperatorsService {
     // 5. Store eligibility: 'all' → unconditional, 'specific' → must be in access set.
     if (membership.store_access_kind === "specific") {
       const ok = await this.storeIsInAccessSet(
+        deviceRow.tenantId,
         membership.id,
         deviceRow.storeId,
       );
@@ -410,6 +412,7 @@ export class PosOperatorsService {
 
     // 6. Active operator session check → takeover_required (minimum disclosure).
     const hasActiveSession = await this.activeOperatorSessionExists(
+      deviceRow.tenantId,
       deviceRow.id,
       deviceRow.storeId,
     );
@@ -468,7 +471,11 @@ export class PosOperatorsService {
 
     // Verify the caller has access to this specific store.
     if (membership.store_access_kind === "specific") {
-      const ok = await this.storeIsInAccessSet(membership.id, query.branch_id);
+      const ok = await this.storeIsInAccessSet(
+        membership.tenant_id,
+        membership.id,
+        query.branch_id,
+      );
       if (!ok) return { kind: "refused", reason: "store_not_accessible" };
     }
 
@@ -573,6 +580,7 @@ export class PosOperatorsService {
 
     // Revoke the existing session for this (device, store).
     const revokedSessionId = await this.revokeActiveOperatorSession(
+      deviceRow.tenantId,
       deviceRow.id,
       deviceRow.storeId,
     );
@@ -662,7 +670,11 @@ export class PosOperatorsService {
 
     // If store-specific access, confirm the caller has the branch in their access set.
     if (membership.store_access_kind === "specific") {
-      const ok = await this.storeIsInAccessSet(membership.id, query.branch_id);
+      const ok = await this.storeIsInAccessSet(
+        membership.tenant_id,
+        membership.id,
+        query.branch_id,
+      );
       if (!ok) return { kind: "refused", reason: "store_not_accessible" };
     }
 
@@ -673,7 +685,11 @@ export class PosOperatorsService {
       return { kind: "none" };
     }
 
-    const hasActive = await this.anyActiveOperatorSessionInStore(targetRow.id, query.branch_id);
+    const hasActive = await this.anyActiveOperatorSessionInStore(
+      membership.tenant_id,
+      targetRow.id,
+      query.branch_id,
+    );
     return { kind: hasActive ? "active" : "none" };
   }
 
@@ -683,7 +699,7 @@ export class PosOperatorsService {
   // -----------------------------------------------------------------------
 
   private async findUserByClerkSubject(sub: string): Promise<UserLookupRow | null> {
-    const r = await this.pool.query<UserLookupRow>(
+    const r = await this.lookupPool.query<UserLookupRow>(
       `SELECT id, email, display_name, clerk_user_id, deleted_at
          FROM users
         WHERE clerk_user_id = $1
@@ -697,51 +713,71 @@ export class PosOperatorsService {
     tenantId: string,
     userId: string,
   ): Promise<MembershipLookupRow | null> {
-    const r = await this.pool.query<MembershipLookupRow>(
-      `SELECT m.id, m.tenant_id, m.user_id, m.role_id,
-              m.store_access_kind, m.revoked_at, m.deleted_at,
-              r.code AS role_code
-         FROM memberships m
-         JOIN roles r ON r.id = m.role_id
-        WHERE m.tenant_id = $1
-          AND m.user_id = $2
-        LIMIT 1`,
-      [tenantId, userId],
+    return runWithTenantContext(
+      this.pool,
+      { tenantId, isPlatformAdmin: false },
+      async (client) => {
+        const r = await client.query<MembershipLookupRow>(
+          `SELECT m.id, m.tenant_id, m.user_id, m.role_id,
+                  m.store_access_kind, m.revoked_at, m.deleted_at,
+                  r.code AS role_code
+             FROM memberships m
+             JOIN roles r ON r.id = m.role_id
+            WHERE m.tenant_id = $1
+              AND m.user_id = $2
+            LIMIT 1`,
+          [tenantId, userId],
+        );
+        return r.rows[0] ?? null;
+      },
     );
-    return r.rows[0] ?? null;
   }
 
   private async storeIsInAccessSet(
+    tenantId: string,
     membershipId: string,
     storeId: string,
   ): Promise<boolean> {
-    const r = await this.pool.query<{ one: number }>(
-      `SELECT 1 AS one
-         FROM store_access
-        WHERE membership_id = $1
-          AND store_id = $2
-        LIMIT 1`,
-      [membershipId, storeId],
+    return runWithTenantContext(
+      this.pool,
+      { tenantId, isPlatformAdmin: false },
+      async (client) => {
+        const r = await client.query<{ one: number }>(
+          `SELECT 1 AS one
+             FROM store_access
+            WHERE membership_id = $1
+              AND store_id = $2
+            LIMIT 1`,
+          [membershipId, storeId],
+        );
+        return r.rows.length > 0;
+      },
     );
-    return r.rows.length > 0;
   }
 
   private async activeOperatorSessionExists(
+    tenantId: string,
     deviceId: string,
     storeId: string,
   ): Promise<boolean> {
-    const r = await this.pool.query<{ one: number }>(
-      `SELECT 1 AS one
-         FROM auth_tokens
-        WHERE scope = 'pos_operator'
-          AND device_id = $1
-          AND store_id = $2
-          AND revoked_at IS NULL
-          AND expires_at > now()
-        LIMIT 1`,
-      [deviceId, storeId],
+    return runWithTenantContext(
+      this.pool,
+      { tenantId, isPlatformAdmin: false },
+      async (client) => {
+        const r = await client.query<{ one: number }>(
+          `SELECT 1 AS one
+             FROM auth_tokens
+            WHERE scope = 'pos_operator'
+              AND device_id = $1
+              AND store_id = $2
+              AND revoked_at IS NULL
+              AND expires_at > now()
+            LIMIT 1`,
+          [deviceId, storeId],
+        );
+        return r.rows.length > 0;
+      },
     );
-    return r.rows.length > 0;
   }
 
   private async runSignOutPipeline(
@@ -794,7 +830,7 @@ export class PosOperatorsService {
   private async findOperatorSessionById(
     sessionId: string,
   ): Promise<OperatorSessionWithIssuedAtRow | null> {
-    const r = await this.pool.query<OperatorSessionWithIssuedAtRow>(
+    const r = await this.lookupPool.query<OperatorSessionWithIssuedAtRow>(
       `SELECT id, user_id, scope, revoked_at, expires_at, issued_at
          FROM auth_tokens
         WHERE id = $1
@@ -812,20 +848,13 @@ export class PosOperatorsService {
     storeId: string,
     userId: string,
   ): Promise<MembershipLookupRow | null> {
-    const r = await this.pool.query<MembershipLookupRow>(
-      `SELECT m.id, m.tenant_id, m.user_id, m.role_id,
-              m.store_access_kind, m.revoked_at, m.deleted_at,
-              r.code AS role_code
-         FROM memberships m
-         JOIN roles r ON r.id = m.role_id
-         JOIN stores s ON s.tenant_id = m.tenant_id AND s.id = $1
-        WHERE m.user_id = $2
-          AND m.revoked_at IS NULL
-          AND m.deleted_at IS NULL
-        LIMIT 1`,
-      [storeId, userId],
+    const store = await this.lookupPool.query<{ tenant_id: string }>(
+      `SELECT tenant_id FROM stores WHERE id = $1 LIMIT 1`,
+      [storeId],
     );
-    return r.rows[0] ?? null;
+    const tenantId = store.rows[0]?.tenant_id;
+    if (!tenantId) return null;
+    return this.findActiveMembership(tenantId, userId);
   }
 
   /**
@@ -838,11 +867,15 @@ export class PosOperatorsService {
   ): Promise<
     Array<{ id: string; user_id: string; display_name: string; role: "cashier" }>
   > {
-    const r = await this.pool.query<{
-      id: string;
-      clerk_user_id: string;
-      display_name: string;
-    }>(
+    return runWithTenantContext(
+      this.pool,
+      { tenantId, isPlatformAdmin: false },
+      async (client) => {
+        const r = await client.query<{
+          id: string;
+          clerk_user_id: string;
+          display_name: string;
+        }>(
       // 034: also project u.id (the provider-neutral users.id, §16) so the
       // roster entry can carry user_id alongside the clerk_user_id bridge.
       // u.id is already the JOIN key — no new join, no new query.
@@ -865,14 +898,16 @@ export class PosOperatorsService {
             )
           )
         ORDER BY u.display_name`,
-      [tenantId, storeId],
+          [tenantId, storeId],
+        );
+        return r.rows.map((row) => ({
+          id: row.clerk_user_id,
+          user_id: row.id,
+          display_name: row.display_name,
+          role: "cashier" as const,
+        }));
+      },
     );
-    return r.rows.map((row) => ({
-      id: row.clerk_user_id,
-      user_id: row.id,
-      display_name: row.display_name,
-      role: "cashier" as const,
-    }));
   }
 
   /**
@@ -1008,44 +1043,61 @@ export class PosOperatorsService {
    * and returns the revoked session id. Returns null if no active session.
    */
   private async revokeActiveOperatorSession(
+    tenantId: string,
     deviceId: string,
     storeId: string,
   ): Promise<string | null> {
-    const r = await this.pool.query<{ id: string }>(
-      `UPDATE auth_tokens
-          SET revoked_at = now()
-        WHERE scope = 'pos_operator'
-          AND device_id = $1
-          AND store_id = $2
-          AND revoked_at IS NULL
-          AND expires_at > now()
-        RETURNING id`,
-      [deviceId, storeId],
+    return runWithTenantContext(
+      this.pool,
+      { tenantId, isPlatformAdmin: false },
+      async (client) => {
+        const r = await client.query<{ id: string }>(
+          `UPDATE auth_tokens
+              SET revoked_at = now()
+            WHERE scope = 'pos_operator'
+              AND device_id = $1
+              AND store_id = $2
+              AND revoked_at IS NULL
+              AND expires_at > now()
+            RETURNING id`,
+          [deviceId, storeId],
+        );
+        return r.rows[0]?.id ?? null;
+      },
     );
-    return r.rows[0]?.id ?? null;
   }
 
   /**
    * Checks whether a user has an active pos_operator session in the given store.
    * Used by active-session endpoint after branch authorization is confirmed.
    */
-  private async anyActiveOperatorSessionInStore(userId: string, storeId: string): Promise<boolean> {
-    const r = await this.pool.query<{ one: number }>(
-      `SELECT 1 AS one
-         FROM auth_tokens
-        WHERE scope = 'pos_operator'
-          AND user_id = $1
-          AND store_id = $2
-          AND revoked_at IS NULL
-          AND expires_at > now()
-        LIMIT 1`,
-      [userId, storeId],
+  private async anyActiveOperatorSessionInStore(
+    tenantId: string,
+    userId: string,
+    storeId: string,
+  ): Promise<boolean> {
+    return runWithTenantContext(
+      this.pool,
+      { tenantId, isPlatformAdmin: false },
+      async (client) => {
+        const r = await client.query<{ one: number }>(
+          `SELECT 1 AS one
+             FROM auth_tokens
+            WHERE scope = 'pos_operator'
+              AND user_id = $1
+              AND store_id = $2
+              AND revoked_at IS NULL
+              AND expires_at > now()
+            LIMIT 1`,
+          [userId, storeId],
+        );
+        return r.rows.length > 0;
+      },
     );
-    return r.rows.length > 0;
   }
 
   private async markSessionRevoked(sessionId: string, userId: string): Promise<boolean> {
-    const r = await this.pool.query<{ id: string }>(
+    const r = await this.lookupPool.query<{ id: string }>(
       `UPDATE auth_tokens
           SET revoked_at = now()
         WHERE id = $1
@@ -1074,15 +1126,21 @@ export class PosOperatorsService {
     const opaqueRaw = generateRawToken();
     const tokenHash = hashToken(opaqueRaw);
     const expiresAt = new Date(Date.now() + OPERATOR_SESSION_TTL_MS);
-    const r = await this.pool.query<{ id: string; issued_at: Date }>(
-      `INSERT INTO auth_tokens
-         (id, token_hash, tenant_id, user_id, device_id, store_id,
-          scope, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pos_operator', $7)
-       RETURNING id, issued_at`,
-      [id, tokenHash, input.tenantId, input.userId, input.deviceId, input.storeId, expiresAt],
+    const row = await runWithTenantContext(
+      this.pool,
+      { tenantId: input.tenantId, isPlatformAdmin: false },
+      async (client) => {
+        const r = await client.query<{ id: string; issued_at: Date }>(
+          `INSERT INTO auth_tokens
+             (id, token_hash, tenant_id, user_id, device_id, store_id,
+              scope, expires_at)
+           VALUES ($1, $2, $3, $4, $5, $6, 'pos_operator', $7)
+           RETURNING id, issued_at`,
+          [id, tokenHash, input.tenantId, input.userId, input.deviceId, input.storeId, expiresAt],
+        );
+        return r.rows[0];
+      },
     );
-    const row = r.rows[0];
     if (!row) throw new Error("PosOperatorsService.issueOperatorSessionRow: insert returned no row");
     return { id: row.id, issuedAt: row.issued_at, envelope: opaqueRaw };
   }

@@ -143,6 +143,8 @@ For local API and worker runs, set:
 
 ```bash
 DATABASE_URL=postgres://dp2:dp2_dev_password@localhost:5432/data_pulse_2
+# Production only: distinct, narrowly granted pre-tenant auth lookup role.
+AUTH_LOOKUP_DATABASE_URL=postgres://dp2_auth_lookup:replace_me@localhost:5432/data_pulse_2
 REDIS_URL=redis://localhost:6379
 ```
 

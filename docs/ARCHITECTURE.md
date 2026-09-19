@@ -267,7 +267,11 @@ flowchart LR
 
 Required production configuration:
 
-- `DATABASE_URL` for API database access.
+- `DATABASE_URL` for non-BYPASSRLS tenant/domain API database access.
+- `AUTH_LOOKUP_DATABASE_URL` for narrowly privileged pre-tenant identity,
+  session, token, device, and store-scope resolution. Production boot rejects a
+  missing credential or a role shared with `DATABASE_URL`.
+- `MIGRATION_DATABASE_URL` for the deployment-only migration owner credential.
 - `REDIS_URL` for production API email job enqueueing and worker queue
   consumption.
 - `LOG_LEVEL` when the default `info` level is not appropriate.

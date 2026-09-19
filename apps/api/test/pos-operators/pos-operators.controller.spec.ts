@@ -38,7 +38,7 @@ import {
   type ClerkVerifier,
 } from "../../src/pos-operators/clerk-verifier";
 import { PosOperatorsModule } from "../../src/pos-operators/pos-operators.module";
-import { PG_POOL } from "../../src/auth/auth.module";
+import { AUTH_LOOKUP_POOL, PG_POOL } from "../../src/auth/auth.module";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
 import { LoggingInterceptor, ROOT_LOGGER } from "../../src/common/logging.interceptor";
 import { RequestIdInterceptor } from "../../src/common/request-id.interceptor";
@@ -267,6 +267,8 @@ beforeAll(async () => {
       imports: [PosOperatorsModule],
     })
       .overrideProvider(PG_POOL)
+      .useValue(env.app)
+      .overrideProvider(AUTH_LOOKUP_POOL)
       .useValue(pool)
       .overrideProvider(CLERK_VERIFIER)
       .useValue(new StubClerkVerifier(verifierMap))

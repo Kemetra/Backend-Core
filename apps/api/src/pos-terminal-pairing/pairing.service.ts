@@ -30,7 +30,7 @@
  */
 import { Inject, Injectable } from "@nestjs/common";
 
-import { PG_POOL } from "../auth/auth.module";
+import { AUTH_LOOKUP_POOL, PG_POOL } from "../auth/auth.module";
 import type { Pool } from "pg";
 import {
   type PairingCodeBindingRow,
@@ -56,8 +56,11 @@ export type PairResult =
 export class PairingService {
   private readonly repo: PairingRepository;
 
-  constructor(@Inject(PG_POOL) pool: Pool) {
-    this.repo = new PairingRepository(pool);
+  constructor(
+    @Inject(PG_POOL) pool: Pool,
+    @Inject(AUTH_LOOKUP_POOL) lookupPool: Pool = pool,
+  ) {
+    this.repo = new PairingRepository(pool, lookupPool);
   }
 
   async pair(rawCode: string): Promise<PairResult> {
