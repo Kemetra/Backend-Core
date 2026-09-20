@@ -46,6 +46,7 @@ import { z } from 'zod';
 import { DashboardAuthGuard } from '../auth/dashboard-auth.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { Idempotent } from '../idempotency/idempotent.decorator';
+import { MembershipRepository } from '../context/membership.repository';
 import { TenantContextGuard } from '../context/tenant-context.guard';
 import type { ResolvedContext, TenantContextRequest } from '../context/types';
 import {
@@ -150,7 +151,12 @@ type RecordStockCountDto = z.infer<typeof RecordStockCountSchema>;
 @Controller()
 @UseGuards(DashboardAuthGuard, TenantContextGuard)
 export class InventoryController {
-  constructor(private readonly inventoryService: InventoryService) {}
+  constructor(
+    private readonly inventoryService: InventoryService,
+    // Object-level store authorization (§XII) — see `authorizeStore`. Provided
+    // by ContextModule, which this module already imports.
+    private readonly memberships: MembershipRepository,
+  ) {}
 
   /**
    * GET /api/inventory/v1/on-hand/{storeId}/{productId}
@@ -165,7 +171,7 @@ export class InventoryController {
     @Param('productId', new ZodValidationPipe(UuidSchema)) productId: string,
   ): Promise<OnHandBody> {
     const ctx = this.requireContext(request);
-    this.authorizeStore(ctx, storeId);
+    await this.authorizeStore(ctx, storeId);
     return this.inventoryService.getOnHand({
       tenantId: ctx.tenantId as string,
       storeId,
@@ -188,7 +194,7 @@ export class InventoryController {
     @Query('limit', new ZodValidationPipe(LimitSchema)) limit: number | undefined,
   ): Promise<StockMovementListBody> {
     const ctx = this.requireContext(request);
-    this.authorizeStore(ctx, storeId);
+    await this.authorizeStore(ctx, storeId);
     return this.inventoryService.listStockMovements({
       tenantId: ctx.tenantId as string,
       storeId,
@@ -216,7 +222,7 @@ export class InventoryController {
     body: CreateStockMovementDto,
   ): Promise<StockMovementBody> {
     const ctx = this.requireContext(request);
-    this.authorizeStore(ctx, storeId);
+    await this.authorizeStore(ctx, storeId);
     return this.inventoryService.createStockMovement({
       tenantId: ctx.tenantId as string,
       storeId,
@@ -257,7 +263,7 @@ export class InventoryController {
     // The source store is the operator's authorized scope (a store-scoped
     // principal may only transfer FROM its own store; a foreign source is a
     // non-disclosing 404). The destination is validated under RLS in the service.
-    this.authorizeStore(ctx, body.sourceStoreId);
+    await this.authorizeStore(ctx, body.sourceStoreId);
     return this.inventoryService.createStockTransfer({
       tenantId: ctx.tenantId as string,
       userId: ctx.userId as string,
@@ -289,7 +295,7 @@ export class InventoryController {
     body: RecordStockCountDto,
   ): Promise<StockCountResultBody> {
     const ctx = this.requireContext(request);
-    this.authorizeStore(ctx, storeId);
+    await this.authorizeStore(ctx, storeId);
     return this.inventoryService.recordStockCount({
       tenantId: ctx.tenantId as string,
       storeId,
@@ -311,16 +317,57 @@ export class InventoryController {
   }
 
   /**
-   * Object-level store authorization (§XII). A store-scoped principal
-   * (`ctx.storeId` set) may only address its own store; a request for any
-   * other store is a NON-DISCLOSING 404 (FR-051) — never 403, which would leak
-   * existence. A tenant-level principal (`ctx.storeId === null`, e.g. a
-   * tenant-wide admin) may address any store within its tenant (RLS still
-   * scopes the rows to the tenant).
+   * Object-level store authorization (§XII / §II).
+   *
+   * Two independent checks, both of which must pass:
+   *
+   *  1. A store-scoped principal (`ctx.storeId` set) may only address its own
+   *     store.
+   *  2. The principal's MEMBERSHIP must actually grant access to the target
+   *     store — resolved server-side via `MembershipRepository.canAccessStore`
+   *     (the same pattern as `StoresService.read`).
+   *
+   * Check 2 is why this is not a pure `ctx.storeId` comparison. `ctx.storeId`
+   * is copied from `sessions.active_store_id`, which is NULL BY DEFAULT:
+   * `signIn` never sets it and `switchTenant` explicitly nulls it. Treating
+   * null as "tenant-wide principal, may address any store" therefore handed
+   * every `store_access.kind = 'specific'` member read AND write access to
+   * every store in the tenant, on the mandatory happy path (#606).
+   *
+   * There is no database backstop for this: the RLS policies on
+   * `stock_movements` scope by `tenant_id` only, with no store predicate, so
+   * store separation is enforced exclusively here.
+   *
+   * A store outside the caller's scope is a NON-DISCLOSING 404 (FR-051) —
+   * never 403, which would leak existence.
+   *
+   * Platform admins bypass (parity with `StoresService.read`). Non-session
+   * principals have no membership in this slice and are left to RLS, which
+   * still scopes them to their tenant.
    */
-  private authorizeStore(ctx: ResolvedContext, storeId: string): void {
+  private async authorizeStore(ctx: ResolvedContext, storeId: string): Promise<void> {
+    // 1. A store-bound principal may only address its own store.
     if (ctx.storeId !== null && ctx.storeId !== storeId) {
       throw new NotFoundException('Not Found');
     }
+
+    // 2. The membership's real store-access policy decides the rest.
+    if (ctx.isPlatformAdmin || ctx.source !== 'session' || !ctx.userId) return;
+
+    const membership = await this.memberships.findActiveMembership(
+      ctx.userId,
+      ctx.tenantId as string,
+    );
+    // Should be impossible once TenantContextGuard has run (it requires an
+    // active membership for non-admin sessions); map defensively to 404.
+    if (!membership) throw new NotFoundException('Not Found');
+
+    const allowed = await this.memberships.canAccessStore(
+      membership.membershipId,
+      ctx.tenantId as string,
+      storeId,
+      membership.storeAccessKind,
+    );
+    if (!allowed) throw new NotFoundException('Not Found');
   }
 }
