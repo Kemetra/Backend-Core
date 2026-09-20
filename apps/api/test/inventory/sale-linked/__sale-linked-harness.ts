@@ -60,6 +60,7 @@ import {
   LINE_A_X_2,
 } from '../../catalog/sales/__support__/seed-sales';
 
+import { MembershipRepository } from '../../../src/context/membership.repository';
 import { InventoryController } from '../../../src/inventory/inventory.controller';
 import { InventoryService } from '../../../src/inventory/inventory.service';
 
@@ -187,6 +188,13 @@ export async function startSaleLinkedHarness(): Promise<HarnessHandle> {
 
     const providers: Provider[] = [
       { provide: PG_POOL, useFactory: (): Pool => env.app },
+      // InventoryController resolves store access via the membership
+      // (§XII, #606). Real repository over the harness pool, so the
+      // seeded membership's store_access actually decides.
+      {
+        provide: MembershipRepository,
+        useFactory: (): MembershipRepository => new MembershipRepository(env.app),
+      },
       InventoryService,
       { provide: IDEMPOTENCY_KEY_STORE, useValue: idempStore },
       { provide: INFLIGHT_REDIS, useValue: fakeRedis },
