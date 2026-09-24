@@ -35,6 +35,7 @@ export {
 export type {
   ClaimedOutboxEvent,
   ClaimFn,
+  ReclaimResult,
 } from "./repository";
 
 // Dead-letter triage queries (T591 / 1C-C1)

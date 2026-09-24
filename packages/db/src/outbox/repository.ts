@@ -149,12 +149,17 @@ export async function claimBatch(
   );
 }
 
+export interface ReclaimResult {
+  readonly reclaimed: number;
+  readonly deadLetteredEventTypes: readonly string[];
+}
+
 /** Recover expired claims in bounded batches. Attempts remain unchanged until re-claim. */
 export async function reclaimStaleClaims(
   pool: Pool,
   leaseMs: number,
   batchSize = 50,
-): Promise<number> {
+): Promise<ReclaimResult> {
   if (!Number.isSafeInteger(leaseMs) || leaseMs <= 0) {
     throw new RangeError('reclaimStaleClaims: leaseMs must be a positive integer');
   }
@@ -163,12 +168,12 @@ export async function reclaimStaleClaims(
     pool,
     { tenantId: null, isPlatformAdmin: true },
     async (client) => {
-      const res = await client.query(
+      const res = await client.query<{ event_type: string; delivery_state: string }>(
         `WITH stale AS (
            SELECT event_id FROM outbox_events
             WHERE delivery_state = 'claimed'
-              AND (claimed_at IS NULL OR claimed_at <= now() - ($1::bigint * interval '1 millisecond'))
-            ORDER BY claimed_at NULLS FIRST
+              AND COALESCE(claimed_at, updated_at) <= now() - ($1::bigint * interval '1 millisecond')
+            ORDER BY COALESCE(claimed_at, updated_at)
             LIMIT $2 FOR UPDATE SKIP LOCKED
          )
          UPDATE outbox_events AS o
@@ -177,10 +182,16 @@ export async function reclaimStaleClaims(
                 claimed_at = NULL,
                 last_error = 'ClaimLeaseExpired',
                 updated_at = now()
-           FROM stale WHERE o.event_id = stale.event_id`,
+           FROM stale WHERE o.event_id = stale.event_id
+         RETURNING o.event_type, o.delivery_state`,
         [leaseMs, batchSize, MAX_ATTEMPTS],
       );
-      return res.rowCount ?? 0;
+      return {
+        reclaimed: res.rows.length,
+        deadLetteredEventTypes: res.rows
+          .filter((row) => row.delivery_state === 'dead_lettered')
+          .map((row) => row.event_type),
+      };
     },
   );
 }

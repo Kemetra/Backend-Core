@@ -8,6 +8,7 @@ import { claimBatch } from '../../../../packages/db/src/outbox/repository';
 import type { OutboxConsumer } from '@data-pulse-2/shared';
 import { DrainerProcessor } from '../../src/outbox/drainer.processor';
 import { OutboxConsumerRegistry } from '../../src/outbox/registry';
+import * as workerMetrics from '../../src/observability/metrics/worker.metrics';
 
 const TENANT = '0ca00000-0000-7000-8000-000000000102';
 const EVENT = '0cc00000-0000-4000-8000-000000000102';
@@ -49,4 +50,37 @@ it('redelivers after the first worker dies between claim and consumer', async ()
     `SELECT delivery_state, attempts FROM outbox_events WHERE event_id=$1`, [EVENT],
   );
   expect(row.rows[0]).toMatchObject({ delivery_state: 'delivered', attempts: 2 });
+});
+
+it('reserves DB pool capacity for claim heartbeats', async () => {
+  const claimFn = jest.fn(async () => []);
+  const drainer = new DrainerProcessor({
+    pool: env.admin,
+    registry: new OutboxConsumerRegistry(),
+    options: { batchSize: 50 },
+    claimFn,
+  });
+  await drainer.tick();
+  expect(claimFn).toHaveBeenCalledWith(env.admin, 5);
+});
+
+it('records dead-letter metrics when the final claim expires', async () => {
+  await env.admin.query(
+    `UPDATE outbox_events
+        SET delivery_state='claimed', attempts=8,
+            claimed_at=now() - interval '2 minutes', processed_at=NULL
+      WHERE event_id=$1`,
+    [EVENT],
+  );
+  const queueMetric = jest.spyOn(workerMetrics, 'recordQueueDeadLetter');
+  const outboxMetric = jest.spyOn(workerMetrics, 'recordOutboxDeadLetter');
+  try {
+    const drainer = new DrainerProcessor({ pool: env.admin, registry: new OutboxConsumerRegistry() });
+    await drainer.tick();
+    expect(queueMetric).toHaveBeenCalledWith({ queue: 'audit-fanout' });
+    expect(outboxMetric).toHaveBeenCalledWith({ event_type: 'test.event.recovery' });
+  } finally {
+    queueMetric.mockRestore();
+    outboxMetric.mockRestore();
+  }
 });

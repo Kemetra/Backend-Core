@@ -35,7 +35,7 @@ it('reclaims a crashed worker claim on the next sweep and fences its late comple
   expect(first.event_id).toBe(EVENT);
   await env.admin.query(`UPDATE outbox_events SET claimed_at=now() - interval '2 minutes' WHERE event_id=$1`, [EVENT]);
 
-  expect(await reclaimStaleClaims(env.admin, 60_000)).toBe(1);
+  expect((await reclaimStaleClaims(env.admin, 60_000)).reclaimed).toBe(1);
   const second = (await claimBatch(env.admin, 1))[0]!;
   expect(second.event_id).toBe(EVENT);
   expect(second.attempts).toBe(first.attempts + 1);
@@ -54,8 +54,20 @@ it('keeps an active claim out of the reclaim sweep while its heartbeat is curren
   const active = (await claimBatch(env.admin, 1))[0]!;
   await env.admin.query(`UPDATE outbox_events SET claimed_at=now() - interval '2 minutes' WHERE event_id=$1`, [EVENT]);
   expect(await heartbeatClaim(env.admin, EVENT, active.attempts)).toBe(true);
-  expect(await reclaimStaleClaims(env.admin, 60_000)).toBe(0);
+  expect((await reclaimStaleClaims(env.admin, 60_000)).reclaimed).toBe(0);
   await markDelivered(env.admin, EVENT, active.attempts);
+});
+
+it('waits for the lease threshold on claims made by an older worker', async () => {
+  await env.admin.query(
+    `UPDATE outbox_events
+        SET delivery_state='claimed', claimed_at=NULL, updated_at=now()
+      WHERE event_id=$1`,
+    [EVENT],
+  );
+  expect((await reclaimStaleClaims(env.admin, 60_000)).reclaimed).toBe(0);
+  await env.admin.query(`UPDATE outbox_events SET updated_at=now() - interval '2 minutes' WHERE event_id=$1`, [EVENT]);
+  expect((await reclaimStaleClaims(env.admin, 60_000)).reclaimed).toBe(1);
 });
 
 it('dead-letters an expired final attempt without issuing a ninth claim', async () => {
@@ -66,7 +78,10 @@ it('dead-letters an expired final attempt without issuing a ninth claim', async 
       WHERE event_id=$1`,
     [EVENT],
   );
-  expect(await reclaimStaleClaims(env.admin, 60_000)).toBe(1);
+  expect(await reclaimStaleClaims(env.admin, 60_000)).toMatchObject({
+    reclaimed: 1,
+    deadLetteredEventTypes: ['audit.event.created'],
+  });
   const row = await env.admin.query<{ delivery_state: string; last_error: string }>(
     `SELECT delivery_state, last_error FROM outbox_events WHERE event_id=$1`, [EVENT],
   );
