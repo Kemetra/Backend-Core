@@ -176,6 +176,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     }
 
     if (isPostgresInputError(exception)) {
+      recordValidationFailure({ route });
       recordHttp4xxError({ route, status: "400" });
       const envelope = errorEnvelope({
         code: ErrorCodes.VALIDATION,

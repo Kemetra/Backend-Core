@@ -193,6 +193,7 @@ describe("GlobalExceptionFilter", () => {
           request_id: REQ_ID,
         },
       });
+      expect(recordValidationFailure).toHaveBeenCalledWith({ route: "unknown" });
       expect(recordHttp4xxError).toHaveBeenCalledWith({
         route: "unknown",
         status: "400",
