@@ -25,10 +25,12 @@ export {
   MAX_ATTEMPTS,
   OutboxStateTransitionError,
   claimBatch,
+  heartbeatClaim,
   markDeadLettered,
   markDelivered,
   markFailed,
   nextAttemptDelayMs,
+  reclaimStaleClaims,
 } from "./repository";
 export type {
   ClaimedOutboxEvent,

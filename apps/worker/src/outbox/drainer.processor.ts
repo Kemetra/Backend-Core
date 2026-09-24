@@ -31,10 +31,9 @@
  * --------------
  * Consumer throws → `markFailed` (with backoff). At `attempts === MAX_ATTEMPTS`
  * → `markDeadLettered`. State-machine transitions are best-effort: if the
- * mark call itself fails, the drainer logs and continues — the row stays in
- * `claimed` and will be reclaimed by a future tick once the claim heartbeat
- * threshold passes (reclaim sweep is T549 / future slice; for now, a `claimed`
- * row that is not marked transitions back to claimable after the drainer restarts).
+ * mark call itself fails, the drainer logs and continues. A bounded lease
+ * sweep returns stale claims to `pending` on a later tick; a live handler
+ * renews its lease until processing finishes.
  *
  * No-consumer routing
  * -------------------
@@ -46,9 +45,11 @@
 import type { Pool } from "pg";
 import {
   claimBatch,
+  heartbeatClaim,
   markDelivered,
   markFailed,
   markDeadLettered,
+  reclaimStaleClaims,
   MAX_ATTEMPTS,
   type ClaimedOutboxEvent,
 } from "@data-pulse-2/db";
@@ -76,6 +77,8 @@ const DRAINER_QUEUE_LABEL = "audit-fanout" as const;
 
 export const DEFAULT_POLL_INTERVAL_MS = 1_000;
 export const DEFAULT_BATCH_SIZE = 50;
+export const DEFAULT_CLAIM_LEASE_MS = 60_000;
+const CLAIM_HEARTBEAT_MS = 20_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,6 +89,8 @@ export interface DrainerOptions {
   readonly pollIntervalMs?: number;
   /** Max rows per claim batch. Default: 50. */
   readonly batchSize?: number;
+  /** How long a claim may go without a heartbeat before recovery. Default: 60s. */
+  readonly claimLeaseMs?: number;
 }
 
 /** Injected for testability — production omits. */
@@ -114,6 +119,7 @@ export class DrainerProcessor {
   private readonly registry: OutboxConsumerRegistry;
   private readonly pollIntervalMs: number;
   private readonly batchSize: number;
+  private readonly claimLeaseMs: number;
   private readonly claimFn: (pool: Pool, batchSize: number) => Promise<ClaimedOutboxEvent[]>;
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -131,6 +137,7 @@ export class DrainerProcessor {
     this.registry = deps.registry;
     this.pollIntervalMs = deps.options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.batchSize = deps.options?.batchSize ?? DEFAULT_BATCH_SIZE;
+    this.claimLeaseMs = deps.options?.claimLeaseMs ?? DEFAULT_CLAIM_LEASE_MS;
     this.claimFn = deps.claimFn ?? claimBatch;
 
     // Fail loud at construction rather than spinning a poll loop with a
@@ -141,6 +148,7 @@ export class DrainerProcessor {
     // produce subtly wrong scheduling.
     assertPositiveInteger("pollIntervalMs", this.pollIntervalMs);
     assertPositiveInteger("batchSize", this.batchSize);
+    assertPositiveInteger("claimLeaseMs", this.claimLeaseMs);
   }
 
   /**
@@ -194,6 +202,13 @@ export class DrainerProcessor {
    * without the setInterval timer.
    */
   async tick(): Promise<void> {
+    const recovered = await reclaimStaleClaims(this.pool, this.claimLeaseMs, this.batchSize).catch((err: unknown) => {
+      this.logError("drainer.reclaimStaleClaims failed", err);
+      return 0;
+    });
+    if (recovered > 0) {
+      this.logError(`drainer.reclaimed stale claims count=${recovered}`, new Error("ClaimLeaseExpired"));
+    }
     const batch = await this.claimFn(this.pool, this.batchSize).catch((err: unknown) => {
       this.logError("drainer.claimBatch failed", err);
       return [] as ClaimedOutboxEvent[];
@@ -215,6 +230,18 @@ export class DrainerProcessor {
     // no-consumer). Emitted in finally so every exit path is timed —
     // identical pattern to PR-A's worker_job_duration_seconds.
     const startNs = process.hrtime.bigint();
+    let heartbeatInFlight = false;
+    const heartbeat = setInterval(() => {
+      if (heartbeatInFlight) return;
+      heartbeatInFlight = true;
+      heartbeatClaim(this.pool, row.event_id, row.attempts)
+        .then((renewed) => {
+          if (!renewed) this.logError("drainer.claim lease lost", new Error("ClaimLeaseLost"));
+        })
+        .catch((err: unknown) => this.logError("drainer.heartbeatClaim failed", err))
+        .finally(() => { heartbeatInFlight = false; });
+    }, Math.min(CLAIM_HEARTBEAT_MS, Math.max(1, Math.floor(this.claimLeaseMs / 3))));
+    heartbeat.unref();
     try {
       const consumer = this.registry.resolve(row.event_type);
 
@@ -240,7 +267,7 @@ export class DrainerProcessor {
 
       try {
         await this.invokeConsumer(consumer, row);
-        await this.safeMarkDelivered(row.event_id);
+        await this.safeMarkDelivered(row.event_id, row.attempts);
       } catch (err: unknown) {
         const errorClass = this.extractErrorClass(err);
         // T596: emit BEFORE persistence (D4). queue_failed_total always fires
@@ -256,13 +283,14 @@ export class DrainerProcessor {
           // queue. Emitted BEFORE persistence (D4 ordering) so the metric
           // reflects the drainer's decision regardless of safeMark outcome.
           recordOutboxDeadLetter({ event_type: row.event_type });
-          await this.safeMarkDeadLettered(row.event_id, errorClass);
+          await this.safeMarkDeadLettered(row.event_id, row.attempts, errorClass);
         } else {
           recordQueueRetry({ queue: DRAINER_QUEUE_LABEL });
           await this.safeMarkFailed(row.event_id, row.attempts, errorClass);
         }
       }
     } finally {
+      clearInterval(heartbeat);
       const durationSeconds = Number(process.hrtime.bigint() - startNs) / 1_000_000_000;
       recordOutboxDrainDuration({ event_type: row.event_type }, durationSeconds);
     }
@@ -313,9 +341,9 @@ export class DrainerProcessor {
   // Safe wrappers — state-machine transition failures must not crash the drainer
   // ---------------------------------------------------------------------------
 
-  private async safeMarkDelivered(eventId: string): Promise<void> {
+  private async safeMarkDelivered(eventId: string, attempts: number): Promise<void> {
     try {
-      await markDelivered(this.pool, eventId);
+      await markDelivered(this.pool, eventId, attempts);
     } catch (err: unknown) {
       this.logError(`drainer.markDelivered failed event_id="${eventId}"`, err);
     }
@@ -335,10 +363,11 @@ export class DrainerProcessor {
 
   private async safeMarkDeadLettered(
     eventId: string,
+    attempts: number,
     errorClass: string,
   ): Promise<void> {
     try {
-      await markDeadLettered(this.pool, eventId, errorClass);
+      await markDeadLettered(this.pool, eventId, errorClass, attempts);
     } catch (err: unknown) {
       this.logError(`drainer.markDeadLettered failed event_id="${eventId}"`, err);
     }

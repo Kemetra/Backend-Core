@@ -23,6 +23,7 @@
  *   claimed  → failed        (markFailed; last_error set, next_attempt_at set)
  *   failed   → claimed       (claimBatch re-claims eligible failed rows)
  *   claimed  → dead_lettered (markDeadLettered, when attempts === 8)
+ *   claimed  → pending/dead_lettered (reclaimStaleClaims, on expired lease)
  *
  * Backoff schedule (lifecycle.md §4.2):
  *   attempts=1 → now() + 30s   (first failure, wait 30s before retry 2)
@@ -131,7 +132,7 @@ export const MAX_ATTEMPTS = 8;
  *   1. Inner SELECT picks claimable rows (state IN ('pending','failed') AND
  *      next_attempt_at IS NULL OR <= now()) ordered by occurred_at ASC FOR
  *      UPDATE SKIP LOCKED LIMIT $batchSize.
- *   2. Outer UPDATE sets delivery_state='claimed', attempts+=1, updated_at=now().
+ *   2. Outer UPDATE sets delivery_state='claimed', attempts+=1, claimed_at=now().
  *   3. RETURNING gives the drainer the data it needs to dispatch consumers.
  */
 export async function claimBatch(
@@ -144,6 +145,58 @@ export async function claimBatch(
     { tenantId: null, isPlatformAdmin: true },
     async (client) => {
       return _claimBatchOnClient(client, batchSize);
+    },
+  );
+}
+
+/** Recover expired claims in bounded batches. Attempts remain unchanged until re-claim. */
+export async function reclaimStaleClaims(
+  pool: Pool,
+  leaseMs: number,
+  batchSize = 50,
+): Promise<number> {
+  if (!Number.isSafeInteger(leaseMs) || leaseMs <= 0) {
+    throw new RangeError('reclaimStaleClaims: leaseMs must be a positive integer');
+  }
+  assertPositiveBatchSize(batchSize);
+  return runWithTenantContext(
+    pool,
+    { tenantId: null, isPlatformAdmin: true },
+    async (client) => {
+      const res = await client.query(
+        `WITH stale AS (
+           SELECT event_id FROM outbox_events
+            WHERE delivery_state = 'claimed'
+              AND (claimed_at IS NULL OR claimed_at <= now() - ($1::bigint * interval '1 millisecond'))
+            ORDER BY claimed_at NULLS FIRST
+            LIMIT $2 FOR UPDATE SKIP LOCKED
+         )
+         UPDATE outbox_events AS o
+            SET delivery_state = CASE WHEN o.attempts >= $3 THEN 'dead_lettered' ELSE 'pending' END,
+                processed_at = CASE WHEN o.attempts >= $3 THEN now() ELSE NULL END,
+                claimed_at = NULL,
+                last_error = 'ClaimLeaseExpired',
+                updated_at = now()
+           FROM stale WHERE o.event_id = stale.event_id`,
+        [leaseMs, batchSize, MAX_ATTEMPTS],
+      );
+      return res.rowCount ?? 0;
+    },
+  );
+}
+
+/** Renew only the current claim generation; a reclaimed attempt cannot renew. */
+export async function heartbeatClaim(pool: Pool, eventId: string, attempts: number): Promise<boolean> {
+  return runWithTenantContext(
+    pool,
+    { tenantId: null, isPlatformAdmin: true },
+    async (client) => {
+      const res = await client.query(
+        `UPDATE outbox_events SET claimed_at = now(), updated_at = now()
+          WHERE event_id = $1 AND delivery_state = 'claimed' AND attempts = $2`,
+        [eventId, attempts],
+      );
+      return res.rowCount === 1;
     },
   );
 }
@@ -194,6 +247,7 @@ async function _claimBatchOnClient(
        UPDATE outbox_events
           SET delivery_state = 'claimed',
               attempts       = attempts + 1,
+              claimed_at     = now(),
               updated_at     = now()
         WHERE event_id IN (
           SELECT event_id
@@ -250,7 +304,7 @@ async function _claimBatchOnClient(
  * `last_error` is NOT cleared — it retains the last-known failure class for audit
  * context (per Slice 1A schema intent).
  */
-export async function markDelivered(pool: Pool, eventId: string): Promise<void> {
+export async function markDelivered(pool: Pool, eventId: string, attempts: number): Promise<void> {
   await runWithTenantContext(
     pool,
     { tenantId: null, isPlatformAdmin: true },
@@ -259,10 +313,11 @@ export async function markDelivered(pool: Pool, eventId: string): Promise<void> 
         `UPDATE outbox_events
             SET delivery_state = 'delivered',
                 processed_at   = now(),
+                claimed_at     = NULL,
                 updated_at     = now()
           WHERE event_id = $1
-            AND delivery_state = 'claimed'`,
-        [eventId],
+            AND delivery_state = 'claimed' AND attempts = $2`,
+        [eventId, attempts],
       );
       assertSingleRow(res.rowCount, "markDelivered", eventId);
     },
@@ -313,10 +368,11 @@ export async function markFailed(
             SET delivery_state  = 'failed',
                 last_error      = $2,
                 next_attempt_at = $3,
+                claimed_at     = NULL,
                 updated_at      = now()
           WHERE event_id = $1
-            AND delivery_state = 'claimed'`,
-        [eventId, errorClass, nextAttemptAt.toISOString()],
+            AND delivery_state = 'claimed' AND attempts = $4`,
+        [eventId, errorClass, nextAttemptAt.toISOString(), attempts],
       );
       assertSingleRow(res.rowCount, "markFailed", eventId);
     },
@@ -341,6 +397,7 @@ export async function markDeadLettered(
   pool: Pool,
   eventId: string,
   errorClass: string,
+  attempts: number,
 ): Promise<void> {
   await runWithTenantContext(
     pool,
@@ -351,10 +408,11 @@ export async function markDeadLettered(
             SET delivery_state = 'dead_lettered',
                 last_error     = $2,
                 processed_at   = now(),
+                claimed_at     = NULL,
                 updated_at     = now()
           WHERE event_id = $1
-            AND delivery_state = 'claimed'`,
-        [eventId, errorClass],
+            AND delivery_state = 'claimed' AND attempts = $3`,
+        [eventId, errorClass, attempts],
       );
       assertSingleRow(res.rowCount, "markDeadLettered", eventId);
     },
