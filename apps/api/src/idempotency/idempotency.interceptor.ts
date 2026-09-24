@@ -358,8 +358,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
       // Step 7 already done (marker set above). Step 8: invoke handler.
       const expiresAt = new Date(Date.now() + replayTtlMs);
       const _fp = fp;
-      const _kf = keyFingerprint(headerValue);
-      void _kf; // used only in logs (not currently emitted to avoid PII)
+      const keyFp = keyFingerprint(headerValue);
 
       return next.handle().pipe(
         tap({
@@ -392,7 +391,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
               // incoherent with ADR 0009 D3 fail-open). The metric/alert counter is
               // AD-TOOL-003-phase-gated and lands separately; this is the warn-log half.
               this.logger?.warn(
-                { err, tuple },
+                { err, route, key_fingerprint: keyFp },
                 "IdempotencyInterceptor: replay-record save failed; idempotency degraded (response returned, retry may re-execute handler)",
               );
             });
