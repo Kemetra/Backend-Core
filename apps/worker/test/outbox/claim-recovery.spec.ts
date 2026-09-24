@@ -61,7 +61,7 @@ it('reserves DB pool capacity for claim heartbeats', async () => {
     claimFn,
   });
   await drainer.tick();
-  expect(claimFn).toHaveBeenCalledWith(env.admin, 5);
+  expect(claimFn).toHaveBeenCalledWith(env.admin, 4);
 });
 
 it('records dead-letter metrics when the final claim expires', async () => {

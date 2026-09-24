@@ -79,6 +79,9 @@ export const DEFAULT_POLL_INTERVAL_MS = 1_000;
 export const DEFAULT_BATCH_SIZE = 50;
 export const DEFAULT_CLAIM_LEASE_MS = 60_000;
 const CLAIM_HEARTBEAT_MS = 20_000;
+// Reconciliation consumers can hold one transaction client while their Bin view
+// opens a second. Keep one connection free for lease renewals and transitions.
+const MAX_CONNECTIONS_PER_CLAIM = 2;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -139,10 +142,13 @@ export class DrainerProcessor {
     this.pollIntervalMs = deps.options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.batchSize = deps.options?.batchSize ?? DEFAULT_BATCH_SIZE;
     const poolMax = (this.pool as Pool & { options?: { max?: number } }).options?.max ?? 10;
-    if (!Number.isInteger(poolMax) || poolMax < 2) {
-      throw new RangeError("outbox drainer requires a DB pool with at least 2 connections");
+    if (!Number.isInteger(poolMax) || poolMax <= MAX_CONNECTIONS_PER_CLAIM) {
+      throw new RangeError("outbox drainer requires a DB pool with at least 3 connections");
     }
-    this.claimLimit = Math.min(this.batchSize, Math.floor(poolMax / 2));
+    this.claimLimit = Math.min(
+      this.batchSize,
+      Math.floor((poolMax - 1) / MAX_CONNECTIONS_PER_CLAIM),
+    );
     this.claimLeaseMs = deps.options?.claimLeaseMs ?? DEFAULT_CLAIM_LEASE_MS;
     this.claimFn = deps.claimFn ?? claimBatch;
 
