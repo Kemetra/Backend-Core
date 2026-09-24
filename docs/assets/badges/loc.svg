@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="154" height="20" role="img" aria-label="lines of code: 301.1k">
-  <title>lines of code: 301.1k</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="154" height="20" role="img" aria-label="lines of code: 301.2k">
+  <title>lines of code: 301.2k</title>
   <linearGradient id="s" x2="0" y2="100%">
     <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
     <stop offset="1" stop-opacity=".1"/>
@@ -15,7 +15,7 @@
   <g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="110">
     <text x="480" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="860" lengthAdjust="spacing">lines of code</text>
     <text x="480" y="140" transform="scale(.1)" textLength="860" lengthAdjust="spacing">lines of code</text>
-    <text x="1250" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="480" lengthAdjust="spacing">301.1k</text>
-    <text x="1250" y="140" transform="scale(.1)" textLength="480" lengthAdjust="spacing">301.1k</text>
+    <text x="1250" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="480" lengthAdjust="spacing">301.2k</text>
+    <text x="1250" y="140" transform="scale(.1)" textLength="480" lengthAdjust="spacing">301.2k</text>
   </g>
 </svg>
