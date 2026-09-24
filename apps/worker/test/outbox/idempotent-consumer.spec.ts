@@ -12,19 +12,16 @@
  *   2. A `delivered` row is invisible to the claim query.
  *   3. Therefore the consumer's `handle()` is invoked at most once per row
  *      in steady-state operation.
- *   4. Re-delivery is only possible via an EXPLICIT operator action (manually
- *      reverting the row's delivery_state — e.g., the dead-letter admin
- *      replay endpoint, deferred to Slice 1C).
+ *   4. A stale claim can also be recovered and redelivered after worker loss;
+ *      consumers must tolerate that at-least-once delivery path.
  *
  * What this test proves:
  *   I-1  After one successful tick, the consumer is NOT invoked a second time
  *        by an immediate second tick on the same row.
  *   I-2  If an operator manually reverts a delivered row to pending (simulating
- *        a Slice 1C replay action), the consumer IS invoked again — making
- *        operator-driven replay the only re-delivery path.
- *   I-3  Therefore the consumer's idempotency obligation in Slice 1B is
- *        narrowed to: "tolerate being called once" (which all consumers
- *        trivially satisfy unless they perform irreversible side effects).
+ *        a Slice 1C replay action), the consumer IS invoked again.
+ *   I-3  The consumer's idempotency obligation includes crash recovery;
+ *        this spec covers steady-state and operator replay separately.
  *
  * Future Slice 1C will introduce `processed_events` as defense-in-depth,
  * tightening the contract to: "tolerate being called more than once with
@@ -158,7 +155,7 @@ describe("T563: idempotent consumer — outbox-row-level dedup", () => {
 
     // Simulate a Slice 1C dead-letter admin replay action: an operator manually
     // reverts the row to pending. After this, the drainer MUST re-invoke the
-    // consumer — this is the SOLE re-delivery path in Slice 1B.
+    // consumer. Claim recovery is the other re-delivery path.
     await env!.admin.query(
       `UPDATE outbox_events
           SET delivery_state='pending',

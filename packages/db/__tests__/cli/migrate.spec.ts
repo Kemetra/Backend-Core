@@ -183,6 +183,7 @@ describe("data-pulse-migrate CLI", () => {
     "0025_external_identity_links",
     "0026_sale_sync_status",
     "0027_settlement_receivables",
+    "0028_outbox_claim_recovery",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -236,6 +237,11 @@ describe("data-pulse-migrate CLI", () => {
     ).toBe("1");
     expect(await countPublicTables(["sale_sync_deadletters"])).toBe("1");
     expect(await countPolicies(["sale_sync_deadletters"])).toBe("3");
+    expect(await countPublicColumn("outbox_events", "claimed_at")).toBe("1");
+    expect(
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_indexes
+        WHERE schemaname = 'public' AND indexname = 'outbox_events_stale_claim_idx'`),
+    ).toBe("1");
   });
 
   it("up is idempotent on a second run", async () => {
@@ -271,18 +277,20 @@ describe("data-pulse-migrate CLI", () => {
 
       expect(await ledgerIds()).toEqual(EXPECTED_MIGRATIONS.slice(0, -1));
 
-      // LATEST_MIGRATION is 0027_settlement_receivables, so this single down
-      // fully reverses it: the settlement tables are ABSENT afterwards, and
-      // dropping the tables drops their RLS policies with them.
-      expect(await countPublicTables(SETTLEMENT_TABLES)).toBe("0");
-      expect(await countPolicies(SETTLEMENT_TABLES)).toBe("0");
+      // 0028 removes its lease column and index while retaining 0027 tables.
+      expect(await countPublicColumn("outbox_events", "claimed_at")).toBe("0");
+      expect(
+        await queryCount(`SELECT COUNT(*)::text AS count FROM pg_indexes
+          WHERE schemaname = 'public' AND indexname = 'outbox_events_stale_claim_idx'`),
+      ).toBe("0");
+      expect(await countPublicTables(SETTLEMENT_TABLES)).toBe("7");
 
-      // Sanity: everything older SURVIVES the 0027 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0028 rollback (down reverses
       // only the latest migration) —
       // 0026's sync_status column + sale_sync_deadletters table;
       expect(await countPublicColumn("sales", "sync_status")).toBe("1");
       expect(await countPublicTables(["sale_sync_deadletters"])).toBe("1");
-      // the `sales` table itself (0027 only adds new tables, never alters it);
+      // the `sales` table itself;
       expect(await countPublicTables(["sales"])).toBe("1");
       // all seven catalog tables introduced by 0007;
       expect(await countPublicTables(CATALOG_TABLES)).toBe("7");
@@ -308,6 +316,7 @@ describe("data-pulse-migrate CLI", () => {
     const r = await runCli(["up"], { DATABASE_URL: env.adminUri });
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(new RegExp(`up: applying ${LATEST_MIGRATION}`));
+    expect(await countPublicColumn("outbox_events", "claimed_at")).toBe("1");
     // Re-applying the latest migration leaves all seven catalog tables from
     // 0007 intact; the catalog set is unaffected by the latest migration.
     expect(await countPublicTables(CATALOG_TABLES)).toBe("7");

@@ -177,7 +177,7 @@ describe("markDelivered — claimed to delivered (R-6)", () => {
       [EV_DELIVER],
     );
 
-    await markDelivered(env!.admin, EV_DELIVER);
+    await markDelivered(env!.admin, EV_DELIVER, 1);
 
     const r = await env!.admin.query<{ delivery_state: string; processed_at: string | null }>(
       `SELECT delivery_state, processed_at FROM outbox_events WHERE event_id=$1`,
@@ -237,7 +237,7 @@ describe("markDeadLettered — claimed to dead_lettered (R-8)", () => {
       [EV_DEAD],
     );
 
-    await markDeadLettered(env!.admin, EV_DEAD, "PoisonMessageError");
+    await markDeadLettered(env!.admin, EV_DEAD, "PoisonMessageError", 8);
 
     const r = await env!.admin.query<{
       delivery_state: string;
@@ -382,7 +382,7 @@ describe("retry budget — 8 attempts then dead_lettered (R-12)", () => {
 
     // Consumer "fails" on the 8th attempt → markDeadLettered.
     expect(row!.attempts).toBe(MAX_ATTEMPTS);
-    await markDeadLettered(env!.admin, EV_BUDGET, "PoisonError");
+    await markDeadLettered(env!.admin, EV_BUDGET, "PoisonError", 8);
 
     // Verify no 9th claim is possible.
     const reclaimAttempt = await claimBatch(env!.admin, 10);
