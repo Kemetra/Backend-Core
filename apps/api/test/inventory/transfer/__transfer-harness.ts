@@ -55,6 +55,7 @@ import {
 } from '../../catalog/__support__/isolation-harness';
 import { seedInventoryFixture } from '../__support__/seed-inventory';
 
+import { MembershipRepository } from '../../../src/context/membership.repository';
 import { InventoryController } from '../../../src/inventory/inventory.controller';
 import { InventoryService } from '../../../src/inventory/inventory.service';
 
@@ -181,6 +182,27 @@ export async function startTransferHarness(): Promise<HarnessHandle> {
 
     const providers: Provider[] = [
       { provide: PG_POOL, useFactory: (): Pool => env.app },
+      // InventoryController resolves store access via the membership
+      // (§XII, #606). These harnesses seed users/stores/movements but NOT
+      // memberships or store_access, and drive a non-platform-admin context —
+      // so the real repository would find no membership and 404 every request,
+      // changing what these suites test. A permissive stub keeps their subject
+      // (transfers, counts, restock, sale-linked provenance, idempotency)
+      // unchanged. Cross-store DENIAL is proven in
+      // test/inventory/isolation/cross-store-authz.spec.ts.
+      {
+        provide: MembershipRepository,
+        useValue: {
+          findActiveMembership: async (): Promise<{
+            membershipId: string;
+            storeAccessKind: string;
+          }> => ({
+            membershipId: '0a000000-0000-7000-8000-0000000000e1',
+            storeAccessKind: 'all',
+          }),
+          canAccessStore: async (): Promise<boolean> => true,
+        } as unknown as MembershipRepository,
+      },
       InventoryService,
       { provide: IDEMPOTENCY_KEY_STORE, useValue: idempStore },
       { provide: INFLIGHT_REDIS, useValue: fakeRedis },
