@@ -78,6 +78,15 @@ function makeHost(
 
 const REQ_ID = "018f3b1d-7c2a-7e3a-9bcd-0123456789ab";
 
+function postgresError(code: string): Error {
+  return Object.assign(new Error("SQL fragment: secret_inventory_column"), {
+    code,
+    severity: "ERROR",
+    detail: "private row data",
+    constraint: "secret_constraint",
+  });
+}
+
 describe("GlobalExceptionFilter", () => {
   beforeEach(() => {
     (recordHttp4xxError as jest.Mock).mockClear();
@@ -167,6 +176,64 @@ describe("GlobalExceptionFilter", () => {
     expect(body.error.code).toBe("internal_error");
     // No leakage of internal error message.
     expect(body.error.message).toBe("Internal Server Error");
+  });
+
+  it.each(["22003", "23514", "22P02"])(
+    "maps PostgreSQL input error %s to a non-disclosing 400 envelope",
+    (sqlState) => {
+      const captured: CapturedResponse = {};
+      const { host } = makeHost({ requestId: REQ_ID }, captured);
+      new GlobalExceptionFilter().catch(postgresError(sqlState), host);
+
+      expect(captured.statusCode).toBe(HttpStatus.BAD_REQUEST);
+      expect(captured.body).toEqual({
+        error: {
+          code: "validation_error",
+          message: "Request validation failed",
+          request_id: REQ_ID,
+        },
+      });
+      expect(recordValidationFailure).toHaveBeenCalledWith({ route: "unknown" });
+      expect(recordHttp4xxError).toHaveBeenCalledWith({
+        route: "unknown",
+        status: "400",
+      });
+      expect(recordHttp5xxError).not.toHaveBeenCalled();
+    },
+  );
+
+  it("recognizes a PostgreSQL input error wrapped as an ORM cause", () => {
+    const captured: CapturedResponse = {};
+    const { host } = makeHost({ requestId: REQ_ID }, captured);
+    new GlobalExceptionFilter().catch(
+      Object.assign(new Error("ORM query failed"), { cause: postgresError("22003") }),
+      host,
+    );
+    expect(captured.statusCode).toBe(HttpStatus.BAD_REQUEST);
+    expect(captured.body).toMatchObject({
+      error: { code: "validation_error", request_id: REQ_ID },
+    });
+  });
+
+  it("keeps non-Postgres and unrelated SQLSTATE errors on the generic 500 path", () => {
+    for (const error of [
+      Object.assign(new Error("application failure"), { code: "22003" }),
+      postgresError("23505"),
+    ]) {
+      const captured: CapturedResponse = {};
+      new GlobalExceptionFilter().catch(
+        error,
+        makeHost({ requestId: REQ_ID }, captured).host,
+      );
+      expect(captured.statusCode).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
+      expect(captured.body).toEqual({
+        error: {
+          code: "internal_error",
+          message: "Internal Server Error",
+          request_id: REQ_ID,
+        },
+      });
+    }
   });
 
   it("mints a fresh request_id when the request is missing one", () => {
