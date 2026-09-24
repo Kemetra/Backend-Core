@@ -34,14 +34,17 @@
 import { Module, type Provider } from "@nestjs/common";
 import { APP_INTERCEPTOR, Reflector } from "@nestjs/core";
 
-import { IdempotencyKeyStore } from "@data-pulse-2/shared";
+import { createLogger, IdempotencyKeyStore, type Logger } from "@data-pulse-2/shared";
 import type {
   PgMirrorReader,
   PgMirrorWriter,
   RedisLike as StoreRedisLike,
 } from "@data-pulse-2/shared";
 
+import { AUDIT_JOB_ENQUEUER, type AuditJobEnqueuer } from "../audit/audit-job.enqueuer";
+import { OutboxAuditEnqueuerModule } from "../audit/outbox-audit-enqueuer.module";
 import { AuthModule, REDIS_CLIENT } from "../auth/auth.module";
+import { ROOT_LOGGER } from "../common/logging.interceptor";
 import { INFLIGHT_REDIS, InProgressMarker, type InflightRedis } from "./in-progress-marker";
 import {
   IDEMPOTENCY_KEY_STORE,
@@ -102,14 +105,23 @@ const idempotencyInterceptorProvider: Provider = {
     reflector: Reflector,
     store: IdempotencyKeyStore,
     marker: InProgressMarker,
+    auditEnqueuer: AuditJobEnqueuer,
+    logger: Logger,
   ): IdempotencyInterceptor =>
-    new IdempotencyInterceptor(reflector, store, marker),
-  inject: [Reflector, IDEMPOTENCY_KEY_STORE, InProgressMarker],
+    new IdempotencyInterceptor(reflector, store, marker, auditEnqueuer, logger),
+  inject: [Reflector, IDEMPOTENCY_KEY_STORE, InProgressMarker, AUDIT_JOB_ENQUEUER, ROOT_LOGGER],
 };
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, OutboxAuditEnqueuerModule],
   providers: [
+    {
+      provide: ROOT_LOGGER,
+      useFactory: (): Logger => createLogger({
+        service: "api.idempotency",
+        level: process.env["LOG_LEVEL"] ?? "info",
+      }),
+    },
     inflightRedisProvider,
     idempotencyKeyStoreProvider,
     inProgressMarkerProvider,
