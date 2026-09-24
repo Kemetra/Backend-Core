@@ -33,6 +33,7 @@ import {
   TENANT_A,
   type HarnessHandle,
 } from './__count-harness';
+import { formatQuantity, parseQuantity } from '../../../src/inventory/decimal-quantity';
 
 const h: HarnessHandle = { harness: null, dockerSkipped: false };
 
@@ -149,5 +150,35 @@ describe('T083 — the correction is traceable to the recorded count', () => {
     );
     expect(row.rows[0]?.movement_type).toBe('count_correction');
     expect(row.rows[0]?.stock_count_id).toBe(res.body.stockCountId);
+  });
+});
+
+describe('exact inventory quantity regression', () => {
+  it('preserves a large fractional count and rejects an overflowing input', async () => {
+    if (h.dockerSkipped || !h.harness) return;
+
+    const exact = '12345678901234.5678';
+    const before = await h.harness.service.getOnHand({
+      tenantId: TENANT_A,
+      storeId: STORE_A_X,
+      productId: PRODUCT_A_RETIRED,
+    });
+    const variance = formatQuantity(parseQuantity(exact) - parseQuantity(before.quantity));
+    const accepted = await h.harness
+      .http()
+      .post(countsPath())
+      .set('Idempotency-Key', idempKey('precisecount'))
+      .send(countBody({ countedQuantity: exact }));
+    expect(accepted.status).toBe(201);
+    expect(accepted.body.countedQuantity).toBe(exact);
+    expect(accepted.body.variance).toBe(variance);
+    expect(accepted.body.correctionMovement.quantity).toBe(variance);
+
+    const rejected = await h.harness
+      .http()
+      .post(countsPath())
+      .set('Idempotency-Key', idempKey('overflowcount'))
+      .send(countBody({ countedQuantity: '1000000000000000.0000' }));
+    expect(rejected.status).toBe(400);
   });
 });

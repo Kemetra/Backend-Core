@@ -180,3 +180,18 @@ describe('T073 — allow-and-flag: transfer-out may drive source negative (FR-02
     expect(onHandBody.negativeBalance).toBe(true);
   });
 });
+
+describe('exact inventory quantity regression', () => {
+  it('writes exact opposite large fractional legs', async () => {
+    if (h.dockerSkipped || !h.harness) return;
+
+    const res = await h.harness
+      .http()
+      .post(TRANSFERS_PATH)
+      .set('Idempotency-Key', idempKey('precisetransfer'))
+      .send(transferBody({ quantity: '12345678901234.5678' }));
+    expect(res.status).toBe(201);
+    expect(res.body.outbound.quantity).toBe('-12345678901234.5678');
+    expect(res.body.inbound.quantity).toBe('12345678901234.5678');
+  });
+});
