@@ -81,6 +81,27 @@ function extractEnvelopeFields(
 }
 
 /**
+ * A node-postgres DatabaseError carries both SQLSTATE `code` and `severity`.
+ * Drizzle may wrap it in `cause`, so inspect a short, bounded cause chain.
+ * Only the input/constraint codes named here are safe to classify as 400.
+ */
+function isPostgresInputError(exception: unknown): boolean {
+  let current = exception;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (current === null || typeof current !== "object") return false;
+    const error = current as { code?: unknown; severity?: unknown; cause?: unknown };
+    if (
+      typeof error.severity === "string" &&
+      (error.code === "22003" || error.code === "23514" || error.code === "22P02")
+    ) {
+      return true;
+    }
+    current = error.cause;
+  }
+  return false;
+}
+
+/**
  * Global exception filter — formats every uncaught error into the uniform
  * `{ error: { code, message, request_id, details? } }` envelope.
  *
@@ -151,6 +172,17 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         ...(details !== undefined ? { details } : {}),
       });
       response.status(status).json(envelope);
+      return;
+    }
+
+    if (isPostgresInputError(exception)) {
+      recordHttp4xxError({ route, status: "400" });
+      const envelope = errorEnvelope({
+        code: ErrorCodes.VALIDATION,
+        message: "Request validation failed",
+        requestId,
+      });
+      response.status(HttpStatus.BAD_REQUEST).json(envelope);
       return;
     }
 
