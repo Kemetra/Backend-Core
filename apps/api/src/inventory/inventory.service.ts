@@ -57,6 +57,7 @@ import type { Pool, PoolClient } from 'pg';
 
 import { PG_POOL } from '../auth/auth.module';
 import { recordInventoryNegativeBalance } from '../observability/metrics/api.metrics';
+import { formatQuantity, parseQuantity } from './decimal-quantity';
 
 /** The set of manually-creatable movement types (contract enum, FR-002). */
 export const MANUAL_MOVEMENT_TYPES = ['inbound', 'outbound', 'adjustment'] as const;
@@ -386,7 +387,7 @@ export class InventoryService {
           productId: input.productId,
           quantity,
           stockingUnit: r.rows[0]?.stocking_unit ?? null,
-          negativeBalance: Number(quantity) < 0,
+          negativeBalance: parseQuantity(quantity) < 0n,
         };
       },
     );
@@ -564,18 +565,14 @@ export class InventoryService {
         `movementType must be one of ${MANUAL_MOVEMENT_TYPES.join(', ')}`,
       );
     }
-    const qtyRaw = Number(input.quantity);
-    if (!Number.isFinite(qtyRaw)) {
-      throw new BadRequestException('quantity must be a number');
-    }
-    const qty = Math.round(qtyRaw * 1e4) / 1e4;
-    if (qty === 0) {
+    const qty = parseQuantity(input.quantity);
+    if (qty === 0n) {
       throw new BadRequestException('quantity must be non-zero at numeric(19,4) scale');
     }
-    if (input.movementType === 'inbound' && qty < 0) {
+    if (input.movementType === 'inbound' && qty < 0n) {
       throw new BadRequestException('inbound quantity must be positive');
     }
-    if (input.movementType === 'outbound' && qty > 0) {
+    if (input.movementType === 'outbound' && qty > 0n) {
       throw new BadRequestException('outbound quantity must be negative');
     }
     const reason =
@@ -616,14 +613,8 @@ export class InventoryService {
     if (input.sourceStoreId === input.destinationStoreId) {
       throw new BadRequestException('source and destination stores must differ');
     }
-    const qtyRaw = Number(input.quantity);
-    if (!Number.isFinite(qtyRaw)) {
-      throw new BadRequestException('quantity must be a number');
-    }
-    // Evaluate at numeric(19,4) scale so a sub-0.0001 value cannot slip the
-    // positivity rule and persist as a zero-quantity transfer.
-    const qty = Math.round(qtyRaw * 1e4) / 1e4;
-    if (qty <= 0) {
+    const qty = parseQuantity(input.quantity);
+    if (qty <= 0n) {
       throw new BadRequestException('transfer quantity must be strictly positive');
     }
     const stockingUnit = input.stockingUnit.trim();
@@ -636,8 +627,8 @@ export class InventoryService {
         : null;
 
     // Signed magnitudes for the two legs (string form for the numeric cast).
-    const outQty = `-${qty.toFixed(4)}`;
-    const inQty = qty.toFixed(4);
+    const outQty = formatQuantity(-qty);
+    const inQty = formatQuantity(qty);
     const transferGroupId = newId();
     const outId = newId();
     const inId = newId();
@@ -794,12 +785,8 @@ export class InventoryService {
    * the SAME tenant + store.
    */
   async recordStockCount(input: RecordStockCountInput): Promise<StockCountResultBody> {
-    const countedRaw = Number(input.countedQuantity);
-    if (!Number.isFinite(countedRaw)) {
-      throw new BadRequestException('countedQuantity must be a number');
-    }
-    const counted = Math.round(countedRaw * 1e4) / 1e4;
-    if (counted < 0) {
+    const counted = parseQuantity(input.countedQuantity, 'countedQuantity');
+    if (counted < 0n) {
       throw new BadRequestException('countedQuantity must be non-negative');
     }
     const stockingUnit = input.stockingUnit.trim();
@@ -829,10 +816,10 @@ export class InventoryService {
             WHERE store_id = $1 AND tenant_product_ref = $2`,
           [input.storeId, input.tenantProductRef],
         );
-        const derivedOnHand = Number(onHandRow.rows[0]?.quantity ?? '0.0000');
-        // Variance = counted − derived on-hand, at numeric(19,4) scale.
-        const variance = Math.round((counted - derivedOnHand) * 1e4) / 1e4;
-        const varianceStr = variance.toFixed(4);
+        const derivedOnHand = parseQuantity(onHandRow.rows[0]?.quantity ?? '0.0000');
+        // Check the calculated variance before attempting a numeric(19,4) insert.
+        const variance = counted - derivedOnHand;
+        const varianceStr = formatQuantity(variance, 'variance');
 
         // ---- Record the count (provenance for the correction) -------------
         await client.query(
@@ -846,8 +833,8 @@ export class InventoryService {
             input.tenantId,
             input.storeId,
             input.tenantProductRef,
-            counted.toFixed(4),
-            derivedOnHand.toFixed(4),
+            formatQuantity(counted),
+            formatQuantity(derivedOnHand),
             stockingUnit,
             input.countedAt ?? null,
             input.userId,
@@ -856,7 +843,7 @@ export class InventoryService {
 
         // ---- Append the count_correction ONLY for a non-zero variance ----
         let correctionMovement: StockMovementBody | null = null;
-        if (variance !== 0) {
+        if (variance !== 0n) {
           const corr = await this.insertMovementRow(
             client,
             `INSERT INTO stock_movements
@@ -901,7 +888,7 @@ export class InventoryService {
             AUDIT_ACTION_COUNT_RECORD,
             AUDIT_TARGET_TYPE_COUNT,
             stockCountId,
-            JSON.stringify({ variance: varianceStr, hasCorrection: variance !== 0 }),
+            JSON.stringify({ variance: varianceStr, hasCorrection: variance !== 0n }),
           ],
         );
 
@@ -921,7 +908,7 @@ export class InventoryService {
 
         return {
           stockCountId,
-          countedQuantity: counted.toFixed(4),
+          countedQuantity: formatQuantity(counted),
           variance: varianceStr,
           correctionMovement,
         };
@@ -1051,15 +1038,11 @@ export class InventoryService {
     if (input.movementType !== spec.movementType) {
       throw new BadRequestException(spec.typeError);
     }
-    const qtyRaw = Number(input.quantity);
-    if (!Number.isFinite(qtyRaw)) {
-      throw new BadRequestException('quantity must be a number');
-    }
-    const qty = Math.round(qtyRaw * 1e4) / 1e4;
-    if (qty === 0) {
+    const qty = parseQuantity(input.quantity);
+    if (qty === 0n) {
       throw new BadRequestException('quantity must be non-zero at numeric(19,4) scale');
     }
-    const wrongSign = spec.movementType === 'outbound' ? qty > 0 : qty < 0;
+    const wrongSign = spec.movementType === 'outbound' ? qty > 0n : qty < 0n;
     if (wrongSign) {
       throw new BadRequestException(spec.signError);
     }
@@ -1317,7 +1300,7 @@ export class InventoryService {
           WHERE store_id = $1 AND tenant_product_ref = $2`,
         [storeId, tenantProductRef],
       );
-      if (Number(r.rows[0]?.quantity ?? '0') < 0) {
+      if (parseQuantity(r.rows[0]?.quantity ?? '0') < 0n) {
         recordInventoryNegativeBalance();
       }
     } catch {

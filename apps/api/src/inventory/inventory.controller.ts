@@ -110,7 +110,7 @@ const PositiveDecimalQtySchema = z
     /^\d{1,15}(\.\d{1,4})?$/,
     'quantity must be an unsigned numeric(19,4) decimal string (≤15 integer, ≤4 fraction digits)',
   )
-  .refine((s) => Math.round(Number(s) * 1e4) > 0, {
+  .refine((s) => /[1-9]/.test(s), {
     message: 'transfer quantity must be strictly positive',
   });
 const CreateStockTransferSchema = z
