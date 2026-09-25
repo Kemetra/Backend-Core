@@ -188,9 +188,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     }
 
     // Unhandled — never leak internals to the client.
-    const message =
-      exception instanceof Error ? exception.message : "Internal Server Error";
-    void message;
+    // exception.message must not be copied into the response body.
     recordHttp5xxError({ route, status: "500" });
     const envelope = errorEnvelope({
       code: ErrorCodes.INTERNAL,

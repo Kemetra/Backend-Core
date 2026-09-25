@@ -50,8 +50,8 @@
  * Metadata is stored as-is only when it is a plain object (no class instances,
  * no Date, no arrays at the top level) containing no blocked keys at any
  * nesting level — including inside nested arrays (case-insensitive,
- * depth-capped at 10). If the check fails, `{}` is stored instead. Full PII
- * redaction is deferred to T236.
+ * depth-capped at 10). If the check fails, `{}` is stored instead.
+ * T236 must become an allowlist, not a longer denylist.
  *
  * request_id coercion
  * -------------------
@@ -296,9 +296,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Blocked metadata keys checked case-insensitively at any nesting depth,
+ * Interim denylist, matched case-insensitively at any nesting depth,
  * including inside nested arrays. If any key matches, the entire metadata
- * object is replaced with `{}`. Full redaction is deferred to T236.
+ * object is replaced with `{}`.
+ * T236 must become an allowlist, not a longer denylist.
  */
 const BLOCKED_KEYS = new Set([
   "password",
@@ -308,6 +309,7 @@ const BLOCKED_KEYS = new Set([
   "authorization",
   "cookie",
   "secret",
+  "email",
 ]);
 
 function safeMetadata(value: unknown): Record<string, unknown> {

@@ -247,7 +247,7 @@
 - [ ] T233 [US6] Implement `audit-fanout` worker in `apps/worker/src/audit/audit-fanout.processor.ts`
 - [ ] T234 [US6] [P] Test `AuditController` query API (filters by action prefix, actor, store, time range; cursor pagination; tenant-scoped; tenant-admin gated) in `apps/api/test/audit/audit.controller.spec.ts`
 - [ ] T235 [US6] Implement `AuditController` + `AuditService` in `apps/api/src/audit/`
-- [ ] T236 [US6] [P] Test PII / credential redaction (hash, token, password, email body never appear in audit `metadata`) in `apps/api/test/audit/redaction.spec.ts`
+- [ ] T236 [US6] [P] Test PII / credential redaction (hash, token, password, email body never appear in audit `metadata`) in `apps/api/test/audit/redaction.spec.ts`. The design is an allowlist (only explicitly permitted keys persist), not a longer denylist.
 - [ ] T237 [US6] [P] Test that audit rows are insert-only at the application layer (UPDATE attempts fail) in `apps/api/test/audit/insert-only.spec.ts`
 - [ ] T238 [US6] [P] Test that authentication failures (no resolved user) record `actor_user_id IS NULL` with `actor_label` = the email used (no password) in `apps/api/test/audit/anonymous-actor.spec.ts`
 

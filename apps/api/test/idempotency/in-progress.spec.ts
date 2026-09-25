@@ -4,6 +4,11 @@
  * When InProgressMarker.trySet returns false (marker already present),
  * the interceptor returns 425 Too Early with Retry-After header.
  * The 425 response body MUST NOT leak original-request data.
+ *
+ * The Redis double used to match AlwaysAllowRedis (get null, set "OK") and
+ * was never read: the marker stub forced the 425 path. A non-retaining
+ * client now fails beforeAll. Redis SET NX is proved only with REDIS_URL
+ * (real-redis.guard.spec.ts); without it that file skips and says so.
  */
 import "reflect-metadata";
 import {
@@ -31,6 +36,7 @@ import { InProgressMarker, INFLIGHT_REDIS } from "../../src/idempotency/in-progr
 import { APP_INTERCEPTOR, Reflector } from "@nestjs/core";
 import { IdempotencyKeyStore } from "@data-pulse-2/shared";
 import type { ResolvedContext } from "../../src/context/types";
+import { assertIdempotencyRedisRetains } from "./require-retaining-redis";
 
 const TENANT_ID = "0d000000-0000-7000-8000-000000000001";
 const USER_ID = "0d000000-0000-7000-8000-000000000004";
@@ -39,8 +45,19 @@ const IDEMPOTENCY_KEY = "abcdef1234567890abcdef1234567890";
 const VALID_BODY = { email: "user@example.com", role_code: "tenant_admin", store_access_kind: "all" };
 
 class FakeRedis {
-  async get(): Promise<null> { return null; }
-  async set(_k: string, _v: string, _opts: { px: number }): Promise<unknown> { return "OK"; }
+  private readonly store = new Map<string, { value: string; expiresAt: number }>();
+  async get(key: string): Promise<string | null> {
+    const entry = this.store.get(key);
+    if (!entry || Date.now() > entry.expiresAt) {
+      this.store.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+  async set(key: string, value: string, options: { px: number }): Promise<unknown> {
+    this.store.set(key, { value, expiresAt: Date.now() + options.px });
+    return "OK";
+  }
 }
 
 /** Marker that always says "already in flight" (trySet → false). */
@@ -80,6 +97,7 @@ let svc: FakeInvitationsService;
 beforeAll(async () => {
   svc = new FakeInvitationsService();
   const fakeRedis = new FakeRedis();
+  await assertIdempotencyRedisRetains(fakeRedis, "in-progress.spec.ts");
   const marker = new AlwaysInFlightMarker();
 
   const store = new IdempotencyKeyStore({

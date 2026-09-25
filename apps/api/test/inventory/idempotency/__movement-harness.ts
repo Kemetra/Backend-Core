@@ -45,6 +45,8 @@ import { TenantContextGuard } from '../../../src/context/tenant-context.guard';
 import type { ResolvedContext } from '../../../src/context/types';
 import { IdempotencyKeyStore } from '@data-pulse-2/shared';
 
+import { assertIdempotencyRedisRetains } from '../../idempotency/require-retaining-redis';
+
 import {
   applyAllUpAndCreateAppRole,
   startPgEnv,
@@ -181,6 +183,7 @@ export async function startMovementHarness(): Promise<HarnessHandle> {
     await seedInventoryFixture(env);
 
     const fakeRedis = new FakeRedis();
+    await assertIdempotencyRedisRetains(fakeRedis, 'movement-harness');
     const fakeMarker = new FakeMarker();
     const contextGuard = new ConfigurableContextGuard();
     const idempStore = buildIdempStore(fakeRedis);
