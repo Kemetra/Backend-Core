@@ -129,9 +129,20 @@ export async function createRetentionWorkerPool(env: PgTestEnv): Promise<Pool> {
   return new Pool({ connectionString: uri });
 }
 
+/**
+ * End a pool whose server is about to be stopped. pg-pool resolves end()
+ * before closing clients finish their Terminate, so a container stop right
+ * after can hand one of them FATAL 57P01, which the pool re-emits as 'error'.
+ * Without a listener Node throws "Unhandled error." and fails the suite.
+ */
+export async function endPoolQuietly(pool: Pool): Promise<void> {
+  pool.on("error", () => undefined);
+  await pool.end().catch(() => undefined);
+}
+
 export async function stopPgEnv(env: PgTestEnv): Promise<void> {
-  await env.app.end().catch(() => undefined);
-  await env.admin.end().catch(() => undefined);
+  await endPoolQuietly(env.app);
+  await endPoolQuietly(env.admin);
   await env.container.stop().catch(() => undefined);
 }
 
