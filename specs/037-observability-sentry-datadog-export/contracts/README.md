@@ -1,4 +1,4 @@
-# Contracts — Spec 034
+# Contracts — Spec 037
 
 **No contract surface. No OpenAPI. No new endpoint.**
 

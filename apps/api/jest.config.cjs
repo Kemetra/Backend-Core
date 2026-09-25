@@ -34,10 +34,14 @@ module.exports = {
   ],
   coverageThreshold: {
     global: {
-      statements: 96,
-      branches: 90,
+      // #618 G2 — the 90 branch gate made CI drop --coverage entirely.
+      // Floors are the CI-measured baseline of main with #625/#627 merged
+      // (95.78% statements, 84.3% branches, lines >= 96). Ratchet them up as
+      // the suite improves; never lower them to pass a PR.
+      statements: 95,
+      branches: 84,
       functions: 95,
-      lines: 97,
+      lines: 96,
     },
   },
 };

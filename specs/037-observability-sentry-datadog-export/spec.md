@@ -1,6 +1,6 @@
 # Feature Specification: Observability — Sentry Errors + Datadog OTLP/Logs Export
 
-**Feature Branch**: `034-observability-sentry-datadog-export`
+**Feature Branch**: `037-observability-sentry-datadog-export`
 
 **Created**: 2026-06-17
 

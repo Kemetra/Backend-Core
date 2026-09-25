@@ -17,12 +17,12 @@ services:
     image: redis:7-alpine
     container_name: dp2-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-changeme}"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"]
     volumes:
       - dp2_redis_data:/data
     networks: [dp2]
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:-changeme} --no-auth-warning ping | grep -q PONG"]
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:?REDIS_PASSWORD must be set} --no-auth-warning ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -35,6 +35,11 @@ services:
     image: dp2-migrate:template
     container_name: dp2-migrate
     restart: "no"
+    user: "node"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
     environment:
       DATABASE_URL: ${MIGRATION_DATABASE_URL:?MIGRATION_DATABASE_URL required (migration owner credential)}
       NODE_ENV: production
@@ -48,6 +53,11 @@ services:
     image: dp2-api:template
     container_name: dp2-api
     restart: unless-stopped
+    user: "node"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -56,7 +66,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL required}
       AUTH_LOOKUP_DATABASE_URL: ${AUTH_LOOKUP_DATABASE_URL:?AUTH_LOOKUP_DATABASE_URL required}
-      REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD:-changeme}@redis:6379}
+      REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379}
       PORT: "3000"
       METRICS_PORT: "9464"
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -89,6 +99,11 @@ services:
     image: dp2-worker:template
     container_name: dp2-worker
     restart: unless-stopped
+    user: "node"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -96,7 +111,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL required}
-      REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD:-changeme}@redis:6379}
+      REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       NODE_ENV: production
     networks: [dp2]
