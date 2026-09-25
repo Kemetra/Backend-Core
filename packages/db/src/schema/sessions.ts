@@ -7,10 +7,15 @@
  *     `active_store_id`'s tenant matches `active_tenant_id` (Invariant I-4,
  *     migration 0003).
  *   - Partial indexes for active sessions and absolute-expiry sweeps.
+ *   - Trigger `sessions_active_tenant_membership_check` (migration 0030)
+ *     rejects `active_tenant_id` unless the user is a platform admin or
+ *     holds an active membership in that tenant.
  *
  * NO RLS (sessions are user-scoped, not tenant-scoped). The dashboard
  * cookie is NOT `id`. `id` is a UUIDv7 row key. The cookie is a separate
  * CSPRNG value; only its SHA-256 is stored in `credential_hash`.
+ * The membership trigger is the database backstop for the tenant id this
+ * table feeds into `app.current_tenant`.
  */
 import { customType, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { stores } from "./stores";

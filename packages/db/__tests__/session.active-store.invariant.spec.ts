@@ -50,6 +50,14 @@ const SESSION_CASCADE_TENANT  = "6a000000-a000-4000-8000-00000000000a";
 // Reused session ID for rollback-based tryInsert tests (scenarios 1–4)
 const SESSION_TRY = "6b000000-b000-4000-8000-00000000000b";
 
+const ROLE_A = "6c000000-c000-4000-8000-00000000000c";
+const ROLE_B = "6d000000-d000-4000-8000-00000000000d";
+const ROLE_CASCADE = "6e000000-e000-4000-8000-00000000000e";
+const MEMBERSHIP_A = "6f000000-f000-4000-8000-00000000000f";
+const MEMBERSHIP_B = "6f100000-f100-4000-8000-000000000010";
+const MEMBERSHIP_CASCADE = "6f200000-f200-4000-8000-000000000011";
+const TENANT_ORPHAN = "6f300000-f300-4000-8000-000000000012";
+
 // ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
@@ -94,8 +102,9 @@ async function seedBase(): Promise<void> {
     `INSERT INTO tenants (id, slug, name) VALUES
        ($1, 'inv-ses-ten-a', 'Session Inv Tenant A'),
        ($2, 'inv-ses-ten-b', 'Session Inv Tenant B'),
-       ($3, 'inv-ses-ten-c', 'Session Inv Tenant C')`,
-    [TENANT_A, TENANT_B, TENANT_CASCADE],
+       ($3, 'inv-ses-ten-c', 'Session Inv Tenant C'),
+       ($4, 'inv-ses-ten-orphan', 'Session Inv Tenant Orphan')`,
+    [TENANT_A, TENANT_B, TENANT_CASCADE, TENANT_ORPHAN],
   );
 
   await pg.query(
@@ -111,6 +120,28 @@ async function seedBase(): Promise<void> {
        ($5, $6, 'inv-sto-c',  'Session Inv Store Cascade'),
        ($7, $8, 'inv-sto-ct', 'Session Inv Store Cascade Tenant')`,
     [STORE_A, TENANT_A, STORE_B, TENANT_B, STORE_CASCADE, TENANT_A, STORE_CASCADE_TENANT, TENANT_CASCADE],
+  );
+
+  // Membership backstop. The existing I-4 fixtures set active_tenant_id,
+  // which the membership trigger rejects unless USER_A belongs to that tenant.
+  await pg.query(
+    `INSERT INTO roles (id, tenant_id, code, name) VALUES
+       ($1, $2, 'owner', 'Owner'),
+       ($3, $4, 'owner', 'Owner'),
+       ($5, $6, 'owner', 'Owner')`,
+    [ROLE_A, TENANT_A, ROLE_B, TENANT_B, ROLE_CASCADE, TENANT_CASCADE],
+  );
+  await pg.query(
+    `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES
+       ($1, $2, $7, $3, 'all'),
+       ($4, $5, $7, $6, 'all'),
+       ($8, $9, $7, $10, 'all')`,
+    [
+      MEMBERSHIP_A, TENANT_A, ROLE_A,
+      MEMBERSHIP_B, TENANT_B, ROLE_B,
+      USER_A,
+      MEMBERSHIP_CASCADE, TENANT_CASCADE, ROLE_CASCADE,
+    ],
   );
 
   // Sessions used by scenarios 5 and 6 (committed, not rolled back)
@@ -265,8 +296,13 @@ describe("sessions I-4 invariant — FK SET NULL on tenant delete", () => {
     expect(mid.rows[0]?.active_store_id).toBeNull();
     expect(mid.rows[0]?.active_tenant_id).toBe(TENANT_CASCADE);
 
+    // roles and memberships RESTRICT tenant delete. Drop the fixture
+    // rows that exist only so the membership trigger accepted the session.
+    await pg.query(`DELETE FROM memberships WHERE tenant_id = $1`, [TENANT_CASCADE]);
+    await pg.query(`DELETE FROM roles WHERE tenant_id = $1`, [TENANT_CASCADE]);
     // Delete the tenant: triggers SET NULL on active_tenant_id.
-    // Trigger short-circuits because active_store_id IS NULL.
+    // The membership trigger is UPDATE OF active_tenant_id only, so the
+    // store-delete SET NULL does not re-enter it.
     await pg.query(`DELETE FROM tenants WHERE id = $1`, [TENANT_CASCADE]);
 
     const after = await pg.query<Row>(
@@ -275,5 +311,22 @@ describe("sessions I-4 invariant — FK SET NULL on tenant delete", () => {
     );
     expect(after.rows[0]?.active_store_id).toBeNull();
     expect(after.rows[0]?.active_tenant_id).toBeNull();
+  });
+
+  it("rejects active_tenant_id when the user has no active membership", async () => {
+    if (maybeSkip()) return;
+    const code = await tryInsertSession(TENANT_ORPHAN, null);
+    expect(code).toBe("23514");
+  });
+
+  it("allows a platform admin to point at a tenant with no membership", async () => {
+    if (maybeSkip()) return;
+    const pg = env!.admin;
+    await pg.query(`UPDATE users SET is_platform_admin = true WHERE id = $1`, [USER_A]);
+    try {
+      expect(await tryInsertSession(TENANT_ORPHAN, null)).toBeNull();
+    } finally {
+      await pg.query(`UPDATE users SET is_platform_admin = false WHERE id = $1`, [USER_A]);
+    }
   });
 });
