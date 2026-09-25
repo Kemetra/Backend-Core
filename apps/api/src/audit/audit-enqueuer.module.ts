@@ -84,7 +84,7 @@ export function auditJobEnqueuerFactory(
   // and the optional `queueFactory` seam so both production and unit
   // tests follow the same lazy materialisation path.
   const provider = () =>
-    queueFactory != null
+    queueFactory !== null && queueFactory !== undefined
       ? queueFactory(url)
       : new Queue(AUDIT_QUEUE_NAME, {
           connection: { url },

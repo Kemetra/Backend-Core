@@ -87,7 +87,10 @@ export class ErpnextPostingController {
 
     const result = await this.service.pullPostings({
       tenantId: principal.tenantId,
-      since: query.since != null ? BigInt(query.since) : null,
+      since:
+        query.since !== null && query.since !== undefined
+          ? BigInt(query.since)
+          : null,
       limit: query.limit ?? 100,
     });
 

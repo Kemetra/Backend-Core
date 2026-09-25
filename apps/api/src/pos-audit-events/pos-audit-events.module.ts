@@ -23,7 +23,6 @@ import type { Pool } from "pg";
 import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../auth/auth.module";
 import {
   CLERK_VERIFIER,
-  type ClerkVerifier,
   clerkVerifierFactory,
 } from "../pos-operators/clerk-verifier";
 import { DeviceRepository } from "../pos-operators/device.repository";

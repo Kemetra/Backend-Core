@@ -115,7 +115,10 @@ export class ErpnextSyncOpsController {
     await this.assertStore(tenantId, query.store_id);
     return this.service.listPostingBacklog({
       tenantId,
-      cursor: query.cursor != null ? BigInt(query.cursor) : null,
+      cursor:
+        query.cursor !== null && query.cursor !== undefined
+          ? BigInt(query.cursor)
+          : null,
       limit: query.page_size ?? 50,
       ...(query.store_id ? { storeId: query.store_id } : {}),
     });

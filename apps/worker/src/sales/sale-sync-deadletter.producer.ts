@@ -320,7 +320,11 @@ export class SaleSyncDeadletterProducer {
     // on failure (§XIV PII boundary): reject a malformed value HERE so a
     // non-UUID neither reaches the INSERT as a `22P02` nor leaks arbitrary
     // free text into the worker log. null is allowed (the column is nullable).
-    if (input.correlationId != null && !UUID_RE.test(input.correlationId)) {
+    if (
+      input.correlationId !== null &&
+      input.correlationId !== undefined &&
+      !UUID_RE.test(input.correlationId)
+    ) {
       throw new Error(
         "SaleSyncDeadletterProducer: correlationId must be a UUID string or null",
       );

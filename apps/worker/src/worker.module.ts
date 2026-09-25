@@ -76,7 +76,7 @@ import {
   type OnModuleDestroy,
   type OnModuleInit,
 } from "@nestjs/common";
-import { Queue, Worker as BullMqWorker, type WorkerOptions } from "bullmq";
+import { Queue, Worker as BullMqWorker } from "bullmq";
 import { Pool } from "pg";
 
 import {

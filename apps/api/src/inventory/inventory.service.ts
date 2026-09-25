@@ -411,13 +411,15 @@ export class InventoryService {
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<StockMovementListBody> => {
         // productId present → that product; absent → ad-hoc (NULL) movements.
-        const productPredicate =
-          input.productId != null ? 'tenant_product_ref = $2' : 'tenant_product_ref IS NULL';
-        const params: unknown[] =
-          input.productId != null
-            ? [input.storeId, input.productId, limit]
-            : [input.storeId, limit];
-        const limitParam = input.productId != null ? '$3' : '$2';
+        const hasProduct =
+          input.productId !== null && input.productId !== undefined;
+        const productPredicate = hasProduct
+          ? 'tenant_product_ref = $2'
+          : 'tenant_product_ref IS NULL';
+        const params: unknown[] = hasProduct
+          ? [input.storeId, input.productId, limit]
+          : [input.storeId, limit];
+        const limitParam = hasProduct ? '$3' : '$2';
         const r = await client.query<MovementRow>(
           `SELECT ${MOVEMENT_COLUMNS}
              FROM stock_movements

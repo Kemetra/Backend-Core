@@ -229,7 +229,7 @@
 - [ ] T205 [US5] [P] Frontend-bypass probe test (Store-Staff user crafts tenant-admin request → 403) in `apps/api/test/authz/frontend-bypass.spec.ts`
 - [ ] T206 [US5] [P] Default-deny test: an endpoint with no `@Roles()` and no `@Public()` annotation must fail closed in `apps/api/test/authz/default-deny.spec.ts`
 - [ ] T207 [US5] [P] RLS bypass probe: a raw SQL `SELECT * FROM stores WHERE id = '<other tenant store>'` on a connection with `app.current_tenant` set to the wrong tenant returns 0 rows in `packages/db/__tests__/rls.bypass.spec.ts`
-- [ ] T208 [US5] [P] Lint rule (custom ESLint rule or test-time grep) that forbids un-tenant-scoped Drizzle queries in `apps/api/src/**/*.ts` (excluding repositories that explicitly opt out) — rule at `tools/eslint-rules/no-unscoped-tenant-query.js`, smoke test at `tools/eslint-rules/__tests__/no-unscoped-tenant-query.spec.ts`
+- [x] T208 [US5] [P] Lint rule (custom ESLint rule or test-time grep) that forbids un-tenant-scoped Drizzle queries in `apps/api/src/**/*.ts` (excluding repositories that explicitly opt out) — rule at `tools/eslint-rules/no-unscoped-tenant-query.js`, smoke test at `tools/eslint-rules/__tests__/no-unscoped-tenant-query.spec.js`. CI runs it via `pnpm lint:eslint` on the fast job.
 
 **US5 done when**: SC-1 + SC-2 + SC-4 + SC-9 measurable; sweep tests cover every endpoint.
 

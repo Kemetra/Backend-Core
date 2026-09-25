@@ -24,24 +24,9 @@
  * Note: the Jest CI guard does NOT honour this comment — the ALLOWLIST is
  * the only load-bearing opt-out for that guard.
  *
- * How to wire this rule into .eslintrc.cjs (DO NOT do this yet)
- * -------------------------------------------------------------
- * When the time comes, add the rule via the `rulesdir` or `eslint-plugin-local`
- * mechanism. For example, using `eslint-plugin-local` (or rulesdir):
- *
- *   // .eslintrc.cjs (excerpt — NOT yet active)
- *   plugins: ["local"],
- *   rules: {
- *     "local/no-unscoped-tenant-query": "error",
- *   },
- *
- * Or via `rulesdir` (eslint-plugin-rulesdir):
- *
- *   const rulesDirPlugin = require("eslint-plugin-rulesdir");
- *   rulesDirPlugin.RULES_DIR = "tools/eslint-rules";
- *   // then: "rulesdir/no-unscoped-tenant-query": "error"
- *
- * DO NOT modify .eslintrc.cjs without an explicit story/task approval.
+ * Wired in the root .eslintrc.cjs via eslint-plugin-rulesdir as
+ * `rulesdir/no-unscoped-tenant-query` (issue #618 G1). CI runs it with
+ * `pnpm lint:eslint`.
  */
 
 "use strict";
@@ -204,58 +189,56 @@ module.exports = {
     //
     // we flag it.
     //
-    // Strategy: collect drizzle-pool call nodes, then watch for .from / .into
-    // calls on any MemberExpression whose "object" chain traces back to a
-    // drizzle(pool) call.
+    // Strategy: on .from/.into, walk to the root call and test it directly.
+    // ESLint visits the outer CallExpression first, so a set filled by a
+    // nested drizzle() visit would still be empty when .from() is checked.
     // -----------------------------------------------------------------------
-
-    /** Set of CallExpression nodes that ARE drizzle(<pool>) calls. */
-    const drizzlePoolCalls = new Set();
 
     function rootCallExpression(node) {
       // Walk callee chain to find the root CallExpression.
       let n = node;
-      while (n.type === "CallExpression" && n.callee.type === "MemberExpression") {
+      while (n && n.type === "CallExpression" && n.callee.type === "MemberExpression") {
         n = n.callee.object;
       }
       return n;
+    }
+
+    function isDrizzlePoolCall(node) {
+      return (
+        node &&
+        node.type === "CallExpression" &&
+        node.callee.type === "Identifier" &&
+        node.callee.name === "drizzle" &&
+        node.arguments.length > 0 &&
+        looksLikePool(node.arguments[0])
+      );
     }
 
     return {
       CallExpression(node) {
         const callee = node.callee;
 
-        // Detect drizzle(pool) calls.
+        // Detect .from(<tenantTable>) or .into(<tenantTable>) calls.
+        // Inspect the root here. ESLint visits the outer call first, so a
+        // side set filled by an earlier drizzle() visit would always be empty.
         if (
-          callee.type === "Identifier" &&
-          callee.name === "drizzle" &&
-          node.arguments.length > 0 &&
-          looksLikePool(node.arguments[0])
+          callee.type !== "MemberExpression" ||
+          callee.property.type !== "Identifier" ||
+          (callee.property.name !== "from" && callee.property.name !== "into") ||
+          node.arguments.length === 0
         ) {
-          drizzlePoolCalls.add(node);
           return;
         }
 
-        // Detect .from(<tenantTable>) or .into(<tenantTable>) calls.
-        if (
-          callee.type === "MemberExpression" &&
-          (callee.property.name === "from" || callee.property.name === "into") &&
-          node.arguments.length > 0
-        ) {
-          const tableArg = node.arguments[0];
-          const tableName = leafName(tableArg);
-          if (!tableName || !TENANT_SCOPED_TABLES.has(tableName)) return;
+        const tableName = leafName(node.arguments[0]);
+        if (!tableName || !TENANT_SCOPED_TABLES.has(tableName)) return;
 
-          // Walk the object chain back to the root CallExpression.
-          const root = rootCallExpression(callee.object);
-
-          if (root.type === "CallExpression" && drizzlePoolCalls.has(root)) {
-            context.report({
-              node,
-              messageId: "unscopedQuery",
-              data: { table: tableName },
-            });
-          }
+        if (isDrizzlePoolCall(rootCallExpression(callee.object))) {
+          context.report({
+            node,
+            messageId: "unscopedQuery",
+            data: { table: tableName },
+          });
         }
       },
     };

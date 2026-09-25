@@ -31,7 +31,7 @@ import {
   type TenantStatus,
 } from "@data-pulse-2/db/schema";
 import { newId } from "@data-pulse-2/shared";
-import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Pool, PoolClient } from "pg";
 

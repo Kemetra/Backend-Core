@@ -59,20 +59,20 @@ export function isValidQueryClass(value: string): boolean {
  * `db_slow_query_total` when a query exceeds the 500 ms threshold.
  */
 export class InstrumentedPool extends Pool {
-  override query<R extends QueryResultRow = any>(
+  override query<R extends QueryResultRow = QueryResultRow>(
     queryTextOrConfig: string | QueryConfig,
     values?: unknown[],
   ): Promise<QueryResult<R>>;
-  override query<R extends QueryResultRow = any>(
+  override query<R extends QueryResultRow = QueryResultRow>(
     queryTextOrConfig: string | QueryConfig,
     callback: (err: Error, result: QueryResult<R>) => void,
   ): void;
-  override query<R extends QueryResultRow = any>(
+  override query<R extends QueryResultRow = QueryResultRow>(
     queryTextOrConfig: string,
     values: unknown[],
     callback: (err: Error, result: QueryResult<R>) => void,
   ): void;
-  override query<R extends QueryResultRow = any>(
+  override query<R extends QueryResultRow = QueryResultRow>(
     queryTextOrConfig: string | QueryConfig,
     valuesOrCallback?: unknown[] | ((err: Error, result: QueryResult<R>) => void),
     callback?: (err: Error, result: QueryResult<R>) => void,
