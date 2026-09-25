@@ -73,6 +73,10 @@ const EVENT_A_DEAD_OTHER_TYPE = "0de40000-0000-4000-8000-000000000001";
 // Dead-letter row with an UNSAFE last_error value (defence-in-depth probe).
 const EVENT_A_DEAD_UNSAFE_ERR = "0de50000-0000-4000-8000-000000000001";
 
+// Platform-scoped dead-letter row (tenant_id NULL since migration 0031).
+const EVENT_PLATFORM_DEAD = "0de60000-0000-4000-8000-000000000002";
+const NIL_TENANT_ID = "00000000-0000-0000-0000-000000000000";
+
 // PII canary -- if this string ever shows up in a response, the test fails.
 const PII_CANARY = "pii-canary@example.test";
 
@@ -127,7 +131,7 @@ function maybeSkip(): boolean {
  */
 async function seedEvent(opts: {
   eventId: string;
-  tenantId: string;
+  tenantId: string | null;
   eventType: string;
   deliveryState:
     | "pending"
@@ -308,6 +312,17 @@ beforeAll(async () => {
        WHERE event_id = $2`,
     [EVENT_A_DEAD_MID, EVENT_A_DEAD_TIE],
   );
+
+  // Platform-scoped row: stored NULL, listed as the nil UUID.
+  await seedEvent({
+    eventId: EVENT_PLATFORM_DEAD,
+    tenantId: null,
+    eventType: "audit.event.created",
+    deliveryState: "dead_lettered",
+    attempts: 8,
+    occurredSecondsAgo: 900,
+    lastError: "PlatformRow",
+  });
 }, 60_000);
 
 // ===========================================================================
@@ -484,6 +499,16 @@ describe("listDeadLettered (DL-3) — filters", () => {
     for (const r of rows) expect(r.tenant_id).toBe(TENANT_B);
     expect(rows.map((r) => r.event_id)).toContain(EVENT_B_DEAD);
     expect(rows.map((r) => r.event_id)).not.toContain(EVENT_A_DEAD_NEWEST);
+  });
+
+  it("nil-UUID tenantId filter returns platform rows (stored NULL) only", async () => {
+    if (maybeSkip()) return;
+    const rows = await listDeadLettered(env!.app, {
+      tenantId: NIL_TENANT_ID,
+      limit: 100,
+    });
+    expect(rows.map((r) => r.event_id)).toEqual([EVENT_PLATFORM_DEAD]);
+    expect(rows[0]!.tenant_id).toBe(NIL_TENANT_ID);
   });
 
   it("filters compose: eventType + tenantId together", async () => {

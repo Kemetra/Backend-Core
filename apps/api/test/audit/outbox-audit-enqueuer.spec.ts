@@ -600,10 +600,9 @@ describe("OutboxAuditEnqueuer — writes a pending outbox_events row", () => {
     });
   });
 
-  it("inserts a NIL_UUID-tenant row for platform-scoped audit events (tenant_id null in payload)", async () => {
+  it("stores NULL tenant_id for platform-scoped audit events (nil UUID is not a tenant)", async () => {
     if (maybeSkip()) return;
 
-    const NIL_UUID = "00000000-0000-0000-0000-000000000000";
     // Same RLS-realism contract as the tenant-scoped test above: SUT runs
     // under the app role. The platform-admin GUC the enqueuer sets is what
     // makes the INSERT pass RLS WITH CHECK on the platform-scoped row.
@@ -625,14 +624,14 @@ describe("OutboxAuditEnqueuer — writes a pending outbox_events row", () => {
 
     await enqueuer.enqueue(payload);
 
-    const rows = await env!.admin.query<{ tenant_id: string; event_type: string }>(
+    const rows = await env!.admin.query<{ tenant_id: string | null; event_type: string }>(
       `SELECT tenant_id, event_type
          FROM outbox_events
         WHERE correlation_id = $1`,
       [PLATFORM_REQUEST_UUID],
     );
     expect(rows.rows).toHaveLength(1);
-    expect(rows.rows[0]!.tenant_id).toBe(NIL_UUID);
+    expect(rows.rows[0]!.tenant_id).toBeNull();
     expect(rows.rows[0]!.event_type).toBe("audit.event.created");
   });
 
