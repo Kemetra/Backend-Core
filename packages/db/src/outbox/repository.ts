@@ -67,6 +67,17 @@ export class OutboxStateTransitionError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
+ * Platform-scoped outbox rows store SQL NULL (migration 0031). The
+ * in-process envelope still uses the nil UUID so existing consumers,
+ * including the audit consumer's nil-to-null map, keep their contract.
+ */
+const PLATFORM_OUTBOX_TENANT_ID = "00000000-0000-0000-0000-000000000000";
+
+export function outboxEnvelopeTenantId(stored: string | null): string {
+  return stored ?? PLATFORM_OUTBOX_TENANT_ID;
+}
+
+/**
  * A claimed outbox event row — the subset of columns the drainer needs to
  * route the event to its consumer.
  */
@@ -247,7 +258,7 @@ async function _claimBatchOnClient(
   const res = await client.query<{
     event_id: string;
     event_type: string;
-    tenant_id: string;
+    tenant_id: string | null;
     store_id: string | null;
     payload: unknown;
     correlation_id: string | null;
@@ -286,7 +297,7 @@ async function _claimBatchOnClient(
   return res.rows.map((r) => ({
     event_id: r.event_id,
     event_type: r.event_type,
-    tenant_id: r.tenant_id,
+    tenant_id: outboxEnvelopeTenantId(r.tenant_id),
     store_id: r.store_id,
     payload: r.payload,
     correlation_id: r.correlation_id,
@@ -645,7 +656,7 @@ const DEAD_LETTER_COLUMNS = `
 interface DeadLetterDbRow {
   event_id: string;
   event_type: string;
-  tenant_id: string;
+  tenant_id: string | null;
   store_id: string | null;
   delivery_state: string; // always 'dead_lettered' -- predicate enforces it
   attempts: number;
@@ -662,7 +673,7 @@ function mapRow(row: DeadLetterDbRow): OutboxDeadLetterRecord {
   return {
     event_id: row.event_id,
     event_type: row.event_type,
-    tenant_id: row.tenant_id,
+    tenant_id: outboxEnvelopeTenantId(row.tenant_id),
     store_id: row.store_id,
     delivery_state: "dead_lettered" as const,
     attempts: row.attempts,

@@ -32,13 +32,14 @@ export const outboxEvents = pgTable("outbox_events", {
   eventId: uuid("event_id").primaryKey(),
 
   /**
-   * Tenant scope. NOT NULL -- every outbox event belongs to exactly one
-   * tenant. The RLS policy gates visibility on this column.
-   * FK to tenants(id) ON DELETE RESTRICT (migration 0031).
+   * Tenant scope. NULL is a platform-scoped row (audit events whose
+   * payload tenant is null). Every other row references tenants(id)
+   * ON DELETE RESTRICT (migration 0031). The RLS policy still hides a
+   * NULL row from a tenant caller.
    */
-  tenantId: uuid("tenant_id")
-    .notNull()
-    .references(() => tenants.id, { onDelete: "restrict" }),
+  tenantId: uuid("tenant_id").references(() => tenants.id, {
+    onDelete: "restrict",
+  }),
 
   /**
    * Store scope. NULL for tenant-level events; populated for store-level

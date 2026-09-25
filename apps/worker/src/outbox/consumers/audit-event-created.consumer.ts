@@ -87,10 +87,11 @@ export const OUTBOX_AUDIT_QUEUE_NAME = "audit";
 export const OUTBOX_AUDIT_JOB_NAME = "audit-fanout";
 
 /**
- * The NIL UUID — sentinel for "platform-scoped" audit events at the outbox
- * row level (the outbox_events table requires tenant_id NOT NULL, so platform
- * events use NIL_UUID instead of NULL). The downstream `AuditFanoutProcessor`
- * expects `tenant_id: string | null` and treats `null` as platform-scoped, so
+ * The NIL UUID — in-process sentinel for a platform-scoped outbox row.
+ * Migration 0031 stores SQL NULL on `outbox_events.tenant_id` (the nil
+ * UUID is not a tenant, so it cannot satisfy the foreign key). The claim
+ * path presents that NULL as NIL_UUID. `AuditFanoutProcessor` expects
+ * `tenant_id: string | null` and treats `null` as platform-scoped, so
  * NIL_UUID is mapped back to `null` when enqueuing the BullMQ job.
  */
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";

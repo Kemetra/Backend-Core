@@ -101,8 +101,13 @@ export type OutboxEventType = typeof OUTBOX_EVENT_TYPES[keyof typeof OUTBOX_EVEN
 export interface OutboxEmitInput {
   /** Registry-controlled event type. Must be one of `OUTBOX_EVENT_TYPES`. */
   readonly eventType: OutboxEventType;
-  /** Tenant that owns the event. Must match the active tenant context. */
-  readonly tenantId: string;
+  /**
+   * Tenant that owns the event. Must match the active tenant context.
+   * `null` is a platform-scoped row: the caller must set
+   * `isPlatformAdmin: true` (the GUC sentinel stays the nil UUID).
+   * RLS WITH CHECK rejects a tenant context that inserts NULL.
+   */
+  readonly tenantId: string | null;
   /** Store scope; null for tenant-level events. */
   readonly storeId?: string | null;
   /** Event-type-specific body. Never logged in full. */

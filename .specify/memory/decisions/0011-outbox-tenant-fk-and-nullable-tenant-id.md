@@ -34,7 +34,7 @@ The Drizzle table `outboxEvents.tenantId` records the same `references(() => ten
 | `ON DELETE CASCADE` | Would delete the replay ledger with the tenant. |
 | `NOT VALID` plus a later `VALIDATE` | Other added foreign keys in this repo are validated at `ADD CONSTRAINT`. An orphan should fail closed. |
 
-- **Tradeoff**: platform-scoped audit events currently store the nil UUID on `outbox_events.tenant_id` because the column is `NOT NULL` (`apps/api/src/audit/outbox-audit-enqueuer.ts`). After this foreign key, that insert fails with `23503` unless a `tenants` row with the nil id exists. D2 forbids that row. This ADR does not change the enqueuer. A follow-up has to stop writing the sentinel as if it were a tenant. Existing databases that already contain those rows will fail this migration until those rows are removed or rewritten. That cleanup is not part of 0031 (no data backfill).
+- **Tradeoff**: platform-scoped audit events used to store the nil UUID on `outbox_events.tenant_id` because the column was `NOT NULL` (`apps/api/src/audit/outbox-audit-enqueuer.ts`). That value is not a `tenants.id`. 0031 drops `NOT NULL`, rewrites those rows to SQL NULL, then adds the foreign key. NULL is allowed by a foreign key and matches `audit_events.tenant_id` for platform events. The session GUC is still the nil UUID via `runWithTenantContext`. The claim and dead-letter readers present NULL as the nil UUID so existing consumers keep a `string` tenant id. A tenant caller still cannot insert NULL: RLS `WITH CHECK` requires either a matching tenant GUC or `is_platform_admin`.
 
 ### D2. Reject the nil UUID on `tenants.id` with a CHECK, in the same migration
 
@@ -69,8 +69,6 @@ No test fails when a SQL table has no Drizzle schema file. Searched `packages/db
 
 - Editing `0006_outbox_events.sql` or any earlier migration.
 - Changing nullability, RLS, or policies on `roles`, `auth_tokens`, or `audit_events`.
-- Rewriting `OutboxAuditEnqueuer` or teaching `outbox_events.tenant_id` to be nullable.
-- Backfilling or deleting existing nil-UUID outbox rows.
 - Drizzle schema files for `pairing_codes` and `external_identity_links`.
 - A CHECK or foreign key on any column other than `outbox_events.tenant_id` and `tenants.id`.
 

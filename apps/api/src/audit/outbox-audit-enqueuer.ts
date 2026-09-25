@@ -28,10 +28,12 @@
  * Tenant-context derivation
  * -------------------------
  * `AuditJobPayload.tenant_id` may be null (platform-admin/anonymous-actor path).
- * For the outbox row, `tenant_id` is NOT NULL (schema constraint). When the
- * payload has null tenant_id, we use the NIL UUID as the context tenantId +
- * isPlatformAdmin: true, and store a NIL UUID in the outbox row's tenant_id.
- * This mirrors the pattern in `insertAuditEvent` (packages/db/src/helpers/audit-insert.ts).
+ * The outbox row stores that null. It does not store the nil UUID: migration
+ * 0031 references `tenants(id)` and rejects a tenant with the nil id.
+ * `runWithTenantContext` still maps a null context tenant to the nil UUID
+ * so the RLS `::uuid` cast succeeds, with `isPlatformAdmin: true`.
+ * This matches `insertAuditEvent`, which stores SQL NULL and uses the nil
+ * UUID only as the session GUC.
  *
  * NOTE: Null tenant_id in the audit payload means the event is platform-scoped.
  * The outbox RLS policy allows platform-admin context to INSERT. The drainer
@@ -53,9 +55,6 @@ import { PG_POOL } from "../auth/auth.module";
 import type { AuditJobEnqueuer } from "./audit-job.enqueuer";
 import type { AuditJobPayload } from "./audit-job.types";
 
-/** NIL UUID — same sentinel used in insertAuditEvent for platform-scoped rows. */
-const NIL_UUID = "00000000-0000-0000-0000-000000000000";
-
 @Injectable()
 export class OutboxAuditEnqueuer implements AuditJobEnqueuer {
   constructor(
@@ -66,16 +65,13 @@ export class OutboxAuditEnqueuer implements AuditJobEnqueuer {
   async enqueue(payload: AuditJobPayload): Promise<void> {
     const tenantId = payload.tenant_id ?? null;
     const isPlatformAdmin = tenantId === null;
-    // For the outbox row, tenant_id must be a UUID (NOT NULL). Platform-scoped
-    // events use NIL_UUID; the drainer's platform-admin claim context sees all rows.
-    const rowTenantId = tenantId ?? NIL_UUID;
 
     await emitInNewTransaction(
       this.pool,
-      { tenantId: rowTenantId, isPlatformAdmin },
+      { tenantId, isPlatformAdmin },
       {
         eventType: OUTBOX_EVENT_TYPES.AUDIT_EVENT_CREATED,
-        tenantId: rowTenantId,
+        tenantId,
         storeId: payload.store_id,
         payload: {
           actor_user_id: payload.actor_user_id,

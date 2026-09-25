@@ -30,9 +30,21 @@ describe("0031 — outbox tenant FK and nil tenant id", () => {
         "i",
       ),
     );
+
+    const dropNotNull = up.search(/ALTER COLUMN tenant_id DROP NOT NULL/i);
+    const rewriteNil = up.search(
+      new RegExp(
+        `SET tenant_id = NULL[\\s\\S]*'${NIL_TENANT_ID}'::uuid`,
+        "i",
+      ),
+    );
+    const addFk = up.search(/ADD CONSTRAINT outbox_events_tenant_id_fk/i);
+    expect(dropNotNull).toBeGreaterThan(-1);
+    expect(rewriteNil).toBeGreaterThan(dropNotNull);
+    expect(addFk).toBeGreaterThan(rewriteNil);
   });
 
-  it("down drops only the constraints this migration added", () => {
+  it("down restores NOT NULL only after nil rows are rewritten and the FK is gone", () => {
     const down = readFileSync(DOWN_PATH, "utf8");
 
     expect(down).toMatch(
@@ -41,8 +53,17 @@ describe("0031 — outbox tenant FK and nil tenant id", () => {
     expect(down).toMatch(
       /ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_id_not_nil/i,
     );
+    const dropFk = down.search(/DROP CONSTRAINT IF EXISTS outbox_events_tenant_id_fk/i);
+    const rewriteNull = down.search(
+      new RegExp(
+        `SET tenant_id = '${NIL_TENANT_ID}'::uuid[\\s\\S]*tenant_id IS NULL`,
+        "i",
+      ),
+    );
+    const setNotNull = down.search(/ALTER COLUMN tenant_id SET NOT NULL/i);
+    expect(rewriteNull).toBeGreaterThan(dropFk);
+    expect(setNotNull).toBeGreaterThan(rewriteNull);
     expect(down).not.toMatch(/DROP TABLE/i);
     expect(down).not.toMatch(/DROP COLUMN/i);
-    expect(down).not.toMatch(/NOT NULL/i);
   });
 });
