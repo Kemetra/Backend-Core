@@ -54,7 +54,7 @@ jest.mock("bullmq", () => ({
   }),
 }));
 
-import { hashPassword } from "@data-pulse-2/auth";
+import { hashPassword, hashToken } from "@data-pulse-2/auth";
 import { newId } from "@data-pulse-2/shared";
 import { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
@@ -257,6 +257,11 @@ function extractSessionCookie(res: request.Response): string {
   return cookie.split(";")[0]!;
 }
 
+function cookieValue(setCookie: string): string {
+  const eq = setCookie.indexOf("=");
+  return eq === -1 ? "" : setCookie.slice(eq + 1);
+}
+
 function expectErrorEnvelope(
   body: unknown,
   expectedCode: string,
@@ -359,11 +364,9 @@ describe("POST /api/v1/auth/signout", () => {
     const out = await http().post("/api/v1/auth/signout").set("Cookie", cookie);
     expect(out.status).toBe(204);
 
-    // DB shows revocation
-    const sessionId = cookie.split("=")[1]!;
     const rows = await pool!.query<{ revoked_at: Date | null }>(
-      `SELECT revoked_at FROM sessions WHERE id = $1`,
-      [sessionId],
+      `SELECT revoked_at FROM sessions WHERE credential_hash = $1`,
+      [hashToken(cookieValue(cookie))],
     );
     expect(rows.rows[0]?.revoked_at).not.toBeNull();
 
@@ -394,8 +397,8 @@ describe("POST /api/v1/auth/refresh", () => {
     const cookie = extractSessionCookie(signin);
 
     const before = await pool!.query<{ last_seen_at: Date }>(
-      `SELECT last_seen_at FROM sessions WHERE id = $1`,
-      [cookie.split("=")[1]!],
+      `SELECT last_seen_at FROM sessions WHERE credential_hash = $1`,
+      [hashToken(cookieValue(cookie))],
     );
 
     // Sleep a tiny bit so last_seen_at can advance
@@ -405,11 +408,11 @@ describe("POST /api/v1/auth/refresh", () => {
       .post("/api/v1/auth/refresh")
       .set("Cookie", cookie);
     expect(refresh.status).toBe(204);
-    extractSessionCookie(refresh); // cookie re-issued
+    expect(cookieValue(extractSessionCookie(refresh))).toBe(cookieValue(cookie));
 
     const after = await pool!.query<{ last_seen_at: Date }>(
-      `SELECT last_seen_at FROM sessions WHERE id = $1`,
-      [cookie.split("=")[1]!],
+      `SELECT last_seen_at FROM sessions WHERE credential_hash = $1`,
+      [hashToken(cookieValue(cookie))],
     );
     expect(after.rows[0]!.last_seen_at.getTime()).toBeGreaterThanOrEqual(
       before.rows[0]!.last_seen_at.getTime(),

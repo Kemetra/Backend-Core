@@ -185,7 +185,9 @@ Document this as an explicit architectural decision (it may already be in the co
 
 ---
 
-### FINDING-08: `sessions` Table Lacks RLS — Revoked Session Cookie Replay Window (Low)
+### FINDING-08: `sessions` Table Lacks RLS — Revoked Session Cookie Replay Window (re-rated HIGH for credential-at-rest, 2026-09-25)
+
+**Re-rate (#608):** the original Low rating covered a cache-TTL replay window. Combined with plaintext storage of the cookie as `sessions.id`, any read of `sessions` was immediate credential theft. That at-rest defect is HIGH (constitution §XII / §IV). The fix stores only SHA-256 of a CSPRNG cookie, distinct from the row id, and revokes live pre-fix sessions at deploy. The missing database backstop on `active_tenant_id` is tracked separately as HIGH (#609) and is not closed by this re-rate.
 
 **Location:** `apps/api/src/auth/session.repository.ts:82-99`
 **Risk:** A revoked session could be served from a stale cache for up to the cache TTL.

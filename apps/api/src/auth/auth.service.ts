@@ -28,6 +28,7 @@ import { newId } from "@data-pulse-2/shared";
 import {
   generateRawToken,
   hashPassword,
+  hashToken,
   verifyPassword,
 } from "@data-pulse-2/auth";
 import { sessions, users } from "@data-pulse-2/db/schema";
@@ -163,9 +164,9 @@ export class AuthService {
   // ---------------------------------------------------------------------
 
   /**
-   * Verify credentials and create a dashboard session. Returns the cookie
-   * value (`sessionId`) plus metadata; the controller serializes it
-   * with the appropriate `HttpOnly; Secure; SameSite=Lax` attributes.
+   * Verify credentials and create a dashboard session. Returns the row id
+   * and a separate CSPRNG cookie value. The controller sets the cookie.
+   * Only the SHA-256 of that cookie is persisted.
    *
    * Throws a uniform UnauthorizedException for ALL failure modes.
    */
@@ -214,11 +215,13 @@ export class AuthService {
     }
 
     const sessionId = newId();
+    const sessionCredential = generateRawToken();
     const absoluteExpiresAt = new Date(Date.now() + SESSION_ABSOLUTE_EXPIRY_MS);
     await this.sessions.create({
       id: sessionId,
       userId: userRow.id,
       absoluteExpiresAt,
+      credentialHash: hashToken(sessionCredential),
     });
 
     // T238/T230 — successful sign-in audit event. Action string is
@@ -239,6 +242,7 @@ export class AuthService {
 
     return {
       sessionId,
+      sessionCredential,
       userId: userRow.id,
       absoluteExpiresAt,
       user: {

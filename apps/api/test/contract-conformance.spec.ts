@@ -43,7 +43,7 @@ import request from "supertest";
 
 import { AuthController } from "../src/auth/auth.controller";
 import { AuthService } from "../src/auth/auth.service";
-import { AuthGuard } from "../src/auth/auth.guard";
+import { AuthGuard, SESSION_COOKIE_NAME } from "../src/auth/auth.guard";
 import { DashboardAuthGuard } from "../src/auth/dashboard-auth.guard";
 import { RateLimiter } from "../src/auth/rate-limit";
 import type { SignInResult } from "../src/auth/dto";
@@ -1937,7 +1937,11 @@ describe("POST /api/v1/auth/signout", () => {
 
 describe("POST /api/v1/auth/refresh", () => {
   it("204 — success has no body", async () => {
-    const res = await http().post("/api/v1/auth/refresh").expect(204);
+    // Refresh re-issues the caller's own cookie, so a real call carries one.
+    const res = await http()
+      .post("/api/v1/auth/refresh")
+      .set("Cookie", `${SESSION_COOKIE_NAME}=contract-session-credential`)
+      .expect(204);
     assertNoBody(res);
   });
 

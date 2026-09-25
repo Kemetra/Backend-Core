@@ -5,8 +5,9 @@
  *
  *   1. IDEMPOTENCY_KEY_STORE — IdempotencyKeyStore with 72h TTL override.
  *      Backed by REDIS_CLIENT from AuthModule (single Redis connection).
- *      Postgres mirror: null no-op in this slice; a future slice wires
- *      the Drizzle writer.
+ *      Postgres mirror: PgIdempotencyMirror against idempotency_keys
+ *      (claim-before-handler + completion update). Redis remains the
+ *      fast path; Postgres is the durable copy.
  *
  *   2. InProgressMarker — Redis-backed SET NX EX 60 in-flight marker.
  *      Also backed by REDIS_CLIENT from AuthModule.
@@ -35,32 +36,20 @@ import { Module, type Provider } from "@nestjs/common";
 import { APP_INTERCEPTOR, Reflector } from "@nestjs/core";
 
 import { createLogger, IdempotencyKeyStore, type Logger } from "@data-pulse-2/shared";
-import type {
-  PgMirrorReader,
-  PgMirrorWriter,
-  RedisLike as StoreRedisLike,
-} from "@data-pulse-2/shared";
+import type { RedisLike as StoreRedisLike } from "@data-pulse-2/shared";
+
+import type { Pool } from "pg";
 
 import { AUDIT_JOB_ENQUEUER, type AuditJobEnqueuer } from "../audit/audit-job.enqueuer";
 import { OutboxAuditEnqueuerModule } from "../audit/outbox-audit-enqueuer.module";
-import { AuthModule, REDIS_CLIENT } from "../auth/auth.module";
+import { AuthModule, PG_POOL, REDIS_CLIENT } from "../auth/auth.module";
 import { ROOT_LOGGER } from "../common/logging.interceptor";
 import { INFLIGHT_REDIS, InProgressMarker, type InflightRedis } from "./in-progress-marker";
 import {
   IDEMPOTENCY_KEY_STORE,
   IdempotencyInterceptor,
 } from "./idempotency.interceptor";
-
-// ---------------------------------------------------------------------------
-// Null Postgres mirror — no-op for this slice
-// ---------------------------------------------------------------------------
-class NullPgMirrorWriter implements PgMirrorWriter {
-  async insert(): Promise<void> { /* no-op */ }
-}
-
-class NullPgMirrorReader implements PgMirrorReader {
-  async find(): Promise<null> { return null; }
-}
+import { PgIdempotencyMirror } from "./pg-mirror";
 
 // ---------------------------------------------------------------------------
 // Providers
@@ -77,14 +66,16 @@ const inflightRedisProvider: Provider = {
 
 const idempotencyKeyStoreProvider: Provider = {
   provide: IDEMPOTENCY_KEY_STORE,
-  useFactory: (redis: StoreRedisLike): IdempotencyKeyStore =>
-    new IdempotencyKeyStore({
+  useFactory: (redis: StoreRedisLike, pool: Pool): IdempotencyKeyStore => {
+    const mirror = new PgIdempotencyMirror(pool);
+    return new IdempotencyKeyStore({
       redis,
-      pgWriter: new NullPgMirrorWriter(),
-      pgReader: new NullPgMirrorReader(),
+      pgWriter: mirror,
+      pgReader: mirror,
       defaultTtlMs: 72 * 60 * 60 * 1000, // 72h override (T525)
-    }),
-  inject: [REDIS_CLIENT],
+    });
+  },
+  inject: [REDIS_CLIENT, PG_POOL],
 };
 
 const inProgressMarkerProvider: Provider = {

@@ -36,7 +36,8 @@ import {
 } from "@nestjs/common";
 import type { Response } from "express";
 import { AuthService } from "./auth.service";
-import { AuthGuard, type AuthedRequest, SESSION_COOKIE_NAME } from "./auth.guard";
+import { AuthGuard, type AuthedRequest, readSessionCookie, SESSION_COOKIE_NAME } from "./auth.guard";
+import { Public } from "./route-auth";
 import {
   RATE_LIMIT_BUCKETS,
   RateLimiter,
@@ -100,6 +101,7 @@ export class AuthController {
   // POST /signin — public; sets session cookie on 200.
   // ---------------------------------------------------------------------
 
+  @Public()
   @Post("signin")
   @HttpCode(HttpStatus.OK)
   async signIn(
@@ -113,7 +115,7 @@ export class AuthController {
 
     const result = await this.authService.signIn(body);
 
-    setSessionCookie(res, result.sessionId, result.absoluteExpiresAt);
+    setSessionCookie(res, result.sessionCredential, result.absoluteExpiresAt);
 
     // `memberships` is part of the OpenAPI shape but its source
     // repository isn't in this slice — return an empty array so the
@@ -164,15 +166,20 @@ export class AuthController {
     if (!result) {
       throw new UnauthorizedException("Unauthorized");
     }
-    // Re-issue the cookie. We deliberately keep the original absolute
-    // expiry — refresh extends `last_seen_at` only.
-    setSessionCookie(res, result.sessionId, result.absoluteExpiresAt);
+    // Re-issue the same CSPRNG cookie. Refresh extends last_seen_at only
+    // and must not replace the cookie with the row id.
+    const credential = readSessionCookie(req);
+    if (credential === null) {
+      throw new UnauthorizedException("Unauthorized");
+    }
+    setSessionCookie(res, credential, result.absoluteExpiresAt);
   }
 
   // ---------------------------------------------------------------------
   // POST /password-reset/request — public; 202 always.
   // ---------------------------------------------------------------------
 
+  @Public()
   @Post("password-reset/request")
   @HttpCode(HttpStatus.ACCEPTED)
   async requestPasswordReset(
@@ -190,6 +197,7 @@ export class AuthController {
   // POST /password-reset/confirm — public; 204 / 400.
   // ---------------------------------------------------------------------
 
+  @Public()
   @Post("password-reset/confirm")
   @HttpCode(HttpStatus.NO_CONTENT)
   async confirmPasswordReset(
@@ -230,6 +238,7 @@ export class AuthController {
   // POST /email/verify/confirm — public; 204 / 400.
   // ---------------------------------------------------------------------
 
+  @Public()
   @Post("email/verify/confirm")
   @HttpCode(HttpStatus.NO_CONTENT)
   async confirmEmailVerification(

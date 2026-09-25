@@ -58,11 +58,15 @@ function makeFakeDb() {
   return chain;
 }
 
-jest.mock("@data-pulse-2/auth", () => ({
-  verifyPassword: jest.fn(),
-  hashPassword: jest.fn(),
-  generateRawToken: jest.fn(),
-}));
+jest.mock("@data-pulse-2/auth", () => {
+  const { createHash } = require("node:crypto") as typeof import("node:crypto");
+  return {
+    verifyPassword: jest.fn(),
+    hashPassword: jest.fn(),
+    generateRawToken: jest.fn(),
+    hashToken: (token: string): Buffer => createHash("sha256").update(token).digest(),
+  };
+});
 
 // Import after mocks are set up
 import { verifyPassword, hashPassword, generateRawToken } from "@data-pulse-2/auth";
@@ -327,8 +331,19 @@ describe("AuthService.signIn — success path", () => {
     expect(result.sessionId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
     );
-    const createCall = sessions.create.mock.calls[0]![0] as { id: string };
+    const createCall = sessions.create.mock.calls[0]![0] as {
+      id: string;
+      credentialHash: Buffer;
+    };
     expect(createCall.id).toBe(result.sessionId);
+    expect(result.sessionCredential).toBe("raw-token-abc");
+    expect(result.sessionCredential).not.toBe(result.sessionId);
+    expect(createCall.credentialHash).toEqual(
+      Buffer.from(
+        // sha256("raw-token-abc") — the cookie is stored only as a hash
+        require("node:crypto").createHash("sha256").update("raw-token-abc").digest(),
+      ),
+    );
   });
 
   it("B6: absoluteExpiresAt is approximately 24h in the future", async () => {
