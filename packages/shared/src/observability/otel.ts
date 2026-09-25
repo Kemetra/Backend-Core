@@ -45,6 +45,8 @@ export {
   metrics as __internal_otelMetricsApi,
 };
 
+export { shouldStartOtel } from "./should-start-otel";
+
 /** Configuration for the Prometheus metrics HTTP endpoint. */
 export interface MetricsOptions {
   /**

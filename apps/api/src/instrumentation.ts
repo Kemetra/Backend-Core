@@ -21,18 +21,25 @@
  * instrument-creating module is evaluated, so all instruments resolve
  * directly to live OTel SDK counters/histograms.
  *
+ * `shouldStartOtel()` is read before `startOtel()`. `DP2_OTEL_DISABLED=1|true`
+ * or `OTEL_SDK_DISABLED=true` skips SDK construction and the metrics listener.
+ * When neither is set, `startOtel()` still runs at module evaluation.
+ *
  * Note: `reflect-metadata` must also be imported early (NestJS decorators
  * requirement) so it stays directly after this import in main.ts.
  *
  * Constitution §VII / T483.
  */
-import { startOtel } from "@data-pulse-2/shared";
+import { shouldStartOtel, startOtel } from "@data-pulse-2/shared";
 
 // Read env vars at module-evaluation time. Node.js has already populated
 // `process.env` from the OS environment by this point, so these reads are safe.
-startOtel({
-  serviceName: "api",
-  metrics: {
-    port: Number(process.env["METRICS_PORT"] ?? 9464),
-  },
-});
+// The guard is before startOtel so a disable flag never constructs the SDK.
+if (shouldStartOtel(process.env)) {
+  startOtel({
+    serviceName: "api",
+    metrics: {
+      port: Number(process.env["METRICS_PORT"] ?? 9464),
+    },
+  });
+}
