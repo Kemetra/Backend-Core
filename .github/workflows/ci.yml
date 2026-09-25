@@ -133,9 +133,9 @@ jobs:
 
       - name: Test @data-pulse-2/api (RLS + audit + auth suites)
         # #618 G2 — coverage is collected and the Jest threshold gates this
-        # job. The branch floor is 89 (apps/api/jest.config.cjs), the last
-        # measured suite sat at 89.9% and a 90 floor had forced this step to
-        # drop --coverage. Codecov stays informational. ESLint is still not
+        # job. The floors live in apps/api/jest.config.cjs (branches 85,
+        # lines 96, measured in CI); a 90 branch floor had forced this step
+        # to drop --coverage. Codecov stays informational. ESLint is still not
         # the `pnpm lint` command (that remains tsc --noEmit).
         #
         # (Note: --coverage is NOT the runtime bottleneck — covered vs uncovered
