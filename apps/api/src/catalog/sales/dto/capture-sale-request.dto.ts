@@ -34,10 +34,14 @@ const decimalAmount = z
   .string()
   .regex(/^[0-9]{1,15}(\.[0-9]{1,4})?$/, "must be a non-negative exact-decimal string");
 
-/** Line quantity: up to 6 fractional digits (sub-unit quantities allowed). */
+/**
+ * Line quantity: `numeric(19,6)` allows 13 integer digits (precision − scale)
+ * and 6 fractional digits. A 15-digit integer pattern (copied from scale-4
+ * money) overflows the column and becomes PG 22003.
+ */
 const quantityAmount = z
   .string()
-  .regex(/^[0-9]{1,15}(\.[0-9]{1,6})?$/, "must be a non-negative decimal string");
+  .regex(/^[0-9]{1,13}(\.[0-9]{1,6})?$/, "must be a non-negative decimal string");
 
 /** ISO-4217 alphabetic currency code. */
 const currencyCode = z.string().regex(/^[A-Z]{3}$/, "must be an ISO-4217 code");

@@ -469,8 +469,10 @@ components:
           $ref: "#/components/schemas/CurrencyCode"
         quantity:
           type: string
-          pattern: '^[0-9]{1,15}(\.[0-9]{1,6})?$'
-          description: Line quantity as reported (exact-decimal string, no float).
+          pattern: '^[0-9]{1,13}(\.[0-9]{1,6})?$'
+          description: >
+            Line quantity as reported (exact-decimal string, no float).
+            Bound is numeric(19,6): at most 13 integer digits and 6 fractional digits.
         lineAmount:
           # B1-3: non-negative — mirrors `sale_lines_line_amount_non_negative`.
           $ref: "#/components/schemas/NonNegativeDecimalAmount"
