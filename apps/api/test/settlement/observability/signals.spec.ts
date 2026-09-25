@@ -100,6 +100,7 @@ async function openOne(owed: string): Promise<string> {
     storeId: STORE_A_X,
     operation: {
       idempotencyKey: `signals-open-${owed}-${Date.now()}`,
+      terminalId: "settlement-test-terminal",
       actorUserId: SETTLEMENT_FIXTURE_IDS.actorA,
       requestId: "b2000000-0000-4000-8000-000000000001",
     },
@@ -124,6 +125,7 @@ describe("035 T034 — settlement_receivable_total signal", () => {
       storeId: STORE_A_X,
       operation: {
         idempotencyKey: "signals-rejected-intent",
+        terminalId: "settlement-test-terminal",
         actorUserId: SETTLEMENT_FIXTURE_IDS.actorA,
         requestId: "b2000000-0000-4000-8000-000000000002",
       },

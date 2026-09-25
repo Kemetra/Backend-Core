@@ -135,6 +135,7 @@ class ConfigurableContextGuard implements CanActivate {
     const req = ctx.switchToHttp().getRequest<{
       context?: ResolvedContext;
       principal?: { userId?: string };
+      posDeviceId?: string;
     }>();
     req.context = {
       userId: this.userId,
@@ -143,6 +144,7 @@ class ConfigurableContextGuard implements CanActivate {
       isPlatformAdmin: false,
       source: "token",
     };
+    req.posDeviceId = "settlement-test-terminal";
     if (this.userId) req.principal = { userId: this.userId };
     return true;
   }
@@ -481,6 +483,7 @@ describe("035 T030 §4 — idempotent replay", () => {
       storeId: STORE_A_X,
       operation: {
         idempotencyKey: key,
+        terminalId: "settlement-test-terminal",
         actorUserId: ACTOR_A,
         requestId: "b1000000-0000-4000-8000-000000000001",
       },

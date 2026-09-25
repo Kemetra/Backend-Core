@@ -125,11 +125,13 @@ export class SettlementController {
     body: SettlementIntentCreateDto,
   ): Promise<SettlementIntentResultBody> {
     const { tenantId, storeId, userId } = this.requirePosContext(request);
+    if (!request.posDeviceId) throw new UnauthorizedException("Unauthorized");
     const result = await this.service.openFromIntent({
       tenantId,
       storeId,
       operation: {
         idempotencyKey,
+        terminalId: request.posDeviceId,
         actorUserId: userId,
         requestId: request.requestId ?? null,
       },

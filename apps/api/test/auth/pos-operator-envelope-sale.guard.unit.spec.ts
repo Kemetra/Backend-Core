@@ -124,6 +124,7 @@ describe("PosOperatorEnvelopeSaleGuard — live predicate (G-4)", () => {
       isPlatformAdmin: false,
       source: "token",
     });
+    expect(req["posDeviceId"]).toBe(DEVICE_ID);
   });
 
   it("G4-MEMBERSHIP: membership revoked mid-session → 401 even with a valid envelope", async () => {

@@ -39,4 +39,6 @@ export interface ResolvedContext {
  */
 export type TenantContextRequest = AuthedRequest & {
   context?: ResolvedContext;
+  /** Server-resolved device binding for POS operator write requests. */
+  posDeviceId?: string;
 };

@@ -87,6 +87,7 @@ export interface OpenIntentInput {
   readonly storeId: string;
   readonly operation: {
     readonly idempotencyKey: string;
+    readonly terminalId: string;
     readonly actorUserId: string;
     readonly requestId: string | null;
   };
@@ -230,7 +231,7 @@ export class ReceivableService {
               newId(),
               input.tenantId,
               input.storeId,
-              input.operation.actorUserId,
+              input.operation.terminalId,
               operationKey,
               fingerprint,
               JSON.stringify({ state: "pending" }),
@@ -252,7 +253,7 @@ export class ReceivableService {
               [
                 input.tenantId,
                 input.storeId,
-                input.operation.actorUserId,
+                input.operation.terminalId,
                 operationKey,
               ],
             );
@@ -272,9 +273,6 @@ export class ReceivableService {
           // Validate all references while the reservation is still uncommitted.
           // A validation conflict is thrown so runWithTenantContext rolls the
           // reservation back together with every other write.
-          if (!(await this.saleInScope(client, input.saleRef, input.storeId))) {
-            throw new SettlementReferenceConflictError();
-          }
           for (const payer of input.payers) {
             const ok = await this.payerInScope(client, payer.payerRef, input.storeId);
             if (!ok) throw new SettlementReferenceConflictError();
@@ -322,7 +320,7 @@ export class ReceivableService {
               JSON.stringify(durableBody),
               input.tenantId,
               input.storeId,
-              input.operation.actorUserId,
+              input.operation.terminalId,
               operationKey,
             ],
           );
@@ -527,21 +525,6 @@ export class ReceivableService {
       { tenantId, isPlatformAdmin: false },
       async (client) => this.payerInScope(client, payerRef),
     );
-  }
-
-  /** RLS-filtered sale lookup with explicit store binding. */
-  private async saleInScope(
-    client: PoolClient,
-    saleRef: string,
-    storeId: string,
-  ): Promise<boolean> {
-    const r = await client.query<{ id: string }>(
-      `SELECT id FROM sales
-        WHERE id = $1::uuid AND store_id = $2::uuid
-        LIMIT 1`,
-      [saleRef, storeId],
-    );
-    return r.rows.length > 0;
   }
 
   /**

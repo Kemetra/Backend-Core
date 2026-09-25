@@ -26,9 +26,9 @@ import type { DeviceRepository } from "../../src/pos-operators/device.repository
 
 const KEYCLOAK_SUBJECT = "kc|abc-123";
 const USER_ID = "0a000000-0000-7000-8000-00000000aa01";
-const TENANT_ID = "0a000000-0000-7000-8000-0000000ten01";
-const STORE_ID = "0a000000-0000-7000-8000-0000000sto01";
-const DEVICE_ID = "0a000000-0000-7000-8000-0000000dev01";
+const TENANT_ID = "0a000000-0000-7000-8000-00000000aa02";
+const STORE_ID = "0a000000-0000-7000-8000-00000000aa03";
+const DEVICE_ID = "0a000000-0000-7000-8000-00000000aa04";
 
 /**
  * A stub adapter for a hypothetical SECOND provider. It implements only the two
@@ -93,7 +93,10 @@ describe("IdentityProviderPort — provider-readiness (G-5 / OQ-7)", () => {
       }
       return Promise.resolve({ rows: [] });
     });
-    const pool = { query } as unknown as Pool;
+    const pool = {
+      query,
+      connect: jest.fn().mockResolvedValue({ query, release: jest.fn() }),
+    } as unknown as Pool;
     const deviceRepository = {
       findActiveByAttestation: jest.fn().mockResolvedValue(makeDevice()),
     } as unknown as DeviceRepository;

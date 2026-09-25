@@ -19,6 +19,7 @@ function harness(options: { saleExists?: boolean; auditFails?: boolean } = {}) {
   let operationExists = false;
   let receivableInsertCount = 0;
   let auditInsertCount = 0;
+  const reservationClients: unknown[] = [];
   const commands: string[] = [];
 
   const query = jest.fn(async (sql: string, params?: unknown[]) => {
@@ -28,6 +29,7 @@ function harness(options: { saleExists?: boolean; auditFails?: boolean } = {}) {
       return result();
     }
     if (text.includes("INSERT INTO idempotency_keys")) {
+      reservationClients.push(params?.[3]);
       if (operationExists) return result();
       operationExists = true;
       durableFingerprint = params?.[5] as Buffer;
@@ -38,11 +40,11 @@ function harness(options: { saleExists?: boolean; auditFails?: boolean } = {}) {
         { request_hash: durableFingerprint, response_body: durableBody },
       ]);
     }
-    if (text.includes("FROM sales")) {
-      return result(options.saleExists === false ? [] : [{ id: SALE_ID }]);
-    }
     if (text.includes("FROM payer_account")) return result([{ id: PAYER_ID }]);
     if (text.includes("INSERT INTO receivable")) {
+      if (options.saleExists === false) {
+        throw Object.assign(new Error("sale FK violation"), { code: "23503" });
+      }
       receivableInsertCount += 1;
       return result([
         {
@@ -76,6 +78,7 @@ function harness(options: { saleExists?: boolean; auditFails?: boolean } = {}) {
   return {
     service: new ReceivableService(pool),
     commands,
+    reservationClients,
     get receivableInsertCount() {
       return receivableInsertCount;
     },
@@ -91,6 +94,7 @@ function input(owedAmount = "12.00") {
     storeId: STORE_ID,
     operation: {
       idempotencyKey: "settlement-unit-idempotency-key",
+      terminalId: "settlement-test-terminal",
       actorUserId: ACTOR_ID,
       requestId: "b3000000-0000-4000-8000-000000000001",
     },
@@ -109,6 +113,18 @@ describe("ReceivableService durable settlement idempotency", () => {
     expect(h.receivableInsertCount).toBe(1);
     expect(h.auditInsertCount).toBe(1);
     expect(h.commands.filter((sql) => sql === "COMMIT")).toHaveLength(2);
+  });
+
+  it("keeps the durable reservation on the terminal when the operator changes", async () => {
+    const h = harness();
+    const first = await h.service.openFromIntent(input());
+    const retry = await h.service.openFromIntent({
+      ...input(),
+      operation: { ...input().operation, actorUserId: "71000000-0000-4000-8000-000000000008" },
+    });
+    expect(retry).toEqual(first);
+    expect(h.reservationClients).toEqual(["settlement-test-terminal", "settlement-test-terminal"]);
+    expect(h.receivableInsertCount).toBe(1);
   });
 
   it("rejects the same operation key with a different logical payload", async () => {
