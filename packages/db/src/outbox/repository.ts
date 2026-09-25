@@ -746,7 +746,11 @@ export async function listDeadLettered(
         params.push(input.eventType);
         where.push(`event_type = $${params.length}`);
       }
-      if (input.tenantId !== undefined) {
+      if (input.tenantId === PLATFORM_OUTBOX_TENANT_ID) {
+        // Platform rows store NULL but are listed with the nil UUID
+        // (outboxEnvelopeTenantId), so filtering by it must match NULL.
+        where.push("tenant_id IS NULL");
+      } else if (input.tenantId !== undefined) {
         params.push(input.tenantId);
         where.push(`tenant_id = $${params.length}::uuid`);
       }
