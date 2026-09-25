@@ -1,5 +1,5 @@
 jest.mock("@data-pulse-2/db", () => ({
-  runWithTenantContext: jest.fn(async (_pool: unknown, _ctx: unknown, fn: (c: unknown) => unknown) => fn({ query: jest.fn() })),
+  runWithTenantContext: jest.fn(async (pool: Pool, _ctx: unknown, fn: (c: unknown) => unknown) => fn({ query: (...args: unknown[]) => (pool.query as jest.Mock)(...args) })),
 }));
 
 import "reflect-metadata";
@@ -166,19 +166,18 @@ describe("PosShiftsService.getStuck — happy path (all-access)", () => {
       .mockResolvedValueOnce({ rows: [{ id: USER_ID }] })
       .mockResolvedValueOnce({ rows: [MEMBERSHIP_ROW] });
 
-    (runWithTenantContext as jest.Mock).mockImplementationOnce(
-      async (_pool: unknown, _ctx: unknown, fn: (c: { query: jest.Mock }) => unknown) => {
-        const fakeClient = {
-          query: jest.fn().mockResolvedValue({ rows: [SHIFT_ROW] }),
-        };
-        return fn(fakeClient);
-      },
-    );
+    (pool.query as jest.Mock).mockResolvedValueOnce({ rows: [SHIFT_ROW] });
 
     const result = await service.getStuck(RAW_JWT, BRANCH_ID, "req-2");
 
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") return;
+    expect(runWithTenantContext).toHaveBeenNthCalledWith(
+      1, pool, { tenantId: null, isPlatformAdmin: true }, expect.any(Function),
+    );
+    expect(runWithTenantContext).toHaveBeenNthCalledWith(
+      2, pool, { tenantId: TENANT_ID, isPlatformAdmin: false }, expect.any(Function),
+    );
     expect(result.body.kind).toBe("ok");
     expect(Array.isArray(result.body.shifts)).toBe(true);
     expect(result.body.shifts).toHaveLength(1);
@@ -200,14 +199,7 @@ describe("PosShiftsService.getStuck — happy path (all-access)", () => {
       .mockResolvedValueOnce({ rows: [{ id: USER_ID }] })
       .mockResolvedValueOnce({ rows: [MEMBERSHIP_ROW] });
 
-    (runWithTenantContext as jest.Mock).mockImplementationOnce(
-      async (_pool: unknown, _ctx: unknown, fn: (c: { query: jest.Mock }) => unknown) => {
-        const fakeClient = {
-          query: jest.fn().mockResolvedValue({ rows: [] }),
-        };
-        return fn(fakeClient);
-      },
-    );
+    (pool.query as jest.Mock).mockResolvedValueOnce({ rows: [] });
 
     const result = await service.getStuck(RAW_JWT, BRANCH_ID, null);
 
@@ -237,19 +229,12 @@ describe("PosShiftsService.getStuck — specific-access happy path", () => {
       })
       .mockResolvedValueOnce({ rows: [{ one: 1 }] });
 
-    (runWithTenantContext as jest.Mock).mockImplementationOnce(
-      async (_pool: unknown, _ctx: unknown, fn: (c: { query: jest.Mock }) => unknown) => {
-        const fakeClient = {
-          query: jest.fn().mockResolvedValue({ rows: [SHIFT_ROW] }),
-        };
-        return fn(fakeClient);
-      },
-    );
+    (pool.query as jest.Mock).mockResolvedValueOnce({ rows: [SHIFT_ROW] });
 
     const result = await service.getStuck(RAW_JWT, BRANCH_ID, null);
 
     expect(result.kind).toBe("ok");
-    expect(pool.query).toHaveBeenCalledTimes(3);
+    expect(pool.query).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -283,14 +268,7 @@ describe("PosShiftsService.getStuck — eligible roles", () => {
           ],
         });
 
-      (runWithTenantContext as jest.Mock).mockImplementationOnce(
-        async (_pool: unknown, _ctx: unknown, fn: (c: { query: jest.Mock }) => unknown) => {
-          const fakeClient = {
-            query: jest.fn().mockResolvedValue({ rows: [] }),
-          };
-          return fn(fakeClient);
-        },
-      );
+      (pool.query as jest.Mock).mockResolvedValueOnce({ rows: [] });
 
       const result = await service.getStuck(RAW_JWT, BRANCH_ID, null);
       expect(result.kind).toBe("ok");

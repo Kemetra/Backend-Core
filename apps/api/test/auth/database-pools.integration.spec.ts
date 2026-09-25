@@ -1,9 +1,14 @@
 import { hashToken } from "@data-pulse-2/auth";
 import { runWithTenantContext } from "@data-pulse-2/db";
+import type { Logger } from "@data-pulse-2/shared";
 import { Pool } from "pg";
 
 import { verifyDatabasePoolBoundary } from "../../src/auth/database-pools";
+import { MembershipRepository } from "../../src/context/membership.repository";
 import { DeviceRepository } from "../../src/pos-operators/device.repository";
+import { PosShiftsService } from "../../src/pos-shifts/pos-shifts.service";
+import { TenantsRepository } from "../../src/tenants/tenants.repository";
+import { TenantsService } from "../../src/tenants/tenants.service";
 import {
   applyAllUpAndCreateAppRole,
   startPgEnv,
@@ -19,6 +24,9 @@ const DEVICE_A = "a1000000-0000-4000-8000-000000000003";
 const DEVICE_B = "b1000000-0000-4000-8000-000000000003";
 const LOOKUP_ROLE = "auth_lookup_test";
 const LOOKUP_PASSWORD = "auth_lookup_test";
+const USER_A = "a1000000-0000-4000-8000-000000000004";
+const ROLE_A = "a1000000-0000-4000-8000-000000000005";
+const MEMBERSHIP_A = "a1000000-0000-4000-8000-000000000006";
 
 let env: PgTestEnv | null = null;
 let lookup: Pool | null = null;
@@ -52,6 +60,19 @@ beforeAll(async () => {
       `INSERT INTO stores (id, tenant_id, code, name) VALUES
          ($1, $2, 'A', 'Store A'), ($3, $4, 'B', 'Store B')`,
       [STORE_A, TENANT_A, STORE_B, TENANT_B],
+    );
+    await env.admin.query(
+      `INSERT INTO users (id, email, clerk_user_id) VALUES ($1, 'pool-user@example.test', 'pool-clerk-user')`,
+      [USER_A],
+    );
+    await env.admin.query(
+      `INSERT INTO roles (id, tenant_id, code, name) VALUES ($1, $2, 'store_manager', 'Store Manager')`,
+      [ROLE_A, TENANT_A],
+    );
+    await env.admin.query(
+      `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind)
+       VALUES ($1, $2, $3, $4, 'all')`,
+      [MEMBERSHIP_A, TENANT_A, USER_A, ROLE_A],
     );
     await env.admin.query(
       `INSERT INTO devices (id, tenant_id, store_id, token_hash) VALUES
@@ -102,5 +123,32 @@ describe("production database pool separation", () => {
     await expect(lookupPool.query("SELECT * FROM sales LIMIT 1")).rejects.toThrow(
       /permission denied/i,
     );
+  });
+
+  it("lists only the caller's tenants and admits an authorized stuck-shifts lookup", async () => {
+    if (dockerSkipped) return;
+    const { app } = env!;
+    const tenants = new TenantsService(
+      app,
+      new TenantsRepository(),
+      new MembershipRepository(app),
+    );
+    const principal = { kind: "session" as const, sessionId: USER_A, userId: USER_A };
+
+    expect((await tenants.list(principal)).map((row) => row.id)).toEqual([TENANT_A]);
+    await expect(tenants.read(principal, TENANT_B)).rejects.toMatchObject({ status: 404 });
+
+    const shifts = new PosShiftsService(
+      app,
+      { verify: async () => ({ sub: "pool-clerk-user" }) },
+      { warn: () => undefined } as unknown as Logger,
+    );
+    await expect(shifts.getStuck("verified-jwt", STORE_A, null)).resolves.toEqual({
+      kind: "ok",
+      body: { kind: "ok", shifts: [] },
+    });
+    await expect(shifts.getStuck("verified-jwt", STORE_B, null)).resolves.toEqual({
+      kind: "refused",
+    });
   });
 });
