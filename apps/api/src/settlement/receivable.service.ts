@@ -101,6 +101,8 @@ export type OpenIntentResult =
   | { kind: "conflict" }
   | { kind: "idempotency_conflict" };
 
+type IntentTransactionResult = { result: OpenIntentResult; created: boolean };
+
 interface DurableIntentBody {
   kind: "settlement_intent";
   saleRef: string;
@@ -212,13 +214,13 @@ export class ReceivableService {
     const operationKey = durableKey(input.operation.idempotencyKey);
 
     try {
-      const result = await runWithTenantContext(
+      const outcome = await runWithTenantContext(
         this.pool,
         { tenantId: input.tenantId, isPlatformAdmin: false },
         (client) => this.openIntentTransaction(client, input, fingerprint, operationKey),
       );
-      if (result.kind === "ok") recordSettlementReceivable();
-      return result;
+      if (outcome.created) recordSettlementReceivable();
+      return outcome.result;
     } catch (err: unknown) {
       if (err instanceof SettlementReferenceConflictError || isPgCode(err, "23503")) {
         return { kind: "conflict" };
@@ -232,12 +234,14 @@ export class ReceivableService {
     input: OpenIntentInput,
     fingerprint: Buffer,
     operationKey: string,
-  ): Promise<OpenIntentResult> {
+  ): Promise<IntentTransactionResult> {
     // The reservation, receivables, and audit fact share this transaction.
     const reservation = await this.reserveIntent(client, input, fingerprint, operationKey);
-    if (reservation.kind === "conflict") return { kind: "idempotency_conflict" };
+    if (reservation.kind === "conflict") {
+      return { result: { kind: "idempotency_conflict" }, created: false };
+    }
     if (reservation.kind === "replay") {
-      return { kind: "ok", rows: reservation.rows.map(toRow) };
+      return { result: { kind: "ok", rows: reservation.rows.map(toRow) }, created: false };
     }
 
     await this.assertIntentPayers(client, input);
@@ -253,7 +257,7 @@ export class ReceivableService {
       targetId: input.saleRef,
       metadata: { receivable_ids: dbRows.map((row) => row.id) },
     });
-    return { kind: "ok", rows: dbRows.map(toRow) };
+    return { result: { kind: "ok", rows: dbRows.map(toRow) }, created: true };
   }
 
   private async reserveIntent(

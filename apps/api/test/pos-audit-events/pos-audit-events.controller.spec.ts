@@ -531,6 +531,22 @@ describe("POST /api/pos/v1/audit-events (per-event rejections)", () => {
     });
   });
 
+  it("accepts a delayed audit from a session valid before the operator was demoted", async () => {
+    if (maybeSkip()) return;
+    const membershipId = "0c000000-0000-4000-8000-00000000dd01";
+    const eventId = "0c111111-0000-4000-8000-000000000029";
+    await pool!.query("UPDATE memberships SET revoked_at=now() WHERE id=$1", [membershipId]);
+    try {
+      const res = await http()
+        .post("/api/pos/v1/audit-events")
+        .send({ device_token_attestation: DEVICE_ATTESTATION, events: [makeShiftOpen(eventId)] });
+      expect(res.status).toBe(200);
+      expect(res.body.accepted).toContain(eventId);
+    } finally {
+      await pool!.query("UPDATE memberships SET revoked_at=NULL WHERE id=$1", [membershipId]);
+    }
+  });
+
   it("contradictory originating_terminal_id is rejected and never persisted", async () => {
     if (maybeSkip()) return;
     const eventId = "0c111111-0000-4000-8000-000000000027";

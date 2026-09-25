@@ -207,7 +207,7 @@ describe("syncBatch — actor resolution", () => {
     (runWithTenantContext as jest.Mock).mockImplementation(
       async (_pool: unknown, _ctx: unknown, fn: (client: { query: jest.Mock }) => Promise<unknown>) => {
         const query = jest.fn(async (sql: string) => {
-          if (String(sql).includes("JOIN auth_tokens")) {
+          if (String(sql).includes("FROM auth_tokens token")) {
             actorSql = String(sql);
             return { rows: [{ id: "user-1" }] };
           }

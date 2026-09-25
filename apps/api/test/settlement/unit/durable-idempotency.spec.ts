@@ -1,6 +1,7 @@
 import type { Pool, PoolClient, QueryResult } from "pg";
 
 import { ReceivableService } from "../../../src/settlement/receivable.service";
+import * as apiMetrics from "../../../src/observability/metrics/api.metrics";
 
 const TENANT_ID = "71000000-0000-4000-8000-000000000001";
 const STORE_ID = "71000000-0000-4000-8000-000000000002";
@@ -100,13 +101,19 @@ function input(owedAmount = "12.00") {
 describe("ReceivableService durable settlement idempotency", () => {
   it("stores the result in the business transaction and replays without another receivable", async () => {
     const h = harness();
-    const first = await h.service.openFromIntent(input());
-    const retry = await h.service.openFromIntent(input());
+    const metric = jest.spyOn(apiMetrics, "recordSettlementReceivable");
+    try {
+      const first = await h.service.openFromIntent(input());
+      const retry = await h.service.openFromIntent(input());
 
-    expect(first).toEqual(retry);
-    expect(h.receivableInsertCount).toBe(1);
-    expect(h.auditInsertCount).toBe(1);
-    expect(h.commands.filter((sql) => sql === "COMMIT")).toHaveLength(2);
+      expect(first).toEqual(retry);
+      expect(h.receivableInsertCount).toBe(1);
+      expect(h.auditInsertCount).toBe(1);
+      expect(h.commands.filter((sql) => sql === "COMMIT")).toHaveLength(2);
+      expect(metric).toHaveBeenCalledTimes(1);
+    } finally {
+      metric.mockRestore();
+    }
   });
 
   it("keeps the durable reservation on the terminal when the operator changes", async () => {

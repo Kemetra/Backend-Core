@@ -213,27 +213,15 @@ export class PosAuditEventsService {
     event: AuditEventItemInput,
     deviceId: string,
   ): Promise<string | null> {
+    // The bound POS session proves authorization at event time. Current
+    // membership, role, and store grants may have changed while the event was
+    // queued offline; using them here would discard a valid historical audit.
     const r = await client.query<{ id: string }>(
       `SELECT u.id
-       FROM users u
-       JOIN memberships m ON m.user_id = u.id
-       JOIN roles role ON role.id = m.role_id
-       JOIN auth_tokens token
-         ON token.user_id = u.id
-        AND token.tenant_id = m.tenant_id
+       FROM auth_tokens token
+       JOIN users u ON u.id = token.user_id
        WHERE u.clerk_user_id = $1
-         AND u.deleted_at IS NULL
-         AND m.tenant_id = $2
-         AND m.deleted_at IS NULL
-         AND m.revoked_at IS NULL
-         AND role.code IN ('owner', 'tenant_admin', 'store_manager')
-         AND (
-           m.store_access_kind = 'all'
-           OR EXISTS (
-             SELECT 1 FROM store_access sa
-              WHERE sa.membership_id = m.id AND sa.store_id = $3
-           )
-         )
+         AND token.tenant_id = $2
          AND token.scope = 'pos_operator'
          AND token.device_id = $4
          AND token.store_id = $3
