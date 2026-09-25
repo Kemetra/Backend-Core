@@ -1,4 +1,4 @@
-# Quickstart — Validating Spec 034 (reviewer guide)
+# Quickstart — Validating Spec 037 (reviewer guide)
 
 How a reviewer confirms the slice is correct once implemented. **No step here is run by authoring the spec chain** — this is the execution-time validation guide.
 

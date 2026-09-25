@@ -1,4 +1,4 @@
-# Research & Clarifications — Spec 034
+# Research & Clarifications — Spec 037
 
 **Phase**: `/clarify`. Resolves scoping ambiguities; routes mechanism detail to `plan.md`/execution. Does not re-decide any owner decision (OD-1..OD-4).
 

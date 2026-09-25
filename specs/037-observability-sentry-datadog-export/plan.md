@@ -1,8 +1,8 @@
 # Implementation Plan: Observability — Sentry Errors + Datadog OTLP/Logs Export
 
-**Branch**: `034-observability-sentry-datadog-export` | **Date**: 2026-06-17 | **Spec**: [spec.md](./spec.md)
+**Branch**: `037-observability-sentry-datadog-export` | **Date**: 2026-06-17 | **Spec**: [spec.md](./spec.md)
 
-**Input**: Feature specification from `/specs/034-observability-sentry-datadog-export/spec.md`
+**Input**: Feature specification from `/specs/037-observability-sentry-datadog-export/spec.md`
 
 > **Planning artifact only.** This plan describes wiring tasks against existing seams. No code, SDK install, DSN/key, or contract is authored by this plan. Execution is a separate DP-2 slice, owner-gated per AD-TOOL-003 D6.
 
@@ -48,7 +48,7 @@ Add two telemetry drains to DP-2 on top of the existing OTel layer: **Sentry** f
 ### Documentation (this feature)
 
 ```
-specs/034-observability-sentry-datadog-export/
+specs/037-observability-sentry-datadog-export/
 ├── spec.md          # /specify — done
 ├── plan.md          # this file — /plan
 ├── research.md      # /clarify resolutions

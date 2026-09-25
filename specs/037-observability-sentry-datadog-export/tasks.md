@@ -1,6 +1,6 @@
 # Tasks: Observability — Sentry Errors + Datadog OTLP/Logs Export
 
-**Spec**: [spec.md](./spec.md) | **Plan**: [plan.md](./plan.md) | **Branch**: `034-observability-sentry-datadog-export`
+**Spec**: [spec.md](./spec.md) | **Plan**: [plan.md](./plan.md) | **Branch**: `037-observability-sentry-datadog-export`
 
 ## Format: `[ID] [P?] [Story] Description`
 - **[P]** = parallelizable (different files, no dependency)

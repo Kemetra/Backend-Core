@@ -44,16 +44,17 @@ RUN pnpm --filter=@data-pulse-2/db     deploy --prod /out/db
 # ---- api runtime --------------------------------------------------------------
 FROM base AS api
 WORKDIR /app
-COPY --from=build /out/api ./
+COPY --from=build --chown=node:node /out/api ./
 # The OpenAPI loader resolves contracts relative to the monorepo layout:
 #   /app/dist/openapi/loader.js -> ../../../../packages/contracts/openapi == /packages/contracts/openapi
 # The pruned bundle has no such tree, so place the static contract YAMLs there.
-COPY --from=build /repo/packages/contracts/openapi /packages/contracts/openapi
+COPY --from=build --chown=node:node /repo/packages/contracts/openapi /packages/contracts/openapi
 # The migration-status gauge (app.module.ts countMigrationFiles) reads the drizzle
 # SQL dir; without it the pruned image reports db_migration_status pending forever.
 # Ship the migrations and point DB_MIGRATIONS_DIR at them (set in compose).
-COPY --from=build /repo/packages/db/drizzle /packages/db/drizzle
+COPY --from=build --chown=node:node /repo/packages/db/drizzle /packages/db/drizzle
 ENV NODE_ENV=production
+USER node
 # 3000 = HTTP API, 9464 = Prometheus metrics (also used as the liveness probe)
 EXPOSE 3000 9464
 CMD ["node", "dist/main.js"]
@@ -61,14 +62,16 @@ CMD ["node", "dist/main.js"]
 # ---- worker runtime -----------------------------------------------------------
 FROM base AS worker
 WORKDIR /app
-COPY --from=build /out/worker ./
+COPY --from=build --chown=node:node /out/worker ./
 ENV NODE_ENV=production
+USER node
 CMD ["node", "dist/main.js"]
 
 # ---- migrate (one-shot) -------------------------------------------------------
 FROM base AS migrate
 WORKDIR /app
-COPY --from=build /out/db ./
+COPY --from=build --chown=node:node /out/db ./
 ENV NODE_ENV=production
+USER node
 # migrations resolved relative to the bundled db package
 CMD ["node", "dist/cli/migrate.js", "up"]
