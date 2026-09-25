@@ -18,6 +18,10 @@
  * Fix: call `startOtel()` at module-evaluation time before every other
  * import in main.ts. `import "./instrumentation"` must be the FIRST import.
  *
+ * `shouldStartOtel()` is read before `startOtel()`. `DP2_OTEL_DISABLED=1|true`
+ * or `OTEL_SDK_DISABLED=true` skips SDK construction and the metrics listener.
+ * When neither is set, `startOtel()` still runs at module evaluation.
+ *
  * Worker-specific defaults
  * ------------------------
  * The metrics listener binds to `127.0.0.1` by default. Workers have no
@@ -27,14 +31,17 @@
  *
  * Constitution §VII / T483.
  */
-import { startOtel } from "@data-pulse-2/shared";
+import { shouldStartOtel, startOtel } from "@data-pulse-2/shared";
 
 // Read env vars at module-evaluation time. Node.js has already populated
 // `process.env` from the OS environment by this point, so these reads are safe.
-startOtel({
-  serviceName: "worker",
-  metrics: {
-    port: Number(process.env["WORKER_METRICS_PORT"] ?? 9091),
-    host: process.env["WORKER_METRICS_BIND_HOST"] ?? "127.0.0.1",
-  },
-});
+// The guard is before startOtel so a disable flag never constructs the SDK.
+if (shouldStartOtel(process.env)) {
+  startOtel({
+    serviceName: "worker",
+    metrics: {
+      port: Number(process.env["WORKER_METRICS_PORT"] ?? 9091),
+      host: process.env["WORKER_METRICS_BIND_HOST"] ?? "127.0.0.1",
+    },
+  });
+}
