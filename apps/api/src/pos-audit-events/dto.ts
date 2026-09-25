@@ -45,9 +45,11 @@ const FORBIDDEN_PAYLOAD_KEYS = new Set<string>([
  * violation is found.
  */
 export function hasForbiddenField(value: unknown, depth = 0): boolean {
-  if (depth > 20 || typeof value !== "object" || value === null) {
-    return false;
-  }
+  // Fail closed: an object/array beyond the supported inspection depth is a
+  // schema violation. Treating it as safe would let a credential field hide
+  // below the traversal cutoff.
+  if (typeof value !== "object" || value === null) return false;
+  if (depth > 20) return true;
   if (Array.isArray(value)) {
     return value.some((item) => hasForbiddenField(item, depth + 1));
   }

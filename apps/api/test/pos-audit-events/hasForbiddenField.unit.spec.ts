@@ -47,4 +47,22 @@ describe("hasForbiddenField", () => {
   it("returns false for an empty array", () => {
     expect(hasForbiddenField([])).toBe(false);
   });
+
+  it("fails closed when a nested object exceeds the supported depth", () => {
+    let value: Record<string, unknown> = { safe: true };
+    for (let i = 0; i < 21; i += 1) value = { nested: value };
+    expect(hasForbiddenField(value)).toBe(true);
+  });
+
+  it("fails closed when nested arrays exceed the supported depth", () => {
+    let value: unknown = { safe: true };
+    for (let i = 0; i < 21; i += 1) value = [value];
+    expect(hasForbiddenField(value)).toBe(true);
+  });
+
+  it("still accepts normal payloads at the maximum supported depth", () => {
+    let value: Record<string, unknown> = { safe: true };
+    for (let i = 0; i < 20; i += 1) value = { nested: value };
+    expect(hasForbiddenField(value)).toBe(false);
+  });
 });

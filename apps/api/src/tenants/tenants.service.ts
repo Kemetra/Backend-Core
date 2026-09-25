@@ -117,10 +117,20 @@ export class TenantsService {
   async list(principal: Principal): Promise<TenantRecord[]> {
     const userId = await this.resolveActingUserId(principal);
     if (await this.isPlatformAdmin(principal, userId)) {
-      return this.tenants.listAll(this.pool);
+      return this.tx(
+        this.pool,
+        { tenantId: null, isPlatformAdmin: true },
+        (client) => this.tenants.listAll(client),
+      );
     }
     if (!userId) return [];
-    return this.tenants.listForUser(this.pool, userId);
+    // This cross-tenant read is constrained by the authenticated user ID.
+    // RLS needs a transaction-local bootstrap context to see memberships.
+    return this.tx(
+      this.pool,
+      { tenantId: null, isPlatformAdmin: true },
+      (client) => this.tenants.listForUser(client, userId),
+    );
   }
 
   // ===== CREATE =====================================================
@@ -192,15 +202,20 @@ export class TenantsService {
     const isAdmin = await this.isPlatformAdmin(principal, userId);
 
     if (isAdmin) {
-      const row = await this.tenants.findByIdAdmin(this.pool, tenantId);
+      const row = await this.tx(
+        this.pool,
+        { tenantId, isPlatformAdmin: true },
+        (client) => this.tenants.findByIdAdmin(client, tenantId),
+      );
       if (!row) throw notFound();
       return row;
     }
 
     if (!userId) throw notFound();
-    const role = await this.memberships.findRoleCodeForUserInTenant(
-      userId,
-      tenantId,
+    const role = await this.tx(
+      this.pool,
+      { tenantId, isPlatformAdmin: false },
+      (client) => this.memberships.findRoleCodeForUserInTenant(userId, tenantId, client),
     );
     if (!role) throw notFound();
 

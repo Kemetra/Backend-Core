@@ -93,6 +93,7 @@ function idempKey(suffix: string): string {
 
 class FakeRedis {
   private readonly store = new Map<string, { value: string; expiresAt: number }>();
+  public failWrites = false;
   async get(key: string): Promise<string | null> {
     const e = this.store.get(key);
     if (!e) return null;
@@ -103,6 +104,7 @@ class FakeRedis {
     return e.value;
   }
   async set(key: string, value: string, options: { px: number }): Promise<unknown> {
+    if (this.failWrites) throw new Error("injected Redis replay-save failure");
     this.store.set(key, { value, expiresAt: Date.now() + options.px });
     return "OK";
   }
@@ -133,6 +135,7 @@ class ConfigurableContextGuard implements CanActivate {
     const req = ctx.switchToHttp().getRequest<{
       context?: ResolvedContext;
       principal?: { userId?: string };
+      posDeviceId?: string;
     }>();
     req.context = {
       userId: this.userId,
@@ -141,6 +144,7 @@ class ConfigurableContextGuard implements CanActivate {
       isPlatformAdmin: false,
       source: "token",
     };
+    req.posDeviceId = "settlement-test-terminal";
     if (this.userId) req.principal = { userId: this.userId };
     return true;
   }
@@ -237,12 +241,16 @@ beforeEach(() => {
   contextGuard.storeId = STORE_A_X;
   contextGuard.userId = ACTOR_A;
   fakeRedis.clear();
+  fakeRedis.failWrites = false;
 });
 
 afterEach(async () => {
   if (dockerSkipped || !env) return;
   // Each sub-case opens fresh receivables; clear them so cases are independent.
   await env.admin.query(`DELETE FROM receivable WHERE sale_id = $1`, [SALE_A]);
+  await env.admin.query(
+    `DELETE FROM idempotency_keys WHERE key LIKE 'settlement-intent:%'`,
+  );
 });
 
 function maybeSkip(): boolean {
@@ -399,6 +407,100 @@ describe("035 T030 §4 — idempotent replay", () => {
     expect(await countReceivables()).toBe(1);
     // The replayed body is byte-for-byte the stored response.
     expect(replay.body).toEqual(first.body);
+  });
+
+  it("PostgreSQL replays the same result after the Redis replay record disappears", async () => {
+    if (maybeSkip()) return;
+    const key = idempKey("s4durable");
+    const body = { saleRef: SALE_A, payers: [{ payerRef: PAYER_A_STORE, owedAmount: "120.00" }] };
+
+    const first = await http().post(INTENT_URL).set("Idempotency-Key", key).send(body);
+    expect(first.status).toBe(201);
+    fakeRedis.clear();
+
+    const retry = await http().post(INTENT_URL).set("Idempotency-Key", key).send(body);
+    expect(retry.status).toBe(201);
+    expect(retry.body).toEqual(first.body);
+    expect(await countReceivables()).toBe(1);
+  });
+
+  it("same durable key with a different logical payload conflicts after Redis loss", async () => {
+    if (maybeSkip()) return;
+    const key = idempKey("s4collision");
+    const first = await http().post(INTENT_URL).set("Idempotency-Key", key).send({
+      saleRef: SALE_A,
+      payers: [{ payerRef: PAYER_A_STORE, owedAmount: "10.00" }],
+    });
+    expect(first.status).toBe(201);
+    fakeRedis.clear();
+
+    const retry = await http().post(INTENT_URL).set("Idempotency-Key", key).send({
+      saleRef: SALE_A,
+      payers: [{ payerRef: PAYER_A_STORE, owedAmount: "11.00" }],
+    });
+    expect(retry.status).toBe(409);
+    expect(retry.body.error.code).toBe("idempotency_key_conflict");
+    expect(await countReceivables()).toBe(1);
+  });
+
+  it("a Redis replay-save failure cannot duplicate receivables", async () => {
+    if (maybeSkip()) return;
+    const key = idempKey("s4redisfail");
+    const body = { saleRef: SALE_A, payers: [{ payerRef: PAYER_A_STORE, owedAmount: "21.00" }] };
+    fakeRedis.failWrites = true;
+
+    const first = await http().post(INTENT_URL).set("Idempotency-Key", key).send(body);
+    expect(first.status).toBe(201);
+    fakeRedis.failWrites = false;
+
+    const retry = await http().post(INTENT_URL).set("Idempotency-Key", key).send(body);
+    expect(retry.status).toBe(201);
+    expect(retry.body).toEqual(first.body);
+    expect(await countReceivables()).toBe(1);
+  });
+
+  it("concurrent requests with the same key converge to one durable outcome", async () => {
+    if (maybeSkip()) return;
+    const key = idempKey("s4concurrent");
+    const body = { saleRef: SALE_A, payers: [{ payerRef: PAYER_A_STORE, owedAmount: "31.00" }] };
+
+    const [a, b] = await Promise.all([
+      http().post(INTENT_URL).set("Idempotency-Key", key).send(body),
+      http().post(INTENT_URL).set("Idempotency-Key", key).send(body),
+    ]);
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(201);
+    expect(b.body).toEqual(a.body);
+    expect(await countReceivables()).toBe(1);
+  });
+
+  it("retry after a DB commit without an HTTP replay record returns the committed outcome", async () => {
+    if (maybeSkip() || !app) return;
+    const key = idempKey("s4crash");
+    const service = app.get(ReceivableService);
+    const committed = await service.openFromIntent({
+      tenantId: TENANT_A,
+      storeId: STORE_A_X,
+      operation: {
+        idempotencyKey: key,
+        terminalId: "settlement-test-terminal",
+        actorUserId: ACTOR_A,
+        requestId: "b1000000-0000-4000-8000-000000000001",
+      },
+      saleRef: SALE_A,
+      payers: [{ payerRef: PAYER_A_STORE, owedAmount: "41.00" }],
+    });
+    expect(committed.kind).toBe("ok");
+
+    const retry = await http().post(INTENT_URL).set("Idempotency-Key", key).send({
+      saleRef: SALE_A,
+      payers: [{ payerRef: PAYER_A_STORE, owedAmount: "41.00" }],
+    });
+    expect(retry.status).toBe(201);
+    if (committed.kind === "ok") {
+      expect(retry.body.receivables[0].receivableRef).toBe(committed.rows[0]?.id);
+    }
+    expect(await countReceivables()).toBe(1);
   });
 
   it("missing Idempotency-Key on the write → 400", async () => {

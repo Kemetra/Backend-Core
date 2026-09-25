@@ -5,23 +5,9 @@
  *
  * RLS posture
  * -----------
- * Methods come in two flavours by their first argument:
- *
- *   1. **`pool: Pool`** — runs on a plain pool connection. Used by
- *      list-style queries that intentionally cross tenant boundaries
- *      (e.g., the user's "all my tenants" list, joining memberships
- *      with tenants). These queries do NOT set the tenant GUC and
- *      filter by user/membership at the SQL level. Same posture as
- *      `MembershipRepository`.
- *
- *   2. **`client: PoolClient`** — runs inside a transaction the caller
- *      opened via `runWithTenantContext` (in the service). RLS is in
- *      force; `app.current_tenant` is the path-resolved tenant id;
- *      `app.is_platform_admin` is the actor's flag. The repository
- *      issues plain SQL — RLS handles cross-tenant filtering for free.
- *
- * The two flavours are *intentionally* separated so a reviewer
- * scanning a service callsite knows which RLS regime applies.
+ * All production calls run on a client supplied by `runWithTenantContext`.
+ * Cross-tenant lists use a transaction-local bootstrap context and retain
+ * an authenticated user predicate for regular users.
  *
  * What this repository owns
  * -------------------------
@@ -93,19 +79,17 @@ export const DEFAULT_TENANT_ROLES: readonly {
 
 @Injectable()
 export class TenantsRepository {
-  // ===== List queries (plain pool, no tenant GUC) ===================
+  // ===== List queries ================================================
 
   /**
    * Tenants the user has an active membership in. Returns active
    * (non-deleted, non-revoked) memberships only.
    *
-   * Uses a plain pool because this query crosses tenant boundaries
-   * by design — a regular user belongs to ≥0 tenants and we list
-   * them all in one query. RLS would defeat the purpose: the user's
-   * own memberships are the access mechanism.
+   * The service supplies a bootstrap-context client so RLS permits
+   * cross-tenant membership reads; the user predicate limits the result.
    */
-  async listForUser(pool: Pool, userId: string): Promise<TenantRecord[]> {
-    const db = drizzle(pool);
+  async listForUser(connection: Pool | PoolClient, userId: string): Promise<TenantRecord[]> {
+    const db = drizzle(connection);
     const rows = await db
       .select({
         id: tenants.id,
@@ -144,10 +128,10 @@ export class TenantsRepository {
    * for restoration UX, NOT by the list endpoint).
    */
   async listAll(
-    pool: Pool,
+    connection: Pool | PoolClient,
     opts: { includeDeleted?: boolean } = {},
   ): Promise<TenantRecord[]> {
-    const db = drizzle(pool);
+    const db = drizzle(connection);
     const where = opts.includeDeleted ? undefined : isNull(tenants.deletedAt);
     const rows = where
       ? await db.select().from(tenants).where(where)
@@ -156,15 +140,15 @@ export class TenantsRepository {
   }
 
   /**
-   * Read-by-id without RLS — the platform-admin path that needs to
+   * Read-by-id under platform-admin RLS context — the path that needs to
    * see soft-deleted rows. Returns `null` if no row matches the id.
    * Caller decides whether to filter `deleted_at` based on actor.
    */
   async findByIdAdmin(
-    pool: Pool,
+    connection: Pool | PoolClient,
     tenantId: string,
   ): Promise<TenantRecord | null> {
-    const db = drizzle(pool);
+    const db = drizzle(connection);
     const rows = await db
       .select()
       .from(tenants)

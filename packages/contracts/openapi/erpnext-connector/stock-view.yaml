@@ -53,7 +53,7 @@ info:
 
     Failure vocabulary: the single canonical `Error` envelope matching
     `auth.openapi.yaml` / `outbox.openapi.yaml` / `pos-sales/sales.yaml` /
-    `posting-feed.yaml`. Closed `error.code` set: `validation_failure`,
+    `posting-feed.yaml`. Closed `error.code` set: `validation_error`,
     `snapshot_required` (stale pull cursor, 409), `idempotency_key_conflict`
     (report key reused with a different report, 409), `not_found`
     (non-disclosing 404 for a cross-tenant / out-of-scope `requestRef` or
@@ -560,7 +560,7 @@ components:
               type: string
               description: >
                 Stable machine-readable error code. Closed set on this surface:
-                validation_failure | snapshot_required | idempotency_key_conflict |
+                validation_error | snapshot_required | idempotency_key_conflict |
                 not_found | system_failure (plus the generic 401 refusal).
             message:
               type: string
@@ -573,7 +573,7 @@ components:
   responses:
     ValidationFailure:
       description: >
-        `validation_failure` — malformed query / body, unknown key (strict
+        `validation_error` — malformed query / body, unknown key (strict
         boundary), bad cursor format, a body-supplied server-owned field (e.g. a
         `tenant_id`/`storeId` in the report body), or a malformed quantity.
         Deterministic; no record created.

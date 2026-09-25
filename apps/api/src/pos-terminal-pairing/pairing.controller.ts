@@ -29,10 +29,12 @@ import {
   HttpStatus,
   NotFoundException,
   Post,
+  Req,
   Res,
 } from "@nestjs/common";
-import type { Response } from "express";
+import type { Request, Response } from "express";
 
+import { RATE_LIMIT_BUCKETS, RateLimiter } from "../auth/rate-limit";
 import {
   TerminalPairRequestSchema,
   type TerminalPairResponseBody,
@@ -41,7 +43,10 @@ import { PairingService } from "./pairing.service";
 
 @Controller()
 export class PairingController {
-  constructor(private readonly service: PairingService) {}
+  constructor(
+    private readonly service: PairingService,
+    private readonly rateLimiter: RateLimiter,
+  ) {}
 
   /**
    * Consume a one-time pairing code. Anonymous (no guard). Success → 200 with the
@@ -52,8 +57,30 @@ export class PairingController {
   @HttpCode(HttpStatus.OK)
   async pair(
     @Body() rawBody: unknown,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<TerminalPairResponseBody> {
+    // Source-IP throttling runs before validation and code lookup so malformed
+    // bodies and unknown codes cannot be used as an unlimited enumeration path.
+    // req.ip is derived by Express from the explicitly configured trust-proxy
+    // policy; this code never reads X-Forwarded-For directly.
+    const ip = String(req.ip ?? req.socket?.remoteAddress ?? "unknown");
+    const ipDecision = await this.rateLimiter.check(
+      "pairing_ip",
+      ip,
+      RATE_LIMIT_BUCKETS.pairingPerIp,
+    );
+    if (!ipDecision.allowed) {
+      const resetSeconds = ipDecision.resetMs < 0
+        ? 1
+        : Math.ceil(ipDecision.resetMs / 1000);
+      res.setHeader("Retry-After", String(Math.min(300, Math.max(1, resetSeconds))));
+      throw new HttpException(
+        { code: "RATE_LIMITED", message: "Too many pairing attempts." },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
     // Validate in-controller (not via the shared ZodValidationPipe) so a bad body
     // surfaces the contract's `validation_failure` code rather than the global
     // `validation_error` — the contract's closed error enum is `validation_failure`

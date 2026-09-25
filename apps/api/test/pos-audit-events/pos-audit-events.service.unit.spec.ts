@@ -15,13 +15,14 @@ import type { AuditEventItemInput, PosAuditEventsSyncInput } from "../../src/pos
 const TENANT_ID   = "11111111-0000-4000-8000-000000000001";
 const STORE_ID    = "22222222-0000-4000-8000-000000000001";
 const DEVICE_TOKEN = "valid-device-token";
+const DEVICE_ID = "44444444-0000-4000-8000-000000000001";
 
 function makeEvent(overrides: Partial<AuditEventItemInput> = {}): AuditEventItemInput {
   return {
     event_id:                "aaaaaaaa-0000-4000-8000-000000000001",
     tenant_id:               TENANT_ID,
     branch_id:               STORE_ID,
-    originating_terminal_id: "44444444-0000-4000-8000-000000000001",
+    originating_terminal_id: DEVICE_ID,
     acting_operator_id:      "user_clerk_test",
     action_category:         "shift.open",
     created_at:              "2026-01-15T10:00:00.000Z",
@@ -38,7 +39,7 @@ function makeBody(events: AuditEventItemInput[] = [makeEvent()]): PosAuditEvents
 }
 
 const fakeDevice = {
-  id:        "device-1",
+  id:        DEVICE_ID,
   tenantId:  TENANT_ID,
   storeId:   STORE_ID,
   label:     "till",
@@ -174,14 +175,54 @@ describe("syncBatch — tenant_mismatch rejections", () => {
 // ===========================================================================
 
 describe("syncBatch — actor resolution", () => {
+  it("AR0: contradictory client terminal id is rejected before persistence", async () => {
+    const result = await service.syncBatch(
+      makeBody([
+        makeEvent({
+          originating_terminal_id: "44444444-0000-4000-8000-000000000099",
+        }),
+      ]),
+      null,
+    );
+
+    expect(result).toMatchObject({ rejected: [{ category: "invalid_input" }] });
+    expect(runWithTenantContext).not.toHaveBeenCalled();
+  });
+
   it("AR1: actor lookup returns no rows → invalid_input", async () => {
-    mockPool.query.mockResolvedValue({ rows: [] });
+    (runWithTenantContext as jest.Mock).mockImplementation(
+      async (_pool: unknown, _ctx: unknown, fn: (client: { query: jest.Mock }) => Promise<unknown>) =>
+        fn({ query: jest.fn().mockResolvedValue({ rows: [] }) }),
+    );
 
     const result = await service.syncBatch(makeBody(), null);
 
     expect(result).toMatchObject({
       rejected: [{ category: "invalid_input" }],
     });
+  });
+
+  it("AR2: actor lookup binds tenant, store, device, session and event time", async () => {
+    let actorSql = "";
+    (runWithTenantContext as jest.Mock).mockImplementation(
+      async (_pool: unknown, _ctx: unknown, fn: (client: { query: jest.Mock }) => Promise<unknown>) => {
+        const query = jest.fn(async (sql: string) => {
+          if (String(sql).includes("FROM auth_tokens token")) {
+            actorSql = String(sql);
+            return { rows: [{ id: "user-1" }] };
+          }
+          return { rows: [{ id: makeEvent().event_id }] };
+        });
+        return fn({ query });
+      },
+    );
+
+    const result = await service.syncBatch(makeBody(), null);
+    expect(result).toMatchObject({ accepted: [makeEvent().event_id] });
+    expect(actorSql).toContain("token.device_id = $4");
+    expect(actorSql).toContain("token.store_id = $3");
+    expect(actorSql).toContain("token.issued_at <= $6::timestamptz");
+    expect(actorSql).toContain("token.revoked_at IS NULL OR token.revoked_at >= $6::timestamptz");
   });
 });
 
@@ -217,7 +258,11 @@ describe("syncBatch — accepted / duplicate outcomes", () => {
 
     (runWithTenantContext as jest.Mock).mockImplementation(
       async (_pool: unknown, _ctx: unknown, fn: (client: { query: jest.Mock }) => Promise<unknown>) => {
-        const fakeClient = { query: jest.fn().mockResolvedValue({ rows: [] }) };
+        const fakeClient = {
+          query: jest.fn()
+            .mockResolvedValueOnce({ rows: [{ id: "user-1" }] })
+            .mockResolvedValueOnce({ rows: [] }),
+        };
         return fn(fakeClient);
       },
     );
@@ -238,7 +283,7 @@ describe("syncBatch — accepted / duplicate outcomes", () => {
 // ===========================================================================
 
 describe("syncBatch — shift.open side-effect", () => {
-  it("SH1: shift.open accepted → client.query called twice (audit_events + shifts)", async () => {
+  it("SH1: shift.open accepted → actor validation + audit_events + shifts", async () => {
     mockPool.query.mockResolvedValue({ rows: [{ id: "user-1" }] });
 
     let capturedClient: { query: jest.Mock } | null = null;
@@ -247,6 +292,7 @@ describe("syncBatch — shift.open side-effect", () => {
       async (_pool: unknown, _ctx: unknown, fn: (client: { query: jest.Mock }) => Promise<unknown>) => {
         capturedClient = {
           query: jest.fn()
+            .mockResolvedValueOnce({ rows: [{ id: "user-1" }] })
             .mockResolvedValueOnce({ rows: [{ id: "aaaaaaaa-0000-4000-8000-000000000001" }] })
             .mockResolvedValueOnce({ rows: [] }),
         };
@@ -256,10 +302,10 @@ describe("syncBatch — shift.open side-effect", () => {
 
     await service.syncBatch(makeBody([makeEvent({ action_category: "shift.open" })]), "req-id");
 
-    expect(capturedClient!.query).toHaveBeenCalledTimes(2);
+    expect(capturedClient!.query).toHaveBeenCalledTimes(3);
   });
 
-  it("SH2: shift.close accepted → client.query called once (no shifts INSERT)", async () => {
+  it("SH2: shift.close accepted → actor validation + audit insert only", async () => {
     mockPool.query.mockResolvedValue({ rows: [{ id: "user-1" }] });
 
     let capturedClient: { query: jest.Mock } | null = null;
@@ -275,7 +321,7 @@ describe("syncBatch — shift.open side-effect", () => {
 
     await service.syncBatch(makeBody([makeEvent({ action_category: "shift.close" })]), "req-id");
 
-    expect(capturedClient!.query).toHaveBeenCalledTimes(1);
+    expect(capturedClient!.query).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -285,7 +331,7 @@ describe("syncBatch — shift.open side-effect", () => {
 
 describe("syncBatch — unexpected error isolation", () => {
   it("UE1: pool.query throws → event pushed to rejected as invalid_input; other events unaffected", async () => {
-    mockPool.query.mockRejectedValue(new Error("DB connection reset"));
+    (runWithTenantContext as jest.Mock).mockRejectedValue(new Error("DB connection reset"));
 
     const result = await service.syncBatch(makeBody([makeEvent()]), "req-id");
 
@@ -319,7 +365,11 @@ describe("syncBatch — mixed batch", () => {
       )
       .mockImplementationOnce(
         async (_pool: unknown, _ctx: unknown, fn: (client: { query: jest.Mock }) => Promise<unknown>) => {
-          const fakeClient = { query: jest.fn().mockResolvedValue({ rows: [] }) };
+          const fakeClient = {
+            query: jest.fn()
+              .mockResolvedValueOnce({ rows: [{ id: "user-1" }] })
+              .mockResolvedValueOnce({ rows: [] }),
+          };
           return fn(fakeClient);
         },
       );

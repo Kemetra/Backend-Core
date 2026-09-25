@@ -23,7 +23,7 @@ import { Module } from "@nestjs/common";
 import { createLogger, type Logger } from "@data-pulse-2/shared";
 import type { Pool } from "pg";
 
-import { AuthModule, PG_POOL } from "../auth/auth.module";
+import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../auth/auth.module";
 
 import {
   CLERK_VERIFIER,
@@ -55,7 +55,7 @@ export const POS_OPERATORS_LOGGER = "POS_OPERATORS_LOGGER";
     {
       provide: DeviceRepository,
       useFactory: (pool: Pool): DeviceRepository => new DeviceRepository(pool),
-      inject: [PG_POOL],
+      inject: [AUTH_LOOKUP_POOL],
     },
     {
       provide: PosOperatorsService,
@@ -64,9 +64,16 @@ export const POS_OPERATORS_LOGGER = "POS_OPERATORS_LOGGER";
         verifier: ClerkVerifier,
         devices: DeviceRepository,
         logger: Logger,
+        lookupPool: Pool,
       ): PosOperatorsService =>
-        new PosOperatorsService(pool, verifier, devices, logger),
-      inject: [PG_POOL, CLERK_VERIFIER, DeviceRepository, POS_OPERATORS_LOGGER],
+        new PosOperatorsService(pool, verifier, devices, logger, lookupPool),
+      inject: [
+        PG_POOL,
+        CLERK_VERIFIER,
+        DeviceRepository,
+        POS_OPERATORS_LOGGER,
+        AUTH_LOOKUP_POOL,
+      ],
     },
   ],
 })

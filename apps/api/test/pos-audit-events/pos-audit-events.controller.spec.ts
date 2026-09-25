@@ -36,7 +36,7 @@ import {
   type ClerkVerifier,
 } from "../../src/pos-operators/clerk-verifier";
 import { PosAuditEventsModule } from "../../src/pos-audit-events/pos-audit-events.module";
-import { PG_POOL } from "../../src/auth/auth.module";
+import { AUTH_LOOKUP_POOL, PG_POOL } from "../../src/auth/auth.module";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
 import { LoggingInterceptor, ROOT_LOGGER } from "../../src/common/logging.interceptor";
 import { RequestIdInterceptor } from "../../src/common/request-id.interceptor";
@@ -67,6 +67,7 @@ const OPERATOR_REVOKED_CLERK_SUB = "user_clerk_op_ae_revoked";
 
 const DEVICE_ID = "0c000000-0000-4000-8000-00000000ee01";
 const DEVICE_REVOKED_ID = "0c000000-0000-4000-8000-00000000ee02";
+const OPERATOR_SESSION_ID = "0c000000-0000-4000-8000-00000000ee03";
 
 const DEVICE_ATTESTATION = "ae-device-attestation-token-pr6";
 const DEVICE_REVOKED_ATTESTATION = "ae-device-revoked-attestation-pr6";
@@ -88,6 +89,7 @@ function makeShiftOpen(eventId: string) {
     branch_id: STORE_ID,
     originating_terminal_id: DEVICE_ID,
     acting_operator_id: OPERATOR_CLERK_SUB,
+    session_id: OPERATOR_SESSION_ID,
     action_category: "shift.open",
     created_at: CREATED_AT,
     payload: { shift_id: SHIFT_ID, opened_at: CREATED_AT },
@@ -153,7 +155,7 @@ beforeAll(async () => {
     // Membership for the primary operator in TENANT_ID (required by the tenant-scoped actor lookup).
     const ROLE_ID = "0c000000-0000-4000-8000-00000000ff01";
     await pool.query(
-      `INSERT INTO roles (id, tenant_id, code, name) VALUES ($1, $2, 'cashier', 'Cashier AE') ON CONFLICT DO NOTHING`,
+      `INSERT INTO roles (id, tenant_id, code, name) VALUES ($1, $2, 'store_manager', 'Manager AE') ON CONFLICT DO NOTHING`,
       [ROLE_ID, TENANT_ID],
     );
     await pool.query(
@@ -189,11 +191,29 @@ beforeAll(async () => {
       `INSERT INTO devices (id, tenant_id, store_id, label, token_hash, revoked_at) VALUES ($1, $2, $3, 'till-rev', $4, now())`,
       [DEVICE_REVOKED_ID, TENANT_ID, STORE_ID, hashRevoked],
     );
+    await pool.query(
+      `INSERT INTO auth_tokens
+         (id, token_hash, tenant_id, user_id, device_id, store_id, scope,
+          issued_at, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'pos_operator', $7, $8)`,
+      [
+        OPERATOR_SESSION_ID,
+        hashToken("ae-operator-session"),
+        TENANT_ID,
+        OPERATOR_USER_ID,
+        DEVICE_ID,
+        STORE_ID,
+        "2026-01-14T10:00:00.000Z",
+        "2027-01-15T10:00:00.000Z",
+      ],
+    );
 
     const moduleRef = await Test.createTestingModule({
       imports: [PosAuditEventsModule],
     })
       .overrideProvider(PG_POOL)
+      .useValue(env.app)
+      .overrideProvider(AUTH_LOOKUP_POOL)
       .useValue(pool)
       .overrideProvider(CLERK_VERIFIER)
       .useValue(new StubClerkVerifier(new Set(["jwt-valid"])))
@@ -509,6 +529,52 @@ describe("POST /api/pos/v1/audit-events (per-event rejections)", () => {
       event_id: "0c111111-0000-4000-8000-000000000026",
       category: "invalid_input",
     });
+  });
+
+  it("accepts a delayed audit from a session valid before the operator was demoted", async () => {
+    if (maybeSkip()) return;
+    const membershipId = "0c000000-0000-4000-8000-00000000dd01";
+    const eventId = "0c111111-0000-4000-8000-000000000029";
+    await pool!.query("UPDATE memberships SET revoked_at=now() WHERE id=$1", [membershipId]);
+    try {
+      const res = await http()
+        .post("/api/pos/v1/audit-events")
+        .send({ device_token_attestation: DEVICE_ATTESTATION, events: [makeShiftOpen(eventId)] });
+      expect(res.status).toBe(200);
+      expect(res.body.accepted).toContain(eventId);
+    } finally {
+      await pool!.query("UPDATE memberships SET revoked_at=NULL WHERE id=$1", [membershipId]);
+    }
+  });
+
+  it("contradictory originating_terminal_id is rejected and never persisted", async () => {
+    if (maybeSkip()) return;
+    const eventId = "0c111111-0000-4000-8000-000000000027";
+    const evt = {
+      ...makeShiftOpen(eventId),
+      originating_terminal_id: DEVICE_REVOKED_ID,
+    };
+    const res = await http()
+      .post("/api/pos/v1/audit-events")
+      .send({ device_token_attestation: DEVICE_ATTESTATION, events: [evt] });
+    expect(res.status).toBe(200);
+    expect(res.body.rejected).toEqual([{ event_id: eventId, category: "invalid_input" }]);
+    const persisted = await pool!.query("SELECT id FROM audit_events WHERE id = $1", [eventId]);
+    expect(persisted.rows).toHaveLength(0);
+  });
+
+  it("a session not bound to the authenticated device/operator is rejected", async () => {
+    if (maybeSkip()) return;
+    const eventId = "0c111111-0000-4000-8000-000000000028";
+    const evt = {
+      ...makeShiftOpen(eventId),
+      session_id: "0c000000-0000-4000-8000-00000000ee99",
+    };
+    const res = await http()
+      .post("/api/pos/v1/audit-events")
+      .send({ device_token_attestation: DEVICE_ATTESTATION, events: [evt] });
+    expect(res.status).toBe(200);
+    expect(res.body.rejected).toEqual([{ event_id: eventId, category: "invalid_input" }]);
   });
 });
 

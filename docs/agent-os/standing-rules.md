@@ -1,4 +1,4 @@
-# Data-Pulse-2 — Agent OS v1 Standing Rules
+# Backend-Core — Agent OS v1 Standing Rules
 
 > These rules apply to **every** agent action in this repo unless the user
 > explicitly overrides them. They are not negotiable defaults — they are

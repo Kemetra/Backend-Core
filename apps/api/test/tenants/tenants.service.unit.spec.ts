@@ -241,10 +241,10 @@ describe("TenantsService.list", () => {
     const result = await service.list(tokenPlatformAdmin);
 
     expect(result).toBe(rows);
-    expect(tenantsRepo.listAll).toHaveBeenCalledWith(fakePool);
+    expect(tenantsRepo.listAll).toHaveBeenCalledWith(fakeClient);
     expect(tenantsRepo.listForUser).not.toHaveBeenCalled();
     expect(membershipsRepo.isPlatformAdmin).not.toHaveBeenCalled();
-    expect(tx).not.toHaveBeenCalled();
+    expect(tx).toHaveBeenCalledWith(fakePool, { tenantId: null, isPlatformAdmin: true }, expect.any(Function));
   });
 
   it("LI2: session principal + memberships.isPlatformAdmin=true → listAll(pool)", async () => {
@@ -257,9 +257,9 @@ describe("TenantsService.list", () => {
 
     expect(result).toBe(rows);
     expect(membershipsRepo.isPlatformAdmin).toHaveBeenCalledWith(USER_ID);
-    expect(tenantsRepo.listAll).toHaveBeenCalledWith(fakePool);
+    expect(tenantsRepo.listAll).toHaveBeenCalledWith(fakeClient);
     expect(tenantsRepo.listForUser).not.toHaveBeenCalled();
-    expect(tx).not.toHaveBeenCalled();
+    expect(tx).toHaveBeenCalledWith(fakePool, { tenantId: null, isPlatformAdmin: true }, expect.any(Function));
   });
 
   it("LI3: session principal + memberships.isPlatformAdmin=false → listForUser(pool, userId)", async () => {
@@ -271,9 +271,9 @@ describe("TenantsService.list", () => {
     const result = await service.list(sessionPrincipal);
 
     expect(result).toBe(rows);
-    expect(tenantsRepo.listForUser).toHaveBeenCalledWith(fakePool, USER_ID);
+    expect(tenantsRepo.listForUser).toHaveBeenCalledWith(fakeClient, USER_ID);
     expect(tenantsRepo.listAll).not.toHaveBeenCalled();
-    expect(tx).not.toHaveBeenCalled();
+    expect(tx).toHaveBeenCalledWith(fakePool, { tenantId: null, isPlatformAdmin: true }, expect.any(Function));
   });
 
   it("LI4: token principal with tenantId set + isPlatformAdmin=false + userId set → listForUser", async () => {
@@ -286,7 +286,7 @@ describe("TenantsService.list", () => {
 
     expect(result).toBe(rows);
     expect(membershipsRepo.isPlatformAdmin).toHaveBeenCalledWith(USER_ID);
-    expect(tenantsRepo.listForUser).toHaveBeenCalledWith(fakePool, USER_ID);
+    expect(tenantsRepo.listForUser).toHaveBeenCalledWith(fakeClient, USER_ID);
     expect(tenantsRepo.listAll).not.toHaveBeenCalled();
   });
 
@@ -429,10 +429,10 @@ describe("TenantsService.read", () => {
     const result = await service.read(tokenPlatformAdmin, TENANT_ID);
 
     expect(result).toBe(row);
-    expect(tenantsRepo.findByIdAdmin).toHaveBeenCalledWith(fakePool, TENANT_ID);
+    expect(tenantsRepo.findByIdAdmin).toHaveBeenCalledWith(fakeClient, TENANT_ID);
     expect(tenantsRepo.findById).not.toHaveBeenCalled();
     expect(membershipsRepo.findRoleCodeForUserInTenant).not.toHaveBeenCalled();
-    expect(tx).not.toHaveBeenCalled();
+    expect(tx).toHaveBeenCalledWith(fakePool, { tenantId: TENANT_ID, isPlatformAdmin: true }, expect.any(Function));
   });
 
   it("RE2: platform-admin token + findByIdAdmin returns null → NotFoundException", async () => {
@@ -457,8 +457,9 @@ describe("TenantsService.read", () => {
     expect(membershipsRepo.findRoleCodeForUserInTenant).toHaveBeenCalledWith(
       USER_ID,
       TENANT_ID,
+      fakeClient,
     );
-    expect(tx).toHaveBeenCalledTimes(1);
+    expect(tx).toHaveBeenCalledTimes(2);
     const txCall = tx.mock.calls[0]!;
     expect(txCall[1]).toEqual({ tenantId: TENANT_ID, isPlatformAdmin: false });
     expect(tenantsRepo.findById).toHaveBeenCalledWith(fakeClient, TENANT_ID);
@@ -476,7 +477,7 @@ describe("TenantsService.read", () => {
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it("RE5: session user, findRoleCodeForUserInTenant returns null → NotFoundException (no tx entered)", async () => {
+  it("RE5: session user, findRoleCodeForUserInTenant returns null → NotFoundException", async () => {
     const { service, tenantsRepo, membershipsRepo, tx } = buildService();
     membershipsRepo.isPlatformAdmin.mockResolvedValue(false);
     membershipsRepo.findRoleCodeForUserInTenant.mockResolvedValue(null);
@@ -485,7 +486,7 @@ describe("TenantsService.read", () => {
       service.read(sessionPrincipal, TENANT_ID),
     ).rejects.toBeInstanceOf(NotFoundException);
 
-    expect(tx).not.toHaveBeenCalled();
+    expect(tx).toHaveBeenCalledTimes(1);
     expect(tenantsRepo.findById).not.toHaveBeenCalled();
   });
 

@@ -8,7 +8,7 @@
  *   - `etaStatus` accepted + ignored in the interim mode (016 owns it).
  *
  * `.strict()` rejects unknown keys AND any body-supplied tenant/store/actor or
- * server-owned field (§XII mass-assignment ban) → 400 validation_failure.
+ * server-owned field (§XII mass-assignment ban) → 400 validation_error.
  * Tenant/scope come from the connectorBearer principal, never the body.
  *
  * The conditional-required coupling is enforced via `superRefine`: a `posted`

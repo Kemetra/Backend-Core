@@ -92,8 +92,7 @@ Icons live at `docs/assets/brand/icons/`.
 ## Scope Notes
 
 > **Important**: These icons are brand and documentation assets only.
-> **Data-Pulse-2 remains the backend-first repository codename** for this
-> project.
+> **Backend-Core is the canonical backend repository** for this project.
 
 - These icons do **not** imply that a dashboard UI is implemented in this
   repository.

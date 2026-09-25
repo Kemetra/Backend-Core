@@ -116,7 +116,7 @@ paths:
         `idempotency_key_conflict` per FR-021c.
 
         Failure-response error codes follow research.md §R2 taxonomy:
-        `validation_failure`, `store_context_required`,
+        `validation_error`, `store_context_required`,
         `idempotency_key_required`, `idempotency_key_malformed`,
         `idempotency_key_conflict`.
       parameters:
@@ -177,7 +177,7 @@ paths:
         "400":
           description: >
             Bad request. Possible `error.code` values:
-            `validation_failure` (FR-070 / FR-071 — missing or malformed
+            `validation_error` (FR-070 / FR-071 — missing or malformed
             field), `store_context_required` (FR-011 — POS principal
             lacks resolved store), `idempotency_key_required`,
             `idempotency_key_malformed`.
@@ -431,7 +431,7 @@ paths:
         product), `target_unavailable` (FR-051 — product is retired or
         deleted), `already_reconciled` (race-loser per US3 #3 — item was
         concurrently resolved before this request committed),
-        `validation_failure` (malformed request body).
+        `validation_error` (malformed request body).
 
         Cross-tenant or out-of-scope addresses receive a non-disclosing
         404 (SI-001 / SI-004 / FR-013 / FR-092). The conflict response
@@ -467,7 +467,7 @@ paths:
                 $ref: "#/components/schemas/ReviewQueueItem"
         "400":
           description: >
-            Bad request. `error.code = "validation_failure"` (malformed
+            Bad request. `error.code = "validation_error"` (malformed
             path UUID or invalid request body).
           content:
             application/json:
@@ -523,7 +523,7 @@ paths:
         `alias_conflict` (FR-062 — identifier already bound to a different
         product; neither the product nor the alias is created),
         `already_reconciled` (race-loser — item was concurrently resolved),
-        `validation_failure` (missing or malformed required fields).
+        `validation_error` (missing or malformed required fields).
 
         Cross-tenant or out-of-scope addresses receive a non-disclosing
         404 (SI-001 / SI-004 / FR-013 / FR-092).
@@ -557,7 +557,7 @@ paths:
                 $ref: "#/components/schemas/ReviewQueueItem"
         "400":
           description: >
-            Bad request. `error.code = "validation_failure"` (malformed
+            Bad request. `error.code = "validation_error"` (malformed
             path UUID, missing `name`, or missing `tax_category`).
           content:
             application/json:
@@ -1328,11 +1328,8 @@ components:
                 this closed set (the runtime interceptor emits a diagnostic
                 `idempotency_in_progress` marker on 425; see the per-op 425
                 response and the recorded contract/runtime body-shape finding).
-                Some shipped-005 operation prose uses the legacy spelling
-                `validation_failure`; the canonical 007 wire code is
-                `validation` (research §R4). Shipped ops are not retrofitted
-                (ISOLATE, T003); the runtime already emits `validation` (the
-                prose is documented drift, not a live second code).
+                Request-shape failures use the platform-wide runtime code
+                `validation_error` (`ErrorCodes.VALIDATION`).
             message:
               type: string
               description: Human-readable summary; no sensitive data.

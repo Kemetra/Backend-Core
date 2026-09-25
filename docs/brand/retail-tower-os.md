@@ -124,10 +124,9 @@ the full approved icon list, and usage guidelines.
 ## Repository Scope Notes
 
 > **Important**: Retail Tower OS is the external product identity and
-> product-vision brand. **Data-Pulse-2 remains the backend-first
-> repository codename** for this project. No repository names, package
-> names, code identifiers, OpenAPI `info.title` values, or deployment
-> names have been changed.
+> product-vision brand. **Backend-Core is the canonical backend repository.**
+> Legacy package names, code identifiers, OpenAPI `info.title` values, and
+> deployment identifiers remain intentionally stable unless separately migrated.
 
 - The brand imagery above describes **product identity and vision only**.
 - It does **not** imply that a dashboard frontend is implemented in this
@@ -139,9 +138,8 @@ the full approved icon list, and usage guidelines.
 - The icon SVGs are brand and docs assets only — they do not replace
   OpenAPI contracts or implementation architecture diagrams.
 
-A future decision to rename the repository, packages, or API titles to
-match the Retail Tower OS brand will be made explicitly and tracked as
-a separate approved change.
+Future decisions to rename packages or API titles to match the Retail Tower OS
+brand will be made explicitly and tracked as separate approved changes.
 
 ---
 
@@ -164,10 +162,9 @@ a separate approved change.
 The following are **not yet decided or approved** and must be tracked as
 explicit separate changes when the time comes:
 
-- [ ] Rename the repository from `Data-Pulse-2` to match the brand.
 - [ ] Update package names (`@data-pulse/*` → brand-aligned namespace).
 - [ ] Update OpenAPI `info.title` in `packages/contracts/openapi/`.
-- [ ] Adopt Retail Tower OS in deployment configuration and CI pipelines.
+- [ ] Adopt Retail Tower OS product naming in any remaining deployment identifiers.
 - [ ] Commission or finalize the fortified watchtower logomark.
 - [ ] Define full brand color palette and typography system.
 - [ ] Produce brand guidelines document covering all touchpoints.

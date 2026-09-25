@@ -418,7 +418,7 @@ components:
               type: string
               description: >
                 Stable machine-readable error code. Closed set on this surface:
-                validation_failure | not_found | conflict | system_failure
+                validation_error | not_found | conflict | system_failure
                 (plus the generic 401 refusal).
             message:
               type: string

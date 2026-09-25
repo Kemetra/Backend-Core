@@ -118,6 +118,7 @@ class ConfigurableContextGuard implements CanActivate {
     const req = ctx.switchToHttp().getRequest<{
       context?: ResolvedContext;
       principal?: { userId?: string };
+      posDeviceId?: string;
     }>();
     req.context = {
       userId: this.userId,
@@ -126,6 +127,7 @@ class ConfigurableContextGuard implements CanActivate {
       isPlatformAdmin: false,
       source: "token",
     };
+    req.posDeviceId = "settlement-test-terminal";
     if (this.userId) req.principal = { userId: this.userId };
     return true;
   }
@@ -231,6 +233,13 @@ afterEach(async () => {
     [SALE_A],
   );
   await env.admin.query(`DELETE FROM receivable WHERE sale_id = $1`, [SALE_A]);
+  // Each case reuses the same HTTP key for its fixture receivable. Remove the
+  // durable reservation with that fixture so the next case creates a live row.
+  await env.admin.query(
+    `DELETE FROM idempotency_keys
+      WHERE tenant_id=$1 AND client_id=$2 AND key LIKE 'settlement-intent:%'`,
+    [TENANT_A, "settlement-test-terminal"],
+  );
 });
 
 function maybeSkip(): boolean {

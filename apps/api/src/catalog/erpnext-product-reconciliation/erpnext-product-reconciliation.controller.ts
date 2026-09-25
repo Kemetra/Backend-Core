@@ -134,7 +134,7 @@ export class ErpnextProductReconciliationController {
     const { tenantId, userId } = this.requireContext(request);
     if ((body.runId && !body.resultId) || (!body.runId && body.resultId)) {
       throw new BadRequestException({
-        code: "validation_failure",
+        code: "validation_error",
         message: "runId and resultId must be supplied together.",
       });
     }
@@ -246,7 +246,7 @@ export class ErpnextProductReconciliationController {
       }
       if (err instanceof RepairValidationError) {
         throw new BadRequestException({
-          code: "validation_failure",
+          code: "validation_error",
           message: err.message,
         });
       }

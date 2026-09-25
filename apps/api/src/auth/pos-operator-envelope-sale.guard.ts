@@ -100,6 +100,7 @@ export class PosOperatorEnvelopeSaleGuard extends AuthGuard {
       isPlatformAdmin: false,
       source: "token",
     };
+    request.posDeviceId = deviceId;
 
     return true;
   }

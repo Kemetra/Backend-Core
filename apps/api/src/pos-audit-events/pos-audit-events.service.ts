@@ -26,7 +26,7 @@
 import { Injectable } from "@nestjs/common";
 import type { Logger } from "@data-pulse-2/shared";
 import { runWithTenantContext } from "@data-pulse-2/db";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 import { DeviceRepository } from "../pos-operators/device.repository";
 import {
@@ -68,7 +68,16 @@ export class PosAuditEventsService {
 
     for (const event of body.events) {
       try {
-        await this.processEvent(event, device.tenantId, device.storeId, requestId, accepted, duplicates, rejected);
+        await this.processEvent(
+          event,
+          device.id,
+          device.tenantId,
+          device.storeId,
+          requestId,
+          accepted,
+          duplicates,
+          rejected,
+        );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         this.logger.warn(
@@ -84,6 +93,7 @@ export class PosAuditEventsService {
 
   private async processEvent(
     event: AuditEventItemInput,
+    deviceId: string,
     deviceTenantId: string,
     deviceStoreId: string,
     requestId: string | null,
@@ -118,9 +128,9 @@ export class PosAuditEventsService {
       return;
     }
 
-    // Resolve acting_operator_id (Clerk subject) → users.id scoped to device tenant.
-    const actorUserId = await this.resolveActorUserId(event.acting_operator_id, deviceTenantId);
-    if (actorUserId === null) {
+    // The authenticated device is authoritative terminal provenance. Retain
+    // the wire field for compatibility, but never persist a contradictory id.
+    if (event.originating_terminal_id !== deviceId) {
       rejected.push({ event_id: event.event_id, category: "invalid_input" });
       return;
     }
@@ -131,7 +141,14 @@ export class PosAuditEventsService {
     const outcome = await runWithTenantContext(
       this.pool,
       { tenantId: event.tenant_id, isPlatformAdmin: false },
-      async (client): Promise<"accepted" | "duplicate"> => {
+      async (client): Promise<"accepted" | "duplicate" | "invalid_actor"> => {
+        const actorUserId = await this.resolveActorUserId(
+          client,
+          event,
+          deviceId,
+        );
+        if (actorUserId === null) return "invalid_actor";
+
         const r = await client.query<{ id: string }>(
           `INSERT INTO audit_events
              (id, occurred_at, actor_user_id, actor_label,
@@ -172,7 +189,7 @@ export class PosAuditEventsService {
               event.tenant_id,
               event.branch_id,
               actorUserId,
-              event.originating_terminal_id,
+              deviceId,
               event.created_at,
             ],
           );
@@ -182,25 +199,45 @@ export class PosAuditEventsService {
       },
     );
 
-    if (outcome === "accepted") {
+    if (outcome === "invalid_actor") {
+      rejected.push({ event_id: eventId, category: "invalid_input" });
+    } else if (outcome === "accepted") {
       accepted.push(eventId);
     } else {
       duplicates.push(eventId);
     }
   }
 
-  private async resolveActorUserId(clerkSubject: string, tenantId: string): Promise<string | null> {
-    const r = await this.pool.query<{ id: string }>(
+  private async resolveActorUserId(
+    client: PoolClient,
+    event: AuditEventItemInput,
+    deviceId: string,
+  ): Promise<string | null> {
+    // The bound POS session proves authorization at event time. Current
+    // membership, role, and store grants may have changed while the event was
+    // queued offline; using them here would discard a valid historical audit.
+    const r = await client.query<{ id: string }>(
       `SELECT u.id
-       FROM users u
-       JOIN memberships m ON m.user_id = u.id
+       FROM auth_tokens token
+       JOIN users u ON u.id = token.user_id
        WHERE u.clerk_user_id = $1
-         AND u.deleted_at IS NULL
-         AND m.tenant_id = $2
-         AND m.deleted_at IS NULL
-         AND m.revoked_at IS NULL
+         AND token.tenant_id = $2
+         AND token.scope = 'pos_operator'
+         AND token.device_id = $4
+         AND token.store_id = $3
+         AND ($5::uuid IS NULL OR token.id = $5::uuid)
+         AND token.issued_at <= $6::timestamptz
+         AND token.expires_at > $6::timestamptz
+         AND (token.revoked_at IS NULL OR token.revoked_at >= $6::timestamptz)
        LIMIT 1`,
-      [clerkSubject, tenantId],
+      [
+        event.acting_operator_id,
+        event.tenant_id,
+        event.branch_id,
+        deviceId,
+        event.session_id ?? null,
+        event.created_at,
+      ],
     );
     return r.rows[0]?.id ?? null;
   }

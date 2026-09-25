@@ -13,7 +13,8 @@
  *   AND opened_at < now() - stuckThresholdMinutes
  *   AND no active pos_operator auth_token for the opening cashier on that branch.
  *
- * The shifts query runs inside runWithTenantContext (shifts has RLS).
+ * Membership and access checks use a transaction-local bootstrap RLS
+ * context; the shifts query uses the resolved tenant context.
  * users/devices have no RLS, so the JOIN works without extra context.
  */
 import { Injectable } from "@nestjs/common";
@@ -82,23 +83,41 @@ export class PosShiftsService {
     }
     const userId = userRow.rows[0].id;
 
-    // 3. Find active membership for caller on the requested branch.
-    const membershipRow = await this.pool.query<MembershipRow>(
-      `SELECT m.id, m.tenant_id, m.store_access_kind, r.code AS role_code
-         FROM memberships m
-         JOIN roles r ON r.id = m.role_id
-         JOIN stores s ON s.tenant_id = m.tenant_id AND s.id = $1
-        WHERE m.user_id = $2
-          AND m.revoked_at IS NULL
-          AND m.deleted_at IS NULL
-        LIMIT 1`,
-      [branchId, userId],
+    // 3. Find an active membership on the requested branch. The verified
+    // user and branch IDs constrain this bootstrap read before authorization.
+    const membership = await runWithTenantContext(
+      this.pool,
+      { tenantId: null, isPlatformAdmin: true },
+      async (client) => {
+        const membershipRow = await client.query<MembershipRow>(
+          `SELECT m.id, m.tenant_id, m.store_access_kind, r.code AS role_code
+             FROM memberships m
+             JOIN roles r ON r.id = m.role_id
+             JOIN stores s ON s.tenant_id = m.tenant_id AND s.id = $1
+            WHERE m.user_id = $2
+              AND m.revoked_at IS NULL
+              AND m.deleted_at IS NULL
+            LIMIT 1`,
+          [branchId, userId],
+        );
+        const row = membershipRow.rows[0];
+        if (!row || !ELIGIBLE_INTERNAL_ROLES.has(row.role_code)) {
+          return row ?? null;
+        }
+        if (row.store_access_kind === "specific") {
+          const accessRow = await client.query<{ one: number }>(
+            `SELECT 1 AS one FROM store_access WHERE membership_id = $1 AND store_id = $2 LIMIT 1`,
+            [row.id, branchId],
+          );
+          if (!accessRow.rows[0]) return null;
+        }
+        return row;
+      },
     );
-    if (!membershipRow.rows[0]) {
+    if (!membership) {
       this.logger.warn({ request_id: requestId, userId, branchId }, "pos-shifts: no membership");
       return { kind: "refused" };
     }
-    const membership = membershipRow.rows[0];
 
     // 4. Role eligibility check.
     if (!ELIGIBLE_INTERNAL_ROLES.has(membership.role_code)) {
@@ -109,22 +128,7 @@ export class PosShiftsService {
       return { kind: "refused" };
     }
 
-    // 5. Branch access check for specific-access memberships.
-    if (membership.store_access_kind === "specific") {
-      const accessRow = await this.pool.query<{ one: number }>(
-        `SELECT 1 AS one FROM store_access WHERE membership_id = $1 AND store_id = $2 LIMIT 1`,
-        [membership.id, branchId],
-      );
-      if (!accessRow.rows[0]) {
-        this.logger.warn(
-          { request_id: requestId, userId, branchId },
-          "pos-shifts: branch not in access set",
-        );
-        return { kind: "refused" };
-      }
-    }
-
-    // 6. Query stuck shifts (inside tenant RLS context).
+    // 5. Query stuck shifts (inside tenant RLS context).
     const shifts = await runWithTenantContext(
       this.pool,
       { tenantId: membership.tenant_id, isPlatformAdmin: false },

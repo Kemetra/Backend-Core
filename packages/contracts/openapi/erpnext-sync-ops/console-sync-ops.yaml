@@ -371,7 +371,7 @@ components:
             code:
               type: string
               description: >
-                Stable machine-readable code. Closed set: validation_failure |
+                Stable machine-readable code. Closed set: validation_error |
                 unauthorized | forbidden | not_found | system_failure.
             message:
               type: string
@@ -383,7 +383,7 @@ components:
 
   responses:
     ValidationFailure:
-      description: validation_failure (400) — malformed query, unknown key (strict), bad cursor.
+      description: validation_error (400) — malformed query, unknown key (strict), bad cursor.
       content:
         application/json:
           schema:

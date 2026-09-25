@@ -627,13 +627,8 @@ components:
               type: string
               description: >
                 Stable machine-readable error code. Closed set on this surface:
-                validation_failure | not_found | conflict | system_failure
+                validation_error | not_found | conflict | system_failure
                 (plus the generic 401 refusal).
-                NOTE (documented platform drift): `validation_failure` is the
-                code for domain-level controller rejections; Zod-strict-pipe and
-                UUID-pipe 400s fall through the global filter and emit
-                `validation_error` (ErrorCodes.VALIDATION). Same drift as
-                create-product-request.dto.ts.
             message:
               type: string
               description: Human-readable summary. No sensitive data, no cause enumeration.

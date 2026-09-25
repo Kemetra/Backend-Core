@@ -50,6 +50,8 @@
 import { Injectable } from "@nestjs/common";
 import type { Pool } from "pg";
 
+import { runWithTenantContext } from "@data-pulse-2/db";
+
 import { DeviceRepository } from "../pos-operators/device.repository";
 import type { ResolvedContext } from "../context/types";
 import type { IdentityProviderPort } from "./identity-provider.port";
@@ -140,6 +142,7 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
     private readonly identityProvider: IdentityProviderPort,
     private readonly deviceRepository: DeviceRepository,
     private readonly logger?: ResolverLogger,
+    private readonly lookupPool: Pool = pool,
   ) {}
 
   async resolve(rawJwt: string, rawAttestation: string): Promise<ResolveOperatorResult> {
@@ -181,7 +184,11 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
 
     // 5. Store eligibility: 'all' → unconditional, 'specific' → must be in set.
     if (membership.store_access_kind === "specific") {
-      const ok = await this.storeIsInAccessSet(membership.id, deviceRow.storeId);
+      const ok = await this.storeIsInAccessSet(
+        deviceRow.tenantId,
+        membership.id,
+        deviceRow.storeId,
+      );
       if (!ok) return { kind: "refused", reason: "store_not_in_access_set" };
     }
 
@@ -218,7 +225,7 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
     providerKey: string,
     subject: string,
   ): Promise<UserLookupRow | null> {
-    const r = await this.pool.query<UserLookupRow>(
+    const r = await this.lookupPool.query<UserLookupRow>(
       `SELECT u.id, u.deleted_at
          FROM external_identity_links l
          JOIN users u ON u.id = l.user_id
@@ -243,27 +250,43 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
     // caller would refuse them with `membership_revoked`. Order so the ACTIVE grant
     // (revoked_at / deleted_at both NULL) sorts first; the caller still inspects
     // revoked_at/deleted_at, so a genuinely revoked-only user is unchanged.
-    const r = await this.pool.query<MembershipLookupRow>(
-      `SELECT m.id, m.store_access_kind, m.revoked_at, m.deleted_at,
-              r.code AS role_code
-         FROM memberships m
-         JOIN roles r ON r.id = m.role_id
-        WHERE m.tenant_id = $1
-          AND m.user_id = $2
-        ORDER BY m.revoked_at NULLS FIRST, m.deleted_at NULLS FIRST
-        LIMIT 1`,
-      [tenantId, userId],
+    return runWithTenantContext(
+      this.pool,
+      { tenantId, isPlatformAdmin: false },
+      async (client) => {
+        const r = await client.query<MembershipLookupRow>(
+          `SELECT m.id, m.store_access_kind, m.revoked_at, m.deleted_at,
+                  r.code AS role_code
+             FROM memberships m
+             JOIN roles r ON r.id = m.role_id
+            WHERE m.tenant_id = $1
+              AND m.user_id = $2
+            ORDER BY m.revoked_at NULLS FIRST, m.deleted_at NULLS FIRST
+            LIMIT 1`,
+          [tenantId, userId],
+        );
+        return r.rows[0] ?? null;
+      },
     );
-    return r.rows[0] ?? null;
   }
 
-  private async storeIsInAccessSet(membershipId: string, storeId: string): Promise<boolean> {
-    const r = await this.pool.query<{ one: number }>(
-      `SELECT 1 AS one FROM store_access
-        WHERE membership_id = $1 AND store_id = $2 LIMIT 1`,
-      [membershipId, storeId],
+  private async storeIsInAccessSet(
+    tenantId: string,
+    membershipId: string,
+    storeId: string,
+  ): Promise<boolean> {
+    return runWithTenantContext(
+      this.pool,
+      { tenantId, isPlatformAdmin: false },
+      async (client) => {
+        const r = await client.query<{ one: number }>(
+          `SELECT 1 AS one FROM store_access
+            WHERE membership_id = $1 AND store_id = $2 LIMIT 1`,
+          [membershipId, storeId],
+        );
+        return r.rows.length > 0;
+      },
     );
-    return r.rows.length > 0;
   }
 
   // -------------------------------------------------------------------------
@@ -275,7 +298,7 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
     // The envelope's auth_tokens row carries the bound device_id (the
     // pos_operator invariant guarantees it is non-null). Re-read it by the
     // token row id the canonical principal exposes as `tokenId`.
-    const r = await this.pool.query<{ device_id: string | null }>(
+    const r = await this.lookupPool.query<{ device_id: string | null }>(
       `SELECT device_id FROM auth_tokens
         WHERE id = $1 AND scope = 'pos_operator' LIMIT 1`,
       [tokenId],
@@ -304,7 +327,7 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
 
     // Store access still granted? ('all' → unconditional; 'specific' → in set.)
     if (membership.store_access_kind === "specific") {
-      const ok = await this.storeIsInAccessSet(membership.id, storeId);
+      const ok = await this.storeIsInAccessSet(device.tenantId, membership.id, storeId);
       if (!ok) return { kind: "refused", reason: "store_not_in_access_set" };
     }
 
@@ -314,7 +337,7 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
   private async findActiveDeviceById(
     deviceId: string,
   ): Promise<{ id: string; tenantId: string } | null> {
-    const r = await this.pool.query<{ id: string; tenant_id: string }>(
+    const r = await this.lookupPool.query<{ id: string; tenant_id: string }>(
       `SELECT id, tenant_id FROM devices
         WHERE id = $1 AND revoked_at IS NULL LIMIT 1`,
       [deviceId],

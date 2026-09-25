@@ -30,7 +30,12 @@ import request from "supertest";
 import { hashToken } from "@data-pulse-2/auth";
 
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
-import { PG_POOL } from "../../src/auth/auth.module";
+import {
+  AlwaysAllowRedis,
+  AUTH_LOOKUP_POOL,
+  PG_POOL,
+} from "../../src/auth/auth.module";
+import { RateLimiter } from "../../src/auth/rate-limit";
 import { PosDeviceAuthGuard } from "../../src/auth/pos-device-auth.guard";
 import { DeviceRepository } from "../../src/pos-operators/device.repository";
 import { PairingController } from "../../src/pos-terminal-pairing/pairing.controller";
@@ -164,10 +169,15 @@ beforeAll(async () => {
       // The service's writes run via runWithTenantContext under RLS, so the
       // app (non-superuser) pool is correct — but findByCode is a NO-GUC probe
       // that must see the row regardless of tenant context (the code IS the
-      // source of context, exactly like DeviceRepository at sign-in). The admin
-      // pool is the production-equivalent privileged app pool for that bootstrap
-      // probe (read-down's device-principal spec uses the same reasoning).
-      { provide: PG_POOL, useFactory: (): Pool => theEnv.admin },
+      // source of context, exactly like DeviceRepository at sign-in). Keep the
+      // bootstrap lookup pool distinct from the RLS-enforced domain pool, as in
+      // the production module.
+      { provide: PG_POOL, useFactory: (): Pool => theEnv.app },
+      { provide: AUTH_LOOKUP_POOL, useFactory: (): Pool => theEnv.admin },
+      {
+        provide: RateLimiter,
+        useValue: new RateLimiter(new AlwaysAllowRedis()),
+      },
       PairingService,
       // For the device_token-authenticates assertion: the REAL guard path.
       { provide: DeviceRepository, useValue: new DeviceRepository(theEnv.admin) },

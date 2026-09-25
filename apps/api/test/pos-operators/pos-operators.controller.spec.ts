@@ -38,7 +38,7 @@ import {
   type ClerkVerifier,
 } from "../../src/pos-operators/clerk-verifier";
 import { PosOperatorsModule } from "../../src/pos-operators/pos-operators.module";
-import { PG_POOL } from "../../src/auth/auth.module";
+import { AUTH_LOOKUP_POOL, PG_POOL } from "../../src/auth/auth.module";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
 import { LoggingInterceptor, ROOT_LOGGER } from "../../src/common/logging.interceptor";
 import { RequestIdInterceptor } from "../../src/common/request-id.interceptor";
@@ -74,6 +74,7 @@ const DELETED_USER_ID = "0b000000-0000-4000-8000-00000000cc05";
 const DELETED_CLERK_SUB = "user_clerk_deleted_pr5";
 
 const ADMIN_MEMBERSHIP_ID = "0b000000-0000-4000-8000-00000000dd01";
+const ADMIN_HISTORICAL_MEMBERSHIP_ID = "0b000000-0000-4000-8000-00000000d101";
 const MANAGER_MEMBERSHIP_ID = "0b000000-0000-4000-8000-00000000dd02";
 const STAFF_MEMBERSHIP_ID = "0b000000-0000-4000-8000-00000000dd03";
 const SPECIFIC_MEMBERSHIP_ID = "0b000000-0000-4000-8000-00000000dd04";
@@ -184,6 +185,14 @@ beforeAll(async () => {
     );
 
     // ---- memberships ----
+    // Historical soft-deleted grant for the same tenant/user. Security-sensitive
+    // lookup must resolve the current active grant, not whichever row is first.
+    await pool.query(
+      `INSERT INTO memberships
+         (id, tenant_id, user_id, role_id, store_access_kind, revoked_at, deleted_at)
+       VALUES ($1, $2, $3, $4, 'all', now(), now())`,
+      [ADMIN_HISTORICAL_MEMBERSHIP_ID, TENANT_ID, ADMIN_USER_ID, STAFF_ROLE_ID],
+    );
     await pool.query(
       `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES
          ($1, $2, $3, $4, 'all'),
@@ -267,6 +276,8 @@ beforeAll(async () => {
       imports: [PosOperatorsModule],
     })
       .overrideProvider(PG_POOL)
+      .useValue(env.app)
+      .overrideProvider(AUTH_LOOKUP_POOL)
       .useValue(pool)
       .overrideProvider(CLERK_VERIFIER)
       .useValue(new StubClerkVerifier(verifierMap))
@@ -497,6 +508,32 @@ describe("POST /api/pos/v1/operators/sign-in (takeover_required)", () => {
 
     expect(second.status).toBe(200);
     expect(second.body).toEqual({ kind: "takeover_required" });
+  });
+
+  it("serializes concurrent sign-ins so exactly one live operator session is created", async () => {
+    if (maybeSkip()) return;
+
+    const send = () =>
+      http()
+        .post("/api/pos/v1/operators/sign-in")
+        .set("Authorization", "Bearer jwt-admin")
+        .send({ kind: "manager_admin", device_token_attestation: DEVICE_A_ATTESTATION });
+
+    const [a, b] = await Promise.all([send(), send()]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect([a.body.kind, b.body.kind].sort()).toEqual(["signed_in", "takeover_required"]);
+
+    const active = await pool!.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+         FROM auth_tokens
+        WHERE scope = 'pos_operator'
+          AND device_id = $1
+          AND store_id = $2
+          AND revoked_at IS NULL
+          AND expires_at > now()`,
+      [DEVICE_A_ID, STORE_ID_A],
+    );
+    expect(active.rows[0]!.count).toBe("1");
   });
 });
 
@@ -744,6 +781,112 @@ describe("POST /api/pos/v1/operators/takeover/confirm", () => {
     expect(second.status).toBe(200);
     expect(second.body.kind).toBe("signed_in");
     expect(second.body.operator_session.id).toBe(firstSessionId);
+  });
+
+  it("concurrent same-event takeover confirms converge on one replacement session", async () => {
+    if (maybeSkip()) return;
+    await http()
+      .post("/api/pos/v1/operators/sign-in")
+      .set("Authorization", "Bearer jwt-admin")
+      .send({ kind: "manager_admin", device_token_attestation: DEVICE_A_ATTESTATION });
+
+    const body = {
+      event_id: TAKEOVER_EVENT_ID,
+      operator_id: MANAGER_CLERK_SUB,
+      device_token_attestation: DEVICE_A_ATTESTATION,
+    };
+    const send = () =>
+      http()
+        .post("/api/pos/v1/operators/takeover/confirm")
+        .set("Authorization", "Bearer jwt-manager")
+        .send(body);
+
+    const [a, b] = await Promise.all([send(), send()]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect(a.body.kind).toBe("signed_in");
+    expect(b.body.kind).toBe("signed_in");
+    expect(a.body.operator_session.id).toBe(b.body.operator_session.id);
+
+    const active = await pool!.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+         FROM auth_tokens
+        WHERE scope = 'pos_operator'
+          AND device_id = $1
+          AND store_id = $2
+          AND revoked_at IS NULL
+          AND expires_at > now()`,
+      [DEVICE_A_ID, STORE_ID_A],
+    );
+    expect(active.rows[0]!.count).toBe("1");
+    const audits = await pool!.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+         FROM audit_events
+        WHERE action = 'operator.session.takeover'
+          AND target_id = $1`,
+      [a.body.operator_session.id],
+    );
+    expect(audits.rows[0]!.count).toBe("1");
+  });
+
+  it("rolls back the takeover mutation when its required audit fact cannot be inserted", async () => {
+    if (maybeSkip()) return;
+    await http()
+      .post("/api/pos/v1/operators/sign-in")
+      .set("Authorization", "Bearer jwt-admin")
+      .send({ kind: "manager_admin", device_token_attestation: DEVICE_A_ATTESTATION });
+
+    await pool!.query(`
+      CREATE OR REPLACE FUNCTION test_reject_takeover_audit() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.action = 'operator.session.takeover' THEN
+          RAISE EXCEPTION 'injected takeover audit failure';
+        END IF;
+        RETURN NEW;
+      END
+      $$
+    `);
+    await pool!.query(`
+      CREATE TRIGGER test_reject_takeover_audit_trigger
+      BEFORE INSERT ON audit_events
+      FOR EACH ROW EXECUTE FUNCTION test_reject_takeover_audit()
+    `);
+
+    try {
+      const res = await http()
+        .post("/api/pos/v1/operators/takeover/confirm")
+        .set("Authorization", "Bearer jwt-manager")
+        .send({
+          event_id: TAKEOVER_EVENT_ID,
+          operator_id: MANAGER_CLERK_SUB,
+          device_token_attestation: DEVICE_A_ATTESTATION,
+        });
+      expect(res.status).toBe(500);
+
+      const sessions = await pool!.query<{ user_id: string; count: string }>(
+        `SELECT user_id, COUNT(*)::text AS count
+           FROM auth_tokens
+          WHERE scope = 'pos_operator'
+            AND device_id = $1
+            AND store_id = $2
+            AND revoked_at IS NULL
+            AND expires_at > now()
+          GROUP BY user_id`,
+        [DEVICE_A_ID, STORE_ID_A],
+      );
+      expect(sessions.rows).toEqual([{ user_id: ADMIN_USER_ID, count: "1" }]);
+
+      const key = await pool!.query(
+        `SELECT id FROM idempotency_keys
+          WHERE tenant_id = $1 AND store_id = $2
+            AND client_id = 'pos_takeover' AND key = $3`,
+        [TENANT_ID, STORE_ID_A, TAKEOVER_EVENT_ID],
+      );
+      expect(key.rows).toHaveLength(0);
+    } finally {
+      await pool!.query(`DROP TRIGGER IF EXISTS test_reject_takeover_audit_trigger ON audit_events`);
+      await pool!.query(`DROP FUNCTION IF EXISTS test_reject_takeover_audit()`);
+    }
   });
 
   it("401 when operator_id in body does not match JWT sub", async () => {

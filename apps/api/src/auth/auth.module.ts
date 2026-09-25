@@ -39,7 +39,14 @@ import { Queue, type JobsOptions } from "bullmq";
 import { Pool } from "pg";
 import Redis from "ioredis";
 
-import { InstrumentedPool } from "../observability/instrumented-pool";
+import {
+  AUTH_LOOKUP_POOL,
+  DatabasePoolBoundaryVerifier,
+  DatabasePoolLifecycle,
+  PG_POOL,
+  authLookupPoolFactory,
+  domainPoolFactory,
+} from "./database-pools";
 
 import { DEFAULT_JOB_OPTIONS } from "@data-pulse-2/shared/queues/queue-config";
 
@@ -100,7 +107,7 @@ export function redisClientFactory(): RedisLike {
   return new IoredisIdempotencyAdapter(client);
 }
 
-export const PG_POOL = "PG_POOL";
+export { AUTH_LOOKUP_POOL, PG_POOL } from "./database-pools";
 export const REDIS_CLIENT = "REDIS_CLIENT";
 
 /**
@@ -196,15 +203,12 @@ export class AlwaysAllowRedis implements RedisLike {
   providers: [
     {
       provide: PG_POOL,
-      useFactory: (): Pool => {
-        const url = process.env["DATABASE_URL"];
-        if (!url) {
-          throw new Error(
-            "AuthModule: DATABASE_URL is not set; cannot create pg.Pool",
-          );
-        }
-        return new InstrumentedPool({ connectionString: url });
-      },
+      useFactory: domainPoolFactory,
+    },
+    {
+      provide: AUTH_LOOKUP_POOL,
+      useFactory: authLookupPoolFactory,
+      inject: [PG_POOL],
     },
     {
       provide: REDIS_CLIENT,
@@ -217,13 +221,13 @@ export class AlwaysAllowRedis implements RedisLike {
     {
       provide: SessionRepository,
       useFactory: (pool: Pool): SessionRepository => new SessionRepository(pool),
-      inject: [PG_POOL],
+      inject: [AUTH_LOOKUP_POOL],
     },
     {
       provide: AuthTokenRepository,
       useFactory: (pool: Pool): AuthTokenRepository =>
         new AuthTokenRepository(pool),
-      inject: [PG_POOL],
+      inject: [AUTH_LOOKUP_POOL],
     },
     {
       provide: RateLimiter,
@@ -246,13 +250,15 @@ export class AlwaysAllowRedis implements RedisLike {
           auditEnqueuer,
         }),
       inject: [
-        PG_POOL,
+        AUTH_LOOKUP_POOL,
         SessionRepository,
         AuthTokenRepository,
         EMAIL_JOB_ENQUEUER,
         AUDIT_JOB_ENQUEUER,
       ],
     },
+    DatabasePoolBoundaryVerifier,
+    DatabasePoolLifecycle,
   ],
   exports: [
     AuthService,
@@ -265,6 +271,7 @@ export class AlwaysAllowRedis implements RedisLike {
     // tenant/store modules) can share the single connection pool
     // rather than provisioning their own.
     PG_POOL,
+    AUTH_LOOKUP_POOL,
     // EMAIL_JOB_ENQUEUER is exported so downstream modules (MembershipsModule)
     // can inject the enqueuer for invitation jobs without re-wiring it.
     EMAIL_JOB_ENQUEUER,

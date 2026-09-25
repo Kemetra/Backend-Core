@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" role="img" aria-label="Retail Tower OS synchronization flow: POS-Pulse and Retail-Tower-Console synchronize through Data-Pulse-2, which is the contract boundary to the ERPNext Connector and ERPNext/Frappe.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" font-family="'Segoe UI', system-ui, -apple-system, sans-serif" role="img" aria-label="Retail Tower OS synchronization flow: POS and Admin-Console synchronize through Backend-Core, which is the contract boundary to ERPNext-Connector and ERPNext/Frappe.">
   <title>Retail Tower OS — Synchronization Flow</title>
 
   <defs>
@@ -85,8 +85,8 @@
   </g>
 
   <!-- Header -->
-  <text x="64" y="64" class="title" font-size="34">Retail Tower OS — Data-Pulse-2 at the Core</text>
-  <text x="64" y="96" class="sub" font-size="17">Data-Pulse-2 is the single contract boundary. Every edge syncs through here; only the connector reaches ERPNext.</text>
+  <text x="64" y="64" class="title" font-size="34">Retail Tower OS — Backend-Core at the Core</text>
+  <text x="64" y="96" class="sub" font-size="17">Backend-Core is the single contract boundary. Every edge syncs through here; only the connector reaches ERPNext.</text>
 
   <!-- ============ CONNECTION PATHS ============ -->
   <g fill="none" stroke-linecap="round">
@@ -174,7 +174,7 @@
     <text x="146" y="570" class="nodeS" font-size="12" opacity="0.8">tenant · catalog · sync ops</text>
   </g>
 
-  <!-- ============ NODE: Data-Pulse-2 (HUB) ============ -->
+  <!-- ============ NODE: Backend-Core (HUB) ============ -->
   <g class="pulse" opacity="1">
     <rect x="420" y="288" width="220" height="144" rx="22" fill="url(#edgeShade)" transform="translate(0,11)"/>
     <rect x="420" y="288" width="220" height="144" rx="22" fill="url(#cardDP)" filter="url(#soft)"/>
@@ -186,7 +186,7 @@
       <ellipse cx="22" cy="22" rx="22" ry="7" fill="none" stroke="url(#chrome)" stroke-width="1.6" opacity="0.7"/>
       <ellipse cx="22" cy="6"  rx="22" ry="7" fill="#7c3aed"/>
     </g>
-    <text x="510" y="332" class="nodeT" font-size="20">Data-Pulse-2</text>
+    <text x="510" y="332" class="nodeT" font-size="20">Backend-Core</text>
     <text x="510" y="356" class="nodeS" font-size="13">Backend · contract boundary</text>
     <text x="510" y="376" class="nodeS" font-size="12" opacity="0.85">OpenAPI · RLS · outbox</text>
     <text x="510" y="408" font-size="11" fill="#38bdf8" font-weight="700">◆ SINGLE SOURCE OF TRUTH</text>

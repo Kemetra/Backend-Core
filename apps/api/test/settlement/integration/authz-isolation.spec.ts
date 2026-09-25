@@ -112,6 +112,7 @@ class ConfigurableContextGuard implements CanActivate {
     const req = ctx.switchToHttp().getRequest<{
       context?: ResolvedContext;
       principal?: { userId?: string };
+      posDeviceId?: string;
     }>();
     req.context = {
       userId: this.userId,
@@ -120,6 +121,7 @@ class ConfigurableContextGuard implements CanActivate {
       isPlatformAdmin: false,
       source: "token",
     };
+    req.posDeviceId = "settlement-test-terminal";
     if (this.userId) req.principal = { userId: this.userId };
     return true;
   }

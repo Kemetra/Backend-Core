@@ -33,10 +33,18 @@ import type { DeviceRepository } from "../../src/pos-operators/device.repository
 
 const SUB = "user_clerk_sub_123";
 const USER_ID = "0a000000-0000-7000-8000-00000000aa01";
-const TENANT_ID = "0a000000-0000-7000-8000-0000000ten01";
-const STORE_ID = "0a000000-0000-7000-8000-0000000sto01";
-const DEVICE_ID = "0a000000-0000-7000-8000-0000000dev01";
-const MEMBERSHIP_ID = "0a000000-0000-7000-8000-0000000mem01";
+const TENANT_ID = "0a000000-0000-7000-8000-000000000001";
+const STORE_ID = "0a000000-0000-7000-8000-000000000002";
+const DEVICE_ID = "0a000000-0000-7000-8000-000000000003";
+const MEMBERSHIP_ID = "0a000000-0000-7000-8000-000000000004";
+
+function fakePool(query: jest.Mock): Pool {
+  const client = { query, release: jest.fn() };
+  return {
+    query,
+    connect: jest.fn().mockResolvedValue(client),
+  } as unknown as Pool;
+}
 
 function makeDevice(overrides: Partial<DeviceRow> = {}): DeviceRow {
   return {
@@ -124,7 +132,7 @@ function build(opts: {
     }
     return Promise.resolve({ rows: [] });
   });
-  const pool = { query } as unknown as Pool;
+  const pool = fakePool(query);
 
   return new PgOperatorContextResolver(pool, identityProvider, deviceRepository);
 }
@@ -260,7 +268,7 @@ describe("PgOperatorContextResolver — membership lookup determinism (audit M-3
       }
       return Promise.resolve({ rows: [] });
     });
-    const pool = { query } as unknown as Pool;
+    const pool = fakePool(query);
     const identityProvider = {
       verifyIdentityToken: async (raw: string): Promise<VerifiedSubject> => {
         void raw;

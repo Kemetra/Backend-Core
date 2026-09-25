@@ -43,10 +43,13 @@ async function bootstrap(): Promise<void> {
   // real client IP. Without this, rate-limit buckets and audit events all
   // key on the proxy's internal address. The hop count MUST match the
   // deployment topology; `1` is correct for the single-Caddy template.
-  const trustProxy = process.env["TRUST_PROXY"] ?? "1";
+  // Do not trust forwarded headers unless the deployment explicitly declares
+  // its proxy topology. Direct clients therefore cannot select their own
+  // rate-limit bucket with X-Forwarded-For.
+  const trustProxy = process.env["TRUST_PROXY"] ?? "false";
   const expressApp = app.getHttpAdapter().getInstance() as { set(key: string, value: unknown): void };
-  const parsed = Number(trustProxy);
-  expressApp.set("trust proxy", Number.isFinite(parsed) ? parsed : trustProxy);
+  const parsed = /^\d+$/.test(trustProxy) ? Number(trustProxy) : null;
+  expressApp.set("trust proxy", parsed ?? trustProxy === "true");
 
   // CORS — explicit allowlist from ALLOWED_ORIGINS (comma-separated).
   // Defaults to disabled (no cross-origin requests allowed). The dashboard

@@ -74,7 +74,7 @@ export const SETTLEMENT_FIXTURE_IDS: SettlementFixtureIds = Object.freeze({
 
 /**
  * Seed the 035 fixtures. Calls `seedCatalogIsolationFixture` first (tenants +
- * stores + actors), then adds the sale + payer rows. Idempotent
+ * stores + actor identifiers), then adds the actor user, sale + payer rows. Idempotent
  * (`ON CONFLICT DO NOTHING`) so it is safe to call once per suite.
  */
 export async function seedSettlementFixture(
@@ -82,6 +82,14 @@ export async function seedSettlementFixture(
 ): Promise<SettlementFixtureIds> {
   await seedCatalogIsolationFixture(env);
   const { admin } = env;
+
+  // Transactional settlement audit has a real actor_user_id FK. The catalog
+  // fixture uses actor identifiers as metadata but does not seed users.
+  await admin.query(
+    `INSERT INTO users (id, email) VALUES ($1, 'settlement-actor-a@example.test')
+     ON CONFLICT DO NOTHING`,
+    [ACTOR_A],
+  );
 
   // ---- Tenant A: one captured sale on STORE_A_X (all NOT NULL cols) ---------
   await admin.query(

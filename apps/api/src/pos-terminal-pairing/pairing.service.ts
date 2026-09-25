@@ -15,10 +15,8 @@
  *      sliding window — a code that exceeds the budget is permanently
  *      `rate_limited` (recovery = issue a fresh code). `Retry-After` is a fixed
  *      hint, not a promise the same code becomes redeemable after it. The
- *      per-IP / time-windowed half is the edge proxy's job (contract narrative).
- *      Note also: an UNKNOWN code short-circuits at step 1 before any attempt is
- *      recorded — so this counter gives NO anti-enumeration value; brute-force
- *      enumeration defence is the edge per-IP limiter alone (by design).
+ *      controller enforces the independent Redis-backed source-IP window before
+ *      this service is called, including for unknown codes.
  *   3. status used/cancelled OR past expiry → `expired` (410 EXPIRED_CODE).
  *   4. Already-paired checks (FR-14): a live device at the terminal id under the
  *      SAME branch → `already_paired` (409); under a DIFFERENT branch →
@@ -30,7 +28,7 @@
  */
 import { Inject, Injectable } from "@nestjs/common";
 
-import { PG_POOL } from "../auth/auth.module";
+import { AUTH_LOOKUP_POOL, PG_POOL } from "../auth/auth.module";
 import type { Pool } from "pg";
 import {
   type PairingCodeBindingRow,
@@ -39,7 +37,7 @@ import {
 } from "./dto/terminal-pair.dto";
 import { PairingRepository, type PairingCodeRow } from "./pairing.repository";
 
-/** Per-code attempt budget before 429 (FR-008). Per-IP limiting is the edge proxy's job. */
+/** Per-code attempt budget before 429 (FR-008). */
 export const MAX_ATTEMPTS_PER_CODE = 5;
 /** Back-off seconds advertised in Retry-After (clamped to the contract's [1,300]). */
 export const RETRY_AFTER_SECONDS = 30;
@@ -56,8 +54,11 @@ export type PairResult =
 export class PairingService {
   private readonly repo: PairingRepository;
 
-  constructor(@Inject(PG_POOL) pool: Pool) {
-    this.repo = new PairingRepository(pool);
+  constructor(
+    @Inject(PG_POOL) pool: Pool,
+    @Inject(AUTH_LOOKUP_POOL) lookupPool: Pool = pool,
+  ) {
+    this.repo = new PairingRepository(pool, lookupPool);
   }
 
   async pair(rawCode: string): Promise<PairResult> {
@@ -65,7 +66,7 @@ export class PairingService {
     if (!code) return { kind: "invalid" };
 
     // Rate-limit accounting BEFORE acting on the code. The count is per-code; the
-    // edge proxy owns the per-IP half (contract narrative).
+    // controller has already consumed the independent per-IP budget.
     const attempts = await this.repo.recordAttempt(code.id, code.tenant_id);
     if (attempts > MAX_ATTEMPTS_PER_CODE) {
       return { kind: "rate_limited", retryAfterSeconds: RETRY_AFTER_SECONDS };

@@ -10,7 +10,7 @@
  * §XII strict boundary: `.strict()` everywhere rejects unknown keys, and there is
  * NO `tenant_id`/`storeId`/scope field — scope is the connector principal's;
  * `requestRef` is a PATH param (un-forgeable). A body that smuggles scope or an
- * unknown key is a 400 validation_failure.
+ * unknown key is a 400 validation_error.
  */
 import { z } from "zod";
 

@@ -282,6 +282,11 @@ paths:
   /api/inventory/v1/admin/sale-linked-backfill:
     post:
       operationId: backfillSaleLinkedMovements
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        The backfill exists as an off-request service/worker seam. No platform
+        admin HTTP guard or controller route is shipped; do not generate this
+        operation as a live API.
       tags: [inventory-admin]
       summary: "PLATFORM/ADMIN: backfill sale-linked outbound / restock movements."
       description: >

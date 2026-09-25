@@ -29,7 +29,7 @@ interface MockPool {
  */
 function makePool(): MockPool {
   const queryFn = jest.fn();
-  const TX_CTRL = /^(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|SELECT set_config)/i;
+  const TX_CTRL = /^(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|SELECT set_config|SELECT pg_advisory_xact_lock)/i;
   const clientQueryFn = jest.fn(async (sql: string) => {
     if (TX_CTRL.test(sql.trimStart())) return { rows: [] };
     return queryFn(sql);
@@ -71,9 +71,15 @@ const SILENT_LOGGER = {
 
 function programPoolQueries(pool: MockPool, results: Array<unknown[]>): void {
   let i = 0;
-  pool.query.mockImplementation(async () => ({
-    rows: results[i++] ?? [],
-  }));
+  pool.query.mockImplementation(async (sql: string) => {
+    // findActiveMembershipByStore performs the narrow bootstrap lookup before
+    // entering tenant RLS. Keep it explicit without making every behavior test
+    // repeat the same plumbing fixture.
+    if (/SELECT\s+tenant_id\s+FROM\s+stores/i.test(sql)) {
+      return { rows: [{ tenant_id: TENANT_ID }] };
+    }
+    return { rows: results[i++] ?? [] };
+  });
 }
 
 const TENANT_ID = "11111111-1111-7111-8111-111111111111";
@@ -243,9 +249,9 @@ describe("PosOperatorsService.roster", () => {
 
     const r = await svc.roster("jwt", { branch_id: STORE_ID }, "rid-6");
     expect(r).toEqual({ kind: "refused" });
-    // Exactly 3 queries: user lookup, membership lookup, access-set check.
-    // Cashier fetch (query 4) must NOT have been called.
-    expect(pool.query).toHaveBeenCalledTimes(3);
+    // Exactly 4 queries: user lookup, store→tenant bootstrap lookup,
+    // membership lookup, and access-set check. Cashier fetch must not run.
+    expect(pool.query).toHaveBeenCalledTimes(4);
   });
 
   it("returns 'refused' when user is found but soft-deleted (deleted_at set)", async () => {

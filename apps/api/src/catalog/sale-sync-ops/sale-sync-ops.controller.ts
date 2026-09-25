@@ -66,7 +66,7 @@ import {
  * Canonical UUID shape — a saleRef that fails this never hits the DB.
  *
  * A saleRef that does not match is a MALFORMED request-shape error → 400
- * `validation_failure` (NOT a safe-404). This is not a non-disclosure concern:
+ * `validation_error` (NOT a safe-404). This is not a non-disclosure concern:
  * the check runs BEFORE any DB hit, so it reveals nothing about whether a
  * resource exists. The non-disclosing 404 is reserved for the
  * exists-but-out-of-scope / cross-tenant / genuinely-absent trio — a VALID ref
@@ -89,7 +89,7 @@ export class SaleSyncOpsController {
   }
 
   /**
-   * Reject a syntactically MALFORMED saleRef with a 400 `validation_failure`
+   * Reject a syntactically MALFORMED saleRef with a 400 `validation_error`
    * BEFORE any DB hit (a request-shape error, discloses nothing). A
    * VALID-but-out-of-scope ref is left to the service layer's non-disclosing
    * 404 — the two cases are deliberately distinct.
@@ -97,7 +97,7 @@ export class SaleSyncOpsController {
   private assertSaleRef(saleRef: string): void {
     if (!SaleRefSchema.safeParse(saleRef).success) {
       throw new BadRequestException({
-        code: "validation_failure",
+        code: "validation_error",
         message: "saleRef must be a valid UUID.",
       });
     }

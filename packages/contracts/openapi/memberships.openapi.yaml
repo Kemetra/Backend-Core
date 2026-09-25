@@ -108,6 +108,11 @@ paths:
     post:
       summary: Accept a pending invitation. Public — accept token authenticates the request.
       operationId: acceptInvitation
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        The current runtime contains the existing-user service foundation but no
+        public controller route; new-user password/session semantics remain a
+        product and security decision. Do not generate this as a shipped route.
       security: []
       requestBody:
         required: true

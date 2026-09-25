@@ -20,7 +20,7 @@ import { Module } from "@nestjs/common";
 import { createLogger, type Logger } from "@data-pulse-2/shared";
 import type { Pool } from "pg";
 
-import { AuthModule, PG_POOL } from "../auth/auth.module";
+import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../auth/auth.module";
 import {
   CLERK_VERIFIER,
   type ClerkVerifier,
@@ -51,7 +51,7 @@ export const POS_AUDIT_EVENTS_LOGGER = "POS_AUDIT_EVENTS_LOGGER";
     {
       provide: DeviceRepository,
       useFactory: (pool: Pool): DeviceRepository => new DeviceRepository(pool),
-      inject: [PG_POOL],
+      inject: [AUTH_LOOKUP_POOL],
     },
     {
       provide: PosAuditEventsService,

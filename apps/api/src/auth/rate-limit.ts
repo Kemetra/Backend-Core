@@ -59,6 +59,7 @@ export const RATE_LIMIT_BUCKETS = {
   signInPerIp: { limit: 30, windowMs: 60 * 60 * 1000 },
   passwordResetPerIp: { limit: 100, windowMs: 24 * 60 * 60 * 1000 },
   passwordResetConfirmPerIp: { limit: 10, windowMs: 15 * 60 * 1000 },
+  pairingPerIp: { limit: 30, windowMs: 60 * 60 * 1000 },
 } as const satisfies Record<string, RateLimitBucket>;
 
 /**

@@ -36,7 +36,7 @@
     "bootstrap:pilot": "node dist/cli/bootstrap-pilot.js",
     "bootstrap:pairing-code": "node dist/cli/bootstrap-pairing-code.js",
     "seed:catalog": "node dist/cli/seed-catalog.js",
-    "lint": "echo \"db: lint runs at the repo root\""
+    "lint": "tsc -p tsconfig.build.json --noEmit --incremental false"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

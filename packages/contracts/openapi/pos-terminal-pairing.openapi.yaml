@@ -69,8 +69,10 @@ info:
     Authentication boundary: this surface is the ONLY backend operation
     callable without `clerkJwt` or any device-bound bearer. All other
     POS operations (sign-in, sales finalization, receipts, etc.) are
-    `clerkJwt`-authenticated. The endpoint is rate-limited at the
-    edge proxy (per `pairing_code` + per source IP) per FR-9.
+    `clerkJwt`-authenticated. Backend-Core enforces both a durable
+    per-`pairing_code` attempt budget and a Redis-backed per-source-IP
+    window before code lookup. Source IP is derived using the deployment's
+    explicit trusted-proxy configuration per FR-9.
 
 
     Idempotency model: the contract does NOT require an

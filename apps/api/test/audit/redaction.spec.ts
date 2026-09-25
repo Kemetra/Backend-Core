@@ -151,8 +151,8 @@ describe("hasForbiddenField — array handling", () => {
   });
 });
 
-describe("hasForbiddenField — depth guard (depth > 20 short-circuits)", () => {
-  it("returns false at depth > 20 instead of stack-overflowing", () => {
+describe("hasForbiddenField — depth guard (depth > 20 fails closed)", () => {
+  it("rejects a payload deeper than 20 instead of stack-overflowing", () => {
     // Build an object 25 levels deep; the forbidden key sits at depth 22.
     let root: Record<string, unknown> = {};
     let cursor: Record<string, unknown> = root;
@@ -161,8 +161,7 @@ describe("hasForbiddenField — depth guard (depth > 20 short-circuits)", () => 
       cursor = cursor["child"] as Record<string, unknown>;
     }
     cursor["pin"] = "deep";
-    // Depth guard fires at > 20 — the forbidden key at depth 22 is NOT reached.
-    expect(hasForbiddenField(root)).toBe(false);
+    expect(hasForbiddenField(root)).toBe(true);
   });
 });
 
@@ -289,7 +288,7 @@ beforeAll(async () => {
     );
     // Active membership required by the tenant-scoped actor lookup (CODX-POS-2).
     await pool.query(
-      `INSERT INTO roles (id, tenant_id, code, name) VALUES ($1, $2, 'cashier', 'Cashier T236')`,
+      `INSERT INTO roles (id, tenant_id, code, name) VALUES ($1, $2, 'store_manager', 'Store Manager T236')`,
       ["0a000000-0000-7000-8000-000000ff4001", TENANT_ID],
     );
     await pool.query(
@@ -301,6 +300,14 @@ beforeAll(async () => {
     await pool.query(
       `INSERT INTO devices (id, tenant_id, store_id, label, token_hash) VALUES ($1, $2, $3, 'POS-R', $4)`,
       [TERMINAL_ID, TENANT_ID, BRANCH_ID, hashToken(ATTESTATION)],
+    );
+    await pool.query(
+      `INSERT INTO auth_tokens
+         (id, token_hash, tenant_id, user_id, device_id, store_id, scope, issued_at, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'pos_operator', $7, $8)`,
+      ["0a000000-0000-7000-8000-000000ff7001", hashToken("redaction-operator-session"),
+        TENANT_ID, OPERATOR_ID, TERMINAL_ID, BRANCH_ID,
+        "2020-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z"],
     );
 
     // Boot the PosAuditEventsModule with the test pool and stub Clerk verifier —
