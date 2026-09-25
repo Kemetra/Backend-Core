@@ -228,9 +228,10 @@ components:
         backlogIndicator:
           type: integer
           minimum: 0
+          maximum: 2147483647
           description: >
             Self-reported lag / backlog (e.g. count of pending postings).
-            Non-negative. Stored verbatim as a self-report.
+            Non-negative int4. Stored verbatim as a self-report.
         erpnextReachable:
           type: boolean
           description: >
@@ -322,7 +323,8 @@ components:
         backlogIndicator:
           type: [integer, "null"]
           minimum: 0
-          description: Most recent self-reported backlog/lag indicator (null until reported).
+          maximum: 2147483647
+          description: Most recent self-reported backlog/lag indicator (null until reported). int4.
         erpnextReachable:
           type: [boolean, "null"]
           description: >

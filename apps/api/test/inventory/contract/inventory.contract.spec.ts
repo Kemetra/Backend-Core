@@ -121,6 +121,7 @@ type PathItem = Record<string, OperationObject>;
 
 interface SchemaObject {
   type?: string | string[];
+  pattern?: string;
   additionalProperties?: boolean | Record<string, unknown>;
   required?: string[];
   properties?: Record<string, unknown>;
@@ -371,6 +372,13 @@ describe("inventory/inventory.yaml — projections + envelope", () => {
       { type?: string | string[] }
     >;
     expect(props["negativeBalance"]?.type).toBe("boolean");
+  });
+
+  it("bounds DecimalQuantity to the numeric(19,4) Zod shape", () => {
+    // inventory.controller.ts DecimalQtySchema: ≤15 integer digits, ≤4 fraction digits.
+    expect(inventoryDoc.components?.schemas?.["DecimalQuantity"]?.pattern).toBe(
+      "^-?\\d{1,15}(\\.\\d{1,4})?$",
+    );
   });
 
   it("command schemas are strict (additionalProperties: false — mass-assignment ban, FR-052)", () => {

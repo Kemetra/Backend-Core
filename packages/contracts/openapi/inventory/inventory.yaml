@@ -589,7 +589,7 @@ components:
     # ----- Shared
     DecimalQuantity:
       type: string
-      pattern: '^-?\d+(\.\d+)?$'
+      pattern: '^-?\d{1,15}(\.\d{1,4})?$'
       description: >
         Exact-decimal quantity as a STRING (`numeric(p,s)` at rest); no float on
         the wire. May be negative on a derived on-hand (allow-and-flag, FR-024).
