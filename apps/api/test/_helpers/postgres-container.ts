@@ -17,7 +17,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from "@testcontainers/postgresql";
-import { Pool } from "pg";
+import { Client, Pool } from "pg";
 
 const DRIZZLE_DIR = resolve(
   __dirname,
@@ -53,14 +53,14 @@ export async function startPgEnv(): Promise<PgTestEnv> {
     .start();
 
   const adminUri = container.getConnectionUri();
-  const admin = new Pool({ connectionString: adminUri });
+  const admin = guardPool(new Pool({ connectionString: adminUri }));
 
   const upSql = readFileSync(UP_SQL_PATH, "utf8");
 
   const host = container.getHost();
   const port = container.getMappedPort(5432);
   const appUri = `postgres://${APP_ROLE_NAME}:${APP_ROLE_PASSWORD}@${host}:${port}/test`;
-  const app = new Pool({ connectionString: appUri });
+  const app = guardPool(new Pool({ connectionString: appUri }));
 
   return { container, admin, app, upSql, adminUri };
 }
@@ -92,19 +92,99 @@ export async function applyUpAndCreateAppRole(env: PgTestEnv): Promise<void> {
 }
 
 /**
+ * SQLSTATEs Postgres sends when it terminates a backend on shutdown:
+ * 57P01 admin_shutdown, 57P02 crash_shutdown, 57P03 cannot_connect_now.
+ */
+const SHUTDOWN_SQLSTATES = new Set(["57P01", "57P02", "57P03"]);
+
+/**
+ * True for errors a pooled client can receive because the test container is
+ * shutting down: a server FATAL with a shutdown SQLSTATE, or pg's own
+ * "Connection terminated" when the socket closes under it.
+ */
+export function isShutdownError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  if (typeof code === "string" && SHUTDOWN_SQLSTATES.has(code)) return true;
+  return /^Connection terminated( unexpectedly)?$/.test(err.message);
+}
+
+/**
+ * Pool 'error' listener for test pools. pg-pool re-emits an idle client's
+ * error on the pool, and with no listener Node throws "Unhandled error.",
+ * which Jest pins on whichever suite is running. Shutdown errors are expected
+ * during teardown and are dropped; anything else is rethrown so a real fault
+ * still fails loudly.
+ */
+export function ignoreShutdownErrors(err: Error): void {
+  if (isShutdownError(err)) return;
+  throw err;
+}
+
+/** Idempotently attach `ignoreShutdownErrors` to a pool. */
+export function guardPool(pool: Pool): Pool {
+  if (!pool.listeners("error").includes(ignoreShutdownErrors)) {
+    pool.on("error", ignoreShutdownErrors);
+  }
+  return pool;
+}
+
+/**
  * End a pool whose server is about to be stopped. pg-pool resolves end()
  * before closing clients finish their Terminate, so a container stop right
  * after can hand one of them FATAL 57P01, which the pool re-emits as 'error'.
- * Without a listener Node throws "Unhandled error." and fails the suite.
  */
 export async function endPoolQuietly(pool: Pool): Promise<void> {
-  pool.on("error", () => undefined);
+  guardPool(pool);
   await pool.end().catch(() => undefined);
+}
+
+/**
+ * Wait until the server has no client backends besides this probe's own.
+ *
+ * `Pool.end()` resolves before its sockets close, so a pool a spec ended in
+ * its own afterAll (which carries no 'error' listener) can still hold a live
+ * backend when the container is stopped; Postgres then sends that client
+ * FATAL 57P01 and the pool throws "Unhandled error." Waiting for those
+ * backends to exit closes the race for every pool on the server, not just
+ * the two this env owns. Uses a standalone Client because `Client.end()`,
+ * unlike `Pool.end()`, resolves only once its socket has closed. Bounded, so
+ * a leaked (never-ended) pool costs `timeoutMs` and a warning naming the open
+ * connections, rather than hanging the suite.
+ */
+async function waitForOtherBackendsToExit(uri: string, timeoutMs = 5000): Promise<void> {
+  const probe = new Client({ connectionString: uri });
+  probe.on("error", ignoreShutdownErrors);
+  try {
+    await probe.connect();
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const { rows } = await probe.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM pg_stat_activity
+         WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()`,
+      );
+      if (rows[0]?.n === 0) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const { rows: left } = await probe.query(
+      `SELECT usename, state, left(query, 80) AS query FROM pg_stat_activity
+       WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()`,
+    );
+    // eslint-disable-next-line no-console
+    console.warn(
+      `stopPgEnv: ${left.length} connection(s) still open after ${timeoutMs}ms; ` +
+        `a pool/client was not ended before teardown`,
+      left,
+    );
+  } finally {
+    await probe.end().catch(() => undefined);
+  }
 }
 
 export async function stopPgEnv(env: PgTestEnv): Promise<void> {
   await endPoolQuietly(env.app);
   await endPoolQuietly(env.admin);
+  await waitForOtherBackendsToExit(env.adminUri).catch(() => undefined);
   await env.container.stop().catch(() => undefined);
 }
 
