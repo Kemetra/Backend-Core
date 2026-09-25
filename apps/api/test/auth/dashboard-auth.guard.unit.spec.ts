@@ -40,7 +40,7 @@ const TENANT_ID  = "0a000000-0000-7000-8000-0000000ten01";
 // ---------------------------------------------------------------------------
 
 const makeFakeSessions = () => ({
-  findActiveById: jest.fn<Promise<SessionRow | null>, [string]>(),
+  findActiveByCredential: jest.fn<Promise<SessionRow | null>, [string]>(),
 });
 
 const makeFakeAuthTokens = () => ({
@@ -120,13 +120,13 @@ function makeRequest(opts: { cookie?: string; bearer?: string }): Record<string,
 describe("DashboardAuthGuard — session principal", () => {
   it("DAG1: cookie session → returns true (dashboard humans are always allowed)", async () => {
     const { guard, sessions } = buildGuard();
-    sessions.findActiveById.mockResolvedValue(makeSession());
+    sessions.findActiveByCredential.mockResolvedValue(makeSession());
 
     const req = makeRequest({ cookie: SESSION_ID });
     const result = await guard.canActivate(makeCtx(req));
 
     expect(result).toBe(true);
-    expect(sessions.findActiveById).toHaveBeenCalledWith(SESSION_ID);
+    expect(sessions.findActiveByCredential).toHaveBeenCalledWith(SESSION_ID);
   });
 });
 
@@ -211,7 +211,7 @@ describe("DashboardAuthGuard — inner AuthGuard failure", () => {
 
   it("DAG5c: expired/revoked session → inner AuthGuard throws UnauthorizedException", async () => {
     const { guard, sessions } = buildGuard();
-    sessions.findActiveById.mockResolvedValue(null);
+    sessions.findActiveByCredential.mockResolvedValue(null);
 
     const req = makeRequest({ cookie: SESSION_ID });
     await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(

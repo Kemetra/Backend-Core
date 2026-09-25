@@ -10,6 +10,7 @@
  * in without touching the repository. The default is a no-op cache.
  */
 import { Injectable } from "@nestjs/common";
+import { hashToken, tokenHashesEqual } from "@data-pulse-2/auth";
 import {
   type NewSessionRow,
   sessions,
@@ -65,6 +66,35 @@ export class SessionRepository {
     if (!row) {
       throw new Error("SessionRepository.create: insert returned no row");
     }
+    await this.cache.set(row);
+    return row;
+  }
+
+  /**
+   * Look up a live session by the raw dashboard cookie.
+   *
+   * The cookie is hashed with SHA-256 and compared to `credential_hash`.
+   * The raw value is never used as a query key and is never cached.
+   * A second constant-time compare rejects a row whose stored hash does
+   * not match the hash just computed.
+   */
+  async findActiveByCredential(rawCredential: string): Promise<SessionRow | null> {
+    const hash = hashToken(rawCredential);
+    const rows = await this.db
+      .select()
+      .from(sessions)
+      .where(
+        and(
+          eq(sessions.credentialHash, hash),
+          isNull(sessions.revokedAt),
+          gt(sessions.absoluteExpiresAt, sql`now()`),
+        ),
+      )
+      .limit(1);
+    const row = rows[0] ?? null;
+    if (!row) return null;
+    if (!tokenHashesEqual(row.credentialHash, hash)) return null;
+    if (!this.isLive(row)) return null;
     await this.cache.set(row);
     return row;
   }

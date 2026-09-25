@@ -8,15 +8,28 @@
  *     migration 0003).
  *   - Partial indexes for active sessions and absolute-expiry sweeps.
  *
- * NO RLS (sessions are user-scoped, not tenant-scoped).
+ * NO RLS (sessions are user-scoped, not tenant-scoped). The dashboard
+ * cookie is NOT `id`. `id` is a UUIDv7 row key. The cookie is a separate
+ * CSPRNG value; only its SHA-256 is stored in `credential_hash`.
  */
-import { pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { customType, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { stores } from "./stores";
 import { tenants } from "./tenants";
 import { users } from "./users";
 
+const bytea = customType<{ data: Buffer; default: false }>({
+  dataType() {
+    return "bytea";
+  },
+});
+
 export const sessions = pgTable("sessions", {
   id: uuid("id").primaryKey(),
+  /**
+   * SHA-256 of the raw `dp2_session` cookie. The raw value is returned to
+   * the browser once and is never stored. Lookup is by this hash.
+   */
+  credentialHash: bytea("credential_hash").notNull().unique(),
   userId: uuid("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "restrict" }),

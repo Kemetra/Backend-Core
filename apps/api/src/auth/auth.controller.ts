@@ -36,7 +36,7 @@ import {
 } from "@nestjs/common";
 import type { Response } from "express";
 import { AuthService } from "./auth.service";
-import { AuthGuard, type AuthedRequest, SESSION_COOKIE_NAME } from "./auth.guard";
+import { AuthGuard, type AuthedRequest, readSessionCookie, SESSION_COOKIE_NAME } from "./auth.guard";
 import {
   RATE_LIMIT_BUCKETS,
   RateLimiter,
@@ -113,7 +113,7 @@ export class AuthController {
 
     const result = await this.authService.signIn(body);
 
-    setSessionCookie(res, result.sessionId, result.absoluteExpiresAt);
+    setSessionCookie(res, result.sessionCredential, result.absoluteExpiresAt);
 
     // `memberships` is part of the OpenAPI shape but its source
     // repository isn't in this slice — return an empty array so the
@@ -164,9 +164,13 @@ export class AuthController {
     if (!result) {
       throw new UnauthorizedException("Unauthorized");
     }
-    // Re-issue the cookie. We deliberately keep the original absolute
-    // expiry — refresh extends `last_seen_at` only.
-    setSessionCookie(res, result.sessionId, result.absoluteExpiresAt);
+    // Re-issue the same CSPRNG cookie. Refresh extends last_seen_at only
+    // and must not replace the cookie with the row id.
+    const credential = readSessionCookie(req);
+    if (credential === null) {
+      throw new UnauthorizedException("Unauthorized");
+    }
+    setSessionCookie(res, credential, result.absoluteExpiresAt);
   }
 
   // ---------------------------------------------------------------------

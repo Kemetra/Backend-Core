@@ -184,6 +184,7 @@ describe("data-pulse-migrate CLI", () => {
     "0026_sale_sync_status",
     "0027_settlement_receivables",
     "0028_outbox_claim_recovery",
+    "0029_session_credential_hash",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;

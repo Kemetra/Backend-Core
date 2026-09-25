@@ -56,12 +56,15 @@ export interface UserSummary {
 }
 
 /**
- * What a successful sign-in returns to the controller. The raw session id
- * is what becomes the cookie value; the controller serializes it with the
- * appropriate `HttpOnly; Secure; SameSite=Lax` attributes.
+ * What a successful sign-in returns to the controller.
+ *
+ * `sessionId` is the sessions row key (UUIDv7). It is not a credential.
+ * `sessionCredential` is the CSPRNG cookie value, shown to the browser
+ * once. Only its SHA-256 is stored.
  */
 export interface SignInResult {
   sessionId: string;
+  sessionCredential: string;
   userId: string;
   absoluteExpiresAt: Date;
   user: UserSummary;
