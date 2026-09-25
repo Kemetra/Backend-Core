@@ -11,7 +11,8 @@
 #     Testcontainers cannot start (the soft-skip is a local-Docker-less escape hatch
 #     only, per constitution.md).
 #   - `pnpm lint` is the repository's no-emit TypeScript static-analysis gate.
-#     ESLint is not installed, so the name does not imply ESLint or formatting.
+#     `pnpm lint:eslint` is a separate ESLint gate (recommended rules + the
+#     tenant-scope rule) on apps/api/src and apps/worker/src.
 
 name: CI
 
@@ -60,6 +61,9 @@ jobs:
       # TS2307 "Cannot find module '@data-pulse-2/shared'".
       - name: Static checks
         run: pnpm lint
+
+      - name: ESLint
+        run: pnpm lint:eslint
 
       - name: Test @data-pulse-2/worker (Docker-free suites)
         # The Testcontainers-backed outbox suites

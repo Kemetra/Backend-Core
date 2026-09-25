@@ -108,7 +108,10 @@ export class ErpnextReconciliationController {
     const tenantId = this.requireTenant(request);
     const result = await this.service.listPostingBacklog({
       tenantId,
-      cursor: query.cursor != null ? BigInt(query.cursor) : null,
+      cursor:
+        query.cursor !== null && query.cursor !== undefined
+          ? BigInt(query.cursor)
+          : null,
       limit: query.limit ?? 100,
       ...(query.storeId ? { storeId: query.storeId } : {}),
       ...(query.class ? { rejectionCategory: query.class } : {}),

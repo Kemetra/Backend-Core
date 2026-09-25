@@ -29,7 +29,6 @@
 import {
   BadRequestException,
   ConflictException,
-  HttpException,
   Inject,
   Injectable,
   Optional,
@@ -39,7 +38,7 @@ import {
 } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
 import { createHash } from "node:crypto";
-import { EMPTY, Observable, from, of } from "rxjs";
+import { EMPTY, Observable, from } from "rxjs";
 import { catchError, concatMap, finalize, switchMap } from "rxjs/operators";
 
 import { IdempotencyKeyStore, type Logger } from "@data-pulse-2/shared";
@@ -77,14 +76,6 @@ const HEADER_NAME = "idempotency-key";
 
 /** Valid printable ASCII, no whitespace, 16–128 chars. */
 const KEY_REGEX = /^[\x21-\x7E]{16,128}$/;
-
-/** Route template used in the dedup tuple — method + path template. */
-function routeTemplate(ctx: ExecutionContext): string {
-  const req = ctx.switchToHttp().getRequest<{ method: string; route?: { path?: string }; url: string }>();
-  const method = req.method.toUpperCase();
-  const path = req.route?.path ?? req.url;
-  return `${method}:${path}`;
-}
 
 /**
  * Extract clientId from the resolved context.

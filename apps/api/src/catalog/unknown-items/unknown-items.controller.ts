@@ -105,7 +105,6 @@ import {
   UnknownItemsService,
   type BulkDismissOutcome,
   type CapturedUnknownItemRow,
-  type UnknownItemRow,
 } from "./unknown-items.service";
 
 /**

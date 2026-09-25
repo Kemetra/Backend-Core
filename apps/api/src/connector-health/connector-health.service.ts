@@ -159,10 +159,13 @@ export class ConnectorHealthService {
         //            value via the target-table qualifier `connector_health.…`
         //            (NOT EXCLUDED, which is the rejected insert row = NULL here).
         const hasFields =
-          fields.connectorVersion != null ||
-          fields.backlogIndicator != null ||
-          fields.erpnextReachable != null ||
-          fields.sourceClockAt != null;
+          (fields.connectorVersion !== null &&
+            fields.connectorVersion !== undefined) ||
+          (fields.backlogIndicator !== null &&
+            fields.backlogIndicator !== undefined) ||
+          (fields.erpnextReachable !== null &&
+            fields.erpnextReachable !== undefined) ||
+          (fields.sourceClockAt !== null && fields.sourceClockAt !== undefined);
         const res = await client.query<{ last_seen_at: Date }>(
           `INSERT INTO connector_health
              (id, tenant_id, connector_registration_id, last_seen_at,

@@ -727,7 +727,7 @@ const PENDING_DELIVERY_STATES = ["pending", "claimed", "failed"] as const;
  * time, well after Nest init.
  */
 async function defaultPendingQuery(pool: Pool): Promise<OutboxPendingRow[]> {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { runWithTenantContext } = require("@data-pulse-2/db") as {
     runWithTenantContext: <T>(
       pool: Pool,
