@@ -186,6 +186,7 @@ describe("data-pulse-migrate CLI", () => {
     "0028_outbox_claim_recovery",
     "0029_session_credential_hash",
     "0030_session_membership_trigger",
+    "0031_outbox_tenant_fk",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -244,6 +245,19 @@ describe("data-pulse-migrate CLI", () => {
       await queryCount(`SELECT COUNT(*)::text AS count FROM pg_indexes
         WHERE schemaname = 'public' AND indexname = 'outbox_events_stale_claim_idx'`),
     ).toBe("1");
+    // 0031's outbox tenant FK and nil-tenant CHECK.
+    expect(
+      await queryCount(`
+        SELECT COUNT(*)::text AS count FROM pg_constraint
+        WHERE conname = 'outbox_events_tenant_id_fk'
+      `),
+    ).toBe("1");
+    expect(
+      await queryCount(`
+        SELECT COUNT(*)::text AS count FROM pg_constraint
+        WHERE conname = 'tenants_id_not_nil'
+      `),
+    ).toBe("1");
   });
 
   it("up is idempotent on a second run", async () => {
@@ -279,22 +293,35 @@ describe("data-pulse-migrate CLI", () => {
 
       expect(await ledgerIds()).toEqual(EXPECTED_MIGRATIONS.slice(0, -1));
 
-      // 0030 removes its membership trigger and function.
+      // 0031 removes the outbox tenant FK and the nil-tenant CHECK.
+      expect(
+        await queryCount(`
+          SELECT COUNT(*)::text AS count FROM pg_constraint
+          WHERE conname = 'outbox_events_tenant_id_fk'
+        `),
+      ).toBe("0");
+      expect(
+        await queryCount(`
+          SELECT COUNT(*)::text AS count FROM pg_constraint
+          WHERE conname = 'tenants_id_not_nil'
+        `),
+      ).toBe("0");
+
+      // Sanity: everything older SURVIVES the 0031 rollback (down reverses
+      // only the latest migration) —
+      // 0030's membership trigger and function;
       expect(
         await queryCount(`
           SELECT COUNT(*)::text AS count FROM pg_trigger
           WHERE tgname = 'sessions_active_tenant_membership_check'
         `),
-      ).toBe("0");
+      ).toBe("1");
       expect(
         await queryCount(`
           SELECT COUNT(*)::text AS count FROM pg_proc
           WHERE proname = 'sessions_check_active_tenant_membership'
         `),
-      ).toBe("0");
-
-      // Sanity: everything older SURVIVES the 0030 rollback (down reverses
-      // only the latest migration) —
+      ).toBe("1");
       // 0029's credential_hash column;
       expect(await countPublicColumn("sessions", "credential_hash")).toBe("1");
       // 0028's lease column and index, and the 0027 settlement tables;
@@ -335,8 +362,14 @@ describe("data-pulse-migrate CLI", () => {
     expect(r.stdout).toMatch(new RegExp(`up: applying ${LATEST_MIGRATION}`));
     expect(
       await queryCount(`
-        SELECT COUNT(*)::text AS count FROM pg_trigger
-        WHERE tgname = 'sessions_active_tenant_membership_check'
+        SELECT COUNT(*)::text AS count FROM pg_constraint
+        WHERE conname = 'outbox_events_tenant_id_fk'
+      `),
+    ).toBe("1");
+    expect(
+      await queryCount(`
+        SELECT COUNT(*)::text AS count FROM pg_constraint
+        WHERE conname = 'tenants_id_not_nil'
       `),
     ).toBe("1");
     // Re-applying the latest migration leaves all seven catalog tables from

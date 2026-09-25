@@ -21,6 +21,7 @@
  * Additional event types require a separate approval PR per T541.
  */
 import { integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { tenants } from "./tenants";
 
 export const outboxEvents = pgTable("outbox_events", {
   /**
@@ -33,8 +34,11 @@ export const outboxEvents = pgTable("outbox_events", {
   /**
    * Tenant scope. NOT NULL -- every outbox event belongs to exactly one
    * tenant. The RLS policy gates visibility on this column.
+   * FK to tenants(id) ON DELETE RESTRICT (migration 0031).
    */
-  tenantId: uuid("tenant_id").notNull(),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .references(() => tenants.id, { onDelete: "restrict" }),
 
   /**
    * Store scope. NULL for tenant-level events; populated for store-level
