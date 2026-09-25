@@ -129,16 +129,35 @@ function idemKey(): string {
   return randomUUID().replace(/-/g, "");
 }
 
+/** A fresh externalId per request (the idempotency tuple must not collide). */
 let extSeq = 0;
-function ext(prefix: string): string {
+function nextExternalId(): string {
   extSeq += 1;
-  return `${prefix}-${extSeq}`;
+  return `env560-${extSeq}`;
 }
 
-function captureBody(externalId: string): Record<string, unknown> {
+/** Who is calling (null = no Authorization header) and, for void/refund, which sale. */
+interface SaleTarget {
+  readonly envelope: string | null;
+  readonly saleRef?: string;
+}
+
+/** The void and refund routes differ only in path suffix and body. */
+interface SaleEvent {
+  readonly path: "void" | "refund";
+  readonly body: Record<string, unknown>;
+}
+
+const VOID_EVENT: SaleEvent = { path: "void", body: {} };
+const REFUND_EVENT: SaleEvent = {
+  path: "refund",
+  body: { posRefundAmount: "5.0000", currencyCode: "USD" },
+};
+
+function captureBody(): Record<string, unknown> {
   return {
     sourceSystem: "pos-env-560",
-    externalId,
+    externalId: nextExternalId(),
     currencyCode: "USD",
     posTotal: "12.5000",
     occurredAt: "2026-05-01T10:00:00.000Z",
@@ -176,51 +195,51 @@ async function signIn(): Promise<string> {
   return envelope as string;
 }
 
-function capture(envelope: string | null, externalId: string): request.Test {
-  const req = http().post("/api/pos/v1/sales").set("Idempotency-Key", idemKey());
-  if (envelope !== null) req.set("Authorization", `Bearer ${envelope}`);
-  return req.send(captureBody(externalId));
+function withBearer(req: request.Test, target: SaleTarget): request.Test {
+  req.set("Idempotency-Key", idemKey());
+  if (target.envelope !== null) req.set("Authorization", `Bearer ${target.envelope}`);
+  return req;
 }
 
-function voidSale(envelope: string, saleRef: string, externalId: string): request.Test {
-  return http()
-    .post(`/api/pos/v1/sales/${saleRef}/void`)
-    .set("Idempotency-Key", idemKey())
-    .set("Authorization", `Bearer ${envelope}`)
-    .send({ sourceSystem: "pos-env-560", externalId });
+function capture(target: SaleTarget): request.Test {
+  return withBearer(http().post("/api/pos/v1/sales"), target).send(captureBody());
 }
 
-function refundSale(envelope: string, saleRef: string, externalId: string): request.Test {
-  return http()
-    .post(`/api/pos/v1/sales/${saleRef}/refund`)
-    .set("Idempotency-Key", idemKey())
-    .set("Authorization", `Bearer ${envelope}`)
-    .send({
-      sourceSystem: "pos-env-560",
-      externalId,
-      posRefundAmount: "5.0000",
-      currencyCode: "USD",
-    });
+function postSaleEvent(event: SaleEvent, target: SaleTarget): request.Test {
+  return withBearer(
+    http().post(`/api/pos/v1/sales/${target.saleRef}/${event.path}`),
+    target,
+  ).send({ sourceSystem: "pos-env-560", externalId: nextExternalId(), ...event.body });
 }
 
-async function expectAllSaleRoutes401(envelope: string, saleRef: string): Promise<void> {
-  const cap = await capture(envelope, ext("cap-after-revoke"));
-  expect(cap.status).toBe(401);
-  const v = await voidSale(envelope, saleRef, ext("void-after-revoke"));
-  expect(v.status).toBe(401);
-  const r = await refundSale(envelope, saleRef, ext("refund-after-revoke"));
-  expect(r.status).toBe(401);
+async function expectAllSaleRoutes401(target: SaleTarget): Promise<void> {
+  expect((await capture(target)).status).toBe(401);
+  expect((await postSaleEvent(VOID_EVENT, target)).status).toBe(401);
+  expect((await postSaleEvent(REFUND_EVENT, target)).status).toBe(401);
 }
 
 /** The envelope's auth_tokens row must still be live — so a 401 is G-4, not layer 1. */
-async function expectEnvelopeRowStillActive(envelope: string): Promise<void> {
+async function expectEnvelopeRowStillActive(target: SaleTarget): Promise<void> {
   const r = await E().admin.query<{ n: string }>(
     `SELECT COUNT(*)::text AS n FROM auth_tokens
       WHERE token_hash = $1 AND scope = 'pos_operator'
         AND revoked_at IS NULL AND expires_at > now()`,
-    [hashToken(envelope)],
+    [hashToken(target.envelope ?? "")],
   );
   expect(r.rows[0]?.n).toBe("1");
+}
+
+/** Every write row (sale / void / refund) must carry the device scope and the operator. */
+async function expectDeviceScopedRow(query: { sql: string; id: string }): Promise<void> {
+  const r = await E().admin.query<{ tenant_id: string; store_id: string; created_by: string }>(
+    query.sql,
+    [query.id],
+  );
+  expect(r.rows[0]).toEqual({
+    tenant_id: TENANT_ID,
+    store_id: STORE_ID,
+    created_by: OPERATOR_USER_ID,
+  });
 }
 
 beforeAll(async () => {
@@ -329,52 +348,40 @@ describe("#560 envelope auth — happy path through the real guard chain", () =>
     const envelope = await signIn();
 
     // --- captureSale ---------------------------------------------------
-    const capA = await capture(envelope, ext("cap-happy-a"));
+    const capA = await capture({ envelope });
     expect(capA.status).toBe(201);
     expect(capA.body.storeId).toBe(STORE_ID);
     const saleA: string = capA.body.saleRef;
 
-    const capB = await capture(envelope, ext("cap-happy-b"));
+    const capB = await capture({ envelope });
     expect(capB.status).toBe(201);
     const saleB: string = capB.body.saleRef;
 
-    const sales = await E().admin.query<{ tenant_id: string; store_id: string; created_by: string }>(
-      `SELECT tenant_id, store_id, created_by FROM sales WHERE id = ANY($1::uuid[]) ORDER BY id`,
-      [[saleA, saleB]],
-    );
-    expect(sales.rows).toHaveLength(2);
-    for (const row of sales.rows) {
-      expect(row).toEqual({ tenant_id: TENANT_ID, store_id: STORE_ID, created_by: OPERATOR_USER_ID });
+    for (const id of [saleA, saleB]) {
+      await expectDeviceScopedRow({
+        sql: `SELECT tenant_id, store_id, created_by FROM sales WHERE id = $1`,
+        id,
+      });
     }
 
     // --- recordVoid ----------------------------------------------------
-    const v = await voidSale(envelope, saleA, ext("void-happy"));
+    const v = await postSaleEvent(VOID_EVENT, { envelope, saleRef: saleA });
     expect(v.status).toBe(201);
     expect(v.body.kind).toBe("void");
     expect(v.body.saleRef).toBe(saleA);
-    const voidRow = await E().admin.query<{ tenant_id: string; store_id: string; created_by: string }>(
-      `SELECT tenant_id, store_id, created_by FROM sale_voids WHERE id = $1`,
-      [v.body.eventRef],
-    );
-    expect(voidRow.rows[0]).toEqual({
-      tenant_id: TENANT_ID,
-      store_id: STORE_ID,
-      created_by: OPERATOR_USER_ID,
+    await expectDeviceScopedRow({
+      sql: `SELECT tenant_id, store_id, created_by FROM sale_voids WHERE id = $1`,
+      id: v.body.eventRef,
     });
 
     // --- recordRefund --------------------------------------------------
-    const r = await refundSale(envelope, saleB, ext("refund-happy"));
+    const r = await postSaleEvent(REFUND_EVENT, { envelope, saleRef: saleB });
     expect(r.status).toBe(201);
     expect(r.body.kind).toBe("refund");
     expect(r.body.saleRef).toBe(saleB);
-    const refundRow = await E().admin.query<{ tenant_id: string; store_id: string; created_by: string }>(
-      `SELECT tenant_id, store_id, created_by FROM sale_refunds WHERE id = $1`,
-      [r.body.eventRef],
-    );
-    expect(refundRow.rows[0]).toEqual({
-      tenant_id: TENANT_ID,
-      store_id: STORE_ID,
-      created_by: OPERATOR_USER_ID,
+    await expectDeviceScopedRow({
+      sql: `SELECT tenant_id, store_id, created_by FROM sale_refunds WHERE id = $1`,
+      id: r.body.eventRef,
     });
 
     // --- provenance (G-5): audit actor is the real operator ------------
@@ -390,7 +397,7 @@ describe("#560 envelope auth — happy path through the real guard chain", () =>
   it("the sale was written under RLS: visible to its own tenant GUC, invisible to another tenant", async () => {
     if (skip()) return;
     const envelope = await signIn();
-    const cap = await capture(envelope, ext("cap-rls"));
+    const cap = await capture({ envelope });
     expect(cap.status).toBe(201);
     const saleRef: string = cap.body.saleRef;
 
@@ -415,66 +422,68 @@ describe("#560 envelope auth — happy path through the real guard chain", () =>
 describe("#560 envelope auth — layer 1 (canonical bearer) refusals", () => {
   it("no Authorization header → 401", async () => {
     if (skip()) return;
-    const res = await capture(null, ext("cap-no-auth"));
+    const res = await capture({ envelope: null });
     expect(res.status).toBe(401);
   });
 
   it("unknown envelope → 401", async () => {
     if (skip()) return;
-    const res = await capture("not-a-real-envelope-560", ext("cap-bad-auth"));
+    const res = await capture({ envelope: "not-a-real-envelope-560" });
     expect(res.status).toBe(401);
   });
 
   it("the Clerk JWT itself is not a sale credential → 401", async () => {
     if (skip()) return;
-    const res = await capture(OPERATOR_JWT, ext("cap-jwt-auth"));
+    const res = await capture({ envelope: OPERATOR_JWT });
     expect(res.status).toBe(401);
   });
 });
 
 describe("#560 envelope auth — G-4 live predicate: mid-session revocation → 401 on the next sale", () => {
-  async function signInAndCapture(): Promise<{ envelope: string; saleRef: string }> {
+  async function signInAndCapture(): Promise<SaleTarget> {
     const envelope = await signIn();
-    const cap = await capture(envelope, ext("cap-pre-revoke"));
+    const cap = await capture({ envelope });
     expect(cap.status).toBe(201);
     return { envelope, saleRef: cap.body.saleRef as string };
   }
 
-  it("membership revoked → next capture / void / refund 401", async () => {
-    if (skip()) return;
-    const { envelope, saleRef } = await signInAndCapture();
-    await E().admin.query(`UPDATE memberships SET revoked_at = now() WHERE id = $1`, [
-      OPERATOR_MEMBERSHIP_ID,
-    ]);
-    await expectEnvelopeRowStillActive(envelope);
-    await expectAllSaleRoutes401(envelope, saleRef);
-  });
+  const revocations: ReadonlyArray<{ axis: string; revoke: () => Promise<unknown> }> = [
+    {
+      axis: "membership revoked",
+      revoke: () =>
+        E().admin.query(`UPDATE memberships SET revoked_at = now() WHERE id = $1`, [
+          OPERATOR_MEMBERSHIP_ID,
+        ]),
+    },
+    {
+      axis: "device revoked",
+      revoke: () =>
+        E().admin.query(`UPDATE devices SET revoked_at = now() WHERE id = $1`, [DEVICE_ID]),
+    },
+    {
+      axis: "store-access grant removed",
+      revoke: () =>
+        E().admin.query(`DELETE FROM store_access WHERE membership_id = $1 AND store_id = $2`, [
+          OPERATOR_MEMBERSHIP_ID,
+          STORE_ID,
+        ]),
+    },
+  ];
 
-  it("device revoked → next capture / void / refund 401", async () => {
+  it.each(revocations)("$axis → next capture / void / refund 401", async ({ revoke }) => {
     if (skip()) return;
-    const { envelope, saleRef } = await signInAndCapture();
-    await E().admin.query(`UPDATE devices SET revoked_at = now() WHERE id = $1`, [DEVICE_ID]);
-    await expectEnvelopeRowStillActive(envelope);
-    await expectAllSaleRoutes401(envelope, saleRef);
-  });
-
-  it("store-access grant removed → next capture / void / refund 401", async () => {
-    if (skip()) return;
-    const { envelope, saleRef } = await signInAndCapture();
-    await E().admin.query(
-      `DELETE FROM store_access WHERE membership_id = $1 AND store_id = $2`,
-      [OPERATOR_MEMBERSHIP_ID, STORE_ID],
-    );
-    await expectEnvelopeRowStillActive(envelope);
-    await expectAllSaleRoutes401(envelope, saleRef);
+    const target = await signInAndCapture();
+    await revoke();
+    await expectEnvelopeRowStillActive(target);
+    await expectAllSaleRoutes401(target);
   });
 
   it("restoring the revoked axis re-admits the same envelope (the 401 was the live predicate)", async () => {
     if (skip()) return;
-    const { envelope } = await signInAndCapture();
+    const target = await signInAndCapture();
     await E().admin.query(`UPDATE devices SET revoked_at = now() WHERE id = $1`, [DEVICE_ID]);
-    expect((await capture(envelope, ext("cap-while-revoked"))).status).toBe(401);
+    expect((await capture(target)).status).toBe(401);
     await E().admin.query(`UPDATE devices SET revoked_at = NULL WHERE id = $1`, [DEVICE_ID]);
-    expect((await capture(envelope, ext("cap-after-restore"))).status).toBe(201);
+    expect((await capture(target)).status).toBe(201);
   });
 });
