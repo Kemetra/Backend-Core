@@ -148,8 +148,8 @@ async function seedBase(): Promise<void> {
   await pg.query(
     `INSERT INTO sessions (id, user_id, active_tenant_id, active_store_id, absolute_expires_at, credential_hash)
      VALUES
-       ($1, $2, $3, $4, NOW() + INTERVAL '1 hour', decode(md5($1::text), 'hex') || decode(md5($1::text || ':h'), 'hex')),
-       ($5, $6, $7, $8, NOW() + INTERVAL '1 hour', decode(md5($5::text), 'hex') || decode(md5($5::text || ':h'), 'hex'))`,
+       ($1::uuid, $2, $3, $4, NOW() + INTERVAL '1 hour', decode(md5($1::uuid::text), 'hex') || decode(md5($1::uuid::text || ':h'), 'hex')),
+       ($5::uuid, $6, $7, $8, NOW() + INTERVAL '1 hour', decode(md5($5::uuid::text), 'hex') || decode(md5($5::uuid::text || ':h'), 'hex'))`,
     [
       SESSION_CASCADE_STORE,  USER_A, TENANT_A,         STORE_CASCADE,
       SESSION_CASCADE_TENANT, USER_A, TENANT_CASCADE,   STORE_CASCADE_TENANT,
@@ -171,7 +171,7 @@ async function tryInsertSession(
     await client.query("BEGIN");
     await client.query(
       `INSERT INTO sessions (id, user_id, active_tenant_id, active_store_id, absolute_expires_at, credential_hash)
-       VALUES ($1, $2, $3, $4, NOW() + INTERVAL '1 hour', decode(md5($1::text), 'hex') || decode(md5($1::text || ':h'), 'hex'))`,
+       VALUES ($1::uuid, $2, $3, $4, NOW() + INTERVAL '1 hour', decode(md5($1::uuid::text), 'hex') || decode(md5($1::uuid::text || ':h'), 'hex'))`,
       [SESSION_TRY, USER_A, activeTenantId, activeStoreId],
     );
     await client.query("ROLLBACK");

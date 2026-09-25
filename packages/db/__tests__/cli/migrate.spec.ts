@@ -279,16 +279,31 @@ describe("data-pulse-migrate CLI", () => {
 
       expect(await ledgerIds()).toEqual(EXPECTED_MIGRATIONS.slice(0, -1));
 
-      // 0028 removes its lease column and index while retaining 0027 tables.
-      expect(await countPublicColumn("outbox_events", "claimed_at")).toBe("0");
+      // 0030 removes its membership trigger and function.
+      expect(
+        await queryCount(`
+          SELECT COUNT(*)::text AS count FROM pg_trigger
+          WHERE tgname = 'sessions_active_tenant_membership_check'
+        `),
+      ).toBe("0");
+      expect(
+        await queryCount(`
+          SELECT COUNT(*)::text AS count FROM pg_proc
+          WHERE proname = 'sessions_check_active_tenant_membership'
+        `),
+      ).toBe("0");
+
+      // Sanity: everything older SURVIVES the 0030 rollback (down reverses
+      // only the latest migration) —
+      // 0029's credential_hash column;
+      expect(await countPublicColumn("sessions", "credential_hash")).toBe("1");
+      // 0028's lease column and index, and the 0027 settlement tables;
+      expect(await countPublicColumn("outbox_events", "claimed_at")).toBe("1");
       expect(
         await queryCount(`SELECT COUNT(*)::text AS count FROM pg_indexes
           WHERE schemaname = 'public' AND indexname = 'outbox_events_stale_claim_idx'`),
-      ).toBe("0");
+      ).toBe("1");
       expect(await countPublicTables(SETTLEMENT_TABLES)).toBe("7");
-
-      // Sanity: everything older SURVIVES the 0028 rollback (down reverses
-      // only the latest migration) —
       // 0026's sync_status column + sale_sync_deadletters table;
       expect(await countPublicColumn("sales", "sync_status")).toBe("1");
       expect(await countPublicTables(["sale_sync_deadletters"])).toBe("1");
@@ -318,7 +333,12 @@ describe("data-pulse-migrate CLI", () => {
     const r = await runCli(["up"], { DATABASE_URL: env.adminUri });
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(new RegExp(`up: applying ${LATEST_MIGRATION}`));
-    expect(await countPublicColumn("outbox_events", "claimed_at")).toBe("1");
+    expect(
+      await queryCount(`
+        SELECT COUNT(*)::text AS count FROM pg_trigger
+        WHERE tgname = 'sessions_active_tenant_membership_check'
+      `),
+    ).toBe("1");
     // Re-applying the latest migration leaves all seven catalog tables from
     // 0007 intact; the catalog set is unaffected by the latest migration.
     expect(await countPublicTables(CATALOG_TABLES)).toBe("7");
