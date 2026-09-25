@@ -40,7 +40,7 @@ import {
 import { Reflector } from "@nestjs/core";
 import { createHash } from "node:crypto";
 import { EMPTY, Observable, from, of } from "rxjs";
-import { switchMap, tap } from "rxjs/operators";
+import { catchError, concatMap, finalize, switchMap } from "rxjs/operators";
 
 import { IdempotencyKeyStore, type Logger } from "@data-pulse-2/shared";
 import type { StoredResult } from "@data-pulse-2/shared";
@@ -58,6 +58,7 @@ import {
   type IdempotentOptions,
   type IdempotentPolicy,
 } from "./idempotent.decorator";
+import { canonicalJson } from "./canonical-json";
 import {
   DEFAULT_INFLIGHT_TTL_SEC,
   InProgressMarker,
@@ -125,18 +126,29 @@ function keyFingerprint(headerValue: string): string {
 }
 
 /** Canonical JSON fingerprint of the request body. */
-function bodyFingerprint(body: unknown): Buffer {
-  return sha256Buffer(JSON.stringify(body ?? null));
+export function bodyFingerprint(body: unknown): Buffer {
+  return sha256Buffer(canonicalJson(body ?? null));
 }
 
-/** Composed dedup tuple string (strategy.md §4.2). */
-function composeTuple(
+/**
+ * Replay-store key. Tenant is already a separate partition on the store,
+ * so this string stays stable across the #614 marker fix.
+ */
+function composeStoreKey(
   method: string,
   routePath: string,
   cId: string,
   headerKey: string,
 ): string {
   return `${method}:${routePath}:${cId}:${headerKey}`;
+}
+
+/**
+ * In-flight marker tuple. Tenant is part of the namespace: the same user
+ * in two tenants must not block the other with 425.
+ */
+export function composeTuple(tenantId: string, storeKey: string): string {
+  return `${tenantId}:${storeKey}`;
 }
 
 @Injectable()
@@ -233,7 +245,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const tId = tenantId(execCtx) ?? "no-tenant";
     const route = `${method}:${routePath}`;
 
-    const tuple = composeTuple(method, routePath, cId, headerValue);
+    const storeKey = composeStoreKey(method, routePath, cId, headerValue);
+    const tuple = composeTuple(tId, storeKey);
     const fp = bodyFingerprint(req.body);
 
     // Step 5: check in-progress marker BEFORE store lookup.
@@ -268,7 +281,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
         tId,
         null,
         cId,
-        tuple,
+        storeKey,
         fp,
       );
 
@@ -355,14 +368,73 @@ export class IdempotencyInterceptor implements NestInterceptor {
         });
       }
 
-      // Step 7 already done (marker set above). Step 8: invoke handler.
-      const expiresAt = new Date(Date.now() + replayTtlMs);
-      const _fp = fp;
-      const keyFp = keyFingerprint(headerValue);
+      return runFresh({
+        store: this.store,
+        marker: this.marker,
+        logger: this.logger,
+        execCtx,
+        next,
+        route,
+        tuple,
+        tenantId: tId,
+        clientId: cId,
+        storeKey,
+        fingerprint: fp,
+        replayTtlMs,
+        hit: stored.hit,
+        keyFingerprint: keyFingerprint(headerValue),
+      });
+    } catch (err) {
+      await this.marker.del(tuple).catch(() => undefined);
+      throw err;
+    }
+  }
+}
 
-      return next.handle().pipe(
-        tap({
-          next: async (responseBody: unknown) => {
+interface FreshAttempt {
+  store: IdempotencyKeyStore;
+  marker: InProgressMarker;
+  logger: Logger | undefined;
+  execCtx: ExecutionContext;
+  next: CallHandler;
+  route: string;
+  tuple: string;
+  tenantId: string;
+  clientId: string;
+  storeKey: string;
+  fingerprint: Buffer;
+  replayTtlMs: number;
+  hit: false | "in_progress";
+  keyFingerprint: string;
+}
+
+async function runFresh(attempt: FreshAttempt): Promise<Observable<unknown>> {
+  if (attempt.hit === "in_progress") {
+    await attempt.marker.del(attempt.tuple);
+    recordIdempotencyInProgress({ route: attempt.route });
+    return replyInProgress(attempt.execCtx);
+  }
+  const expiresAt = new Date(Date.now() + attempt.replayTtlMs);
+  const claimed = await attempt.store.claim({
+    tenantId: attempt.tenantId,
+    storeId: null,
+    clientId: attempt.clientId,
+    key: attempt.storeKey,
+    fingerprint: attempt.fingerprint,
+    expiresAt,
+  });
+  if (claimed === "conflict") return lostClaim(attempt);
+  const keyFp = attempt.keyFingerprint;
+  return attempt.next.handle().pipe(
+        catchError((err: unknown) => from(attempt.store.releaseClaim({
+          tenantId: attempt.tenantId,
+          storeId: null,
+          clientId: attempt.clientId,
+          key: attempt.storeKey,
+        }).then(() => {
+          throw err;
+        }))),
+        concatMap(async (responseBody: unknown) => {
             // Save the successful response for future replays.
             // T539a — preserve the handler's actual status (200, 201, 202, …)
             // rather than hard-coding CREATED. Handlers that use
@@ -370,15 +442,15 @@ export class IdempotencyInterceptor implements NestInterceptor {
             // 005 unknown-items capture: 200 resolved / 201 unknown) rely on
             // this so replay returns the same status as the original response.
             const result: StoredResult = {
-              status: execCtx.switchToHttp().getResponse<{ statusCode: number }>().statusCode,
+              status: attempt.execCtx.switchToHttp().getResponse<{ statusCode: number }>().statusCode,
               body: responseBody,
             };
-            await this.store.save(
-              tId,
+            await attempt.store.save(
+              attempt.tenantId,
               null,
-              cId,
-              tuple,
-              _fp,
+              attempt.clientId,
+              attempt.storeKey,
+              attempt.fingerprint,
               result,
               expiresAt,
             ).catch((err: unknown) => {
@@ -390,22 +462,73 @@ export class IdempotencyInterceptor implements NestInterceptor {
               // happened — failing the request now would only hide it and is
               // incoherent with ADR 0009 D3 fail-open). The metric/alert counter is
               // AD-TOOL-003-phase-gated and lands separately; this is the warn-log half.
-              this.logger?.warn(
-                { err, route, key_fingerprint: keyFp },
+              attempt.logger?.warn(
+                { err, route: attempt.route, key_fingerprint: keyFp },
                 "IdempotencyInterceptor: replay-record save failed; idempotency degraded (response returned, retry may re-execute handler)",
               );
             });
-          },
-          finalize: () => {
-            // Best-effort marker cleanup on any exit (success or error).
-            this.marker.del(tuple).catch(() => undefined);
-          },
+            return responseBody;
+          }),
+        finalize(() => {
+          // Best-effort marker cleanup on any exit (success or error).
+          // Runs after concatMap's save promise settles, so a retry cannot
+          // pass the marker while the completion write is still in flight.
+          attempt.marker.del(attempt.tuple).catch(() => undefined);
         }),
       );
-    } catch (err) {
-      // If we set the marker but then hit a store error, clean up.
-      await this.marker.del(tuple).catch(() => undefined);
-      throw err;
-    }
+}
+
+async function lostClaim(attempt: FreshAttempt): Promise<Observable<unknown>> {
+  const again = await attempt.store.findOrCreate(
+    attempt.tenantId,
+    null,
+    attempt.clientId,
+    attempt.storeKey,
+    attempt.fingerprint,
+  );
+  await attempt.marker.del(attempt.tuple);
+  if (again.hit === true) {
+    recordIdempotencyReplay({ route: attempt.route });
+    return replyReplay(attempt.execCtx, again.entry.result.status, again.entry.result.body);
   }
+  if (again.hit === "collision") {
+    throw new ConflictException({
+      code: "idempotency_key_conflict",
+      message:
+        "The provided Idempotency-Key has already been used for a different request body. Generate a new key.",
+    });
+  }
+  if (again.hit === "in_progress") {
+    recordIdempotencyInProgress({ route: attempt.route });
+    return replyInProgress(attempt.execCtx);
+  }
+  return runFresh({ ...attempt, hit: false });
+}
+
+function replyInProgress(execCtx: ExecutionContext): Observable<never> {
+  const rawRes = execCtx.switchToHttp().getResponse<{
+    status(code: number): unknown;
+    setHeader(name: string, value: string): void;
+    json(body: unknown): void;
+  }>();
+  rawRes.setHeader("Retry-After", "2");
+  rawRes.status(425 as unknown as number);
+  rawRes.json({ error: "idempotency_in_progress", retryAfterSec: 2 });
+  return EMPTY;
+}
+
+function replyReplay(
+  execCtx: ExecutionContext,
+  status: number,
+  body: unknown,
+): Observable<never> {
+  const rawRes = execCtx.switchToHttp().getResponse<{
+    status(code: number): unknown;
+    setHeader(name: string, value: string): void;
+    json(body: unknown): void;
+  }>();
+  rawRes.setHeader("Idempotent-Replayed", "true");
+  rawRes.status(status);
+  rawRes.json(body);
+  return EMPTY;
 }

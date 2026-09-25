@@ -4,8 +4,9 @@
  * Redis-backed in-flight marker for the HTTP idempotency layer.
  *
  * Uses `SET key value NX EX ttlSec` (atomic, expires if the origin request
- * crashes before cleanup). The key includes a sha-256 fingerprint of the
- * dedup tuple so tenantId is part of the namespace.
+ * crashes before cleanup). The caller passes a tuple that already includes
+ * tenantId (`composeTuple`); this class only hashes that string. It does
+ * not add a tenant of its own.
  *
  * Storage key format: `idem:inflight:<hex16(sha256(tuple))>`
  * Payload: minimal — just `"1"`. No PII, no original-request data.

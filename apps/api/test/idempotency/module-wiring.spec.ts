@@ -102,6 +102,7 @@ describe("production idempotency interceptor wiring", () => {
   it("warns on replay-save failure without logging the raw key", async () => {
     const store = {
       findOrCreate: jest.fn(async () => ({ hit: false })),
+      claim: jest.fn(async () => "inserted"),
       save: jest.fn(async () => { throw new Error("redis unavailable"); }),
     } as unknown as IdempotencyKeyStore;
     const interceptor = productionProvider().useFactory(new Reflector(), store, marker, enqueuer, logger);
