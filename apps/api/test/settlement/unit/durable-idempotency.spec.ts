@@ -22,53 +22,47 @@ function harness(options: { saleExists?: boolean; auditFails?: boolean } = {}) {
   const reservationClients: unknown[] = [];
   const commands: string[] = [];
 
-  const query = jest.fn(async (sql: string, params?: unknown[]) => {
-    const text = String(sql);
-    commands.push(text);
-    if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(text) || text.includes("set_config")) {
-      return result();
-    }
-    if (text.includes("INSERT INTO idempotency_keys")) {
+  const handlers: Array<{
+    matches: (sql: string) => boolean;
+    run: (params?: unknown[]) => QueryResult;
+  }> = [
+    { matches: (sql) => /^(BEGIN|COMMIT|ROLLBACK)$/.test(sql) || sql.includes("set_config"),
+      run: () => result() },
+    { matches: (sql) => sql.includes("INSERT INTO idempotency_keys"), run: (params) => {
       reservationClients.push(params?.[3]);
       if (operationExists) return result();
       operationExists = true;
       durableFingerprint = params?.[5] as Buffer;
       return result([{ id: "71000000-0000-4000-8000-000000000007" }]);
-    }
-    if (text.includes("SELECT request_hash, response_body")) {
-      return result([
-        { request_hash: durableFingerprint, response_body: durableBody },
-      ]);
-    }
-    if (text.includes("FROM payer_account")) return result([{ id: PAYER_ID }]);
-    if (text.includes("INSERT INTO receivable")) {
+    } },
+    { matches: (sql) => sql.includes("SELECT request_hash, response_body"),
+      run: () => result([{ request_hash: durableFingerprint, response_body: durableBody }]) },
+    { matches: (sql) => sql.includes("FROM payer_account"),
+      run: () => result([{ id: PAYER_ID }]) },
+    { matches: (sql) => sql.includes("INSERT INTO receivable"), run: (params) => {
       if (options.saleExists === false) {
         throw Object.assign(new Error("sale FK violation"), { code: "23503" });
       }
       receivableInsertCount += 1;
-      return result([
-        {
-          id: RECEIVABLE_ID,
-          sale_id: SALE_ID,
-          payer_id: PAYER_ID,
-          outstanding_balance: params?.[5] as string,
-          state: "open",
-          erpnext_payment_entry_ref: null,
-          tax_placeholder: null,
-          version: 0,
-        },
-      ]);
-    }
-    if (text.includes("UPDATE idempotency_keys")) {
+      return result([{ id: RECEIVABLE_ID, sale_id: SALE_ID, payer_id: PAYER_ID,
+        outstanding_balance: params?.[5] as string, state: "open",
+        erpnext_payment_entry_ref: null, tax_placeholder: null, version: 0 }]);
+    } },
+    { matches: (sql) => sql.includes("UPDATE idempotency_keys"), run: (params) => {
       durableBody = JSON.parse(params?.[0] as string) as unknown;
       return result([], 1);
-    }
-    if (text.includes("INSERT INTO audit_events")) {
+    } },
+    { matches: (sql) => sql.includes("INSERT INTO audit_events"), run: () => {
       auditInsertCount += 1;
       if (options.auditFails) throw new Error("injected audit failure");
       return result([], 1);
-    }
-    throw new Error(`unexpected SQL: ${text}`);
+    } },
+  ];
+  const query = jest.fn(async (sql: string, params?: unknown[]) => {
+    commands.push(sql);
+    const handler = handlers.find((entry) => entry.matches(sql));
+    if (!handler) throw new Error(`unexpected SQL: ${sql}`);
+    return handler.run(params);
   });
   const client = { query, release: jest.fn() } as unknown as PoolClient;
   const pool = {

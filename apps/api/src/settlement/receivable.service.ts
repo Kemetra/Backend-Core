@@ -215,134 +215,7 @@ export class ReceivableService {
       const result = await runWithTenantContext(
         this.pool,
         { tenantId: input.tenantId, isPlatformAdmin: false },
-        async (client): Promise<OpenIntentResult> => {
-          // Reserve the operation before creating any financial fact. The
-          // idempotency row and receivables share this transaction, so neither
-          // can commit without the other. The UNIQUE constraint serializes
-          // concurrent requests with the same operation identity.
-          const reservation = await client.query<{ id: string }>(
-            `INSERT INTO idempotency_keys
-               (id, tenant_id, store_id, client_id, key, request_hash,
-                response_status, response_body, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6, 201, $7::jsonb, 'infinity')
-             ON CONFLICT (tenant_id, store_id, client_id, key) DO NOTHING
-             RETURNING id`,
-            [
-              newId(),
-              input.tenantId,
-              input.storeId,
-              input.operation.terminalId,
-              operationKey,
-              fingerprint,
-              JSON.stringify({ state: "pending" }),
-            ],
-          );
-
-          if (reservation.rows.length === 0) {
-            const existing = await client.query<{
-              request_hash: Buffer;
-              response_body: unknown;
-            }>(
-              `SELECT request_hash, response_body
-                 FROM idempotency_keys
-                WHERE tenant_id = $1
-                  AND store_id = $2
-                  AND client_id = $3
-                  AND key = $4
-                FOR UPDATE`,
-              [
-                input.tenantId,
-                input.storeId,
-                input.operation.terminalId,
-                operationKey,
-              ],
-            );
-            const prior = existing.rows[0];
-            if (!prior) {
-              throw new Error(
-                "ReceivableService.openFromIntent: idempotency conflict row disappeared",
-              );
-            }
-            if (!prior.request_hash.equals(fingerprint)) {
-              return { kind: "idempotency_conflict" };
-            }
-            const persisted = readDurableIntentBody(prior.response_body);
-            return { kind: "ok", rows: persisted.rows.map(toRow) };
-          }
-
-          // Validate all references while the reservation is still uncommitted.
-          // A validation conflict is thrown so runWithTenantContext rolls the
-          // reservation back together with every other write.
-          for (const payer of input.payers) {
-            const ok = await this.payerInScope(client, payer.payerRef, input.storeId);
-            if (!ok) throw new SettlementReferenceConflictError();
-          }
-
-          const dbRows: DbRow[] = [];
-          for (const payer of input.payers) {
-            const inserted = await client.query<DbRow>(
-              `INSERT INTO receivable
-                 (id, tenant_id, store_id, sale_id, payer_id,
-                  outstanding_balance, state, tax_placeholder, version)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0)
-               RETURNING ${SELECT_COLS}`,
-              [
-                newId(),
-                input.tenantId,
-                input.storeId,
-                input.saleRef,
-                payer.payerRef,
-                payer.owedAmount,
-                INITIAL_RECEIVABLE_STATE,
-                null,
-              ],
-            );
-            const row = inserted.rows[0];
-            if (!row) {
-              throw new Error("ReceivableService.openFromIntent: insert returned no row");
-            }
-            dbRows.push(row);
-          }
-
-          const durableBody: DurableIntentBody = {
-            kind: "settlement_intent",
-            saleRef: input.saleRef,
-            rows: dbRows,
-          };
-          const completed = await client.query(
-            `UPDATE idempotency_keys
-                SET response_body = $1::jsonb
-              WHERE tenant_id = $2
-                AND store_id = $3
-                AND client_id = $4
-                AND key = $5`,
-            [
-              JSON.stringify(durableBody),
-              input.tenantId,
-              input.storeId,
-              input.operation.terminalId,
-              operationKey,
-            ],
-          );
-          if (completed.rowCount !== 1) {
-            throw new Error(
-              "ReceivableService.openFromIntent: durable result update failed",
-            );
-          }
-
-          await insertSettlementAudit(client, {
-            tenantId: input.tenantId,
-            storeId: input.storeId,
-            actorUserId: input.operation.actorUserId,
-            requestId: input.operation.requestId,
-            action: "settlement.intent.recorded",
-            targetType: "sales",
-            targetId: input.saleRef,
-            metadata: { receivable_ids: dbRows.map((row) => row.id) },
-          });
-
-          return { kind: "ok", rows: dbRows.map(toRow) };
-        },
+        (client) => this.openIntentTransaction(client, input, fingerprint, operationKey),
       );
       if (result.kind === "ok") recordSettlementReceivable();
       return result;
@@ -351,6 +224,112 @@ export class ReceivableService {
         return { kind: "conflict" };
       }
       throw err;
+    }
+  }
+
+  private async openIntentTransaction(
+    client: PoolClient,
+    input: OpenIntentInput,
+    fingerprint: Buffer,
+    operationKey: string,
+  ): Promise<OpenIntentResult> {
+    // The reservation, receivables, and audit fact share this transaction.
+    const reservation = await this.reserveIntent(client, input, fingerprint, operationKey);
+    if (reservation.kind === "conflict") return { kind: "idempotency_conflict" };
+    if (reservation.kind === "replay") {
+      return { kind: "ok", rows: reservation.rows.map(toRow) };
+    }
+
+    await this.assertIntentPayers(client, input);
+    const dbRows = await this.insertIntentRows(client, input);
+    await this.completeIntent(client, input, operationKey, dbRows);
+    await insertSettlementAudit(client, {
+      tenantId: input.tenantId,
+      storeId: input.storeId,
+      actorUserId: input.operation.actorUserId,
+      requestId: input.operation.requestId,
+      action: "settlement.intent.recorded",
+      targetType: "sales",
+      targetId: input.saleRef,
+      metadata: { receivable_ids: dbRows.map((row) => row.id) },
+    });
+    return { kind: "ok", rows: dbRows.map(toRow) };
+  }
+
+  private async reserveIntent(
+    client: PoolClient,
+    input: OpenIntentInput,
+    fingerprint: Buffer,
+    operationKey: string,
+  ): Promise<{ kind: "new" } | { kind: "replay"; rows: DbRow[] } | { kind: "conflict" }> {
+    const scope = [input.tenantId, input.storeId, input.operation.terminalId, operationKey];
+    const reservation = await client.query<{ id: string }>(
+      `INSERT INTO idempotency_keys
+         (id, tenant_id, store_id, client_id, key, request_hash,
+          response_status, response_body, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 201, $7::jsonb, 'infinity')
+       ON CONFLICT (tenant_id, store_id, client_id, key) DO NOTHING
+       RETURNING id`,
+      [newId(), ...scope, fingerprint, JSON.stringify({ state: "pending" })],
+    );
+    if (reservation.rows.length > 0) return { kind: "new" };
+
+    const existing = await client.query<{ request_hash: Buffer; response_body: unknown }>(
+      `SELECT request_hash, response_body
+         FROM idempotency_keys
+        WHERE tenant_id = $1 AND store_id = $2 AND client_id = $3 AND key = $4
+        FOR UPDATE`,
+      scope,
+    );
+    const prior = existing.rows[0];
+    if (!prior) throw new Error("ReceivableService.openFromIntent: idempotency conflict row disappeared");
+    if (!prior.request_hash.equals(fingerprint)) return { kind: "conflict" };
+    return { kind: "replay", rows: readDurableIntentBody(prior.response_body).rows };
+  }
+
+  private async assertIntentPayers(client: PoolClient, input: OpenIntentInput): Promise<void> {
+    // Throw so a bad reference rolls the reservation back with the transaction.
+    for (const payer of input.payers) {
+      if (!(await this.payerInScope(client, payer.payerRef, input.storeId))) {
+        throw new SettlementReferenceConflictError();
+      }
+    }
+  }
+
+  private async insertIntentRows(client: PoolClient, input: OpenIntentInput): Promise<DbRow[]> {
+    const rows: DbRow[] = [];
+    for (const payer of input.payers) {
+      const inserted = await client.query<DbRow>(
+        `INSERT INTO receivable
+           (id, tenant_id, store_id, sale_id, payer_id,
+            outstanding_balance, state, tax_placeholder, version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0)
+         RETURNING ${SELECT_COLS}`,
+        [newId(), input.tenantId, input.storeId, input.saleRef, payer.payerRef,
+          payer.owedAmount, INITIAL_RECEIVABLE_STATE, null],
+      );
+      const row = inserted.rows[0];
+      if (!row) throw new Error("ReceivableService.openFromIntent: insert returned no row");
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  private async completeIntent(
+    client: PoolClient,
+    input: OpenIntentInput,
+    operationKey: string,
+    rows: DbRow[],
+  ): Promise<void> {
+    const durableBody: DurableIntentBody = { kind: "settlement_intent", saleRef: input.saleRef, rows };
+    const completed = await client.query(
+      `UPDATE idempotency_keys SET response_body = $1::jsonb
+        WHERE tenant_id = $2 AND store_id = $3 AND client_id = $4 AND key = $5`,
+      [JSON.stringify(durableBody), input.tenantId, input.storeId,
+        input.operation.terminalId, operationKey],
+    );
+    if (completed.rowCount !== 1) {
+      throw new Error("ReceivableService.openFromIntent: durable result update failed");
     }
   }
 
