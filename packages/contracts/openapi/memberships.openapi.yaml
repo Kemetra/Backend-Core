@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Memberships & Invitations API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     Invite users into the active tenant; manage their role and store-access
     policy. Acceptance flow lives at /invitations/accept.

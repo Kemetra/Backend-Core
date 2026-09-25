@@ -32,8 +32,9 @@ info:
     `vouchers.validate` / `vouchers.redeem` / `vouchers.reverse` (see
     POS-Pulse `specs/006-payments-tender/contracts/bridge-api.md`
     §"`vouchers.*` namespace"). It is NOT consumed by the dashboard or
-    backend admin UI; tenant-admin voucher CRUD already exists under
-    `/api/v1/pos/vouchers` and is owned by a separate prior contract.
+    backend admin UI. Tenant-admin voucher CRUD (issuing and managing
+    vouchers) is not part of this contract and has no contract or route
+    yet; it will need its own contract when it is specified.
 
     Authentication boundary: all three operations are POS-authenticated
     via the role-named `operator-identity` security scheme — a
