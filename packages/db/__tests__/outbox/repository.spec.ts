@@ -233,6 +233,7 @@ describe("outbox_events — claim transition (R-2)", () => {
     await env!.admin.query(
       `UPDATE outbox_events
           SET delivery_state = 'delivered',
+              claimed_at     = NULL,
               processed_at   = now(),
               updated_at     = now()
         WHERE event_id = $1`,
@@ -317,6 +318,7 @@ describe("outbox_events — retry metadata columns (R-4)", () => {
     await env!.admin.query(
       `UPDATE outbox_events
           SET delivery_state  = 'failed',
+              claimed_at      = NULL,
               attempts        = 1,
               last_error      = $2,
               next_attempt_at = $3,

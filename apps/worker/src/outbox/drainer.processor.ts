@@ -2,8 +2,8 @@
  * T581 — Outbox drainer processor.
  *
  * Polls `outbox_events` on a configurable interval, claims batches via
- * `FOR UPDATE SKIP LOCKED`, establishes tenant context per row, dispatches to
- * the registered consumer, and transitions the row to `delivered`, `failed`,
+ * `FOR UPDATE SKIP LOCKED`, passes each tenant-scoped row to its consumer,
+ * and transitions the row to `delivered`, `failed`,
  * or `dead_lettered` depending on the outcome.
  *
  * Tenant-context pattern (Constitution §II, lifecycle.md §6)
@@ -12,13 +12,13 @@
  *
  *   1. `claimBatch(pool, batchSize)` runs under `{ isPlatformAdmin: true }`.
  *      The RLS policy allows the platform-admin context to see all tenants' rows.
- *   2. For each claimed row, BEFORE calling the consumer, the drainer calls
- *      `runWithTenantContext(pool, { tenantId: row.tenant_id }, consumer.handle)`.
- *   3. The consumer MUST NOT make any tenant-scoped DB writes outside of this
- *      established context. T561 proves that skipping this step fails RLS.
+ *   2. The drainer passes the row's tenant ID to its consumer.
+ *   3. A consumer making tenant-scoped DB queries MUST establish its own
+ *      `runWithTenantContext` on the client it actually uses. T561 proves
+ *      that skipping this fails RLS.
  *
- * This matches lifecycle.md §6.1–6.2: the drainer holds the platform-admin
- * context only for the claim step; per-row processing uses the row's own tenant.
+ * The drainer uses platform-admin context only for claim and state updates;
+ * consumer-owned DB operations use the row's tenant.
  *
  * Concurrency
  * -----------
@@ -26,15 +26,15 @@
  * the full batch before the next tick fires — the effective poll rate is
  * `POLL_INTERVAL_MS + processing_time`. Multiple drainer instances (replicas)
  * run independently; `FOR UPDATE SKIP LOCKED` prevents double-claiming.
+ * The claim limit reserves pool capacity for lease heartbeats and transitions.
  *
  * Error handling
  * --------------
  * Consumer throws → `markFailed` (with backoff). At `attempts === MAX_ATTEMPTS`
  * → `markDeadLettered`. State-machine transitions are best-effort: if the
- * mark call itself fails, the drainer logs and continues — the row stays in
- * `claimed` and will be reclaimed by a future tick once the claim heartbeat
- * threshold passes (reclaim sweep is T549 / future slice; for now, a `claimed`
- * row that is not marked transitions back to claimable after the drainer restarts).
+ * mark call itself fails, the drainer logs and continues. A bounded lease
+ * sweep returns stale claims to `pending` on a later tick; a live handler
+ * renews its lease until processing finishes.
  *
  * No-consumer routing
  * -------------------
@@ -46,13 +46,14 @@
 import type { Pool } from "pg";
 import {
   claimBatch,
+  heartbeatClaim,
   markDelivered,
   markFailed,
   markDeadLettered,
+  reclaimStaleClaims,
   MAX_ATTEMPTS,
   type ClaimedOutboxEvent,
 } from "@data-pulse-2/db";
-import { runWithTenantContext } from "@data-pulse-2/db";
 import type { OutboxConsumer } from "@data-pulse-2/shared";
 import type { OutboxConsumerRegistry } from "./registry";
 import {
@@ -76,6 +77,11 @@ const DRAINER_QUEUE_LABEL = "audit-fanout" as const;
 
 export const DEFAULT_POLL_INTERVAL_MS = 1_000;
 export const DEFAULT_BATCH_SIZE = 50;
+export const DEFAULT_CLAIM_LEASE_MS = 60_000;
+const CLAIM_HEARTBEAT_MS = 20_000;
+// Reconciliation consumers can hold one transaction client while their Bin view
+// opens a second. Keep one connection free for lease renewals and transitions.
+const MAX_CONNECTIONS_PER_CLAIM = 2;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,11 +92,15 @@ export interface DrainerOptions {
   readonly pollIntervalMs?: number;
   /** Max rows per claim batch. Default: 50. */
   readonly batchSize?: number;
+  /** How long a claim may go without a heartbeat before recovery. Default: 60s. */
+  readonly claimLeaseMs?: number;
 }
 
 /** Injected for testability — production omits. */
 export interface DrainerDependencies {
   readonly pool: Pool;
+  /** Dedicated capacity for lease renewals when other workers saturate the main pool. */
+  readonly heartbeatPool?: Pool;
   readonly registry: OutboxConsumerRegistry;
   readonly options?: DrainerOptions;
   /**
@@ -111,9 +121,12 @@ export interface DrainerDependencies {
  */
 export class DrainerProcessor {
   private readonly pool: Pool;
+  private readonly heartbeatPool: Pool;
   private readonly registry: OutboxConsumerRegistry;
   private readonly pollIntervalMs: number;
   private readonly batchSize: number;
+  private readonly claimLimit: number;
+  private readonly claimLeaseMs: number;
   private readonly claimFn: (pool: Pool, batchSize: number) => Promise<ClaimedOutboxEvent[]>;
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -128,9 +141,19 @@ export class DrainerProcessor {
 
   constructor(deps: DrainerDependencies) {
     this.pool = deps.pool;
+    this.heartbeatPool = deps.heartbeatPool ?? deps.pool;
     this.registry = deps.registry;
     this.pollIntervalMs = deps.options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.batchSize = deps.options?.batchSize ?? DEFAULT_BATCH_SIZE;
+    const poolMax = (this.pool as Pool & { options?: { max?: number } }).options?.max ?? 10;
+    if (!Number.isInteger(poolMax) || poolMax <= MAX_CONNECTIONS_PER_CLAIM) {
+      throw new RangeError("outbox drainer requires a DB pool with at least 3 connections");
+    }
+    this.claimLimit = Math.min(
+      this.batchSize,
+      Math.floor((poolMax - 1) / MAX_CONNECTIONS_PER_CLAIM),
+    );
+    this.claimLeaseMs = deps.options?.claimLeaseMs ?? DEFAULT_CLAIM_LEASE_MS;
     this.claimFn = deps.claimFn ?? claimBatch;
 
     // Fail loud at construction rather than spinning a poll loop with a
@@ -141,6 +164,7 @@ export class DrainerProcessor {
     // produce subtly wrong scheduling.
     assertPositiveInteger("pollIntervalMs", this.pollIntervalMs);
     assertPositiveInteger("batchSize", this.batchSize);
+    assertPositiveInteger("claimLeaseMs", this.claimLeaseMs);
   }
 
   /**
@@ -194,7 +218,18 @@ export class DrainerProcessor {
    * without the setInterval timer.
    */
   async tick(): Promise<void> {
-    const batch = await this.claimFn(this.pool, this.batchSize).catch((err: unknown) => {
+    const recovered = await reclaimStaleClaims(this.pool, this.claimLeaseMs, this.batchSize).catch((err: unknown) => {
+      this.logError("drainer.reclaimStaleClaims failed", err);
+      return { reclaimed: 0, deadLetteredEventTypes: [] as readonly string[] };
+    });
+    if (recovered.reclaimed > 0) {
+      this.logError(`drainer.reclaimed stale claims count=${recovered.reclaimed}`, new Error("ClaimLeaseExpired"));
+    }
+    for (const eventType of recovered.deadLetteredEventTypes) {
+      recordQueueDeadLetter({ queue: DRAINER_QUEUE_LABEL });
+      recordOutboxDeadLetter({ event_type: eventType });
+    }
+    const batch = await this.claimFn(this.pool, this.claimLimit).catch((err: unknown) => {
       this.logError("drainer.claimBatch failed", err);
       return [] as ClaimedOutboxEvent[];
     });
@@ -215,6 +250,18 @@ export class DrainerProcessor {
     // no-consumer). Emitted in finally so every exit path is timed —
     // identical pattern to PR-A's worker_job_duration_seconds.
     const startNs = process.hrtime.bigint();
+    let heartbeatInFlight = false;
+    const heartbeat = setInterval(() => {
+      if (heartbeatInFlight) return;
+      heartbeatInFlight = true;
+      heartbeatClaim(this.heartbeatPool, row.event_id, row.attempts)
+        .then((renewed) => {
+          if (!renewed) this.logError("drainer.claim lease lost", new Error("ClaimLeaseLost"));
+        })
+        .catch((err: unknown) => this.logError("drainer.heartbeatClaim failed", err))
+        .finally(() => { heartbeatInFlight = false; });
+    }, Math.min(CLAIM_HEARTBEAT_MS, Math.max(1, Math.floor(this.claimLeaseMs / 3))));
+    heartbeat.unref();
     try {
       const consumer = this.registry.resolve(row.event_type);
 
@@ -240,7 +287,7 @@ export class DrainerProcessor {
 
       try {
         await this.invokeConsumer(consumer, row);
-        await this.safeMarkDelivered(row.event_id);
+        await this.safeMarkDelivered(row.event_id, row.attempts);
       } catch (err: unknown) {
         const errorClass = this.extractErrorClass(err);
         // T596: emit BEFORE persistence (D4). queue_failed_total always fires
@@ -256,66 +303,43 @@ export class DrainerProcessor {
           // queue. Emitted BEFORE persistence (D4 ordering) so the metric
           // reflects the drainer's decision regardless of safeMark outcome.
           recordOutboxDeadLetter({ event_type: row.event_type });
-          await this.safeMarkDeadLettered(row.event_id, errorClass);
+          await this.safeMarkDeadLettered(row.event_id, row.attempts, errorClass);
         } else {
           recordQueueRetry({ queue: DRAINER_QUEUE_LABEL });
           await this.safeMarkFailed(row.event_id, row.attempts, errorClass);
         }
       }
     } finally {
+      clearInterval(heartbeat);
       const durationSeconds = Number(process.hrtime.bigint() - startNs) / 1_000_000_000;
       recordOutboxDrainDuration({ event_type: row.event_type }, durationSeconds);
     }
   }
 
-  /**
-   * Establish per-row tenant context, then call the consumer's `handle()`.
-   *
-   * T561 proves that omitting this `runWithTenantContext` call causes the
-   * consumer's downstream DB writes to fail RLS. The tenant context wraps
-   * ONLY the consumer invocation — state-machine transitions (markDelivered
-   * etc.) run under the drainer's platform-admin context.
-   */
+  /** Pass the tenant-scoped envelope; consumers open their own DB context. */
   private async invokeConsumer(
     consumer: OutboxConsumer<unknown>,
     row: ClaimedOutboxEvent,
   ): Promise<void> {
-    return runWithTenantContext(
-      this.pool,
-      { tenantId: row.tenant_id, isPlatformAdmin: false },
-      async (_client) => {
-        // NOTE: we pass the pool, not the client, to the consumer so it can
-        // open its own connections if needed. The runWithTenantContext call
-        // above establishes the GUC context on a separate pooled connection
-        // that we don't use directly — this is intentional. The consumer
-        // that needs tenant-context DB access must call runWithTenantContext
-        // itself (or receive the tenantId from the event and set context).
-        //
-        // For the audit consumer (T584), the consumer calls `Queue.add()` on
-        // Redis — no DB access needed, so this wrapping is a proof-of-intent
-        // rather than a functional guard. T561 proves the necessity for
-        // consumers that DO perform tenant-scoped DB writes.
-        await consumer.handle({
-          event_id: row.event_id,
-          event_type: row.event_type,
-          tenant_id: row.tenant_id,
-          store_id: row.store_id,
-          payload: row.payload,
-          correlation_id: row.correlation_id,
-          occurred_at: row.occurred_at,
-          attempts: row.attempts,
-        });
-      },
-    );
+    await consumer.handle({
+      event_id: row.event_id,
+      event_type: row.event_type,
+      tenant_id: row.tenant_id,
+      store_id: row.store_id,
+      payload: row.payload,
+      correlation_id: row.correlation_id,
+      occurred_at: row.occurred_at,
+      attempts: row.attempts,
+    });
   }
 
   // ---------------------------------------------------------------------------
   // Safe wrappers — state-machine transition failures must not crash the drainer
   // ---------------------------------------------------------------------------
 
-  private async safeMarkDelivered(eventId: string): Promise<void> {
+  private async safeMarkDelivered(eventId: string, attempts: number): Promise<void> {
     try {
-      await markDelivered(this.pool, eventId);
+      await markDelivered(this.pool, eventId, attempts);
     } catch (err: unknown) {
       this.logError(`drainer.markDelivered failed event_id="${eventId}"`, err);
     }
@@ -335,10 +359,11 @@ export class DrainerProcessor {
 
   private async safeMarkDeadLettered(
     eventId: string,
+    attempts: number,
     errorClass: string,
   ): Promise<void> {
     try {
-      await markDeadLettered(this.pool, eventId, errorClass);
+      await markDeadLettered(this.pool, eventId, errorClass, attempts);
     } catch (err: unknown) {
       this.logError(`drainer.markDeadLettered failed event_id="${eventId}"`, err);
     }

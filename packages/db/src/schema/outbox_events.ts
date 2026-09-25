@@ -12,7 +12,7 @@
  *
  * Delivery states:
  *   pending      -> freshly inserted, not yet claimed
- *   claimed      -> drainer holds a lock; processing in flight
+ *   claimed      -> drainer holds a renewable lease; processing in flight
  *   delivered    -> consumer confirmed successful processing
  *   failed       -> consumer threw; eligible for retry (backoff in next_attempt_at)
  *   dead_lettered -> budget exhausted (8 attempts); awaiting operator triage
@@ -56,7 +56,7 @@ export const outboxEvents = pgTable("outbox_events", {
 
   /**
    * Lifecycle state. Enforced by a CHECK constraint at the DB layer.
-   * `claimed` is the in-flight state: a drainer holds a row-level lock.
+   * `claimed` is the in-flight state: a drainer holds a renewable lease.
    */
   deliveryState: text("delivery_state").notNull(),
 
@@ -73,6 +73,9 @@ export const outboxEvents = pgTable("outbox_events", {
    * (lifecycle.md section 4.2).
    */
   nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+
+  /** Renewable lease timestamp while claimed; NULL in all other states. */
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
 
   /**
    * Redacted error class only -- never the full exception string, never PII,

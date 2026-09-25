@@ -25,14 +25,17 @@ export {
   MAX_ATTEMPTS,
   OutboxStateTransitionError,
   claimBatch,
+  heartbeatClaim,
   markDeadLettered,
   markDelivered,
   markFailed,
   nextAttemptDelayMs,
+  reclaimStaleClaims,
 } from "./repository";
 export type {
   ClaimedOutboxEvent,
   ClaimFn,
+  ReclaimResult,
 } from "./repository";
 
 // Dead-letter triage queries (T591 / 1C-C1)

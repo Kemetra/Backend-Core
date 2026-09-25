@@ -211,6 +211,7 @@ describe("T596: drainer queue metric emission (retry / dead-letter / failed)", (
         `UPDATE outbox_events
             SET attempts = $2,
                 delivery_state = 'pending',
+                claimed_at = NULL,
                 next_attempt_at = NULL,
                 last_error = NULL,
                 processed_at = NULL
@@ -453,6 +454,7 @@ describe("T595 PR-B-1: drainer outbox metric emission (dead-letter / drain-durat
         `UPDATE outbox_events
             SET attempts = $2,
                 delivery_state = 'pending',
+                claimed_at = NULL,
                 next_attempt_at = NULL,
                 last_error = NULL,
                 processed_at = NULL
