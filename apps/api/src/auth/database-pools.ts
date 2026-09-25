@@ -79,11 +79,19 @@ export async function verifyDatabasePoolBoundary(
     readRole(lookupPool),
   ]);
 
+  assertDomainRole(domainRole);
+  assertLookupRole(lookupRole, domainRole.role_name);
+}
+
+function assertDomainRole(domainRole: RoleRow): void {
   if (domainRole.is_superuser || domainRole.bypass_rls) {
     throw new Error(
       "AuthModule: DATABASE_URL role must be non-superuser and must not have BYPASSRLS",
     );
   }
+}
+
+function assertLookupRole(lookupRole: RoleRow, domainRoleName: string): void {
   if (lookupRole.is_superuser) {
     throw new Error("AuthModule: AUTH_LOOKUP_DATABASE_URL role must not be a superuser");
   }
@@ -92,7 +100,7 @@ export async function verifyDatabasePoolBoundary(
       "AuthModule: AUTH_LOOKUP_DATABASE_URL role must have BYPASSRLS for pre-tenant lookups",
     );
   }
-  if (domainRole.role_name === lookupRole.role_name) {
+  if (domainRoleName === lookupRole.role_name) {
     throw new Error(
       "AuthModule: domain and pre-tenant lookup pools must use distinct database roles",
     );

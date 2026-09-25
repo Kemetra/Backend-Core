@@ -28,6 +28,8 @@ type ExpressLayer = {
 
 const HTTP_METHODS = ["get", "post", "put", "patch", "delete"] as const;
 
+type ContractRoute = { path: string; method: string; operation: Operation };
+
 function yamlFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
@@ -45,6 +47,31 @@ function normalizePath(path: string): string {
     .replace(/:[^/]+/g, "{param}")
     .replace(/\{[^/}]+\}/g, "{param}");
   return normalized.length > 1 ? normalized.replace(/\/$/, "") : normalized;
+}
+
+function registeredRoutes(app: INestApplication): Set<string> {
+  const express = app.getHttpAdapter().getInstance() as {
+    router?: { stack: ExpressLayer[] };
+    _router?: { stack: ExpressLayer[] };
+  };
+  const stack = express.router?.stack ?? express._router?.stack ?? [];
+  return new Set(stack.flatMap((layer) =>
+    Object.entries(layer.route?.methods ?? {})
+      .filter(([, enabled]) => enabled)
+      .map(([method]) => `${method.toUpperCase()} ${normalizePath(layer.route!.path)}`),
+  ));
+}
+
+function contractRoutes(dir: string): ContractRoute[] {
+  return yamlFiles(dir).flatMap((file) => {
+    const document = parseYaml(readFileSync(file, "utf8")) as OpenApiDocument;
+    return Object.entries(document.paths ?? {}).flatMap(([path, item]) =>
+      HTTP_METHODS.flatMap((method) => {
+        const operation = item[method];
+        return operation?.operationId ? [{ path, method, operation }] : [];
+      }),
+    );
+  });
 }
 
 describe("OpenAPI operations map to registered Nest routes", () => {
@@ -74,43 +101,24 @@ describe("OpenAPI operations map to registered Nest routes", () => {
   });
 
   it("has a real registered method/path for every production operationId", () => {
-    const express = app.getHttpAdapter().getInstance() as {
-      router?: { stack: ExpressLayer[] };
-      _router?: { stack: ExpressLayer[] };
-    };
-    const stack = express.router?.stack ?? express._router?.stack ?? [];
-    const runtimeRoutes = new Set<string>();
-    for (const layer of stack) {
-      if (!layer.route) continue;
-      for (const [method, enabled] of Object.entries(layer.route.methods)) {
-        if (enabled) runtimeRoutes.add(`${method.toUpperCase()} ${normalizePath(layer.route.path)}`);
-      }
-    }
-
+    const runtimeRoutes = registeredRoutes(app);
     const contractsDir = resolve(__dirname, "..", "..", "..", "..", "packages", "contracts", "openapi");
     const missing: string[] = [];
     const explicitContractOnly: string[] = [];
     const operationIds = new Set<string>();
 
-    for (const file of yamlFiles(contractsDir)) {
-      const document = parseYaml(readFileSync(file, "utf8")) as OpenApiDocument;
-      for (const [path, pathItem] of Object.entries(document.paths ?? {})) {
-        for (const method of HTTP_METHODS) {
-          const operation = pathItem[method];
-          if (!operation?.operationId) continue;
-          expect(operationIds.has(operation.operationId)).toBe(false);
-          operationIds.add(operation.operationId);
-
-          if (operation["x-runtime-status"] === "contract-only") {
-            expect(operation["x-runtime-note"]?.trim().length).toBeGreaterThan(0);
-            explicitContractOnly.push(operation.operationId);
-            continue;
-          }
-          expect(operation["x-runtime-status"]).toBeUndefined();
-          const route = `${method.toUpperCase()} ${normalizePath(path)}`;
-          if (!runtimeRoutes.has(route)) missing.push(`${operation.operationId}: ${route}`);
-        }
+    for (const { path, method, operation } of contractRoutes(contractsDir)) {
+      const operationId = operation.operationId!;
+      expect(operationIds.has(operationId)).toBe(false);
+      operationIds.add(operationId);
+      if (operation["x-runtime-status"] === "contract-only") {
+        expect(operation["x-runtime-note"]?.trim().length).toBeGreaterThan(0);
+        explicitContractOnly.push(operationId);
+        continue;
       }
+      expect(operation["x-runtime-status"]).toBeUndefined();
+      const route = `${method.toUpperCase()} ${normalizePath(path)}`;
+      if (!runtimeRoutes.has(route)) missing.push(`${operationId}: ${route}`);
     }
 
     expect(explicitContractOnly.sort()).toEqual([

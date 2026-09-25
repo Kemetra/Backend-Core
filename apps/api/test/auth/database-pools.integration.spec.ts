@@ -83,21 +83,23 @@ afterAll(async () => {
 
 describe("production database pool separation", () => {
   it("keeps bootstrap resolution available while the domain pool remains RLS-bound", async () => {
-    if (dockerSkipped || !env || !lookup) return;
+    if (dockerSkipped) return;
+    const { app } = env!;
+    const lookupPool = lookup!;
 
-    await expect(verifyDatabasePoolBoundary(env.app, lookup)).resolves.toBeUndefined();
+    await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
 
-    const device = await new DeviceRepository(lookup).findActiveByAttestation("device-b");
+    const device = await new DeviceRepository(lookupPool).findActiveByAttestation("device-b");
     expect(device?.id).toBe(DEVICE_B);
 
     const visibleToTenantA = await runWithTenantContext(
-      env.app,
+      app,
       { tenantId: TENANT_A, isPlatformAdmin: false },
       (client) => client.query<{ id: string }>("SELECT id FROM devices ORDER BY id"),
     );
     expect(visibleToTenantA.rows.map((row) => row.id)).toEqual([DEVICE_A]);
 
-    await expect(lookup.query("SELECT * FROM sales LIMIT 1")).rejects.toThrow(
+    await expect(lookupPool.query("SELECT * FROM sales LIMIT 1")).rejects.toThrow(
       /permission denied/i,
     );
   });
