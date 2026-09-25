@@ -43,6 +43,27 @@ export interface PgMirrorWriter {
     result: StoredResult;
     expiresAt: Date;
   }): Promise<void>;
+  /**
+   * Insert the in-flight claim before the handler runs.
+   * Throws {@link IdempotencyMirrorConflict} when the unique key is taken.
+   * Optional so older test doubles keep working; a missing claim means
+   * Redis is still the only backstop.
+   */
+  claim?(row: {
+    tenantId: string;
+    storeId: string | null;
+    clientId: string;
+    key: string;
+    fingerprint: Buffer;
+    expiresAt: Date;
+  }): Promise<void>;
+  /** Drop an in-flight claim so a failed handler can be retried. */
+  release?(row: {
+    tenantId: string;
+    storeId: string | null;
+    clientId: string;
+    key: string;
+  }): Promise<void>;
 }
 
 /** Read an existing idempotency record from the Postgres mirror. */
@@ -55,10 +76,27 @@ export interface PgMirrorReader {
   }): Promise<IdempotencyEntry | null>;
 }
 
+/** In-flight placeholder. Not a replayable HTTP response. */
+export function isIdempotencyClaim(result: StoredResult): boolean {
+  if (result.status !== 0) return false;
+  const body = result.body;
+  if (body === null || typeof body !== "object") return false;
+  return (body as { __dp2IdempotencyClaim?: unknown }).__dp2IdempotencyClaim === true;
+}
+
+/** Raised when a claim insert loses the unique (tenant, store, client, key) race. */
+export class IdempotencyMirrorConflict extends Error {
+  constructor() {
+    super("idempotency key already claimed");
+    this.name = "IdempotencyMirrorConflict";
+  }
+}
+
 export type FindOrCreateResult =
   | { hit: true; entry: IdempotencyEntry }
   | { hit: false; entry: null }
-  | { hit: "collision" };
+  | { hit: "collision" }
+  | { hit: "in_progress" };
 
 export interface IdempotencyKeyStoreOptions {
   redis: RedisLike;
@@ -71,6 +109,12 @@ export interface IdempotencyKeyStoreOptions {
 }
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(value: string): boolean {
+  return UUID_RE.test(value);
+}
 
 function redisKey(
   tenantId: string,
@@ -170,7 +214,42 @@ export class IdempotencyKeyStore {
     if (!pgEntry.fingerprint.equals(fingerprint)) {
       return { hit: "collision" };
     }
+    if (isIdempotencyClaim(pgEntry.result)) {
+      return { hit: "in_progress" };
+    }
     return { hit: true, entry: pgEntry };
+  }
+
+  /**
+   * Reserve the key in Postgres before the handler runs.
+   * `unsupported` means this store has no claim writer (Redis only).
+   */
+  async claim(input: {
+    tenantId: string;
+    storeId: string | null;
+    clientId: string;
+    key: string;
+    fingerprint: Buffer;
+    expiresAt: Date;
+  }): Promise<"inserted" | "conflict" | "unsupported"> {
+    if (!this.pgWriter.claim || !isUuid(input.tenantId)) return "unsupported";
+    try {
+      await this.pgWriter.claim(input);
+      return "inserted";
+    } catch (err) {
+      if (err instanceof IdempotencyMirrorConflict) return "conflict";
+      throw err;
+    }
+  }
+
+  async releaseClaim(input: {
+    tenantId: string;
+    storeId: string | null;
+    clientId: string;
+    key: string;
+  }): Promise<void> {
+    if (!this.pgWriter.release || !isUuid(input.tenantId)) return;
+    await this.pgWriter.release(input);
   }
 
   /**
@@ -198,9 +277,6 @@ export class IdempotencyKeyStore {
       expiresAt: resolvedExpiry,
     };
 
-    const rkey = redisKey(tenantId, storeId, clientId, key);
-    await this.redis.set(rkey, serialize(entry), { px: Math.max(ttlMs, 1) });
-
     await this.pgWriter.insert({
       tenantId,
       storeId,
@@ -210,5 +286,8 @@ export class IdempotencyKeyStore {
       result,
       expiresAt: resolvedExpiry,
     });
+
+    const rkey = redisKey(tenantId, storeId, clientId, key);
+    await this.redis.set(rkey, serialize(entry), { px: Math.max(ttlMs, 1) });
   }
 }

@@ -7,4 +7,8 @@ export type {
   FindOrCreateResult,
   IdempotencyKeyStoreOptions,
 } from "./store";
-export { IdempotencyKeyStore } from "./store";
+export {
+  IdempotencyKeyStore,
+  IdempotencyMirrorConflict,
+  isIdempotencyClaim,
+} from "./store";

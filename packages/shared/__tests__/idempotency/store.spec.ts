@@ -16,6 +16,7 @@
 
 import {
   IdempotencyKeyStore,
+  IdempotencyMirrorConflict,
   type RedisLike,
   type PgMirrorWriter,
   type PgMirrorReader,
@@ -534,6 +535,66 @@ describe("IdempotencyKeyStore", () => {
         TENANT_A, STORE_1, CLIENT, KEY, FP_A,
       );
       expect(result.hit).toBe(false);
+    });
+  });
+
+  describe("#614 claim and in-progress mirror rows", () => {
+    it("returns in_progress for a claim row with the same fingerprint", async () => {
+      const redis = makeRedis();
+      const entry: IdempotencyEntry = {
+        fingerprint: FP_A,
+        result: { status: 0, body: { __dp2IdempotencyClaim: true } },
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      };
+      const store = new IdempotencyKeyStore({
+        redis,
+        pgWriter: makePgWriter(),
+        pgReader: { async find() { return entry; } },
+      });
+      const result = await store.findOrCreate(TENANT_A, STORE_1, CLIENT, KEY, FP_A);
+      expect(result.hit).toBe("in_progress");
+    });
+
+    it("claim returns conflict when the writer raises IdempotencyMirrorConflict", async () => {
+      const store = new IdempotencyKeyStore({
+        redis: makeRedis(),
+        pgWriter: {
+          async insert() { /* unused */ },
+          async claim() { throw new IdempotencyMirrorConflict(); },
+        },
+        pgReader: makePgReader(),
+      });
+      const outcome = await store.claim({
+        tenantId: TENANT_A,
+        storeId: STORE_1,
+        clientId: CLIENT,
+        key: KEY,
+        fingerprint: FP_A,
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      });
+      expect(outcome).toBe("conflict");
+    });
+
+    it("claim is unsupported when the tenant id is not a uuid", async () => {
+      let called = false;
+      const store = new IdempotencyKeyStore({
+        redis: makeRedis(),
+        pgWriter: {
+          async insert() { /* unused */ },
+          async claim() { called = true; },
+        },
+        pgReader: makePgReader(),
+      });
+      const outcome = await store.claim({
+        tenantId: "no-tenant",
+        storeId: null,
+        clientId: CLIENT,
+        key: KEY,
+        fingerprint: FP_A,
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      });
+      expect(outcome).toBe("unsupported");
+      expect(called).toBe(false);
     });
   });
 });
