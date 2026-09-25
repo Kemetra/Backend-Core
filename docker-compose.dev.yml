@@ -14,7 +14,8 @@ services:
     environment:
       POSTGRES_DB: data_pulse_2
       POSTGRES_USER: dp2
-      POSTGRES_PASSWORD: dp2_dev_password
+      # Override with POSTGRES_PASSWORD in your shell or a local .env file.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dp2_dev_password}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
