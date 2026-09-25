@@ -82,6 +82,7 @@ describe("ADR 0010 D1 — store.save failure is logged + swallowed, response sti
   let app: INestApplication;
   let controller: TestController;
   let failingRedis: SaveFailingRedis;
+  let pgInsertCalls = 0;
   let warnSpy: jest.Mock;
   let errorSpy: jest.Mock;
 
@@ -90,12 +91,18 @@ describe("ADR 0010 D1 — store.save failure is logged + swallowed, response sti
     warnSpy = jest.fn();
     errorSpy = jest.fn();
     const logger = { warn: warnSpy, error: errorSpy, info: jest.fn(), debug: jest.fn() };
-    // Real store over the failing redis + a failing pg mirror, so BOTH legs of
-    // `save` reject → the interceptor's catch is the only thing standing between
-    // the failure and the response. Lookup (`get` → null) still misses → handler runs.
+    // Real store over the failing redis + a failing pg mirror. `save` writes the
+    // durable pg mirror first, so its rejection surfaces before Redis is touched;
+    // the interceptor's catch is the only thing standing between the failure and
+    // the response. Lookup (`get` → null) still misses → handler runs.
     const store = new IdempotencyKeyStore({
       redis: failingRedis,
-      pgWriter: { async insert() { throw new Error("pg down: insert failed"); } },
+      pgWriter: {
+        async insert() {
+          pgInsertCalls += 1;
+          throw new Error("pg down: insert failed");
+        },
+      },
       pgReader: { async find() { return null; } },
       defaultTtlMs: 72 * 60 * 60 * 1000,
     });
@@ -130,6 +137,7 @@ describe("ADR 0010 D1 — store.save failure is logged + swallowed, response sti
   beforeEach(() => {
     controller.callCount = 0;
     failingRedis.setCalls = 0;
+    pgInsertCalls = 0;
     warnSpy.mockClear();
     errorSpy.mockClear();
   });
@@ -153,7 +161,8 @@ describe("ADR 0010 D1 — store.save failure is logged + swallowed, response sti
     for (let i = 0; i < 50; i += 1) {
       await new Promise((resolve) => setImmediate(resolve));
     }
-    expect(failingRedis.setCalls).toBeGreaterThanOrEqual(1);
+    // save was attempted (pg mirror is written first and rejects).
+    expect(pgInsertCalls).toBeGreaterThanOrEqual(1);
     expect(warnSpy).toHaveBeenCalled();
     // First arg is the structured payload carrying the error.
     const [payload] = warnSpy.mock.calls[0] as [Record<string, unknown>, string];
