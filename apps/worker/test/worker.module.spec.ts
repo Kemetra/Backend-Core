@@ -239,6 +239,8 @@ describe("pgPoolProviderFactory — DATABASE_URL × REDIS_URL guard", () => {
     expect(wrapper).toBeInstanceOf(AuditDbPool);
     expect(wrapper.pool).not.toBeNull();
     expect(typeof (wrapper.pool as Pool).connect).toBe("function");
+    expect(wrapper.heartbeatPool).not.toBeNull();
+    expect(wrapper.heartbeatPool).not.toBe(wrapper.pool);
     // pg.Pool is lazy — it does not connect until query() / connect().
     // Closing the empty pool via the wrapper's lifecycle hook releases
     // any internal timers.
@@ -272,6 +274,16 @@ describe("pgPoolProviderFactory — DATABASE_URL × REDIS_URL guard", () => {
 // ---------------------------------------------------------------------------
 
 describe("AuditDbPool — Nest-managed lifecycle", () => {
+  it("closes the dedicated heartbeat pool with the main pool", async () => {
+    const main = { end: jest.fn(async () => undefined) } as unknown as Pool;
+    const heartbeat = { end: jest.fn(async () => undefined) } as unknown as Pool;
+    const wrapper = new AuditDbPool(main, heartbeat);
+    await wrapper.onModuleDestroy();
+    await wrapper.onModuleDestroy();
+    expect(main.end).toHaveBeenCalledTimes(1);
+    expect(heartbeat.end).toHaveBeenCalledTimes(1);
+  });
+
   it("calls pool.end() exactly once on onModuleDestroy when wrapping a real Pool", async () => {
     let endCalls = 0;
     const fakePool = {

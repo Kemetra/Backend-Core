@@ -99,6 +99,8 @@ export interface DrainerOptions {
 /** Injected for testability — production omits. */
 export interface DrainerDependencies {
   readonly pool: Pool;
+  /** Dedicated capacity for lease renewals when other workers saturate the main pool. */
+  readonly heartbeatPool?: Pool;
   readonly registry: OutboxConsumerRegistry;
   readonly options?: DrainerOptions;
   /**
@@ -119,6 +121,7 @@ export interface DrainerDependencies {
  */
 export class DrainerProcessor {
   private readonly pool: Pool;
+  private readonly heartbeatPool: Pool;
   private readonly registry: OutboxConsumerRegistry;
   private readonly pollIntervalMs: number;
   private readonly batchSize: number;
@@ -138,6 +141,7 @@ export class DrainerProcessor {
 
   constructor(deps: DrainerDependencies) {
     this.pool = deps.pool;
+    this.heartbeatPool = deps.heartbeatPool ?? deps.pool;
     this.registry = deps.registry;
     this.pollIntervalMs = deps.options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.batchSize = deps.options?.batchSize ?? DEFAULT_BATCH_SIZE;
@@ -250,7 +254,7 @@ export class DrainerProcessor {
     const heartbeat = setInterval(() => {
       if (heartbeatInFlight) return;
       heartbeatInFlight = true;
-      heartbeatClaim(this.pool, row.event_id, row.attempts)
+      heartbeatClaim(this.heartbeatPool, row.event_id, row.attempts)
         .then((renewed) => {
           if (!renewed) this.logError("drainer.claim lease lost", new Error("ClaimLeaseLost"));
         })

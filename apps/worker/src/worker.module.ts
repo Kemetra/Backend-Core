@@ -250,14 +250,20 @@ export function workerFactoryProviderFactory(): WorkerFactory {
 @Injectable()
 export class AuditDbPool implements OnModuleDestroy {
   private _pool: Pool | null;
+  private _heartbeatPool: Pool | null;
 
-  constructor(pool: Pool | null) {
+  constructor(pool: Pool | null, heartbeatPool: Pool | null = null) {
     this._pool = pool;
+    this._heartbeatPool = heartbeatPool;
   }
 
   /** The underlying pool, or `null` on the safe no-DB path. */
   get pool(): Pool | null {
     return this._pool;
+  }
+
+  get heartbeatPool(): Pool | null {
+    return this._heartbeatPool;
   }
 
   /**
@@ -267,9 +273,17 @@ export class AuditDbPool implements OnModuleDestroy {
    */
   async onModuleDestroy(): Promise<void> {
     const p = this._pool;
+    const heartbeatPool = this._heartbeatPool;
     this._pool = null;
-    if (p !== null) {
-      await p.end();
+    this._heartbeatPool = null;
+    try {
+      if (heartbeatPool !== null) {
+        await heartbeatPool.end();
+      }
+    } finally {
+      if (p !== null) {
+        await p.end();
+      }
     }
   }
 }
@@ -289,7 +303,10 @@ export function pgPoolProviderFactory(): AuditDbPool {
   const isProd = process.env["NODE_ENV"] === "production";
 
   if (dbUrl) {
-    return new AuditDbPool(new InstrumentedPool({ connectionString: dbUrl }));
+    return new AuditDbPool(
+      new InstrumentedPool({ connectionString: dbUrl }),
+      new InstrumentedPool({ connectionString: dbUrl, max: 2 }),
+    );
   }
 
   // dbUrl is missing from here on.
@@ -470,7 +487,7 @@ export function drainerProcessorProviderFactory(
   // (FR-007). This makes the DP2-INTERNAL run live; it does NOT make the
   // cross-system connector leg live.
   registry.register(new ProductReconciliationRequestedConsumer(pool));
-  return new DrainerProcessor({ pool, registry });
+  return new DrainerProcessor({ pool, heartbeatPool: wrapper.heartbeatPool ?? pool, registry });
 }
 
 /**
