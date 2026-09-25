@@ -16,7 +16,8 @@ import { z } from "zod";
 
 export const VersionedMutationRequestSchema = z
   .object({
-    version: z.number().int().min(1),
+    // Postgres int4, bound as `WHERE version = $2`. Past 2^31-1 is 22003, not 409.
+    version: z.number().int().min(1).max(2147483647),
   })
   .strict();
 

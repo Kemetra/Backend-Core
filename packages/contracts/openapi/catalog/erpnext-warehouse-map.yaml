@@ -264,8 +264,9 @@ components:
         version:
           type: integer
           minimum: 1
+          maximum: 2147483647
           description: >
-            The version the caller last observed. The update is
+            The version the caller last observed (Postgres int4). The update is
             `WHERE id = :id AND version = :version`; a mismatch is 409.
 
     ErpnextWarehouseMapping:

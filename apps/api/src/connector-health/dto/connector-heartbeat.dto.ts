@@ -18,7 +18,8 @@ import { z } from "zod";
 export const HeartbeatReportSchema = z
   .object({
     connectorVersion: z.string().min(1).max(64).optional(),
-    backlogIndicator: z.number().int().min(0).optional(),
+    // Postgres int4. 2147483648 would bind as 22003/500 instead of a 400.
+    backlogIndicator: z.number().int().min(0).max(2147483647).optional(),
     erpnextReachable: z.boolean().optional(),
     // Connector-reported clock; provenance only, never used for the verdict (§X).
     sourceClockAt: z.string().datetime().optional(),

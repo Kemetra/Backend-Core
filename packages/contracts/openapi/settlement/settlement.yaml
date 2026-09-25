@@ -537,11 +537,32 @@ components:
         (FR-005): open → partially_applied → settled; open → claimed →
         (settled | partially_applied + variance); variance/net-zero-or-below →
         flagged.
+    # Signed money stays for variance (claimed − remitted; negative on
+    # over-remittance). Request fields use NonNegativeMoney / PositiveMoney
+    # so one pattern is not applied to every money field.
     Money:
       type: string
+      pattern: '^-?[0-9]{1,15}(\.[0-9]{1,4})?$'
       description: >
-        Exact-decimal money as a string (no floats, §III). E.g. "120.00". Tax
-        is NOT apportioned into this value in v1 (tax-pending, §OQ-2).
+        Signed exact-decimal money as a string (no floats, §III), stored as
+        `numeric(19,4)` — at most 15 integer digits and 4 fractional digits.
+        A leading `-` is allowed: `variance` is legitimately negative. Tax is
+        NOT apportioned into this value in v1 (tax-pending, §OQ-2).
+    NonNegativeMoney:
+      type: string
+      pattern: '^[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: >
+        Non-negative exact-decimal money (`numeric(19,4)`). Zero is valid: a
+        0 `remittedAmount` is a full rejection, and `cashTendered`,
+        `outstandingBalance`, and `claimedAmount` may be zero. No leading `-`.
+    PositiveMoney:
+      type: string
+      pattern: '^(?!0+(?:\.0+)?$)[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: >
+        Strictly positive exact-decimal money (`numeric(19,4)`). Zero and
+        negatives are rejected, matching apply-payment `amount` and
+        settlement-intent `owedAmount` (`> 0`). A zero apply would trip
+        `payment_application_amount_positive`.
 
     # ----- payer account -----
     PayerAccountCreate:
@@ -638,7 +659,7 @@ components:
           type: string
           format: uuid
         outstandingBalance:
-          $ref: "#/components/schemas/Money"
+          $ref: "#/components/schemas/NonNegativeMoney"
         state:
           $ref: "#/components/schemas/ReceivableState"
         erpnextPaymentEntryRef:
@@ -677,7 +698,7 @@ components:
       description: Apply a payment/cash against the path receivable (7-C operational truth).
       properties:
         amount:
-          $ref: "#/components/schemas/Money"
+          $ref: "#/components/schemas/PositiveMoney"
         version:
           type: integer
           minimum: 0
@@ -703,10 +724,13 @@ components:
           format: uuid
           description: The already-captured sale (pos-sales/sales.yaml captureSale). Not mutated.
         cashTendered:
-          type: [string, "null"]
           description: >
             The cash portion settled at the till (part of the immutable sale);
-            the owed remainder opens the receivable(s). Exact-decimal string.
+            the owed remainder opens the receivable(s). Non-negative
+            exact-decimal string; zero is valid. Null when no cash was tendered.
+          anyOf:
+            - $ref: "#/components/schemas/NonNegativeMoney"
+            - type: "null"
         payers:
           type: array
           minItems: 1
@@ -726,7 +750,7 @@ components:
           format: uuid
           description: In-scope payer account; unknown/cross-tenant → 409 unknown-payer (safe).
         owedAmount:
-          $ref: "#/components/schemas/Money"
+          $ref: "#/components/schemas/PositiveMoney"
         claimMetadata:
           type: [object, "null"]
           additionalProperties: true
@@ -790,7 +814,7 @@ components:
       description: Reconcile a remittance against the path claim; records variance.
       properties:
         remittedAmount:
-          $ref: "#/components/schemas/Money"
+          $ref: "#/components/schemas/NonNegativeMoney"
         remittanceRef:
           type: [string, "null"]
           description: Optional payer-side remittance advice reference; opaque.
@@ -807,9 +831,9 @@ components:
           type: string
           format: uuid
         claimedAmount:
-          $ref: "#/components/schemas/Money"
+          $ref: "#/components/schemas/NonNegativeMoney"
         remittedAmount:
-          $ref: "#/components/schemas/Money"
+          $ref: "#/components/schemas/NonNegativeMoney"
         variance:
           $ref: "#/components/schemas/Money"
         outcome:

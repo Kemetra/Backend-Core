@@ -143,6 +143,11 @@ function findOp(operationId: string): OperationObject | undefined {
   return operations().find((o) => o.op.operationId === operationId)?.op;
 }
 
+function schemaProps(name: string): Record<string, unknown> {
+  const schemas = doc.components!.schemas!;
+  return schemas[name]!.properties!;
+}
+
 describe("connector-health.yaml — loadability + conventions", () => {
   it("is parseable by the production OpenAPI loader", () => {
     expect(doc).toBeDefined();
@@ -220,6 +225,26 @@ describe("connector-health.yaml — heartbeat body is strict + identity-free (§
     ]) {
       expect(props).not.toHaveProperty(leak);
     }
+  });
+
+  it("bounds the heartbeat backlogIndicator to a non-negative int4", () => {
+    const field = schemaProps("HeartbeatReport")["backlogIndicator"] as {
+      type: string;
+      minimum: number;
+      maximum: number;
+    };
+    expect(field.type).toBe("integer");
+    expect(field.minimum).toBe(0);
+    expect(field.maximum).toBe(2147483647);
+  });
+
+  it("bounds the health-view backlogIndicator to a non-negative int4", () => {
+    const field = schemaProps("ConnectorHealthView")["backlogIndicator"] as {
+      minimum: number;
+      maximum: number;
+    };
+    expect(field.minimum).toBe(0);
+    expect(field.maximum).toBe(2147483647);
   });
 
   it("HeartbeatAck is minimal — server-clock acknowledgedAt only, no secret/identity echo", () => {

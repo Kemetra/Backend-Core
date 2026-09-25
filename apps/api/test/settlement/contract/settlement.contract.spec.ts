@@ -54,6 +54,7 @@ type PathItem = Record<string, OperationObject>;
 
 interface SchemaObject {
   type?: string | string[];
+  pattern?: string;
   additionalProperties?: boolean | Record<string, unknown>;
   required?: string[];
   properties?: Record<string, unknown>;
@@ -249,5 +250,79 @@ describe("settlement.yaml — Receivable projection", () => {
     for (const forbidden of ["tenant_id", "tenantId", "payload_hash", "lines", "saleLines"]) {
       expect(props[forbidden]).toBeUndefined();
     }
+  });
+});
+
+// ===========================================================================
+// 7. Money patterns — per-field, not one shared non-negative pattern.
+//    variance is signed (claimed − remitted, negative on over-remittance).
+//    Request fields follow the Zod rule for that field. remittedAmount is >= 0.
+// ===========================================================================
+const SIGNED_MONEY = "^-?[0-9]{1,15}(\\.[0-9]{1,4})?$";
+const NON_NEGATIVE_MONEY = "^[0-9]{1,15}(\\.[0-9]{1,4})?$";
+// Same digit bound as the Zod regex, plus a zero-reject so it matches the > 0 refine.
+const POSITIVE_MONEY = "^(?!0+(?:\\.0+)?$)[0-9]{1,15}(\\.[0-9]{1,4})?$";
+
+function moneyRef(schemaName: string, field: string): string | undefined {
+  const prop = schema(schemaName)?.properties?.[field] as { $ref?: string } | undefined;
+  return prop?.$ref;
+}
+
+describe("settlement.yaml — money patterns", () => {
+  it("splits signed, non-negative, and positive money", () => {
+    expect(schema("Money")?.pattern).toBe(SIGNED_MONEY);
+    expect(schema("NonNegativeMoney")?.pattern).toBe(NON_NEGATIVE_MONEY);
+    expect(schema("PositiveMoney")?.pattern).toBe(POSITIVE_MONEY);
+  });
+
+  it("keeps signed Money only where the value can be negative", () => {
+    expect(moneyRef("ReconciliationResult", "variance")).toBe("#/components/schemas/Money");
+  });
+
+  it("points each other money field at that field's own rule", () => {
+    expect(moneyRef("Receivable", "outstandingBalance")).toBe(
+      "#/components/schemas/NonNegativeMoney",
+    );
+    expect(moneyRef("PaymentApplicationCreate", "amount")).toBe(
+      "#/components/schemas/PositiveMoney",
+    );
+    expect(moneyRef("SettlementIntentPayer", "owedAmount")).toBe(
+      "#/components/schemas/PositiveMoney",
+    );
+    expect(moneyRef("RemittanceReconcile", "remittedAmount")).toBe(
+      "#/components/schemas/NonNegativeMoney",
+    );
+    expect(moneyRef("ReconciliationResult", "claimedAmount")).toBe(
+      "#/components/schemas/NonNegativeMoney",
+    );
+    expect(moneyRef("ReconciliationResult", "remittedAmount")).toBe(
+      "#/components/schemas/NonNegativeMoney",
+    );
+  });
+
+  it("types cashTendered as nullable non-negative money (0 allowed)", () => {
+    const cash = schema("SettlementIntentCreate")?.properties?.["cashTendered"] as {
+      anyOf?: Array<{ $ref?: string; type?: string }>;
+    };
+    expect(cash?.anyOf).toEqual([
+      { $ref: "#/components/schemas/NonNegativeMoney" },
+      { type: "null" },
+    ]);
+  });
+
+  it("the patterns accept and reject the boundary examples", () => {
+    const signed = new RegExp(SIGNED_MONEY);
+    const nonNeg = new RegExp(NON_NEGATIVE_MONEY);
+    const positive = new RegExp(POSITIVE_MONEY);
+    for (const ok of ["0", "0.0000", "120.00", "999999999999999.9999"]) {
+      expect(nonNeg.test(ok)).toBe(true);
+    }
+    expect(signed.test("-30.0000")).toBe(true);
+    expect(nonNeg.test("-30.0000")).toBe(false);
+    expect(positive.test("0")).toBe(false);
+    expect(positive.test("0.0000")).toBe(false);
+    expect(positive.test("0.0001")).toBe(true);
+    expect(positive.test("120.00")).toBe(true);
+    expect(positive.test("-1.00")).toBe(false);
   });
 });

@@ -231,6 +231,17 @@ describe("catalog/erpnext-item-map.yaml — request DTOs", () => {
     expect(v?.required).toEqual(["version"]);
     expect(v?.properties?.["version"]).toBeDefined();
   });
+
+  it("bounds the mutation version to a positive int4", () => {
+    const version = schema("VersionedMutationRequest")?.properties?.["version"] as {
+      type?: string;
+      minimum?: number;
+      maximum?: number;
+    };
+    expect(version?.type).toBe("integer");
+    expect(version?.minimum).toBe(1);
+    expect(version?.maximum).toBe(2147483647);
+  });
 });
 
 // ===========================================================================
