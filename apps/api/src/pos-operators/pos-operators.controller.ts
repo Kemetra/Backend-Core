@@ -16,15 +16,17 @@ import {
   Body,
   Controller,
   Get,
-  Headers,
   HttpCode,
   HttpStatus,
   Post,
   Query,
   Req,
   UnauthorizedException,
+  UseGuards,
 } from "@nestjs/common";
-import type { Request } from "express";
+
+import { ClerkBearerGuard } from "../auth/clerk-bearer.guard";
+import { ClerkBearer, requirePosBearer, type CredentialRequest } from "../auth/route-auth";
 
 import { PosOperatorsService } from "./pos-operators.service";
 import {
@@ -45,8 +47,8 @@ import {
 } from "./dto";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 
-const BEARER_PREFIX = "Bearer ";
-
+@ClerkBearer()
+@UseGuards(ClerkBearerGuard)
 @Controller("api/pos/v1/operators")
 export class PosOperatorsController {
   constructor(private readonly service: PosOperatorsService) {}
@@ -54,18 +56,11 @@ export class PosOperatorsController {
   @Post("sign-in")
   @HttpCode(HttpStatus.OK)
   async signIn(
-    @Headers("authorization") authorization: string | undefined,
     @Body(new ZodValidationPipe(PosOperatorSignInSchema))
     body: PosOperatorSignInInput,
-    @Req() req: Request & { requestId?: string },
+    @Req() req: CredentialRequest & { requestId?: string },
   ): Promise<PosOperatorSignInResponseBody> {
-    const rawJwt = extractBearer(authorization);
-    if (rawJwt === null) {
-      // Missing / malformed authorization header — same generic 401 as
-      // every other refusal cause (ADR D10). Cause is logged at the
-      // service boundary; here the controller short-circuits.
-      throw new UnauthorizedException("Unauthorized");
-    }
+    const rawJwt = requirePosBearer(req);
 
     const requestId = req.requestId ?? "unknown";
     const result = await this.service.signIn(rawJwt, body, requestId);
@@ -78,16 +73,11 @@ export class PosOperatorsController {
   @Post("sign-out")
   @HttpCode(HttpStatus.OK)
   async signOut(
-    @Headers("authorization") authorization: string | undefined,
     @Body(new ZodValidationPipe(PosOperatorSignOutSchema))
     body: PosOperatorSignOutInput,
-    @Req() req: Request & { requestId?: string },
+    @Req() req: CredentialRequest & { requestId?: string },
   ): Promise<PosOperatorSignOutResponseBody> {
-    const rawJwt = extractBearer(authorization);
-    if (rawJwt === null) {
-      throw new UnauthorizedException("Unauthorized");
-    }
-
+    const rawJwt = requirePosBearer(req);
     const requestId = req.requestId ?? "unknown";
     const result = await this.service.signOut(rawJwt, body, requestId);
     if (result.kind === "refused") {
@@ -99,16 +89,11 @@ export class PosOperatorsController {
   @Get("roster")
   @HttpCode(HttpStatus.OK)
   async roster(
-    @Headers("authorization") authorization: string | undefined,
     @Query(new ZodValidationPipe(PosRosterQuerySchema))
     query: PosRosterQueryInput,
-    @Req() req: Request & { requestId?: string },
+    @Req() req: CredentialRequest & { requestId?: string },
   ): Promise<PosRosterResponseBody> {
-    const rawJwt = extractBearer(authorization);
-    if (rawJwt === null) {
-      throw new UnauthorizedException("Unauthorized");
-    }
-
+    const rawJwt = requirePosBearer(req);
     const requestId = req.requestId ?? "unknown";
     const result = await this.service.roster(rawJwt, query, requestId);
     if (!("cashiers" in result)) {
@@ -120,16 +105,11 @@ export class PosOperatorsController {
   @Post("takeover/confirm")
   @HttpCode(HttpStatus.OK)
   async takeoverConfirm(
-    @Headers("authorization") authorization: string | undefined,
     @Body(new ZodValidationPipe(PosTakeoverConfirmSchema))
     body: PosTakeoverConfirmInput,
-    @Req() req: Request & { requestId?: string },
+    @Req() req: CredentialRequest & { requestId?: string },
   ): Promise<PosOperatorSignInResponseBody> {
-    const rawJwt = extractBearer(authorization);
-    if (rawJwt === null) {
-      throw new UnauthorizedException("Unauthorized");
-    }
-
+    const rawJwt = requirePosBearer(req);
     const requestId = req.requestId ?? "unknown";
     const result = await this.service.takeoverConfirm(rawJwt, body, requestId);
     if (result.kind === "refused") {
@@ -141,16 +121,11 @@ export class PosOperatorsController {
   @Get("active-session")
   @HttpCode(HttpStatus.OK)
   async activeSession(
-    @Headers("authorization") authorization: string | undefined,
     @Query(new ZodValidationPipe(PosActiveSessionQuerySchema))
     query: PosActiveSessionQueryInput,
-    @Req() req: Request & { requestId?: string },
+    @Req() req: CredentialRequest & { requestId?: string },
   ): Promise<PosActiveSessionResponseBody> {
-    const rawJwt = extractBearer(authorization);
-    if (rawJwt === null) {
-      throw new UnauthorizedException("Unauthorized");
-    }
-
+    const rawJwt = requirePosBearer(req);
     const requestId = req.requestId ?? "unknown";
     const result = await this.service.activeSession(rawJwt, query, requestId);
     if (result.kind === "refused") {
@@ -160,23 +135,4 @@ export class PosOperatorsController {
   }
 }
 
-/**
- * Pull the bearer credential out of the `Authorization` header. Returns
- * the raw token on success, or null if the header is absent / not in
- * `Bearer <token>` form / has an empty token.
- *
- * Deliberately lenient about leading whitespace and case on the scheme:
- * `Authorization: bearer  <jwt>` is accepted. We reject only when the
- * scheme is missing or the token segment is empty.
- */
-function extractBearer(value: string | undefined): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trimStart();
-  if (trimmed.length < BEARER_PREFIX.length) return null;
-  if (trimmed.slice(0, BEARER_PREFIX.length).toLowerCase() !== BEARER_PREFIX.toLowerCase()) {
-    return null;
-  }
-  const token = trimmed.slice(BEARER_PREFIX.length).trim();
-  if (token.length === 0) return null;
-  return token;
-}
+

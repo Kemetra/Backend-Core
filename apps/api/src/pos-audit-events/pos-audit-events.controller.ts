@@ -19,16 +19,17 @@
 import {
   Body,
   Controller,
-  Headers,
   HttpCode,
   HttpStatus,
   Inject,
   Post,
   Req,
   UnauthorizedException,
+  UseGuards,
 } from "@nestjs/common";
-import type { Request } from "express";
 
+import { DeviceAttestedGuard } from "../auth/device-attested.guard";
+import { DeviceAttested, readBearerHeader, type CredentialRequest } from "../auth/route-auth";
 import { CLERK_VERIFIER, type ClerkVerifier } from "../pos-operators/clerk-verifier";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { PosAuditEventsService } from "./pos-audit-events.service";
@@ -38,20 +39,14 @@ import {
   type PosAuditEventsSyncResponseBody,
 } from "./dto";
 
-const BEARER_PREFIX = "Bearer ";
-
-function extractBearer(value: string | undefined): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trimStart();
-  if (trimmed.length < BEARER_PREFIX.length) return null;
-  if (trimmed.slice(0, BEARER_PREFIX.length).toLowerCase() !== BEARER_PREFIX.toLowerCase()) {
-    return null;
-  }
-  const token = trimmed.slice(BEARER_PREFIX.length).trim();
-  if (token.length === 0) return null;
-  return token;
-}
-
+/**
+ * Clerk JWT stays optional: sign-out and takeover events are accepted with
+ * only the device attestation. When a bearer is present it is verified.
+ * `@DeviceAttested` is what stops a new method on this controller from
+ * shipping as a public route.
+ */
+@DeviceAttested()
+@UseGuards(DeviceAttestedGuard)
 @Controller("api/pos/v1/audit-events")
 export class PosAuditEventsController {
   constructor(
@@ -62,14 +57,13 @@ export class PosAuditEventsController {
   @Post()
   @HttpCode(HttpStatus.OK)
   async syncBatch(
-    @Headers("authorization") authorization: string | undefined,
     @Body(new ZodValidationPipe(PosAuditEventsSyncSchema))
     body: PosAuditEventsSyncInput,
-    @Req() req: Request & { requestId?: string },
+    @Req() req: CredentialRequest & { requestId?: string },
   ): Promise<PosAuditEventsSyncResponseBody> {
-    // Clerk JWT is optional — verify only when present.
+    const authorization = req.headers["authorization"];
     if (authorization !== undefined) {
-      const rawJwt = extractBearer(authorization);
+      const rawJwt = readBearerHeader(typeof authorization === "string" ? authorization : undefined);
       if (rawJwt === null) {
         throw new UnauthorizedException("Unauthorized");
       }

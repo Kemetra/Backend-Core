@@ -7,7 +7,7 @@
  * precedence, and the FR-ISO-4 uniform 401 contract.
  *
  * Mock surface is intentionally narrow: only the two repository methods
- * the guard calls (`findActiveById` and `findActiveByRawToken`). Anything
+ * the guard calls (`findActiveByCredential` and `findActiveByRawToken`). Anything
  * else on those classes can change without breaking these tests.
  */
 import { ExecutionContext, UnauthorizedException } from "@nestjs/common";
@@ -23,7 +23,7 @@ import { AuthTokenRepository } from "../../src/auth/auth-token.repository";
 import { SessionRepository } from "../../src/auth/session.repository";
 
 interface MockSessionRepo {
-  findActiveById: jest.Mock<Promise<SessionRow | null>, [string]>;
+  findActiveByCredential: jest.Mock<Promise<SessionRow | null>, [string]>;
 }
 
 interface MockTokenRepo {
@@ -105,7 +105,7 @@ let tokenRepo: MockTokenRepo;
 let guard: AuthGuard;
 
 beforeEach(() => {
-  sessionRepo = { findActiveById: jest.fn() };
+  sessionRepo = { findActiveByCredential: jest.fn() };
   tokenRepo = { findActiveByRawToken: jest.fn() };
   guard = buildGuard(sessionRepo, tokenRepo);
 });
@@ -113,15 +113,15 @@ beforeEach(() => {
 describe("AuthGuard — cookie path", () => {
   it("allows when cookie maps to an active session and attaches principal", async () => {
     const session = activeSession();
-    sessionRepo.findActiveById.mockResolvedValue(session);
+    sessionRepo.findActiveByCredential.mockResolvedValue(session);
     const request = makeRequest({
       cookies: { [SESSION_COOKIE_NAME]: SESSION_ID },
     });
 
     await expect(guard.canActivate(makeContext(request))).resolves.toBe(true);
 
-    expect(sessionRepo.findActiveById).toHaveBeenCalledTimes(1);
-    expect(sessionRepo.findActiveById).toHaveBeenCalledWith(SESSION_ID);
+    expect(sessionRepo.findActiveByCredential).toHaveBeenCalledTimes(1);
+    expect(sessionRepo.findActiveByCredential).toHaveBeenCalledWith(SESSION_ID);
     expect(tokenRepo.findActiveByRawToken).not.toHaveBeenCalled();
 
     const principal = request.principal as Principal & { kind: "session" };
@@ -133,7 +133,7 @@ describe("AuthGuard — cookie path", () => {
   });
 
   it("rejects with UnauthorizedException when the session is not active (revoked/expired/unknown)", async () => {
-    sessionRepo.findActiveById.mockResolvedValue(null);
+    sessionRepo.findActiveByCredential.mockResolvedValue(null);
     const request = makeRequest({
       cookies: { [SESSION_COOKIE_NAME]: SESSION_ID },
     });
@@ -153,7 +153,7 @@ describe("AuthGuard — cookie path", () => {
     await expect(guard.canActivate(makeContext(request))).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
-    expect(sessionRepo.findActiveById).not.toHaveBeenCalled();
+    expect(sessionRepo.findActiveByCredential).not.toHaveBeenCalled();
   });
 });
 
@@ -169,7 +169,7 @@ describe("AuthGuard — bearer path", () => {
 
     expect(tokenRepo.findActiveByRawToken).toHaveBeenCalledTimes(1);
     expect(tokenRepo.findActiveByRawToken).toHaveBeenCalledWith(RAW_TOKEN);
-    expect(sessionRepo.findActiveById).not.toHaveBeenCalled();
+    expect(sessionRepo.findActiveByCredential).not.toHaveBeenCalled();
 
     expect(request.principal).toEqual({
       kind: "token",
@@ -269,7 +269,7 @@ describe("AuthGuard — bearer path", () => {
 
 describe("AuthGuard — precedence and uniformity", () => {
   it("prefers cookie over bearer when both are present", async () => {
-    sessionRepo.findActiveById.mockResolvedValue(activeSession());
+    sessionRepo.findActiveByCredential.mockResolvedValue(activeSession());
     tokenRepo.findActiveByRawToken.mockResolvedValue(activeToken());
     const request = makeRequest({
       cookies: { [SESSION_COOKIE_NAME]: SESSION_ID },
@@ -278,13 +278,13 @@ describe("AuthGuard — precedence and uniformity", () => {
 
     await expect(guard.canActivate(makeContext(request))).resolves.toBe(true);
 
-    expect(sessionRepo.findActiveById).toHaveBeenCalledTimes(1);
+    expect(sessionRepo.findActiveByCredential).toHaveBeenCalledTimes(1);
     expect(tokenRepo.findActiveByRawToken).not.toHaveBeenCalled();
     expect((request.principal as Principal).kind).toBe("session");
   });
 
   it("if cookie path fails, does NOT fall through to bearer (cookie is authoritative)", async () => {
-    sessionRepo.findActiveById.mockResolvedValue(null);
+    sessionRepo.findActiveByCredential.mockResolvedValue(null);
     tokenRepo.findActiveByRawToken.mockResolvedValue(activeToken());
     const request = makeRequest({
       cookies: { [SESSION_COOKIE_NAME]: SESSION_ID },
@@ -303,12 +303,12 @@ describe("AuthGuard — precedence and uniformity", () => {
     await expect(guard.canActivate(makeContext(request))).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
-    expect(sessionRepo.findActiveById).not.toHaveBeenCalled();
+    expect(sessionRepo.findActiveByCredential).not.toHaveBeenCalled();
     expect(tokenRepo.findActiveByRawToken).not.toHaveBeenCalled();
   });
 
   it("uses the same exception class for every failure mode (FR-ISO-4)", async () => {
-    sessionRepo.findActiveById.mockResolvedValue(null);
+    sessionRepo.findActiveByCredential.mockResolvedValue(null);
     // Default: token lookup returns null (expired/unknown). The wrong-scope
     // case below overrides this with a live token that has a disallowed scope.
     tokenRepo.findActiveByRawToken.mockResolvedValue(null);

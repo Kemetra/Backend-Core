@@ -45,7 +45,7 @@ const TENANT_ID  = "0a000000-0000-7000-8000-0000000ten01";
 // ---------------------------------------------------------------------------
 
 const makeFakeSessions = () => ({
-  findActiveById: jest.fn<Promise<SessionRow | null>, [string]>(),
+  findActiveByCredential: jest.fn<Promise<SessionRow | null>, [string]>(),
 });
 
 const makeFakeAuthTokens = () => ({
@@ -133,7 +133,7 @@ describe("AuthGuard — session-cookie path", () => {
   it("AG1: cookie present + session found → principal attached, returns true, kind='session'", async () => {
     const { guard, sessions, authTokens } = buildGuard();
     const session = makeSession();
-    sessions.findActiveById.mockResolvedValue(session);
+    sessions.findActiveByCredential.mockResolvedValue(session);
 
     const req = makeRequest({ cookie: SESSION_ID });
     const result = await guard.canActivate(makeCtx(req));
@@ -144,31 +144,31 @@ describe("AuthGuard — session-cookie path", () => {
       sessionId: SESSION_ID,
       userId: USER_ID,
     });
-    expect(sessions.findActiveById).toHaveBeenCalledWith(SESSION_ID);
+    expect(sessions.findActiveByCredential).toHaveBeenCalledWith(SESSION_ID);
     expect(authTokens.findActiveByRawToken).not.toHaveBeenCalled();
   });
 
   it("AG2: cookie present + session NOT found → throws UnauthorizedException", async () => {
     const { guard, sessions } = buildGuard();
-    sessions.findActiveById.mockResolvedValue(null);
+    sessions.findActiveByCredential.mockResolvedValue(null);
 
     const req = makeRequest({ cookie: SESSION_ID });
     await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(UnauthorizedException);
 
-    expect(sessions.findActiveById).toHaveBeenCalledWith(SESSION_ID);
+    expect(sessions.findActiveByCredential).toHaveBeenCalledWith(SESSION_ID);
   });
 
   it("AG3: cookie wins over bearer when both present — bearer path NOT entered", async () => {
     const { guard, sessions, authTokens } = buildGuard();
     const session = makeSession();
-    sessions.findActiveById.mockResolvedValue(session);
+    sessions.findActiveByCredential.mockResolvedValue(session);
 
     const req = makeRequest({ cookie: SESSION_ID, bearer: "Bearer some-token" });
     const result = await guard.canActivate(makeCtx(req));
 
     expect(result).toBe(true);
     expect((req.principal as Principal).kind).toBe("session");
-    expect(sessions.findActiveById).toHaveBeenCalledTimes(1);
+    expect(sessions.findActiveByCredential).toHaveBeenCalledTimes(1);
     expect(authTokens.findActiveByRawToken).not.toHaveBeenCalled();
   });
 });
@@ -196,7 +196,7 @@ describe("AuthGuard — bearer-token path", () => {
       storeId: null,
       scope: "dashboard_api",
     });
-    expect(sessions.findActiveById).not.toHaveBeenCalled();
+    expect(sessions.findActiveByCredential).not.toHaveBeenCalled();
     expect(authTokens.findActiveByRawToken).toHaveBeenCalledWith(rawTokenValue);
   });
 
@@ -233,7 +233,7 @@ describe("AuthGuard — readSessionCookie edge cases", () => {
     const result = await guard.canActivate(makeCtx(req));
 
     expect(result).toBe(true);
-    expect(sessions.findActiveById).not.toHaveBeenCalled();
+    expect(sessions.findActiveByCredential).not.toHaveBeenCalled();
     expect(authTokens.findActiveByRawToken).toHaveBeenCalledWith("raw-tok");
   });
 
@@ -246,7 +246,7 @@ describe("AuthGuard — readSessionCookie edge cases", () => {
     const result = await guard.canActivate(makeCtx(req));
 
     expect(result).toBe(true);
-    expect(sessions.findActiveById).not.toHaveBeenCalled();
+    expect(sessions.findActiveByCredential).not.toHaveBeenCalled();
     expect(authTokens.findActiveByRawToken).toHaveBeenCalledWith("raw-tok");
   });
 
@@ -259,21 +259,21 @@ describe("AuthGuard — readSessionCookie edge cases", () => {
     const result = await guard.canActivate(makeCtx(req));
 
     expect(result).toBe(true);
-    expect(sessions.findActiveById).not.toHaveBeenCalled();
+    expect(sessions.findActiveByCredential).not.toHaveBeenCalled();
     expect(authTokens.findActiveByRawToken).toHaveBeenCalledWith("raw-tok");
   });
 
   it("AG10: cookie value has surrounding whitespace → trimmed correctly, session path taken", async () => {
     const { guard, sessions } = buildGuard();
     const session = makeSession();
-    sessions.findActiveById.mockResolvedValue(session);
+    sessions.findActiveByCredential.mockResolvedValue(session);
 
     const req = makeRequest({ cookie: `  ${SESSION_ID}  ` });
     const result = await guard.canActivate(makeCtx(req));
 
     expect(result).toBe(true);
-    // Guard must call findActiveById with the trimmed value, not the padded one
-    expect(sessions.findActiveById).toHaveBeenCalledWith(SESSION_ID);
+    // Guard must call findActiveByCredential with the trimmed value, not the padded one
+    expect(sessions.findActiveByCredential).toHaveBeenCalledWith(SESSION_ID);
   });
 });
 
@@ -343,7 +343,7 @@ describe("AuthGuard — principal shape", () => {
   it("AG16: session principal has correct sessionId and userId from session row", async () => {
     const { guard, sessions } = buildGuard();
     const session = makeSession({ id: SESSION_ID, userId: USER_ID });
-    sessions.findActiveById.mockResolvedValue(session);
+    sessions.findActiveByCredential.mockResolvedValue(session);
 
     const req = makeRequest({ cookie: SESSION_ID });
     await guard.canActivate(makeCtx(req));

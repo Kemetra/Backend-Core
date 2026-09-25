@@ -59,11 +59,15 @@ jest.mock("drizzle-orm/node-postgres", () => ({
   })),
 }));
 
-jest.mock("@data-pulse-2/auth", () => ({
-  verifyPassword: jest.fn(),
-  hashPassword: jest.fn(),
-  generateRawToken: jest.fn(() => "raw-token-fixture"),
-}));
+jest.mock("@data-pulse-2/auth", () => {
+  const { createHash } = require("node:crypto") as typeof import("node:crypto");
+  return {
+    verifyPassword: jest.fn(),
+    hashPassword: jest.fn(),
+    generateRawToken: jest.fn(() => "raw-token-fixture"),
+    hashToken: (token: string): Buffer => createHash("sha256").update(token).digest(),
+  };
+});
 
 // Imports AFTER mocks
 import {
@@ -161,7 +165,7 @@ function makeTokenRow(overrides: Partial<AuthTokenRow> = {}): AuthTokenRow {
 // ---------------------------------------------------------------------------
 
 class FakeSessionRepository {
-  findActiveById = jest.fn<Promise<SessionRow | null>, [string]>().mockResolvedValue(null);
+  findActiveByCredential = jest.fn<Promise<SessionRow | null>, [string]>().mockResolvedValue(null);
   create = jest.fn().mockResolvedValue(makeSessionRow());
   revoke = jest.fn().mockResolvedValue(true);
   touchLastSeen = jest.fn().mockResolvedValue(true);
@@ -379,9 +383,9 @@ describe("T470 — AuthGuard emits auth_failure_total on every failure mode", ()
     return { guard, sessions, authTokens };
   }
 
-  it("session cookie present but findActiveById returns null → bad_token", async () => {
+  it("session cookie present but findActiveByCredential returns null → bad_token", async () => {
     const { guard, sessions } = buildGuard();
-    sessions.findActiveById.mockResolvedValue(null);
+    sessions.findActiveByCredential.mockResolvedValue(null);
 
     const req = makeRequest({ cookie: SESSION_ID });
     await expect(guard.canActivate(makeExecCtx(req))).rejects.toBeInstanceOf(
@@ -461,7 +465,7 @@ describe("T470 — AuthGuard emits auth_failure_total on every failure mode", ()
 
   it("valid session cookie does NOT emit any failure", async () => {
     const { guard, sessions } = buildGuard();
-    sessions.findActiveById.mockResolvedValue(makeSessionRow());
+    sessions.findActiveByCredential.mockResolvedValue(makeSessionRow());
 
     const req = makeRequest({ cookie: SESSION_ID });
     await expect(guard.canActivate(makeExecCtx(req))).resolves.toBe(true);

@@ -53,8 +53,9 @@ export const BEARER_AUTH_SCOPES = new Set<BearerAuthScope>([
 /**
  * The authenticated caller, attached as `request.principal` on success.
  *
- * `kind: "session"` is a dashboard human authenticated via cookie; the
- * sessionId IS the cookie value.
+ * `kind: "session"` is a dashboard human authenticated via cookie.
+ * `sessionId` is the sessions row key, not the cookie. The cookie is a
+ * separate CSPRNG value looked up by SHA-256.
  *
  * `kind: "token"` is an API/POS caller authenticated via opaque bearer
  * token. `tenantId` is null for platform-admin tokens.
@@ -113,9 +114,9 @@ export class AuthGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthedRequest>();
 
-    const sessionId = readSessionCookie(request);
-    if (sessionId !== null) {
-      const session = await this.sessions.findActiveById(sessionId);
+    const sessionCredential = readSessionCookie(request);
+    if (sessionCredential !== null) {
+      const session = await this.sessions.findActiveByCredential(sessionCredential);
       if (!session) {
         // T470 — observability: emit auth_failure_total{cause="bad_token"}.
         // `findActiveById` returns null for every non-live row (missing,
@@ -161,11 +162,25 @@ export class AuthGuard implements CanActivate {
   }
 }
 
-function readSessionCookie(request: AuthedRequest): string | null {
-  const value = request.cookies?.[SESSION_COOKIE_NAME];
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+export function readSessionCookie(request: AuthedRequest): string | null {
+  const parsed = request.cookies?.[SESSION_COOKIE_NAME];
+  if (typeof parsed === "string" && parsed.trim().length > 0) {
+    return parsed.trim();
+  }
+  const header = request.headers?.cookie;
+  if (typeof header !== "string") return null;
+  return cookieValue(header, SESSION_COOKIE_NAME);
+}
+
+function cookieValue(header: string, name: string): string | null {
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
+    const value = part.slice(eq + 1).trim();
+    return value.length > 0 ? value : null;
+  }
+  return null;
 }
 
 function readBearerToken(request: AuthedRequest): string | null {

@@ -102,8 +102,9 @@ beforeAll(async () => {
     await adminPool.query(
       `INSERT INTO sessions
          (id, user_id, active_tenant_id, active_store_id,
-          issued_at, last_seen_at, absolute_expires_at)
-       VALUES ($1, $2, $3, $4, now(), now(), now() + interval '1 hour')`,
+          issued_at, last_seen_at, absolute_expires_at, credential_hash)
+       VALUES ($1::uuid, $2, $3, $4, now(), now(), now() + interval '1 hour',
+               decode(md5($1::uuid::text), 'hex') || decode(md5($1::uuid::text || ':h'), 'hex'))`,
       [sessionId, userId, tenantId, null],
     );
 

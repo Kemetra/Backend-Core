@@ -46,7 +46,7 @@ const DEVICE_ID  = "0a000000-0000-7000-8000-0000000dev01";
 // ---------------------------------------------------------------------------
 
 const makeFakeSessions = () => ({
-  findActiveById: jest.fn<Promise<SessionRow | null>, [string]>(),
+  findActiveByCredential: jest.fn<Promise<SessionRow | null>, [string]>(),
 });
 
 const makeFakeAuthTokens = () => ({
@@ -149,7 +149,7 @@ describe("PosOperatorAuthGuard — pos_operator token", () => {
 describe("PosOperatorAuthGuard — session principal rejected", () => {
   it("POG2: cookie session → throws UnauthorizedException (POS routes reject dashboard sessions)", async () => {
     const { guard, sessions } = buildGuard();
-    sessions.findActiveById.mockResolvedValue(makeSession());
+    sessions.findActiveByCredential.mockResolvedValue(makeSession());
 
     const req = makeRequest({ cookie: SESSION_ID });
     await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(

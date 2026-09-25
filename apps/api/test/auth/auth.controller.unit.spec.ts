@@ -58,6 +58,7 @@ import type { RefreshResult } from "../../src/auth/auth.service";
 
 const USER_ID    = "0c000000-0000-7000-8000-000000000001";
 const SESSION_ID = "0c000000-0000-7000-8000-000000000002";
+const SESSION_CREDENTIAL = "cspnrg-cookie-value-not-the-row-id";
 const TOKEN_ID   = "0c000000-0000-7000-8000-000000000003";
 const TENANT_ID  = "0c000000-0000-7000-8000-000000000004";
 
@@ -85,6 +86,7 @@ class FakeAuthService {
 
   signInResult: SignInResult = {
     sessionId: SESSION_ID,
+    sessionCredential: SESSION_CREDENTIAL,
     userId: USER_ID,
     absoluteExpiresAt: FUTURE,
     user: { id: USER_ID, email: "user@example.com", display_name: null, is_platform_admin: false },
@@ -235,6 +237,7 @@ beforeEach(() => {
 
   svc.signInResult = {
     sessionId: SESSION_ID,
+    sessionCredential: SESSION_CREDENTIAL,
     userId: USER_ID,
     absoluteExpiresAt: FUTURE,
     user: { id: USER_ID, email: "user@example.com", display_name: null, is_platform_admin: false },
@@ -287,8 +290,9 @@ describe("POST /api/v1/auth/signin", () => {
     expect(sessionCookie).toMatch(/Path=\//i);
     // NODE_ENV=test → Secure flag must NOT be present
     expect(sessionCookie).not.toMatch(/;\s*Secure/i);
-    // Cookie value matches the sessionId from the fake service
-    expect(sessionCookie).toContain(`dp2_session=${SESSION_ID}`);
+    // Cookie value is the CSPRNG credential, not the sessions row id.
+    expect(sessionCookie).toContain(`dp2_session=${SESSION_CREDENTIAL}`);
+    expect(sessionCookie).not.toContain(`dp2_session=${SESSION_ID}`);
   });
 
   it("forwards email and password to authService.signIn", async () => {
@@ -428,14 +432,16 @@ describe("POST /api/v1/auth/signout", () => {
 
 describe("POST /api/v1/auth/refresh", () => {
   it("happy path: 204 and cookie re-issued", async () => {
-    const res = await http().post("/api/v1/auth/refresh");
+    const res = await http()
+      .post("/api/v1/auth/refresh")
+      .set("Cookie", [`dp2_session=${SESSION_CREDENTIAL}`]);
 
     expect(res.status).toBe(204);
     const setCookie: string | string[] | undefined = res.headers["set-cookie"];
     const cookies = Array.isArray(setCookie) ? setCookie : [String(setCookie)];
     const reissued = cookies.find((c) => c.startsWith("dp2_session="));
     expect(reissued).toBeDefined();
-    expect(reissued).toContain(`dp2_session=${SESSION_ID}`);
+    expect(reissued).toContain(`dp2_session=${SESSION_CREDENTIAL}`);
   });
 
   it("forwards sessionId to authService.refresh", async () => {

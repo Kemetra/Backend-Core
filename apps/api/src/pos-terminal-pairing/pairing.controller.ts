@@ -7,9 +7,8 @@
  *
  * AUTH — `security: []` (FR-002): this is the ONLY unauthenticated POS operation
  * (pairing IS the bootstrap that issues the device_token; the terminal has no
- * credential yet). DP-2 applies guards PER-CONTROLLER via `@UseGuards`; there is
- * NO global `APP_GUARD` (verified by repo grep). So this controller registers
- * NO guard at all — the route is anonymous WITHOUT weakening any other guard.
+ * credential yet). The global fail-closed guard denies every unmarked route.
+ * `@Public()` is the explicit opt-out for this one.
  * It is deliberately NOT `@Auditable`: the success carries a SECRET
  * (`device_token`) and MUST emit no audit payload (§VII).
  *
@@ -40,7 +39,9 @@ import {
   type TerminalPairResponseBody,
 } from "./dto/terminal-pair.dto";
 import { PairingService } from "./pairing.service";
+import { Public } from "../auth/route-auth";
 
+@Public()
 @Controller()
 export class PairingController {
   constructor(
