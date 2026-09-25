@@ -147,6 +147,9 @@ describe("createLogger — redactPaths merging", () => {
     expect(DEFAULT_REDACT_PATHS).toContain("token");
     expect(DEFAULT_REDACT_PATHS).toContain("secret");
     expect(DEFAULT_REDACT_PATHS).toContain("api_key");
+    expect(DEFAULT_REDACT_PATHS).toContain("device_token_attestation");
+    expect(DEFAULT_REDACT_PATHS).toContain("pairing_code");
+    expect(DEFAULT_REDACT_PATHS).toContain("device_token");
   });
 });
 

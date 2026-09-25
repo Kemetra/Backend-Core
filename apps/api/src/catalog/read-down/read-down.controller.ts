@@ -35,6 +35,7 @@ import {
 
 import { Auditable } from "../../audit/auditable.decorator";
 import { PosDeviceAuthGuard } from "../../auth/pos-device-auth.guard";
+import { DeviceBearer } from "../../auth/route-auth";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe";
 import type { TenantContextRequest } from "../../context/types";
 import {
@@ -62,6 +63,7 @@ export class ReadDownController {
   constructor(private readonly readDown: ReadDownService) {}
 
   @Get("api/pos/v1/catalog/snapshot")
+  @DeviceBearer()
   @UseGuards(PosDeviceAuthGuard)
   @Auditable("catalog.snapshot.read")
   async getSnapshot(
@@ -104,6 +106,7 @@ export class ReadDownController {
   }
 
   @Get("api/pos/v1/catalog/deltas")
+  @DeviceBearer()
   @UseGuards(PosDeviceAuthGuard)
   @Auditable("catalog.deltas.read")
   async getDeltas(

@@ -1,10 +1,12 @@
 import { Injectable, Module, type OnModuleDestroy, type OnModuleInit, Inject } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
 import { readdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { Pool } from "pg";
 
 import { AuditModule } from "./audit/audit.module";
 import { AuthModule, PG_POOL } from "./auth/auth.module";
+import { FailClosedAuthGuard } from "./auth/fail-closed-auth.guard";
 import { ErpnextBinViewModule } from "./catalog/erpnext-bin-view/erpnext-bin-view.module";
 import { ErpnextItemMapModule } from "./catalog/erpnext-item-map/erpnext-item-map.module";
 import { ErpnextPostingModule } from "./catalog/erpnext-posting/erpnext-posting.module";
@@ -221,6 +223,10 @@ class ApiDbMigrationStatusGaugeRegistrar implements OnModuleInit, OnModuleDestro
 @Module({
   imports: [AuditModule, AuthModule, ContextModule, TenantsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, PosAuditEventsModule, PosShiftsModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, ConnectorModule, ConnectorHealthModule, PairingModule],
   controllers: [],
-  providers: [ApiDbPoolGaugeRegistrar, ApiDbMigrationStatusGaugeRegistrar],
+  providers: [
+    ApiDbPoolGaugeRegistrar,
+    ApiDbMigrationStatusGaugeRegistrar,
+    { provide: APP_GUARD, useClass: FailClosedAuthGuard },
+  ],
 })
 export class AppModule {}

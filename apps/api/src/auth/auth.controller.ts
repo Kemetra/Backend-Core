@@ -37,6 +37,7 @@ import {
 import type { Response } from "express";
 import { AuthService } from "./auth.service";
 import { AuthGuard, type AuthedRequest, readSessionCookie, SESSION_COOKIE_NAME } from "./auth.guard";
+import { Public } from "./route-auth";
 import {
   RATE_LIMIT_BUCKETS,
   RateLimiter,
@@ -100,6 +101,7 @@ export class AuthController {
   // POST /signin — public; sets session cookie on 200.
   // ---------------------------------------------------------------------
 
+  @Public()
   @Post("signin")
   @HttpCode(HttpStatus.OK)
   async signIn(
@@ -177,6 +179,7 @@ export class AuthController {
   // POST /password-reset/request — public; 202 always.
   // ---------------------------------------------------------------------
 
+  @Public()
   @Post("password-reset/request")
   @HttpCode(HttpStatus.ACCEPTED)
   async requestPasswordReset(
@@ -194,6 +197,7 @@ export class AuthController {
   // POST /password-reset/confirm — public; 204 / 400.
   // ---------------------------------------------------------------------
 
+  @Public()
   @Post("password-reset/confirm")
   @HttpCode(HttpStatus.NO_CONTENT)
   async confirmPasswordReset(
@@ -234,6 +238,7 @@ export class AuthController {
   // POST /email/verify/confirm — public; 204 / 400.
   // ---------------------------------------------------------------------
 
+  @Public()
   @Post("email/verify/confirm")
   @HttpCode(HttpStatus.NO_CONTENT)
   async confirmEmailVerification(
