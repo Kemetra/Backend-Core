@@ -49,13 +49,35 @@ it('reclaims a crashed worker claim on the next sweep and fences its late comple
 
 it('keeps an active claim out of the reclaim sweep while its heartbeat is current', async () => {
   await env.admin.query(
-    `UPDATE outbox_events SET delivery_state='pending', processed_at=NULL WHERE event_id=$1`, [EVENT],
+    `UPDATE outbox_events SET delivery_state='pending', claimed_at=NULL, processed_at=NULL WHERE event_id=$1`, [EVENT],
   );
   const active = (await claimBatch(env.admin, 1))[0]!;
   await env.admin.query(`UPDATE outbox_events SET claimed_at=now() - interval '2 minutes' WHERE event_id=$1`, [EVENT]);
   expect(await heartbeatClaim(env.admin, EVENT, active.attempts)).toBe(true);
   expect((await reclaimStaleClaims(env.admin, 60_000)).reclaimed).toBe(0);
   await markDelivered(env.admin, EVENT, active.attempts);
+});
+
+it('rejects an unfenced legacy terminal update after a new worker reclaims the row', async () => {
+  await env.admin.query(
+    `UPDATE outbox_events SET delivery_state='pending', claimed_at=NULL, processed_at=NULL
+      WHERE event_id=$1`, [EVENT],
+  );
+  await claimBatch(env.admin, 1);
+  await env.admin.query(
+    `UPDATE outbox_events SET claimed_at=now() - interval '2 minutes' WHERE event_id=$1`, [EVENT],
+  );
+  expect((await reclaimStaleClaims(env.admin, 60_000)).reclaimed).toBe(1);
+  const current = (await claimBatch(env.admin, 1))[0]!;
+  await expect(env.admin.query(
+    `UPDATE outbox_events SET delivery_state='delivered', processed_at=now()
+      WHERE event_id=$1 AND delivery_state='claimed'`, [EVENT],
+  )).rejects.toMatchObject({ code: '23514' });
+  await expect(env.admin.query(
+    `UPDATE outbox_events SET delivery_state='failed', updated_at=now()
+      WHERE event_id=$1 AND delivery_state='claimed'`, [EVENT],
+  )).rejects.toMatchObject({ code: '23514' });
+  await markDelivered(env.admin, EVENT, current.attempts);
 });
 
 it('waits for the lease threshold on claims made by an older worker', async () => {

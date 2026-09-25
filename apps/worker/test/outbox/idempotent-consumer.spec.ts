@@ -159,6 +159,7 @@ describe("T563: idempotent consumer — outbox-row-level dedup", () => {
     await env!.admin.query(
       `UPDATE outbox_events
           SET delivery_state='pending',
+              claimed_at=NULL,
               processed_at=NULL,
               attempts=0,
               next_attempt_at=NULL,

@@ -148,7 +148,7 @@ describe("claimBatch — pending to claimed transition (R-5)", () => {
 
     // Mark all existing claimed events as delivered first so we can claim fresh predictably.
     await env!.admin.query(
-      `UPDATE outbox_events SET delivery_state='delivered', processed_at=now()
+      `UPDATE outbox_events SET delivery_state='delivered', processed_at=now(), claimed_at=NULL
         WHERE delivery_state='claimed'`,
     );
 
@@ -268,7 +268,7 @@ describe("2-drainer SKIP LOCKED race (R-9)", () => {
 
     // First clean up any existing pending rows to make the test predictable.
     await env!.admin.query(
-      `UPDATE outbox_events SET delivery_state='delivered', processed_at=now()
+      `UPDATE outbox_events SET delivery_state='delivered', processed_at=now(), claimed_at=NULL
         WHERE delivery_state IN ('pending','failed','claimed')`,
     );
 
@@ -315,14 +315,14 @@ describe("backoff — failed row eligibility (R-10/R-11)", () => {
     const futureNext = new Date(Date.now() + 60_000).toISOString();
     await env!.admin.query(
       `UPDATE outbox_events
-          SET delivery_state='failed', attempts=1, next_attempt_at=$2, updated_at=now()
+          SET delivery_state='failed', attempts=1, next_attempt_at=$2, claimed_at=NULL, updated_at=now()
         WHERE event_id=$1`,
       [EV_BACKOFF, futureNext],
     );
 
     // Ensure no other pending rows exist.
     await env!.admin.query(
-      `UPDATE outbox_events SET delivery_state='delivered', processed_at=now()
+      `UPDATE outbox_events SET delivery_state='delivered', processed_at=now(), claimed_at=NULL
         WHERE delivery_state IN ('pending','claimed') AND event_id != $1`,
       [EV_BACKOFF],
     );
@@ -338,7 +338,7 @@ describe("backoff — failed row eligibility (R-10/R-11)", () => {
     const pastNext = new Date(Date.now() - 1_000).toISOString();
     await env!.admin.query(
       `UPDATE outbox_events
-          SET delivery_state='failed', attempts=1, next_attempt_at=$2, updated_at=now()
+          SET delivery_state='failed', attempts=1, next_attempt_at=$2, claimed_at=NULL, updated_at=now()
         WHERE event_id=$1`,
       [EV_BACKOFF2, pastNext],
     );
@@ -362,14 +362,14 @@ describe("retry budget — 8 attempts then dead_lettered (R-12)", () => {
     const pastNext = new Date(Date.now() - 1_000).toISOString();
     await env!.admin.query(
       `UPDATE outbox_events
-          SET delivery_state='failed', attempts=7, next_attempt_at=$2, updated_at=now()
+          SET delivery_state='failed', attempts=7, next_attempt_at=$2, claimed_at=NULL, updated_at=now()
         WHERE event_id=$1`,
       [EV_BUDGET, pastNext],
     );
 
     // Clean up other pending/failed rows.
     await env!.admin.query(
-      `UPDATE outbox_events SET delivery_state='delivered', processed_at=now()
+      `UPDATE outbox_events SET delivery_state='delivered', processed_at=now(), claimed_at=NULL
         WHERE delivery_state IN ('pending','claimed') AND event_id != $1`,
       [EV_BUDGET],
     );

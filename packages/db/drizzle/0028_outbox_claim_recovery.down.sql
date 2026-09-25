@@ -2,6 +2,7 @@
 BEGIN;
 
 DROP INDEX IF EXISTS outbox_events_stale_claim_idx;
+ALTER TABLE outbox_events DROP CONSTRAINT IF EXISTS outbox_claimed_at_state_check;
 ALTER TABLE outbox_events DROP COLUMN IF EXISTS claimed_at;
 
 COMMIT;

@@ -8,6 +8,11 @@ BEGIN;
 
 ALTER TABLE outbox_events ADD COLUMN claimed_at TIMESTAMPTZ;
 UPDATE outbox_events SET claimed_at = updated_at WHERE delivery_state = 'claimed';
+-- Legacy workers leave claimed_at untouched on terminal updates. Once a new
+-- worker has reclaimed the row, its non-null lease must make those updates
+-- fail instead of overwriting the new attempt.
+ALTER TABLE outbox_events ADD CONSTRAINT outbox_claimed_at_state_check
+  CHECK (delivery_state = 'claimed' OR claimed_at IS NULL);
 CREATE INDEX outbox_events_stale_claim_idx ON outbox_events (COALESCE(claimed_at, updated_at))
   WHERE delivery_state = 'claimed';
 
