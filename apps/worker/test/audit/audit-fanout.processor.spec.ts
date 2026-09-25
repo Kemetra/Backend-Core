@@ -221,6 +221,21 @@ describe("AuditFanoutProcessor", () => {
     expect(db.capturedRows[0]!.metadata).toEqual({});
   });
 
+  it("stores {} when metadata contains email, and a safe key still persists", async () => {
+    const blocked = {
+      ...VALID_PAYLOAD,
+      metadata: { email: "user@example.com", reason: "should-drop" },
+    };
+    await processor.process(AUDIT_FANOUT_JOB_NAME, blocked);
+    expect(db.capturedRows[0]!.metadata).toEqual({});
+
+    db = buildSpyDb();
+    processor = new AuditFanoutProcessor(db);
+    const safe = { ...VALID_PAYLOAD, metadata: { reason: "kept" } };
+    await processor.process(AUDIT_FANOUT_JOB_NAME, safe);
+    expect(db.capturedRows[0]!.metadata).toEqual({ reason: "kept" });
+  });
+
   it("stores {} for each blocked key at top level", async () => {
     const blocked = ["password", "access_token", "refresh_token", "authorization", "cookie", "secret"];
     for (const key of blocked) {

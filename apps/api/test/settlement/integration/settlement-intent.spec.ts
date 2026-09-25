@@ -39,6 +39,8 @@ import request from "supertest";
 
 import { IdempotencyKeyStore } from "@data-pulse-2/shared";
 
+import { assertIdempotencyRedisRetains } from "../../idempotency/require-retaining-redis";
+
 import { PG_POOL } from "../../../src/auth/auth.module";
 import { DashboardAuthGuard } from "../../../src/auth/dashboard-auth.guard";
 import { PosOperatorEnvelopeSaleGuard } from "../../../src/auth/pos-operator-envelope-sale.guard";
@@ -180,6 +182,7 @@ beforeAll(async () => {
   const localEnv = env;
   contextGuard = new ConfigurableContextGuard();
   fakeRedis = new FakeRedis();
+  await assertIdempotencyRedisRetains(fakeRedis, "settlement-intent.spec.ts");
   const fakeMarker = new FakeMarker();
 
   const idempStore = new IdempotencyKeyStore({

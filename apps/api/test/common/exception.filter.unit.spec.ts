@@ -313,6 +313,20 @@ describe("GlobalExceptionFilter – unit", () => {
     expect(JSON.stringify(body)).not.toContain("secret-internal-detail");
   });
 
+  it("EF13b: unhandled Error with SQL and a secret stays a generic 500", () => {
+    const captured: CapturedResponse = {};
+    filter.catch(
+      new Error("password=secret SELECT token"),
+      makeHost({ requestId: REQ_ID }, captured),
+    );
+    expect(captured.statusCode).toBe(500);
+    const body = captured.body as { error: Record<string, unknown> };
+    expect(body.error.message).toBe("Internal Server Error");
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("password");
+    expect(serialized).not.toContain("SELECT");
+  });
+
   // EF14: Unhandled non-Error (string thrown) → 500 + INTERNAL
   it("EF14: thrown string (non-Error) → 500 + internal_error", () => {
     const captured: CapturedResponse = {};

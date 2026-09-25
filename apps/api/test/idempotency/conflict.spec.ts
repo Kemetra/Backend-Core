@@ -32,6 +32,7 @@ import { APP_INTERCEPTOR, Reflector } from "@nestjs/core";
 import type { InvitationRow } from "@data-pulse-2/db/schema";
 import { IdempotencyKeyStore } from "@data-pulse-2/shared";
 import type { ResolvedContext } from "../../src/context/types";
+import { assertIdempotencyRedisRetains } from "./require-retaining-redis";
 
 const TENANT_ID = "0d000000-0000-7000-8000-000000000001";
 const INVITATION_ID = "0d000000-0000-7000-8000-000000000002";
@@ -106,6 +107,7 @@ let fakeRedis: FakeRedis;
 beforeAll(async () => {
   svc = new FakeInvitationsService();
   fakeRedis = new FakeRedis();
+  await assertIdempotencyRedisRetains(fakeRedis, "conflict.spec.ts");
   const fakeMarker = new FakeMarker();
 
   const store = new IdempotencyKeyStore({
