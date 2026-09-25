@@ -38,6 +38,26 @@ const TENANT = "aaaaaaaa-0000-4000-8000-0000000000a7";
 const CLIENT = "o7-probe";
 const FP_A = Buffer.alloc(32, 1);
 const FP_B = Buffer.alloc(32, 2);
+const SAVED = { status: 201, body: { ok: true } };
+
+function redisOnlyStore(redis: IoredisIdempotencyAdapter): IdempotencyKeyStore {
+  return new IdempotencyKeyStore({
+    redis,
+    pgWriter: { async insert() {} },
+    pgReader: { async find() { return null; } },
+  });
+}
+
+async function saveThenFind(
+  redis: IoredisIdempotencyAdapter,
+  key: string,
+  savedFp: Buffer,
+  lookupFp: Buffer,
+) {
+  const store = redisOnlyStore(redis);
+  await store.save(TENANT, null, CLIENT, key, savedFp, SAVED);
+  return store.findOrCreate(TENANT, null, CLIENT, key, lookupFp);
+}
 
 describe("O7 AlwaysAllowRedis is not idempotency coverage", () => {
   it("fails the retaining-redis guard (set returns OK, get returns null)", async () => {
@@ -79,32 +99,14 @@ proveRealRedis(
 
     it("replays a saved record", async () => {
       const key = `o7-replay-${Date.now()}`;
-      const store = new IdempotencyKeyStore({
-        redis: adapter,
-        pgWriter: { async insert() {} },
-        pgReader: { async find() { return null; } },
-      });
-      await store.save(TENANT, null, CLIENT, key, FP_A, {
-        status: 201,
-        body: { ok: true },
-      });
-      const hit = await store.findOrCreate(TENANT, null, CLIENT, key, FP_A);
+      const hit = await saveThenFind(adapter, key, FP_A, FP_A);
       expect(hit.hit).toBe(true);
       await adapter.del(`idempotency:${TENANT}:null:${CLIENT}:${key}`);
     });
 
     it("conflicts when the retained fingerprint differs", async () => {
       const key = `o7-conflict-${Date.now()}`;
-      const store = new IdempotencyKeyStore({
-        redis: adapter,
-        pgWriter: { async insert() {} },
-        pgReader: { async find() { return null; } },
-      });
-      await store.save(TENANT, null, CLIENT, key, FP_A, {
-        status: 201,
-        body: { ok: true },
-      });
-      const hit = await store.findOrCreate(TENANT, null, CLIENT, key, FP_B);
+      const hit = await saveThenFind(adapter, key, FP_A, FP_B);
       expect(hit.hit).toBe("collision");
       await adapter.del(`idempotency:${TENANT}:null:${CLIENT}:${key}`);
     });
