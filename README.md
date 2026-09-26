@@ -136,7 +136,7 @@ pnpm lint               # eslint + prettier --check
 
 The development compose stack exposes:
 
-- PostgreSQL: `postgres://dp2:dp2_dev_password@localhost:5432/data_pulse_2`
+- PostgreSQL: `postgres://dp2:dp2_dev_password@localhost:5432/data_pulse_2` (the password defaults to `dp2_dev_password`; set `POSTGRES_PASSWORD` before `docker compose up` to override it, and use the same value in `DATABASE_URL`)
 - Redis: `redis://localhost:6379`
 
 For local API and worker runs, set:
