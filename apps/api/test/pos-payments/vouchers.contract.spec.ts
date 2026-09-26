@@ -197,8 +197,8 @@ describe("pos-payments/vouchers.yaml — loadability", () => {
   });
 
   it("does NOT declare cookieAuth (this surface is POS-only; no dashboard endpoints)", () => {
-    // Voucher CRUD for tenant admins already lives under the existing
-    // `/api/v1/pos/vouchers` surface in another contract. This V-A
+    // Tenant-admin voucher CRUD is not part of this contract (it has no
+    // contract or route yet). This V-A
     // contract is strictly the POS terminal → backend voucher-authority
     // surface and uses the role-named `operator-identity` scheme exclusively.
     const schemes = vouchersDoc.components?.securitySchemes ?? {};
