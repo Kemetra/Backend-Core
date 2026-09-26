@@ -169,6 +169,10 @@ Owns:
 - fiscal extension points;
 - compatibility with ERPNext/Frappe upgrades.
 
+### Legacy name aliases
+
+Program shorthand and legacy names still found in constitutions, specs, and config/env identifiers (e.g. `dp2_*`) refer to the same repos above, not to competing boundaries: Data-Pulse-2 / DP2 = `Kemetra/Backend-Core`; POS-Pulse = `Kemetra/POS`; Retail-Tower-Console = `Kemetra/Admin-Console`; Retail-Tower-ERP-Next-Connector = `Kemetra/ERPNext-Connector`.
+
 ## 4. Architecture Invariants
 
 The normal integration path is:
@@ -274,10 +278,17 @@ Before repository work:
 git status --short
 git branch --show-current
 git fetch origin
+```
+
+If starting a new task from a clean state, then bring `main` current before branching:
+
+```bash
 git checkout main
 git pull --ff-only origin main
 git log -1 --oneline
 ```
+
+If resuming an existing task branch or working in a dedicated worktree, stay on it — do not check out `main` (it may already be checked out in another worktree) — and compare against `origin/main` instead: `git log -1 --oneline origin/main`.
 
 Then inspect:
 - the Jira issue;
@@ -505,6 +516,8 @@ Bootstrap read order for every agent session:
 
 Do not duplicate standing-rules content here.
 
+**Mapping standing-rules.md's forbidden-surface gate to Jira.** `standing-rules.md` §3 (forbidden surfaces) and §7 (stop conditions) still speak in terms of a retired "slice brief" providing `allowed_files`/`forbidden_files` and `[GATED]` approval. Since there is no slice brief under the RT operating model, map those clauses as follows: `allowed_files` = the scope stated in the Jira issue (RT operating instructions §8); `[GATED]` approval = explicit authorization written into the Jira issue or given by the owner (RT operating instructions §10); if the issue doesn't make the scope or gate status clear, that is the §14 stop condition "Jira scope is ambiguous" — stop and ask on the issue rather than proceeding or improvising a brief.
+
 ## Constitution
 
 [.specify/memory/constitution.md](.specify/memory/constitution.md) (v3.0.0) — read it when principle text matters; do not paraphrase from memory. Key principles: §II multi-tenant RLS, §III backend authority, §IV contract-first, §VIII reproducible releases (`[GATED]` required), §XII object safety, §XIV PII discipline.
@@ -570,7 +583,7 @@ reference-on-demand and may lag the spec files.
 
 ## What this repo does NOT own
 
-POS application (separate repo). This repo owns SaaS backend, admin/dashboard frontend (separate feature, deferred), workers, infrastructure.
+Does not own POS (`Kemetra/POS`) or the admin/operator frontend (`Kemetra/Admin-Console`) — see the RT operating instructions §3 for repo ownership. This repo owns the SaaS backend, workers, infrastructure, and the OpenAPI contracts both POS and Admin-Console consume.
 
 ## Stack
 
@@ -583,7 +596,7 @@ POS application (separate repo). This repo owns SaaS backend, admin/dashboard fr
 - **Auth**: argon2id (`argon2` npm) · opaque revocable bearer tokens (API/POS) · httpOnly cookie sessions (dashboard humans)
 - **IDs**: UUIDv7 with UUIDv4 fallback
 
-Dashboard / web frontend is a separate future feature. OpenAPI contracts produced here are the only thing the dashboard depends on.
+The admin/operator dashboard is `Kemetra/Admin-Console`, a separate repo. OpenAPI contracts produced here are the only thing it depends on.
 
 ## Working agreement
 
