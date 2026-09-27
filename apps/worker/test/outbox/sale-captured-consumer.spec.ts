@@ -29,6 +29,7 @@ import {
   type SaleCapturedPayload,
 } from "../../src/outbox/consumers/sale-captured.consumer";
 import type { OutboxEventEnvelope } from "@data-pulse-2/shared";
+import { Job, type JobsOptions } from "bullmq";
 
 // ---------------------------------------------------------------------------
 // Fake queue — the consumer's ONLY collaborator. No DB pool is injected, so a
@@ -121,13 +122,13 @@ describe("SaleCapturedConsumer — happy path (AC-1, AC-3)", () => {
 // which omits jobId by design.
 
 describe("SaleCapturedConsumer — deterministic jobId dedup (FIX 1)", () => {
-  it("uses jobId `<consumerId>:<event_id>` in the add() opts", async () => {
+  it("uses jobId `<consumerId>-<event_id>` in the add() opts", async () => {
     const queue = new FakeQueue();
     const consumer = new SaleCapturedConsumer(queue);
 
     await consumer.handle(envelope(validPayload) as OutboxEventEnvelope<SaleCapturedPayload>);
 
-    const expectedJobId = `${SALE_CAPTURED_CONSUMER_ID}:${EVENT_ID}`;
+    const expectedJobId = `${SALE_CAPTURED_CONSUMER_ID}-${EVENT_ID}`;
     expect(queue.calls[0]!.opts?.["jobId"]).toBe(expectedJobId);
   });
 
@@ -143,7 +144,7 @@ describe("SaleCapturedConsumer — deterministic jobId dedup (FIX 1)", () => {
     // identical, which is what lets BullMQ collapse the re-delivery.
     expect(queue.calls).toHaveLength(2);
     expect(queue.calls[0]!.opts?.["jobId"]).toBe(queue.calls[1]!.opts?.["jobId"]);
-    expect(queue.calls[0]!.opts?.["jobId"]).toBe(`${SALE_CAPTURED_CONSUMER_ID}:${EVENT_ID}`);
+    expect(queue.calls[0]!.opts?.["jobId"]).toBe(`${SALE_CAPTURED_CONSUMER_ID}-${EVENT_ID}`);
   });
 
   it("two DIFFERENT event_ids produce DIFFERENT jobIds", async () => {
@@ -156,9 +157,87 @@ describe("SaleCapturedConsumer — deterministic jobId dedup (FIX 1)", () => {
       envelope(validPayload, { event_id: otherEventId }) as OutboxEventEnvelope<SaleCapturedPayload>,
     );
 
-    expect(queue.calls[0]!.opts?.["jobId"]).toBe(`${SALE_CAPTURED_CONSUMER_ID}:${EVENT_ID}`);
-    expect(queue.calls[1]!.opts?.["jobId"]).toBe(`${SALE_CAPTURED_CONSUMER_ID}:${otherEventId}`);
+    expect(queue.calls[0]!.opts?.["jobId"]).toBe(`${SALE_CAPTURED_CONSUMER_ID}-${EVENT_ID}`);
+    expect(queue.calls[1]!.opts?.["jobId"]).toBe(`${SALE_CAPTURED_CONSUMER_ID}-${otherEventId}`);
     expect(queue.calls[0]!.opts?.["jobId"]).not.toBe(queue.calls[1]!.opts?.["jobId"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RT-44: the jobId must pass BullMQ's REAL custom-id validation
+// ---------------------------------------------------------------------------
+//
+// The FakeQueue above is a spy: it accepted `worker.sale.captured:<event_id>`,
+// but BullMQ 5.76.5 rejects any custom jobId containing ':' (unless it has
+// exactly 3 ':'-segments) with `Error('Custom Id cannot contain :')`. In the
+// RT-9 lab every sale.captured event failed that way and no sale was ever
+// processed or posted. These tests route the consumer through BullMQ's own
+// `Job#validateOptions` — the exact check `Queue.add` runs before any Redis
+// I/O — so reintroducing a ':' jobId fails here, Docker-free, in the fast job.
+
+type BullmqMinimalQueue = ConstructorParameters<typeof Job>[0];
+
+/** Enough of a queue for BullMQ's `Job` constructor; never touches Redis. */
+const OFFLINE_QUEUE = {
+  name: OUTBOX_SALE_PROCESSING_QUEUE_NAME,
+  qualifiedName: `bull:${OUTBOX_SALE_PROCESSING_QUEUE_NAME}`,
+  keys: {},
+  opts: {},
+  toKey: (type: string) => `bull:${OUTBOX_SALE_PROCESSING_QUEUE_NAME}:${type}`,
+} as unknown as BullmqMinimalQueue;
+
+/** Exposes BullMQ's protected `validateOptions` — the real pre-enqueue check. */
+class OfflineValidatedJob extends Job {
+  runBullmqValidation(): void {
+    this.validateOptions(this.asJSON());
+  }
+}
+
+/** Queue double that applies BullMQ's real job-option validation on add(). */
+class BullmqValidatingQueue implements SaleProcessingQueueLike {
+  accepted: Array<{ name: string; opts: Record<string, unknown> | undefined }> = [];
+  async add(name: string, data: unknown, opts?: Record<string, unknown>): Promise<unknown> {
+    new OfflineValidatedJob(OFFLINE_QUEUE, name, data, opts as JobsOptions).runBullmqValidation();
+    this.accepted.push({ name, opts });
+    return null;
+  }
+}
+
+describe("SaleCapturedConsumer — jobId passes real BullMQ validation (RT-44)", () => {
+  it("guard: the validating queue really rejects a ':' custom jobId", async () => {
+    const queue = new BullmqValidatingQueue();
+    await expect(
+      queue.add(OUTBOX_SALE_PROCESSING_JOB_NAME, {}, { jobId: `worker.sale.captured:${EVENT_ID}` }),
+    ).rejects.toThrow("Custom Id cannot contain :");
+  });
+
+  it("a valid sale.captured event is accepted by BullMQ's jobId validation", async () => {
+    const queue = new BullmqValidatingQueue();
+    const consumer = new SaleCapturedConsumer(queue);
+
+    await expect(
+      consumer.handle(envelope(validPayload) as OutboxEventEnvelope<SaleCapturedPayload>),
+    ).resolves.toBeUndefined();
+    expect(queue.accepted).toHaveLength(1);
+    expect(queue.accepted[0]!.opts?.["jobId"]).not.toContain(":");
+  });
+
+  it("re-delivery passes validation with the SAME jobId; a different event gets a different one", async () => {
+    const queue = new BullmqValidatingQueue();
+    const consumer = new SaleCapturedConsumer(queue);
+    const env = envelope(validPayload) as OutboxEventEnvelope<SaleCapturedPayload>;
+
+    await consumer.handle(env);
+    await consumer.handle(env);
+    await consumer.handle(
+      envelope(validPayload, {
+        event_id: "0e000000-0000-4000-8000-000000000003",
+      }) as OutboxEventEnvelope<SaleCapturedPayload>,
+    );
+
+    const [first, redelivered, other] = queue.accepted.map((c) => c.opts?.["jobId"]);
+    expect(redelivered).toBe(first);
+    expect(other).not.toBe(first);
   });
 });
 
