@@ -123,17 +123,21 @@ export class SaleCapturedConsumer implements OutboxConsumer<SaleCapturedPayload>
     // at-least-once; if the same row is re-delivered (e.g. the drainer crashes
     // after enqueuing but before marking the row delivered) handle() runs
     // again. A stable jobId derived from the OUTBOX EVENT IDENTITY
-    // (`<consumerId>:<event_id>`) maps every re-delivery of the same row to the
+    // (`<consumerId>-<event_id>`) maps every re-delivery of the same row to the
     // SAME BullMQ job, so a re-delivered row does not enqueue a second job.
     // This is hardening on top of the downstream `WHERE processed_at IS NULL`
     // guard — not a replacement for it.
+    //
+    // The separator MUST be '-', never ':' — BullMQ 5.x rejects custom jobIds
+    // containing ':' (`Custom Id cannot contain :`), which failed every
+    // sale.captured event in RT-9 (RT-44). Same fix as EmailQueueProducer (#288).
     //
     // DEVIATION from AuditEventCreatedConsumer, which intentionally OMITS jobId
     // (FR-AUDIT-1: every audit emission must produce a distinct row, audit
     // fan-out is naturally idempotent downstream). Sales must NOT double-process,
     // so this consumer deliberately sets a deterministic jobId. Do not "fix"
     // this back to match the audit pattern.
-    const jobId = `${SALE_CAPTURED_CONSUMER_ID}:${event.event_id}`;
+    const jobId = `${SALE_CAPTURED_CONSUMER_ID}-${event.event_id}`;
 
     // Map the outbox envelope → SaleProcessingJob. The ENVELOPE is the source
     // of truth for tenant_id (a tampered payload tenant_id must not redirect
