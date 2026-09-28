@@ -1,0 +1,49 @@
+# Ephemeral Backend-Core stack for the Schemathesis job (RT-59).
+# Everything is throwaway: credentials are generated per run by stack-up.sh,
+# the only published port is the API on 127.0.0.1, and `down -v` removes it all.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fuzz
+      POSTGRES_USER: fuzz_owner
+      POSTGRES_PASSWORD: ${PG_OWNER_PASSWORD:?}
+      PG_APP_PASSWORD: ${PG_APP_PASSWORD:?}
+      PG_AUTH_PASSWORD: ${PG_AUTH_PASSWORD:?}
+    volumes:
+      - ./pg-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fuzz_owner -d fuzz"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?}"]
+
+  api:
+    image: ${API_IMAGE:?}
+    read_only: true
+    tmpfs: ["/tmp"]
+    # Worker is deliberately not started: nothing drains the outbox, so no
+    # generated request can reach ERPNext or any other external system.
+    environment:
+      DATABASE_URL: postgres://fuzz_app:${PG_APP_PASSWORD}@postgres:5432/fuzz
+      AUTH_LOOKUP_DATABASE_URL: postgres://fuzz_auth:${PG_AUTH_PASSWORD}@postgres:5432/fuzz
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      PORT: "3000"
+      METRICS_PORT: "9464"
+      LOG_LEVEL: info
+      NODE_ENV: production
+      DB_MIGRATIONS_DIR: /packages/db/drizzle
+      # No real Clerk: the cookie-auth surface never calls it.
+      CLERK_SECRET_KEY: sk_test_fuzz_dummy_not_a_real_key
+      OTEL_SDK_DISABLED: "true"
+    ports:
+      - "127.0.0.1:${API_PORT:-23000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
