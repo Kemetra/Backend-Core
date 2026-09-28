@@ -15,6 +15,8 @@
  *   LI4 – error path → childLogger.error called with "request errored" + err field
  *   LI5 – requestId absent → request_id is "unknown" passed to withRequestContext
  *   LI6 – requestId present → request_id matches in withRequestContext call
+ *   LI7-LI11 – logged status matches GlobalExceptionFilter for PostgreSQL
+ *              input errors (400) and for everything else (500) (RT-60)
  */
 import "reflect-metadata";
 
@@ -217,5 +219,50 @@ describe("LoggingInterceptor – unit", () => {
       fakeLogger,
       expect.objectContaining({ request_id: reqId }),
     );
+  });
+
+  // LI7-LI11 (RT-60): GlobalExceptionFilter answers a PostgreSQL input error
+  // (22003 / 23514 / 22P02) with 400. The request log must record that 400,
+  // not the unhandled-error 500.
+  function pgError(code: string): Error & { code: string; severity: string } {
+    return Object.assign(new Error(`pg ${code}`), { code, severity: "ERROR" });
+  }
+
+  async function loggedErrorStatus(err: unknown): Promise<unknown> {
+    const req: FakeRequest = {
+      method: "POST",
+      url: "/api/v1/catalog/erpnext-item-mappings/x/confirm",
+      requestId: "018f3b1d-7c2a-7e3a-9bcd-0123456789ab",
+    };
+    const handler: CallHandler = { handle: () => throwError(() => err) };
+    await subscribeToCompletion(interceptor, makeCtx(req, { statusCode: 200 }), handler);
+    expect(fakeLogger.error).toHaveBeenCalledTimes(1);
+    const [obj] = fakeLogger.error.mock.calls[0] as [Record<string, unknown>];
+    return obj.status;
+  }
+
+  it.each(["22003", "23514", "22P02"])(
+    "LI7: PostgreSQL input error %s → logged status 400",
+    async (code) => {
+      expect(await loggedErrorStatus(pgError(code))).toBe(400);
+    },
+  );
+
+  it("LI8: PostgreSQL input error wrapped in `cause` (Drizzle) → logged status 400", async () => {
+    const wrapped = Object.assign(new Error("query failed"), { cause: pgError("22003") });
+    expect(await loggedErrorStatus(wrapped)).toBe(400);
+  });
+
+  it("LI9: SQLSTATE-like code without a pg severity → still logged as 500", async () => {
+    const notPg = Object.assign(new Error("looks like pg"), { code: "22003" });
+    expect(await loggedErrorStatus(notPg)).toBe(500);
+  });
+
+  it("LI10: other PostgreSQL errors (e.g. 40P01) → still logged as 500", async () => {
+    expect(await loggedErrorStatus(pgError("40P01"))).toBe(500);
+  });
+
+  it("LI11: genuine unhandled error → logged status 500", async () => {
+    expect(await loggedErrorStatus(new Error("database exploded"))).toBe(500);
   });
 });
