@@ -28,20 +28,20 @@ def is_platform_only(op):
     return "platform admin" in str(forbidden.get("description", "")).lower()
 
 
+def in_scope(op, default_security):
+    """Cookie-authenticated, shipped, and safe to run against the test session."""
+    if op.get("operationId") in EXCLUDED or op.get("x-runtime-status") == "contract-only":
+        return False
+    security = op.get("security", default_security) or []
+    return any("cookieAuth" in req for req in security)
+
+
 def cookie_ops(doc, group):
     default = doc.get("security")
+    want_platform = group == "platform"
     for item in (doc.get("paths") or {}).values():
         for method, op in item.items():
-            if method not in METHODS:
-                continue
-            if op.get("operationId") in EXCLUDED:
-                continue
-            if op.get("x-runtime-status") == "contract-only":
-                continue
-            security = op.get("security", default) or []
-            if not any("cookieAuth" in req for req in security):
-                continue
-            if is_platform_only(op) == (group == "platform"):
+            if method in METHODS and in_scope(op, default) and is_platform_only(op) == want_platform:
                 yield op["operationId"]
 
 
