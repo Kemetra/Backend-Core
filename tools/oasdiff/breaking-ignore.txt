@@ -1,0 +1,9 @@
+# Acknowledged OpenAPI breaking changes — see tools/oasdiff/README.md.
+#
+# One line per acknowledged finding: the method and path (or `components`) plus
+# the finding text, as printed by `oasdiff breaking --format singleline`, and a
+# reason with the PR or Jira key. The gate only honours lines added by the PR
+# under review; once that PR merges its lines stop applying and can be removed.
+#
+# Example:
+#   RT-123 intentional: POST /api/v1/example added the new required request header 'X-Example'

@@ -1,0 +1,55 @@
+# OpenAPI breaking-change gate (RT-52).
+#
+# Compares packages/contracts/openapi/** at the PR merge-base with the PR head,
+# in oasdiff composed mode, and fails on WARN or higher. Configuration and the
+# acknowledgement workflow live in tools/oasdiff/ (see its README).
+#
+# Runs on every PR (not path-filtered) so it can later be made a required check
+# without leaving path-skipped PRs pending. It needs no install, DB or Docker.
+
+name: OpenAPI breaking changes
+
+"on":
+  pull_request:
+
+concurrency:
+  group: openapi-breaking-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  OASDIFF_VERSION: "1.32.1"
+  # sha256 of oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz from the release checksums.txt
+  OASDIFF_SHA256: "7c8939fc49b75ee11fec66a5b83b37a2fca6aee109fed85013b1ba2ac2a1ee7f"
+
+jobs:
+  oasdiff:
+    name: oasdiff (breaking changes vs merge-base)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install oasdiff (pinned, checksum-verified)
+        run: |
+          archive="oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/$archive"
+          echo "${OASDIFF_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/oasdiff"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/oasdiff" oasdiff
+          echo "$RUNNER_TEMP/oasdiff" >> "$GITHUB_PATH"
+
+      - name: Check for breaking changes
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          oasdiff --version
+          base="$(git merge-base "origin/$BASE_REF" HEAD)"
+          echo "Comparing against merge-base $base"
+          bash tools/oasdiff/check.sh "$base"
