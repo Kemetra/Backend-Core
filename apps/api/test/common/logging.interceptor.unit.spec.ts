@@ -15,6 +15,8 @@
  *   LI4 – error path → childLogger.error called with "request errored" + err field
  *   LI5 – requestId absent → request_id is "unknown" passed to withRequestContext
  *   LI6 – requestId present → request_id matches in withRequestContext call
+ *   LI7-LI11 – logged status matches GlobalExceptionFilter for PostgreSQL
+ *              input errors (400) and for everything else (500) (RT-60)
  */
 import "reflect-metadata";
 

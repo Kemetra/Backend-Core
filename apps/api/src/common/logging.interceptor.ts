@@ -20,6 +20,7 @@ import {
   recordHttpRequest,
   type HttpStatusClass,
 } from "../observability/metrics/api.metrics";
+import { isPostgresInputError } from "./postgres-input-error";
 import { routeTemplate } from "./route-template";
 
 /**
@@ -42,13 +43,15 @@ function httpStatusClass(statusCode: number): HttpStatusClass {
  * (200) when tap.error fires — reading it would bucket every error
  * into `status_class="2xx"` (misleading).
  *
- * - HttpException → err.getStatus()
- * - ZodError      → 400 (matches GlobalExceptionFilter's ZodError branch)
- * - other         → 500 (matches the unhandled-error branch)
+ * - HttpException          → err.getStatus()
+ * - ZodError               → 400 (matches GlobalExceptionFilter's ZodError branch)
+ * - PostgreSQL input error → 400 (matches its isPostgresInputError branch)
+ * - other                  → 500 (matches the unhandled-error branch)
  */
 function effectiveErrorStatus(err: unknown): number {
   if (err instanceof HttpException) return err.getStatus();
   if (err instanceof ZodError) return 400;
+  if (isPostgresInputError(err)) return 400;
   return 500;
 }
 
