@@ -1,0 +1,6 @@
+# These files run inside Linux containers (the pg-init script is executed by the
+# postgres entrypoint). Keep LF on Windows checkouts too, or its shebang breaks.
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.json text eol=lf

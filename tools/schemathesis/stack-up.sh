@@ -2,7 +2,8 @@
 # Bring up the ephemeral Backend-Core stack for the Schemathesis job (RT-59)
 # and mint a throwaway owner session. See tools/schemathesis/README.md.
 #
-# Writes $FUZZ_OUT/cookie (the dp2_session value) for run.sh. Never prints it.
+# Writes $FUZZ_OUT/cookie-owner and $FUZZ_OUT/cookie-platform (dp2_session
+# values) for run.sh. Never prints them.
 # Tear down with: docker compose -p "$FUZZ_PROJECT" -f tools/schemathesis/compose.yml down -v
 set -euo pipefail
 export MSYS_NO_PATHCONV=1 # Git Bash only; no effect on Linux
@@ -70,7 +71,7 @@ tenant=$(docker run --rm --network "$net" -e NODE_ENV=production -e DATABASE_URL
   "$MIGRATE_IMAGE" node dist/cli/bootstrap-pilot.js | sed -n 's/.*"tenant_id": "\([^"]*\)".*/\1/p')
 [ -n "$tenant" ] || { echo "bootstrap-pilot did not return a tenant id" >&2; exit 1; }
 
-echo "Creating the owner user"
+echo "Creating the owner and platform-admin users"
 hash=$(docker run --rm -e PW="$ADMIN_PASSWORD" --entrypoint node "$API_IMAGE" -e \
   'require("/app/node_modules/@data-pulse-2/auth/dist/passwords.js").hashPassword(process.env.PW).then((h) => process.stdout.write(h))')
 case "$hash" in '$argon2id$'*) ;; *) echo "unexpected password hash format" >&2; exit 1 ;; esac
@@ -83,6 +84,10 @@ WITH u AS (
   VALUES (gen_random_uuid(), 'fuzz-owner@example.invalid', now(), :'h', 'Fuzz Owner') RETURNING id)
 INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind)
 SELECT gen_random_uuid(), :'t', u.id, r.id, 'all' FROM u JOIN roles r ON r.tenant_id = :'t' AND r.code = 'owner';
+-- Platform admin for the @PlatformAdminOnly operations (tenant create/delete,
+-- outbox dead letters). No membership: platform admins are tenant-independent.
+INSERT INTO users (id, email, email_verified_at, password_hash, display_name, is_platform_admin)
+VALUES (gen_random_uuid(), 'fuzz-platform@example.invalid', now(), :'h', 'Fuzz Platform Admin', true);
 COMMIT;
 SQL
 
@@ -97,15 +102,21 @@ for _ in $(seq 1 90); do
 done
 [ "$code" = "400" ] || { echo "API did not become ready" >&2; compose logs api | tail -50 >&2; exit 1; }
 
-echo "Signing in"
-signin=$(curl -s -D - -o - -X POST "$base/api/v1/auth/signin" -H 'content-type: application/json' \
-  -d "{\"email\":\"fuzz-owner@example.invalid\",\"password\":\"$ADMIN_PASSWORD\"}" || true)
-cookie=$(printf '%s\n' "$signin" | sed -n 's/^[Ss]et-[Cc]ookie: dp2_session=\([^;]*\).*/\1/p' | tr -d '\r\n')
-[ -n "$cookie" ] || { echo "sign-in did not return a session cookie ($(printf '%s' "$signin" | head -n 1))" >&2; exit 1; }
-mask "$cookie"
-printf '%s' "$cookie" >"$FUZZ_OUT/cookie"
+# Sign in as <email>, switch to the seeded tenant, write the cookie to <file>.
+mint_session() {
+  local email="$1" file="$2" signin cookie code
+  signin=$(curl -s -D - -o - -X POST "$base/api/v1/auth/signin" -H 'content-type: application/json' \
+    -d "{\"email\":\"$email\",\"password\":\"$ADMIN_PASSWORD\"}" || true)
+  cookie=$(printf '%s\n' "$signin" | sed -n 's/^[Ss]et-[Cc]ookie: dp2_session=\([^;]*\).*/\1/p' | tr -d '\r\n')
+  [ -n "$cookie" ] || { echo "sign-in for $email returned no session cookie ($(printf '%s' "$signin" | head -n 1))" >&2; exit 1; }
+  mask "$cookie"
+  printf '%s' "$cookie" >"$file"
+  code=$(http_status -X POST "$base/api/v1/context/tenant" -H "Cookie: dp2_session=$cookie" \
+    -H 'content-type: application/json' -d "{\"tenant_id\":\"$tenant\"}")
+  [ "$code" = "200" ] || { echo "switching $email to the seeded tenant failed ($code)" >&2; exit 1; }
+}
 
-code=$(http_status -X POST "$base/api/v1/context/tenant" -H "Cookie: dp2_session=$cookie" \
-  -H 'content-type: application/json' -d "{\"tenant_id\":\"$tenant\"}")
-[ "$code" = "200" ] || { echo "switching to the seeded tenant failed ($code)" >&2; exit 1; }
+echo "Signing in"
+mint_session fuzz-owner@example.invalid "$FUZZ_OUT/cookie-owner"
+mint_session fuzz-platform@example.invalid "$FUZZ_OUT/cookie-platform"
 echo "Stack ready: $base"

@@ -14,11 +14,20 @@ decision was a 5xx gate plus report-only contract checks.
 | Step | Check | Effect |
 | --- | --- | --- |
 | Gate | `not_a_server_error` | **Fails the PR** on any 5xx not listed in `5xx-baseline.json` |
-| Report only | `positive_data_acceptance` | **Never fails.** Lists requests the contract allows but the server rejects, in the job summary |
+| Report | `positive_data_acceptance` | Findings **never fail the PR.** Lists requests the contract allows but the server rejects, in the job summary |
 
-Surface: every `cookieAuth` operation in `packages/contracts/openapi/`, except
-`signOut` and `refreshSession`, which would end the test session. `ops.py`
+Either step **fails if Schemathesis could not run** a contract file (schema
+load, network or tool error), so a broken check never looks green.
+
+Surface: every `cookieAuth` operation in `packages/contracts/openapi/`. `ops.py`
 builds the list from the contracts, so new operations are covered automatically.
+
+- Operations whose `403` response says the caller "is not a platform admin"
+  (`@PlatformAdminOnly`: tenant create/delete, outbox dead letters) run with a
+  **platform-admin session**; everything else runs with the **tenant owner**.
+- Skipped: `signOut` and `refreshSession` (they would end the test session) and
+  operations marked `x-runtime-status: contract-only` (no route is shipped).
+
 Settings: seed 38, 200 examples per operation, phases `examples,coverage,fuzzing`,
 one worker.
 
@@ -31,7 +40,7 @@ semantics.
 | --- | --- |
 | `compose.yml` | Postgres 16, Redis 7 and the API image. The API is published on 127.0.0.1 only |
 | `pg-init/01-roles.sh` | Domain role (NOBYPASSRLS) and auth lookup role (BYPASSRLS), as in `docs/operations/database-roles.md` |
-| `stack-up.sh` | Build, migrate, grant, seed (`bootstrap-pilot` + owner), sign in, and switch tenant |
+| `stack-up.sh` | Build, migrate, grant, seed (`bootstrap-pilot`, an owner and a platform admin), sign both in, and switch tenant |
 | `run.sh` | `gate` or `report` pass |
 | `ops.py` | Lists the cookieAuth operations per contract file (runs inside the Schemathesis image) |
 | `5xx-baseline.json` | Accepted known 5xx findings |
