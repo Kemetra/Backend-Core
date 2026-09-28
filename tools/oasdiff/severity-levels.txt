@@ -1,0 +1,3 @@
+response-property-pattern-changed info
+api-security-added warn
+api-security-component-type-changed warn
