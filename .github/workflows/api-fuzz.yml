@@ -1,0 +1,64 @@
+# Generated boundary-input testing with Schemathesis (RT-59).
+#
+# Boots an ephemeral Backend-Core stack (fresh Postgres + Redis, documented DB
+# roles, throwaway owner session, no worker), then runs Schemathesis over every
+# cookieAuth operation in packages/contracts/openapi:
+#
+#   - gate:   not_a_server_error. Fails on any 5xx that is not in
+#             tools/schemathesis/5xx-baseline.json.
+#   - report: positive_data_acceptance. Findings never fail the job; they are
+#             listed in the job summary.
+#
+# Either step fails if Schemathesis could not run (schema, network or tool
+# error). @PlatformAdminOnly operations run with a platform-admin session.
+#
+# This is the Docker tier (like db-integration), kept as its own workflow so it
+# neither extends nor shares failures with the db-integration job.
+# Everything it creates is local to the runner; see tools/schemathesis/README.md.
+
+name: API fuzz (Schemathesis)
+
+"on":
+  pull_request:
+
+concurrency:
+  group: api-fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  schemathesis:
+    name: schemathesis (cookieAuth surface)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The scripts write to $RUNNER_TEMP/api-fuzz (the runner context is not
+      # available in job-level env, so the path is not set here).
+      FUZZ_PROJECT: api-fuzz
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start ephemeral stack
+        run: bash tools/schemathesis/stack-up.sh
+
+      - name: "Gate: no 5xx (not_a_server_error)"
+        run: bash tools/schemathesis/run.sh gate
+
+      # Findings never fail this step; it fails only if Schemathesis could not run.
+      - name: "Report (non-gating findings): positive_data_acceptance"
+        if: always()
+        run: bash tools/schemathesis/run.sh report
+
+      - name: Tear down
+        if: always()
+        run: |
+          out="$RUNNER_TEMP/api-fuzz"
+          if [ -f "$out/stack.env" ]; then
+            set -a; . "$out/stack.env"; set +a
+            export API_IMAGE=api-fuzz-api:local
+            docker compose -p "$FUZZ_PROJECT" -f tools/schemathesis/compose.yml down -v
+          fi
+          rm -rf "$out"

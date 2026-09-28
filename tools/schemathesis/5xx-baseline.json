@@ -1,0 +1,15 @@
+{
+  "format_version": 1,
+  "schemathesis_version": "4.28.0",
+  "entries": [
+    {
+      "id": "e92dac",
+      "operation": "POST /api/v1/connector/instances/{id}/credentials",
+      "check": "not_a_server_error",
+      "failure": "ServerError",
+      "signature": "500",
+      "first_seen": "2026-09-28",
+      "last_seen": "2026-09-28"
+    }
+  ]
+}
