@@ -31,7 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      FUZZ_OUT: ${{ runner.temp }}/fuzz
+      # The scripts write to $RUNNER_TEMP/api-fuzz (the runner context is not
+      # available in job-level env, so the path is not set here).
       FUZZ_PROJECT: api-fuzz
     steps:
       - name: Checkout
@@ -51,9 +52,10 @@ jobs:
       - name: Tear down
         if: always()
         run: |
-          if [ -f "$FUZZ_OUT/stack.env" ]; then
-            set -a; . "$FUZZ_OUT/stack.env"; set +a
+          out="$RUNNER_TEMP/api-fuzz"
+          if [ -f "$out/stack.env" ]; then
+            set -a; . "$out/stack.env"; set +a
             export API_IMAGE=api-fuzz-api:local
             docker compose -p "$FUZZ_PROJECT" -f tools/schemathesis/compose.yml down -v
           fi
-          rm -rf "$FUZZ_OUT"
+          rm -rf "$out"
