@@ -67,9 +67,10 @@ info:
     mode). Tender is NEVER derived from `posTotal`.
 
     Reversal settlement (RT-10 D6): a `void` refunds by mirroring the original
-    sale's tenders (`sale.tenders` on the reversal work item); a `return` pays
-    out its `reversalOf.refundTenders`; a tender-unknown sale's reversal stays
-    an outstanding credit note, as today.
+    sale's tenders (`sale.tenders` on the reversal work item); a `return` ALWAYS pays out its `reversalOf.refundTenders`
+    — they record cash that actually left the drawer, even when the original
+    sale is tender-unknown. Only a `void` of a tender-unknown sale (no tenders
+    to mirror) stays an outstanding credit note, as today.
 
     ROLLOUT ORDER (Connector first): Backend-Core MUST NOT emit `sale.tenders` or `reversalOf.refundTenders`
     until the Connector supports settlement (RT-78). A Connector that predates

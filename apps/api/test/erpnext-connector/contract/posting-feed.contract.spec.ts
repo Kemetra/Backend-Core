@@ -624,6 +624,13 @@ describe("erpnext-connector/posting-feed.yaml — RT-76 settlement", () => {
     expect(description).not.toContain("may emit them before the Connector ships");
   });
 
+  it("a return always pays out its refundTenders; only a void of a tender-unknown sale stays outstanding (D6, review #645)", () => {
+    const description = feedDoc.info?.description ?? "";
+    expect(description).toContain("a `return` ALWAYS pays out its `reversalOf.refundTenders`");
+    expect(description).toContain("a `void` of a tender-unknown sale");
+    expect(description).not.toContain("a tender-unknown sale's reversal stays");
+  });
+
   it("the ack is unchanged — one documentRef per work item (D4)", () => {
     const kind = prop<{ enum?: string[] }>("PostingWorkItem", "kind");
     expect(kind?.enum?.slice().sort()).toEqual(["reversal", "sale_post"]);

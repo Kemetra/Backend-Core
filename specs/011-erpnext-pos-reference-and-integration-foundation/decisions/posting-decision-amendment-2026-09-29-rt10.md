@@ -72,7 +72,11 @@ a per-sale Payment Entry. That fallback needs the owner's re-confirmation.
   recorded `refundTenders` (cash only).
 * **Tender-unknown sale** (RT-10 D8): a sale captured without `tenders` posts
   exactly as in R1's interim mode, as an unpaid invoice with open receivables.
-  Its reversal stays an outstanding credit note. There is **no backfill**, and
+  A **void** of it has no tenders to mirror, so it stays an outstanding credit
+  note. A **return** against it still pays out its recorded `refundTenders`,
+  because that cash really left the drawer. The original invoice's open
+  receivable is part of the D8 reconciliation population, not settled by the
+  return. There is **no backfill**, and
   tender is **never derived from `posTotal`**: that R1 rule is unchanged.
 
 ## 5. Not changed
