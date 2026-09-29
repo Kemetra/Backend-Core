@@ -40,6 +40,12 @@ A DP2 sale is posted to ERPNext as follows. Each numbered item answers the
 correspondingly-numbered sub-question above.
 
 1. **Posting target shape — one submitted `Sales Invoice` per DP2 sale (1:1).**
+
+   > **Amended 2026-09-29 (RT-10) by [011-DR-POSTING-A1](./posting-decision-amendment-2026-09-29-rt10.md):**
+   > a POS sale's tender is settled on the Sales Invoice itself (payments carried on the
+   > invoice), not by a separate Payment Entry. The ban on deriving tender from
+   > `posTotal` and every other rule here are unchanged.
+
    Each DP2 sale (008 `sales` + `sale_lines`) posts as exactly one **submitted**
    ERPNext **Sales Invoice**, with its tender posted as the associated **Payment
    Entry**. We do **not** use the ERPNext `POS Invoice` + `POS Closing`
