@@ -131,6 +131,11 @@ later. Two rules follow:
 * **Invariant:** a work item for a tender-bearing sale (or its return) is
   never offered *without* its tenders. Withholding only the fields gives the
   same terminal unpaid posting.
+* **Returns wait for settlement too:** every return carries `refundTenders`
+  (RT-14 D3), even against a tender-unknown sale. So no return work item is
+  offered until the Connector supports settlement (RT-78) as well as returns
+  (RT-16), whatever the original sale's tenders. In Backend-Core, the RT-73
+  `POS_RETURNS_ENABLED` switch stays off until both have shipped.
 
 So tender acceptance on capture (RT-77) goes live only once RT-78 is deployed,
 unless Backend-Core holds tender-bearing work items off the feed until then.
