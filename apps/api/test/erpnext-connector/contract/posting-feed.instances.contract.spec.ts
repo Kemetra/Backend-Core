@@ -105,13 +105,13 @@ describe("posting-feed.yaml — projected work items validate against PostingWor
     expectValid(item);
   });
 
-  it("a return whose tender rows are missing (field omitted, never [])", async () => {
+  it("a return whose tender rows are missing is never offered (withheld, not emitted without them)", async () => {
     const item = await project([
       { rows: [{ reversal_kind: "return", recorded_at: AT, business_date: "2026-06-07" }] },
       RETURN_LINES,
       { rows: [] },
     ]);
-    expectValid(item);
+    expect(item).toBeNull();
   });
 
   it("a void, a legacy refund and a sale_post (no refund tenders)", async () => {

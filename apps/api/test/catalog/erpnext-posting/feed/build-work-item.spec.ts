@@ -170,13 +170,13 @@ describe("buildWorkItem — RT-73 lineRef, reversal time and return lines", () =
     });
   });
 
-  it("a return with no stored tender rows omits refundTenders rather than emit an empty list (RT-86)", async () => {
-    // Capture requires >= 1 refund tender, so this is a data anomaly. The contract says
-    // minItems: 1, so [] would be malformed; omitting the field makes the Connector reject the
-    // return visibly (validation) instead of stranding the work item.
+  it("a return with no visible tender rows is withheld from the feed, never offered without them (RT-86)", async () => {
+    // Capture requires >= 1 refund tender, so zero VISIBLE rows is an anomaly (e.g. an RLS or
+    // grant misconfiguration). The contract INVARIANT forbids offering a return without its
+    // tenders — the field is optional on the wire, so omitting it could post an outstanding
+    // credit note terminally although cash left the drawer (Codex/Greptile P1, PR #652). The
+    // item is omitted (null), like an unresolved item map: it stays pending, never corrupt.
     const client = fakeClient([{ rows: [SALE_ROW] }, { rows: [LINE_ROW] }, RETURN_KIND_ROW, RETURN_LINE_ROWS, { rows: [] }]);
-    const item = await buildWorkItem(client, REVERSAL_ROW);
-    expect(item!.reversalOf).not.toHaveProperty("refundTenders");
-    expect(item!.reversalOf!.returnLines).toHaveLength(1);
+    expect(await buildWorkItem(client, REVERSAL_ROW)).toBeNull();
   });
 });
