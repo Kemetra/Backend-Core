@@ -138,7 +138,7 @@ interface SchemaObject {
 
 interface OpenApiDocument {
   openapi?: string;
-  info?: { title?: string; version?: string };
+  info?: { title?: string; version?: string; description?: string };
   paths?: Record<string, PathItem>;
   components?: {
     schemas?: Record<string, SchemaObject>;
@@ -617,6 +617,12 @@ describe("pos-sales/sales.yaml — RT-76 sale tender contract", () => {
     for (const banned of ["deviceId", "device_id", "terminalId", "terminal_id", "shiftId", "shift_id"]) {
       expect(props).not.toHaveProperty(banned);
     }
+  });
+
+  it("tells strict response validators to re-pin before RT-77 emits Sale.tenders (review #645)", () => {
+    expect(salesDoc.info?.description ?? "").toContain(
+      "must re-pin this version BEFORE RT-77 deploys",
+    );
   });
 
   it("the sale read exposes tenders, OPTIONAL until RT-77 emits them (safe re-pin order)", () => {

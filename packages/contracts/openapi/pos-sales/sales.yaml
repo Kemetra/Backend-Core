@@ -63,7 +63,11 @@ info:
     request field (RT-10 D7). ROLLOUT ORDER: the server accepts `tenders` from
     RT-77 — until then the strict capture DTO rejects the unknown field (400),
     so the POS MUST NOT send it before RT-77 is deployed. `Sale.tenders` is
-    OPTIONAL until RT-77 emits it (the same safe re-pin order as RT-72).
+    OPTIONAL until RT-77 emits it. Optional does not make an OLD strict client
+    accept the new field: because `Sale` is `additionalProperties: false`, a
+    client that validates responses strictly must re-pin this version BEFORE RT-77 deploys
+    (the same order as RT-72). The current POS capture client classifies the
+    response by status code only.
     Emitting tenders on the ERPNext posting feed is gated separately, Connector
     first (see `erpnext-connector/posting-feed.yaml`, ROLLOUT ORDER).
 
