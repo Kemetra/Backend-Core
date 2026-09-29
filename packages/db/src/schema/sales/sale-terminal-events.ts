@@ -26,6 +26,7 @@ import { sql } from "drizzle-orm";
 import {
   char,
   check,
+  date,
   foreignKey,
   index,
   numeric,
@@ -55,6 +56,9 @@ export const saleVoids = pgTable(
     voidedAt: timestamp("voided_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    // RT-63 P2 (0032): the void's own business day in the store timezone,
+    // computed once at insert and never recomputed.
+    businessDate: date("business_date").notNull(),
     sourceSystem: text("source_system").notNull(),
     externalId: text("external_id").notNull(),
     payloadHash: text("payload_hash").notNull(),
@@ -70,6 +74,8 @@ export const saleVoids = pgTable(
       t.externalId,
     ),
     index("idx_sale_voids_sale").on(t.saleId),
+    // RT-14 D2 (0032): at most one void per sale.
+    uniqueIndex("uq_sale_voids_one_per_sale").on(t.saleId),
     index("idx_sale_voids_tenant_store").on(t.tenantId, t.storeId),
     foreignKey({
       name: "fk_sale_voids_sale_tenant_store",

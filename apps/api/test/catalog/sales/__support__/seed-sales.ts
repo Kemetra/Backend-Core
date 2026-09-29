@@ -235,12 +235,14 @@ export async function seedSalesFixture(
 
   // ---- sale_voids (one per tenant, store X) ------------------------------
   await admin.query(
+    // business_date (0032, RT-63 P2) is a fixed seed date; production
+    // computes it from voided_at in the store timezone at insert.
     `INSERT INTO sale_voids
-       (id, sale_id, tenant_id, store_id, source_system, external_id,
-        payload_hash, created_by)
+       (id, sale_id, tenant_id, store_id, business_date, source_system,
+        external_id, payload_hash, created_by)
      VALUES
-       ($1, $2, $3, $4, $5, 'void-A-X', $6, $7),
-       ($8, $9, $10, $11, $5, 'void-B-X', $6, $12)
+       ($1, $2, $3, $4, '2026-05-01', $5, 'void-A-X', $6, $7),
+       ($8, $9, $10, $11, '2026-05-01', $5, 'void-B-X', $6, $12)
      ON CONFLICT DO NOTHING`,
     [
       VOID_A_X, SALE_VOIDED_A_X, TENANT_A, STORE_A_X, SALES_SOURCE_SYSTEM, PAYLOAD_HASH, ACTOR_A,
