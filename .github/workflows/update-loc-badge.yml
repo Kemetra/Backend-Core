@@ -1,25 +1,33 @@
 name: Update LOC Badge
 
+# The badge is published to the `badges` branch, never to `main` (RT-81), so
+# `main` can require PRs and status checks. Only the `publish` job can write,
+# and it runs no repository code.
+
 "on":
   push:
     branches: [main]
-    paths-ignore:
-      - "docs/assets/badges/**"
   workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: {}
+
+concurrency:
+  group: update-loc-badge
+  cancel-in-progress: true
 
 jobs:
-  update-loc-badge:
-    name: Count LOC and update badge
+  count:
+    name: Count LOC
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: main
+          persist-credentials: false
 
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
@@ -29,11 +37,47 @@ jobs:
       - name: Count LOC and generate badge
         run: node scripts/update-loc-badge.mjs
 
-      - name: Commit badge if changed
+      - name: Upload badge
+        uses: actions/upload-artifact@v4
+        with:
+          name: loc-badge
+          path: docs/assets/badges/loc.svg
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish badge to badges branch
+    needs: count
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download badge
+        uses: actions/download-artifact@v4
+        with:
+          name: loc-badge
+          path: ${{ runner.temp }}/loc-badge
+
+      - name: Commit badge to badges branch if changed
+        shell: bash
         run: |
-          git diff --quiet docs/assets/badges/loc.svg && exit 0
+          set -euo pipefail
+          if git fetch --depth=1 origin badges; then
+            git switch -C badges FETCH_HEAD
+          else
+            git switch --orphan badges
+          fi
+          cp "$RUNNER_TEMP/loc-badge/loc.svg" loc.svg
+          git add loc.svg
+          if git diff --cached --quiet; then
+            echo "Badge unchanged."
+            exit 0
+          fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/assets/badges/loc.svg
           git commit -m "chore: update LOC badge [skip ci]"
-          git push
+          git push origin HEAD:refs/heads/badges
