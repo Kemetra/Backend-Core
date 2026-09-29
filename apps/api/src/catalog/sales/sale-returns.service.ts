@@ -105,7 +105,7 @@ export class SaleReturnsService {
         const lines = await priceReturnLines(client, saleRef, body.lines);
         const total = await totalMatchingTenders(client, lines, body.refundTenders);
 
-        const returnId = await insertReturn(client, input, sale, total, payloadHash);
+        const returnId = await insertReturn(client, { input, sale, total, payloadHash });
         if (!returnId) {
           // The same provenance was recorded concurrently against another sale.
           const winner = await findReturnByProvenance(client, tenantId, body);
@@ -227,13 +227,17 @@ async function totalMatchingTenders(
   return row.total;
 }
 
+interface NewReturnHeader {
+  readonly input: RecordReturnInput;
+  readonly sale: LockedSale;
+  readonly total: string;
+  readonly payloadHash: string;
+}
+
 /** Insert the header; null when the provenance already exists (a race). */
 async function insertReturn(
   client: PoolClient,
-  input: RecordReturnInput,
-  sale: LockedSale,
-  total: string,
-  payloadHash: string,
+  { input, sale, total, payloadHash }: NewReturnHeader,
 ): Promise<string | null> {
   const r = await client.query<{ id: string }>(
     `INSERT INTO sale_returns

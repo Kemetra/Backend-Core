@@ -58,12 +58,23 @@ function fmt4(v: bigint): string {
   const s = v.toString().padStart(5, "0");
   return `${s.slice(0, -4)}.${s.slice(-4)}`;
 }
+interface PriceQuery {
+  /** Line amount A. */
+  readonly amount: string;
+  /** Quantity sold Q. */
+  readonly sold: string;
+  /** Quantity already returned c. */
+  readonly returned: string;
+  /** Quantity being returned q. */
+  readonly quantity: string;
+}
+
 /** round4(A×(c+q)/Q) − round4(A×c/Q), from cumulative quantities only. */
-function clientPrice(A: string, Q: string, c: string, q: string): string {
-  const a4 = units(A, 4);
-  const q6 = units(Q, 6);
-  const before = units(c, 6);
-  const after = before + units(q, 6);
+function clientPrice(p: PriceQuery): string {
+  const a4 = units(p.amount, 4);
+  const q6 = units(p.sold, 6);
+  const before = units(p.returned, 6);
+  const after = before + units(p.quantity, 6);
   return fmt4(roundDiv(a4 * after, q6) - roundDiv(a4 * before, q6));
 }
 
@@ -186,11 +197,16 @@ describe("RT-73 — recording a return", () => {
 // Pricing — cumulative-difference rule (option (a))
 // ===========================================================================
 describe("RT-73 — cumulative-difference pricing", () => {
-  async function returnSequence(
-    externalId: string,
-    split: string[],
-    taxAmount?: string,
-  ): Promise<Array<{ lineAmount: string; taxAmount: string | null }>> {
+  interface SequencePlan {
+    readonly externalId: string;
+    readonly split: readonly string[];
+    readonly taxAmount?: string;
+  }
+  async function returnSequence({
+    externalId,
+    split,
+    taxAmount,
+  }: SequencePlan): Promise<Array<{ lineAmount: string; taxAmount: string | null }>> {
     const sale = await captureOneLine(h, {
       externalId,
       quantity: "3",
@@ -200,7 +216,7 @@ describe("RT-73 — cumulative-difference pricing", () => {
     const out: Array<{ lineAmount: string; taxAmount: string | null }> = [];
     let cumulative = "0";
     for (const [i, q] of split.entries()) {
-      const expected = clientPrice("10.0000", "3", cumulative, q);
+      const expected = clientPrice({ amount: "10.0000", sold: "3", returned: cumulative, quantity: q });
       const res = await postReturn(
         h,
         sale.saleRef,
@@ -220,21 +236,21 @@ describe("RT-73 — cumulative-difference pricing", () => {
 
   it("3 × 10.0000 returned as 2 + 1 sums to exactly 10.0000", async () => {
     if (skip()) return;
-    const parts = await returnSequence("ret-p21", ["2", "1"]);
+    const parts = await returnSequence({ externalId: "ret-p21", split: ["2", "1"] });
     expect(parts.map((p) => p.lineAmount)).toEqual(["6.6667", "3.3333"]);
     expect(sum4(parts.map((p) => p.lineAmount))).toBe("10.0000");
   });
 
   it("3 × 10.0000 returned as 1 + 1 + 1 sums to exactly 10.0000", async () => {
     if (skip()) return;
-    const parts = await returnSequence("ret-p111", ["1", "1", "1"]);
+    const parts = await returnSequence({ externalId: "ret-p111", split: ["1", "1", "1"] });
     expect(parts.map((p) => p.lineAmount)).toEqual(["3.3333", "3.3334", "3.3333"]);
     expect(sum4(parts.map((p) => p.lineAmount))).toBe("10.0000");
   });
 
   it("splits the line tax by the same rule, summing to the line tax", async () => {
     if (skip()) return;
-    const parts = await returnSequence("ret-ptax", ["1", "1", "1"], "1.0000");
+    const parts = await returnSequence({ externalId: "ret-ptax", split: ["1", "1", "1"], taxAmount: "1.0000" });
     expect(parts.map((p) => p.taxAmount)).toEqual(["0.3333", "0.3334", "0.3333"]);
     expect(sum4(parts.map((p) => p.taxAmount))).toBe("1.0000");
   });
@@ -312,13 +328,13 @@ describe("RT-73 — invariants", () => {
   it("a second, different void → 409 already_reversed; re-delivering the first void still replays 200", async () => {
     if (skip()) return;
     const s = await captureOneLine(h, { externalId: "ret-2void", quantity: "1", lineAmount: "5.0000" });
-    const post = (externalId: string, key: string) =>
-      h.harness!.http().post(`/api/pos/v1/sales/${s.saleRef}/void`).set("Idempotency-Key", idempKey(key)).send({ sourceSystem: "pos-1", externalId });
-    expect((await post("void-2v-a", "r2va")).status).toBe(201);
-    const second = await post("void-2v-b", "r2vb");
+    const post = (v: { externalId: string; key: string }) =>
+      h.harness!.http().post(`/api/pos/v1/sales/${s.saleRef}/void`).set("Idempotency-Key", idempKey(v.key)).send({ sourceSystem: "pos-1", externalId: v.externalId });
+    expect((await post({ externalId: "void-2v-a", key: "r2va" })).status).toBe(201);
+    const second = await post({ externalId: "void-2v-b", key: "r2vb" });
     expect(second.status).toBe(409);
     expect(second.body.error.code).toBe("already_reversed");
-    const replay = await post("void-2v-a", "r2vc");
+    const replay = await post({ externalId: "void-2v-a", key: "r2vc" });
     expect(replay.status).toBe(200);
     expect(replay.headers["idempotent-replayed"]).toBe("true");
   });
