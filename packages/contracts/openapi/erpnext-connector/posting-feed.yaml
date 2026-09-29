@@ -69,9 +69,16 @@ info:
     Reversal settlement (RT-10 D6): a `void` refunds by mirroring the original
     sale's tenders (`sale.tenders` on the reversal work item); a `return` pays
     out its `reversalOf.refundTenders`; a tender-unknown sale's reversal stays
-    an outstanding credit note, as today. ROLLOUT: every new field is OPTIONAL
-    and additive, and a Connector that predates them ignores them (posting
-    stays unpaid), so Backend-Core may emit them before the Connector ships.
+    an outstanding credit note, as today.
+
+    ROLLOUT ORDER (Connector first): Backend-Core MUST NOT emit `sale.tenders` or `reversalOf.refundTenders`
+    until the Connector supports settlement (RT-78). A Connector that predates
+    them would post the sale UNPAID and ack `posted` — a terminal outcome that
+    a later Connector upgrade never revisits — so the sale would stay unpaid in
+    ERPNext for good; a Connector that validates the feed strictly would reject
+    the item instead. Backend-Core may capture and store tenders (RT-77) before
+    then; only their emission on this feed waits. Both fields are OPTIONAL and
+    additive.
 
     SALE PROJECTION IS A CURATED SUBSET (by design): this contract's `Sale`
     mirrors 008's `Sale` minus request-only / advisory fields the connector does
@@ -505,9 +512,9 @@ components:
           description: >
             RT-10 D6 — how a `return` was paid out (the return's recorded
             refund tenders, RT-14 D3), summing to the returned total. Only on a
-            `return`; absent on other kinds. Emitted with returns (RT-73);
-            optional until then. A `void` carries no refund tenders: it mirrors
-            `sale.tenders`.
+            `return`; absent on other kinds. Optional; emitted only once the
+            Connector supports settlement (see ROLLOUT ORDER). A `void` carries
+            no refund tenders: it mirrors `sale.tenders`.
 
     ReturnLine:
       type: object
@@ -598,11 +605,20 @@ components:
             RT-10 D1/D4 — the sale's tender facts, mirroring
             `pos-sales/sales.yaml` `Sale.tenders`. Non-empty: settle the posting
             with one payment per tender. Absent or empty: a tender-unknown sale,
-            posted unpaid as before (RT-10 D8). Emitted from RT-77; optional.
+            posted unpaid as before (RT-10 D8). Optional; emitted only once the
+            Connector supports settlement (see ROLLOUT ORDER).
     SaleTender:
       type: object
       additionalProperties: false
       required: [method, amount]
+      if:
+        properties:
+          method:
+            const: cash
+        required: [method]
+      then:
+        not:
+          required: [reference]
       description: >
         One way the sale was paid (mirrors `pos-sales/sales.yaml` `SaleTender`).
         The Connector maps `method` to the operator-configured ERPNext payment

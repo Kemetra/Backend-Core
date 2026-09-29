@@ -608,6 +608,22 @@ describe("erpnext-connector/posting-feed.yaml — RT-76 settlement", () => {
     expect(prop<{ enum?: string[] }>("RefundTender", "method")?.enum).toEqual(["cash"]);
   });
 
+  it("the schema itself forbids a reference on a cash tender (card-only)", () => {
+    const tender = schema("SaleTender") as
+      | (SchemaObject & { if?: unknown; then?: unknown })
+      | undefined;
+    expect(tender?.if).toEqual({ properties: { method: { const: "cash" } }, required: ["method"] });
+    expect(tender?.then).toEqual({ not: { required: ["reference"] } });
+  });
+
+  it("orders the rollout Connector-first: no tender fields on the feed before settlement ships (review #645)", () => {
+    // A pre-settlement Connector would post an unpaid invoice and ack `posted`,
+    // which is terminal — a later Connector upgrade never settles that sale.
+    const description = feedDoc.info?.description ?? "";
+    expect(description).toContain("MUST NOT emit `sale.tenders` or `reversalOf.refundTenders`");
+    expect(description).not.toContain("may emit them before the Connector ships");
+  });
+
   it("the ack is unchanged — one documentRef per work item (D4)", () => {
     const kind = prop<{ enum?: string[] }>("PostingWorkItem", "kind");
     expect(kind?.enum?.slice().sort()).toEqual(["reversal", "sale_post"]);

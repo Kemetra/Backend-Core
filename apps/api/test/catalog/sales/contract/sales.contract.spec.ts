@@ -586,6 +586,19 @@ describe("pos-sales/sales.yaml — RT-76 sale tender contract", () => {
     expect(reference?.pattern).toBe("^[A-Z0-9]{1,6}$");
   });
 
+  it("the schema itself forbids a reference on a cash tender (card-only, review #645)", () => {
+    const tender = schema("SaleTender") as
+      | (SchemaObject & { if?: unknown; then?: unknown })
+      | undefined;
+    expect(tender?.if).toEqual({ properties: { method: { const: "cash" } }, required: ["method"] });
+    expect(tender?.then).toEqual({ not: { required: ["reference"] } });
+  });
+
+  it("no longer describes return settlement as deferred to RT-10 (review #645)", () => {
+    const text = JSON.stringify([findOp("recordReturn"), schema("RefundTender")]);
+    expect(text).not.toContain("deferred to RT-10");
+  });
+
   it("refunds stay cash-only on a return (RT-14 D3 is unchanged by RT-10)", () => {
     expect(prop<{ enum?: string[] }>("RefundTender", "method")?.enum).toEqual(["cash"]);
   });

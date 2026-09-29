@@ -64,6 +64,8 @@ info:
     RT-77 — until then the strict capture DTO rejects the unknown field (400),
     so the POS MUST NOT send it before RT-77 is deployed. `Sale.tenders` is
     OPTIONAL until RT-77 emits it (the same safe re-pin order as RT-72).
+    Emitting tenders on the ERPNext posting feed is gated separately, Connector
+    first (see `erpnext-connector/posting-feed.yaml`, ROLLOUT ORDER).
 
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
@@ -373,8 +375,9 @@ paths:
         Tender (D3): `refundTenders` records how the refund was paid out, as a
         fact. The amounts MUST sum to the server-computed `returnTotal`, else
         422 `return_tender_mismatch`. Cash only for the pilot; the `method`
-        enum grows with the RT-10 tender decision. ERP settlement (Payment
-        Entry) is deferred to RT-10.
+        enum stays cash-only under RT-10 D2. ERP settlement: the Connector pays
+        the return out with these refund tenders on the reversing invoice
+        (RT-10 D6).
 
 
         Invariants (D2), enforced in the database under a row lock on the sale
@@ -768,7 +771,8 @@ components:
       required: [method, amount]
       description: >
         One refund payout, recorded as a fact (RT-14 D3), in the sale's
-        currency. ERP settlement is deferred to RT-10.
+        currency. The Connector pays the return out with it on the reversing
+        invoice (RT-10 D6).
       properties:
         method:
           type: string
@@ -782,6 +786,14 @@ components:
       type: object
       additionalProperties: false
       required: [method, amount]
+      if:
+        properties:
+          method:
+            const: cash
+        required: [method]
+      then:
+        not:
+          required: [reference]
       description: >
         One way a sale was paid (RT-10 D1), in the sale's currency. Recorded as
         part of the immutable sale fact; not a payment ledger (ADR-0005).
