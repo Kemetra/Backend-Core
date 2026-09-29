@@ -57,12 +57,31 @@ export interface ReturnWorkLine {
 }
 
 /**
+ * RT-86: a `return` whose recorded refund tenders are not visible to the feed. Capture always
+ * stores >= 1 (RT-73), so this is a visibility fault (e.g. an RLS policy mismatch), not data.
+ * Thrown rather than omitting the item: the pull fails and its cursor does not advance, so the
+ * return is neither offered without its tenders nor skipped past (Codex P1/P2, PR #652).
+ */
+export class ReturnTendersNotVisibleError extends Error {
+  constructor(returnId: string) {
+    super(`return ${returnId} has no visible refund tenders; refusing to offer it without them (RT-86)`);
+    this.name = "ReturnTendersNotVisibleError";
+  }
+}
+
+/** RT-86: one recorded payout of a return (RT-14 D3, cash only), a non-negative magnitude. */
+export interface RefundWorkTender {
+  readonly method: "cash";
+  readonly amount: string;
+}
+
+/**
  * The 012 ReversalRef — present only on a `reversal` work-item. Carries the
  * ORIGINAL sale's provenance so the connector locates the document to reverse
  * (O-4), the reversal kind, and (RT-63) the reversal's OWN server time and
  * business date. A legacy refund has no persisted business date (RT-63 P2),
- * so `businessDate` is omitted for it; `returnLines` is present only for a
- * return (RT-14 D1).
+ * so `businessDate` is omitted for it; `returnLines` and (RT-86)
+ * `refundTenders` are present only for a return (RT-14 D1 / D3).
  */
 export interface ReversalRef {
   readonly sourceSystem: string;
@@ -71,6 +90,7 @@ export interface ReversalRef {
   readonly recordedAt: string;
   readonly businessDate?: string;
   readonly returnLines?: readonly ReturnWorkLine[];
+  readonly refundTenders?: readonly RefundWorkTender[];
 }
 
 /** A 012 PostingWorkItem (sale_post; a reversal additionally carries reversalOf). */
@@ -261,6 +281,7 @@ async function buildReversalRef(
   if (!rk) return null;
 
   let returnLines: ReturnWorkLine[] | undefined;
+  let refundTenders: RefundWorkTender[] | undefined;
   if (rk.reversal_kind === "return") {
     // Fixed order so every re-pull of the feed is byte-identical.
     const rl = await client.query<{
@@ -280,6 +301,7 @@ async function buildReversalRef(
       lineAmount: l.line_amount,
       taxAmount: l.tax_amount,
     }));
+    refundTenders = await loadRefundTenders(client, sourceRefId);
   }
 
   return {
@@ -289,5 +311,27 @@ async function buildReversalRef(
     recordedAt: rk.recorded_at.toISOString(),
     ...(rk.business_date === null ? {} : { businessDate: rk.business_date }),
     ...(returnLines === undefined ? {} : { returnLines }),
+    ...(refundTenders === undefined ? {} : { refundTenders }),
   };
+}
+
+/**
+ * RT-86: the return's recorded refund payouts (`sale_return_tenders`), in request order
+ * (`ordinal`, unique per return) so every re-pull is byte-identical. Capture guarantees at
+ * least one row summing to the return total (RT-73), so zero VISIBLE rows throws
+ * {@link ReturnTendersNotVisibleError}: the contract INVARIANT forbids offering a return
+ * without its tenders (the field is optional on the wire, and a credit note posted without its
+ * cash is terminal), and omitting the item would let the page cursor skip a still-pending row.
+ */
+async function loadRefundTenders(
+  client: PoolClient,
+  returnId: string,
+): Promise<RefundWorkTender[]> {
+  const rt = await client.query<{ method: "cash"; amount: string }>(
+    `SELECT method, amount::text AS amount
+       FROM sale_return_tenders WHERE return_id = $1 ORDER BY ordinal`,
+    [returnId],
+  );
+  if (rt.rows.length === 0) throw new ReturnTendersNotVisibleError(returnId);
+  return rt.rows.map((t) => ({ method: t.method, amount: t.amount }));
 }

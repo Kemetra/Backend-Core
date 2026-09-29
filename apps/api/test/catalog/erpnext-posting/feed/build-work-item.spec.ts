@@ -12,7 +12,10 @@ import "reflect-metadata";
 
 import type { PoolClient } from "pg";
 
-import { buildWorkItem } from "../../../../src/catalog/erpnext-posting/posting-work-item.projection";
+import {
+  ReturnTendersNotVisibleError,
+  buildWorkItem,
+} from "../../../../src/catalog/erpnext-posting/posting-work-item.projection";
 
 /** A PoolClient stub that returns canned rows per query call, in order. */
 function fakeClient(resultsInOrder: Array<{ rows: unknown[] }>): PoolClient {
@@ -139,12 +142,21 @@ describe("buildWorkItem — RT-73 lineRef, reversal time and return lines", () =
     });
   });
 
-  it("a return carries only its returned lines as magnitudes", async () => {
+  const RETURN_KIND_ROW = {
+    rows: [{ reversal_kind: "return", recorded_at: new Date("2026-06-07T10:00:00.000Z"), business_date: "2026-06-07" }],
+  };
+  const RETURN_LINE_ROWS = {
+    rows: [{ line_ref: LINE_ROW.line_ref, quantity: "1.000000", line_amount: "6.6667", tax_amount: null }],
+  };
+
+  it("a return carries only its returned lines as magnitudes, and its stored refund tenders in order (RT-86)", async () => {
     const client = fakeClient([
       { rows: [SALE_ROW] },
       { rows: [LINE_ROW] },
-      { rows: [{ reversal_kind: "return", recorded_at: new Date("2026-06-07T10:00:00.000Z"), business_date: "2026-06-07" }] },
-      { rows: [{ line_ref: LINE_ROW.line_ref, quantity: "1.000000", line_amount: "6.6667", tax_amount: null }] },
+      RETURN_KIND_ROW,
+      RETURN_LINE_ROWS,
+      // sale_return_tenders ORDER BY ordinal — two payouts, deliberately unequal so order shows.
+      { rows: [{ method: "cash", amount: "5.0000" }, { method: "cash", amount: "1.6667" }] },
     ]);
     const item = await buildWorkItem(client, REVERSAL_ROW);
     expect(item!.reversalOf).toEqual({
@@ -154,6 +166,21 @@ describe("buildWorkItem — RT-73 lineRef, reversal time and return lines", () =
       recordedAt: "2026-06-07T10:00:00.000Z",
       businessDate: "2026-06-07",
       returnLines: [{ lineRef: LINE_ROW.line_ref, quantity: "1.000000", lineAmount: "6.6667", taxAmount: null }],
+      refundTenders: [
+        { method: "cash", amount: "5.0000" },
+        { method: "cash", amount: "1.6667" },
+      ],
     });
+  });
+
+  it("a return with no visible tender rows fails the pull loudly — never offered without them, never skipped (RT-86)", async () => {
+    // Capture requires >= 1 refund tender, so zero VISIBLE rows is a visibility fault (e.g. an
+    // RLS policy mismatch). Offering the return without them could post an outstanding credit
+    // note terminally (Codex/Greptile P1, PR #652); omitting it would let the page cursor advance
+    // past a still-pending row so it is never re-offered (Codex P2, PR #652). Failing the pull
+    // keeps the cursor where it is: the feed halts loudly (as a missing grant already does) and
+    // the return is offered, with its tenders, once visibility is restored.
+    const client = fakeClient([{ rows: [SALE_ROW] }, { rows: [LINE_ROW] }, RETURN_KIND_ROW, RETURN_LINE_ROWS, { rows: [] }]);
+    await expect(buildWorkItem(client, REVERSAL_ROW)).rejects.toThrow(ReturnTendersNotVisibleError);
   });
 });
