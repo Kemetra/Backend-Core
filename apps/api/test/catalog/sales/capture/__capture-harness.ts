@@ -73,6 +73,7 @@ import {
 // the unbuilt module.
 import { SalesController } from "../../../../src/catalog/sales/sales.controller";
 import { SalesService } from "../../../../src/catalog/sales/sales.service";
+import { SaleReturnsService } from "../../../../src/catalog/sales/sale-returns.service";
 
 export {
   TENANT_A,
@@ -213,6 +214,7 @@ export async function startCaptureHarness(
     const providers: Provider[] = [
       { provide: PG_POOL, useFactory: (): Pool => env.app },
       SalesService,
+      SaleReturnsService,
       { provide: IDEMPOTENCY_KEY_STORE, useValue: idempStore },
       { provide: INFLIGHT_REDIS, useValue: fakeRedis },
       { provide: InProgressMarker, useValue: fakeMarker },

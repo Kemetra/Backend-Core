@@ -20,6 +20,7 @@ import { Test } from "@nestjs/testing";
 
 import { SalesController } from "../../../../src/catalog/sales/sales.controller";
 import { SalesService } from "../../../../src/catalog/sales/sales.service";
+import { SaleReturnsService } from "../../../../src/catalog/sales/sale-returns.service";
 import { PG_POOL } from "../../../../src/auth/auth.module";
 import { OPERATOR_CONTEXT_RESOLVER } from "../../../../src/auth/operator-context-resolver";
 import { PosOperatorEnvelopeSaleGuard } from "../../../../src/auth/pos-operator-envelope-sale.guard";
@@ -48,6 +49,7 @@ const fakeRateLimiter = {
 function compileSalesModule(overrideRateLimitGuard: boolean): Promise<unknown> {
   const providers = [
     SalesService,
+    SaleReturnsService,
     { provide: PG_POOL, useValue: {} },
     {
       provide: OPERATOR_CONTEXT_RESOLVER,

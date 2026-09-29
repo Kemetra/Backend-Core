@@ -30,18 +30,27 @@
  * the capture integration spec can construct the service with PG_POOL only
  * (mirrors UnknownItemsService's optional enqueuer).
  */
-import { createHash } from "node:crypto";
-
 import { Inject, Injectable, Optional } from "@nestjs/common";
 import { runWithTenantContext, emit, OUTBOX_EVENT_TYPES } from "@data-pulse-2/db";
 import { newId } from "@data-pulse-2/shared";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../../auth/auth.module";
 import type { CaptureSaleRequestDto } from "./dto/capture-sale-request.dto";
 import type { RecordVoidRequestDto } from "./dto/record-void-request.dto";
 import type { RecordRefundRequestDto } from "./dto/record-refund-request.dto";
 import { SALE_SYNC_STATUS, type SaleSyncStatus } from "./sale-sync-status";
+import { sha256CanonicalHex } from "./payload-hash";
+import { SaleNotFoundError, TerminalEventProvenanceConflictError } from "./sale-errors";
+import {
+  lockSaleForReversal,
+  mapOneVoidViolation,
+  readReversalState,
+  SaleAlreadyReversedError,
+} from "./sale-reversal";
+
+// Moved to ./sale-errors (RT-73); re-exported so existing importers are unchanged.
+export { SaleNotFoundError, TerminalEventProvenanceConflictError } from "./sale-errors";
 
 /**
  * Optional outbox producer seam — OBSOLETE DEAD CODE.
@@ -84,10 +93,14 @@ export interface SaleProjection {
   readonly mismatchFlag: boolean;
   /** 032 §7 — DP-2's server-authoritative sale-status (the terminal observes, DP-2 decides). */
   readonly syncStatus: SaleSyncStatus;
+  /** RT-73: a void terminal event exists (derived; the sale row is never mutated). */
+  readonly voided: boolean;
   readonly lines: ReadonlyArray<SaleLineProjection>;
 }
 
 export interface SaleLineProjection {
+  /** RT-72/73: stable line identity (= sale_lines.id); a return names it. */
+  readonly lineRef: string;
   readonly lineName: string;
   readonly unitPrice: string;
   readonly currencyCode: string;
@@ -96,6 +109,10 @@ export interface SaleLineProjection {
   readonly taxAmount: string | null;
   readonly unit: string;
   readonly tenantProductRef: string | null;
+  /** Cumulative quantity returned on the line. */
+  readonly returnedQuantity: string;
+  /** quantity − returnedQuantity, or 0 once the sale is voided. */
+  readonly returnableQuantity: string;
 }
 
 export interface CaptureSaleResult {
@@ -152,9 +169,11 @@ interface SaleRow {
   external_id: string;
   mismatch_flag: boolean | null;
   sync_status: SaleSyncStatus;
+  voided: boolean;
 }
 
 interface SaleLineRow {
+  line_ref: string;
   line_name: string;
   unit_price: string;
   currency_code: string;
@@ -163,30 +182,8 @@ interface SaleLineRow {
   tax_amount: string | null;
   unit: string;
   tenant_product_ref: string | null;
-}
-
-/**
- * SHA-256 over a canonical (sorted-key) JSON serialization of a value
- * (gate C). Deterministic key ordering so US5/T062 provenance-reconcile can
- * reproduce the hash from the stored payload. No float involved — the input
- * is the request DTO whose money fields are strings.
- */
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value ?? null);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
-  }
-  const keys = Object.keys(value as Record<string, unknown>).sort();
-  const entries = keys.map(
-    (k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`,
-  );
-  return `{${entries.join(",")}}`;
-}
-
-function sha256CanonicalHex(value: unknown): string {
-  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+  returned_quantity: string;
+  returnable_quantity: string;
 }
 
 @Injectable()
@@ -389,7 +386,8 @@ export class SalesService {
           `SELECT id, store_id, currency_code, pos_total, occurred_at,
                   received_at, business_date::text AS business_date,
                   processed_at, source_clock_at,
-                  source_system, external_id, mismatch_flag, sync_status
+                  source_system, external_id, mismatch_flag, sync_status,
+                  EXISTS (SELECT 1 FROM sale_voids v WHERE v.sale_id = sales.id) AS voided
              FROM sales WHERE id = $1 AND store_id = $2`,
           [saleId, storeId],
         );
@@ -399,11 +397,22 @@ export class SalesService {
           // tenant (RLS) or store (predicate above) reads as absent.
           throw new SaleNotFoundError();
         }
+        // RT-73 returnability: cumulative returned quantity per line; a voided
+        // sale has nothing left to return (RT-14 D2).
         const lines = await client.query<SaleLineRow>(
-          `SELECT line_name, unit_price, currency_code, quantity, line_amount,
-                  tax_amount, unit, tenant_product_ref
-             FROM sale_lines WHERE sale_id = $1 ORDER BY line_name`,
-          [saleId],
+          `SELECT sl.id::text AS line_ref, sl.line_name, sl.unit_price,
+                  sl.currency_code, sl.quantity, sl.line_amount, sl.tax_amount,
+                  sl.unit, sl.tenant_product_ref,
+                  r.returned::text AS returned_quantity,
+                  (CASE WHEN $2::boolean THEN 0 ELSE sl.quantity - r.returned END)
+                    ::numeric(19,6)::text AS returnable_quantity
+             FROM sale_lines sl
+             CROSS JOIN LATERAL (
+               SELECT COALESCE(SUM(rl.quantity), 0)::numeric(19,6) AS returned
+                 FROM sale_return_lines rl WHERE rl.sale_line_id = sl.id
+             ) r
+            WHERE sl.sale_id = $1 ORDER BY sl.line_name`,
+          [saleId, row.voided],
         );
         return toBody(row, lines.rows);
       },
@@ -420,9 +429,15 @@ export class SalesService {
    * non-disclosing `SaleNotFoundError` (→ 404) and NO record is written.
    *
    * Idempotent on the void's OWN `(tenant_id, source_system, external_id)`
-   * provenance (FR-013): a re-delivery is a deterministic replay (no duplicate),
-   * via the same atomic `ON CONFLICT` pattern as capture. `voided_at` is the DB
-   * `now()` server clock — never client-supplied.
+   * provenance (FR-013): a re-delivery is a deterministic replay (no duplicate).
+   * `voided_at` is the DB `now()` server clock — never client-supplied — and
+   * `business_date` is its store-timezone day, persisted at insert (RT-63 P2).
+   *
+   * RT-14 D2 (RT-73): the sale row is locked first, so a concurrent void or
+   * return on the same sale serializes behind this one. Under the lock the
+   * replay check runs BEFORE the exclusivity check — a re-delivered void must
+   * still replay although the sale is now voided — then a second void or a
+   * void of a returned sale is `SaleAlreadyReversedError` (409).
    */
   async recordVoid(input: RecordVoidInput): Promise<TerminalEventResult> {
     const { tenantId, storeId, actorUserId, saleRef, body } = input;
@@ -431,66 +446,47 @@ export class SalesService {
       this.pool,
       { tenantId, isPlatformAdmin: false },
       async (client): Promise<TerminalEventResult> => {
-        // Object-safety gate: the sale must exist within (tenant, store) scope
-        // BEFORE any terminal-event write. A wrong-store/unknown ref is a
-        // non-disclosing 404 — no void row, no existence leak.
-        const sale = await client.query<{ id: string }>(
-          `SELECT id FROM sales WHERE id = $1 AND store_id = $2`,
-          [saleRef, storeId],
-        );
-        if (!sale.rows[0]) {
-          throw new SaleNotFoundError();
+        const sale = await lockSaleForReversal(client, saleRef, storeId);
+
+        const existing = await findVoidByProvenance(client, tenantId, body);
+        if (existing) return replayVoid(existing, saleRef);
+
+        const state = await readReversalState(client, saleRef);
+        if (state.voided || state.returned) throw new SaleAlreadyReversedError();
+
+        let inserted;
+        try {
+          inserted = await client.query<{ id: string; voided_at: Date }>(
+            `INSERT INTO sale_voids
+               (id, sale_id, tenant_id, store_id, business_date, source_system,
+                external_id, payload_hash, created_by)
+             VALUES ($1, $2, $3, $4, (now() AT TIME ZONE $9)::date, $5, $6, $7, $8)
+             ON CONFLICT (tenant_id, source_system, external_id) DO NOTHING
+             RETURNING id, voided_at`,
+            [
+              newId(),
+              saleRef,
+              tenantId,
+              storeId,
+              body.sourceSystem,
+              body.externalId,
+              payloadHash,
+              actorUserId,
+              sale.timezone,
+            ],
+          );
+        } catch (err) {
+          throw mapOneVoidViolation(err);
         }
 
-        const eventId = newId();
-        const inserted = await client.query<{ id: string; voided_at: Date }>(
-          `INSERT INTO sale_voids
-             (id, sale_id, tenant_id, store_id, source_system, external_id,
-              payload_hash, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           ON CONFLICT (tenant_id, source_system, external_id) DO NOTHING
-           RETURNING id, voided_at`,
-          [
-            eventId,
-            saleRef,
-            tenantId,
-            storeId,
-            body.sourceSystem,
-            body.externalId,
-            payloadHash,
-            actorUserId,
-          ],
-        );
-
         if (inserted.rows.length === 0) {
-          // The void provenance already exists. It is a deterministic REPLAY
-          // only if it points at the SAME sale (FR-013). The unique index is
-          // (tenant, source_system, external_id) — NOT scoped by sale — so the
-          // existing row may belong to a different sale; we must read its
-          // sale_id and never echo the caller's saleRef.
-          const existing = await client.query<{
-            id: string;
-            sale_id: string;
-            voided_at: Date;
-          }>(
-            `SELECT id, sale_id, voided_at FROM sale_voids
-              WHERE tenant_id = $1 AND source_system = $2 AND external_id = $3
-              LIMIT 1`,
-            [tenantId, body.sourceSystem, body.externalId],
-          );
-          const row = existing.rows[0];
-          if (!row) {
+          // The same provenance was recorded concurrently (possibly for a
+          // different sale): resolve it like a replay — never echo saleRef.
+          const winner = await findVoidByProvenance(client, tenantId, body);
+          if (!winner) {
             throw new Error("void conflict but no existing terminal event found");
           }
-          if (row.sale_id !== saleRef) {
-            // Same provenance reused for a DIFFERENT sale — not a valid replay.
-            // Reject as a conflict; never disclose the other sale (FR-013/014).
-            throw new TerminalEventProvenanceConflictError();
-          }
-          return {
-            projection: toTerminalEvent("void", row.id, row.sale_id, row.voided_at, null, null),
-            created: false,
-          };
+          return replayVoid(winner, saleRef);
         }
 
         const row = inserted.rows[0]!;
@@ -649,24 +645,40 @@ export class SalesService {
   }
 }
 
-/** Thrown when a sale ref does not resolve within the caller's scope. */
-export class SaleNotFoundError extends Error {
-  constructor() {
-    super("sale not found");
-    this.name = "SaleNotFoundError";
-  }
+interface VoidProvenanceRow {
+  id: string;
+  sale_id: string;
+  voided_at: Date;
+}
+
+async function findVoidByProvenance(
+  client: PoolClient,
+  tenantId: string,
+  body: RecordVoidRequestDto,
+): Promise<VoidProvenanceRow | null> {
+  const r = await client.query<VoidProvenanceRow>(
+    `SELECT id, sale_id, voided_at FROM sale_voids
+      WHERE tenant_id = $1 AND source_system = $2 AND external_id = $3
+      LIMIT 1`,
+    [tenantId, body.sourceSystem, body.externalId],
+  );
+  return r.rows[0] ?? null;
 }
 
 /**
- * Thrown when a terminal-event provenance `(tenant, source_system, external_id)`
- * is reused for a DIFFERENT sale than the one it was first recorded against —
- * a client conflict (→ 409), not a valid idempotent replay (FR-013).
+ * A void provenance is a deterministic REPLAY only if it points at the SAME
+ * sale (FR-013). The unique index is (tenant, source_system, external_id) —
+ * NOT scoped by sale — so the existing row may belong to a different sale;
+ * that is a conflict and never discloses the other sale.
  */
-export class TerminalEventProvenanceConflictError extends Error {
-  constructor() {
-    super("terminal event provenance already used for a different sale");
-    this.name = "TerminalEventProvenanceConflictError";
+function replayVoid(row: VoidProvenanceRow, saleRef: string): TerminalEventResult {
+  if (row.sale_id !== saleRef) {
+    throw new TerminalEventProvenanceConflictError();
   }
+  return {
+    projection: toTerminalEvent("void", row.id, row.sale_id, row.voided_at, null, null),
+    created: false,
+  };
 }
 
 function toBody(row: SaleRow, lines: ReadonlyArray<SaleLineRow>): SaleProjection {
@@ -687,7 +699,9 @@ function toBody(row: SaleRow, lines: ReadonlyArray<SaleLineRow>): SaleProjection
     externalId: row.external_id,
     mismatchFlag: row.mismatch_flag ?? false,
     syncStatus: row.sync_status,
+    voided: row.voided,
     lines: lines.map((l) => ({
+      lineRef: l.line_ref,
       lineName: l.line_name,
       unitPrice: l.unit_price,
       currencyCode: l.currency_code,
@@ -696,6 +710,8 @@ function toBody(row: SaleRow, lines: ReadonlyArray<SaleLineRow>): SaleProjection
       taxAmount: l.tax_amount,
       unit: l.unit,
       tenantProductRef: l.tenant_product_ref,
+      returnedQuantity: l.returned_quantity,
+      returnableQuantity: l.returnable_quantity,
     })),
   };
 }

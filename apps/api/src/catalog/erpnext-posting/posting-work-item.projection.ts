@@ -29,6 +29,8 @@ import type { PoolClient } from "pg";
 
 /** A 012 SaleLine projection line (interim mode: no tender). */
 export interface WorkItemLine {
+  /** RT-73: stable line identity (= sale_lines.id); return lines point at it (RT-14 D6). */
+  readonly lineRef: string;
   readonly lineName: string;
   readonly unitPrice: string;
   readonly currencyCode: string;
@@ -46,15 +48,29 @@ export interface WorkItemLine {
   readonly tenantProductRef: string | null;
 }
 
+/** RT-73: one returned line, a non-negative magnitude priced by Backend-Core. */
+export interface ReturnWorkLine {
+  readonly lineRef: string;
+  readonly quantity: string;
+  readonly lineAmount: string;
+  readonly taxAmount: string | null;
+}
+
 /**
  * The 012 ReversalRef — present only on a `reversal` work-item. Carries the
  * ORIGINAL sale's provenance so the connector locates the document to reverse
- * (O-4), plus whether the reversal stems from a void or a refund.
+ * (O-4), the reversal kind, and (RT-63) the reversal's OWN server time and
+ * business date. A legacy refund has no persisted business date (RT-63 P2),
+ * so `businessDate` is omitted for it; `returnLines` is present only for a
+ * return (RT-14 D1).
  */
 export interface ReversalRef {
   readonly sourceSystem: string;
   readonly externalId: string;
-  readonly reversalKind: "void" | "refund";
+  readonly reversalKind: "void" | "refund" | "return";
+  readonly recordedAt: string;
+  readonly businessDate?: string;
+  readonly returnLines?: readonly ReturnWorkLine[];
 }
 
 /** A 012 PostingWorkItem (sale_post; a reversal additionally carries reversalOf). */
@@ -121,6 +137,7 @@ export async function buildWorkItem(
   if (!s) return null;
 
   const lines = await client.query<{
+    line_ref: string;
     line_name: string;
     unit_price: string;
     currency_code: string;
@@ -131,7 +148,8 @@ export async function buildWorkItem(
     erpnext_item_ref: string | null;
     tenant_product_ref: string | null;
   }>(
-    `SELECT sl.line_name, sl.unit_price::text AS unit_price, sl.currency_code,
+    `SELECT sl.id::text AS line_ref, sl.line_name,
+            sl.unit_price::text AS unit_price, sl.currency_code,
             sl.quantity::text AS quantity, sl.line_amount::text AS line_amount,
             sl.tax_amount::text AS tax_amount, sl.unit,
             m.erpnext_item_ref, sl.tenant_product_ref::text AS tenant_product_ref
@@ -166,6 +184,7 @@ export async function buildWorkItem(
       return null; // stale/retired map → omit the work-item rather than ship "".
     }
     wireLines.push({
+      lineRef: l.line_ref,
       lineName: l.line_name,
       unitPrice: l.unit_price,
       currencyCode: l.currency_code,
@@ -180,27 +199,16 @@ export async function buildWorkItem(
   }
 
   // For a reversal, carry the ORIGINAL sale's provenance (so the connector
-  // locates the document to reverse, O-4) + whether the source is a void or a
-  // refund — derived from which terminal table holds `source_ref_id`. The
-  // reversal posts a NEW reversing document; the original sale_post row is never
-  // touched (§IX). A reversal whose terminal row cannot be classified is omitted
-  // (defensive — should not happen, the consumer only inserts for real events).
+  // locates the document to reverse, O-4), the kind — derived from which
+  // terminal table holds `source_ref_id` — and the reversal's own immutable
+  // time / business date (RT-63). The reversal posts a NEW reversing document;
+  // the original sale_post row is never touched (§IX). A reversal whose
+  // terminal row cannot be classified is omitted (defensive — should not
+  // happen, the consumer only inserts for real events).
   let reversalOf: ReversalRef | null = null;
   if (row.kind === "reversal") {
-    const kindRow = await client.query<{ reversal_kind: "void" | "refund" }>(
-      `SELECT 'void'::text AS reversal_kind FROM sale_voids WHERE id = $1
-       UNION ALL
-       SELECT 'refund'::text AS reversal_kind FROM sale_refunds WHERE id = $1
-       LIMIT 1`,
-      [row.sourceRefId],
-    );
-    const rk = kindRow.rows[0];
-    if (!rk) return null;
-    reversalOf = {
-      sourceSystem: s.source_system,
-      externalId: s.external_id,
-      reversalKind: rk.reversal_kind,
-    };
+    reversalOf = await buildReversalRef(client, row.sourceRefId, s);
+    if (!reversalOf) return null;
   }
 
   return {
@@ -223,5 +231,63 @@ export async function buildWorkItem(
       lines: wireLines,
     },
     itemCursor: row.sequence,
+  };
+}
+
+/** Classify the reversal row and project its RT-63 time + (return) lines. */
+async function buildReversalRef(
+  client: PoolClient,
+  sourceRefId: string,
+  sale: { source_system: string; external_id: string },
+): Promise<ReversalRef | null> {
+  const kindRow = await client.query<{
+    reversal_kind: "void" | "refund" | "return";
+    recorded_at: Date;
+    business_date: string | null;
+  }>(
+    `SELECT 'void'::text AS reversal_kind, voided_at AS recorded_at,
+            business_date::text AS business_date
+       FROM sale_voids WHERE id = $1
+     UNION ALL
+     SELECT 'refund'::text, refunded_at, NULL::text
+       FROM sale_refunds WHERE id = $1
+     UNION ALL
+     SELECT 'return'::text, returned_at, business_date::text
+       FROM sale_returns WHERE id = $1
+     LIMIT 1`,
+    [sourceRefId],
+  );
+  const rk = kindRow.rows[0];
+  if (!rk) return null;
+
+  let returnLines: ReturnWorkLine[] | undefined;
+  if (rk.reversal_kind === "return") {
+    // Fixed order so every re-pull of the feed is byte-identical.
+    const rl = await client.query<{
+      line_ref: string;
+      quantity: string;
+      line_amount: string;
+      tax_amount: string | null;
+    }>(
+      `SELECT sale_line_id::text AS line_ref, quantity::text AS quantity,
+              line_amount::text AS line_amount, tax_amount::text AS tax_amount
+         FROM sale_return_lines WHERE return_id = $1 ORDER BY sale_line_id`,
+      [sourceRefId],
+    );
+    returnLines = rl.rows.map((l) => ({
+      lineRef: l.line_ref,
+      quantity: l.quantity,
+      lineAmount: l.line_amount,
+      taxAmount: l.tax_amount,
+    }));
+  }
+
+  return {
+    sourceSystem: sale.source_system,
+    externalId: sale.external_id,
+    reversalKind: rk.reversal_kind,
+    recordedAt: rk.recorded_at.toISOString(),
+    ...(rk.business_date === null ? {} : { businessDate: rk.business_date }),
+    ...(returnLines === undefined ? {} : { returnLines }),
   };
 }
