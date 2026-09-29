@@ -19,7 +19,7 @@
   <a href="tsconfig.base.json"><img alt="TypeScript strict" src="https://img.shields.io/badge/TypeScript-strict-3178c6?style=flat-square&logo=typescript&logoColor=white"></a>
   <a href="apps/api"><img alt="NestJS 11" src="https://img.shields.io/badge/NestJS-11-e0234e?style=flat-square&logo=nestjs&logoColor=white"></a>
   <a href="packages/contracts/openapi"><img alt="OpenAPI 3.1" src="https://img.shields.io/badge/OpenAPI-3.1-6ba539?style=flat-square&logo=openapiinitiative&logoColor=white"></a>
-  <a href="docs/assets/badges/loc.svg"><img alt="LOC" src="docs/assets/badges/loc.svg"></a>
+  <a href="https://github.com/Kemetra/Backend-Core/blob/badges/loc.svg"><img alt="LOC" src="https://raw.githubusercontent.com/Kemetra/Backend-Core/badges/loc.svg"></a>
 </p>
 
 <p align="center">
