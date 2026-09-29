@@ -139,12 +139,21 @@ describe("buildWorkItem — RT-73 lineRef, reversal time and return lines", () =
     });
   });
 
-  it("a return carries only its returned lines as magnitudes", async () => {
+  const RETURN_KIND_ROW = {
+    rows: [{ reversal_kind: "return", recorded_at: new Date("2026-06-07T10:00:00.000Z"), business_date: "2026-06-07" }],
+  };
+  const RETURN_LINE_ROWS = {
+    rows: [{ line_ref: LINE_ROW.line_ref, quantity: "1.000000", line_amount: "6.6667", tax_amount: null }],
+  };
+
+  it("a return carries only its returned lines as magnitudes, and its stored refund tenders in order (RT-86)", async () => {
     const client = fakeClient([
       { rows: [SALE_ROW] },
       { rows: [LINE_ROW] },
-      { rows: [{ reversal_kind: "return", recorded_at: new Date("2026-06-07T10:00:00.000Z"), business_date: "2026-06-07" }] },
-      { rows: [{ line_ref: LINE_ROW.line_ref, quantity: "1.000000", line_amount: "6.6667", tax_amount: null }] },
+      RETURN_KIND_ROW,
+      RETURN_LINE_ROWS,
+      // sale_return_tenders ORDER BY ordinal — two payouts, deliberately unequal so order shows.
+      { rows: [{ method: "cash", amount: "5.0000" }, { method: "cash", amount: "1.6667" }] },
     ]);
     const item = await buildWorkItem(client, REVERSAL_ROW);
     expect(item!.reversalOf).toEqual({
@@ -154,6 +163,20 @@ describe("buildWorkItem — RT-73 lineRef, reversal time and return lines", () =
       recordedAt: "2026-06-07T10:00:00.000Z",
       businessDate: "2026-06-07",
       returnLines: [{ lineRef: LINE_ROW.line_ref, quantity: "1.000000", lineAmount: "6.6667", taxAmount: null }],
+      refundTenders: [
+        { method: "cash", amount: "5.0000" },
+        { method: "cash", amount: "1.6667" },
+      ],
     });
+  });
+
+  it("a return with no stored tender rows omits refundTenders rather than emit an empty list (RT-86)", async () => {
+    // Capture requires >= 1 refund tender, so this is a data anomaly. The contract says
+    // minItems: 1, so [] would be malformed; omitting the field makes the Connector reject the
+    // return visibly (validation) instead of stranding the work item.
+    const client = fakeClient([{ rows: [SALE_ROW] }, { rows: [LINE_ROW] }, RETURN_KIND_ROW, RETURN_LINE_ROWS, { rows: [] }]);
+    const item = await buildWorkItem(client, REVERSAL_ROW);
+    expect(item!.reversalOf).not.toHaveProperty("refundTenders");
+    expect(item!.reversalOf!.returnLines).toHaveLength(1);
   });
 });

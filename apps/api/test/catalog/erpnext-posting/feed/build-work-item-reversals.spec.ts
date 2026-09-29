@@ -135,7 +135,10 @@ describe("RT-73 — reversal work-items from real rows", () => {
       returnLines: [
         { lineRef: sale.lineRef, quantity: "1.000000", lineAmount: "3.0000", taxAmount: null },
       ],
+      // RT-86: the return's stored refund tenders (sale_return_tenders), as recorded.
+      refundTenders: [{ method: "cash", amount: "3.0000" }],
     });
+    expect(first!.reversalOf).toHaveProperty("refundTenders", ret.body.refundTenders);
 
     const again = await project(sale.saleRef, ret.body.returnRef);
     expect(again).toEqual(first);
@@ -156,6 +159,7 @@ describe("RT-73 — reversal work-items from real rows", () => {
     );
 
     const first = await project(sale.saleRef, v.body.eventRef);
+    expect(first!.reversalOf).not.toHaveProperty("refundTenders");
     expect(first!.reversalOf).toEqual({
       sourceSystem: "pos-1",
       externalId: "bw-void",
