@@ -12,6 +12,7 @@ import {
   startCaptureHarness,
   stopCaptureHarness,
   resetHarness,
+  captureBody,
   idempKey,
   STORE_A_X,
   type HarnessHandle,
@@ -282,6 +283,38 @@ describe("RT-73 — invariants", () => {
     const big = await postReturn(h, s.saleRef, returnBody("ret-bound-2", [{ lineRef: s.lineRef, quantity: "9999999999999" }], "1.0000"), "rbound2");
     expect(big.status).toBe(409);
     expect(big.body.error.code).toBe("over_return");
+  });
+
+  it("a return whose total exceeds numeric(19,4) is a deterministic 400, never a 500", async () => {
+    if (skip()) return;
+    // Each line fits numeric(19,4); their sum does not.
+    const big = "600000000000000.0000";
+    const cap = await h
+      .harness!.http()
+      .post("/api/pos/v1/sales")
+      .set("Idempotency-Key", idempKey("rtotalcap"))
+      .send(
+        captureBody({
+          externalId: "ret-total",
+          posTotal: "0",
+          lines: [
+            { lineName: "A", unitPrice: big, currencyCode: "USD", quantity: "1", lineAmount: big, unit: "ea" },
+            { lineName: "B", unitPrice: big, currencyCode: "USD", quantity: "1", lineAmount: big, unit: "ea" },
+          ],
+        }),
+      );
+    expect(cap.status).toBe(201);
+    const lines = (cap.body.lines as Array<{ lineRef: string }>).map((l) => ({ lineRef: l.lineRef, quantity: "1" }));
+    const res = await postReturn(
+      h,
+      cap.body.saleRef,
+      { sourceSystem: "pos-1", externalId: "ret-total-1", lines, refundTenders: [{ method: "cash", amount: big }, { method: "cash", amount: big }] },
+      "rtotal1",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("validation_error");
+    const n = await h.harness!.env.admin.query("SELECT 1 FROM sale_returns WHERE external_id = 'ret-total-1'");
+    expect(n.rowCount).toBe(0);
   });
 
   it("tender sum ≠ server total → 422 return_tender_mismatch; a numerically equal tender is accepted", async () => {
