@@ -18,12 +18,16 @@
 --      (a finance decision) and re-runs.
 --   2. sale_voids.business_date DATE NOT NULL — backfilled from voided_at in
 --      each store's CURRENT timezone (RT-63 P2), then NOT NULL. New voids
---      compute it at insert (SalesService.recordVoid).
+--      compute it at insert (SalesService.recordVoid). A BEFORE INSERT
+--      trigger fills it for any writer that omits it — the pre-RT-73 API
+--      replicas still running during a rolling deploy (expand/contract) —
+--      so migrating first never turns an old void into a 23502 / 500.
 --   3. uq_sale_voids_one_per_sale — at most one void per sale (D2).
 --   4. sale_returns / sale_return_lines / sale_return_tenders — append-only,
 --      tenant-RLS-forced, SELECT + INSERT policies only.
 --
--- Existing-table DDL is limited to the authorized sale_voids column + index.
+-- Existing-table DDL is limited to the authorized sale_voids column + index,
+-- plus the business_date fill trigger that keeps old writers compatible.
 --
 -- ---------------------------------------------------------------------------
 -- RLS AND THE BACKFILL
@@ -92,6 +96,27 @@ SET LOCAL app.is_platform_admin = 'false';
 ALTER TABLE sale_voids ALTER COLUMN business_date SET NOT NULL;
 
 CREATE UNIQUE INDEX uq_sale_voids_one_per_sale ON sale_voids (sale_id);
+
+-- Rollout compatibility + backstop: derive business_date when a writer omits
+-- it. Column defaults (voided_at = now()) are applied before BEFORE ROW
+-- triggers, so NEW.voided_at is the server stamp. SECURITY INVOKER: the
+-- store is read under the writer's own tenant GUC; if it is not visible the
+-- column stays NULL and the NOT NULL constraint fails loudly.
+CREATE FUNCTION sale_voids_fill_business_date() RETURNS trigger
+  LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.business_date IS NULL THEN
+    SELECT (NEW.voided_at AT TIME ZONE s.timezone)::date
+      INTO NEW.business_date
+      FROM stores s WHERE s.id = NEW.store_id;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER sale_voids_business_date_fill
+  BEFORE INSERT ON sale_voids
+  FOR EACH ROW EXECUTE FUNCTION sale_voids_fill_business_date();
 
 ALTER TABLE sale_voids FORCE ROW LEVEL SECURITY;
 

@@ -10,6 +10,8 @@ DROP TABLE IF EXISTS sale_return_tenders;
 DROP TABLE IF EXISTS sale_return_lines;
 DROP TABLE IF EXISTS sale_returns;
 
+DROP TRIGGER IF EXISTS sale_voids_business_date_fill ON sale_voids;
+DROP FUNCTION IF EXISTS sale_voids_fill_business_date();
 DROP INDEX IF EXISTS uq_sale_voids_one_per_sale;
 
 ALTER TABLE sale_voids DROP COLUMN IF EXISTS business_date;

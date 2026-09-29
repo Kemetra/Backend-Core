@@ -60,13 +60,19 @@ async function applyBefore0032(pgEnv: PgTestEnv): Promise<void> {
   await ensureAppRole(pgEnv);
 }
 
-async function insertVoid(id: string, voidedAt: string, externalId: string): Promise<void> {
+/** A void in the pre-0032 writer shape: no business_date column. */
+async function insertVoid(
+  id: string,
+  voidedAt: string,
+  externalId: string,
+  saleId: string = SALE,
+): Promise<void> {
   await pg().admin.query(
     `INSERT INTO sale_voids
        (id, sale_id, tenant_id, store_id, voided_at, source_system, external_id,
         payload_hash, created_by)
      VALUES ($1, $2, $3, $4, $5::timestamptz, 'pos-1', $6, $7, $8)`,
-    [id, SALE, TENANT, STORE, voidedAt, externalId, "a".repeat(64), ACTOR],
+    [id, saleId, TENANT, STORE, voidedAt, externalId, "a".repeat(64), ACTOR],
   );
 }
 
@@ -178,6 +184,31 @@ describe("0032_sale_returns — applies and backfills", () => {
     expect(r.rows[0]?.relforcerowsecurity).toBe(true);
   });
 
+  it("fills business_date for a writer that omits it (pre-RT-73 API replicas during rollout)", async () => {
+    if (skip()) return;
+    // The old recordVoid INSERT has no business_date column. The BEFORE
+    // INSERT trigger derives it from voided_at in the store timezone, so a
+    // rolling deploy never hits the NOT NULL constraint.
+    const SALE_2 = "0a000000-0000-7000-8000-000000032020";
+    const VOID_OLD = "0a000000-0000-7000-8000-000000032021";
+    await pg().admin.query(
+      `INSERT INTO sales
+         (id, tenant_id, store_id, currency_code, pos_total, occurred_at,
+          business_date, source_system, external_id, payload_hash, created_by)
+       VALUES ($1, $2, $3, 'EGP', 1, '2026-05-01T10:00:00Z', '2026-05-01',
+               'pos-1', 'rt73-sale-2', $4, $5)`,
+      [SALE_2, TENANT, STORE, "b".repeat(64), ACTOR],
+    );
+    await insertVoid(VOID_OLD, "2026-06-01T21:30:00Z", "void-old-writer", SALE_2);
+    const r = await pg().admin.query<{ business_date: string }>(
+      `SELECT business_date::text AS business_date FROM sale_voids WHERE id = $1`,
+      [VOID_OLD],
+    );
+    expect(r.rows[0]?.business_date).toBe("2026-06-02");
+    await pg().admin.query("DELETE FROM sale_voids WHERE id = $1", [VOID_OLD]);
+    await pg().admin.query("DELETE FROM sales WHERE id = $1", [SALE_2]);
+  });
+
   it("enforces at most one void per sale (uq_sale_voids_one_per_sale)", async () => {
     if (skip()) return;
     await expect(
@@ -275,6 +306,10 @@ describe("0032_sale_returns — down → up round-trip", () => {
       `SELECT 1 FROM pg_indexes WHERE indexname = 'uq_sale_voids_one_per_sale'`,
     );
     expect(idx.rowCount).toBe(0);
+    const fn = await pg().admin.query(
+      `SELECT 1 FROM pg_proc WHERE proname = 'sale_voids_fill_business_date'`,
+    );
+    expect(fn.rowCount).toBe(0);
 
     await pg().admin.query(readFileSync(UP_PATH, "utf8"));
     const again = await pg().admin.query<{ business_date: string }>(
