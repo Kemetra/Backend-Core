@@ -195,7 +195,12 @@ async function priceReturnLines(
             CASE WHEN found AND c + qty <= sold AND t IS NOT NULL THEN
               (round(t * (c + qty) / sold, 4) - round(t * c / sold, 4))::numeric(19,4)::text
             END AS tax_amount,
-            (c + qty)::numeric(19,6)::text AS returned_after
+            -- Cast only rows within the sold quantity: an over-return near the
+            -- numeric(19,6) bound would otherwise raise 22003 before the
+            -- service can answer 409 over_return.
+            CASE WHEN found AND c + qty <= sold THEN
+              (c + qty)::numeric(19,6)::text
+            END AS returned_after
        FROM priced ORDER BY ord`,
     [saleRef, lines.map((l) => l.lineRef), lines.map((l) => l.quantity)],
   );

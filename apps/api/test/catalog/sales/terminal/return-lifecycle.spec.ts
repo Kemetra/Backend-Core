@@ -272,6 +272,18 @@ describe("RT-73 — invariants", () => {
     expect(n.rowCount).toBe(0);
   });
 
+  it("an over-return past the numeric(19,6) bound is still 409 over_return, never a 500", async () => {
+    if (skip()) return;
+    // sold 9999999999999 (13 integer digits), 1 already returned, then another
+    // 9999999999999: c + q has 14 integer digits and must not be cast.
+    const s = await captureOneLine(h, { externalId: "ret-bound", quantity: "9999999999999", lineAmount: "1.0000" });
+    const one = await postReturn(h, s.saleRef, returnBody("ret-bound-1", [{ lineRef: s.lineRef, quantity: "1" }], "0"), "rbound1");
+    expect(one.status).toBe(201);
+    const big = await postReturn(h, s.saleRef, returnBody("ret-bound-2", [{ lineRef: s.lineRef, quantity: "9999999999999" }], "1.0000"), "rbound2");
+    expect(big.status).toBe(409);
+    expect(big.body.error.code).toBe("over_return");
+  });
+
   it("tender sum ≠ server total → 422 return_tender_mismatch; a numerically equal tender is accepted", async () => {
     if (skip()) return;
     const sale = await captureOneLine(h, { externalId: "ret-tender", quantity: "2", lineAmount: "10.0000" });
