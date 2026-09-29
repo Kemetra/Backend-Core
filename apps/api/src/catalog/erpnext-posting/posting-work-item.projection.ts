@@ -56,13 +56,19 @@ export interface ReturnWorkLine {
   readonly taxAmount: string | null;
 }
 
+/** RT-86: one recorded payout of a return (RT-14 D3, cash only), a non-negative magnitude. */
+export interface RefundWorkTender {
+  readonly method: "cash";
+  readonly amount: string;
+}
+
 /**
  * The 012 ReversalRef — present only on a `reversal` work-item. Carries the
  * ORIGINAL sale's provenance so the connector locates the document to reverse
  * (O-4), the reversal kind, and (RT-63) the reversal's OWN server time and
  * business date. A legacy refund has no persisted business date (RT-63 P2),
- * so `businessDate` is omitted for it; `returnLines` is present only for a
- * return (RT-14 D1).
+ * so `businessDate` is omitted for it; `returnLines` and (RT-86)
+ * `refundTenders` are present only for a return (RT-14 D1 / D3).
  */
 export interface ReversalRef {
   readonly sourceSystem: string;
@@ -71,6 +77,7 @@ export interface ReversalRef {
   readonly recordedAt: string;
   readonly businessDate?: string;
   readonly returnLines?: readonly ReturnWorkLine[];
+  readonly refundTenders?: readonly RefundWorkTender[];
 }
 
 /** A 012 PostingWorkItem (sale_post; a reversal additionally carries reversalOf). */
@@ -261,6 +268,7 @@ async function buildReversalRef(
   if (!rk) return null;
 
   let returnLines: ReturnWorkLine[] | undefined;
+  let refundTenders: RefundWorkTender[] | undefined;
   if (rk.reversal_kind === "return") {
     // Fixed order so every re-pull of the feed is byte-identical.
     const rl = await client.query<{
@@ -280,6 +288,7 @@ async function buildReversalRef(
       lineAmount: l.line_amount,
       taxAmount: l.tax_amount,
     }));
+    refundTenders = await loadRefundTenders(client, sourceRefId);
   }
 
   return {
@@ -289,5 +298,26 @@ async function buildReversalRef(
     recordedAt: rk.recorded_at.toISOString(),
     ...(rk.business_date === null ? {} : { businessDate: rk.business_date }),
     ...(returnLines === undefined ? {} : { returnLines }),
+    ...(refundTenders === undefined ? {} : { refundTenders }),
   };
+}
+
+/**
+ * RT-86: the return's recorded refund payouts (`sale_return_tenders`), in request order
+ * (`ordinal`, unique per return) so every re-pull is byte-identical. Capture guarantees at
+ * least one row summing to the return total (RT-73). The contract forbids an empty list
+ * (`minItems: 1`), so zero rows — a data anomaly — omits the field: the Connector then rejects
+ * the return visibly as `validation` rather than posting a credit note without its cash.
+ */
+async function loadRefundTenders(
+  client: PoolClient,
+  returnId: string,
+): Promise<RefundWorkTender[] | undefined> {
+  const rt = await client.query<{ method: "cash"; amount: string }>(
+    `SELECT method, amount::text AS amount
+       FROM sale_return_tenders WHERE return_id = $1 ORDER BY ordinal`,
+    [returnId],
+  );
+  if (rt.rows.length === 0) return undefined;
+  return rt.rows.map((t) => ({ method: t.method, amount: t.amount }));
 }

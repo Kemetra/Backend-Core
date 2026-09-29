@@ -80,7 +80,10 @@ const REVERSAL_ROW = { ...STATUS_ROW, kind: "reversal" as const, sourceRefId: "0
 const AT = new Date("2026-06-07T10:00:00.000Z");
 const RETURN_LINES = { rows: [{ line_ref: LINE_ROW.line_ref, quantity: "1.000000", line_amount: "5.0000", tax_amount: null }] };
 
-async function project(results: Array<{ rows: unknown[] }>, row = REVERSAL_ROW) {
+async function project(
+  results: Array<{ rows: unknown[] }>,
+  row: typeof STATUS_ROW | typeof REVERSAL_ROW = REVERSAL_ROW,
+) {
   return buildWorkItem(fakeClient([{ rows: [SALE_ROW] }, { rows: [LINE_ROW] }, ...results]), row);
 }
 
