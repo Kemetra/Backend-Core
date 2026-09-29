@@ -55,7 +55,16 @@ let dockerSkipped = false;
 const NON_EXISTENT_TENANT = "0f000000-0000-7000-8000-00000000dead";
 
 // The four 008 sale-fact tables.
-const SALE_TABLES = ["sales", "sale_lines", "sale_voids", "sale_refunds"] as const;
+const SALE_TABLES = [
+  "sales",
+  "sale_lines",
+  "sale_voids",
+  "sale_refunds",
+  // RT-73 (0032)
+  "sale_returns",
+  "sale_return_lines",
+  "sale_return_tenders",
+] as const;
 
 beforeAll(async () => {
   try {
@@ -172,6 +181,24 @@ describe("sales-sweep §A.3 — fail-closed: unset tenant GUC ⇒ zero rows on e
         return r.rows[0]?.count;
       });
       expect(count).toBe("0");
+    },
+  );
+});
+
+describe("sales-sweep §A.4b — RT-73 return tables are not vacuously isolated", () => {
+  it.each(["sale_returns", "sale_return_lines", "sale_return_tenders"])(
+    "%s: TENANT_A GUC sees its own seeded return rows",
+    async (table) => {
+      if (maybeSkip()) return;
+      const count = await withRawClient(async (client) => {
+        await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [TENANT_A]);
+        const r = await client.query<{ count: string }>(
+          `SELECT COUNT(*)::text AS count FROM ${table} WHERE tenant_id = $1`,
+          [TENANT_A],
+        );
+        return r.rows[0]?.count;
+      });
+      expect(Number(count)).toBeGreaterThan(0);
     },
   );
 });

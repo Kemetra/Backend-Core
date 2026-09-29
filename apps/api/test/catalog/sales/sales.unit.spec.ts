@@ -125,7 +125,8 @@ function scriptClient(opts: {
     if (/SELECT id FROM sales/.test(sql)) return { rows: opts.winnerRows ?? [] };
     if (/INSERT INTO sale_lines/.test(sql)) return { rows: [] };
     if (/FROM sales WHERE id/.test(sql)) return { rows: opts.saleRows ?? [saleRow()] };
-    if (/FROM sale_lines WHERE sale_id/.test(sql)) return { rows: opts.lineRows ?? [] };
+    // RT-73: the line read joins the cumulative returned quantity per line.
+    if (/FROM sale_lines sl/.test(sql)) return { rows: opts.lineRows ?? [] };
     throw new Error(`unscripted query: ${sql}`);
   });
 }

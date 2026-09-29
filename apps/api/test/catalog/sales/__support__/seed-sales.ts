@@ -85,6 +85,10 @@ export const REFUND_A_X = "0a000000-0000-7000-8000-00005a1ee0a1";
 export const REFUND_B_X = "0b000000-0000-7000-8000-00005a1ee0b1";
 
 // Shared source system for the fixture provenance/dedup keys.
+/** RT-73: one return per tenant, against line 1 of the store-X sale. */
+export const RETURN_A_X = "0a000000-0000-7000-8000-00005a1ef0a1";
+export const RETURN_B_X = "0b000000-0000-7000-8000-00005a1ef0b1";
+
 export const SALES_SOURCE_SYSTEM = "fixture-pos";
 
 /** A deterministic 64-hex placeholder payload hash (shape only — not verified here). */
@@ -263,6 +267,39 @@ export async function seedSalesFixture(
       REFUND_A_X, SALE_REFUNDED_A_X, TENANT_A, STORE_A_X, SALES_SOURCE_SYSTEM, PAYLOAD_HASH, ACTOR_A,
       REFUND_B_X, SALE_REFUNDED_B_X, TENANT_B, STORE_B_X, ACTOR_B,
     ],
+  );
+
+  // ---- sale_returns + lines + tenders (RT-73; one per tenant, store X) ----
+  await admin.query(
+    `INSERT INTO sale_returns
+       (id, sale_id, tenant_id, store_id, return_seq, business_date,
+        currency_code, return_total, source_system, external_id,
+        payload_hash, created_by)
+     VALUES
+       ($1, $2, $3, $4, 1, '2026-05-01', 'USD', 1.0000, $5, 'return-A-X', $6, $7),
+       ($8, $9, $10, $11, 1, '2026-05-01', 'USD', 1.0000, $5, 'return-B-X', $6, $12)
+     ON CONFLICT DO NOTHING`,
+    [
+      RETURN_A_X, SALE_A_X, TENANT_A, STORE_A_X, SALES_SOURCE_SYSTEM, PAYLOAD_HASH, ACTOR_A,
+      RETURN_B_X, SALE_B_X, TENANT_B, STORE_B_X, ACTOR_B,
+    ],
+  );
+  await admin.query(
+    `INSERT INTO sale_return_lines
+       (return_id, sale_line_id, tenant_id, store_id, quantity, line_amount,
+        returned_quantity_after)
+     VALUES
+       ($1, $2, $3, $4, 1, 1.0000, 1),
+       ($5, $6, $7, $8, 1, 1.0000, 1)
+     ON CONFLICT DO NOTHING`,
+    [RETURN_A_X, LINE_A_X_1, TENANT_A, STORE_A_X, RETURN_B_X, LINE_B_X_1, TENANT_B, STORE_B_X],
+  );
+  await admin.query(
+    `INSERT INTO sale_return_tenders
+       (return_id, tenant_id, store_id, ordinal, method, amount)
+     VALUES ($1, $2, $3, 0, 'cash', 1.0000), ($4, $5, $6, 0, 'cash', 1.0000)
+     ON CONFLICT DO NOTHING`,
+    [RETURN_A_X, TENANT_A, STORE_A_X, RETURN_B_X, TENANT_B, STORE_B_X],
   );
 
   return SALES_FIXTURE_IDS;

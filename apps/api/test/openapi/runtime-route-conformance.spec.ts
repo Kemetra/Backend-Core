@@ -129,7 +129,6 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "posRedeemVoucher",
       "posReverseVoucher",
       "posValidateVoucher",
-      "recordReturn",
     ]);
     expect(missing).toEqual([]);
   });

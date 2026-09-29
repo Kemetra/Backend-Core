@@ -32,6 +32,7 @@ import { ContextModule } from "../../context/context.module";
 import { IdempotencyModule } from "../../idempotency/idempotency.module";
 import { SalesController } from "./sales.controller";
 import { SalesService } from "./sales.service";
+import { SaleReturnsService } from "./sale-returns.service";
 import { DeviceRepository } from "../../pos-operators/device.repository";
 import {
   OPERATOR_CONTEXT_RESOLVER,
@@ -61,6 +62,7 @@ import { AuthTokenRepository } from "../../auth/auth-token.repository";
   controllers: [SalesController],
   providers: [
     SalesService,
+    SaleReturnsService,
     {
       provide: IDENTITY_PROVIDER_PORT,
       useFactory: (pool: Pool): IdentityProviderPort =>
