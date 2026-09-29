@@ -85,3 +85,28 @@ a per-sale Payment Entry. That fallback needs the owner's re-confirmation.
   third-party payer settlement, still gated by R1 and not affected here.
 * ADR-0005: Backend-Core records tender as a sale fact. It owns no payment
   allocation or GL ledger.
+
+## 6. Superseded text
+
+For **POS sale settlement**, this amendment supersedes:
+
+* 011-DR-POSTING §1: "with its tender posted as the associated Payment Entry".
+* Rider R1: "each DP2 sale posts as one submitted Sales Invoice + its associated
+  Payment Entry" and "MUST NOT present 'Sales Invoice only' as the final accepted
+  posting model". The final model is now a Sales Invoice **carrying its own
+  payments**. A Sales Invoice without payments remains the interim mode, but only
+  for tender-unknown sales.
+* Rider R1 gate item 3's "exactly-one Payment Entry per sale tender". See §2.
+* Spec `015-pos-sale-posting-to-erpnext`, wherever it plans a POS-sale Payment
+  Entry. Those passages are historical for POS sales; this record governs.
+
+Payment Entry language about **third-party payer settlement** (spec 035
+receivables) is not superseded.
+
+## 7. Rollout order
+
+Backend-Core records tenders from RT-77, but it MUST NOT emit tender fields on
+the posting feed until the Connector supports settlement (RT-78). A Connector
+without settlement support would post the sale unpaid and ack it `posted`. That
+outcome is terminal, so the sale would never be settled later. See the
+posting-feed contract's ROLLOUT ORDER.

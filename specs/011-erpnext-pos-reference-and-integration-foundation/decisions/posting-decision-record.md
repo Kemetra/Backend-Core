@@ -41,10 +41,13 @@ correspondingly-numbered sub-question above.
 
 1. **Posting target shape — one submitted `Sales Invoice` per DP2 sale (1:1).**
 
-   > **Amended 2026-09-29 (RT-10) by [011-DR-POSTING-A1](./posting-decision-amendment-2026-09-29-rt10.md):**
-   > a POS sale's tender is settled on the Sales Invoice itself (payments carried on the
-   > invoice), not by a separate Payment Entry. The ban on deriving tender from
-   > `posTotal` and every other rule here are unchanged.
+   > **Amended 2026-09-29 (RT-10) by [011-DR-POSTING-A1](./posting-decision-amendment-2026-09-29-rt10.md).**
+   > **Superseded for POS sale settlement:** every instruction in this section to post
+   > a separate **Payment Entry** for a POS sale, including "MUST NOT present Sales
+   > Invoice only as final", now reads as **a Sales Invoice that carries its own
+   > payments**. That is the final target. An invoice *without* payments stays the interim
+   > mode for tender-unknown sales. The ban on deriving tender from `posTotal` and
+   > every other rule here are unchanged.
 
    Each DP2 sale (008 `sales` + `sale_lines`) posts as exactly one **submitted**
    ERPNext **Sales Invoice**, with its tender posted as the associated **Payment
