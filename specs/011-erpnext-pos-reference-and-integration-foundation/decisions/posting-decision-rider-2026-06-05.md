@@ -18,6 +18,14 @@
 
 ## R1 — Payment Entry (resolves 015 OQ-7)
 
+> **Amended 2026-09-29 (RT-10) by [011-DR-POSTING-A1](./posting-decision-amendment-2026-09-29-rt10.md).**
+> **Superseded for POS sale settlement:** every instruction in this section to post
+> a separate **Payment Entry** for a POS sale, including "MUST NOT present Sales
+> Invoice only as final", now reads as **a Sales Invoice that carries its own
+> payments**. That is the final target. An invoice *without* payments stays the interim
+> mode for tender-unknown sales. The ban on deriving tender from `posTotal` and
+> every other rule here are unchanged.
+
 **The signed target is unchanged**: each DP2 sale posts as one **submitted Sales
 Invoice + its associated Payment Entry** [011-DR-POSTING §1]. DP-015 **MUST NOT**
 present "Sales Invoice only" as the final accepted posting model.

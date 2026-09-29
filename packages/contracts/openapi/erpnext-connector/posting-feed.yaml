@@ -60,13 +60,48 @@ info:
     `POS_RETURNS_ENABLED` gate is on, which follows RT-16. Return lines are
     priced by the cumulative-difference rule (RT-73 comment 10406).
 
-    PAYMENT ENTRY DEFERRAL: the posting decision pairs the Sales Invoice with "its
-    associated Payment Entry", but 008 models NO tender (gate A.5 — payments
-    deferred). The work-item therefore carries the sale only and CANNOT carry
-    tender; the connector posts the Sales Invoice (+ stock impact per 014) — the
-    Payment Entry is deferred until a DP2 payments model lands, at which point the
-    work-item payload + this contract gain the tender fields (a versioned,
-    backward-compatible extension). `posTotal` is the sale total, not tender.
+    SETTLEMENT (RT-76; RT-10 D3(b)/D4/D6/D8, amending 011-DR-POSTING rider R1 —
+    see `specs/011-…/decisions/posting-decision-amendment-2026-09-29-rt10.md`):
+    `sale.tenders` carries how the sale was paid. When it is non-empty, the
+    Connector posts the sale as ONE settled (paid) sales document with one
+    payment per tender, inside the same exactly-once submit — there is no
+    separate payment document, no new work-item kind and no ack change (one
+    `documentRef` per work item). Backend-Core guarantees the tender amounts
+    sum to `posTotal` exactly; the Connector posts the amounts verbatim and
+    never rounds the document total. The Connector builds the document total
+    from the frozen lines, and `posTotal` may differ from it (008 keeps the POS
+    total verbatim; the difference is only an advisory mismatch flag). If the
+    tender total differs from the document total the Connector would build, it
+    acks `permanently_rejected` / `validation` (a reconciliation case). It
+    never adjusts a line, invents change or leaves a partial balance to force a
+    match. When `sale.tenders` is absent (an older Backend-Core) or empty (a
+    tender-unknown sale), the Connector posts exactly as before: an unpaid
+    invoice with the amount outstanding (rider R1 interim mode). Tender is
+    NEVER derived from `posTotal`.
+
+    Reversal settlement (RT-10 D6): a `void` refunds by mirroring the original
+    sale's tenders (`sale.tenders` on the reversal work item), and a `return`
+    ALWAYS pays out its `reversalOf.refundTenders`, because they record cash
+    that actually left the drawer, even when the original sale is
+    tender-unknown. Both are non-negative MAGNITUDES that the Connector negates
+    on the reversing document, exactly as it negates `returnLines`. Only a
+    `void` of a tender-unknown sale (no tenders to mirror) stays an outstanding
+    credit note, as today.
+
+    ROLLOUT ORDER (Connector first): Backend-Core MUST NOT emit `sale.tenders`
+    or `reversalOf.refundTenders` until the Connector supports settlement
+    (RT-78). A Connector that predates them would post the sale UNPAID and ack
+    `posted` — a terminal outcome that a later Connector upgrade never
+    revisits — so the sale would stay unpaid in ERPNext for good; a Connector
+    that validates the feed strictly would reject the item instead.
+
+    INVARIANT: Backend-Core MUST NOT offer a work item for a tender-bearing sale
+    (or its return) without its tenders — withholding only the fields would post
+    that sale unpaid, terminally, in exactly the same way. So Backend-Core
+    either does not accept `tenders` on capture until the Connector supports
+    settlement, or holds such work items (not offered) until it does. Sales
+    captured without tenders are unaffected. Both fields are OPTIONAL and
+    additive.
 
     SALE PROJECTION IS A CURATED SUBSET (by design): this contract's `Sale`
     mirrors 008's `Sale` minus request-only / advisory fields the connector does
@@ -358,8 +393,8 @@ components:
           type: string
           enum: [sale_post, reversal]
           description: >
-            `sale_post` — post the sale as a submitted ERPNext Sales Invoice
-            (+ Payment Entry). `reversal` — post a NEW reversing document (credit
+            `sale_post` — post the sale as a submitted ERPNext Sales Invoice,
+            settled by its `sale.tenders` when present (RT-10 D3(b)). `reversal` — post a NEW reversing document (credit
             note / return invoice) for the referenced original sale (O-4);
             `reversalOf` is then present and says which kind (void, return, or
             legacy refund).
@@ -422,7 +457,9 @@ components:
         required: [returnLines]
       else:
         not:
-          required: [returnLines]
+          anyOf:
+            - required: [returnLines]
+            - required: [refundTenders]
       allOf:
         - if:
             properties:
@@ -500,6 +537,17 @@ components:
             Present (and required) only when `reversalKind = return`; absent
             otherwise. Only the returned lines, each pointing at its sale line
             by `lineRef`.
+        refundTenders:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/RefundTender"
+          description: >
+            RT-10 D6 — how a `return` was paid out (the return's recorded
+            refund tenders, RT-14 D3), summing to the returned total. Only on a
+            `return`; absent on other kinds. Optional; emitted only once the
+            Connector supports settlement (see ROLLOUT ORDER). A `void` carries
+            no refund tenders: it mirrors `sale.tenders`.
 
     ReturnLine:
       type: object
@@ -584,6 +632,58 @@ components:
           minItems: 1
           items:
             $ref: "#/components/schemas/SaleLine"
+        tenders:
+          type: array
+          items:
+            $ref: "#/components/schemas/SaleTender"
+          description: >
+            RT-10 D1/D4 — the sale's tender facts, mirroring
+            `pos-sales/sales.yaml` `Sale.tenders`. Non-empty: settle the posting
+            with one payment per tender. Absent or empty: a tender-unknown sale,
+            posted unpaid as before (RT-10 D8). Optional; emitted only once the
+            Connector supports settlement (see ROLLOUT ORDER).
+    SaleTender:
+      type: object
+      additionalProperties: false
+      required: [method, amount]
+      if:
+        properties:
+          method:
+            const: cash
+        required: [method]
+      then:
+        not:
+          required: [reference]
+      description: >
+        One way the sale was paid (mirrors `pos-sales/sales.yaml` `SaleTender`).
+        The Connector maps `method` to the operator-configured ERPNext payment
+        mode and fails closed (`permanently_rejected` / `validation`) when a
+        method has no mapping (RT-10 D5) — it never guesses one.
+      properties:
+        method:
+          type: string
+          enum: [cash, card_external]
+          description: RT-10 D2 pilot methods. Vouchers are excluded.
+        amount:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        reference:
+          type: string
+          pattern: '^[A-Z0-9]{1,6}$'
+          description: >
+            `card_external` only — the card terminal's short reference. Never
+            card data.
+    RefundTender:
+      type: object
+      additionalProperties: false
+      required: [method, amount]
+      description: One payout of a `return` (RT-14 D3), in the sale's currency.
+      properties:
+        method:
+          type: string
+          enum: [cash]
+          description: Cash only (RT-14 D3).
+        amount:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
     SaleLine:
       type: object
       additionalProperties: false
@@ -700,8 +800,8 @@ components:
             dead-letters it and raises a reconciliation flag (017).
         documentRef:
           description: >
-            The ERPNext document reference (submitted Sales Invoice / Payment
-            Entry / reversing-document id) — required on `posted`, echoed back
+            The ERPNext document reference (the submitted Sales Invoice or
+            reversing-document id) — required on `posted`, echoed back
             unchanged on an idempotent duplicate `posted` (O-3). Null otherwise.
           anyOf:
             - $ref: "#/components/schemas/ErpnextDocumentRef"

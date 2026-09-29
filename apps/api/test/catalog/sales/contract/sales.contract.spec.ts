@@ -27,7 +27,8 @@
  *   * Verifies structural conventions shared with the other contracts:
  *     OpenAPI 3.1 of record, `clerkJwt` POS security scheme defined and
  *     referenced, canonical `Error` envelope, and the FR-101 failure-category
- *     responses. No tender fields appear (gate A.5).
+ *     responses. Tender fields appear only where the owner approved them
+ *     (RT-14 D3 return tender, RT-10 D1 sale tender); gate A.5 bans the rest.
  *
  * The spec is structural / load-only (no app boot, no HTTP requests). The
  * controller / service are authored in the 008-US1-CAPTURE slice onward.
@@ -66,11 +67,21 @@ const REFUND_PATH = "/api/pos/v1/sales/{saleRef}/refund";
 const RETURNS_PATH = "/api/pos/v1/sales/{saleRef}/returns";
 
 /**
- * RT-14 D3 records the refund tender (`refundTenders[{method, amount}]`) as a
- * fact on a return. These are the only schemas exempt from the gate A.5
- * tender-field ban; sale capture still carries no tender (gate A.5 / RT-10).
+ * The owner-approved tender fields — the only `schema.property` pairs exempt
+ * from the gate A.5 tender-field ban:
+ *   - RT-14 D3: a return records its refund tender (`refundTenders`);
+ *   - RT-10 D1: a sale carries its tender facts (`tenders`) on capture and read.
+ * Any other tender/payment-named field is still a violation.
  */
-const RETURN_TENDER_SCHEMAS = ["RecordReturnRequest", "RefundTender", "SaleReturn"];
+const APPROVED_TENDER_FIELDS = [
+  "RecordReturnRequest.refundTenders",
+  "SaleReturn.refundTenders",
+  "CaptureSaleRequest.tenders",
+  "Sale.tenders",
+];
+
+/** RT-10 D2: the pilot tender methods. `voucher` is deliberately excluded. */
+const PILOT_TENDER_METHODS = ["card_external", "cash"];
 
 /**
  * Resolve the pos-sales contract directory from this spec file's location.
@@ -127,7 +138,7 @@ interface SchemaObject {
 
 interface OpenApiDocument {
   openapi?: string;
-  info?: { title?: string; version?: string };
+  info?: { title?: string; version?: string; description?: string };
   paths?: Record<string, PathItem>;
   components?: {
     schemas?: Record<string, SchemaObject>;
@@ -355,6 +366,7 @@ describe("pos-sales/sales.yaml — object safety + gate A.5 (no tender)", () => 
       "RecordReturnRequest",
       "ReturnLineRequest",
       "RefundTender",
+      "SaleTender",
     ]) {
       expect(schemas[name]?.additionalProperties).toBe(false);
     }
@@ -382,12 +394,12 @@ describe("pos-sales/sales.yaml — object safety + gate A.5 (no tender)", () => 
     }
   });
 
-  it("declares no tender/payment field NAMES outside the RT-14 D3 return schemas (gate A.5)", () => {
+  it("declares no tender/payment field NAMES outside the owner-approved tender fields (gate A.5)", () => {
     // Gate A.5 bans tender/payment *fields* — not the word "tender" in the
-    // prose (the description legitimately states tender is deferred to 010).
-    // So inspect property names across every component schema, not the whole
-    // serialized document. RT-14 D3 (owner-approved) records the refund
-    // tender on a return, so only RETURN_TENDER_SCHEMAS are exempt.
+    // prose. So inspect property names across every component schema, not the
+    // whole serialized document. Only APPROVED_TENDER_FIELDS (RT-14 D3, RT-10
+    // D1) are exempt — field by field, so a new tender-named field on any
+    // schema (even one that already carries an approved field) still fails.
     const bannedFieldFragments = [
       "tender",
       "paymentmethod",
@@ -398,12 +410,12 @@ describe("pos-sales/sales.yaml — object safety + gate A.5 (no tender)", () => 
     const isBanned = (prop: string): boolean =>
       bannedFieldFragments.some((banned) => prop.toLowerCase().includes(banned));
     const offending = Object.entries(salesDoc.components?.schemas ?? {})
-      .filter(([schemaName]) => !RETURN_TENDER_SCHEMAS.includes(schemaName))
       .flatMap(([schemaName, schema]) =>
         Object.keys(schema.properties ?? {})
           .filter(isBanned)
           .map((prop) => `${schemaName}.${prop}`),
-      );
+      )
+      .filter((field) => !APPROVED_TENDER_FIELDS.includes(field));
     expect(offending).toEqual([]);
   });
 });
@@ -537,5 +549,95 @@ describe("pos-sales/sales.yaml — RT-72 returns contract", () => {
       expect.arrayContaining(["lineRef", "returnedQuantity", "returnableQuantity"]),
     );
     expect(schema("Sale")?.required).toEqual(expect.arrayContaining(["voided"]));
+  });
+});
+
+// ===========================================================================
+// 8. RT-76 — sale tender contract (RT-10 D1/D2/D7/D8)
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-76 sale tender contract", () => {
+  function schema(name: string): SchemaObject | undefined {
+    return salesDoc.components?.schemas?.[name];
+  }
+  function prop<T>(name: string, field: string): T | undefined {
+    return (schema(name)?.properties ?? {})[field] as T | undefined;
+  }
+  type ArrayProp = { type?: string; minItems?: number; items?: { $ref?: string } };
+
+  it("capture accepts an OPTIONAL tenders list — absent means a tender-unknown sale (D1/D8)", () => {
+    expect(schema("CaptureSaleRequest")?.required).not.toContain("tenders");
+    const tenders = prop<ArrayProp>("CaptureSaleRequest", "tenders");
+    expect(tenders?.type).toBe("array");
+    expect(tenders?.minItems).toBe(1);
+    expect(tenders?.items?.$ref).toBe("#/components/schemas/SaleTender");
+  });
+
+  it("a sale tender is strict {method, amount, reference?} with non-negative decimal money (D1)", () => {
+    expect(schema("SaleTender")?.additionalProperties).toBe(false);
+    expect(schema("SaleTender")?.required?.sort()).toEqual(["amount", "method"]);
+    expect(Object.keys(schema("SaleTender")?.properties ?? {}).sort()).toEqual(
+      ["amount", "method", "reference"],
+    );
+    expect(prop<{ $ref?: string }>("SaleTender", "amount")?.$ref).toBe(
+      "#/components/schemas/NonNegativeDecimalAmount",
+    );
+  });
+
+  it("the pilot tender methods are cash + card_external; voucher is excluded (D2)", () => {
+    const method = prop<{ enum?: string[] }>("SaleTender", "method");
+    expect(method?.enum?.slice().sort()).toEqual(PILOT_TENDER_METHODS);
+    expect(method?.enum).not.toContain("voucher");
+  });
+
+  it("the card reference is a short terminal reference, never a card number (D1)", () => {
+    const reference = prop<{ type?: string; pattern?: string }>("SaleTender", "reference");
+    expect(reference?.type).toBe("string");
+    expect(reference?.pattern).toBe("^[A-Z0-9]{1,6}$");
+  });
+
+  it("the schema itself forbids a reference on a cash tender (card-only, review #645)", () => {
+    const tender = schema("SaleTender") as
+      | (SchemaObject & { if?: unknown; then?: unknown })
+      | undefined;
+    expect(tender?.if).toEqual({ properties: { method: { const: "cash" } }, required: ["method"] });
+    expect(tender?.then).toEqual({ not: { required: ["reference"] } });
+  });
+
+  it("no longer describes return settlement as deferred to RT-10 (review #645)", () => {
+    const text = JSON.stringify([findOp("recordReturn"), schema("RefundTender")]);
+    expect(text).not.toContain("deferred to RT-10");
+  });
+
+  it("refunds stay cash-only on a return (RT-14 D3 is unchanged by RT-10)", () => {
+    expect(prop<{ enum?: string[] }>("RefundTender", "method")?.enum).toEqual(["cash"]);
+  });
+
+  it("capture rejects tenders that do not sum to posTotal with 422 sale_tender_mismatch (D1)", () => {
+    const responses = (findOp("captureSale")?.responses ?? {}) as Record<string, { $ref?: string }>;
+    expect(responses["422"]?.$ref).toBe("#/components/responses/SaleTenderMismatch");
+    const mismatch = salesDoc.components?.responses?.["SaleTenderMismatch"] as
+      | { description?: string }
+      | undefined;
+    expect(mismatch?.description).toContain("sale_tender_mismatch");
+  });
+
+  it("the device is server-resolved — capture accepts no device/terminal field (D7-i)", () => {
+    const props = schema("CaptureSaleRequest")?.properties ?? {};
+    for (const banned of ["deviceId", "device_id", "terminalId", "terminal_id", "shiftId", "shift_id"]) {
+      expect(props).not.toHaveProperty(banned);
+    }
+  });
+
+  it("tells strict response validators to re-pin before RT-77 emits Sale.tenders (review #645)", () => {
+    expect(salesDoc.info?.description ?? "").toContain(
+      "must re-pin this version BEFORE RT-77 deploys",
+    );
+  });
+
+  it("the sale read exposes tenders, OPTIONAL until RT-77 emits them (safe re-pin order)", () => {
+    const tenders = prop<ArrayProp>("Sale", "tenders");
+    expect(tenders?.type).toBe("array");
+    expect(tenders?.items?.$ref).toBe("#/components/schemas/SaleTender");
+    expect(schema("Sale")?.required).not.toContain("tenders");
   });
 });

@@ -105,7 +105,7 @@ interface SchemaObject {
 
 interface OpenApiDocument {
   openapi?: string;
-  info?: { title?: string; version?: string };
+  info?: { title?: string; version?: string; description?: string };
   paths?: Record<string, PathItem>;
   components?: {
     schemas?: Record<string, SchemaObject>;
@@ -409,7 +409,10 @@ describe("erpnext-connector/posting-feed.yaml — work-item payload (O-1/O-4)", 
       required: ["reversalKind"],
     });
     expect(ref?.then).toEqual({ required: ["returnLines"] });
-    expect(ref?.else).toEqual({ not: { required: ["returnLines"] } });
+    // RT-76: refundTenders (RT-10 D6) is also return-only.
+    expect(ref?.else).toEqual({
+      not: { anyOf: [{ required: ["returnLines"] }, { required: ["refundTenders"] }] },
+    });
   });
 
   it("businessDate is required for void and return reversals (persisted, RT-63 P2)", () => {
@@ -558,6 +561,8 @@ describe("erpnext-connector/posting-feed.yaml — object safety", () => {
       "RejectionReason",
       "RecordedOutcome",
       "ReturnLine",
+      "SaleTender",
+      "RefundTender",
     ]) {
       expect(schemas[name]?.additionalProperties).toBe(false);
     }
@@ -575,6 +580,100 @@ describe("erpnext-connector/posting-feed.yaml — object safety", () => {
       "processed_at",
     ]) {
       expect(props).not.toHaveProperty(leak);
+    }
+  });
+});
+
+// ===========================================================================
+// 8. RT-76 — settlement on the feed (RT-10 D3(b)/D4/D6/D8)
+// ===========================================================================
+describe("erpnext-connector/posting-feed.yaml — RT-76 settlement", () => {
+  function schema(name: string): SchemaObject | undefined {
+    return feedDoc.components?.schemas?.[name];
+  }
+  function prop<T>(name: string, field: string): T | undefined {
+    return (schema(name)?.properties ?? {})[field] as T | undefined;
+  }
+  type ArrayProp = { type?: string; items?: { $ref?: string } };
+
+  it("the feed sale carries its tenders, OPTIONAL — absent or empty means tender-unknown (D4/D8)", () => {
+    expect(schema("Sale")?.required).not.toContain("tenders");
+    const tenders = prop<ArrayProp>("Sale", "tenders");
+    expect(tenders?.type).toBe("array");
+    expect(tenders?.items?.$ref).toBe("#/components/schemas/SaleTender");
+  });
+
+  it("a feed tender mirrors the capture tender: cash | card_external, no voucher (D2)", () => {
+    expect(schema("SaleTender")?.required?.sort()).toEqual(["amount", "method"]);
+    const method = prop<{ enum?: string[] }>("SaleTender", "method");
+    expect(method?.enum?.slice().sort()).toEqual(["card_external", "cash"]);
+    expect(prop<{ $ref?: string }>("SaleTender", "amount")?.$ref).toBe(
+      "#/components/schemas/NonNegativeDecimalAmount",
+    );
+    expect(prop<{ pattern?: string }>("SaleTender", "reference")?.pattern).toBe("^[A-Z0-9]{1,6}$");
+  });
+
+  it("a return carries its refund tenders, cash-only and optional until emitted (D6)", () => {
+    const refunds = prop<ArrayProp>("ReversalRef", "refundTenders");
+    expect(refunds?.type).toBe("array");
+    expect(refunds?.items?.$ref).toBe("#/components/schemas/RefundTender");
+    expect(schema("ReversalRef")?.required).not.toContain("refundTenders");
+    expect(prop<{ enum?: string[] }>("RefundTender", "method")?.enum).toEqual(["cash"]);
+  });
+
+  it("the schema itself forbids a reference on a cash tender (card-only)", () => {
+    const tender = schema("SaleTender") as
+      | (SchemaObject & { if?: unknown; then?: unknown })
+      | undefined;
+    expect(tender?.if).toEqual({ properties: { method: { const: "cash" } }, required: ["method"] });
+    expect(tender?.then).toEqual({ not: { required: ["reference"] } });
+  });
+
+  it("orders the rollout Connector-first: no tender fields on the feed before settlement ships (review #645)", () => {
+    // A pre-settlement Connector would post an unpaid invoice and ack `posted`,
+    // which is terminal — a later Connector upgrade never settles that sale.
+    const description = feedDoc.info?.description ?? "";
+    expect(description).toContain("MUST NOT emit `sale.tenders` or `reversalOf.refundTenders`");
+    expect(description).not.toContain("may emit them before the Connector ships");
+    // Review #645: gating only the fields still posts a tender-bearing sale
+    // unpaid (terminal). The work item must never be offered without them.
+    expect(description).toContain(
+      "MUST NOT offer a work item for a tender-bearing sale (or its return) without its tenders",
+    );
+    expect(description).not.toContain("may capture and store tenders (RT-77) before");
+  });
+
+  it("a return always pays out its refundTenders; only a void of a tender-unknown sale stays outstanding (D6, review #645)", () => {
+    const description = feedDoc.info?.description ?? "";
+    expect(description).toContain("a `return` ALWAYS pays out its `reversalOf.refundTenders`");
+    expect(description).toContain("a `void` of a tender-unknown sale");
+    expect(description).not.toContain("a tender-unknown sale's reversal stays");
+  });
+
+  it("fails closed when the tenders do not equal the invoice total built from the lines (review #645)", () => {
+    const description = feedDoc.info?.description ?? "";
+    expect(description).toContain("tender total differs from the document total");
+    expect(description).toContain("`permanently_rejected` / `validation`");
+  });
+
+  it("reversal payouts are magnitudes the Connector negates (review #645)", () => {
+    const description = feedDoc.info?.description ?? "";
+    expect(description).toContain("non-negative MAGNITUDES that the Connector negates");
+  });
+
+  it("the ack is unchanged — one documentRef per work item (D4)", () => {
+    const kind = prop<{ enum?: string[] }>("PostingWorkItem", "kind");
+    expect(kind?.enum?.slice().sort()).toEqual(["reversal", "sale_post"]);
+    expect(Object.keys(schema("OutcomeAckRequest")?.properties ?? {}).sort()).toEqual(
+      ["documentRef", "etaStatus", "outcome", "reason"],
+    );
+  });
+
+  it("retires the Payment Entry deferral and speaks no ERPNext field names (O-6)", () => {
+    const description = feedDoc.info?.description ?? "";
+    expect(description).not.toContain("CANNOT carry tender");
+    for (const erpField of ["is_pos", "disable_rounded_total", "mode_of_payment"]) {
+      expect(JSON.stringify(feedDoc)).not.toContain(erpField);
     }
   });
 });

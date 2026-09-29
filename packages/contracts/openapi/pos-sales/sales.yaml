@@ -8,8 +8,8 @@ info:
     snapshot, plus append-only void and refund terminal events. Built ALONGSIDE
     the shipped 005 POS ingestion seam — it reuses the `Idempotency-Key`
     interceptor, the `sourceSystem + externalId` dedup key, tenant-context/RLS,
-    audit, and outbox. It does NOT re-invent ingestion and it does NOT model
-    tender / payment (deferred to 010 per gate A.5).
+    audit, and outbox. It does NOT re-invent ingestion. Tender (gate A.5) was
+    deferred until RT-10; from RT-76 a sale carries its tender facts (below).
 
     Five operations, all POS-facing (`/api/pos/v1/...`), authenticated via the
     `operatorAuthorization` scheme — the opaque DP-2-issued operator-authorization
@@ -59,6 +59,27 @@ info:
     are priced by the cumulative-difference rule (RT-14 D1 amended by option
     (a), RT-73 comment 10406). A second void of a voided sale is now 409
     `already_reversed` (RT-14 D2).
+
+    RT-76 versioning (additive; RT-10 D1/D2/D7/D8): `CaptureSaleRequest` gains
+    an OPTIONAL `tenders[{method, amount, reference?}]` (`SaleTender`) and
+    `captureSale` gains 422 `sale_tender_mismatch`; `Sale` gains an OPTIONAL
+    `tenders` on `readSale` and `captureSale`. The tender list is part of the
+    immutable sale fact and of its payload hash. It is NOT a payment ledger
+    (ADR-0005) and is unrelated to the 035 payer receivables. The terminal
+    device is resolved server-side from the operator envelope and is never a
+    request field (RT-10 D7). ROLLOUT ORDER: the server accepts `tenders` from
+    RT-77 — until then the strict capture DTO rejects the unknown field (400),
+    so the POS MUST NOT send it before RT-77 is deployed. `Sale.tenders` is
+    OPTIONAL until RT-77 emits it. Optional does not make an OLD strict client
+    accept the new field: because `Sale` is `additionalProperties: false`, a
+    client that validates responses strictly must re-pin this version BEFORE
+    RT-77 deploys (the same order as RT-72). The current POS capture client
+    classifies the response by status code only.
+    Settlement is Connector-first: a tender-bearing sale must never reach the
+    ERPNext posting feed without its tenders, so accepting `tenders` on capture
+    must wait for Connector settlement support, or such sales must be held off
+    the feed until it lands (see `erpnext-connector/posting-feed.yaml`,
+    ROLLOUT ORDER and INVARIANT).
 
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
@@ -117,6 +138,16 @@ paths:
         Idempotency: the `Idempotency-Key` header is REQUIRED. Dedup is on
         `(tenant, sourceSystem, externalId)` (FR-050) — replays return the same
         stable sale reference deterministically (FR-100), with no double-apply.
+
+        Tender (RT-10 D1, from RT-77): the optional `tenders` list records how
+        the sale was paid. Each `amount` is NET of change (cash = tendered −
+        change), there is at most one entry per `method` (else 400), and the
+        amounts MUST sum to `posTotal` exactly (else 422
+        `sale_tender_mismatch`); nothing is recorded on either failure. The
+        tender list is hashed into the payload, so a replay that adds, drops or
+        changes tenders is a different payload (409). An absent list is a
+        tender-unknown sale (RT-10 D8): it is captured exactly as before, and
+        the server NEVER derives tender from `posTotal`.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -153,6 +184,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "409":
           $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/SaleTenderMismatch"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "500":
@@ -360,8 +393,9 @@ paths:
         Tender (D3): `refundTenders` records how the refund was paid out, as a
         fact. The amounts MUST sum to the server-computed `returnTotal`, else
         422 `return_tender_mismatch`. Cash only for the pilot; the `method`
-        enum grows with the RT-10 tender decision. ERP settlement (Payment
-        Entry) is deferred to RT-10.
+        enum stays cash-only under RT-10 D2. ERP settlement: the Connector pays
+        the return out with these refund tenders on the reversing invoice
+        (RT-10 D6).
 
 
         Invariants (D2), enforced in the database under a row lock on the sale
@@ -592,6 +626,17 @@ components:
           minItems: 1
           items:
             $ref: "#/components/schemas/CaptureSaleLine"
+        tenders:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/SaleTender"
+          description: >
+            OPTIONAL (RT-10 D1) — how the sale was paid. Net of change, at most
+            one entry per method, and summing to `posTotal` exactly (else 422
+            `sale_tender_mismatch`). Absent = a tender-unknown sale (RT-10 D8).
+            Accepted from RT-77; do not send before then (see the versioning
+            note).
     CaptureSaleLine:
       type: object
       additionalProperties: false
@@ -744,14 +789,49 @@ components:
       required: [method, amount]
       description: >
         One refund payout, recorded as a fact (RT-14 D3), in the sale's
-        currency. ERP settlement is deferred to RT-10.
+        currency. The Connector pays the return out with it on the reversing
+        invoice (RT-10 D6).
       properties:
         method:
           type: string
           enum: [cash]
-          description: Cash only for the pilot; further methods follow the RT-10 tender decision.
+          description: >
+            Cash only (RT-14 D3). RT-10 D2 left refunds cash-only; a card
+            refund is not recorded here.
         amount:
           $ref: "#/components/schemas/NonNegativeDecimalAmount"
+    SaleTender:
+      type: object
+      additionalProperties: false
+      required: [method, amount]
+      if:
+        properties:
+          method:
+            const: cash
+        required: [method]
+      then:
+        not:
+          required: [reference]
+      description: >
+        One way a sale was paid (RT-10 D1), in the sale's currency. Recorded as
+        part of the immutable sale fact; not a payment ledger (ADR-0005).
+      properties:
+        method:
+          type: string
+          enum: [cash, card_external]
+          description: >
+            RT-10 D2 pilot methods. `cash` — the till drawer. `card_external` —
+            a standalone card terminal (not integrated with the POS). Vouchers
+            are excluded from the pilot.
+        amount:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        reference:
+          type: string
+          pattern: '^[A-Z0-9]{1,6}$'
+          description: >
+            OPTIONAL, `card_external` only (else 400): the short reference the
+            card terminal printed, as keyed by the cashier. NEVER a card number
+            or any other card data.
 
     # -----------------------------------------------------------------------
     # Response projections (toBody) — NOT the DB row shape (§IV)
@@ -777,7 +857,7 @@ components:
         Wire projection of a captured sale. Decoupled from the `sales` /
         `sale_lines` DB schema (§IV). Carries no `tenant_id` (implicit in the
         authenticated scope), no `payload_hash`, no `created_by`, and no
-        tender fields.
+        device. Tender facts ride `tenders` (RT-10 D1) only.
       properties:
         saleRef:
           type: string
@@ -833,6 +913,14 @@ components:
             True when a void terminal event exists for the sale (derived, §X —
             the sale row is never mutated). A voided sale cannot be returned
             (RT-14 D2).
+        tenders:
+          type: array
+          items:
+            $ref: "#/components/schemas/SaleTender"
+          description: >
+            The sale's tender facts as captured (RT-10 D1). Empty for a
+            tender-unknown sale (RT-10 D8). Emitted from RT-77; optional until
+            then.
         lines:
           type: array
           items:
@@ -1118,6 +1206,14 @@ components:
         422 `return_tender_mismatch` (RT-14 D3) — the `refundTenders` amounts
         do not sum to the server-computed `returnTotal`. Deterministic; nothing
         is recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SaleTenderMismatch:
+      description: >
+        422 `sale_tender_mismatch` (RT-10 D1) — the capture's `tenders` amounts
+        do not sum to `posTotal` exactly. Deterministic; nothing is recorded.
       content:
         application/json:
           schema:
