@@ -15,7 +15,8 @@
  *     there is no central YAML registry to extend (same verdict as 005 T504).
  *
  *   * Asserts presence of the four 008 operationIds (`captureSale`,
- *     `recordVoid`, `recordRefund`, `readSale`) and their uniqueness against
+ *     `recordVoid`, `recordRefund`, `readSale`) plus the RT-72
+ *     `recordReturn`, and their uniqueness against
  *     the existing top-level contracts (the slice's stop condition is "if any
  *     operationId collides with or renames a shipped 005/007 operationId").
  *
@@ -394,17 +395,15 @@ describe("pos-sales/sales.yaml — object safety + gate A.5 (no tender)", () => 
       "card",
       "cash",
     ];
-    const schemas = salesDoc.components?.schemas ?? {};
-    const offending: string[] = [];
-    for (const [schemaName, schema] of Object.entries(schemas)) {
-      if (RETURN_TENDER_SCHEMAS.includes(schemaName)) continue;
-      for (const prop of Object.keys(schema.properties ?? {})) {
-        const lower = prop.toLowerCase();
-        if (bannedFieldFragments.some((banned) => lower.includes(banned))) {
-          offending.push(`${schemaName}.${prop}`);
-        }
-      }
-    }
+    const isBanned = (prop: string): boolean =>
+      bannedFieldFragments.some((banned) => prop.toLowerCase().includes(banned));
+    const offending = Object.entries(salesDoc.components?.schemas ?? {})
+      .filter(([schemaName]) => !RETURN_TENDER_SCHEMAS.includes(schemaName))
+      .flatMap(([schemaName, schema]) =>
+        Object.keys(schema.properties ?? {})
+          .filter(isBanned)
+          .map((prop) => `${schemaName}.${prop}`),
+      );
     expect(offending).toEqual([]);
   });
 });
