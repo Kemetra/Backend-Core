@@ -187,10 +187,14 @@ describe("data-pulse-migrate CLI", () => {
     "0029_session_credential_hash",
     "0030_session_membership_trigger",
     "0031_outbox_tenant_fk",
+    "0032_sale_returns",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
   const SECOND_LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 2]!;
+
+  /** The three return tables created by 0032_sale_returns (RT-73). */
+  const RETURN_TABLES = ["sale_returns", "sale_return_lines", "sale_return_tenders"];
 
   /** The seven tables created by 0027_settlement_receivables. */
   const SETTLEMENT_TABLES = [
@@ -258,6 +262,13 @@ describe("data-pulse-migrate CLI", () => {
         WHERE conname = 'tenants_id_not_nil'
       `),
     ).toBe("1");
+    // 0032's return tables, sale_voids.business_date and one-void index.
+    expect(await countPublicTables(RETURN_TABLES)).toBe("3");
+    expect(await countPublicColumn("sale_voids", "business_date")).toBe("1");
+    expect(
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_indexes
+        WHERE schemaname = 'public' AND indexname = 'uq_sale_voids_one_per_sale'`),
+    ).toBe("1");
   });
 
   it("up is idempotent on a second run", async () => {
@@ -293,22 +304,30 @@ describe("data-pulse-migrate CLI", () => {
 
       expect(await ledgerIds()).toEqual(EXPECTED_MIGRATIONS.slice(0, -1));
 
-      // 0031 removes the outbox tenant FK and the nil-tenant CHECK.
+      // 0032 removes the return tables, sale_voids.business_date and the
+      // one-void-per-sale index.
+      expect(await countPublicTables(RETURN_TABLES)).toBe("0");
+      expect(await countPublicColumn("sale_voids", "business_date")).toBe("0");
+      expect(
+        await queryCount(`SELECT COUNT(*)::text AS count FROM pg_indexes
+          WHERE schemaname = 'public' AND indexname = 'uq_sale_voids_one_per_sale'`),
+      ).toBe("0");
+
+      // Sanity: everything older SURVIVES the 0032 rollback (down reverses
+      // only the latest migration) —
+      // 0031's outbox tenant FK and nil-tenant CHECK;
       expect(
         await queryCount(`
           SELECT COUNT(*)::text AS count FROM pg_constraint
           WHERE conname = 'outbox_events_tenant_id_fk'
         `),
-      ).toBe("0");
+      ).toBe("1");
       expect(
         await queryCount(`
           SELECT COUNT(*)::text AS count FROM pg_constraint
           WHERE conname = 'tenants_id_not_nil'
         `),
-      ).toBe("0");
-
-      // Sanity: everything older SURVIVES the 0031 rollback (down reverses
-      // only the latest migration) —
+      ).toBe("1");
       // 0030's membership trigger and function;
       expect(
         await queryCount(`

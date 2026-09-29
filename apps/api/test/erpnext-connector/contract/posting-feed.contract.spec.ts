@@ -379,9 +379,9 @@ describe("erpnext-connector/posting-feed.yaml — work-item payload (O-1/O-4)", 
   it("a reversal carries its own server event time + business date (RT-63 P1)", () => {
     const ref = feedDoc.components?.schemas?.["ReversalRef"];
     expect(ref?.additionalProperties).toBe(false);
-    // Optional until RT-73 emits them, so the feed on main never violates its
-    // own contract; the Connector falls back to the RT-49 stamp when absent.
-    expect(ref?.required).not.toContain("recordedAt");
+    // RT-73 emits them: recordedAt for every kind; businessDate only where it
+    // is persisted (void / return — a legacy refund has none, RT-63 P2).
+    expect(ref?.required).toContain("recordedAt");
     expect(ref?.required).not.toContain("businessDate");
     const props = ref?.properties ?? {};
     expect((props["recordedAt"] as { format?: string })?.format).toBe("date-time");
@@ -415,10 +415,23 @@ describe("erpnext-connector/posting-feed.yaml — work-item payload (O-1/O-4)", 
     });
   });
 
+  it("businessDate is required for void and return reversals (persisted, RT-63 P2)", () => {
+    const ref = feedDoc.components?.schemas?.["ReversalRef"] as
+      | { allOf?: Array<Record<string, unknown>> }
+      | undefined;
+    expect(ref?.allOf).toContainEqual({
+      if: {
+        properties: { reversalKind: { enum: ["void", "return"] } },
+        required: ["reversalKind"],
+      },
+      then: { required: ["businessDate"] },
+    });
+  });
+
   it("every offered sale line carries its lineRef (D6 line mapping)", () => {
     const line = feedDoc.components?.schemas?.["SaleLine"];
-    // Optional until RT-73 emits it (the current projection does not).
-    expect(line?.required).not.toContain("lineRef");
+    // Required: RT-73's projection emits it on every offered line.
+    expect(line?.required).toContain("lineRef");
     expect(((line?.properties ?? {})["lineRef"] as { format?: string })?.format).toBe("uuid");
   });
 });

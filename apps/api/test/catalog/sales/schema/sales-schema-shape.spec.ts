@@ -26,6 +26,9 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import {
   saleLines,
   saleRefunds,
+  saleReturnLines,
+  saleReturns,
+  saleReturnTenders,
   sales,
   saleVoids,
 } from "@data-pulse-2/db/schema";
@@ -73,6 +76,9 @@ const ALL_TABLES: ReadonlyArray<{ name: string; table: unknown }> = [
   { name: "sale_lines", table: saleLines },
   { name: "sale_voids", table: saleVoids },
   { name: "sale_refunds", table: saleRefunds },
+  { name: "sale_returns", table: saleReturns },
+  { name: "sale_return_lines", table: saleReturnLines },
+  { name: "sale_return_tenders", table: saleReturnTenders },
 ];
 
 describe("sales schema shape — sales (header)", () => {
@@ -186,6 +192,12 @@ describe("sales schema shape — terminal events (void / refund)", () => {
     expect(cols.get("voided_at")?.notNull).toBe(true);
   });
 
+  it("sale_voids carries its own NOT NULL business_date (RT-63 P2, 0032)", () => {
+    const c = columns(saleVoids).get("business_date");
+    expect(c?.columnType).toBe("PgDateString");
+    expect(c?.notNull).toBe(true);
+  });
+
   it("sale_refunds preserves pos_refund_amount numeric(19,4) + currency", () => {
     const cols = columns(saleRefunds);
     for (const name of [
@@ -209,6 +221,37 @@ describe("sales schema shape — terminal events (void / refund)", () => {
     expect(amt?.scale).toBe(4);
     expect(amt?.notNull).toBe(true);
     expect(cols.get("refunded_at")?.notNull).toBe(true);
+  });
+});
+
+describe("sales schema shape — line-aware returns (RT-73, 0032)", () => {
+  it("money is numeric(19,4) and quantities numeric(19,6)", () => {
+    const money: Array<[unknown, string]> = [
+      [saleReturns, "return_total"],
+      [saleReturnLines, "line_amount"],
+      [saleReturnLines, "tax_amount"],
+      [saleReturnTenders, "amount"],
+    ];
+    for (const [table, name] of money) {
+      const c = columns(table).get(name);
+      expect(c?.columnType).toBe("PgNumeric");
+      expect([c?.precision, c?.scale]).toEqual([19, 4]);
+    }
+    for (const name of ["quantity", "returned_quantity_after"]) {
+      const c = columns(saleReturnLines).get(name);
+      expect(c?.columnType).toBe("PgNumeric");
+      expect([c?.precision, c?.scale]).toEqual([19, 6]);
+      expect(c?.notNull).toBe(true);
+    }
+  });
+
+  it("a return carries its own server stamp, business date and per-sale sequence", () => {
+    const cols = columns(saleReturns);
+    for (const name of ["returned_at", "business_date", "return_seq", "payload_hash"]) {
+      expect(cols.get(name)?.notNull).toBe(true);
+    }
+    expect(cols.get("reason")?.notNull).toBe(false);
+    expect(columns(saleReturnLines).get("tax_amount")?.notNull).toBe(false);
   });
 });
 

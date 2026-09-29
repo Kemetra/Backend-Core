@@ -478,8 +478,17 @@ describe("pos-sales/sales.yaml — RT-72 returns contract", () => {
     return (schema(name)?.properties ?? {})[field] as T | undefined;
   }
 
-  it("recordReturn is declared contract-only until RT-73 wires the runtime", () => {
-    expect(findOp("recordReturn")?.["x-runtime-status"]).toBe("contract-only");
+  it("recordReturn is live (RT-73) and documents its POS_RETURNS_ENABLED gate (AC4)", () => {
+    const op = findOp("recordReturn") as (OperationObject & { description?: string; "x-runtime-note"?: string }) | undefined;
+    expect(op?.["x-runtime-status"]).toBeUndefined();
+    expect(op?.["x-runtime-note"]).toMatch(/POS_RETURNS_ENABLED/);
+    expect(op?.description).toMatch(/POS_RETURNS_ENABLED/);
+  });
+
+  it("prices returns by the cumulative-difference rule (option (a), RT-73 comment 10406)", () => {
+    const op = findOp("recordReturn") as (OperationObject & { description?: string }) | undefined;
+    expect(op?.description).toMatch(/round4\(A × \(c \+ q\) \/ Q\) − round4\(A × c \/ Q\)/);
+    expect(op?.description).not.toMatch(/EXACT\s+remainder instead/);
   });
 
   it("deprecates the amount-only recordRefund for new use (D1)", () => {
@@ -535,11 +544,11 @@ describe("pos-sales/sales.yaml — RT-72 returns contract", () => {
     expect(prop<{ type?: string }>("Sale", "voided")?.type).toBe("boolean");
   });
 
-  it("keeps the new read fields OPTIONAL until RT-73 emits them (safe re-pin order for strict clients)", () => {
-    for (const field of ["lineRef", "returnedQuantity", "returnableQuantity"]) {
-      expect(schema("SaleLine")?.required).not.toContain(field);
-    }
-    expect(schema("Sale")?.required).not.toContain("voided");
+  it("requires the RT-72 read fields now that RT-73 emits them", () => {
+    expect(schema("SaleLine")?.required).toEqual(
+      expect.arrayContaining(["lineRef", "returnedQuantity", "returnableQuantity"]),
+    );
+    expect(schema("Sale")?.required).toEqual(expect.arrayContaining(["voided"]));
   });
 });
 

@@ -291,8 +291,8 @@ describe("PostingRequestedConsumer.handle — US3 reversal cardinality (data-mod
     const voidId = "01900000-0000-7000-8000-0000005ee0d1";
     const refundId = "01900000-0000-7000-8000-0000005ee0d2";
     await e.admin.query(
-      `INSERT INTO sale_voids (id, sale_id, tenant_id, store_id, source_system, external_id, payload_hash, created_by)
-       VALUES ($1, $2, $3, $4, 'pos-prc', 'void-rev-1', $5, $6)`,
+      `INSERT INTO sale_voids (id, sale_id, tenant_id, store_id, business_date, source_system, external_id, payload_hash, created_by)
+       VALUES ($1, $2, $3, $4, '2026-05-01', 'pos-prc', 'void-rev-1', $5, $6)`,
       [voidId, saleId, TENANT, STORE_MAPPED, PAYLOAD_HASH, ACTOR],
     );
     await e.admin.query(

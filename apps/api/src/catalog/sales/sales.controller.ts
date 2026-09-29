@@ -23,6 +23,7 @@
  * provenance dedup-hit (deterministic, identical body — FR-100).
  */
 import {
+  BadRequestException,
   Body,
   ConflictException,
   Controller,
@@ -34,6 +35,7 @@ import {
   Req,
   Res,
   UnauthorizedException,
+  UnprocessableEntityException,
   UseGuards,
 } from "@nestjs/common";
 import type { Response } from "express";
@@ -60,6 +62,21 @@ import {
   type RecordRefundRequestDto,
 } from "./dto/record-refund-request.dto";
 import {
+  RecordReturnRequestSchema,
+  type RecordReturnRequestDto,
+} from "./dto/record-return-request.dto";
+import { isPosReturnsEnabled } from "./returns-gate";
+import {
+  SaleReturnsService,
+  type SaleReturnProjection,
+} from "./sale-returns.service";
+import {
+  ReturnLineInvalidError,
+  ReturnOverReturnError,
+  ReturnTenderMismatchError,
+  SaleAlreadyReversedError,
+} from "./sale-reversal";
+import {
   SalesService,
   SaleNotFoundError,
   TerminalEventProvenanceConflictError,
@@ -71,9 +88,43 @@ import {
 const SALE_REF_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Map a void / return service error to its contract response. Every code is
+ * passed explicitly: the filter's status fallback has no 422 case.
+ */
+function toReversalHttpError(err: unknown): unknown {
+  if (err instanceof SaleNotFoundError) {
+    // Cross-tenant / cross-store / unknown sale are indistinguishable.
+    return new NotFoundException("not_found");
+  }
+  if (err instanceof TerminalEventProvenanceConflictError) {
+    // Provenance reused for a different sale or payload → 409 (FR-013).
+    return new ConflictException("conflict");
+  }
+  if (err instanceof SaleAlreadyReversedError) {
+    return new ConflictException({ code: "already_reversed", message: "sale already reversed" });
+  }
+  if (err instanceof ReturnOverReturnError) {
+    return new ConflictException({ code: "over_return", message: "return exceeds the returnable quantity" });
+  }
+  if (err instanceof ReturnTenderMismatchError) {
+    return new UnprocessableEntityException({
+      code: "return_tender_mismatch",
+      message: "refund tenders do not match the return total",
+    });
+  }
+  if (err instanceof ReturnLineInvalidError) {
+    return new BadRequestException({ code: "validation_error", message: "lineRef is not a line of this sale" });
+  }
+  return err;
+}
+
 @Controller()
 export class SalesController {
-  constructor(private readonly salesService: SalesService) {}
+  constructor(
+    private readonly salesService: SalesService,
+    private readonly saleReturnsService: SaleReturnsService,
+  ) {}
 
   @Post("api/pos/v1/sales")
   // Guard order matters: the envelope guard runs FIRST (resolves
@@ -191,15 +242,57 @@ export class SalesController {
       }
       return result.projection;
     } catch (err) {
-      if (err instanceof SaleNotFoundError) {
-        // Cross-tenant / cross-store / unknown sale are indistinguishable.
-        throw new NotFoundException("not_found");
+      throw toReversalHttpError(err);
+    }
+  }
+
+  /**
+   * RT-73 line-aware return (RT-14 D1–D3). Behind the AC4 deployment gate:
+   * until `POS_RETURNS_ENABLED` is on, the route answers 404 and records
+   * nothing, so no `return` reversal reaches a Connector that predates RT-16.
+   */
+  @Post("api/pos/v1/sales/:saleRef/returns")
+  @UseGuards(PosOperatorEnvelopeSaleGuard)
+  @Idempotent("required")
+  @Auditable("sale.returned")
+  async recordReturn(
+    @Req() request: TenantContextRequest,
+    @Param("saleRef") saleRef: string,
+    @Body(new ZodValidationPipe(RecordReturnRequestSchema))
+    body: RecordReturnRequestDto,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<SaleReturnProjection> {
+    if (!isPosReturnsEnabled()) {
+      throw new NotFoundException("not_found");
+    }
+    const ctx = request.context;
+    if (!ctx || ctx.tenantId === null || ctx.userId === null) {
+      throw new UnauthorizedException("Unauthorized");
+    }
+    if (ctx.storeId === null) {
+      throw new UnauthorizedException("store_context_required");
+    }
+    if (!SALE_REF_RE.test(saleRef)) {
+      throw new NotFoundException("not_found");
+    }
+    try {
+      const result = await this.saleReturnsService.recordReturn({
+        tenantId: ctx.tenantId,
+        storeId: ctx.storeId,
+        actorUserId: ctx.userId,
+        saleRef,
+        body,
+      });
+      if (result.created) {
+        res.status(HttpStatus.CREATED);
+      } else {
+        // Provenance replay: identical stored return, no duplicate (FR-013).
+        res.status(HttpStatus.OK);
+        res.setHeader("Idempotent-Replayed", "true");
       }
-      if (err instanceof TerminalEventProvenanceConflictError) {
-        // Void provenance reused for a different sale → 409 (FR-013).
-        throw new ConflictException("conflict");
-      }
-      throw err;
+      return result.projection;
+    } catch (err) {
+      throw toReversalHttpError(err);
     }
   }
 

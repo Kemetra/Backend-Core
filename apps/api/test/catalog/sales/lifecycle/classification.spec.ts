@@ -39,6 +39,9 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import {
   saleLines,
   saleRefunds,
+  saleReturnLines,
+  saleReturns,
+  saleReturnTenders,
   sales,
   saleVoids,
 } from "@data-pulse-2/db/schema";
@@ -111,6 +114,7 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       "tenant_id",
       "store_id",
       "voided_at",
+      "business_date",
       "source_system",
       "external_id",
       "payload_hash",
@@ -135,6 +139,52 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       "created_by",
       "created_at",
     ],
+  },
+  // RT-73 (0032) — re-reviewed under SI-012. `reason` is operator free text
+  // that must not carry customer PII. sale_return_tenders records only the
+  // refund payout METHOD ('cash') and AMOUNT as a fact (RT-14 D3): no card,
+  // account or instrument data, no customer reference. A non-cash method
+  // (RT-10) re-triggers SI-012.
+  {
+    name: "sale_returns",
+    table: saleReturns,
+    columns: [
+      "id",
+      "sale_id",
+      "tenant_id",
+      "store_id",
+      "return_seq",
+      "returned_at",
+      "business_date",
+      "currency_code",
+      "return_total",
+      "reason",
+      "source_system",
+      "external_id",
+      "payload_hash",
+      "created_by",
+      "created_at",
+    ],
+  },
+  {
+    name: "sale_return_lines",
+    table: saleReturnLines,
+    columns: [
+      "id",
+      "return_id",
+      "sale_line_id",
+      "tenant_id",
+      "store_id",
+      "quantity",
+      "line_amount",
+      "tax_amount",
+      "returned_quantity_after",
+    ],
+  },
+  {
+    name: "sale_return_tenders",
+    table: saleReturnTenders,
+    columns: ["id", "return_id", "tenant_id", "store_id", "ordinal", "method", "amount"],
   },
 ];
 

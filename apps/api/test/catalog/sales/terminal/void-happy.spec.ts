@@ -77,9 +77,19 @@ describe("T050 — recordVoid happy path (separate terminal event, sale unchange
     );
     expect(voids.rows[0]?.n).toBe("1");
 
-    // The sale is NEVER mutated — its projection is byte-identical afterwards.
+    // The sale is NEVER mutated: every stored field of its projection is
+    // identical afterwards. Only the DERIVED return state moves (RT-73): the
+    // sale reads as voided and nothing on it remains returnable (RT-14 D2).
     const after = await h.harness.http().get(`/api/pos/v1/sales/${saleRef}`);
     expect(after.status).toBe(200);
-    expect(after.body).toEqual(before.body);
+    expect(before.body.voided).toBe(false);
+    expect(after.body).toEqual({
+      ...before.body,
+      voided: true,
+      lines: before.body.lines.map((l: Record<string, unknown>) => ({
+        ...l,
+        returnableQuantity: "0.000000",
+      })),
+    });
   });
 });

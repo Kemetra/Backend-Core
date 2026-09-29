@@ -38,6 +38,7 @@ const SALE_ROW = {
 };
 
 const LINE_ROW = {
+  line_ref: "00000000-0000-7000-8000-0000000011e1",
   line_name: "Line 1",
   unit_price: "19.9900",
   currency_code: "USD",
@@ -83,5 +84,76 @@ describe("buildWorkItem — issue #506 erpnextItemRef object shape", () => {
     const item = await buildWorkItem(client, STATUS_ROW);
 
     expect(item).toBeNull();
+  });
+});
+
+// RT-73: lineRef on every line; reversals carry their own recordedAt /
+// businessDate (RT-63); a return carries only its returned lines.
+describe("buildWorkItem — RT-73 lineRef, reversal time and return lines", () => {
+  const REVERSAL_ROW = { ...STATUS_ROW, kind: "reversal" as const, sourceRefId: "00000000-0000-7000-8000-0000000ae7e1" };
+
+  it("emits each line's lineRef (= sale_lines.id)", async () => {
+    const client = fakeClient([{ rows: [SALE_ROW] }, { rows: [LINE_ROW] }]);
+    const item = await buildWorkItem(client, STATUS_ROW);
+    expect(item!.sale.lines[0]!.lineRef).toBe(LINE_ROW.line_ref);
+  });
+
+  it("a void carries its own recordedAt + businessDate and no returnLines", async () => {
+    const client = fakeClient([
+      { rows: [SALE_ROW] },
+      { rows: [LINE_ROW] },
+      {
+        rows: [
+          {
+            reversal_kind: "void",
+            recorded_at: new Date("2026-06-07T21:30:00.000Z"),
+            business_date: "2026-06-08",
+          },
+        ],
+      },
+    ]);
+    const item = await buildWorkItem(client, REVERSAL_ROW);
+    expect(item!.reversalOf).toEqual({
+      sourceSystem: SALE_ROW.source_system,
+      externalId: SALE_ROW.external_id,
+      reversalKind: "void",
+      recordedAt: "2026-06-07T21:30:00.000Z",
+      businessDate: "2026-06-08",
+    });
+    // The work-item's top-level business date stays the ORIGINAL sale's.
+    expect(item!.businessDate).toBe(SALE_ROW.business_date);
+  });
+
+  it("a legacy refund carries recordedAt but no businessDate (not persisted, RT-63 P2)", async () => {
+    const client = fakeClient([
+      { rows: [SALE_ROW] },
+      { rows: [LINE_ROW] },
+      { rows: [{ reversal_kind: "refund", recorded_at: new Date("2026-06-07T10:00:00.000Z"), business_date: null }] },
+    ]);
+    const item = await buildWorkItem(client, REVERSAL_ROW);
+    expect(item!.reversalOf).toEqual({
+      sourceSystem: SALE_ROW.source_system,
+      externalId: SALE_ROW.external_id,
+      reversalKind: "refund",
+      recordedAt: "2026-06-07T10:00:00.000Z",
+    });
+  });
+
+  it("a return carries only its returned lines as magnitudes", async () => {
+    const client = fakeClient([
+      { rows: [SALE_ROW] },
+      { rows: [LINE_ROW] },
+      { rows: [{ reversal_kind: "return", recorded_at: new Date("2026-06-07T10:00:00.000Z"), business_date: "2026-06-07" }] },
+      { rows: [{ line_ref: LINE_ROW.line_ref, quantity: "1.000000", line_amount: "6.6667", tax_amount: null }] },
+    ]);
+    const item = await buildWorkItem(client, REVERSAL_ROW);
+    expect(item!.reversalOf).toEqual({
+      sourceSystem: SALE_ROW.source_system,
+      externalId: SALE_ROW.external_id,
+      reversalKind: "return",
+      recordedAt: "2026-06-07T10:00:00.000Z",
+      businessDate: "2026-06-07",
+      returnLines: [{ lineRef: LINE_ROW.line_ref, quantity: "1.000000", lineAmount: "6.6667", taxAmount: null }],
+    });
   });
 });

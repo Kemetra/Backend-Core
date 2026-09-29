@@ -53,6 +53,13 @@ info:
     this version, because Backend-Core emits them from RT-73 (they become
     required then); a Connector that predates them ignores them.
 
+    RT-73 (1.3.0-draft): Backend-Core emits them. `lineRef` and
+    `reversalOf.recordedAt` are REQUIRED; `reversalOf.businessDate` is
+    required for `void` and `return` (a legacy `refund` has no persisted
+    business date, RT-63 P2). Returns exist only once the API's
+    `POS_RETURNS_ENABLED` gate is on, which follows RT-16. Return lines are
+    priced by the cumulative-difference rule (RT-73 comment 10406).
+
     SETTLEMENT (RT-76; RT-10 D3(b)/D4/D6/D8, amending 011-DR-POSTING rider R1 —
     see `specs/011-…/decisions/posting-decision-amendment-2026-09-29-rt10.md`):
     `sale.tenders` carries how the sale was paid. When it is non-empty, the
@@ -65,33 +72,36 @@ info:
     from the frozen lines, and `posTotal` may differ from it (008 keeps the POS
     total verbatim; the difference is only an advisory mismatch flag). If the
     tender total differs from the document total the Connector would build, it
-    acks `permanently_rejected` / `validation` (a reconciliation case). It never
-    adjusts a line, invents change or leaves a partial balance to force a match. When `sale.tenders` is absent (an older
-    Backend-Core) or empty (a tender-unknown sale), the Connector posts exactly
-    as before: an unpaid invoice with the amount outstanding (rider R1 interim
-    mode). Tender is NEVER derived from `posTotal`.
+    acks `permanently_rejected` / `validation` (a reconciliation case). It
+    never adjusts a line, invents change or leaves a partial balance to force a
+    match. When `sale.tenders` is absent (an older Backend-Core) or empty (a
+    tender-unknown sale), the Connector posts exactly as before: an unpaid
+    invoice with the amount outstanding (rider R1 interim mode). Tender is
+    NEVER derived from `posTotal`.
 
     Reversal settlement (RT-10 D6): a `void` refunds by mirroring the original
-    sale's tenders (`sale.tenders` on the reversal work item), and a `return` ALWAYS pays out its `reversalOf.refundTenders`,
-    because they record cash that actually left the drawer, even when the
-    original sale is tender-unknown. Both are non-negative MAGNITUDES that the Connector negates
+    sale's tenders (`sale.tenders` on the reversal work item), and a `return`
+    ALWAYS pays out its `reversalOf.refundTenders`, because they record cash
+    that actually left the drawer, even when the original sale is
+    tender-unknown. Both are non-negative MAGNITUDES that the Connector negates
     on the reversing document, exactly as it negates `returnLines`. Only a
     `void` of a tender-unknown sale (no tenders to mirror) stays an outstanding
     credit note, as today.
 
-    ROLLOUT ORDER (Connector first): Backend-Core MUST NOT emit `sale.tenders` or `reversalOf.refundTenders`
-    until the Connector supports settlement (RT-78). A Connector that predates
-    them would post the sale UNPAID and ack `posted` — a terminal outcome that
-    a later Connector upgrade never revisits — so the sale would stay unpaid in
-    ERPNext for good; a Connector that validates the feed strictly would reject
-    the item instead.
+    ROLLOUT ORDER (Connector first): Backend-Core MUST NOT emit `sale.tenders`
+    or `reversalOf.refundTenders` until the Connector supports settlement
+    (RT-78). A Connector that predates them would post the sale UNPAID and ack
+    `posted` — a terminal outcome that a later Connector upgrade never
+    revisits — so the sale would stay unpaid in ERPNext for good; a Connector
+    that validates the feed strictly would reject the item instead.
 
-    INVARIANT: Backend-Core MUST NOT offer a work item for a tender-bearing sale (or its return) without its tenders
-    — withholding only the fields would post that sale unpaid, terminally, in
-    exactly the same way. So Backend-Core either does not accept `tenders` on
-    capture until the Connector supports settlement, or holds such work items
-    (not offered) until it does. Sales captured without tenders are unaffected.
-    Both fields are OPTIONAL and additive.
+    INVARIANT: Backend-Core MUST NOT offer a work item for a tender-bearing sale
+    (or its return) without its tenders — withholding only the fields would post
+    that sale unpaid, terminally, in exactly the same way. So Backend-Core
+    either does not accept `tenders` on capture until the Connector supports
+    settlement, or holds such work items (not offered) until it does. Sales
+    captured without tenders are unaffected. Both fields are OPTIONAL and
+    additive.
 
     SALE PROJECTION IS A CURATED SUBSET (by design): this contract's `Sale`
     mirrors 008's `Sale` minus request-only / advisory fields the connector does
@@ -437,7 +447,7 @@ components:
     ReversalRef:
       type: object
       additionalProperties: false
-      required: [sourceSystem, externalId, reversalKind]
+      required: [sourceSystem, externalId, reversalKind, recordedAt]
       if:
         properties:
           reversalKind:
@@ -450,10 +460,19 @@ components:
           anyOf:
             - required: [returnLines]
             - required: [refundTenders]
+      allOf:
+        - if:
+            properties:
+              reversalKind:
+                enum: [void, return]
+            required: [reversalKind]
+          then:
+            required: [businessDate]
       description: >
         Provenance of the original sale a reversal work-item targets (O-4),
-        plus the reversal's own event time (RT-63). `recordedAt` and
-        `businessDate` are emitted from RT-73 and optional until then.
+        plus the reversal's own event time (RT-63). `businessDate` is present
+        for `void` and `return`; a legacy `refund` carries none (not persisted,
+        RT-63 P2).
 
 
         Posting (RT-63 P3): the reversal posts ON `businessDate` AT
@@ -507,7 +526,8 @@ components:
             The reversal's own business day: `recordedAt` in the store
             timezone, persisted at insert so a later timezone change never
             rewrites it (RT-63 P2). Distinct from the work-item's top-level
-            `businessDate`, which stays the original sale's.
+            `businessDate`, which stays the original sale's. Required for
+            `void` / `return`; absent for a legacy `refund`.
         returnLines:
           type: array
           minItems: 1
@@ -534,10 +554,12 @@ components:
       additionalProperties: false
       required: [lineRef, quantity, lineAmount, taxAmount]
       description: >
-        One returned line, priced by Backend-Core from the frozen sale line
-        (RT-14 D1): `lineAmount = round4(sale lineAmount × quantity / sold
-        quantity)`, tax split the same way, and the return that exhausts a
-        line takes the exact remainder. Values are non-negative MAGNITUDES —
+        One returned line, priced by Backend-Core from the frozen sale line by
+        the cumulative-difference rule (RT-14 D1 amended by option (a), RT-73
+        comment 10406): with sold quantity Q, line amount A and c already
+        returned, `lineAmount = round4(A × (c + q) / Q) − round4(A × c / Q)`,
+        tax split the same way, so a line's returns sum to A exactly. Values
+        are non-negative MAGNITUDES —
         the Connector negates them on the credit note and links each row to
         the original invoice line through `lineRef` (RT-14 D6).
       properties:
@@ -665,7 +687,8 @@ components:
     SaleLine:
       type: object
       additionalProperties: false
-      required: [lineName, unitPrice, currencyCode, quantity, lineAmount, unit, erpnextItemRef]
+      required:
+        [lineRef, lineName, unitPrice, currencyCode, quantity, lineAmount, unit, erpnextItemRef]
       description: >
         Wire projection of a frozen 008 sale-line snapshot (mirrors sales.yaml),
         carrying the DP2-resolved ERPNext Item identity. Every line OFFERED on
@@ -681,7 +704,7 @@ components:
             Stable line identity (= `sale_lines.id`, the same value as
             `pos-sales` `SaleLine.lineRef`). A return's `returnLines` point at
             it, and the Connector stores it on the ERPNext Sales Invoice Item
-            (RT-14 D6). Emitted from RT-73; optional until then.
+            (RT-14 D6).
         lineName:
           type: string
         unitPrice:
