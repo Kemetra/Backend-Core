@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -11,7 +11,7 @@ info:
     audit, and outbox. It does NOT re-invent ingestion and it does NOT model
     tender / payment (deferred to 010 per gate A.5).
 
-    Four operations, all POS-facing (`/api/pos/v1/...`), authenticated via the
+    Five operations, all POS-facing (`/api/pos/v1/...`), authenticated via the
     `operatorAuthorization` scheme — the opaque DP-2-issued operator-authorization
     ENVELOPE presented as `Authorization: Bearer <envelope>` (031 D1+D2). This
     REPLACES the prior 008 Option-Y auth (a genuine Clerk JWT +
@@ -33,12 +33,23 @@ info:
       2. `recordVoid`   — create a void terminal event referencing a sale;
          stamp `voidedAt` (server clock); never mutate the original; idempotent
          re-delivery (FR-010/011/013/014).
-      3. `recordRefund` — create a refund terminal event referencing a sale;
-         stamp `refundedAt`; preserve the POS-reported refund amount verbatim;
-         idempotent (FR-010/012/013/014). No tender fields (gate A.5).
+      3. `recordRefund` — DEPRECATED (RT-14 D1). Create a refund terminal
+         event referencing a sale; stamp `refundedAt`; preserve the
+         POS-reported refund amount verbatim; idempotent (FR-010/012/013/014).
+         No tender fields (gate A.5). Not for new use — see `recordReturn`.
       4. `readSale`     — the minimal authorized read to resolve a sale for
-         void/refund and duplicate-replay; object-level authz; cross-tenant /
+         void/return and duplicate-replay; object-level authz; cross-tenant /
          out-of-scope ids are non-disclosing 404s (FR-014/063/100/102).
+      5. `recordReturn` — RT-72 (RT-14 D1–D5): a line-aware return naming
+         `lines[{lineRef, quantity}]`; the server computes all money and
+         records the refund tender as a fact. CONTRACT-ONLY until RT-73.
+
+    RT-72 versioning (additive): `recordReturn` is new; `SaleLine` gains
+    `lineRef`, `returnedQuantity` and `returnableQuantity`, and `Sale` gains
+    `voided`, on both `readSale` and `captureSale`. The server emits the new
+    fields from RT-73. Because `Sale` / `SaleLine` are
+    `additionalProperties: false`, a client that validates responses
+    strictly (the POS) must re-pin this contract before RT-73 deploys.
 
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
@@ -145,7 +156,8 @@ paths:
       security:
         - operatorAuthorization: []
       description: >
-        Resolve a single sale for void/refund or duplicate-replay confirmation.
+        Resolve a single sale for void/return or duplicate-replay confirmation,
+        including each line's `lineRef` and remaining `returnableQuantity`.
         Object-level authz: a sale outside the caller's resolved (tenant, store)
         scope returns a non-disclosing 404 with no existence leak via any
         response, error, or conflict shape (FR-063/102, SI-004).
@@ -183,6 +195,11 @@ paths:
         deduped on its own `(tenant, sourceSystem, externalId)` provenance — a
         second void of the same sale is a deterministic already-applied outcome
         with no duplicate record (FR-013).
+
+
+        Reversal exclusivity (RT-14 D2; enforced from RT-73): a sale has AT
+        MOST ONE void, and a void excludes returns. A void of a sale that has
+        any return is 409 `already_reversed` (see `ReversalConflict`).
       parameters:
         - $ref: "#/components/parameters/SaleRef"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -218,20 +235,28 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          $ref: "#/components/responses/Conflict"
+          $ref: "#/components/responses/ReversalConflict"
         "422":
           $ref: "#/components/responses/AlreadyApplied"
         "500":
           $ref: "#/components/responses/SystemFailure"
   /api/pos/v1/sales/{saleRef}/refund:
     post:
-      summary: Record a refund as a separate terminal event.
+      summary: Record a refund as a separate terminal event (deprecated).
       operationId: recordRefund
+      deprecated: true
       x-idempotency: required
       tags: [pos-sales]
       security:
         - operatorAuthorization: []
       description: >
+        DEPRECATED (RT-14 D1): not for new use — record a line-aware return
+        with `recordReturn` instead. Existing refund rows stay readable. The
+        amount-only refund never reaches the posting feed as an amount, so
+        since RT-71 the Connector rejects refund reversals instead of posting
+        a full-value credit note.
+
+
         Create a refund terminal event referencing the sale, stamping
         `refundedAt` from the server clock and preserving the POS-reported
         refund amount verbatim (FR-012/030). The original sale is NEVER mutated.
@@ -279,6 +304,111 @@ paths:
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/AlreadyApplied"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+  /api/pos/v1/sales/{saleRef}/returns:
+    post:
+      summary: Record a line-aware return against a sale.
+      operationId: recordReturn
+      x-idempotency: required
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-72 lands this contract first. Backend-Core has no controller route,
+        tables or invariants for it yet; they ship in RT-73. Do not generate
+        this operation as a live API until then.
+      tags: [pos-sales]
+      security:
+        - operatorAuthorization: []
+      description: >
+        RT-14 D1. Return some or all of the quantity on one or more of a sale's
+        lines, and record how the refund was paid out. Replaces the amount-only
+        `recordRefund` for new use. The original sale and its lines are NEVER
+        mutated; the return is a separate append-only record.
+
+
+        CONTRACT-ONLY (RT-72, contract-first): the handler, the
+        `sale_returns` / `sale_return_lines` tables and the invariants below
+        land in RT-73. Until then this route is not wired.
+
+
+        Money (D1): the client sends quantities only; the server prices every
+        returned line from the frozen sale line. For a returned `quantity` on a
+        line sold with `quantity` Q and `lineAmount` A:
+        `lineAmount = round4(A × quantity / Q)`, and the line's snapshot
+        `taxAmount` is split the same way (a null line tax stays null). The
+        return that exhausts a line (cumulative returned = Q) takes the EXACT
+        remainder instead, so all returns on a line sum to the line exactly.
+        `round4` is `round(numeric, 4)` in Postgres `numeric`, never a float.
+        `returnTotal` = Σ returned `lineAmount`, the same basis as capture's
+        `posTotal` = Σ `lineAmount`; the tax share is carried inside it for
+        posting, not added on top.
+
+
+        Tender (D3): `refundTenders` records how the refund was paid out, as a
+        fact. The amounts MUST sum to the server-computed `returnTotal`, else
+        422 `return_tender_mismatch`. Cash only for the pilot; the `method`
+        enum grows with the RT-10 tender decision. ERP settlement (Payment
+        Entry) is deferred to RT-10.
+
+
+        Invariants (D2), enforced in the database under a row lock on the sale
+        as well as in the service: per line, cumulative returned ≤ sold
+        (409 `over_return`); a voided sale cannot be returned and a sale with
+        any return cannot be voided (409 `already_reversed`). Each `lineRef`
+        must be a line of THIS sale and appear at most once per request, and
+        each `quantity` must be > 0 — otherwise 400 `validation_error`.
+        Online-only (D4) and same-terminal lookup (D5) are POS rules.
+
+
+        Idempotency: the `Idempotency-Key` header is REQUIRED and the return is
+        deduped on its own `(tenant, sourceSystem, externalId)` provenance. The
+        same provenance with the same payload replays (200); with a different
+        payload or against a different sale it is 409 `conflict`.
+
+
+        Posting: each return becomes a `reversal` work-item with
+        `reversalKind: return` on the ERPNext posting feed
+        (`erpnext-connector/posting-feed.yaml`). Backend-Core MUST NOT emit it
+        before the Connector supports it (RT-16).
+      parameters:
+        - $ref: "#/components/parameters/SaleRef"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordReturnRequest"
+      responses:
+        "200":
+          description: >
+            Idempotent replay — this return was already recorded (same
+            provenance and payload, or same `Idempotency-Key`). Returns the
+            identical return projection with `Idempotent-Replayed: true`; no
+            duplicate record.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SaleReturn"
+        "201":
+          description: Return recorded for the first time.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SaleReturn"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/ReversalConflict"
+        "422":
+          $ref: "#/components/responses/ReturnTenderMismatch"
         "500":
           $ref: "#/components/responses/SystemFailure"
 
@@ -535,6 +665,82 @@ components:
           $ref: "#/components/schemas/CurrencyCode"
 
     # -----------------------------------------------------------------------
+    # Return request (RT-14 D1/D3) — strict; the server computes all money
+    # -----------------------------------------------------------------------
+    RecordReturnRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceSystem, externalId, lines, refundTenders]
+      description: >
+        A line-aware return (RT-14 D1). Names lines by `lineRef` and quantity
+        only — no amounts: the server prices each line from the frozen sale
+        line (see `recordReturn`). `returnedAt` / business date / tenant /
+        store / actor resolve server-side and are rejected if body-supplied
+        (FR-061). Auth: the operator-authorization envelope in
+        `Authorization: Bearer <envelope>` (`operatorAuthorization`),
+        re-verified live per request (G-4).
+      properties:
+        sourceSystem:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Provenance + dedup key of the return itself (FR-013).
+        externalId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: POS-side return identifier; with `sourceSystem`, the return's dedup key.
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ReturnLineRequest"
+          description: The lines returned. Each `lineRef` at most once per request.
+        refundTenders:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/RefundTender"
+          description: >
+            How the refund was paid out (D3). The amounts MUST sum to the
+            server-computed `returnTotal`, else 422 `return_tender_mismatch`.
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Optional free-text return reason. No PII.
+    ReturnLineRequest:
+      type: object
+      additionalProperties: false
+      required: [lineRef, quantity]
+      properties:
+        lineRef:
+          type: string
+          format: uuid
+          description: The sale line returned (`SaleLine.lineRef`). Must belong to this sale.
+        quantity:
+          type: string
+          pattern: '^[0-9]{1,13}(\.[0-9]{1,6})?$'
+          description: >
+            Quantity returned, exact-decimal string (no float), same bound as
+            the sale line's `quantity`. MUST be > 0 and ≤ the line's
+            `returnableQuantity` (else 400 / 409 `over_return`).
+    RefundTender:
+      type: object
+      additionalProperties: false
+      required: [method, amount]
+      description: >
+        One refund payout, recorded as a fact (RT-14 D3), in the sale's
+        currency. ERP settlement is deferred to RT-10.
+      properties:
+        method:
+          type: string
+          enum: [cash]
+          description: Cash only for the pilot; further methods follow the RT-10 tender decision.
+        amount:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+
+    # -----------------------------------------------------------------------
     # Response projections (toBody) — NOT the DB row shape (§IV)
     # -----------------------------------------------------------------------
     Sale:
@@ -552,6 +758,7 @@ components:
         - externalId
         - mismatchFlag
         - syncStatus
+        - voided
         - lines
       description: >
         Wire projection of a captured sale. Decoupled from the `sales` /
@@ -607,6 +814,12 @@ components:
             `synced` by the off-request drain that sets `processedAt`; the
             dead-letter classifier sets `failed-retryable` / `failed-needs-repair`.
             POS never overrides it (the terminal observes, DP-2 decides).
+        voided:
+          type: boolean
+          description: >
+            True when a void terminal event exists for the sale (derived, §X —
+            the sale row is never mutated). A voided sale cannot be returned
+            (RT-14 D2).
         lines:
           type: array
           items:
@@ -614,9 +827,24 @@ components:
     SaleLine:
       type: object
       additionalProperties: false
-      required: [lineName, unitPrice, currencyCode, quantity, lineAmount, unit]
+      required:
+        - lineRef
+        - lineName
+        - unitPrice
+        - currencyCode
+        - quantity
+        - lineAmount
+        - unit
+        - returnedQuantity
+        - returnableQuantity
       description: Wire projection of a frozen sale-line snapshot.
       properties:
+        lineRef:
+          type: string
+          format: uuid
+          description: >
+            Stable line identity (= `sale_lines.id`). A return names the line
+            by it (RT-14 D1); store it at capture.
         lineName:
           type: string
         unitPrice:
@@ -640,6 +868,101 @@ components:
             - type: string
               format: uuid
             - type: "null"
+        returnedQuantity:
+          type: string
+          description: Cumulative quantity returned on this line across all returns ("0" when none).
+        returnableQuantity:
+          type: string
+          description: >
+            Quantity still returnable: `quantity` − `returnedQuantity`, and "0"
+            when the sale is voided.
+    SaleReturn:
+      type: object
+      additionalProperties: false
+      required:
+        - returnRef
+        - saleRef
+        - recordedAt
+        - businessDate
+        - sourceSystem
+        - externalId
+        - currencyCode
+        - returnTotal
+        - lines
+        - refundTenders
+        - reason
+      description: >
+        Wire projection of a recorded return (RT-14 D1). A separate append-only
+        record; the sale is unchanged. Carries no `tenant_id`, no
+        `payload_hash`, no `created_by`.
+      properties:
+        returnRef:
+          type: string
+          format: uuid
+          description: Stable reference to the return row.
+        saleRef:
+          type: string
+          format: uuid
+          description: The sale this return is against.
+        recordedAt:
+          type: string
+          format: date-time
+          description: Server-clock stamp of the return (never a client time).
+        businessDate:
+          type: string
+          format: date
+          description: >
+            The return's own business day: `recordedAt` in the store timezone,
+            persisted at insert so a later timezone change never rewrites it
+            (RT-63 P2). The sale's `businessDate` is unaffected.
+        sourceSystem:
+          type: string
+        externalId:
+          type: string
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+        returnTotal:
+          $ref: "#/components/schemas/DecimalAmount"
+          description: Σ returned `lineAmount` — the server-computed refund total.
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ReturnLine"
+        refundTenders:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/RefundTender"
+        reason:
+          type: [string, "null"]
+    ReturnLine:
+      type: object
+      additionalProperties: false
+      required:
+        [lineRef, quantity, lineAmount, taxAmount, returnedQuantity, returnableQuantity]
+      description: One returned line as priced by the server, with the line's remaining returnability.
+      properties:
+        lineRef:
+          type: string
+          format: uuid
+        quantity:
+          type: string
+          description: Quantity returned by THIS return.
+        lineAmount:
+          $ref: "#/components/schemas/DecimalAmount"
+          description: Server-computed amount for this return's quantity (round4 pro-rata or exact remainder).
+        taxAmount:
+          description: The tax share of `lineAmount`, split the same way; null when the sale line has no tax.
+          anyOf:
+            - $ref: "#/components/schemas/DecimalAmount"
+            - type: "null"
+        returnedQuantity:
+          type: string
+          description: Cumulative quantity returned on the line, including this return.
+        returnableQuantity:
+          type: string
+          description: Quantity still returnable on the line after this return.
     SaleTerminalEvent:
       type: object
       additionalProperties: false
@@ -755,6 +1078,30 @@ components:
         FR-101 `already-applied` — a re-delivered terminal event whose effect is
         already recorded (e.g. a sale already voided). Deterministic, no
         duplicate record (FR-013).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ReversalConflict:
+      description: >
+        409 on a reversal (void or return). `error.code` is one of:
+        `idempotency_key_conflict` — the same `Idempotency-Key` reused with a
+        different payload; `conflict` — the event's `(sourceSystem,
+        externalId)` provenance was already used with a different payload or
+        against a different sale; `already_reversed` (RT-14 D2) — void and
+        return exclude each other: a return against a voided sale, or a void of
+        a sale that has a return; `over_return` (returns only) — the cumulative
+        returned quantity on a line would exceed the quantity sold.
+        Deterministic; nothing is recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ReturnTenderMismatch:
+      description: >
+        422 `return_tender_mismatch` (RT-14 D3) — the `refundTenders` amounts
+        do not sum to the server-computed `returnTotal`. Deterministic; nothing
+        is recorded.
       content:
         application/json:
           schema:

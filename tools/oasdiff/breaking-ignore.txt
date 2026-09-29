@@ -7,3 +7,4 @@
 #
 # Example:
 #   RT-123 intentional: POST /api/v1/example added the new required request header 'X-Example'
+RT-72 intentional (RT-14 D1; Backend-Core does not emit it before RT-16): GET /api/connector/v1/erpnext/postings added the new `return` enum value to the `items/items/reversalOf/anyOf[#/components/schemas/ReversalRef]/reversalKind` response property for the response status `200`
