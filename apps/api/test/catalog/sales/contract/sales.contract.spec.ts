@@ -485,6 +485,14 @@ describe("pos-sales/sales.yaml — RT-72 returns contract", () => {
     expect(op?.description).toMatch(/POS_RETURNS_ENABLED/);
   });
 
+  it("the returns gate waits for Connector settlement (RT-78) as well as returns (RT-16) (review #650)", () => {
+    const op = findOp("recordReturn") as (OperationObject & { description?: string; "x-runtime-note"?: string }) | undefined;
+    for (const text of [op?.["x-runtime-note"] ?? "", op?.description ?? ""]) {
+      expect(text).toMatch(/RT-16/);
+      expect(text).toMatch(/RT-78/);
+    }
+  });
+
   it("prices returns by the cumulative-difference rule (option (a), RT-73 comment 10406)", () => {
     const op = findOp("recordReturn") as (OperationObject & { description?: string }) | undefined;
     expect(op?.description).toMatch(/round4\(A × \(c \+ q\) \/ Q\) − round4\(A × c \/ Q\)/);

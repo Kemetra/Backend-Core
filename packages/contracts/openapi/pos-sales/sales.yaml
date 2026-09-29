@@ -357,7 +357,8 @@ paths:
       x-runtime-note: >
         Live from RT-73 behind the `POS_RETURNS_ENABLED` deployment gate
         (default off → 404 `not_found`, nothing recorded). Enable it only once
-        the Connector posts `reversalKind: return` (RT-16).
+        the Connector posts `reversalKind: return` (RT-16) AND settles returns
+        with their refund tenders (RT-78).
       tags: [pos-sales]
       security:
         - operatorAuthorization: []
@@ -371,8 +372,11 @@ paths:
         DEPLOYMENT GATE (RT-73 AC4): the route is live but answers 404
         `not_found` and records nothing unless the API runs with
         `POS_RETURNS_ENABLED=true`. Enable it only once the Connector posts
-        `reversalKind: return` (RT-16); an earlier return would be
-        dead-lettered by the Connector as an unparseable work-item.
+        `reversalKind: return` (RT-16) AND supports settlement (RT-78). Before
+        RT-16 a return would be dead-lettered as an unparseable work-item;
+        before RT-78 it would post as an outstanding credit note (terminal)
+        although cash was paid out (RT-76, `erpnext-connector/posting-feed.yaml`
+        INVARIANT).
 
 
         Money (RT-14 D1, amended by option (a) — RT-73 comment 10406): the
@@ -416,7 +420,8 @@ paths:
         Posting: each return becomes a `reversal` work-item with
         `reversalKind: return` on the ERPNext posting feed
         (`erpnext-connector/posting-feed.yaml`). Backend-Core MUST NOT emit it
-        before the Connector supports it (RT-16).
+        before the Connector supports it (RT-16) and supports settlement
+        (RT-78).
       parameters:
         - $ref: "#/components/parameters/SaleRef"
         - $ref: "#/components/parameters/IdempotencyKey"
