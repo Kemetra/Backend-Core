@@ -109,8 +109,16 @@ receivables) is not superseded.
 
 ## 7. Rollout order
 
-Backend-Core records tenders from RT-77, but it MUST NOT emit tender fields on
-the posting feed until the Connector supports settlement (RT-78). A Connector
-without settlement support would post the sale unpaid and ack it `posted`. That
-outcome is terminal, so the sale would never be settled later. See the
-posting-feed contract's ROLLOUT ORDER.
+A Connector without settlement support would post a tendered sale unpaid and
+ack it `posted`. That outcome is terminal, so the sale would never be settled
+later. Two rules follow:
+
+* Backend-Core MUST NOT emit tender fields on the posting feed until the
+  Connector supports settlement (RT-78).
+* **Invariant:** a work item for a tender-bearing sale (or its return) is
+  never offered *without* its tenders. Withholding only the fields gives the
+  same terminal unpaid posting.
+
+So tender acceptance on capture (RT-77) goes live only once RT-78 is deployed,
+unless Backend-Core holds tender-bearing work items off the feed until then.
+See the posting-feed contract's ROLLOUT ORDER and INVARIANT.

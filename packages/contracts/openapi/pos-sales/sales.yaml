@@ -68,8 +68,11 @@ info:
     client that validates responses strictly must re-pin this version BEFORE RT-77 deploys
     (the same order as RT-72). The current POS capture client classifies the
     response by status code only.
-    Emitting tenders on the ERPNext posting feed is gated separately, Connector
-    first (see `erpnext-connector/posting-feed.yaml`, ROLLOUT ORDER).
+    Settlement is Connector-first: a tender-bearing sale must never reach the
+    ERPNext posting feed without its tenders, so accepting `tenders` on capture
+    must wait for Connector settlement support, or such sales must be held off
+    the feed until it lands (see `erpnext-connector/posting-feed.yaml`,
+    ROLLOUT ORDER and INVARIANT).
 
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever

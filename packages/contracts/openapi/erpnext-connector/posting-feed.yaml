@@ -77,9 +77,14 @@ info:
     them would post the sale UNPAID and ack `posted` — a terminal outcome that
     a later Connector upgrade never revisits — so the sale would stay unpaid in
     ERPNext for good; a Connector that validates the feed strictly would reject
-    the item instead. Backend-Core may capture and store tenders (RT-77) before
-    then; only their emission on this feed waits. Both fields are OPTIONAL and
-    additive.
+    the item instead.
+
+    INVARIANT: Backend-Core MUST NOT offer a work item for a tender-bearing sale (or its return) without its tenders
+    — withholding only the fields would post that sale unpaid, terminally, in
+    exactly the same way. So Backend-Core either does not accept `tenders` on
+    capture until the Connector supports settlement, or holds such work items
+    (not offered) until it does. Sales captured without tenders are unaffected.
+    Both fields are OPTIONAL and additive.
 
     SALE PROJECTION IS A CURATED SUBSET (by design): this contract's `Sale`
     mirrors 008's `Sale` minus request-only / advisory fields the connector does

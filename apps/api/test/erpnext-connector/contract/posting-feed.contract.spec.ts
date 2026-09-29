@@ -622,6 +622,12 @@ describe("erpnext-connector/posting-feed.yaml — RT-76 settlement", () => {
     const description = feedDoc.info?.description ?? "";
     expect(description).toContain("MUST NOT emit `sale.tenders` or `reversalOf.refundTenders`");
     expect(description).not.toContain("may emit them before the Connector ships");
+    // Review #645: gating only the fields still posts a tender-bearing sale
+    // unpaid (terminal). The work item must never be offered without them.
+    expect(description).toContain(
+      "MUST NOT offer a work item for a tender-bearing sale (or its return) without its tenders",
+    );
+    expect(description).not.toContain("may capture and store tenders (RT-77) before");
   });
 
   it("a return always pays out its refundTenders; only a void of a tender-unknown sale stays outstanding (D6, review #645)", () => {
