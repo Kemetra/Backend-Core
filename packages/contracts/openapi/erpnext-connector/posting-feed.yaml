@@ -99,9 +99,13 @@ info:
     (or its return) without its tenders — withholding only the fields would post
     that sale unpaid, terminally, in exactly the same way. So Backend-Core
     either does not accept `tenders` on capture until the Connector supports
-    settlement, or holds such work items (not offered) until it does. Sales
-    captured without tenders are unaffected. Both fields are OPTIONAL and
-    additive.
+    settlement, or holds such work items (not offered) until it does. A sale
+    captured without tenders still posts unpaid as before, but EVERY `return`
+    carries `refundTenders` (RT-14 D3), even against a tender-unknown sale, so
+    no `return` work item may be offered until the Connector supports settlement
+    (RT-78) as well as returns (RT-16) — whatever the original sale's tenders.
+    Offered earlier, it would post an outstanding credit note (terminal)
+    although cash was paid out. Both fields are OPTIONAL and additive.
 
     SALE PROJECTION IS A CURATED SUBSET (by design): this contract's `Sale`
     mirrors 008's `Sale` minus request-only / advisory fields the connector does

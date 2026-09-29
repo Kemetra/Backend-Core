@@ -661,6 +661,15 @@ describe("erpnext-connector/posting-feed.yaml — RT-76 settlement", () => {
     expect(description).toContain("non-negative MAGNITUDES that the Connector negates");
   });
 
+  it("holds every return until settlement ships, whatever the original sale's tenders (review #645)", () => {
+    // A return always carries refundTenders (RT-14 D3), even against a
+    // tender-unknown sale; offered early, it posts an outstanding credit note
+    // (terminal) although cash was paid out.
+    const description = feedDoc.info?.description ?? "";
+    expect(description).toContain("no `return` work item may be offered until the Connector supports settlement");
+    expect(description).not.toContain("Sales captured without tenders are unaffected");
+  });
+
   it("the ack is unchanged — one documentRef per work item (D4)", () => {
     const kind = prop<{ enum?: string[] }>("PostingWorkItem", "kind");
     expect(kind?.enum?.slice().sort()).toEqual(["reversal", "sale_post"]);
