@@ -56,6 +56,19 @@ export interface ReturnWorkLine {
   readonly taxAmount: string | null;
 }
 
+/**
+ * RT-86: a `return` whose recorded refund tenders are not visible to the feed. Capture always
+ * stores >= 1 (RT-73), so this is a visibility fault (e.g. an RLS policy mismatch), not data.
+ * Thrown rather than omitting the item: the pull fails and its cursor does not advance, so the
+ * return is neither offered without its tenders nor skipped past (Codex P1/P2, PR #652).
+ */
+export class ReturnTendersNotVisibleError extends Error {
+  constructor(returnId: string) {
+    super(`return ${returnId} has no visible refund tenders; refusing to offer it without them (RT-86)`);
+    this.name = "ReturnTendersNotVisibleError";
+  }
+}
+
 /** RT-86: one recorded payout of a return (RT-14 D3, cash only), a non-negative magnitude. */
 export interface RefundWorkTender {
   readonly method: "cash";
@@ -289,7 +302,6 @@ async function buildReversalRef(
       taxAmount: l.tax_amount,
     }));
     refundTenders = await loadRefundTenders(client, sourceRefId);
-    if (refundTenders === undefined) return null; // withhold: never offer a return without them
   }
 
   return {
@@ -306,21 +318,20 @@ async function buildReversalRef(
 /**
  * RT-86: the return's recorded refund payouts (`sale_return_tenders`), in request order
  * (`ordinal`, unique per return) so every re-pull is byte-identical. Capture guarantees at
- * least one row summing to the return total (RT-73), so zero VISIBLE rows is an anomaly (e.g.
- * an RLS or grant misconfiguration) and yields `undefined`. The caller then WITHHOLDS the whole
- * work item (null): the contract INVARIANT forbids offering a return without its tenders, since
- * the field is optional on the wire and a credit note posted without its cash is terminal
- * (Codex/Greptile P1, PR #652). Same omit-never-corrupt handling as an unresolved item map.
+ * least one row summing to the return total (RT-73), so zero VISIBLE rows throws
+ * {@link ReturnTendersNotVisibleError}: the contract INVARIANT forbids offering a return
+ * without its tenders (the field is optional on the wire, and a credit note posted without its
+ * cash is terminal), and omitting the item would let the page cursor skip a still-pending row.
  */
 async function loadRefundTenders(
   client: PoolClient,
   returnId: string,
-): Promise<RefundWorkTender[] | undefined> {
+): Promise<RefundWorkTender[]> {
   const rt = await client.query<{ method: "cash"; amount: string }>(
     `SELECT method, amount::text AS amount
        FROM sale_return_tenders WHERE return_id = $1 ORDER BY ordinal`,
     [returnId],
   );
-  if (rt.rows.length === 0) return undefined;
+  if (rt.rows.length === 0) throw new ReturnTendersNotVisibleError(returnId);
   return rt.rows.map((t) => ({ method: t.method, amount: t.amount }));
 }
