@@ -637,6 +637,17 @@ describe("erpnext-connector/posting-feed.yaml — RT-76 settlement", () => {
     expect(description).not.toContain("a tender-unknown sale's reversal stays");
   });
 
+  it("fails closed when the tenders do not equal the invoice total built from the lines (review #645)", () => {
+    const description = feedDoc.info?.description ?? "";
+    expect(description).toContain("tender total differs from the document total");
+    expect(description).toContain("`permanently_rejected` / `validation`");
+  });
+
+  it("reversal payouts are magnitudes the Connector negates (review #645)", () => {
+    const description = feedDoc.info?.description ?? "";
+    expect(description).toContain("non-negative MAGNITUDES that the Connector negates");
+  });
+
   it("the ack is unchanged — one documentRef per work item (D4)", () => {
     const kind = prop<{ enum?: string[] }>("PostingWorkItem", "kind");
     expect(kind?.enum?.slice().sort()).toEqual(["reversal", "sale_post"]);

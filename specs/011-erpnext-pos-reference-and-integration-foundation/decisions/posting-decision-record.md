@@ -87,7 +87,9 @@ correspondingly-numbered sub-question above.
 4. **System of record — DP2 owns the sale fact; ERPNext owns the GL.** DP2
    remains the source of truth for the sale (§IX). ERPNext owns what DP2
    deliberately does **not** model: the **General Ledger entries** (and the
-   accounting view) produced by the submitted Sales Invoice + Payment Entry. The
+   accounting view) produced by the submitted Sales Invoice + Payment Entry
+   (for a POS sale: the Sales Invoice carrying its own payments — amended by
+   [011-DR-POSTING-A1](./posting-decision-amendment-2026-09-29-rt10.md)). The
    connector **MUST NOT** silently rewrite a posted ERPNext document, and DP2
    **MUST NOT** silently rewrite POS-received sale totals (§III); posted amounts
    reconcile to the DP2 sale totals.

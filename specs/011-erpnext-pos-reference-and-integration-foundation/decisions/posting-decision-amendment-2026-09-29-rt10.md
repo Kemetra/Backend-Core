@@ -67,7 +67,8 @@ a per-sale Payment Entry. That fallback needs the owner's re-confirmation.
 ## 4. Reversals and tender-unknown sales
 
 * **Void** (RT-10 D6): the return invoice carries negative payments that mirror
-  the original sale's tenders.
+  the original sale's tenders. The feed carries them as non-negative magnitudes,
+  and the Connector negates them, as it negates returned lines.
 * **Return** (RT-14 D3 / RT-10 D6): the return invoice pays out the return's
   recorded `refundTenders` (cash only).
 * **Tender-unknown sale** (RT-10 D8): a sale captured without `tenders` posts
@@ -78,6 +79,15 @@ a per-sale Payment Entry. That fallback needs the owner's re-confirmation.
   receivable is part of the D8 reconciliation population, not settled by the
   return. There is **no backfill**, and
   tender is **never derived from `posTotal`**: that R1 rule is unchanged.
+
+## 4a. Total mismatch
+
+Capture keeps the POS total verbatim, and a difference from the line sum is
+only an advisory flag (008 FR-030/031). Tenders sum to `posTotal`, while the
+Connector builds the invoice total from the lines. When the two differ, the
+Connector rejects the work item (`permanently_rejected` / `validation`, a
+reconciliation case). It never adjusts a line, invents change or posts a
+partial settlement to force a match.
 
 ## 5. Not changed
 
@@ -95,6 +105,9 @@ a per-sale Payment Entry. That fallback needs the owner's re-confirmation.
 For **POS sale settlement**, this amendment supersedes:
 
 * 011-DR-POSTING §1: "with its tender posted as the associated Payment Entry".
+* 011-DR-POSTING §4: "produced by the submitted Sales Invoice + Payment Entry".
+  For a POS sale, the GL comes from the Sales Invoice carrying its own
+  payments. The rest of §4 (system of record, no silent rewrites) stands.
 * Rider R1: "each DP2 sale posts as one submitted Sales Invoice + its associated
   Payment Entry" and "MUST NOT present 'Sales Invoice only' as the final accepted
   posting model". The final model is now a Sales Invoice **carrying its own
