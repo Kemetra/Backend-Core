@@ -15,7 +15,8 @@
  *     there is no central YAML registry to extend (same verdict as 005 T504).
  *
  *   * Asserts presence of the four 008 operationIds (`captureSale`,
- *     `recordVoid`, `recordRefund`, `readSale`) and their uniqueness against
+ *     `recordVoid`, `recordRefund`, `readSale`) plus the RT-72
+ *     `recordReturn`, and their uniqueness against
  *     the existing top-level contracts (the slice's stop condition is "if any
  *     operationId collides with or renames a shipped 005/007 operationId").
  *
@@ -48,14 +49,28 @@ const OPERATION_IDS = [
   "recordVoid",
   "recordRefund",
   "readSale",
+  "recordReturn",
 ] as const;
 
-const WRITE_OPERATION_IDS = ["captureSale", "recordVoid", "recordRefund"];
+const WRITE_OPERATION_IDS = [
+  "captureSale",
+  "recordVoid",
+  "recordRefund",
+  "recordReturn",
+];
 
 const CAPTURE_PATH = "/api/pos/v1/sales";
 const READ_PATH = "/api/pos/v1/sales/{saleRef}";
 const VOID_PATH = "/api/pos/v1/sales/{saleRef}/void";
 const REFUND_PATH = "/api/pos/v1/sales/{saleRef}/refund";
+const RETURNS_PATH = "/api/pos/v1/sales/{saleRef}/returns";
+
+/**
+ * RT-14 D3 records the refund tender (`refundTenders[{method, amount}]`) as a
+ * fact on a return. These are the only schemas exempt from the gate A.5
+ * tender-field ban; sale capture still carries no tender (gate A.5 / RT-10).
+ */
+const RETURN_TENDER_SCHEMAS = ["RecordReturnRequest", "RefundTender", "SaleReturn"];
 
 /**
  * Resolve the pos-sales contract directory from this spec file's location.
@@ -87,6 +102,8 @@ function posSalesContractsDir(): string {
 
 interface OperationObject {
   operationId?: string;
+  deprecated?: boolean;
+  "x-runtime-status"?: string;
   security?: Array<Record<string, unknown>>;
   parameters?: Array<{
     $ref?: string;
@@ -214,7 +231,7 @@ describe("pos-sales/sales.yaml — loadability", () => {
 // 2. Operations present, uniquely named, POS-secured
 // ===========================================================================
 describe("pos-sales/sales.yaml — operations", () => {
-  it("declares exactly the four 008 operationIds", () => {
+  it("declares exactly the four 008 operationIds plus the RT-72 recordReturn", () => {
     const ids = salesOperations()
       .map((o) => o.op.operationId)
       .filter((id): id is string => typeof id === "string")
@@ -228,6 +245,7 @@ describe("pos-sales/sales.yaml — operations", () => {
     expect(salesDoc.paths?.[READ_PATH]?.["get"]?.operationId).toBe("readSale");
     expect(salesDoc.paths?.[VOID_PATH]?.["post"]?.operationId).toBe("recordVoid");
     expect(salesDoc.paths?.[REFUND_PATH]?.["post"]?.operationId).toBe("recordRefund");
+    expect(salesDoc.paths?.[RETURNS_PATH]?.["post"]?.operationId).toBe("recordReturn");
   });
 
   it("does NOT collide with or rename any shipped top-level operationId", () => {
@@ -312,7 +330,7 @@ describe("pos-sales/sales.yaml — error vocabulary", () => {
   });
 
   it("declares a documented 200 idempotent-replay (Idempotent-Replayed header) on every write", () => {
-    for (const p of [CAPTURE_PATH, VOID_PATH, REFUND_PATH]) {
+    for (const p of [CAPTURE_PATH, VOID_PATH, REFUND_PATH, RETURNS_PATH]) {
       const post = salesDoc.paths?.[p]?.["post"];
       const ok = (post?.responses ?? {})["200"] as
         | { headers?: Record<string, unknown> }
@@ -334,6 +352,9 @@ describe("pos-sales/sales.yaml — object safety + gate A.5 (no tender)", () => 
       "CaptureSaleLine",
       "RecordVoidRequest",
       "RecordRefundRequest",
+      "RecordReturnRequest",
+      "ReturnLineRequest",
+      "RefundTender",
     ]) {
       expect(schemas[name]?.additionalProperties).toBe(false);
     }
@@ -361,11 +382,12 @@ describe("pos-sales/sales.yaml — object safety + gate A.5 (no tender)", () => 
     }
   });
 
-  it("declares no tender/payment field NAMES in any schema (gate A.5)", () => {
+  it("declares no tender/payment field NAMES outside the RT-14 D3 return schemas (gate A.5)", () => {
     // Gate A.5 bans tender/payment *fields* — not the word "tender" in the
     // prose (the description legitimately states tender is deferred to 010).
     // So inspect property names across every component schema, not the whole
-    // serialized document.
+    // serialized document. RT-14 D3 (owner-approved) records the refund
+    // tender on a return, so only RETURN_TENDER_SCHEMAS are exempt.
     const bannedFieldFragments = [
       "tender",
       "paymentmethod",
@@ -373,16 +395,15 @@ describe("pos-sales/sales.yaml — object safety + gate A.5 (no tender)", () => 
       "card",
       "cash",
     ];
-    const schemas = salesDoc.components?.schemas ?? {};
-    const offending: string[] = [];
-    for (const [schemaName, schema] of Object.entries(schemas)) {
-      for (const prop of Object.keys(schema.properties ?? {})) {
-        const lower = prop.toLowerCase();
-        if (bannedFieldFragments.some((banned) => lower.includes(banned))) {
-          offending.push(`${schemaName}.${prop}`);
-        }
-      }
-    }
+    const isBanned = (prop: string): boolean =>
+      bannedFieldFragments.some((banned) => prop.toLowerCase().includes(banned));
+    const offending = Object.entries(salesDoc.components?.schemas ?? {})
+      .filter(([schemaName]) => !RETURN_TENDER_SCHEMAS.includes(schemaName))
+      .flatMap(([schemaName, schema]) =>
+        Object.keys(schema.properties ?? {})
+          .filter(isBanned)
+          .map((prop) => `${schemaName}.${prop}`),
+      );
     expect(offending).toEqual([]);
   });
 });
@@ -431,5 +452,81 @@ describe("pos-sales/sales.yaml — review-hardening invariants", () => {
       expect(refs).toContain(ref);
       expect(hasNull).toBe(true);
     }
+  });
+});
+
+// ===========================================================================
+// 7. RT-72 — line-aware returns contract (RT-14 D1–D8, RT-63)
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-72 returns contract", () => {
+  function schema(name: string): SchemaObject | undefined {
+    return salesDoc.components?.schemas?.[name];
+  }
+  function prop<T>(name: string, field: string): T | undefined {
+    return (schema(name)?.properties ?? {})[field] as T | undefined;
+  }
+
+  it("recordReturn is declared contract-only until RT-73 wires the runtime", () => {
+    expect(findOp("recordReturn")?.["x-runtime-status"]).toBe("contract-only");
+  });
+
+  it("deprecates the amount-only recordRefund for new use (D1)", () => {
+    expect(findOp("recordRefund")?.deprecated).toBe(true);
+    expect(findOp("recordReturn")?.deprecated).not.toBe(true);
+  });
+
+  it("the return request names lines by lineRef + quantity only — the server computes all money (D1)", () => {
+    expect(schema("RecordReturnRequest")?.required?.sort()).toEqual(
+      ["externalId", "lines", "refundTenders", "sourceSystem"].sort(),
+    );
+    const lineProps = Object.keys(schema("ReturnLineRequest")?.properties ?? {}).sort();
+    expect(lineProps).toEqual(["lineRef", "quantity"]);
+    expect(schema("ReturnLineRequest")?.required?.sort()).toEqual(["lineRef", "quantity"]);
+    expect(prop<{ format?: string }>("ReturnLineRequest", "lineRef")?.format).toBe("uuid");
+  });
+
+  it("records the refund tender as cash-only for the pilot (D3)", () => {
+    expect(schema("RefundTender")?.required?.sort()).toEqual(["amount", "method"]);
+    expect(prop<{ enum?: string[] }>("RefundTender", "method")?.enum).toEqual(["cash"]);
+  });
+
+  it("maps recordReturn to 200(replay)/201/400/401/404/409/422/500 with return-specific 409/422", () => {
+    const responses = (findOp("recordReturn")?.responses ?? {}) as Record<string, { $ref?: string }>;
+    expect(Object.keys(responses)).toEqual(
+      expect.arrayContaining(["200", "201", "400", "401", "404", "409", "422", "500"]),
+    );
+    expect(responses["409"]?.$ref).toBe("#/components/responses/ReversalConflict");
+    expect(responses["422"]?.$ref).toBe("#/components/responses/ReturnTenderMismatch");
+  });
+
+  it("a void conflicting with a return shares the reversal-conflict vocabulary (D2)", () => {
+    const responses = (findOp("recordVoid")?.responses ?? {}) as Record<string, { $ref?: string }>;
+    expect(responses["409"]?.$ref).toBe("#/components/responses/ReversalConflict");
+  });
+
+  it("the return projection is strict and leaks no DB internals (§IV)", () => {
+    expect(schema("SaleReturn")?.additionalProperties).toBe(false);
+    expect(schema("ReturnLine")?.additionalProperties).toBe(false);
+    const props = schema("SaleReturn")?.properties ?? {};
+    for (const leak of ["tenant_id", "tenantId", "payload_hash", "payloadHash", "created_by", "createdBy"]) {
+      expect(props).not.toHaveProperty(leak);
+    }
+    expect(schema("SaleReturn")?.required).toEqual(
+      expect.arrayContaining(["returnRef", "saleRef", "recordedAt", "businessDate", "returnTotal", "lines"]),
+    );
+  });
+
+  it("sale lines expose lineRef + returnability and the sale exposes voided (additive)", () => {
+    expect(prop<{ format?: string }>("SaleLine", "lineRef")?.format).toBe("uuid");
+    expect(schema("SaleLine")?.properties).toHaveProperty("returnedQuantity");
+    expect(schema("SaleLine")?.properties).toHaveProperty("returnableQuantity");
+    expect(prop<{ type?: string }>("Sale", "voided")?.type).toBe("boolean");
+  });
+
+  it("keeps the new read fields OPTIONAL until RT-73 emits them (safe re-pin order for strict clients)", () => {
+    for (const field of ["lineRef", "returnedQuantity", "returnableQuantity"]) {
+      expect(schema("SaleLine")?.required).not.toContain(field);
+    }
+    expect(schema("Sale")?.required).not.toContain("voided");
   });
 });

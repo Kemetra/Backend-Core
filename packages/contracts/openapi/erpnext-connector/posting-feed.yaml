@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Connector Posting-Feed API
-  version: "1.1.0-draft"
+  version: "1.2.0-draft"
   description: >
     Spec 012 ERPNext Connector Contracts surface — the DP2 ↔ connector boundary
     that realises the signed 011 posting + version-pin decisions over a
@@ -20,7 +20,7 @@ info:
 
       1. `connectorPullPostings` — the connector PULLS a cursor-paginated, ordered,
          idempotent, gap-detectable feed of pending posting work-items (sale
-         posts + void/refund reversals) after an opaque `since` cursor, scoped to
+         posts + void/return reversals) after an opaque `since` cursor, scoped to
          the principal's tenant(s). Mirrors the 010 read-down delta cursor
          semantics. A stale/unservable cursor returns `snapshot_required`
          (re-baseline directive). (O-1, O-4.)
@@ -42,6 +42,16 @@ info:
     reversal work-item additionally references the original sale's provenance so
     the connector posts a NEW reversing document (credit note / return invoice),
     never an edit of the original (O-4).
+
+    RT-72 (RT-14 D1/D6/D7 + RT-63), one additive feed version: a new
+    `reversalKind: return` carrying only the returned lines (`returnLines`);
+    a `lineRef` on every sale line; and the reversal's own server event time
+    and business date (`reversalOf.recordedAt` / `reversalOf.businessDate`).
+    ROLLOUT ORDER: the Connector fails closed on an unknown `reversalKind`,
+    so Backend-Core MUST NOT emit `return` until the Connector supports it
+    (RT-16). The new fields on existing kinds are additive and OPTIONAL in
+    this version, because Backend-Core emits them from RT-73 (they become
+    required then); a Connector that predates them ignores them.
 
     PAYMENT ENTRY DEFERRAL: the posting decision pairs the Sales Invoice with "its
     associated Payment Entry", but 008 models NO tender (gate A.5 — payments
@@ -110,7 +120,7 @@ paths:
         - connectorBearer: []
       description: >
         Return ordered, idempotent, gap-detectable pending posting work-items
-        (sale posts + void/refund reversals) after the supplied opaque `since`
+        (sale posts + void/return reversals) after the supplied opaque `since`
         cursor, for the authenticated connector principal's tenant scope, with an
         advanced cursor reaching the current pending state. Mirrors the 010
         read-down delta semantics: completeness is server-guaranteed, NOT
@@ -297,6 +307,13 @@ components:
         Exact-decimal monetary amount as a string (gate A.6 — never a float).
         Up to 4 fractional digits, stored as `numeric(19,4)`. Always paired
         with a `currency_code`.
+    NonNegativeDecimalAmount:
+      type: string
+      pattern: '^[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: >
+        Exact-decimal amount as a string, constrained NON-NEGATIVE (no leading
+        `-`), verbatim from `pos-sales/sales.yaml`. Used for return-line
+        magnitudes. Up to 4 fractional digits, `numeric(19,4)` at rest.
     CurrencyCode:
       type: string
       pattern: '^[A-Z]{3}$'
@@ -337,7 +354,8 @@ components:
             `sale_post` — post the sale as a submitted ERPNext Sales Invoice
             (+ Payment Entry). `reversal` — post a NEW reversing document (credit
             note / return invoice) for the referenced original sale (O-4);
-            `reversalOf` is then present.
+            `reversalOf` is then present and says which kind (void, return, or
+            legacy refund).
         sourceSystem:
           type: string
           minLength: 1
@@ -363,7 +381,10 @@ components:
           description: >
             The sale's business date (008) — drives the ERPNext `posting_date`
             (posting decision §2), so a delayed/offline sale lands in the correct
-            fiscal period. NEVER the connector's post-time.
+            fiscal period. NEVER the connector's post-time. On a `reversal`
+            work-item this stays the ORIGINAL sale's business date (unchanged,
+            as does `sale.occurredAt`); the reversal itself posts on
+            `reversalOf.businessDate` (RT-63).
         reversalOf:
           description: >
             Present only when `kind = reversal` — the provenance of the original
@@ -385,7 +406,39 @@ components:
       type: object
       additionalProperties: false
       required: [sourceSystem, externalId, reversalKind]
-      description: Provenance of the original sale a reversal work-item targets (O-4).
+      if:
+        properties:
+          reversalKind:
+            const: return
+        required: [reversalKind]
+      then:
+        required: [returnLines]
+      else:
+        not:
+          required: [returnLines]
+      description: >
+        Provenance of the original sale a reversal work-item targets (O-4),
+        plus the reversal's own event time (RT-63). `recordedAt` and
+        `businessDate` are emitted from RT-73 and optional until then.
+
+
+        Posting (RT-63 P3): the reversal posts ON `businessDate` AT
+        `recordedAt` (the time capped at the site clock and clamped into that
+        day), and NEVER earlier than the original document. A late void is
+        not back-dated into the sale's day.
+
+
+        Closed period (RT-63 P4): if that date falls in a closed or frozen
+        accounting period, the Connector acks `permanently_rejected`
+        (category `validation`) and NEVER re-dates the posting. Repair is a
+        finance decision (reopen the period or an approved adjustment),
+        followed by a Backend-Core re-post.
+
+
+        Identity (RT-63 P5): neither timestamp enters provenance, the reversal
+        key or `payloadHash`. Both come from immutable rows, so every re-pull
+        is identical. A Connector that receives a reversal without them (an
+        older Backend-Core) falls back to the sale-derived stamp (RT-49).
       properties:
         sourceSystem:
           type: string
@@ -397,8 +450,67 @@ components:
           maxLength: 200
         reversalKind:
           type: string
-          enum: [void, refund]
-          description: Whether the reversal stems from a void or a refund terminal event (008).
+          enum: [void, refund, return]
+          description: >
+            `void` — reverses the whole sale (every line). `return` (RT-14 D1)
+            — reverses only the lines in `returnLines`. `refund` — LEGACY
+            amount-only refund (deprecated, RT-14 D1): its amount is not on the
+            feed, so since RT-71 the Connector rejects it
+            (`permanently_rejected` / `validation`) instead of posting a
+            full-value credit note. Backend-Core MUST NOT emit `return` before
+            the Connector supports it (RT-16).
+        recordedAt:
+          type: string
+          format: date-time
+          description: >
+            Server clock of the reversal row (`sale_voids.voided_at`, the
+            return's recorded time, or `sale_refunds.refunded_at` for a legacy
+            refund). Never a client time.
+        businessDate:
+          type: string
+          format: date
+          description: >
+            The reversal's own business day: `recordedAt` in the store
+            timezone, persisted at insert so a later timezone change never
+            rewrites it (RT-63 P2). Distinct from the work-item's top-level
+            `businessDate`, which stays the original sale's.
+        returnLines:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ReturnLine"
+          description: >
+            Present (and required) only when `reversalKind = return`; absent
+            otherwise. Only the returned lines, each pointing at its sale line
+            by `lineRef`.
+
+    ReturnLine:
+      type: object
+      additionalProperties: false
+      required: [lineRef, quantity, lineAmount, taxAmount]
+      description: >
+        One returned line, priced by Backend-Core from the frozen sale line
+        (RT-14 D1): `lineAmount = round4(sale lineAmount × quantity / sold
+        quantity)`, tax split the same way, and the return that exhausts a
+        line takes the exact remainder. Values are non-negative MAGNITUDES —
+        the Connector negates them on the credit note and links each row to
+        the original invoice line through `lineRef` (RT-14 D6).
+      properties:
+        lineRef:
+          type: string
+          format: uuid
+          description: The returned sale line (= `sale.lines[].lineRef`).
+        quantity:
+          type: string
+          pattern: '^[0-9]{1,13}(\.[0-9]{1,6})?$'
+          description: Quantity returned (exact-decimal string, > 0).
+        lineAmount:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        taxAmount:
+          description: The tax share of `lineAmount`; null when the sale line has no tax.
+          anyOf:
+            - $ref: "#/components/schemas/NonNegativeDecimalAmount"
+            - type: "null"
 
     # -----------------------------------------------------------------------
     # Sale projection — mirrors pos-sales/sales.yaml `Sale` / `SaleLine` (§IV).
@@ -465,6 +577,14 @@ components:
         work-item is offered (012 contract correction; 011 posting rider R2/R3/R4
         — DP2-side resolution, no connector lookup, no substitute item).
       properties:
+        lineRef:
+          type: string
+          format: uuid
+          description: >
+            Stable line identity (= `sale_lines.id`, the same value as
+            `pos-sales` `SaleLine.lineRef`). A return's `returnLines` point at
+            it, and the Connector stores it on the ERPNext Sales Invoice Item
+            (RT-14 D6). Emitted from RT-73; optional until then.
         lineName:
           type: string
         unitPrice:
