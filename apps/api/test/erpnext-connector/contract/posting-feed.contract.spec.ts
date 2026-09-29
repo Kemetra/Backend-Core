@@ -367,6 +367,41 @@ describe("erpnext-connector/posting-feed.yaml — work-item payload (O-1/O-4)", 
     // An ad-hoc line DLQs before offer (R2); no substitute item (R3) -> no lineType discriminator.
     expect(props).not.toHaveProperty("lineType");
   });
+
+  // RT-72: line-aware returns (RT-14 D1/D6/D7) + reversal event time (RT-63).
+  it("reversalKind adds return; void + legacy refund stay readable", () => {
+    const kind = (feedDoc.components?.schemas?.["ReversalRef"]?.properties ?? {})[
+      "reversalKind"
+    ] as { enum?: string[] } | undefined;
+    expect(kind?.enum?.sort()).toEqual(["refund", "return", "void"]);
+  });
+
+  it("a reversal carries its own server event time + business date (RT-63 P1)", () => {
+    const ref = feedDoc.components?.schemas?.["ReversalRef"];
+    expect(ref?.additionalProperties).toBe(false);
+    expect(ref?.required).toEqual(expect.arrayContaining(["recordedAt", "businessDate"]));
+    const props = ref?.properties ?? {};
+    expect((props["recordedAt"] as { format?: string })?.format).toBe("date-time");
+    expect((props["businessDate"] as { format?: string })?.format).toBe("date");
+  });
+
+  it("a return reversal carries only the returned lines, as non-negative magnitudes (D1)", () => {
+    const props = feedDoc.components?.schemas?.["ReversalRef"]?.properties ?? {};
+    const lines = props["returnLines"] as { type?: string; items?: { $ref?: string } } | undefined;
+    expect(lines?.type).toBe("array");
+    expect(lines?.items?.$ref).toBe("#/components/schemas/ReturnLine");
+    const line = feedDoc.components?.schemas?.["ReturnLine"];
+    expect(line?.additionalProperties).toBe(false);
+    expect(line?.required?.sort()).toEqual(["lineAmount", "lineRef", "quantity", "taxAmount"]);
+    const amount = (line?.properties ?? {})["lineAmount"] as { $ref?: string } | undefined;
+    expect(amount?.$ref).toBe("#/components/schemas/NonNegativeDecimalAmount");
+  });
+
+  it("every offered sale line carries its lineRef (D6 line mapping)", () => {
+    const line = feedDoc.components?.schemas?.["SaleLine"];
+    expect(line?.required).toEqual(expect.arrayContaining(["lineRef"]));
+    expect(((line?.properties ?? {})["lineRef"] as { format?: string })?.format).toBe("uuid");
+  });
 });
 
 // ===========================================================================
@@ -493,6 +528,7 @@ describe("erpnext-connector/posting-feed.yaml — object safety", () => {
       "EtaStatus",
       "RejectionReason",
       "RecordedOutcome",
+      "ReturnLine",
     ]) {
       expect(schemas[name]?.additionalProperties).toBe(false);
     }
