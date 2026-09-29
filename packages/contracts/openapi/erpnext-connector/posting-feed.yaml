@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Connector Posting-Feed API
-  version: "1.2.0-draft"
+  version: "1.3.0-draft"
   description: >
     Spec 012 ERPNext Connector Contracts surface — the DP2 ↔ connector boundary
     that realises the signed 011 posting + version-pin decisions over a
@@ -52,6 +52,13 @@ info:
     (RT-16). The new fields on existing kinds are additive and OPTIONAL in
     this version, because Backend-Core emits them from RT-73 (they become
     required then); a Connector that predates them ignores them.
+
+    RT-73 (1.3.0-draft): Backend-Core emits them. `lineRef` and
+    `reversalOf.recordedAt` are REQUIRED; `reversalOf.businessDate` is
+    required for `void` and `return` (a legacy `refund` has no persisted
+    business date, RT-63 P2). Returns exist only once the API's
+    `POS_RETURNS_ENABLED` gate is on, which follows RT-16. Return lines are
+    priced by the cumulative-difference rule (RT-73 comment 10406).
 
     PAYMENT ENTRY DEFERRAL: the posting decision pairs the Sales Invoice with "its
     associated Payment Entry", but 008 models NO tender (gate A.5 — payments
@@ -405,7 +412,7 @@ components:
     ReversalRef:
       type: object
       additionalProperties: false
-      required: [sourceSystem, externalId, reversalKind]
+      required: [sourceSystem, externalId, reversalKind, recordedAt]
       if:
         properties:
           reversalKind:
@@ -416,10 +423,19 @@ components:
       else:
         not:
           required: [returnLines]
+      allOf:
+        - if:
+            properties:
+              reversalKind:
+                enum: [void, return]
+            required: [reversalKind]
+          then:
+            required: [businessDate]
       description: >
         Provenance of the original sale a reversal work-item targets (O-4),
-        plus the reversal's own event time (RT-63). `recordedAt` and
-        `businessDate` are emitted from RT-73 and optional until then.
+        plus the reversal's own event time (RT-63). `businessDate` is present
+        for `void` and `return`; a legacy `refund` carries none (not persisted,
+        RT-63 P2).
 
 
         Posting (RT-63 P3): the reversal posts ON `businessDate` AT
@@ -473,7 +489,8 @@ components:
             The reversal's own business day: `recordedAt` in the store
             timezone, persisted at insert so a later timezone change never
             rewrites it (RT-63 P2). Distinct from the work-item's top-level
-            `businessDate`, which stays the original sale's.
+            `businessDate`, which stays the original sale's. Required for
+            `void` / `return`; absent for a legacy `refund`.
         returnLines:
           type: array
           minItems: 1
@@ -489,10 +506,12 @@ components:
       additionalProperties: false
       required: [lineRef, quantity, lineAmount, taxAmount]
       description: >
-        One returned line, priced by Backend-Core from the frozen sale line
-        (RT-14 D1): `lineAmount = round4(sale lineAmount × quantity / sold
-        quantity)`, tax split the same way, and the return that exhausts a
-        line takes the exact remainder. Values are non-negative MAGNITUDES —
+        One returned line, priced by Backend-Core from the frozen sale line by
+        the cumulative-difference rule (RT-14 D1 amended by option (a), RT-73
+        comment 10406): with sold quantity Q, line amount A and c already
+        returned, `lineAmount = round4(A × (c + q) / Q) − round4(A × c / Q)`,
+        tax split the same way, so a line's returns sum to A exactly. Values
+        are non-negative MAGNITUDES —
         the Connector negates them on the credit note and links each row to
         the original invoice line through `lineRef` (RT-14 D6).
       properties:
@@ -568,7 +587,8 @@ components:
     SaleLine:
       type: object
       additionalProperties: false
-      required: [lineName, unitPrice, currencyCode, quantity, lineAmount, unit, erpnextItemRef]
+      required:
+        [lineRef, lineName, unitPrice, currencyCode, quantity, lineAmount, unit, erpnextItemRef]
       description: >
         Wire projection of a frozen 008 sale-line snapshot (mirrors sales.yaml),
         carrying the DP2-resolved ERPNext Item identity. Every line OFFERED on
@@ -584,7 +604,7 @@ components:
             Stable line identity (= `sale_lines.id`, the same value as
             `pos-sales` `SaleLine.lineRef`). A return's `returnLines` point at
             it, and the Connector stores it on the ERPNext Sales Invoice Item
-            (RT-14 D6). Emitted from RT-73; optional until then.
+            (RT-14 D6).
         lineName:
           type: string
         unitPrice:

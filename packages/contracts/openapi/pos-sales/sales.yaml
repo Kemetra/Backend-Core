@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.1.0-draft"
+  version: "1.2.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -42,7 +42,8 @@ info:
          out-of-scope ids are non-disclosing 404s (FR-014/063/100/102).
       5. `recordReturn` — RT-72 (RT-14 D1–D5): a line-aware return naming
          `lines[{lineRef, quantity}]`; the server computes all money and
-         records the refund tender as a fact. CONTRACT-ONLY until RT-73.
+         records the refund tender as a fact. Live from RT-73 behind the
+         `POS_RETURNS_ENABLED` deployment gate.
 
     RT-72 versioning (additive): `recordReturn` is new; `SaleLine` gains
     `lineRef`, `returnedQuantity` and `returnableQuantity`, and `Sale` gains
@@ -52,6 +53,12 @@ info:
     `Sale` / `SaleLine` are `additionalProperties: false`, a client that
     validates responses strictly (the POS) must re-pin this version before
     RT-73 deploys — optional fields make that safe to do now.
+
+    RT-73 (1.2.0-draft): the server now emits those fields, so they are
+    REQUIRED; `recordReturn` is live behind `POS_RETURNS_ENABLED`; and returns
+    are priced by the cumulative-difference rule (RT-14 D1 amended by option
+    (a), RT-73 comment 10406). A second void of a voided sale is now 409
+    `already_reversed` (RT-14 D2).
 
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
@@ -195,13 +202,14 @@ paths:
 
         Idempotency: the `Idempotency-Key` header is REQUIRED and the event is
         deduped on its own `(tenant, sourceSystem, externalId)` provenance — a
-        second void of the same sale is a deterministic already-applied outcome
-        with no duplicate record (FR-013).
+        re-delivery of the SAME void (same provenance) is a deterministic replay
+        (200) with no duplicate record (FR-013).
 
 
-        Reversal exclusivity (RT-14 D2; enforced from RT-73): a sale has AT
-        MOST ONE void, and a void excludes returns. A void of a sale that has
-        any return is 409 `already_reversed` (see `ReversalConflict`).
+        Reversal exclusivity (RT-14 D2): a sale has AT MOST ONE void, and a
+        void excludes returns. A second, different void of an already-voided
+        sale, or a void of a sale that has any return, is 409
+        `already_reversed` (see `ReversalConflict`); nothing is recorded.
       parameters:
         - $ref: "#/components/parameters/SaleRef"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -313,11 +321,10 @@ paths:
       summary: Record a line-aware return against a sale.
       operationId: recordReturn
       x-idempotency: required
-      x-runtime-status: contract-only
       x-runtime-note: >
-        RT-72 lands this contract first. Backend-Core has no controller route,
-        tables or invariants for it yet; they ship in RT-73. Do not generate
-        this operation as a live API until then.
+        Live from RT-73 behind the `POS_RETURNS_ENABLED` deployment gate
+        (default off → 404 `not_found`, nothing recorded). Enable it only once
+        the Connector posts `reversalKind: return` (RT-16).
       tags: [pos-sales]
       security:
         - operatorAuthorization: []
@@ -328,18 +335,22 @@ paths:
         mutated; the return is a separate append-only record.
 
 
-        CONTRACT-ONLY (RT-72, contract-first): the handler, the
-        `sale_returns` / `sale_return_lines` tables and the invariants below
-        land in RT-73. Until then this route is not wired.
+        DEPLOYMENT GATE (RT-73 AC4): the route is live but answers 404
+        `not_found` and records nothing unless the API runs with
+        `POS_RETURNS_ENABLED=true`. Enable it only once the Connector posts
+        `reversalKind: return` (RT-16); an earlier return would be
+        dead-lettered by the Connector as an unparseable work-item.
 
 
-        Money (D1): the client sends quantities only; the server prices every
-        returned line from the frozen sale line. For a returned `quantity` on a
-        line sold with `quantity` Q and `lineAmount` A:
-        `lineAmount = round4(A × quantity / Q)`, and the line's snapshot
-        `taxAmount` is split the same way (a null line tax stays null). The
-        return that exhausts a line (cumulative returned = Q) takes the EXACT
-        remainder instead, so all returns on a line sum to the line exactly.
+        Money (RT-14 D1, amended by option (a) — RT-73 comment 10406): the
+        client sends quantities only; the server prices every returned line
+        from the frozen sale line. For a line sold with `quantity` Q and
+        `lineAmount` A, of which c is already returned, a return of `quantity`
+        q is priced `lineAmount = round4(A × (c + q) / Q) − round4(A × c / Q)`,
+        and the line's snapshot `taxAmount` is split the same way (a null line
+        tax stays null). The amount depends only on cumulative quantities
+        (`readSale` exposes `returnedQuantity`), so a client can recompute it
+        exactly, and all returns on a line sum to A once it is fully returned.
         `round4` is `round(numeric, 4)` in Postgres `numeric`, never a float.
         `returnTotal` = Σ returned `lineAmount`, the same basis as capture's
         `posTotal` = Σ `lineAmount`; the tax share is carried inside it for
@@ -760,6 +771,7 @@ components:
         - externalId
         - mismatchFlag
         - syncStatus
+        - voided
         - lines
       description: >
         Wire projection of a captured sale. Decoupled from the `sales` /
@@ -820,7 +832,7 @@ components:
           description: >
             True when a void terminal event exists for the sale (derived, §X —
             the sale row is never mutated). A voided sale cannot be returned
-            (RT-14 D2). Emitted from RT-73; optional until then.
+            (RT-14 D2).
         lines:
           type: array
           items:
@@ -828,11 +840,19 @@ components:
     SaleLine:
       type: object
       additionalProperties: false
-      required: [lineName, unitPrice, currencyCode, quantity, lineAmount, unit]
+      required:
+        - lineRef
+        - lineName
+        - unitPrice
+        - currencyCode
+        - quantity
+        - lineAmount
+        - unit
+        - returnedQuantity
+        - returnableQuantity
       description: >
-        Wire projection of a frozen sale-line snapshot. `lineRef`,
-        `returnedQuantity` and `returnableQuantity` (RT-72) are emitted from
-        RT-73 and optional until then.
+        Wire projection of a frozen sale-line snapshot, with the line's return
+        state (RT-72 / RT-73).
       properties:
         lineRef:
           type: string
@@ -946,7 +966,7 @@ components:
           description: Quantity returned by THIS return.
         lineAmount:
           $ref: "#/components/schemas/DecimalAmount"
-          description: Server-computed amount for this return's quantity (round4 pro-rata or exact remainder).
+          description: Server-computed amount for this return's quantity (the cumulative-difference rule, see `recordReturn`).
         taxAmount:
           description: The tax share of `lineAmount`, split the same way; null when the sale line has no tax.
           anyOf:
@@ -1084,8 +1104,9 @@ components:
         different payload; `conflict` — the event's `(sourceSystem,
         externalId)` provenance was already used with a different payload or
         against a different sale; `already_reversed` (RT-14 D2) — void and
-        return exclude each other: a return against a voided sale, or a void of
-        a sale that has a return; `over_return` (returns only) — the cumulative
+        return exclude each other and a sale has at most one void: a return
+        against a voided sale, a void of a sale that has a return, or a second
+        void of an already-voided sale; `over_return` (returns only) — the cumulative
         returned quantity on a line would exceed the quantity sold.
         Deterministic; nothing is recorded.
       content:
