@@ -668,6 +668,12 @@ describe("erpnext-connector/posting-feed.yaml — RT-76 settlement", () => {
     const description = feedDoc.info?.description ?? "";
     expect(description).toContain("no `return` work item may be offered until the Connector supports settlement");
     expect(description).not.toContain("Sales captured without tenders are unaffected");
+    // Review #650: every returns-gate instruction names both prerequisites.
+    expect(description).toContain("gate is on, which follows RT-16 and RT-78");
+    const kind = (feedDoc.components?.schemas?.["ReversalRef"]?.properties ?? {})["reversalKind"] as
+      | { description?: string }
+      | undefined;
+    expect(kind?.description).toMatch(/RT-78/);
   });
 
   it("the ack is unchanged — one documentRef per work item (D4)", () => {

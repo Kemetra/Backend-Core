@@ -49,7 +49,7 @@ info:
     and business date (`reversalOf.recordedAt` / `reversalOf.businessDate`).
     ROLLOUT ORDER: the Connector fails closed on an unknown `reversalKind`,
     so Backend-Core MUST NOT emit `return` until the Connector supports it
-    (RT-16). The new fields on existing kinds are additive and OPTIONAL in
+    (RT-16) — and, since RT-76, supports settlement (RT-78). The new fields on existing kinds are additive and OPTIONAL in
     this version, because Backend-Core emits them from RT-73 (they become
     required then); a Connector that predates them ignores them.
 
@@ -57,7 +57,8 @@ info:
     `reversalOf.recordedAt` are REQUIRED; `reversalOf.businessDate` is
     required for `void` and `return` (a legacy `refund` has no persisted
     business date, RT-63 P2). Returns exist only once the API's
-    `POS_RETURNS_ENABLED` gate is on, which follows RT-16. Return lines are
+    `POS_RETURNS_ENABLED` gate is on, which follows RT-16 and RT-78 (see the
+    RT-76 INVARIANT below). Return lines are
     priced by the cumulative-difference rule (RT-73 comment 10406).
 
     SETTLEMENT (RT-76; RT-10 D3(b)/D4/D6/D8, amending 011-DR-POSTING rider R1 —
@@ -515,7 +516,7 @@ components:
             feed, so since RT-71 the Connector rejects it
             (`permanently_rejected` / `validation`) instead of posting a
             full-value credit note. Backend-Core MUST NOT emit `return` before
-            the Connector supports it (RT-16).
+            the Connector supports it (RT-16) and supports settlement (RT-78).
         recordedAt:
           type: string
           format: date-time
