@@ -49,8 +49,9 @@ info:
     and business date (`reversalOf.recordedAt` / `reversalOf.businessDate`).
     ROLLOUT ORDER: the Connector fails closed on an unknown `reversalKind`,
     so Backend-Core MUST NOT emit `return` until the Connector supports it
-    (RT-16). The new fields on existing kinds are additive; a Connector that
-    predates them ignores them.
+    (RT-16). The new fields on existing kinds are additive and OPTIONAL in
+    this version, because Backend-Core emits them from RT-73 (they become
+    required then); a Connector that predates them ignores them.
 
     PAYMENT ENTRY DEFERRAL: the posting decision pairs the Sales Invoice with "its
     associated Payment Entry", but 008 models NO tender (gate A.5 — payments
@@ -404,10 +405,21 @@ components:
     ReversalRef:
       type: object
       additionalProperties: false
-      required: [sourceSystem, externalId, reversalKind, recordedAt, businessDate]
+      required: [sourceSystem, externalId, reversalKind]
+      if:
+        properties:
+          reversalKind:
+            const: return
+        required: [reversalKind]
+      then:
+        required: [returnLines]
+      else:
+        not:
+          required: [returnLines]
       description: >
         Provenance of the original sale a reversal work-item targets (O-4),
-        plus the reversal's own event time (RT-63).
+        plus the reversal's own event time (RT-63). `recordedAt` and
+        `businessDate` are emitted from RT-73 and optional until then.
 
 
         Posting (RT-63 P3): the reversal posts ON `businessDate` AT
@@ -556,8 +568,7 @@ components:
     SaleLine:
       type: object
       additionalProperties: false
-      required:
-        [lineRef, lineName, unitPrice, currencyCode, quantity, lineAmount, unit, erpnextItemRef]
+      required: [lineName, unitPrice, currencyCode, quantity, lineAmount, unit, erpnextItemRef]
       description: >
         Wire projection of a frozen 008 sale-line snapshot (mirrors sales.yaml),
         carrying the DP2-resolved ERPNext Item identity. Every line OFFERED on
@@ -573,7 +584,7 @@ components:
             Stable line identity (= `sale_lines.id`, the same value as
             `pos-sales` `SaleLine.lineRef`). A return's `returnLines` point at
             it, and the Connector stores it on the ERPNext Sales Invoice Item
-            (RT-14 D6).
+            (RT-14 D6). Emitted from RT-73; optional until then.
         lineName:
           type: string
         unitPrice:

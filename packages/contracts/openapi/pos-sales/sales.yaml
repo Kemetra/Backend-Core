@@ -47,9 +47,11 @@ info:
     RT-72 versioning (additive): `recordReturn` is new; `SaleLine` gains
     `lineRef`, `returnedQuantity` and `returnableQuantity`, and `Sale` gains
     `voided`, on both `readSale` and `captureSale`. The server emits the new
-    fields from RT-73. Because `Sale` / `SaleLine` are
-    `additionalProperties: false`, a client that validates responses
-    strictly (the POS) must re-pin this contract before RT-73 deploys.
+    fields from RT-73, so they are OPTIONAL in this version; RT-73 makes
+    them required once it emits them (non-breaking for a response). Because
+    `Sale` / `SaleLine` are `additionalProperties: false`, a client that
+    validates responses strictly (the POS) must re-pin this version before
+    RT-73 deploys — optional fields make that safe to do now.
 
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
@@ -758,7 +760,6 @@ components:
         - externalId
         - mismatchFlag
         - syncStatus
-        - voided
         - lines
       description: >
         Wire projection of a captured sale. Decoupled from the `sales` /
@@ -819,7 +820,7 @@ components:
           description: >
             True when a void terminal event exists for the sale (derived, §X —
             the sale row is never mutated). A voided sale cannot be returned
-            (RT-14 D2).
+            (RT-14 D2). Emitted from RT-73; optional until then.
         lines:
           type: array
           items:
@@ -827,17 +828,11 @@ components:
     SaleLine:
       type: object
       additionalProperties: false
-      required:
-        - lineRef
-        - lineName
-        - unitPrice
-        - currencyCode
-        - quantity
-        - lineAmount
-        - unit
-        - returnedQuantity
-        - returnableQuantity
-      description: Wire projection of a frozen sale-line snapshot.
+      required: [lineName, unitPrice, currencyCode, quantity, lineAmount, unit]
+      description: >
+        Wire projection of a frozen sale-line snapshot. `lineRef`,
+        `returnedQuantity` and `returnableQuantity` (RT-72) are emitted from
+        RT-73 and optional until then.
       properties:
         lineRef:
           type: string

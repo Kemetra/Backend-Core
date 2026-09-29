@@ -517,11 +517,16 @@ describe("pos-sales/sales.yaml — RT-72 returns contract", () => {
   });
 
   it("sale lines expose lineRef + returnability and the sale exposes voided (additive)", () => {
-    expect(schema("SaleLine")?.required).toEqual(
-      expect.arrayContaining(["lineRef", "returnedQuantity", "returnableQuantity"]),
-    );
     expect(prop<{ format?: string }>("SaleLine", "lineRef")?.format).toBe("uuid");
-    expect(schema("Sale")?.required).toEqual(expect.arrayContaining(["voided"]));
+    expect(schema("SaleLine")?.properties).toHaveProperty("returnedQuantity");
+    expect(schema("SaleLine")?.properties).toHaveProperty("returnableQuantity");
     expect(prop<{ type?: string }>("Sale", "voided")?.type).toBe("boolean");
+  });
+
+  it("keeps the new read fields OPTIONAL until RT-73 emits them (safe re-pin order for strict clients)", () => {
+    for (const field of ["lineRef", "returnedQuantity", "returnableQuantity"]) {
+      expect(schema("SaleLine")?.required).not.toContain(field);
+    }
+    expect(schema("Sale")?.required).not.toContain("voided");
   });
 });

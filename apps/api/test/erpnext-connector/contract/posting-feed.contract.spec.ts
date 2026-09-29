@@ -379,7 +379,10 @@ describe("erpnext-connector/posting-feed.yaml — work-item payload (O-1/O-4)", 
   it("a reversal carries its own server event time + business date (RT-63 P1)", () => {
     const ref = feedDoc.components?.schemas?.["ReversalRef"];
     expect(ref?.additionalProperties).toBe(false);
-    expect(ref?.required).toEqual(expect.arrayContaining(["recordedAt", "businessDate"]));
+    // Optional until RT-73 emits them, so the feed on main never violates its
+    // own contract; the Connector falls back to the RT-49 stamp when absent.
+    expect(ref?.required).not.toContain("recordedAt");
+    expect(ref?.required).not.toContain("businessDate");
     const props = ref?.properties ?? {};
     expect((props["recordedAt"] as { format?: string })?.format).toBe("date-time");
     expect((props["businessDate"] as { format?: string })?.format).toBe("date");
@@ -397,9 +400,22 @@ describe("erpnext-connector/posting-feed.yaml — work-item payload (O-1/O-4)", 
     expect(amount?.$ref).toBe("#/components/schemas/NonNegativeDecimalAmount");
   });
 
+  it("returnLines is required for a return and forbidden on other kinds (schema-enforced)", () => {
+    const ref = feedDoc.components?.schemas?.["ReversalRef"] as
+      | { if?: unknown; then?: unknown; else?: unknown }
+      | undefined;
+    expect(ref?.if).toEqual({
+      properties: { reversalKind: { const: "return" } },
+      required: ["reversalKind"],
+    });
+    expect(ref?.then).toEqual({ required: ["returnLines"] });
+    expect(ref?.else).toEqual({ not: { required: ["returnLines"] } });
+  });
+
   it("every offered sale line carries its lineRef (D6 line mapping)", () => {
     const line = feedDoc.components?.schemas?.["SaleLine"];
-    expect(line?.required).toEqual(expect.arrayContaining(["lineRef"]));
+    // Optional until RT-73 emits it (the current projection does not).
+    expect(line?.required).not.toContain("lineRef");
     expect(((line?.properties ?? {})["lineRef"] as { format?: string })?.format).toBe("uuid");
   });
 });
