@@ -52,24 +52,34 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
+    # Actions in this write-scoped job are pinned to commit SHAs. The artifact
+    # is downloaded before checkout, so no credentials exist while it runs.
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Download badge
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: loc-badge
           path: ${{ runner.temp }}/loc-badge
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Commit badge to badges branch if changed
         shell: bash
         run: |
           set -euo pipefail
-          if git fetch --depth=1 origin badges; then
+          # ls-remote exits 2 only when the branch is missing; any other
+          # failure must stop the job instead of starting a new orphan.
+          rc=0
+          git ls-remote --exit-code --heads origin badges > /dev/null || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            git fetch --depth=1 origin badges
             git switch -C badges FETCH_HEAD
-          else
+          elif [ "$rc" -eq 2 ]; then
             git switch --orphan badges
+          else
+            echo "::error::git ls-remote failed (exit $rc); not publishing."
+            exit "$rc"
           fi
           cp "$RUNNER_TEMP/loc-badge/loc.svg" loc.svg
           git add loc.svg
