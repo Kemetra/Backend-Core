@@ -18,7 +18,10 @@ import Ajv2020, { type ValidateFunction } from "ajv/dist/2020";
 import addFormats from "ajv-formats";
 import type { PoolClient } from "pg";
 
-import { buildWorkItem } from "../../../src/catalog/erpnext-posting/posting-work-item.projection";
+import {
+  ReturnTendersNotVisibleError,
+  buildWorkItem,
+} from "../../../src/catalog/erpnext-posting/posting-work-item.projection";
 import { loadOpenApiContracts } from "../../../src/openapi/loader";
 
 const CONNECTOR_DIR = resolve(__dirname, "..", "..", "..", "..", "..", "packages", "contracts", "openapi", "erpnext-connector");
@@ -105,13 +108,14 @@ describe("posting-feed.yaml — projected work items validate against PostingWor
     expectValid(item);
   });
 
-  it("a return whose tender rows are missing is never offered (withheld, not emitted without them)", async () => {
-    const item = await project([
-      { rows: [{ reversal_kind: "return", recorded_at: AT, business_date: "2026-06-07" }] },
-      RETURN_LINES,
-      { rows: [] },
-    ]);
-    expect(item).toBeNull();
+  it("a return whose tender rows are not visible is never emitted without them (the pull fails)", async () => {
+    await expect(
+      project([
+        { rows: [{ reversal_kind: "return", recorded_at: AT, business_date: "2026-06-07" }] },
+        RETURN_LINES,
+        { rows: [] },
+      ]),
+    ).rejects.toThrow(ReturnTendersNotVisibleError);
   });
 
   it("a void, a legacy refund and a sale_post (no refund tenders)", async () => {

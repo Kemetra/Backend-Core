@@ -12,7 +12,10 @@ import "reflect-metadata";
 
 import type { PoolClient } from "pg";
 
-import { buildWorkItem } from "../../../../src/catalog/erpnext-posting/posting-work-item.projection";
+import {
+  ReturnTendersNotVisibleError,
+  buildWorkItem,
+} from "../../../../src/catalog/erpnext-posting/posting-work-item.projection";
 
 /** A PoolClient stub that returns canned rows per query call, in order. */
 function fakeClient(resultsInOrder: Array<{ rows: unknown[] }>): PoolClient {
@@ -170,13 +173,14 @@ describe("buildWorkItem — RT-73 lineRef, reversal time and return lines", () =
     });
   });
 
-  it("a return with no visible tender rows is withheld from the feed, never offered without them (RT-86)", async () => {
-    // Capture requires >= 1 refund tender, so zero VISIBLE rows is an anomaly (e.g. an RLS or
-    // grant misconfiguration). The contract INVARIANT forbids offering a return without its
-    // tenders — the field is optional on the wire, so omitting it could post an outstanding
-    // credit note terminally although cash left the drawer (Codex/Greptile P1, PR #652). The
-    // item is omitted (null), like an unresolved item map: it stays pending, never corrupt.
+  it("a return with no visible tender rows fails the pull loudly — never offered without them, never skipped (RT-86)", async () => {
+    // Capture requires >= 1 refund tender, so zero VISIBLE rows is a visibility fault (e.g. an
+    // RLS policy mismatch). Offering the return without them could post an outstanding credit
+    // note terminally (Codex/Greptile P1, PR #652); omitting it would let the page cursor advance
+    // past a still-pending row so it is never re-offered (Codex P2, PR #652). Failing the pull
+    // keeps the cursor where it is: the feed halts loudly (as a missing grant already does) and
+    // the return is offered, with its tenders, once visibility is restored.
     const client = fakeClient([{ rows: [SALE_ROW] }, { rows: [LINE_ROW] }, RETURN_KIND_ROW, RETURN_LINE_ROWS, { rows: [] }]);
-    expect(await buildWorkItem(client, REVERSAL_ROW)).toBeNull();
+    await expect(buildWorkItem(client, REVERSAL_ROW)).rejects.toThrow(ReturnTendersNotVisibleError);
   });
 });
