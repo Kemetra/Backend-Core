@@ -289,6 +289,7 @@ async function buildReversalRef(
       taxAmount: l.tax_amount,
     }));
     refundTenders = await loadRefundTenders(client, sourceRefId);
+    if (refundTenders === undefined) return null; // withhold: never offer a return without them
   }
 
   return {
@@ -305,9 +306,11 @@ async function buildReversalRef(
 /**
  * RT-86: the return's recorded refund payouts (`sale_return_tenders`), in request order
  * (`ordinal`, unique per return) so every re-pull is byte-identical. Capture guarantees at
- * least one row summing to the return total (RT-73). The contract forbids an empty list
- * (`minItems: 1`), so zero rows — a data anomaly — omits the field: the Connector then rejects
- * the return visibly as `validation` rather than posting a credit note without its cash.
+ * least one row summing to the return total (RT-73), so zero VISIBLE rows is an anomaly (e.g.
+ * an RLS or grant misconfiguration) and yields `undefined`. The caller then WITHHOLDS the whole
+ * work item (null): the contract INVARIANT forbids offering a return without its tenders, since
+ * the field is optional on the wire and a credit note posted without its cash is terminal
+ * (Codex/Greptile P1, PR #652). Same omit-never-corrupt handling as an unresolved item map.
  */
 async function loadRefundTenders(
   client: PoolClient,
