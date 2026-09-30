@@ -22,6 +22,26 @@ export interface OneLineSale {
   readonly lineRef: string;
 }
 
+/**
+ * RT-105: the unit price of a line whose amount A divides exactly by quantity Q
+ * (A ÷ Q at 4 decimals), so the capture meets the line price invariant. A line
+ * that does not divide cannot be captured any more; seed it with
+ * `seedPreInvariantSale` instead.
+ */
+function exactUnitPrice(lineAmount: string, quantity: string): string {
+  const scaled = (v: string, scale: number): bigint => {
+    const [whole, frac = ""] = v.split(".");
+    return BigInt(whole! + frac.padEnd(scale, "0"));
+  };
+  const amount = scaled(lineAmount, 4) * 1_000_000n;
+  const qty = scaled(quantity, 6);
+  if (amount % qty !== 0n) {
+    throw new Error(`captureOneLine: ${lineAmount} ÷ ${quantity} is not exact; seed it as a pre-RT-105 sale`);
+  }
+  const unit = (amount / qty).toString().padStart(5, "0");
+  return `${unit.slice(0, -4)}.${unit.slice(-4)}`;
+}
+
 /** Capture a one-line sale (quantity Q, amount A, optional tax T) and return its refs. */
 export async function captureOneLine(
   h: HarnessHandle,
@@ -39,7 +59,7 @@ export async function captureOneLine(
         lines: [
           {
             lineName: "Widget",
-            unitPrice: opts.lineAmount,
+            unitPrice: exactUnitPrice(opts.lineAmount, opts.quantity),
             currencyCode: "USD",
             quantity: opts.quantity,
             lineAmount: opts.lineAmount,

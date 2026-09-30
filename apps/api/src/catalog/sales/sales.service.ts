@@ -41,7 +41,9 @@ import type { RecordVoidRequestDto } from "./dto/record-void-request.dto";
 import type { RecordRefundRequestDto } from "./dto/record-refund-request.dto";
 import { SALE_SYNC_STATUS, type SaleSyncStatus } from "./sale-sync-status";
 import { sha256CanonicalHex } from "./payload-hash";
+import { findLinePricingViolation } from "./sale-line-pricing";
 import {
+  SaleLinePricingInvalidError,
   SaleNotFoundError,
   SaleTenderMismatchError,
   SaleTenderReplayConflictError,
@@ -57,6 +59,7 @@ import {
 
 // Moved to ./sale-errors (RT-73); re-exported so existing importers are unchanged.
 export {
+  SaleLinePricingInvalidError,
   SaleNotFoundError,
   SaleTenderMismatchError,
   SaleTenderReplayConflictError,
@@ -352,6 +355,15 @@ export class SalesService {
           // payload (409). Only the tender set is compared (RT-77 10509).
           await assertSameTenders(client, winnerRow, tenders);
           return { saleId: winnerRow.id, created: false };
+        }
+
+        // RT-105 (RT-87 decision D): a FIRST capture must satisfy the line
+        // price invariant, or the line could never be returned exactly. It is
+        // checked here, after the provenance insert and never before it, so a
+        // replay of a sale captured before RT-105 still resolves above (200).
+        // Throwing rolls the transaction back: the sales row is not kept.
+        if (findLinePricingViolation(body.lines) !== null) {
+          throw new SaleLinePricingInvalidError();
         }
 
         for (const line of body.lines) {

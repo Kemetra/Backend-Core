@@ -36,6 +36,19 @@ export class SaleTenderMismatchError extends Error {
 }
 
 /**
+ * RT-105 (RT-87 decision D): a first capture whose line breaks the price
+ * invariant — money beyond the currency's minor unit, `lineAmount ≠ unitPrice ×
+ * quantity`, or a fractional quantity (→ 422 `sale_line_pricing_invalid`).
+ * Such a line could not be returned exactly. Nothing is recorded.
+ */
+export class SaleLinePricingInvalidError extends Error {
+  constructor() {
+    super("a sale line breaks the price invariant");
+    this.name = "SaleLinePricingInvalidError";
+  }
+}
+
+/**
  * RT-77: a capture re-delivered under an existing `(tenant, source_system,
  * external_id)` provenance whose tender set differs from the one recorded — a
  * different payload (→ 409), never a replay (RT-77 comment 10509: the compare
