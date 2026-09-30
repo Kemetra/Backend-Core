@@ -388,3 +388,50 @@ export function refundBody(overrides: Record<string, unknown> = {}): Record<stri
     ...overrides,
   };
 }
+
+/**
+ * RT-105: seed a one-line sale DIRECTLY (admin pool, bypassing captureSale) with
+ * any price shape — standing in for a sale captured before the RT-105 line
+ * price invariant, which capture now rejects (for example 10.00 for 3 units at
+ * 3.3333). Returns the sale and line refs.
+ */
+export async function seedPreInvariantSale(
+  h: HarnessHandle,
+  opts: {
+    externalId: string;
+    unitPrice: string;
+    quantity: string;
+    lineAmount: string;
+    taxAmount?: string;
+  },
+): Promise<{ saleRef: string; lineRef: string }> {
+  const admin = h.harness!.env.admin;
+  const sale = await admin.query<{ id: string }>(
+    `INSERT INTO sales
+       (id, tenant_id, store_id, currency_code, pos_total, occurred_at,
+        business_date, source_system, external_id, payload_hash, created_by)
+     VALUES (gen_random_uuid(), $1, $2, 'USD', $3::numeric, now(),
+             (now() AT TIME ZONE 'UTC')::date, 'pos-1', $4, $5, $6)
+     RETURNING id::text AS id`,
+    [TENANT_A, STORE_A_X, opts.lineAmount, opts.externalId, "0".repeat(64), DEVICE_USER_ID],
+  );
+  const saleRef = sale.rows[0]!.id;
+  const line = await admin.query<{ id: string }>(
+    `INSERT INTO sale_lines
+       (id, sale_id, tenant_id, store_id, line_name, unit_price, currency_code,
+        quantity, line_amount, tax_amount, unit)
+     VALUES (gen_random_uuid(), $1, $2, $3, 'Widget', $4::numeric, 'USD',
+             $5::numeric, $6::numeric, $7::numeric, 'ea')
+     RETURNING id::text AS id`,
+    [
+      saleRef,
+      TENANT_A,
+      STORE_A_X,
+      opts.unitPrice,
+      opts.quantity,
+      opts.lineAmount,
+      opts.taxAmount ?? null,
+    ],
+  );
+  return { saleRef, lineRef: line.rows[0]!.id };
+}

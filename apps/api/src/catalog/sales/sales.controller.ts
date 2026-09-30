@@ -76,6 +76,7 @@ import {
 } from "./sale-reversal";
 import {
   SalesService,
+  SaleLinePricingInvalidError,
   SaleNotFoundError,
   SaleTenderMismatchError,
   SaleTenderReplayConflictError,
@@ -93,6 +94,12 @@ function toCaptureHttpError(err: unknown): unknown {
     return new UnprocessableEntityException({
       code: "sale_tender_mismatch",
       message: "tenders do not sum to posTotal",
+    });
+  }
+  if (err instanceof SaleLinePricingInvalidError) {
+    return new UnprocessableEntityException({
+      code: "sale_line_pricing_invalid",
+      message: "a sale line's price, amount or quantity breaks the price invariant",
     });
   }
   if (err instanceof SaleTenderReplayConflictError) {

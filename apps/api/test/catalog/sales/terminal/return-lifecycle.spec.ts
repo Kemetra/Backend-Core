@@ -14,6 +14,7 @@ import {
   resetHarness,
   captureBody,
   idempKey,
+  seedPreInvariantSale,
   STORE_A_X,
   type HarnessHandle,
 } from "../capture/__capture-harness";
@@ -106,7 +107,13 @@ describe("RT-73 AC4 — POS_RETURNS_ENABLED gate", () => {
 describe("RT-73 — recording a return", () => {
   it("prices a partial return server-side and returns the SaleReturn projection", async () => {
     if (skip()) return;
-    const sale = await captureOneLine(h, { externalId: "ret-happy", quantity: "3", lineAmount: "10.0000" });
+    // 10.00 for 3 does not divide: a pre-RT-105 line, still priced by round4.
+    const sale = await seedPreInvariantSale(h, {
+      externalId: "ret-happy",
+      unitPrice: "3.3333",
+      quantity: "3",
+      lineAmount: "10.0000",
+    });
     const res = await postReturn(
       h,
       sale.saleRef,
@@ -208,8 +215,10 @@ describe("RT-73 — cumulative-difference pricing", () => {
     split,
     taxAmount,
   }: SequencePlan): Promise<Array<{ lineAmount: string; taxAmount: string | null }>> {
-    const sale = await captureOneLine(h, {
+    // 10.00 for 3 does not divide: a pre-RT-105 line, still priced by round4.
+    const sale = await seedPreInvariantSale(h, {
       externalId,
+      unitPrice: "3.3333",
       quantity: "3",
       lineAmount: "10.0000",
       ...(taxAmount === undefined ? {} : { taxAmount }),
@@ -277,8 +286,9 @@ describe("RT-73 — invariants", () => {
     if (skip()) return;
     // sold 9999999999999 (13 integer digits), 1 already returned, then another
     // 9999999999999: c + q has 14 integer digits and must not be cast.
-    const s = await captureOneLine(h, { externalId: "ret-bound", quantity: "9999999999999", lineAmount: "1.0000" });
-    const one = await postReturn(h, s.saleRef, returnBody("ret-bound-1", [{ lineRef: s.lineRef, quantity: "1" }], "0"), "rbound1");
+    // RT-105: priced at 0.01 each so the capture meets the line price invariant.
+    const s = await captureOneLine(h, { externalId: "ret-bound", quantity: "9999999999999", lineAmount: "99999999999.9900" });
+    const one = await postReturn(h, s.saleRef, returnBody("ret-bound-1", [{ lineRef: s.lineRef, quantity: "1" }], "0.01"), "rbound1");
     expect(one.status).toBe(201);
     const big = await postReturn(h, s.saleRef, returnBody("ret-bound-2", [{ lineRef: s.lineRef, quantity: "9999999999999" }], "1.0000"), "rbound2");
     expect(big.status).toBe(409);
@@ -391,7 +401,13 @@ describe("RT-73 — invariants", () => {
 describe("RT-73 — replay and provenance", () => {
   it("a replay returns the identical body even after a later return used up the line", async () => {
     if (skip()) return;
-    const s = await captureOneLine(h, { externalId: "ret-replay", quantity: "3", lineAmount: "10.0000" });
+    // 10.00 for 3 does not divide: a pre-RT-105 line, still priced by round4.
+    const s = await seedPreInvariantSale(h, {
+      externalId: "ret-replay",
+      unitPrice: "3.3333",
+      quantity: "3",
+      lineAmount: "10.0000",
+    });
     const body = returnBody("ret-replay-1", [{ lineRef: s.lineRef, quantity: "1" }], "3.3333");
     const first = await postReturn(h, s.saleRef, body, "rrep1");
     expect(first.status).toBe(201);
