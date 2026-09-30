@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.2.0-draft"
+  version: "1.3.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -81,6 +81,20 @@ info:
     the feed until it lands (see `erpnext-connector/posting-feed.yaml`,
     ROLLOUT ORDER and INVARIANT).
 
+    RT-105 (1.3.0-draft; RT-87 decision D): from the RT-105 capture change,
+    `captureSale` enforces a sale-line price invariant and gains 422
+    `sale_line_pricing_invalid` (until then it keeps capturing such lines); the
+    422 response is renamed `CaptureUnprocessable` and carries both codes. The
+    request shape is unchanged — no field, pattern or `required` list moves. A
+    line whose `unitPrice` or `lineAmount` has more fractional digits than its
+    currency's minor unit, whose `lineAmount` is not exactly `unitPrice ×
+    quantity`, or whose `quantity` is not a whole number is rejected, because
+    such a line cannot be returned exactly: ERPNext posts a return at the
+    original rate × returned quantity, at the currency's precision. The POS
+    already sends conforming lines (integer quantity × unit price in minor
+    units), so it is unaffected; any other producer now gets 422 instead of an
+    unreturnable sale. Sales captured before RT-105 are not re-checked.
+
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
     appears on the wire. Timestamps are RFC 3339 / `date-time` in UTC (FR-021).
@@ -148,6 +162,13 @@ paths:
         changes tenders is a different payload (409). An absent list is a
         tender-unknown sale (RT-10 D8): it is captured exactly as before, and
         the server NEVER derives tender from `posTotal`.
+
+        Line pricing (RT-105): every line must satisfy the `CaptureSaleLine`
+        price invariant, else 422 `sale_line_pricing_invalid`; nothing is
+        recorded. The tender rule is checked first, so a body that breaks both
+        answers `sale_tender_mismatch`. The invariant applies to a first capture
+        only: a replay of a sale captured before RT-105 is never re-checked, and
+        still returns 200 with the stored projection.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -185,7 +206,7 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
         "422":
-          $ref: "#/components/responses/SaleTenderMismatch"
+          $ref: "#/components/responses/CaptureUnprocessable"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "500":
@@ -389,6 +410,10 @@ paths:
         (`readSale` exposes `returnedQuantity`), so a client can recompute it
         exactly, and all returns on a line sum to A once it is fully returned.
         `round4` is `round(numeric, 4)` in Postgres `numeric`, never a float.
+        A line captured under the RT-105 price invariant (`lineAmount =
+        unitPrice × quantity`, minor-unit precision, whole quantity) prices to exactly `unitPrice × q`
+        at every step, which ERPNext can post; a line captured before RT-105
+        may still price to more fractional digits than its currency allows.
         `returnTotal` = Σ returned `lineAmount`, the same basis as capture's
         `posTotal` = Σ `lineAmount`; the tax share is carried inside it for
         posting, not added on top.
@@ -650,6 +675,14 @@ components:
         A sold line. Snapshot fields are frozen at capture (FR-002/003).
         `tenantProductRef` is optional lineage only — ad-hoc lines have none
         (FR-004) and no tenant product is auto-created from a line.
+
+        Price invariant (RT-105, RT-87 decision D), compared numerically in
+        exact decimal (`"3.3300"` equals `"3.33"`): `unitPrice` and
+        `lineAmount` have no more significant fractional digits than the line
+        currency's ISO-4217 minor unit (EGP 2); `lineAmount = unitPrice ×
+        quantity` exactly; and `quantity` is a whole number (`"2.000000"` is
+        whole; fractional quantities, such as weighed goods, are not accepted
+        yet). A line that breaks any of them is 422 `sale_line_pricing_invalid`.
       properties:
         lineName:
           type: string
@@ -1215,10 +1248,13 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
-    SaleTenderMismatch:
+    CaptureUnprocessable:
       description: >
-        422 `sale_tender_mismatch` (RT-10 D1) — the capture's `tenders` amounts
-        do not sum to `posTotal` exactly. Deterministic; nothing is recorded.
+        422 on `captureSale`. `error.code` is one of: `sale_tender_mismatch`
+        (RT-10 D1) — the capture's `tenders` amounts do not sum to `posTotal`
+        exactly; `sale_line_pricing_invalid` (RT-105) — a line breaks the
+        `CaptureSaleLine` price invariant. The tender rule is checked first.
+        Deterministic; nothing is recorded.
       content:
         application/json:
           schema:

@@ -622,8 +622,8 @@ describe("pos-sales/sales.yaml — RT-76 sale tender contract", () => {
 
   it("capture rejects tenders that do not sum to posTotal with 422 sale_tender_mismatch (D1)", () => {
     const responses = (findOp("captureSale")?.responses ?? {}) as Record<string, { $ref?: string }>;
-    expect(responses["422"]?.$ref).toBe("#/components/responses/SaleTenderMismatch");
-    const mismatch = salesDoc.components?.responses?.["SaleTenderMismatch"] as
+    expect(responses["422"]?.$ref).toBe("#/components/responses/CaptureUnprocessable");
+    const mismatch = salesDoc.components?.responses?.["CaptureUnprocessable"] as
       | { description?: string }
       | undefined;
     expect(mismatch?.description).toContain("sale_tender_mismatch");
@@ -647,5 +647,51 @@ describe("pos-sales/sales.yaml — RT-76 sale tender contract", () => {
     expect(tenders?.type).toBe("array");
     expect(tenders?.items?.$ref).toBe("#/components/schemas/SaleTender");
     expect(schema("Sale")?.required).not.toContain("tenders");
+  });
+});
+
+// ===========================================================================
+// RT-105 (RT-87 decision D) — sale-line price invariant at capture
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-105 sale-line price invariant", () => {
+  function captureLine(): SchemaObject | undefined {
+    return salesDoc.components?.schemas?.["CaptureSaleLine"];
+  }
+  /** The `description` of a contract node, or "" (the loader's types omit it). */
+  function describedBy(node: unknown): string {
+    return (node as { description?: string } | undefined)?.description ?? "";
+  }
+
+  it("capture's 422 names the new sale_line_pricing_invalid code beside sale_tender_mismatch", () => {
+    const text = describedBy(salesDoc.components?.responses?.["CaptureUnprocessable"]);
+    expect(text).toContain("sale_line_pricing_invalid");
+    expect(text).toContain("sale_tender_mismatch");
+  });
+
+  it("a capture line states all three invariant conditions", () => {
+    const text = describedBy(captureLine());
+    expect(text).toContain("lineAmount = unitPrice × quantity");
+    expect(text).toContain("minor unit");
+    expect(text).toContain("whole number");
+    expect(text).toContain("sale_line_pricing_invalid");
+  });
+
+  it("a replay of an already-captured sale is exempt from the invariant", () => {
+    expect(describedBy(findOp("captureSale"))).toContain(
+      "a replay of a sale captured before RT-105 is never re-checked",
+    );
+  });
+
+  it("returns prose says conforming lines return at exactly unitPrice × q", () => {
+    expect(describedBy(findOp("recordReturn"))).toContain(
+      "prices to exactly `unitPrice × q`",
+    );
+  });
+
+  it("the version note records RT-105 and that the request shape is unchanged", () => {
+    const info = salesDoc.info?.description ?? "";
+    expect(info).toContain("RT-105");
+    expect(info).toContain("The request shape is unchanged");
+    expect(salesDoc.info?.version).toBe("1.3.0-draft");
   });
 });
