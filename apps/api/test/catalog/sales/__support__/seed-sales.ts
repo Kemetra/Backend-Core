@@ -302,5 +302,21 @@ export async function seedSalesFixture(
     [RETURN_A_X, TENANT_A, STORE_A_X, RETURN_B_X, TENANT_B, STORE_B_X],
   );
 
+  // ---- sale_tenders (RT-77; one per tenant, the store-X captured sale) ----
+  // A valid tender-bearing sale: the single cash tender equals its pos_total.
+  await admin.query(
+    `INSERT INTO sale_tenders
+       (sale_id, tenant_id, store_id, method, amount, currency_code)
+     VALUES ($1, $2, $3, 'cash', 12.5000, 'USD'), ($4, $5, $6, 'cash', 12.5000, 'USD')
+     ON CONFLICT DO NOTHING`,
+    [SALE_A_X, TENANT_A, STORE_A_X, SALE_B_X, TENANT_B, STORE_B_X],
+  );
+  // Capture writes tender_count with the rows in one transaction; the posting
+  // feed refuses a sale whose visible tenders differ from it (RT-77).
+  await admin.query(`UPDATE sales SET tender_count = 1 WHERE id IN ($1, $2)`, [
+    SALE_A_X,
+    SALE_B_X,
+  ]);
+
   return SALES_FIXTURE_IDS;
 }

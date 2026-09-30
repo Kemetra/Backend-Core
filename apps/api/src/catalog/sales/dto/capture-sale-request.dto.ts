@@ -71,5 +71,43 @@ export const CaptureSaleRequestSchema = z
   })
   .strict();
 
-export type CaptureSaleRequestDto = z.infer<typeof CaptureSaleRequestSchema>;
+/**
+ * RT-77 (RT-10 D1/D2) — one way the sale was paid, mirroring `SaleTender` in
+ * `sales.yaml`. `amount` is NET of change and non-negative (the contract's
+ * NonNegativeDecimalAmount; RT-77 comment 10509). `reference` is the card
+ * terminal's short code, card_external only — never card data.
+ */
+export const SaleTenderSchema = z.discriminatedUnion("method", [
+  z.object({ method: z.literal("cash"), amount: decimalAmount }).strict(),
+  z
+    .object({
+      method: z.literal("card_external"),
+      amount: decimalAmount,
+      reference: z
+        .string()
+        .regex(/^[A-Z0-9]{1,6}$/, "must be a short card terminal reference")
+        .optional(),
+    })
+    .strict(),
+]);
+
+/**
+ * The tender-aware capture body (RT-77). Selected by `CaptureSaleRequestPipe`
+ * only while `POS_SALE_TENDERS_ENABLED` is on; `CaptureSaleRequestSchema`
+ * above stays the pre-RT-77 boundary. At most one entry per method — a
+ * duplicate is a validation failure (400), per the contract. The Σ = posTotal
+ * rule needs exact decimal math and runs in the service (422).
+ */
+export const CaptureSaleRequestWithTendersSchema = CaptureSaleRequestSchema.extend({
+  tenders: z
+    .array(SaleTenderSchema)
+    .min(1)
+    .refine((ts) => new Set(ts.map((t) => t.method)).size === ts.length, {
+      message: "at most one tender per method",
+    })
+    .optional(),
+}).strict();
+
+export type CaptureSaleRequestDto = z.infer<typeof CaptureSaleRequestWithTendersSchema>;
+export type SaleTenderDto = z.infer<typeof SaleTenderSchema>;
 export type CaptureSaleLineDto = z.infer<typeof CaptureSaleLineSchema>;

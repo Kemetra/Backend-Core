@@ -42,6 +42,7 @@ import {
   saleReturnLines,
   saleReturns,
   saleReturnTenders,
+  saleTenders,
   sales,
   saleVoids,
 } from "@data-pulse-2/db/schema";
@@ -84,6 +85,10 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       "mismatch_flag",
       "sync_status",
       "created_by",
+      // RT-77 (0033): the server-resolved terminal (no PII) and the number of
+      // recorded tenders (a count, no payment data) — re-reviewed under SI-012.
+      "device_id",
+      "tender_count",
       "created_at",
     ],
   },
@@ -186,7 +191,35 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
     table: saleReturnTenders,
     columns: ["id", "return_id", "tenant_id", "store_id", "ordinal", "method", "amount"],
   },
+  // RT-77 (0033) — re-reviewed under SI-012 for the first non-cash method,
+  // `card_external`. Method + amount are sale facts; `reference` is the card
+  // terminal's short approval code, CHECK-constrained to ^[A-Z0-9]{1,6}$ so no
+  // PAN / expiry / customer identifier fits. No card, account or customer column.
+  {
+    name: "sale_tenders",
+    table: saleTenders,
+    columns: [
+      "id",
+      "sale_id",
+      "tenant_id",
+      "store_id",
+      "method",
+      "amount",
+      "currency_code",
+      "reference",
+      "created_at",
+    ],
+  },
 ];
+
+/**
+ * Columns that carry a payment-class NAME fragment but no payment data, each
+ * re-reviewed under SI-012 when it landed. `sales.tender_count` (RT-77) is the
+ * number of `sale_tenders` rows capture wrote — the feed's visibility guard.
+ */
+const REVIEWED_PAYMENT_NAMED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  sales: ["tender_count"],
+};
 
 /**
  * Collision-safe PII / payment-class substrings. Each is a fragment that would
@@ -235,11 +268,12 @@ describe("008-LIFECYCLE (T075) — sale-fact data-class classification (SI-012 /
   describe("no PII / payment-class field is persisted in v1 (gate A.5 — tender deferred)", () => {
     it.each(BUSINESS_CLASS_COLUMNS)(
       "$name has zero PII/payment-class columns",
-      ({ table }) => {
-        const offending = persistedColumns(table).filter((col) =>
-          PII_PAYMENT_SUBSTRINGS.some((frag) =>
-            col.toLowerCase().includes(frag),
-          ),
+      ({ name, table }) => {
+        const reviewed = REVIEWED_PAYMENT_NAMED_COLUMNS[name] ?? [];
+        const offending = persistedColumns(table).filter(
+          (col) =>
+            !reviewed.includes(col) &&
+            PII_PAYMENT_SUBSTRINGS.some((frag) => col.toLowerCase().includes(frag)),
         );
         expect(offending).toEqual([]);
       },

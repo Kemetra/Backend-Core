@@ -64,6 +64,8 @@ const SALE_TABLES = [
   "sale_returns",
   "sale_return_lines",
   "sale_return_tenders",
+  // RT-77 (0033)
+  "sale_tenders",
 ] as const;
 
 beforeAll(async () => {
@@ -186,8 +188,8 @@ describe("sales-sweep §A.3 — fail-closed: unset tenant GUC ⇒ zero rows on e
 });
 
 describe("sales-sweep §A.4b — RT-73 return tables are not vacuously isolated", () => {
-  it.each(["sale_returns", "sale_return_lines", "sale_return_tenders"])(
-    "%s: TENANT_A GUC sees its own seeded return rows",
+  it.each(["sale_returns", "sale_return_lines", "sale_return_tenders", "sale_tenders"])(
+    "%s: TENANT_A GUC sees its own seeded return / tender rows",
     async (table) => {
       if (maybeSkip()) return;
       const count = await withRawClient(async (client) => {

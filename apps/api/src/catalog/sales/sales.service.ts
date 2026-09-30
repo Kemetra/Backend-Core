@@ -36,12 +36,18 @@ import { newId } from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../../auth/auth.module";
-import type { CaptureSaleRequestDto } from "./dto/capture-sale-request.dto";
+import type { CaptureSaleRequestDto, SaleTenderDto } from "./dto/capture-sale-request.dto";
 import type { RecordVoidRequestDto } from "./dto/record-void-request.dto";
 import type { RecordRefundRequestDto } from "./dto/record-refund-request.dto";
 import { SALE_SYNC_STATUS, type SaleSyncStatus } from "./sale-sync-status";
 import { sha256CanonicalHex } from "./payload-hash";
-import { SaleNotFoundError, TerminalEventProvenanceConflictError } from "./sale-errors";
+import {
+  SaleNotFoundError,
+  SaleTenderMismatchError,
+  SaleTenderReplayConflictError,
+  SaleTendersNotVisibleError,
+  TerminalEventProvenanceConflictError,
+} from "./sale-errors";
 import {
   lockSaleForReversal,
   mapOneVoidViolation,
@@ -50,7 +56,13 @@ import {
 } from "./sale-reversal";
 
 // Moved to ./sale-errors (RT-73); re-exported so existing importers are unchanged.
-export { SaleNotFoundError, TerminalEventProvenanceConflictError } from "./sale-errors";
+export {
+  SaleNotFoundError,
+  SaleTenderMismatchError,
+  SaleTenderReplayConflictError,
+  SaleTendersNotVisibleError,
+  TerminalEventProvenanceConflictError,
+} from "./sale-errors";
 
 /**
  * Optional outbox producer seam — OBSOLETE DEAD CODE.
@@ -74,6 +86,11 @@ export interface CaptureSaleInput {
   readonly tenantId: string;
   readonly storeId: string;
   readonly actorUserId: string;
+  /**
+   * RT-77 (RT-10 D7(i)): the envelope guard's bound device
+   * (`request.posDeviceId`), stored on `sales.device_id`. Never a body field.
+   */
+  readonly deviceId: string;
   readonly body: CaptureSaleRequestDto;
 }
 
@@ -96,6 +113,15 @@ export interface SaleProjection {
   /** RT-73: a void terminal event exists (derived; the sale row is never mutated). */
   readonly voided: boolean;
   readonly lines: ReadonlyArray<SaleLineProjection>;
+  /** RT-77: how the sale was paid; empty for a tender-unknown sale (RT-10 D8). */
+  readonly tenders: ReadonlyArray<SaleTenderProjection>;
+}
+
+/** RT-77: one recorded tender (contract `SaleTender`); `reference` only when set. */
+export interface SaleTenderProjection {
+  readonly method: "cash" | "card_external";
+  readonly amount: string;
+  readonly reference?: string;
 }
 
 export interface SaleLineProjection {
@@ -170,6 +196,13 @@ interface SaleRow {
   mismatch_flag: boolean | null;
   sync_status: SaleSyncStatus;
   voided: boolean;
+  tender_count: number;
+}
+
+interface SaleTenderRow {
+  method: "cash" | "card_external";
+  amount: string;
+  reference: string | null;
 }
 
 interface SaleLineRow {
@@ -200,8 +233,9 @@ export class SalesService {
   ) {}
 
   async captureSale(input: CaptureSaleInput): Promise<CaptureSaleResult> {
-    const { tenantId, storeId, actorUserId, body } = input;
+    const { tenantId, storeId, actorUserId, deviceId, body } = input;
     const payloadHash = sha256CanonicalHex(body);
+    const tenders = body.tenders ?? [];
 
     const result = await runWithTenantContext(
       this.pool,
@@ -223,6 +257,11 @@ export class SalesService {
           [body.posTotal, body.lines.map((l) => l.lineAmount)],
         );
         const mismatchFlag = compare.rows[0]?.mismatch ?? false;
+
+        // RT-77 (RT-10 D1): tenders sum to posTotal EXACTLY, in Postgres
+        // numeric (never JS float). Checked before any write, so a mismatch
+        // (→ 422) records nothing — replay or not.
+        if (tenders.length > 0) await assertTendersMatchTotal(client, tenders, body.posTotal);
 
         // UUIDv7 (time-ordered) via the shared id policy — fact tables are
         // high-write, so v7 B-tree locality matters; matches reconciliation.
@@ -259,10 +298,11 @@ export class SalesService {
           `INSERT INTO sales
              (id, tenant_id, store_id, currency_code, pos_total, occurred_at,
               business_date, source_clock_at, source_system, external_id,
-              payload_hash, mismatch_flag, created_by, sync_status)
+              payload_hash, mismatch_flag, created_by, sync_status,
+              device_id, tender_count)
            VALUES ($1, $2, $3, $4, $5::numeric, $6::timestamptz,
                    ($6::timestamptz AT TIME ZONE $13)::date, $7::timestamptz,
-                   $8, $9, $10, $11, $12, $14)
+                   $8, $9, $10, $11, $12, $14, $15, $16)
            ON CONFLICT (tenant_id, source_system, external_id) DO NOTHING
            RETURNING id`,
           [
@@ -280,6 +320,8 @@ export class SalesService {
             actorUserId,
             storeTimezone,
             SALE_SYNC_STATUS.CAPTURED,
+            deviceId,
+            tenders.length,
           ],
         );
 
@@ -287,17 +329,29 @@ export class SalesService {
           // The provenance already exists — a prior re-delivery or a concurrent
           // racing capture won. Resolve to that row deterministically (replay,
           // no double-apply). No line inserts: the winner already wrote them.
-          const winner = await client.query<{ id: string }>(
-            `SELECT id FROM sales
+          const winner = await client.query<{
+            id: string;
+            store_id: string;
+            tender_count: number;
+          }>(
+            `SELECT id, store_id, tender_count FROM sales
               WHERE tenant_id = $1 AND source_system = $2 AND external_id = $3
               LIMIT 1`,
             [tenantId, body.sourceSystem, body.externalId],
           );
-          const winnerId = winner.rows[0]?.id;
-          if (!winnerId) {
+          const winnerRow = winner.rows[0];
+          if (!winnerRow) {
             throw new Error("dedup conflict but no existing sale row found");
           }
-          return { saleId: winnerId, created: false };
+          // The provenance belongs to a sale in another store of this tenant:
+          // non-disclosing, exactly as before RT-77 (the store-scoped read
+          // below would not find it). Checked BEFORE the tender compare so a
+          // replay can never probe another store's tenders.
+          if (winnerRow.store_id !== storeId) throw new SaleNotFoundError();
+          // RT-77: a replay that adds, drops or changes tenders is a different
+          // payload (409). Only the tender set is compared (RT-77 10509).
+          await assertSameTenders(client, winnerRow, tenders);
+          return { saleId: winnerRow.id, created: false };
         }
 
         for (const line of body.lines) {
@@ -323,6 +377,15 @@ export class SalesService {
               line.tenantProductRef ?? null,
             ],
           );
+        }
+        if (tenders.length > 0) {
+          await insertTenders(client, {
+            saleId,
+            tenantId,
+            storeId,
+            currencyCode: body.currencyCode,
+            tenders,
+          });
         }
 
         // Emit the `sale.captured` outbox event IN-TRANSACTION, atomic with the
@@ -386,7 +449,7 @@ export class SalesService {
           `SELECT id, store_id, currency_code, pos_total, occurred_at,
                   received_at, business_date::text AS business_date,
                   processed_at, source_clock_at,
-                  source_system, external_id, mismatch_flag, sync_status,
+                  source_system, external_id, mismatch_flag, sync_status, tender_count,
                   EXISTS (SELECT 1 FROM sale_voids v WHERE v.sale_id = sales.id) AS voided
              FROM sales WHERE id = $1 AND store_id = $2`,
           [saleId, storeId],
@@ -414,7 +477,25 @@ export class SalesService {
             WHERE sl.sale_id = $1 ORDER BY sl.line_name`,
           [saleId, row.voided],
         );
-        return toBody(row, lines.rows);
+        // RT-77: a tender-unknown sale (tender_count 0 — every legacy sale)
+        // never touches sale_tenders, so the pre-RT-77 read path does not
+        // depend on the new table's grant.
+        const tenders =
+          row.tender_count > 0
+            ? (
+                await client.query<SaleTenderRow>(
+                  `SELECT method, amount::text AS amount, reference
+                     FROM sale_tenders WHERE sale_id = $1 ORDER BY method`,
+                  [saleId],
+                )
+              ).rows
+            : [];
+        // Same invariant as the posting feed: never answer with a partial or
+        // empty list for a tender-bearing sale (empty means tender-unknown).
+        if (tenders.length !== row.tender_count) {
+          throw new SaleTendersNotVisibleError(saleId, row.tender_count, tenders.length);
+        }
+        return toBody(row, lines.rows, tenders);
       },
     );
   }
@@ -681,7 +762,11 @@ function replayVoid(row: VoidProvenanceRow, saleRef: string): TerminalEventResul
   };
 }
 
-function toBody(row: SaleRow, lines: ReadonlyArray<SaleLineRow>): SaleProjection {
+function toBody(
+  row: SaleRow,
+  lines: ReadonlyArray<SaleLineRow>,
+  tenders: ReadonlyArray<SaleTenderRow>,
+): SaleProjection {
   return {
     saleRef: row.id,
     storeId: row.store_id,
@@ -713,7 +798,100 @@ function toBody(row: SaleRow, lines: ReadonlyArray<SaleLineRow>): SaleProjection
       returnedQuantity: l.returned_quantity,
       returnableQuantity: l.returnable_quantity,
     })),
+    tenders: tenders.map((t) => ({
+      method: t.method,
+      amount: t.amount,
+      ...(t.reference === null ? {} : { reference: t.reference }),
+    })),
   };
+}
+
+/** A tender's reference, or null — only card_external carries one. */
+function tenderReference(t: SaleTenderDto): string | null {
+  return t.method === "card_external" ? (t.reference ?? null) : null;
+}
+
+/** RT-77: Σ tender amounts = posTotal exactly, in Postgres numeric; else 422. */
+async function assertTendersMatchTotal(
+  client: PoolClient,
+  tenders: ReadonlyArray<SaleTenderDto>,
+  posTotal: string,
+): Promise<void> {
+  const r = await client.query<{ matches: boolean }>(
+    `SELECT (SELECT SUM(a) FROM unnest($1::numeric[]) a) = $2::numeric AS matches`,
+    [tenders.map((t) => t.amount), posTotal],
+  );
+  if (r.rows[0]?.matches !== true) throw new SaleTenderMismatchError();
+}
+
+/** RT-77: write the sale's tenders in its capture transaction (one row per method). */
+async function insertTenders(
+  client: PoolClient,
+  sale: {
+    readonly saleId: string;
+    readonly tenantId: string;
+    readonly storeId: string;
+    readonly currencyCode: string;
+    readonly tenders: ReadonlyArray<SaleTenderDto>;
+  },
+): Promise<void> {
+  const { tenders } = sale;
+  await client.query(
+    `INSERT INTO sale_tenders
+       (id, sale_id, tenant_id, store_id, method, amount, currency_code, reference)
+     SELECT t.id, $1, $2, $3, t.method, t.amount, $4, t.reference
+       FROM unnest($5::uuid[], $6::text[], $7::numeric[], $8::text[])
+            AS t(id, method, amount, reference)`,
+    [
+      sale.saleId,
+      sale.tenantId,
+      sale.storeId,
+      sale.currencyCode,
+      tenders.map(() => newId()),
+      tenders.map((t) => t.method),
+      tenders.map((t) => t.amount),
+      tenders.map(tenderReference),
+    ],
+  );
+}
+
+/**
+ * RT-77: a provenance replay must carry the tender set that was recorded —
+ * compared as a set by (method, numeric amount, reference), so "10.5" and
+ * "10.5000" are the same tender. A difference is a different payload (409).
+ * The stored `tender_count` settles the common cases without reading
+ * sale_tenders: both empty (every legacy replay) is the same payload, and a
+ * different count is a conflict.
+ */
+async function assertSameTenders(
+  client: PoolClient,
+  winner: { readonly id: string; readonly tender_count: number },
+  tenders: ReadonlyArray<SaleTenderDto>,
+): Promise<void> {
+  if (winner.tender_count !== tenders.length) throw new SaleTenderReplayConflictError();
+  if (tenders.length === 0) return;
+  const saleId = winner.id;
+  const r = await client.query<{ same: boolean }>(
+    `WITH req AS (
+       SELECT * FROM unnest($2::text[], $3::numeric[], $4::text[]) AS r(method, amount, reference)
+     ), stored AS (
+       SELECT method, amount::numeric AS amount, reference FROM sale_tenders WHERE sale_id = $1
+     )
+     SELECT NOT EXISTS (
+       (SELECT method, amount, reference FROM req
+        EXCEPT SELECT method, amount, reference FROM stored)
+       UNION ALL
+       (SELECT method, amount, reference FROM stored
+        EXCEPT SELECT method, amount, reference FROM req)
+     ) AS same`,
+    [
+      saleId,
+      tenders.map((t) => t.method),
+      tenders.map((t) => t.amount),
+      tenders.map(tenderReference),
+    ],
+  );
+  if (r.rows[0]?.same !== true) throw new SaleTenderReplayConflictError();
 }
 
 /** Build the `SaleTerminalEvent` wire projection for a void/refund event. */

@@ -13,6 +13,7 @@ import {
   ConflictException,
   NotFoundException,
   UnauthorizedException,
+  UnprocessableEntityException,
 } from "@nestjs/common";
 
 // runWithTenantContext is mocked to invoke its callback with a scripted client,
@@ -48,6 +49,9 @@ jest.mock("@data-pulse-2/db", () => ({
 import {
   SalesService,
   SaleNotFoundError,
+  SaleTenderMismatchError,
+  SaleTenderReplayConflictError,
+  SaleTendersNotVisibleError,
   TerminalEventProvenanceConflictError,
 } from "../../../src/catalog/sales/sales.service";
 import { SalesController } from "../../../src/catalog/sales/sales.controller";
@@ -82,6 +86,7 @@ function saleRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     store_id: "0d000000-0000-7000-8000-0000000000b1",
     currency_code: "USD",
     pos_total: "12.5000",
+    tender_count: 0,
     occurred_at: new Date("2026-05-01T10:00:00.000Z"),
     received_at: new Date("2026-05-01T10:00:01.000Z"),
     business_date: "2026-05-01",
@@ -98,6 +103,8 @@ const CAPTURE = {
   tenantId: "0d000000-0000-7000-8000-0000000000c1",
   storeId: "0d000000-0000-7000-8000-0000000000b1",
   actorUserId: "0d000000-0000-7000-8000-0000000000d1",
+  // RT-77: the envelope guard's bound device (request.posDeviceId).
+  deviceId: "0d000000-0000-7000-8000-0000000000e1",
 };
 
 /**
@@ -113,8 +120,19 @@ function scriptClient(opts: {
   storeRows?: Array<{ timezone: string }>;
   /** When set, the IN-TRANSACTION outbox INSERT throws this (rollback path). */
   outboxError?: Error;
+  /** RT-77: Σ tenders = posTotal (default true). */
+  tendersMatch?: boolean;
+  /** RT-77: a provenance replay's tender set equals the stored one (default true). */
+  sameTenders?: boolean;
+  /** RT-77: the stored tenders the read projection returns. */
+  tenderRows?: Array<Record<string, unknown>>;
 }): jest.Mock {
   return jest.fn(async (sql: string) => {
+    // RT-77 — matched before the plain sale_tenders read (the compare CTE reads it too).
+    if (/WITH req AS/.test(sql)) return { rows: [{ same: opts.sameTenders ?? true }] };
+    if (/AS matches/.test(sql)) return { rows: [{ matches: opts.tendersMatch ?? true }] };
+    if (/INSERT INTO sale_tenders/.test(sql)) return { rows: [] };
+    if (/FROM sale_tenders WHERE sale_id/.test(sql)) return { rows: opts.tenderRows ?? [] };
     if (/FROM stores WHERE id/.test(sql)) return { rows: opts.storeRows ?? [{ timezone: "UTC" }] };
     if (/SUM\(amt\)/.test(sql)) return { rows: opts.mismatchRows ?? [{ mismatch: false }] };
     if (/INSERT INTO outbox_events/.test(sql)) {
@@ -122,7 +140,7 @@ function scriptClient(opts: {
       return { rows: [] };
     }
     if (/INSERT INTO sales/.test(sql)) return { rows: opts.insertedRows ?? [{ id: VALID_REF }] };
-    if (/SELECT id FROM sales/.test(sql)) return { rows: opts.winnerRows ?? [] };
+    if (/SELECT id(, store_id, tender_count)? FROM sales/.test(sql)) return { rows: opts.winnerRows ?? [] };
     if (/INSERT INTO sale_lines/.test(sql)) return { rows: [] };
     if (/FROM sales WHERE id/.test(sql)) return { rows: opts.saleRows ?? [saleRow()] };
     // RT-73: the line read joins the cumulative returned quantity per line.
@@ -177,7 +195,7 @@ describe("SalesService — capture branches (unit)", () => {
   });
 
   it("ON CONFLICT (zero rows) resolves to the existing row, created=false, does NOT emit", async () => {
-    clientQuery = scriptClient({ insertedRows: [], winnerRows: [{ id: VALID_REF }] });
+    clientQuery = scriptClient({ insertedRows: [], winnerRows: [{ id: VALID_REF, store_id: CAPTURE.storeId, tender_count: 0 }] });
     const svc = new SalesService({} as never);
 
     const res = await svc.captureSale({ ...CAPTURE, body: body() });
@@ -201,6 +219,102 @@ describe("SalesService — capture branches (unit)", () => {
     const svc = new SalesService({} as never);
     const res = await svc.captureSale({ ...CAPTURE, body: body() });
     expect(res.created).toBe(true);
+  });
+
+  /** The bound parameters of the scripted `INSERT INTO sales`. */
+  function salesInsertParams(q: jest.Mock): unknown[] {
+    const call = q.mock.calls.find((c) => /INSERT INTO sales/.test(String(c[0])));
+    return call![1] as unknown[];
+  }
+
+  it("RT-77: stores the guard's device and a zero tender_count on a legacy (tender-unknown) capture", async () => {
+    clientQuery = scriptClient({});
+    const svc = new SalesService({} as never);
+    await svc.captureSale({ ...CAPTURE, body: body() });
+    const sql = String(clientQuery.mock.calls.find((c) => /INSERT INTO sales/.test(String(c[0])))![0]);
+    expect(sql).toMatch(/device_id, tender_count/);
+    expect(salesInsertParams(clientQuery).slice(-2)).toEqual([CAPTURE.deviceId, 0]);
+    // No tender statement at all for a tender-unknown sale.
+    expect(clientQuery.mock.calls.some((c) => /INSERT INTO sale_tenders|AS matches/.test(String(c[0])))).toBe(false);
+  });
+
+  it("RT-77: a tendered capture checks Σ, records tender_count and writes one row per tender", async () => {
+    clientQuery = scriptClient({});
+    const svc = new SalesService({} as never);
+    const tenders = [
+      { method: "cash", amount: "2.5" },
+      { method: "card_external", amount: "10", reference: "A1B2C3" },
+    ];
+    await svc.captureSale({ ...CAPTURE, body: body({ tenders }) });
+    const sigma = clientQuery.mock.calls.find((c) => /AS matches/.test(String(c[0])))!;
+    expect(sigma[1]).toEqual([["2.5", "10"], "12.5000"]);
+    expect(salesInsertParams(clientQuery).slice(-1)).toEqual([2]);
+    const ins = clientQuery.mock.calls.find((c) => /INSERT INTO sale_tenders/.test(String(c[0])))!;
+    const params = ins[1] as unknown[];
+    // (saleId, tenant, store, currency from the SALE, ids, methods, amounts, references)
+    expect(params.slice(1, 4)).toEqual([CAPTURE.tenantId, CAPTURE.storeId, "USD"]);
+    expect(params.slice(5)).toEqual([["cash", "card_external"], ["2.5", "10"], [null, "A1B2C3"]]);
+  });
+
+  it("RT-77: Σ tenders ≠ posTotal → SaleTenderMismatchError before any write", async () => {
+    clientQuery = scriptClient({ tendersMatch: false });
+    const svc = new SalesService({} as never);
+    await expect(
+      svc.captureSale({ ...CAPTURE, body: body({ tenders: [{ method: "cash", amount: "1" }] }) }),
+    ).rejects.toBeInstanceOf(SaleTenderMismatchError);
+    expect(clientQuery.mock.calls.some((c) => /INSERT INTO/.test(String(c[0])))).toBe(false);
+  });
+
+  it("RT-77: a provenance owned by another store is non-disclosing and never compares tenders", async () => {
+    clientQuery = scriptClient({
+      insertedRows: [],
+      winnerRows: [{ id: VALID_REF, store_id: "0d000000-0000-7000-8000-0000000000b2", tender_count: 2 }],
+    });
+    const svc = new SalesService({} as never);
+    await expect(svc.captureSale({ ...CAPTURE, body: body() })).rejects.toBeInstanceOf(SaleNotFoundError);
+    expect(clientQuery.mock.calls.some((c) => /sale_tenders/.test(String(c[0])))).toBe(false);
+  });
+
+  it("RT-77: a provenance replay whose tender count differs → conflict, without reading sale_tenders", async () => {
+    clientQuery = scriptClient({ insertedRows: [], winnerRows: [{ id: VALID_REF, store_id: CAPTURE.storeId, tender_count: 2 }] });
+    const svc = new SalesService({} as never);
+    await expect(svc.captureSale({ ...CAPTURE, body: body() })).rejects.toBeInstanceOf(
+      SaleTenderReplayConflictError,
+    );
+    expect(clientQuery.mock.calls.some((c) => /sale_tenders/.test(String(c[0])))).toBe(false);
+  });
+
+  it("RT-77: a legacy replay (no tenders stored or sent) never reads sale_tenders", async () => {
+    clientQuery = scriptClient({ insertedRows: [], winnerRows: [{ id: VALID_REF, store_id: CAPTURE.storeId, tender_count: 0 }] });
+    const svc = new SalesService({} as never);
+    const res = await svc.captureSale({ ...CAPTURE, body: body() });
+    expect(res.created).toBe(false);
+    expect(clientQuery.mock.calls.some((c) => /sale_tenders/.test(String(c[0])))).toBe(false);
+  });
+
+  it("RT-77: a provenance replay with a different tender set → SaleTenderReplayConflictError", async () => {
+    clientQuery = scriptClient({
+      insertedRows: [],
+      winnerRows: [{ id: VALID_REF, store_id: CAPTURE.storeId, tender_count: 1 }],
+      sameTenders: false,
+    });
+    const svc = new SalesService({} as never);
+    await expect(
+      svc.captureSale({ ...CAPTURE, body: body({ tenders: [{ method: "cash", amount: "12.5" }] }) }),
+    ).rejects.toBeInstanceOf(SaleTenderReplayConflictError);
+  });
+
+  it("RT-77: a provenance replay compares the request's tenders with the winner's", async () => {
+    clientQuery = scriptClient({ insertedRows: [], winnerRows: [{ id: VALID_REF, store_id: CAPTURE.storeId, tender_count: 1 }] });
+    const svc = new SalesService({} as never);
+    const res = await svc.captureSale({
+      ...CAPTURE,
+      body: body({ tenders: [{ method: "cash", amount: "12.5" }] }),
+    });
+    expect(res.created).toBe(false);
+    const cmp = clientQuery.mock.calls.find((c) => /WITH req AS/.test(String(c[0])))!;
+    expect(cmp[1]).toEqual([VALID_REF, ["cash"], ["12.5"], [null]]);
+    expect(clientQuery.mock.calls.some((c) => /INSERT INTO sale_tenders/.test(String(c[0])))).toBe(false);
   });
 
   it("an unresolvable store timezone → throws (defensive; store always resolves in prod)", async () => {
@@ -251,6 +365,39 @@ describe("SalesService — readSaleProjection branches (unit)", () => {
     expect(p.sourceClockAt).not.toBeNull();
     expect(p.mismatchFlag).toBe(true);
     expect(p.lines).toHaveLength(1);
+  });
+
+  it("RT-77: a read whose visible tenders differ from tender_count fails loudly (never a partial / tender-unknown answer)", async () => {
+    clientQuery = scriptClient({
+      saleRows: [saleRow({ tender_count: 2 })],
+      tenderRows: [{ method: "cash", amount: "2.5000", reference: null }],
+    });
+    const svc = new SalesService({} as never);
+    await expect(
+      svc.readSaleProjection(CAPTURE.tenantId, CAPTURE.storeId, VALID_REF),
+    ).rejects.toBeInstanceOf(SaleTendersNotVisibleError);
+  });
+
+  it("RT-77: projects stored tenders, a reference only when set; none → []", async () => {
+    clientQuery = scriptClient({
+      saleRows: [saleRow({ tender_count: 2 })],
+      tenderRows: [
+        { method: "card_external", amount: "10.0000", reference: "A1B2C3" },
+        { method: "cash", amount: "2.5000", reference: null },
+      ],
+    });
+    const svc = new SalesService({} as never);
+    const p = await svc.readSaleProjection(CAPTURE.tenantId, CAPTURE.storeId, VALID_REF);
+    expect(p.tenders).toEqual([
+      { method: "card_external", amount: "10.0000", reference: "A1B2C3" },
+      { method: "cash", amount: "2.5000" },
+    ]);
+
+    // tender_count 0: the read never touches sale_tenders (no dependency on its grant).
+    clientQuery = scriptClient({ saleRows: [saleRow({ tender_count: 0 })] });
+    const none = await svc.readSaleProjection(CAPTURE.tenantId, CAPTURE.storeId, VALID_REF);
+    expect(none.tenders).toEqual([]);
+    expect(clientQuery.mock.calls.some((c) => /sale_tenders/.test(String(c[0])))).toBe(false);
   });
 
   it("maps a minimal row (string business_date, null timestamps, null mismatch)", async () => {
@@ -310,6 +457,42 @@ describe("SalesController — guard + status branches (unit)", () => {
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
+  it("RT-77: captureSale without a guard-resolved device → 401, service not called", async () => {
+    const svc = { captureSale: jest.fn() };
+    const c = new SalesController(svc as never);
+    await expect(
+      c.captureSale({ context: ctx } as never, body() as never, makeRes() as never),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(svc.captureSale).not.toHaveBeenCalled();
+  });
+
+  it("RT-77: Σ mismatch → 422 sale_tender_mismatch; tender replay conflict → 409; other errors rethrow", async () => {
+    const req = { context: ctx, posDeviceId: CAPTURE.deviceId };
+    const failing = (err: Error): SalesController =>
+      new SalesController({ captureSale: jest.fn().mockRejectedValue(err) } as never);
+
+    const mismatch = await failing(new SaleTenderMismatchError())
+      .captureSale(req as never, body() as never, makeRes() as never)
+      .catch((e: unknown) => e);
+    expect(mismatch).toBeInstanceOf(UnprocessableEntityException);
+    expect((mismatch as UnprocessableEntityException).getResponse()).toMatchObject({
+      code: "sale_tender_mismatch",
+    });
+
+    const conflict = await failing(new SaleTenderReplayConflictError())
+      .captureSale(req as never, body() as never, makeRes() as never)
+      .catch((e: unknown) => e);
+    expect(conflict).toBeInstanceOf(ConflictException);
+    expect((conflict as ConflictException).getResponse()).toMatchObject({
+      code: "idempotency_key_conflict",
+    });
+
+    const boom = new Error("boom");
+    await expect(
+      failing(boom).captureSale(req as never, body() as never, makeRes() as never),
+    ).rejects.toBe(boom);
+  });
+
   it("readSale: null tenantId → 401", async () => {
     const c = new SalesController({ readSaleProjection: jest.fn() } as never);
     await expect(
@@ -325,13 +508,16 @@ describe("SalesController — guard + status branches (unit)", () => {
         .mockResolvedValueOnce({ created: false, projection: { saleRef: VALID_REF } }),
     };
     const c = new SalesController(svc as never);
+    const req = { context: ctx, posDeviceId: CAPTURE.deviceId };
 
     const res1 = makeRes();
-    await c.captureSale({ context: ctx } as never, body() as never, res1 as never);
+    await c.captureSale(req as never, body() as never, res1 as never);
     expect(res1.status).toHaveBeenCalledWith(201);
+    // RT-77 (D7(i)): the device passed to the service is the guard's, never the body's.
+    expect(svc.captureSale.mock.calls[0][0].deviceId).toBe(CAPTURE.deviceId);
 
     const res2 = makeRes();
-    await c.captureSale({ context: ctx } as never, body() as never, res2 as never);
+    await c.captureSale(req as never, body() as never, res2 as never);
     expect(res2.status).toHaveBeenCalledWith(200);
     expect(res2.setHeader).toHaveBeenCalledWith("Idempotent-Replayed", "true");
   });

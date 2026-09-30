@@ -14,6 +14,7 @@ import type { PoolClient } from "pg";
 
 import {
   ReturnTendersNotVisibleError,
+  SaleTendersNotVisibleError,
   buildWorkItem,
 } from "../../../../src/catalog/erpnext-posting/posting-work-item.projection";
 
@@ -38,6 +39,8 @@ const SALE_ROW = {
   business_date: "2026-06-06",
   source_system: "retail_tower_pos",
   external_id: "UNIT-SALE-0001",
+  // RT-77: a tender-unknown sale; its (empty) sale_tenders read is the fixture's default.
+  tender_count: 0,
 };
 
 const LINE_ROW = {
@@ -182,5 +185,70 @@ describe("buildWorkItem — RT-73 lineRef, reversal time and return lines", () =
     // the return is offered, with its tenders, once visibility is restored.
     const client = fakeClient([{ rows: [SALE_ROW] }, { rows: [LINE_ROW] }, RETURN_KIND_ROW, RETURN_LINE_ROWS, { rows: [] }]);
     await expect(buildWorkItem(client, REVERSAL_ROW)).rejects.toThrow(ReturnTendersNotVisibleError);
+  });
+});
+
+describe("buildWorkItem — RT-77 sale tenders", () => {
+  const REVERSAL_ROW = { ...STATUS_ROW, kind: "reversal" as const, sourceRefId: "00000000-0000-7000-8000-0000000ae7e2" };
+  const TENDERED_SALE = { ...SALE_ROW, tender_count: 2 };
+  // sale_tenders ORDER BY method.
+  const TENDER_ROWS = {
+    rows: [
+      { method: "card_external", amount: "15.0000", reference: "A1B2C3" },
+      { method: "cash", amount: "4.9900", reference: null },
+    ],
+  };
+  const EXPECTED_TENDERS = [
+    { method: "card_external", amount: "15.0000", reference: "A1B2C3" },
+    { method: "cash", amount: "4.9900" },
+  ];
+
+  it("a tender-unknown sale_post OMITS sale.tenders and never reads sale_tenders (byte-identical pre-RT-77 item)", async () => {
+    const queries: string[] = [];
+    const client = {
+      query: async (sql: string) => {
+        queries.push(sql);
+        return queries.length === 1 ? { rows: [SALE_ROW] } : queries.length === 2 ? { rows: [LINE_ROW] } : { rows: [] };
+      },
+    } as unknown as PoolClient;
+    const item = await buildWorkItem(client, STATUS_ROW);
+    expect(item!.sale).not.toHaveProperty("tenders");
+    expect(queries.some((q) => /sale_tenders/.test(q))).toBe(false);
+  });
+
+  it("a sale_post carries its recorded tenders, a reference only on card_external", async () => {
+    const client = fakeClient([{ rows: [TENDERED_SALE] }, { rows: [LINE_ROW] }, TENDER_ROWS]);
+    const item = await buildWorkItem(client, STATUS_ROW);
+    expect(item!.sale.tenders).toEqual(EXPECTED_TENDERS);
+  });
+
+  it("a void carries the ORIGINAL sale's tenders on sale.tenders, for mirroring (RT-10 D6)", async () => {
+    const client = fakeClient([
+      { rows: [TENDERED_SALE] },
+      { rows: [LINE_ROW] },
+      { rows: [{ reversal_kind: "void", recorded_at: new Date("2026-06-07T21:30:00.000Z"), business_date: "2026-06-08" }] },
+      TENDER_ROWS,
+    ]);
+    const item = await buildWorkItem(client, REVERSAL_ROW);
+    expect(item!.reversalOf!.reversalKind).toBe("void");
+    expect(item!.reversalOf).not.toHaveProperty("refundTenders");
+    expect(item!.sale.tenders).toEqual(EXPECTED_TENDERS);
+  });
+
+  it("fails the pull when fewer tenders are visible than capture recorded — never offered unpaid, never skipped", async () => {
+    // tender_count is written in the capture transaction; a visible-row shortfall is an RLS or
+    // grant fault. Offering the sale would post it unpaid (terminal); omitting it would let the
+    // cursor skip it (the RT-86 lesson). Throwing keeps the cursor where it is.
+    const client = fakeClient([{ rows: [TENDERED_SALE] }, { rows: [LINE_ROW] }, { rows: [] }]);
+    await expect(buildWorkItem(client, STATUS_ROW)).rejects.toThrow(SaleTendersNotVisibleError);
+  });
+
+  it("fails the pull on a partial tender set too (one of two visible)", async () => {
+    const client = fakeClient([
+      { rows: [TENDERED_SALE] },
+      { rows: [LINE_ROW] },
+      { rows: [TENDER_ROWS.rows[1]] },
+    ]);
+    await expect(buildWorkItem(client, STATUS_ROW)).rejects.toThrow(SaleTendersNotVisibleError);
   });
 });

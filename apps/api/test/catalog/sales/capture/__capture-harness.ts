@@ -88,6 +88,13 @@ export {
 /** Stand-in POS device principal id (`req.context.userId`). */
 export const DEVICE_USER_ID = "0d000000-0000-7000-8000-0000000005d1";
 
+/**
+ * RT-77: the seeded `devices` row the harness publishes as `req.posDeviceId`
+ * (what the real envelope guard resolves from the operator token). Capture
+ * stores it on `sales.device_id`.
+ */
+export const HARNESS_DEVICE_ID = "0d000000-0000-7000-8000-0000000007d1";
+
 /** A fresh 32-char ASCII idempotency key per call site. */
 export function idempKey(suffix: string): string {
   return (suffix + "0".repeat(32)).slice(0, 32).replace(/[^a-z0-9]/g, "0");
@@ -127,6 +134,8 @@ export class ConfigurableContextGuard implements CanActivate {
   public tenantId: string = TENANT_A;
   public storeId: string | null = STORE_A_X;
   public userId: string | null = DEVICE_USER_ID;
+  /** RT-77: the bound device the envelope guard publishes; null publishes none. */
+  public deviceId: string | null = HARNESS_DEVICE_ID;
   /** When true, publishes NO context — exercises the unauthenticated path. */
   public anonymous = false;
 
@@ -134,6 +143,7 @@ export class ConfigurableContextGuard implements CanActivate {
     const req = ctx.switchToHttp().getRequest<{
       context?: ResolvedContext;
       principal?: { userId?: string };
+      posDeviceId?: string;
     }>();
     if (this.anonymous) return true;
     req.context = {
@@ -144,6 +154,7 @@ export class ConfigurableContextGuard implements CanActivate {
       source: "token",
     };
     if (this.userId) req.principal = { userId: this.userId };
+    if (this.deviceId) req.posDeviceId = this.deviceId;
     return true;
   }
 }
@@ -189,6 +200,12 @@ export async function startCaptureHarness(
   try {
     await applyAllUpAndCreateAppRole(env);
     await seedCatalogIsolationFixture(env);
+    // RT-77: sales.device_id → devices(id).
+    await env.admin.query(
+      `INSERT INTO devices (id, tenant_id, store_id, token_hash)
+       VALUES ($1, $2, $3, decode(repeat('d7', 32), 'hex'))`,
+      [HARNESS_DEVICE_ID, TENANT_A, STORE_A_X],
+    );
 
     const fakeRedis = new FakeRedis();
     await assertIdempotencyRedisRetains(fakeRedis, "capture-harness");
@@ -315,6 +332,7 @@ export function resetHarness(h: HarnessHandle): void {
   h.harness.contextGuard.tenantId = TENANT_A;
   h.harness.contextGuard.storeId = STORE_A_X;
   h.harness.contextGuard.userId = DEVICE_USER_ID;
+  h.harness.contextGuard.deviceId = HARNESS_DEVICE_ID;
   h.harness.contextGuard.anonymous = false;
 }
 

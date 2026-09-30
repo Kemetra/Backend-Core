@@ -23,3 +23,44 @@ export class TerminalEventProvenanceConflictError extends Error {
     this.name = "TerminalEventProvenanceConflictError";
   }
 }
+
+/**
+ * RT-77 (RT-10 D1): the capture's `tenders` amounts do not sum to `posTotal`
+ * exactly (→ 422 `sale_tender_mismatch`). Nothing is recorded.
+ */
+export class SaleTenderMismatchError extends Error {
+  constructor() {
+    super("sale tenders do not sum to posTotal");
+    this.name = "SaleTenderMismatchError";
+  }
+}
+
+/**
+ * RT-77: a capture re-delivered under an existing `(tenant, source_system,
+ * external_id)` provenance whose tender set differs from the one recorded — a
+ * different payload (→ 409), never a replay (RT-77 comment 10509: the compare
+ * covers tenders only; every other replay is unchanged).
+ */
+export class SaleTenderReplayConflictError extends Error {
+  constructor() {
+    super("sale provenance already captured with different tenders");
+    this.name = "SaleTenderReplayConflictError";
+  }
+}
+
+/**
+ * RT-77: a sale whose VISIBLE `sale_tenders` rows differ from the `sales.tender_count` capture
+ * wrote in the same transaction — a visibility fault (an RLS or grant gap), not data. Thrown
+ * rather than answering with a partial or empty tender list, which would misstate how the sale
+ * was paid (empty means tender-unknown). On the posting feed the pull fails and its cursor does
+ * not advance: a tender-bearing sale offered without its tenders is posted unpaid, terminally
+ * (RT-76 INVARIANT), and omitting it would let the cursor skip past it (the RT-86 lesson).
+ */
+export class SaleTendersNotVisibleError extends Error {
+  constructor(saleId: string, expected: number, visible: number) {
+    super(
+      `sale ${saleId} recorded ${expected} tender(s) but ${visible} are visible; refusing to answer without them (RT-77)`,
+    );
+    this.name = "SaleTendersNotVisibleError";
+  }
+}

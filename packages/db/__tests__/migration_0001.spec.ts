@@ -38,6 +38,8 @@ const DOWN_0001_PATH = resolve(
 );
 const UP_0002_PATH = resolve(DRIZZLE_DIR, "0002_shifts.sql");
 const DOWN_0002_PATH = resolve(DRIZZLE_DIR, "0002_shifts.down.sql");
+const UP_0033_PATH = resolve(DRIZZLE_DIR, "0033_sale_tenders.sql");
+const DOWN_0033_PATH = resolve(DRIZZLE_DIR, "0033_sale_tenders.down.sql");
 
 let env: PgTestEnv | null = null;
 let dockerSkipReason = "";
@@ -441,11 +443,15 @@ describe("0001_pos_operator_identity migration", () => {
     if (!env) throw new Error("env not initialized");
     const down0002Sql = readFileSync(DOWN_0002_PATH, "utf8");
     const up0002Sql = readFileSync(UP_0002_PATH, "utf8");
+    const down0033Sql = readFileSync(DOWN_0033_PATH, "utf8");
+    const up0033Sql = readFileSync(UP_0033_PATH, "utf8");
     const downSql = readFileSync(DOWN_0001_PATH, "utf8");
     const upSql = readFileSync(UP_0001_PATH, "utf8");
 
     // 0002_shifts depends on devices (FK opening_device_id → devices.id ON DELETE RESTRICT).
     // Drop 0002 first so 0001 DOWN can remove devices without a FK violation.
+    // 0033_sale_tenders likewise (sales.device_id → devices.id, RT-77).
+    await env.admin.query(down0033Sql);
     await env.admin.query(down0002Sql);
 
     // Roll back 0001 only. After this, devices is gone, clerk_user_id is gone,
@@ -480,8 +486,9 @@ describe("0001_pos_operator_identity migration", () => {
     `);
     expect(reDevices.rows[0]?.count).toBe("1");
 
-    // Restore 0002 so subsequent tests in this suite have the full schema.
+    // Restore 0002 and 0033 so subsequent tests in this suite have the full schema.
     await env.admin.query(up0002Sql);
+    await env.admin.query(up0033Sql);
 
     // After re-UP, the scope-aware CHECK is back and the original XOR is gone.
     const reCheck = await env.admin.query<{ conname: string }>(`

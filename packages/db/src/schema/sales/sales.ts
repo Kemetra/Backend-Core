@@ -16,8 +16,10 @@
  *     nullable (SaaS-owned, set off-request).
  *   - `business_date` is a DATE (store-tz derived, FR-023), not a timestamptz.
  *   - Immutable fact: NO `version` column (gate D.1 / FR-070 — no
- *     optimistic-concurrency column). NO tender / payment columns (gate A.5,
- *     deferred to 010).
+ *     optimistic-concurrency column). Tenders live in the child
+ *     `sale_tenders` (RT-77); `tender_count` records how many capture wrote.
+ *   - `device_id` (RT-77, RT-10 D7(i)): the envelope guard's bound device,
+ *     never a body field; NULL for pre-RT-77 sales.
  *   - Provenance: `source_system` / `external_id` / `payload_hash`
  *     (SHA-256 canonical, gate C). Dedup-unique on
  *     `(tenant_id, source_system, external_id)`.
@@ -29,6 +31,7 @@ import {
   boolean,
   char,
   check,
+  smallint,
   date,
   index,
   numeric,
@@ -39,6 +42,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { devices } from "../devices";
 import { stores } from "../stores";
 import { tenants } from "../tenants";
 
@@ -78,6 +82,10 @@ export const sales = pgTable(
     // Advisory; SaaS-owned (FR-031/032). Nullable until processing computes it.
     mismatchFlag: boolean("mismatch_flag"),
     createdBy: uuid("created_by").notNull(),
+    // RT-77 (0033): the terminal that captured the sale, server-resolved.
+    deviceId: uuid("device_id").references(() => devices.id, { onDelete: "restrict" }),
+    // RT-77 (0033): number of sale_tenders rows; the feed's visibility guard.
+    tenderCount: smallint("tender_count").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -88,6 +96,7 @@ export const sales = pgTable(
       sql`${t.currencyCode} ~ '^[A-Z]{3}$'`,
     ),
     check("sales_pos_total_non_negative", sql`${t.posTotal} >= 0`),
+    check("sales_tender_count_range", sql`${t.tenderCount} BETWEEN 0 AND 2`),
     // Backs the composite FK from each child table (sale_lines / sale_voids /
     // sale_refunds reference (id, tenant_id, store_id) so a child can never
     // attach to a sale in a different tenant/store).

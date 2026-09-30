@@ -29,6 +29,7 @@ import {
   saleReturnLines,
   saleReturns,
   saleReturnTenders,
+  saleTenders,
   sales,
   saleVoids,
 } from "@data-pulse-2/db/schema";
@@ -79,6 +80,7 @@ const ALL_TABLES: ReadonlyArray<{ name: string; table: unknown }> = [
   { name: "sale_returns", table: saleReturns },
   { name: "sale_return_lines", table: saleReturnLines },
   { name: "sale_return_tenders", table: saleReturnTenders },
+  { name: "sale_tenders", table: saleTenders },
 ];
 
 describe("sales schema shape — sales (header)", () => {
@@ -255,6 +257,25 @@ describe("sales schema shape — line-aware returns (RT-73, 0032)", () => {
   });
 });
 
+describe("sales schema shape — sale tenders + device attribution (RT-77, 0033)", () => {
+  it("a tender amount is numeric(19,4) with a char(3) currency; reference is optional", () => {
+    const cols = columns(saleTenders);
+    expect(cols.get("amount")?.columnType).toBe("PgNumeric");
+    expect([cols.get("amount")?.precision, cols.get("amount")?.scale]).toEqual([19, 4]);
+    for (const name of ["sale_id", "method", "amount", "currency_code", "created_at"]) {
+      expect(cols.get(name)?.notNull).toBe(true);
+    }
+    expect(cols.get("currency_code")?.length).toBe(3);
+    expect(cols.get("reference")?.notNull).toBe(false);
+  });
+
+  it("sales.device_id is nullable (pre-RT-77 rows) and tender_count is NOT NULL", () => {
+    const cols = columns(sales);
+    expect(cols.get("device_id")?.notNull).toBe(false);
+    expect(cols.get("tender_count")?.notNull).toBe(true);
+  });
+});
+
 describe("sales schema shape — load-bearing negatives", () => {
   it("NO `version` column on any table (gate D.1 / FR-070)", () => {
     for (const { table } of ALL_TABLES) {
@@ -262,14 +283,19 @@ describe("sales schema shape — load-bearing negatives", () => {
     }
   });
 
-  it("NO tender/payment column on any table (gate A.5)", () => {
+  it("NO tender/payment column on any table (gate A.5) beyond the RT-77 tender count", () => {
+    // Gate A.5 is lifted only by RT-10/RT-77: tenders live in the child
+    // `sale_tenders` (method/amount/reference), and `sales.tender_count` is
+    // the one reviewed payment-named column (a count, not payment data).
     const banned = ["tender", "payment", "card", "cash"];
+    const allowed: Readonly<Record<string, readonly string[]>> = { sales: ["tender_count"] };
     for (const { name, table } of ALL_TABLES) {
-      const offending = [...columns(table).keys()].filter((col) =>
-        banned.some((b) => col.toLowerCase().includes(b)),
+      const offending = [...columns(table).keys()].filter(
+        (col) =>
+          !(allowed[name] ?? []).includes(col) &&
+          banned.some((b) => col.toLowerCase().includes(b)),
       );
       expect(offending).toEqual([]);
-      void name;
     }
   });
 });
