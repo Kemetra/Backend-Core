@@ -45,6 +45,7 @@ import {
   SaleNotFoundError,
   SaleTenderMismatchError,
   SaleTenderReplayConflictError,
+  SaleTendersNotVisibleError,
   TerminalEventProvenanceConflictError,
 } from "./sale-errors";
 import {
@@ -59,6 +60,7 @@ export {
   SaleNotFoundError,
   SaleTenderMismatchError,
   SaleTenderReplayConflictError,
+  SaleTendersNotVisibleError,
   TerminalEventProvenanceConflictError,
 } from "./sale-errors";
 
@@ -488,6 +490,11 @@ export class SalesService {
                 )
               ).rows
             : [];
+        // Same invariant as the posting feed: never answer with a partial or
+        // empty list for a tender-bearing sale (empty means tender-unknown).
+        if (tenders.length !== row.tender_count) {
+          throw new SaleTendersNotVisibleError(saleId, row.tender_count, tenders.length);
+        }
         return toBody(row, lines.rows, tenders);
       },
     );

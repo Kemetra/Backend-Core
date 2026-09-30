@@ -303,10 +303,11 @@ export async function seedSalesFixture(
   );
 
   // ---- sale_tenders (RT-77; one per tenant, the store-X captured sale) ----
+  // A valid tender-bearing sale: the single cash tender equals its pos_total.
   await admin.query(
     `INSERT INTO sale_tenders
        (sale_id, tenant_id, store_id, method, amount, currency_code)
-     VALUES ($1, $2, $3, 'cash', 1.0000, 'USD'), ($4, $5, $6, 'cash', 1.0000, 'USD')
+     VALUES ($1, $2, $3, 'cash', 12.5000, 'USD'), ($4, $5, $6, 'cash', 12.5000, 'USD')
      ON CONFLICT DO NOTHING`,
     [SALE_A_X, TENANT_A, STORE_A_X, SALE_B_X, TENANT_B, STORE_B_X],
   );

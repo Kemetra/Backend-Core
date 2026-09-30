@@ -23,6 +23,11 @@
  */
 import type { PoolClient } from "pg";
 
+import { SaleTendersNotVisibleError } from "../sales/sale-errors";
+
+// RT-77: shared with the sale read path; re-exported for existing importers.
+export { SaleTendersNotVisibleError } from "../sales/sale-errors";
+
 // ---------------------------------------------------------------------------
 // Wire shape — the 012 PostingWorkItem (subset 015 populates in the interim mode)
 // ---------------------------------------------------------------------------
@@ -66,22 +71,6 @@ export class ReturnTendersNotVisibleError extends Error {
   constructor(returnId: string) {
     super(`return ${returnId} has no visible refund tenders; refusing to offer it without them (RT-86)`);
     this.name = "ReturnTendersNotVisibleError";
-  }
-}
-
-/**
- * RT-77: a sale whose VISIBLE `sale_tenders` rows differ from the `sales.tender_count` capture
- * wrote in the same transaction — a visibility fault (an RLS or grant gap), not data. Thrown
- * rather than offering the item: a tender-bearing sale offered without its tenders is posted
- * unpaid, terminally (RT-76 INVARIANT), and omitting it would let the cursor skip past it (the
- * RT-86 lesson). The pull fails and its cursor does not advance.
- */
-export class SaleTendersNotVisibleError extends Error {
-  constructor(saleId: string, expected: number, visible: number) {
-    super(
-      `sale ${saleId} recorded ${expected} tender(s) but ${visible} are visible; refusing to offer it without them (RT-77)`,
-    );
-    this.name = "SaleTendersNotVisibleError";
   }
 }
 

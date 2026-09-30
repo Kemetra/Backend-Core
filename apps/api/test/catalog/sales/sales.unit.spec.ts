@@ -51,6 +51,7 @@ import {
   SaleNotFoundError,
   SaleTenderMismatchError,
   SaleTenderReplayConflictError,
+  SaleTendersNotVisibleError,
   TerminalEventProvenanceConflictError,
 } from "../../../src/catalog/sales/sales.service";
 import { SalesController } from "../../../src/catalog/sales/sales.controller";
@@ -85,6 +86,7 @@ function saleRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     store_id: "0d000000-0000-7000-8000-0000000000b1",
     currency_code: "USD",
     pos_total: "12.5000",
+    tender_count: 0,
     occurred_at: new Date("2026-05-01T10:00:00.000Z"),
     received_at: new Date("2026-05-01T10:00:01.000Z"),
     business_date: "2026-05-01",
@@ -363,6 +365,17 @@ describe("SalesService — readSaleProjection branches (unit)", () => {
     expect(p.sourceClockAt).not.toBeNull();
     expect(p.mismatchFlag).toBe(true);
     expect(p.lines).toHaveLength(1);
+  });
+
+  it("RT-77: a read whose visible tenders differ from tender_count fails loudly (never a partial / tender-unknown answer)", async () => {
+    clientQuery = scriptClient({
+      saleRows: [saleRow({ tender_count: 2 })],
+      tenderRows: [{ method: "cash", amount: "2.5000", reference: null }],
+    });
+    const svc = new SalesService({} as never);
+    await expect(
+      svc.readSaleProjection(CAPTURE.tenantId, CAPTURE.storeId, VALID_REF),
+    ).rejects.toBeInstanceOf(SaleTendersNotVisibleError);
   });
 
   it("RT-77: projects stored tenders, a reference only when set; none → []", async () => {
