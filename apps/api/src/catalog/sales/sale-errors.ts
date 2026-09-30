@@ -23,3 +23,27 @@ export class TerminalEventProvenanceConflictError extends Error {
     this.name = "TerminalEventProvenanceConflictError";
   }
 }
+
+/**
+ * RT-77 (RT-10 D1): the capture's `tenders` amounts do not sum to `posTotal`
+ * exactly (→ 422 `sale_tender_mismatch`). Nothing is recorded.
+ */
+export class SaleTenderMismatchError extends Error {
+  constructor() {
+    super("sale tenders do not sum to posTotal");
+    this.name = "SaleTenderMismatchError";
+  }
+}
+
+/**
+ * RT-77: a capture re-delivered under an existing `(tenant, source_system,
+ * external_id)` provenance whose tender set differs from the one recorded — a
+ * different payload (→ 409), never a replay (RT-77 comment 10509: the compare
+ * covers tenders only; every other replay is unchanged).
+ */
+export class SaleTenderReplayConflictError extends Error {
+  constructor() {
+    super("sale provenance already captured with different tenders");
+    this.name = "SaleTenderReplayConflictError";
+  }
+}

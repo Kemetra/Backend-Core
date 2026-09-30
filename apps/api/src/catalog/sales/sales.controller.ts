@@ -49,10 +49,8 @@ import { ZodValidationPipe } from "../../common/zod-validation.pipe";
 import { TenantContextGuard } from "../../context/tenant-context.guard";
 import type { TenantContextRequest } from "../../context/types";
 import { Idempotent } from "../../idempotency/idempotent.decorator";
-import {
-  CaptureSaleRequestSchema,
-  type CaptureSaleRequestDto,
-} from "./dto/capture-sale-request.dto";
+import { type CaptureSaleRequestDto } from "./dto/capture-sale-request.dto";
+import { CaptureSaleRequestPipe } from "./dto/capture-sale-request.pipe";
 import {
   RecordVoidRequestSchema,
   type RecordVoidRequestDto,
@@ -79,10 +77,34 @@ import {
 import {
   SalesService,
   SaleNotFoundError,
+  SaleTenderMismatchError,
+  SaleTenderReplayConflictError,
   TerminalEventProvenanceConflictError,
   type SaleProjection,
   type TerminalEventProjection,
 } from "./sales.service";
+
+/**
+ * Map a capture service error to its contract response (RT-77). The filter's
+ * status fallback has no 422 case, so the code is passed explicitly.
+ */
+function toCaptureHttpError(err: unknown): unknown {
+  if (err instanceof SaleTenderMismatchError) {
+    return new UnprocessableEntityException({
+      code: "sale_tender_mismatch",
+      message: "tenders do not sum to posTotal",
+    });
+  }
+  if (err instanceof SaleTenderReplayConflictError) {
+    // The contract's single 409 wire code (sales.yaml `Conflict`): the same
+    // provenance reused with a different logical payload.
+    return new ConflictException({
+      code: "idempotency_key_conflict",
+      message: "sale already captured with different tenders",
+    });
+  }
+  return err;
+}
 
 /** Canonical UUID shape (any version) — a saleRef that fails this never hits the DB. */
 const SALE_REF_RE =
@@ -137,7 +159,9 @@ export class SalesController {
   @Auditable("sale.captured")
   async captureSale(
     @Req() request: TenantContextRequest,
-    @Body(new ZodValidationPipe(CaptureSaleRequestSchema))
+    // RT-77: the schema is chosen per request by POS_SALE_TENDERS_ENABLED
+    // (default off → the pre-RT-77 strict body, `tenders` is a 400).
+    @Body(CaptureSaleRequestPipe)
     body: CaptureSaleRequestDto,
     @Res({ passthrough: true }) res: Response,
   ): Promise<SaleProjection> {
@@ -149,13 +173,23 @@ export class SalesController {
       // A POS sale MUST resolve a store binding (FR-001).
       throw new UnauthorizedException("store_context_required");
     }
+    // RT-77 (RT-10 D7(i)): the envelope guard's bound device is the sale's
+    // device — never a body field. A request the guard did not resolve to a
+    // device is refused (the settlement-intent precedent).
+    if (!request.posDeviceId) throw new UnauthorizedException("Unauthorized");
 
-    const result = await this.salesService.captureSale({
-      tenantId: ctx.tenantId,
-      storeId: ctx.storeId,
-      actorUserId: ctx.userId,
-      body,
-    });
+    let result;
+    try {
+      result = await this.salesService.captureSale({
+        tenantId: ctx.tenantId,
+        storeId: ctx.storeId,
+        actorUserId: ctx.userId,
+        deviceId: request.posDeviceId,
+        body,
+      });
+    } catch (err) {
+      throw toCaptureHttpError(err);
+    }
 
     if (result.created) {
       res.status(HttpStatus.CREATED);

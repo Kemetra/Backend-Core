@@ -96,6 +96,7 @@ export async function cleanReturnsFixtures(h: HarnessHandle): Promise<void> {
            (SELECT id FROM sale_returns WHERE sale_id IN (${sales}))`);
   await q(`DELETE FROM sale_returns WHERE sale_id IN (${sales})`);
   await q(`DELETE FROM sale_voids WHERE sale_id IN (${sales})`);
+  await q(`DELETE FROM sale_tenders WHERE sale_id IN (${sales})`);
   await q(`DELETE FROM sale_lines WHERE sale_id IN (${sales})`);
   await q(`DELETE FROM sales WHERE source_system = 'pos-1'`);
 }

@@ -56,6 +56,7 @@ const SALE_ROW = {
   business_date: "2026-06-06",
   source_system: "pos-pulse",
   external_id: "RT86-SALE-0001",
+  tender_count: 0,
 };
 const LINE_ROW = {
   line_ref: "00000000-0000-7000-8000-0000000011e1",
@@ -135,5 +136,61 @@ describe("posting-feed.yaml — projected work items validate against PostingWor
     expect(
       validate({ ...voided, reversalOf: { ...voided!.reversalOf, refundTenders: [{ method: "cash", amount: "5.0000" }] } }),
     ).toBe(false);
+  });
+});
+
+describe("posting-feed.yaml — RT-77 sale tenders validate against PostingWorkItem", () => {
+  const validate = workItemValidator();
+  const TENDERED = { ...SALE_ROW, tender_count: 2 };
+  // sale_tenders ORDER BY method; sums to posTotal 10.0000.
+  const TENDERS = {
+    rows: [
+      { method: "card_external", amount: "7.5000", reference: "A1B2C3" },
+      { method: "cash", amount: "2.5000", reference: null },
+    ],
+  };
+  const expectValid = (item: unknown): void => {
+    const ok = validate(item);
+    expect(validate.errors ?? []).toEqual([]);
+    expect(ok).toBe(true);
+  };
+
+  it("a tendered sale_post, and a void that mirrors the original tenders", async () => {
+    const sale = await buildWorkItem(
+      fakeClient([{ rows: [TENDERED] }, { rows: [LINE_ROW] }, TENDERS]),
+      STATUS_ROW,
+    );
+    expect(sale!.sale.tenders).toHaveLength(2);
+    expectValid(sale);
+
+    const voided = await buildWorkItem(
+      fakeClient([
+        { rows: [TENDERED] },
+        { rows: [LINE_ROW] },
+        { rows: [{ reversal_kind: "void", recorded_at: AT, business_date: "2026-06-07" }] },
+        TENDERS,
+      ]),
+      REVERSAL_ROW,
+    );
+    expect(voided!.sale.tenders).toEqual(sale!.sale.tenders);
+    expectValid(voided);
+  });
+
+  it("a tender-unknown sale omits sale.tenders and still validates", async () => {
+    const item = await project([], STATUS_ROW);
+    expect(item!.sale).not.toHaveProperty("tenders");
+    expectValid(item);
+  });
+
+  it("negative control: a reference on a cash tender is rejected", async () => {
+    const sale = await buildWorkItem(
+      fakeClient([{ rows: [TENDERED] }, { rows: [LINE_ROW] }, TENDERS]),
+      STATUS_ROW,
+    );
+    const bad = {
+      ...sale,
+      sale: { ...sale!.sale, tenders: [{ method: "cash", amount: "10.0000", reference: "A1B2C3" }] },
+    };
+    expect(validate(bad)).toBe(false);
   });
 });

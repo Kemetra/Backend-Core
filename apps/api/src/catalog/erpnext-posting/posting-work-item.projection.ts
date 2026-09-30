@@ -27,7 +27,7 @@ import type { PoolClient } from "pg";
 // Wire shape — the 012 PostingWorkItem (subset 015 populates in the interim mode)
 // ---------------------------------------------------------------------------
 
-/** A 012 SaleLine projection line (interim mode: no tender). */
+/** A 012 SaleLine projection line. */
 export interface WorkItemLine {
   /** RT-73: stable line identity (= sale_lines.id); return lines point at it (RT-14 D6). */
   readonly lineRef: string;
@@ -67,6 +67,30 @@ export class ReturnTendersNotVisibleError extends Error {
     super(`return ${returnId} has no visible refund tenders; refusing to offer it without them (RT-86)`);
     this.name = "ReturnTendersNotVisibleError";
   }
+}
+
+/**
+ * RT-77: a sale whose VISIBLE `sale_tenders` rows differ from the `sales.tender_count` capture
+ * wrote in the same transaction — a visibility fault (an RLS or grant gap), not data. Thrown
+ * rather than offering the item: a tender-bearing sale offered without its tenders is posted
+ * unpaid, terminally (RT-76 INVARIANT), and omitting it would let the cursor skip past it (the
+ * RT-86 lesson). The pull fails and its cursor does not advance.
+ */
+export class SaleTendersNotVisibleError extends Error {
+  constructor(saleId: string, expected: number, visible: number) {
+    super(
+      `sale ${saleId} recorded ${expected} tender(s) but ${visible} are visible; refusing to offer it without them (RT-77)`,
+    );
+    this.name = "SaleTendersNotVisibleError";
+  }
+}
+
+/** RT-77: one way the sale was paid (RT-10 D1/D2), net of change, a non-negative magnitude. */
+export interface SaleWorkTender {
+  readonly method: "cash" | "card_external";
+  readonly amount: string;
+  /** card_external only — the card terminal's short reference. */
+  readonly reference?: string;
 }
 
 /** RT-86: one recorded payout of a return (RT-14 D3, cash only), a non-negative magnitude. */
@@ -113,6 +137,14 @@ export interface PostingWorkItem {
     readonly sourceSystem: string;
     readonly externalId: string;
     readonly lines: readonly WorkItemLine[];
+    /**
+     * RT-77: the ORIGINAL sale's recorded tenders on every item — a sale_post settles with them
+     * and a void mirrors them (RT-10 D6); a return pays `reversalOf.refundTenders` instead.
+     * OMITTED for a tender-unknown sale (posted unpaid, RT-10 D8): the contract treats absent
+     * and empty alike, and omitting keeps every pre-RT-77 work item byte-identical for a
+     * Connector that predates settlement (posting-feed.yaml ROLLOUT ORDER).
+     */
+    readonly tenders?: readonly SaleWorkTender[];
   };
   readonly itemCursor: string;
 }
@@ -146,10 +178,11 @@ export async function buildWorkItem(
     business_date: string;
     source_system: string;
     external_id: string;
+    tender_count: number;
   }>(
     `SELECT id, store_id, currency_code, pos_total::text AS pos_total,
             occurred_at, business_date::text AS business_date,
-            source_system, external_id
+            source_system, external_id, tender_count
        FROM sales WHERE id = $1`,
     [row.saleId],
   );
@@ -231,6 +264,8 @@ export async function buildWorkItem(
     if (!reversalOf) return null;
   }
 
+  const tenders = await loadSaleTenders(client, s.id, s.tender_count);
+
   return {
     workItemRef: row.id,
     kind: row.kind,
@@ -249,6 +284,7 @@ export async function buildWorkItem(
       sourceSystem: s.source_system,
       externalId: s.external_id,
       lines: wireLines,
+      ...(tenders.length === 0 ? {} : { tenders }),
     },
     itemCursor: row.sequence,
   };
@@ -313,6 +349,39 @@ async function buildReversalRef(
     ...(returnLines === undefined ? {} : { returnLines }),
     ...(refundTenders === undefined ? {} : { refundTenders }),
   };
+}
+
+/**
+ * RT-77: the sale's recorded tenders in a fixed order (`method`, unique per sale) so every
+ * re-pull is byte-identical. The visible row count must equal `sales.tender_count`, else
+ * {@link SaleTendersNotVisibleError}: zero visible rows is otherwise indistinguishable from a
+ * tender-unknown sale, and offering a tender-bearing sale without its tenders posts it unpaid.
+ */
+async function loadSaleTenders(
+  client: PoolClient,
+  saleId: string,
+  expected: number,
+): Promise<SaleWorkTender[]> {
+  // A tender-unknown sale never touches sale_tenders (capture writes the rows and the count in
+  // one transaction), so the pre-RT-77 feed does not depend on the new table's grant.
+  if (expected === 0) return [];
+  const st = await client.query<{
+    method: "cash" | "card_external";
+    amount: string;
+    reference: string | null;
+  }>(
+    `SELECT method, amount::text AS amount, reference
+       FROM sale_tenders WHERE sale_id = $1 ORDER BY method`,
+    [saleId],
+  );
+  if (st.rows.length !== expected) {
+    throw new SaleTendersNotVisibleError(saleId, expected, st.rows.length);
+  }
+  return st.rows.map((t) => ({
+    method: t.method,
+    amount: t.amount,
+    ...(t.reference === null ? {} : { reference: t.reference }),
+  }));
 }
 
 /**
