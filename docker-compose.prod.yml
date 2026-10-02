@@ -83,9 +83,9 @@ services:
     expose:
       - "3000"
     healthcheck:
-      # No public /health route yet; the unauthenticated Prometheus metrics
-      # listener on 9464 proves the process is up. (Follow-up: add GET /health.)
-      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:9464/metrics').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      # RT-144 readiness: 200 only when the domain DB, the auth lookup DB and
+      # Redis all answer within a bounded timeout (503 otherwise).
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/v1/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 15s
       timeout: 5s
       retries: 10
