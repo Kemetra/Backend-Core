@@ -350,6 +350,28 @@ describe("pos-sales/sales.yaml — error vocabulary", () => {
       expect(ok?.headers).toHaveProperty("Idempotent-Replayed");
     }
   });
+
+  // RT-82 K4: a same-Idempotency-Key replay keeps the stored status (201), so
+  // the 201 must document the replay header too; clients key on the header.
+  it("declares Idempotent-Replayed on every write's 201 (stored-status replay, RT-82 K4)", () => {
+    for (const p of [CAPTURE_PATH, VOID_PATH, REFUND_PATH, RETURNS_PATH]) {
+      const created = (salesDoc.paths?.[p]?.["post"]?.responses ?? {})["201"] as
+        | { headers?: Record<string, unknown> }
+        | undefined;
+      expect(created?.headers).toHaveProperty("Idempotent-Replayed");
+    }
+  });
+
+  // RT-82 K1: the replay key is per resource (resolved path params) and the
+  // clientId is the operator, not the device.
+  it("documents per-resource idempotency keying on the operator principal (RT-82 K1)", () => {
+    const param = salesDoc.components?.parameters?.["IdempotencyKey"] as
+      | { description?: string }
+      | undefined;
+    expect(param?.description).toMatch(/resolved path parameters/);
+    expect(param?.description).toMatch(/operator/);
+    expect(param?.description).not.toMatch(/POS device principal/);
+  });
 });
 
 // ===========================================================================

@@ -60,6 +60,7 @@ function openapiSubDir(sub: string): string {
 
 interface OperationObject {
   operationId?: string;
+  description?: string;
   security?: Array<Record<string, unknown>>;
   parameters?: Array<{ $ref?: string }>;
   requestBody?: {
@@ -280,6 +281,16 @@ describe("connector/connector-admin.yaml — secret discipline", () => {
     const s = schema("IssuedCredential");
     expect(s?.additionalProperties).toBe(false);
     expect(s?.properties?.["secret"]).toBeDefined();
+  });
+
+  // RT-82 K3: the rotate secret is never stored for replay, so a same-key
+  // retry is a 409, never a replayed 201 carrying the secret.
+  it("documents rotate as non-replayable: a same-key retry is 409, never the secret (RT-82 K3)", () => {
+    const rotate = findOp("tenantAdminRotateConnectorCredential");
+    expect(rotate?.description).toMatch(/Non-replayable/);
+    const conflict = (rotate?.responses ?? {})["409"] as { description?: string } | undefined;
+    expect(conflict?.description).toMatch(/idempotency_key_conflict/);
+    expect(conflict?.description).toMatch(/never replayed/);
   });
 
   it("ConnectorInstance projection carries NO secret / hash (status only)", () => {
