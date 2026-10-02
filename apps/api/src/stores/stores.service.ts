@@ -97,7 +97,13 @@ type TenantTxRunner = <T>(
 function txCtx(ctx: ResolvedContext): TenantContext {
   return {
     tenantId: ctx.tenantId,
-    isPlatformAdmin: ctx.isPlatformAdmin,
+    // RT-142: these are ordinary tenant-context routes, so they act as the
+    // SELECTED tenant even for a platform admin. Passing the admin flag into
+    // the GUC would enable RLS's platform-admin branch and let list / read /
+    // update / delete reach every tenant's stores. Cross-tenant work stays
+    // explicit: a platform admin switches the active tenant first. A missing
+    // tenant (tokenless edge) sees nothing — fail closed.
+    isPlatformAdmin: false,
   };
 }
 

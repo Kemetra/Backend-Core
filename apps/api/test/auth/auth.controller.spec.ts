@@ -807,6 +807,33 @@ describe("POST /api/v1/auth/password-reset/confirm", () => {
 // -----------------------------------------------------------------------
 
 describe("POST /api/v1/auth/email/verify/request", () => {
+  it("RT-141: at most 3 verification emails per user per hour; extras are a silent 202", async () => {
+    if (maybeSkip()) return;
+    const userId = newId();
+    const password = "verify-limit-password-1";
+    const email = `verify-limit-${userId}@example.com`;
+    await pool!.query(
+      `INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)`,
+      [userId, email, await hashPassword(password)],
+    );
+    const cookie = extractSessionCookie(
+      await http().post("/api/v1/auth/signin").send({ email, password }),
+    );
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const res = await http().post("/api/v1/auth/email/verify/request").set("Cookie", cookie);
+      statuses.push(res.status);
+    }
+    expect(statuses).toEqual([202, 202, 202, 202, 202]);
+
+    const r = await pool!.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM auth_tokens WHERE user_id = $1 AND scope = 'email_verify'`,
+      [userId],
+    );
+    expect(r.rows[0]!.count).toBe("3");
+  });
+
   it("returns 202, issues a token, enqueues the email", async () => {
     if (maybeSkip()) return;
 

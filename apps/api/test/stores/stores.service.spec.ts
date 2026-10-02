@@ -239,11 +239,11 @@ describe("StoresService.list", () => {
     });
   });
 
-  it("propagates isPlatformAdmin into the runWithTenantContext ctx", async () => {
+  it("RT-142: a platform admin still runs as the selected tenant (no RLS admin branch)", async () => {
     repo.listInTenantResult = [];
     await service.list(ADMIN_SESSION_CTX);
     const [, ctx] = passthroughTx.mock.calls[0]!;
-    expect(ctx.isPlatformAdmin).toBe(true);
+    expect(ctx).toEqual({ tenantId: ADMIN_SESSION_CTX.tenantId, isPlatformAdmin: false });
   });
 });
 
