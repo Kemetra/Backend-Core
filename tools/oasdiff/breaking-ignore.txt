@@ -8,3 +8,5 @@
 # Example:
 #   RT-123 intentional: POST /api/v1/example added the new required request header 'X-Example'
 RT-76 intentional (RT-10 D6; tightens only the server-emitted feed: refundTenders is return-only, like RT-72 returnLines): GET /api/connector/v1/erpnext/postings added `subschema #1, subschema #2` to the `items/items/reversalOf/anyOf[#/components/schemas/ReversalRef]/else/not/` response property `anyOf` list for the response status `200`
+RT-153 intentional (RT-145 F1, owner-ratified; documents the bound the runtime already enforced, now counted in code points, so no previously accepted password is rejected): POST /api/v1/auth/signin the `password` request property's maxLength was set to `1024`
+RT-153 intentional (RT-145 F1, owner-ratified; same bound as sign-in so a reset cannot set a password sign-in rejects): POST /api/v1/auth/password-reset/confirm the `new_password` request property's maxLength was set to `1024`
