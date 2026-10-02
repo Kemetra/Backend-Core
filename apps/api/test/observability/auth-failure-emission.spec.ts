@@ -64,6 +64,7 @@ jest.mock("@data-pulse-2/auth", () => {
   return {
     verifyPassword: jest.fn(),
     hashPassword: jest.fn(),
+    needsRehash: jest.fn(() => false),
     generateRawToken: jest.fn(() => "raw-token-fixture"),
     hashToken: (token: string): Buffer => createHash("sha256").update(token).digest(),
   };

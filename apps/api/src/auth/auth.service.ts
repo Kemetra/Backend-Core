@@ -29,6 +29,7 @@ import {
   generateRawToken,
   hashPassword,
   hashToken,
+  needsRehash,
   verifyPassword,
 } from "@data-pulse-2/auth";
 import { sessions, users } from "@data-pulse-2/db/schema";
@@ -214,6 +215,9 @@ export class AuthService {
       throw new UnauthorizedException("Invalid credentials");
     }
 
+    // RT-130: only after a successful verify, so failure timing is untouched.
+    await this.upgradeStalePasswordHash(userRow.id, userRow.passwordHash, password);
+
     const sessionId = newId();
     const sessionCredential = generateRawToken();
     const absoluteExpiresAt = new Date(Date.now() + SESSION_ABSOLUTE_EXPIRY_MS);
@@ -252,6 +256,39 @@ export class AuthService {
         is_platform_admin: userRow.isPlatformAdmin,
       },
     };
+  }
+
+  /**
+   * Re-hash the password with the current `ARGON2_PARAMS` when the stored
+   * hash was produced with older ones (RT-130), so a parameter bump reaches
+   * every active user on their next sign-in.
+   *
+   * Compare-and-swap on the old hash: a password changed concurrently (e.g.
+   * a reset) is never overwritten. Best-effort: any failure leaves the old,
+   * still-valid hash in place and never fails the sign-in — the next
+   * successful sign-in retries.
+   */
+  private async upgradeStalePasswordHash(
+    userId: string,
+    storedHash: string,
+    password: string,
+  ): Promise<void> {
+    if (!needsRehash(storedHash)) return;
+    try {
+      const upgraded = await hashPassword(password);
+      await this.db
+        .update(users)
+        .set({ passwordHash: upgraded, updatedAt: sql`now()` })
+        .where(
+          and(
+            eq(users.id, userId),
+            eq(users.passwordHash, storedHash),
+            isNull(users.deletedAt),
+          ),
+        );
+    } catch {
+      // Keep the old hash; it still verifies.
+    }
   }
 
   /**

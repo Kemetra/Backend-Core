@@ -63,17 +63,19 @@ jest.mock("@data-pulse-2/auth", () => {
   return {
     verifyPassword: jest.fn(),
     hashPassword: jest.fn(),
+    needsRehash: jest.fn(() => false),
     generateRawToken: jest.fn(),
     hashToken: (token: string): Buffer => createHash("sha256").update(token).digest(),
   };
 });
 
 // Import after mocks are set up
-import { verifyPassword, hashPassword, generateRawToken } from "@data-pulse-2/auth";
+import { verifyPassword, hashPassword, generateRawToken, needsRehash } from "@data-pulse-2/auth";
 
 const mockVerifyPassword = verifyPassword as jest.MockedFunction<typeof verifyPassword>;
 const mockHashPassword = hashPassword as jest.MockedFunction<typeof hashPassword>;
 const mockGenerateRawToken = generateRawToken as jest.MockedFunction<typeof generateRawToken>;
+const mockNeedsRehash = needsRehash as jest.MockedFunction<typeof needsRehash>;
 
 // ---------------------------------------------------------------------------
 // Fixed UUIDs (UUIDv7-ish format)
@@ -291,6 +293,70 @@ describe("AuthService.signIn — failure paths", () => {
 // ===========================================================================
 // B. signIn — success path
 // ===========================================================================
+
+describe("AuthService.signIn — RT-130 rehash of stale hashes", () => {
+  afterEach(() => {
+    mockNeedsRehash.mockReset();
+    mockNeedsRehash.mockReturnValue(false);
+    mockHashPassword.mockReset();
+  });
+
+  it("R1: stale hash on a successful sign-in → re-hashed with the submitted password", async () => {
+    const user = makeUserRow();
+    selectRows = [user];
+    mockVerifyPassword.mockResolvedValue(true);
+    mockNeedsRehash.mockReturnValue(true);
+    mockHashPassword.mockResolvedValue("$argon2id$v=19$m=19456,t=2,p=1$new");
+
+    const { service, sessions } = buildService();
+    sessions.create.mockResolvedValue(makeSessionRow());
+    await service.signIn({ email: USER_EMAIL, password: "correct" });
+
+    expect(mockNeedsRehash).toHaveBeenCalledWith(user.passwordHash);
+    expect(mockHashPassword).toHaveBeenCalledWith("correct");
+    expect(sessions.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("R2: current hash → no re-hash", async () => {
+    selectRows = [makeUserRow()];
+    mockVerifyPassword.mockResolvedValue(true);
+    mockNeedsRehash.mockReturnValue(false);
+
+    const { service, sessions } = buildService();
+    sessions.create.mockResolvedValue(makeSessionRow());
+    await service.signIn({ email: USER_EMAIL, password: "correct" });
+
+    expect(mockHashPassword).not.toHaveBeenCalled();
+  });
+
+  it("R3: a failing re-hash never fails the sign-in", async () => {
+    selectRows = [makeUserRow()];
+    mockVerifyPassword.mockResolvedValue(true);
+    mockNeedsRehash.mockReturnValue(true);
+    mockHashPassword.mockRejectedValue(new Error("argon2 exploded"));
+
+    const { service, sessions } = buildService();
+    sessions.create.mockResolvedValue(makeSessionRow());
+    const result = await service.signIn({ email: USER_EMAIL, password: "correct" });
+
+    expect(result.userId).toBe(USER_ID);
+    expect(sessions.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("R4: failed sign-in never checks or re-hashes (failure timing unchanged)", async () => {
+    selectRows = [makeUserRow()];
+    mockVerifyPassword.mockResolvedValue(false);
+    mockNeedsRehash.mockReturnValue(true);
+
+    const { service } = buildService();
+    await expect(
+      service.signIn({ email: USER_EMAIL, password: "wrong" }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(mockNeedsRehash).not.toHaveBeenCalled();
+    expect(mockHashPassword).not.toHaveBeenCalled();
+  });
+});
 
 describe("AuthService.signIn — success path", () => {
   it("B4: valid credentials — sessions.create called, result shape correct", async () => {
