@@ -61,7 +61,11 @@ type RegisterResult =
 
 type IssueResult =
   | { kind: "ok"; credential: IssuedCredentialBody }
-  | { kind: "not_found" };
+  | { kind: "not_found" }
+  | { kind: "conflict" };
+
+/** At most one unrevoked connector credential per registration (migration 0021). */
+const ACTIVE_CONNECTOR_CREDENTIAL_UNIQUE = "uq_auth_tokens_active_connector_credential";
 
 const INSTANCE_COLS =
   "id, display_name, erpnext_site_ref, environment, created_at, disabled_at";
@@ -187,6 +191,9 @@ export class ConnectorRegistrationService {
    * Issue a connector credential for a registered, non-disabled instance. The
    * raw secret is in the result ONCE. Bounded expiry (default 90d). Issuing for
    * an absent / cross-tenant / disabled instance → not_found (non-disclosing).
+   * An instance that already has an unrevoked credential → conflict (RT-62):
+   * the partial unique index rejects the insert, the transaction rolls back
+   * (no audit row), and the caller is pointed at rotate.
    */
   async issue(input: IssueCredentialInput): Promise<IssueResult> {
     return runWithTenantContext(
@@ -201,12 +208,21 @@ export class ConnectorRegistrationService {
         const row = inst.rows[0];
         if (!row || row.disabled_at !== null) return { kind: "not_found" };
 
-        const credential = await this.issueCredentialRow(client, {
-          tenantId: input.tenantId,
-          actorUserId: input.actorUserId,
-          instanceId: input.instanceId,
-          expiresInDays: input.expiresInDays ?? DEFAULT_CREDENTIAL_EXPIRY_DAYS,
-        });
+        let credential: IssuedCredentialBody;
+        try {
+          credential = await this.issueCredentialRow(client, {
+            tenantId: input.tenantId,
+            actorUserId: input.actorUserId,
+            instanceId: input.instanceId,
+            expiresInDays: input.expiresInDays ?? DEFAULT_CREDENTIAL_EXPIRY_DAYS,
+          });
+        } catch (err) {
+          const pgErr = err as { code?: string; constraint?: string };
+          if (pgErr.code === "23505" && pgErr.constraint === ACTIVE_CONNECTOR_CREDENTIAL_UNIQUE) {
+            return { kind: "conflict" };
+          }
+          throw err;
+        }
         await this.insertAudit(client, input.tenantId, input.actorUserId, {
           action: "connector.credential.issued",
           targetType: "connector_registration",
