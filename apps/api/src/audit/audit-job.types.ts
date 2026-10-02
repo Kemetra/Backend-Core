@@ -27,4 +27,10 @@ export interface AuditJobPayload {
   readonly target_id: string | null;
   readonly request_id: string | null;
   readonly metadata: Record<string, unknown> | null;
+  /**
+   * Stable id of the audit row this job writes (RT-124). Stamped once at
+   * enqueue when absent, used as the BullMQ jobId and as audit_events.id, so
+   * a retried or re-added job cannot insert a second row.
+   */
+  readonly event_id?: string;
 }

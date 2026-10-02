@@ -6,12 +6,14 @@
  * `apps/worker/src/audit/audit-fanout.processor.ts` (T233); this file ships
  * the producer side so `AuditEmitterInterceptor` can enqueue real jobs.
  *
- * No-dedup by design
- * ------------------
- * Unlike `EmailQueueProducer`, this producer MUST NOT set a deterministic
- * `jobId`. Every `@Auditable` action must produce a distinct row in
- * `audit_events` — deduplication via jobId would silently suppress audit
- * records when an HTTP request is retried, violating FR-AUDIT-1.
+ * Per-emission identity (RT-124)
+ * ------------------------------
+ * Every `@Auditable` action must produce a distinct row in `audit_events`
+ * (FR-AUDIT-1), so the jobId is NEVER derived from the request (unlike
+ * `EmailQueueProducer`'s deterministic jobId) — a retried HTTP request is a
+ * new emission and gets a new id. Each emission mints one `event_id`, used as
+ * the jobId and as `audit_events.id`, so only a re-delivery of the SAME
+ * emission is deduplicated.
  *
  * Cross-app constant mirror
  * -------------------------
@@ -25,6 +27,7 @@
  */
 import { Injectable, type OnModuleDestroy } from "@nestjs/common";
 import type { Queue } from "bullmq";
+import { newId } from "@data-pulse-2/shared";
 import { injectTraceContext } from "@data-pulse-2/shared/observability/otel";
 import type { AuditJobEnqueuer } from "./audit-job.enqueuer";
 import type { AuditJobPayload } from "./audit-job.types";
@@ -179,8 +182,17 @@ export class AuditQueueProducer
 
   async enqueue(payload: AuditJobPayload): Promise<void> {
     const queue = this.ensureQueue();
-    // No jobId — every emission must produce a distinct BullMQ job entry.
-    await queue.add(AUDIT_FANOUT_JOB_NAME_API, { ...payload, traceContext: injectTraceContext() });
+    // RT-124: every emission still produces a distinct job — each enqueue
+    // mints a fresh id unless the caller already holds one. That id is the
+    // jobId (a repeated add of the SAME fact is a no-op) and becomes
+    // audit_events.id in the worker, whose insert ignores a conflicting id,
+    // so a retried job cannot duplicate the row.
+    const eventId = payload.event_id ?? newId();
+    await queue.add(
+      AUDIT_FANOUT_JOB_NAME_API,
+      { ...payload, event_id: eventId, traceContext: injectTraceContext() },
+      { jobId: eventId },
+    );
   }
 
   /**

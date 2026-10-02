@@ -97,8 +97,20 @@ export class AuditEmitterInterceptor implements NestInterceptor {
     return next.handle().pipe(
       tap({
         next: (responseBody: unknown) => {
+          // Fire-and-forget: the HTTP outcome never depends on audit
+          // delivery, but a failure must be visible (RT-124). Log the action
+          // and error class only — never the payload (actor_label may be an
+          // email) or a raw driver message.
           this.emitAsync(action, request, responseBody).catch((err: unknown) => {
-            this.logger?.error({ err, action }, "AuditEmitter: enqueue failed");
+            this.logger?.error(
+              {
+                component: "audit.emitter",
+                action,
+                request_id: request.requestId ?? null,
+                err_class: err instanceof Error ? err.name : typeof err,
+              },
+              "AuditEmitter: enqueue failed",
+            );
           });
         },
       }),

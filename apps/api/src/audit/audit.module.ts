@@ -61,6 +61,8 @@ import {
   DrizzleAuditRepository,
 } from "./audit.repository";
 import { AuditService } from "./audit.service";
+import { ROOT_LOGGER } from "../common/logging.interceptor";
+import type { Logger } from "@data-pulse-2/shared";
 
 /**
  * Re-export of the enqueuer factory. Hoisted into `AuditEnqueuerModule` to
@@ -72,9 +74,11 @@ export { auditJobEnqueuerFactory } from "./audit-enqueuer.module";
 
 const auditInterceptorProvider: Provider = {
   provide: APP_INTERCEPTOR,
-  useFactory: (reflector: Reflector, enqueuer: AuditJobEnqueuer) =>
-    new AuditEmitterInterceptor(reflector, enqueuer),
-  inject: [Reflector, AUDIT_JOB_ENQUEUER],
+  // ROOT_LOGGER (RootLoggerModule, RT-124) so a failed enqueue is logged
+  // instead of vanishing. Optional only for standalone test modules.
+  useFactory: (reflector: Reflector, enqueuer: AuditJobEnqueuer, logger?: Logger) =>
+    new AuditEmitterInterceptor(reflector, enqueuer, logger),
+  inject: [Reflector, AUDIT_JOB_ENQUEUER, { token: ROOT_LOGGER, optional: true }],
 };
 
 const auditRepositoryProvider: Provider = {

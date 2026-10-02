@@ -164,6 +164,23 @@ describe("AuditFanoutProcessor", () => {
     expect(r1!.id).not.toBe(r2!.id);
   });
 
+  it("uses the producer's event_id as the row id when present (RT-124)", async () => {
+    const eventId = "0e000000-0000-7000-8000-0000000000aa";
+    await processor.process(AUDIT_FANOUT_JOB_NAME, { ...VALID_PAYLOAD, event_id: eventId });
+    await processor.process(AUDIT_FANOUT_JOB_NAME, { ...VALID_PAYLOAD, event_id: eventId });
+    const [r1, r2] = db.capturedRows;
+    // A retried job re-inserts the same id; the insert ignores the conflict.
+    expect(r1!.id).toBe(eventId);
+    expect(r2!.id).toBe(eventId);
+  });
+
+  it("rejects a non-UUID event_id as malformed", async () => {
+    await expect(
+      processor.process(AUDIT_FANOUT_JOB_NAME, { ...VALID_PAYLOAD, event_id: "not-a-uuid" }),
+    ).rejects.toThrow();
+    expect(db.insertAuditEvent).not.toHaveBeenCalled();
+  });
+
   // ── occurred_at absent ──────────────────────────────────────────────────
 
   it("does not pass occurred_at/occurredAt — DB DEFAULT stamps it", async () => {

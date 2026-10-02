@@ -32,6 +32,7 @@ interface FakeRequest {
   originalUrl?: string;
   requestId?: string;
   headers?: Record<string, string>;
+  route?: { path: string };
 }
 
 interface FakeResponse {
@@ -94,6 +95,7 @@ describe("LoggingInterceptor", () => {
       method: "GET",
       url: "/x",
       originalUrl: "/x?y=1",
+      route: { path: "/x" },
       requestId: "018f3b1d-7c2a-7e3a-9bcd-0123456789ab",
     };
     const res: FakeResponse = { statusCode: 200 };
@@ -109,7 +111,7 @@ describe("LoggingInterceptor", () => {
     expect(infoCalls[0]?.msg).toBe("request completed");
     const obj = infoCalls[0]?.obj as Record<string, unknown>;
     expect(obj.method).toBe("GET");
-    expect(obj.route).toBe("/x?y=1");
+    expect(obj.route).toBe("/x");
     expect(obj.status).toBe(200);
     expect(typeof obj.latency_ms).toBe("number");
   });
