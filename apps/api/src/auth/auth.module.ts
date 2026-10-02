@@ -60,6 +60,12 @@ import { AuthController } from "./auth.controller";
 import { AuthGuard } from "./auth.guard";
 import { DashboardAuthGuard } from "./dashboard-auth.guard";
 import { PosOperatorAuthGuard } from "./pos-operator-auth.guard";
+import { clerkIdentityProviderFactory } from "./clerk-identity-provider.adapter";
+import {
+  OPERATOR_CONTEXT_RESOLVER,
+  PgOperatorContextResolver,
+} from "./operator-context-resolver";
+import { DeviceRepository } from "../pos-operators/device.repository";
 import { AuthService } from "./auth.service";
 import { AuthTokenRepository } from "./auth-token.repository";
 import {
@@ -247,6 +253,24 @@ export class AlwaysAllowRedis implements RedisLike {
     },
     AuthGuard,
     DashboardAuthGuard,
+    // RT-137: PosOperatorAuthGuard re-verifies device / membership / role /
+    // store access live on every request (the same reverifier SalesModule and
+    // SettlementModule register for PosOperatorEnvelopeSaleGuard). Exported
+    // because Nest builds a @UseGuards guard in the controller's own module,
+    // which must therefore see this token; a module's local binding (Sales,
+    // Settlement) still takes precedence there.
+    {
+      provide: OPERATOR_CONTEXT_RESOLVER,
+      useFactory: (pool: Pool, lookupPool: Pool): PgOperatorContextResolver =>
+        new PgOperatorContextResolver(
+          pool,
+          clerkIdentityProviderFactory(lookupPool),
+          new DeviceRepository(lookupPool),
+          undefined,
+          lookupPool,
+        ),
+      inject: [PG_POOL, AUTH_LOOKUP_POOL],
+    },
     PosOperatorAuthGuard,
     {
       provide: AuthService,
@@ -276,6 +300,7 @@ export class AlwaysAllowRedis implements RedisLike {
     AuthGuard,
     DashboardAuthGuard,
     PosOperatorAuthGuard,
+    OPERATOR_CONTEXT_RESOLVER,
     SessionRepository,
     AuthTokenRepository,
     // PG_POOL is exported so downstream modules (ContextModule, future

@@ -344,20 +344,25 @@ export class AuthService {
    * BadRequestException for invalid / expired / wrong-scope tokens — the
    * exception filter renders that as a 400 envelope.
    *
-   * On success: hash the new password (argon2id), update the user,
-   * revoke the reset token, and revoke ALL of the user's active sessions
-   * so a stolen cookie can't outlive the credential change.
+   * The token is consumed atomically FIRST (RT-146): one conditional
+   * `UPDATE … RETURNING` revokes it only if it is still unrevoked,
+   * unexpired and password_reset-scoped, so concurrent or replayed confirms
+   * of the same token cannot both proceed — exactly one wins, the rest get
+   * the same generic 400. Then: hash the new password (argon2id), update
+   * the user, and revoke ALL of the user's active sessions so a stolen
+   * cookie can't outlive the credential change. If a later step fails the
+   * token stays consumed (fail closed); the user requests a new link.
    */
   async confirmPasswordReset(input: {
     rawToken: string;
     newPassword: string;
   }): Promise<void> {
     const repo = this.requireAuthTokens();
-    const tokenRow = await repo.findActiveByRawToken(input.rawToken);
-    if (!tokenRow || tokenRow.scope !== AUTH_TOKEN_SCOPES.passwordReset) {
-      throw new BadRequestException("Invalid or expired token");
-    }
-    if (tokenRow.userId === null) {
+    const tokenRow = await repo.consumeActiveByRawToken(
+      input.rawToken,
+      AUTH_TOKEN_SCOPES.passwordReset,
+    );
+    if (!tokenRow || tokenRow.userId === null) {
       throw new BadRequestException("Invalid or expired token");
     }
     const userId = tokenRow.userId;
@@ -368,7 +373,6 @@ export class AuthService {
       .set({ passwordHash: newHash, updatedAt: sql`now()` })
       .where(and(eq(users.id, userId), isNull(users.deletedAt)));
 
-    await repo.revoke(tokenRow.id);
     await this.revokeAllSessionsForUser(userId);
   }
 

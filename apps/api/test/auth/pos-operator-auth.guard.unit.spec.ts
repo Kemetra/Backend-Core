@@ -18,6 +18,14 @@
  *     (POS service-account tokens are not operator-session state)
  *   - inner AuthGuard failure     → UnauthorizedException (401)
  *   - super resolves, no principal → UnauthorizedException (401)
+ *
+ * RT-137 live re-verification (POG7-POG11):
+ *   - pos_operator token, live re-check ok          → allowed; reverify called
+ *     with the token's (user, bound device, store)
+ *   - bound device not recoverable                  → 401
+ *   - device revoked / membership revoked / role ineligible / store access
+ *     removed (any refused verdict)                 → 401
+ *   - token without a user or store binding         → 401, no live lookup
  */
 import "reflect-metadata";
 
@@ -28,6 +36,7 @@ import type { AuthTokenRow, SessionRow } from "@data-pulse-2/db/schema";
 import { AuthGuard, SESSION_COOKIE_NAME } from "../../src/auth/auth.guard";
 import type { SessionRepository } from "../../src/auth/session.repository";
 import type { AuthTokenRepository } from "../../src/auth/auth-token.repository";
+import type { OperatorReverifier } from "../../src/auth/operator-context-resolver";
 import { PosOperatorAuthGuard } from "../../src/auth/pos-operator-auth.guard";
 
 // ---------------------------------------------------------------------------
@@ -53,14 +62,24 @@ const makeFakeAuthTokens = () => ({
   findActiveByRawToken: jest.fn<Promise<AuthTokenRow | null>, [string]>(),
 });
 
+// RT-137: live reverifier — defaults to the token's device and an ok verdict.
+const makeFakeReverifier = () => ({
+  recoverDeviceId: jest.fn<Promise<string | null>, [string]>().mockResolvedValue(DEVICE_ID),
+  reverify: jest
+    .fn<ReturnType<OperatorReverifier["reverify"]>, Parameters<OperatorReverifier["reverify"]>>()
+    .mockResolvedValue({ kind: "ok" }),
+});
+
 function buildGuard() {
   const sessions   = makeFakeSessions();
   const authTokens = makeFakeAuthTokens();
+  const reverifier = makeFakeReverifier();
   const guard      = new PosOperatorAuthGuard(
     sessions   as unknown as SessionRepository,
     authTokens as unknown as AuthTokenRepository,
+    reverifier,
   );
-  return { guard, sessions, authTokens };
+  return { guard, sessions, authTokens, reverifier };
 }
 
 // ---------------------------------------------------------------------------
@@ -237,5 +256,75 @@ describe("PosOperatorAuthGuard — !principal defensive check", () => {
     );
 
     spy.mockRestore();
+  });
+});
+
+// ===========================================================================
+// POG7-POG11 — RT-137 live re-verification
+// ===========================================================================
+
+describe("PosOperatorAuthGuard — live re-verification (RT-137)", () => {
+  it("POG7: re-verifies the token's user, bound device and store on every request", async () => {
+    const { guard, authTokens, reverifier } = buildGuard();
+    authTokens.findActiveByRawToken.mockResolvedValue(makeToken("pos_operator"));
+
+    const req = makeRequest({ bearer: "Bearer pos-operator-token" });
+    await expect(guard.canActivate(makeCtx(req))).resolves.toBe(true);
+
+    expect(reverifier.recoverDeviceId).toHaveBeenCalledWith(TOKEN_ID);
+    expect(reverifier.reverify).toHaveBeenCalledWith(USER_ID, DEVICE_ID, STORE_ID);
+  });
+
+  it("POG8: bound device not recoverable → 401", async () => {
+    const { guard, authTokens, reverifier } = buildGuard();
+    authTokens.findActiveByRawToken.mockResolvedValue(makeToken("pos_operator"));
+    reverifier.recoverDeviceId.mockResolvedValue(null);
+
+    const req = makeRequest({ bearer: "Bearer pos-operator-token" });
+    await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(reverifier.reverify).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "device_invalid",
+    "membership_missing",
+    "membership_revoked",
+    "role_ineligible",
+    "store_not_in_access_set",
+  ] as const)("POG9: live verdict %s → generic 401", async (reason) => {
+    const { guard, authTokens, reverifier } = buildGuard();
+    authTokens.findActiveByRawToken.mockResolvedValue(makeToken("pos_operator"));
+    reverifier.reverify.mockResolvedValue({ kind: "refused", reason });
+
+    const req = makeRequest({ bearer: "Bearer pos-operator-token" });
+    const err = await guard.canActivate(makeCtx(req)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnauthorizedException);
+    // Fail closed without disclosing which check refused.
+    expect((err as UnauthorizedException).message).toBe("Unauthorized");
+  });
+
+  it.each([
+    ["user", { userId: null }],
+    ["store", { storeId: null }],
+  ] as const)("POG10: pos_operator token without a %s binding → 401, no live lookup", async (_label, overrides) => {
+    const { guard, authTokens, reverifier } = buildGuard();
+    authTokens.findActiveByRawToken.mockResolvedValue(makeToken("pos_operator", overrides));
+
+    const req = makeRequest({ bearer: "Bearer pos-operator-token" });
+    await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(reverifier.recoverDeviceId).not.toHaveBeenCalled();
+  });
+
+  it("POG11: a live lookup error propagates (never an implicit allow)", async () => {
+    const { guard, authTokens, reverifier } = buildGuard();
+    authTokens.findActiveByRawToken.mockResolvedValue(makeToken("pos_operator"));
+    reverifier.reverify.mockRejectedValue(new Error("db down"));
+
+    const req = makeRequest({ bearer: "Bearer pos-operator-token" });
+    await expect(guard.canActivate(makeCtx(req))).rejects.toThrow("db down");
   });
 });
