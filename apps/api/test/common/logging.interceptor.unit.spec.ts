@@ -17,10 +17,13 @@
  *   LI6 – requestId present → request_id matches in withRequestContext call
  *   LI7-LI11 – logged status matches GlobalExceptionFilter for PostgreSQL
  *              input errors (400) and for everything else (500) (RT-60)
+ *   LI12-LI16 – RT-124 (RT-120 A10): route is the template, never the
+ *              rendered URL; client errors log class + status/code only
  */
 import "reflect-metadata";
 
-import { type CallHandler, type ExecutionContext } from "@nestjs/common";
+import { BadRequestException, type CallHandler, type ExecutionContext } from "@nestjs/common";
+import { z } from "zod";
 import { of, throwError } from "rxjs";
 import { LoggingInterceptor } from "../../src/common/logging.interceptor";
 
@@ -69,6 +72,7 @@ interface FakeRequest {
   url: string;
   originalUrl?: string;
   requestId?: string;
+  route?: { path: string };
 }
 
 interface FakeResponse {
@@ -125,6 +129,7 @@ describe("LoggingInterceptor – unit", () => {
       method: "GET",
       url: "/api/items",
       originalUrl: "/api/items?page=1",
+      route: { path: "/api/items" },
       requestId: "018f3b1d-7c2a-7e3a-9bcd-0123456789ab",
     };
     const res: FakeResponse = { statusCode: 200 };
@@ -136,7 +141,7 @@ describe("LoggingInterceptor – unit", () => {
     const [obj, msg] = fakeLogger.info.mock.calls[0] as [Record<string, unknown>, string];
     expect(msg).toBe("request completed");
     expect(obj.method).toBe("GET");
-    expect(obj.route).toBe("/api/items?page=1");
+    expect(obj.route).toBe("/api/items");
     expect(obj.status).toBe(200);
   });
 
@@ -159,6 +164,7 @@ describe("LoggingInterceptor – unit", () => {
       method: "POST",
       url: "/api/tenants",
       originalUrl: "/api/tenants",
+      route: { path: "/api/tenants" },
       requestId: "018f3b1d-7c2a-7e3a-9bcd-0123456789ab",
     };
     const res: FakeResponse = { statusCode: 201 };
@@ -264,5 +270,56 @@ describe("LoggingInterceptor – unit", () => {
 
   it("LI11: genuine unhandled error → logged status 500", async () => {
     expect(await loggedErrorStatus(new Error("database exploded"))).toBe(500);
+  });
+
+  // LI12-LI16 (RT-124 / RT-120 A10)
+  async function loggedError(err: unknown): Promise<Record<string, unknown>> {
+    const req: FakeRequest = {
+      method: "POST",
+      url: "/api/v1/tenants/0190f1cf-0000-7000-8000-000000000001?email=a%40b.c",
+      route: { path: "/api/v1/tenants/:id" },
+      requestId: "018f3b1d-7c2a-7e3a-9bcd-0123456789ab",
+    };
+    const handler: CallHandler = { handle: () => throwError(() => err) };
+    await subscribeToCompletion(interceptor, makeCtx(req, { statusCode: 200 }), handler);
+    const [obj] = fakeLogger.error.mock.calls[0] as [Record<string, unknown>];
+    return obj;
+  }
+
+  it("LI12: route is the matched template, never the rendered URL", async () => {
+    const obj = await loggedError(new Error("x"));
+    expect(obj.route).toBe("/api/v1/tenants/:id");
+    expect(JSON.stringify(obj)).not.toContain("0190f1cf");
+  });
+
+  it("LI13: HttpException → class and status only, not its message", async () => {
+    const obj = await loggedError(new BadRequestException("bad value: secret@example.com"));
+    expect(obj).toMatchObject({ err_class: "BadRequestException", err_status: 400 });
+    expect(obj).not.toHaveProperty("err");
+    expect(JSON.stringify(obj)).not.toContain("secret@example.com");
+  });
+
+  it("LI14: ZodError → issue count only, not the issues", async () => {
+    const parsed = z.object({ email: z.string().email() }).safeParse({ email: "not-an-email" });
+    const obj = await loggedError(parsed.success ? new Error("unreachable") : parsed.error);
+    expect(obj).toMatchObject({ err_class: "ZodError", err_issue_count: 1 });
+    expect(JSON.stringify(obj)).not.toContain("not-an-email");
+  });
+
+  it("LI15: PostgreSQL input error → SQLSTATE only, not the quoted value", async () => {
+    const obj = await loggedError(
+      Object.assign(new Error('invalid input syntax for type uuid: "leaked-value"'), {
+        code: "22P02",
+        severity: "ERROR",
+      }),
+    );
+    expect(obj).toMatchObject({ err_code: "22P02", status: 400 });
+    expect(JSON.stringify(obj)).not.toContain("leaked-value");
+  });
+
+  it("LI16: genuine server fault keeps the err for diagnosis", async () => {
+    const boom = new Error("database exploded");
+    const obj = await loggedError(boom);
+    expect(obj.err).toBe(boom);
   });
 });

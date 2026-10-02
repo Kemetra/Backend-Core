@@ -18,6 +18,8 @@ import type { INestApplicationContext } from "@nestjs/common";
 import { EmailWorker } from "../src/email/email.worker";
 import { AuditWorker } from "../src/audit/audit.worker";
 import { SaleWorker } from "../src/sales/sale.worker";
+import { AuditRetentionWorker } from "../src/audit/audit-retention.worker";
+import { OutboxRetentionWorker } from "../src/outbox/retention.worker";
 
 class FakeEmailWorker {
   starts = 0;
@@ -59,9 +61,22 @@ class FakeSaleWorker {
   }
 }
 
+/** RT-123: both retention workers share this start/close shape. */
+class FakeRetentionWorker {
+  starts = 0;
+  start(): void {
+    this.starts += 1;
+  }
+  async close(): Promise<void> {
+    // see FakeEmailWorker
+  }
+}
+
 class FakeAppContext implements Partial<INestApplicationContext> {
   closed = 0;
   closeReject?: Error;
+  readonly auditRetentionWorker = new FakeRetentionWorker();
+  readonly outboxRetentionWorker = new FakeRetentionWorker();
   constructor(
     private readonly emailWorker: FakeEmailWorker,
     private readonly auditWorker: FakeAuditWorker,
@@ -81,6 +96,12 @@ class FakeAppContext implements Partial<INestApplicationContext> {
     }
     if ((token as unknown) === SaleWorker) {
       return this.saleWorker as unknown as TResult;
+    }
+    if ((token as unknown) === AuditRetentionWorker) {
+      return this.auditRetentionWorker as unknown as TResult;
+    }
+    if ((token as unknown) === OutboxRetentionWorker) {
+      return this.outboxRetentionWorker as unknown as TResult;
     }
     throw new Error(
       `FakeAppContext.get: unknown token ${String(token)} — extend the fake.`,
@@ -179,6 +200,12 @@ describe("bootstrap — happy path", () => {
     expect(saleWorker.starts).toBe(1);
   });
 
+  it("RT-123: starts the audit and outbox retention workers exactly once each", async () => {
+    const { ctx } = await setup();
+    expect(ctx.auditRetentionWorker.starts).toBe(1);
+    expect(ctx.outboxRetentionWorker.starts).toBe(1);
+  });
+
   it("registers SIGTERM and SIGINT handlers exactly once", async () => {
     const { proc } = await setup();
     expect(proc.handlers["SIGTERM"]).toHaveLength(1);
@@ -215,6 +242,12 @@ describe("bootstrap — happy path", () => {
     );
     expect(result.saleWorker).toBe(
       saleWorker as unknown as SaleWorker,
+    );
+    expect(result.auditRetentionWorker).toBe(
+      ctx.auditRetentionWorker as unknown as AuditRetentionWorker,
+    );
+    expect(result.outboxRetentionWorker).toBe(
+      ctx.outboxRetentionWorker as unknown as OutboxRetentionWorker,
     );
   });
 });

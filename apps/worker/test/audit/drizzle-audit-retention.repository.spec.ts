@@ -28,13 +28,29 @@ interface FakeQueryCall {
   params: unknown[];
 }
 
+/** Transaction-control / GUC statements issued by runWithTenantContext. */
+function isContextStatement(sql: string): boolean {
+  return /^(BEGIN|COMMIT|ROLLBACK)$/.test(sql.trim()) || sql.includes("set_config(");
+}
+
+/**
+ * Fake pool whose `connect()` client records every statement. `calls` holds
+ * only the sweep statements; `contextCalls` holds the transaction / GUC
+ * statements `runWithTenantContext` wraps them in (RT-123).
+ */
 function makeFakePool(rowsToReturn: Array<{ id: string }>): {
   pool: Pool;
   calls: FakeQueryCall[];
+  contextCalls: FakeQueryCall[];
 } {
   const calls: FakeQueryCall[] = [];
-  const pool = {
-    query: jest.fn(async (sql: string, params: unknown[]) => {
+  const contextCalls: FakeQueryCall[] = [];
+  const client = {
+    query: jest.fn(async (sql: string, params: unknown[] = []) => {
+      if (isContextStatement(sql)) {
+        contextCalls.push({ sql, params });
+        return { rows: [], rowCount: 0, command: "", oid: 0, fields: [] };
+      }
       calls.push({ sql, params });
       return {
         rows: rowsToReturn,
@@ -44,13 +60,26 @@ function makeFakePool(rowsToReturn: Array<{ id: string }>): {
         fields: [],
       } satisfies QueryResult<{ id: string }>;
     }),
+    release: jest.fn(),
+  };
+  const pool = {
+    connect: jest.fn(async () => client),
   } as unknown as Pool;
-  return { pool, calls };
+  return { pool, calls, contextCalls };
 }
 
 function makeErrorPool(err: Error): Pool {
+  const client = {
+    query: jest.fn(async (sql: string) => {
+      if (isContextStatement(sql)) {
+        return { rows: [], rowCount: 0, command: "", oid: 0, fields: [] };
+      }
+      throw err;
+    }),
+    release: jest.fn(),
+  };
   return {
-    query: jest.fn().mockRejectedValue(err),
+    connect: jest.fn(async () => client),
   } as unknown as Pool;
 }
 
@@ -207,5 +236,26 @@ describe("NoOpAuditRetentionRepository", () => {
     const asRecord = repo as unknown as Record<string, unknown>;
     expect(asRecord["deleteRows"]).toBeUndefined();
     expect(asRecord["purge"]).toBeUndefined();
+  });
+});
+
+describe("DrizzleAuditRetentionRepository — RLS context (RT-123)", () => {
+  it("runs the sweep in one transaction with the platform-admin GUC set", async () => {
+    const { pool, calls, contextCalls } = makeFakePool([]);
+    const repo = new DrizzleAuditRetentionRepository(pool);
+    await repo.markBatch(CUTOFF, MARKED_AT, BATCH_SIZE);
+
+    expect(contextCalls.map((c) => c.sql.trim())[0]).toBe("BEGIN");
+    expect(contextCalls.map((c) => c.sql.trim()).at(-1)).toBe("COMMIT");
+    const gucs = Object.fromEntries(
+      contextCalls
+        .filter((c) => c.sql.includes("set_config("))
+        .map((c) => [/'(app\.[a-z_]+)'/.exec(c.sql)?.[1], c.params[0]]),
+    );
+    expect(gucs).toEqual({
+      "app.current_tenant": "00000000-0000-0000-0000-000000000000",
+      "app.is_platform_admin": "true",
+    });
+    expect(calls).toHaveLength(1);
   });
 });

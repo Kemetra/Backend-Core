@@ -126,12 +126,16 @@ export function _makeInsertAuditEvent(
         return;
       }
       const db = drizzle(client);
+      // ON CONFLICT (id) DO NOTHING: a retried delivery of the same audit fact
+      // (same stable id, RT-124) is a no-op instead of a duplicate row.
       if (isPlatformAdmin) {
         // Platform path: row stores tenant_id: undefined (DB NULL), not NIL_UUID.
-        await db.insert(auditEvents).values(newRow);
+        await db.insert(auditEvents).values(newRow).onConflictDoNothing({ target: auditEvents.id });
       } else {
         // Tenant path: withTenant enforces application-level tenant match.
-        await withTenant(db, row.tenant_id!).auditEvents.insert(newRow);
+        await withTenant(db, row.tenant_id!)
+          .auditEvents.insert(newRow)
+          .onConflictDoNothing({ target: auditEvents.id });
       }
     });
   };

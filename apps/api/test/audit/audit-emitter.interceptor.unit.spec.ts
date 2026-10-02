@@ -418,8 +418,15 @@ describe("AEI11 — enqueue rejection: logger.error called, Observable still emi
     expect(logger.error).toHaveBeenCalledTimes(1);
     const [logObj, msg] = logger.error.mock.calls[0] as [Record<string, unknown>, string];
     expect(msg).toBe("AuditEmitter: enqueue failed");
-    expect(logObj.err).toBe(enqueueError);
-    expect(logObj.action).toBe(ACTION);
+    // RT-124: action + error class only — no raw error, no payload fields.
+    expect(logObj).toEqual({
+      component: "audit.emitter",
+      action: ACTION,
+      request_id: null,
+      err_class: "Error",
+    });
+    expect(JSON.stringify(logObj)).not.toContain(USER_ID);
+    expect(JSON.stringify(logObj)).not.toContain("queue full");
   });
 });
 

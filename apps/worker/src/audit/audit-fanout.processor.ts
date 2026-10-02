@@ -129,6 +129,9 @@ const AuditFanoutJobSchema = z.object({
   target_id:     z.string().uuid().nullable(),
   request_id:    z.string().nullable(),
   metadata:      z.unknown().nullable(),
+  // RT-124: stable audit row id from the producer / outbox envelope. Optional
+  // so jobs already queued before this change still process.
+  event_id:      z.string().uuid().optional(),
 });
 
 export type AuditFanoutJobData = z.infer<typeof AuditFanoutJobSchema>;
@@ -226,7 +229,9 @@ export class AuditFanoutProcessor {
         const parsed = parseJobData(jobName, data);
 
         const row: AuditEventInsertRow = {
-          id:            newId(),
+          // Deterministic when the producer supplied one (RT-124): a retry
+          // re-inserts the same id, which the insert ignores on conflict.
+          id:            parsed.event_id ?? newId(),
           actor_user_id: parsed.actor_user_id,
           actor_label:   parsed.actor_label,
           tenant_id:     parsed.tenant_id,

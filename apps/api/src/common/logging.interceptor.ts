@@ -116,7 +116,7 @@ export class LoggingInterceptor implements NestInterceptor {
           childLogger.info(
             {
               method: request.method,
-              route: request.originalUrl ?? request.url,
+              route: routeTemplate(context, request),
               status: response.statusCode,
               latency_ms: latencyMs,
             },
@@ -134,10 +134,10 @@ export class LoggingInterceptor implements NestInterceptor {
           childLogger.error(
             {
               method: request.method,
-              route: request.originalUrl ?? request.url,
+              route: routeTemplate(context, request),
               status: errorStatus,
               latency_ms: latencyMs,
-              err,
+              ...safeErrorFields(err),
             },
             "request errored",
           );
@@ -146,6 +146,32 @@ export class LoggingInterceptor implements NestInterceptor {
       }),
     );
   }
+}
+
+/**
+ * RT-124 (RT-120 A10): what a request log line may say about an error.
+ *
+ * Client errors are expected and their raw text can echo client input
+ * (a Postgres input error quotes the offending value; a Zod error describes
+ * the submitted body), so only the class and status / SQLSTATE are logged.
+ * Genuine server faults keep the boundary `err` serializer's type, message
+ * and stack — the diagnostics an operator needs — which already strips any
+ * custom properties (e.g. a driver's `detail` carrying row values).
+ */
+function safeErrorFields(err: unknown): Record<string, unknown> {
+  if (err instanceof HttpException) {
+    return { err_class: err.constructor.name, err_status: err.getStatus() };
+  }
+  if (err instanceof ZodError) {
+    return { err_class: "ZodError", err_issue_count: err.issues.length };
+  }
+  if (isPostgresInputError(err)) {
+    return {
+      err_class: err instanceof Error ? err.constructor.name : "PostgresError",
+      err_code: (err as { code?: unknown }).code ?? null,
+    };
+  }
+  return { err };
 }
 
 /**

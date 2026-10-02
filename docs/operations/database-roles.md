@@ -33,3 +33,24 @@ privilege boundary for that credential. Never grant it access to sales,
 receivables, inventory, audit, membership mutation, idempotency, or outbox
 tables. The domain role remains `NOBYPASSRLS` and is the only pool injected into
 tenant/domain services.
+
+## audit_events is append-only for every role
+
+Migration `0034_audit_events_append_only` (RT-133) adds triggers that refuse
+`UPDATE`, `DELETE` and `TRUNCATE` on `audit_events` for **every** role,
+including the domain role, the platform-admin GUC path and the table owner.
+Grants alone cannot provide this guarantee, because runtime role grants are
+provisioned outside migrations. Only two writes besides `INSERT` remain:
+
+- **Retention marking:** `retention_marked_at` may be set once, from `NULL` to
+  a timestamp, with every other column unchanged. The column grant from
+  `0005_audit_retention_privileges` keeps this to `audit_retention_worker`.
+  Retention never deletes audit rows.
+- **`ON DELETE SET NULL`:** hard-deleting a referenced user or store nulls
+  `actor_user_id` / `store_id` through the foreign key's referential action.
+  The audit row itself is kept.
+
+Anything else fails with SQLSTATE `42501` and an `append-only` message.
+Break-glass requires a deliberate DDL step (dropping or disabling the
+triggers), performed with the migration credential, never from the API or
+worker.

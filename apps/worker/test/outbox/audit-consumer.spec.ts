@@ -15,8 +15,10 @@
  *   AC-4  Correlation propagation: when payload.request_id is null but
  *         the envelope carries a correlation_id, the queue job receives
  *         the correlation_id as request_id.
- *   AC-5  No jobId: opts MUST NOT contain a `jobId` — every audit emission
- *         is a distinct row (FR-AUDIT-1).
+ *   AC-5  Per-emission identity (RT-124): jobId and data.event_id are the
+ *         outbox envelope's event_id — distinct emissions (distinct outbox
+ *         rows) stay distinct audit rows (FR-AUDIT-1); a redelivery of the
+ *         same outbox event maps onto the same job and row id.
  *   AC-6  Consumer surface: consumerId + eventType constants match the
  *         contract used by the drainer registry.
  */
@@ -102,16 +104,28 @@ describe("AuditEventCreatedConsumer — happy path (AC-1, AC-3, AC-5)", () => {
     });
   });
 
-  it("AC-5: queue.add opts MUST NOT include a jobId", async () => {
+  it("AC-5: jobId and data.event_id are the outbox event_id", async () => {
     const queue = new FakeQueue();
     const consumer = new AuditEventCreatedConsumer(queue);
-    await consumer.handle(envelope(validPayload) as OutboxEventEnvelope<AuditEventCreatedPayload>);
+    const event = envelope(validPayload);
+    await consumer.handle(event as OutboxEventEnvelope<AuditEventCreatedPayload>);
 
-    const opts = queue.calls[0]!.opts;
-    // opts may be undefined or an object — if an object, it MUST NOT have jobId.
-    if (opts !== undefined) {
-      expect(opts["jobId"]).toBeUndefined();
-    }
+    expect(queue.calls[0]!.opts).toEqual({ jobId: event.event_id });
+    expect((queue.calls[0]!.data as Record<string, unknown>)["event_id"]).toBe(event.event_id);
+  });
+
+  it("AC-5: a redelivered event reuses its id; a distinct event gets its own", async () => {
+    const queue = new FakeQueue();
+    const consumer = new AuditEventCreatedConsumer(queue);
+    const first = envelope(validPayload);
+    const second = envelope(validPayload, { event_id: "0e000000-0000-4000-8000-000000000002" });
+
+    await consumer.handle(first as OutboxEventEnvelope<AuditEventCreatedPayload>);
+    await consumer.handle({ ...first, attempts: 2 } as OutboxEventEnvelope<AuditEventCreatedPayload>);
+    await consumer.handle(second as OutboxEventEnvelope<AuditEventCreatedPayload>);
+
+    const jobIds = queue.calls.map((c) => c.opts?.["jobId"]);
+    expect(jobIds).toEqual([first.event_id, first.event_id, second.event_id]);
   });
 });
 

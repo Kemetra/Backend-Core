@@ -32,8 +32,10 @@
  * `AuditQueueProducer`) so unit tests can inject a spy without Redis.
  * The production instance is wired by `OutboxModule`.
  *
- * No jobId — mirrors the existing `AuditQueueProducer` which explicitly
- * omits `jobId` per FR-AUDIT-1 (every audit emission must produce a distinct row).
+ * jobId = outbox `event_id` (RT-124). Each audit emission writes its own
+ * outbox row with its own `event_id`, so every emission still produces a
+ * distinct audit row (FR-AUDIT-1); only a redelivery of the same outbox event
+ * collapses onto the same job and the same `audit_events.id`.
  *
  * Tenant context
  * --------------
@@ -144,11 +146,19 @@ export class AuditEventCreatedConsumer implements OutboxConsumer<AuditEventCreat
     const authoritativeTenantId =
       event.tenant_id === NIL_UUID ? null : event.tenant_id;
 
-    await this.auditQueue.add(OUTBOX_AUDIT_JOB_NAME, {
-      ...parsed.data,
-      tenant_id:  authoritativeTenantId,
-      store_id:   event.store_id,
-      request_id: parsed.data.request_id ?? event.correlation_id,
-    });
+    // RT-124: the outbox event_id (the consumer dedup key) becomes the audit
+    // row id and the BullMQ jobId, so a redelivered outbox event or a retried
+    // fan-out job cannot write a second audit row.
+    await this.auditQueue.add(
+      OUTBOX_AUDIT_JOB_NAME,
+      {
+        ...parsed.data,
+        tenant_id:  authoritativeTenantId,
+        store_id:   event.store_id,
+        request_id: parsed.data.request_id ?? event.correlation_id,
+        event_id:   event.event_id,
+      },
+      { jobId: event.event_id },
+    );
   }
 }
