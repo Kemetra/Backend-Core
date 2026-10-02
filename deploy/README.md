@@ -1,6 +1,6 @@
-# Data-Pulse-2 Deploy Template
+# Backend-Core Deploy Template
 
-Deploys the DP-2 backend (`api` + `worker`) onto `<app-host>`, behind
+Deploys the Backend-Core backend (`api` + `worker`) onto `<app-host>`, behind
 `api.example.test`, using `<managed-db>` for PostgreSQL and `<redis-service>` for
 Redis.
 
@@ -40,7 +40,7 @@ compose stack. Redis is containerized by default.
 
 ```bash
 gh repo clone <owner>/<repo>                    # or: git pull on an existing clone
-cd Data-Pulse-2
+cd Backend-Core
 git checkout <deploy-ref>                       # the reconciled origin/main commit being deployed
 
 cp deploy/prod.env.example deploy/prod.env      # then set private references/values

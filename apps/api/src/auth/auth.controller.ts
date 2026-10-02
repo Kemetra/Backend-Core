@@ -36,6 +36,7 @@ import {
 } from "@nestjs/common";
 import type { Response } from "express";
 import { AuthService } from "./auth.service";
+import { DashboardAuthGuard } from "./dashboard-auth.guard";
 import { AuthGuard, type AuthedRequest, readSessionCookie, SESSION_COOKIE_NAME } from "./auth.guard";
 import { Public } from "./route-auth";
 import {
@@ -236,7 +237,9 @@ export class AuthController {
 
   @Post("email/verify/request")
   @HttpCode(HttpStatus.ACCEPTED)
-  @UseGuards(AuthGuard)
+  // RT-141: the human dashboard authority only (session cookie or a
+  // dashboard_api bearer). POS, POS-operator and connector tokens are 401.
+  @UseGuards(DashboardAuthGuard)
   async requestEmailVerification(@Req() req: AuthedRequest): Promise<void> {
     const principal = req.principal;
     if (!principal) {
@@ -248,6 +251,14 @@ export class AuthController {
       // Platform-admin token without a user id can't verify "their" email.
       throw new BadRequestException("No user associated with this credential");
     }
+    // RT-141: per-user limit. The contract answers 202 only, so an over-limit
+    // request is accepted but sends nothing — no new status, no signal.
+    const decision = await this.rateLimiter.check(
+      "email_verify_user",
+      userId,
+      RATE_LIMIT_BUCKETS.emailVerifyRequestPerUser,
+    );
+    if (!decision.allowed) return;
     await this.authService.requestEmailVerification({ userId });
   }
 

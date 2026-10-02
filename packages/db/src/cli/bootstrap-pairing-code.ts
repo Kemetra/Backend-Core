@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Data-Pulse-2 PILOT/HOME terminal PAIRING-CODE seed.
+ * Backend-Core PILOT/HOME terminal PAIRING-CODE seed.
  *
  * Owner-run, one-shot seed that inserts ONE `pending` row into `pairing_codes`
  * so a POS terminal can redeem it through the REAL consume endpoint:
@@ -81,6 +81,7 @@
  *             3 required input missing/invalid (incl. neither PAIRING_CODE nor --generate).
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { pairingCodeWeakness } from "./pairing-code-strength";
 import { Client } from "pg";
 
 const NIL_TENANT_ID = "00000000-0000-0000-0000-000000000000";
@@ -204,6 +205,9 @@ function readConfig(argv: string[]): PairingConfig {
   if (suppliedCode && generate) {
     fail("pass EITHER PAIRING_CODE/--code OR --generate, not both.");
   }
+  // RT-141: refuse a guessable owner-supplied code (the reason never echoes it).
+  const weakness = suppliedCode ? pairingCodeWeakness(suppliedCode) : null;
+  if (weakness) fail(`PAIRING_CODE ${weakness}; or pass --generate`);
 
   return {
     tenantId,

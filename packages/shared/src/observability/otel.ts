@@ -1,5 +1,5 @@
 /**
- * OpenTelemetry SDK setup for Data-Pulse-2.
+ * OpenTelemetry SDK setup for Backend-Core.
  *
  * Instruments HTTP, Postgres (`pg`), and Redis (`node-redis`, v4+) via the
  * official `@opentelemetry/instrumentation-*` packages, and exports traces
