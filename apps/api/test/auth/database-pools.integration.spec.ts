@@ -103,6 +103,31 @@ afterAll(async () => {
 });
 
 describe("production database pool separation", () => {
+  it("RT-143: the documented lookup grants pass; an extra or a missing grant fails boot verification", async () => {
+    if (dockerSkipped) return;
+    const { app, admin } = env!;
+    const lookupPool = lookup!;
+    await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
+
+    await admin.query(`GRANT SELECT ON sales TO ${LOOKUP_ROLE}`);
+    try {
+      await expect(verifyDatabasePoolBoundary(app, lookupPool)).rejects.toThrow(
+        /forbidden grants on: sales/,
+      );
+    } finally {
+      await admin.query(`REVOKE SELECT ON sales FROM ${LOOKUP_ROLE}`);
+    }
+
+    await admin.query(`REVOKE UPDATE ON users FROM ${LOOKUP_ROLE}`);
+    try {
+      await expect(verifyDatabasePoolBoundary(app, lookupPool)).rejects.toThrow(
+        /missing required grants: UPDATE ON users/,
+      );
+    } finally {
+      await admin.query(`GRANT UPDATE ON users TO ${LOOKUP_ROLE}`);
+    }
+  });
+
   it("keeps bootstrap resolution available while the domain pool remains RLS-bound", async () => {
     if (dockerSkipped) return;
     const { app } = env!;

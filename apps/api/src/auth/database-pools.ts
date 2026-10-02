@@ -69,6 +69,109 @@ async function readRole(pool: Pool): Promise<RoleRow> {
   return role;
 }
 
+/**
+ * RT-143: the lookup role has BYPASSRLS, so its TABLE GRANTS are its whole
+ * privilege boundary (docs/operations/database-roles.md). Each entry is one
+ * privilege the auth boundary needs; boot fails if any is missing.
+ */
+export const AUTH_LOOKUP_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = [
+  ["users", "SELECT"],
+  ["users", "UPDATE"],
+  ["sessions", "SELECT"],
+  ["sessions", "INSERT"],
+  ["sessions", "UPDATE"],
+  ["auth_tokens", "SELECT"],
+  ["auth_tokens", "INSERT"],
+  ["auth_tokens", "UPDATE"],
+  ["devices", "SELECT"],
+  ["stores", "SELECT"],
+  ["external_identity_links", "SELECT"],
+  ["connector_registration", "SELECT"],
+  ["pairing_codes", "SELECT"],
+];
+
+/**
+ * Tables the lookup role must hold NO listed privilege on (sales,
+ * receivables, inventory, audit, idempotency, outbox, membership mutation).
+ * Each entry is a table and the privileges that are forbidden on it.
+ */
+export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, string]> = [
+  ...[
+    "sales",
+    "sale_lines",
+    "sale_tenders",
+    "sale_voids",
+    "sale_refunds",
+    "sale_returns",
+    "sale_return_lines",
+    "sale_return_tenders",
+    "sale_sync_deadletters",
+    "receivable",
+    "claim",
+    "claim_receivables",
+    "payment_application",
+    "remittance",
+    "payer_account",
+    "stock_movements",
+    "stock_counts",
+    "audit_events",
+    "idempotency_keys",
+    "outbox_events",
+  ].map((table) => [table, "SELECT, INSERT, UPDATE, DELETE"] as const),
+  ["memberships", "INSERT, UPDATE, DELETE"],
+  ["store_access", "INSERT, UPDATE, DELETE"],
+];
+
+interface GrantRow {
+  table_name: string;
+  privilege: string;
+  granted: boolean;
+}
+
+/**
+ * `has_table_privilege` for each (table, privilege-list) pair; a list is
+ * true when ANY listed privilege is held. Tables that do not exist yet are
+ * reported as not granted (a required one then fails, a forbidden one passes).
+ */
+async function readGrants(
+  pool: Pool,
+  checks: ReadonlyArray<readonly [string, string]>,
+): Promise<GrantRow[]> {
+  const result = await pool.query<GrantRow>(
+    `SELECT t.table_name, t.privilege,
+            CASE WHEN to_regclass('public.' || t.table_name) IS NULL THEN false
+                 ELSE has_table_privilege(current_user,
+                        to_regclass('public.' || t.table_name), t.privilege)
+            END AS granted
+       FROM unnest($1::text[], $2::text[]) AS t(table_name, privilege)`,
+    [checks.map(([table]) => table), checks.map(([, privilege]) => privilege)],
+  );
+  return result.rows;
+}
+
+async function assertLookupGrants(lookupPool: Pool): Promise<void> {
+  const [required, forbidden] = await Promise.all([
+    readGrants(lookupPool, AUTH_LOOKUP_REQUIRED_GRANTS),
+    readGrants(lookupPool, AUTH_LOOKUP_FORBIDDEN_GRANTS),
+  ]);
+  const missing = required.filter((g) => !g.granted);
+  if (missing.length > 0) {
+    throw new Error(
+      "AuthModule: AUTH_LOOKUP_DATABASE_URL role is missing required grants: " +
+        missing.map((g) => `${g.privilege} ON ${g.table_name}`).join(", ") +
+        " (see docs/operations/database-roles.md)",
+    );
+  }
+  const excess = forbidden.filter((g) => g.granted);
+  if (excess.length > 0) {
+    throw new Error(
+      "AuthModule: AUTH_LOOKUP_DATABASE_URL role holds forbidden grants on: " +
+        excess.map((g) => g.table_name).join(", ") +
+        " (see docs/operations/database-roles.md)",
+    );
+  }
+}
+
 /** Exported for Testcontainers proof of the production role boundary. */
 export async function verifyDatabasePoolBoundary(
   domainPool: Pool,
@@ -81,6 +184,7 @@ export async function verifyDatabasePoolBoundary(
 
   assertDomainRole(domainRole);
   assertLookupRole(lookupRole, domainRole.role_name);
+  await assertLookupGrants(lookupPool);
 }
 
 function assertDomainRole(domainRole: RoleRow): void {
