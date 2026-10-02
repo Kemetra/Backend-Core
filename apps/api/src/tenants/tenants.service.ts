@@ -110,9 +110,9 @@ export class TenantsService {
    *   - Platform admin → all non-deleted tenants.
    *   - Regular user   → tenants the user has an active membership in.
    *
-   * Token principals: a token bound to a single tenant returns just
-   * that tenant when found; platform-scoped tokens follow the
-   * platform-admin path. Unbound user-less tokens return an empty list.
+   * Token principals never follow the platform-admin path (RT-132 D6),
+   * including null-tenant tokens: a token with a user lists that user's
+   * memberships; a user-less token returns an empty list.
    */
   async list(principal: Principal): Promise<TenantRecord[]> {
     const userId = await this.resolveActingUserId(principal);
@@ -337,18 +337,16 @@ export class TenantsService {
   }
 
   /**
-   * Resolve platform-admin status. Token principals with
-   * `tenantId === null` are platform-scoped (PR #19 design); session
-   * principals consult the `users.is_platform_admin` flag via
-   * `MembershipRepository`.
+   * Resolve platform-admin status. Only session principals consult the
+   * `users.is_platform_admin` flag via `MembershipRepository`; a token
+   * principal — including one with `tenantId === null` — is never a
+   * platform admin (RT-132 D6).
    */
   private async isPlatformAdmin(
     principal: Principal,
     userId: string | null,
   ): Promise<boolean> {
-    if (principal.kind === "token" && principal.tenantId === null) {
-      return true;
-    }
+    if (principal.kind !== "session") return false;
     if (!userId) return false;
     return this.memberships.isPlatformAdmin(userId);
   }

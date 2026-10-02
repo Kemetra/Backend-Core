@@ -13,7 +13,7 @@
  * Coverage retained here:
  *   - list as platform admin             → listAll
  *   - list as regular user with userId   → listForUser
- *   - list as platform-scoped token      → listAll
+ *   - list as null-tenant token          → [] (RT-149: no platform-admin implication)
  *   - list as user-less token            → []
  *   - create: admin path seeds 4 roles atomically
  *   - create: 23505 on slug index → 409
@@ -174,7 +174,7 @@ const SESSION_PRINCIPAL: Principal = {
   userId: USER_ID,
 };
 
-const PLATFORM_TOKEN: Principal = {
+const NULL_TENANT_TOKEN: Principal = {
   kind: "token",
   tokenId: "0a000000-0000-7000-8000-0000000000d4",
   tenantId: null,
@@ -232,11 +232,11 @@ describe("TenantsService.list", () => {
     expect(repo.listAllCalls).toBe(0);
   });
 
-  it("returns listAll for platform-scoped token", async () => {
+  it("returns empty list for null-tenant user-less token (RT-149: never platform admin)", async () => {
     repo.listAllResult = [tenant()];
-    const out = await service.list(PLATFORM_TOKEN);
-    expect(out).toHaveLength(1);
-    expect(repo.listAllCalls).toBe(1);
+    const out = await service.list(NULL_TENANT_TOKEN);
+    expect(out).toEqual([]);
+    expect(repo.listAllCalls).toBe(0);
   });
 
   it("returns listForUser for tenant-bound token with userId", async () => {
