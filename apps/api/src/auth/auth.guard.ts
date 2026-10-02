@@ -130,6 +130,8 @@ export class AuthGuard implements CanActivate {
         recordAuthFailure({ cause: "bad_token" });
         throw unauthorized();
       }
+      // RT-139: authenticated use slides the idle window (throttled).
+      await this.sessions.recordActivity(session);
       request.principal = principalFromSession(session);
       return true;
     }

@@ -167,6 +167,7 @@ function makeTokenRow(overrides: Partial<AuthTokenRow> = {}): AuthTokenRow {
 
 class FakeSessionRepository {
   findActiveByCredential = jest.fn<Promise<SessionRow | null>, [string]>().mockResolvedValue(null);
+  recordActivity = jest.fn<Promise<void>, [SessionRow]>().mockResolvedValue(undefined);
   create = jest.fn().mockResolvedValue(makeSessionRow());
   revoke = jest.fn().mockResolvedValue(true);
   touchLastSeen = jest.fn().mockResolvedValue(true);

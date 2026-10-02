@@ -32,7 +32,6 @@ import {
 } from "@data-pulse-2/shared";
 import {
   WORKER_METRIC_NAMES,
-  WORKER_OUTBOX_METRIC_NAMES,
   WORKER_OUTBOX_EVENT_TYPES,
   WORKER_QUEUE_NAMES,
   WORKER_DELIVERY_QUEUE_LABELS,
@@ -87,7 +86,7 @@ describe("T465 — signal presence: every worker metric is in ALLOWED_METRIC_LAB
       "queue_retry_total",
       "worker_job_duration_seconds",
       "worker_processing_failure_total",
-      // T595 PR-B-1: graduated from WORKER_OUTBOX_METRIC_NAMES
+      // T595 PR-B-1: outbox signals
       "outbox_dead_letter_total",
       "outbox_drain_duration_seconds",
       // T595 PR-B-2: ObservableGauge with scrape-time addCallback
@@ -101,24 +100,12 @@ describe("T465 — signal presence: every worker metric is in ALLOWED_METRIC_LAB
 });
 
 // ---------------------------------------------------------------------------
-// 2. Track C outbox placeholders: tombstone — all signals graduated.
-//    WORKER_OUTBOX_METRIC_NAMES is now empty (T595 PR-B-2 graduated the
-//    final placeholder, outbox_pending_total).
+// 2. The T595 outbox signals are emit-now worker metrics (RT-126 removed the
+//    empty WORKER_OUTBOX_METRIC_NAMES tombstone).
 // ---------------------------------------------------------------------------
 
-describe("T465 — outbox placeholders: tombstone (all signals graduated post-PR-B-2)", () => {
-  it("WORKER_OUTBOX_METRIC_NAMES is empty (all three T595 signals now emit)", () => {
-    expect([...WORKER_OUTBOX_METRIC_NAMES]).toEqual([]);
-  });
-
-  it("outbox placeholder names are disjoint from emit-now worker names (vacuously true)", () => {
-    const intersect = WORKER_OUTBOX_METRIC_NAMES.filter((n) =>
-      (WORKER_METRIC_NAMES as readonly string[]).includes(n),
-    );
-    expect(intersect).toEqual([]);
-  });
-
-  it("all three T595 outbox signals are now in WORKER_METRIC_NAMES, not WORKER_OUTBOX_METRIC_NAMES", () => {
+describe("T465 — T595 outbox signals are emit-now worker metrics", () => {
+  it("all three T595 outbox signals are in WORKER_METRIC_NAMES", () => {
     const graduated = [
       "outbox_dead_letter_total",
       "outbox_drain_duration_seconds",
@@ -126,7 +113,6 @@ describe("T465 — outbox placeholders: tombstone (all signals graduated post-PR
     ];
     for (const name of graduated) {
       expect((WORKER_METRIC_NAMES as readonly string[]).includes(name)).toBe(true);
-      expect((WORKER_OUTBOX_METRIC_NAMES as readonly string[]).includes(name)).toBe(false);
     }
   });
 });
@@ -136,7 +122,7 @@ describe("T465 — outbox placeholders: tombstone (all signals graduated post-PR
 // ---------------------------------------------------------------------------
 
 describe("T465 — label policy: every worker metric's labels pass validateMetricLabels", () => {
-  const allNames = [...WORKER_METRIC_NAMES, ...WORKER_OUTBOX_METRIC_NAMES] as const;
+  const allNames = WORKER_METRIC_NAMES;
 
   for (const name of allNames) {
     const allowed = ALLOWED_METRIC_LABELS[name] ?? [];
