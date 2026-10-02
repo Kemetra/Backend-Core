@@ -58,11 +58,9 @@ semantics.
 
 ## The 5xx baseline
 
-Each entry accepts **one known 5xx on one operation** until it is fixed:
-
-| Entry | Operation | Reason | Remove when |
-| --- | --- | --- | --- |
-| `e92dac` | `POST /api/v1/connector/instances/{id}/credentials` | Issuing a second credential for an instance hits the `uq_auth_tokens_active_connector_credential` unique violation and returns 500 | RT-62 merges |
+Each entry accepts **one known 5xx on one operation** until it is fixed. The
+baseline is currently **empty**: the last entry (`e92dac`, a second credential
+issue returning 500) was removed when RT-62 mapped it to `409 conflict`.
 
 An entry matches on operation + check + failure type + status (`500`). **While an
 entry exists, any 500 on that operation is accepted**, not only the known one. Keep

@@ -223,6 +223,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            The instance already has an active (unrevoked) credential. Issue
+            mints only the first one; use
+            `POST /api/v1/connector/instances/{id}/credentials/rotate` to
+            replace it. `error.code = "conflict"`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/connector/instances/{id}/credentials/rotate:
     post:
