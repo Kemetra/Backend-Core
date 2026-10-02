@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Connector Stock-View (Bin) Read API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     Spec 019 ERPNext live stock-view (Bin) read contract — the DP2 ↔ connector
     boundary by which DP2 obtains the connector's point-in-time ERPNext-Bin
@@ -58,7 +58,9 @@ info:
     (report key reused with a different report, 409), `not_found`
     (non-disclosing 404 for a cross-tenant / out-of-scope `requestRef` or
     foreign-scope cursor — no existence leak, §II/§XII), the generic bearer-auth
-    refusal (401), and `system_failure` (500).
+    refusal (401), `forbidden` (generic 403 for a connector registration whose
+    environment does not match this deployment, RT-134), and `system_failure`
+    (500).
 
     This contract is consumed by
     `apps/api/test/erpnext-connector/contract/stock-view.contract.spec.ts`, loaded
@@ -115,6 +117,8 @@ paths:
           $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -177,6 +181,8 @@ paths:
           $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -561,7 +567,8 @@ components:
               description: >
                 Stable machine-readable error code. Closed set on this surface:
                 validation_error | snapshot_required | idempotency_key_conflict |
-                not_found | system_failure (plus the generic 401 refusal).
+                not_found | forbidden | system_failure (plus the generic 401
+                refusal).
             message:
               type: string
               description: Human-readable summary. No sensitive data, no cause enumeration.
@@ -586,6 +593,21 @@ components:
         Generic refusal (401). The body does not distinguish a missing / invalid /
         revoked connector bearer token from a missing tenant binding or an
         in-scope-but-not-permitted principal. Non-disclosing.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: >
+        `forbidden` (403) — generic refusal: the connector bearer is valid, but
+        the connector registration's `environment` does not match this
+        Backend-Core deployment's environment, so the registration may not pull
+        Bin-view requests or report a snapshot (RT-134). Non-disclosing: the
+        body names neither environment. Deterministic, no side effects — no
+        request is returned and no snapshot is recorded; the reconciliation run
+        is unchanged. Connector heartbeat (`connector-health.yaml`) is not gated
+        and stays available. A retry with the same registration gets the same
+        403; it is not transient. Documented ahead of the runtime gate (RT-152).
       content:
         application/json:
           schema:
