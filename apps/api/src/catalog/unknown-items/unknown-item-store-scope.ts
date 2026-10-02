@@ -28,6 +28,11 @@ async function setStoreGuc(client: PoolClient, value: string): Promise<void> {
   await client.query("SELECT set_config('app.current_store', $1, true)", [value]);
 }
 
+/** The explicit store list of a scope; empty for an absent scope (fail closed). */
+function scopedStoreIds(scope: StoreScope | undefined): readonly string[] {
+  return scope?.kind === "stores" ? scope.storeIds : [];
+}
+
 /**
  * Single-item paths (inspect, dismiss, link, create-product, reopen). After
  * this returns, the item is visible only if it is in `scope`.
@@ -38,23 +43,29 @@ export async function applyItemStoreScope(
   itemId: string,
 ): Promise<void> {
   if (scope?.kind === "tenant") return setStoreGuc(client, ALL_STORES);
-  const storeIds = scope?.storeIds ?? [];
-  if (storeIds.length === 0) return setStoreGuc(client, NO_STORE);
-  if (storeIds.length === 1) return setStoreGuc(client, storeIds[0] as string);
+  const storeIds = scopedStoreIds(scope);
+  if (storeIds.length > 1) return pinToItemStore(client, storeIds, itemId);
+  return setStoreGuc(client, storeIds[0] ?? NO_STORE);
+}
 
-  // Several granted stores: read the item's store under the tenant-wide
-  // carve-out (tenant isolation still applies), then pin to it — or to no
-  // store when it is not granted.
+/**
+ * Several granted stores: read the item's store under the tenant-wide
+ * carve-out (tenant isolation still applies), then pin to it — or to no
+ * store when it is not granted.
+ */
+async function pinToItemStore(
+  client: PoolClient,
+  storeIds: readonly string[],
+  itemId: string,
+): Promise<void> {
   await setStoreGuc(client, ALL_STORES);
   const res = await client.query<{ store_id: string }>(
     "SELECT store_id FROM unknown_items WHERE id = $1",
     [itemId],
   );
   const itemStoreId = res.rows[0]?.store_id;
-  await setStoreGuc(
-    client,
-    itemStoreId !== undefined && storeIds.includes(itemStoreId) ? itemStoreId : NO_STORE,
-  );
+  const inScope = itemStoreId !== undefined && storeIds.includes(itemStoreId);
+  await setStoreGuc(client, inScope ? itemStoreId : NO_STORE);
 }
 
 /**
@@ -69,7 +80,7 @@ export async function applyListStoreScope(
     await setStoreGuc(client, ALL_STORES);
     return null;
   }
-  const storeIds = scope?.storeIds ?? [];
+  const storeIds = scopedStoreIds(scope);
   if (storeIds.length <= 1) {
     await setStoreGuc(client, storeIds[0] ?? NO_STORE);
     return null;

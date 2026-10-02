@@ -165,7 +165,12 @@ class HeaderSessionAuthGuard implements CanActivate {
 
 async function seed(admin: Pool): Promise<void> {
   await seedCatalogIsolationFixture({ admin });
+  await seedMembers(admin);
+  await seedItems(admin);
+}
 
+/** Store Z, users, roles, memberships, store grants and sessions. */
+async function seedMembers(admin: Pool): Promise<void> {
   await admin.query(
     `INSERT INTO stores (id, tenant_id, code, name) VALUES ($1, $2, 'rt131-z', 'RT-131 Z')`,
     [STORE_A_Z, TENANT_A],
@@ -223,7 +228,9 @@ async function seed(admin: Pool): Promise<void> {
       TENANT_A, STORE_A_X,
     ],
   );
+}
 
+async function seedItems(admin: Pool): Promise<void> {
   for (const [id, tenant, store] of PENDING_ROWS) {
     await admin.query(
       `INSERT INTO unknown_items
