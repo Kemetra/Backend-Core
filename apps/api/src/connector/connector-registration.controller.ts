@@ -159,7 +159,9 @@ export class ConnectorRegistrationController {
   @Header("Cache-Control", "no-store")
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
-  @Idempotent("required")
+  // RT-82 K3: the body carries the raw secret, so it is never stored or
+  // replayed; only `credential_id` is kept. A same-key retry answers 409.
+  @Idempotent("required", { replay: "forbid", replayMarkerFields: ["credential_id"] })
   async rotate(
     @Req() request: TenantContextRequest,
     @Param("id", new ZodValidationPipe(z.string().uuid())) id: string,

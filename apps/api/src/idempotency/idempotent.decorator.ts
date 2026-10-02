@@ -29,6 +29,19 @@ export interface IdempotentOptions {
   replayTtlSec?: number;
   /** Override the 60s default in-flight marker TTL (seconds). */
   inflightTtlSec?: number;
+  /**
+   * `"forbid"` — the response carries credential material and is never
+   * stored or replayed (RT-82 K3). The key stays occupied, so the handler
+   * never runs twice; a same-key retry answers `409 idempotency_key_conflict`.
+   * Default `"allow"`.
+   */
+  replay?: "allow" | "forbid";
+  /**
+   * With `replay: "forbid"`: the top-level response fields kept in the stored
+   * marker (an allowlist; every other field is dropped). Must name only
+   * non-secret identifiers, e.g. `["credential_id"]`.
+   */
+  replayMarkerFields?: readonly string[];
 }
 
 export const IDEMPOTENT_POLICY_KEY = "dp2:idempotent:policy";
