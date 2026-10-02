@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Connector Posting-Feed API
-  version: "1.3.0-draft"
+  version: "1.4.0-draft"
   description: >
     Spec 012 ERPNext Connector Contracts surface — the DP2 ↔ connector boundary
     that realises the signed 011 posting + version-pin decisions over a
@@ -133,7 +133,9 @@ info:
     `idempotency_key_conflict` (ack key reused with a different outcome, 409),
     `not_found` (non-disclosing 404-class for a cross-tenant / out-of-scope
     work-item ref or foreign-scope cursor — no existence leak, §II/§XII), the
-    generic bearer-auth refusal (401), and `system_failure` (500).
+    generic bearer-auth refusal (401), `forbidden` (generic 403 for a connector
+    registration whose environment does not match this deployment, RT-134), and
+    `system_failure` (500).
 
     This contract is consumed by
     `apps/api/test/erpnext-connector/contract/posting-feed.contract.spec.ts`,
@@ -193,6 +195,8 @@ paths:
           $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -257,6 +261,8 @@ paths:
           $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -958,7 +964,8 @@ components:
               description: >
                 Stable machine-readable error code. Closed set on this surface:
                 validation_error | snapshot_required | idempotency_key_conflict |
-                not_found | system_failure (plus the generic 401 refusal).
+                not_found | forbidden | system_failure (plus the generic 401
+                refusal).
             message:
               type: string
               description: Human-readable summary. No sensitive data, no cause enumeration.
@@ -983,6 +990,21 @@ components:
         Generic refusal (401). The body does not distinguish a missing / invalid /
         revoked connector bearer token from a missing tenant binding or an
         in-scope-but-not-permitted principal. Non-disclosing.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: >
+        `forbidden` (403) — generic refusal: the connector bearer is valid, but
+        the connector registration's `environment` does not match this
+        Backend-Core deployment's environment, so the registration may not pull
+        or ack this feed (RT-134). Non-disclosing: the body names neither
+        environment. Deterministic, no side effects — no work-item is returned
+        and no outcome is recorded; posting status is unchanged. Connector
+        heartbeat (`connector-health.yaml`) is not gated and stays available. A
+        retry with the same registration gets the same 403; it is not
+        transient. Documented ahead of the runtime gate (RT-152).
       content:
         application/json:
           schema:
