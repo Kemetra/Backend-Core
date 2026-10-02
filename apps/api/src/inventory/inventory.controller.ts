@@ -46,7 +46,7 @@ import { z } from 'zod';
 import { DashboardAuthGuard } from '../auth/dashboard-auth.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { Idempotent } from '../idempotency/idempotent.decorator';
-import { MembershipRepository } from '../context/membership.repository';
+import { resolveStoreScope } from '../context/store-scope';
 import { TenantContextGuard } from '../context/tenant-context.guard';
 import type { ResolvedContext, TenantContextRequest } from '../context/types';
 import {
@@ -151,12 +151,7 @@ type RecordStockCountDto = z.infer<typeof RecordStockCountSchema>;
 @Controller()
 @UseGuards(DashboardAuthGuard, TenantContextGuard)
 export class InventoryController {
-  constructor(
-    private readonly inventoryService: InventoryService,
-    // Object-level store authorization (§XII) — see `authorizeStore`. Provided
-    // by ContextModule, which this module already imports.
-    private readonly memberships: MembershipRepository,
-  ) {}
+  constructor(private readonly inventoryService: InventoryService) {}
 
   /**
    * GET /api/inventory/v1/on-hand/{storeId}/{productId}
@@ -171,7 +166,7 @@ export class InventoryController {
     @Param('productId', new ZodValidationPipe(UuidSchema)) productId: string,
   ): Promise<OnHandBody> {
     const ctx = this.requireContext(request);
-    await this.authorizeStore(ctx, storeId);
+    this.authorizeStore(ctx, storeId);
     return this.inventoryService.getOnHand({
       tenantId: ctx.tenantId as string,
       storeId,
@@ -194,7 +189,7 @@ export class InventoryController {
     @Query('limit', new ZodValidationPipe(LimitSchema)) limit: number | undefined,
   ): Promise<StockMovementListBody> {
     const ctx = this.requireContext(request);
-    await this.authorizeStore(ctx, storeId);
+    this.authorizeStore(ctx, storeId);
     return this.inventoryService.listStockMovements({
       tenantId: ctx.tenantId as string,
       storeId,
@@ -222,7 +217,7 @@ export class InventoryController {
     body: CreateStockMovementDto,
   ): Promise<StockMovementBody> {
     const ctx = this.requireContext(request);
-    await this.authorizeStore(ctx, storeId);
+    this.authorizeStore(ctx, storeId);
     return this.inventoryService.createStockMovement({
       tenantId: ctx.tenantId as string,
       storeId,
@@ -262,8 +257,10 @@ export class InventoryController {
     const ctx = this.requireContext(request);
     // The source store is the operator's authorized scope (a store-scoped
     // principal may only transfer FROM its own store; a foreign source is a
-    // non-disclosing 404). The destination is validated under RLS in the service.
-    await this.authorizeStore(ctx, body.sourceStoreId);
+    // non-disclosing 404). The destination must be inside the membership's
+    // store access too (RT-61); the service still validates it under RLS.
+    this.authorizeStore(ctx, body.sourceStoreId);
+    this.authorizeDestinationStore(ctx, body.destinationStoreId);
     return this.inventoryService.createStockTransfer({
       tenantId: ctx.tenantId as string,
       userId: ctx.userId as string,
@@ -295,7 +292,7 @@ export class InventoryController {
     body: RecordStockCountDto,
   ): Promise<StockCountResultBody> {
     const ctx = this.requireContext(request);
-    await this.authorizeStore(ctx, storeId);
+    this.authorizeStore(ctx, storeId);
     return this.inventoryService.recordStockCount({
       tenantId: ctx.tenantId as string,
       storeId,
@@ -319,55 +316,55 @@ export class InventoryController {
   /**
    * Object-level store authorization (§XII / §II).
    *
-   * Two independent checks, both of which must pass:
-   *
    *  1. A store-scoped principal (`ctx.storeId` set) may only address its own
    *     store.
-   *  2. The principal's MEMBERSHIP must actually grant access to the target
-   *     store — resolved server-side via `MembershipRepository.canAccessStore`
-   *     (the same pattern as `StoresService.read`).
+   *  2. A session's MEMBERSHIP store access decides the rest, via the shared
+   *     `resolveStoreScope` rule (RT-131): 'all' → any store in the tenant,
+   *     'specific' → exactly the granted stores. A null active store is never
+   *     read as tenant-wide (#606).
    *
-   * Check 2 is why this is not a pure `ctx.storeId` comparison. `ctx.storeId`
-   * is copied from `sessions.active_store_id`, which is NULL BY DEFAULT:
-   * `signIn` never sets it and `switchTenant` explicitly nulls it. Treating
-   * null as "tenant-wide principal, may address any store" therefore handed
-   * every `store_access.kind = 'specific'` member read AND write access to
-   * every store in the tenant, on the mandatory happy path (#606).
+   * The store access comes from `ctx.storeAccess`, which TenantContextGuard
+   * resolved inside its tenant context. This method must NOT re-query
+   * `memberships` / `store_access` itself: on the plain domain pool, outside
+   * `runWithTenantContext`, FORCE RLS either hides the rows (404) or, on a
+   * reused connection whose `app.current_tenant` reset to '', fails the
+   * policy cast with 22P02 (400) — for every session user, the owner
+   * included (RT-61).
    *
-   * There is no database backstop for this: the RLS policies on
-   * `stock_movements` scope by `tenant_id` only, with no store predicate, so
-   * store separation is enforced exclusively here.
+   * There is no database backstop: the RLS policies on `stock_movements`
+   * scope by `tenant_id` only, so store separation is enforced exclusively
+   * here. A store outside the caller's scope is a NON-DISCLOSING 404
+   * (FR-051) — never 403, which would leak existence.
    *
-   * A store outside the caller's scope is a NON-DISCLOSING 404 (FR-051) —
-   * never 403, which would leak existence.
-   *
-   * Platform admins bypass (parity with `StoresService.read`). Non-session
-   * principals have no membership in this slice and are left to RLS, which
-   * still scopes them to their tenant.
+   * Non-session principals have no membership in this slice and are left to
+   * RLS, which still scopes them to their tenant.
    */
-  private async authorizeStore(ctx: ResolvedContext, storeId: string): Promise<void> {
+  private authorizeStore(ctx: ResolvedContext, storeId: string): void {
     // 1. A store-bound principal may only address its own store.
     if (ctx.storeId !== null && ctx.storeId !== storeId) {
       throw new NotFoundException('Not Found');
     }
+    if (ctx.source !== 'session') return;
 
-    // 2. The membership's real store-access policy decides the rest.
-    if (ctx.isPlatformAdmin || ctx.source !== 'session' || !ctx.userId) return;
+    // 2. The membership's store access decides the rest.
+    const scope = resolveStoreScope(ctx);
+    if (scope.kind === 'stores' && !scope.storeIds.includes(storeId)) {
+      throw new NotFoundException('Not Found');
+    }
+  }
 
-    const membership = await this.memberships.findActiveMembership(
-      ctx.userId,
-      ctx.tenantId as string,
-    );
-    // Should be impossible once TenantContextGuard has run (it requires an
-    // active membership for non-admin sessions); map defensively to 404.
-    if (!membership) throw new NotFoundException('Not Found');
-
-    const allowed = await this.memberships.canAccessStore(
-      membership.membershipId,
-      ctx.tenantId as string,
-      storeId,
-      membership.storeAccessKind,
-    );
-    if (!allowed) throw new NotFoundException('Not Found');
+  /**
+   * A transfer's DESTINATION store must also be within the caller's
+   * membership store access (RT-61 / RT-120). Unlike the source it is not
+   * tied to the active store: a tenant-wide member with an active store may
+   * transfer to any store in the tenant, a 'specific' member only to stores
+   * it is granted.
+   */
+  private authorizeDestinationStore(ctx: ResolvedContext, storeId: string): void {
+    if (ctx.source !== 'session') return;
+    const access = ctx.storeAccess;
+    if (access?.kind === 'all') return;
+    if (access?.kind === 'specific' && access.storeIds.includes(storeId)) return;
+    throw new NotFoundException('Not Found');
   }
 }

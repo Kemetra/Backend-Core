@@ -362,6 +362,7 @@ export class InventoryService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<OnHandBody> => {
+        await this.assertReferencesInTenant(client, { storeIds: [input.storeId] });
         // Store scope is the WHERE clause + object-level authz at the
         // controller; 0014 has tenant RLS only (no store policy), so no
         // app.current_store GUC is needed.
@@ -410,6 +411,7 @@ export class InventoryService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<StockMovementListBody> => {
+        await this.assertReferencesInTenant(client, { storeIds: [input.storeId] });
         // productId present → that product; absent → ad-hoc (NULL) movements.
         const hasProduct =
           input.productId !== null && input.productId !== undefined;
@@ -460,6 +462,10 @@ export class InventoryService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<StockMovementBody> => {
+        await this.assertReferencesInTenant(client, {
+          storeIds: [input.storeId],
+          tenantProductRef,
+        });
         // ---- Cross-unit check (FR-022) -----------------------------------
         // The product's established unit is the unit of its existing movements
         // at this store (no catalog stocking-unit column). Skip for ad-hoc
@@ -640,16 +646,12 @@ export class InventoryService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<StockTransferBody> => {
-        // ---- Destination store must resolve within the tenant (FR-051) ----
-        // RLS scopes `stores` to the current tenant, so a cross-tenant
-        // destination returns zero rows → non-disclosing 404 (never 403).
-        const dest = await client.query<{ id: string }>(
-          `SELECT id FROM stores WHERE id = $1`,
-          [input.destinationStoreId],
-        );
-        if (!dest.rows[0]) {
-          throw new NotFoundException('Not Found');
-        }
+        // ---- Both stores and the product must resolve within the tenant ----
+        // (FR-051 / RT-61): a cross-tenant or unknown reference → 404.
+        await this.assertReferencesInTenant(client, {
+          storeIds: [input.sourceStoreId, input.destinationStoreId],
+          tenantProductRef: input.tenantProductRef,
+        });
 
         // ---- Per-store cross-unit checks (FR-022) -------------------------
         await this.assertUnitMatchesEstablished(
@@ -803,6 +805,10 @@ export class InventoryService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<StockCountResultBody> => {
+        await this.assertReferencesInTenant(client, {
+          storeIds: [input.storeId],
+          tenantProductRef: input.tenantProductRef,
+        });
         // ---- Established-unit check (FR-022) ------------------------------
         await this.assertUnitMatchesEstablished(
           client,
@@ -1219,6 +1225,35 @@ export class InventoryService {
    * outside this slice's allowed_files), so it is a documented follow-up, not
    * silently reached into here.
    */
+  /**
+   * The addressed store(s) and product must exist in the CURRENT tenant
+   * (RT-61). Runs on the tenant-context client, so RLS hides other tenants'
+   * rows: an unknown, soft-deleted or cross-tenant reference is a
+   * non-disclosing 404 (FR-051). Without it a write reached the
+   * `stock_movements` foreign keys — which do not apply RLS — and either
+   * failed as a 500 or accepted another tenant's store / product id.
+   */
+  private async assertReferencesInTenant(
+    client: PoolClient,
+    refs: { readonly storeIds: readonly string[]; readonly tenantProductRef?: string | null },
+  ): Promise<void> {
+    const storeIds = [...new Set(refs.storeIds)];
+    const found = await client.query<{ id: string }>(
+      `SELECT id FROM stores WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL`,
+      [storeIds],
+    );
+    if (found.rows.length !== storeIds.length) throw new NotFoundException('Not Found');
+
+    const productRef = refs.tenantProductRef ?? null;
+    if (productRef !== null) {
+      const product = await client.query<{ id: string }>(
+        `SELECT id FROM tenant_products WHERE id = $1`,
+        [productRef],
+      );
+      if (!product.rows[0]) throw new NotFoundException('Not Found');
+    }
+  }
+
   private async assertUnitMatchesEstablished(
     client: PoolClient,
     storeId: string,
