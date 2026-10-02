@@ -248,6 +248,11 @@ describe("connector/connector-admin.yaml — error envelope", () => {
     expect(responses["409"]).toBeDefined();
   });
 
+  it("issue declares 409 conflict for an already-active credential (RT-62)", () => {
+    const responses = findOp("tenantAdminIssueConnectorCredential")?.responses ?? {};
+    expect(responses["409"]).toBeDefined();
+  });
+
   it("rotate + revoke declare 404 + the idempotency conflict (409)", () => {
     for (const id of [
       "tenantAdminRotateConnectorCredential",

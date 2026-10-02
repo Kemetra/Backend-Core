@@ -123,6 +123,13 @@ export class ConnectorRegistrationController {
         : {}),
     });
     if (result.kind === "ok") return result.credential;
+    if (result.kind === "conflict") {
+      // RT-62: one active credential per instance; rotation replaces it.
+      throw new ConflictException({
+        code: "conflict",
+        message: "This connector instance already has an active credential. Rotate it instead.",
+      });
+    }
     // Non-disclosing 404 — absent / cross-tenant / disabled instance (§II/§XII).
     throw new NotFoundException("Not Found");
   }

@@ -84,24 +84,8 @@ import {
   recordDuplicateAliasConflict,
 } from "../../observability/metrics/api.metrics";
 import { applyItemStoreScope } from "../unknown-items/unknown-item-store-scope";
-
-// Re-export the common row shape so the controller does not need a separate
-// import from unknown-items.service.ts (avoids cross-module coupling).
-export interface UnknownItemRow {
-  readonly id: string;
-  readonly tenantId: string;
-  readonly storeId: string;
-  readonly identifierType: string;
-  readonly identifierValue: string;
-  readonly sourceSystem: string | null;
-  readonly resolutionStatus: "pending" | "resolved" | "dismissed";
-  readonly resolutionAction: "linked" | "created" | "dismissed" | null;
-  readonly resolvedAt: Date | null;
-  readonly resolvedBy: string | null;
-  readonly resolvedProductId: string | null;
-  readonly encounteredAt: Date;
-  readonly saleContext: Record<string, unknown> | null;
-}
+// The row shape is owned by unknown-items.service.ts (type-only import).
+import type { UnknownItemRow } from "../unknown-items/unknown-items.service";
 
 export type LinkResult =
   | { kind: "ok"; row: UnknownItemRow }

@@ -262,6 +262,40 @@ describe("018-US1 — issue", () => {
     expect(JSON.stringify(res.body)).not.toMatch(/secret|token_hash/i);
   });
 
+  it("RT-62 a second issue while a credential is active → 409 conflict, first credential untouched", async () => {
+    if (maybeSkip()) return;
+    const reg = await http()
+      .post(BASE)
+      .send({ display_name: "Dup", erpnext_site_ref: "erp-dup.example", environment: "pilot" })
+      .expect(201);
+    const first = await http().post(`${BASE}/${reg.body.id}/credentials`).send({}).expect(201);
+    const second = await http().post(`${BASE}/${reg.body.id}/credentials`).send({});
+    expect(second.status).toBe(409);
+    expect(second.body.error.code).toBe("conflict");
+    expect(JSON.stringify(second.body)).not.toMatch(/secret|token_hash|uq_auth_tokens/i);
+    // The active credential is still the first one; nothing else was written.
+    const list = await http().get(BASE).expect(200);
+    const found = list.body.items.find((i: { id: string }) => i.id === reg.body.id);
+    expect(found.active_credential.credential_id).toBe(first.body.credential_id);
+    expect(await auditCount("connector.credential.issued", reg.body.id)).toBe(1);
+    // Rotation stays the way to replace it.
+    await http().post(`${BASE}/${reg.body.id}/credentials/rotate`).send({}).expect(201);
+  });
+
+  it("RT-62 concurrent issues for one instance → exactly one 201, the rest 409 (never 5xx)", async () => {
+    if (maybeSkip()) return;
+    const reg = await http()
+      .post(BASE)
+      .send({ display_name: "Race", erpnext_site_ref: "erp-race.example", environment: "pilot" })
+      .expect(201);
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => http().post(`${BASE}/${reg.body.id}/credentials`).send({})),
+    );
+    const statuses = results.map((r) => r.status).sort();
+    expect(statuses).toEqual([201, 409, 409, 409]);
+    expect(await auditCount("connector.credential.issued", reg.body.id)).toBe(1);
+  });
+
   it("§6 issue for an absent / cross-tenant instance → non-disclosing 404", async () => {
     if (maybeSkip()) return;
     // REGISTRATION_B belongs to tenant B; tenant-A context cannot see it (RLS) → 404.

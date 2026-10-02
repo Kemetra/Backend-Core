@@ -49,9 +49,9 @@ import { SessionRepository } from "../../auth/session.repository";
 import { AuthTokenRepository } from "../../auth/auth-token.repository";
 
 /**
- * 008 Option Y wiring, 029 D3 re-pointed: the sale routes authenticate via a
- * provider token + device attestation through PosOperatorSaleAuthGuard →
- * PgOperatorContextResolver, which now verifies the token via the
+ * 008 Option Y wiring (its PosOperatorSaleAuthGuard is retired; 031 replaced
+ * it with PosOperatorEnvelopeSaleGuard below), 029 D3 re-pointed:
+ * PgOperatorContextResolver which now verifies the token via the
  * provider-neutral IdentityProviderPort (v1 Clerk adapter, constructed against
  * the shared PG_POOL; `@clerk/backend` stays contained behind the adapter) and
  * resolves the operator via the external_identity_links join. The guard

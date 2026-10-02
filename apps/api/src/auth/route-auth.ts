@@ -6,7 +6,7 @@
  * and device-attested audit ingestion declare their own credential instead
  * of becoming public.
  */
-import { SetMetadata, type ExecutionContext } from "@nestjs/common";
+import { SetMetadata } from "@nestjs/common";
 import { UnauthorizedException } from "@nestjs/common";
 import type { Request } from "express";
 
@@ -23,7 +23,6 @@ export const DeviceBearer = () => SetMetadata(DEVICE_BEARER_KEY, true);
 
 export type CredentialRequest = Request & {
   posBearer?: string;
-  clerkJwt?: string;
 };
 
 export function readBearerHeader(value: string | undefined): string | null {
@@ -39,8 +38,4 @@ export function readBearerHeader(value: string | undefined): string | null {
 export function requirePosBearer(req: CredentialRequest): string {
   if (!req.posBearer) throw new UnauthorizedException("Unauthorized");
   return req.posBearer;
-}
-
-export function requestOf(context: ExecutionContext): CredentialRequest {
-  return context.switchToHttp().getRequest<CredentialRequest>();
 }

@@ -30,7 +30,7 @@
  * the capture integration spec can construct the service with PG_POOL only
  * (mirrors UnknownItemsService's optional enqueuer).
  */
-import { Inject, Injectable, Optional } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { runWithTenantContext, emit, OUTBOX_EVENT_TYPES } from "@data-pulse-2/db";
 import { newId } from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
@@ -66,24 +66,6 @@ export {
   SaleTendersNotVisibleError,
   TerminalEventProvenanceConflictError,
 } from "./sale-errors";
-
-/**
- * Optional outbox producer seam — OBSOLETE DEAD CODE.
- *
- * Superseded by the IN-TRANSACTION `emit(client, ...)` call in `captureSale`
- * (the inventory-service precedent), which writes the `sale.captured` outbox
- * row atomically with the sale + sale_lines inserts. This post-tx enqueue seam
- * is intentionally LEFT in place (unbound — never provided in `SalesModule`)
- * only to avoid broadening this slice's scope; it is never invoked at runtime.
- */
-export interface SalesOutboxProducer {
-  enqueue(event: {
-    tenantId: string;
-    type: string;
-    payload: Record<string, unknown>;
-  }): Promise<void>;
-}
-export const SALES_OUTBOX_PRODUCER = Symbol("SALES_OUTBOX_PRODUCER");
 
 export interface CaptureSaleInput {
   readonly tenantId: string;
@@ -224,16 +206,7 @@ interface SaleLineRow {
 
 @Injectable()
 export class SalesService {
-  constructor(
-    @Inject(PG_POOL) private readonly pool: Pool,
-    // OBSOLETE: the outbox event is now emitted IN-TRANSACTION via `emit(client,
-    // ...)` inside `captureSale`. This @Optional inject is dead — `SalesModule`
-    // never binds `SALES_OUTBOX_PRODUCER`, so it is always `undefined`. Kept to
-    // avoid broadening this slice's scope (see `SalesOutboxProducer` docstring).
-    @Optional()
-    @Inject(SALES_OUTBOX_PRODUCER)
-    private readonly outbox?: SalesOutboxProducer,
-  ) {}
+  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
 
   async captureSale(input: CaptureSaleInput): Promise<CaptureSaleResult> {
     const { tenantId, storeId, actorUserId, deviceId, body } = input;

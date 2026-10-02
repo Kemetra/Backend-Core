@@ -28,7 +28,7 @@ import {
   AuditQueueProducer,
   type AuditQueueLike,
 } from "../../src/audit/audit-queue.producer";
-import { auditJobEnqueuerFactory } from "../../src/audit/audit.module";
+import { auditJobEnqueuerFactory } from "../../src/audit/audit-enqueuer.module";
 import { NoOpAuditJobEnqueuer } from "../../src/audit/audit-job.enqueuer";
 import type { AuditJobPayload } from "../../src/audit/audit-job.types";
 import {

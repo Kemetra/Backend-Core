@@ -63,8 +63,8 @@ op run --env-file=deploy/prod.env -- \
 
 ```bash
 docker compose -f docker-compose.prod.yml ps          # all healthy; migrate Exited(0)
-curl -sS -o /dev/null -w "%{http_code}\n" https://api.example.test/
-# any app response (e.g. 401/404 from NestJS) proves the edge is live; TCP timeout = not live
+curl -sS https://api.example.test/api/v1/health/live    # {"status":"ok"}: the edge and the process are up
+curl -sS https://api.example.test/api/v1/health/ready   # 200 ready / 503 not_ready, with per-check ok|failed
 op run --env-file=deploy/prod.env -- \
   docker compose -f docker-compose.prod.yml run --rm migrate node dist/cli/migrate.js status
 ```
@@ -82,8 +82,6 @@ docker compose -f docker-compose.prod.yml down            # keeps volumes (redis
 
 ## Known follow-ups (not in this artifact)
 
-- **Add a public `GET /health` route** to `apps/api`; currently healthchecks use the
-  unauthenticated Prometheus metrics listener on `:9464`.
 - **Hardening:** run containers as a non-root user; add resource limits; offsite backups
   for `<managed-db>`; monitoring/alerting; log shipping.
 - **Console** (`<console-host>`) is a separate later deployment.

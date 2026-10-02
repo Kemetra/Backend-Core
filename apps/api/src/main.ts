@@ -10,7 +10,7 @@ import helmet from "helmet";
 
 import { AppModule } from "./app.module";
 import { GlobalExceptionFilter } from "./common/exception.filter";
-import { LoggingInterceptor, ROOT_LOGGER } from "./common/logging.interceptor";
+import { LoggingInterceptor } from "./common/logging.interceptor";
 import { getRootLogger } from "./common/root-logger.module";
 import { RequestIdInterceptor } from "./common/request-id.interceptor";
 import { ZodValidationPipe } from "./common/zod-validation.pipe";
@@ -86,10 +86,6 @@ async function bootstrap(): Promise<void> {
   // Global Zod validation pipe — no-op when no schema is attached. Per-
   // route bodies attach their own schema via `@Body(new ZodValidationPipe(SignInSchema))`.
   app.useGlobalPipes(new ZodValidationPipe());
-
-  // `ROOT_LOGGER` is provided app-wide by RootLoggerModule (RT-124); the
-  // global LoggingInterceptor above is constructed with the same instance.
-  void ROOT_LOGGER;
 
   app.enableShutdownHooks();
 
