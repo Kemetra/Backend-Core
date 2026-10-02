@@ -192,7 +192,11 @@ describe("033 — takeover-confirm idempotent replay (null envelope) carries use
       SILENT_LOGGER,
     );
 
-    const r = await svc.signIn("jwt", { device_token_attestation: "attest" }, "rid-env");
+    const r = await svc.signIn(
+      "jwt",
+      { device_token_attestation: "attest" } as Parameters<PosOperatorsService["signIn"]>[1],
+      "rid-env",
+    );
 
     expect(r.kind).toBe("signed_in");
     if (r.kind !== "signed_in") throw new Error("expected signed_in");

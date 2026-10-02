@@ -316,7 +316,7 @@ describe("T475 — TenantContextGuard emits cross_tenant_rejection_total on NotF
         userId: "user-a",
         storeId: null,
         tenantId: "tenant-a",
-      },
+      } as NonNullable<TenantContextRequest["principal"]>,
     };
 
     // resolveToken always succeeds (no membership lookup, no NotFoundException).

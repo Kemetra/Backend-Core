@@ -309,7 +309,7 @@ describe("T360 — GlobalCatalogService.list: service is the sanctioned read pat
     // the import at the top of this file fails the entire suite, keeping
     // every test in this file RED for the right reason.
     expect(typeof GlobalCatalogService).toBe("function");
-    const proto = GlobalCatalogService.prototype as Record<string, unknown>;
+    const proto = GlobalCatalogService.prototype as unknown as Record<string, unknown>;
     expect(typeof proto["list"]).toBe("function");
   });
 });

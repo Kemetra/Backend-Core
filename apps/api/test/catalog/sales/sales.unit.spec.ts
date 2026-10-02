@@ -114,7 +114,7 @@ const CAPTURE = {
 function scriptClient(opts: {
   mismatchRows?: Array<{ mismatch: boolean }>;
   insertedRows?: Array<{ id: string }>;
-  winnerRows?: Array<{ id: string }>;
+  winnerRows?: Array<{ id: string; store_id?: string; tender_count?: number }>;
   saleRows?: Array<Record<string, unknown>>;
   lineRows?: Array<Record<string, unknown>>;
   storeRows?: Array<{ timezone: string }>;
@@ -412,20 +412,22 @@ describe("SalesService — readSaleProjection branches (unit)", () => {
 });
 
 describe("SalesController — guard + status branches (unit)", () => {
+  // The 2nd ctor arg (SaleReturnsService) is not exercised by these branches;
+  // it is passed as `undefined` explicitly, exactly as the prior 1-arg calls did.
   function makeRes(): { status: jest.Mock; setHeader: jest.Mock } {
     return { status: jest.fn(), setHeader: jest.fn() };
   }
   const ctx = { tenantId: CAPTURE.tenantId, storeId: CAPTURE.storeId, userId: CAPTURE.actorUserId };
 
   it("captureSale: missing context → 401", async () => {
-    const c = new SalesController({} as never);
+    const c = new SalesController({} as never, undefined as never);
     await expect(
       c.captureSale({ context: undefined } as never, body() as never, makeRes() as never),
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it("captureSale: null tenantId → 401", async () => {
-    const c = new SalesController({} as never);
+    const c = new SalesController({} as never, undefined as never);
     await expect(
       c.captureSale(
         { context: { ...ctx, tenantId: null } } as never,
@@ -436,7 +438,7 @@ describe("SalesController — guard + status branches (unit)", () => {
   });
 
   it("captureSale: null userId → 401", async () => {
-    const c = new SalesController({} as never);
+    const c = new SalesController({} as never, undefined as never);
     await expect(
       c.captureSale(
         { context: { ...ctx, userId: null } } as never,
@@ -447,7 +449,7 @@ describe("SalesController — guard + status branches (unit)", () => {
   });
 
   it("captureSale: null storeId → 401 (store_context_required)", async () => {
-    const c = new SalesController({} as never);
+    const c = new SalesController({} as never, undefined as never);
     await expect(
       c.captureSale(
         { context: { ...ctx, storeId: null } } as never,
@@ -459,7 +461,7 @@ describe("SalesController — guard + status branches (unit)", () => {
 
   it("RT-77: captureSale without a guard-resolved device → 401, service not called", async () => {
     const svc = { captureSale: jest.fn() };
-    const c = new SalesController(svc as never);
+    const c = new SalesController(svc as never, undefined as never);
     await expect(
       c.captureSale({ context: ctx } as never, body() as never, makeRes() as never),
     ).rejects.toBeInstanceOf(UnauthorizedException);
@@ -469,7 +471,7 @@ describe("SalesController — guard + status branches (unit)", () => {
   it("RT-77: Σ mismatch → 422 sale_tender_mismatch; tender replay conflict → 409; other errors rethrow", async () => {
     const req = { context: ctx, posDeviceId: CAPTURE.deviceId };
     const failing = (err: Error): SalesController =>
-      new SalesController({ captureSale: jest.fn().mockRejectedValue(err) } as never);
+      new SalesController({ captureSale: jest.fn().mockRejectedValue(err) } as never, undefined as never);
 
     const mismatch = await failing(new SaleTenderMismatchError())
       .captureSale(req as never, body() as never, makeRes() as never)
@@ -494,7 +496,7 @@ describe("SalesController — guard + status branches (unit)", () => {
   });
 
   it("readSale: null tenantId → 401", async () => {
-    const c = new SalesController({ readSaleProjection: jest.fn() } as never);
+    const c = new SalesController({ readSaleProjection: jest.fn() } as never, undefined as never);
     await expect(
       c.readSale({ context: { ...ctx, tenantId: null } } as never, VALID_REF),
     ).rejects.toBeInstanceOf(UnauthorizedException);
@@ -507,7 +509,7 @@ describe("SalesController — guard + status branches (unit)", () => {
         .mockResolvedValueOnce({ created: true, projection: { saleRef: VALID_REF } })
         .mockResolvedValueOnce({ created: false, projection: { saleRef: VALID_REF } }),
     };
-    const c = new SalesController(svc as never);
+    const c = new SalesController(svc as never, undefined as never);
     const req = { context: ctx, posDeviceId: CAPTURE.deviceId };
 
     const res1 = makeRes();
@@ -523,7 +525,7 @@ describe("SalesController — guard + status branches (unit)", () => {
   });
 
   it("readSale: missing context → 401, null store → 401, bad ref → 404", async () => {
-    const c = new SalesController({ readSaleProjection: jest.fn() } as never);
+    const c = new SalesController({ readSaleProjection: jest.fn() } as never, undefined as never);
     await expect(
       c.readSale({ context: undefined } as never, VALID_REF),
     ).rejects.toBeInstanceOf(UnauthorizedException);
@@ -538,14 +540,14 @@ describe("SalesController — guard + status branches (unit)", () => {
   it("readSale: SaleNotFoundError → 404; any other error rethrows", async () => {
     const notFound = new SalesController({
       readSaleProjection: jest.fn().mockRejectedValue(new SaleNotFoundError()),
-    } as never);
+    } as never, undefined as never);
     await expect(notFound.readSale({ context: ctx } as never, VALID_REF)).rejects.toBeInstanceOf(
       NotFoundException,
     );
 
     const boom = new SalesController({
       readSaleProjection: jest.fn().mockRejectedValue(new Error("db exploded")),
-    } as never);
+    } as never, undefined as never);
     await expect(boom.readSale({ context: ctx } as never, VALID_REF)).rejects.toThrow(
       /db exploded/,
     );
@@ -554,7 +556,7 @@ describe("SalesController — guard + status branches (unit)", () => {
   const voidBody = { sourceSystem: "pos-1", externalId: "v" };
 
   it("recordVoid: missing ctx / null tenant / null actor / null store → 401; bad ref → 404", async () => {
-    const c = new SalesController({ recordVoid: jest.fn() } as never);
+    const c = new SalesController({ recordVoid: jest.fn() } as never, undefined as never);
     for (const badCtx of [
       { context: undefined },
       { context: { ...ctx, tenantId: null } },
@@ -578,7 +580,7 @@ describe("SalesController — guard + status branches (unit)", () => {
         .mockResolvedValueOnce({ created: true, projection })
         .mockResolvedValueOnce({ created: false, projection }),
     };
-    const c = new SalesController(svc as never);
+    const c = new SalesController(svc as never, undefined as never);
 
     const r1 = makeRes();
     await c.recordVoid({ context: ctx } as never, VALID_REF, voidBody as never, r1 as never);
@@ -593,21 +595,21 @@ describe("SalesController — guard + status branches (unit)", () => {
   it("recordVoid: SaleNotFoundError → 404; ProvenanceConflict → 409; other rethrows", async () => {
     const nf = new SalesController({
       recordVoid: jest.fn().mockRejectedValue(new SaleNotFoundError()),
-    } as never);
+    } as never, undefined as never);
     await expect(
       nf.recordVoid({ context: ctx } as never, VALID_REF, voidBody as never, makeRes() as never),
     ).rejects.toBeInstanceOf(NotFoundException);
 
     const conflict = new SalesController({
       recordVoid: jest.fn().mockRejectedValue(new TerminalEventProvenanceConflictError()),
-    } as never);
+    } as never, undefined as never);
     await expect(
       conflict.recordVoid({ context: ctx } as never, VALID_REF, voidBody as never, makeRes() as never),
     ).rejects.toBeInstanceOf(ConflictException);
 
     const boom = new SalesController({
       recordVoid: jest.fn().mockRejectedValue(new Error("kaboom")),
-    } as never);
+    } as never, undefined as never);
     await expect(
       boom.recordVoid({ context: ctx } as never, VALID_REF, voidBody as never, makeRes() as never),
     ).rejects.toThrow(/kaboom/);
@@ -621,7 +623,7 @@ describe("SalesController — guard + status branches (unit)", () => {
   };
 
   it("recordRefund: missing ctx / null tenant / null actor / null store → 401; bad ref → 404", async () => {
-    const c = new SalesController({ recordRefund: jest.fn() } as never);
+    const c = new SalesController({ recordRefund: jest.fn() } as never, undefined as never);
     for (const badCtx of [
       { context: undefined },
       { context: { ...ctx, tenantId: null } },
@@ -651,7 +653,7 @@ describe("SalesController — guard + status branches (unit)", () => {
         .mockResolvedValueOnce({ created: true, projection })
         .mockResolvedValueOnce({ created: false, projection }),
     };
-    const c = new SalesController(svc as never);
+    const c = new SalesController(svc as never, undefined as never);
 
     const r1 = makeRes();
     await c.recordRefund({ context: ctx } as never, VALID_REF, refundBody as never, r1 as never);
@@ -666,21 +668,21 @@ describe("SalesController — guard + status branches (unit)", () => {
   it("recordRefund: SaleNotFoundError → 404; ProvenanceConflict → 409; other rethrows", async () => {
     const nf = new SalesController({
       recordRefund: jest.fn().mockRejectedValue(new SaleNotFoundError()),
-    } as never);
+    } as never, undefined as never);
     await expect(
       nf.recordRefund({ context: ctx } as never, VALID_REF, refundBody as never, makeRes() as never),
     ).rejects.toBeInstanceOf(NotFoundException);
 
     const conflict = new SalesController({
       recordRefund: jest.fn().mockRejectedValue(new TerminalEventProvenanceConflictError()),
-    } as never);
+    } as never, undefined as never);
     await expect(
       conflict.recordRefund({ context: ctx } as never, VALID_REF, refundBody as never, makeRes() as never),
     ).rejects.toBeInstanceOf(ConflictException);
 
     const boom = new SalesController({
       recordRefund: jest.fn().mockRejectedValue(new Error("kaboom")),
-    } as never);
+    } as never, undefined as never);
     await expect(
       boom.recordRefund({ context: ctx } as never, VALID_REF, refundBody as never, makeRes() as never),
     ).rejects.toThrow(/kaboom/);

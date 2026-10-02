@@ -37,6 +37,12 @@ const mockedRecord = recordDbSlowQuery as jest.MockedFunction<typeof recordDbSlo
 // 1. hashQueryTemplate
 // ---------------------------------------------------------------------------
 
+
+// pg.Pool#query is heavily overloaded; spy on it through a single loose
+// signature so mockResolvedValue / mockRejectedValue type-check.
+const queryTarget = (): { query: (...args: unknown[]) => Promise<unknown> } =>
+  Pool.prototype as unknown as { query: (...args: unknown[]) => Promise<unknown> };
+
 describe("hashQueryTemplate", () => {
   it("returns an 8-character hex string", () => {
     const hash = hashQueryTemplate("SELECT 1");
@@ -91,7 +97,7 @@ describe("InstrumentedPool.query (Promise form) — threshold gate", () => {
 
   it("does NOT emit when the query resolves below the threshold", async () => {
     superSpy = jest
-      .spyOn(Pool.prototype, "query")
+      .spyOn(queryTarget(), "query")
       .mockResolvedValue({ rows: [], rowCount: 0 } as any);
 
     await pool.query("SELECT 1");
@@ -129,7 +135,7 @@ describe("InstrumentedPool.query (Promise form) — threshold gate", () => {
       .mockReturnValueOnce(SLOW_QUERY_THRESHOLD_SECONDS * 1000 + 1);
 
     superSpy = jest
-      .spyOn(Pool.prototype, "query")
+      .spyOn(queryTarget(), "query")
       .mockResolvedValue({ rows: [], rowCount: 0 } as any);
 
     await pool.query("SELECT slow");
@@ -147,7 +153,7 @@ describe("InstrumentedPool.query (Promise form) — threshold gate", () => {
 
     const originalErr = new Error("connection reset");
     superSpy = jest
-      .spyOn(Pool.prototype, "query")
+      .spyOn(queryTarget(), "query")
       .mockRejectedValue(originalErr);
 
     await expect(pool.query("SELECT slow")).rejects.toBe(originalErr);
@@ -158,7 +164,7 @@ describe("InstrumentedPool.query (Promise form) — threshold gate", () => {
 
   it("does NOT emit when the query rejects below the threshold", async () => {
     superSpy = jest
-      .spyOn(Pool.prototype, "query")
+      .spyOn(queryTarget(), "query")
       .mockRejectedValue(new Error("fast error"));
 
     await expect(pool.query("SELECT 1")).rejects.toThrow("fast error");
@@ -178,7 +184,7 @@ describe("InstrumentedPool.query (Promise form) — query_class label", () => {
       .mockReturnValueOnce(0)
       .mockReturnValueOnce(SLOW_QUERY_THRESHOLD_SECONDS * 1000 + 1);
     superSpy = jest
-      .spyOn(Pool.prototype, "query")
+      .spyOn(queryTarget(), "query")
       .mockResolvedValue({ rows: [], rowCount: 0 } as any);
   });
 

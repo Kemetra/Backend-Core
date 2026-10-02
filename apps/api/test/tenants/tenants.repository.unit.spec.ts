@@ -202,10 +202,10 @@ beforeEach(() => {
 describe("DEFAULT_TENANT_ROLES", () => {
   it("A1: exports exactly 4 roles in stable order", () => {
     expect(DEFAULT_TENANT_ROLES).toHaveLength(4);
-    expect(DEFAULT_TENANT_ROLES[0].code).toBe("owner");
-    expect(DEFAULT_TENANT_ROLES[1].code).toBe("tenant_admin");
-    expect(DEFAULT_TENANT_ROLES[2].code).toBe("store_manager");
-    expect(DEFAULT_TENANT_ROLES[3].code).toBe("store_staff");
+    expect(DEFAULT_TENANT_ROLES[0]!.code).toBe("owner");
+    expect(DEFAULT_TENANT_ROLES[1]!.code).toBe("tenant_admin");
+    expect(DEFAULT_TENANT_ROLES[2]!.code).toBe("store_manager");
+    expect(DEFAULT_TENANT_ROLES[3]!.code).toBe("store_staff");
   });
 
   it("A2: every role has a non-empty name", () => {
@@ -254,11 +254,11 @@ describe("TenantsRepository.listForUser", () => {
     const result = await repo.listForUser(fakePool, USER_ID);
 
     expect(result).toHaveLength(2);
-    expect(result[0].id).toBe(TENANT_ID);
-    expect(result[0].slug).toBe("acme");
-    expect(result[0].status).toBe("active");
-    expect(result[1].id).toBe(TENANT_ID_2);
-    expect(result[1].status).toBe("suspended");
+    expect(result[0]!.id).toBe(TENANT_ID);
+    expect(result[0]!.slug).toBe("acme");
+    expect(result[0]!.status).toBe("active");
+    expect(result[1]!.id).toBe(TENANT_ID_2);
+    expect(result[1]!.status).toBe("suspended");
   });
 
   it("B3: maps all TenantRecord fields correctly (single row)", async () => {
@@ -278,9 +278,9 @@ describe("TenantsRepository.listForUser", () => {
     const result = await repo.listForUser(fakePool, USER_ID);
 
     expect(result).toHaveLength(1);
-    expect(result[0].name).toBe("Test Tenant");
-    expect(result[0].deletedAt).toEqual(deletedAt);
-    expect(result[0].updatedAt).toEqual(row.updatedAt);
+    expect(result[0]!.name).toBe("Test Tenant");
+    expect(result[0]!.deletedAt).toEqual(deletedAt);
+    expect(result[0]!.updatedAt).toEqual(row.updatedAt);
   });
 });
 
@@ -307,8 +307,8 @@ describe("TenantsRepository.listAll", () => {
     const result = await repo.listAll(fakePool);
 
     expect(result).toHaveLength(2);
-    expect(result[0].id).toBe(TENANT_ID);
-    expect(result[1].id).toBe(TENANT_ID_2);
+    expect(result[0]!.id).toBe(TENANT_ID);
+    expect(result[1]!.id).toBe(TENANT_ID_2);
   });
 
   it("C3: includeDeleted = true — exercises direct from() await (no where path)", async () => {
@@ -321,7 +321,7 @@ describe("TenantsRepository.listAll", () => {
     const result = await repo.listAll(fakePool, { includeDeleted: true });
 
     expect(result).toHaveLength(2);
-    expect(result[1].deletedAt).not.toBeNull();
+    expect(result[1]!.deletedAt).not.toBeNull();
   });
 
   it("C4: includeDeleted = false — returns only non-deleted rows per fake seed", async () => {
@@ -332,7 +332,7 @@ describe("TenantsRepository.listAll", () => {
     const result = await repo.listAll(fakePool, { includeDeleted: false });
 
     expect(result).toHaveLength(1);
-    expect(result[0].deletedAt).toBeNull();
+    expect(result[0]!.deletedAt).toBeNull();
   });
 
   it("C5: maps all TenantRecord fields including status", async () => {
@@ -342,9 +342,9 @@ describe("TenantsRepository.listAll", () => {
 
     const result = await repo.listAll(fakePool);
 
-    expect(result[0].status).toBe("suspended");
-    expect(result[0].createdAt).toEqual(row.createdAt);
-    expect(result[0].updatedAt).toEqual(row.updatedAt);
+    expect(result[0]!.status).toBe("suspended");
+    expect(result[0]!.createdAt).toEqual(row.createdAt);
+    expect(result[0]!.updatedAt).toEqual(row.updatedAt);
   });
 });
 

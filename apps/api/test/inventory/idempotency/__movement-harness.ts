@@ -133,7 +133,7 @@ export interface MovementHarness {
   readonly fakeRedis: { clear(): void };
   readonly contextGuard: ConfigurableContextGuard;
   /** Real persisted idempotency replay store across requests (mirrors prod). */
-  http(): request.SuperTest<request.Test>;
+  http(): ReturnType<typeof request>;
 }
 
 export interface HarnessHandle {

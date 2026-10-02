@@ -133,7 +133,7 @@ export interface TransferHarness {
   readonly fakeRedis: { clear(): void };
   readonly contextGuard: ConfigurableContextGuard;
   readonly service: InventoryService;
-  http(): request.SuperTest<request.Test>;
+  http(): ReturnType<typeof request>;
 }
 
 export interface HarnessHandle {

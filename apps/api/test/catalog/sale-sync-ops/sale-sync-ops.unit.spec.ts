@@ -362,7 +362,7 @@ describe("F-3 regression — live POS provenance-conflict 409 unchanged", () => 
         .fn()
         .mockRejectedValue(new TerminalEventProvenanceConflictError()),
     };
-    const controller = new SalesController(service as never);
+    const controller = new SalesController(service as never, undefined as never); // SaleReturnsService unused here
     const res = { status: jest.fn(), setHeader: jest.fn() };
     await expect(
       controller.recordVoid(
@@ -378,7 +378,7 @@ describe("F-3 regression — live POS provenance-conflict 409 unchanged", () => 
     const service = {
       recordVoid: jest.fn().mockRejectedValue(new SaleNotFoundError()),
     };
-    const controller = new SalesController(service as never);
+    const controller = new SalesController(service as never, undefined as never); // SaleReturnsService unused here
     const res = { status: jest.fn(), setHeader: jest.fn() };
     await expect(
       controller.recordVoid(

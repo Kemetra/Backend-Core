@@ -22,6 +22,7 @@ import "reflect-metadata";
 
 import { HttpException, HttpStatus, type ExecutionContext } from "@nestjs/common";
 import type { Reflector } from "@nestjs/core";
+import type { Logger } from "@data-pulse-2/shared";
 
 import { PosWriteRateLimitGuard } from "../../src/auth/pos-write-rate-limit.guard";
 import type { RateLimiter, RateLimitDecision } from "../../src/auth/rate-limit";
@@ -81,7 +82,7 @@ function makeGuard(opts: {
   const reflector = {
     get: (_key: unknown, handler: { __bucket?: string }) => handler?.__bucket,
   } as unknown as Reflector;
-  const guard = new PosWriteRateLimitGuard(rateLimiter, reverifier, reflector, logger);
+  const guard = new PosWriteRateLimitGuard(rateLimiter, reverifier, reflector, logger as unknown as Logger);
   return { guard, checkSpy, warnSpy };
 }
 

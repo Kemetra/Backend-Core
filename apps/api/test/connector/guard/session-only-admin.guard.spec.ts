@@ -35,7 +35,7 @@ describe("SessionOnlyAdminGuard — FR-005c kind check", () => {
   beforeEach(() => {
     // The base AuthGuard requires DI collaborators; we only need it to "succeed
     // authentication" (the subclass reads request.principal which our ctx sets).
-    guard = new SessionOnlyAdminGuard(...([{}, {}] as never[]));
+    guard = new SessionOnlyAdminGuard(...([{}, {}] as unknown as ConstructorParameters<typeof SessionOnlyAdminGuard>));
     baseSpy = jest
       .spyOn(AuthGuard.prototype, "canActivate")
       .mockResolvedValue(true);

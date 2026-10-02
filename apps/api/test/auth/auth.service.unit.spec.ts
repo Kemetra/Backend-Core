@@ -49,12 +49,12 @@ function makeFakeDb() {
     // .where() when used after update().set() must also resolve
   };
   // Override .where to handle both select and update chains
-  chain.where = () => ({
+  chain.where = (() => ({
     limit: () => Promise.resolve(selectRows),
     // for update chain that ends at .where()
     then: (resolve: (v: unknown) => void) =>
       resolve({ rowCount: updateRowCount }),
-  });
+  })) as unknown as typeof chain.where;
   return chain;
 }
 

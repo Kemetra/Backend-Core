@@ -150,9 +150,7 @@ function makeService(
   return new MembershipsService(
     FAKE_POOL,
     repo as unknown as MembershipsRepository,
-    tx as unknown as Parameters<typeof MembershipsService.prototype.revoke>[0] extends never
-      ? never
-      : unknown,
+    tx as unknown as NonNullable<ConstructorParameters<typeof MembershipsService>[2]>,
   );
 }
 

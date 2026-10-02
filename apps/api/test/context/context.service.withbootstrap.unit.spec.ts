@@ -45,10 +45,10 @@ describe("ContextService — withBootstrapCtx pool path", () => {
   });
 
   it("switchTenant calls runWithTenantContext when pool is present (covers withBootstrapCtx pool branch)", async () => {
-    const fakeMembership: MembershipSummary = {
+    const fakeMembership = {
       membershipId: "m1",
       storeAccessKind: "all",
-    };
+    } as unknown as MembershipSummary;
 
     const fakeSessions = {
       updateActiveContext: jest.fn().mockResolvedValue({

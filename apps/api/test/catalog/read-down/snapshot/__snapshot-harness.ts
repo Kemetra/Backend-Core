@@ -92,7 +92,7 @@ export interface SnapshotHarness {
   readonly env: PgTestEnv;
   readonly app: INestApplication;
   readonly contextGuard: ConfigurableContextGuard;
-  http(): request.SuperTest<request.Test>;
+  http(): ReturnType<typeof request>;
 }
 
 export interface HarnessHandle {

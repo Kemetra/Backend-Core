@@ -164,7 +164,7 @@ describe("AuditController — HTTP surface (metadata inspection, no app instanti
     for (const method of methods) {
       const httpMethod = Reflect.getMetadata(
         "method",
-        (AuditController.prototype as unknown as Record<string, unknown>)[method],
+        (AuditController.prototype as unknown as Record<string, object>)[method]!,
       ) as number | undefined;
       if (httpMethod !== undefined) {
         expect(MUTATION_METHODS.has(httpMethod)).toBe(false);

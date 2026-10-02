@@ -102,7 +102,7 @@ const MANAGER_MEMBERSHIP = {
 
 const SIGN_IN_BODY = {
   device_token_attestation: "attest",
-};
+} as Parameters<PosOperatorsService["signIn"]>[1];
 
 describe("PosOperatorsService.signIn — membership_revoked branch", () => {
   it("returns 'refused' when membership has revoked_at set", async () => {

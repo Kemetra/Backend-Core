@@ -262,7 +262,6 @@ import {
   redisClientFactory,
   AlwaysAllowRedis,
 } from "../../src/auth/auth.module";
-import { IoredisIdempotencyAdapter } from "../../src/auth/ioredis-idempotency-adapter";
 
 describe("redisClientFactory — REDIS_CLIENT provider wiring", () => {
   const ORIGINAL_REDIS_URL = process.env["REDIS_URL"];

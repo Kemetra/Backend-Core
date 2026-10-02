@@ -164,7 +164,7 @@ export interface CaptureHarness {
   readonly app: INestApplication;
   readonly fakeRedis: { clear(): void };
   readonly contextGuard: ConfigurableContextGuard;
-  http(): request.SuperTest<request.Test>;
+  http(): ReturnType<typeof request>;
 }
 
 export interface HarnessHandle {

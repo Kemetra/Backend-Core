@@ -96,7 +96,7 @@ function makeInterceptor(opts: {
   interceptor: AuditEmitterInterceptor;
   reflector: Reflector;
   enqueuer: AuditJobEnqueuer & { enqueue: jest.Mock };
-  logger?: { info: jest.Mock; error: jest.Mock };
+  logger?: { info: jest.Mock; error: jest.Mock } | undefined;
   handlerRef: object;
 } {
   const handlerRef = opts.handlerRef ?? function namedHandler() { return; };

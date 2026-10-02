@@ -169,11 +169,11 @@ describe("SessionRepository.create", () => {
     const cache = makeFakeCache();
     const { repo } = buildRepo(cache);
 
-    const input: NewSessionRow = {
+    const input = {
       id: SESSION_ID,
       userId: USER_ID,
       absoluteExpiresAt: row.absoluteExpiresAt,
-    };
+    } as NewSessionRow;
     const result = await repo.create(input);
 
     expect(result).toBe(row);
@@ -186,11 +186,11 @@ describe("SessionRepository.create", () => {
     const cache = makeFakeCache();
     const { repo } = buildRepo(cache);
 
-    const input: NewSessionRow = {
+    const input = {
       id: SESSION_ID,
       userId: USER_ID,
       absoluteExpiresAt: new Date(Date.now() + 3600_000),
-    };
+    } as NewSessionRow;
 
     await expect(repo.create(input)).rejects.toThrow(
       "SessionRepository.create: insert returned no row",
@@ -202,11 +202,11 @@ describe("SessionRepository.create", () => {
     const cache = makeFakeCache();
     const { repo } = buildRepo(cache);
 
-    const input: NewSessionRow = {
+    const input = {
       id: SESSION_ID,
       userId: USER_ID,
       absoluteExpiresAt: new Date(Date.now() + 3600_000),
-    };
+    } as NewSessionRow;
 
     await expect(repo.create(input)).rejects.toThrow();
     expect(cache.set).not.toHaveBeenCalled();
@@ -376,11 +376,11 @@ describe("SessionRepository — default NoOpSessionCache", () => {
     // buildRepo() with no cache arg — SessionRepository uses NoOpSessionCache internally
     const { repo } = buildRepo();
 
-    const input: NewSessionRow = {
+    const input = {
       id: SESSION_ID,
       userId: USER_ID,
       absoluteExpiresAt: row.absoluteExpiresAt,
-    };
+    } as NewSessionRow;
     const result = await repo.create(input);
     expect(result).toBe(row);
   });

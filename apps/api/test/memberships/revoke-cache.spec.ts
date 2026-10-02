@@ -308,7 +308,7 @@ afterAll(async () => {
   if (env) await stopPgEnv(env);
 }, 60_000);
 
-function http(): request.SuperTest<request.Test> {
+function http(): ReturnType<typeof request> {
   if (!app) throw new Error("app not initialized");
   return request(app.getHttpServer());
 }

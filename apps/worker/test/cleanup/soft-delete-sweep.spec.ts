@@ -257,7 +257,7 @@ describe("SoftDeleteSweepProcessor.process — payload schema", () => {
 describe("SoftDeleteSweepDbLike interface", () => {
   it("has no purgeSoftDeletedTenants method — tenants are out of scope for T312", () => {
     const db = makeDb(0);
-    expect((db as Record<string, unknown>)["purgeSoftDeletedTenants"]).toBeUndefined();
+    expect((db as unknown as Record<string, unknown>)["purgeSoftDeletedTenants"]).toBeUndefined();
   });
 
   it("SWEEP_DB token is a non-empty string", () => {

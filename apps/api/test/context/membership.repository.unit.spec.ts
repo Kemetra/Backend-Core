@@ -324,14 +324,14 @@ describe("MembershipRepository.listForUser", () => {
     const result = await repo.listForUser(USER_ID);
 
     expect(result).toHaveLength(2);
-    expect(result[0].tenantId).toBe(TENANT_ID);
-    expect(result[0].tenantName).toBe("Acme Corp");
-    expect(result[0].roleCode).toBe("tenant_admin");
-    expect(result[0].storeAccessKind).toBe("all");
-    expect(result[0].accessibleStoreIds).toEqual([]);
-    expect(result[1].tenantId).toBe(TENANT_ID_2);
-    expect(result[1].storeAccessKind).toBe("all");
-    expect(result[1].accessibleStoreIds).toEqual([]);
+    expect(result[0]!.tenantId).toBe(TENANT_ID);
+    expect(result[0]!.tenantName).toBe("Acme Corp");
+    expect(result[0]!.roleCode).toBe("tenant_admin");
+    expect(result[0]!.storeAccessKind).toBe("all");
+    expect(result[0]!.accessibleStoreIds).toEqual([]);
+    expect(result[1]!.tenantId).toBe(TENANT_ID_2);
+    expect(result[1]!.storeAccessKind).toBe("all");
+    expect(result[1]!.accessibleStoreIds).toEqual([]);
   });
 
   it("D3: returns MembershipSummary with populated accessibleStoreIds for kind='specific'", async () => {
@@ -354,8 +354,8 @@ describe("MembershipRepository.listForUser", () => {
     const result = await repo.listForUser(USER_ID);
 
     expect(result).toHaveLength(1);
-    expect(result[0].storeAccessKind).toBe("specific");
-    expect(result[0].accessibleStoreIds).toEqual([STORE_ID_1, STORE_ID_2]);
+    expect(result[0]!.storeAccessKind).toBe("specific");
+    expect(result[0]!.accessibleStoreIds).toEqual([STORE_ID_1, STORE_ID_2]);
   });
 
   it("D4: mixed kinds — grant select fires only for 'specific' rows (N+1 scoped correctly)", async () => {
@@ -386,11 +386,11 @@ describe("MembershipRepository.listForUser", () => {
 
     expect(result).toHaveLength(2);
     // 'all' row — no grant query, empty accessibleStoreIds
-    expect(result[0].storeAccessKind).toBe("all");
-    expect(result[0].accessibleStoreIds).toEqual([]);
+    expect(result[0]!.storeAccessKind).toBe("all");
+    expect(result[0]!.accessibleStoreIds).toEqual([]);
     // 'specific' row — grant query ran, one store
-    expect(result[1].storeAccessKind).toBe("specific");
-    expect(result[1].accessibleStoreIds).toEqual([STORE_ID_1]);
+    expect(result[1]!.storeAccessKind).toBe("specific");
+    expect(result[1]!.accessibleStoreIds).toEqual([STORE_ID_1]);
   });
 
   it("D5: client path — returns correct summaries when client passed", async () => {
@@ -410,7 +410,7 @@ describe("MembershipRepository.listForUser", () => {
     const result = await repo.listForUser(USER_ID, fakeClient);
 
     expect(result).toHaveLength(1);
-    expect(result[0].roleCode).toBe("owner");
+    expect(result[0]!.roleCode).toBe("owner");
   });
 });
 
@@ -537,14 +537,14 @@ describe("MembershipRepository.listForTenant", () => {
     const result = await repo.listForTenant(fakeClient, TENANT_ID);
 
     expect(result).toHaveLength(1);
-    expect(result[0].membershipId).toBe(MEMBERSHIP_ID);
-    expect(result[0].user.id).toBe(USER_ID);
-    expect(result[0].user.email).toBe("alice@example.com");
-    expect(result[0].user.displayName).toBe("Alice");
-    expect(result[0].roleCode).toBe("tenant_admin");
-    expect(result[0].storeAccessKind).toBe("all");
-    expect(result[0].accessibleStoreIds).toEqual([]);
-    expect(result[0].revokedAt).toBeNull();
+    expect(result[0]!.membershipId).toBe(MEMBERSHIP_ID);
+    expect(result[0]!.user.id).toBe(USER_ID);
+    expect(result[0]!.user.email).toBe("alice@example.com");
+    expect(result[0]!.user.displayName).toBe("Alice");
+    expect(result[0]!.roleCode).toBe("tenant_admin");
+    expect(result[0]!.storeAccessKind).toBe("all");
+    expect(result[0]!.accessibleStoreIds).toEqual([]);
+    expect(result[0]!.revokedAt).toBeNull();
   });
 
   it("G3: returns MembershipDetail with populated accessibleStoreIds for kind='specific'", async () => {
@@ -567,8 +567,8 @@ describe("MembershipRepository.listForTenant", () => {
 
     const result = await repo.listForTenant(fakeClient, TENANT_ID);
 
-    expect(result[0].storeAccessKind).toBe("specific");
-    expect(result[0].accessibleStoreIds).toEqual([STORE_ID_1, STORE_ID_2]);
+    expect(result[0]!.storeAccessKind).toBe("specific");
+    expect(result[0]!.accessibleStoreIds).toEqual([STORE_ID_1, STORE_ID_2]);
   });
 
   it("G4: userDisplayName null fallback — displayName maps to null (not undefined)", async () => {
@@ -589,7 +589,7 @@ describe("MembershipRepository.listForTenant", () => {
 
     const result = await repo.listForTenant(fakeClient, TENANT_ID);
 
-    expect(result[0].user.displayName).toBeNull();
+    expect(result[0]!.user.displayName).toBeNull();
   });
 
   it("G5: revokedAt non-null — preserved in MembershipDetail", async () => {
@@ -611,7 +611,7 @@ describe("MembershipRepository.listForTenant", () => {
 
     const result = await repo.listForTenant(fakeClient, TENANT_ID);
 
-    expect(result[0].revokedAt).toEqual(revokedAt);
+    expect(result[0]!.revokedAt).toEqual(revokedAt);
   });
 
   it("G6: mixed kinds — grant select fires only for 'specific' rows", async () => {
@@ -644,10 +644,10 @@ describe("MembershipRepository.listForTenant", () => {
     const result = await repo.listForTenant(fakeClient, TENANT_ID);
 
     expect(result).toHaveLength(2);
-    expect(result[0].storeAccessKind).toBe("all");
-    expect(result[0].accessibleStoreIds).toEqual([]);
-    expect(result[1].storeAccessKind).toBe("specific");
-    expect(result[1].accessibleStoreIds).toEqual([STORE_ID_1]);
+    expect(result[0]!.storeAccessKind).toBe("all");
+    expect(result[0]!.accessibleStoreIds).toEqual([]);
+    expect(result[1]!.storeAccessKind).toBe("specific");
+    expect(result[1]!.accessibleStoreIds).toEqual([STORE_ID_1]);
   });
 });
 
