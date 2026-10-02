@@ -236,7 +236,7 @@ export async function startCaptureHarness(
       { provide: INFLIGHT_REDIS, useValue: fakeRedis },
       { provide: InProgressMarker, useValue: fakeMarker },
       { provide: APP_INTERCEPTOR, useValue: idempInterceptor },
-      // PosOperatorSaleAuthGuard is overridden to a no-op below, but Nest still
+      // PosOperatorEnvelopeSaleGuard is overridden to a no-op below, but Nest still
       // validates the provider graph at compile time — the guard's
       // @Inject(OPERATOR_CONTEXT_RESOLVER) dependency must be resolvable or the
       // whole module fails to build (breaking every harness-importing spec).
@@ -260,12 +260,11 @@ export async function startCaptureHarness(
     }
 
     // The write routes (capture/void/refund) are guarded by
-    // PosOperatorSaleAuthGuard (008 Option Y). These capture specs exercise the
+    // PosOperatorEnvelopeSaleGuard (031). These capture specs exercise the
     // sale WRITE-PATH, not the auth derivation, so the guard is overridden to a
     // no-op here; req.context is injected by the global ConfigurableContextGuard
-    // below. The guard's real Clerk-JWT + attestation auth is covered by its own
-    // unit spec (test/auth/pos-operator-sale-auth.guard.unit.spec.ts) and the
-    // resolver integration spec.
+    // below. The guard's real envelope auth + live reverify is covered by its
+    // own specs.
     const moduleRef = await Test.createTestingModule({
       controllers: [SalesController],
       providers,

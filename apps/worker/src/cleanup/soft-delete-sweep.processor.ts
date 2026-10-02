@@ -48,12 +48,6 @@
  * -------------------
  * This file MUST NOT import from `apps/api` or `@data-pulse-2/db`.
  *
- * DLQ registry
- * ------------
- * This processor is NOT added to `DLQ_METRIC_REGISTRY`. It is a scheduled
- * (repeatable) job, not an event-driven queue consumer. The registry and its
- * `toHaveLength(3)` pin remain unchanged.
- *
  * KNOWN GAP: Not registered in `worker.module.ts` and has no BullMQ `Worker`
  * bootstrap in this slice. Layer B wiring is deferred.
  */

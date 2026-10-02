@@ -14,9 +14,8 @@
  *                        → BullMQ "sale-processing" queue.
  *   SaleWorker consumes → SaleProcessingProcessor.process(envelope) → DB UPDATE.
  *
- * This consumer is the clean half of the loop that ships now. The capture-side
- * emit + `SALES_OUTBOX_PRODUCER` binding, the `saleWorker.start()` in `main.ts`,
- * and the sale-processing metrics/DLQ entries are a SEPARATE follow-up slice.
+ * `SalesService.captureSale` emits the `sale.captured` row in-transaction and
+ * `main.ts` starts the `SaleWorker`, so this consumer completes a live loop.
  *
  * Payload shape
  * -------------
