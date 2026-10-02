@@ -1,0 +1,94 @@
+openapi: 3.1.0
+info:
+  title: Backend-Core Health API
+  version: "1.0.0"
+  description: >
+    Unauthenticated process health for deployment checks (RT-144).
+    Liveness says the process serves HTTP and checks no dependency.
+    Readiness runs bounded checks of the dependencies required to serve
+    traffic. Responses carry fixed values only: no error text, hostnames,
+    versions, or credentials.
+servers:
+  - url: https://api.example.com
+paths:
+  /api/v1/health/live:
+    get:
+      summary: Liveness — the process is up and serving HTTP.
+      operationId: getHealthLiveness
+      security: []
+      responses:
+        "200":
+          description: The process is alive.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LivenessResponse"
+  /api/v1/health/ready:
+    get:
+      summary: Readiness — every dependency required to serve traffic answered in time.
+      description: >
+        Checks the domain database pool, the auth lookup database pool and
+        Redis, each with a short timeout. Concurrent callers share one
+        in-flight check.
+      operationId: getHealthReadiness
+      security: []
+      responses:
+        "200":
+          description: Ready to serve traffic.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: At least one dependency failed or timed out.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+components:
+  schemas:
+    LivenessResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+    CheckResult:
+      type: string
+      enum: [ok, failed]
+    ReadinessResponse:
+      type: object
+      additionalProperties: false
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        checks:
+          type: object
+          additionalProperties: false
+          required: [database, auth_database, redis]
+          properties:
+            database:
+              $ref: "#/components/schemas/CheckResult"
+            auth_database:
+              $ref: "#/components/schemas/CheckResult"
+            redis:
+              $ref: "#/components/schemas/CheckResult"

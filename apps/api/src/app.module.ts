@@ -8,6 +8,7 @@ import { AuditModule } from "./audit/audit.module";
 import { RootLoggerModule } from "./common/root-logger.module";
 import { AuthModule, PG_POOL } from "./auth/auth.module";
 import { FailClosedAuthGuard } from "./auth/fail-closed-auth.guard";
+import { HealthModule } from "./health/health.module";
 import { ErpnextBinViewModule } from "./catalog/erpnext-bin-view/erpnext-bin-view.module";
 import { ErpnextItemMapModule } from "./catalog/erpnext-item-map/erpnext-item-map.module";
 import { ErpnextPostingModule } from "./catalog/erpnext-posting/erpnext-posting.module";
@@ -222,7 +223,7 @@ class ApiDbMigrationStatusGaugeRegistrar implements OnModuleInit, OnModuleDestro
  * pipe are registered in `main.ts`.
  */
 @Module({
-  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, PosAuditEventsModule, PosShiftsModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, ConnectorModule, ConnectorHealthModule, PairingModule],
+  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, PosAuditEventsModule, PosShiftsModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, ConnectorModule, ConnectorHealthModule, PairingModule, HealthModule],
   controllers: [],
   providers: [
     ApiDbPoolGaugeRegistrar,
