@@ -169,4 +169,78 @@ describe("SessionRepository", () => {
     await repo.revoke(id);
     expect(await repo.touchLastSeen(id)).toBe(false);
   });
+
+  // ---- RT-139: idle timeout inside the absolute cap ----------------------
+
+  async function lastSeen(id: string, hoursAgo: number): Promise<void> {
+    await pool!.query(
+      `UPDATE sessions SET last_seen_at = now() - make_interval(hours => $2) WHERE id = $1`,
+      [id, hoursAgo],
+    );
+  }
+
+  function dayAhead(): Date {
+    return new Date(Date.now() + 24 * 60 * 60 * 1000);
+  }
+
+  it("RT-139: a session idle past 12h is dead (by cookie and by id) even inside the absolute cap", async () => {
+    const id = newId();
+    await repo.create(sessionInput(id, dayAhead()));
+    await lastSeen(id, 13);
+    expect(await repo.findActiveByCredential(rawCredential(id))).toBeNull();
+    expect(await repo.findActiveById(id)).toBeNull();
+  });
+
+  it("RT-139: a session used within 12h is live", async () => {
+    const id = newId();
+    await repo.create(sessionInput(id, dayAhead()));
+    await lastSeen(id, 11);
+    expect((await repo.findActiveByCredential(rawCredential(id)))?.id).toBe(id);
+    expect((await repo.findActiveById(id))?.id).toBe(id);
+  });
+
+  it("RT-139: activity cannot revive an idle-expired session", async () => {
+    const id = newId();
+    await repo.create(sessionInput(id, dayAhead()));
+    await lastSeen(id, 13);
+    expect(await repo.touchLastSeen(id)).toBe(false);
+    expect(await repo.findActiveById(id)).toBeNull();
+  });
+
+  it("RT-139: activity never outlives the absolute cap", async () => {
+    const id = newId();
+    await repo.create(sessionInput(id, pastExpiry()));
+    expect(await repo.touchLastSeen(id)).toBe(false);
+    expect(await repo.findActiveByCredential(rawCredential(id))).toBeNull();
+  });
+
+  it("RT-139: recordActivity slides last_seen_at once the touch interval has passed", async () => {
+    const id = newId();
+    await repo.create(sessionInput(id, dayAhead()));
+    await lastSeen(id, 6);
+    const stale = await repo.findActiveById(id);
+    await repo.recordActivity(stale!);
+    const r = await pool!.query<{ idle_s: number }>(
+      `SELECT EXTRACT(EPOCH FROM now() - last_seen_at)::int AS idle_s FROM sessions WHERE id = $1`,
+      [id],
+    );
+    expect(r.rows[0]!.idle_s).toBeLessThan(60);
+  });
+
+  it("RT-139: recordActivity is throttled — a recent last_seen_at is left alone", async () => {
+    const id = newId();
+    const created = await repo.create(sessionInput(id, dayAhead()));
+    const before = await pool!.query<{ last_seen_at: Date }>(
+      "SELECT last_seen_at FROM sessions WHERE id = $1",
+      [id],
+    );
+    await repo.recordActivity(created);
+    const after = await pool!.query<{ last_seen_at: Date }>(
+      "SELECT last_seen_at FROM sessions WHERE id = $1",
+      [id],
+    );
+    expect(new Date(after.rows[0]!.last_seen_at).getTime()).toBe(
+      new Date(before.rows[0]!.last_seen_at).getTime(),
+    );
+  });
 });

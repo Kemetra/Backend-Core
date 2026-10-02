@@ -24,6 +24,7 @@ import { SessionRepository } from "../../src/auth/session.repository";
 
 interface MockSessionRepo {
   findActiveByCredential: jest.Mock<Promise<SessionRow | null>, [string]>;
+  recordActivity: jest.Mock<Promise<void>, [SessionRow]>;
 }
 
 interface MockTokenRepo {
@@ -105,7 +106,7 @@ let tokenRepo: MockTokenRepo;
 let guard: AuthGuard;
 
 beforeEach(() => {
-  sessionRepo = { findActiveByCredential: jest.fn() };
+  sessionRepo = { findActiveByCredential: jest.fn(), recordActivity: jest.fn().mockResolvedValue(undefined) };
   tokenRepo = { findActiveByRawToken: jest.fn() };
   guard = buildGuard(sessionRepo, tokenRepo);
 });

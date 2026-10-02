@@ -56,6 +56,7 @@ const DEVICE_ID  = "0a000000-0000-7000-8000-0000000dev01";
 
 const makeFakeSessions = () => ({
   findActiveByCredential: jest.fn<Promise<SessionRow | null>, [string]>(),
+  recordActivity: jest.fn<Promise<void>, [SessionRow]>().mockResolvedValue(undefined),
 });
 
 const makeFakeAuthTokens = () => ({
