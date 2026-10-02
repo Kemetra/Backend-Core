@@ -21,6 +21,7 @@ import {
   deepFreeze,
   DEFAULT_JOB_OPTIONS,
   DEFAULT_WORKER_OPTIONS,
+  QUEUE_NAMES,
 } from "../../src/queues/queue.config";
 
 describe("DEFAULT_JOB_OPTIONS — pinned values", () => {
@@ -173,5 +174,21 @@ describe("deepFreeze helper", () => {
   it("returns primitives unchanged", () => {
     expect(deepFreeze(42)).toBe(42);
     expect(deepFreeze("hi")).toBe("hi");
+  });
+});
+
+describe("QUEUE_NAMES (RT-125)", () => {
+  it("pins the BullMQ wire names (Redis keys — never rename without draining)", () => {
+    expect(QUEUE_NAMES).toEqual({
+      email: "email",
+      audit: "audit",
+      auditRetention: "audit-retention",
+      saleProcessing: "sale-processing",
+      outboxRetention: "outbox-retention",
+    });
+  });
+
+  it("is frozen", () => {
+    expect(Object.isFrozen(QUEUE_NAMES)).toBe(true);
   });
 });

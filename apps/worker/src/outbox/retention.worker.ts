@@ -33,8 +33,9 @@ import {
   type WorkerLike,
   WORKER_FACTORY,
 } from "../email/email.worker";
+import { QUEUE_NAMES } from "@data-pulse-2/shared";
 
-export const OUTBOX_RETENTION_QUEUE_NAME = "outbox-retention";
+export const OUTBOX_RETENTION_QUEUE_NAME = QUEUE_NAMES.outboxRetention;
 
 export type { JobLike, WorkerFactory, WorkerLike } from "../email/email.worker";
 export { WORKER_FACTORY } from "../email/email.worker";
