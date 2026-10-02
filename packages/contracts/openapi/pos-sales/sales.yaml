@@ -180,10 +180,14 @@ paths:
       responses:
         "200":
           description: >
-            Idempotent replay — the same `(tenant, sourceSystem, externalId)` (or
-            same `Idempotency-Key`) was already captured. Returns the identical
-            `toBody` sale projection with the `Idempotent-Replayed: true` header
-            (mirrors `posCaptureItem`). No second record is created.
+            Provenance replay — the same `(tenant, sourceSystem, externalId)`
+            was already captured, and no live replay entry exists for this
+            `Idempotency-Key` (a different key, or the same key after its 72h
+            replay window). Returns the identical `toBody` sale projection with
+            the `Idempotent-Replayed: true` header (mirrors `posCaptureItem`).
+            No second record is created. A retry with the SAME `Idempotency-Key`
+            is answered by the idempotency layer with the stored status instead
+            (the `201` below, RT-82 K4).
           headers:
             Idempotent-Replayed:
               $ref: "#/components/headers/IdempotentReplayed"
@@ -194,7 +198,12 @@ paths:
         "201":
           description: >
             Sale captured for the first time. Returns the `toBody` sale
-            projection with a stable reference.
+            projection with a stable reference. A retry with the same
+            `Idempotency-Key` replays this stored `201` byte-identically, with
+            `Idempotent-Replayed: true` (RT-82 K4); no second record is created.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
           content:
             application/json:
               schema:
@@ -276,9 +285,13 @@ paths:
       responses:
         "200":
           description: >
-            Idempotent replay — this void was already recorded (same provenance
-            or `Idempotency-Key`). Returns the identical terminal-event
-            projection with `Idempotent-Replayed: true`; no duplicate record.
+            Provenance replay — this void was already recorded with the same
+            provenance, and no live replay entry exists for this
+            `Idempotency-Key` (a different key, or the same key after its 72h
+            replay window). Returns the identical terminal-event projection with
+            `Idempotent-Replayed: true`; no duplicate record. A
+            same-`Idempotency-Key` retry returns the stored `201` instead (RT-82
+            K4).
           headers:
             Idempotent-Replayed:
               $ref: "#/components/headers/IdempotentReplayed"
@@ -287,7 +300,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/SaleTerminalEvent"
         "201":
-          description: Void terminal event recorded for the first time.
+          description: >
+            Void terminal event recorded for the first time. A retry with the
+            same `Idempotency-Key` on the same sale replays this stored `201`
+            with `Idempotent-Replayed: true` (RT-82 K4).
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
           content:
             application/json:
               schema:
@@ -342,9 +361,13 @@ paths:
       responses:
         "200":
           description: >
-            Idempotent replay — this refund was already recorded (same provenance
-            or `Idempotency-Key`). Returns the identical terminal-event
-            projection with `Idempotent-Replayed: true`; not double-applied.
+            Provenance replay — this refund was already recorded with the same
+            provenance, and no live replay entry exists for this
+            `Idempotency-Key` (a different key, or the same key after its 72h
+            replay window). Returns the identical terminal-event projection with
+            `Idempotent-Replayed: true`; not double-applied. A
+            same-`Idempotency-Key` retry returns the stored `201` instead (RT-82
+            K4).
           headers:
             Idempotent-Replayed:
               $ref: "#/components/headers/IdempotentReplayed"
@@ -353,7 +376,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/SaleTerminalEvent"
         "201":
-          description: Refund terminal event recorded for the first time.
+          description: >
+            Refund terminal event recorded for the first time. A retry with the
+            same `Idempotency-Key` on the same sale replays this stored `201`
+            with `Idempotent-Replayed: true` (RT-82 K4).
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
           content:
             application/json:
               schema:
@@ -459,10 +488,13 @@ paths:
       responses:
         "200":
           description: >
-            Idempotent replay — this return was already recorded (same
-            provenance and payload, or same `Idempotency-Key`). Returns the
-            identical return projection with `Idempotent-Replayed: true`; no
-            duplicate record.
+            Provenance replay — this return was already recorded with the same
+            provenance and payload, and no live replay entry exists for this
+            `Idempotency-Key` (a different key, or the same key after its 72h
+            replay window). Returns the identical return projection with
+            `Idempotent-Replayed: true`; no duplicate record. A
+            same-`Idempotency-Key` retry returns the stored `201` instead (RT-82
+            K4).
           headers:
             Idempotent-Replayed:
               $ref: "#/components/headers/IdempotentReplayed"
@@ -471,7 +503,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/SaleReturn"
         "201":
-          description: Return recorded for the first time.
+          description: >
+            Return recorded for the first time. A retry with the same
+            `Idempotency-Key` on the same sale replays this stored `201` with
+            `Idempotent-Replayed: true` (RT-82 K4).
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
           content:
             application/json:
               schema:
@@ -536,8 +574,12 @@ components:
         maxLength: 255
       description: >
         REQUIRED on every write. Reuses the existing `IdempotencyInterceptor`
-        (FR-051) — keyed on `(method, route, clientId = POS device principal,
-        key)`. Identical retry replays the stored response; key-reuse with a
+        (FR-051) — keyed on `(method, route template, resolved path parameters,
+        clientId = the authenticated operator's user id, key)`, per RT-82 K1.
+        The same key on a DIFFERENT `saleRef` is therefore a separate operation
+        and is never answered with another sale's stored response. An identical
+        retry on the same route and resource replays the stored response with
+        its stored status and `Idempotent-Replayed: true`; key-reuse with a
         different logical payload returns 409 `idempotency_key_conflict`
         (FR-051, 005 FR-021c). No new idempotency primitive is introduced.
     SaleRef:
@@ -555,8 +597,11 @@ components:
   headers:
     IdempotentReplayed:
       description: >
-        Present and `true` on a 200 idempotent-replay response (mirrors the
-        `posCaptureItem` convention). Absent on a fresh 201 create.
+        Present and `true` on every idempotent-replay response: a provenance
+        replay (`200`) and a same-`Idempotency-Key` replay, which carries the
+        stored status (normally `201`) per RT-82 K4. Clients MUST detect a
+        replay by this header, not by the status code (mirrors the
+        `posCaptureItem` convention). Absent on a first-time create.
       schema:
         type: boolean
     RetryAfter:

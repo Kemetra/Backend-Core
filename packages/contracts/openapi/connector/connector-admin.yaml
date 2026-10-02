@@ -245,6 +245,15 @@ paths:
         secret is in the `201` body ONCE. At most one active (unrevoked)
         credential per registration. If issuing the new credential fails, the
         previous one stays active (no lockout). Requires an `Idempotency-Key`.
+
+
+        Non-replayable (RT-82 K3): the raw secret is never stored for
+        idempotent replay. A retry with the SAME `Idempotency-Key` for the same
+        instance does not rotate again and does not return the secret; it is
+        answered `409 idempotency_key_conflict`. A client that lost the `201`
+        body rotates again with a NEW key, which revokes the lost credential.
+        The key is scoped to the instance `{id}` (RT-82 K1), so the same key on
+        a different instance is an independent rotation.
       parameters:
         - $ref: "#/components/parameters/InstanceId"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -268,7 +277,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: An idempotency-key conflict. `error.code = "idempotency_key_conflict"`.
+          description: >
+            An idempotency-key conflict, `error.code = "idempotency_key_conflict"`:
+            the key was reused with a different request, OR it already completed
+            a rotation of this instance (a same-key retry is never replayed,
+            because the secret is never stored; RT-82 K3). Rotate again with a
+            new `Idempotency-Key`.
           content:
             application/json:
               schema:
@@ -352,7 +366,11 @@ components:
         type: string
         minLength: 1
         maxLength: 255
-      description: Required on rotate + revoke (reuses the platform idempotency interceptor).
+      description: >
+        Required on rotate + revoke (reuses the platform idempotency
+        interceptor). Keyed per resource: the resolved `{id}` / `{credentialId}`
+        is part of the key (RT-82 K1), so reusing a key on a different instance
+        or credential never replays another resource's result.
 
   schemas:
 
