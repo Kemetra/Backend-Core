@@ -93,7 +93,7 @@ describe("T025 — inspect read path reaches in-scope terminal rows", () => {
     const row = await service!.findByIdForTenant({
       id: F.dismissedAX,
       tenantId: F.tenantA,
-      storeId: null,
+      storeScope: { kind: "tenant" },
     });
     expect(row.id).toBe(F.dismissedAX);
     expect(row.resolutionStatus).toBe("dismissed");
@@ -104,7 +104,7 @@ describe("T025 — inspect read path reaches in-scope terminal rows", () => {
     const row = await service!.findByIdForTenant({
       id: F.resolvedAX,
       tenantId: F.tenantA,
-      storeId: null,
+      storeScope: { kind: "tenant" },
     });
     expect(row.id).toBe(F.resolvedAX);
     expect(row.resolutionStatus).toBe("resolved");
@@ -116,7 +116,7 @@ describe("T025 — inspect read path reaches in-scope terminal rows", () => {
     const row = await service!.findByIdForTenant({
       id: F.dismissedAX,
       tenantId: F.tenantA,
-      storeId: F.storeAX,
+      storeScope: { kind: "stores", storeIds: [F.storeAX] },
     });
     expect(row.id).toBe(F.dismissedAX);
   });
@@ -134,7 +134,7 @@ describe("T025 — cross-tenant terminal rows are non-disclosing 404", () => {
       service!.findByIdForTenant({
         id: F.dismissedBX,
         tenantId: F.tenantA,
-        storeId: null,
+        storeScope: { kind: "tenant" },
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
@@ -145,7 +145,7 @@ describe("T025 — cross-tenant terminal rows are non-disclosing 404", () => {
       service!.findByIdForTenant({
         id: F.resolvedBX,
         tenantId: F.tenantA,
-        storeId: null,
+        storeScope: { kind: "tenant" },
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
@@ -156,7 +156,7 @@ describe("T025 — cross-tenant terminal rows are non-disclosing 404", () => {
       service!.findByIdForTenant({
         id: F.resolvedAX,
         tenantId: F.tenantB,
-        storeId: null,
+        storeScope: { kind: "tenant" },
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
@@ -174,7 +174,7 @@ describe("T025 — out-of-scope store terminal rows are non-disclosing 404", () 
       service!.findByIdForTenant({
         id: F.dismissedAY,
         tenantId: F.tenantA,
-        storeId: F.storeAX, // actor scoped to X, row is in Y
+        storeScope: { kind: "stores", storeIds: [F.storeAX] }, // actor scoped to X, row is in Y
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
@@ -185,7 +185,7 @@ describe("T025 — out-of-scope store terminal rows are non-disclosing 404", () 
       service!.findByIdForTenant({
         id: F.resolvedAY,
         tenantId: F.tenantA,
-        storeId: F.storeAX,
+        storeScope: { kind: "stores", storeIds: [F.storeAX] },
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
@@ -208,7 +208,7 @@ describe("T025 — RLS-bypass probe fails closed", () => {
       service!.findByIdForTenant({
         id: F.dismissedAX,
         tenantId: F.tenantB,
-        storeId: null,
+        storeScope: { kind: "tenant" },
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });

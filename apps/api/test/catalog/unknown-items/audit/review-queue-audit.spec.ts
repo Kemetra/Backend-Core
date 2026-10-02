@@ -146,6 +146,7 @@ class ConfigurableContextGuard implements CanActivate {
       storeId: this.storeId,
       isPlatformAdmin: false,
       source: "session",
+      storeAccess: { kind: "all" },
     };
     return true;
   }

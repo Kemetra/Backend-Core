@@ -94,6 +94,7 @@ function makeGuard(opts: {
   isPlatformAdmin?: jest.Mock;
   findActiveMembership?: jest.Mock;
   canAccessStore?: jest.Mock;
+  listGrantedStoreIds?: jest.Mock;
 } = {}) {
   const fakeSessions = {
     findActiveById: opts.sessionFindActive ?? jest.fn().mockResolvedValue(null),
@@ -102,6 +103,7 @@ function makeGuard(opts: {
     isPlatformAdmin:       opts.isPlatformAdmin       ?? jest.fn().mockResolvedValue(false),
     findActiveMembership:  opts.findActiveMembership  ?? jest.fn().mockResolvedValue(null),
     canAccessStore:        opts.canAccessStore         ?? jest.fn().mockResolvedValue(false),
+    listGrantedStoreIds:   opts.listGrantedStoreIds    ?? jest.fn().mockResolvedValue([]),
   };
   const guard = new TenantContextGuard(
     fakeSessions as unknown as SessionRepository,
@@ -245,6 +247,7 @@ describe("TCG7 — non-admin: membership found, no store", () => {
       storeId: null,
       isPlatformAdmin: false,
       source: "session",
+      storeAccess: { kind: "all" },
     });
     expect(fakeMemberships.findActiveMembership).toHaveBeenCalledTimes(1);
     expect(canAccessStore).not.toHaveBeenCalled();
@@ -296,6 +299,8 @@ describe("TCG9 — non-admin: membership found, store set, access granted", () =
       "specific",
       undefined, // client is undefined in unit-test path
     );
+    // RT-131: the 'specific' membership's grants are published as store access.
+    expect(ctx.storeAccess).toEqual({ kind: "specific", storeIds: [] });
   });
 });
 
@@ -342,6 +347,7 @@ describe("TCG11 — platform admin: no store", () => {
       storeId: null,
       isPlatformAdmin: true,
       source: "session",
+      storeAccess: { kind: "all" },
     });
     expect(findActiveMembership).not.toHaveBeenCalled();
     expect(canAccessStore).not.toHaveBeenCalled();

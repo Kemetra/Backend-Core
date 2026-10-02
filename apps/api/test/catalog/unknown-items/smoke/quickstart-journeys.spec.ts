@@ -137,7 +137,7 @@ class ConfigurableContextGuard implements CanActivate {
   public userId: string = ACTOR_A;
   canActivate(ctx: ExecutionContext): boolean {
     const req = ctx.switchToHttp().getRequest<{ context?: ResolvedContext }>();
-    req.context = { userId: this.userId, tenantId: this.tenantId, storeId: this.storeId, isPlatformAdmin: false, source: "session" };
+    req.context = { userId: this.userId, tenantId: this.tenantId, storeId: this.storeId, isPlatformAdmin: false, source: "session", storeAccess: { kind: "all" } };
     return true;
   }
   asAdmin() { this.tenantId = TENANT_A; this.storeId = null; this.userId = ACTOR_A; }

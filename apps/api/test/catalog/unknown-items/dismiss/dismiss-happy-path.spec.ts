@@ -109,6 +109,7 @@ class ConfigurableContextGuard implements CanActivate {
       storeId: this.storeId,
       isPlatformAdmin: false,
       source: "session",
+      storeAccess: { kind: "all" },
     };
     req.principal = { userId: this.userId };
     return true;
@@ -239,7 +240,7 @@ describe("T540 / 005-WAVE1-DISMISS — service-direct happy-path", () => {
     const result = await service.dismissUnknownItem({
       id: UNKNOWN_ITEMS_FIXTURE_IDS.unknownAXBarcode,
       tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantA,
-      storeId: null, // tenant-wide actor
+      storeScope: { kind: "tenant" }, // tenant-wide actor
       actorUserId: ACTOR_USER_ID,
     });
 
@@ -278,7 +279,7 @@ describe("T540 / 005-WAVE1-DISMISS — service-direct happy-path", () => {
     const result = await service.dismissUnknownItem({
       id: UNKNOWN_ITEMS_FIXTURE_IDS.unknownAXBarcode,
       tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantA,
-      storeId: UNKNOWN_ITEMS_FIXTURE_IDS.storeAX, // store-scoped to A.X
+      storeScope: { kind: "stores", storeIds: [UNKNOWN_ITEMS_FIXTURE_IDS.storeAX] }, // store-scoped to A.X
       actorUserId: ACTOR_USER_ID,
     });
 

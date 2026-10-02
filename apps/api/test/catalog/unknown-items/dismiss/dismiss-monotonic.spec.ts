@@ -171,7 +171,7 @@ describe("T542 / 005-WAVE1-DISMISS — FR-004 monotonic lifecycle (409 paths)", 
       service.dismissUnknownItem({
         id: UNKNOWN_ITEMS_FIXTURE_IDS.unknownAXBarcode,
         tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantA,
-        storeId: null,
+        storeScope: { kind: "tenant" },
         actorUserId: ACTOR_USER_ID,
       }),
     ).rejects.toBeInstanceOf(ConflictException);
@@ -236,7 +236,7 @@ describe("T542 / 005-WAVE1-DISMISS — FR-004 monotonic lifecycle (409 paths)", 
       service.dismissUnknownItem({
         id: UNKNOWN_ITEMS_FIXTURE_IDS.unknownAYBarcode,
         tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantA,
-        storeId: null,
+        storeScope: { kind: "tenant" },
         actorUserId: ACTOR_USER_ID,
       }),
     ).rejects.toBeInstanceOf(ConflictException);
@@ -279,7 +279,7 @@ describe("T542 / 005-WAVE1-DISMISS — SI-001/004 non-disclosing 404", () => {
       service.dismissUnknownItem({
         id: UNKNOWN_ITEMS_FIXTURE_IDS.unknownBXBarcode, // tenant B's row
         tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantA, // tenant A's context
-        storeId: null,
+        storeScope: { kind: "tenant" },
         actorUserId: ACTOR_USER_ID,
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
@@ -305,7 +305,7 @@ describe("T542 / 005-WAVE1-DISMISS — SI-001/004 non-disclosing 404", () => {
       service.dismissUnknownItem({
         id: NEVER_EXISTED,
         tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantA,
-        storeId: null,
+        storeScope: { kind: "tenant" },
         actorUserId: ACTOR_USER_ID,
       }),
     ).rejects.toBeInstanceOf(NotFoundException);

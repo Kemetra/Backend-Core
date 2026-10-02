@@ -84,7 +84,11 @@ import {
 } from "../observability/metrics/api.metrics";
 import { recordDbRlsContextFailure } from "../observability/metrics/db.metrics";
 import { MembershipRepository } from "./membership.repository";
-import type { ResolvedContext, TenantContextRequest } from "./types";
+import type {
+  ResolvedContext,
+  StoreAccess,
+  TenantContextRequest,
+} from "./types";
 
 @Injectable()
 export class TenantContextGuard implements CanActivate {
@@ -187,6 +191,11 @@ export class TenantContextGuard implements CanActivate {
       principal.userId,
     );
 
+    // RT-131: the membership's store authority, published so store-scoped
+    // routes never infer it from a null active store. Platform admins are
+    // tenant-wide (FR-TEN-6).
+    let storeAccess: StoreAccess = { kind: "all" };
+
     if (!isPlatformAdmin) {
       // FR-CTX-2: validate active membership.
       // FR-CTX-3: validate active-store reachability if set.
@@ -211,6 +220,17 @@ export class TenantContextGuard implements CanActivate {
             client,
           );
           if (!ok) throw notFound();
+        }
+
+        if (membership.storeAccessKind === "specific") {
+          storeAccess = {
+            kind: "specific",
+            storeIds: await this.memberships.listGrantedStoreIds(
+              membership.membershipId,
+              tenantId,
+              client,
+            ),
+          };
         }
       });
     } else if (storeId !== null) {
@@ -237,6 +257,7 @@ export class TenantContextGuard implements CanActivate {
       storeId,
       isPlatformAdmin,
       source: "session",
+      storeAccess,
     };
   }
 

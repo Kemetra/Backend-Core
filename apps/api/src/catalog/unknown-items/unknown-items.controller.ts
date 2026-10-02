@@ -86,6 +86,7 @@ import { PosOperatorAuthGuard } from "../../auth/pos-operator-auth.guard";
 import { Roles } from "../../auth/roles.decorator";
 import { RolesGuard } from "../../auth/roles.guard";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe";
+import { resolveStoreScope } from "../../context/store-scope";
 import { TenantContextGuard } from "../../context/tenant-context.guard";
 import type { TenantContextRequest } from "../../context/types";
 import { Idempotent } from "../../idempotency/idempotent.decorator";
@@ -386,13 +387,13 @@ export class UnknownItemsController {
       throw new UnauthorizedException("Unauthorized");
     }
     // No `store_context_required` check here — list supports both
-    // tenant-wide actors (ctx.storeId === null) and store-scoped
-    // actors (ctx.storeId === UUID). The service's
-    // `app.current_store` GUC drives the RLS branch accordingly.
+    // tenant-wide and store-scoped actors. Which one the caller is comes
+    // from its membership, NOT from a null active store (RT-131).
+    const storeScope = resolveStoreScope(ctx);
 
     const result = await this.unknownItemsService.listForTenant({
       tenantId: ctx.tenantId,
-      storeId: ctx.storeId,
+      storeScope,
       status: query.status,
       limit: query.limit,
       storeIdFilter: query.store_id ?? null,
@@ -402,11 +403,11 @@ export class UnknownItemsController {
       groupBy: query.group_by ?? null,
     });
 
-    // FR-001a (007 canSeeProduct policy): a tenant-wide actor
-    // (ctx.storeId === null) may see the linked/created product reference; a
-    // store-scoped actor gets `resolved_product_id` omitted (SC-007 — no
-    // cross-store product leak), while the item row is still returned.
-    const canSeeProduct = ctx.storeId === null;
+    // FR-001a (007 canSeeProduct policy): a tenant-wide actor may see the
+    // linked/created product reference; a store-scoped actor gets
+    // `resolved_product_id` omitted (SC-007 — no cross-store product leak),
+    // while the item row is still returned.
+    const canSeeProduct = storeScope.kind === "tenant";
     return {
       items: result.items.map((row) => toReviewQueueItem(row, canSeeProduct)),
       next_cursor: result.nextCursor,
@@ -423,8 +424,9 @@ export class UnknownItemsController {
    * `findByIdForTenant` single-row read: a cross-tenant or out-of-scope id
    * yields zero rows → non-disclosing 404 (SI-004 / FR-062). This is a
    * BROWSE surface, so FR-001a product-reference suppression applies — a
-   * tenant-wide actor (ctx.storeId === null) sees `resolved_product_id`; a
-   * store-scoped actor has it omitted (the item row is still returned).
+   * tenant-wide actor (per `resolveStoreScope`, RT-131) sees
+   * `resolved_product_id`; a store-scoped actor has it omitted (the item row
+   * is still returned).
    *
    * Auth posture mirrors the list route (FR-009 "inherits the document-level
    * cookieAuth"): `DashboardAuthGuard + TenantContextGuard`, no `RolesGuard` —
@@ -450,15 +452,16 @@ export class UnknownItemsController {
       throw new UnauthorizedException("Unauthorized");
     }
 
+    const storeScope = resolveStoreScope(ctx);
     const row = await this.unknownItemsService.findByIdForTenant({
       id,
       tenantId: ctx.tenantId,
-      storeId: ctx.storeId,
+      storeScope,
     });
 
     // Browse surface → FR-001a suppression applies (unlike the action responses
     // for link/create/dismiss which always show the product they acted on).
-    return toReviewQueueItem(row, ctx.storeId === null);
+    return toReviewQueueItem(row, storeScope.kind === "tenant");
   }
 
   /**
@@ -534,7 +537,7 @@ export class UnknownItemsController {
     const row = await this.unknownItemsService.dismissUnknownItem({
       id,
       tenantId: ctx.tenantId,
-      storeId: ctx.storeId,
+      storeScope: resolveStoreScope(ctx),
       actorUserId: ctx.userId,
     });
 
@@ -607,6 +610,7 @@ export class UnknownItemsController {
     const result = await this.unknownItemsService.bulkDismissUnknownItems({
       tenantId: ctx.tenantId,
       storeId: ctx.storeId,
+      storeScope: resolveStoreScope(ctx),
       actorUserId: ctx.userId,
       ids: body.ids,
       // Thread the request correlation id into every per-item dismiss audit so

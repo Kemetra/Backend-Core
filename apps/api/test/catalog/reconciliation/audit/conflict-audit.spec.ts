@@ -113,6 +113,7 @@ class ConfigurableContextGuard implements CanActivate {
       storeId: this.storeId,
       isPlatformAdmin: false,
       source: "session",
+      storeAccess: { kind: "all" },
     };
     req.principal = { userId: this.userId };
     return true;
@@ -491,6 +492,7 @@ describe("T645 / 005-WAVE2-AUDIT — service error-path branches [FR-082]", () =
     const result = await svc.linkUnknownItem({
       tenantId: UNIT_TENANT,
       storeId: UNIT_STORE,
+      storeScope: { kind: "stores", storeIds: [UNIT_STORE] },
       unknownItemId: UNIT_ITEM,
       productId: UNIT_PRODUCT,
       actorUserId: UNIT_ACTOR,
@@ -529,6 +531,7 @@ describe("T645 / 005-WAVE2-AUDIT — service error-path branches [FR-082]", () =
     const result = await svc.linkUnknownItem({
       tenantId: UNIT_TENANT,
       storeId: UNIT_STORE,
+      storeScope: { kind: "stores", storeIds: [UNIT_STORE] },
       unknownItemId: UNIT_ITEM,
       productId: UNIT_PRODUCT,
       actorUserId: UNIT_ACTOR,
@@ -556,6 +559,7 @@ describe("T645 / 005-WAVE2-AUDIT — service error-path branches [FR-082]", () =
       svc.createProductFromUnknownItem({
         tenantId: UNIT_TENANT,
         storeId: UNIT_STORE,
+        storeScope: { kind: "stores", storeIds: [UNIT_STORE] },
         unknownItemId: UNIT_ITEM,
         actorUserId: UNIT_ACTOR,
         name: "Widget T645",
@@ -589,6 +593,7 @@ describe("T645 / 005-WAVE2-AUDIT — service error-path branches [FR-082]", () =
       svc.linkUnknownItem({
         tenantId: UNIT_TENANT,
         storeId: UNIT_STORE,
+        storeScope: { kind: "stores", storeIds: [UNIT_STORE] },
         unknownItemId: UNIT_ITEM,
         productId: UNIT_PRODUCT,
         actorUserId: UNIT_ACTOR,
@@ -617,6 +622,7 @@ describe("T645 / 005-WAVE2-AUDIT — service error-path branches [FR-082]", () =
       svc.createProductFromUnknownItem({
         tenantId: UNIT_TENANT,
         storeId: UNIT_STORE,
+        storeScope: { kind: "stores", storeIds: [UNIT_STORE] },
         unknownItemId: UNIT_ITEM,
         actorUserId: UNIT_ACTOR,
         name: "Widget T645",
@@ -645,6 +651,7 @@ describe("T645 / 005-WAVE2-AUDIT — service error-path branches [FR-082]", () =
       svc.linkUnknownItem({
         tenantId: UNIT_TENANT,
         storeId: UNIT_STORE,
+        storeScope: { kind: "stores", storeIds: [UNIT_STORE] },
         unknownItemId: UNIT_ITEM,
         productId: UNIT_PRODUCT,
         actorUserId: UNIT_ACTOR,
@@ -669,6 +676,7 @@ describe("T645 / 005-WAVE2-AUDIT — service error-path branches [FR-082]", () =
       svc.createProductFromUnknownItem({
         tenantId: UNIT_TENANT,
         storeId: UNIT_STORE,
+        storeScope: { kind: "stores", storeIds: [UNIT_STORE] },
         unknownItemId: UNIT_ITEM,
         actorUserId: UNIT_ACTOR,
         name: "Widget T645",

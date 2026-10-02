@@ -74,6 +74,7 @@ import { DashboardAuthGuard } from "../../auth/dashboard-auth.guard";
 import { Roles } from "../../auth/roles.decorator";
 import { RolesGuard } from "../../auth/roles.guard";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe";
+import { resolveStoreScope } from "../../context/store-scope";
 import { TenantContextGuard } from "../../context/tenant-context.guard";
 import type { TenantContextRequest } from "../../context/types";
 import { Idempotent } from "../../idempotency/idempotent.decorator";
@@ -142,8 +143,8 @@ type LinkUnknownItemRequestDto = z.infer<typeof LinkUnknownItemRequestSchema>;
 // imports — per FR-007 / T002 (TIGHTEN). The former local
 // `UnknownItemWireShape` + `rowToWireShape` (which echoed `sale_context`) are
 // removed. FR-001a product-reference suppression uses the 007 canSeeProduct
-// rule: a tenant-wide actor (ctx.storeId === null) sees `resolved_product_id`;
-// a store-scoped actor has it omitted.
+// rule: a tenant-wide actor (per `resolveStoreScope`, RT-131) sees
+// `resolved_product_id`; a store-scoped actor has it omitted.
 
 // ---------------------------------------------------------------------------
 // Controller
@@ -196,6 +197,7 @@ export class ReconciliationController {
     const result = await this.reconciliationService.linkUnknownItem({
       tenantId: ctx.tenantId,
       storeId: ctx.storeId,
+      storeScope: resolveStoreScope(ctx),
       unknownItemId: id,
       productId: body.product_id,
       actorUserId: ctx.userId,
@@ -290,6 +292,7 @@ export class ReconciliationController {
     const result = await this.reconciliationService.createProductFromUnknownItem({
       tenantId: ctx.tenantId,
       storeId: ctx.storeId,
+      storeScope: resolveStoreScope(ctx),
       unknownItemId: id,
       actorUserId: ctx.userId,
       // The Zod schema already trims; the .min(1) check guarantees the
@@ -348,10 +351,11 @@ export class ReconciliationController {
    * `@Roles("owner","tenant_admin")` here would wrongly 404 an in-scope
    * store_manager (the R7.4 trap).
    *
-   * `isTenantWide` is derived from `ctx.storeId === null` — `ResolvedContext`
-   * carries no role field, and a store context (even for a tenant_admin) means
-   * the actor is operating store-scoped (the same store-context rule the
-   * wave-1 canSeeProduct policy uses).
+   * `isTenantWide` is derived from `resolveStoreScope(ctx)` — tenant-wide only
+   * for a membership with access to all stores and no active store (RT-131).
+   * A store context (even for a tenant_admin) or a `'specific'` membership
+   * means the actor is operating store-scoped (the same rule the wave-1
+   * canSeeProduct policy uses).
    *
    * Idempotency (FR-063, T003 ISOLATE — only new ops carry the key):
    * `@Idempotent("required")` engages the shared `IdempotencyInterceptor` —
@@ -391,15 +395,17 @@ export class ReconciliationController {
       throw new UnauthorizedException("Unauthorized");
     }
 
+    const storeScope = resolveStoreScope(ctx);
     const result = await this.reconciliationService.reopenUnknownItem({
       tenantId: ctx.tenantId,
       storeId: ctx.storeId,
+      storeScope,
       unknownItemId: id,
       actorUserId: ctx.userId,
-      // R7.4: tenant-wide authority is signalled by the ABSENCE of a store
-      // context (ResolvedContext has no role field). A store-scoped actor
-      // (storeId set) is NOT tenant-wide → the service returns `forbidden`.
-      isTenantWide: ctx.storeId === null,
+      // R7.4: tenant-wide authority comes from the membership's store access
+      // (RT-131), NOT from the absence of an active store. A store-scoped
+      // actor is NOT tenant-wide → the service returns `forbidden`.
+      isTenantWide: storeScope.kind === "tenant",
       // correlation_id is NOT NULL on unknown_items; reopen has no POS
       // correlation, so derive from the request id (mirrors captureItem).
       correlationId:
