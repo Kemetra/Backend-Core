@@ -155,10 +155,8 @@ afterEach(async () => {
       WHERE id NOT IN ($1, $2)`,
     [CONNECTOR_FIXTURE_IDS.registrationA, REGISTRATION_B],
   );
-  await env.admin.query(
-    `DELETE FROM audit_events WHERE action LIKE 'connector.%' AND target_id NOT IN ($1, $2)`,
-    [CONNECTOR_FIXTURE_IDS.registrationA, REGISTRATION_B],
-  );
+  // audit_events rows are not cleaned up: the table is append-only (RT-133),
+  // and every audit assertion here is scoped to its own target_id.
 });
 
 function maybeSkip(): boolean {

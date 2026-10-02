@@ -253,9 +253,6 @@ afterEach(async () => {
     await pool
       .query(`DELETE FROM shifts WHERE tenant_id = $1`, [TENANT_ID])
       .catch(() => undefined);
-    await pool
-      .query(`DELETE FROM audit_events WHERE tenant_id = $1`, [TENANT_ID])
-      .catch(() => undefined);
   }
 });
 

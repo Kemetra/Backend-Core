@@ -71,6 +71,14 @@ async function queryCount(sql: string, params: unknown[] = []): Promise<string> 
   return r.rows[0]?.count ?? "";
 }
 
+/** How many of 0034's audit_events append-only triggers exist (RT-133). */
+function countAppendOnlyTriggers(): Promise<string> {
+  return queryCount(
+    `SELECT COUNT(*)::text AS count FROM pg_trigger
+     WHERE tgname IN ('audit_events_append_only_row', 'audit_events_append_only_truncate')`,
+  );
+}
+
 /** How many of the named public-schema tables currently exist. */
 function countPublicTables(names: string[]): Promise<string> {
   return queryCount(
@@ -189,6 +197,7 @@ describe("data-pulse-migrate CLI", () => {
     "0031_outbox_tenant_fk",
     "0032_sale_returns",
     "0033_sale_tenders",
+    "0034_audit_events_append_only",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -273,6 +282,8 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicTables(["sale_tenders"])).toBe("1");
     expect(await countPublicColumn("sales", "device_id")).toBe("1");
     expect(await countPublicColumn("sales", "tender_count")).toBe("1");
+    // 0034's audit_events append-only triggers (RT-133).
+    expect(await countAppendOnlyTriggers()).toBe("2");
   });
 
   it("up is idempotent on a second run", async () => {
@@ -308,13 +319,15 @@ describe("data-pulse-migrate CLI", () => {
 
       expect(await ledgerIds()).toEqual(EXPECTED_MIGRATIONS.slice(0, -1));
 
-      // 0033 removes sale_tenders and the two sales columns (RT-77).
-      expect(await countPublicTables(["sale_tenders"])).toBe("0");
-      expect(await countPublicColumn("sales", "device_id")).toBe("0");
-      expect(await countPublicColumn("sales", "tender_count")).toBe("0");
+      // 0034 removes the audit_events append-only triggers (RT-133).
+      expect(await countAppendOnlyTriggers()).toBe("0");
 
-      // Sanity: everything older SURVIVES the 0033 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0034 rollback (down reverses
       // only the latest migration) —
+      // 0033's sale_tenders table and the two sales columns (RT-77);
+      expect(await countPublicTables(["sale_tenders"])).toBe("1");
+      expect(await countPublicColumn("sales", "device_id")).toBe("1");
+      expect(await countPublicColumn("sales", "tender_count")).toBe("1");
       // 0032's return tables, sale_voids.business_date and one-void index;
       expect(await countPublicTables(RETURN_TABLES)).toBe("3");
       expect(await countPublicColumn("sale_voids", "business_date")).toBe("1");
@@ -401,6 +414,7 @@ describe("data-pulse-migrate CLI", () => {
     // Re-applying the latest migration leaves all seven catalog tables from
     // 0007 intact; the catalog set is unaffected by the latest migration.
     expect(await countPublicTables(CATALOG_TABLES)).toBe("7");
+    expect(await countAppendOnlyTriggers()).toBe("2");
   });
 
   it(

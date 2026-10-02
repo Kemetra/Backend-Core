@@ -22,19 +22,12 @@
  * `AuditService` exposes only `list()`. No mutation methods exist at the
  * service layer either.
  *
- * Layer C — DB/RLS acknowledgment (honest boundary statement)
- * ------------------------------------------------------------
- * The `audit_events_tenant_isolation` RLS policy (0000_initial.sql) does NOT
- * restrict UPDATE for the same-tenant `app_test` role. `applyAllUpAndCreateAppRole`
- * grants `UPDATE` on all tables to `app_test`, and the `WITH CHECK` clause
- * applies only to rows within the caller's tenant context, meaning a
- * same-tenant UPDATE would succeed at the database level.
- *
- * This is a documented limitation: insert-only semantics are enforced
- * exclusively at the application layer (no mutation surface in `AuditRepository`,
- * `AuditService`, or `AuditController`). A future hardening pass could
- * restrict the DB role with `REVOKE UPDATE, DELETE ON audit_events FROM app_role`
- * but that requires a migration and is out of scope for this slice.
+ * Layer C — DB boundary (RT-133)
+ * ------------------------------
+ * Migration 0034_audit_events_append_only refuses UPDATE / DELETE / TRUNCATE
+ * on audit_events for every role — including `app_test` with full grants and
+ * the table owner — apart from one-time retention marking and the schema's
+ * ON DELETE SET NULL. Real PostgreSQL tests below.
  *
  * Out-of-scope boundary
  * ---------------------
@@ -47,6 +40,8 @@
  */
 import "reflect-metadata";
 
+import type { Pool, PoolClient } from "pg";
+
 import { AuditController } from "../../src/audit/audit.controller";
 import { AuditService } from "../../src/audit/audit.service";
 import {
@@ -55,6 +50,12 @@ import {
   type AuditEventRecord,
   type ListPageInput,
 } from "../../src/audit/audit.repository";
+import {
+  applyAllUpAndCreateAppRole,
+  startPgEnv,
+  stopPgEnv,
+  type PgTestEnv,
+} from "../_helpers/postgres-container";
 
 // ---------------------------------------------------------------------------
 // Layer A — TypeScript interface structural proof
@@ -186,57 +187,106 @@ describe("AuditController — HTTP surface (metadata inspection, no app instanti
 });
 
 // ---------------------------------------------------------------------------
-// Layer C — DB/RLS honest boundary statement
+// Layer C — DB-level enforcement (RT-133, migration 0034)
 // ---------------------------------------------------------------------------
+//
+// Until RT-133, insert-only held only at the application layer: the RLS
+// policy and `applyAllUpAndCreateAppRole`'s full grants let a same-tenant
+// UPDATE succeed (RT-120 C-1). Migration 0034_audit_events_append_only adds
+// row and TRUNCATE triggers that refuse UPDATE / DELETE / TRUNCATE for every
+// role, with two narrow carve-outs: one-time retention marking and the
+// schema's own ON DELETE SET NULL. The full matrix lives in
+// packages/db/__tests__/migration/0034-audit-append-only.spec.ts; this
+// layer proves it through this app's own role setup.
 
-describe("DB/RLS boundary — documented limitation", () => {
-  /**
-   * IMPORTANT: The following is a documented limitation, NOT a test gap.
-   *
-   * The `audit_events_tenant_isolation` RLS policy (packages/db/drizzle/0000_initial.sql)
-   * applies to SELECT, INSERT, UPDATE, and DELETE (no FOR clause). The `WITH CHECK`
-   * clause allows INSERT/UPDATE for rows within the caller's tenant context.
-   *
-   * Additionally, `applyAllUpAndCreateAppRole` (test/_helpers/postgres-container.ts)
-   * grants `SELECT, INSERT, UPDATE, DELETE` to the `app_test` role.
-   *
-   * This means: a same-tenant UPDATE on `audit_events` would succeed at the
-   * database level. Insert-only semantics are enforced EXCLUSIVELY at the
-   * application layer:
-   *
-   *   - `AuditRepository` interface has no `update`/`delete` methods
-   *   - `AuditService` has no `update`/`delete` methods
-   *   - `AuditController` has no mutation HTTP handlers
-   *
-   * A future DB-layer hardening pass would issue:
-   *   REVOKE UPDATE, DELETE ON audit_events FROM app_role;
-   * but this requires a migration (out of scope for this slice per US6 constraints).
-   */
+let env: PgTestEnv | null = null;
+let dockerSkipped = false;
+const LAYER_C_TENANT = "0a000000-0000-7000-8000-000000134c01";
+const LAYER_C_ROW = "0a000000-0000-7000-8000-000000134c02";
 
-  it("documents that insert-only is application-layer only (no DB-level UPDATE block)", () => {
-    // Specification test: pins the current boundary. Update this test
-    // when a REVOKE migration is added and the DB-layer guarantee is strengthened.
-    const boundary = {
-      applicationLayer: "insert-only — no update/delete on AuditRepository, AuditService, or AuditController",
-      dbLayer: "UPDATE permitted for same-tenant rows by app_test role — REVOKE migration needed to close this",
-      workerLayer: "out-of-scope — apps/worker is the INSERT path; governed separately",
-    } as const;
+beforeAll(async () => {
+  try {
+    env = await startPgEnv();
+    await applyAllUpAndCreateAppRole(env);
+    await env.admin.query(
+      `INSERT INTO tenants (id, slug, name) VALUES ($1, 'rt133-layer-c', 'Layer C')`,
+      [LAYER_C_TENANT],
+    );
+    await env.admin.query(
+      `INSERT INTO audit_events (id, tenant_id, action) VALUES ($1, $2, 'rt133.layer_c')`,
+      [LAYER_C_ROW, LAYER_C_TENANT],
+    );
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
+      dockerSkipped = true;
+      // eslint-disable-next-line no-console
+      console.warn(`\n[insert-only.spec] Docker NOT AVAILABLE: ${msg}\n`);
+      return;
+    }
+    throw new Error(`Container start failed: ${msg}`);
+  }
+}, 180_000);
 
-    expect(boundary.applicationLayer).toMatch(/insert-only/);
-    expect(boundary.dbLayer).toMatch(/REVOKE/);
-    expect(boundary.workerLayer).toMatch(/out-of-scope/);
+afterAll(async () => {
+  if (env) await stopPgEnv(env);
+}, 60_000);
+
+const APPEND_ONLY = { code: "42501", message: expect.stringMatching(/append-only/) };
+
+describe("DB-level insert-only enforcement (RT-133)", () => {
+  it("app_test (NOBYPASSRLS, full grants) can INSERT but not UPDATE or DELETE in its own tenant", async () => {
+    if (dockerSkipped || !env) return;
+    await withTenant(env.app, LAYER_C_TENANT, async (client) => {
+      await client.query(
+        `INSERT INTO audit_events (id, tenant_id, action) VALUES (gen_random_uuid(), $1, 'rt133.insert')`,
+        [LAYER_C_TENANT],
+      );
+    });
+    await expect(
+      withTenant(env.app, LAYER_C_TENANT, (client) =>
+        client.query(`UPDATE audit_events SET action = 'tampered' WHERE id = $1`, [LAYER_C_ROW]),
+      ),
+    ).rejects.toMatchObject(APPEND_ONLY);
+    await expect(
+      withTenant(env.app, LAYER_C_TENANT, (client) =>
+        client.query(`DELETE FROM audit_events WHERE id = $1`, [LAYER_C_ROW]),
+      ),
+    ).rejects.toMatchObject(APPEND_ONLY);
+  });
+
+  it("even the admin (owner) pool cannot UPDATE or DELETE audit_events", async () => {
+    if (dockerSkipped || !env) return;
+    await expect(
+      env.admin.query(`UPDATE audit_events SET action = 'tampered' WHERE id = $1`, [LAYER_C_ROW]),
+    ).rejects.toMatchObject(APPEND_ONLY);
+    await expect(
+      env.admin.query(`DELETE FROM audit_events WHERE id = $1`, [LAYER_C_ROW]),
+    ).rejects.toMatchObject(APPEND_ONLY);
+    const r = await env.admin.query<{ action: string }>(
+      `SELECT action FROM audit_events WHERE id = $1`,
+      [LAYER_C_ROW],
+    );
+    expect(r.rows[0]?.action).toBe("rt133.layer_c");
   });
 });
 
-// ---------------------------------------------------------------------------
-// Stubs — DB-level enforcement (deferred, requires migration)
-// ---------------------------------------------------------------------------
-
-describe("DB-level insert-only enforcement (deferred)", () => {
-  it.todo(
-    "REVOKE UPDATE, DELETE ON audit_events FROM app_role — same-tenant UPDATE must fail at DB layer (requires migration)",
-  );
-  it.todo(
-    "even with admin pool, UPDATE on audit_events fails after REVOKE (belt-and-suspenders; requires migration)",
-  );
-});
+async function withTenant<T>(
+  pool: Pool,
+  tenantId: string,
+  work: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.current_tenant', $1, true)", [tenantId]);
+    const result = await work(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
