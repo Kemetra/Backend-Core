@@ -32,7 +32,6 @@ import { DashboardAuthGuard } from '../../../src/auth/dashboard-auth.guard';
 import { GlobalExceptionFilter } from '../../../src/common/exception.filter';
 import { TenantContextGuard } from '../../../src/context/tenant-context.guard';
 import type { ResolvedContext } from '../../../src/context/types';
-import { MembershipRepository } from '../../../src/context/membership.repository';
 import { InventoryController } from '../../../src/inventory/inventory.controller';
 import { CrossUnitError, InventoryService } from '../../../src/inventory/inventory.service';
 
@@ -74,23 +73,6 @@ class PassAuthGuard implements CanActivate {
   }
 }
 
-/**
- * Store-access is not what these tests exercise — they cover the boundary
- * concern named in this file's header. `InventoryController` now resolves the
- * membership's store-access policy server-side (§XII, #606), so it needs a
- * MembershipRepository. This stub grants every store, keeping the subject of
- * these tests unchanged. Cross-store DENIAL is covered in
- * `test/inventory/isolation/cross-store-authz.spec.ts`.
- */
-class AllowAllMembershipRepository {
-  async findActiveMembership(): Promise<{ membershipId: string; storeAccessKind: string }> {
-    return { membershipId: '0a000000-0000-7000-8000-0000000000e1', storeAccessKind: 'all' };
-  }
-  async canAccessStore(): Promise<boolean> {
-    return true;
-  }
-}
-
 let app: INestApplication;
 let fake: FakeInventoryService;
 let contextGuard: ConfigurableContextGuard;
@@ -103,7 +85,6 @@ beforeAll(async () => {
     controllers: [InventoryController],
     providers: [
       { provide: InventoryService, useValue: fake },
-      { provide: MembershipRepository, useValue: new AllowAllMembershipRepository() },
     ],
   })
     .overrideGuard(DashboardAuthGuard)
@@ -132,6 +113,7 @@ function tenantLevelCtx(): ResolvedContext {
     storeId: null,
     isPlatformAdmin: false,
     source: 'session',
+    storeAccess: { kind: 'all' },
   };
 }
 

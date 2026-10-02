@@ -20,12 +20,14 @@
  * nulls it — so a `store_access.kind = 'specific'` member reached every store
  * in the tenant, for READ and for WRITE, on the mandatory happy path.
  *
- * Correct behaviour: the membership's real store-access policy is consulted via
- * `MembershipRepository.canAccessStore` (the pattern already used by
- * `StoresService.read`). A store outside the caller's grant is a NON-DISCLOSING
- * 404 (FR-051) — never 403, which would leak existence.
+ * Correct behaviour: the membership's real store access decides, as resolved by
+ * TenantContextGuard into `ctx.storeAccess` and read through the shared
+ * `resolveStoreScope` rule (RT-131 / RT-61). A store outside the caller's grant
+ * is a NON-DISCLOSING 404 (FR-051) — never 403, which would leak existence.
+ * The end-to-end proof against a NOBYPASSRLS role is
+ * session-store-authz.rls.spec.ts.
  *
- * Docker-FREE — controller + guards + fake service/repository.
+ * Docker-FREE — controller + guards + fake service.
  */
 import 'reflect-metadata';
 
@@ -35,7 +37,6 @@ import request from 'supertest';
 
 import { DashboardAuthGuard } from '../../../src/auth/dashboard-auth.guard';
 import { GlobalExceptionFilter } from '../../../src/common/exception.filter';
-import { MembershipRepository } from '../../../src/context/membership.repository';
 import { TenantContextGuard } from '../../../src/context/tenant-context.guard';
 import type { ResolvedContext } from '../../../src/context/types';
 import { InventoryController } from '../../../src/inventory/inventory.controller';
@@ -78,28 +79,6 @@ class FakeInventoryService {
   }
 }
 
-/**
- * Mirrors the real repository's contract: `canAccessStore` returns false for a
- * store the membership has no grant for. Here the member is `kind: 'specific'`
- * with a grant to STORE_GRANTED only.
- */
-class FakeMembershipRepository {
-  public canAccessStoreCalls: string[] = [];
-
-  async findActiveMembership(): Promise<{ membershipId: string; storeAccessKind: string } | null> {
-    return { membershipId: MEMBERSHIP_A, storeAccessKind: 'specific' };
-  }
-
-  async canAccessStore(
-    _membershipId: string,
-    _tenantId: string,
-    storeId: string,
-  ): Promise<boolean> {
-    this.canAccessStoreCalls.push(storeId);
-    return storeId === STORE_GRANTED;
-  }
-}
-
 class ConfigurableContextGuard implements CanActivate {
   public context: ResolvedContext | null = null;
   canActivate(ctx: ExecutionContext): boolean {
@@ -116,19 +95,16 @@ class PassAuthGuard implements CanActivate {
 
 let app: INestApplication;
 let fake: FakeInventoryService;
-let memberships: FakeMembershipRepository;
 let contextGuard: ConfigurableContextGuard;
 
 beforeAll(async () => {
   fake = new FakeInventoryService();
-  memberships = new FakeMembershipRepository();
   contextGuard = new ConfigurableContextGuard();
 
   const moduleRef = await Test.createTestingModule({
     controllers: [InventoryController],
     providers: [
       { provide: InventoryService, useValue: fake },
-      { provide: MembershipRepository, useValue: memberships },
     ],
   })
     .overrideGuard(DashboardAuthGuard)
@@ -148,7 +124,6 @@ afterAll(async () => {
 
 beforeEach(() => {
   fake.touched = false;
-  memberships.canAccessStoreCalls = [];
 });
 
 function http() {
@@ -167,6 +142,9 @@ function nullStoreCtx(): ResolvedContext {
     storeId: null,
     isPlatformAdmin: false,
     source: 'session',
+    // A 'specific' member granted STORE_GRANTED only (as TenantContextGuard
+    // resolves it from store_access).
+    storeAccess: { kind: 'specific', storeIds: [STORE_GRANTED] },
   };
 }
 
@@ -177,6 +155,7 @@ function platformAdminCtx(): ResolvedContext {
     storeId: null,
     isPlatformAdmin: true,
     source: 'session',
+    storeAccess: { kind: 'all' },
   };
 }
 
@@ -248,7 +227,32 @@ describe('inventory cross-store authorization — null active_store_id must not 
       .get(`/api/inventory/v1/on-hand/${STORE_GRANTED}/${PRODUCT_REF}`)
       .expect(200);
     expect(fake.touched).toBe(true);
-    expect(memberships.canAccessStoreCalls).toContain(STORE_GRANTED);
+  });
+
+  it('POST transfer TO a non-granted destination store is a non-disclosing 404 (RT-61)', async () => {
+    contextGuard.context = nullStoreCtx();
+    await http()
+      .post('/api/inventory/v1/transfers')
+      .set('Idempotency-Key', 'cross-store-authz-transfer-0002')
+      .send({
+        sourceStoreId: STORE_GRANTED,
+        destinationStoreId: STORE_FOREIGN,
+        tenantProductRef: PRODUCT_REF,
+        quantity: '5.0000',
+        stockingUnit: 'ea',
+      })
+      .expect(404);
+    expect(fake.touched).toBe(false);
+  });
+
+  it('a session whose store access was not resolved is denied (fail closed)', async () => {
+    const ctx = nullStoreCtx();
+    delete (ctx as { storeAccess?: unknown }).storeAccess;
+    contextGuard.context = ctx;
+    await http()
+      .get(`/api/inventory/v1/on-hand/${STORE_GRANTED}/${PRODUCT_REF}`)
+      .expect(404);
+    expect(fake.touched).toBe(false);
   });
 
   it('a platform admin bypasses the store-access check (parity with StoresService.read)', async () => {
@@ -257,7 +261,6 @@ describe('inventory cross-store authorization — null active_store_id must not 
       .get(`/api/inventory/v1/on-hand/${STORE_FOREIGN}/${PRODUCT_REF}`)
       .expect(200);
     expect(fake.touched).toBe(true);
-    expect(memberships.canAccessStoreCalls).toHaveLength(0);
   });
 });
 
