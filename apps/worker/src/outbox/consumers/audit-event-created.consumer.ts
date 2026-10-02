@@ -48,6 +48,7 @@
  */
 import { z } from "zod";
 import type { OutboxConsumer, OutboxEventEnvelope } from "@data-pulse-2/shared";
+import { QUEUE_NAMES } from "@data-pulse-2/shared";
 
 // ---------------------------------------------------------------------------
 // Payload schema (mirrors AuditFanoutJobSchema in audit-fanout.processor.ts)
@@ -85,7 +86,7 @@ export interface AuditQueueLike {
 }
 
 /** BullMQ queue name and job name — mirrors the producer/processor constants. */
-export const OUTBOX_AUDIT_QUEUE_NAME = "audit";
+export const OUTBOX_AUDIT_QUEUE_NAME = QUEUE_NAMES.audit;
 export const OUTBOX_AUDIT_JOB_NAME = "audit-fanout";
 
 /**

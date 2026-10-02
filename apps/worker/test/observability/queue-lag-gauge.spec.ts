@@ -244,7 +244,7 @@ describe("createQueueLagCallback — per-queue error isolation", () => {
     const auditQueue = {} as unknown as Queue;
     const queuesMap = new Map<string, Queue>([
       ["email", emailQueue],
-      ["audit-fanout", auditQueue],
+      ["audit", auditQueue],
     ]);
 
     const callback = createQueueLagCallback(queuesMap, async (queue) => {
@@ -264,9 +264,9 @@ describe("createQueueLagCallback — per-queue error isolation", () => {
 
     jest.restoreAllMocks();
 
-    // "audit-fanout" observed (lag 0); "email" skipped due to throw
+    // "audit" observed (lag 0); "email" skipped due to throw
     expect(observations).toHaveLength(1);
-    expect(observations[0]?.queue).toBe("audit-fanout");
+    expect(observations[0]?.queue).toBe("audit");
     // One stderr line written for the "email" error
     expect(stderrLines).toHaveLength(1);
     const logged = JSON.parse(stderrLines[0] ?? "{}") as Record<string, string>;

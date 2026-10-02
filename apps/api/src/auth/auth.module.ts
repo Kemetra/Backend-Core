@@ -77,9 +77,10 @@ import { EmailQueueProducer } from "./email-queue.producer";
 import { IoredisIdempotencyAdapter } from "./ioredis-idempotency-adapter";
 import { RateLimiter, type RedisLike } from "./rate-limit";
 import { SessionRepository } from "./session.repository";
+import { QUEUE_NAMES } from "@data-pulse-2/shared";
 
 /** Name of the BullMQ queue both the producer and the (future) worker bind to. */
-export const EMAIL_QUEUE_NAME = "email";
+export const EMAIL_QUEUE_NAME = QUEUE_NAMES.email;
 
 /**
  * Factory for the `REDIS_CLIENT` provider. Extracted so a focused unit test

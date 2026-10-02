@@ -172,6 +172,15 @@ only after the Track C first slice (P7) ships.
 | `queue_dead_letter_total` | counter | `queue` | FR-B-003, spec §7.5 |
 | `queue_retry_total` | counter | `queue` | FR-B-003, spec §7.5 |
 
+`queue` values (RT-125). The lag gauge observes the queues the worker
+consumes, taken from the shared `QUEUE_NAMES`: `email`, `audit`,
+`audit-retention`, `sale-processing`, `outbox-retention`. The three delivery
+counters also carry `outbox-drainer`, which is the outbox drainer's own
+retries and dead-letters. The drainer is not a BullMQ queue, so it has no lag.
+Before RT-125, the drainer reported as `audit-fanout`, which is a job name,
+and the gauge observed `audit-fanout`, `session-revoke` and `soft-delete-sweep`,
+none of which is a consumed queue.
+
 ### 3.3 Workers
 
 | Signal | Type | Labels | Source FR |
