@@ -1,6 +1,6 @@
 # @data-pulse-2/api
 
-NestJS HTTP API for the Data-Pulse-2 backend foundation.
+NestJS HTTP API for Retail Tower OS Backend-Core.
 
 ## Current Surface
 
