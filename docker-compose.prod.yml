@@ -84,6 +84,9 @@ services:
       METRICS_PORT: "9464"
       LOG_LEVEL: ${LOG_LEVEL:-info}
       NODE_ENV: production
+      # RT-152: which deployment this is (dev|staging|pilot|prod). Connector feed
+      # calls from a registration of a different environment are refused (403).
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:?DEPLOYMENT_ENVIRONMENT required (dev|staging|pilot|prod)}
       # Exactly one trusted reverse-proxy hop (the Caddy service).
       TRUST_PROXY: "1"
       # Migration-status gauge reads the drizzle SQL dir (shipped into the image).

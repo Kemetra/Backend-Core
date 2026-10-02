@@ -36,6 +36,8 @@ services:
       METRICS_PORT: "9464"
       LOG_LEVEL: info
       NODE_ENV: production
+      # RT-152: required by the production boot guard; the fuzz stack is throwaway dev.
+      DEPLOYMENT_ENVIRONMENT: dev
       DB_MIGRATIONS_DIR: /packages/db/drizzle
       # No real Clerk: the cookie-auth surface never calls it.
       CLERK_SECRET_KEY: sk_test_fuzz_dummy_not_a_real_key
