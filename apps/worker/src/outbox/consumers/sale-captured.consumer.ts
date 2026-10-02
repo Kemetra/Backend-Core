@@ -51,6 +51,7 @@
  */
 import { z } from "zod";
 import type { OutboxConsumer, OutboxEventEnvelope } from "@data-pulse-2/shared";
+import { QUEUE_NAMES } from "@data-pulse-2/shared";
 
 // ---------------------------------------------------------------------------
 // Payload schema — IDs only (no PII / money / line amounts; FR-042 / FR-092)
@@ -87,7 +88,7 @@ export interface SaleProcessingQueueLike {
  * is the transport channel the `SaleWorker` consumes. The job name is the BullMQ
  * job identifier; the `SaleProcessingJob` envelope shape is the actual contract.
  */
-export const OUTBOX_SALE_PROCESSING_QUEUE_NAME = "sale-processing";
+export const OUTBOX_SALE_PROCESSING_QUEUE_NAME = QUEUE_NAMES.saleProcessing;
 export const OUTBOX_SALE_PROCESSING_JOB_NAME = "sale-processing";
 
 // ---------------------------------------------------------------------------

@@ -23,8 +23,9 @@ import {
   type WorkerLike,
   WORKER_FACTORY,
 } from "../email/email.worker";
+import { QUEUE_NAMES } from "@data-pulse-2/shared";
 
-export const AUDIT_RETENTION_QUEUE_NAME = "audit-retention";
+export const AUDIT_RETENTION_QUEUE_NAME = QUEUE_NAMES.auditRetention;
 
 export type { JobLike, WorkerFactory, WorkerLike } from "../email/email.worker";
 export { WORKER_FACTORY } from "../email/email.worker";

@@ -58,6 +58,7 @@ import {
   type WorkerLike,
   WORKER_FACTORY,
 } from "../email/email.worker";
+import { QUEUE_NAMES } from "@data-pulse-2/shared";
 
 /**
  * The queue name shared with the API-side `AuditQueueProducer`. Mirrors
@@ -72,7 +73,7 @@ import {
  * queue can carry many job names; only `"audit-fanout"` is currently
  * defined.
  */
-export const AUDIT_QUEUE_NAME = "audit";
+export const AUDIT_QUEUE_NAME = QUEUE_NAMES.audit;
 
 /**
  * Re-export the shared job-handler / job-like shapes from `email.worker`

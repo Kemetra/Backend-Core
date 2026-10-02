@@ -42,6 +42,7 @@ import {
   type DefaultWorkerOptionsShape,
 } from "@data-pulse-2/shared/queues/queue-config";
 import { EmailProcessor } from "./email.processor";
+import { QUEUE_NAMES } from "@data-pulse-2/shared";
 
 /**
  * The queue name shared with `EmailQueueProducer`. Mirrors
@@ -51,7 +52,7 @@ import { EmailProcessor } from "./email.processor";
  * the string so any future drift fails CI loudly. We deliberately do
  * NOT import from `apps/api` — apps must not depend on each other.
  */
-export const EMAIL_QUEUE_NAME = "email";
+export const EMAIL_QUEUE_NAME = QUEUE_NAMES.email;
 
 /**
  * The handler the BullMQ worker invokes for each job. We narrow to

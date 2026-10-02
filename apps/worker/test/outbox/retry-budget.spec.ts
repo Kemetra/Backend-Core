@@ -231,7 +231,7 @@ describe("T596: drainer queue metric emission (retry / dead-letter / failed)", (
     };
   }
 
-  it("retry branch (attempts < MAX_ATTEMPTS): records queue_retry_total + queue_failed_total with queue='audit-fanout'", async () => {
+  it("retry branch (attempts < MAX_ATTEMPTS): records queue_retry_total + queue_failed_total with queue='outbox-drainer'", async () => {
     if (maybeSkip()) return;
 
     class PoisonError extends Error {
@@ -260,11 +260,11 @@ describe("T596: drainer queue metric emission (retry / dead-letter / failed)", (
     await drainer.tick();
 
     expect(retrySpy).toHaveBeenCalledTimes(1);
-    expect(retrySpy).toHaveBeenCalledWith({ queue: "audit-fanout" });
+    expect(retrySpy).toHaveBeenCalledWith({ queue: "outbox-drainer" });
 
     expect(failedSpy).toHaveBeenCalledTimes(1);
     expect(failedSpy).toHaveBeenCalledWith({
-      queue: "audit-fanout",
+      queue: "outbox-drainer",
       // PoisonError is not in WORKER_ERROR_CLASSES → sanitizes to "UnknownError".
       error_class: "UnknownError",
     });
@@ -272,7 +272,7 @@ describe("T596: drainer queue metric emission (retry / dead-letter / failed)", (
     expect(deadLetterSpy).not.toHaveBeenCalled();
   });
 
-  it("dead-letter branch (attempts >= MAX_ATTEMPTS): records queue_dead_letter_total + queue_failed_total with queue='audit-fanout'", async () => {
+  it("dead-letter branch (attempts >= MAX_ATTEMPTS): records queue_dead_letter_total + queue_failed_total with queue='outbox-drainer'", async () => {
     if (maybeSkip()) return;
 
     class PoisonError extends Error {
@@ -301,11 +301,11 @@ describe("T596: drainer queue metric emission (retry / dead-letter / failed)", (
     await drainer.tick();
 
     expect(deadLetterSpy).toHaveBeenCalledTimes(1);
-    expect(deadLetterSpy).toHaveBeenCalledWith({ queue: "audit-fanout" });
+    expect(deadLetterSpy).toHaveBeenCalledWith({ queue: "outbox-drainer" });
 
     expect(failedSpy).toHaveBeenCalledTimes(1);
     expect(failedSpy).toHaveBeenCalledWith({
-      queue: "audit-fanout",
+      queue: "outbox-drainer",
       error_class: "UnknownError",
     });
 
@@ -359,11 +359,11 @@ describe("T596: drainer queue metric emission (retry / dead-letter / failed)", (
     await drainer.tick();
 
     expect(retrySpy).toHaveBeenCalledTimes(1);
-    expect(retrySpy).toHaveBeenCalledWith({ queue: "audit-fanout" });
+    expect(retrySpy).toHaveBeenCalledWith({ queue: "outbox-drainer" });
 
     expect(failedSpy).toHaveBeenCalledTimes(1);
     expect(failedSpy).toHaveBeenCalledWith({
-      queue: "audit-fanout",
+      queue: "outbox-drainer",
       // "UnroutableEventType" is not in WORKER_ERROR_CLASSES → "UnknownError".
       error_class: "UnknownError",
     });

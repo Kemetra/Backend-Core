@@ -35,6 +35,7 @@ import {
   WORKER_OUTBOX_METRIC_NAMES,
   WORKER_OUTBOX_EVENT_TYPES,
   WORKER_QUEUE_NAMES,
+  WORKER_DELIVERY_QUEUE_LABELS,
   WORKER_JOB_NAMES,
   WORKER_ERROR_CLASSES,
   createQueueLagCallback,
@@ -51,6 +52,14 @@ import {
   registerQueueLagGauge,
   sanitizeErrorClass,
 } from "../../src/observability/metrics/worker.metrics";
+import { QUEUE_NAMES } from "@data-pulse-2/shared";
+import { EMAIL_QUEUE_NAME } from "../../src/email/email.worker";
+import { AUDIT_QUEUE_NAME } from "../../src/audit/audit.worker";
+import { AUDIT_RETENTION_QUEUE_NAME } from "../../src/audit/audit-retention.worker";
+import { SALE_PROCESSING_QUEUE_NAME } from "../../src/sales/sale.worker";
+import { OUTBOX_RETENTION_QUEUE_NAME } from "../../src/outbox/retention.worker";
+import { OUTBOX_AUDIT_QUEUE_NAME } from "../../src/outbox/consumers/audit-event-created.consumer";
+import { OUTBOX_SALE_PROCESSING_QUEUE_NAME } from "../../src/outbox/consumers/sale-captured.consumer";
 
 // ---------------------------------------------------------------------------
 // 1. Signal-name registry: every worker metric is in ALLOWED_METRIC_LABELS
@@ -190,19 +199,45 @@ describe("T465 — label policy: every worker metric's labels pass validateMetri
 // ---------------------------------------------------------------------------
 
 describe("T465 — bounded enums: queue, job_name, and error_class are documented", () => {
-  it("WORKER_QUEUE_NAMES contains the five plan §7 queues", () => {
+  it("RT-125: WORKER_QUEUE_NAMES is exactly the five queues the worker consumes", () => {
     const expected = [
       "email",
-      "audit-fanout",
+      "audit",
       "audit-retention",
-      "session-revoke",
-      "soft-delete-sweep",
+      "sale-processing",
+      "outbox-retention",
     ];
     expect([...WORKER_QUEUE_NAMES].sort()).toEqual([...expected].sort());
   });
 
-  it("WORKER_JOB_NAMES mirrors WORKER_QUEUE_NAMES 1:1 (plan §7)", () => {
-    expect([...WORKER_JOB_NAMES].sort()).toEqual([...WORKER_QUEUE_NAMES].sort());
+  it("RT-125: WORKER_QUEUE_NAMES is the shared QUEUE_NAMES set (producers, consumers and gauge agree)", () => {
+    expect([...WORKER_QUEUE_NAMES].sort()).toEqual(Object.values(QUEUE_NAMES).sort());
+  });
+
+  it("RT-125: every consumer's queue constant is in the observed set", () => {
+    for (const name of [
+      EMAIL_QUEUE_NAME,
+      AUDIT_QUEUE_NAME,
+      AUDIT_RETENTION_QUEUE_NAME,
+      SALE_PROCESSING_QUEUE_NAME,
+      OUTBOX_RETENTION_QUEUE_NAME,
+      OUTBOX_AUDIT_QUEUE_NAME,
+      OUTBOX_SALE_PROCESSING_QUEUE_NAME,
+    ]) {
+      expect(WORKER_QUEUE_NAMES).toContain(name);
+    }
+  });
+
+  it("RT-125: delivery-counter labels add only the outbox drainer", () => {
+    expect([...WORKER_DELIVERY_QUEUE_LABELS].sort()).toEqual(
+      [...WORKER_QUEUE_NAMES, "outbox-drainer"].sort(),
+    );
+  });
+
+  it("WORKER_JOB_NAMES is unchanged by RT-125 (no job-label churn)", () => {
+    expect([...WORKER_JOB_NAMES].sort()).toEqual(
+      ["audit-fanout", "audit-retention", "email", "session-revoke", "soft-delete-sweep"],
+    );
   });
 
   it("WORKER_ERROR_CLASSES contains the plan §7.1 allowlist (including UnknownError catch-all)", () => {
