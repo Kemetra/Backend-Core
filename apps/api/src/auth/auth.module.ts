@@ -186,6 +186,9 @@ export class AlwaysAllowRedis implements RedisLike {
   async pttl(_key: string): Promise<number> {
     return -1;
   }
+  async decr(_key: string): Promise<number> {
+    return 0;
+  }
   async get(_key: string): Promise<string | null> {
     return null;
   }

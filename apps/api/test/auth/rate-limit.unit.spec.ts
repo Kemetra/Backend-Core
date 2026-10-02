@@ -40,6 +40,8 @@ function makeMockRedis(overrides: Partial<{
     incr: jest.fn<Promise<number>, [string]>().mockResolvedValue(overrides.incrResult ?? 1),
     pexpireNx: jest.fn<Promise<number>, [string, number]>().mockResolvedValue(overrides.pexpireNxResult ?? 1),
     pttl: jest.fn<Promise<number>, [string]>().mockResolvedValue(overrides.pttlResult ?? 900_000),
+    decr: jest.fn<Promise<number>, [string]>().mockResolvedValue(0),
+    del: jest.fn<Promise<number>, [string]>().mockResolvedValue(1),
   };
 }
 

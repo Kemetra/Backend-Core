@@ -4,7 +4,8 @@
  * Generic fixed-window counter backed by Redis. The same primitive serves
  * the three buckets defined in research.md §PQ-4:
  *
- *   - per-account failed sign-ins: 5 / 15 minutes
+ *   - per-account failed sign-ins: 5 / 15 minutes (a hit is released
+ *     again unless the sign-in fails authentication — RT-136)
  *   - per-IP failed sign-ins:      30 / hour
  *   - per-IP password-reset:       100 / day  (wired by slice 3c)
  *
@@ -46,6 +47,10 @@ export interface RedisLike {
   pexpireNx(key: string, ttlMs: number): Promise<number>;
   /** Milliseconds until expiry. -1 = no TTL set, -2 = key missing. */
   pttl(key: string): Promise<number>;
+  /** Atomically decrement `key` and return the new value. */
+  decr(key: string): Promise<number>;
+  /** Delete `key`; returns the number of keys removed. */
+  del(key: string): Promise<number>;
 }
 
 /**
@@ -133,5 +138,20 @@ export class RateLimiter {
     const allowed = count <= bucket.limit;
 
     return { allowed, count, remaining, resetMs };
+  }
+
+  /**
+   * Give back one hit taken by {@link check}, for a hit that turned out not
+   * to count — e.g. a sign-in that did not fail authentication (RT-136).
+   * Reserving with `check` first and releasing afterwards keeps the limit
+   * atomic under concurrent attempts.
+   *
+   * If the window expired in between, DECR recreates the key below zero with
+   * no TTL; that key is deleted so the next window starts clean.
+   */
+  async release(bucketName: string, identifier: string): Promise<void> {
+    const key = buildKey(bucketName, identifier);
+    const count = await this.redis.decr(key);
+    if (count < 0) await this.redis.del(key);
   }
 }

@@ -51,6 +51,7 @@ import {
   type PasswordResetConfirmInput,
   type PasswordResetRequestInput,
   type SignInInput,
+  type SignInResult,
 } from "./dto";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import {
@@ -110,10 +111,26 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<SignInResponseBody> {
     const ip = readClientIp(req);
+    // RT-136: the per-account budget counts FAILED sign-ins only
+    // (research.md §PQ-4). The hit is reserved atomically up front, so
+    // concurrent guesses cannot overrun the limit, and released again
+    // unless the attempt fails authentication. The per-IP budget still
+    // counts every attempt.
     await this.guardRateLimit("signin_account", body.email, RATE_LIMIT_BUCKETS.signInPerAccount);
-    await this.guardRateLimit("signin_ip", ip, RATE_LIMIT_BUCKETS.signInPerIp);
-
-    const result = await this.authService.signIn(body);
+    let result: SignInResult;
+    try {
+      await this.guardRateLimit("signin_ip", ip, RATE_LIMIT_BUCKETS.signInPerIp);
+      result = await this.authService.signIn(body);
+    } catch (err) {
+      // Every credential failure (unknown email, wrong password, SSO-only,
+      // deleted) is the same UnauthorizedException, so all of them count
+      // alike and the lockout does not disclose account existence.
+      if (!(err instanceof UnauthorizedException)) {
+        await this.releaseAccountAttempt(body.email);
+      }
+      throw err;
+    }
+    await this.releaseAccountAttempt(body.email);
 
     setSessionCookie(res, result.sessionCredential, result.absoluteExpiresAt);
 
@@ -251,6 +268,16 @@ export class AuthController {
   // ---------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------
+
+  /**
+   * Hand back the per-account hit for a sign-in that did not fail
+   * authentication (RT-136). Best-effort: if the release itself fails, the
+   * hit stays counted — over-counting is the safe direction, and a
+   * successful sign-in must not turn into a 500 after its session exists.
+   */
+  private async releaseAccountAttempt(email: string): Promise<void> {
+    await this.rateLimiter.release("signin_account", email).catch(() => undefined);
+  }
 
   private async guardRateLimit(
     bucket: string,

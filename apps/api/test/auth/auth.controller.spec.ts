@@ -129,6 +129,18 @@ class FakeRedis implements RedisLike {
     if (live.expiresAt === null) return -1;
     return Math.max(0, live.expiresAt - Date.now());
   }
+  async decr(key: string): Promise<number> {
+    const live = this.gc(key);
+    if (!live) {
+      this.store.set(key, { value: -1, expiresAt: null });
+      return -1;
+    }
+    live.value -= 1;
+    return live.value;
+  }
+  async del(key: string): Promise<number> {
+    return this.store.delete(key) ? 1 : 0;
+  }
 }
 
 function makeEmailSpy(): jest.Mocked<EmailJobEnqueuer> {
@@ -346,6 +358,96 @@ describe("POST /api/v1/auth/signin", () => {
       .send({ email: target, password: "x" });
     expect(blocked.status).toBe(429);
     expectErrorEnvelope(blocked.body, "rate_limited");
+  });
+});
+
+// -----------------------------------------------------------------------
+// RT-136 — the per-account budget counts FAILED sign-ins only
+// (research.md §PQ-4: 5 failed sign-ins / 15 minutes). RT-120 A1: it used
+// to count every attempt, so correct sign-ins also ate the budget.
+// -----------------------------------------------------------------------
+
+describe("RT-136 — per-account sign-in lockout counts failures only", () => {
+  const FIFTEEN_MINUTES = 15 * 60 * 1000;
+
+  function signIn(email: string, password: string) {
+    return http().post("/api/v1/auth/signin").send({ email, password });
+  }
+
+  async function failTimes(email: string, n: number): Promise<number[]> {
+    const statuses: number[] = [];
+    for (let i = 0; i < n; i++) {
+      statuses.push((await signIn(email, "wrong-password")).status);
+    }
+    return statuses;
+  }
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("successful sign-ins never consume the budget", async () => {
+    if (maybeSkip()) return;
+    for (let i = 0; i < 6; i++) {
+      expect((await signIn(ALICE_EMAIL, ALICE_PASSWORD)).status).toBe(200);
+    }
+    // All five failures are still available after six successes.
+    expect(await failTimes(ALICE_EMAIL, 5)).toEqual([401, 401, 401, 401, 401]);
+    expect((await signIn(ALICE_EMAIL, "wrong-password")).status).toBe(429);
+  });
+
+  it("a correct sign-in between failures does not count toward the lockout", async () => {
+    if (maybeSkip()) return;
+    expect(await failTimes(ALICE_EMAIL, 4)).toEqual([401, 401, 401, 401]);
+    expect((await signIn(ALICE_EMAIL, ALICE_PASSWORD)).status).toBe(200);
+    // The success did not take the fifth slot: one failure is still a 401.
+    expect((await signIn(ALICE_EMAIL, "wrong-password")).status).toBe(401);
+    expect((await signIn(ALICE_EMAIL, "wrong-password")).status).toBe(429);
+  });
+
+  it("five failures lock the account — the correct password is refused too", async () => {
+    if (maybeSkip()) return;
+    expect(await failTimes(ALICE_EMAIL, 5)).toEqual([401, 401, 401, 401, 401]);
+    const locked = await signIn(ALICE_EMAIL, ALICE_PASSWORD);
+    expect(locked.status).toBe(429);
+    expectErrorEnvelope(locked.body, "rate_limited");
+    expect(locked.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("the account recovers once the 15-minute window has passed", async () => {
+    if (maybeSkip()) return;
+    expect(await failTimes(ALICE_EMAIL, 5)).toEqual([401, 401, 401, 401, 401]);
+    expect((await signIn(ALICE_EMAIL, ALICE_PASSWORD)).status).toBe(429);
+
+    const realNow = Date.now.bind(Date);
+    jest.spyOn(Date, "now").mockImplementation(() => realNow() + FIFTEEN_MINUTES + 1);
+    expect((await signIn(ALICE_EMAIL, ALICE_PASSWORD)).status).toBe(200);
+  });
+
+  it("an unknown email and a real account lock identically (no existence leak)", async () => {
+    if (maybeSkip()) return;
+    const sequence = async (email: string) => {
+      const statuses = await failTimes(email, 5);
+      const blocked = await signIn(email, "wrong-password");
+      return { statuses, blocked: blocked.status, code: blocked.body?.error?.code };
+    };
+    const real = await sequence(ALICE_EMAIL);
+    const ghost = await sequence("rt136-ghost@example.com");
+    expect(ghost).toEqual(real);
+    expect(real).toEqual({
+      statuses: [401, 401, 401, 401, 401],
+      blocked: 429,
+      code: "rate_limited",
+    });
+  });
+
+  it("the per-IP limit still counts every attempt, successes included", async () => {
+    if (maybeSkip()) return;
+    // 30 / hour per IP (research.md §PQ-4), unchanged by RT-136.
+    for (let i = 0; i < 30; i++) {
+      expect((await signIn(ALICE_EMAIL, ALICE_PASSWORD)).status).toBe(200);
+    }
+    expect((await signIn(ALICE_EMAIL, ALICE_PASSWORD)).status).toBe(429);
   });
 });
 

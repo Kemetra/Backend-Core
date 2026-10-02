@@ -13,7 +13,7 @@
  * surfaces:
  *
  *   1. Rate-limit surface (`RedisLike` from `rate-limit.ts`):
- *      `incr`, `pexpireNx`, `pttl`
+ *      `incr`, `pexpireNx`, `pttl`, `decr`, `del`
  *   2. Idempotency store surface (`RedisLike` from `packages/shared`):
  *      `get`, `set(key, value, { px })`
  *   3. In-progress marker surface (`InflightRedis` from `in-progress-marker.ts`):
@@ -67,6 +67,10 @@ export class IoredisIdempotencyAdapter {
 
   async incr(key: string): Promise<number> {
     return this.client.incr(key);
+  }
+
+  async decr(key: string): Promise<number> {
+    return this.client.decr(key);
   }
 
   /**
