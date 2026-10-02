@@ -260,12 +260,12 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const tId = tenantId(execCtx) ?? "no-tenant";
     const route = `${method}:${routePath}`;
 
-    const storeKey = composeStoreKey(method, routePath, cId, headerValue, req.params);
+    const storeKey = composeStoreKey({ method, routePath, params: req.params }, cId, headerValue);
     // K2: the pre-RT-155 template-only key, probed on param routes only.
     const legacyKey =
       paramsSegment(req.params) === ""
         ? null
-        : composeStoreKey(method, routePath, cId, headerValue);
+        : composeStoreKey({ method, routePath }, cId, headerValue);
     const replayForbidden = options.replay === "forbid";
     const tuple = composeTuple(tId, storeKey);
     const fp = bodyFingerprint(req.body);

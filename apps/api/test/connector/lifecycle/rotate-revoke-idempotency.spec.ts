@@ -264,7 +264,7 @@ describe("RT-155 — rotate is keyed per instance and never replayed", () => {
     if (skip()) return;
     const a = await instanceWithCredential("erp-rt155-e.example");
     const key = "rt155-rotate-key-0000000000000004";
-    const legacyKey = composeStoreKey("POST", ROTATE_TEMPLATE, ACTOR_A, key);
+    const legacyKey = composeStoreKey({ method: "POST", routePath: ROTATE_TEMPLATE }, ACTOR_A, key);
     await env!.admin.query(
       `INSERT INTO idempotency_keys
          (id, tenant_id, store_id, client_id, key, request_hash, response_status, response_body, expires_at)

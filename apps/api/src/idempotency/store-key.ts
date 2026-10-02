@@ -28,14 +28,15 @@ export function paramsSegment(params: RouteParams): string {
   return json === "{}" ? "" : json;
 }
 
-export function composeStoreKey(
-  method: string,
-  routePath: string,
-  cId: string,
-  headerKey: string,
-  params?: RouteParams,
-): string {
-  const segment = paramsSegment(params);
-  const route = segment === "" ? routePath : `${routePath}:${segment}`;
-  return `${method}:${route}:${cId}:${headerKey}`;
+/** The matched route: HTTP method, template, and (optionally) resolved params. */
+export interface RouteRef {
+  method: string;
+  routePath: string;
+  params?: RouteParams;
+}
+
+export function composeStoreKey(route: RouteRef, cId: string, headerKey: string): string {
+  const segment = paramsSegment(route.params);
+  const path = segment === "" ? route.routePath : `${route.routePath}:${segment}`;
+  return `${route.method}:${path}:${cId}:${headerKey}`;
 }

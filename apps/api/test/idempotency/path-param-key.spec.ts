@@ -199,13 +199,13 @@ const EXPIRES = (): Date => new Date(Date.now() + 72 * 60 * 60 * 1000);
 describe("RT-155 K1 — store-key composition", () => {
   it("pins the key of a route without params as byte-identical to the pre-RT-155 format", () => {
     const expected = `POST:/api/v1/memberships/invite:${USER}:${KEY}`;
-    expect(composeStoreKey("POST", "/api/v1/memberships/invite", USER, KEY)).toBe(expected);
-    expect(composeStoreKey("POST", "/api/v1/memberships/invite", USER, KEY, {})).toBe(expected);
-    expect(composeStoreKey("POST", "/api/v1/memberships/invite", USER, KEY, undefined)).toBe(expected);
+    expect(composeStoreKey({ method: "POST", routePath: "/api/v1/memberships/invite" }, USER, KEY)).toBe(expected);
+    expect(composeStoreKey({ method: "POST", routePath: "/api/v1/memberships/invite", params: {} }, USER, KEY)).toBe(expected);
+    expect(composeStoreKey({ method: "POST", routePath: "/api/v1/memberships/invite", params: undefined }, USER, KEY)).toBe(expected);
   });
 
   it("appends the canonical, sorted params on a param route", () => {
-    expect(composeStoreKey("POST", "/s/:b/:a", USER, KEY, { b: "2", a: "1" })).toBe(
+    expect(composeStoreKey({ method: "POST", routePath: "/s/:b/:a", params: { b: "2", a: "1" } }, USER, KEY)).toBe(
       `POST:/s/:b/:a:{"a":"1","b":"2"}:${USER}:${KEY}`,
     );
     expect(paramsSegment({ id: undefined })).toBe("");
@@ -272,7 +272,7 @@ describe("RT-155 — interceptor over a FakeRedis + in-memory pg mirror", () => 
   });
 
   describe("K2 — legacy template-only key probe", () => {
-    const legacyKey = composeStoreKey("POST", ACT_TEMPLATE, USER, KEY);
+    const legacyKey = composeStoreKey({ method: "POST", routePath: ACT_TEMPLATE }, USER, KEY);
 
     it("AC7: a completed legacy row (same body) → 409, neither replayed nor executed", async () => {
       const conflictSpy = jest.spyOn(apiMetrics, "recordIdempotencyConflict");
@@ -298,7 +298,7 @@ describe("RT-155 — interceptor over a FakeRedis + in-memory pg mirror", () => 
     });
 
     it("a legacy rotate row holding a secret is never replayed", async () => {
-      const legacyRotate = composeStoreKey("POST", ROTATE_TEMPLATE, USER, KEY);
+      const legacyRotate = composeStoreKey({ method: "POST", routePath: ROTATE_TEMPLATE }, USER, KEY);
       const legacySecret = `${SECRET_PREFIX}-legacy`;
       await store.save(TENANT, null, USER, legacyRotate, bodyFingerprint({}), { status: 201, body: { secret: legacySecret } }, EXPIRES());
       const res = await http().post(`${BASE}/instances/A/rotate`).set("Idempotency-Key", KEY).send({}).expect(409);
@@ -352,7 +352,7 @@ describe("RT-155 — interceptor over a FakeRedis + in-memory pg mirror", () => 
     });
 
     it("a stored marker is never replayed, even on a route without the option", async () => {
-      const newKey = composeStoreKey("POST", ACT_TEMPLATE, USER, KEY, { ref: "A" });
+      const newKey = composeStoreKey({ method: "POST", routePath: ACT_TEMPLATE, params: { ref: "A" } }, USER, KEY);
       await store.save(TENANT, null, USER, newKey, bodyFingerprint({ n: 1 }), { status: 202, body: nonReplayableMarker({}) }, EXPIRES());
       await http().post(`${BASE}/things/A/act`).set("Idempotency-Key", KEY).send({ n: 1 }).expect(409);
       expect(CALLS.get("act:A")).toBeUndefined();
@@ -384,7 +384,7 @@ describe("RT-155 — lost-claim path (claim race resolved by a completed row)", 
   beforeEach(() => CALLS.clear());
 
   it("a forbid route answers 409 instead of replaying", async () => {
-    const key = composeStoreKey("POST", ROTATE_TEMPLATE, USER, KEY, { id: "A" });
+    const key = composeStoreKey({ method: "POST", routePath: ROTATE_TEMPLATE, params: { id: "A" } }, USER, KEY);
     const app = await buildApp(racingStore({ credential_id: "cred-A-1" }, key));
     try {
       const res = await request(app.getHttpServer()).post(`${BASE}/instances/A/rotate`).set("Idempotency-Key", KEY).send({}).expect(409);
@@ -396,7 +396,7 @@ describe("RT-155 — lost-claim path (claim race resolved by a completed row)", 
   });
 
   it("a stored marker answers 409 on any route", async () => {
-    const key = composeStoreKey("POST", ACT_TEMPLATE, USER, KEY, { ref: "A" });
+    const key = composeStoreKey({ method: "POST", routePath: ACT_TEMPLATE, params: { ref: "A" } }, USER, KEY);
     const app = await buildApp(racingStore(nonReplayableMarker({}), key));
     try {
       await request(app.getHttpServer()).post(`${BASE}/things/A/act`).set("Idempotency-Key", KEY).send({}).expect(409);
@@ -406,7 +406,7 @@ describe("RT-155 — lost-claim path (claim race resolved by a completed row)", 
   });
 
   it("an ordinary stored response still replays", async () => {
-    const key = composeStoreKey("POST", ACT_TEMPLATE, USER, KEY, { ref: "A" });
+    const key = composeStoreKey({ method: "POST", routePath: ACT_TEMPLATE, params: { ref: "A" } }, USER, KEY);
     const app = await buildApp(racingStore({ ref: "A", run: 1 }, key));
     try {
       const res = await request(app.getHttpServer()).post(`${BASE}/things/A/act`).set("Idempotency-Key", KEY).send({}).expect(201);
