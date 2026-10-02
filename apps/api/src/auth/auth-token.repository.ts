@@ -125,6 +125,35 @@ export class AuthTokenRepository {
   }
 
   /**
+   * Atomically consume a one-time token (RT-146): revoke it and return its
+   * row in a single `UPDATE … RETURNING`, but only while it is unrevoked,
+   * unexpired and of `scope`. Concurrent consumers of the same token
+   * serialize on the row lock and only the first sees a row; the rest (and
+   * any later replay) get null. A token of another scope is left untouched.
+   */
+  async consumeActiveByRawToken(
+    rawToken: string,
+    scope: string,
+    client?: PoolClient,
+  ): Promise<AuthTokenRow | null> {
+    const target = client ?? this.pool;
+    const tokenHash = hashToken(rawToken);
+    const rows = await db(target)
+      .update(authTokens)
+      .set({ revokedAt: sql`now()` })
+      .where(
+        and(
+          eq(authTokens.tokenHash, tokenHash),
+          eq(authTokens.scope, scope),
+          isNull(authTokens.revokedAt),
+          gt(authTokens.expiresAt, sql`now()`),
+        ),
+      )
+      .returning();
+    return rows[0] ?? null;
+  }
+
+  /**
    * Revoke a token by id. Idempotent: returns true on first revoke and
    * false on subsequent calls (the row's `revoked_at` is already set).
    */
