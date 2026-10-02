@@ -188,6 +188,43 @@ describe("RT-61 inventory authorization for cookie sessions (NOBYPASSRLS role, r
     await http().get(`/api/inventory/v1/stores/${STORE_B}/movements`).set("Cookie", staff).expect(404);
   });
 
+  it("an owner addressing a store that is not in the tenant gets a non-disclosing 404, never 5xx", async () => {
+    if (dockerSkipped) return;
+    const owner = await sessionFor(OWNER_EMAIL);
+    const unknownStore = "99999999-aaaa-4aaa-8aaa-616161616161";
+    const probes: Array<[string, string, Record<string, unknown> | undefined]> = [
+      ["get", `/api/inventory/v1/on-hand/${unknownStore}/${PRODUCT}`, undefined],
+      ["get", `/api/inventory/v1/stores/${unknownStore}/movements`, undefined],
+      ["post", `/api/inventory/v1/stores/${unknownStore}/movements`, { movementType: "inbound", quantity: "1", stockingUnit: "each" }],
+      ["post", `/api/inventory/v1/stores/${unknownStore}/counts`, { tenantProductRef: PRODUCT, countedQuantity: "1", stockingUnit: "each" }],
+      ["post", "/api/inventory/v1/transfers", { sourceStoreId: unknownStore, destinationStoreId: STORE_A, tenantProductRef: PRODUCT, quantity: "1", stockingUnit: "each" }],
+      ["post", "/api/inventory/v1/transfers", { sourceStoreId: STORE_A, destinationStoreId: unknownStore, tenantProductRef: PRODUCT, quantity: "1", stockingUnit: "each" }],
+    ];
+    for (const [method, path, body] of probes) {
+      let req = http()[method as "get" | "post"](path).set("Cookie", owner);
+      if (method === "post") req = req.set("Idempotency-Key", idemKey()).send(body);
+      const res = await req;
+      expect({ path, body, status: res.status }).toEqual({ path, body, status: 404 });
+    }
+  });
+
+  it("unknown product / provenance refs on a granted store never produce a 5xx", async () => {
+    if (dockerSkipped) return;
+    const owner = await sessionFor(OWNER_EMAIL);
+    const unknown = "88888888-aaaa-4aaa-8aaa-616161616161";
+    const probes: Array<[string, Record<string, unknown>]> = [
+      [`/api/inventory/v1/stores/${STORE_A}/movements`, { movementType: "inbound", quantity: "1", stockingUnit: "each", tenantProductRef: unknown }],
+      [`/api/inventory/v1/stores/${STORE_A}/movements`, { movementType: "outbound", quantity: "-1", stockingUnit: "each", saleId: unknown, saleLineId: unknown }],
+      [`/api/inventory/v1/stores/${STORE_A}/movements`, { movementType: "adjustment", quantity: "1", stockingUnit: "each", terminalEventRef: unknown }],
+      [`/api/inventory/v1/stores/${STORE_A}/counts`, { tenantProductRef: unknown, countedQuantity: "1", stockingUnit: "each" }],
+      ["/api/inventory/v1/transfers", { sourceStoreId: STORE_A, destinationStoreId: STORE_B, tenantProductRef: unknown, quantity: "1", stockingUnit: "each" }],
+    ];
+    for (const [path, body] of probes) {
+      const res = await http().post(path).set("Cookie", owner).set("Idempotency-Key", idemKey()).send(body);
+      expect({ path, body, status: res.status < 500 }).toEqual({ path, body, status: true });
+    }
+  });
+
   it("a transfer is authorized for the destination store too", async () => {
     if (dockerSkipped) return;
     const body = (src: string, dst: string): Record<string, unknown> => ({
@@ -198,6 +235,14 @@ describe("RT-61 inventory authorization for cookie sessions (NOBYPASSRLS role, r
       stockingUnit: "each",
     });
     const staff = await sessionFor(STAFF_EMAIL);
+    const movementCount = async (): Promise<number> => {
+      const r = await env!.admin.query(
+        `SELECT count(*)::int AS n FROM stock_movements WHERE tenant_id = $1`,
+        [TENANT],
+      );
+      return r.rows[0]!.n as number;
+    };
+    const before = await movementCount();
     // Granted source, non-granted destination → 404 and nothing written.
     await http()
       .post("/api/inventory/v1/transfers")
@@ -205,11 +250,7 @@ describe("RT-61 inventory authorization for cookie sessions (NOBYPASSRLS role, r
       .set("Idempotency-Key", idemKey())
       .send(body(STORE_A, STORE_B))
       .expect(404);
-    const rows = await env!.admin.query(
-      `SELECT count(*)::int AS n FROM stock_movements WHERE tenant_id = $1`,
-      [TENANT],
-    );
-    expect(rows.rows[0]!.n).toBe(0);
+    expect(await movementCount()).toBe(before);
 
     // A tenant-wide member may transfer between any two of its stores.
     const owner = await sessionFor(OWNER_EMAIL);
