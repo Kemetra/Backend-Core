@@ -44,6 +44,8 @@ import { shutdownOtel } from "@data-pulse-2/shared";
 import { EmailWorker } from "./email/email.worker";
 import { AuditWorker } from "./audit/audit.worker";
 import { SaleWorker } from "./sales/sale.worker";
+import { AuditRetentionWorker } from "./audit/audit-retention.worker";
+import { OutboxRetentionWorker } from "./outbox/retention.worker";
 import { WorkerModule } from "./worker.module";
 
 /**
@@ -81,11 +83,14 @@ const logger = new Logger("worker.bootstrap");
 
 /**
  * Bootstraps the worker. Returns the Nest context plus the workers it
- * resolved (`emailWorker`, `auditWorker`, `saleWorker`), and a
- * `triggerShutdown` callable that tests can call to simulate a signal
- * without actually emitting one.
+ * resolved (`emailWorker`, `auditWorker`, `saleWorker`,
+ * `auditRetentionWorker`, `outboxRetentionWorker`), and a `triggerShutdown`
+ * callable that tests can call to simulate a signal without actually
+ * emitting one.
  *
- * All three workers are started by this function. Their shutdown is owned
+ * All five workers are started by this function. The two retention workers
+ * consume the repeatable jobs their schedulers register at module init
+ * (RT-123); without a consumer those jobs accumulated unprocessed. Their shutdown is owned
  * by Nest's lifecycle: `app.close()` (called inside `shutdown()` below)
  * fires `onModuleDestroy` on every provider, which calls `close()` on
  * each worker.
@@ -97,6 +102,8 @@ export async function bootstrap(
   emailWorker: EmailWorker;
   auditWorker: AuditWorker;
   saleWorker: SaleWorker;
+  auditRetentionWorker: AuditRetentionWorker;
+  outboxRetentionWorker: OutboxRetentionWorker;
   /** Test hook: invoke the registered shutdown sequence. */
   triggerShutdown: (signal: "SIGTERM" | "SIGINT") => Promise<void>;
 }> {
@@ -127,9 +134,13 @@ export async function bootstrap(
   // DP-008-LIVELOOP). It is registered in WorkerModule but NOT self-starting,
   // so it must be started imperatively here alongside email/audit.
   const saleWorker = app.get(SaleWorker);
+  const auditRetentionWorker = app.get(AuditRetentionWorker);
+  const outboxRetentionWorker = app.get(OutboxRetentionWorker);
   emailWorker.start();
   auditWorker.start();
   saleWorker.start();
+  auditRetentionWorker.start();
+  outboxRetentionWorker.start();
 
   writeLine(stderr, {
     level: "info",
@@ -170,7 +181,15 @@ export async function bootstrap(
     void shutdown(s);
   });
 
-  return { app, emailWorker, auditWorker, saleWorker, triggerShutdown: shutdown };
+  return {
+    app,
+    emailWorker,
+    auditWorker,
+    saleWorker,
+    auditRetentionWorker,
+    outboxRetentionWorker,
+    triggerShutdown: shutdown,
+  };
 }
 
 function writeLine(
