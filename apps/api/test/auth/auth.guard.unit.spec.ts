@@ -46,6 +46,7 @@ const TENANT_ID  = "0a000000-0000-7000-8000-0000000ten01";
 
 const makeFakeSessions = () => ({
   findActiveByCredential: jest.fn<Promise<SessionRow | null>, [string]>(),
+  recordActivity: jest.fn<Promise<void>, [SessionRow]>().mockResolvedValue(undefined),
 });
 
 const makeFakeAuthTokens = () => ({
@@ -148,6 +149,16 @@ describe("AuthGuard — session-cookie path", () => {
     expect(authTokens.findActiveByRawToken).not.toHaveBeenCalled();
   });
 
+  it("AG1b (RT-139): a live session's use is recorded as activity (slides the idle window)", async () => {
+    const { guard, sessions } = buildGuard();
+    const session = makeSession();
+    sessions.findActiveByCredential.mockResolvedValue(session);
+
+    await guard.canActivate(makeCtx(makeRequest({ cookie: SESSION_ID })));
+
+    expect(sessions.recordActivity).toHaveBeenCalledWith(session);
+  });
+
   it("AG2: cookie present + session NOT found → throws UnauthorizedException", async () => {
     const { guard, sessions } = buildGuard();
     sessions.findActiveByCredential.mockResolvedValue(null);
@@ -156,6 +167,7 @@ describe("AuthGuard — session-cookie path", () => {
     await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(UnauthorizedException);
 
     expect(sessions.findActiveByCredential).toHaveBeenCalledWith(SESSION_ID);
+    expect(sessions.recordActivity).not.toHaveBeenCalled();
   });
 
   it("AG3: cookie wins over bearer when both present — bearer path NOT entered", async () => {

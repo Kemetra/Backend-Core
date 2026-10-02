@@ -47,6 +47,24 @@ export interface SessionRepositoryOptions {
   cache?: SessionCache;
 }
 
+/**
+ * Dashboard-session idle timeout (RT-139): a session unused for this long is
+ * dead, even inside its absolute cap. Spec 001 research.md / plan.md: "12h
+ * sliding (max 24h absolute)". Activity slides `last_seen_at`; it never
+ * extends `absolute_expires_at`.
+ */
+export const SESSION_IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Activity renews `last_seen_at` at most this often per session, so an
+ * authenticated burst costs one UPDATE, not one per request. Well below the
+ * idle timeout, so the slide is effectively continuous.
+ */
+export const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+
+/** `last_seen_at` still inside the idle window (DB clock). */
+const notIdle = sql`${sessions.lastSeenAt} > now() - make_interval(secs => ${SESSION_IDLE_TIMEOUT_MS / 1000})`;
+
 @Injectable()
 export class SessionRepository {
   private readonly db: NodePgDatabase;
@@ -88,6 +106,7 @@ export class SessionRepository {
           eq(sessions.credentialHash, hash),
           isNull(sessions.revokedAt),
           gt(sessions.absoluteExpiresAt, sql`now()`),
+          notIdle,
         ),
       )
       .limit(1);
@@ -121,6 +140,7 @@ export class SessionRepository {
           eq(sessions.id, id),
           isNull(sessions.revokedAt),
           gt(sessions.absoluteExpiresAt, sql`now()`),
+          notIdle,
         ),
       )
       .limit(1);
@@ -131,15 +151,35 @@ export class SessionRepository {
 
   /**
    * Update `last_seen_at` to now(). Returns true if a row was touched.
-   * Does NOT extend `absolute_expires_at` — refresh logic lives in slice 3c.
+   * Does NOT extend `absolute_expires_at`. Only a session that is still live
+   * (unrevoked, inside its absolute cap AND its idle window) is touched, so
+   * activity can never revive an idle-expired session (RT-139).
    */
   async touchLastSeen(id: string): Promise<boolean> {
     const result = await this.db
       .update(sessions)
       .set({ lastSeenAt: sql`now()` })
-      .where(and(eq(sessions.id, id), isNull(sessions.revokedAt)));
+      .where(
+        and(
+          eq(sessions.id, id),
+          isNull(sessions.revokedAt),
+          gt(sessions.absoluteExpiresAt, sql`now()`),
+          notIdle,
+        ),
+      );
     await this.cache.invalidate(id);
     return (result.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Record activity on a live session (RT-139): slide `last_seen_at`, at
+   * most once per {@link SESSION_TOUCH_INTERVAL_MS}. Best-effort — the
+   * request was already authenticated; a failed touch only shortens the
+   * idle window, never extends access.
+   */
+  async recordActivity(session: SessionRow): Promise<void> {
+    if (Date.now() - session.lastSeenAt.getTime() < SESSION_TOUCH_INTERVAL_MS) return;
+    await this.touchLastSeen(session.id).catch(() => undefined);
   }
 
   /**
@@ -203,6 +243,7 @@ export class SessionRepository {
   private isLive(row: SessionRow): boolean {
     if (row.revokedAt !== null) return false;
     if (row.absoluteExpiresAt.getTime() <= Date.now()) return false;
+    if (Date.now() - row.lastSeenAt.getTime() >= SESSION_IDLE_TIMEOUT_MS) return false;
     return true;
   }
 }

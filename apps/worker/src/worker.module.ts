@@ -140,6 +140,7 @@ import {
 } from "./outbox/drizzle-outbox-retention.repository";
 import { OutboxRetentionWorker } from "./outbox/retention.worker";
 import { OutboxRetentionScheduler } from "./outbox/retention.scheduler";
+import { verifyWorkerDatabaseRole } from "./database-role-verifier";
 
 /**
  * Real BullMQ-backed factory. Constructs a `bullmq.Worker` that
@@ -633,6 +634,28 @@ export class OutboxPendingGaugeRegistrar implements OnModuleInit, OnModuleDestro
   }
 }
 
+/**
+ * Boot-time database role check (RT-143). In production (or with
+ * `VERIFY_DATABASE_POOL_BOUNDARY=1`) the worker refuses to start when its
+ * DATABASE_URL role is a superuser or has BYPASSRLS — either would disable
+ * the FORCE RLS boundary. Skipped on the no-DB path (pool is null).
+ */
+@Injectable()
+export class WorkerDatabaseRoleVerifier implements OnModuleInit {
+  constructor(private readonly wrapper: AuditDbPool) {}
+
+  async onModuleInit(): Promise<void> {
+    const pool = this.wrapper.pool;
+    if (pool === null) return;
+    if (
+      process.env["NODE_ENV"] === "production" ||
+      process.env["VERIFY_DATABASE_POOL_BOUNDARY"] === "1"
+    ) {
+      await verifyWorkerDatabaseRole(pool);
+    }
+  }
+}
+
 @Module({
   imports: [OutboxModule],
   providers: [
@@ -664,6 +687,7 @@ export class OutboxPendingGaugeRegistrar implements OnModuleInit, OnModuleDestro
       provide: PG_POOL,
       useExisting: AuditDbPool,
     },
+    WorkerDatabaseRoleVerifier,
     {
       provide: AUDIT_DB,
       useFactory: auditDbProviderFactory,

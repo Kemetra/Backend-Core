@@ -17,12 +17,25 @@ services:
     image: redis:7-alpine
     container_name: dp2-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"]
+    # RT-143: the password never appears in a command line. It reaches the
+    # container only as REDIS_PASSWORD, is written to a private config file
+    # at start, and redis-server is exec'd with that file. `ps` and the
+    # container's Cmd show no secret; the healthcheck authenticates through
+    # REDISCLI_AUTH instead of `redis-cli -a`. The hand-off goes through the
+    # image's docker-entrypoint.sh so redis-server still drops to the `redis`
+    # user. ($$ escapes compose interpolation so the shell expands the
+    # variable inside the container.)
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+    command:
+      - sh
+      - -c
+      - umask 077 && printf 'requirepass %s\n' "$$REDIS_PASSWORD" > /tmp/redis-auth.conf && chown redis:redis /tmp/redis-auth.conf && unset REDIS_PASSWORD && exec docker-entrypoint.sh redis-server /tmp/redis-auth.conf --appendonly yes
     volumes:
       - dp2_redis_data:/data
     networks: [dp2]
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:?REDIS_PASSWORD must be set} --no-auth-warning ping | grep -q PONG"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(sed -n 's/^requirepass //p' /tmp/redis-auth.conf)\" redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 10

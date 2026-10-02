@@ -35,6 +35,13 @@ compose stack. Redis is containerized by default.
    ```
 6. A `deploy/prod.env` (copied from `deploy/prod.env.example`) containing only
    secret-manager references plus non-secret config. Do not commit real values.
+7. Three distinct database roles on `<managed-db>` (migration owner, domain
+   runtime, auth lookup), provisioned per
+   [`docs/operations/database-roles.md`](../docs/operations/database-roles.md).
+   Create the lookup role from
+   [`docs/operations/sql/auth-lookup-role.sql`](../docs/operations/sql/auth-lookup-role.sql)
+   after the first `migrate up`. The API and worker refuse to boot when a role's
+   posture or grants are wrong.
 
 ## Deploy
 

@@ -10,13 +10,25 @@ Production uses three independent PostgreSQL credentials.
 
 The auth lookup credential exists because a device token, session, or bearer
 token must be resolved before a tenant GUC can be established. It must not be
-used by domain services. The API verifies at startup that the domain role is
-not a superuser, does not have `BYPASSRLS`, and is distinct from the lookup
-role.
+used by domain services.
+
+## Boot-time verification
+
+In production (or with `VERIFY_DATABASE_POOL_BOUNDARY=1`) both processes check
+their credentials before serving and refuse to start on a violation:
+
+- **API:** the domain role is not a superuser, does not have `BYPASSRLS`, and is
+  distinct from the lookup role; the lookup role is not a superuser, has
+  `BYPASSRLS`, holds every grant listed below, and holds none of the forbidden
+  grants (RT-143, `AUTH_LOOKUP_REQUIRED_GRANTS` / `AUTH_LOOKUP_FORBIDDEN_GRANTS`
+  in `apps/api/src/auth/database-pools.ts`).
+- **Worker:** its `DATABASE_URL` role is not a superuser and does not have
+  `BYPASSRLS` (RT-143, `apps/worker/src/database-role-verifier.ts`).
 
 Provision the lookup login outside migrations because login credentials belong
-to the deployment environment. Grant only the operations required by the auth
-boundary:
+to the deployment environment. A template with the exact grants and a verify
+query is in [`sql/auth-lookup-role.sql`](sql/auth-lookup-role.sql); it holds no
+password. Grant only the operations required by the auth boundary:
 
 - `users`: `SELECT`, `UPDATE`
 - `sessions`: `SELECT`, `INSERT`, `UPDATE`
@@ -33,6 +45,15 @@ privilege boundary for that credential. Never grant it access to sales,
 receivables, inventory, audit, membership mutation, idempotency, or outbox
 tables. The domain role remains `NOBYPASSRLS` and is the only pool injected into
 tenant/domain services.
+
+## Redis credential
+
+`docker-compose.prod.yml` requires `REDIS_PASSWORD` and starts Redis with
+`requirepass`. The password is written to a mode-600 config file inside the
+container and removed from the server's environment before `redis-server`
+starts, so it does not appear in the process command line or the logs. It is
+still visible to anyone who can run `docker inspect` on the host, like the
+database URLs; restrict Docker access on the host accordingly.
 
 ## audit_events is append-only for every role
 
