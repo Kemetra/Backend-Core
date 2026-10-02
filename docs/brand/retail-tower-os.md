@@ -162,7 +162,7 @@ brand will be made explicitly and tracked as separate approved changes.
 The following are **not yet decided or approved** and must be tracked as
 explicit separate changes when the time comes:
 
-- [ ] Update package names (`@data-pulse/*` → brand-aligned namespace).
+- [ ] Update package names (`@data-pulse-2/*` → brand-aligned namespace).
 - [ ] Update OpenAPI `info.title` in `packages/contracts/openapi/`.
 - [ ] Adopt Retail Tower OS product naming in any remaining deployment identifiers.
 - [ ] Commission or finalize the fortified watchtower logomark.

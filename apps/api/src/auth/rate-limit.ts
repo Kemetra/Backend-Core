@@ -65,6 +65,13 @@ export const RATE_LIMIT_BUCKETS = {
   passwordResetPerIp: { limit: 100, windowMs: 24 * 60 * 60 * 1000 },
   passwordResetConfirmPerIp: { limit: 10, windowMs: 15 * 60 * 1000 },
   pairingPerIp: { limit: 30, windowMs: 60 * 60 * 1000 },
+  // RT-141: verification-email requests per user. Over the limit the request
+  // is still answered 202 (contract) but no further email is sent.
+  emailVerifyRequestPerUser: { limit: 3, windowMs: 60 * 60 * 1000 },
+  // RT-141: wrong pairing codes across ALL sources. Only guesses that match
+  // no code consume it (a hit is released when the code exists), so a
+  // distributed enumeration cannot sidestep the per-IP budget.
+  pairingInvalidGlobal: { limit: 300, windowMs: 15 * 60 * 1000 },
 } as const satisfies Record<string, RateLimitBucket>;
 
 /**
