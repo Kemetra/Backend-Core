@@ -258,7 +258,102 @@ describe("RolesGuard", () => {
     expect(memberships.isPlatformAdminCalls).toEqual([]);
   });
 
-  it("allows platform-scoped token (tenantId === null) without membership lookup", async () => {
+  // --- RT-149 / RT-132 D6: a null-tenant bearer token is never platform admin --
+
+  const BEARER_SCOPES: readonly BearerAuthScope[] = [
+    "dashboard_api",
+    "pos",
+    "pos_operator",
+    "connector",
+  ];
+
+  for (const scope of BEARER_SCOPES) {
+    describe(`null-tenant ${scope} token (RT-149 fail-closed)`, () => {
+      const nullTenantToken = (): Principal =>
+        tokenPrincipal({ tenantId: null, scope } as Partial<Principal>);
+
+      it("@Roles (context) → 403 'Active tenant required', no platform-admin bypass", async () => {
+        const { guard, reflector, memberships } = buildGuard();
+        reflector.metadata = {
+          any: ["owner"],
+          tenantFrom: "context",
+          platformAdminOnly: false,
+          denyAs: 404,
+        };
+        // Even if the token's user is flagged is_platform_admin in the DB,
+        // a bearer principal must not inherit platform authority.
+        memberships.platformAdmin = true;
+        const req = buildRequest({ principal: nullTenantToken() });
+        await expect(guard.canActivate(ctxFor(req))).rejects.toThrow(
+          new ForbiddenException("Active tenant required."),
+        );
+        expect(memberships.isPlatformAdminCalls).toEqual([]);
+        expect(memberships.findRoleCalls).toEqual([]);
+      });
+
+      it("@RolesFromParam with no membership → 404, no platform-admin bypass", async () => {
+        const { guard, reflector, memberships } = buildGuard();
+        reflector.metadata = {
+          any: ["owner", "tenant_admin"],
+          tenantFrom: "param:id",
+          platformAdminOnly: false,
+          denyAs: 404,
+        };
+        memberships.platformAdmin = true;
+        memberships.roleCode = null;
+        const req = buildRequest({
+          principal: nullTenantToken(),
+          params: { id: PARAM_TENANT_ID },
+        });
+        await expect(guard.canActivate(ctxFor(req))).rejects.toBeInstanceOf(
+          NotFoundException,
+        );
+        expect(memberships.isPlatformAdminCalls).toEqual([]);
+        expect(memberships.findRoleCalls).toEqual([
+          { userId: USER_ID, tenantId: PARAM_TENANT_ID },
+        ]);
+      });
+
+      it("@PlatformAdminOnly → 403 even when the token's user is_platform_admin", async () => {
+        const { guard, reflector, memberships } = buildGuard();
+        reflector.metadata = {
+          any: [],
+          tenantFrom: "context",
+          platformAdminOnly: true,
+          denyAs: 403,
+        };
+        memberships.platformAdmin = true;
+        const req = buildRequest({ principal: nullTenantToken() });
+        await expect(guard.canActivate(ctxFor(req))).rejects.toThrow(
+          new ForbiddenException("Platform admin role required."),
+        );
+        expect(memberships.isPlatformAdminCalls).toEqual([]);
+      });
+
+      it("@PlatformAdminOnly → 403 even if a context wrongly flags isPlatformAdmin", async () => {
+        const { guard, reflector } = buildGuard();
+        reflector.metadata = {
+          any: [],
+          tenantFrom: "context",
+          platformAdminOnly: true,
+          denyAs: 403,
+        };
+        const req = buildRequest({
+          principal: nullTenantToken(),
+          context: resolved({
+            tenantId: null,
+            isPlatformAdmin: true,
+            source: "token",
+          }),
+        });
+        await expect(guard.canActivate(ctxFor(req))).rejects.toBeInstanceOf(
+          ForbiddenException,
+        );
+      });
+    });
+  }
+
+  it("tenant-bound token whose user is_platform_admin gets NO bypass (session-only platform authority)", async () => {
     const { guard, reflector, memberships } = buildGuard();
     reflector.metadata = {
       any: ["owner"],
@@ -266,12 +361,19 @@ describe("RolesGuard", () => {
       platformAdminOnly: false,
       denyAs: 404,
     };
+    memberships.platformAdmin = true;
+    memberships.roleCode = "store_staff";
     const req = buildRequest({
-      principal: tokenPrincipal({ tenantId: null } as Partial<Principal>),
+      principal: tokenPrincipal(),
+      context: resolved({ source: "token" }),
     });
-    await expect(guard.canActivate(ctxFor(req))).resolves.toBe(true);
-    expect(memberships.findRoleCalls).toEqual([]);
+    await expect(guard.canActivate(ctxFor(req))).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
     expect(memberships.isPlatformAdminCalls).toEqual([]);
+    expect(memberships.findRoleCalls).toEqual([
+      { userId: USER_ID, tenantId: TENANT_ID },
+    ]);
   });
 
   it("allows platform admin via fallback DB lookup when no context is set", async () => {
@@ -563,19 +665,6 @@ describe("RolesGuard", () => {
     expect(memberships.findRoleCalls).toEqual([]);
   });
 
-  it("@PlatformAdminOnly allows a platform-scoped token", async () => {
-    const { guard, reflector } = buildGuard();
-    reflector.metadata = {
-      any: [],
-      tenantFrom: "context",
-      platformAdminOnly: true,
-      denyAs: 403,
-    };
-    const req = buildRequest({
-      principal: tokenPrincipal({ tenantId: null } as Partial<Principal>),
-    });
-    await expect(guard.canActivate(ctxFor(req))).resolves.toBe(true);
-  });
 
   it("@PlatformAdminOnly allows when fallback isPlatformAdmin lookup is true", async () => {
     const { guard, reflector, memberships } = buildGuard();
@@ -627,12 +716,12 @@ describe("RolesGuard", () => {
         scope: "password_reset" as unknown as BearerAuthScope,
       }),
     });
-    // Falls through to the DB lookup (isPlatformAdmin returns false), then
-    // has no tenantId for the membership check → ForbiddenException (step 5).
+    // Token principals never get the platform-admin bypass (no DB lookup),
+    // then there is no tenantId for the membership check → 403 (step 5).
     await expect(guard.canActivate(ctxFor(req))).rejects.toBeInstanceOf(
       ForbiddenException,
     );
-    expect(memberships.isPlatformAdminCalls).toEqual([USER_ID]);
+    expect(memberships.isPlatformAdminCalls).toEqual([]);
   });
 
   it("does NOT grant platform-admin bypass to a null-tenant token with scope 'email_verify'", async () => {
@@ -653,7 +742,7 @@ describe("RolesGuard", () => {
     await expect(guard.canActivate(ctxFor(req))).rejects.toBeInstanceOf(
       ForbiddenException,
     );
-    expect(memberships.isPlatformAdminCalls).toEqual([USER_ID]);
+    expect(memberships.isPlatformAdminCalls).toEqual([]);
   });
 
   it("context.tenantId is null (platform-scoped context) → forbidden (active tenant required)", async () => {

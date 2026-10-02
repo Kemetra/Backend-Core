@@ -48,9 +48,11 @@
  * eventual DB middleware (T155) sets `app.current_tenant` to the
  * deleted UUID and RLS naturally returns no rows — defence in depth.
  *
- * A token with `principal.tenantId === null` is a platform-scoped
- * token; the guard resolves it as `{ tenantId: null,
- * isPlatformAdmin: true, source: "token" }`.
+ * A token with `principal.tenantId === null` fails closed with
+ * `UnauthorizedException` (RT-132 D6 / RT-149). Platform authority
+ * comes only from a session user with `users.is_platform_admin =
+ * true`; a bearer token never implies it, so token contexts always
+ * resolve with `isPlatformAdmin: false`.
  *
  * What this guard does NOT do
  * ---------------------------
@@ -150,17 +152,9 @@ export class TenantContextGuard implements CanActivate {
   private resolveToken(
     principal: Extract<Principal, { kind: "token" }>,
   ): ResolvedContext {
-    // Platform-scoped tokens (`tenantId === null`) resolve as platform
-    // admins by definition — only platform admins can mint them.
-    if (principal.tenantId === null) {
-      return {
-        userId: principal.userId,
-        tenantId: null,
-        storeId: null,
-        isPlatformAdmin: true,
-        source: "token",
-      };
-    }
+    // RT-132 D6: a null-tenant bearer token carries no tenant and no
+    // platform authority — fail closed rather than resolve a context.
+    if (principal.tenantId === null) throw unauthorized();
     return {
       userId: principal.userId,
       tenantId: principal.tenantId,

@@ -48,15 +48,17 @@
  *      `tenants.service.ts:23-29` — platform-admin status is
  *      self-knowable, so a forbidden response leaks no side-channel.
  *
- *   4. Platform-admin bypass for `@Roles` / `@RolesFromParam`:
- *        a. `request.context?.isPlatformAdmin === true`         → allow.
- *        b. Token principal with `tenantId === null`            → allow
- *           (only platform admins mint platform-scoped tokens; see
- *           `tenant-context.guard.ts:111-122`).
- *        c. `MembershipRepository.isPlatformAdmin(userId)`      → allow.
- *           This last check covers path-as-context routes that don't
- *           mount `TenantContextGuard` (so 4a is unavailable) and
- *           cookie-session admins (so 4b doesn't fire).
+ *   4. Platform-admin bypass for `@Roles` / `@RolesFromParam`.
+ *      Platform authority comes ONLY from a session principal whose
+ *      user has `users.is_platform_admin = true` (RT-132 D6 / RT-149).
+ *      Token principals never get the bypass — whatever their scope,
+ *      tenant binding (including `tenantId === null`) or user; they
+ *      fall through to the tenant/membership checks below and fail
+ *      closed there.
+ *        a. session + `request.context?.isPlatformAdmin === true` → allow.
+ *        b. session + `MembershipRepository.isPlatformAdmin(userId)` → allow.
+ *           This covers path-as-context routes that don't mount
+ *           `TenantContextGuard` (so 4a is unavailable).
  *
  *   5. Resolve tenant id from `RolesMetadata.tenantFrom`:
  *        - `"context"`     → `request.context?.tenantId`
@@ -109,7 +111,6 @@ import type { Pool, PoolClient } from "pg";
 import { runWithTenantContext } from "@data-pulse-2/db";
 
 import type { Principal } from "./auth.guard";
-import { BEARER_AUTH_SCOPES } from "./auth.guard";
 import { PG_POOL } from "./auth.module";
 import { MembershipRepository } from "../context/membership.repository";
 import type { TenantContextRequest } from "../context/types";
@@ -213,31 +214,19 @@ export class RolesGuard implements CanActivate {
   }
 
   /**
-   * Three-way platform-admin probe (see decision matrix #4):
-   *   - explicit context flag (TenantContextGuard already resolved it),
-   *   - platform-scoped token (tenantId === null at issuance), or
+   * Platform-admin probe (see decision matrix #4). Session principals
+   * only (RT-132 D6): a bearer token — including one with a null
+   * tenant — never implies platform authority.
+   *   - explicit context flag (TenantContextGuard already resolved it), or
    *   - fallback DB lookup for path-as-context routes.
    */
   private async isPlatformAdmin(
     principal: Principal,
     request: TenantContextRequest,
   ): Promise<boolean> {
+    if (principal.kind !== "session") return false;
     if (request.context?.isPlatformAdmin === true) return true;
-    // Defense-in-depth: only tokens with both a null tenantId AND a
-    // bearer-safe scope get the platform-admin bypass. Single-use workflow
-    // tokens (password_reset / email_verify) should never reach this guard
-    // because AuthGuard rejects them; this check prevents a bypass if the
-    // guard chain is misconfigured.
-    if (
-      principal.kind === "token" &&
-      principal.tenantId === null &&
-      BEARER_AUTH_SCOPES.has(principal.scope)
-    ) {
-      return true;
-    }
-    const userId = principal.userId;
-    if (!userId) return false;
-    return this.memberships.isPlatformAdmin(userId);
+    return this.memberships.isPlatformAdmin(principal.userId);
   }
 }
 

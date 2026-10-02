@@ -95,7 +95,7 @@ const tokenPrincipalTenant: Principal = {
   scope: "dashboard_api",
 };
 
-const tokenPlatformAdmin: Principal = {
+const tokenNullTenant: Principal = {
   kind: "token",
   tokenId: TOKEN_ID_PLATFORM,
   tenantId: null,
@@ -235,18 +235,35 @@ beforeEach(() => {
 // ===========================================================================
 
 describe("TenantsService.list", () => {
-  it("LI1: platform-scoped token (tenantId=null) → listAll(pool); memberships.isPlatformAdmin NOT called", async () => {
+  it("LI1: null-tenant user-less token → [] (RT-149: no platform-admin implication); listAll NOT called", async () => {
     const { service, tenantsRepo, membershipsRepo, tx } = buildService();
-    const rows = [makeTenantRecord({ id: TENANT_ID }), makeTenantRecord({ id: OTHER_TENANT_ID })];
-    tenantsRepo.listAll.mockResolvedValue(rows);
+    tenantsRepo.listAll.mockResolvedValue([
+      makeTenantRecord({ id: TENANT_ID }),
+      makeTenantRecord({ id: OTHER_TENANT_ID }),
+    ]);
 
-    const result = await service.list(tokenPlatformAdmin);
+    const result = await service.list(tokenNullTenant);
 
-    expect(result).toBe(rows);
-    expect(tenantsRepo.listAll).toHaveBeenCalledWith(fakeClient);
+    expect(result).toEqual([]);
+    expect(tenantsRepo.listAll).not.toHaveBeenCalled();
     expect(tenantsRepo.listForUser).not.toHaveBeenCalled();
     expect(membershipsRepo.isPlatformAdmin).not.toHaveBeenCalled();
-    expect(tx).toHaveBeenCalledWith(fakePool, { tenantId: null, isPlatformAdmin: true }, expect.any(Function));
+    expect(tx).not.toHaveBeenCalled();
+  });
+
+  it("LI1b: null-tenant token whose user is_platform_admin → member path, never listAll (session-only platform authority)", async () => {
+    const { service, tenantsRepo, membershipsRepo, tx } = buildService();
+    membershipsRepo.isPlatformAdmin.mockResolvedValue(true);
+    const rows = [makeTenantRecord({ id: TENANT_ID })];
+    tenantsRepo.listForUser.mockResolvedValue(rows);
+
+    const result = await service.list({ ...tokenNullTenant, userId: USER_ID } as Principal);
+
+    expect(result).toBe(rows);
+    expect(tenantsRepo.listAll).not.toHaveBeenCalled();
+    expect(tenantsRepo.listForUser).toHaveBeenCalledWith(fakeClient, USER_ID);
+    expect(membershipsRepo.isPlatformAdmin).not.toHaveBeenCalled();
+    expect(tx).toHaveBeenCalledTimes(1);
   });
 
   it("LI2: session principal + memberships.isPlatformAdmin=true → listAll(pool)", async () => {
@@ -278,16 +295,16 @@ describe("TenantsService.list", () => {
     expect(tx).toHaveBeenCalledWith(fakePool, { tenantId: null, isPlatformAdmin: true }, expect.any(Function));
   });
 
-  it("LI4: token principal with tenantId set + isPlatformAdmin=false + userId set → listForUser", async () => {
+  it("LI4: token principal with tenantId set + userId set → listForUser (platform-admin flag never consulted for tokens)", async () => {
     const { service, tenantsRepo, membershipsRepo } = buildService();
-    membershipsRepo.isPlatformAdmin.mockResolvedValue(false);
+    membershipsRepo.isPlatformAdmin.mockResolvedValue(true);
     const rows = [makeTenantRecord({ id: TENANT_ID })];
     tenantsRepo.listForUser.mockResolvedValue(rows);
 
     const result = await service.list(tokenPrincipalTenant);
 
     expect(result).toBe(rows);
-    expect(membershipsRepo.isPlatformAdmin).toHaveBeenCalledWith(USER_ID);
+    expect(membershipsRepo.isPlatformAdmin).not.toHaveBeenCalled();
     expect(tenantsRepo.listForUser).toHaveBeenCalledWith(fakeClient, USER_ID);
     expect(tenantsRepo.listAll).not.toHaveBeenCalled();
   });
@@ -423,27 +440,32 @@ describe("TenantsService.create", () => {
 // ===========================================================================
 
 describe("TenantsService.read", () => {
-  it("RE1: platform-admin token → findByIdAdmin(pool, tenantId); tx NOT invoked", async () => {
+  it("RE1: null-tenant user-less token → NotFoundException (RT-149); admin path NOT taken", async () => {
     const { service, tenantsRepo, membershipsRepo, tx } = buildService();
-    const row = makeTenantRecord({ id: TENANT_ID });
-    tenantsRepo.findByIdAdmin.mockResolvedValue(row);
-
-    const result = await service.read(tokenPlatformAdmin, TENANT_ID);
-
-    expect(result).toBe(row);
-    expect(tenantsRepo.findByIdAdmin).toHaveBeenCalledWith(fakeClient, TENANT_ID);
-    expect(tenantsRepo.findById).not.toHaveBeenCalled();
-    expect(membershipsRepo.findRoleCodeForUserInTenant).not.toHaveBeenCalled();
-    expect(tx).toHaveBeenCalledWith(fakePool, { tenantId: TENANT_ID, isPlatformAdmin: true }, expect.any(Function));
-  });
-
-  it("RE2: platform-admin token + findByIdAdmin returns null → NotFoundException", async () => {
-    const { service, tenantsRepo } = buildService();
-    tenantsRepo.findByIdAdmin.mockResolvedValue(null);
+    tenantsRepo.findByIdAdmin.mockResolvedValue(makeTenantRecord({ id: TENANT_ID }));
 
     await expect(
-      service.read(tokenPlatformAdmin, TENANT_ID),
+      service.read(tokenNullTenant, TENANT_ID),
     ).rejects.toBeInstanceOf(NotFoundException);
+
+    expect(tenantsRepo.findByIdAdmin).not.toHaveBeenCalled();
+    expect(tenantsRepo.findById).not.toHaveBeenCalled();
+    expect(membershipsRepo.isPlatformAdmin).not.toHaveBeenCalled();
+    expect(tx).not.toHaveBeenCalled();
+  });
+
+  it("RE2: null-tenant token whose user is_platform_admin, no membership → NotFoundException (admin path NOT taken)", async () => {
+    const { service, tenantsRepo, membershipsRepo } = buildService();
+    membershipsRepo.isPlatformAdmin.mockResolvedValue(true);
+    membershipsRepo.findRoleCodeForUserInTenant.mockResolvedValue(null);
+    tenantsRepo.findByIdAdmin.mockResolvedValue(makeTenantRecord({ id: TENANT_ID }));
+
+    await expect(
+      service.read({ ...tokenNullTenant, userId: USER_ID } as Principal, TENANT_ID),
+    ).rejects.toBeInstanceOf(NotFoundException);
+
+    expect(tenantsRepo.findByIdAdmin).not.toHaveBeenCalled();
+    expect(membershipsRepo.isPlatformAdmin).not.toHaveBeenCalled();
   });
 
   it("RE3: session user (non-admin) with role → tx invoked, findById returns row", async () => {
@@ -617,17 +639,17 @@ describe("TenantsService.listMembers", () => {
     );
   });
 
-  it("LM3: platform-scoped token (tenantId=null) → tx ctx isPlatformAdmin=true (short-circuit, no memberships call)", async () => {
+  it("LM3: null-tenant token → tx ctx isPlatformAdmin=false (RT-149: never platform-admin RLS bypass)", async () => {
     const { service, membershipsRepo, tx } = buildService();
+    membershipsRepo.isPlatformAdmin.mockResolvedValue(true);
     const details = [makeMembershipDetail()];
     membershipsRepo.listForTenant.mockResolvedValue(details);
 
-    const result = await service.listMembers(tokenPlatformAdmin, TENANT_ID);
+    await service.listMembers({ ...tokenNullTenant, userId: USER_ID } as Principal, TENANT_ID);
 
-    expect(result).toBe(details);
     expect(membershipsRepo.isPlatformAdmin).not.toHaveBeenCalled();
     const txCall = tx.mock.calls[0]!;
-    expect(txCall[1]).toEqual({ tenantId: TENANT_ID, isPlatformAdmin: true });
+    expect(txCall[1]).toEqual({ tenantId: TENANT_ID, isPlatformAdmin: false });
   });
 });
 

@@ -15,7 +15,7 @@
  * Tests:
  *   TCG1  — canActivate: no principal → UnauthorizedException
  *   TCG2  — canActivate: principal present → resolves true, attaches context
- *   TCG3  — resolveToken: tenantId === null → isPlatformAdmin true, token source
+ *   TCG3  — resolveToken: tenantId === null → UnauthorizedException (RT-149), every bearer scope
  *   TCG4  — resolveToken: tenantId set → isPlatformAdmin false, token source
  *   TCG5  — resolveSession: session not found → UnauthorizedException
  *   TCG6  — resolveSession: session found, activeTenantId null → UnauthorizedException
@@ -158,21 +158,18 @@ describe("TCG2 — canActivate: principal present", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TCG3 — resolveToken: tenantId === null → platform admin, token source
+// TCG3 — resolveToken: tenantId === null → fail closed (RT-149 / RT-132 D6)
 // ---------------------------------------------------------------------------
 
 describe("TCG3 — resolveToken: null tenantId", () => {
-  it("resolves to isPlatformAdmin=true with null tenant/store, source=token", async () => {
-    const { guard } = makeGuard();
-    const ctx = await guard.resolve(tokenPrincipal(null));
-    expect(ctx).toEqual({
-      userId: USER_ID,
-      tenantId: null,
-      storeId: null,
-      isPlatformAdmin: true,
-      source: "token",
+  for (const scope of ["dashboard_api", "pos", "pos_operator", "connector"] as const) {
+    it(`${scope}: rejects with UnauthorizedException — never resolves a platform-admin context`, async () => {
+      const { guard } = makeGuard();
+      await expect(
+        guard.resolve({ ...tokenPrincipal(null), scope }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
     });
-  });
+  }
 });
 
 // ---------------------------------------------------------------------------

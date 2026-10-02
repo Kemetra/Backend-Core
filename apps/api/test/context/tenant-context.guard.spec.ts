@@ -19,7 +19,7 @@
  *   - kind='specific' + no grant     → 404
  *   - platform-admin session         → membership skipped
  *   - token w/ tenantId              → no membership query
- *   - platform-scoped token (null)   → isPlatformAdmin: true
+ *   - null-tenant token              → 401, no context (RT-149)
  */
 import {
   type ExecutionContext,
@@ -405,7 +405,7 @@ describe("TenantContextGuard — token principal", () => {
     expect(sessions.calls).toHaveLength(0);
   });
 
-  it("with tenantId === null: resolves as platform admin", async () => {
+  it("with tenantId === null: fails closed with 401 and publishes no context (RT-149)", async () => {
     const request = makeRequest({
       kind: "token",
       tokenId: TOKEN_ID,
@@ -414,15 +414,11 @@ describe("TenantContextGuard — token principal", () => {
       storeId: null,
       scope: "dashboard_api",
     });
-    await expect(guard.canActivate(makeContext(request))).resolves.toBe(true);
+    await expect(guard.canActivate(makeContext(request))).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
 
-    expect(request.context).toEqual({
-      userId: null,
-      tenantId: null,
-      storeId: null,
-      isPlatformAdmin: true,
-      source: "token",
-    });
+    expect(request.context).toBeUndefined();
     expect(memberships.isPlatformAdminCalls).toHaveLength(0);
   });
 
