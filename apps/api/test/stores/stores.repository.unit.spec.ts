@@ -185,14 +185,14 @@ describe("StoresRepository.listInTenant", () => {
     const result = await repo.listInTenant(fakeClient);
 
     expect(result).toHaveLength(2);
-    expect(result[0].id).toBe(STORE_ID);
-    expect(result[0].tenantId).toBe(TENANT_ID);
-    expect(result[0].code).toBe("MAIN");
-    expect(result[0].name).toBe("Main");
-    expect(result[0].isActive).toBe(true);
-    expect(result[0].deletedAt).toBeNull();
-    expect(result[1].id).toBe(STORE_ID_2);
-    expect(result[1].code).toBe("BRANCH");
+    expect(result[0]!.id).toBe(STORE_ID);
+    expect(result[0]!.tenantId).toBe(TENANT_ID);
+    expect(result[0]!.code).toBe("MAIN");
+    expect(result[0]!.name).toBe("Main");
+    expect(result[0]!.isActive).toBe(true);
+    expect(result[0]!.deletedAt).toBeNull();
+    expect(result[1]!.id).toBe(STORE_ID_2);
+    expect(result[1]!.code).toBe("BRANCH");
   });
 
   it("A3: single row — maps all StoreRecord fields correctly", async () => {
@@ -204,10 +204,10 @@ describe("StoresRepository.listInTenant", () => {
     const result = await repo.listInTenant(fakeClient);
 
     expect(result).toHaveLength(1);
-    expect(result[0].isActive).toBe(false);
-    expect(result[0].deletedAt).toEqual(deletedAt);
-    expect(result[0].createdAt).toEqual(row.createdAt);
-    expect(result[0].updatedAt).toEqual(row.updatedAt);
+    expect(result[0]!.isActive).toBe(false);
+    expect(result[0]!.deletedAt).toEqual(deletedAt);
+    expect(result[0]!.createdAt).toEqual(row.createdAt);
+    expect(result[0]!.updatedAt).toEqual(row.updatedAt);
   });
 });
 

@@ -9,7 +9,8 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "test": "jest --passWithNoTests",
-    "lint": "tsc -p tsconfig.build.json --noEmit --incremental false"
+    "lint": "tsc -p tsconfig.build.json --noEmit --incremental false",
+    "typecheck": "tsc -p tsconfig.json --noEmit --incremental false"
   },
   "dependencies": {
     "@data-pulse-2/db": "workspace:*",
@@ -24,6 +25,8 @@
     "zod": "3.23.8"
   },
   "devDependencies": {
+    "@nestjs/testing": "11.1.19",
+    "@opentelemetry/api": "1.9.1",
     "@types/jest": "29.5.14",
     "@types/node": "20.17.6",
     "@types/pg": "8.20.0",

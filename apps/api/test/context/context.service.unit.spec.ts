@@ -218,7 +218,7 @@ function activeSession(overrides: Partial<SessionRow> = {}): SessionRow {
     userAgent: null,
     ipAtIssue: null,
     ...overrides,
-  };
+  } as SessionRow;
 }
 
 const SESSION_PRINCIPAL: Principal = {

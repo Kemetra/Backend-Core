@@ -115,7 +115,7 @@ describe("posGetCatalogSnapshot — happy path (T030)", () => {
       "prescription_required",
       "unit_pack_label",
     ]) {
-      expect(sellable as Record<string, unknown>).not.toHaveProperty(removed);
+      expect(sellable as unknown as Record<string, unknown>).not.toHaveProperty(removed);
     }
   });
 });

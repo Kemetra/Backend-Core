@@ -212,7 +212,7 @@ function buildService(opts: BuildServiceOpts = {}) {
     fakePool,
     repo as unknown as InvitationsRepository,
     enqueuer,
-    tx,
+    tx as unknown as NonNullable<ConstructorParameters<typeof InvitationsService>[3]>,
   );
 
   return { service, repo, enqueuer, tx };

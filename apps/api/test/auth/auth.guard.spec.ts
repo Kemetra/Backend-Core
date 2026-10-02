@@ -82,7 +82,7 @@ function activeSession(overrides: Partial<SessionRow> = {}): SessionRow {
     userAgent: null,
     ipAtIssue: null,
     ...overrides,
-  };
+  } as SessionRow;
 }
 
 function activeToken(overrides: Partial<AuthTokenRow> = {}): AuthTokenRow {
@@ -98,7 +98,7 @@ function activeToken(overrides: Partial<AuthTokenRow> = {}): AuthTokenRow {
     expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     revokedAt: null,
     ...overrides,
-  };
+  } as AuthTokenRow;
 }
 
 let sessionRepo: MockSessionRepo;

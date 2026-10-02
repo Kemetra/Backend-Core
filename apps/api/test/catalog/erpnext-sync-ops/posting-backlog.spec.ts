@@ -168,8 +168,8 @@ describe("025-US2 §1 — only permanently_rejected rows, read-only", () => {
     for (const i of items) {
       expect(i.status).toBe("permanently_rejected");
       // read-only: no write/repair affordance leaked
-      expect((i as Record<string, unknown>)["repair"]).toBeUndefined();
-      expect((i as Record<string, unknown>)["repairKind"]).toBeUndefined();
+      expect((i as unknown as Record<string, unknown>)["repair"]).toBeUndefined();
+      expect((i as unknown as Record<string, unknown>)["repairKind"]).toBeUndefined();
     }
   });
 });

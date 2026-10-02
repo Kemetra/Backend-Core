@@ -185,7 +185,7 @@ describe("AuditFanoutProcessor", () => {
 
   it("does not pass occurred_at/occurredAt — DB DEFAULT stamps it", async () => {
     await processor.process(AUDIT_FANOUT_JOB_NAME, VALID_PAYLOAD);
-    const row = db.capturedRows[0]! as Record<string, unknown>;
+    const row = db.capturedRows[0]! as unknown as Record<string, unknown>;
     expect(row).not.toHaveProperty("occurred_at");
     expect(row).not.toHaveProperty("occurredAt");
   });

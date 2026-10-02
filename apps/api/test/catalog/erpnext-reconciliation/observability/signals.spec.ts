@@ -116,7 +116,7 @@ describe("reconciliation observability — erpnext_reconciliation_repair_total (
       limit: 50,
       storeId: undefined,
       rejectionCategory: "unmapped_item",
-    });
+    } as unknown as Parameters<ErpnextReconciliationService["listPostingBacklog"]>[0]);
     expect(Array.isArray(page.items)).toBe(true);
     expect(recordRepair).not.toHaveBeenCalled();
   });

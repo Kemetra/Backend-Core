@@ -196,7 +196,7 @@ class FakeAuthService {
         display_name: null,
         is_platform_admin: false,
       },
-    };
+    } as SignInResult;
   }
 
   async signOut(_sessionId: string): Promise<void> {}

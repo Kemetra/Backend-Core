@@ -39,9 +39,9 @@ type ColumnInfo = {
   notNull: boolean;
   dataType: string;
   columnType: string;
-  precision?: number;
-  scale?: number;
-  length?: number;
+  precision?: number | undefined;
+  scale?: number | undefined;
+  length?: number | undefined;
 };
 
 function columns(table: unknown): Map<string, ColumnInfo> {

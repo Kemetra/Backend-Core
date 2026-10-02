@@ -473,7 +473,7 @@ describe("acceptInvitationExistingUser — returned shape", () => {
 
     expect(detail).not.toHaveProperty("tokenHash");
     expect(detail).not.toHaveProperty("rawToken");
-    const values = Object.values(detail as Record<string, unknown>);
+    const values = Object.values(detail as unknown as Record<string, unknown>);
     expect(values).not.toContain(rawToken);
     // Confirm expected keys present
     expect(detail).toHaveProperty("membershipId");

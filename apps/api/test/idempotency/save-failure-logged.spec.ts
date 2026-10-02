@@ -41,7 +41,7 @@ import {
 } from "../../src/idempotency/idempotency.interceptor";
 import { InProgressMarker, INFLIGHT_REDIS } from "../../src/idempotency/in-progress-marker";
 import { APP_INTERCEPTOR, Reflector } from "@nestjs/core";
-import { IdempotencyKeyStore } from "@data-pulse-2/shared";
+import { IdempotencyKeyStore, type Logger } from "@data-pulse-2/shared";
 
 const KEY = "abcdef1234567890abcdef1234567510"; // 32 chars, valid
 
@@ -112,7 +112,7 @@ describe("ADR 0010 D1 — store.save failure is logged + swallowed, response sti
       store,
       new FakeMarker() as unknown as InProgressMarker,
       undefined, // auditEnqueuer
-      logger, // ROOT_LOGGER
+      logger as unknown as Logger, // ROOT_LOGGER
     );
 
     const moduleRef = await Test.createTestingModule({

@@ -76,7 +76,6 @@ function makeNext(handler: () => Observable<unknown>): CallHandler {
       // Tests read it through `(next as any).__calls`.
       return handler();
     },
-    // @ts-expect-error - test-only side channel
     get __calls(): number {
       return calls;
     },

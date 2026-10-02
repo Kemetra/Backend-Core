@@ -306,9 +306,9 @@ describe("FR-021 identical retry — same (tenant, device, key, payload) replays
     }
 
     // Calls 2-5 are replays; call 1 is the original compute.
-    expect(responses[0].replayed).toBeUndefined();
+    expect(responses[0]!.replayed).toBeUndefined();
     for (let i = 1; i < 5; i += 1) {
-      expect(responses[i].replayed).toBe("true");
+      expect(responses[i]!.replayed).toBe("true");
     }
   });
 });

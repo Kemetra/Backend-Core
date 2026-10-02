@@ -140,7 +140,7 @@ describe("T561a: consumer without tenant context fails RLS on DB writes", () => 
     // row-level security policy" — exactly the two outcomes a missing
     // tenant context can produce on this INSERT.
     expect(consumerError).not.toBeNull();
-    const pgErr = consumerError as Error & { code?: string };
+    const pgErr = consumerError as unknown as Error & { code?: string };
     expect(pgErr.code).toBe("42501");
     expect(pgErr.message).toMatch(/row.level security|policy|permission denied/i);
   });

@@ -90,7 +90,7 @@ function envelope(
     correlation_id: null,
     occurred_at: new Date().toISOString(),
     payload: payload as ReconciliationRequestedPayload,
-  } as OutboxEventEnvelope<ReconciliationRequestedPayload>;
+  } as unknown as OutboxEventEnvelope<ReconciliationRequestedPayload>;
 }
 
 beforeAll(async () => {

@@ -207,7 +207,7 @@ beforeEach(() => {
     fakePool,
     repo as unknown as TenantsRepository,
     memberships as unknown as MembershipRepository,
-    passthroughTx,
+    passthroughTx as unknown as NonNullable<ConstructorParameters<typeof TenantsService>[3]>,
   );
 });
 

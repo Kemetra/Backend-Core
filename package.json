@@ -14,6 +14,7 @@
     "test": "pnpm -r --if-present run test",
     "lint": "pnpm -r --if-present run lint",
     "lint:eslint": "eslint --ext .ts ./apps/api/src ./apps/worker/src",
+    "typecheck": "pnpm -r --if-present run typecheck",
     "format": "pnpm -r --if-present run format",
     "migrate": "pnpm -r --if-present run migrate",
     "dev": "pnpm -r --parallel --if-present run dev",

@@ -13,6 +13,8 @@
 #   - `pnpm lint` is the repository's no-emit TypeScript static-analysis gate.
 #     `pnpm lint:eslint` is a separate ESLint gate (recommended rules + the
 #     tenant-scope rule) on apps/api/src and apps/worker/src.
+#   - `pnpm typecheck` (RT-129) type-checks the api/worker TEST files too
+#     (tsconfig.json includes test/**); jest itself does not type-check.
 
 name: CI
 
@@ -64,6 +66,12 @@ jobs:
 
       - name: ESLint
         run: pnpm lint:eslint
+
+      - name: Typecheck tests (api + worker)
+        run: pnpm typecheck
+
+      - name: ESLint rule smoke test
+        run: node --test tools/eslint-rules/__tests__/no-unscoped-tenant-query.spec.js
 
       - name: Test @data-pulse-2/worker (Docker-free suites)
         # The Testcontainers-backed outbox suites

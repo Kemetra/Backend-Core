@@ -34,7 +34,7 @@ import {
 interface RecordedCall {
   name: string;
   data: unknown;
-  opts?: { jobId?: string };
+  opts?: { jobId?: string } | undefined;
 }
 
 class FakeQueue implements QueueLike {

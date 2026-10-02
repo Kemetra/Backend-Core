@@ -55,6 +55,8 @@ import type { InvitationsRepository } from "../../src/memberships/invitations.re
 import type { EmailJobEnqueuer } from "../../src/auth/email-job.enqueuer";
 import type { ResolvedContext } from "../../src/context/types";
 
+type TxRunner = NonNullable<ConstructorParameters<typeof InvitationsService>[3]>;
+
 // ---------------------------------------------------------------------------
 // Fixed IDs / fixtures
 // ---------------------------------------------------------------------------
@@ -215,7 +217,7 @@ function makeInvitationRow(overrides: Partial<InvitationRow> = {}): InvitationRo
   } as unknown as InvitationRow;
 }
 
-function makeUserRow(overrides: Partial<UserRow> = {}): UserRow {
+function makeUserRow(overrides: { [K in keyof UserRow]?: UserRow[K] | undefined } = {}): UserRow {
   return {
     id: USER_ID,
     email: "invitee@example.com",
@@ -246,7 +248,7 @@ function makeTxRunner(clients: PoolClient[] = []) {
       idx++;
       return work(client);
     },
-  );
+  ) as unknown as jest.MockedFunction<TxRunner>;
 }
 
 /**
@@ -265,7 +267,7 @@ function makeSimpleTxRunner(roleCode?: string) {
         : ({ query: jest.fn().mockResolvedValue({ rows: [], rowCount: 0 }) } as unknown as PoolClient);
       return work(client);
     },
-  );
+  ) as unknown as jest.MockedFunction<TxRunner>;
 }
 
 function makeService(
@@ -277,7 +279,7 @@ function makeService(
     FAKE_POOL,
     repo as unknown as InvitationsRepository,
     enqueuer as unknown as EmailJobEnqueuer,
-    tx as unknown as Parameters<typeof InvitationsService.prototype["invite"]>["0"] extends never ? never : unknown,
+    tx,
   );
 }
 
@@ -474,8 +476,8 @@ describe("InvitationsService.lookupAndValidateAcceptToken()", () => {
     repo.findByTokenHashResult = makeInvitationRow({ expiresAt: new Date(Date.now() - 1) });
     const [e3] = await svc.lookupAndValidateAcceptToken("t").then(() => [], (e: BadRequestException) => [e]);
 
-    expect(e1.message).toBe(e2.message);
-    expect(e2.message).toBe(e3.message);
+    expect(e1!.message).toBe(e2!.message);
+    expect(e2!.message).toBe(e3!.message);
   });
 });
 

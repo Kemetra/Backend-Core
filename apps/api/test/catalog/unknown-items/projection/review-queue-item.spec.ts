@@ -67,7 +67,7 @@ describe("toReviewQueueItem — review-surface projection (007 FR-007 / FR-001a)
     expect(Object.prototype.hasOwnProperty.call(item, "sale_context")).toBe(
       false,
     );
-    expect((item as Record<string, unknown>)["sale_context"]).toBeUndefined();
+    expect((item as unknown as Record<string, unknown>)["sale_context"]).toBeUndefined();
   });
 
   it("RQ1b: omits sale_context entirely (resolved row, caller can see product)", () => {
