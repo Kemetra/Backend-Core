@@ -71,16 +71,7 @@ export class PairingController {
       ip,
       RATE_LIMIT_BUCKETS.pairingPerIp,
     );
-    if (!ipDecision.allowed) {
-      const resetSeconds = ipDecision.resetMs < 0
-        ? 1
-        : Math.ceil(ipDecision.resetMs / 1000);
-      res.setHeader("Retry-After", String(Math.min(300, Math.max(1, resetSeconds))));
-      throw new HttpException(
-        { code: "RATE_LIMITED", message: "Too many pairing attempts." },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
+    if (!ipDecision.allowed) throw rateLimited(res, ipDecision.resetMs);
 
     // Validate in-controller (not via the shared ZodValidationPipe) so a bad body
     // surfaces the contract's `validation_failure` code rather than the global
@@ -94,7 +85,23 @@ export class PairingController {
       });
     }
 
+    // RT-141: the per-code attempt budget only counts guesses that match a
+    // code, so guessing NON-matching codes from many IPs was bounded by the
+    // per-IP budget alone. Reserve a hit on one global wrong-code budget
+    // first and give it back when the code exists: only non-matching guesses
+    // consume it. When exhausted, pairing answers 429 until the window rolls
+    // (fail closed while an enumeration is under way).
+    const guessDecision = await this.rateLimiter.check(
+      "pairing_invalid",
+      "global",
+      RATE_LIMIT_BUCKETS.pairingInvalidGlobal,
+    );
+    if (!guessDecision.allowed) throw rateLimited(res, guessDecision.resetMs);
+
     const result = await this.service.pair(parsed.data.pairing_code);
+    if (result.kind !== "invalid") {
+      await this.rateLimiter.release("pairing_invalid", "global").catch(() => undefined);
+    }
 
     switch (result.kind) {
       case "ok":
@@ -137,4 +144,14 @@ export class PairingController {
       }
     }
   }
+}
+
+/** The contract's 429 `RATE_LIMITED` envelope, Retry-After clamped to [1, 300]. */
+function rateLimited(res: Response, resetMs: number): HttpException {
+  const resetSeconds = resetMs < 0 ? 1 : Math.ceil(resetMs / 1000);
+  res.setHeader("Retry-After", String(Math.min(300, Math.max(1, resetSeconds))));
+  return new HttpException(
+    { code: "RATE_LIMITED", message: "Too many pairing attempts." },
+    HttpStatus.TOO_MANY_REQUESTS,
+  );
 }
