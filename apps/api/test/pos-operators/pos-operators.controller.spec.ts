@@ -688,6 +688,39 @@ describe("GET /api/pos/v1/operators/roster", () => {
     expect(res.status).toBe(401);
     expectErrorEnvelope(res.body, "unauthorized");
   });
+
+  // RT-150 (RT-132 D7 / A11): roster requires an eligible internal role.
+  it("401 when requester is store_staff (role ineligible)", async () => {
+    if (maybeSkip()) return;
+    const res = await http()
+      .get(`/api/pos/v1/operators/roster?branch_id=${STORE_ID_A}`)
+      .set("Authorization", "Bearer jwt-staff");
+
+    expect(res.status).toBe(401);
+    expectErrorEnvelope(res.body, "unauthorized");
+  });
+
+  it("store_manager with access to the branch still gets the roster", async () => {
+    if (maybeSkip()) return;
+    const res = await http()
+      .get(`/api/pos/v1/operators/roster?branch_id=${STORE_ID_A}`)
+      .set("Authorization", "Bearer jwt-manager");
+
+    expect(res.status).toBe(200);
+    const cashierIds = res.body.cashiers.map((c: { id: string }) => c.id);
+    expect(cashierIds).toContain(STAFF_CLERK_SUB);
+  });
+
+  it("specific-access store_manager gets the roster for its granted branch", async () => {
+    if (maybeSkip()) return;
+    // SPECIFIC_USER (store_manager) is granted STORE_ID_B only.
+    const res = await http()
+      .get(`/api/pos/v1/operators/roster?branch_id=${STORE_ID_B}`)
+      .set("Authorization", "Bearer jwt-specific");
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.cashiers)).toBe(true);
+  });
 });
 
 // -----------------------------------------------------------------------
@@ -1029,4 +1062,72 @@ describe("GET /api/pos/v1/operators/active-session", () => {
       .set("Authorization", "Bearer jwt-admin");
     expect(res.status).toBe(400);
   });
+
+  // RT-150 (RT-132 D7 / A11): active-session requires an eligible internal role.
+  it("401 when requester is store_staff (role ineligible)", async () => {
+    if (maybeSkip()) return;
+    const res = await http()
+      .get(
+        `/api/pos/v1/operators/active-session?branch_id=${STORE_ID_A}&operator_id=${ADMIN_CLERK_SUB}`,
+      )
+      .set("Authorization", "Bearer jwt-staff");
+
+    expect(res.status).toBe(401);
+    expectErrorEnvelope(res.body, "unauthorized");
+  });
+
+  it("store_manager can probe a tenant member's session state", async () => {
+    if (maybeSkip()) return;
+    await insertLiveOperatorSession(STAFF_USER_ID);
+    const res = await http()
+      .get(
+        `/api/pos/v1/operators/active-session?branch_id=${STORE_ID_A}&operator_id=${STAFF_CLERK_SUB}`,
+      )
+      .set("Authorization", "Bearer jwt-manager");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ kind: "active" });
+  });
+
+  it("answers { kind: 'none' } for a non-member target even when it holds a live session row", async () => {
+    if (maybeSkip()) return;
+    // REVOKED_MBR_USER's membership is revoked, but a live pos_operator row
+    // remains in STORE_ID_A. The lookup must not disclose it.
+    await insertLiveOperatorSession(REVOKED_MBR_USER_ID);
+    const res = await http()
+      .get(
+        `/api/pos/v1/operators/active-session?branch_id=${STORE_ID_A}&operator_id=${REVOKED_MBR_CLERK_SUB}`,
+      )
+      .set("Authorization", "Bearer jwt-admin");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ kind: "none" });
+  });
+
+  it("answers { kind: 'none' } for an operator of another tenant", async () => {
+    if (maybeSkip()) return;
+    const res = await http()
+      .get(
+        `/api/pos/v1/operators/active-session?branch_id=${STORE_ID_A}&operator_id=${TENANT_B_CLERK_SUB}`,
+      )
+      .set("Authorization", "Bearer jwt-admin");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ kind: "none" });
+  });
 });
+
+/**
+ * Seed a live `pos_operator` session row for `userId` on device A
+ * (STORE_ID_A) directly, bypassing sign-in so a non-member can hold one.
+ * Cleaned up by the file-level afterEach.
+ */
+async function insertLiveOperatorSession(userId: string): Promise<void> {
+  if (!pool) throw new Error("pool not initialized");
+  await pool.query(
+    `INSERT INTO auth_tokens
+       (id, token_hash, tenant_id, user_id, device_id, store_id, scope, expires_at)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'pos_operator', now() + interval '1 hour')`,
+    [hashToken(`rt150-session-${userId}`), TENANT_ID, userId, DEVICE_A_ID, STORE_ID_A],
+  );
+}

@@ -148,6 +148,7 @@ export type RosterRefusalReason =
   | "user_unmapped"
   | "user_disabled"
   | "membership_missing"
+  | "role_ineligible"
   | "branch_id_required"
   | "branch_mismatch"
   | "store_not_accessible";
@@ -178,6 +179,7 @@ export type ActiveSessionRefusalReason =
   | "user_unmapped"
   | "user_disabled"
   | "membership_missing"
+  | "role_ineligible"
   | "store_not_accessible";
 
 /**
@@ -275,6 +277,7 @@ export class PosOperatorsService {
    *
    * Returns all `store_staff` members of the branch. Per FR-015 role-visibility
    * matrix, `store_staff` maps to the POS `cashier` role in roster responses.
+   * The caller must hold an eligible internal role (RT-132 D7).
    */
   async roster(
     rawJwt: string,
@@ -322,7 +325,8 @@ export class PosOperatorsService {
    * Wave 3 — minimum-disclosure active session check.
    *
    * Returns `{ kind: "none" | "active" }` — no session id, no timestamps,
-   * no operator identity. Refuses on invalid JWT or unmapped/disabled user.
+   * no operator identity. Refuses on invalid JWT, unmapped/disabled user, or a
+   * caller without an eligible internal role (RT-132 D7).
    * The caller (controller) maps any refused result to 401.
    */
   async activeSession(
@@ -474,6 +478,10 @@ export class PosOperatorsService {
     // Confirm user has a membership in the tenant that owns this branch.
     const membership = await this.findActiveMembershipByStore(query.branch_id, userRow.id);
     if (!membership) return { kind: "refused", reason: "membership_missing" };
+    // RT-132 D7: only an eligible internal role may list a branch's cashiers.
+    if (!ELIGIBLE_INTERNAL_ROLES.has(membership.role_code)) {
+      return { kind: "refused", reason: "role_ineligible" };
+    }
 
     // Verify the caller has access to this specific store.
     if (membership.store_access_kind === "specific") {
@@ -682,6 +690,10 @@ export class PosOperatorsService {
     // Uses the same JOIN-via-stores pattern as roster to enforce cross-tenant protection.
     const membership = await this.findActiveMembershipByStore(query.branch_id, requesterRow.id);
     if (!membership) return { kind: "refused", reason: "membership_missing" };
+    // RT-132 D7: only an eligible internal role may probe operator session state.
+    if (!ELIGIBLE_INTERNAL_ROLES.has(membership.role_code)) {
+      return { kind: "refused", reason: "role_ineligible" };
+    }
 
     // If store-specific access, confirm the caller has the branch in their access set.
     if (membership.store_access_kind === "specific") {
@@ -699,6 +711,10 @@ export class PosOperatorsService {
       // Non-existent or disabled target → "none" (minimum disclosure, not 401).
       return { kind: "none" };
     }
+    // RT-132 D7: a target that is not an active member of this tenant answers
+    // "none" too, so the lookup cannot probe non-members' session state.
+    const targetMembership = await this.findActiveMembership(membership.tenant_id, targetRow.id);
+    if (!targetMembership) return { kind: "none" };
 
     const hasActive = await this.anyActiveOperatorSessionInStore(
       membership.tenant_id,

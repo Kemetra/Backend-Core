@@ -270,6 +270,60 @@ describe("PosOperatorsService.roster", () => {
     const r = await svc.roster("jwt", { branch_id: STORE_ID }, "rid-7");
     expect(r).toEqual({ kind: "refused" });
   });
+
+  // RT-150 (RT-132 D7 / A11): roster requires an eligible internal role.
+  it("returns 'refused' (role_ineligible) for a store_staff caller and never lists cashiers", async () => {
+    const pool = makePool();
+    programPoolQueries(pool, [
+      [VALID_USER_ROW],
+      [{ ...MANAGER_MEMBERSHIP_ROW, role_code: "store_staff" }],
+    ]);
+    const svc = new PosOperatorsService(
+      pool as unknown as Pool,
+      makeVerifier(),
+      makeDeviceRepo(),
+      SILENT_LOGGER,
+    );
+
+    const r = await svc.roster("jwt", { branch_id: STORE_ID }, "rid-staff");
+    expect(r).toEqual({ kind: "refused" });
+    expect(SILENT_LOGGER.warn).toHaveBeenCalledWith(
+      { request_id: "rid-staff", refusal: "role_ineligible" },
+      "pos-operator roster refused",
+    );
+    // user lookup, store→tenant bootstrap, membership — no cashier fetch.
+    expect(pool.query).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["owner", "tenant_admin", "store_manager"])(
+    "returns cashiers for an eligible %s caller",
+    async (roleCode) => {
+      const pool = makePool();
+      programPoolQueries(pool, [
+        [VALID_USER_ROW],
+        [{ ...MANAGER_MEMBERSHIP_ROW, role_code: roleCode }],
+        [{ id: "0195b400-0000-7000-8000-0000000a0001", clerk_user_id: "user_staff_1", display_name: "Alice" }],
+      ]);
+      const svc = new PosOperatorsService(
+        pool as unknown as Pool,
+        makeVerifier(),
+        makeDeviceRepo(),
+        SILENT_LOGGER,
+      );
+
+      const r = await svc.roster("jwt", { branch_id: STORE_ID }, "rid-eligible");
+      expect(r).toEqual({
+        cashiers: [
+          {
+            id: "user_staff_1",
+            user_id: "0195b400-0000-7000-8000-0000000a0001",
+            display_name: "Alice",
+            role: "cashier",
+          },
+        ],
+      });
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -569,6 +623,14 @@ describe("PosOperatorsService.takeoverConfirm", () => {
 
 const ACTIVE_SESSION_QUERY = { branch_id: STORE_ID, operator_id: OPERATOR_CLERK_SUB };
 
+/** The queried operator's own active membership in the branch's tenant. */
+const TARGET_MEMBERSHIP_ROW = {
+  ...MANAGER_MEMBERSHIP_ROW,
+  id: "99999999-9999-7999-8999-999999999999",
+  user_id: OTHER_USER_ID,
+  role_code: "store_staff",
+};
+
 describe("PosOperatorsService.activeSession", () => {
   it("returns 'refused' when verifier throws", async () => {
     const pool = makePool();
@@ -678,6 +740,7 @@ describe("PosOperatorsService.activeSession", () => {
       [VALID_USER_ROW],                                  // requester lookup
       [MANAGER_MEMBERSHIP_ROW],                          // membership lookup
       [{ ...VALID_USER_ROW, id: OTHER_USER_ID }],        // target lookup
+      [TARGET_MEMBERSHIP_ROW],                           // target membership lookup
       [],                                                // anyActiveOperatorSessionInStore → 0 rows
     ]);
     const svc = new PosOperatorsService(
@@ -701,6 +764,7 @@ describe("PosOperatorsService.activeSession", () => {
       [VALID_USER_ROW],                                  // requester lookup
       [MANAGER_MEMBERSHIP_ROW],                          // membership lookup
       [{ ...VALID_USER_ROW, id: OTHER_USER_ID }],        // target lookup
+      [TARGET_MEMBERSHIP_ROW],                           // target membership lookup
       [{ one: 1 }],                                      // anyActiveOperatorSessionInStore → 1 row
     ]);
     const svc = new PosOperatorsService(
@@ -724,6 +788,7 @@ describe("PosOperatorsService.activeSession", () => {
       [VALID_USER_ROW],
       [MANAGER_MEMBERSHIP_ROW],
       [{ ...VALID_USER_ROW, id: OTHER_USER_ID }],
+      [TARGET_MEMBERSHIP_ROW],
       [{ one: 1 }],
     ]);
     const svc = new PosOperatorsService(
@@ -739,5 +804,87 @@ describe("PosOperatorsService.activeSession", () => {
       "rid-8",
     );
     expect(Object.keys(r)).toEqual(["kind"]);
+  });
+
+  // RT-150 (RT-132 D7 / A11): active-session requires an eligible internal role.
+  it("returns 'refused' (role_ineligible) for a store_staff caller before resolving the target", async () => {
+    const pool = makePool();
+    programPoolQueries(pool, [
+      [VALID_USER_ROW],
+      [{ ...MANAGER_MEMBERSHIP_ROW, role_code: "store_staff" }],
+    ]);
+    const svc = new PosOperatorsService(
+      pool as unknown as Pool,
+      makeVerifier(),
+      makeDeviceRepo(),
+      SILENT_LOGGER,
+    );
+
+    const r = await svc.activeSession(
+      "jwt",
+      { branch_id: STORE_ID, operator_id: "target_sub" },
+      "rid-staff",
+    );
+    expect(r).toEqual({ kind: "refused" });
+    expect(SILENT_LOGGER.warn).toHaveBeenCalledWith(
+      { request_id: "rid-staff", refusal: "role_ineligible" },
+      "pos-operator active-session refused",
+    );
+    // requester lookup, store→tenant bootstrap, membership — target never probed.
+    expect(pool.query).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["owner", "tenant_admin"])(
+    "returns { kind: 'active' } for an eligible %s caller",
+    async (roleCode) => {
+      const pool = makePool();
+      programPoolQueries(pool, [
+        [VALID_USER_ROW],
+        [{ ...MANAGER_MEMBERSHIP_ROW, role_code: roleCode }],
+        [{ ...VALID_USER_ROW, id: OTHER_USER_ID }],
+        [TARGET_MEMBERSHIP_ROW],
+        [{ one: 1 }],
+      ]);
+      const svc = new PosOperatorsService(
+        pool as unknown as Pool,
+        makeVerifier(),
+        makeDeviceRepo(),
+        SILENT_LOGGER,
+      );
+
+      const r = await svc.activeSession(
+        "jwt",
+        { branch_id: STORE_ID, operator_id: "target_sub" },
+        "rid-eligible",
+      );
+      expect(r).toEqual({ kind: "active" });
+    },
+  );
+
+  it("returns { kind: 'none' } when the target is not an active member of the tenant, without probing sessions", async () => {
+    const pool = makePool();
+    programPoolQueries(pool, [
+      [VALID_USER_ROW],                                  // requester lookup
+      [MANAGER_MEMBERSHIP_ROW],                          // requester membership
+      [{ ...VALID_USER_ROW, id: OTHER_USER_ID }],        // target lookup
+      [],                                                // target membership → none
+      [{ one: 1 }],                                      // a live session would exist
+    ]);
+    const svc = new PosOperatorsService(
+      pool as unknown as Pool,
+      makeVerifier(),
+      makeDeviceRepo(),
+      SILENT_LOGGER,
+    );
+
+    const r = await svc.activeSession(
+      "jwt",
+      { branch_id: STORE_ID, operator_id: "target_sub" },
+      "rid-non-member",
+    );
+    expect(r).toEqual({ kind: "none" });
+    // requester, bootstrap, requester membership, target, target membership —
+    // the session table is never queried for a non-member.
+    expect(pool.query).toHaveBeenCalledTimes(5);
   });
 });
