@@ -276,6 +276,9 @@ beforeAll(async () => {
   })
     .overrideGuard(AuthGuard)
     .useValue(authGuard)
+    // RT-141: email/verify/request is DashboardAuthGuard-gated.
+    .overrideGuard(DashboardAuthGuard)
+    .useValue(authGuard)
     .compile();
 
   app = moduleRef.createNestApplication({ bufferLogs: true });

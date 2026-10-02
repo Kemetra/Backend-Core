@@ -41,6 +41,7 @@ import { Test } from "@nestjs/testing";
 import request from "supertest";
 
 import { AuthGuard } from "../../src/auth/auth.guard";
+import { DashboardAuthGuard } from "../../src/auth/dashboard-auth.guard";
 import type { AuthedRequest } from "../../src/auth/auth.guard";
 import type { Principal } from "../../src/auth/auth.guard";
 import { AuthService } from "../../src/auth/auth.service";
@@ -216,6 +217,9 @@ beforeAll(async () => {
     ],
   })
     .overrideGuard(AuthGuard).useValue(guard)
+    // RT-141: email/verify/request is DashboardAuthGuard-gated; the same
+    // scripted double stands in (its scope rules are unit-tested separately).
+    .overrideGuard(DashboardAuthGuard).useValue(guard)
     .compile();
 
   app = moduleRef.createNestApplication({ bufferLogs: true });
@@ -700,6 +704,29 @@ describe("POST /api/v1/auth/email/verify/request", () => {
 
     expect(res.status).toBe(401);
     expectErrorEnvelope(res.body, "unauthorized");
+    expect(svc.lastRequestEmailVerificationArgs).toBeNull();
+  });
+
+  it("RT-141: is gated by DashboardAuthGuard (human authority only)", () => {
+    const guards = Reflect.getMetadata(
+      "__guards__",
+      AuthController.prototype.requestEmailVerification,
+    ) as unknown[];
+    expect(guards).toEqual([DashboardAuthGuard]);
+  });
+
+  it("RT-141: checks the per-user bucket before sending", async () => {
+    rl.calledBuckets = [];
+    const res = await http().post("/api/v1/auth/email/verify/request");
+    expect(res.status).toBe(202);
+    expect(rl.calledBuckets).toEqual(["email_verify_user"]);
+    expect(svc.lastRequestEmailVerificationArgs!.userId).toBe(USER_ID);
+  });
+
+  it("RT-141: over the per-user limit → still 202, but nothing is sent", async () => {
+    rl.blockBucket("email_verify_user");
+    const res = await http().post("/api/v1/auth/email/verify/request");
+    expect(res.status).toBe(202);
     expect(svc.lastRequestEmailVerificationArgs).toBeNull();
   });
 });
