@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import type { Pool } from "pg";
+import { runWithTenantContext } from "@data-pulse-2/db";
 import type { AuditRetentionRepository } from "./audit-retention.processor";
 
 /**
@@ -28,11 +29,23 @@ export class DrizzleAuditRetentionRepository implements AuditRetentionRepository
   constructor(private readonly pool: Pool) {}
 
   async markBatch(cutoff: Date, markedAt: Date, batchSize: number): Promise<number> {
-    const result = await this.pool.query<{ id: string }>(
-      MARK_BATCH_SQL,
-      [cutoff, markedAt, batchSize],
+    // audit_events is FORCE RLS: without a GUC the sweep sees no rows and
+    // marks nothing (RT-120 C-7). Run in the platform-admin context so the
+    // policy's is_platform_admin branch covers every tenant in one sweep —
+    // the same boundary as the outbox retention purge. The role's own
+    // privileges still apply (column-scoped UPDATE for audit_retention_worker),
+    // and 0034 allows only this one-time marker write (RT-123).
+    return runWithTenantContext(
+      this.pool,
+      { tenantId: null, isPlatformAdmin: true },
+      async (client) => {
+        const result = await client.query<{ id: string }>(
+          MARK_BATCH_SQL,
+          [cutoff, markedAt, batchSize],
+        );
+        return result.rows.length;
+      },
     );
-    return result.rows.length;
   }
 }
 
