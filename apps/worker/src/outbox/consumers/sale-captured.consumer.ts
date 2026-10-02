@@ -132,11 +132,9 @@ export class SaleCapturedConsumer implements OutboxConsumer<SaleCapturedPayload>
     // containing ':' (`Custom Id cannot contain :`), which failed every
     // sale.captured event in RT-9 (RT-44). Same fix as EmailQueueProducer (#288).
     //
-    // DEVIATION from AuditEventCreatedConsumer, which intentionally OMITS jobId
-    // (FR-AUDIT-1: every audit emission must produce a distinct row, audit
-    // fan-out is naturally idempotent downstream). Sales must NOT double-process,
-    // so this consumer deliberately sets a deterministic jobId. Do not "fix"
-    // this back to match the audit pattern.
+    // AuditEventCreatedConsumer keys its jobId on the outbox event_id too
+    // (RT-124). Sales must NOT double-process, so keep this jobId
+    // deterministic.
     const jobId = `${SALE_CAPTURED_CONSUMER_ID}-${event.event_id}`;
 
     // Map the outbox envelope → SaleProcessingJob. The ENVELOPE is the source

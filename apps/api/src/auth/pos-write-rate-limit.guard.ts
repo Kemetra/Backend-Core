@@ -52,12 +52,10 @@ export class PosWriteRateLimitGuard implements CanActivate {
     @Inject(OPERATOR_CONTEXT_RESOLVER)
     private readonly reverifier: OperatorReverifier,
     private readonly reflector: Reflector,
-    // ROOT_LOGGER is not a globally-registered provider (only feature-scoped /
-    // manual), so every injection site is @Optional() — matches the codebase
-    // pattern (audit-emitter, idempotency, erpnext services). When absent,
-    // `this.logger?.warn` no-ops; the fail-open ALLOW still happens (correctness
-    // is independent of the log). Registering ROOT_LOGGER app-wide so these warns
-    // fire in prod is a separate, codebase-wide concern, not this slice.
+    // ROOT_LOGGER is provided app-wide by RootLoggerModule (RT-124). It stays
+    // @Optional() for standalone test modules; when absent `this.logger?.warn`
+    // no-ops and the fail-open ALLOW still happens (correctness is independent
+    // of the log).
     @Optional()
     @Inject(ROOT_LOGGER)
     private readonly logger?: Logger,

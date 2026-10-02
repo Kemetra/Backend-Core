@@ -154,20 +154,33 @@ describe("AuditQueueProducer — enqueue", () => {
     expect(carrierValues).not.toContain(examplePayload.action);
   });
 
-  it("does not set a jobId in opts (no dedup — must not collapse retried events)", async () => {
+  it("stamps one event_id per emission, used as jobId and in the job data (RT-124)", async () => {
     const q = new FakeQueue();
     const producer = new AuditQueueProducer(q);
     await producer.enqueue(examplePayload);
     const opts = q.calls[0]!.opts as Record<string, unknown> | undefined;
-    expect(opts?.["jobId"]).toBeUndefined();
+    const data = q.calls[0]!.data as Record<string, unknown>;
+    expect(data["event_id"]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(opts?.["jobId"]).toBe(data["event_id"]);
   });
 
-  it("two identical enqueue() calls produce two distinct queue.add() calls", async () => {
+  it("two identical enqueue() calls produce two distinct jobs (FR-AUDIT-1: retries are not collapsed)", async () => {
     const q = new FakeQueue();
     const producer = new AuditQueueProducer(q);
     await producer.enqueue(examplePayload);
     await producer.enqueue(examplePayload);
     expect(q.calls).toHaveLength(2);
+    const ids = q.calls.map((c) => (c.opts as Record<string, unknown>)["jobId"]);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
+  it("keeps a caller-supplied event_id instead of minting a new one", async () => {
+    const q = new FakeQueue();
+    const producer = new AuditQueueProducer(q);
+    const eventId = "0e000000-0000-7000-8000-0000000000bb";
+    await producer.enqueue({ ...examplePayload, event_id: eventId });
+    expect((q.calls[0]!.opts as Record<string, unknown>)["jobId"]).toBe(eventId);
+    expect((q.calls[0]!.data as Record<string, unknown>)["event_id"]).toBe(eventId);
   });
 
   it("propagates errors from queue.add without swallowing them", async () => {

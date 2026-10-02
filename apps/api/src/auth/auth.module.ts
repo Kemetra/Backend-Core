@@ -50,7 +50,7 @@ import {
 
 import { DEFAULT_JOB_OPTIONS } from "@data-pulse-2/shared/queues/queue-config";
 
-import { AuditEnqueuerModule } from "../audit/audit-enqueuer.module";
+import { outboxOrLegacyAuditJobEnqueuerFactory } from "../audit/audit-enqueuer.module";
 import {
   AUDIT_JOB_ENQUEUER,
   type AuditJobEnqueuer,
@@ -201,9 +201,17 @@ export class AlwaysAllowRedis implements RedisLike {
 }
 
 @Module({
-  imports: [AuditEnqueuerModule],
   controllers: [AuthController],
   providers: [
+    // RT-124: auth audits (sign-in ok/failed, …) take the same outbox-aware
+    // path as the request graph, instead of always going straight to BullMQ.
+    // AuthModule owns PG_POOL, so it can wire this without a module cycle.
+    {
+      provide: AUDIT_JOB_ENQUEUER,
+      useFactory: (pool: Pool | null): AuditJobEnqueuer =>
+        outboxOrLegacyAuditJobEnqueuerFactory(pool),
+      inject: [PG_POOL],
+    },
     {
       provide: PG_POOL,
       useFactory: domainPoolFactory,

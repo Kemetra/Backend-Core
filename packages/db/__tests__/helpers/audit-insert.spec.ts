@@ -348,7 +348,7 @@ describe("insertAuditEvent — Testcontainers (real RLS)", () => {
     expect(rows[0].action).toBe("platform.system.bootstrap");
   });
 
-  it("rolls back on insert error — duplicate id does not leave partial state", async () => {
+  it("ignores a duplicate id — a redelivered audit fact is a no-op (RT-124)", async () => {
     if (skip()) return;
 
     const row: AuditEventInsertRow = {
@@ -364,13 +364,39 @@ describe("insertAuditEvent — Testcontainers (real RLS)", () => {
       metadata: {},
     };
 
+    await expect(insertAuditEvent(env!.app, row)).resolves.toBeUndefined();
+
+    // Admin verification query — exactly the original row, unchanged.
+    const { rows } = await env!.admin.query(
+      "SELECT count(*)::int AS cnt, min(action) AS action FROM audit_events WHERE id = $1",
+      [row.id],
+    );
+    expect(rows[0].cnt).toBe(1);
+    expect(rows[0].action).not.toBe("context.switch.tenant.duplicate");
+  });
+
+  it("rolls back on insert error — FK violation does not leave partial state", async () => {
+    if (skip()) return;
+
+    const row: AuditEventInsertRow = {
+      id: "e1000000-0000-7000-8000-0000000000ff",
+      tenant_id: TC_TENANT_ID,
+      action: "context.switch.tenant.bad-actor",
+      actor_user_id: "e1000000-0000-7000-8000-00000000dead", // no such user
+      actor_label: null,
+      store_id: null,
+      target_type: null,
+      target_id: null,
+      request_id: null,
+      metadata: {},
+    };
+
     await expect(insertAuditEvent(env!.app, row)).rejects.toThrow();
 
-    // Admin verification query — original row must still be intact (count = 1)
     const { rows } = await env!.admin.query(
       "SELECT count(*)::int AS cnt FROM audit_events WHERE id = $1",
       [row.id],
     );
-    expect(rows[0].cnt).toBe(1);
+    expect(rows[0].cnt).toBe(0);
   });
 });

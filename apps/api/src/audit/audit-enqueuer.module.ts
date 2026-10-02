@@ -95,8 +95,8 @@ export function auditJobEnqueuerFactory(
 
 /**
  * Returns true when the outbox-backed audit path should be used in place of
- * direct BullMQ enqueueing. Defaults OFF — production cutover is operator-
- * driven, not code-driven.
+ * direct BullMQ enqueueing. Defaults ON in production, OFF elsewhere (RT-124:
+ * the durable path must not depend on an operator remembering the flag).
  *
  * The DI swap landed with slice 1C-B2 (T583): `outboxOrLegacyAuditJobEnqueuerFactory`
  * below consults this flag and returns either an OutboxAuditEnqueuer (flag on +
@@ -104,20 +104,26 @@ export function auditJobEnqueuerFactory(
  * off, or flag on but pool unavailable).
  *
  * The live binding lives in `OutboxAuditEnqueuerModule` (a sibling leaf module
- * that imports AuthModule to inject PG_POOL). This module — `AuditEnqueuerModule`
- * — keeps its legacy provider so `AuthModule` can still resolve
- * AUDIT_JOB_ENQUEUER for the auth-signin emission path without picking up the
- * outbox dependency on PG_POOL (which would re-introduce the
- * `AuthModule → AuditEnqueuerModule → AuthModule` cycle this leaf module
- * exists to avoid).
+ * that imports AuthModule to inject PG_POOL) for the request graph, and in
+ * `AuthModule` itself (which owns PG_POOL) for the auth-signin emission path
+ * (RT-124). This module — `AuditEnqueuerModule` — keeps its legacy provider
+ * for the existing test surface and type-export chain.
  *
- * The flag accepts the literal strings "1", "true", or "yes"
- * (case-insensitive). Leading and trailing whitespace is stripped before
+ * Unset: on in production, off elsewhere (RT-124). Otherwise the flag
+ * accepts the literal strings "1", "true", or "yes" (case-insensitive);
+ * anything else (e.g. "0") turns it off. Leading and trailing whitespace is stripped before
  * parsing so " true " and "yes\n" (common when the value comes from a
  * .env file or shell here-doc) are correctly recognised as enabled.
  */
 export function isOutboxAuditEnabled(): boolean {
   const raw = (process.env["OUTBOX_AUDIT_ENABLED"] ?? "").trim().toLowerCase();
+  if (raw === "") {
+    // RT-124: production defaults to the durable outbox path, so a BullMQ
+    // enqueue failure can no longer silently drop an audit event because a
+    // deployment forgot the flag. Outside production the default stays the
+    // legacy path. An explicit value always wins (e.g. "0" to opt out).
+    return process.env["NODE_ENV"] === "production";
+  }
   return raw === "1" || raw === "true" || raw === "yes";
 }
 

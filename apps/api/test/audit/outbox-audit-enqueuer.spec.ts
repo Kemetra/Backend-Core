@@ -98,6 +98,39 @@ describe("isOutboxAuditEnabled — feature-flag parsing", () => {
     process.env["OUTBOX_AUDIT_ENABLED"] = "enabled";
     expect(isOutboxAuditEnabled()).toBe(false);
   });
+
+  describe("RT-124: production default", () => {
+    const originalNodeEnv = process.env["NODE_ENV"];
+
+    afterEach(() => {
+      if (originalNodeEnv === undefined) delete process.env["NODE_ENV"];
+      else process.env["NODE_ENV"] = originalNodeEnv;
+    });
+
+    it("unset or empty in production → on (durable outbox path)", () => {
+      process.env["NODE_ENV"] = "production";
+      delete process.env["OUTBOX_AUDIT_ENABLED"];
+      expect(isOutboxAuditEnabled()).toBe(true);
+      process.env["OUTBOX_AUDIT_ENABLED"] = "  ";
+      expect(isOutboxAuditEnabled()).toBe(true);
+    });
+
+    it("an explicit value in production still wins (e.g. '0' opts out)", () => {
+      process.env["NODE_ENV"] = "production";
+      process.env["OUTBOX_AUDIT_ENABLED"] = "0";
+      expect(isOutboxAuditEnabled()).toBe(false);
+      process.env["OUTBOX_AUDIT_ENABLED"] = "false";
+      expect(isOutboxAuditEnabled()).toBe(false);
+    });
+
+    it("unset outside production → off", () => {
+      delete process.env["OUTBOX_AUDIT_ENABLED"];
+      process.env["NODE_ENV"] = "development";
+      expect(isOutboxAuditEnabled()).toBe(false);
+      process.env["NODE_ENV"] = "test";
+      expect(isOutboxAuditEnabled()).toBe(false);
+    });
+  });
 });
 
 describe("auditJobEnqueuerFactory — REDIS_URL × NODE_ENV branch matrix", () => {

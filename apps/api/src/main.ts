@@ -4,13 +4,14 @@ import "./instrumentation";
 import "reflect-metadata";
 
 import { NestFactory } from "@nestjs/core";
-import { createLogger, type Logger } from "@data-pulse-2/shared";
+import { type Logger } from "@data-pulse-2/shared";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
 
 import { AppModule } from "./app.module";
 import { GlobalExceptionFilter } from "./common/exception.filter";
 import { LoggingInterceptor, ROOT_LOGGER } from "./common/logging.interceptor";
+import { getRootLogger } from "./common/root-logger.module";
 import { RequestIdInterceptor } from "./common/request-id.interceptor";
 import { ZodValidationPipe } from "./common/zod-validation.pipe";
 import { ContextInterceptor } from "./context/context.interceptor";
@@ -23,10 +24,8 @@ async function bootstrap(): Promise<void> {
   // provider creates an OTel instrument, so all instruments resolve to live
   // SDK counters/histograms rather than dead ProxyCounters.
 
-  const rootLogger: Logger = createLogger({
-    service: "api",
-    level: process.env["LOG_LEVEL"] ?? "info",
-  });
+  // One root logger, shared with the app-wide ROOT_LOGGER provider (RT-124).
+  const rootLogger: Logger = getRootLogger();
 
   // Fail-fast on malformed contracts. Constitution IV — contracts are the
   // source of truth; we'd rather refuse to start than serve traffic against
@@ -88,9 +87,8 @@ async function bootstrap(): Promise<void> {
   // route bodies attach their own schema via `@Body(new ZodValidationPipe(SignInSchema))`.
   app.useGlobalPipes(new ZodValidationPipe());
 
-  // DI registration so providers that need the logger can `@Inject(ROOT_LOGGER)`.
-  // (Used by LoggingInterceptor instances created via DI in future test
-  // bootstraps; the global instance above is constructed manually.)
+  // `ROOT_LOGGER` is provided app-wide by RootLoggerModule (RT-124); the
+  // global LoggingInterceptor above is constructed with the same instance.
   void ROOT_LOGGER;
 
   app.enableShutdownHooks();
