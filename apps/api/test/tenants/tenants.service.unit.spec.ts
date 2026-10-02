@@ -215,7 +215,7 @@ function buildService(opts: BuildServiceOpts = {}) {
     fakePool,
     tenantsRepo as unknown as TenantsRepository,
     membershipsRepo as unknown as MembershipRepository,
-    tx,
+    tx as unknown as NonNullable<ConstructorParameters<typeof TenantsService>[3]>,
   );
 
   return { service, tenantsRepo, membershipsRepo, tx };

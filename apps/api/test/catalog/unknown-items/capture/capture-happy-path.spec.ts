@@ -486,7 +486,7 @@ describe("T512 / UnknownItemsController — defensive context guards (unit)", ()
     constructor(private readonly ctx: MalformedContext) {}
     canActivate(c: ExecutionContext): boolean {
       const req = c.switchToHttp().getRequest<{
-        context?: MalformedContext;
+        context?: MalformedContext | undefined;
         principal?: { userId?: string };
       }>();
       // null ⇒ omit `context` so the `if (!ctx)` branch fires.

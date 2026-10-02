@@ -161,7 +161,9 @@ describe("EmailQueueProducer.lazy mode (override-orphan leak fix)", () => {
     });
     await producer.enqueuePasswordReset(PROBE_JOB);
     await producer.enqueueEmailVerification(PROBE_JOB);
-    await producer.enqueueInvitation(PROBE_JOB);
+    await producer.enqueueInvitation(
+      PROBE_JOB as unknown as Parameters<EmailQueueProducer["enqueueInvitation"]>[0],
+    );
     expect(calls).toBe(1);
     expect(queue.addCalls).toBe(3);
   });

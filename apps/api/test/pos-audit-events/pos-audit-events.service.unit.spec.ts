@@ -48,7 +48,7 @@ const fakeDevice = {
   createdAt: new Date(),
 };
 
-let mockPool: { query: jest.MockedFunction<Pool["query"]> };
+let mockPool: { query: jest.Mock };
 let fakeDeviceRepo: { findActiveByAttestation: jest.MockedFunction<DeviceRepository["findActiveByAttestation"]> };
 let mockLogger: { warn: jest.MockedFunction<() => void>; info: jest.MockedFunction<() => void> };
 let service: PosAuditEventsService;

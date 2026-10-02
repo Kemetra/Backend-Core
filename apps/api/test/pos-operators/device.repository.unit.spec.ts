@@ -28,6 +28,6 @@ describe("DeviceRepository.findActiveByAttestation — empty attestation guard",
     const result = await repo.findActiveByAttestation("");
 
     expect(result).toBeNull();
-    expect((fakePool as { query: jest.Mock }).query).not.toHaveBeenCalled();
+    expect((fakePool as unknown as { query: jest.Mock }).query).not.toHaveBeenCalled();
   });
 });

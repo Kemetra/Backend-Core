@@ -56,12 +56,12 @@ describe("T060 — captureSale idempotent replay on a repeated Idempotency-Key",
 
     for (const res of responses) {
       expect(res.status).toBe(201);
-      expect(res.body).toEqual(responses[0].body);
+      expect(res.body).toEqual(responses[0]!.body);
     }
     // First is the real write; every retry is an interceptor replay.
-    expect(responses[0].headers["idempotent-replayed"]).toBeUndefined();
+    expect(responses[0]!.headers["idempotent-replayed"]).toBeUndefined();
     for (let i = 1; i < RETRIES; i += 1) {
-      expect(responses[i].headers["idempotent-replayed"]).toBe("true");
+      expect(responses[i]!.headers["idempotent-replayed"]).toBe("true");
     }
 
     const count = await h.harness.env.admin.query<{ n: string }>(

@@ -25,6 +25,8 @@ import {
 import { recordRedisCommandDuration } from "../../src/observability/metrics/worker.metrics";
 import { BullMqWorkerFactory } from "../../src/worker.module";
 
+type WorkerOpts = Parameters<BullMqWorkerFactory["create"]>[2];
+
 jest.mock("../../src/observability/metrics/worker.metrics", () => ({
   recordRedisCommandDuration: jest.fn(),
 }));
@@ -275,7 +277,7 @@ describe("InstrumentedRedis — BullMQ-compatible safe defaults", () => {
     it("passes BullMQ a connection carrying BULLMQ_SAFE_REDIS_DEFAULTS", async () => {
       const factory = new BullMqWorkerFactory("redis://127.0.0.1:6379");
       const handler = jest.fn();
-      const created = factory.create("test-queue", handler, {});
+      const created = factory.create("test-queue", handler, {} as WorkerOpts);
       try {
         expect(bullMqWorkerCalls).toHaveLength(1);
         const call = bullMqWorkerCalls[0]!;
@@ -294,7 +296,7 @@ describe("InstrumentedRedis — BullMQ-compatible safe defaults", () => {
     it("forwards caller-supplied worker options unchanged", async () => {
       const factory = new BullMqWorkerFactory("redis://127.0.0.1:6379");
       const handler = jest.fn();
-      const callerOpts = { concurrency: 4, lockDuration: 60_000 };
+      const callerOpts = { concurrency: 4, lockDuration: 60_000 } as WorkerOpts;
       const created = factory.create("test-queue", handler, callerOpts);
       try {
         expect(bullMqWorkerCalls).toHaveLength(1);

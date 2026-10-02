@@ -92,7 +92,7 @@ function makeShiftOpen(eventId: string) {
     session_id: OPERATOR_SESSION_ID,
     action_category: "shift.open",
     created_at: CREATED_AT,
-    payload: { shift_id: SHIFT_ID, opened_at: CREATED_AT },
+    payload: { shift_id: SHIFT_ID, opened_at: CREATED_AT } as Record<string, unknown>,
   };
 }
 

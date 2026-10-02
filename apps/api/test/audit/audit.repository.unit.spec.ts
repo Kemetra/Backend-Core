@@ -162,7 +162,7 @@ function makeInput(overrides: Partial<ListPageInput> = {}): ListPageInput {
 
 function buildRepo() {
   const fakePool = {} as Pool;
-  const repo = new DrizzleAuditRepository(fakePool, fakeTx as typeof fakeTx);
+  const repo = new DrizzleAuditRepository(fakePool, fakeTx as unknown as NonNullable<ConstructorParameters<typeof DrizzleAuditRepository>[1]>);
   return { repo };
 }
 

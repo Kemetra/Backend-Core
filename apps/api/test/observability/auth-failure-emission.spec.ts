@@ -595,7 +595,7 @@ describe("T470 — emitted labels are bounded and PII-free", () => {
 
     expect(mockRecordAuthFailure.mock.calls.length).toBeGreaterThan(0);
     for (const [arg] of mockRecordAuthFailure.mock.calls) {
-      const args = arg as Record<string, unknown>;
+      const args = arg as unknown as Record<string, unknown>;
       assertOnlyAllowedKeys(args, VALID_AUTH_FAILURE_KEYS);
       // No PII / ID / high-cardinality slipped in.
       expect(args).not.toHaveProperty("email");
@@ -631,7 +631,7 @@ describe("T470 — emitted labels are bounded and PII-free", () => {
 
     expect(mockRecordSuspiciousLogin.mock.calls.length).toBeGreaterThan(0);
     for (const [arg] of mockRecordSuspiciousLogin.mock.calls) {
-      const args = arg as Record<string, unknown>;
+      const args = arg as unknown as Record<string, unknown>;
       assertOnlyAllowedKeys(args, VALID_SUSPICIOUS_LOGIN_KEYS);
       expect(args).not.toHaveProperty("email");
       expect(args).not.toHaveProperty("user_id");

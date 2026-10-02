@@ -563,7 +563,7 @@ describe("030 — diff touches only contracts; no migration, no source, no conne
         // renames "old -> new" by taking the destination path.
         const rest = line.slice(2).trimStart();
         const arrow = rest.split(" -> ");
-        return (arrow[1] ?? arrow[0]).replace(/^"|"$/g, "");
+        return (arrow[1] ?? arrow[0]!).replace(/^"|"$/g, "");
       });
   }
 

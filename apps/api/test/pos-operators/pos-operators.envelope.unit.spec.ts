@@ -101,7 +101,7 @@ const MANAGER_MEMBERSHIP = {
 
 const ISSUED_ROW = { id: SESSION_ID, issued_at: new Date("2026-06-12T00:00:00Z") };
 
-const SIGN_IN_BODY = { device_token_attestation: "attest" };
+const SIGN_IN_BODY = { device_token_attestation: "attest" } as Parameters<PosOperatorsService["signIn"]>[1];
 
 /**
  * Programs the happy-path query sequence: user → membership → (store-access:

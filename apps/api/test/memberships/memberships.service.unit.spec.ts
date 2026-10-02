@@ -130,7 +130,7 @@ function buildService(opts: BuildServiceOpts = {}) {
   const service = new MembershipsService(
     fakePool,
     repo as unknown as MembershipsRepository,
-    tx,
+    tx as unknown as NonNullable<ConstructorParameters<typeof MembershipsService>[2]>,
   );
 
   return { service, repo, tx };

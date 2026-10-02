@@ -10,7 +10,8 @@
     "start": "node dist/main.js",
     "start:dev": "tsc -p tsconfig.build.json --watch",
     "test": "jest --passWithNoTests",
-    "lint": "tsc -p tsconfig.build.json --noEmit --incremental false"
+    "lint": "tsc -p tsconfig.build.json --noEmit --incremental false",
+    "typecheck": "tsc -p tsconfig.json --noEmit --incremental false"
   },
   "dependencies": {
     "@data-pulse-2/auth": "workspace:*",

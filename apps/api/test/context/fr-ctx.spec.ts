@@ -153,7 +153,7 @@ function activeSession(overrides: Partial<SessionRow> = {}): SessionRow {
     userAgent: null,
     ipAtIssue: null,
     ...overrides,
-  };
+  } as SessionRow;
 }
 
 function makeRequest(principal: Principal | undefined): TenantContextRequest {

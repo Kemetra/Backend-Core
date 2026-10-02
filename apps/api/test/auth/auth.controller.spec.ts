@@ -147,7 +147,7 @@ function makeEmailSpy(): jest.Mocked<EmailJobEnqueuer> {
   return {
     enqueuePasswordReset: jest.fn().mockResolvedValue(undefined),
     enqueueEmailVerification: jest.fn().mockResolvedValue(undefined),
-  };
+  } as unknown as jest.Mocked<EmailJobEnqueuer>;
 }
 
 // -----------------------------------------------------------------------

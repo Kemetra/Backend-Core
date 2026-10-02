@@ -133,7 +133,7 @@ function makeActiveSession(overrides: Partial<SessionRow> = {}): SessionRow {
     userAgent: null,
     ipAtIssue: null,
     ...overrides,
-  };
+  } as SessionRow;
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +217,7 @@ class FakeMembershipRepository {
     _tenantId: string,
     _client?: PoolClient,
   ): Promise<TenantSummary | null> {
-    return { id: TENANT_ID, name: "Acme Corp" };
+    return { id: TENANT_ID, name: "Acme Corp" } as TenantSummary;
   }
 
   async findStoreSummary(

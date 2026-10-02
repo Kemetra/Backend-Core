@@ -103,8 +103,11 @@ async function seedSale(
   );
 }
 
-function envelope(payload: Record<string, unknown>, eventId: string): OutboxEventEnvelope {
-  return {
+type PostingEnvelope = Parameters<PostingRequestedConsumer["handle"]>[0];
+
+/** Tests feed arbitrary (incl. malformed) payloads; the consumer validates them. */
+function envelope(payload: Record<string, unknown>, eventId: string): PostingEnvelope {
+  const env: OutboxEventEnvelope = {
     event_id: eventId,
     event_type: "erpnext.posting.requested",
     tenant_id: TENANT,
@@ -114,6 +117,7 @@ function envelope(payload: Record<string, unknown>, eventId: string): OutboxEven
     attempts: 1,
     occurred_at: new Date("2026-06-01T00:00:00.000Z"),
   };
+  return env as PostingEnvelope;
 }
 
 async function statusRow(

@@ -123,7 +123,7 @@ function schemaImports(source: string): Set<string> {
     /import\s*\{([^}]+)\}\s*from\s*["']@data-pulse-2\/db\/schema["']/g;
   let m: RegExpExecArray | null;
   while ((m = importRe.exec(source)) !== null) {
-    const names = m[1].split(",").map((n) =>
+    const names = m[1]!.split(",").map((n) =>
       // Strip leading "type " keyword and trim whitespace.
       n.replace(/^\s*type\s+/, "").trim(),
     );
