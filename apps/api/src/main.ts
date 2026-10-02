@@ -14,10 +14,15 @@ import { LoggingInterceptor } from "./common/logging.interceptor";
 import { getRootLogger } from "./common/root-logger.module";
 import { RequestIdInterceptor } from "./common/request-id.interceptor";
 import { ZodValidationPipe } from "./common/zod-validation.pipe";
+import { assertDeploymentEnvironmentConfigured } from "./connector/deployment-environment";
 import { ContextInterceptor } from "./context/context.interceptor";
 import { loadOpenApiContracts } from "./openapi/loader";
 
 async function bootstrap(): Promise<void> {
+  // RT-152: production must declare which deployment environment it is, before
+  // any provider starts, so the connector feed gate can never run unconfigured.
+  assertDeploymentEnvironmentConfigured();
+
   // OTel SDK is already running (started by ./instrumentation, which is
   // imported as the very first module in this file). The PrometheusExporter
   // listener is up on METRICS_PORT (default 9464) before any AppModule

@@ -41,6 +41,7 @@ import type { Response } from "express";
 import { Auditable } from "../../audit/auditable.decorator";
 import type { AuthedRequest } from "../../auth/auth.guard";
 import { ConnectorAuthGuard } from "../../auth/connector-auth.guard";
+import { ConnectorEnvironmentGuard } from "../../auth/connector-environment.guard";
 import { Idempotent } from "../../idempotency/idempotent.decorator";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe";
 import {
@@ -67,7 +68,7 @@ interface PostingFeedPageResponse {
 }
 
 @Controller("api/connector/v1/erpnext")
-@UseGuards(ConnectorAuthGuard)
+@UseGuards(ConnectorAuthGuard, ConnectorEnvironmentGuard)
 export class ErpnextPostingController {
   constructor(private readonly service: ErpnextPostingService) {}
 

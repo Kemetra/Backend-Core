@@ -88,6 +88,17 @@ async function issueToken(
   return raw;
 }
 
+// RT-152: the connector feed is gated on DEPLOYMENT_ENVIRONMENT; the registration
+// seeded below is 'pilot', so this deployment must declare the same environment.
+const savedDeploymentEnv = process.env["DEPLOYMENT_ENVIRONMENT"];
+beforeAll(() => {
+  process.env["DEPLOYMENT_ENVIRONMENT"] = "pilot";
+});
+afterAll(() => {
+  if (savedDeploymentEnv === undefined) delete process.env["DEPLOYMENT_ENVIRONMENT"];
+  else process.env["DEPLOYMENT_ENVIRONMENT"] = savedDeploymentEnv;
+});
+
 beforeAll(async () => {
   try {
     env = await startPgEnv();
