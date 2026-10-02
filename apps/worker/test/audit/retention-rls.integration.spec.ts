@@ -81,25 +81,32 @@ afterAll(async () => {
   if (env) await stopPgEnv(env);
 }, 60_000);
 
-const skip = (): boolean => env === null;
+/** Both handles once setup ran; null on a Docker-less run (tests then skip). */
+function handles(): { env: PgTestEnv; retentionPool: Pool } | null {
+  if (env === null) return null;
+  if (retentionPool === null) return null;
+  return { env, retentionPool };
+}
 
 describe("RT-123 — audit retention marks across tenants under FORCE RLS", () => {
   it("the least-privilege retention role is NOBYPASSRLS (the sweep cannot rely on bypass)", async () => {
-    if (skip() || !retentionPool) return;
-    const r = await retentionPool.query<{ rolbypassrls: boolean; rolsuper: boolean }>(
+    const h = handles();
+    if (!h) return;
+    const r = await h.retentionPool.query<{ rolbypassrls: boolean; rolsuper: boolean }>(
       "SELECT rolbypassrls, rolsuper FROM pg_roles WHERE rolname = current_user",
     );
     expect(r.rows[0]).toEqual({ rolbypassrls: false, rolsuper: false });
   });
 
   it("marks every tenant's expired rows, and only those", async () => {
-    if (skip() || !retentionPool || !env) return;
-    const repo = new DrizzleAuditRetentionRepository(retentionPool);
+    const h = handles();
+    if (!h) return;
+    const repo = new DrizzleAuditRetentionRepository(h.retentionPool);
     const cutoff = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
 
     expect(await repo.markBatch(cutoff, new Date(), 1000)).toBe(2);
 
-    const r = await env.admin.query<{ id: string; marked: boolean }>(
+    const r = await h.env.admin.query<{ id: string; marked: boolean }>(
       `SELECT id, retention_marked_at IS NOT NULL AS marked
          FROM audit_events WHERE id = ANY($1::uuid[]) ORDER BY id`,
       [[AUDIT_OLD_A, AUDIT_OLD_B, AUDIT_NEW_A]],
@@ -112,8 +119,9 @@ describe("RT-123 — audit retention marks across tenants under FORCE RLS", () =
   });
 
   it("is idempotent: a second sweep marks nothing", async () => {
-    if (skip() || !retentionPool) return;
-    const repo = new DrizzleAuditRetentionRepository(retentionPool);
+    const h = handles();
+    if (!h) return;
+    const repo = new DrizzleAuditRetentionRepository(h.retentionPool);
     const cutoff = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
     expect(await repo.markBatch(cutoff, new Date(), 1000)).toBe(0);
   });
@@ -121,12 +129,13 @@ describe("RT-123 — audit retention marks across tenants under FORCE RLS", () =
 
 describe("RT-123 — outbox retention purges across tenants under FORCE RLS", () => {
   it("purges every tenant's expired delivered rows and keeps the rest", async () => {
-    if (skip() || !env) return;
-    const repo = new DrizzleOutboxRetentionRepository(env.app);
+    const h = handles();
+    if (!h) return;
+    const repo = new DrizzleOutboxRetentionRepository(h.env.app);
 
     expect(await repo.purgeBatch(computeRetentionCutoffs(new Date()), 1000)).toBe(2);
 
-    const r = await env.admin.query<{ event_id: string }>(
+    const r = await h.env.admin.query<{ event_id: string }>(
       `SELECT event_id FROM outbox_events WHERE event_id = ANY($1::uuid[]) ORDER BY event_id`,
       [[OUTBOX_OLD_A, OUTBOX_OLD_B, OUTBOX_NEW_A, OUTBOX_PENDING_B]],
     );
