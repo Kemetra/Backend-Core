@@ -75,6 +75,8 @@ class AlwaysAllowRedis implements RedisLike {
   async pttl(): Promise<number> {
     return -1;
   }
+  async decr(): Promise<number> { return 0; }
+  async del(): Promise<number> { return 0; }
 }
 
 // ---- Fixture IDs (real UUIDv4 for ParseUUIDPipe compatibility) ----------

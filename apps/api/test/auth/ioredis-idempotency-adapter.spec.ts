@@ -32,6 +32,7 @@ function makeMockClient() {
     set: jest.fn<Promise<"OK" | null>, unknown[]>().mockResolvedValue("OK"),
     del: jest.fn<Promise<number>, [string]>().mockResolvedValue(1),
     incr: jest.fn<Promise<number>, [string]>().mockResolvedValue(1),
+    decr: jest.fn<Promise<number>, [string]>().mockResolvedValue(0),
     pexpire: jest.fn<Promise<number>, unknown[]>().mockResolvedValue(1),
     pttl: jest.fn<Promise<number>, [string]>().mockResolvedValue(900_000),
   };
@@ -144,6 +145,20 @@ describe("IoredisIdempotencyAdapter — incr() delegation", () => {
     expect(client.incr).toHaveBeenCalledTimes(1);
     expect(client.incr).toHaveBeenCalledWith("rl:signin_account:alice");
     expect(result).toBe(3);
+  });
+});
+
+describe("IoredisIdempotencyAdapter — decr() delegation (RT-136)", () => {
+  it("ADAPTER-7b: decr(key) delegates to client.decr(key) and passes result through", async () => {
+    const client = makeMockClient();
+    client.decr.mockResolvedValue(2);
+    const adapter = new IoredisIdempotencyAdapter(client as never);
+
+    const result = await adapter.decr("rl:signin_account:alice");
+
+    expect(client.decr).toHaveBeenCalledTimes(1);
+    expect(client.decr).toHaveBeenCalledWith("rl:signin_account:alice");
+    expect(result).toBe(2);
   });
 });
 

@@ -124,6 +124,18 @@ class FakeRedis implements RedisLike {
     if (live.expiresAt === null) return -1;
     return Math.max(0, live.expiresAt - Date.now());
   }
+  async decr(key: string): Promise<number> {
+    const live = this.gc(key);
+    if (!live) {
+      this.store.set(key, { value: -1, expiresAt: null });
+      return -1;
+    }
+    live.value -= 1;
+    return live.value;
+  }
+  async del(key: string): Promise<number> {
+    return this.store.delete(key) ? 1 : 0;
+  }
 }
 
 interface CapturingEnqueuer extends AuditJobEnqueuer {

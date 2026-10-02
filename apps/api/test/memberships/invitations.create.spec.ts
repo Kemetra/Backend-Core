@@ -81,6 +81,7 @@ class AlwaysAllowRedis implements RedisLike {
   async incr(): Promise<number> { return 1; }
   async pexpireNx(): Promise<number> { return 1; }
   async pttl(): Promise<number> { return -1; }
+  async decr(): Promise<number> { return 0; }
   async get(_key: string): Promise<string | null> { return null; }
   async set(
     _key: string,

@@ -155,6 +155,13 @@ class FakeRateLimiter {
     const allowed = !this.blockedBuckets.has(bucketName);
     return { allowed, count: allowed ? 1 : 100, remaining: allowed ? 99 : 0, resetMs: 60_000 };
   }
+
+  /** Ordered record of bucket names that release() was called with (RT-136). */
+  releasedBuckets: string[] = [];
+
+  async release(bucketName: string, _identifier: string): Promise<void> {
+    this.releasedBuckets.push(bucketName);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +233,7 @@ beforeEach(() => {
   guard.principal = { kind: "session", sessionId: SESSION_ID, userId: USER_ID };
   rl.allowAll();
   rl.calledBuckets = [];
+  rl.releasedBuckets = [];
 
   svc.lastSignInArgs                   = null;
   svc.lastSignOutArgs                  = null;
@@ -348,6 +356,71 @@ describe("POST /api/v1/auth/signin", () => {
     expect(res.status).toBe(401);
     expectErrorEnvelope(res.body, "unauthorized");
     svc.signIn = async (input) => { svc.lastSignInArgs = input; return svc.signInResult; };
+  });
+
+  // RT-136: only a failed authentication keeps its per-account hit.
+  it("releases the per-account hit after a successful sign-in", async () => {
+    const res = await http()
+      .post("/api/v1/auth/signin")
+      .send({ email: "user@example.com", password: "secret123" });
+
+    expect(res.status).toBe(200);
+    expect(rl.releasedBuckets).toEqual(["signin_account"]);
+  });
+
+  it("keeps the per-account hit when authentication fails (401)", async () => {
+    svc.signIn = async () => { throw new UnauthorizedException("Invalid credentials"); };
+
+    const res = await http()
+      .post("/api/v1/auth/signin")
+      .send({ email: "user@example.com", password: "wrong" });
+
+    expect(res.status).toBe(401);
+    expect(rl.releasedBuckets).toEqual([]);
+    svc.signIn = async (input) => { svc.lastSignInArgs = input; return svc.signInResult; };
+  });
+
+  it("releases the per-account hit when the per-IP bucket refuses the attempt", async () => {
+    rl.blockBucket("signin_ip");
+    const res = await http()
+      .post("/api/v1/auth/signin")
+      .send({ email: "user@example.com", password: "p" });
+
+    expect(res.status).toBe(429);
+    expect(rl.releasedBuckets).toEqual(["signin_account"]);
+  });
+
+  it("releases the per-account hit when sign-in fails for a non-authentication reason", async () => {
+    svc.signIn = async () => { throw new Error("database unavailable"); };
+
+    const res = await http()
+      .post("/api/v1/auth/signin")
+      .send({ email: "user@example.com", password: "secret123" });
+
+    expect(res.status).toBe(500);
+    expect(rl.releasedBuckets).toEqual(["signin_account"]);
+    svc.signIn = async (input) => { svc.lastSignInArgs = input; return svc.signInResult; };
+  });
+
+  it("does not release anything when the per-account bucket itself is exhausted", async () => {
+    rl.blockBucket("signin_account");
+    const res = await http()
+      .post("/api/v1/auth/signin")
+      .send({ email: "user@example.com", password: "p" });
+
+    expect(res.status).toBe(429);
+    expect(rl.releasedBuckets).toEqual([]);
+  });
+
+  it("a failed release does not turn a successful sign-in into an error", async () => {
+    rl.release = async () => { throw new Error("redis down"); };
+
+    const res = await http()
+      .post("/api/v1/auth/signin")
+      .send({ email: "user@example.com", password: "secret123" });
+
+    expect(res.status).toBe(200);
+    rl.release = FakeRateLimiter.prototype.release;
   });
 
   it("returns 400 (validation_error) for missing email — rate limiter not called", async () => {

@@ -93,6 +93,24 @@ class FakeRedis implements RedisLike {
     if (live.expiresAt === null) return -1;
     return Math.max(0, live.expiresAt - this.clock.read());
   }
+
+  async decr(key: string): Promise<number> {
+    const live = this.gc(key);
+    if (!live) {
+      this.store.set(key, { value: -1, expiresAt: null });
+      return -1;
+    }
+    live.value -= 1;
+    return live.value;
+  }
+
+  async del(key: string): Promise<number> {
+    return this.store.delete(key) ? 1 : 0;
+  }
+
+  has(key: string): boolean {
+    return this.gc(key) !== undefined;
+  }
 }
 
 let clock: VirtualClock;
@@ -216,5 +234,42 @@ describe("RateLimiter — per-IP password reset (100 / day)", () => {
     expect(blocked.allowed).toBe(false);
     expect(blocked.count).toBe(101);
     expect(blocked.remaining).toBe(0);
+  });
+});
+
+describe("RateLimiter — release (RT-136)", () => {
+  const bucket = RATE_LIMIT_BUCKETS.signInPerAccount;
+  const account = "user-alice";
+
+  it("a released hit no longer counts toward the limit", async () => {
+    for (let i = 0; i < 5; i++) {
+      await limiter.check("signin_account", account, bucket);
+      await limiter.release("signin_account", account);
+    }
+    // Five reserved-and-released hits leave the full budget.
+    for (let i = 0; i < 5; i++) {
+      expect((await limiter.check("signin_account", account, bucket)).allowed).toBe(true);
+    }
+    expect((await limiter.check("signin_account", account, bucket)).allowed).toBe(false);
+  });
+
+  it("keeps the window's original TTL when a hit is released", async () => {
+    await limiter.check("signin_account", account, bucket);
+    clock.advance(60_000);
+    await limiter.check("signin_account", account, bucket);
+    await limiter.release("signin_account", account);
+    const next = await limiter.check("signin_account", account, bucket);
+    expect(next.count).toBe(2);
+    expect(next.resetMs).toBe(bucket.windowMs - 60_000);
+  });
+
+  it("deletes the key instead of leaving a negative, TTL-less counter when the window expired first", async () => {
+    await limiter.check("signin_account", account, bucket);
+    clock.advance(bucket.windowMs);
+    await limiter.release("signin_account", account);
+    expect(redis.has("rl:signin_account:user-alice")).toBe(false);
+    const fresh = await limiter.check("signin_account", account, bucket);
+    expect(fresh.count).toBe(1);
+    expect(fresh.resetMs).toBe(bucket.windowMs);
   });
 });
