@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Data-Pulse-2 migration runner.
+ * Backend-Core migration runner.
  *
  * Walks `packages/db/drizzle/*.sql` in lexical order. Tracks applied
  * migrations in a `_drizzle_migrations` ledger table. Holds a Postgres

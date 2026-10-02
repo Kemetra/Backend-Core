@@ -1,6 +1,6 @@
 # @data-pulse-2/auth
 
-Shared authentication primitives used by Data-Pulse-2 backend apps.
+Shared authentication primitives used by Backend-Core apps.
 
 ## Exports
 

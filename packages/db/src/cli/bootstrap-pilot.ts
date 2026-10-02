@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Data-Pulse-2 P-0 preprod PILOT BOOTSTRAP seed.
+ * Backend-Core P-0 preprod PILOT BOOTSTRAP seed.
  *
  * One-shot, idempotent seed that mints the minimal identity state the first
  * POS live-leg smoke needs in an EMPTY preprod database (tenants/users/stores

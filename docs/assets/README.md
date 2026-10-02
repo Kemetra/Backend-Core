@@ -1,4 +1,4 @@
-# Data Pulse Visual Assets
+# Retail Tower OS Visual Assets
 
 This directory contains GitHub-renderable SVG assets used by the README and
 architecture documentation.
@@ -7,7 +7,7 @@ architecture documentation.
 
 | Path | Purpose |
 | --- | --- |
-| `hero-data-pulse.svg` | Primary README hero for the Data Pulse platform story. |
+| `hero-data-pulse.svg` | Primary README hero for the Retail Tower OS platform story. |
 | `pulse-signature.svg` | Platform identity waveform used as a subtle visual throughline in the README. |
 | `architecture-isometric.svg` | Isometric architecture visual used in `docs/ARCHITECTURE.md`. |
 | `icons/*.svg` | Small reusable icons for platform capabilities and package areas. |

@@ -1,6 +1,6 @@
 # @data-pulse-2/worker
 
-NestJS standalone worker runtime for asynchronous Data-Pulse-2 backend jobs.
+NestJS standalone worker runtime for asynchronous Retail Tower OS Backend-Core jobs.
 The current implemented queue is `email`, transported through BullMQ and
 Redis.
 
