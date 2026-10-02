@@ -153,6 +153,7 @@ class ConfigurableContextGuard implements CanActivate {
       storeId: this.storeId,
       isPlatformAdmin: false,
       source: "session",
+      storeAccess: { kind: "all" },
     };
     req.principal = { userId: this.userId };
     return true;
@@ -365,6 +366,7 @@ describe("T056 / 007-US8-BULK-DISMISS — mixed per-item outcomes [FR-044, FR-07
     const out = await svc.bulkDismissUnknownItems({
       tenantId: TENANT_A,
       storeId: null,
+      storeScope: { kind: "tenant" },
       actorUserId: ACTOR_A,
       ids: [UNK_005_A_X_BARCODE, ABSENT_ID],
     });

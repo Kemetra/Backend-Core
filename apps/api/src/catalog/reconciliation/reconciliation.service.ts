@@ -78,10 +78,12 @@ import {
 } from "../../audit/audit-job.enqueuer";
 import { PG_POOL } from "../../auth/auth.module";
 import { ROOT_LOGGER } from "../../common/logging.interceptor";
+import type { StoreScope } from "../../context/store-scope";
 import {
   recordUnknownItemResolved,
   recordDuplicateAliasConflict,
 } from "../../observability/metrics/api.metrics";
+import { applyItemStoreScope } from "../unknown-items/unknown-item-store-scope";
 
 // Re-export the common row shape so the controller does not need a separate
 // import from unknown-items.service.ts (avoids cross-module coupling).
@@ -244,19 +246,19 @@ export class ReconciliationService {
    *        guard is kept for defensive correctness.
    */
   /**
-   * Sets the app.current_store GUC (required by the unknown_items_store_read
-   * RLS policy; tenant-wide actors pass storeId=null → "*", 003 0009
-   * carve-out) and locks the target unknown_items row FOR UPDATE. The lock
+   * Sets the app.current_store GUC from the caller's store scope (RT-131 —
+   * `'*'` only for genuinely tenant-wide actors; an out-of-scope row becomes
+   * invisible) and locks the target unknown_items row FOR UPDATE. The lock
    * prevents the FR-052 monotonicity race (T626, exercised by
    * link-already-reconciled.spec.ts). RLS filters a cross-tenant /
    * out-of-scope row to zero rows → undefined.
    */
   private async lockUnknownItem(
     client: PoolClient,
-    storeId: string | null,
+    storeScope: StoreScope,
     unknownItemId: string,
   ): Promise<UnknownItemDbRow | undefined> {
-    await client.query("SELECT set_config('app.current_store', $1, true)", [storeId ?? "*"]);
+    await applyItemStoreScope(client, storeScope, unknownItemId);
     const lockResult = await client.query<UnknownItemDbRow>(
       `SELECT ${UNKNOWN_ITEM_COLUMNS}
          FROM unknown_items
@@ -347,7 +349,10 @@ export class ReconciliationService {
 
   async linkUnknownItem(input: {
     readonly tenantId: string;
+    /** Active store, for audit attribution only. */
     readonly storeId: string | null;
+    /** RT-131: the caller's store scope (`resolveStoreScope`). */
+    readonly storeScope: StoreScope;
     readonly unknownItemId: string;
     readonly productId: string;
     readonly actorUserId: string;
@@ -357,7 +362,7 @@ export class ReconciliationService {
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<LinkResult> => {
         // Step 1+2: lock the unknown_items row and discriminate lifecycle.
-        const existing = await this.lockUnknownItem(client, input.storeId, input.unknownItemId);
+        const existing = await this.lockUnknownItem(client, input.storeScope, input.unknownItemId);
         if (!existing) {
           return { kind: "not_found" };
         }
@@ -477,7 +482,10 @@ export class ReconciliationService {
    */
   async createProductFromUnknownItem(input: {
     readonly tenantId: string;
+    /** Active store, for audit attribution only. */
     readonly storeId: string | null;
+    /** RT-131: the caller's store scope (`resolveStoreScope`). */
+    readonly storeScope: StoreScope;
     readonly unknownItemId: string;
     readonly actorUserId: string;
     readonly name: string;
@@ -491,7 +499,7 @@ export class ReconciliationService {
         { tenantId: input.tenantId, isPlatformAdmin: false },
         async (client): Promise<CreateResult> => {
         // Step 1+2: lock the unknown_items row and discriminate lifecycle.
-        const existing = await this.lockUnknownItem(client, input.storeId, input.unknownItemId);
+        const existing = await this.lockUnknownItem(client, input.storeScope, input.unknownItemId);
         if (!existing) {
           return { kind: "not_found" };
         }
@@ -654,7 +662,10 @@ export class ReconciliationService {
    */
   async reopenUnknownItem(input: {
     readonly tenantId: string;
+    /** Active store, for audit attribution only. */
     readonly storeId: string | null;
+    /** RT-131: the caller's store scope (`resolveStoreScope`). */
+    readonly storeScope: StoreScope;
     readonly unknownItemId: string;
     readonly actorUserId: string;
     readonly isTenantWide: boolean;
@@ -668,7 +679,7 @@ export class ReconciliationService {
       async (client): Promise<ReopenResult> => {
         // Lock the target row and discriminate lifecycle. RLS filters a
         // cross-tenant / out-of-scope row to zero rows.
-        const target = await this.lockUnknownItem(client, input.storeId, input.unknownItemId);
+        const target = await this.lockUnknownItem(client, input.storeScope, input.unknownItemId);
 
         // Non-disclosing 404 — RLS-filtered (cross-tenant / out-of-scope) or
         // absent. Decided BEFORE the authority check so an out-of-scope actor

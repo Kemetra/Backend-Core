@@ -121,6 +121,9 @@ class FakeMembershipRepository {
   async canAccessStore(): Promise<boolean> {
     return this.canAccessStoreResult;
   }
+  async listGrantedStoreIds(): Promise<readonly string[]> {
+    return [];
+  }
   async listForUser(): Promise<readonly MembershipSummary[]> {
     return this.listForUserResult;
   }
@@ -294,6 +297,7 @@ describe("FR-CTX-6 — TenantContextGuard primitive", () => {
       storeId: null,
       isPlatformAdmin: false,
       source: "session",
+      storeAccess: { kind: "all" },
     });
   });
 

@@ -121,6 +121,7 @@ class ConfigurableContextGuard implements CanActivate {
       storeId: this.storeId,
       isPlatformAdmin: false,
       source: "session",
+      storeAccess: { kind: "all" },
     };
     req.principal = { userId: this.userId };
     return true;
@@ -215,7 +216,7 @@ describe("T523 / 005-WAVE1-LIST — tenant admin sees all stores", () => {
 
     const result = await service.listForTenant({
       tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantA,
-      storeId: null,
+      storeScope: { kind: "tenant" },
       status: "pending",
       limit: 50,
     });
@@ -249,7 +250,7 @@ describe("T523 / 005-WAVE1-LIST — tenant admin sees all stores", () => {
 
     const result = await service.listForTenant({
       tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantB,
-      storeId: null,
+      storeScope: { kind: "tenant" },
       status: "pending",
       limit: 50,
     });
@@ -286,7 +287,7 @@ describe("T523 / 005-WAVE1-LIST — store-scoped operator sees only their store"
 
     const result = await service.listForTenant({
       tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantA,
-      storeId: UNKNOWN_ITEMS_FIXTURE_IDS.storeAX,
+      storeScope: { kind: "stores", storeIds: [UNKNOWN_ITEMS_FIXTURE_IDS.storeAX] },
       status: "pending",
       limit: 50,
     });
@@ -322,7 +323,7 @@ describe("T523 / 005-WAVE1-LIST — store-scoped operator sees only their store"
 
     const result = await service.listForTenant({
       tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantA,
-      storeId: UNKNOWN_ITEMS_FIXTURE_IDS.storeAY,
+      storeScope: { kind: "stores", storeIds: [UNKNOWN_ITEMS_FIXTURE_IDS.storeAY] },
       status: "pending",
       limit: 50,
     });
@@ -350,7 +351,7 @@ describe("T523 / 005-WAVE1-LIST — cross-tenant probe returns empty, not error"
 
     const result = await service.listForTenant({
       tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantA,
-      storeId: null,
+      storeScope: { kind: "tenant" },
       status: "pending",
       limit: 50,
     });
@@ -385,7 +386,7 @@ describe("T523 / 005-WAVE1-LIST — cross-tenant probe returns empty, not error"
     // foreign store) instead of exercising the residual filter param.
     const result = await service.listForTenant({
       tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantA,
-      storeId: null, // tenant-wide actor
+      storeScope: { kind: "tenant" }, // tenant-wide actor
       storeIdFilter: UNKNOWN_ITEMS_FIXTURE_IDS.storeBX, // foreign-tenant store filter
       status: "pending",
       limit: 50,

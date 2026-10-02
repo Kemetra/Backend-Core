@@ -183,6 +183,7 @@ describe("T662 / SC-007 — real-DB atomicity [FR-053, FR-063]", () => {
     const result = await service.linkUnknownItem({
       tenantId: TENANT_A,
       storeId: STORE_A_X,
+      storeScope: { kind: "stores", storeIds: [STORE_A_X] },
       unknownItemId: UNK_LINK_CONFLICT,
       productId: PRODUCT_A_ACTIVE,
       actorUserId: ADMIN_USER,
@@ -203,6 +204,7 @@ describe("T662 / SC-007 — real-DB atomicity [FR-053, FR-063]", () => {
     const result = await service.createProductFromUnknownItem({
       tenantId: TENANT_A,
       storeId: STORE_A_X,
+      storeScope: { kind: "stores", storeIds: [STORE_A_X] },
       unknownItemId: UNK_CREATE_CONFLICT,
       actorUserId: ADMIN_USER,
       name: CREATE_PRODUCT_NAME,
@@ -309,6 +311,7 @@ describe("T662 / SC-007 — defensive invariant rollback (mock harness)", () => 
       svc.linkUnknownItem({
         tenantId: TENANT_A,
         storeId: STORE_A_X,
+        storeScope: { kind: "stores", storeIds: [STORE_A_X] },
         unknownItemId: UNK_LINK_CONFLICT,
         productId: PRODUCT_A_ACTIVE,
         actorUserId: ADMIN_USER,

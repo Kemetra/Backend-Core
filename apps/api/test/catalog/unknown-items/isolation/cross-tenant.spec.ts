@@ -199,7 +199,7 @@ describe("T521 — cross-tenant: tenant A cannot read tenant B's unknown_items",
       service!.findByIdForTenant({
         id: UNKNOWN_ITEMS_FIXTURE_IDS.unknownBXBarcode,
         tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantA,
-        storeId: null, // tenant-wide read; should still 404 cross-tenant
+        storeScope: { kind: "tenant" }, // tenant-wide read; should still 404 cross-tenant
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
@@ -211,7 +211,7 @@ describe("T521 — cross-tenant: tenant A cannot read tenant B's unknown_items",
       service!.findByIdForTenant({
         id: UNKNOWN_ITEMS_FIXTURE_IDS.unknownBXPos,
         tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantA,
-        storeId: null,
+        storeScope: { kind: "tenant" },
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
@@ -237,7 +237,7 @@ describe("T521 — cross-tenant: tenant B cannot read tenant A's unknown_items",
       service!.findByIdForTenant({
         id: UNKNOWN_ITEMS_FIXTURE_IDS.unknownAXBarcode,
         tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantB,
-        storeId: null,
+        storeScope: { kind: "tenant" },
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
@@ -249,7 +249,7 @@ describe("T521 — cross-tenant: tenant B cannot read tenant A's unknown_items",
       service!.findByIdForTenant({
         id: UNKNOWN_ITEMS_FIXTURE_IDS.unknownAXPos,
         tenantId: UNKNOWN_ITEMS_FIXTURE_IDS.tenantB,
-        storeId: null,
+        storeScope: { kind: "tenant" },
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });

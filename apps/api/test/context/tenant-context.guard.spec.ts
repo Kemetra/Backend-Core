@@ -96,6 +96,11 @@ class FakeMembershipRepository {
     this.canAccessStoreCalls.push({ membershipId, tenantId, storeId, kind });
     return this.canAccessStoreResult;
   }
+
+  grantedStoreIds: readonly string[] = [STORE_ID];
+  async listGrantedStoreIds(): Promise<readonly string[]> {
+    return this.grantedStoreIds;
+  }
 }
 
 // --- Helpers ----------------------------------------------------------
@@ -204,6 +209,7 @@ describe("TenantContextGuard — session principal: tenant-only", () => {
       storeId: null,
       isPlatformAdmin: false,
       source: "session",
+      storeAccess: { kind: "all" },
     });
     expect(memberships.findActiveMembershipCalls).toEqual([
       { userId: USER_ID, tenantId: TENANT_ID },
@@ -291,6 +297,31 @@ describe("TenantContextGuard — session principal: store-access", () => {
       storeId: STORE_ID,
       kind: "specific",
     });
+    expect(request.context?.storeAccess).toEqual({
+      kind: "specific",
+      storeIds: [STORE_ID],
+    });
+  });
+
+  it("RT-131: kind='specific' + no active store → publishes the granted stores, not tenant-wide", async () => {
+    sessions.row = activeSession({ activeStoreId: null });
+    memberships.membershipResult = {
+      membershipId: MEMBERSHIP_ID,
+      storeAccessKind: "specific",
+    };
+
+    const request = makeRequest({
+      kind: "session",
+      sessionId: SESSION_ID,
+      userId: USER_ID,
+    });
+    await expect(guard.canActivate(makeContext(request))).resolves.toBe(true);
+
+    expect(request.context?.storeId).toBeNull();
+    expect(request.context?.storeAccess).toEqual({
+      kind: "specific",
+      storeIds: [STORE_ID],
+    });
   });
 
   it("kind='specific' + no store_access row → 404", async () => {
@@ -327,6 +358,7 @@ describe("TenantContextGuard — platform-admin session", () => {
       storeId: null,
       isPlatformAdmin: true,
       source: "session",
+      storeAccess: { kind: "all" },
     });
     // is_platform_admin === true ⇒ membership lookup must be skipped
     expect(memberships.findActiveMembershipCalls).toHaveLength(0);

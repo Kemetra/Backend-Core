@@ -241,6 +241,36 @@ export class MembershipRepository {
   }
 
   /**
+   * The store IDs a `'specific'` membership is granted within `tenantId`
+   * (non-deleted stores only). `TenantContextGuard` publishes them as
+   * `ResolvedContext.storeAccess` so store-scoped routes can authorize
+   * against the target's store without an active store (RT-131).
+   *
+   * @param client — Optional `PoolClient` from `runWithTenantContext`.
+   *   Same semantics as `findActiveMembership`.
+   */
+  async listGrantedStoreIds(
+    membershipId: string,
+    tenantId: string,
+    client?: PoolClient,
+  ): Promise<readonly string[]> {
+    const db = client ? drizzle(client) : this.db;
+    const rows = await db
+      .select({ storeId: storeAccess.storeId })
+      .from(storeAccess)
+      .innerJoin(stores, eq(stores.id, storeAccess.storeId))
+      .where(
+        and(
+          eq(storeAccess.membershipId, membershipId),
+          eq(storeAccess.tenantId, tenantId),
+          eq(stores.tenantId, tenantId),
+          isNull(stores.deletedAt),
+        ),
+      );
+    return rows.map((r) => r.storeId);
+  }
+
+  /**
    * List every active membership the user has, decorated with the
    * tenant name, role code, and accessible-store IDs (for
    * `kind='specific'`).

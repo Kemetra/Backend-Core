@@ -72,10 +72,15 @@ import {
   type AuditJobEnqueuer,
 } from "../../audit/audit-job.enqueuer";
 import { PG_POOL } from "../../auth/auth.module";
+import type { StoreScope } from "../../context/store-scope";
 import {
   recordUnknownItemCaptured,
   recordUnknownItemResolved,
 } from "../../observability/metrics/api.metrics";
+import {
+  applyItemStoreScope,
+  applyListStoreScope,
+} from "./unknown-item-store-scope";
 
 /**
  * Inputs accepted at the service boundary. Mirrors the contract's
@@ -579,24 +584,17 @@ export class UnknownItemsService {
   async findByIdForTenant(input: {
     readonly id: string;
     readonly tenantId: string;
-    readonly storeId: string | null;
+    /** RT-131: the caller's store scope (`resolveStoreScope`). */
+    readonly storeScope: StoreScope;
   }): Promise<UnknownItemRow> {
     const row = await runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
-        // Set `app.current_store` BEFORE the SELECT so the store_read RLS
-        // branch can evaluate. Empty-string for tenant-wide actors (0009
-        // carve-out); store UUID for store-scoped actors. Without this,
-        // `current_setting('app.current_store', true)` returns NULL and
-        // the OR'd store_read branch evaluates FALSE — leaving only the
-        // tenant_isolation branch, which is fine for tenant-wide queries
-        // but would silently over-restrict a store-scoped principal.
-        // Mirrors the `set_config` call in `captureItem` (line ~295).
-        await client.query(
-          "SELECT set_config('app.current_store', $1, true)",
-          [input.storeId ?? "*"],
-        );
+        // Set `app.current_store` BEFORE the SELECT so the store RLS branch
+        // admits the item only when it is in the caller's store scope
+        // (RT-131; `'*'` only for genuinely tenant-wide actors).
+        await applyItemStoreScope(client, input.storeScope, input.id);
 
         const result = await client.query<{
           id: string;
@@ -700,7 +698,8 @@ export class UnknownItemsService {
    */
   async listForTenant(input: {
     readonly tenantId: string;
-    readonly storeId: string | null;
+    /** RT-131: the caller's store scope (`resolveStoreScope`). */
+    readonly storeScope: StoreScope;
     readonly status: "pending" | "resolved" | "dismissed";
     readonly limit: number;
     readonly storeIdFilter?: string | null;
@@ -744,22 +743,22 @@ export class UnknownItemsService {
           : "";
     const orderBy = `${groupFragment}${sortFragment}, id DESC`;
 
-    params.push(input.limit);
-    const limitPlaceholder = `$${params.length}`;
-
     const rows = await runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
-        // Set `app.current_store` GUC — drives the
-        // `unknown_items_store_read` RLS policy branch. Empty-string
-        // for tenant-wide actors (003 0009 carve-out); store UUID
-        // for store-scoped actors. Mirrors `findByIdForTenant` and
-        // `captureItem`'s GUC pattern.
-        await client.query(
-          "SELECT set_config('app.current_store', $1, true)",
-          [input.storeId ?? "*"],
-        );
+        // Set `app.current_store` GUC — drives the store RLS branch from the
+        // caller's store scope (RT-131). A multi-store scope also needs the
+        // explicit `store_id = ANY(...)` predicate returned here.
+        const scopedStoreIds = await applyListStoreScope(client, input.storeScope);
+        const queryWhere = [...where];
+        const queryParams = [...params];
+        if (scopedStoreIds !== null) {
+          queryParams.push(scopedStoreIds);
+          queryWhere.push(`store_id = ANY($${queryParams.length}::uuid[])`);
+        }
+        queryParams.push(input.limit);
+        const limitPlaceholder = `$${queryParams.length}`;
 
         const result = await client.query<{
           id: string;
@@ -781,10 +780,10 @@ export class UnknownItemsService {
                   resolved_at, resolved_by, resolved_product_id,
                   encountered_at, sale_context
              FROM unknown_items
-            WHERE ${where.join(" AND ")}
+            WHERE ${queryWhere.join(" AND ")}
             ORDER BY ${orderBy}
             LIMIT ${limitPlaceholder}`,
-          params,
+          queryParams,
         );
 
         return result.rows;
@@ -867,7 +866,8 @@ export class UnknownItemsService {
   async dismissUnknownItem(input: {
     readonly id: string;
     readonly tenantId: string;
-    readonly storeId: string | null;
+    /** RT-131: the caller's store scope (`resolveStoreScope`). */
+    readonly storeScope: StoreScope;
     readonly actorUserId: string;
   }): Promise<UnknownItemRow> {
     const result = await runWithTenantContext(
@@ -878,13 +878,10 @@ export class UnknownItemsService {
         | { kind: "already_reconciled" }
         | { kind: "not_found" }
       > => {
-        // Set `app.current_store` GUC — drives the
-        // `unknown_items_store_read` RLS policy branch. Same pattern
-        // as `findByIdForTenant`/`listForTenant`.
-        await client.query(
-          "SELECT set_config('app.current_store', $1, true)",
-          [input.storeId ?? "*"],
-        );
+        // Set `app.current_store` GUC from the caller's store scope — an
+        // out-of-scope row is invisible to the UPDATE and to the existence
+        // check below, so it lands on the non-disclosing 404 (RT-131).
+        await applyItemStoreScope(client, input.storeScope, input.id);
 
         // UPDATE-first with monotonicity guard. The `WHERE` clause
         // includes `resolution_status = 'pending'` per FR-004 +
@@ -1025,7 +1022,10 @@ export class UnknownItemsService {
    */
   async bulkDismissUnknownItems(input: {
     readonly tenantId: string;
+    /** Active store, for audit attribution only. */
     readonly storeId: string | null;
+    /** RT-131: the caller's store scope (`resolveStoreScope`). */
+    readonly storeScope: StoreScope;
     readonly actorUserId: string;
     readonly ids: readonly string[];
     // Request correlation id, threaded from the controller (request_id ??
@@ -1051,7 +1051,7 @@ export class UnknownItemsService {
         await this.dismissUnknownItem({
           id,
           tenantId: input.tenantId,
-          storeId: input.storeId,
+          storeScope: input.storeScope,
           actorUserId: input.actorUserId,
         });
         outcomes.push({ id, outcome: "dismissed" });
@@ -1093,7 +1093,7 @@ export class UnknownItemsService {
             const row = await this.findByIdForTenant({
               id,
               tenantId: input.tenantId,
-              storeId: input.storeId,
+              storeScope: input.storeScope,
             });
             priorState = row.resolutionStatus;
           } catch {

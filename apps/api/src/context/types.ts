@@ -21,6 +21,10 @@ import type { AuthedRequest } from "../auth/auth.guard";
  * (FR-CTX-6) — most settings, user-management, billing, etc. are
  * tenant-scoped without a store.
  *
+ * `storeId === null` means only "no active store"; it is NOT store
+ * authority. Store authority is `storeAccess` (RT-131) — see
+ * `resolveStoreScope` in `store-scope.ts`.
+ *
  * `source` records which authentication path produced the context;
  * useful for audit trails and downstream "API vs dashboard" branching.
  */
@@ -30,7 +34,22 @@ export interface ResolvedContext {
   readonly storeId: string | null;
   readonly isPlatformAdmin: boolean;
   readonly source: "session" | "token";
+  /**
+   * The caller's store authority from its membership, independent of the
+   * active store. Set by `TenantContextGuard` for session principals
+   * (`{ kind: "all" }` for platform admins). Absent means unresolved —
+   * consumers MUST treat that as no store, never as tenant-wide.
+   */
+  readonly storeAccess?: StoreAccess;
 }
+
+/**
+ * A membership's store authority: every store of the tenant (`'all'`), or
+ * exactly the stores granted through `store_access` (`'specific'`).
+ */
+export type StoreAccess =
+  | { readonly kind: "all" }
+  | { readonly kind: "specific"; readonly storeIds: readonly string[] };
 
 /**
  * Express request after `TenantContextGuard` has resolved the active

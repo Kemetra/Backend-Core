@@ -153,6 +153,7 @@ class AllowContextGuard implements CanActivate {
       storeId: null,
       isPlatformAdmin: false,
       source: "session",
+      storeAccess: { kind: "all" },
     };
     return true;
   }
