@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Data-Pulse-2 P-0 preprod GOLDEN CATALOG seed.
+ * Backend-Core P-0 preprod GOLDEN CATALOG seed.
  *
  * Seeds the pilot retail catalog (the read prerequisite for the POS-010
  * read-down smoke) into the tenant/store created by `bootstrap-pilot.ts`.

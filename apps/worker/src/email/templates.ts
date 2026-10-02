@@ -67,17 +67,17 @@ export function renderInvitationEmail(
 ): EmailMessage {
   const { email, rawToken } = job;
   const textBody =
-    "You have been invited to join a tenant on Data Pulse.\n\n" +
+    "You have been invited to join a tenant on Retail Tower OS.\n\n" +
     `Use this token to accept the invitation: ${rawToken}\n\n` +
     "If you did not expect this invitation, you can ignore this email.";
   const htmlBody =
-    "<p>You have been invited to join a tenant on Data Pulse.</p>" +
+    "<p>You have been invited to join a tenant on Retail Tower OS.</p>" +
     `<p>Use this token to accept the invitation: <code>${rawToken}</code></p>` +
     "<p>If you did not expect this invitation, you can ignore this email.</p>";
 
   return {
     to: email,
-    subject: "You have been invited to Data Pulse",
+    subject: "You have been invited to Retail Tower OS",
     textBody,
     htmlBody,
     tags: { template_id: "memberships.invitation" },

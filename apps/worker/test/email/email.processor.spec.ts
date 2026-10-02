@@ -346,6 +346,20 @@ describe("EmailProcessor — memberships.invitation", () => {
     }
   });
 
+  it("names the product as Retail Tower OS, not the legacy Data Pulse name (RT-122)", async () => {
+    await processor.process(EMAIL_JOB_NAMES.invitation, {
+      email: EMAIL,
+      rawToken: RAW_TOKEN,
+      tenantId: TENANT_ID,
+    });
+    const message = adapter.sent[0]!;
+    for (const text of [message.subject, message.textBody, message.htmlBody ?? ""]) {
+      expect(text).not.toMatch(/data pulse/i);
+    }
+    expect(message.subject).toContain("Retail Tower OS");
+    expect(message.textBody).toContain("Retail Tower OS");
+  });
+
   it("throws MalformedEmailJobError when tenantId is missing", async () => {
     await expect(
       processor.process(EMAIL_JOB_NAMES.invitation, {

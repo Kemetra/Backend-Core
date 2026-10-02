@@ -1,6 +1,6 @@
-# Data Pulse Documentation
+# Retail Tower OS Backend-Core Documentation
 
-This directory is the public documentation entrypoint for the Data Pulse
+This directory is the public documentation entrypoint for the Retail Tower OS
 backend foundation. It is organized for product review, engineering onboarding,
 security review, and integration planning.
 

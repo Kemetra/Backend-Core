@@ -1,7 +1,7 @@
 # @data-pulse-2/db
 
 PostgreSQL schema, migrations, tenant context middleware, and tenant-scoped
-query helpers for Data-Pulse-2.
+query helpers for Backend-Core.
 
 ## Current Surface
 

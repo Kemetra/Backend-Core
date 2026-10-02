@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Data-Pulse-2 PILOT/HOME terminal PAIRING-CODE seed.
+ * Backend-Core PILOT/HOME terminal PAIRING-CODE seed.
  *
  * Owner-run, one-shot seed that inserts ONE `pending` row into `pairing_codes`
  * so a POS terminal can redeem it through the REAL consume endpoint:

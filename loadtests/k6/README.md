@@ -1,4 +1,4 @@
-# Data-Pulse-2 k6 load tests — first slice
+# Backend-Core k6 load tests — first slice
 
 > Track A of Feature 004 (Platform Production Readiness), Phase 2,
 > tasks T420–T437.
