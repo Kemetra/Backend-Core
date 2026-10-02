@@ -9,13 +9,41 @@
  * Names use snake_case where the OpenAPI contract does (e.g.
  * `new_password`) so request bodies map 1:1 onto the wire schema.
  */
+import {
+  isWithinPasswordMaxLength,
+  MAX_PASSWORD_CODE_POINTS,
+} from "@data-pulse-2/auth";
 import { Email } from "@data-pulse-2/shared";
 import { z } from "zod";
+
+/**
+ * A password field (RT-153). The maximum is `MAX_PASSWORD_CODE_POINTS`
+ * Unicode code points, the unit OpenAPI `maxLength` uses. Zod's `.max()`
+ * counts UTF-16 units, so the bound is a refinement. Over-limit input fails
+ * here, before any argon2 work. The value is passed on unchanged: no
+ * trimming and no normalization.
+ */
+function passwordString(minLength: number) {
+  return z
+    .string()
+    .min(minLength)
+    .superRefine((value, ctx) => {
+      if (!isWithinPasswordMaxLength(value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.too_big,
+          type: "string",
+          maximum: MAX_PASSWORD_CODE_POINTS,
+          inclusive: true,
+          message: `String must contain at most ${MAX_PASSWORD_CODE_POINTS} character(s)`,
+        });
+      }
+    });
+}
 
 /** POST /api/v1/auth/signin */
 export const SignInSchema = z.object({
   email: Email,
-  password: z.string().min(1).max(1024),
+  password: passwordString(1),
 });
 export type SignInInput = z.infer<typeof SignInSchema>;
 
@@ -30,7 +58,9 @@ export type PasswordResetRequestInput = z.infer<
 /** POST /api/v1/auth/password-reset/confirm */
 export const PasswordResetConfirmSchema = z.object({
   token: z.string().min(1).max(1024),
-  new_password: z.string().min(12).max(1024),
+  // Same maximum as sign-in, so a reset can never set a password that
+  // sign-in would reject.
+  new_password: passwordString(12),
 });
 export type PasswordResetConfirmInput = z.infer<
   typeof PasswordResetConfirmSchema

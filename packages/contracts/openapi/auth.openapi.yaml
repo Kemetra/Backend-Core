@@ -106,6 +106,10 @@ paths:
                 new_password:
                   type: string
                   minLength: 12
+                  maxLength: 1024
+                  description: >
+                    At most 1024 Unicode code points (RT-153). Hashed as sent:
+                    no trimming and no Unicode normalization.
       responses:
         "204":
           description: Password updated. All existing sessions for the user are revoked.
@@ -172,6 +176,11 @@ components:
         password:
           type: string
           minLength: 8
+          maxLength: 1024
+          description: >
+            At most 1024 Unicode code points (RT-153), the same maximum as
+            `new_password`. Verified as sent: no trimming and no Unicode
+            normalization.
     SignInResponse:
       type: object
       properties:

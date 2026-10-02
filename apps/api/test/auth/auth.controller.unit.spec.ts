@@ -457,6 +457,31 @@ describe("POST /api/v1/auth/signin", () => {
     expectErrorEnvelope(res.body, "validation_error");
     expect(svc.lastSignInArgs).toBeNull();
   });
+
+  // RT-153: the maximum is 1024 Unicode code points, not UTF-16 units.
+  it("RT-153: accepts a 1024-code-point non-BMP password (2048 UTF-16 units) and forwards it unchanged", async () => {
+    const password = "\u{1F600}".repeat(1024);
+    const res = await http()
+      .post("/api/v1/auth/signin")
+      .send({ email: "user@example.com", password });
+
+    expect(res.status).toBe(200);
+    expect(svc.lastSignInArgs!.password).toBe(password);
+  });
+
+  it.each([
+    ["1025 ASCII", "a".repeat(1025)],
+    ["1025 non-BMP emoji", "\u{1F600}".repeat(1025)],
+  ])("RT-153: returns 400 (validation_error) for %s — rate limiter and service not called", async (_label, password) => {
+    const res = await http()
+      .post("/api/v1/auth/signin")
+      .send({ email: "user@example.com", password });
+
+    expect(res.status).toBe(400);
+    expectErrorEnvelope(res.body, "validation_error");
+    expect(rl.calledBuckets).toHaveLength(0);
+    expect(svc.lastSignInArgs).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -660,6 +685,29 @@ describe("POST /api/v1/auth/password-reset/confirm", () => {
     const res = await http()
       .post("/api/v1/auth/password-reset/confirm")
       .send({ new_password: "newpassword12345" });
+
+    expect(res.status).toBe(400);
+    expectErrorEnvelope(res.body, "validation_error");
+    expect(svc.lastConfirmPasswordResetArgs).toBeNull();
+  });
+
+  it("RT-153: accepts a 1024-code-point non-BMP new_password and forwards it unchanged", async () => {
+    const newPassword = "\u{1F600}".repeat(1024);
+    const res = await http()
+      .post("/api/v1/auth/password-reset/confirm")
+      .send({ token: "tok", new_password: newPassword });
+
+    expect(res.status).toBe(204);
+    expect(svc.lastConfirmPasswordResetArgs!.newPassword).toBe(newPassword);
+  });
+
+  it.each([
+    ["1025 ASCII", "a".repeat(1025)],
+    ["1025 non-BMP emoji", "\u{1F600}".repeat(1025)],
+  ])("RT-153: returns 400 (validation_error) for a %s new_password — service not called", async (_label, newPassword) => {
+    const res = await http()
+      .post("/api/v1/auth/password-reset/confirm")
+      .send({ token: "tok", new_password: newPassword });
 
     expect(res.status).toBe(400);
     expectErrorEnvelope(res.body, "validation_error");
