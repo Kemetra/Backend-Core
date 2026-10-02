@@ -249,6 +249,7 @@ class ScriptedRateLimiter {
   async check(): Promise<{ allowed: true; count: 1; remaining: 999; resetMs: 60000 }> {
     return { allowed: true, count: 1, remaining: 999, resetMs: 60_000 };
   }
+  async release(): Promise<void> {}
 }
 
 // ---------------------------------------------------------------------------
