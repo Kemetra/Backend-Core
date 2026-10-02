@@ -54,7 +54,7 @@ jest.mock("bullmq", () => ({
   }),
 }));
 
-import { hashPassword, hashToken } from "@data-pulse-2/auth";
+import { hashPassword, hashToken, verifyPassword } from "@data-pulse-2/auth";
 import { newId } from "@data-pulse-2/shared";
 import { INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
@@ -579,6 +579,63 @@ describe("POST /api/v1/auth/password-reset/request", () => {
       .send({ email: "ghost@example.com" });
     expect(res.status).toBe(202);
     expect(emailSpy.enqueuePasswordReset).not.toHaveBeenCalled();
+  });
+});
+
+// -----------------------------------------------------------------------
+// RT-130 — stale argon2 parameters are upgraded on successful sign-in
+// -----------------------------------------------------------------------
+
+describe("POST /api/v1/auth/signin — RT-130 rehash", () => {
+  // Fixed vector: argon2id m=4096,t=2,p=1 (below the m=19456 floor) of
+  // "rehash-me-password-1" — what an older parameter set would have stored.
+  const WEAK_HASH =
+    "$argon2id$v=19$m=4096,t=2,p=1$b7MSd3c0uTXEaYMJSLlBnQ$MwF1/UjK+FkTfdScMsJUu7idkjxGcPqwpT45kUJV9d8";
+  const PASSWORD = "rehash-me-password-1";
+
+  async function storedHash(userId: string): Promise<string> {
+    const r = await pool!.query<{ password_hash: string }>(
+      `SELECT password_hash FROM users WHERE id = $1`,
+      [userId],
+    );
+    return r.rows[0]!.password_hash;
+  }
+
+  it("upgrades a weak-parameter hash, and the password still works afterwards", async () => {
+    if (maybeSkip()) return;
+    const userId = newId();
+    const email = `rehash-${userId}@example.com`;
+    await pool!.query(
+      `INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)`,
+      [userId, email, WEAK_HASH],
+    );
+
+    const first = await http().post("/api/v1/auth/signin").send({ email, password: PASSWORD });
+    expect(first.status).toBe(200);
+
+    const upgraded = await storedHash(userId);
+    expect(upgraded).not.toBe(WEAK_HASH);
+    expect(upgraded).toMatch(/^\$argon2id\$v=19\$m=19456,t=2,p=1\$/);
+    expect(await verifyPassword(upgraded, PASSWORD)).toBe(true);
+
+    const second = await http().post("/api/v1/auth/signin").send({ email, password: PASSWORD });
+    expect(second.status).toBe(200);
+    // Already current → left alone.
+    expect(await storedHash(userId)).toBe(upgraded);
+  });
+
+  it("a failed sign-in does not touch a weak hash", async () => {
+    if (maybeSkip()) return;
+    const userId = newId();
+    const email = `rehash-fail-${userId}@example.com`;
+    await pool!.query(
+      `INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)`,
+      [userId, email, WEAK_HASH],
+    );
+
+    const res = await http().post("/api/v1/auth/signin").send({ email, password: "wrong-password-x" });
+    expect(res.status).toBe(401);
+    expect(await storedHash(userId)).toBe(WEAK_HASH);
   });
 });
 
