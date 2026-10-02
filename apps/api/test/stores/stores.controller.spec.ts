@@ -633,3 +633,52 @@ describe("DELETE /api/v1/stores/:store_id (soft-delete)", () => {
       .expect(404);
   });
 });
+
+// ===== RT-142: platform admin is constrained to the selected tenant =======
+
+describe("RT-142 — platform admin store routes act as the selected tenant", () => {
+  async function storeRow(id: string): Promise<{ name: string; deleted_at: Date | null }> {
+    const r = await pool!.query<{ name: string; deleted_at: Date | null }>(
+      "SELECT name, deleted_at FROM stores WHERE id = $1",
+      [id],
+    );
+    return r.rows[0]!;
+  }
+
+  it("list in acme shows only acme stores (no cross-tenant leak)", async () => {
+    if (maybeSkip()) return;
+    const cookie = await signInWithTenant(ALICE_EMAIL, ALICE_PASSWORD, ACME_ID);
+    const res = await http().get("/api/v1/stores").set("Cookie", cookie).expect(200);
+    const tenants = new Set(res.body.map((s: { tenant_id: string }) => s.tenant_id));
+    expect([...tenants]).toEqual([ACME_ID]);
+    const ids = res.body.map((s: { id: string }) => s.id);
+    expect(ids).toContain(STORE_ACME_BR1);
+    expect(ids).not.toContain(STORE_GLOBEX_BR1);
+  });
+
+  it("GET / PATCH / DELETE of another tenant's store from acme → 404, row untouched", async () => {
+    if (maybeSkip()) return;
+    const before = await storeRow(STORE_GLOBEX_BR1);
+    const cookie = await signInWithTenant(ALICE_EMAIL, ALICE_PASSWORD, ACME_ID);
+
+    await http().get(`/api/v1/stores/${STORE_GLOBEX_BR1}`).set("Cookie", cookie).expect(404);
+    await http()
+      .patch(`/api/v1/stores/${STORE_GLOBEX_BR1}`)
+      .set("Cookie", cookie)
+      .send({ name: "renamed across tenants" })
+      .expect(404);
+    await http().delete(`/api/v1/stores/${STORE_GLOBEX_BR1}`).set("Cookie", cookie).expect(404);
+
+    expect(await storeRow(STORE_GLOBEX_BR1)).toEqual(before);
+  });
+
+  it("the explicit path still works: after switching to globex, the admin manages globex stores", async () => {
+    if (maybeSkip()) return;
+    const cookie = await signInWithTenant(ALICE_EMAIL, ALICE_PASSWORD, GLOBEX_ID);
+    const res = await http().get("/api/v1/stores").set("Cookie", cookie).expect(200);
+    const ids = res.body.map((s: { id: string }) => s.id);
+    expect(ids).toContain(STORE_GLOBEX_BR1);
+    expect(ids).not.toContain(STORE_ACME_BR1);
+    await http().get(`/api/v1/stores/${STORE_GLOBEX_BR1}`).set("Cookie", cookie).expect(200);
+  });
+});
