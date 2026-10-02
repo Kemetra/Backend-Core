@@ -15,20 +15,12 @@
  * worker wiring slice". This is that slice. Without it the worker process
  * cannot consume sale-processing jobs at all.
  *
- * Queue name — DEFINED here, not pinned to a producer (yet)
- * ---------------------------------------------------------
- * `AuditWorker.AUDIT_QUEUE_NAME` mirrors an existing API-side producer
- * constant. There is NO sale-processing producer yet: the enqueue (outbox →
- * queue) half is a SEPARATE, currently-deferred slice. `SalesService` emits a
- * `sale.captured` outbox event, but (a) `SALES_OUTBOX_PRODUCER` is not bound in
- * `SalesModule` and (b) `sale.captured` is not in `OUTBOX_EVENT_TYPES` (which
- * holds only `audit.event.created`). Wiring that half touches `apps/api/src/**`
- * and the gated `packages/db` registry — out of scope here.
- *
- * Therefore `SALE_PROCESSING_QUEUE_NAME` is the canonical literal this worker
- * consumes; the future enqueue side MUST match this string. A cross-app pin
- * test (mirroring `audit.worker.spec.ts`'s `AUDIT_QUEUE_NAME` pin) can be added
- * once a producer constant exists to pin against.
+ * Queue name and producer
+ * -----------------------
+ * `SALE_PROCESSING_QUEUE_NAME` is `QUEUE_NAMES.saleProcessing` (shared). The
+ * producer is `SaleCapturedConsumer`: `SalesService.captureSale` emits the
+ * `sale.captured` outbox row in-transaction, the outbox drainer delivers it,
+ * and the consumer enqueues onto this queue.
  *
  * Handler shape — differs from AuditWorker
  * -----------------------------------------
@@ -111,21 +103,8 @@ export class SaleWorker implements OnModuleDestroy {
   ) {}
 
   /**
-   * Registered-but-NOT-self-started, by design — the precedent is
-   * `AuditRetentionWorker` (registered in WorkerModule, started elsewhere), NOT
-   * `OutboxDrainerRunner` (which self-starts because it has a live feed).
-   *
-   * The sale-processing queue has NO producer yet: `SalesService` emits a
-   * `sale.captured` event but `SALES_OUTBOX_PRODUCER` is unbound and
-   * `sale.captured` is not in the (gated) `OUTBOX_EVENT_TYPES`. So a
-   * self-started worker would just open a Redis connection and poll an empty
-   * queue in every environment that loads `WorkerModule`. The enqueue side +
-   * the imperative `saleWorker.start()` in `main.ts` (mirroring `EmailWorker` /
-   * `AuditWorker`) land together in the gated enqueue-wiring slice, so the whole
-   * live capture→process loop becomes functional in one consistent place.
-   *
-   * `start()` / `close()` remain fully implemented and tested so that slice only
-   * has to add the `main.ts` call + the producer binding.
+   * Registered but not self-started: `main.ts` calls `saleWorker.start()`
+   * imperatively, mirroring `EmailWorker` / `AuditWorker`.
    */
 
   /**

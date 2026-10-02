@@ -64,14 +64,6 @@ import { AuditService } from "./audit.service";
 import { ROOT_LOGGER } from "../common/logging.interceptor";
 import type { Logger } from "@data-pulse-2/shared";
 
-/**
- * Re-export of the enqueuer factory. Hoisted into `AuditEnqueuerModule` to
- * cut the `AuthModule ↔ AuditModule` import cycle, but kept reachable from
- * this path so existing tests (`audit-queue.producer.spec.ts`) that imported
- * it from `audit.module` continue to work without churn.
- */
-export { auditJobEnqueuerFactory } from "./audit-enqueuer.module";
-
 const auditInterceptorProvider: Provider = {
   provide: APP_INTERCEPTOR,
   // ROOT_LOGGER (RootLoggerModule, RT-124) so a failed enqueue is logged

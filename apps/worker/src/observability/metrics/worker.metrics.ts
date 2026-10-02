@@ -881,8 +881,7 @@ export function registerOutboxPendingGauge(
 /**
  * Canonical names of all worker-side signals registered by this module
  * that ALSO have an emission helper exposed (i.e., the seven signals
- * the slice can emit today). Outbox placeholders are tracked separately
- * in `WORKER_OUTBOX_METRIC_NAMES` because no helper is exposed for them.
+ * the slice can emit today).
  *
  * Drift between this array and the actual instrument creation above
  * fails CI via the T465 presence test.
@@ -918,15 +917,3 @@ export const WORKER_METRIC_NAMES = [
 ] as const satisfies readonly string[];
 
 export type WorkerMetricName = (typeof WORKER_METRIC_NAMES)[number];
-
-/**
- * Canonical names of Track C outbox signals **registered** by this module
- * as definitions only — no emission helper exposed.
- *
- * After T595 PR-B-2 all outbox signals emit; this list is now empty but
- * kept as a tombstone so a future placeholder-style signal can land here
- * without rebuilding the test surface that depends on the symbol.
- */
-export const WORKER_OUTBOX_METRIC_NAMES = [] as const satisfies readonly string[];
-
-export type WorkerOutboxMetricName = (typeof WORKER_OUTBOX_METRIC_NAMES)[number];
