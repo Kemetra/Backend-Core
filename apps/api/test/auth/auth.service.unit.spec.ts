@@ -156,9 +156,10 @@ class FakeSessionRepository implements Pick<SessionRepository, "create" | "findA
   touchLastSeen = jest.fn<Promise<boolean>, [string]>().mockResolvedValue(true);
 }
 
-class FakeAuthTokenRepository implements Pick<AuthTokenRepository, "issue" | "findActiveByRawToken" | "revoke"> {
+class FakeAuthTokenRepository implements Pick<AuthTokenRepository, "issue" | "findActiveByRawToken" | "consumeActiveByRawToken" | "revoke"> {
   issue = jest.fn<Promise<AuthTokenRow>, [string, unknown]>().mockResolvedValue(makeTokenRow());
   findActiveByRawToken = jest.fn<Promise<AuthTokenRow | null>, [string]>().mockResolvedValue(null);
+  consumeActiveByRawToken = jest.fn<Promise<AuthTokenRow | null>, [string, string]>().mockResolvedValue(null);
   revoke = jest.fn<Promise<boolean>, [string]>().mockResolvedValue(true);
 }
 
@@ -534,38 +535,58 @@ describe("AuthService.requestPasswordReset", () => {
 // ===========================================================================
 
 describe("AuthService.confirmPasswordReset", () => {
-  it("F13: valid password_reset token — hashPassword called, db update called, authTokens.revoke called", async () => {
+  it("F13: valid password_reset token — consumed atomically (scoped), then hashPassword + db update", async () => {
     const tokenRow = makeTokenRow({ scope: AUTH_TOKEN_SCOPES.passwordReset, userId: USER_ID });
     const { service, authTokens } = buildService();
-    authTokens.findActiveByRawToken.mockResolvedValue(tokenRow);
+    authTokens.consumeActiveByRawToken.mockResolvedValue(tokenRow);
     mockHashPassword.mockResolvedValue("$argon2id$v=19$newhash");
 
     await service.confirmPasswordReset({ rawToken: "valid-token", newPassword: "new-password-long" });
 
+    // RT-146: one conditional consume is the gate; no separate read-then-revoke.
+    expect(authTokens.consumeActiveByRawToken).toHaveBeenCalledWith(
+      "valid-token",
+      AUTH_TOKEN_SCOPES.passwordReset,
+    );
+    expect(authTokens.findActiveByRawToken).not.toHaveBeenCalled();
+    expect(authTokens.revoke).not.toHaveBeenCalled();
     expect(mockHashPassword).toHaveBeenCalledWith("new-password-long");
-    expect(authTokens.revoke).toHaveBeenCalledWith(tokenRow.id);
+  });
+
+  it("F13b: token already consumed (concurrent / replayed confirm) — 400, no password hashed", async () => {
+    const { service, authTokens } = buildService();
+    authTokens.consumeActiveByRawToken.mockResolvedValue(null);
+    mockHashPassword.mockClear();
+
+    await expect(
+      service.confirmPasswordReset({ rawToken: "used-token", newPassword: "x".repeat(12) }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(mockHashPassword).not.toHaveBeenCalled();
   });
 
   it("F14: null/missing token — throws BadRequestException('Invalid or expired token')", async () => {
     const { service, authTokens } = buildService();
-    authTokens.findActiveByRawToken.mockResolvedValue(null);
+    authTokens.consumeActiveByRawToken.mockResolvedValue(null);
 
     await expect(
       service.confirmPasswordReset({ rawToken: "bad-token", newPassword: "x".repeat(12) }),
     ).rejects.toBeInstanceOf(BadRequestException);
 
     try {
-      authTokens.findActiveByRawToken.mockResolvedValue(null);
+      authTokens.consumeActiveByRawToken.mockResolvedValue(null);
       await service.confirmPasswordReset({ rawToken: "bad", newPassword: "x".repeat(12) });
     } catch (err) {
       expect((err as BadRequestException).message).toBe("Invalid or expired token");
     }
   });
 
-  it("F15: wrong token scope — throws BadRequestException", async () => {
-    const tokenRow = makeTokenRow({ scope: AUTH_TOKEN_SCOPES.emailVerify });
+  it("F15: wrong token scope — the scoped consume matches nothing → BadRequestException", async () => {
+    // The scope is part of the consume predicate, so an email-verify token is
+    // neither accepted nor burned by a reset confirm.
     const { service, authTokens } = buildService();
-    authTokens.findActiveByRawToken.mockResolvedValue(tokenRow);
+    authTokens.consumeActiveByRawToken.mockImplementation(async (_raw, scope) =>
+      scope === AUTH_TOKEN_SCOPES.emailVerify ? makeTokenRow({ scope }) : null,
+    );
 
     await expect(
       service.confirmPasswordReset({ rawToken: "wrong-scope", newPassword: "x".repeat(12) }),
@@ -575,7 +596,7 @@ describe("AuthService.confirmPasswordReset", () => {
   it("F16: token userId null — throws BadRequestException", async () => {
     const tokenRow = makeTokenRow({ scope: AUTH_TOKEN_SCOPES.passwordReset, userId: null });
     const { service, authTokens } = buildService();
-    authTokens.findActiveByRawToken.mockResolvedValue(tokenRow);
+    authTokens.consumeActiveByRawToken.mockResolvedValue(tokenRow);
 
     await expect(
       service.confirmPasswordReset({ rawToken: "null-user", newPassword: "x".repeat(12) }),
