@@ -129,13 +129,14 @@ at the T521 PR.)
 Per plan §3.4.6, the **effective dedup tuple at the HTTP layer** is:
 
 ```
-(tenantId, route, clientId, key)
+(tenantId, route, params, clientId, key)
 ```
 
 | Component | Source | Required? | Notes |
 |---|---|---|---|
 | `tenantId` | Established tenant context (from token / membership) | **Yes** | Multi-tenant isolation invariant (FR-D-002). A request without tenant context cannot replay against another request that did have one. |
-| `route` | HTTP method + route **template** (not the rendered path) | **Yes** | E.g., `POST /api/v1/memberships/invite`. Path params are not in the route component; they appear in the request body or in the fingerprint. |
+| `route` | HTTP method + route **template** (not the rendered path) | **Yes** | E.g., `POST /api/v1/memberships/invite`. Metric `route` labels use the template only (§14.1). |
+| `params` | The resolved path params (`req.params`), canonical JSON with sorted names | Only on routes with path params | RT-82 K1 / RT-155. The path params are **not** in the body fingerprint, so they are bound into the key: the same key on another `:saleRef`, `:id`, `:credentialId` or `:storeId` misses and runs that resource's own handler (with its own authorization and provenance checks); it never replays another resource's response. Routes without path params omit the segment, so their keys are byte-identical to the pre-RT-155 format. Template + params rather than the rendered URL, because Express matching tolerates case, trailing-slash and encoding variants of the same operation. |
 | `clientId` | Bearer token's client identifier; falls back to a stable per-token identifier | **Yes** (effectively) | Two distinct clients of the same tenant retrying the same key on the same route are treated independently. |
 | `key` | The `Idempotency-Key` header value | **Yes** | Opaque to the server. |
 
@@ -145,6 +146,12 @@ Per plan §3.4.6, the **effective dedup tuple at the HTTP layer** is:
   retried with the same key but redirected to another store is treated
   as a payload-different retry → **`409 Conflict`** (the safe behavior).
   This is the recommendation locked in research §2 follow-ups.
+  **Current state (RT-155):** the interceptor passes `storeId = null` to the
+  store, so the column is not populated from context (a known gap, tracked
+  separately from RT-82). Where the store is a **path** param (e.g.
+  `POST /api/inventory/v1/stores/:storeId/movements`), it is part of the key
+  through the `params` component above: the same key on another store is an
+  independent request, not a `409`.
 - **`payload_hash`** (a.k.a. `fingerprint`) — sha256 of the canonicalized
   validated request body. **Not** part of the dedup tuple itself; it is
   the **collision detector** used to distinguish "same key + same body =
@@ -152,11 +159,23 @@ Per plan §3.4.6, the **effective dedup tuple at the HTTP layer** is:
 
 ### 4.2 Tuple composition vs. storage
 - The interceptor composes the tuple into the **`key` argument** passed to
-  `IdempotencyKeyStore.findOrCreate(...)` (e.g., as a deterministic
-  string `${method}:${route}:${clientId}:${key}`). This preserves
-  SC-X-001 (no schema change in this slice).
+  `IdempotencyKeyStore.findOrCreate(...)` as a deterministic string
+  (`apps/api/src/idempotency/store-key.ts`):
+  - no path params: `${method}:${route}:${clientId}:${key}` (unchanged);
+  - path params: `${method}:${route}:${canonicalJson(params)}:${clientId}:${key}`,
+    e.g. `POST:/api/pos/v1/sales/:saleRef/void:{"saleRef":"…"}:<user>:<key>`.
+
+  This preserves SC-X-001 (no schema change).
 - The store sees the composed string; the surrounding components
   (`tenantId`, `storeId`) continue to flow into the existing columns.
+- **Transitional legacy-key probe (RT-82 K2).** Keys of param routes changed
+  at RT-155, so a request stored before it sits under the template-only key.
+  On a new-key miss on a param route, the interceptor looks up that legacy
+  key; any hit (completed, different body or in flight) answers
+  `409 idempotency_key_conflict`, and the request is neither replayed nor
+  executed (the legacy row may belong to another resource, and legacy rotate
+  rows hold plaintext secrets). The probe is removed once one full replay TTL
+  (72h, §10) has elapsed in every environment after RT-155 deployed.
 
 ---
 
@@ -209,12 +228,14 @@ Each additional endpoint requires:
 
 ### 6.1 Match condition
 A retry replays the original response when **all** of the following hold:
-1. The dedup tuple `(tenantId, route, clientId, key)` matches.
+1. The dedup tuple `(tenantId, route, params, clientId, key)` matches —
+   the same route **and the same resolved path params** (§4).
 2. The `payload_hash` (fingerprint) matches.
 3. The original record has not expired (within the 72h retention window
    — see §10).
 4. No in-progress marker exists for the same tuple (in-progress takes
    precedence; see §8).
+5. The route does not forbid replay (§6.6).
 
 ### 6.2 Response
 - **Status**: identical to the original.
@@ -225,6 +246,10 @@ A retry replays the original response when **all** of the following hold:
   `Idempotent-Replayed: true` is added so clients can distinguish a
   replay from a fresh processing. Absence of the header means "freshly
   processed."
+- **Status is the stored one** (RT-82 K4): a same-key replay of a `201`
+  is a `201` plus the header. A domain-level provenance replay inside a
+  handler (e.g. a re-delivered sale void) is a separate layer and stays
+  `200`. Clients key on the header, not the status.
 
 ### 6.3 Authorization preservation  (FR-D-009)
 The replay returns the **original** authorization decision, not a fresh
@@ -258,16 +283,39 @@ no longer available. The request is treated as a brand-new request and
 proceeds to the handler. (This is a known data-loss-by-design: 72h is
 the agreed business-staleness horizon — see §10.)
 
+### 6.6 Non-replayable responses — `replay: "forbid"`  (RT-82 K3)
+A response that carries credential material is **never stored and never
+replayed**. The route opts in with
+`@Idempotent("required", { replay: "forbid", replayMarkerFields: [...] })`:
+- The first request runs the handler and returns the real body.
+- The store keeps only the status plus a non-secret marker built from the
+  allowlisted top-level scalar fields (e.g. `credential_id`); every other
+  field is dropped. Neither Redis nor `idempotency_keys` ever holds the
+  secret.
+- The key stays occupied, so a same-key retry never runs the handler again.
+  It answers `409 idempotency_key_conflict` — never a redacted `2xx`, since
+  the contract marks the secret as required. A stored marker is never
+  replayed on any route.
+- A client that lost the response retries the operation with a **new** key.
+
+Applied to `POST /api/v1/connector/instances/:id/credentials/rotate`
+(`connector-admin.yaml`), and to any future route whose response carries
+credential material. Rotate rows written before RT-155 hold plaintext
+secrets; purging them is an ops step with a per-environment owner go-ahead.
+
 ---
 
 ## 7. Conflict semantics — `409 Conflict`  (T500)
 
 ### 7.1 Match condition
 The interceptor returns `409 Conflict` when:
-1. The dedup tuple `(tenantId, route, clientId, key)` matches an
+1. The dedup tuple `(tenantId, route, params, clientId, key)` matches an
    existing record.
 2. The `payload_hash` does **not** match.
 3. The original record has not expired.
+
+It also returns `409 idempotency_key_conflict` when the matched record is
+non-replayable (§6.6), or when the legacy-key probe hits (§4.2).
 
 ### 7.2 Response shape
 - **Status**: `409 Conflict`.
@@ -492,6 +540,8 @@ meaningful `tenantId` in the tuple. The recommended posture:
 |---|---|---|
 | `replayTtlSec` | 72h (=`259_200`) | Long-running webhook / integration where the consumer needs more replay headroom. Requires per-endpoint review at T521 PR. |
 | `inflightTtlSec` | 60 | Known-slow path (bulk import, long export). Requires per-endpoint review. |
+| `replay` | `"allow"` | `"forbid"` when the response carries credential material (§6.6). |
+| `replayMarkerFields` | `[]` | With `replay: "forbid"`: the non-secret top-level fields kept in the stored marker. |
 
 ### 12.4 Registration discipline
 - **Route-level only** — registered on a controller method, never on a

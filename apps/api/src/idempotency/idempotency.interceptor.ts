@@ -8,10 +8,14 @@
  *   1. Read `@Idempotent` metadata. No metadata → pass through.
  *   2. Extract `Idempotency-Key` header; enforce policy (required → 400 if missing).
  *   3. Validate header format (16–128 chars, printable ASCII, no whitespace).
- *   4. Compose dedup tuple: `${method}:${route}:${clientId}:${key}`.
+ *   4. Compose dedup tuple: `${method}:${route}[:${params}]:${clientId}:${key}`
+ *      — the resolved path params are bound into the key (RT-82 K1, store-key.ts).
  *   5. Check in-progress marker. Present → 425 Too Early.
- *   6. Check IdempotencyKeyStore. Hit → return cached response (replay).
+ *   6. Check IdempotencyKeyStore. Hit → return cached response (replay),
+ *                                   or 409 when the route forbids replay (K3).
  *                                   Collision → 409 Conflict.
+ *                                   Miss on a param route whose legacy
+ *                                   template-only key is occupied → 409 (K2).
  *   7. Set in-progress marker.
  *   8. Invoke handler. On success → save to store; on any exit → clear marker.
  *
@@ -62,6 +66,8 @@ import {
   DEFAULT_INFLIGHT_TTL_SEC,
   InProgressMarker,
 } from "./in-progress-marker";
+import { isNonReplayableMarker, nonReplayableMarker } from "./non-replayable";
+import { composeStoreKey, paramsSegment } from "./store-key";
 import {
   recordIdempotencyConflict,
   recordIdempotencyInProgress,
@@ -121,17 +127,34 @@ export function bodyFingerprint(body: unknown): Buffer {
   return sha256Buffer(canonicalJson(body ?? null));
 }
 
+function idempotencyConflict(message: string): ConflictException {
+  return new ConflictException({ code: "idempotency_key_conflict", message });
+}
+
+const NON_REPLAYABLE_MESSAGE =
+  "The provided Idempotency-Key already completed a request whose response is never replayed. Generate a new key.";
+const LEGACY_KEY_MESSAGE =
+  "The provided Idempotency-Key was already used on this route before per-resource keying. Generate a new key.";
+
 /**
- * Replay-store key. Tenant is already a separate partition on the store,
- * so this string stays stable across the #614 marker fix.
+ * RT-82 K2 — transitional legacy-key probe. REMOVE (with its call site and
+ * tests) once one full replay TTL (72h) has elapsed in every environment
+ * after RT-155 deployed; tracked as an RT-155 follow-up.
+ *
+ * Before RT-155 a param route stored under the template-only key. A row
+ * there may belong to ANOTHER resource, and legacy rotate rows hold
+ * plaintext secrets, so any non-miss is answered 409: never replayed,
+ * never executed.
  */
-function composeStoreKey(
-  method: string,
-  routePath: string,
+async function legacyKeyOccupied(
+  store: IdempotencyKeyStore,
+  tId: string,
   cId: string,
-  headerKey: string,
-): string {
-  return `${method}:${routePath}:${cId}:${headerKey}`;
+  legacyKey: string,
+  fp: Buffer,
+): Promise<boolean> {
+  const legacy = await store.findOrCreate(tId, null, cId, legacyKey, fp);
+  return legacy.hit !== false;
 }
 
 /**
@@ -198,6 +221,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const req = execCtx.switchToHttp().getRequest<{
       method: string;
       route?: { path?: string };
+      params?: Record<string, unknown>;
       url: string;
       headers: Record<string, string | string[] | undefined>;
       body?: unknown;
@@ -236,7 +260,13 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const tId = tenantId(execCtx) ?? "no-tenant";
     const route = `${method}:${routePath}`;
 
-    const storeKey = composeStoreKey(method, routePath, cId, headerValue);
+    const storeKey = composeStoreKey({ method, routePath, params: req.params }, cId, headerValue);
+    // K2: the pre-RT-155 template-only key, probed on param routes only.
+    const legacyKey =
+      paramsSegment(req.params) === ""
+        ? null
+        : composeStoreKey({ method, routePath }, cId, headerValue);
+    const replayForbidden = options.replay === "forbid";
     const tuple = composeTuple(tId, storeKey);
     const fp = bodyFingerprint(req.body);
 
@@ -279,8 +309,14 @@ export class IdempotencyInterceptor implements NestInterceptor {
       if (stored.hit === true) {
         // Replay path — short-circuit before handler.
         await this.marker.del(tuple);
-        recordIdempotencyReplay({ route });
         const entry = stored.entry;
+        // K3: a non-replayable route (or any stored marker) is never replayed
+        // as a 2xx — the secret was never stored, so the only answer is 409.
+        if (replayForbidden || isNonReplayableMarker(entry.result.body)) {
+          recordIdempotencyConflict({ route });
+          throw idempotencyConflict(NON_REPLAYABLE_MESSAGE);
+        }
+        recordIdempotencyReplay({ route });
         const rawRes = execCtx.switchToHttp().getResponse<{
           status(code: number): unknown;
           setHeader(name: string, value: string): void;
@@ -359,6 +395,16 @@ export class IdempotencyInterceptor implements NestInterceptor {
         });
       }
 
+      if (
+        stored.hit === false &&
+        legacyKey !== null &&
+        (await legacyKeyOccupied(this.store, tId, cId, legacyKey, fp))
+      ) {
+        await this.marker.del(tuple);
+        recordIdempotencyConflict({ route });
+        throw idempotencyConflict(LEGACY_KEY_MESSAGE);
+      }
+
       return runFresh({
         store: this.store,
         marker: this.marker,
@@ -374,6 +420,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
         replayTtlMs,
         hit: stored.hit,
         keyFingerprint: keyFingerprint(headerValue),
+        replayForbidden,
+        replayMarkerFields: options.replayMarkerFields ?? [],
       });
     } catch (err) {
       await this.marker.del(tuple).catch(() => undefined);
@@ -397,6 +445,9 @@ interface FreshAttempt {
   replayTtlMs: number;
   hit: false | "in_progress";
   keyFingerprint: string;
+  /** K3: store a non-secret marker instead of the body; never replay. */
+  replayForbidden: boolean;
+  replayMarkerFields: readonly string[];
 }
 
 async function runFresh(attempt: FreshAttempt): Promise<Observable<unknown>> {
@@ -432,9 +483,14 @@ async function runFresh(attempt: FreshAttempt): Promise<Observable<unknown>> {
             // `@Res({ passthrough: true })` to branch status (e.g.,
             // 005 unknown-items capture: 200 resolved / 201 unknown) rely on
             // this so replay returns the same status as the original response.
+            // K3: a non-replayable route stores only the status plus an
+            // allowlisted marker — the secret never reaches Redis or Postgres.
+            // The client still receives the real `responseBody` below.
             const result: StoredResult = {
               status: attempt.execCtx.switchToHttp().getResponse<{ statusCode: number }>().statusCode,
-              body: responseBody,
+              body: attempt.replayForbidden
+                ? nonReplayableMarker(responseBody, attempt.replayMarkerFields)
+                : responseBody,
             };
             await attempt.store.save(
               attempt.tenantId,
@@ -479,6 +535,10 @@ async function lostClaim(attempt: FreshAttempt): Promise<Observable<unknown>> {
   );
   await attempt.marker.del(attempt.tuple);
   if (again.hit === true) {
+    if (attempt.replayForbidden || isNonReplayableMarker(again.entry.result.body)) {
+      recordIdempotencyConflict({ route: attempt.route });
+      throw idempotencyConflict(NON_REPLAYABLE_MESSAGE);
+    }
     recordIdempotencyReplay({ route: attempt.route });
     return replyReplay(attempt.execCtx, again.entry.result.status, again.entry.result.body);
   }
