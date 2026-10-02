@@ -77,7 +77,7 @@ it('records dead-letter metrics when the final claim expires', async () => {
   try {
     const drainer = new DrainerProcessor({ pool: env.admin, registry: new OutboxConsumerRegistry() });
     await drainer.tick();
-    expect(queueMetric).toHaveBeenCalledWith({ queue: 'audit-fanout' });
+    expect(queueMetric).toHaveBeenCalledWith({ queue: 'outbox-drainer' });
     expect(outboxMetric).toHaveBeenCalledWith({ event_type: 'test.event.recovery' });
   } finally {
     queueMetric.mockRestore();

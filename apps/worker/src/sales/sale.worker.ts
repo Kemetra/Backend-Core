@@ -83,6 +83,7 @@ import {
   type WorkerFactory,
   type WorkerLike,
 } from "../email/email.worker";
+import { QUEUE_NAMES } from "@data-pulse-2/shared";
 
 /**
  * The BullMQ queue name this worker consumes. DEFINED here (no producer to
@@ -90,7 +91,7 @@ import {
  * literal. The queue name is the transport channel; a job-name string is NOT
  * pinned here — the envelope shape (`SaleProcessingJob`) is the contract.
  */
-export const SALE_PROCESSING_QUEUE_NAME = "sale-processing";
+export const SALE_PROCESSING_QUEUE_NAME = QUEUE_NAMES.saleProcessing;
 
 /**
  * Re-export the shared job-handler / job-like shapes from `email.worker` so the

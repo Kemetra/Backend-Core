@@ -43,6 +43,7 @@ import type { Queue } from "bullmq";
 import type { Pool } from "pg";
 
 import {
+  QUEUE_NAMES,
   assertMetricLabels,
   getMeter,
   type Attributes,
@@ -61,22 +62,48 @@ import {
 // These constants are exported so emission sites (deferred to a follow-on
 // slice) and test fixtures consume a single source of truth.
 
-/** Bounded queue label values. Mirrors plan §7 table row "queue_lag_seconds". */
+/**
+ * The BullMQ queues this worker actually CONSUMES (RT-125) — the
+ * `queue_lag_seconds` gauge observes exactly these. Derived from the shared
+ * `QUEUE_NAMES` so producers, consumers and the gauge cannot drift. (The
+ * former set named a job — `audit-fanout` — and two queues with no live
+ * worker — `session-revoke`, `soft-delete-sweep` — so the real `audit`,
+ * `sale-processing` and `outbox-retention` backlogs were never observed.)
+ */
 export const WORKER_QUEUE_NAMES = [
+  QUEUE_NAMES.email,
+  QUEUE_NAMES.audit,
+  QUEUE_NAMES.auditRetention,
+  QUEUE_NAMES.saleProcessing,
+  QUEUE_NAMES.outboxRetention,
+] as const satisfies readonly string[];
+export type WorkerQueueName = (typeof WORKER_QUEUE_NAMES)[number];
+
+/**
+ * `queue` label values for the delivery counters (`queue_failed_total`,
+ * `queue_retry_total`, `queue_dead_letter_total`): the consumed queues plus
+ * the outbox drainer, which retries and dead-letters outbox rows but is not
+ * a BullMQ queue (so it is never a lag-gauge target).
+ */
+export const OUTBOX_DRAINER_QUEUE_LABEL = "outbox-drainer" as const;
+export const WORKER_DELIVERY_QUEUE_LABELS = [
+  ...WORKER_QUEUE_NAMES,
+  OUTBOX_DRAINER_QUEUE_LABEL,
+] as const;
+export type WorkerDeliveryQueueLabel = (typeof WORKER_DELIVERY_QUEUE_LABELS)[number];
+
+/**
+ * Bounded job_name label values. Unchanged by RT-125 (no job-label churn);
+ * no longer tied to the queue set, since a queue and its job names differ
+ * (the `audit` queue runs `audit-fanout` jobs).
+ */
+export const WORKER_JOB_NAMES = [
   "email",
   "audit-fanout",
   "audit-retention",
   "session-revoke",
   "soft-delete-sweep",
 ] as const satisfies readonly string[];
-export type WorkerQueueName = (typeof WORKER_QUEUE_NAMES)[number];
-
-/**
- * Bounded job_name label values. Mirrors the queue set 1:1 today — the
- * label name differs (`job_name`) for catalogue consistency with BullMQ
- * conventions, but the allowed values are the same as `WORKER_QUEUE_NAMES`.
- */
-export const WORKER_JOB_NAMES = WORKER_QUEUE_NAMES;
 export type WorkerJobName = (typeof WORKER_JOB_NAMES)[number];
 
 // ---------------------------------------------------------------------------
@@ -316,16 +343,16 @@ export interface QueueLagAttrs {
 }
 
 export interface QueueFailedAttrs {
-  queue: WorkerQueueName;
+  queue: WorkerDeliveryQueueLabel;
   error_class: WorkerErrorClass;
 }
 
 export interface QueueDeadLetterAttrs {
-  queue: WorkerQueueName;
+  queue: WorkerDeliveryQueueLabel;
 }
 
 export interface QueueRetryAttrs {
-  queue: WorkerQueueName;
+  queue: WorkerDeliveryQueueLabel;
 }
 
 export interface WorkerJobDurationAttrs {

@@ -32,6 +32,8 @@ import type { Pool, PoolClient } from "pg";
 // ---------------------------------------------------------------------------
 
 jest.mock("@data-pulse-2/shared", () => ({
+  // RT-125: real queue names (read at module load by queue producers).
+  QUEUE_NAMES: jest.requireActual("@data-pulse-2/shared").QUEUE_NAMES,
   newId: jest.fn(),
   assertMetricLabels: jest.fn(),
   getMeter: jest.fn(() => ({

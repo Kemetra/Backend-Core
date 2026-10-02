@@ -131,3 +131,21 @@ export function deepFreeze<T>(obj: T): T {
   }
   return Object.freeze(obj);
 }
+
+/**
+ * BullMQ queue names — the single source of truth (RT-125).
+ *
+ * Every producer (`apps/api`), consumer (`apps/worker`) and the worker's
+ * `queue_lag_seconds` gauge reads these, so a queue cannot be renamed on one
+ * side only. Values are wire identity (Redis keys): never change one without
+ * draining the old queue first.
+ */
+export const QUEUE_NAMES = deepFreeze({
+  email: "email",
+  audit: "audit",
+  auditRetention: "audit-retention",
+  saleProcessing: "sale-processing",
+  outboxRetention: "outbox-retention",
+} as const);
+
+export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];

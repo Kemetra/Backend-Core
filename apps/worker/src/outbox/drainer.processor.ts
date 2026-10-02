@@ -57,6 +57,7 @@ import {
 import type { OutboxConsumer } from "@data-pulse-2/shared";
 import type { OutboxConsumerRegistry } from "./registry";
 import {
+  OUTBOX_DRAINER_QUEUE_LABEL,
   recordOutboxDeadLetter,
   recordOutboxDrainDuration,
   recordQueueDeadLetter,
@@ -65,11 +66,11 @@ import {
   sanitizeErrorClass,
 } from "../observability/metrics/worker.metrics";
 
-// T596: the drainer is the failure-decision point for outbox delivery. The
-// `queue` label maps to "audit-fanout" — the only outbox-managed queue today
-// — per the approved D2 decision. Adding "outbox-drainer" to
-// WORKER_QUEUE_NAMES is deferred to a future slice.
-const DRAINER_QUEUE_LABEL = "audit-fanout" as const;
+// T596: the drainer is the failure-decision point for outbox delivery. RT-125:
+// its `queue` label is its own — it drains every outbox event type (audit,
+// sale, ERPNext…), so the old "audit-fanout" label misattributed sale and
+// ERPNext retries/dead-letters to the audit job.
+const DRAINER_QUEUE_LABEL = OUTBOX_DRAINER_QUEUE_LABEL;
 
 // ---------------------------------------------------------------------------
 // Defaults
