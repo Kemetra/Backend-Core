@@ -681,6 +681,67 @@ describe("POST /api/v1/auth/password-reset/confirm", () => {
       .post("/api/v1/auth/password-reset/confirm")
       .send({ token: verifyToken, new_password: "twelve-chars-plus-x" });
     expect(res.status).toBe(400);
+
+    // RT-146: the scoped consume leaves the email-verify token un-burned.
+    const r = await pool!.query<{ revoked: boolean }>(
+      `SELECT revoked_at IS NOT NULL AS revoked FROM auth_tokens WHERE token_hash = $1`,
+      [hashToken(verifyToken)],
+    );
+    expect(r.rows[0]!.revoked).toBe(false);
+  });
+
+  // RT-146 — one-time consumption is atomic under concurrency and replay.
+  async function seedResetToken(): Promise<{ userId: string; email: string; rawToken: string }> {
+    const userId = newId();
+    const email = `pwreset-race-${userId}@example.com`;
+    await pool!.query(
+      `INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)`,
+      [userId, email, await hashPassword("race-old-password-1")],
+    );
+    await http().post("/api/v1/auth/password-reset/request").send({ email });
+    const lastCall = emailSpy.enqueuePasswordReset.mock.calls.at(-1);
+    expect(lastCall![0].email).toBe(email);
+    return { userId, email, rawToken: lastCall![0].rawToken };
+  }
+
+  it("concurrent confirms of one token: exactly one succeeds, and only its password is set", async () => {
+    if (maybeSkip()) return;
+    const { email, rawToken } = await seedResetToken();
+    const passwords = [1, 2, 3, 4, 5].map((n) => `race-new-password-${n}`);
+
+    const results = await Promise.all(
+      passwords.map((new_password) =>
+        http().post("/api/v1/auth/password-reset/confirm").send({ token: rawToken, new_password }),
+      ),
+    );
+    const statuses = results.map((r) => r.status).sort();
+    expect(statuses).toEqual([204, 400, 400, 400, 400]);
+
+    const winner = passwords[results.findIndex((r) => r.status === 204)]!;
+    for (const password of passwords) {
+      const signin = await http().post("/api/v1/auth/signin").send({ email, password });
+      expect(signin.status).toBe(password === winner ? 200 : 401);
+    }
+  });
+
+  it("replaying a consumed token returns 400 and leaves the password unchanged", async () => {
+    if (maybeSkip()) return;
+    const { email, rawToken } = await seedResetToken();
+
+    const first = await http()
+      .post("/api/v1/auth/password-reset/confirm")
+      .send({ token: rawToken, new_password: "replay-first-password" });
+    expect(first.status).toBe(204);
+
+    const replay = await http()
+      .post("/api/v1/auth/password-reset/confirm")
+      .send({ token: rawToken, new_password: "replay-second-password" });
+    expect(replay.status).toBe(400);
+
+    const ok = await http()
+      .post("/api/v1/auth/signin")
+      .send({ email, password: "replay-first-password" });
+    expect(ok.status).toBe(200);
   });
 });
 
