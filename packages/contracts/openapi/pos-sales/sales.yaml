@@ -95,6 +95,14 @@ info:
     units), so it is unaffected; any other producer now gets 422 instead of an
     unreturnable sale. Sales captured before RT-105 are not re-checked.
 
+    RT-105 completion (still 1.3.0-draft; request shape still unchanged): the
+    minor unit is the currency's ISO-4217 exponent (JPY 0, EGP 2, OMR 3, CLF
+    4), never an assumed 2; a currency with no ISO-4217 minor unit cannot meet
+    the invariant, so its lines are 422 `sale_line_pricing_invalid`. On
+    `recordReturn`, a line sold in a whole quantity can only be returned in
+    whole quantities (else 400 `validation_error`), so every return of a
+    conforming line prices to exactly `unitPrice × q`.
+
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
     appears on the wire. Timestamps are RFC 3339 / `date-time` in UTC (FR-021).
@@ -441,8 +449,13 @@ paths:
         `round4` is `round(numeric, 4)` in Postgres `numeric`, never a float.
         A line captured under the RT-105 price invariant (`lineAmount =
         unitPrice × quantity`, minor-unit precision, whole quantity) prices to exactly `unitPrice × q`
-        at every step, which ERPNext can post; a line captured before RT-105
-        may still price to more fractional digits than its currency allows.
+        at every step, which ERPNext can post, because its returned quantities
+        are whole too: a line sold in a whole quantity accepts only a whole
+        return `quantity` (`"1.000000"` is whole), else 400 `validation_error`
+        (with a fractional q, round4 is not `unitPrice × q`: 0.01 × 0.333333
+        prices to 0.0033). A line captured before RT-105 may still price to
+        more fractional digits than its currency allows; one sold in a
+        fractional quantity still accepts fractional returns.
         `returnTotal` = Σ returned `lineAmount`, the same basis as capture's
         `posTotal` = Σ `lineAmount`; the tax share is carried inside it for
         posting, not added on top.
@@ -461,7 +474,10 @@ paths:
         (409 `over_return`); a voided sale cannot be returned and a sale with
         any return cannot be voided (409 `already_reversed`). Each `lineRef`
         must be a line of THIS sale and appear at most once per request, and
-        each `quantity` must be > 0 — otherwise 400 `validation_error`.
+        each `quantity` must be > 0 and, on a line sold in a whole quantity,
+        whole (RT-105) — otherwise 400 `validation_error`. A replay is never
+        re-checked: a return recorded before the whole-quantity rule still
+        replays 200.
         Online-only (D4) and same-terminal lookup (D5) are POS rules.
 
 
@@ -724,10 +740,13 @@ components:
         Price invariant (RT-105, RT-87 decision D), compared numerically in
         exact decimal (`"3.3300"` equals `"3.33"`): `unitPrice` and
         `lineAmount` have no more significant fractional digits than the line
-        currency's ISO-4217 minor unit (EGP 2); `lineAmount = unitPrice ×
-        quantity` exactly; and `quantity` is a whole number (`"2.000000"` is
-        whole; fractional quantities, such as weighed goods, are not accepted
-        yet). A line that breaks any of them is 422 `sale_line_pricing_invalid`.
+        currency's ISO-4217 minor unit (JPY 0, EGP 2, OMR 3, CLF 4 — the
+        exponent of the line's `currencyCode`, never an assumed 2; a code with
+        no ISO-4217 minor unit, such as `XAU` or an unassigned code, cannot
+        meet it); `lineAmount = unitPrice × quantity` exactly; and `quantity`
+        is a whole number (`"2.000000"` is whole; fractional quantities, such
+        as weighed goods, are not accepted yet). A line that breaks any of them
+        is 422 `sale_line_pricing_invalid`.
       properties:
         lineName:
           type: string
@@ -865,7 +884,9 @@ components:
           description: >
             Quantity returned, exact-decimal string (no float), same bound as
             the sale line's `quantity`. MUST be > 0 and ≤ the line's
-            `returnableQuantity` (else 400 / 409 `over_return`).
+            `returnableQuantity` (else 400 / 409 `over_return`). MUST be a
+            whole number when the line was sold in a whole quantity (RT-105;
+            else 400 `validation_error`).
     RefundTender:
       type: object
       additionalProperties: false

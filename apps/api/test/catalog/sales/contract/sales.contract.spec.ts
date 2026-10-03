@@ -710,6 +710,20 @@ describe("pos-sales/sales.yaml — RT-105 sale-line price invariant", () => {
     );
   });
 
+  it("the minor unit is the currency's ISO-4217 exponent, never an assumed 2 (comment 10537 gap 2)", () => {
+    const text = describedBy(captureLine());
+    expect(text).toContain("never an assumed 2");
+    expect(text).toContain("no ISO-4217 minor unit");
+  });
+
+  it("a line sold in a whole quantity is returned in whole quantities only (comment 10537 gap 1)", () => {
+    const op = describedBy(findOp("recordReturn"));
+    expect(op).toContain("accepts only a whole return `quantity`");
+    expect(op).toContain("A replay is never re-checked");
+    const quantity = salesDoc.components?.schemas?.["ReturnLineRequest"]?.properties?.["quantity"];
+    expect(describedBy(quantity)).toContain("MUST be a whole number when the line was sold in a whole quantity");
+  });
+
   it("the version note records RT-105 and that the request shape is unchanged", () => {
     const info = salesDoc.info?.description ?? "";
     expect(info).toContain("RT-105");
