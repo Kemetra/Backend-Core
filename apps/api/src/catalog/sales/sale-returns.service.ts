@@ -10,7 +10,8 @@
  *   3. D2: a voided sale cannot be returned;
  *   4. price every line from the frozen sale line in Postgres `numeric` by the
  *      cumulative-difference rule round4(A×(c+q)/Q) − round4(A×c/Q) (option
- *      (a), RT-73 comment 10406), rejecting unknown lines and over-returns;
+ *      (a), RT-73 comment 10406), rejecting unknown lines, a fractional q on a
+ *      line sold in a whole quantity (RT-105) and over-returns;
  *   5. D3: the refund tenders must sum (numerically) to the computed total;
  *   6. insert the return (per-sale `return_seq`, own business date — RT-63
  *      P2), its lines (with the frozen cumulative quantity) and tenders;
@@ -33,6 +34,7 @@ import {
   readReversalState,
   ReturnLineInvalidError,
   ReturnOverReturnError,
+  ReturnQuantityNotWholeError,
   ReturnTenderMismatchError,
   SaleAlreadyReversedError,
   type LockedSale,
@@ -169,6 +171,7 @@ async function priceReturnLines(
   const r = await client.query<{
     line_ref: string;
     found: boolean;
+    fractional: boolean | null;
     over: boolean | null;
     quantity: string;
     line_amount: string | null;
@@ -187,6 +190,9 @@ async function priceReturnLines(
          LEFT JOIN sale_lines sl ON sl.id = req.line_ref AND sl.sale_id = $1
      )
      SELECT line_ref::text AS line_ref, found,
+            -- RT-105: a line sold in a whole quantity returns in whole
+            -- quantities only, so a conforming line prices to exactly u × q.
+            (sold = trunc(sold) AND qty <> trunc(qty)) AS fractional,
             (c + qty > sold) AS over,
             qty::numeric(19,6)::text AS quantity,
             CASE WHEN found AND c + qty <= sold THEN
@@ -205,6 +211,7 @@ async function priceReturnLines(
     [saleRef, lines.map((l) => l.lineRef), lines.map((l) => l.quantity)],
   );
   if (r.rows.some((row) => !row.found)) throw new ReturnLineInvalidError();
+  if (r.rows.some((row) => row.fractional)) throw new ReturnQuantityNotWholeError();
   if (r.rows.some((row) => row.over)) throw new ReturnOverReturnError();
   return r.rows.map((row) => ({
     lineRef: row.line_ref,

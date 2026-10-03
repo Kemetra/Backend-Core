@@ -11,6 +11,7 @@ import {
   findLinePricingViolation,
   type PricedLineInput,
 } from "../../../../src/catalog/sales/sale-line-pricing";
+import { minorUnitExponent } from "../../../../src/catalog/sales/iso4217-minor-units";
 
 function line(overrides: Partial<PricedLineInput> = {}): PricedLineInput {
   return { unitPrice: "3.33", quantity: "3", lineAmount: "9.99", currencyCode: "EGP", ...overrides };
@@ -25,6 +26,10 @@ describe("RT-105 — sale-line price invariant", () => {
       ["a free line", line({ unitPrice: "0", quantity: "5", lineAmount: "0.0000" })],
       ["a 0-minor currency", line({ currencyCode: "JPY", unitPrice: "100", quantity: "2", lineAmount: "200" })],
       ["a 3-minor currency", line({ currencyCode: "KWD", unitPrice: "1.125", quantity: "2", lineAmount: "2.250" })],
+      // Comment 10537 gap 2: exponents beyond the read-down map come from ISO 4217.
+      ["OMR at its 3 minor digits", line({ currencyCode: "OMR", unitPrice: "1.234", quantity: "2", lineAmount: "2.468" })],
+      ["CLF at its 4 minor digits", line({ currencyCode: "CLF", unitPrice: "1.2345", quantity: "2", lineAmount: "2.4690" })],
+      ["KRW at 0 minor digits", line({ currencyCode: "KRW", unitPrice: "1000", quantity: "3", lineAmount: "3000" })],
       [
         "the largest price at the column bound",
         line({ unitPrice: "0.01", quantity: "9999999999999", lineAmount: "99999999999.99" }),
@@ -42,8 +47,29 @@ describe("RT-105 — sale-line price invariant", () => {
       ["quantity is fractional, even when the product holds", line({ unitPrice: "2.00", quantity: "0.5", lineAmount: "1.00" })],
       ["a 0-minor currency with a fractional price", line({ currencyCode: "JPY", unitPrice: "100.5", quantity: "2", lineAmount: "201" })],
       ["the bench shape: 1 of 3 at 3.3333 for 10.00", line({ unitPrice: "3.3333", quantity: "3", lineAmount: "10.00" })],
+      // Comment 10537 gap 2: no assumed 2 minor digits for a currency the read-down map lacks.
+      ["KRW (0 minor) with a fractional price", line({ currencyCode: "KRW", unitPrice: "1.5", quantity: "2", lineAmount: "3" })],
+      ["OMR (3 minor) with 4 fractional digits", line({ currencyCode: "OMR", unitPrice: "1.2345", quantity: "2", lineAmount: "2.469" })],
+      ["a code whose ISO-4217 minor unit is N.A. (XAU)", line({ currencyCode: "XAU", unitPrice: "3", lineAmount: "9" })],
+      ["the ISO-4217 no-currency code (XXX)", line({ currencyCode: "XXX", unitPrice: "3", lineAmount: "9" })],
+      ["a code that is not in ISO 4217 (ZZZ)", line({ currencyCode: "ZZZ", unitPrice: "3", lineAmount: "9" })],
     ])("%s", (_name, l) => {
       expect(findLinePricingViolation([l])).toBe(0);
+    });
+  });
+
+  describe("ISO-4217 minor units (comment 10537 gap 2)", () => {
+    it.each([
+      ["JPY", 0], ["KRW", 0], ["CLP", 0], ["VND", 0], ["XOF", 0],
+      ["EGP", 2], ["USD", 2], ["EUR", 2], ["ZWG", 2], ["XCG", 2],
+      ["KWD", 3], ["BHD", 3], ["OMR", 3], ["JOD", 3], ["TND", 3], ["IQD", 3], ["LYD", 3],
+      ["CLF", 4], ["UYW", 4],
+    ])("%s has %i minor digits", (code, exponent) => {
+      expect(minorUnitExponent(code)).toBe(exponent);
+    });
+
+    it.each(["XAU", "XAG", "XDR", "XTS", "XXX", "ZZZ", "egp", ""])("%s has no minor unit", (code) => {
+      expect(minorUnitExponent(code)).toBeNull();
     });
   });
 

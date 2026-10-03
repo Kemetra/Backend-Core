@@ -25,6 +25,7 @@ import {
   enableReturns,
   postReturn,
   returnBody,
+  seedPreRuleReturn,
 } from "./__returns-support";
 
 const h: HarnessHandle = { harness: null, dockerSkipped: false };
@@ -392,6 +393,85 @@ describe("RT-73 — invariants", () => {
     const replay = await post({ externalId: "void-2v-a", key: "r2vc" });
     expect(replay.status).toBe(200);
     expect(replay.headers["idempotent-replayed"]).toBe("true");
+  });
+});
+
+// ===========================================================================
+// RT-105 (comment 10537 gap 1) — whole return quantities on whole lines
+// ===========================================================================
+describe("RT-105 — a line sold in a whole quantity returns in whole quantities", () => {
+  async function returnsOf(saleRef: string): Promise<number> {
+    const r = await h.harness!.env.admin.query("SELECT 1 FROM sale_returns WHERE sale_id = $1", [saleRef]);
+    return r.rowCount ?? 0;
+  }
+
+  it("a fractional quantity on a whole line → 400 validation_error, nothing recorded", async () => {
+    if (skip()) return;
+    // 0.01 × 3: round4 would price q = 0.333333 at 0.0033, not 0.01 × q.
+    const s = await captureOneLine(h, { externalId: "ret-frac", quantity: "3", lineAmount: "0.0300" });
+    const res = await postReturn(
+      h,
+      s.saleRef,
+      returnBody("ret-frac-1", [{ lineRef: s.lineRef, quantity: "0.333333" }], "0.0033"),
+      "rfrac",
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("validation_error");
+    expect(await returnsOf(s.saleRef)).toBe(0);
+    const outbox = await h.harness!.env.admin.query(
+      `SELECT 1 FROM outbox_events WHERE payload->>'sale_id' = $1 AND payload->>'kind' = 'reversal'`,
+      [s.saleRef],
+    );
+    expect(outbox.rowCount).toBe(0);
+  });
+
+  it("a whole quantity written with decimals (1.000000) is accepted and prices to exactly unitPrice", async () => {
+    if (skip()) return;
+    const s = await captureOneLine(h, { externalId: "ret-whole6", quantity: "3", lineAmount: "9.9900" });
+    const res = await postReturn(
+      h,
+      s.saleRef,
+      returnBody("ret-whole6-1", [{ lineRef: s.lineRef, quantity: "1.000000" }], "3.33"),
+      "rwhole6",
+    );
+    expect(res.status).toBe(201);
+    expect(res.body.lines[0].lineAmount).toBe("3.3300");
+  });
+
+  it("a pre-RT-105 line sold in a fractional quantity still accepts a fractional return", async () => {
+    if (skip()) return;
+    const s = await seedPreInvariantSale(h, {
+      externalId: "ret-fracline",
+      unitPrice: "2.0000",
+      quantity: "2.5",
+      lineAmount: "5.0000",
+    });
+    const res = await postReturn(
+      h,
+      s.saleRef,
+      returnBody("ret-fracline-1", [{ lineRef: s.lineRef, quantity: "0.5" }], "1.0000"),
+      "rfracline",
+    );
+    expect(res.status).toBe(201);
+    expect(res.body.lines[0].lineAmount).toBe("1.0000");
+  });
+
+  it("a return recorded before the rule still replays 200 with its stored body, never 400", async () => {
+    if (skip()) return;
+    const s = await captureOneLine(h, { externalId: "ret-legacy", quantity: "3", lineAmount: "9.0000" });
+    const body = returnBody("ret-legacy-1", [{ lineRef: s.lineRef, quantity: "0.5" }], "1.5000");
+    await seedPreRuleReturn(h, s, body, { quantity: "0.5", lineAmount: "1.5000", returnedAfter: "0.5" });
+    const replay = await postReturn(h, s.saleRef, body, "rlegacy");
+    expect(replay.status).toBe(200);
+    expect(replay.headers["idempotent-replayed"]).toBe("true");
+    expect(replay.body.lines[0]).toMatchObject({
+      lineRef: s.lineRef,
+      quantity: "0.500000",
+      lineAmount: "1.5000",
+      returnedQuantity: "0.500000",
+      returnableQuantity: "2.500000",
+    });
+    expect(await returnsOf(s.saleRef)).toBe(1);
   });
 });
 

@@ -71,6 +71,7 @@ import {
 import {
   ReturnLineInvalidError,
   ReturnOverReturnError,
+  ReturnQuantityNotWholeError,
   ReturnTenderMismatchError,
   SaleAlreadyReversedError,
 } from "./sale-reversal";
@@ -144,6 +145,12 @@ function toReversalHttpError(err: unknown): unknown {
   }
   if (err instanceof ReturnLineInvalidError) {
     return new BadRequestException({ code: "validation_error", message: "lineRef is not a line of this sale" });
+  }
+  if (err instanceof ReturnQuantityNotWholeError) {
+    return new BadRequestException({
+      code: "validation_error",
+      message: "quantity must be a whole number for a line sold in a whole quantity",
+    });
   }
   return err;
 }

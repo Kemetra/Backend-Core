@@ -10,9 +10,11 @@
  *
  * Exact decimal only (gate A.6): values are compared as scaled `bigint`, never
  * JS numbers. The DTO already bounds the inputs (money ≤ 4 fractional digits,
- * quantity ≤ 6), so the scales below are fixed.
+ * quantity ≤ 6), so the scales below are fixed. The minor unit is the line
+ * currency's ISO-4217 exponent (0–4, never above MONEY_SCALE); a currency with
+ * none cannot conform (Jira RT-105 comment 10537, gap 2).
  */
-import { isRepresentable } from "../read-down/read-down.toBody";
+import { minorUnitExponent } from "./iso4217-minor-units";
 
 export interface PricedLineInput {
   readonly unitPrice: string;
@@ -34,9 +36,16 @@ function isWhole(quantity: string): boolean {
   return toScaled(quantity, QUANTITY_SCALE) % 10n ** BigInt(QUANTITY_SCALE) === 0n;
 }
 
+/** True iff `amount` has no more significant fractional digits than `exponent`. */
+function fitsMinorUnit(amount: string, exponent: number): boolean {
+  return toScaled(amount, MONEY_SCALE) % 10n ** BigInt(MONEY_SCALE - exponent) === 0n;
+}
+
 function conforms(line: PricedLineInput): boolean {
-  if (!isRepresentable(line.unitPrice, line.currencyCode)) return false;
-  if (!isRepresentable(line.lineAmount, line.currencyCode)) return false;
+  const exponent = minorUnitExponent(line.currencyCode);
+  if (exponent === null) return false;
+  if (!fitsMinorUnit(line.unitPrice, exponent)) return false;
+  if (!fitsMinorUnit(line.lineAmount, exponent)) return false;
   if (!isWhole(line.quantity)) return false;
   const product = toScaled(line.unitPrice, MONEY_SCALE) * toScaled(line.quantity, QUANTITY_SCALE);
   return product === toScaled(line.lineAmount, MONEY_SCALE) * 10n ** BigInt(QUANTITY_SCALE);
