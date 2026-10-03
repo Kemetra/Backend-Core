@@ -36,12 +36,31 @@ def in_scope(op, default_security):
     return any("cookieAuth" in req for req in security)
 
 
+def is_operation(method):
+    """A path-item key that holds an HTTP operation (not e.g. `parameters`)."""
+    return method in METHODS
+
+
+def in_group(op, want_platform):
+    """The operation belongs to the requested group (platform or owner)."""
+    return is_platform_only(op) == want_platform
+
+
+def selected(method, op, default_security, want_platform):
+    """An in-scope HTTP operation that belongs to the requested group."""
+    if not is_operation(method):
+        return False
+    if not in_scope(op, default_security):
+        return False
+    return in_group(op, want_platform)
+
+
 def cookie_ops(doc, group):
     default = doc.get("security")
     want_platform = group == "platform"
     for item in (doc.get("paths") or {}).values():
         for method, op in item.items():
-            if method in METHODS and in_scope(op, default) and is_platform_only(op) == want_platform:
+            if selected(method, op, default, want_platform):
                 yield op["operationId"]
 
 
