@@ -35,6 +35,18 @@ export class ReturnTenderMismatchError extends Error {
   }
 }
 
+/**
+ * RT-105 (comment 10537 gap 1): a fractional return quantity on a line sold in
+ * a whole quantity → 400. round4 prices such a return at other than
+ * `unitPrice × q`, which ERPNext would reject after the refund was paid out.
+ */
+export class ReturnQuantityNotWholeError extends Error {
+  constructor() {
+    super("return quantity must be whole for a line sold in a whole quantity");
+    this.name = "ReturnQuantityNotWholeError";
+  }
+}
+
 /** A return names a line that is not a line of the sale → 400. */
 export class ReturnLineInvalidError extends Error {
   constructor() {

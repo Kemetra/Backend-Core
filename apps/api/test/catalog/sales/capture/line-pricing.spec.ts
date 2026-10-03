@@ -39,11 +39,16 @@ afterEach(async () => {
 
 const skip = (): boolean => h.dockerSkipped || !h.harness;
 
-function oneLine(externalId: string, l: { unitPrice: string; quantity: string; lineAmount: string }) {
+function oneLine(
+  externalId: string,
+  l: { unitPrice: string; quantity: string; lineAmount: string; currencyCode?: string },
+) {
+  const currencyCode = l.currencyCode ?? "USD";
   return captureBody({
     externalId,
+    currencyCode,
     posTotal: l.lineAmount,
-    lines: [{ lineName: "Widget", currencyCode: "USD", unit: "ea", ...l }],
+    lines: [{ lineName: "Widget", unit: "ea", ...l, currencyCode }],
   });
 }
 
@@ -68,6 +73,15 @@ describe("RT-105 — conforming lines are captured as before", () => {
     expect(res.status).toBe(201);
   });
 
+  it("OMR at its 3 ISO-4217 minor digits: 1.234 × 2 = 2.468 is a 201 (comment 10537 gap 2)", async () => {
+    if (skip()) return;
+    const res = await post(
+      oneLine("lp-omr", { currencyCode: "OMR", unitPrice: "1.234", quantity: "2", lineAmount: "2.468" }),
+      "lpomr",
+    );
+    expect(res.status).toBe(201);
+  });
+
   it("trailing zeros compare numerically: 3.3300 × 3.000000 = 9.9900 is a 201", async () => {
     if (skip()) return;
     const res = await post(
@@ -84,6 +98,9 @@ describe("RT-105 — a line that cannot be returned exactly is 422 and nothing i
     ["unitPrice beyond the minor unit", "lp-up", { unitPrice: "3.3333", quantity: "3", lineAmount: "9.9999" }],
     ["lineAmount beyond the minor unit", "lp-la", { unitPrice: "1.00", quantity: "1", lineAmount: "1.005" }],
     ["fractional quantity", "lp-qty", { unitPrice: "2.00", quantity: "0.5", lineAmount: "1.00" }],
+    // Comment 10537 gap 2: the minor unit is the ISO-4217 exponent, never an assumed 2.
+    ["KRW (0 minor) with a fractional price", "lp-krw", { currencyCode: "KRW", unitPrice: "1.5", quantity: "2", lineAmount: "3" }],
+    ["a currency with no ISO-4217 minor unit (XAU)", "lp-xau", { currencyCode: "XAU", unitPrice: "3", quantity: "3", lineAmount: "9" }],
   ])("%s", async (_name, externalId, l) => {
     if (skip()) return;
     const res = await post(oneLine(externalId, l), externalId.replace(/-/g, ""));

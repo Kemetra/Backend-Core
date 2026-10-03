@@ -4,9 +4,13 @@
  */
 import {
   captureBody,
+  DEVICE_USER_ID,
   idempKey,
+  STORE_A_X,
+  TENANT_A,
   type HarnessHandle,
 } from "../capture/__capture-harness";
+import { sha256CanonicalHex } from "../../../../src/catalog/sales/payload-hash";
 
 /** Enable the RT-73 deployment gate for a suite (read per request). */
 export function enableReturns(): void {
@@ -89,6 +93,44 @@ export function returnBody(
     refundTenders: [{ method: "cash", amount: cashAmount }],
     ...extra,
   };
+}
+
+/**
+ * RT-105: store a one-line return the way `recordReturn` did BEFORE the
+ * whole-quantity rule (so it may carry a fractional q on a whole line), with
+ * the payload hash a re-delivery of `body` will present. Not a capture path:
+ * rows are written directly, as `seedPreInvariantSale` does for sales.
+ */
+export async function seedPreRuleReturn(
+  h: HarnessHandle,
+  sale: OneLineSale,
+  body: Record<string, unknown>,
+  priced: { quantity: string; lineAmount: string; returnedAfter: string },
+): Promise<void> {
+  const admin = h.harness!.env.admin;
+  const ret = await admin.query<{ id: string }>(
+    `INSERT INTO sale_returns
+       (id, sale_id, tenant_id, store_id, return_seq, business_date, currency_code,
+        return_total, reason, source_system, external_id, payload_hash, created_by)
+     VALUES (gen_random_uuid(), $1, $2, $3, 1, (now() AT TIME ZONE 'UTC')::date, 'USD',
+             $4::numeric, NULL, $5, $6, $7, $8)
+     RETURNING id::text AS id`,
+    [sale.saleRef, TENANT_A, STORE_A_X, priced.lineAmount, body["sourceSystem"], body["externalId"],
+      sha256CanonicalHex(body), DEVICE_USER_ID],
+  );
+  const returnId = ret.rows[0]!.id;
+  await admin.query(
+    `INSERT INTO sale_return_lines
+       (id, return_id, sale_line_id, tenant_id, store_id, quantity, line_amount,
+        tax_amount, returned_quantity_after)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::numeric, $6::numeric, NULL, $7::numeric)`,
+    [returnId, sale.lineRef, TENANT_A, STORE_A_X, priced.quantity, priced.lineAmount, priced.returnedAfter],
+  );
+  await admin.query(
+    `INSERT INTO sale_return_tenders (id, return_id, tenant_id, store_id, ordinal, method, amount)
+     VALUES (gen_random_uuid(), $1, $2, $3, 0, 'cash', $4::numeric)`,
+    [returnId, TENANT_A, STORE_A_X, priced.lineAmount],
+  );
 }
 
 /** POST a return. */
