@@ -10,8 +10,8 @@
 #
 # glibc (bookworm-slim), NOT alpine: pg + NestJS native deps are more reliable on glibc.
 
-# ---- base: node 20 + pnpm via corepack ----------------------------------------
-FROM node:20-bookworm-slim AS base
+# ---- base: node 22 LTS + pnpm via corepack ------------------------------------
+FROM node:22-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=/pnpm:$PATH
 # pnpm deploy needs workspace packages injected so internal deps (@data-pulse-2/*)
