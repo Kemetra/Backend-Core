@@ -649,6 +649,41 @@ describe("stock-view.yaml — v1.2 connector-paged windows (RT-174)", () => {
     expectInvalid(validateRequest, request({ windowSeq: 0, maxItems: 500, maxWindows: 0 }));
   });
 
+  it("a paged request (maxWindows >= 2) must have windowSeq 0 and null bounds (if/then)", () => {
+    // Bounds omitted is fine; present bounds must be null.
+    expectValid(validateRequest, request({ windowSeq: 0, maxItems: 500, maxWindows: 2 }));
+    expectInvalid(
+      validateRequest,
+      request({ windowSeq: 4, maxItems: 500, maxWindows: 2, fromItemRef: "A" }),
+    );
+    expectInvalid(validateRequest, request({ windowSeq: 1, maxItems: 500, maxWindows: 20 }));
+    expectInvalid(
+      validateRequest,
+      request({ windowSeq: 0, maxItems: 500, maxWindows: 20, fromItemRef: "A", toItemRef: null }),
+    );
+    expectInvalid(
+      validateRequest,
+      request({ windowSeq: 0, maxItems: 500, maxWindows: 20, fromItemRef: null, toItemRef: "Z" }),
+    );
+  });
+
+  it("v1 compat: the paged-request rule does not apply when maxWindows is absent or 1", () => {
+    const v1Window = { windowSeq: 3, maxItems: 500, fromItemRef: "A", toItemRef: "Z" };
+    expectValid(validateRequest, request(v1Window));
+    expectValid(validateRequest, request({ ...v1Window, maxWindows: 1 }));
+  });
+
+  it("the overflow cutoff is maxWindows × maxItems everywhere (never a hard-coded × 500)", () => {
+    const infoDescription = (doc.info as { description?: string } | undefined)?.description ?? "";
+    const maxWindows = (doc.components?.schemas?.["BinViewItemWindow"]?.properties ?? {})[
+      "maxWindows"
+    ] as { description?: string };
+    for (const text of [infoDescription, maxWindows?.description ?? ""]) {
+      expect(text).toContain("`maxWindows × maxItems`");
+      expect(text).not.toContain("maxWindows × 500");
+    }
+  });
+
   // --- Report body -------------------------------------------------------------
 
   it("the report `window` is a strict {attemptRef: uuid, windowSeq: int >= 0, isFinal: bool}", () => {
@@ -814,6 +849,23 @@ describe("stock-view.yaml — v1.2 connector-paged windows (RT-174)", () => {
     ]) {
       expect(description).toContain(phrase);
     }
+  });
+
+  it("the replay identity is the whole body, isFinal included (IdempotencyInterceptor fingerprint)", () => {
+    // Folded YAML keeps line breaks inside more-indented bullets; compare on
+    // normalised whitespace.
+    const flat = (s: string | undefined): string => (s ?? "").replace(/\s+/g, " ");
+    const description = flat(
+      (findOp("binViewReportSnapshot") as { description?: string } | undefined)?.description,
+    );
+    expect(description).toContain(
+      "the replay identity is the full body (`attemptRef`, `windowSeq`, `isFinal`, `entries`, `readAt`)",
+    );
+    expect(description).toContain("including a changed `isFinal`, → 409 `idempotency_key_conflict`");
+    const conflict = doc.components?.responses?.["Conflict"] as { description?: string };
+    expect(flat(conflict?.description)).toContain(
+      "any difference in `attemptRef`, `windowSeq`, `isFinal`, `entries` or `readAt` conflicts",
+    );
   });
 
   it("the document states the v1 compatibility rules and the deploy order", () => {
