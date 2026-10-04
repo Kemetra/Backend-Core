@@ -13,7 +13,10 @@
  *     rejection_category='unmapped_store';
  *   - the 008 sale fact is NEVER mutated;
  *   - at-least-once: a 2nd handle() of the same event is a no-op (O-3 unique),
- *     the FIRST verdict stands.
+ *     the FIRST verdict stands;
+ *   - RT-173 (RT-83 option 2): a reversal's row is created only after its
+ *     sale's sale_post row exists — before that the consumer throws the typed
+ *     retryable ReversalAwaitingSalePostError and inserts nothing.
  *
  * Docker policy mirrors the other worker DB specs: HARD failure unless
  * MIGRATION_TEST_ALLOW_SKIP=1.
@@ -24,10 +27,14 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../../../../packages/db/__tests__/_helpers/postgres-container";
-import { PostingRequestedConsumer } from "../../src/erpnext-posting/posting-requested.consumer";
+import {
+  PostingRequestedConsumer,
+  ReversalAwaitingSalePostError,
+} from "../../src/erpnext-posting/posting-requested.consumer";
 import type { OutboxEventEnvelope } from "@data-pulse-2/shared";
 
 const TENANT = "01900000-0000-7000-8000-0000000aa111";
+const OTHER_TENANT = "01900000-0000-7000-8000-0000000aa222";
 const STORE_MAPPED = "01900000-0000-7000-8000-0000000ac111";
 const STORE_UNMAPPED = "01900000-0000-7000-8000-0000000ac222";
 const ACTOR = "01900000-0000-7000-8000-0000000ad111";
@@ -106,11 +113,15 @@ async function seedSale(
 type PostingEnvelope = Parameters<PostingRequestedConsumer["handle"]>[0];
 
 /** Tests feed arbitrary (incl. malformed) payloads; the consumer validates them. */
-function envelope(payload: Record<string, unknown>, eventId: string): PostingEnvelope {
+function envelope(
+  payload: Record<string, unknown>,
+  eventId: string,
+  tenantId: string = TENANT,
+): PostingEnvelope {
   const env: OutboxEventEnvelope = {
     event_id: eventId,
     event_type: "erpnext.posting.requested",
-    tenant_id: TENANT,
+    tenant_id: tenantId,
     store_id: null,
     payload,
     correlation_id: null,
@@ -134,6 +145,49 @@ async function statusRow(
     rejection_category: r.rows[0]?.rejection_category ?? null,
     count: r.rowCount ?? 0,
   };
+}
+
+function salePostEvent(saleId: string, eventId: string, tenantId: string = TENANT): PostingEnvelope {
+  return envelope(
+    { sale_id: saleId, store_id: STORE_MAPPED, kind: "sale_post", source_ref_id: saleId },
+    eventId,
+    tenantId,
+  );
+}
+
+function reversalEvent(
+  saleId: string,
+  voidId: string,
+  opts: { eventId: string; tenantId?: string },
+): PostingEnvelope {
+  return envelope(
+    { sale_id: saleId, store_id: STORE_MAPPED, kind: "reversal", source_ref_id: voidId },
+    opts.eventId,
+    opts.tenantId,
+  );
+}
+
+/** Insert a void of `saleId`; returns the void id (the reversal's source_ref_id). */
+async function seedVoid(e: PgTestEnv, saleId: string, voidId: string): Promise<string> {
+  await e.admin.query(
+    `INSERT INTO sale_voids (id, sale_id, tenant_id, store_id, business_date, source_system, external_id, payload_hash, created_by)
+     VALUES ($1, $2, $3, $4, '2026-05-01', 'pos-prc', $5, $6, $7)`,
+    [voidId, saleId, TENANT, STORE_MAPPED, `void-${voidId}`, PAYLOAD_HASH, ACTOR],
+  );
+  return voidId;
+}
+
+/** The (kind, status, sequence) rows for a sale, in feed (sequence) order. */
+async function postingRows(
+  e: PgTestEnv,
+  saleId: string,
+): Promise<Array<{ kind: string; status: string; sequence: string }>> {
+  const r = await e.admin.query<{ kind: string; status: string; sequence: string }>(
+    `SELECT kind, status, sequence::text AS sequence FROM erpnext_posting_status
+      WHERE sale_id = $1 ORDER BY sequence`,
+    [saleId],
+  );
+  return r.rows;
 }
 
 beforeAll(async () => {
@@ -306,6 +360,8 @@ describe("PostingRequestedConsumer.handle — US3 reversal cardinality (data-mod
     );
 
     const c = new PostingRequestedConsumer(e.app);
+    // RT-173: a reversal row needs its sale's sale_post row to exist first.
+    await c.handle(salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev0b0"));
     await c.handle(
       envelope(
         { sale_id: saleId, store_id: STORE_MAPPED, kind: "reversal", source_ref_id: voidId },
@@ -329,5 +385,105 @@ describe("PostingRequestedConsumer.handle — US3 reversal cardinality (data-mod
     expect(rows.rows[0]?.count).toBe("2");
     expect((await statusRow(e, voidId)).status).toBe("pending");
     expect((await statusRow(e, refundId)).status).toBe("pending");
+  });
+});
+
+describe("PostingRequestedConsumer.handle — RT-173 reversal waits for its sale_post row", () => {
+  it("reversal before sale_post throws + inserts nothing; after sale_post it is created behind it", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleId = "01900000-0000-7000-8000-00000050c001";
+    await seedSale(e, { id: saleId, store: STORE_MAPPED, externalId: "ord-1", tenantProductRef: TPRODUCT });
+    const voidId = await seedVoid(e, saleId, "01900000-0000-7000-8000-0000005ec0d1");
+    const c = new PostingRequestedConsumer(e.app);
+    const reversal = reversalEvent(saleId, voidId, { eventId: "01900000-0000-7000-8000-0000000ev0c1" });
+
+    // 1. The reversal is drained BEFORE the sale_post (the RT-83 race).
+    await expect(c.handle(reversal)).rejects.toBeInstanceOf(ReversalAwaitingSalePostError);
+    expect(await postingRows(e, saleId)).toEqual([]);
+
+    // 2. The sale_post arrives; 3. the outbox redelivers the reversal.
+    await c.handle(salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev0c2"));
+    await c.handle(reversal);
+
+    const rows = await postingRows(e, saleId);
+    expect(rows.map((r) => [r.kind, r.status])).toEqual([
+      ["sale_post", "pending"],
+      ["reversal", "pending"],
+    ]);
+    expect(BigInt(rows[1]?.sequence ?? "0")).toBeGreaterThan(BigInt(rows[0]?.sequence ?? "0"));
+  });
+
+  it("a redelivery after the reversal row exists is still a no-op (O-3)", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleId = "01900000-0000-7000-8000-00000050c002";
+    await seedSale(e, { id: saleId, store: STORE_MAPPED, externalId: "ord-2", tenantProductRef: TPRODUCT });
+    const voidId = await seedVoid(e, saleId, "01900000-0000-7000-8000-0000005ec0d2");
+    const c = new PostingRequestedConsumer(e.app);
+    const reversal = reversalEvent(saleId, voidId, { eventId: "01900000-0000-7000-8000-0000000ev0c3" });
+    await c.handle(salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev0c4"));
+    await c.handle(reversal);
+    const before = await postingRows(e, saleId);
+
+    await c.handle(reversal); // re-delivery
+
+    expect(await postingRows(e, saleId)).toEqual(before);
+    expect(before).toHaveLength(2);
+  });
+
+  it("a permanently_rejected sale_post still satisfies the check", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleId = "01900000-0000-7000-8000-00000050c003";
+    // Ad-hoc line (no tenant_product_ref) → the sale_post is permanently_rejected.
+    await seedSale(e, { id: saleId, store: STORE_MAPPED, externalId: "ord-3", tenantProductRef: null });
+    const voidId = await seedVoid(e, saleId, "01900000-0000-7000-8000-0000005ec0d3");
+    const c = new PostingRequestedConsumer(e.app);
+    await c.handle(salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev0c5"));
+
+    await c.handle(reversalEvent(saleId, voidId, { eventId: "01900000-0000-7000-8000-0000000ev0c6" }));
+
+    const rows = await postingRows(e, saleId);
+    expect(rows.map((r) => [r.kind, r.status])).toEqual([
+      ["sale_post", "permanently_rejected"],
+      ["reversal", "permanently_rejected"],
+    ]);
+  });
+
+  it("another tenant cannot satisfy the check (RLS): the reversal is deferred, nothing is inserted", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleId = "01900000-0000-7000-8000-00000050c004";
+    await seedSale(e, { id: saleId, store: STORE_MAPPED, externalId: "ord-4", tenantProductRef: TPRODUCT });
+    const voidId = await seedVoid(e, saleId, "01900000-0000-7000-8000-0000005ec0d4");
+    const c = new PostingRequestedConsumer(e.app);
+    await c.handle(salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev0c7"));
+
+    // Same sale + void, but the envelope names a different tenant.
+    const foreign = reversalEvent(saleId, voidId, {
+      eventId: "01900000-0000-7000-8000-0000000ev0c8",
+      tenantId: OTHER_TENANT,
+    });
+
+    await expect(c.handle(foreign)).rejects.toBeInstanceOf(ReversalAwaitingSalePostError);
+    expect((await postingRows(e, saleId)).map((r) => r.kind)).toEqual(["sale_post"]);
+  });
+
+  it("a sale_post of a DIFFERENT sale does not satisfy the check", async () => {
+    if (skip) return;
+    const e = guard();
+    const postedSale = "01900000-0000-7000-8000-00000050c005";
+    const voidedSale = "01900000-0000-7000-8000-00000050c006";
+    await seedSale(e, { id: postedSale, store: STORE_MAPPED, externalId: "ord-5", tenantProductRef: TPRODUCT });
+    await seedSale(e, { id: voidedSale, store: STORE_MAPPED, externalId: "ord-6", tenantProductRef: TPRODUCT });
+    const voidId = await seedVoid(e, voidedSale, "01900000-0000-7000-8000-0000005ec0d6");
+    const c = new PostingRequestedConsumer(e.app);
+    await c.handle(salePostEvent(postedSale, "01900000-0000-7000-8000-0000000ev0c9"));
+
+    const reversal = reversalEvent(voidedSale, voidId, { eventId: "01900000-0000-7000-8000-0000000ev0ca" });
+
+    await expect(c.handle(reversal)).rejects.toBeInstanceOf(ReversalAwaitingSalePostError);
+    expect(await postingRows(e, voidedSale)).toEqual([]);
   });
 });
