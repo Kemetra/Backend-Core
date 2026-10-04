@@ -38,7 +38,7 @@ import { Roles } from "../../auth/roles.decorator";
 import { RolesGuard } from "../../auth/roles.guard";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe";
 import { TenantContextGuard } from "../../context/tenant-context.guard";
-import type { TenantContextRequest } from "../../context/types";
+import type { ResolvedContext, TenantContextRequest } from "../../context/types";
 import {
   SyncOpsListQuerySchema,
   SyncOpsRunListQuerySchema,
@@ -61,21 +61,26 @@ import {
 export class ErpnextSyncOpsController {
   constructor(private readonly service: ErpnextSyncOpsReadModelService) {}
 
-  private requireTenant(request: TenantContextRequest): string {
+  /** The read context: tenant + the session context whose store scope bounds the read (RT-192). */
+  private requireTenant(request: TenantContextRequest): { tenantId: string; context: ResolvedContext } {
     const ctx = request.context;
     if (!ctx || ctx.tenantId === null) {
       throw new UnauthorizedException("Unauthorized");
     }
-    return ctx.tenantId;
+    return { tenantId: ctx.tenantId, context: ctx };
   }
 
   /**
-   * Validate an optional `store_id` is in the session tenant's scope; map an
+   * Validate an optional `store_id` is one of the caller's accessible stores
+   * (membership store scope, RT-192, within the session tenant); map an
    * out-of-scope id to a non-disclosing 404 (FR-009 / SC-002). No-op when absent.
    */
-  private async assertStore(tenantId: string, storeId?: string): Promise<void> {
+  private async assertStore(
+    scoped: { tenantId: string; context: ResolvedContext },
+    storeId?: string,
+  ): Promise<void> {
     try {
-      await this.service.assertStoreInScope(tenantId, storeId);
+      await this.service.assertStoreInScope({ ...scoped, ...(storeId ? { storeId } : {}) });
     } catch (err) {
       if (err instanceof StoreNotInScopeError) {
         throw new NotFoundException({ code: "not_found", message: "Not found." });
@@ -94,10 +99,10 @@ export class ErpnextSyncOpsController {
     @Query(new ZodValidationPipe(SyncOpsSummaryQuerySchema))
     query: SyncOpsSummaryQuery,
   ): Promise<SyncOpsSummaryBody> {
-    const tenantId = this.requireTenant(request);
-    await this.assertStore(tenantId, query.store_id);
+    const scoped = this.requireTenant(request);
+    await this.assertStore(scoped, query.store_id);
     return this.service.getSummary({
-      tenantId,
+      ...scoped,
       ...(query.store_id ? { storeId: query.store_id } : {}),
     });
   }
@@ -111,10 +116,10 @@ export class ErpnextSyncOpsController {
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(SyncOpsListQuerySchema)) query: SyncOpsListQuery,
   ): Promise<Page<PostingBacklogItem>> {
-    const tenantId = this.requireTenant(request);
-    await this.assertStore(tenantId, query.store_id);
+    const scoped = this.requireTenant(request);
+    await this.assertStore(scoped, query.store_id);
     return this.service.listPostingBacklog({
-      tenantId,
+      ...scoped,
       cursor:
         query.cursor !== null && query.cursor !== undefined
           ? BigInt(query.cursor)
@@ -134,10 +139,10 @@ export class ErpnextSyncOpsController {
     @Query(new ZodValidationPipe(SyncOpsRunListQuerySchema))
     query: SyncOpsRunListQuery,
   ): Promise<Page<ReconciliationRunView>> {
-    const tenantId = this.requireTenant(request);
-    await this.assertStore(tenantId, query.store_id);
+    const scoped = this.requireTenant(request);
+    await this.assertStore(scoped, query.store_id);
     return this.service.listReconciliationRuns({
-      tenantId,
+      ...scoped,
       cursor: query.cursor ?? null,
       limit: query.page_size ?? 50,
       ...(query.store_id ? { storeId: query.store_id } : {}),

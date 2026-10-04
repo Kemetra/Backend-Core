@@ -76,12 +76,13 @@ interface PostingBacklogPageResponse {
 export class ErpnextReconciliationController {
   constructor(private readonly service: ErpnextReconciliationService) {}
 
-  private requireTenant(request: TenantContextRequest): string {
+  /** The read context: tenant + the session context whose store scope bounds the read (RT-192). */
+  private requireTenant(request: TenantContextRequest): { tenantId: string; context: ResolvedContext } {
     const ctx = request.context;
     if (!ctx || ctx.tenantId === null) {
       throw new UnauthorizedException("Unauthorized");
     }
-    return ctx.tenantId;
+    return { tenantId: ctx.tenantId, context: ctx };
   }
 
   /** The write context: tenant + actor, and the session context whose store scope bounds the write (RT-191). */
@@ -97,7 +98,7 @@ export class ErpnextReconciliationController {
     return { tenantId: ctx.tenantId, userId: ctx.userId, context: ctx };
   }
 
-  /** GET — the tenant's posting dead-letter backlog (US1; a read-projection over 015). */
+  /** GET — the posting dead-letter backlog of the caller's scoped stores (US1; a read-projection over 015, RT-192). */
   @Get("api/v1/catalog/erpnext-reconciliation/postings/backlog")
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
@@ -107,9 +108,8 @@ export class ErpnextReconciliationController {
     @Query(new ZodValidationPipe(ListBacklogQuerySchema))
     query: ListBacklogQuery,
   ): Promise<PostingBacklogPageResponse> {
-    const tenantId = this.requireTenant(request);
     const result = await this.service.listPostingBacklog({
-      tenantId,
+      ...this.requireTenant(request),
       cursor:
         query.cursor !== null && query.cursor !== undefined
           ? BigInt(query.cursor)
@@ -196,9 +196,9 @@ export class ErpnextReconciliationController {
     @Req() request: TenantContextRequest,
     @Param("runId", new ParseUUIDPipe()) runId: string,
   ): Promise<ReconciliationRunBody> {
-    const tenantId = this.requireTenant(request);
+    const scoped = this.requireTenant(request);
     try {
-      return await this.service.getRun({ tenantId, runId });
+      return await this.service.getRun({ ...scoped, runId });
     } catch (err) {
       if (err instanceof RunNotFoundError) {
         throw new NotFoundException({ code: "not_found", message: "Run not found." });
@@ -216,10 +216,10 @@ export class ErpnextReconciliationController {
     @Param("runId", new ParseUUIDPipe()) runId: string,
     @Query(new ZodValidationPipe(ListResultsQuerySchema)) query: ListResultsQuery,
   ): Promise<{ items: ReconciliationResultBody[]; nextCursor: string | null }> {
-    const tenantId = this.requireTenant(request);
+    const scoped = this.requireTenant(request);
     try {
       return await this.service.listResults({
-        tenantId,
+        ...scoped,
         runId,
         cursor: query.cursor ?? null,
         limit: query.limit ?? 100,

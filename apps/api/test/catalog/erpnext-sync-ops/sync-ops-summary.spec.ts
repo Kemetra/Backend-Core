@@ -36,6 +36,7 @@ import { DashboardAuthGuard } from "../../../src/auth/dashboard-auth.guard";
 import { PG_POOL } from "../../../src/auth/auth.module";
 import { RolesGuard } from "../../../src/auth/roles.guard";
 import { GlobalExceptionFilter } from "../../../src/common/exception.filter";
+import { MembershipRepository } from "../../../src/context/membership.repository";
 import { TenantContextGuard } from "../../../src/context/tenant-context.guard";
 import type { ResolvedContext } from "../../../src/context/types";
 import { ErpnextSyncOpsController } from "../../../src/catalog/erpnext-sync-ops/erpnext-sync-ops.controller";
@@ -73,6 +74,9 @@ class ConfigurableContextGuard implements CanActivate {
       storeId: this.storeId,
       isPlatformAdmin: false,
       source: "session",
+      // RT-192: the reads are bound to the membership store scope; this is what
+      // TenantContextGuard resolves for an 'all' membership.
+      storeAccess: { kind: "all" },
     };
     req.principal = { userId: this.userId };
     return true;
@@ -109,6 +113,7 @@ beforeAll(async () => {
     providers: [
       { provide: PG_POOL, useFactory: (): Pool => localEnv.app },
       ErpnextSyncOpsReadModelService,
+      { provide: MembershipRepository, useFactory: (): MembershipRepository => new MembershipRepository(localEnv.app) },
     ],
   })
     .overrideGuard(DashboardAuthGuard)

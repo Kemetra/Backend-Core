@@ -33,6 +33,7 @@ import { PG_POOL } from "../../../src/auth/auth.module";
 import { RolesGuard } from "../../../src/auth/roles.guard";
 import { GlobalExceptionFilter } from "../../../src/common/exception.filter";
 import { isPostgresInputError } from "../../../src/common/postgres-input-error";
+import { MembershipRepository } from "../../../src/context/membership.repository";
 import { TenantContextGuard } from "../../../src/context/tenant-context.guard";
 import type { ResolvedContext } from "../../../src/context/types";
 import { ErpnextSyncOpsController } from "../../../src/catalog/erpnext-sync-ops/erpnext-sync-ops.controller";
@@ -54,6 +55,15 @@ const TENANT_A = RECONCILIATION_FIXTURE_IDS.tenantA;
 const TENANT_B = RECONCILIATION_FIXTURE_IDS.tenantB;
 const ACTOR_A = RECONCILIATION_FIXTURE_IDS.actorA;
 const BASE = "/api/v1/catalog/erpnext-sync-ops/reconciliation-runs";
+/** RT-192: a tenant-A session with tenant-wide store access (an 'all' membership). */
+const ALL_STORES_CTX: ResolvedContext = {
+  userId: ACTOR_A,
+  tenantId: TENANT_A,
+  storeId: null,
+  isPlatformAdmin: false,
+  source: "session",
+  storeAccess: { kind: "all" },
+};
 
 class ConfigurableContextGuard implements CanActivate {
   public tenantId: string = TENANT_A;
@@ -70,6 +80,9 @@ class ConfigurableContextGuard implements CanActivate {
       storeId: this.storeId,
       isPlatformAdmin: false,
       source: "session",
+      // RT-192: the reads are bound to the membership store scope; this is what
+      // TenantContextGuard resolves for an 'all' membership.
+      storeAccess: { kind: "all" },
     };
     req.principal = { userId: this.userId };
     return true;
@@ -106,6 +119,7 @@ beforeAll(async () => {
     providers: [
       { provide: PG_POOL, useFactory: (): Pool => localEnv.app },
       ErpnextSyncOpsReadModelService,
+      { provide: MembershipRepository, useFactory: (): MembershipRepository => new MembershipRepository(localEnv.app) },
     ],
   })
     .overrideGuard(DashboardAuthGuard)
@@ -275,7 +289,7 @@ describe("RT-180 §5 — run cursor timestamp must be a real instant", () => {
       // future caller without the DTO check would.
       const service = app!.get(ErpnextSyncOpsReadModelService);
       const err: unknown = await service
-        .listReconciliationRuns({ tenantId: TENANT_A, cursor, limit: 1 })
+        .listReconciliationRuns({ tenantId: TENANT_A, context: ALL_STORES_CTX, cursor, limit: 1 })
         .then(
           () => null,
           (e: unknown) => e,
