@@ -728,6 +728,40 @@ describe("pos-sales/sales.yaml — RT-105 sale-line price invariant", () => {
     const info = salesDoc.info?.description ?? "";
     expect(info).toContain("RT-105");
     expect(info).toContain("The request shape is unchanged");
-    expect(salesDoc.info?.version).toBe("1.3.0-draft");
+  });
+});
+
+// ===========================================================================
+// RT-181 — Idempotency-Key declared as the IdempotencyInterceptor rule
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-181 Idempotency-Key bounds", () => {
+  // apps/api/src/idempotency/idempotency.interceptor.ts enforces
+  // /^[\x21-\x7E]{16,128}$/ on every @Idempotent route. The contract MUST
+  // declare the same rule; 1-255 accepted keys the interceptor rejects 400.
+  const keySchema = (): { minLength?: number; maxLength?: number; pattern?: string } =>
+    ((salesDoc.components?.parameters?.["IdempotencyKey"] as { schema?: object } | undefined)
+      ?.schema ?? {}) as { minLength?: number; maxLength?: number; pattern?: string };
+
+  it("declares 16-128 printable ASCII, matching the interceptor", () => {
+    const schema = keySchema();
+    expect(schema.minLength).toBe(16);
+    expect(schema.maxLength).toBe(128);
+    expect(schema.pattern).toBe("^[\\x21-\\x7E]{16,128}$");
+  });
+
+  it("accepts the key the POS sends and rejects keys the interceptor rejects", () => {
+    const pattern = new RegExp(keySchema().pattern ?? "(?!)");
+    // POS: `pos-pulse:${envelope_handoff_action_id}` (a crypto.randomUUID()), 46 chars.
+    expect(pattern.test("pos-pulse:0b8a7c3e-5f1d-4e2a-9c6b-7d8e9f0a1b2c")).toBe(true);
+    expect(pattern.test("a".repeat(15))).toBe(false);
+    expect(pattern.test("a".repeat(129))).toBe(false);
+    expect(pattern.test("pos-pulse key with spaces")).toBe(false);
+  });
+
+  it("the version note records RT-181 at 1.4.0-draft", () => {
+    const info = salesDoc.info?.description ?? "";
+    expect(info).toContain("RT-181 (1.4.0-draft");
+    expect(info).toContain("The server is unchanged");
+    expect(salesDoc.info?.version).toBe("1.4.0-draft");
   });
 });

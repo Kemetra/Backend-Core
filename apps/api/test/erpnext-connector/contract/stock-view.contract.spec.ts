@@ -608,8 +608,8 @@ describe("stock-view.yaml — v1.2 connector-paged windows (RT-174)", () => {
     itemCursor: "c1",
   });
 
-  it("is version 1.2.0-draft", () => {
-    expect(doc.info?.version).toBe("1.2.0-draft");
+  it("is version 1.3.0-draft (1.2 windows + the RT-181 Idempotency-Key declaration)", () => {
+    expect(doc.info?.version).toBe("1.3.0-draft");
   });
 
   // --- Request (feed) --------------------------------------------------------
@@ -873,5 +873,48 @@ describe("stock-view.yaml — v1.2 connector-paged windows (RT-174)", () => {
     for (const phrase of ["(i)", "(ii)", "(iii)", "(iv)", "DEPLOY ORDER: Backend-Core first"]) {
       expect(description).toContain(phrase);
     }
+  });
+});
+
+// ===========================================================================
+// RT-181 — Idempotency-Key declared as the IdempotencyInterceptor rule
+// ===========================================================================
+describe("stock-view.yaml — RT-181 Idempotency-Key bounds", () => {
+  // apps/api/src/idempotency/idempotency.interceptor.ts enforces
+  // /^[\x21-\x7E]{16,128}$/ on every @Idempotent route. The contract MUST
+  // declare the same rule; 1-255 accepted keys the interceptor rejects 400.
+  const keySchema = (): { minLength?: number; maxLength?: number; pattern?: string } =>
+    (doc.components?.parameters?.["IdempotencyKey"]?.["schema"] ?? {}) as {
+      minLength?: number;
+      maxLength?: number;
+      pattern?: string;
+    };
+
+  it("declares 16-128 printable ASCII, matching the interceptor", () => {
+    const schema = keySchema();
+    expect(schema.minLength).toBe(16);
+    expect(schema.maxLength).toBe(128);
+    expect(schema.pattern).toBe("^[\\x21-\\x7E]{16,128}$");
+  });
+
+  it("accepts the keys the connector sends and rejects keys the interceptor rejects", () => {
+    const pattern = new RegExp(keySchema().pattern ?? "(?!)");
+    const ref = "00000000-0000-7000-8000-00000000e001";
+    const attempt = "0b8a7c3e-5f1d-4e2a-9c6b-7d8e9f0a1b2c";
+    // v1 single-window report: `binview-<requestRef>` (44 characters).
+    expect(pattern.test(`binview-${ref}`)).toBe(true);
+    // v1.2 per-window report: `binview-<requestRef>-<attemptRef>-w<windowSeq>`
+    // (83 characters plus the windowSeq digits).
+    expect(pattern.test(`binview-${ref}-${attempt}-w0`)).toBe(true);
+    expect(pattern.test(`binview-${ref}-${attempt}-w999999`)).toBe(true);
+    expect(pattern.test("a".repeat(15))).toBe(false);
+    expect(pattern.test("a".repeat(129))).toBe(false);
+    expect(pattern.test(`binview ${ref}`)).toBe(false);
+  });
+
+  it("the version note records RT-181", () => {
+    const description = (doc.info as { description?: string } | undefined)?.description ?? "";
+    expect(description).toContain("VERSION 1.3 (RT-181");
+    expect(description).toContain("The server is unchanged");
   });
 });

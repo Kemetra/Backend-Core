@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Connector Posting-Feed API
-  version: "1.4.0-draft"
+  version: "1.5.0-draft"
   description: >
     Spec 012 ERPNext Connector Contracts surface — the DP2 ↔ connector boundary
     that realises the signed 011 posting + version-pin decisions over a
@@ -149,6 +149,16 @@ info:
     feed/ack endpoints (DP2-side: a future 015 + connector-feed slice), register
     the `erpnext.posting.requested` outbox event type (its own approval PR), or
     add any ERPNext/Frappe client dependency (separate `[GATED]` `package.json`).
+
+    RT-181 (1.5.0-draft; RT-66 follow-up): the `Idempotency-Key` header on
+    `connectorAckOutcome` now declares the rule the `IdempotencyInterceptor`
+    already enforces — 16 to 128 printable ASCII characters, no whitespace
+    (`^[\x21-\x7E]{16,128}$`) — instead of 1 to 255. The server is unchanged:
+    a key outside the rule was already rejected with 400 before the handler
+    ran. The connector's keys (`<workItemRef>:posted`,
+    `<workItemRef>:permanently_rejected`, and the RT-171
+    `<workItemRef>:failed_transient:<itemCursor>`, at most 73 characters)
+    fit the rule, so it is unaffected.
 
 servers:
   - url: https://api.example.com
@@ -331,10 +341,13 @@ components:
       required: true
       schema:
         type: string
-        minLength: 1
-        maxLength: 255
+        minLength: 16
+        maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
       description: >
-        REQUIRED on the outcome ack. Reuses the existing `IdempotencyInterceptor`
+        REQUIRED on the outcome ack. 16 to 128 printable ASCII characters with
+        no whitespace, as the interceptor enforces (RT-181); any other value is
+        a 400. Reuses the existing `IdempotencyInterceptor`
         — keyed on `(method, route, clientId = connector principal, key)`.
         Identical retry replays the stored response; key-reuse with a different
         logical outcome returns 409 `idempotency_key_conflict`. No new idempotency

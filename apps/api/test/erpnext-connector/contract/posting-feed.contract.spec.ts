@@ -692,3 +692,45 @@ describe("erpnext-connector/posting-feed.yaml — RT-76 settlement", () => {
     }
   });
 });
+
+// ===========================================================================
+// 9. RT-181 — Idempotency-Key declared as the IdempotencyInterceptor rule
+// ===========================================================================
+describe("erpnext-connector/posting-feed.yaml — RT-181 Idempotency-Key bounds", () => {
+  // apps/api/src/idempotency/idempotency.interceptor.ts enforces
+  // /^[\x21-\x7E]{16,128}$/ on every @Idempotent route. The contract MUST
+  // declare the same rule; 1-255 accepted keys the interceptor rejects 400.
+  const keySchema = (): { minLength?: number; maxLength?: number; pattern?: string } =>
+    (feedDoc.components?.parameters?.["IdempotencyKey"]?.["schema"] ?? {}) as {
+      minLength?: number;
+      maxLength?: number;
+      pattern?: string;
+    };
+
+  it("declares 16-128 printable ASCII, matching the interceptor", () => {
+    const schema = keySchema();
+    expect(schema.minLength).toBe(16);
+    expect(schema.maxLength).toBe(128);
+    expect(schema.pattern).toBe("^[\\x21-\\x7E]{16,128}$");
+  });
+
+  it("accepts the keys the connector sends and rejects keys the interceptor rejects", () => {
+    const pattern = new RegExp(keySchema().pattern ?? "(?!)");
+    const ref = "00000000-0000-7000-8000-00000000a001";
+    expect(pattern.test(`${ref}:posted`)).toBe(true);
+    expect(pattern.test(`${ref}:permanently_rejected`)).toBe(true);
+    // RT-171: `<workItemRef>:failed_transient:<itemCursor>`. The cursor is the
+    // bigint sequence, so the longest key is 36 + 18 + 19 = 73 characters.
+    const longest = `${ref}:failed_transient:9223372036854775807`;
+    expect(longest).toHaveLength(73);
+    expect(pattern.test(longest)).toBe(true);
+    expect(pattern.test("a".repeat(15))).toBe(false);
+    expect(pattern.test("a".repeat(129))).toBe(false);
+    expect(pattern.test(`${ref} posted`)).toBe(false);
+  });
+
+  it("the version note records RT-181 at 1.5.0-draft", () => {
+    expect(feedDoc.info?.description ?? "").toContain("RT-181 (1.5.0-draft");
+    expect(feedDoc.info?.version).toBe("1.5.0-draft");
+  });
+});
