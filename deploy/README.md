@@ -94,7 +94,9 @@ idempotent, so restarts and replicas share one schedule.
 The stock sweep creates one `scheduled` stock reconciliation run for every store
 that has an active `stock` warehouse map. A store is skipped when it already has
 a `running` stock run, or when it already has a scheduled run in the current
-period. Periods are the interval aligned to the Unix epoch. For the daily
+period. It is also skipped when, at creation time, its tenant is no longer
+active, the store is inactive or deleted, or its stock map is retired; the
+sweep re-checks these with row locks just before creating the run. Periods are the interval aligned to the Unix epoch. For the daily
 default, that is the UTC day. The run then waits for the connector's Bin
 snapshot, the same as an on-demand run.
 

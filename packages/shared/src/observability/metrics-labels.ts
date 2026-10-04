@@ -196,9 +196,11 @@ export const ALLOWED_METRIC_LABELS: Readonly<Record<string, readonly string[]>> 
 
   // ---- ERPNext stock reconciliation sweep — RT-179 ----
   // Increments once per (tenant, store) the scheduled worker sweep considers:
-  // `outcome` is the closed set {created, skipped_running, skipped_period}
-  // (a run was created; the store already had a running stock run; a scheduled
-  // run already exists for this period). The (tenant, store) itself lives on
+  // `outcome` is the closed set {created, skipped_running, skipped_period,
+  // skipped_ineligible} (a run was created; the store already had a running
+  // stock run; a scheduled run already exists for this period; the tenant was
+  // suspended or the store/stock map retired between listing and creation).
+  // The (tenant, store) itself lives on
   // the run row + the sweep's structured log, NOT a metric label.
   erpnext_stock_reconciliation_sweep_total: ["outcome"],
 

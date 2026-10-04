@@ -188,7 +188,7 @@ none of which is a consumed queue.
 |---|---|---|---|
 | `worker_job_duration_seconds` | histogram | `job_name` (bounded set; one per declared job type) | FR-B-003, spec §7.5 |
 | `worker_processing_failure_total` | counter | `job_name`, `error_class` | FR-B-003, spec §7.5 |
-| `erpnext_stock_reconciliation_sweep_total` | counter | `outcome` (`created` / `skipped_running` / `skipped_period`) — one increment per store the scheduled stock reconciliation sweep considers; the tenant and store are in the sweep log, never a label | RT-179 |
+| `erpnext_stock_reconciliation_sweep_total` | counter | `outcome` (`created` / `skipped_running` / `skipped_period` / `skipped_ineligible`) — one increment per store the scheduled stock reconciliation sweep considers; the tenant and store are in the sweep log, never a label | RT-179 |
 
 ### 3.4 Track C outbox (future, emitted after P7)
 

@@ -135,7 +135,9 @@ class FakeRepo implements StockRunSweepRepository {
   }
   async sweepStore(input: SweepStoreInput): Promise<SweepStoreResult> {
     this.calls.push(input);
-    return { outcome: this.outcomes[input.target.storeId] ?? "created", runId: `run-${input.target.storeId}` };
+    const outcome = this.outcomes[input.target.storeId] ?? "created";
+    const runId = outcome === "skipped_ineligible" ? null : `run-${input.target.storeId}`;
+    return { outcome, runId };
   }
 }
 
@@ -146,8 +148,8 @@ function makeProcessor(repo: StockRunSweepRepository, lines: StockRunSweepLogLin
 describe("RT-179 StockRunSweepProcessor", () => {
   it("sweeps every mapped store of every tenant with the period start and tick time", async () => {
     const repo = new FakeRepo(
-      { "t-a": ["s-1", "s-2"], "t-b": ["s-3"], "t-c": [] },
-      { "s-2": "skipped_running", "s-3": "skipped_period" },
+      { "t-a": ["s-1", "s-2"], "t-b": ["s-3", "s-4"], "t-c": [] },
+      { "s-2": "skipped_running", "s-3": "skipped_period", "s-4": "skipped_ineligible" },
     );
     const lines: StockRunSweepLogLine[] = [];
     const result = await makeProcessor(repo, lines).process(STOCK_RUN_SWEEP_JOB_NAME, {});
@@ -158,12 +160,14 @@ describe("RT-179 StockRunSweepProcessor", () => {
       created: 1,
       skippedRunning: 1,
       skippedPeriod: 1,
+      skippedIneligible: 1,
       failedTenants: 0,
     });
     expect(repo.calls.map((c) => [c.target.tenantId, c.target.storeId])).toEqual([
       ["t-a", "s-1"],
       ["t-a", "s-2"],
       ["t-b", "s-3"],
+      ["t-b", "s-4"],
     ]);
     for (const c of repo.calls) {
       expect(c.period.start.toISOString()).toBe("2026-10-04T00:00:00.000Z");
@@ -171,7 +175,7 @@ describe("RT-179 StockRunSweepProcessor", () => {
     }
 
     const perStore = lines.filter((l) => l["message"] === "store_swept");
-    expect(perStore).toHaveLength(3);
+    expect(perStore).toHaveLength(4);
     expect(perStore[0]).toMatchObject({
       level: "info",
       outcome: "created",
@@ -185,8 +189,13 @@ describe("RT-179 StockRunSweepProcessor", () => {
       created: 1,
       skipped_running: 1,
       skipped_period: 1,
+      skipped_ineligible: 1,
       failed_tenants: 0,
     });
+    // An ineligible store has no run, so its line carries no run_id.
+    const ineligible = perStore.find((l) => l["outcome"] === "skipped_ineligible");
+    expect(ineligible).toMatchObject({ tenant_id: "t-b", store_id: "s-4" });
+    expect(ineligible).not.toHaveProperty("run_id");
   });
 
   it("isolates a failing tenant, finishes the others, then fails the job for a retry", async () => {

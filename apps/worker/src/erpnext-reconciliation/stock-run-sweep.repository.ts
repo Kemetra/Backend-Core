@@ -14,6 +14,17 @@
  *
  * Run creation goes through the shared `createStockReconciliationRun` — the
  * exact path the api `triggerRun` uses — with `trigger='scheduled'`.
+ *
+ * Eligibility is atomic with creation: inside the per-store transaction the
+ * tenant, store and stock-map rows are re-read `FOR SHARE`. A concurrent
+ * suspension / store deactivation / map retirement either committed first (the
+ * locked re-read sees it, under READ COMMITTED's recheck of the newest row
+ * version) or waits for this transaction to commit. An ineligible store is
+ * `skipped_ineligible` and never reaches run creation, so the sweep never
+ * creates a run for a suspended tenant or an unmapped store. Row locks need
+ * UPDATE privilege; the domain runtime role (DATABASE_URL) already updates all
+ * three tables (tenant status, store lifecycle, map retirement), and the
+ * tables' UPDATE policies admit the tenant's own rows under its GUC.
  */
 import { createStockReconciliationRun, runWithTenantContext } from "@data-pulse-2/db";
 import { newId } from "@data-pulse-2/shared";
@@ -24,17 +35,6 @@ import type { SweepPeriod } from "./stock-run-sweep.config";
 
 /** `audit_events.actor_label` on a scheduled run's audit row (no human actor). */
 export const STOCK_RUN_SWEEP_ACTOR_LABEL = "system:erpnext-stock-reconciliation-sweep";
-
-/**
- * The store is not visible to the tenant, or has no active stock map any more.
- * Fails the tenant's pass; the retried job re-lists the stores.
- */
-export class StockRunSweepStoreNotEligibleError extends Error {
-  constructor() {
-    super("store is not eligible for a scheduled stock run");
-    this.name = "StockRunSweepStoreNotEligibleError";
-  }
-}
 
 /** One store of one tenant, as the sweep addresses it. */
 export interface StoreSweepTarget {
@@ -50,8 +50,8 @@ export interface SweepStoreInput {
 
 export interface SweepStoreResult {
   readonly outcome: StockReconciliationSweepOutcome;
-  /** The created run, or the run that caused the skip. */
-  readonly runId: string;
+  /** The created run, or the run that caused the skip; null when ineligible. */
+  readonly runId: string | null;
 }
 
 export interface StockRunSweepRepository {
@@ -115,24 +115,29 @@ export class PgStockRunSweepRepository implements StockRunSweepRepository {
           [storeId],
         );
 
-        // Re-check under the lock and the tenant GUC that the store is this
-        // tenant's and still has an active stock map. A foreign store id is
-        // invisible here (RLS), so it can never get a run stamped with this
-        // tenant; a map retired since the listing is not swept. The retry
-        // re-lists the stores, so the store simply drops out.
+        // Eligibility, atomic with creation (see the module doc): the tenant is
+        // active, the store is active and not deleted, and it has an active
+        // `stock` map. FOR SHARE holds those rows until COMMIT, so a concurrent
+        // suspension / deactivation / retirement cannot slip in before the
+        // insert; one that committed first is seen by the locked re-read. A
+        // foreign store id is invisible under this tenant's GUC (RLS), so it is
+        // ineligible too and can never get a run stamped with this tenant.
         const eligible = await client.query<{ id: string }>(
           `SELECT s.id
              FROM stores s
+             JOIN tenants t
+               ON t.id = s.tenant_id
              JOIN erpnext_warehouse_map whm
                ON whm.store_id = s.id
-              AND whm.purpose = 'stock'
-              AND whm.retired_at IS NULL
+              AND whm.tenant_id = s.tenant_id
             WHERE s.id = $1 AND s.tenant_id = $2
+              AND t.status = 'active' AND t.deleted_at IS NULL
               AND s.deleted_at IS NULL AND s.is_active
-            LIMIT 1`,
+              AND whm.purpose = 'stock' AND whm.retired_at IS NULL
+              FOR SHARE OF t, s, whm`,
           [storeId, tenantId],
         );
-        if (!eligible.rows[0]) throw new StockRunSweepStoreNotEligibleError();
+        if (!eligible.rows[0]) return { outcome: "skipped_ineligible", runId: null };
 
         const running = await client.query<{ id: string }>(
           `SELECT id FROM erpnext_reconciliation_run

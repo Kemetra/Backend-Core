@@ -199,7 +199,7 @@ assertMetricLabels("outbox_drain_duration_seconds", ["event_type"]);
 assertMetricLabels("erpnext_posting_reconciliation_total", []);
 
 // ERPNext stock reconciliation sweep — RT-179. One increment per (tenant, store)
-// the scheduled sweep considers; `outcome` is a closed three-value set.
+// the scheduled sweep considers; `outcome` is a closed four-value set.
 assertMetricLabels("erpnext_stock_reconciliation_sweep_total", ["outcome"]);
 
 // ---------------------------------------------------------------------------
@@ -338,7 +338,9 @@ const _erpnextStockReconciliationSweep: Counter = meter.createCounter(
       "Stores considered by the scheduled ERPNext stock reconciliation sweep, " +
       "by outcome: created (a scheduled run was created), skipped_running (the " +
       "store already had a running stock run), skipped_period (a scheduled run " +
-      "already exists for this period). The (tenant, store) is on the run row " +
+      "already exists for this period), skipped_ineligible (the tenant was " +
+      "suspended or the store / stock map retired before creation). The " +
+      "(tenant, store) is on the run row " +
       "and the sweep log, never a label.",
   },
 );
@@ -545,6 +547,7 @@ export const STOCK_RECONCILIATION_SWEEP_OUTCOMES = [
   "created",
   "skipped_running",
   "skipped_period",
+  "skipped_ineligible",
 ] as const satisfies readonly string[];
 export type StockReconciliationSweepOutcome =
   (typeof STOCK_RECONCILIATION_SWEEP_OUTCOMES)[number];

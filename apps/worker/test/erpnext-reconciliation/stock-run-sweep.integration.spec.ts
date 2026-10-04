@@ -40,7 +40,6 @@ import { sweepPeriod } from "../../src/erpnext-reconciliation/stock-run-sweep.co
 import {
   PgStockRunSweepRepository,
   STOCK_RUN_SWEEP_ACTOR_LABEL,
-  StockRunSweepStoreNotEligibleError,
   type StockRunSweepRepository,
 } from "../../src/erpnext-reconciliation/stock-run-sweep.repository";
 
@@ -308,12 +307,11 @@ describe("RT-179 AC3 — tenant isolation", () => {
     await completeRuns(B_MAPPED);
     const before = await runsFor(B_MAPPED);
     const repo = new PgStockRunSweepRepository(pg().app);
-    await expect(
-      repo.sweepStore({
-        target: { tenantId: TENANT_A, storeId: B_MAPPED },
-        period: sweepPeriod(at(10 * DAY), DAY),
-      }),
-    ).rejects.toBeInstanceOf(StockRunSweepStoreNotEligibleError);
+    const swept = await repo.sweepStore({
+      target: { tenantId: TENANT_A, storeId: B_MAPPED },
+      period: sweepPeriod(at(10 * DAY), DAY),
+    });
+    expect(swept).toEqual({ outcome: "skipped_ineligible", runId: null });
     expect(await runsFor(B_MAPPED)).toEqual(before);
   });
 
@@ -342,15 +340,15 @@ describe("RT-179 AC3 — tenant isolation", () => {
     expect(r.rows[0]!.n).toBe("0");
   });
 
-  it("a store whose stock map was retired is refused at sweep time", async () => {
+  it("a store whose stock map was retired is skipped as ineligible at sweep time", async () => {
     if (skipped()) return;
     const repo = new PgStockRunSweepRepository(pg().app);
-    await expect(
-      repo.sweepStore({
-        target: { tenantId: TENANT_A, storeId: A_RETIRED },
-        period: sweepPeriod(at(20 * DAY), DAY),
-      }),
-    ).rejects.toBeInstanceOf(StockRunSweepStoreNotEligibleError);
+    const swept = await repo.sweepStore({
+      target: { tenantId: TENANT_A, storeId: A_RETIRED },
+      period: sweepPeriod(at(20 * DAY), DAY),
+    });
+    expect(swept).toEqual({ outcome: "skipped_ineligible", runId: null });
+    expect(await runsFor(A_RETIRED)).toHaveLength(0);
   });
 });
 
@@ -434,6 +432,158 @@ describe("RT-179 retry of an incomplete sweep", () => {
     expect(tickResult).toMatchObject({ created: 0, skippedRunning: 3 });
     for (const s of [A_MAPPED, A_MAPPED_2, B_MAPPED]) {
       expect((await runsFor(s)).filter((r) => r.status === "running")).toHaveLength(1);
+    }
+  });
+});
+
+describe("RT-179 eligibility is atomic with run creation", () => {
+  const TENANT_D = "0d000000-0000-7000-8000-000000179d01";
+  const D_MAPPED = "0d000000-0000-7000-8000-000000179d10";
+  const A_RACE = "0a000000-0000-7000-8000-000000179a20";
+
+  beforeAll(async () => {
+    if (!env) return;
+    await env.admin.query(
+      `INSERT INTO tenants (id, slug, name, status) VALUES ($1, 'rt179-d', 'D', 'active')`,
+      [TENANT_D],
+    );
+    await env.admin.query(
+      `INSERT INTO stores (id, tenant_id, code, name) VALUES ($1, $2, 'DM', 'D mapped'), ($3, $4, 'AR', 'A race')`,
+      [D_MAPPED, TENANT_D, A_RACE, TENANT_A],
+    );
+    await env.admin.query(
+      `INSERT INTO erpnext_warehouse_map (tenant_id, store_id, purpose, erpnext_warehouse_ref, set_by)
+       VALUES ($1, $2, 'stock', 'WH-D1', $5), ($3, $4, 'stock', 'WH-AR', $5)`,
+      [TENANT_D, D_MAPPED, TENANT_A, A_RACE, ACTOR],
+    );
+  });
+
+  async function eventsFor(storeId: string): Promise<number> {
+    const r = await pg().admin.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM outbox_events WHERE store_id = $1`,
+      [storeId],
+    );
+    return Number(r.rows[0]!.n);
+  }
+
+  async function setTenantStatus(status: "active" | "suspended"): Promise<void> {
+    await pg().admin.query(`UPDATE tenants SET status = $2 WHERE id = $1`, [TENANT_D, status]);
+  }
+
+  async function setRaceMapRetired(retired: boolean): Promise<void> {
+    await pg().admin.query(
+      `UPDATE erpnext_warehouse_map
+          SET retired_at = CASE WHEN $2::boolean THEN now() ELSE NULL END
+        WHERE store_id = $1`,
+      [A_RACE, retired],
+    );
+  }
+
+  /**
+   * A repository whose sweepStore first runs `between` (after the listing).
+   * The sweep is limited to TENANT_D so other tenants' stores stay untouched.
+   */
+  function interleaved(
+    between: (target: { storeId: string }) => Promise<void>,
+  ): StockRunSweepRepository {
+    const real = new PgStockRunSweepRepository(pg().app);
+    return {
+      listActiveTenantIds: async () =>
+        (await real.listActiveTenantIds()).filter((t) => t === TENANT_D),
+      listMappedStoreIds: (tenantId) => real.listMappedStoreIds(tenantId),
+      sweepStore: async (input) => {
+        await between(input.target);
+        return real.sweepStore(input);
+      },
+    };
+  }
+
+  it("a tenant suspended between listing and creation gets no run and no event", async () => {
+    if (skipped()) return;
+    const repo = interleaved(async ({ storeId }) => {
+      if (storeId === D_MAPPED) await setTenantStatus("suspended");
+    });
+    const result = await new StockRunSweepProcessor(
+      repo,
+      DAY,
+      () => at(40 * DAY),
+      () => undefined,
+    ).process(STOCK_RUN_SWEEP_JOB_NAME, {});
+    expect(result.skippedIneligible).toBe(1);
+    expect(result.failedTenants).toBe(0);
+    expect(await runsFor(D_MAPPED)).toHaveLength(0);
+    expect(await eventsFor(D_MAPPED)).toBe(0);
+  });
+
+  it("a stock map retired between listing and creation gets no run and no event", async () => {
+    if (skipped()) return;
+    const real = new PgStockRunSweepRepository(pg().app);
+    expect(await real.listMappedStoreIds(TENANT_A)).toContain(A_RACE);
+    const repo = interleaved(async ({ storeId }) => {
+      if (storeId === A_RACE) await setRaceMapRetired(true);
+    });
+    const swept = await repo.sweepStore({
+      target: { tenantId: TENANT_A, storeId: A_RACE },
+      period: sweepPeriod(at(41 * DAY), DAY),
+    });
+    expect(swept).toEqual({ outcome: "skipped_ineligible", runId: null });
+    expect(await runsFor(A_RACE)).toHaveLength(0);
+    expect(await eventsFor(A_RACE)).toBe(0);
+  });
+
+  it("a retirement in flight on another connection is waited for, then honoured", async () => {
+    if (skipped()) return;
+    await setRaceMapRetired(false);
+    const other = await pg().admin.connect();
+    try {
+      await other.query("BEGIN");
+      await other.query(
+        `UPDATE erpnext_warehouse_map SET retired_at = now() WHERE store_id = $1`,
+        [A_RACE],
+      );
+      // The sweep's FOR SHARE blocks on the uncommitted retirement...
+      const pending = new PgStockRunSweepRepository(pg().app).sweepStore({
+        target: { tenantId: TENANT_A, storeId: A_RACE },
+        period: sweepPeriod(at(42 * DAY), DAY),
+      });
+      await new Promise((r) => setTimeout(r, 500));
+      await other.query("COMMIT");
+      // ...then re-reads the committed row and skips the store.
+      expect(await pending).toEqual({ outcome: "skipped_ineligible", runId: null });
+    } finally {
+      other.release();
+    }
+    expect(await runsFor(A_RACE)).toHaveLength(0);
+    expect(await eventsFor(A_RACE)).toBe(0);
+  });
+
+  it("a suspension in flight waits for an open sweep transaction holding the lock", async () => {
+    if (skipped()) return;
+    await setTenantStatus("active");
+    // Reproduce the sweep's eligibility lock on its own connection (app role,
+    // tenant GUC) and keep the transaction open.
+    const sweepConn = await pg().app.connect();
+    let suspended = false;
+    try {
+      await sweepConn.query("BEGIN");
+      await sweepConn.query("SELECT set_config('app.current_tenant', $1, true)", [TENANT_D]);
+      await sweepConn.query("SELECT set_config('app.is_platform_admin', 'false', true)");
+      const locked = await sweepConn.query(
+        `SELECT s.id FROM stores s JOIN tenants t ON t.id = s.tenant_id
+          WHERE s.id = $1 AND t.status = 'active' FOR SHARE OF t, s`,
+        [D_MAPPED],
+      );
+      expect(locked.rows).toHaveLength(1);
+      const suspension = setTenantStatus("suspended").then(() => {
+        suspended = true;
+      });
+      await new Promise((r) => setTimeout(r, 500));
+      expect(suspended).toBe(false); // blocked by the sweep's row lock
+      await sweepConn.query("COMMIT");
+      await suspension;
+      expect(suspended).toBe(true);
+    } finally {
+      sweepConn.release();
     }
   });
 });

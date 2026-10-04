@@ -13,6 +13,8 @@
  * requested` → `ReconciliationRunProcessor`.
  *
  * Per store, in one tenant-scoped transaction (see the repository):
+ *   - tenant suspended, store inactive/deleted or
+ *     stock map retired since the listing          → `skipped_ineligible`;
  *   - a `running` stock run exists (any trigger)   → `skipped_running`;
  *   - a `scheduled` run started in this period     → `skipped_period`;
  *   - otherwise                                    → `created`.
@@ -73,6 +75,7 @@ export interface StockRunSweepResult {
   readonly created: number;
   readonly skippedRunning: number;
   readonly skippedPeriod: number;
+  readonly skippedIneligible: number;
   readonly failedTenants: number;
 }
 
@@ -103,6 +106,7 @@ class SweepTally {
     created: 0,
     skipped_running: 0,
     skipped_period: 0,
+    skipped_ineligible: 0,
   };
   private tenants = 0;
   private failedTenants = 0;
@@ -125,6 +129,7 @@ class SweepTally {
       created: this.counts.created,
       skippedRunning: this.counts.skipped_running,
       skippedPeriod: this.counts.skipped_period,
+      skippedIneligible: this.counts.skipped_ineligible,
       failedTenants: this.failedTenants,
     };
   }
@@ -197,7 +202,7 @@ export class StockRunSweepProcessor {
       outcome: swept.outcome,
       tenant_id: target.tenantId,
       store_id: target.storeId,
-      run_id: swept.runId,
+      ...(swept.runId === null ? {} : { run_id: swept.runId }),
     });
   }
 
@@ -211,6 +216,7 @@ export class StockRunSweepProcessor {
       created: result.created,
       skipped_running: result.skippedRunning,
       skipped_period: result.skippedPeriod,
+      skipped_ineligible: result.skippedIneligible,
       failed_tenants: result.failedTenants,
     });
   }
