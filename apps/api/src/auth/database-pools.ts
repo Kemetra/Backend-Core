@@ -155,6 +155,10 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   ["cashier_admission_requests", "INSERT"],
   ["cashier_admission_requests", "UPDATE"],
   ["cashier_admission_requests", "DELETE"],
+  // RT-213: every device-authenticated request reads the device's tenant
+  // status on this role (DeviceRepository, inside the tenant's RLS context).
+  // Without the grant every till would be refused at once, so boot fails.
+  ["tenants", "SELECT"],
 ];
 
 interface GrantRow {

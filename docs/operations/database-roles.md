@@ -28,6 +28,8 @@ their credentials before serving and refuse to start on a violation:
   whose grants are provisioned as a separate deploy step:
   - `cashier_admissions`: `SELECT`, `INSERT`, `UPDATE`
   - `cashier_admission_requests`: `SELECT`, `INSERT`, `UPDATE`, `DELETE`
+  - `tenants`: `SELECT` (RT-213: POS device authentication reads the
+    device's tenant status on this role)
 
   A deploy that skips that grant step now fails to boot, and the error names
   each missing privilege and table, instead of starting healthy with those
@@ -78,6 +80,9 @@ table the domain role must use needs a matching grant step at deploy time.
   `-v domain_role=<role>` is required. It grants the domain role:
   - `cashier_admissions`: `SELECT`, `INSERT`, `UPDATE`
   - `cashier_admission_requests`: `SELECT`, `INSERT`, `UPDATE`, `DELETE`
+  - `tenants`: `SELECT` (RT-213). Every device-authenticated POS request
+    reads its tenant's status on the domain role; without this grant every
+    till would be refused at once, so the API refuses to boot instead.
 
   The script runs with `ON_ERROR_STOP` and exits non-zero if a grant fails or
   if the verification finds a missing grant. Without these grants the API

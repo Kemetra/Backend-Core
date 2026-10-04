@@ -1,5 +1,6 @@
 -- Domain-role grants for the cashier-admissions tables (RT-113 BC2, migration
--- 0035). See docs/operations/database-roles.md.
+-- 0035) and for the tenant-status read of device auth (RT-213). See
+-- docs/operations/database-roles.md.
 --
 -- Run ONCE per environment, AFTER `migrate up` has applied 0035, as the
 -- migration owner (or any role allowed to grant on these tables). This file
@@ -21,6 +22,11 @@
 -- with the boot check off, the three /api/pos/v1/cashier-admissions routes fail
 -- with 500 (permission denied). The tables are FORCE ROW LEVEL SECURITY, so the
 -- grants give access only inside runWithTenantContext.
+--
+-- RT-213: every device-authenticated POS request reads its tenant's status
+-- (`tenants.status`, `deleted_at`) on the domain role, inside that tenant's RLS
+-- context. Without SELECT on `tenants` every till is refused at once; the
+-- API refuses to boot instead (DOMAIN_REQUIRED_GRANTS).
 --
 -- `cashier_admissions` has no DELETE grant: admissions are ended, never
 -- removed. `cashier_admission_requests` needs DELETE to purge expired replay
@@ -45,20 +51,23 @@
 
 GRANT SELECT, INSERT, UPDATE         ON cashier_admissions         TO :"domain_role";
 GRANT SELECT, INSERT, UPDATE, DELETE ON cashier_admission_requests TO :"domain_role";
+GRANT SELECT                         ON tenants                    TO :"domain_role";
 
 -- Verify the domain role: every row must read `t`.
 SELECT t.tbl, t.priv, has_table_privilege(:'domain_role', t.tbl, t.priv) AS granted
   FROM (VALUES ('cashier_admissions', 'SELECT'), ('cashier_admissions', 'INSERT'),
                ('cashier_admissions', 'UPDATE'),
                ('cashier_admission_requests', 'SELECT'), ('cashier_admission_requests', 'INSERT'),
-               ('cashier_admission_requests', 'UPDATE'), ('cashier_admission_requests', 'DELETE'))
+               ('cashier_admission_requests', 'UPDATE'), ('cashier_admission_requests', 'DELETE'),
+               ('tenants', 'SELECT'))
        AS t(tbl, priv);
 
 SELECT bool_and(has_table_privilege(:'domain_role', t.tbl, t.priv)) AS domain_ok
   FROM (VALUES ('cashier_admissions', 'SELECT'), ('cashier_admissions', 'INSERT'),
                ('cashier_admissions', 'UPDATE'),
                ('cashier_admission_requests', 'SELECT'), ('cashier_admission_requests', 'INSERT'),
-               ('cashier_admission_requests', 'UPDATE'), ('cashier_admission_requests', 'DELETE'))
+               ('cashier_admission_requests', 'UPDATE'), ('cashier_admission_requests', 'DELETE'),
+               ('tenants', 'SELECT'))
        AS t(tbl, priv) \gset
 
 \if :domain_ok
