@@ -79,6 +79,16 @@ const DRAINER_QUEUE_LABEL = OUTBOX_DRAINER_QUEUE_LABEL;
 export const DEFAULT_POLL_INTERVAL_MS = 1_000;
 export const DEFAULT_BATCH_SIZE = 50;
 export const DEFAULT_CLAIM_LEASE_MS = 60_000;
+
+/**
+ * The drainer's dead-letter rule: a consumer throw on the claim whose
+ * (claim-incremented) `attempts` has reached `MAX_ATTEMPTS` dead-letters the
+ * row instead of retrying it. Exported so a consumer that must signal its own
+ * dead-letter (RT-207) uses the same rule as the drainer.
+ */
+export function isFinalOutboxAttempt(attempts: number): boolean {
+  return attempts >= MAX_ATTEMPTS;
+}
 const CLAIM_HEARTBEAT_MS = 20_000;
 // Reconciliation consumers can hold one transaction client while their Bin view
 // opens a second. Keep one connection free for lease renewals and transitions.
@@ -297,7 +307,7 @@ export class DrainerProcessor {
         const sanitizedClass = sanitizeErrorClass(errorClass);
         recordQueueFailed({ queue: DRAINER_QUEUE_LABEL, error_class: sanitizedClass });
 
-        if (row.attempts >= MAX_ATTEMPTS) {
+        if (isFinalOutboxAttempt(row.attempts)) {
           // Budget exhausted — dead-letter.
           recordQueueDeadLetter({ queue: DRAINER_QUEUE_LABEL });
           // T595 (PR-B-1): outbox_dead_letter_total carries event_type, not

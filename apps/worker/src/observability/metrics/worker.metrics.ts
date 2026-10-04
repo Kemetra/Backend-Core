@@ -124,6 +124,10 @@ export const WORKER_ERROR_CLASSES = [
   "PostgresUniqueViolation",
   "RedisConnectionError",
   "Timeout",
+  // RT-207: the RT-173 reversal deferral (PostingRequestedConsumer). An
+  // expected, retried outcome — counted under its own class so it does not
+  // inflate UnknownError and skew failure alerts.
+  "ReversalAwaitingSalePostError",
   "UnknownError",
 ] as const satisfies readonly string[];
 export type WorkerErrorClass = (typeof WORKER_ERROR_CLASSES)[number];
@@ -201,6 +205,10 @@ assertMetricLabels("erpnext_posting_reconciliation_total", []);
 // ERPNext stock reconciliation sweep — RT-179. One increment per (tenant, store)
 // the scheduled sweep considers; `outcome` is a closed four-value set.
 assertMetricLabels("erpnext_stock_reconciliation_sweep_total", ["outcome"]);
+
+// ERPNext posting reversal dead-letter — RT-207. UNLABELED: the tenant, sale and
+// outbox event are fields of the structured error log, never labels.
+assertMetricLabels("erpnext_posting_reversal_deferred_dead_letter_total", []);
 
 // ---------------------------------------------------------------------------
 // Instruments
@@ -342,6 +350,21 @@ const _erpnextStockReconciliationSweep: Counter = meter.createCounter(
       "suspended or the store / stock map retired before creation). The " +
       "(tenant, store) is on the run row " +
       "and the sweep log, never a label.",
+  },
+);
+
+// ERPNext posting reversal dead-letter — RT-207. Emitted by
+// PostingRequestedConsumer on the final outbox attempt of a reversal that is
+// still awaiting its sale's sale_post row (the drainer dead-letters that row).
+const _erpnextPostingReversalDeferredDeadLetter: Counter = meter.createCounter(
+  "erpnext_posting_reversal_deferred_dead_letter_total",
+  {
+    description:
+      "erpnext.posting.requested reversals dead-lettered in the outbox while " +
+      "still awaiting their sale's sale_post posting row (the RT-173 deferral " +
+      "exhausted its attempts). No erpnext_posting_status row exists for these; " +
+      "the dead-lettered outbox row is the record. Unlabeled — the tenant, sale " +
+      "and outbox event are in the posting.reversal.dead_lettered error log.",
   },
 );
 
@@ -540,6 +563,18 @@ export function recordOutboxDrainDuration(
  */
 export function recordErpnextPostingReconciliation(): void {
   _erpnextPostingReconciliation.add(1);
+}
+
+/**
+ * Increment erpnext_posting_reversal_deferred_dead_letter_total (RT-207).
+ * Emission site: PostingRequestedConsumer — once, on the final outbox attempt
+ * of a reversal still awaiting its sale_post row, just before it throws the
+ * deferral the drainer then dead-letters (emit-before-persist, as the drainer's
+ * own dead-letter counters). Takes no arguments: unlabeled by design.
+ * A SIGNAL: emission MUST NOT alter the consumer's outcome.
+ */
+export function recordErpnextPostingReversalDeferredDeadLetter(): void {
+  _erpnextPostingReversalDeferredDeadLetter.add(1);
 }
 
 /** Closed `outcome` label set for erpnext_stock_reconciliation_sweep_total. */
@@ -960,6 +995,9 @@ export const WORKER_METRIC_NAMES = [
   // RT-179: scheduled stock reconciliation sweep outcomes, emitted by
   // StockRunSweepProcessor.
   "erpnext_stock_reconciliation_sweep_total",
+  // RT-207: reversal dead-lettered while awaiting its sale_post, emitted by
+  // PostingRequestedConsumer on the final outbox attempt.
+  "erpnext_posting_reversal_deferred_dead_letter_total",
 ] as const satisfies readonly string[];
 
 export type WorkerMetricName = (typeof WORKER_METRIC_NAMES)[number];

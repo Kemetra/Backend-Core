@@ -197,6 +197,7 @@ none of which is a consumed queue.
 | `outbox_pending_total` | gauge | `event_type` (bounded set of declared event types) | FR-C-001 / Track C; via Track B catalogue |
 | `outbox_dead_letter_total` | counter | `event_type` | FR-C-005 / Track C |
 | `outbox_drain_duration_seconds` | histogram | `event_type` | FR-C-001 / Track C |
+| `erpnext_posting_reversal_deferred_dead_letter_total` | counter | none — one increment when an `erpnext.posting.requested` reversal dead-letters while still awaiting its sale's `sale_post` row (the RT-173 deferral ran out of attempts). The tenant, sale and outbox event id are fields of the `posting.reversal.dead_lettered` error log, never labels. The deferral itself counts in `queue_failed_total` as `error_class="ReversalAwaitingSalePostError"` | RT-207 |
 
 ### Notes
 - `queue` and `job_name` are intentionally bounded by the platform — new
