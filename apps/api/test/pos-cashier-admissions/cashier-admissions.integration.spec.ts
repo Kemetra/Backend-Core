@@ -654,3 +654,69 @@ describe("tenant isolation", () => {
   });
 });
 
+
+// ===========================================================================
+// Time source: the clock is read AFTER the locks (Codex P2 on #697)
+// ===========================================================================
+describe("time source after the cashier lock", () => {
+  /** Hold the cashier's serialisation lock on a separate session. */
+  async function holdCashierLock(userId: string) {
+    const client = await h().admin.connect();
+    const key = `cashier_admission:${TENANT_A}:${STORE_A1}:${userId}`;
+    await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [key]);
+    return {
+      async release(): Promise<Date> {
+        const r = await client.query<{ at: Date }>("SELECT clock_timestamp() AS at");
+        await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [key]);
+        client.release();
+        return r.rows[0]!.at;
+      },
+    };
+  }
+
+  /** Resolve once the request is blocked on the advisory lock. */
+  async function waitUntilBlocked(): Promise<void> {
+    for (let i = 0; i < 100; i += 1) {
+      const r = await h().admin.query(
+        `SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'`,
+      );
+      if (r.rows.length > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("request never blocked on the advisory lock");
+  }
+
+  it("an admission that expires while the request waits is expired and re-claimable", async () => {
+    if (skipped()) return;
+    const first = admitted(await admitAs(DEV_A1, online(CASHIER.id)));
+    await h().admin.query(
+      `UPDATE cashier_admissions SET expires_at = clock_timestamp() + interval '1 second' WHERE id = $1`,
+      [first.admission_id],
+    );
+    const lock = await holdCashierLock(CASHIER.id);
+    const pending = admitAs(DEV_A1_SECOND, online(CASHIER.id)).then((res) => res);
+    await waitUntilBlocked();
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await lock.release();
+    const second = admitted(await pending);
+    expect(second.admission_id).not.toBe(first.admission_id);
+    const rows = await admissionsFor(CASHIER.id);
+    expect(rows.find((r) => r.id === first.admission_id)).toMatchObject({ end_reason: "expired" });
+  });
+
+  it("a renewal after waiting gets the full TTL from the moment it is applied", async () => {
+    if (skipped()) return;
+    const first = admitted(await admitAs(DEV_A1, online(CASHIER.id)));
+    const lock = await holdCashierLock(CASHIER.id);
+    const pending = admitAs(DEV_A1, online(CASHIER.id)).then((res) => res);
+    await waitUntilBlocked();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const releasedAt = await lock.release();
+    const renewed = admitted(await pending);
+    expect(renewed.admission_id).toBe(first.admission_id);
+    const serverTime = new Date(renewed.server_time).getTime();
+    expect(serverTime).toBeGreaterThanOrEqual(releasedAt.getTime());
+    const [row] = await admissionsFor(CASHIER.id);
+    expect(row!.expires_at.getTime()).toBe(serverTime + 43200 * 1000);
+  });
+});
