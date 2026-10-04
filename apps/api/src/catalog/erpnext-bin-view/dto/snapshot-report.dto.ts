@@ -2,7 +2,7 @@
  * snapshot-report.dto.ts — Zod body schema for `binViewReportSnapshot`.
  *
  * Mirrors the 019 contract `BinViewSnapshotReport` (strict wire projection,
- * stock-view.yaml 1.2.0-draft):
+ * stock-view.yaml 1.3.0-draft; the `window` rules were introduced in 1.2):
  *   - `entries`: 0..`BIN_VIEW_WINDOW_MAX_ITEMS` (the request's
  *     `itemWindow.maxItems`, 500) BinEntry (empty is a valid, non-failing report);
  *   - each entry: `erpnextItemRef {doctype:"Item", name}`, exact-decimal `quantity`

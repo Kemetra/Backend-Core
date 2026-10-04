@@ -1,7 +1,8 @@
 /**
  * RT-175 — SnapshotReportBodySchema unit spec (Docker-free).
  *
- * The stock-view 1.2.0-draft `BinViewSnapshotReport` body rules the DTO owns:
+ * The stock-view 1.3.0-draft `BinViewSnapshotReport` body rules the DTO owns
+ * (the `window` rules were introduced in 1.2):
  * an optional strict `window {attemptRef, windowSeq, isFinal}`; entries ≤ the
  * request's `maxItems` (500); `windowSeq` < the request's `maxWindows` (20); a
  * window other than `{windowSeq 0, isFinal true}` carries ≥ 1 entry. A v1 body

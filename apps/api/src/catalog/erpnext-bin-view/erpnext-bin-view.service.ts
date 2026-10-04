@@ -2,7 +2,8 @@
  * ErpnextBinViewService — 019-T040 DP2-side bin-view feed/report runtime.
  *
  * Implements the two operations of the shipped
- * `packages/contracts/openapi/erpnext-connector/stock-view.yaml` (1.2.0-draft):
+ * `packages/contracts/openapi/erpnext-connector/stock-view.yaml` (1.3.0-draft;
+ * the multi-window rules were introduced in 1.2):
  *
  *   - `binViewPullRequests` (feed): project OPEN 017 stock runs (status='running',
  *     store has an active 014 `stock` warehouse map) into `BinViewRequest` feed

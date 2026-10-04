@@ -1,7 +1,8 @@
 /**
  * RT-175 — ErpnextBinViewService.reportSnapshot multi-window Testcontainers spec.
  *
- * Proves the stock-view 1.2.0-draft connector-paged report rules (RT-21 §4) on
+ * Proves the stock-view 1.3.0-draft connector-paged report rules (introduced
+ * in 1.2; RT-21 §4) on
  * the service, against real Postgres + RLS:
  *   AC1  a 3-window attempt (500/500/37) records all 1,037 entries flat in the §4
  *        storage shape and emits exactly ONE `erpnext.reconciliation.requested`,
