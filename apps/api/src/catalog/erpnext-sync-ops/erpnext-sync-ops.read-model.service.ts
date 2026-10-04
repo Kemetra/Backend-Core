@@ -9,7 +9,7 @@
  * this read-model surfaces none.
  *
  * RT-192: every read is bound to the caller's membership store scope (the 017
- * reconciliation surface's rule, `reconciliation-store-scope.ts`). The source
+ * reconciliation surface's rule, `context/operator-store-scope.ts`). The source
  * tables carry tenant-only RLS, so the scope is a SQL filter here; a `store_id`
  * outside it is the contract's non-disclosing 404.
  */
@@ -25,7 +25,7 @@ import {
   callerStoreScope,
   inStoreScope,
   scopeStoreIds,
-} from "../erpnext-reconciliation/reconciliation-store-scope";
+} from "../../context/operator-store-scope";
 
 /** A sync-ops domain rollup (wire shape — mirrors the contract `DomainSummary`). */
 export interface DomainSummary {

@@ -13,7 +13,7 @@
  * class and touches no run/result row (RT-51 D2/D3/D5). No outbound HTTP.
  *
  * Scope: tenant from the session principal via `runWithTenantContext` (RLS);
- * store scope from `readScope` (`reconciliation-store-scope.ts`), applied as a
+ * store scope from `readScope` (`context/operator-store-scope.ts`), applied as a
  * store filter — `stores` and `erpnext_reconciliation_run` carry tenant-only
  * RLS. An out-of-scope store is indistinguishable from a nonexistent one (404).
  */
@@ -43,7 +43,7 @@ import {
   type StoreNegativeOnHandSummaryPage,
   type StoreSnapshotFacts,
 } from "./negative-on-hand.projection";
-import { callerStoreScope } from "./reconciliation-store-scope";
+import { callerStoreScope } from "../../context/operator-store-scope";
 
 /** Hard ceiling on a page — the 009/012 500/req convention. */
 export const NEGATIVE_ON_HAND_MAX_PAGE = 500;

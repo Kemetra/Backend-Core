@@ -1,25 +1,26 @@
 /**
- * The ERPNext reconciliation surface's store scope (RT-51 D6 / RT-177, RT-191, RT-192).
+ * The operator (Console) surfaces' store scope (RT-51 D6 / RT-177, RT-191, RT-192, RT-193).
  *
- * One rule for every operation under /api/v1/catalog/erpnext-reconciliation that
- * addresses a store: the negative on-hand reads (RT-177), the run trigger /
- * repair writes (RT-191) and the backlog / run / result reads (RT-192). The 025
- * console sync-ops read model (/api/v1/catalog/erpnext-sync-ops) reads the same
- * 015/017 rows and applies the same rule (RT-192). `stores` and `erpnext_*`
- * carry tenant-only RLS, so the store scope is applied by the caller as a
- * filter; an out-of-scope store is indistinguishable from a nonexistent one.
+ * One rule for every Console operation that addresses a store: the ERPNext
+ * reconciliation surface (/api/v1/catalog/erpnext-reconciliation — the negative
+ * on-hand reads RT-177, the run trigger / repair writes RT-191 and the backlog /
+ * run / result reads RT-192), the 025 console sync-ops read model
+ * (/api/v1/catalog/erpnext-sync-ops, RT-192) and the 032 sale-sync-ops reads and
+ * repair (/api/v1/catalog/sale-sync-ops, RT-193). Their tables carry tenant-only
+ * RLS, so the store scope is applied by the caller as a filter; an out-of-scope
+ * store is indistinguishable from a nonexistent one.
  */
 import type { PoolClient } from "pg";
 
-import type { MembershipRepository } from "../../context/membership.repository";
-import { resolveStoreScope, type StoreScope } from "../../context/store-scope";
-import type { ResolvedContext } from "../../context/types";
+import type { MembershipRepository } from "./membership.repository";
+import { resolveStoreScope, type StoreScope } from "./store-scope";
+import type { ResolvedContext } from "./types";
 
 /** Roles whose scope is their membership's, not narrowed by the active store (RT-51 D6). */
 const TENANT_WIDE_ROLES: ReadonlySet<string> = new Set(["owner", "tenant_admin"]);
 
 /**
- * The stores this caller may address on this surface (RT-51 D6).
+ * The stores this caller may address on an operator surface (RT-51 D6).
  *
  * `owner` / `tenant_admin` are not narrowed by the session's ACTIVE store: their
  * scope is their membership's store authority (`'all'` → tenant-wide). Their

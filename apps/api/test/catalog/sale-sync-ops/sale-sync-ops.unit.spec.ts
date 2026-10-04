@@ -55,6 +55,23 @@ const VALID_REF = "0d000000-0000-7000-8000-0000000000a1";
 const ctxReq = (over: Record<string, unknown> = {}): never =>
   ({ context: { tenantId: TENANT, storeId: null, userId: "u1" }, ...over }) as never;
 
+// A tenant-wide (`all` membership) owner's read input: the store scope resolves
+// to the whole tenant (RT-193), so the scripted client queries are unchanged.
+const SCOPED = {
+  tenantId: TENANT,
+  context: {
+    tenantId: TENANT,
+    storeId: null,
+    userId: "u1",
+    isPlatformAdmin: false,
+    source: "session",
+    storeAccess: { kind: "all" },
+  },
+} as const;
+const memberships = {
+  findRoleCodeForUserInTenant: async () => "owner",
+} as never;
+
 // POS-session request: a sale write REQUIRES a resolved store binding, so the
 // F-3 regression tests (which drive the POS SalesController) supply one.
 const posReq = (): never =>
@@ -128,8 +145,8 @@ describe("032 §9 — read-model branches (T016/T020)", () => {
 
   it("getSaleSyncStatus throws SaleSyncNotFoundError for an absent/out-of-scope sale", async () => {
     clientQuery.mockResolvedValueOnce({ rows: [] }); // sale read → none
-    const svc = new SaleSyncOpsReadModelService({} as never);
-    await expect(svc.getSaleSyncStatus(TENANT, VALID_REF)).rejects.toBeInstanceOf(
+    const svc = new SaleSyncOpsReadModelService({} as never, memberships);
+    await expect(svc.getSaleSyncStatus(SCOPED, VALID_REF)).rejects.toBeInstanceOf(
       SaleSyncNotFoundError,
     );
   });
@@ -160,8 +177,8 @@ describe("032 §9 — read-model branches (T016/T020)", () => {
           },
         ],
       });
-    const svc = new SaleSyncOpsReadModelService({} as never);
-    const body = await svc.getSaleSyncStatus(TENANT, VALID_REF);
+    const svc = new SaleSyncOpsReadModelService({} as never, memberships);
+    const body = await svc.getSaleSyncStatus(SCOPED, VALID_REF);
     expect(body.syncStatus).toBe("failed-needs-repair");
     expect(body.deadLetter?.classification).toBe("needs-repair");
     expect(body.deadLetter?.reasonCode).toBe("auth_revoked");
@@ -185,8 +202,8 @@ describe("032 §9 — read-model branches (T016/T020)", () => {
       })
       // 2. deadletters → none
       .mockResolvedValueOnce({ rows: [] });
-    const svc = new SaleSyncOpsReadModelService({} as never);
-    const tl = await svc.getSaleAuditTimeline(TENANT, VALID_REF);
+    const svc = new SaleSyncOpsReadModelService({} as never, memberships);
+    const tl = await svc.getSaleAuditTimeline(SCOPED, VALID_REF);
     // Previously empty; now the capture entry is always present.
     expect(tl.entries).toHaveLength(1);
     expect(tl.entries[0]?.event).toBe("sale.captured");
@@ -218,8 +235,8 @@ describe("032 §9 — read-model branches (T016/T020)", () => {
           },
         ],
       });
-    const svc = new SaleSyncOpsReadModelService({} as never);
-    const tl = await svc.getSaleAuditTimeline(TENANT, VALID_REF);
+    const svc = new SaleSyncOpsReadModelService({} as never, memberships);
+    const tl = await svc.getSaleAuditTimeline(SCOPED, VALID_REF);
     expect(tl.entries.map((e) => e.event)).toEqual([
       "sale.captured",
       "sync.synced",
@@ -242,8 +259,8 @@ describe("032 §9 — read-model branches (T016/T020)", () => {
         },
       ],
     });
-    const svc = new SaleSyncOpsReadModelService({} as never);
-    await expect(svc.repairSaleSync(TENANT, VALID_REF)).rejects.toBeInstanceOf(
+    const svc = new SaleSyncOpsReadModelService({} as never, memberships);
+    await expect(svc.repairSaleSync(SCOPED, VALID_REF)).rejects.toBeInstanceOf(
       RepairConflictError,
     );
   });
@@ -284,8 +301,8 @@ describe("032 §9 — read-model branches (T016/T020)", () => {
       })
       // 5. re-read open deadletter → none (resolved)
       .mockResolvedValueOnce({ rows: [] });
-    const svc = new SaleSyncOpsReadModelService({} as never);
-    const body = await svc.repairSaleSync(TENANT, VALID_REF);
+    const svc = new SaleSyncOpsReadModelService({} as never, memberships);
+    const body = await svc.repairSaleSync(SCOPED, VALID_REF);
     expect(body.syncStatus).toBe("failed-retryable");
     expect(body.deadLetter).toBeNull();
   });

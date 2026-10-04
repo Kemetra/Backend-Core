@@ -21,8 +21,11 @@
  *
  * Invariants:
  *   - Object-level authz: a sale outside the (tenant, store) scope reads as
- *     absent (non-disclosing 404) — RLS scopes the tenant, an explicit
- *     `store_id` predicate scopes the store (the 0012 sales.service precedent).
+ *     absent (non-disclosing 404) — RLS scopes the tenant; the caller's
+ *     membership store scope (RT-193, `context/operator-store-scope.ts`, the
+ *     RT-191/RT-192 rule) is a `store_id` predicate on every read, the list and
+ *     the repair's gate. owner / tenant_admin get their membership's scope, not
+ *     narrowed by the active store; an empty scope matches no sale.
  *   - Keyset pagination on the UUIDv7 `id` (time-ordered, newest-first) — no
  *     extra timestamp column; the cursor is the last row's `id`.
  *   - Repair acts ONLY on an OPEN `failed-needs-repair` item; anything else is
@@ -35,6 +38,14 @@ import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../../auth/auth.module";
+import { MembershipRepository } from "../../context/membership.repository";
+import {
+  callerStoreScope,
+  inStoreScope,
+  scopeStoreIds,
+} from "../../context/operator-store-scope";
+import type { StoreScope } from "../../context/store-scope";
+import type { ResolvedContext } from "../../context/types";
 import {
   SALE_SYNC_STATUS,
   type SaleSyncStatus,
@@ -50,7 +61,7 @@ export class SaleSyncNotFoundError extends Error {
   }
 }
 
-/** Thrown when a supplied `store_id` is not in the session tenant's scope. */
+/** Thrown when a supplied `store_id` is not one of the caller's accessible stores. */
 export class StoreNotInScopeError extends Error {
   constructor() {
     super("Store not found");
@@ -118,8 +129,13 @@ export interface Page<T> {
   readonly nextCursor: string | null;
 }
 
-export interface ListNeedsRepairInput {
+/** The session context of a read or repair; its store scope bounds the sales (RT-193). */
+export interface ScopedReadInput {
   readonly tenantId: string;
+  readonly context: ResolvedContext;
+}
+
+export interface ListNeedsRepairInput extends ScopedReadInput {
   readonly storeId?: string;
   /** Keyset cursor — the last page's last sale `id` (UUIDv7). */
   readonly cursor: string | null;
@@ -146,19 +162,26 @@ interface DeadLetterRow {
 
 @Injectable()
 export class SaleSyncOpsReadModelService {
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+  constructor(
+    @Inject(PG_POOL) private readonly pool: Pool,
+    @Inject(MembershipRepository) private readonly memberships: MembershipRepository,
+  ) {}
 
   /**
-   * Assert a supplied `store_id` belongs to the session tenant — under RLS a
-   * cross-tenant/out-of-scope id returns no row (→ non-disclosing 404). Null is
-   * always in scope. Mirrors ErpnextSyncOpsReadModelService.
+   * Assert a supplied `store_id` is one of the caller's accessible stores: in
+   * the caller's membership store scope (RT-193) and in the session tenant (RLS
+   * — a cross-tenant id returns no row). Otherwise `StoreNotInScopeError` (→
+   * non-disclosing 404). Null is always in scope. Mirrors
+   * ErpnextSyncOpsReadModelService.
    */
-  async assertStoreInScope(tenantId: string, storeId?: string): Promise<void> {
+  async assertStoreInScope(input: ScopedReadInput & { readonly storeId?: string }): Promise<void> {
+    const { storeId } = input;
     if (!storeId) return;
     const found = await runWithTenantContext(
       this.pool,
-      { tenantId, isPlatformAdmin: false },
+      { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
+        if (!inStoreScope(await this.scopeOf(client, input), storeId)) return false;
         const r = await client.query<{ id: string }>(
           `SELECT id FROM stores WHERE id = $1::uuid`,
           [storeId],
@@ -171,22 +194,20 @@ export class SaleSyncOpsReadModelService {
 
   /**
    * T016 — read one sale's server-authoritative sync-status + any OPEN
-   * dead-letter detail. Object-level authz: RLS scopes the tenant and the sale
-   * `id` is tenant-unique under RLS, so a tenant-scoped `WHERE id = $1` is the
-   * complete object-safety boundary for a Console session (which is normally
-   * tenant-wide, `storeId === null`). An out-of-scope/absent sale throws
-   * `SaleSyncNotFoundError` (→ non-disclosing 404). The sale's own store is
-   * returned in the projection.
+   * dead-letter detail. Object-level authz: RLS scopes the tenant and the
+   * caller's store scope bounds the sale's store (RT-193). An out-of-scope or
+   * absent sale throws `SaleSyncNotFoundError` (→ non-disclosing 404). The
+   * sale's own store is returned in the projection.
    */
   async getSaleSyncStatus(
-    tenantId: string,
+    input: ScopedReadInput,
     saleId: string,
   ): Promise<SaleSyncStatusBody> {
     return runWithTenantContext(
       this.pool,
-      { tenantId, isPlatformAdmin: false },
+      { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
-        const row = await this.readSaleStatusRow(client, saleId);
+        const row = await this.readScopedSale(client, input, saleId);
         const dl = await this.readOpenDeadLetter(client, saleId);
         return this.toStatusBody(row, dl);
       },
@@ -194,7 +215,9 @@ export class SaleSyncOpsReadModelService {
   }
 
   /**
-   * T017 — the NEEDS_REPAIR queue: tenant-scoped (RLS) + optional store filter,
+   * T017 — the NEEDS_REPAIR queue: tenant-scoped (RLS), bounded to the
+   * caller's store scope in SQL (RT-193 — pages stay full and the keyset cursor
+   * gap-free while out-of-scope rows are skipped) + optional store filter,
    * newest-first by the time-ordered sale `id`, keyset paginated. Joins the OPEN
    * `needs-repair` deadletter rows to their sale; the sale's `sync_status` is
    * the authoritative state (`failed-needs-repair`). Resolved rows are excluded
@@ -208,6 +231,7 @@ export class SaleSyncOpsReadModelService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
+        const scoped = scopeStoreIds(await this.scopeOf(client, input));
         const rows = await client.query<{
           sale_id: string;
           store_id: string;
@@ -220,7 +244,8 @@ export class SaleSyncOpsReadModelService {
         }>(
           // Newest-first keyset on the UUIDv7 sale id (`d.sale_id < $cursor`).
           // OPEN needs-repair deadletters only, joined to their sale for the
-          // authoritative status + provenance. Store-filtered via the sale.
+          // authoritative status + provenance. Store-filtered (and store-scoped,
+          // RT-193) via the sale.
           `SELECT d.sale_id, s.store_id, s.sync_status,
                   d.source_system, d.external_id, d.reason_code,
                   d.retry_count, d.quarantined_at
@@ -230,9 +255,10 @@ export class SaleSyncOpsReadModelService {
               AND d.resolved_at IS NULL
               AND ($1::uuid IS NULL OR s.store_id = $1::uuid)
               AND ($2::uuid IS NULL OR d.sale_id < $2::uuid)
+              AND ($4::uuid[] IS NULL OR s.store_id = ANY($4::uuid[]))
             ORDER BY d.sale_id DESC
             LIMIT $3`,
-          [input.storeId ?? null, input.cursor, limit],
+          [input.storeId ?? null, input.cursor, limit, scoped],
         );
         const items: NeedsRepairItem[] = rows.rows.map((r) => ({
           saleRef: r.sale_id,
@@ -263,14 +289,14 @@ export class SaleSyncOpsReadModelService {
    * without leaking.
    */
   async getSaleAuditTimeline(
-    tenantId: string,
+    input: ScopedReadInput,
     saleId: string,
   ): Promise<SaleAuditTimelineBody> {
     return runWithTenantContext(
       this.pool,
-      { tenantId, isPlatformAdmin: false },
+      { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
-        const row = await this.readSaleStatusRow(client, saleId);
+        const row = await this.readScopedSale(client, input, saleId);
         const entries: AuditTimelineEntry[] = [];
         const deadletters = await client.query<{
           classification: string;
@@ -332,23 +358,24 @@ export class SaleSyncOpsReadModelService {
    *
    * Anything not in the repairable state → `RepairConflictError` (409,
    * deterministic, no side effect). An out-of-scope/absent sale →
-   * `SaleSyncNotFoundError` (404).
+   * `SaleSyncNotFoundError` (404), decided by the store-scoped read that opens
+   * the transaction — before any write (RT-193).
    *
    * Atomicity: `runWithTenantContext` wraps the whole callback in ONE
    * transaction (BEGIN/COMMIT), so the deadletter resolution + the `sales`
    * status mutation commit or roll back together.
    */
   async repairSaleSync(
-    tenantId: string,
+    input: ScopedReadInput,
     saleId: string,
   ): Promise<SaleSyncStatusBody> {
     return runWithTenantContext(
       this.pool,
-      { tenantId, isPlatformAdmin: false },
+      { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
-        // Object-safety gate first (non-disclosing 404). RLS scopes the tenant;
-        // the sale id is tenant-unique, so no store predicate is needed.
-        const row = await this.readSaleStatusRow(client, saleId);
+        // Object-safety gate first (non-disclosing 404), before any write: RLS
+        // scopes the tenant, the caller's store scope the sale's store (RT-193).
+        const row = await this.readScopedSale(client, input, saleId);
         if (row.sync_status !== SALE_SYNC_STATUS.FAILED_NEEDS_REPAIR) {
           // Not in a repairable state — deterministic conflict, no side effect.
           throw new RepairConflictError();
@@ -391,19 +418,37 @@ export class SaleSyncOpsReadModelService {
   // Private helpers
   // -------------------------------------------------------------------------
 
+  /** The caller's store scope from its role in the tenant (RLS-scoped read; the RT-192 rule). */
+  private scopeOf(client: PoolClient, input: ScopedReadInput): Promise<StoreScope> {
+    return callerStoreScope(client, this.memberships, input);
+  }
+
+  /** The sale, if it is in the caller's store scope; else `SaleSyncNotFoundError`. */
+  private async readScopedSale(
+    client: PoolClient,
+    input: ScopedReadInput,
+    saleId: string,
+  ): Promise<SaleStatusRow> {
+    const scoped = scopeStoreIds(await this.scopeOf(client, input));
+    return this.readSaleStatusRow(client, saleId, scoped);
+  }
+
   private async readSaleStatusRow(
     client: PoolClient,
     saleId: string,
+    scoped: readonly string[] | null = null,
   ): Promise<SaleStatusRow> {
-    // RLS scopes the tenant; the sale id is tenant-unique, so a tenant-scoped
-    // `WHERE id = $1` is the complete object-safety boundary. The store +
+    // RLS scopes the tenant; `scoped` (null = tenant-wide, empty = none) bounds
+    // the sale's store, so an out-of-scope sale reads as absent. The store +
     // received_at (the capture clock for the audit timeline) are returned in
-    // the row, never required as a predicate.
+    // the row.
     const r = await client.query<SaleStatusRow>(
       `SELECT id, store_id, sync_status, source_system, external_id,
               processed_at, received_at
-         FROM sales WHERE id = $1`,
-      [saleId],
+         FROM sales
+        WHERE id = $1
+          AND ($2::uuid[] IS NULL OR store_id = ANY($2::uuid[]))`,
+      [saleId, scoped],
     );
     const row = r.rows[0];
     if (!row) {
