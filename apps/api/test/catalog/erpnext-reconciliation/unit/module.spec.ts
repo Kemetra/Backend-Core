@@ -16,6 +16,8 @@ import { AUDIT_JOB_ENQUEUER } from "../../../../src/audit/audit-job.enqueuer";
 import { ErpnextReconciliationModule } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.module";
 import { ErpnextReconciliationController } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.controller";
 import { ErpnextReconciliationService } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.service";
+import { NegativeOnHandController } from "../../../../src/catalog/erpnext-reconciliation/negative-on-hand.controller";
+import { NegativeOnHandService } from "../../../../src/catalog/erpnext-reconciliation/negative-on-hand.service";
 
 describe("ErpnextReconciliationModule — DI wiring", () => {
   it("instantiates the module and resolves the controller + service", async () => {
@@ -36,6 +38,9 @@ describe("ErpnextReconciliationModule — DI wiring", () => {
     expect(moduleRef.get(ErpnextReconciliationService)).toBeInstanceOf(
       ErpnextReconciliationService,
     );
+    // RT-177 — the read-only negative on-hand view is wired in the same module.
+    expect(moduleRef.get(NegativeOnHandController)).toBeInstanceOf(NegativeOnHandController);
+    expect(moduleRef.get(NegativeOnHandService)).toBeInstanceOf(NegativeOnHandService);
     await moduleRef.close();
   });
 });
