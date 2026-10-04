@@ -57,7 +57,7 @@ const SCHEMA_NAMES = [
 ] as const;
 type SchemaName = (typeof SCHEMA_NAMES)[number];
 
-type Status = "200" | "400" | "401" | "403" | "409";
+type Status = "200" | "400" | "401" | "403" | "409" | "429";
 
 const OPERATOR_OPERATION_IDS = [
   "posOperatorSignIn",
@@ -311,9 +311,9 @@ describe("pos-cashier-admissions — admission request", () => {
 // 4. Responses
 // ===========================================================================
 describe("pos-cashier-admissions — responses", () => {
-  it("create declares 200 (union), 400, 401, 403 (refused) and 409", () => {
+  it("create declares 200 (union), 400, 401, 403 (refused), 409 and 429 (takeover rate limit)", () => {
     const o = op(ADMIT);
-    expect(Object.keys(o.responses ?? {}).sort()).toEqual(["200", "400", "401", "403", "409"]);
+    expect(Object.keys(o.responses ?? {}).sort()).toEqual(["200", "400", "401", "403", "409", "429"]);
     expect(responseRef(ADMIT, "200")).toBe("#/components/schemas/PosCashierAdmissionResponse");
     expect(responseRef(ADMIT, "401")).toBe("#/components/schemas/Error");
     expect(responseRef(ADMIT, "403")).toBe("#/components/schemas/RefusedError");
@@ -491,7 +491,91 @@ describe("pos-cashier-admissions — AJV fixtures", () => {
 });
 
 // ===========================================================================
-// 7. pos-operators 1.1.1-draft prose fix (RT-182): docs match security + runtime
+// 7. Captain decisions on review of #696 (P1 liveness/TTL, P2 replay, order,
+//    same-device re-admission, audit + takeover rate limit). Owner to confirm.
+// ===========================================================================
+describe("pos-cashier-admissions — liveness, replay, ordering and audit rules", () => {
+  /** One folded-YAML paragraph of the create operation's description. */
+  function createParagraph(marker: RegExp): string {
+    const found = (op(ADMIT).description ?? "").split("\n").find((para) => marker.test(para));
+    if (!found) throw new Error(`no create paragraph matches ${marker}`);
+    return found;
+  }
+
+  it("P1: an online-confirmed session heartbeats with mode online, takeover false, inside the TTL", () => {
+    const p = createParagraph(/\*\*Heartbeat/);
+    expect(p).toMatch(/MUST re-call/);
+    expect(p).toMatch(/`mode: online`/);
+    expect(p).toMatch(/`takeover: false`/);
+    expect(p).toMatch(/fresh `idempotency_key`/);
+    expect(p).toMatch(/strictly shorter than the server TTL/);
+  });
+
+  it("P1: heartbeat `admitted` renews the TTL with the same admission_id; `active_elsewhere` ends the session", () => {
+    const p = createParagraph(/\*\*Heartbeat/);
+    expect(p).toMatch(/renews the TTL/);
+    expect(p).toMatch(/SAME `admission_id`/);
+    expect(p).toMatch(/MUST end the local session at its next safe point/);
+  });
+
+  it("P1: admissions are serialised per (tenant, store, user); concurrent takeovers have exactly one winner", () => {
+    const p = createParagraph(/\*\*Serialisation/);
+    expect(p).toMatch(/serialised per `\(tenant, store, user\)`/);
+    expect(p).toMatch(/exactly one winner/);
+    expect(p).toMatch(/next heartbeat \(online\) or reconcile \(offline grant\)/);
+  });
+
+  it("P1: the takeover loser learns on its next heartbeat or reconcile (not reconcile only)", () => {
+    const d = op(ADMIT).description ?? "";
+    expect(d).not.toMatch(/learns of it on its next reconcile/);
+    expect(createParagraph(/\*\*`mode: online`\*\*/)).toMatch(
+      /learns on its next heartbeat \(online\) or reconcile \(offline grant\)/,
+    );
+  });
+
+  it("P2: a same-key replay returns the original only while the admission is live and the user eligible", () => {
+    const p = createParagraph(/\*\*Idempotency/);
+    expect(p).toMatch(/ONLY while that admission is still the live one/);
+    expect(p).toMatch(/still eligible/);
+    expect(p).toMatch(/evaluated as new/);
+    expect(p).toMatch(/MUST NOT exceed the admission TTL/);
+    expect(p).toMatch(/exactly one is processed/);
+    expect(p).not.toMatch(/The replay window is server policy \(BC2\)\.$/);
+  });
+
+  it("P2: outcomes are evaluated 401, then 403, then active_elsewhere, then admitted", () => {
+    const p = createParagraph(/\*\*Outcome order/);
+    const order = ["401", "403", "`active_elsewhere`", "`admitted`"].map((t) => p.indexOf(t));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(p).toMatch(/A revoked user never sees `active_elsewhere`/);
+  });
+
+  it("P2: same device + same user + live admission returns the SAME admission_id and renews the TTL", () => {
+    const d = op(ADMIT).description ?? "";
+    expect(d).not.toMatch(/may differ/);
+    const p = createParagraph(/already held by THIS device/);
+    expect(p).toMatch(/SAME `admission_id`/);
+    expect(p).toMatch(/renews the TTL/);
+  });
+
+  it("every takeover and every end is audited with device_id, user_id and the prior admission_id", () => {
+    for (const d of [createParagraph(/\*\*Audit/), op(END).description ?? ""]) {
+      expect(d).toMatch(/`device_id`/);
+      expect(d).toMatch(/`user_id`/);
+      expect(d).toMatch(/prior `admission_id`/);
+    }
+  });
+
+  it("takeover is rate-limited per device and declares 429 with the canonical envelope", () => {
+    expect(responseRef(ADMIT, "429")).toBe("#/components/schemas/Error");
+    const takeover = schema("PosCashierAdmissionOnlineRequest").properties?.["takeover"];
+    expect(String(takeover?.["description"])).toMatch(/rate-limited per device/);
+  });
+});
+
+// ===========================================================================
+// 8. pos-operators 1.1.1-draft prose fix (RT-182): docs match security + runtime
 // ===========================================================================
 describe("pos-operators — RT-113 BC1 prose fix", () => {
   function opById(id: OperatorOperationId): OperationObject {
