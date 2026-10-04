@@ -44,10 +44,13 @@ info:
     `(tenant, store, user)`. This is the server's single-active-session rule
     for cashiers. A live admission held by another device yields the
     minimum-disclosure `active_elsewhere` signal unless the request is an
-    online takeover. A live admission expires server-side after a TTL so a
-    dead terminal cannot block a cashier forever. The TTL is server policy
-    (10763 proposes 12 h; BC2 sets it) and is not on the wire. Every
-    `admitted` response starts a fresh TTL for the returned admission.
+    online takeover. Admissions are serialised per `(tenant, store, user)`,
+    so concurrent takeovers resolve to exactly one winner. A live admission
+    expires server-side after a TTL so a dead terminal cannot block a cashier
+    forever. The TTL is server policy (10763 proposes 12 h; BC2 sets it) and
+    is not on the wire. An online-confirmed session keeps its admission live
+    with a heartbeat (see `posCreateCashierAdmission`); every `admitted`
+    response renews the TTL.
 
 
     **Offline grant.** An `admitted` response carries `offline_grace_seconds`,
@@ -68,7 +71,9 @@ info:
 
 
     **Audit.** Every admission, takeover, refusal and end is audited
-    server-side. Audit payloads carry no PIN, grant body or secret.
+    server-side. Takeover and end events record the `device_id`, the
+    `user_id` and the prior `admission_id`. Takeover is rate-limited per
+    device. Audit payloads carry no PIN, grant body or secret.
 
 
     **Runtime status.** Contract-only (BC1). The runtime (controller, guard
@@ -99,8 +104,9 @@ paths:
         returns `admitted`. If another device holds one, the server returns
         `active_elsewhere`, unless `takeover: true`: then the server ends the
         other device's admission and admits this one (D9 "take over here").
-        The other device learns of it on its next reconcile and receives its
-        own `active_elsewhere`.
+        The other device learns on its next heartbeat (online) or reconcile
+        (offline grant) and receives its own `active_elsewhere`. Takeover is
+        rate-limited per device (`429`).
 
 
         **`mode: reconcile_offline`** (D8): called by a terminal whose session
@@ -117,18 +123,60 @@ paths:
 
 
         A live admission already held by THIS device for the same user is
-        replaced or refreshed, and the answer is `admitted`. The returned
-        `admission_id` may differ from an earlier one; the terminal MUST keep
-        the value from the latest `admitted` response.
+        renewed, not replaced: the answer is `admitted` with the SAME
+        `admission_id`, and it renews the TTL. A new `admission_id` is issued
+        only when this device holds no live admission for the user (a first
+        sign-in, or after an `end`, an expiry or a takeover).
+
+
+        **Heartbeat (liveness).** An online-confirmed session MUST re-call
+        this operation with `mode: online`, `takeover: false` and a fresh
+        `idempotency_key` at an interval strictly shorter than the server TTL.
+        A heartbeat answered `admitted` renews the TTL and returns the SAME
+        `admission_id`. A heartbeat answered `active_elsewhere` means the
+        admission was taken over, or expired and was re-claimed on another
+        device: the terminal MUST end the local session at its next safe
+        point. A heartbeat answered `403` ends the session as
+        `account_disabled_mid_session`, and a `401` is handled as
+        device-revoked.
+
+
+        **Serialisation.** Admissions are serialised per
+        `(tenant, store, user)`: at most one live admission exists at any
+        instant, so concurrent takeovers resolve to exactly one winner. Each
+        loser learns on its next heartbeat (online) or reconcile (offline
+        grant), so the delay is bounded by the TTL.
+
+
+        **Outcome order.** The server evaluates outcomes in this order: `401`
+        (device authentication), then `403` (eligibility, including a user
+        revoked mid-session, which the terminal handles as
+        `account_disabled_mid_session`), then `active_elsewhere`, then
+        `admitted`. A revoked user never sees `active_elsewhere`. The
+        request-level rejections `400` (validation), `409` (idempotency key
+        reuse) and `429` (takeover rate limit) are decided after device
+        authentication and before eligibility.
 
 
         **Idempotency** (Constitution §XI): `idempotency_key` is the dedup
         key, scoped to the authenticated device. A retry with the same key and
-        the same body returns the first `200` response unchanged and applies
-        nothing again: no second admission, no second takeover, no second
-        audit event. Reusing a key with a different body returns `409`. Only
-        `200` outcomes are recorded; a retry after a `4xx` is evaluated
-        afresh. The replay window is server policy (BC2).
+        the same body returns the original `200` response ONLY while that
+        admission is still the live one for this device AND the user is still
+        eligible; nothing is applied again (no second admission, no second
+        takeover, no second audit event). Otherwise the retry is evaluated as
+        new, which can yield `403` or `active_elsewhere`; an original
+        `active_elsewhere` recorded nothing and is always evaluated as new.
+        Reusing a key with a different body returns `409`. Of two concurrent
+        requests with the same key, exactly one is processed and the other
+        receives the same outcome. Only `200` outcomes are recorded; a retry
+        after a `4xx` is evaluated afresh. The replay window is server policy
+        (BC2) and MUST NOT exceed the admission TTL.
+
+
+        **Audit.** Every admission, refusal and takeover is audited
+        server-side. A takeover's event records the calling `device_id`, the
+        `user_id` and the prior `admission_id` it ended. Audit payloads carry
+        no PIN, grant body or secret.
       operationId: posCreateCashierAdmission
       x-runtime-status: contract-only
       x-runtime-note: >
@@ -164,6 +212,8 @@ paths:
           $ref: "#/components/responses/Refused"
         "409":
           $ref: "#/components/responses/IdempotencyConflict"
+        "429":
+          $ref: "#/components/responses/TakeoverRateLimited"
   /api/pos/v1/cashier-admissions/{admission_id}/end:
     post:
       summary: End a cashier admission held by this device.
@@ -179,6 +229,12 @@ paths:
         `200 { kind: ended }`. Only an admission held by this device changes
         state, so a device cannot end another device's admission (Constitution
         §II, §XII). There is no request body.
+
+
+        Every `end` is audited server-side with the calling `device_id`, the
+        `user_id` and the prior `admission_id`. For an `end` that changes
+        nothing, the event records only what is visible in the device's own
+        tenant scope.
       operationId: posEndCashierAdmission
       x-runtime-status: contract-only
       x-runtime-note: >
@@ -298,8 +354,8 @@ components:
         membership, an ineligible role, or a store the user cannot access, so
         it reveals neither existence nor cause. The cause is logged
         server-side keyed by `request_id`. The terminal invalidates that
-        user's offline grant (D4) and, while reconciling, ends the session
-        `account_disabled_mid_session` (D8).
+        user's offline grant (D4) and, on a heartbeat or a reconcile, ends the
+        session `account_disabled_mid_session` (D8).
       content:
         application/json:
           schema:
@@ -308,6 +364,15 @@ components:
       description: >
         `idempotency_key_conflict`: the `idempotency_key` was already used by
         this device with a different request body. Nothing is applied.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TakeoverRateLimited:
+      description: >
+        `rate_limited`: this device exceeded the per-device takeover rate
+        limit (server policy, set in BC2). Nothing is applied; no admission is
+        ended or created.
       content:
         application/json:
           schema:
@@ -349,7 +414,9 @@ components:
           description: >
             `true` only after the cashier chose "take over here" on the
             conflict lock (D9). The server ends any live admission another
-            device holds for this user and admits this device.
+            device holds for this user and admits this device. Takeover is
+            rate-limited per device: over the limit the server answers `429`
+            and changes nothing. A heartbeat always sends `false`.
         idempotency_key:
           $ref: "#/components/schemas/AdmissionIdempotencyKey"
     PosCashierAdmissionReconcileRequest:
@@ -516,7 +583,7 @@ components:
               type: string
               description: >
                 Stable error code: `validation_error` (400), `unauthorized`
-                (401), `idempotency_key_conflict` (409).
+                (401), `idempotency_key_conflict` (409), `rate_limited` (429).
             message:
               type: string
               description: Generic human-readable string. Never enumerates causes.
