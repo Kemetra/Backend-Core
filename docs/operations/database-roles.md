@@ -46,6 +46,29 @@ receivables, inventory, audit, membership mutation, idempotency, or outbox
 tables. The domain role remains `NOBYPASSRLS` and is the only pool injected into
 tenant/domain services.
 
+## Domain-role grants for new tables
+
+Runtime grants are provisioned outside migrations, so a migration that adds a
+table the domain role must use needs a matching grant step at deploy time.
+
+- **Migration `0035_cashier_admissions` (RT-113 BC2).** Run
+  [`sql/cashier-admissions-domain-grants.sql`](sql/cashier-admissions-domain-grants.sql)
+  after `migrate up` and before the API starts. That is step 2 of the deploy
+  sequence in [`deploy/README.md`](../../deploy/README.md#deploy).
+  `-v domain_role=<role>` is required. It grants the domain role:
+  - `cashier_admissions`: `SELECT`, `INSERT`, `UPDATE`
+  - `cashier_admission_requests`: `SELECT`, `INSERT`, `UPDATE`, `DELETE`
+
+  The script runs with `ON_ERROR_STOP` and exits non-zero if a grant fails or
+  if the verification finds a missing grant. Without these grants the
+  `/api/pos/v1/cashier-admissions` routes return 500.
+
+  The auth lookup role must hold no privilege on either table. The API refuses
+  to boot if it holds `SELECT`, `INSERT`, `UPDATE` or `DELETE` on one; that
+  boot check does not cover `TRUNCATE`, `REFERENCES` or `TRIGGER` (and
+  `TRUNCATE` is not subject to row security). Pass `-v lookup_role=<role>` to
+  the script to check every privilege as well.
+
 ## Redis credential
 
 `docker-compose.prod.yml` requires `REDIS_PASSWORD` and starts Redis with
