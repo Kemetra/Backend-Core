@@ -420,8 +420,10 @@ describe("online admission and the single-active rule", () => {
     const rows = await admissionsFor(CASHIER.id);
     expect(rows.find((r) => r.id === first.admission_id)).toMatchObject({ end_reason: "expired" });
     expect((await liveFor(CASHIER.id)).map((a) => a.device_id)).toEqual([DEV_A1_SECOND.id]);
-    const actions = (await auditsFor(requestId)).map((a) => a.action);
-    expect(actions).toEqual(["pos.cashier_admission.expired", "pos.cashier_admission.admitted"]);
+    const audits = await auditsFor(requestId);
+    expect(audits.map((a) => a.action)).toEqual(["pos.cashier_admission.expired", "pos.cashier_admission.admitted"]);
+    // The expiry is attributed to the device that held the admission.
+    expect(audits[0]!.metadata).toMatchObject({ device_id: DEV_A1.id, prior_admission_id: first.admission_id });
     // The original device, now on an expired admission, learns on its heartbeat.
     expectActiveElsewhere(await admitAs(DEV_A1, online(CASHIER.id)));
   });

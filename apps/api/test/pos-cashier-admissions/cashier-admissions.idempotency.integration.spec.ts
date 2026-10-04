@@ -20,7 +20,7 @@
  * Takeover rate limit (contract 429 `rate_limited`): per device, decided
  * before eligibility, nothing applied.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   CASHIER,
@@ -29,6 +29,7 @@ import {
   DEV_A1_SECOND,
   MANAGER,
   MUTABLE,
+  TENANT_A,
   admissionsFor,
   admitAs,
   admitted,
@@ -322,5 +323,50 @@ describe("takeover rate limit (429)", () => {
     const replay = await admitAs(DEV_A1, body);
     expect(replay.status).toBe(200);
     expect(replay.body).toEqual(first);
+  });
+});
+
+// ===========================================================================
+// Same device, same cashier, different keys (adversarial review P1-1)
+// ===========================================================================
+describe("concurrent same-device admissions with different keys", () => {
+  it("50 concurrent double-submits: every response is 200 admitted with one admission_id", async () => {
+    if (skipped()) return;
+    for (let i = 0; i < 50; i += 1) {
+      const [a, b] = await Promise.all([admitAs(DEV_A1, online(CASHIER.id)), admitAs(DEV_A1, online(CASHIER.id))]);
+      const first = admitted(a);
+      const second = admitted(b);
+      expect(second.admission_id).toBe(first.admission_id);
+    }
+    expect(await liveFor(CASHIER.id)).toHaveLength(1);
+  }, 120_000);
+
+  it("deterministic: the earlier-begun request waits, the later one creates; the renewal never goes back in time", async () => {
+    if (skipped()) return;
+    const earlyBody = online(CASHIER.id);
+    const keyHex = createHash("sha256").update(String(earlyBody["idempotency_key"]), "utf8").digest("hex");
+    const lockKey = `cashier_admission_key:${TENANT_A}:${DEV_A1.id}:${keyHex}`;
+    const holder = await h().admin.connect();
+    try {
+      await holder.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [lockKey]);
+      // The early request opens its transaction, then blocks on its key lock.
+      const early = admitAs(DEV_A1, earlyBody).then((res) => res);
+      for (let i = 0; i < 100; i += 1) {
+        const r = await h().admin.query(
+          `SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'`,
+        );
+        if (r.rows.length > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      // A later request (another key) takes the cashier lock first and creates.
+      const later = admitted(await admitAs(DEV_A1, online(CASHIER.id)));
+      await holder.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [lockKey]);
+      const renewed = admitted(await early);
+      expect(renewed.admission_id).toBe(later.admission_id);
+      expect(new Date(renewed.server_time).getTime()).toBeGreaterThanOrEqual(new Date(later.server_time).getTime());
+    } finally {
+      holder.release();
+    }
   });
 });

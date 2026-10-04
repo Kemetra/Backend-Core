@@ -97,7 +97,7 @@ function build(w: World) {
     findRequest: track("findRequest", w.prior),
     lockCashier: track("lockCashier", undefined),
     clock: track("clock", NOW),
-    expireStale: track("expireStale", [] as string[]),
+    expireStale: track("expireStale", [] as Array<{ id: string; deviceId: string }>),
     isLiveOnDevice: track("isLiveOnDevice", w.priorLiveOnDevice),
     findLive: track("findLive", w.live),
     create: track("create", { id: NEW_ID, renewedAt: NOW }),
@@ -270,11 +270,16 @@ describe("CashierAdmissionsService.admit — admitted", () => {
 
   it("expired live rows ended by the lazy expiry are audited", async () => {
     const { service, store, ports } = build(world());
-    store.expireStale.mockResolvedValueOnce([LIVE_ID]);
+    store.expireStale.mockResolvedValueOnce([{ id: LIVE_ID, deviceId: OTHER_DEVICE }]);
     await service.admit(SCOPE, onlineBody(), "req-1");
     expect(ports.audit.record).toHaveBeenCalledWith(
       CLIENT,
-      expect.objectContaining({ action: "pos.cashier_admission.expired", targetId: LIVE_ID }),
+      expect.objectContaining({
+        action: "pos.cashier_admission.expired",
+        targetId: LIVE_ID,
+        // The device that held the expired admission, not the requester.
+        metadata: { device_id: OTHER_DEVICE, user_id: USER, prior_admission_id: LIVE_ID },
+      }),
     );
   });
 

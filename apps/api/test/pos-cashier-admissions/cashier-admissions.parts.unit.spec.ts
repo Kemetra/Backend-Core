@@ -16,8 +16,10 @@ import {
   DEFAULT_ADMISSION_TTL_SECONDS,
   DEFAULT_OFFLINE_GRACE_SECONDS,
   DEFAULT_TAKEOVER_RATE_LIMIT,
+  DEFAULT_TAKEOVER_LIMITER_TIMEOUT_MS,
   DEFAULT_TAKEOVER_RATE_WINDOW_SECONDS,
   readCashierAdmissionPolicy,
+  readTakeoverLimiterTimeoutMs,
 } from "../../src/pos-cashier-admissions/cashier-admissions.config";
 import { classifyEligibility, type EligibilityRow } from "../../src/pos-cashier-admissions/cashier-eligibility";
 import type { TenantContextRequest } from "../../src/context/types";
@@ -233,6 +235,33 @@ describe("TakeoverRateLimit", () => {
       expect.objectContaining({ device_id: DEVICE }),
       expect.stringContaining("failing open"),
     );
+  });
+
+  it("a limiter that never answers yields a decision (allow) within the timeout", async () => {
+    const warn = jest.fn();
+    const hung = { check: () => new Promise<never>(() => undefined) } as unknown as RateLimiter;
+    const limit = new TakeoverRateLimit(hung, { warn } as unknown as Logger, { timeoutMs: 50 });
+    const started = Date.now();
+    expect(await limit.allow(DEVICE, bucket)).toBe(true);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ device_id: DEVICE, err_class: "TakeoverLimiterTimeout" }),
+      expect.stringContaining("failing open"),
+    );
+  });
+
+  it("a limiter that answers in time is not affected by the timeout", async () => {
+    const limit = new TakeoverRateLimit(new RateLimiter(redis()), undefined, { timeoutMs: 1000 });
+    expect(await limit.allow(DEVICE, { limit: 1, windowMs: 60_000 })).toBe(true);
+    expect(await limit.allow(DEVICE, { limit: 1, windowMs: 60_000 })).toBe(false);
+  });
+
+  it("the limiter timeout defaults to 250 ms and is configurable", () => {
+    expect(DEFAULT_TAKEOVER_LIMITER_TIMEOUT_MS).toBe(250);
+    expect(readTakeoverLimiterTimeoutMs({})).toBe(250);
+    expect(readTakeoverLimiterTimeoutMs({ CASHIER_TAKEOVER_LIMITER_TIMEOUT_MS: "100" })).toBe(100);
+    expect(readTakeoverLimiterTimeoutMs({ CASHIER_TAKEOVER_LIMITER_TIMEOUT_MS: "0" })).toBe(250);
+    expect(readTakeoverLimiterTimeoutMs({ CASHIER_TAKEOVER_LIMITER_TIMEOUT_MS: "999999" })).toBe(250);
   });
 
   it("fails open without a logger too", async () => {

@@ -274,6 +274,34 @@ describe("0035 — constraints", () => {
     await expect(insertAdmission(input)).rejects.toThrow(error);
   });
 
+  it("takeover_of must name an admission of the SAME tenant (composite FK)", async () => {
+    if (skip()) return;
+    const theirs = await insertAdmission({
+      tenant: TENANT_B,
+      store: STORE_B1,
+      device: DEVICE_B,
+      endedAt: new Date().toISOString(),
+      endReason: "takeover",
+    });
+    await expect(insertAdmission({ takeoverOf: theirs })).rejects.toThrow(
+      /fk_cashier_admissions_takeover_of_tenant/,
+    );
+  });
+
+  it("a replay entry must reference an admission of the SAME tenant (composite FK)", async () => {
+    if (skip()) return;
+    const theirs = await insertAdmission({ tenant: TENANT_B, store: STORE_B1, device: DEVICE_B });
+    await expect(insertRequest(theirs)).rejects.toThrow(/fk_cashier_admission_requests_admission_tenant/);
+  });
+
+  it("(tenant_id, id) is unique on admissions (the composite FK target)", async () => {
+    if (skip()) return;
+    const r = await pg().admin.query(
+      `SELECT 1 FROM pg_constraint WHERE conname = 'uq_cashier_admissions_tenant_id' AND contype = 'u'`,
+    );
+    expect(r.rowCount).toBe(1);
+  });
+
   it("accepts the reconcile provenance and rejects a self-takeover", async () => {
     if (skip()) return;
     await insertAdmission({ mode: "reconcile_offline", offlineAdmittedAt: "2026-10-04T08:00:00Z" });
