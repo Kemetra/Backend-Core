@@ -146,6 +146,8 @@ export const QUEUE_NAMES = deepFreeze({
   auditRetention: "audit-retention",
   saleProcessing: "sale-processing",
   outboxRetention: "outbox-retention",
+  // RT-179: the scheduled ERPNext stock reconciliation run sweep.
+  erpnextStockReconciliationSweep: "erpnext-stock-reconciliation-sweep",
 } as const);
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];

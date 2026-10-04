@@ -121,11 +121,14 @@ export class ReconciliationRunProcessor {
         }
         const storeId = r.store_id;
 
-        // (1) unmapped_store is a whole-run precondition: no active 014 mapping →
-        // the run cannot compare. Record ONE unmapped_store result + complete.
+        // (1) unmapped_store is a whole-run precondition: no active 014 STOCK
+        // mapping → the run cannot compare. Record ONE unmapped_store result +
+        // complete. Only `purpose='stock'` counts — a `returns`-only map is
+        // unmapped here exactly as it is for the trigger and the bin-view feed
+        // (RT-179).
         const wh = await client.query<{ count: string }>(
           `SELECT count(*)::text AS count FROM erpnext_warehouse_map
-            WHERE store_id = $1 AND retired_at IS NULL`,
+            WHERE store_id = $1 AND purpose = 'stock' AND retired_at IS NULL`,
           [storeId],
         );
         // A COUNT(*) always returns one row — no defensive `?? "0"` (dead branch).

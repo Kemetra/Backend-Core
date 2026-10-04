@@ -76,6 +76,8 @@ export const WORKER_QUEUE_NAMES = [
   QUEUE_NAMES.auditRetention,
   QUEUE_NAMES.saleProcessing,
   QUEUE_NAMES.outboxRetention,
+  // RT-179: scheduled ERPNext stock reconciliation run sweep.
+  QUEUE_NAMES.erpnextStockReconciliationSweep,
 ] as const satisfies readonly string[];
 export type WorkerQueueName = (typeof WORKER_QUEUE_NAMES)[number];
 
@@ -195,6 +197,10 @@ assertMetricLabels("outbox_drain_duration_seconds", ["event_type"]);
 // the connectorAckOutcome emission on the api side. UNLABELED — the affected
 // (tenant, store, sale, category) lives on the erpnext_posting_status row + audit.
 assertMetricLabels("erpnext_posting_reconciliation_total", []);
+
+// ERPNext stock reconciliation sweep — RT-179. One increment per (tenant, store)
+// the scheduled sweep considers; `outcome` is a closed four-value set.
+assertMetricLabels("erpnext_stock_reconciliation_sweep_total", ["outcome"]);
 
 // ---------------------------------------------------------------------------
 // Instruments
@@ -320,6 +326,22 @@ const _erpnextPostingReconciliation: Counter = meter.createCounter(
       "creation time (unmapped_item / unmapped_store). The reconciliation / " +
       "dead-letter flag the 017 surface drains. Unlabeled — the affected " +
       "(tenant, store, sale, category) lives on the erpnext_posting_status row.",
+  },
+);
+
+// ERPNext stock reconciliation sweep — RT-179. Emitted by
+// StockRunSweepProcessor once per (tenant, store) with an active stock map.
+const _erpnextStockReconciliationSweep: Counter = meter.createCounter(
+  "erpnext_stock_reconciliation_sweep_total",
+  {
+    description:
+      "Stores considered by the scheduled ERPNext stock reconciliation sweep, " +
+      "by outcome: created (a scheduled run was created), skipped_running (the " +
+      "store already had a running stock run), skipped_period (a scheduled run " +
+      "already exists for this period), skipped_ineligible (the tenant was " +
+      "suspended or the store / stock map retired before creation). The " +
+      "(tenant, store) is on the run row " +
+      "and the sweep log, never a label.",
   },
 );
 
@@ -518,6 +540,27 @@ export function recordOutboxDrainDuration(
  */
 export function recordErpnextPostingReconciliation(): void {
   _erpnextPostingReconciliation.add(1);
+}
+
+/** Closed `outcome` label set for erpnext_stock_reconciliation_sweep_total. */
+export const STOCK_RECONCILIATION_SWEEP_OUTCOMES = [
+  "created",
+  "skipped_running",
+  "skipped_period",
+  "skipped_ineligible",
+] as const satisfies readonly string[];
+export type StockReconciliationSweepOutcome =
+  (typeof STOCK_RECONCILIATION_SWEEP_OUTCOMES)[number];
+
+/**
+ * Increment erpnext_stock_reconciliation_sweep_total (RT-179). Emission site:
+ * StockRunSweepProcessor — once per (tenant, store) with an active stock map.
+ * A SIGNAL: emission MUST NOT alter the sweep's outcome.
+ */
+export function recordStockReconciliationSweep(
+  outcome: StockReconciliationSweepOutcome,
+): void {
+  _erpnextStockReconciliationSweep.add(1, { outcome });
 }
 
 // ---------------------------------------------------------------------------
@@ -914,6 +957,9 @@ export const WORKER_METRIC_NAMES = [
   // 015-POLISH (spec §VII): posting reconciliation / DLQ flag, emitted by
   // PostingRequestedConsumer on a 015-RESOLVE creation-time rejection.
   "erpnext_posting_reconciliation_total",
+  // RT-179: scheduled stock reconciliation sweep outcomes, emitted by
+  // StockRunSweepProcessor.
+  "erpnext_stock_reconciliation_sweep_total",
 ] as const satisfies readonly string[];
 
 export type WorkerMetricName = (typeof WORKER_METRIC_NAMES)[number];

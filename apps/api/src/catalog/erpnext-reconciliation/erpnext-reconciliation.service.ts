@@ -15,7 +15,12 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Pool, PoolClient } from "pg";
 
-import { emit, OUTBOX_EVENT_TYPES, runWithTenantContext } from "@data-pulse-2/db";
+import {
+  createStockReconciliationRun,
+  runWithTenantContext,
+  STOCK_RECONCILIATION_RUN_COLUMNS,
+  type StockReconciliationRunRow,
+} from "@data-pulse-2/db";
 import { newId } from "@data-pulse-2/shared";
 
 import { PG_POOL } from "../../auth/auth.module";
@@ -364,47 +369,22 @@ export class ErpnextReconciliationService {
         );
         if (!store.rows[0]) throw new StoreNotFoundError();
 
-        const runId = newId();
-        const row = await client.query<RunDbRow>(
-          `INSERT INTO erpnext_reconciliation_run
-             (id, tenant_id, store_id, kind, trigger, status, actor_user_id)
-           VALUES ($1, $2, $3, 'stock', 'on_demand', 'running', $4)
-           RETURNING ${RUN_COLS}`,
-          [runId, input.tenantId, input.storeId, input.actorUserId],
-        );
-        await this.insertAudit(client, input.tenantId, input.actorUserId, {
-          action: "erpnext_reconciliation.run.triggered",
-          targetType: "erpnext_reconciliation_run",
-          targetId: runId,
-          metadata: { store_id: input.storeId },
+        // RT-179: the run insert + audit + 019-T041 conditional emit live in the
+        // shared `createStockReconciliationRun` (packages/db), the same path the
+        // worker's scheduled sweep uses. A store with an active `stock` map
+        // DEFERS the emit to the connector Bin snapshot; an unmapped store emits
+        // now so the processor completes it as `unmapped_store` (CodeRabbit #528
+        // P1: do not strand unmapped-store runs).
+        const { run } = await createStockReconciliationRun(client, {
+          runId: newId(),
+          auditEventId: newId(),
+          tenantId: input.tenantId,
+          storeId: input.storeId,
+          trigger: "on_demand",
+          actorUserId: input.actorUserId,
+          actorLabel: null,
         });
-        // 019-T041 lifecycle (shape a) — CONDITIONAL emit:
-        //
-        //   - store HAS an active 014 `stock` map → DEFER: the run WAITS in
-        //     `running`, offered on the 019 bin-view feed; the connector reports
-        //     its Bin snapshot and `binViewReportSnapshot` emits the event then, so
-        //     the processor runs over REAL Bin data (not the inert EMPTY_BIN_VIEW).
-        //   - store has NO active map → EMIT NOW: the bin-view feed only offers
-        //     MAPPED runs, so a deferred unmapped-store run would be STRANDED in
-        //     `running` forever (the connector can't read a store with no warehouse
-        //     ref, and the processor's `unmapped_store` classification — which runs
-        //     BEFORE any bin-view fetch — would be unreachable). Emitting at trigger
-        //     lets the processor complete it immediately as `unmapped_store`
-        //     (CodeRabbit #528 P1: do not strand unmapped-store runs).
-        const mapped = await client.query<{ n: string }>(
-          `SELECT count(*)::text AS n FROM erpnext_warehouse_map
-            WHERE store_id = $1 AND purpose = 'stock' AND retired_at IS NULL`,
-          [input.storeId],
-        );
-        if (Number(mapped.rows[0]!.n) === 0) {
-          await emit(client, {
-            eventType: OUTBOX_EVENT_TYPES.ERPNEXT_RECONCILIATION_REQUESTED,
-            tenantId: input.tenantId,
-            storeId: input.storeId,
-            payload: { run_id: runId, store_id: input.storeId },
-          });
-        }
-        return toRunBody(row.rows[0]!);
+        return toRunBody(run);
       },
     );
   }
@@ -554,18 +534,9 @@ export class ErpnextReconciliationService {
 // US3 row → wire projection helpers
 // ---------------------------------------------------------------------------
 
-const RUN_COLS = `id, store_id, kind, trigger, status, started_at, finished_at, summary`;
+const RUN_COLS = STOCK_RECONCILIATION_RUN_COLUMNS;
 
-interface RunDbRow {
-  id: string;
-  store_id: string;
-  kind: "stock";
-  trigger: "on_demand" | "scheduled";
-  status: "running" | "completed" | "failed";
-  started_at: Date;
-  finished_at: Date | null;
-  summary: Record<string, unknown> | null;
-}
+type RunDbRow = StockReconciliationRunRow;
 
 interface ResultDbRow {
   id: string;

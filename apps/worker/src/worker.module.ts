@@ -129,6 +129,14 @@ import { PostingRequestedConsumer } from "./erpnext-posting/posting-requested.co
 import { ReconciliationRequestedConsumer } from "./erpnext-reconciliation/reconciliation-requested.consumer";
 import { ProductReconciliationRequestedConsumer } from "./erpnext-product-reconciliation/product-reconciliation-requested.consumer";
 import { ReportBackedBinView } from "./erpnext-reconciliation/report-backed-bin-view";
+import { resolveStockRunSweepIntervalMs } from "./erpnext-reconciliation/stock-run-sweep.config";
+import { StockRunSweepProcessor } from "./erpnext-reconciliation/stock-run-sweep.processor";
+import {
+  NoOpStockRunSweepRepository,
+  PgStockRunSweepRepository,
+} from "./erpnext-reconciliation/stock-run-sweep.repository";
+import { StockRunSweepScheduler } from "./erpnext-reconciliation/stock-run-sweep.scheduler";
+import { StockRunSweepWorker } from "./erpnext-reconciliation/stock-run-sweep.worker";
 import {
   OutboxRetentionProcessor,
   OUTBOX_RETENTION_REPO,
@@ -165,7 +173,7 @@ export class BullMqWorkerFactory implements WorkerFactory {
     const client = new InstrumentedRedis(this.redisUrl);
     const worker = new BullMqWorker(
       queueName,
-      async (job) => handler({ name: job.name, data: job.data }),
+      async (job) => handler({ name: job.name, data: job.data, id: job.id }),
       { connection: client, ...options },
     );
     return {
@@ -431,6 +439,24 @@ export function outboxRetentionRepoProviderFactory(
     return new NoOpOutboxRetentionRepository();
   }
   return new DrizzleOutboxRetentionRepository(wrapper.pool);
+}
+
+/**
+ * Factory for the `StockRunSweepProcessor` provider (RT-179).
+ *
+ * Reuses the shared `AuditDbPool` wrapper (no second pool). On the no-DB path
+ * the NoOp repository lists no tenants, so a sweep is an empty pass. The
+ * interval is resolved here as well as in the scheduler, so an invalid
+ * `ERPNEXT_STOCK_RECONCILIATION_SWEEP_INTERVAL_MS` refuses boot.
+ */
+export function stockRunSweepProcessorProviderFactory(
+  wrapper: AuditDbPool,
+): StockRunSweepProcessor {
+  const repo =
+    wrapper.pool === null
+      ? new NoOpStockRunSweepRepository()
+      : new PgStockRunSweepRepository(wrapper.pool);
+  return new StockRunSweepProcessor(repo, resolveStockRunSweepIntervalMs());
 }
 
 /** DI token for the `AuditDbPool` Nest-managed wrapper. */
@@ -771,6 +797,20 @@ export class WorkerDatabaseRoleVerifier implements OnModuleInit {
     OutboxRetentionWorker,
     OutboxRetentionScheduler,
 
+    // ── Scheduled ERPNext stock reconciliation run sweep (RT-179) ─────
+    //
+    // A repeatable job (default daily) that creates one `scheduled` stock run
+    // per store with an active stock warehouse map. Same quartet shape as the
+    // retention pipelines; the processor takes positional args, so it is
+    // built by an explicit factory.
+    {
+      provide: StockRunSweepProcessor,
+      useFactory: stockRunSweepProcessorProviderFactory,
+      inject: [AuditDbPool],
+    },
+    StockRunSweepWorker,
+    StockRunSweepScheduler,
+
     // ── Outbox drainer pipeline (T581) ────────────────────────────────
     //
     // The OUTBOX_DRAINER + OutboxDrainerRunner providers live here (not in
@@ -823,6 +863,8 @@ export class WorkerDatabaseRoleVerifier implements OnModuleInit {
     AuditRetentionProcessor,
     OutboxRetentionWorker,
     OutboxRetentionProcessor,
+    StockRunSweepWorker,
+    StockRunSweepProcessor,
     OUTBOX_DRAINER,
     OutboxDrainerRunner,
     WorkerDbPoolGaugeRegistrar,

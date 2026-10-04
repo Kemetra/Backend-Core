@@ -62,6 +62,11 @@ export const EMAIL_QUEUE_NAME = QUEUE_NAMES.email;
 export interface JobLike {
   readonly name: string;
   readonly data: unknown;
+  /**
+   * The BullMQ job id, when the transport has one (RT-179: a job-scheduler
+   * job's id carries its scheduled time). Optional; existing handlers ignore it.
+   */
+  readonly id?: string | undefined;
 }
 
 export type EmailJobHandler = (job: JobLike) => Promise<void>;

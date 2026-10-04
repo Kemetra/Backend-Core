@@ -194,6 +194,16 @@ export const ALLOWED_METRIC_LABELS: Readonly<Record<string, readonly string[]>> 
   // labels (the 009/010/015 domain-keyed-not-attribute-keyed precedent).
   erpnext_reconciliation_repair_total: [],
 
+  // ---- ERPNext stock reconciliation sweep — RT-179 ----
+  // Increments once per (tenant, store) the scheduled worker sweep considers:
+  // `outcome` is the closed set {created, skipped_running, skipped_period,
+  // skipped_ineligible} (a run was created; the store already had a running
+  // stock run; a scheduled run already exists for this period; the tenant was
+  // suspended or the store/stock map retired between listing and creation).
+  // The (tenant, store) itself lives on
+  // the run row + the sweep's structured log, NOT a metric label.
+  erpnext_stock_reconciliation_sweep_total: ["outcome"],
+
   // ---- Connector boundary lifecycle — 018-POLISH (spec §FR-022a) ----
   // Increments on every connector credential/registration lifecycle action
   // (register / issue / rotate / revoke / disable) — operational visibility for
