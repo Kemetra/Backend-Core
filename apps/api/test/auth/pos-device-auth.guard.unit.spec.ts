@@ -27,9 +27,10 @@ import "reflect-metadata";
 import { UnauthorizedException } from "@nestjs/common";
 import type { ExecutionContext } from "@nestjs/common";
 import type { DeviceRow } from "@data-pulse-2/db/schema";
+import type { Pool } from "pg";
 
 import { SESSION_COOKIE_NAME } from "../../src/auth/auth.guard";
-import type { DeviceRepository } from "../../src/pos-operators/device.repository";
+import { DeviceRepository } from "../../src/pos-operators/device.repository";
 import { PosDeviceAuthGuard } from "../../src/auth/pos-device-auth.guard";
 import type { TenantContextRequest } from "../../src/context/types";
 
@@ -210,5 +211,134 @@ describe("PosDeviceAuthGuard — dashboard cookie rejected", () => {
       UnauthorizedException,
     );
     expect(devices.findActiveByAttestation).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// PDG6 (RT-213) — a device of a suspended / pending / soft-deleted tenant is
+// refused exactly like a revoked device.
+//
+// The check lives in DeviceRepository (the one device resolution every
+// device route shares), so this block wires the REAL DeviceRepository over
+// two fake pools: the pre-tenant lookup pool returns the device row, and
+// the domain pool answers the tenant-status read inside the device's tenant
+// context. Docker-free; the SQL itself is proven in
+// test/auth/tenant-status-device-auth.http.integration.spec.ts.
+// ===========================================================================
+
+interface TenantRowFake {
+  status: string;
+  deleted_at: Date | null;
+}
+
+/** The pre-tenant lookup pool: answers the drizzle device lookup (array rows). */
+function fakeLookupPool(deviceTenantId = TENANT_ID): Pool {
+  return {
+    query: jest.fn(async (config: { rowMode?: string }) => {
+      if (config && config.rowMode === "array") {
+        return {
+          rows: [
+            [
+              DEVICE_ID,
+              deviceTenantId,
+              STORE_ID,
+              "Lane 1",
+              Buffer.from("hash"),
+              null,
+              "2026-10-01T00:00:00.000Z",
+              "2026-10-01T00:00:00.000Z",
+            ],
+          ],
+        };
+      }
+      return { rows: [] };
+    }),
+  } as unknown as Pool;
+}
+
+interface DomainFake {
+  pool: Pool;
+  calls: Array<{ text: string; params: unknown[] | undefined }>;
+}
+
+/** The domain pool: the tenants read must run inside runWithTenantContext. */
+function fakeDomainPool(tenantRow: TenantRowFake | null): DomainFake {
+  const calls: DomainFake["calls"] = [];
+  const client = {
+    query: jest.fn(async (text: string, params?: unknown[]) => {
+      calls.push({ text, params });
+      if (/\bfrom\s+tenants\b/i.test(text)) {
+        return { rows: tenantRow === null ? [] : [tenantRow] };
+      }
+      return { rows: [] };
+    }),
+    release: jest.fn(),
+  };
+  const pool = { connect: jest.fn(async () => client) } as unknown as Pool;
+  return { pool, calls };
+}
+
+function guardOver(tenantRow: TenantRowFake | null): {
+  guard: PosDeviceAuthGuard;
+  domain: DomainFake;
+} {
+  const domain = fakeDomainPool(tenantRow);
+  const repo = new DeviceRepository(fakeLookupPool(), domain.pool);
+  return { guard: new PosDeviceAuthGuard(repo), domain };
+}
+
+/** What a revoked device gets today: the guard's generic 401. */
+async function revokedDeviceRefusal(): Promise<unknown> {
+  const { guard, devices } = buildGuard();
+  devices.findActiveByAttestation.mockResolvedValue(null);
+  try {
+    await guard.canActivate(makeCtx(makeRequest({ authorization: "Bearer revoked" })));
+  } catch (err) {
+    return err;
+  }
+  throw new Error("a revoked device was admitted");
+}
+
+describe("PosDeviceAuthGuard — RT-213 tenant status", () => {
+  it("PDG6a: active tenant → admitted; the status is read inside the device's tenant context", async () => {
+    const { guard, domain } = guardOver({ status: "active", deleted_at: null });
+    const req = makeRequest({ authorization: "Bearer device-pairing-token" });
+
+    await expect(guard.canActivate(makeCtx(req))).resolves.toBe(true);
+    expect(req.posDeviceId).toBe(DEVICE_ID);
+    // The tenants read is RLS-scoped to the DEVICE's tenant (constitution §II).
+    const guc = domain.calls.find((c) => c.text.includes("app.current_tenant"));
+    expect(guc?.params).toEqual([TENANT_ID]);
+    expect(domain.calls.some((c) => /\bfrom\s+tenants\b/i.test(c.text))).toBe(true);
+  });
+
+  it.each<[string, TenantRowFake | null]>([
+    ["suspended", { status: "suspended", deleted_at: null }],
+    ["pending", { status: "pending", deleted_at: null }],
+    ["soft-deleted (status active)", { status: "active", deleted_at: new Date("2026-10-01T00:00:00Z") }],
+    ["soft-deleted and suspended", { status: "suspended", deleted_at: new Date("2026-10-01T00:00:00Z") }],
+    ["tenant row not visible", null],
+  ])("PDG6b: %s tenant → the same 401 as a revoked device; nothing published", async (_label, row) => {
+    const { guard } = guardOver(row);
+    const req = makeRequest({ authorization: "Bearer device-pairing-token" });
+
+    const err = await guard.canActivate(makeCtx(req)).then(
+      () => {
+        throw new Error("a device of an inactive tenant was admitted");
+      },
+      (e: unknown) => e,
+    );
+    const revoked = await revokedDeviceRefusal();
+
+    expect(err).toBeInstanceOf(UnauthorizedException);
+    expect((err as UnauthorizedException).getStatus()).toBe(
+      (revoked as UnauthorizedException).getStatus(),
+    );
+    expect((err as UnauthorizedException).getResponse()).toEqual(
+      (revoked as UnauthorizedException).getResponse(),
+    );
+    expect(req.context).toBeUndefined();
+    expect(req.principal).toBeUndefined();
+    expect(req.posDeviceId).toBeUndefined();
   });
 });
