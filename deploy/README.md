@@ -80,6 +80,30 @@ git pull && op run --env-file=deploy/prod.env -- docker compose -f docker-compos
 docker compose -f docker-compose.prod.yml down            # keeps volumes (redis AOF, caddy certs)
 ```
 
+### Worker schedules
+
+The worker registers its repeatable jobs in Redis at boot. Each schedule is
+idempotent, so restarts and replicas share one schedule.
+
+| Job | Default cadence | Override |
+|---|---|---|
+| Audit retention sweep | 24 h | none |
+| Outbox retention sweep | 24 h | none |
+| ERPNext stock reconciliation run sweep (RT-179) | 24 h | `ERPNEXT_STOCK_RECONCILIATION_SWEEP_INTERVAL_MS` |
+
+The stock sweep creates one `scheduled` stock reconciliation run for every store
+that has an active `stock` warehouse map. A store is skipped when it already has
+a `running` stock run, or when it already has a scheduled run in the current
+period. Periods are the interval aligned to the Unix epoch. For the daily
+default, that is the UTC day. The run then waits for the connector's Bin
+snapshot, the same as an on-demand run.
+
+`ERPNEXT_STOCK_RECONCILIATION_SWEEP_INTERVAL_MS` must be a whole number of
+milliseconds, at least `300000` (5 minutes). Any other value stops the worker
+from booting. `docker-compose.prod.yml` does not pass this variable to the
+worker yet, so production runs the daily default. To override it, add it to
+the worker's `environment` block.
+
 ## Known follow-ups (not in this artifact)
 
 - **Hardening:** run containers as a non-root user; add resource limits; offsite backups

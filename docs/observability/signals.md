@@ -174,7 +174,8 @@ only after the Track C first slice (P7) ships.
 
 `queue` values (RT-125). The lag gauge observes the queues the worker
 consumes, taken from the shared `QUEUE_NAMES`: `email`, `audit`,
-`audit-retention`, `sale-processing`, `outbox-retention`. The three delivery
+`audit-retention`, `sale-processing`, `outbox-retention`,
+`erpnext-stock-reconciliation-sweep` (RT-179). The three delivery
 counters also carry `outbox-drainer`, which is the outbox drainer's own
 retries and dead-letters. The drainer is not a BullMQ queue, so it has no lag.
 Before RT-125, the drainer reported as `audit-fanout`, which is a job name,
@@ -187,6 +188,7 @@ none of which is a consumed queue.
 |---|---|---|---|
 | `worker_job_duration_seconds` | histogram | `job_name` (bounded set; one per declared job type) | FR-B-003, spec §7.5 |
 | `worker_processing_failure_total` | counter | `job_name`, `error_class` | FR-B-003, spec §7.5 |
+| `erpnext_stock_reconciliation_sweep_total` | counter | `outcome` (`created` / `skipped_running` / `skipped_period`) — one increment per store the scheduled stock reconciliation sweep considers; the tenant and store are in the sweep log, never a label | RT-179 |
 
 ### 3.4 Track C outbox (future, emitted after P7)
 
