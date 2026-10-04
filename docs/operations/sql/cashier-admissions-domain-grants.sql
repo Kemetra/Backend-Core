@@ -16,7 +16,9 @@
 -- also exits non-zero if the verification below finds a missing grant or a
 -- lookup-role privilege, so deployment automation cannot accept a failed step.
 --
--- Without these grants the three /api/pos/v1/cashier-admissions routes fail
+-- Without these grants the API refuses to boot in production
+-- (DOMAIN_REQUIRED_GRANTS in apps/api/src/auth/database-pools.ts, RT-212);
+-- with the boot check off, the three /api/pos/v1/cashier-admissions routes fail
 -- with 500 (permission denied). The tables are FORCE ROW LEVEL SECURITY, so the
 -- grants give access only inside runWithTenantContext.
 --
@@ -26,10 +28,10 @@
 -- row security.
 --
 -- The auth lookup role must hold no privilege on these tables. At boot the API
--- refuses to start if it holds SELECT, INSERT, UPDATE or DELETE on either one
--- (AUTH_LOOKUP_FORBIDDEN_GRANTS in apps/api/src/auth/database-pools.ts); the
--- boot check does not cover TRUNCATE, REFERENCES or TRIGGER, which the
--- optional lookup_role check below does.
+-- refuses to start if it holds any table privilege on either one, TRUNCATE,
+-- REFERENCES and TRIGGER included (AUTH_LOOKUP_FORBIDDEN_GRANTS in
+-- apps/api/src/auth/database-pools.ts, RT-212). The optional lookup_role check
+-- below runs the same check at deploy time.
 
 \set ON_ERROR_STOP on
 
