@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Operators API
-  version: "1.1.0-draft"
+  version: "1.1.1-draft"
   description: >
     POS-Pulse 004 Backend operator identity surface. Wave 1 (sign-in /
     sign-out) + Wave 3 (roster, takeover confirm, active-session).
@@ -9,12 +9,35 @@ info:
 
     All endpoints authenticate the caller via the role-named `operator-identity`
     security scheme — a provider-identity JWT in `Authorization: Bearer <jwt>`
-    (spec 030 / 028 DOC-1; previously named `clerkJwt`), paired with the platform
-    device-token header (per the existing 001/002 baseline). The JWT is identity
-    proof only — NOT business authorization (028 §6 CM-1). Both endpoints fail
-    closed: every refusal returns the same generic
-    `{ error: { code, message, request_id } }` envelope and does not
+    (spec 030 / 028 DOC-1; previously named `clerkJwt`). The JWT is identity
+    proof only — NOT business authorization (028 §6 CM-1). There is NO
+    device-token header on this surface. The POST operations (sign-in,
+    takeover confirm) additionally carry the paired terminal's device token in
+    the request body as `device_token_attestation`, which resolves the
+    terminal's tenant + branch scope. The GET operations (roster,
+    active-session) carry NO device credential at all: their branch scope is
+    the required `branch_id` query parameter, checked against the caller's own
+    membership. Every endpoint fails closed: every refusal returns the same
+    generic `{ error: { code, message, request_id } }` envelope and does not
     enumerate causes.
+
+
+    Caller eligibility (RT-150): roster and active-session admit only a
+    manager-eligible caller (an `owner`, `tenant_admin` or `store_manager`
+    membership with access to `branch_id`). A cashier holds no
+    provider-identity JWT and cannot call any route on this surface. Per
+    RT-113 (comment 10763, D2 / D11), the cashier PIN sign-in path uses the
+    device-authenticated `pos-cashier-admissions.openapi.yaml` surface instead
+    (`posCreateCashierAdmission` replaces the cashier path's active-session
+    check; `posListCashierAdmissionRoster` replaces its roster read). The
+    routes in this contract are unchanged by that.
+
+
+    1.1.1-draft (RT-113 BC1): documentation-only. The roster, active-session
+    and sign-out prose described a device-token header and a device-token
+    branch scope that neither the `security` block nor the runtime uses
+    (RT-182). The prose now states the runtime behaviour. No schema,
+    parameter, security or response change.
 
 
     Wave 3 minimum-disclosure principles (FR-013):
@@ -92,7 +115,7 @@ paths:
       description: >
         Revokes the backend POS operator session identified by the
         `session_id` body field, on behalf of the Clerk-authenticated
-        caller paired with the platform device-token header. Idempotent
+        caller. No device credential is read on sign-out. Idempotent
         in effect: a session id that is already revoked, expired, or
         unknown returns the same generic refusal envelope as any other
         invalid sign-out attempt. The Clerk session lifecycle is Clerk's;
@@ -119,8 +142,8 @@ paths:
             Generic refusal. The body does not distinguish between an
             invalid Clerk JWT, an unknown / already-revoked / expired
             session id, a session id that does not belong to the
-            authenticated operator, a tenant / branch mismatch against
-            the device-token claim, or rate-limit exhaustion.
+            authenticated operator, or a session that is not a POS
+            operator session.
           content:
             application/json:
               schema:
@@ -129,11 +152,17 @@ paths:
     get:
       summary: Return the cashier roster for a branch.
       description: >
-        Returns all cashier-role members of the branch resolved from the
-        device-token claim. The optional `branch_id` query parameter
-        allows POS-Pulse to confirm the branch scope it expects — the
-        server validates it against the device token's resolved scope and
-        returns a 401 on mismatch.
+        Returns all cashier-role (`store_staff`) members of the branch named
+        by `branch_id`. The caller is identified by the `operator-identity`
+        JWT alone; no device token is read. The caller must be
+        manager-eligible (RT-150: `owner`, `tenant_admin` or
+        `store_manager`) with an active membership that has access to
+        `branch_id`; otherwise the request is refused with a generic 401.
+
+
+        Not for the cashier sign-in path: cashiers hold no provider-identity
+        JWT. The cashier picker reads `posListCashierAdmissionRoster`
+        (`pos-cashier-admissions.openapi.yaml`, RT-113 D11).
 
 
         Minimum-disclosure (FR-013): the response carries only the fields
@@ -152,12 +181,13 @@ paths:
             type: string
             format: uuid
           description: >
-            Branch id to scope the roster. When provided, the server
-            validates it against the device token's resolved branch scope;
-            a mismatch returns a generic 401. When omitted, the server
-            uses the device token's branch scope directly. POS callers
-            SHOULD always pass this to catch stale token / branch
-            drift early.
+            Branch (store) id to scope the roster. The runtime REQUIRES it:
+            a request without `branch_id` is refused with the generic 401,
+            because no device token is read on this route and the branch
+            cannot be resolved any other way. (The parameter is still
+            declared `required: false`; tightening the declaration is a
+            separate, acknowledged contract change.) The caller's own
+            membership must have access to this branch.
       responses:
         "200":
           description: Cashier roster for the resolved branch.
@@ -168,8 +198,9 @@ paths:
         "401":
           description: >
             Generic refusal. The body does not distinguish between an
-            invalid Clerk JWT, an invalid device token, a
-            `branch_id` mismatch, or rate-limit exhaustion.
+            invalid Clerk JWT, an unmapped or disabled user, a missing
+            `branch_id`, a missing membership or store access for
+            `branch_id`, or a caller that is not manager-eligible (RT-150).
           content:
             application/json:
               schema:
@@ -230,8 +261,17 @@ paths:
         Returns a minimum-disclosure signal indicating whether the
         operator identified by `operator_id` currently holds an active
         (non-revoked, non-expired) POS operator session on any terminal
-        within the specified `branch_id`. The caller must have an active
-        membership for that branch; the check is refused otherwise.
+        within the specified `branch_id`. The caller is identified by the
+        `operator-identity` JWT alone; no device token is read. The caller
+        must be manager-eligible (RT-150: `owner`, `tenant_admin` or
+        `store_manager`) with an active membership that has access to
+        `branch_id`; the check is refused otherwise.
+
+
+        Not for the cashier sign-in path: cashiers hold no provider-identity
+        JWT. The cashier path's single-active check is
+        `posCreateCashierAdmission` (`pos-cashier-admissions.openapi.yaml`,
+        RT-113 D2).
 
 
         Minimum-disclosure (FR-013): the response MUST contain ONLY the
@@ -284,8 +324,9 @@ paths:
         "401":
           description: >
             Generic refusal. The body does not distinguish between an
-            invalid Clerk JWT, an invalid device token, or rate-limit
-            exhaustion.
+            invalid Clerk JWT, an unmapped or disabled user, a missing
+            membership or store access for `branch_id`, or a caller that is
+            not manager-eligible (RT-150).
           content:
             application/json:
               schema:

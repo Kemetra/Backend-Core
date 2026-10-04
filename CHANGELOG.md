@@ -10,6 +10,17 @@ This project follows [Semantic Versioning](https://semver.org/).
 - Phase 1 workspace setup: `pnpm-workspace.yaml`, `tsconfig.base.json`,
   `.eslintrc.cjs`, `.prettierrc`, `.nvmrc`, root `package.json`,
   `docker-compose.dev.yml`, Constitution-Check PR template.
+- RT-113 BC1: OpenAPI contract `pos-cashier-admissions.openapi.yaml`
+  (1.0.0-draft, contract-only). It defines the device-authenticated cashier
+  admission, admission end and cashier roster routes that replace the cashier
+  path's use of the operator-identity-gated roster and active-session routes.
+
+### Changed
+- RT-113 BC1: `pos-operators.openapi.yaml` 1.1.1-draft is a prose-only fix.
+  The roster and active-session descriptions now match the `security` block
+  and the runtime (RT-182): an operator-identity JWT, an RT-150
+  manager-eligible caller, a `branch_id` the runtime requires, and no device
+  token read.
 
 ## [0.1.0] — Foundation backend — 2026-05-12
 
