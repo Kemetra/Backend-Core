@@ -35,7 +35,7 @@ import {
   type StockReconciliationSweepOutcome,
 } from "../observability/metrics/worker.metrics";
 import { sweepPeriodStart } from "./stock-run-sweep.config";
-import type { StockRunSweepRepository } from "./stock-run-sweep.repository";
+import type { StockRunSweepRepository, SweepStoreResult } from "./stock-run-sweep.repository";
 
 /** BullMQ job (and job-scheduler) name. Pinned by the scheduler spec. */
 export const STOCK_RUN_SWEEP_JOB_NAME = "erpnext-stock-reconciliation-sweep";
@@ -91,49 +91,83 @@ export class StockRunSweepProcessor {
   ) {}
 
   async process(jobName: string, data: unknown): Promise<StockRunSweepResult> {
-    if (jobName !== STOCK_RUN_SWEEP_JOB_NAME) {
-      throw new UnknownStockRunSweepJobError(jobName);
-    }
-    if (!StockRunSweepJobSchema.safeParse(data).success) {
-      throw new MalformedStockRunSweepJobError(jobName);
-    }
+    assertSweepJob(jobName, data);
 
     const now = this.clock();
     const periodStart = sweepPeriodStart(now, this.intervalMs);
-    const counts: Record<StockReconciliationSweepOutcome, number> = {
-      created: 0,
-      skipped_running: 0,
-      skipped_period: 0,
-    };
-    let failedTenants = 0;
+    const counts = emptyCounts();
 
     const tenantIds = await this.repo.listActiveTenantIds();
+    let failedTenants = 0;
     for (const tenantId of tenantIds) {
-      try {
-        await this.sweepTenant(tenantId, periodStart, now, counts);
-      } catch (err) {
-        failedTenants += 1;
-        // Error class only — a pg message can carry row values (§VII).
-        this.log({
-          level: "error",
-          component: COMPONENT,
-          message: "tenant_sweep_failed",
-          tenant_id: tenantId,
-          errorName: err instanceof Error ? err.name || "Error" : "UnknownError",
-        });
-      }
+      const ok = await this.sweepTenantSafely(tenantId, periodStart, now, counts);
+      if (!ok) failedTenants += 1;
     }
 
-    const result: StockRunSweepResult = {
-      periodStart: periodStart.toISOString(),
-      tenants: tenantIds.length,
-      created: counts.created,
-      skippedRunning: counts.skipped_running,
-      skippedPeriod: counts.skipped_period,
-      failedTenants,
-    };
+    const result = toResult(periodStart, tenantIds.length, counts, failedTenants);
+    this.logSummary(result);
+    if (failedTenants > 0) throw new StockRunSweepIncompleteError(failedTenants);
+    return result;
+  }
+
+  /** Sweep one tenant. A failure is logged (error class only) and returns false. */
+  private async sweepTenantSafely(
+    tenantId: string,
+    periodStart: Date,
+    now: Date,
+    counts: SweepCounts,
+  ): Promise<boolean> {
+    try {
+      await this.sweepTenant(tenantId, periodStart, now, counts);
+      return true;
+    } catch (err) {
+      // Error class only — a pg message can carry row values (§VII).
+      this.log({
+        level: "error",
+        component: COMPONENT,
+        message: "tenant_sweep_failed",
+        tenant_id: tenantId,
+        errorName: errorClassName(err),
+      });
+      return false;
+    }
+  }
+
+  private async sweepTenant(
+    tenantId: string,
+    periodStart: Date,
+    now: Date,
+    counts: SweepCounts,
+  ): Promise<void> {
+    const storeIds = await this.repo.listMappedStoreIds(tenantId);
+    for (const storeId of storeIds) {
+      const swept = await this.repo.sweepStore({ tenantId, storeId, periodStart, now });
+      this.recordOutcome(tenantId, storeId, swept, counts);
+    }
+  }
+
+  private recordOutcome(
+    tenantId: string,
+    storeId: string,
+    { outcome, runId }: SweepStoreResult,
+    counts: SweepCounts,
+  ): void {
+    counts[outcome] += 1;
+    recordStockReconciliationSweep(outcome);
     this.log({
-      level: failedTenants > 0 ? "warn" : "info",
+      level: "info",
+      component: COMPONENT,
+      message: "store_swept",
+      outcome,
+      tenant_id: tenantId,
+      store_id: storeId,
+      run_id: runId,
+    });
+  }
+
+  private logSummary(result: StockRunSweepResult): void {
+    this.log({
+      level: result.failedTenants > 0 ? "warn" : "info",
       component: COMPONENT,
       message: "sweep_complete",
       period_start: result.periodStart,
@@ -141,37 +175,45 @@ export class StockRunSweepProcessor {
       created: result.created,
       skipped_running: result.skippedRunning,
       skipped_period: result.skippedPeriod,
-      failed_tenants: failedTenants,
+      failed_tenants: result.failedTenants,
     });
-    if (failedTenants > 0) throw new StockRunSweepIncompleteError(failedTenants);
-    return result;
   }
+}
 
-  private async sweepTenant(
-    tenantId: string,
-    periodStart: Date,
-    now: Date,
-    counts: Record<StockReconciliationSweepOutcome, number>,
-  ): Promise<void> {
-    const storeIds = await this.repo.listMappedStoreIds(tenantId);
-    for (const storeId of storeIds) {
-      const { outcome, runId } = await this.repo.sweepStore({
-        tenantId,
-        storeId,
-        periodStart,
-        now,
-      });
-      counts[outcome] += 1;
-      recordStockReconciliationSweep(outcome);
-      this.log({
-        level: "info",
-        component: COMPONENT,
-        message: "store_swept",
-        outcome,
-        tenant_id: tenantId,
-        store_id: storeId,
-        run_id: runId,
-      });
-    }
+type SweepCounts = Record<StockReconciliationSweepOutcome, number>;
+
+function emptyCounts(): SweepCounts {
+  return { created: 0, skipped_running: 0, skipped_period: 0 };
+}
+
+/** Rejects a job that is not the sweep, or whose payload is not an object. */
+function assertSweepJob(jobName: string, data: unknown): void {
+  if (jobName !== STOCK_RUN_SWEEP_JOB_NAME) {
+    throw new UnknownStockRunSweepJobError(jobName);
   }
+  if (!StockRunSweepJobSchema.safeParse(data).success) {
+    throw new MalformedStockRunSweepJobError(jobName);
+  }
+}
+
+function toResult(
+  periodStart: Date,
+  tenants: number,
+  counts: SweepCounts,
+  failedTenants: number,
+): StockRunSweepResult {
+  return {
+    periodStart: periodStart.toISOString(),
+    tenants,
+    created: counts.created,
+    skippedRunning: counts.skipped_running,
+    skippedPeriod: counts.skipped_period,
+    failedTenants,
+  };
+}
+
+/** The error's class name for logs, never its message. */
+function errorClassName(err: unknown): string {
+  if (!(err instanceof Error)) return "UnknownError";
+  return err.name || "Error";
 }
