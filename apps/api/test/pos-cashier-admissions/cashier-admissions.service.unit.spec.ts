@@ -88,11 +88,11 @@ function world(overrides: Partial<World> = {}): World {
 function build(w: World) {
   const calls: string[] = [];
   const track = <T>(name: string, value: T) =>
-    jest.fn(async () => {
+    jest.fn(async (..._args: unknown[]) => {
       calls.push(name);
       return value;
     });
-  const store: jest.Mocked<AdmissionStore> = {
+  const store = {
     lockRequestKey: track("lockRequestKey", undefined),
     findRequest: track("findRequest", w.prior),
     lockCashier: track("lockCashier", undefined),
@@ -105,7 +105,7 @@ function build(w: World) {
     saveRequest: track("saveRequest", undefined),
     findOwned: track("findOwned", null),
     endOwned: track("endOwned", false),
-  };
+  } as unknown as jest.Mocked<AdmissionStore>;
   const ports: AdmissionPorts = {
     tx: async (_tenantId, work) => work(CLIENT),
     admissions: store,
@@ -337,11 +337,13 @@ describe("CashierAdmissionsService.admit — replay", () => {
 // ===========================================================================
 describe("CashierAdmissionsService.end", () => {
   it("own live admission → locked, ended and audited with the user", async () => {
-    const { service, store, ports, calls } = build(world());
+    const { service, store, ports } = build(world());
     store.findOwned.mockResolvedValueOnce({ id: LIVE_ID, userId: USER });
     store.endOwned.mockResolvedValueOnce(true);
     await service.end(SCOPE, LIVE_ID, "req-1");
-    expect(calls.indexOf("lockCashier")).toBeLessThan(calls.indexOf("endOwned"));
+    expect(store.lockCashier.mock.invocationCallOrder[0]).toBeLessThan(
+      store.endOwned.mock.invocationCallOrder[0]!,
+    );
     expect(ports.audit.record).toHaveBeenCalledWith(
       CLIENT,
       expect.objectContaining({

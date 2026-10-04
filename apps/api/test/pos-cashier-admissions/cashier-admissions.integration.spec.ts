@@ -154,8 +154,9 @@ describe("request validation (400)", () => {
 // 403 — eligibility, generic and non-disclosing
 // ===========================================================================
 describe("eligibility (403 refused, no oracle)", () => {
+  const UNKNOWN_USER = randomUUID();
   const cases: Array<[string, () => string, string]> = [
-    ["an unknown user", () => randomUUID(), "membership_inactive"],
+    ["an unknown user", () => UNKNOWN_USER, "membership_inactive"],
     ["a user of another tenant", () => CASHIER_B.id, "membership_inactive"],
     ["a deleted user", () => DELETED.id, "user_deleted"],
     ["a revoked membership", () => REVOKED.id, "membership_inactive"],
@@ -325,7 +326,10 @@ describe("online admission and the single-active rule", () => {
     if (skipped()) return;
     const first = admitted(await admitAs(DEV_A1, online(CASHIER.id)));
     await h().admin.query(
-      "UPDATE cashier_admissions SET renewed_at = now() - interval '1 hour', expires_at = now() + interval '1 hour' WHERE id = $1",
+      `UPDATE cashier_admissions
+          SET created_at = now() - interval '1 hour', renewed_at = now() - interval '1 hour',
+              expires_at = now() + interval '1 hour'
+        WHERE id = $1`,
       [first.admission_id],
     );
     const requestId = randomUUID();

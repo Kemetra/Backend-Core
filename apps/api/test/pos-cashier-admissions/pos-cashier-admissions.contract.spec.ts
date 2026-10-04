@@ -216,7 +216,7 @@ describe("pos-cashier-admissions — document and operations", () => {
 
   it("the info prose no longer calls the surface contract-only", () => {
     expect(doc.info?.description ?? "").not.toMatch(/Contract-only \(BC1\)/);
-    expect(doc.info?.description ?? "").toMatch(/Implemented \(RT-113 BC2\)/);
+    expect(doc.info?.description ?? "").toMatch(/Implemented \(RT-113 BC2;/);
   });
 });
 

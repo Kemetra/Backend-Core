@@ -77,10 +77,11 @@ info:
     device. Audit payloads carry no PIN, grant body or secret.
 
 
-    **Runtime status.** Contract-only (BC1). The runtime (controller, guard
-    wiring, persistence and migration) is RT-113 BC2, a separately gated
-    slice. Each operation is marked `x-runtime-status: contract-only` until
-    BC2 ships it.
+    **Runtime status.** Implemented (RT-113 BC2; `[GATED]` approval: RT-113
+    comment 10832). The contract was approved in BC1 and is unchanged on the
+    wire; BC2 shipped the controller, the device-guard wiring, the
+    persistence and migration 0035, so no operation carries
+    `x-runtime-status: contract-only`.
 
 
     Cross-cutting conventions live in
@@ -180,11 +181,6 @@ paths:
         `user_id` and the prior `admission_id` it ended. Audit payloads carry
         no PIN, grant body or secret.
       operationId: posCreateCashierAdmission
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-113 BC1 approves the contract only. The Backend-Core controller,
-        device-guard wiring, admission persistence and migration are RT-113
-        BC2, a separately gated slice; no route is shipped yet.
       x-idempotency: required
       tags: [pos-cashier-admissions]
       security:
@@ -238,11 +234,6 @@ paths:
         nothing, the event records only what is visible in the device's own
         tenant scope.
       operationId: posEndCashierAdmission
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-113 BC1 approves the contract only. The Backend-Core controller,
-        device-guard wiring, admission persistence and migration are RT-113
-        BC2, a separately gated slice; no route is shipped yet.
       tags: [pos-cashier-admissions]
       security:
         - device: []
@@ -289,11 +280,6 @@ paths:
         credential fragment, admission state or provisioning state. Order is
         not significant.
       operationId: posListCashierAdmissionRoster
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-113 BC1 approves the contract only. The Backend-Core controller,
-        device-guard wiring and roster read are RT-113 BC2, a separately gated
-        slice; no route is shipped yet.
       tags: [pos-cashier-admissions]
       security:
         - device: []

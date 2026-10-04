@@ -29,6 +29,7 @@ import { InventoryModule } from "./inventory/inventory.module";
 import { MembershipsModule } from "./memberships/memberships.module";
 import { OutboxAdminModule } from "./outbox/admin.module";
 import { PosAuditEventsModule } from "./pos-audit-events/pos-audit-events.module";
+import { CashierAdmissionsModule } from "./pos-cashier-admissions/cashier-admissions.module";
 import { PosOperatorsModule } from "./pos-operators/pos-operators.module";
 import { PosShiftsModule } from "./pos-shifts/pos-shifts.module";
 import { SettlementModule } from "./settlement/settlement.module";
@@ -217,13 +218,14 @@ class ApiDbMigrationStatusGaugeRegistrar implements OnModuleInit, OnModuleDestro
  *   - `MembershipsModule`   — membership revoke (US4, first slice)
  *   - `OutboxAdminModule`   — outbox dead-letter triage (T591, 1C-C1)
  *   - `PosOperatorsModule`  — POS operator sign-in (Wave 1, PR-5)
+ *   - `CashierAdmissionsModule` — POS cashier admissions (RT-113 BC2)
  *   - `PosAuditEventsModule`— POS audit-event batch sync (Wave 2, PR-6)
  *
  * Cross-cutting interceptors, the global filter, and the global Zod
  * pipe are registered in `main.ts`.
  */
 @Module({
-  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, PosAuditEventsModule, PosShiftsModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, ConnectorModule, ConnectorHealthModule, PairingModule, HealthModule],
+  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, CashierAdmissionsModule, PosAuditEventsModule, PosShiftsModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, ConnectorModule, ConnectorHealthModule, PairingModule, HealthModule],
   controllers: [],
   providers: [
     ApiDbPoolGaugeRegistrar,

@@ -20,6 +20,8 @@ import {
   readCashierAdmissionPolicy,
 } from "../../src/pos-cashier-admissions/cashier-admissions.config";
 import { classifyEligibility, type EligibilityRow } from "../../src/pos-cashier-admissions/cashier-eligibility";
+import type { TenantContextRequest } from "../../src/context/types";
+import { deviceScopeOf } from "../../src/pos-cashier-admissions/device-scope";
 import { AdmissionIdSchema, AdmissionRequestSchema } from "../../src/pos-cashier-admissions/dto";
 import { TakeoverRateLimit } from "../../src/pos-cashier-admissions/takeover-rate-limit";
 
@@ -277,5 +279,32 @@ describe("AdmissionRequestSchema / AdmissionIdSchema", () => {
   it("the path id must be a uuid", () => {
     expect(AdmissionIdSchema.safeParse(USER).success).toBe(true);
     expect(AdmissionIdSchema.safeParse("not-a-uuid").success).toBe(false);
+  });
+});
+
+// ===========================================================================
+// Device scope (fail closed)
+// ===========================================================================
+describe("deviceScopeOf", () => {
+  const context = {
+    userId: null,
+    tenantId: "0190f5a2-3b4c-7d8e-9f01-00000000a001",
+    storeId: "0190f5a2-3b4c-7d8e-9f01-00000000b001",
+    isPlatformAdmin: false,
+    source: "token" as const,
+  };
+
+  it("returns the device, tenant and store the guard published", () => {
+    const req = { posDeviceId: DEVICE, context } as unknown as TenantContextRequest;
+    expect(deviceScopeOf(req)).toEqual({ deviceId: DEVICE, tenantId: context.tenantId, storeId: context.storeId });
+  });
+
+  it.each<[string, Partial<TenantContextRequest>]>([
+    ["no device id", { context }],
+    ["no context", { posDeviceId: DEVICE }],
+    ["no store", { posDeviceId: DEVICE, context: { ...context, storeId: null } }],
+    ["no tenant", { posDeviceId: DEVICE, context: { ...context, tenantId: null } }],
+  ])("throws a generic 401 with %s", (_label, req) => {
+    expect(() => deviceScopeOf(req as TenantContextRequest)).toThrow("Unauthorized");
   });
 });
