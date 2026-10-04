@@ -91,6 +91,15 @@ export const AUTH_LOOKUP_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string
 ];
 
 /**
+ * RT-212: every PostgreSQL table privilege. The lookup role has BYPASSRLS,
+ * and TRUNCATE is not subject to row security for any role, so a forbidden
+ * table must be checked for all of them, not only SELECT/INSERT/UPDATE/DELETE.
+ */
+const ALL_TABLE_PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER";
+/** Every table privilege except SELECT: membership reads are not forbidden. */
+const ALL_PRIVILEGES_EXCEPT_SELECT = "INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER";
+
+/**
  * Tables the lookup role must hold NO listed privilege on (sales,
  * receivables, cashier admissions, inventory, audit, idempotency, outbox,
  * membership mutation).
@@ -121,9 +130,31 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     "audit_events",
     "idempotency_keys",
     "outbox_events",
-  ].map((table) => [table, "SELECT, INSERT, UPDATE, DELETE"] as const),
-  ["memberships", "INSERT, UPDATE, DELETE"],
-  ["store_access", "INSERT, UPDATE, DELETE"],
+  ].map((table) => [table, ALL_TABLE_PRIVILEGES] as const),
+  ["memberships", ALL_PRIVILEGES_EXCEPT_SELECT],
+  ["store_access", ALL_PRIVILEGES_EXCEPT_SELECT],
+];
+
+/**
+ * RT-212: grants the domain (DATABASE_URL) role must hold. Runtime grants
+ * are provisioned outside migrations, so a deploy that skips a grant step
+ * would otherwise boot healthy while the affected routes return 500. Each
+ * entry is one privilege; boot fails if any is missing.
+ *
+ * Starts with the tables whose grants are documented as a separate deploy
+ * step (migration 0035, docs/operations/database-roles.md). Add a table here
+ * when a migration adds one the domain role must use.
+ */
+export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = [
+  // RT-113 BC2 (0035): admissions are ended, never deleted.
+  ["cashier_admissions", "SELECT"],
+  ["cashier_admissions", "INSERT"],
+  ["cashier_admissions", "UPDATE"],
+  // The replay store also purges expired entries.
+  ["cashier_admission_requests", "SELECT"],
+  ["cashier_admission_requests", "INSERT"],
+  ["cashier_admission_requests", "UPDATE"],
+  ["cashier_admission_requests", "DELETE"],
 ];
 
 interface GrantRow {
@@ -153,6 +184,22 @@ async function readGrants(
   return result.rows;
 }
 
+function formatGrants(grants: ReadonlyArray<GrantRow>): string {
+  return grants.map((g) => `${g.privilege} ON ${g.table_name}`).join(", ");
+}
+
+async function assertDomainGrants(domainPool: Pool): Promise<void> {
+  const required = await readGrants(domainPool, DOMAIN_REQUIRED_GRANTS);
+  const missing = required.filter((g) => !g.granted);
+  if (missing.length > 0) {
+    throw new Error(
+      "AuthModule: DATABASE_URL role is missing required grants: " +
+        formatGrants(missing) +
+        " (see docs/operations/database-roles.md)",
+    );
+  }
+}
+
 async function assertLookupGrants(lookupPool: Pool): Promise<void> {
   const [required, forbidden] = await Promise.all([
     readGrants(lookupPool, AUTH_LOOKUP_REQUIRED_GRANTS),
@@ -162,7 +209,7 @@ async function assertLookupGrants(lookupPool: Pool): Promise<void> {
   if (missing.length > 0) {
     throw new Error(
       "AuthModule: AUTH_LOOKUP_DATABASE_URL role is missing required grants: " +
-        missing.map((g) => `${g.privilege} ON ${g.table_name}`).join(", ") +
+        formatGrants(missing) +
         " (see docs/operations/database-roles.md)",
     );
   }
@@ -188,6 +235,7 @@ export async function verifyDatabasePoolBoundary(
 
   assertDomainRole(domainRole);
   assertLookupRole(lookupRole, domainRole.role_name);
+  await assertDomainGrants(domainPool);
   await assertLookupGrants(lookupPool);
 }
 

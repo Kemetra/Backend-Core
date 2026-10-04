@@ -10,6 +10,7 @@ import { PosShiftsService } from "../../src/pos-shifts/pos-shifts.service";
 import { TenantsRepository } from "../../src/tenants/tenants.repository";
 import { TenantsService } from "../../src/tenants/tenants.service";
 import {
+  APP_ROLE_NAME,
   applyAllUpAndCreateAppRole,
   startPgEnv,
   stopPgEnv,
@@ -138,6 +139,58 @@ describe("production database pool separation", () => {
     } finally {
       await admin.query(`GRANT UPDATE ON users TO ${LOOKUP_ROLE}`);
     }
+  });
+
+  it("RT-212: a TRUNCATE, TRIGGER or REFERENCES grant to the lookup role on a forbidden table fails boot verification", async () => {
+    if (dockerSkipped) return;
+    const { app, admin } = env!;
+    const lookupPool = lookup!;
+    await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
+
+    for (const [privilege, table] of [
+      ["TRUNCATE", "sales"],
+      ["TRIGGER", "audit_events"],
+      ["REFERENCES", "cashier_admissions"],
+      ["TRUNCATE", "memberships"],
+    ] as const) {
+      await admin.query(`GRANT ${privilege} ON ${table} TO ${LOOKUP_ROLE}`);
+      try {
+        await expect(verifyDatabasePoolBoundary(app, lookupPool)).rejects.toThrow(
+          new RegExp(`forbidden grants on: ${table}\\b`),
+        );
+      } finally {
+        await admin.query(`REVOKE ${privilege} ON ${table} FROM ${LOOKUP_ROLE}`);
+      }
+    }
+
+    await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
+  });
+
+  it("RT-212: a domain role missing a cashier-admissions grant fails boot verification", async () => {
+    if (dockerSkipped) return;
+    const { app, admin } = env!;
+    const lookupPool = lookup!;
+    await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
+
+    await admin.query(`REVOKE DELETE ON cashier_admission_requests FROM ${APP_ROLE_NAME}`);
+    try {
+      await expect(verifyDatabasePoolBoundary(app, lookupPool)).rejects.toThrow(
+        /AuthModule: DATABASE_URL role is missing required grants: DELETE ON cashier_admission_requests\b/,
+      );
+    } finally {
+      await admin.query(`GRANT DELETE ON cashier_admission_requests TO ${APP_ROLE_NAME}`);
+    }
+
+    await admin.query(`REVOKE INSERT, UPDATE ON cashier_admissions FROM ${APP_ROLE_NAME}`);
+    try {
+      await expect(verifyDatabasePoolBoundary(app, lookupPool)).rejects.toThrow(
+        /missing required grants: INSERT ON cashier_admissions, UPDATE ON cashier_admissions\b/,
+      );
+    } finally {
+      await admin.query(`GRANT INSERT, UPDATE ON cashier_admissions TO ${APP_ROLE_NAME}`);
+    }
+
+    await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
   });
 
   it("keeps bootstrap resolution available while the domain pool remains RLS-bound", async () => {

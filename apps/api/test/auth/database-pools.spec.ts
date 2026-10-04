@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 
 import {
+  AUTH_LOOKUP_FORBIDDEN_GRANTS,
   AUTH_LOOKUP_REQUIRED_GRANTS,
   authLookupPoolFactory,
   verifyDatabasePoolBoundary,
@@ -12,24 +13,49 @@ afterEach(() => {
   process.env = { ...ORIGINAL_ENV };
 });
 
+/**
+ * RT-212: the domain role's required grants, written out here rather than
+ * imported so the test states the expected set independently of the code.
+ */
+const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
+  "cashier_admissions:SELECT",
+  "cashier_admissions:INSERT",
+  "cashier_admissions:UPDATE",
+  "cashier_admission_requests:SELECT",
+  "cashier_admission_requests:INSERT",
+  "cashier_admission_requests:UPDATE",
+  "cashier_admission_requests:DELETE",
+]);
+
+const LOOKUP_GRANTS: ReadonlySet<string> = new Set(
+  AUTH_LOOKUP_REQUIRED_GRANTS.map(([t, p]) => `${t}:${p}`),
+);
+
 function rolePool(input: {
   roleName: string;
   superuser?: boolean;
   bypassRls?: boolean;
-  /** RT-143: "table:privilege" keys reported as granted (default: exactly the required set). */
+  /**
+   * "table:PRIVILEGE" keys the role holds, one privilege per key. Default:
+   * exactly the domain set for a non-BYPASSRLS role and exactly the lookup
+   * set for a BYPASSRLS one.
+   */
   grants?: ReadonlySet<string>;
 }): Pool {
-  const grants =
-    input.grants ?? new Set(AUTH_LOOKUP_REQUIRED_GRANTS.map(([t, p]) => `${t}:${p}`));
+  const grants = input.grants ?? (input.bypassRls ? LOOKUP_GRANTS : DOMAIN_GRANTS);
   return {
     query: jest.fn(async (sql: string, params?: [string[], string[]]) => {
       if (sql.includes("has_table_privilege")) {
         const [tables, privileges] = params!;
+        // Mirrors has_table_privilege: a comma-separated list is true when
+        // ANY listed privilege is held.
         return {
           rows: tables.map((table_name, i) => ({
             table_name,
             privilege: privileges[i],
-            granted: grants.has(`${table_name}:${privileges[i]}`),
+            granted: privileges[i]!
+              .split(",")
+              .some((p) => grants.has(`${table_name}:${p.trim()}`)),
           })),
         };
       }
@@ -114,7 +140,7 @@ describe("database pool boundary", () => {
   });
 
   // RT-143 — the lookup role's grants are its boundary (it has BYPASSRLS).
-  const REQUIRED = new Set(AUTH_LOOKUP_REQUIRED_GRANTS.map(([t, p]) => `${t}:${p}`));
+  const REQUIRED = LOOKUP_GRANTS;
 
   it("rejects a lookup role missing a required grant, naming it", async () => {
     const grants = new Set(REQUIRED);
@@ -128,20 +154,91 @@ describe("database pool boundary", () => {
   });
 
   it.each([
-    ["sales", "SELECT, INSERT, UPDATE, DELETE"],
-    ["audit_events", "SELECT, INSERT, UPDATE, DELETE"],
-    ["memberships", "INSERT, UPDATE, DELETE"],
+    ["sales", "SELECT"],
+    ["sales", "DELETE"],
+    ["audit_events", "UPDATE"],
+    ["memberships", "INSERT"],
     // RT-113 BC2: cashier admission state and stored replay bodies are
     // tenant data behind FORCE RLS; the BYPASSRLS lookup role must not read them.
-    ["cashier_admissions", "SELECT, INSERT, UPDATE, DELETE"],
-    ["cashier_admission_requests", "SELECT, INSERT, UPDATE, DELETE"],
-  ])("rejects a lookup role holding a forbidden grant on %s", async (table, privileges) => {
-    const grants = new Set([...REQUIRED, `${table}:${privileges}`]);
+    ["cashier_admissions", "SELECT"],
+    ["cashier_admission_requests", "SELECT"],
+    // RT-212: every table privilege counts, not just SELECT/INSERT/UPDATE/DELETE.
+    // TRUNCATE is not subject to row security, so with BYPASSRLS or without
+    // it would let the lookup credential empty a tenant table.
+    ["sales", "TRUNCATE"],
+    ["sales", "REFERENCES"],
+    ["sales", "TRIGGER"],
+    ["audit_events", "TRUNCATE"],
+    ["audit_events", "TRIGGER"],
+    ["receivable", "TRUNCATE"],
+    ["cashier_admissions", "TRUNCATE"],
+    ["cashier_admission_requests", "REFERENCES"],
+    ["memberships", "TRUNCATE"],
+    ["memberships", "REFERENCES"],
+    ["memberships", "TRIGGER"],
+    ["store_access", "TRUNCATE"],
+    ["store_access", "TRIGGER"],
+  ])("rejects a lookup role holding %s %s", async (table, privilege) => {
+    const grants = new Set([...REQUIRED, `${table}:${privilege}`]);
     await expect(
       verifyDatabasePoolBoundary(
         rolePool({ roleName: "app_domain" }),
         rolePool({ roleName: "app_auth_lookup", bypassRls: true, grants }),
       ),
     ).rejects.toThrow(new RegExp(`forbidden grants on: ${table}`));
+  });
+
+  it("RT-212: forbids every table privilege on each fully forbidden table", () => {
+    const ALL = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"];
+    for (const table of ["sales", "receivable", "audit_events", "cashier_admissions"]) {
+      const entry = AUTH_LOOKUP_FORBIDDEN_GRANTS.find(([t]) => t === table);
+      expect(entry).toBeDefined();
+      const listed = entry![1].split(",").map((p) => p.trim());
+      expect([...listed].sort()).toEqual([...ALL].sort());
+    }
+  });
+
+  it("RT-212: forbids every privilege except SELECT on memberships and store_access", () => {
+    for (const table of ["memberships", "store_access"]) {
+      const entry = AUTH_LOOKUP_FORBIDDEN_GRANTS.find(([t]) => t === table);
+      expect(entry).toBeDefined();
+      const listed = entry![1].split(",").map((p) => p.trim());
+      expect([...listed].sort()).toEqual(
+        ["INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"].sort(),
+      );
+    }
+  });
+
+  // RT-212 — the domain role's table grants. Runtime grants are provisioned
+  // outside migrations, so a deploy that skips a grant step must not boot.
+  it.each([...DOMAIN_GRANTS])(
+    "RT-212: rejects a domain role missing %s, naming the table and privilege",
+    async (key) => {
+      const [table, privilege] = key.split(":");
+      const grants = new Set(DOMAIN_GRANTS);
+      grants.delete(key);
+      await expect(
+        verifyDatabasePoolBoundary(
+          rolePool({ roleName: "app_domain", grants }),
+          rolePool({ roleName: "app_auth_lookup", bypassRls: true }),
+        ),
+      ).rejects.toThrow(
+        new RegExp(`AuthModule: DATABASE_URL role is missing required grants: ${privilege} ON ${table}\\b`),
+      );
+    },
+  );
+
+  it("RT-212: names every missing domain grant in one message", async () => {
+    const grants = new Set(DOMAIN_GRANTS);
+    grants.delete("cashier_admissions:UPDATE");
+    grants.delete("cashier_admission_requests:DELETE");
+    await expect(
+      verifyDatabasePoolBoundary(
+        rolePool({ roleName: "app_domain", grants }),
+        rolePool({ roleName: "app_auth_lookup", bypassRls: true }),
+      ),
+    ).rejects.toThrow(
+      /AuthModule: DATABASE_URL role is missing required grants: UPDATE ON cashier_admissions, DELETE ON cashier_admission_requests/,
+    );
   });
 });
