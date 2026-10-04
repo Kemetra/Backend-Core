@@ -131,6 +131,10 @@ describe("database pool boundary", () => {
     ["sales", "SELECT, INSERT, UPDATE, DELETE"],
     ["audit_events", "SELECT, INSERT, UPDATE, DELETE"],
     ["memberships", "INSERT, UPDATE, DELETE"],
+    // RT-113 BC2: cashier admission state and stored replay bodies are
+    // tenant data behind FORCE RLS; the BYPASSRLS lookup role must not read them.
+    ["cashier_admissions", "SELECT, INSERT, UPDATE, DELETE"],
+    ["cashier_admission_requests", "SELECT, INSERT, UPDATE, DELETE"],
   ])("rejects a lookup role holding a forbidden grant on %s", async (table, privileges) => {
     const grants = new Set([...REQUIRED, `${table}:${privileges}`]);
     await expect(
