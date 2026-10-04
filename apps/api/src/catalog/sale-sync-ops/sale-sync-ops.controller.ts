@@ -18,6 +18,10 @@
  * never the query/body (§XII). Every response is a `toBody` projection (no raw
  * DB entity, §IV). 401/403 semantics are owned by 028 (G10).
  *
+ * RT-193: every route passes the session context to the service, which binds
+ * the read / repair to the caller's membership store scope (the RT-191/RT-192
+ * rule) — a sale or `store_id` outside it is the same non-disclosing 404.
+ *
  * The repair route is the ONLY write — server-mediated, audited
  * (`@Auditable`), Idempotency-Key-required. It acts only on a DP-2-classified
  * NEEDS_REPAIR item, performs no sale-fact rewrite, and has no POS-local
@@ -60,6 +64,7 @@ import {
   type Page,
   type SaleAuditTimelineBody,
   type SaleSyncStatusBody,
+  type ScopedReadInput,
 } from "./sale-sync-ops.read-model.service";
 
 /**
@@ -80,12 +85,13 @@ const SaleRefSchema = z.string().uuid();
 export class SaleSyncOpsController {
   constructor(private readonly service: SaleSyncOpsReadModelService) {}
 
-  private requireTenant(request: TenantContextRequest): string {
+  /** The tenant + the session context whose store scope bounds the read / repair (RT-193). */
+  private requireTenant(request: TenantContextRequest): ScopedReadInput {
     const ctx = request.context;
     if (!ctx || ctx.tenantId === null) {
       throw new UnauthorizedException("Unauthorized");
     }
-    return ctx.tenantId;
+    return { tenantId: ctx.tenantId, context: ctx };
   }
 
   /**
@@ -103,9 +109,9 @@ export class SaleSyncOpsController {
     }
   }
 
-  private async assertStore(tenantId: string, storeId?: string): Promise<void> {
+  private async assertStore(scoped: ScopedReadInput, storeId?: string): Promise<void> {
     try {
-      await this.service.assertStoreInScope(tenantId, storeId);
+      await this.service.assertStoreInScope({ ...scoped, ...(storeId ? { storeId } : {}) });
     } catch (err) {
       if (err instanceof StoreNotInScopeError) {
         throw new NotFoundException({ code: "not_found", message: "Not found." });
@@ -123,10 +129,10 @@ export class SaleSyncOpsController {
     @Req() request: TenantContextRequest,
     @Param("saleRef") saleRef: string,
   ): Promise<SaleSyncStatusBody> {
-    const tenantId = this.requireTenant(request);
+    const scoped = this.requireTenant(request);
     this.assertSaleRef(saleRef);
     return this.withNotFound(() =>
-      this.service.getSaleSyncStatus(tenantId, saleRef),
+      this.service.getSaleSyncStatus(scoped, saleRef),
     );
   }
 
@@ -140,10 +146,10 @@ export class SaleSyncOpsController {
     @Query(new ZodValidationPipe(NeedsRepairListQuerySchema))
     query: NeedsRepairListQuery,
   ): Promise<Page<NeedsRepairItem>> {
-    const tenantId = this.requireTenant(request);
-    await this.assertStore(tenantId, query.store_id);
+    const scoped = this.requireTenant(request);
+    await this.assertStore(scoped, query.store_id);
     return this.service.listNeedsRepair({
-      tenantId,
+      ...scoped,
       cursor: query.cursor ?? null,
       limit: query.page_size ?? 50,
       ...(query.store_id ? { storeId: query.store_id } : {}),
@@ -159,10 +165,10 @@ export class SaleSyncOpsController {
     @Req() request: TenantContextRequest,
     @Param("saleRef") saleRef: string,
   ): Promise<SaleAuditTimelineBody> {
-    const tenantId = this.requireTenant(request);
+    const scoped = this.requireTenant(request);
     this.assertSaleRef(saleRef);
     return this.withNotFound(() =>
-      this.service.getSaleAuditTimeline(tenantId, saleRef),
+      this.service.getSaleAuditTimeline(scoped, saleRef),
     );
   }
 
@@ -176,10 +182,10 @@ export class SaleSyncOpsController {
     @Req() request: TenantContextRequest,
     @Param("saleRef") saleRef: string,
   ): Promise<SaleSyncStatusBody> {
-    const tenantId = this.requireTenant(request);
+    const scoped = this.requireTenant(request);
     this.assertSaleRef(saleRef);
     try {
-      return await this.service.repairSaleSync(tenantId, saleRef);
+      return await this.service.repairSaleSync(scoped, saleRef);
     } catch (err) {
       if (err instanceof SaleSyncNotFoundError) {
         throw new NotFoundException({ code: "not_found", message: "Not found." });

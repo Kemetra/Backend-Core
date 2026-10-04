@@ -13,7 +13,7 @@
  * dashboard session principal, never the body — §XII); RLS scopes the rows.
  *
  * RT-191: every WRITE (run trigger, posting repair, stock repair) is also bound
- * to the caller's membership store scope (`reconciliation-store-scope.ts`, the
+ * to the caller's membership store scope (`context/operator-store-scope.ts`, the
  * RT-177 rule) and to a live (not soft-deleted) store. The tables carry
  * tenant-only RLS, so the store check is applied here; a store outside the scope
  * or deleted gets the same non-disclosing 404 as a missing one.
@@ -44,7 +44,7 @@ import {
   type PostingBacklogItem,
   type PostingDeadletterRow,
 } from "./reconciliation-report.projection";
-import { callerStoreScope, inStoreScope, scopeStoreIds } from "./reconciliation-store-scope";
+import { callerStoreScope, inStoreScope, scopeStoreIds } from "../../context/operator-store-scope";
 
 /** Hard ceiling on a single backlog page — the 012/009 500/req convention. */
 export const BACKLOG_MAX_PAGE = 500;

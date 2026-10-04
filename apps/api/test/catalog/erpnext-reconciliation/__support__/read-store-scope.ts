@@ -23,7 +23,7 @@ import type { CanActivate, DynamicModule, ExecutionContext, INestApplication, Ty
 import { Test } from "@nestjs/testing";
 import type { Pool } from "pg";
 
-import { AUDIT_JOB_ENQUEUER } from "../../../../src/audit/audit-job.enqueuer";
+import { AUDIT_JOB_ENQUEUER, type AuditJobEnqueuer } from "../../../../src/audit/audit-job.enqueuer";
 import { PG_POOL } from "../../../../src/auth/auth.module";
 import { AUTH_LOOKUP_POOL } from "../../../../src/auth/database-pools";
 import { AuthTokenRepository } from "../../../../src/auth/auth-token.repository";
@@ -62,12 +62,17 @@ export const SES_OWNER_ALL = "0a000000-0000-7000-8000-0000019204a3";
 /** owner, `all` membership, STORE_A_X selected as the active store. */
 export const SES_OWNER_ALL_ACTIVE = "0a000000-0000-7000-8000-0000019204a4";
 
-const SESSION_USER: Readonly<Record<string, string>> = {
-  [SES_OWNER_SPEC]: USER_OWNER_SPEC,
-  [SES_ADMIN_SPEC]: USER_ADMIN_SPEC,
-  [SES_OWNER_ALL]: USER_OWNER_ALL,
-  [SES_OWNER_ALL_ACTIVE]: USER_OWNER_ALL,
-};
+const SESSION_USER = new Map<string, string>([
+  [SES_OWNER_SPEC, USER_OWNER_SPEC],
+  [SES_ADMIN_SPEC, USER_ADMIN_SPEC],
+  [SES_OWNER_ALL, USER_OWNER_ALL],
+  [SES_OWNER_ALL_ACTIVE, USER_OWNER_ALL],
+]);
+
+/** Let a spec that seeds its own member authenticate as `userId` via `sessionId` (RT-193). */
+export function registerTestSession(sessionId: string, userId: string): void {
+  SESSION_USER.set(sessionId, userId);
+}
 
 /** The two `specific` members (granted STORE_A_X), for `it.each`. */
 export const SPECIFIC_SESSIONS: ReadonlyArray<readonly [string, string]> = [
@@ -106,7 +111,7 @@ class HeaderSessionAuthGuard implements CanActivate {
       principal?: unknown;
     }>();
     const sessionId = req.headers["x-test-session"];
-    const userId = sessionId ? SESSION_USER[sessionId] : undefined;
+    const userId = sessionId ? SESSION_USER.get(sessionId) : undefined;
     if (!sessionId || !userId) return this.real.canActivate(ctx);
     req.principal = { kind: "session", sessionId, userId };
     return true;
@@ -232,10 +237,14 @@ export async function seedReadStoreScope(env: PgTestEnv): Promise<void> {
 // App
 // ---------------------------------------------------------------------------
 
-/** Boot `module` over the app pool with only cookie authentication faked. */
+/**
+ * Boot `module` over the app pool with only cookie authentication faked.
+ * `auditEnqueuer` replaces the default no-op so a spec can observe audit emission.
+ */
 export async function bootScopedApp(
   env: PgTestEnv,
   module: Type<unknown> | DynamicModule,
+  auditEnqueuer: AuditJobEnqueuer = { enqueue: async () => undefined },
 ): Promise<INestApplication> {
   const appPool = env.app;
   const realDashboardGuard = new DashboardAuthGuard(
@@ -248,7 +257,7 @@ export async function bootScopedApp(
     .overrideProvider(AUTH_LOOKUP_POOL)
     .useValue(appPool)
     .overrideProvider(AUDIT_JOB_ENQUEUER)
-    .useValue({ enqueue: async () => undefined })
+    .useValue(auditEnqueuer)
     .overrideGuard(DashboardAuthGuard)
     .useValue(new HeaderSessionAuthGuard(realDashboardGuard))
     .compile();
