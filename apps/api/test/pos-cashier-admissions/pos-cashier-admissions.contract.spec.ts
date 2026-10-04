@@ -325,13 +325,22 @@ describe("pos-cashier-admissions — responses", () => {
     expect(Object.keys(s.discriminator?.mapping ?? {}).sort()).toEqual(["active_elsewhere", "admitted"]);
   });
 
-  it("admitted carries exactly the 10763 fields", () => {
+  it("admitted carries exactly the 10763 fields plus the applied admission_ttl_seconds", () => {
     const s = schema("PosCashierAdmissionAdmitted");
-    const fields = ["admission_id", "display_name", "kind", "offline_grace_seconds", "server_time"];
+    const fields = [
+      "admission_id",
+      "admission_ttl_seconds",
+      "display_name",
+      "kind",
+      "offline_grace_seconds",
+      "server_time",
+    ];
     expect(Object.keys(s.properties ?? {}).sort()).toEqual(fields);
     expect([...(s.required ?? [])].sort()).toEqual(fields);
     expect(s.additionalProperties).toBe(false);
     expect(s.properties?.["offline_grace_seconds"]?.["type"]).toBe("integer");
+    expect(s.properties?.["admission_ttl_seconds"]?.["type"]).toBe("integer");
+    expect(s.properties?.["admission_ttl_seconds"]?.["minimum"]).toBe(1);
   });
 
   it("active_elsewhere is minimum-disclosure: only `kind`", () => {
@@ -449,6 +458,7 @@ describe("pos-cashier-admissions — AJV fixtures", () => {
     kind: "admitted",
     admission_id: ADMISSION_ID,
     offline_grace_seconds: 86400,
+    admission_ttl_seconds: 43200,
     server_time: "2026-10-04T08:15:01Z",
     display_name: "Mona A.",
   };
@@ -464,6 +474,9 @@ describe("pos-cashier-admissions — AJV fixtures", () => {
     ["admitted without offline_grace_seconds", { ...admitted, offline_grace_seconds: undefined }],
     ["negative offline_grace_seconds", { ...admitted, offline_grace_seconds: -1 }],
     ["fractional offline_grace_seconds", { ...admitted, offline_grace_seconds: 1.5 }],
+    ["admitted without admission_ttl_seconds", { ...admitted, admission_ttl_seconds: undefined }],
+    ["zero admission_ttl_seconds", { ...admitted, admission_ttl_seconds: 0 }],
+    ["fractional admission_ttl_seconds", { ...admitted, admission_ttl_seconds: 1.5 }],
     ["admitted with an extra field", { ...admitted, operator_id: "user_2abc" }],
     ["unknown kind", { kind: "refused" }],
   ])("response %s is rejected", (_label, body) => {
@@ -508,7 +521,15 @@ describe("pos-cashier-admissions — liveness, replay, ordering and audit rules"
     expect(p).toMatch(/`mode: online`/);
     expect(p).toMatch(/`takeover: false`/);
     expect(p).toMatch(/fresh `idempotency_key`/);
-    expect(p).toMatch(/strictly shorter than the server TTL/);
+    expect(p).toMatch(/at most half of `admission_ttl_seconds`/);
+  });
+
+  it("P1: the TTL is on the wire: admitted returns the TTL actually applied, so a policy change reaches POS", () => {
+    const ttl = String(schema("PosCashierAdmissionAdmitted").properties?.["admission_ttl_seconds"]?.["description"]);
+    expect(ttl).toMatch(/MUST return the TTL it actually applied/);
+    expect(ttl).toMatch(/next heartbeat/);
+    expect(ttl).toMatch(/at most half/);
+    expect(doc.info?.description ?? "").not.toMatch(/is not on the wire/);
   });
 
   it("P1: heartbeat `admitted` renews the TTL with the same admission_id; `active_elsewhere` ends the session", () => {
