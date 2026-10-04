@@ -105,7 +105,7 @@ async function walkBacklog(session: string, limit: number, query: Record<string,
   const refs: string[] = [];
   let cursor: string | null = null;
   for (let pages = 0; pages < 50; pages += 1) {
-    const res = await get(BACKLOG, session, { ...query, limit, ...(cursor ? { cursor } : {}) }).expect(200);
+    const res: request.Response = await get(BACKLOG, session, { ...query, limit, ...(cursor ? { cursor } : {}) }).expect(200);
     refs.push(...(res.body.items as Array<{ workItemRef: string }>).map((i) => i.workItemRef));
     cursor = res.body.nextCursor;
     if (cursor === null) return refs;

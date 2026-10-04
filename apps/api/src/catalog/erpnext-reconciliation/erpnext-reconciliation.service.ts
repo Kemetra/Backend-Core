@@ -17,6 +17,12 @@
  * RT-177 rule) and to a live (not soft-deleted) store. The tables carry
  * tenant-only RLS, so the store check is applied here; a store outside the scope
  * or deleted gets the same non-disclosing 404 as a missing one.
+ *
+ * RT-192: every READ (backlog, run, results) is bound to the same membership
+ * store scope. The backlog is filtered to the scoped stores (an out-of-scope
+ * `storeId` filter is an empty page); a run outside the scope is the same 404 as
+ * a missing one. Soft-deletion does not hide history from a read: a `specific`
+ * scope never holds a deleted store, the tenant-wide scope still reads it.
  */
 import { Inject, Injectable } from "@nestjs/common";
 import type { Pool, PoolClient } from "pg";
@@ -38,7 +44,7 @@ import {
   type PostingBacklogItem,
   type PostingDeadletterRow,
 } from "./reconciliation-report.projection";
-import { callerStoreScope, inStoreScope } from "./reconciliation-store-scope";
+import { callerStoreScope, inStoreScope, scopeStoreIds } from "./reconciliation-store-scope";
 
 /** Hard ceiling on a single backlog page — the 012/009 500/req convention. */
 export const BACKLOG_MAX_PAGE = 500;
@@ -53,13 +59,13 @@ const REPAIR_RESET_RETRY_COUNT = 0;
 
 export type RepairOutcome = "eligible_again" | "still_failing" | "no_op_echo";
 
-/** The session context of a write; its store scope bounds the addressed store (RT-191). */
-interface ScopedWriteInput {
+/** The session context of a call; its store scope bounds the addressed store (RT-191, RT-192). */
+interface ScopedInput {
   readonly tenantId: string;
   readonly context: ResolvedContext;
 }
 
-export interface RepairPostingInput extends ScopedWriteInput {
+export interface RepairPostingInput extends ScopedInput {
   readonly actorUserId: string;
   readonly workItemRef: string;
 }
@@ -124,25 +130,34 @@ export interface ReconciliationResultBody {
   readonly detail: Record<string, unknown> | null;
 }
 
-export interface TriggerRunInput extends ScopedWriteInput {
+export interface TriggerRunInput extends ScopedInput {
   readonly actorUserId: string;
   readonly storeId: string;
 }
 
-export interface RepairStockInput extends ScopedWriteInput {
+export interface RepairStockInput extends ScopedInput {
   readonly actorUserId: string;
   readonly runId: string;
   readonly resultId: string;
   readonly repairKind: "re_map" | "re_sync";
 }
 
-export interface ListBacklogInput {
-  readonly tenantId: string;
+export interface ListBacklogInput extends ScopedInput {
   /** Opaque cursor — the last `sequence` the operator saw. null = from start. */
   readonly cursor: bigint | null;
   readonly limit: number;
   readonly storeId?: string;
   readonly rejectionCategory?: string;
+}
+
+export interface RunReadInput extends ScopedInput {
+  readonly runId: string;
+}
+
+export interface ListResultsInput extends RunReadInput {
+  readonly cursor: string | null;
+  readonly limit: number;
+  readonly mismatchClass?: string;
 }
 
 export interface ListBacklogResult {
@@ -166,6 +181,9 @@ export class ErpnextReconciliationService {
    * List the tenant's posting dead-letter backlog (US1) — a read-projection over
    * the 015 erpnext_posting_status rows where status='permanently_rejected'.
    * Cursor-ordered by the row `sequence`; optional store + class filters.
+   * RT-192: only the stores in the caller's scope, filtered in SQL so the
+   * cursor pages stay full and gap-free; an out-of-scope `storeId` filter is an
+   * empty page (the contract declares no 404 for this list).
    */
   async listPostingBacklog(input: ListBacklogInput): Promise<ListBacklogResult> {
     const limit = Math.min(Math.max(1, input.limit), BACKLOG_MAX_PAGE);
@@ -173,7 +191,11 @@ export class ErpnextReconciliationService {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
-      async (client) => {
+      async (client): Promise<ListBacklogResult> => {
+        const scope = await callerStoreScope(client, this.memberships, input);
+        if (input.storeId !== undefined && !inStoreScope(scope, input.storeId)) {
+          return { items: [], nextCursor: null };
+        }
         // RLS scopes to the session tenant. The pending-feed index does not back
         // this (status='permanently_rejected'), but the table is small relative
         // to total postings; the provenance index assists the common scans.
@@ -186,6 +208,7 @@ export class ErpnextReconciliationService {
               AND ($1::bigint IS NULL OR sequence > $1::bigint)
               AND ($2::uuid IS NULL OR store_id = $2::uuid)
               AND ($3::text IS NULL OR rejection_category = $3::text)
+              AND ($5::uuid[] IS NULL OR store_id = ANY($5::uuid[]))
             ORDER BY sequence
             LIMIT $4`,
           [
@@ -193,6 +216,7 @@ export class ErpnextReconciliationService {
             input.storeId ?? null,
             input.rejectionCategory ?? null,
             limit,
+            scopeStoreIds(scope),
           ],
         );
 
@@ -410,40 +434,25 @@ export class ErpnextReconciliationService {
     );
   }
 
-  /** Get a run by id (US3). Cross-tenant / absent → RunNotFoundError (404). */
-  async getRun(input: { tenantId: string; runId: string }): Promise<ReconciliationRunBody> {
+  /** Get a run by id (US3). Cross-tenant / out-of-scope / absent → RunNotFoundError (404). */
+  async getRun(input: RunReadInput): Promise<ReconciliationRunBody> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
-      async (client): Promise<ReconciliationRunBody> => {
-        const r = await client.query<RunDbRow>(
-          `SELECT ${RUN_COLS} FROM erpnext_reconciliation_run WHERE id = $1`,
-          [input.runId],
-        );
-        if (!r.rows[0]) throw new RunNotFoundError();
-        return toRunBody(r.rows[0]);
-      },
+      async (client): Promise<ReconciliationRunBody> => toRunBody(await this.readableRun(client, input)),
     );
   }
 
-  /** List a run's classified results (US3), cursor-paginated. Foreign run → 404. */
-  async listResults(input: {
-    tenantId: string;
-    runId: string;
-    cursor: string | null;
-    limit: number;
-    mismatchClass?: string;
-  }): Promise<{ items: ReconciliationResultBody[]; nextCursor: string | null }> {
+  /** List a run's classified results (US3), cursor-paginated. Foreign / out-of-scope run → 404. */
+  async listResults(
+    input: ListResultsInput,
+  ): Promise<{ items: ReconciliationResultBody[]; nextCursor: string | null }> {
     const limit = Math.min(Math.max(1, input.limit), BACKLOG_MAX_PAGE);
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
-        const run = await client.query<{ id: string }>(
-          `SELECT id FROM erpnext_reconciliation_run WHERE id = $1`,
-          [input.runId],
-        );
-        if (!run.rows[0]) throw new RunNotFoundError();
+        await this.readableRun(client, input);
 
         const rows = await client.query<ResultDbRow>(
           `SELECT id, run_id, mismatch_class, source_ref_id, result_state, detail
@@ -542,6 +551,23 @@ export class ErpnextReconciliationService {
   }
 
   /**
+   * RT-192: the addressed run, if it resolves in the tenant (RLS) and its store
+   * is inside the caller's membership store scope; else RunNotFoundError, the
+   * same non-disclosing 404 as a missing run.
+   */
+  private async readableRun(client: PoolClient, input: RunReadInput): Promise<RunDbRow> {
+    const r = await client.query<RunDbRow>(
+      `SELECT ${RUN_COLS} FROM erpnext_reconciliation_run WHERE id = $1`,
+      [input.runId],
+    );
+    const run = r.rows[0];
+    if (!run) throw new RunNotFoundError();
+    const scope = await callerStoreScope(client, this.memberships, input);
+    if (!inStoreScope(scope, run.store_id)) throw new RunNotFoundError();
+    return run;
+  }
+
+  /**
    * RT-191: may this caller write against `storeId`? The store must be inside
    * the caller's membership store scope (the RT-177 rule: `owner` /
    * `tenant_admin` get their membership scope, not narrowed by the active
@@ -550,7 +576,7 @@ export class ErpnextReconciliationService {
    */
   private async storeWritable(
     client: PoolClient,
-    input: ScopedWriteInput,
+    input: ScopedInput,
     storeId: string,
   ): Promise<boolean> {
     const scope = await callerStoreScope(client, this.memberships, input);

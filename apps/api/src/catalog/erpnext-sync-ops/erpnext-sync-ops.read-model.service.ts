@@ -7,12 +7,25 @@
  * product_master domains are reported `not_available` (forward-compat stub) until
  * those specs ship. The 015/017 source tables carry NO money/valuation column, so
  * this read-model surfaces none.
+ *
+ * RT-192: every read is bound to the caller's membership store scope (the 017
+ * reconciliation surface's rule, `reconciliation-store-scope.ts`). The source
+ * tables carry tenant-only RLS, so the scope is a SQL filter here; a `store_id`
+ * outside it is the contract's non-disclosing 404.
  */
 import { Inject, Injectable } from "@nestjs/common";
 import { runWithTenantContext } from "@data-pulse-2/db";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../../auth/auth.module";
+import { MembershipRepository } from "../../context/membership.repository";
+import type { StoreScope } from "../../context/store-scope";
+import type { ResolvedContext } from "../../context/types";
+import {
+  callerStoreScope,
+  inStoreScope,
+  scopeStoreIds,
+} from "../erpnext-reconciliation/reconciliation-store-scope";
 
 /** A sync-ops domain rollup (wire shape — mirrors the contract `DomainSummary`). */
 export interface DomainSummary {
@@ -30,8 +43,13 @@ export interface SyncOpsSummaryBody {
   readonly domains: readonly DomainSummary[];
 }
 
-export interface SummaryInput {
+/** The session context of a read; its store scope bounds the rows (RT-192). */
+export interface ScopedReadInput {
   readonly tenantId: string;
+  readonly context: ResolvedContext;
+}
+
+export interface SummaryInput extends ScopedReadInput {
   readonly storeId?: string;
 }
 
@@ -58,16 +76,14 @@ export interface ReconciliationRunView {
   readonly mismatchSummary: Record<string, number> | null;
 }
 
-export interface ListInput {
-  readonly tenantId: string;
+export interface ListInput extends ScopedReadInput {
   readonly storeId?: string;
   readonly cursor: bigint | null;
   readonly limit: number;
 }
 
 /** Run-history uses a composite string cursor (`<startedAtISO>|<runId>`). */
-export interface RunListInput {
-  readonly tenantId: string;
+export interface RunListInput extends ScopedReadInput {
   readonly storeId?: string;
   readonly cursor: string | null;
   readonly limit: number;
@@ -90,20 +106,26 @@ export class StoreNotInScopeError extends Error {
 
 @Injectable()
 export class ErpnextSyncOpsReadModelService {
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+  constructor(
+    @Inject(PG_POOL) private readonly pool: Pool,
+    @Inject(MembershipRepository) private readonly memberships: MembershipRepository,
+  ) {}
 
   /**
-   * Assert a supplied `store_id` belongs to the session tenant — under RLS, a
-   * cross-tenant/out-of-scope store id returns no row, so we throw
-   * `StoreNotInScopeError` (→ non-disclosing 404, FR-009/SC-002). A null storeId
-   * (no filter) is always in scope. Call before any store-filtered read.
+   * Assert a supplied `store_id` is one of the operator's accessible stores: in
+   * the caller's membership store scope (RT-192) and in the session tenant (RLS —
+   * a cross-tenant id returns no row). Otherwise `StoreNotInScopeError` (→
+   * non-disclosing 404, FR-009/SC-002). A null storeId (no filter) is always in
+   * scope. Call before any store-filtered read.
    */
-  async assertStoreInScope(tenantId: string, storeId?: string): Promise<void> {
+  async assertStoreInScope(input: ScopedReadInput & { readonly storeId?: string }): Promise<void> {
+    const { storeId } = input;
     if (!storeId) return;
     const found = await runWithTenantContext(
       this.pool,
-      { tenantId, isPlatformAdmin: false },
+      { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
+        if (!inStoreScope(await this.scopeOf(client, input), storeId)) return false;
         const r = await client.query<{ id: string }>(
           `SELECT id FROM stores WHERE id = $1::uuid`,
           [storeId],
@@ -126,14 +148,16 @@ export class ErpnextSyncOpsReadModelService {
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
         const storeId = input.storeId ?? null;
+        const scoped = scopeStoreIds(await this.scopeOf(client, input));
 
         // --- posting health: dead-letter backlog size (015) -----------------
         const posting = await client.query<{ count: string }>(
           `SELECT count(*)::text AS count
              FROM erpnext_posting_status
             WHERE status = 'permanently_rejected'
-              AND ($1::uuid IS NULL OR store_id = $1::uuid)`,
-          [storeId],
+              AND ($1::uuid IS NULL OR store_id = $1::uuid)
+              AND ($2::uuid[] IS NULL OR store_id = ANY($2::uuid[]))`,
+          [storeId, scoped],
         );
         const postingBacklog = Number(posting.rows[0]?.count ?? "0");
 
@@ -147,8 +171,9 @@ export class ErpnextSyncOpsReadModelService {
              FROM erpnext_reconciliation_result r
              JOIN erpnext_reconciliation_run run ON run.id = r.run_id
             WHERE r.result_state = 'open'
-              AND ($1::uuid IS NULL OR run.store_id = $1::uuid)`,
-          [storeId],
+              AND ($1::uuid IS NULL OR run.store_id = $1::uuid)
+              AND ($2::uuid[] IS NULL OR run.store_id = ANY($2::uuid[]))`,
+          [storeId, scoped],
         );
         const openMismatchCount = Number(openMismatches.rows[0]?.count ?? "0");
 
@@ -159,9 +184,10 @@ export class ErpnextSyncOpsReadModelService {
           `SELECT status, started_at
              FROM erpnext_reconciliation_run
             WHERE ($1::uuid IS NULL OR store_id = $1::uuid)
+              AND ($2::uuid[] IS NULL OR store_id = ANY($2::uuid[]))
             ORDER BY started_at DESC
             LIMIT 1`,
-          [storeId],
+          [storeId, scoped],
         );
         const latest = latestRun.rows[0] ?? null;
 
@@ -222,6 +248,7 @@ export class ErpnextSyncOpsReadModelService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
+        const scoped = scopeStoreIds(await this.scopeOf(client, input));
         const rows = await client.query<{
           id: string;
           kind: string;
@@ -237,12 +264,14 @@ export class ErpnextSyncOpsReadModelService {
             WHERE status = 'permanently_rejected'
               AND ($1::bigint IS NULL OR sequence > $1::bigint)
               AND ($2::uuid IS NULL OR store_id = $2::uuid)
+              AND ($4::uuid[] IS NULL OR store_id = ANY($4::uuid[]))
             ORDER BY sequence
             LIMIT $3`,
           [
             input.cursor !== null ? input.cursor.toString() : null,
             input.storeId ?? null,
             limit,
+            scoped,
           ],
         );
         const items: PostingBacklogItem[] = rows.rows.map((r) => ({
@@ -294,6 +323,7 @@ export class ErpnextSyncOpsReadModelService {
             cursorId = input.cursor.slice(sep + 1);
           }
         }
+        const scoped = scopeStoreIds(await this.scopeOf(client, input));
         const rows = await client.query<{
           id: string;
           store_id: string;
@@ -310,9 +340,10 @@ export class ErpnextSyncOpsReadModelService {
             WHERE ($1::uuid IS NULL OR store_id = $1::uuid)
               AND ($2::timestamptz IS NULL
                    OR (started_at, id) < ($2::timestamptz, $3::uuid))
+              AND ($5::uuid[] IS NULL OR store_id = ANY($5::uuid[]))
             ORDER BY started_at DESC, id DESC
             LIMIT $4`,
-          [input.storeId ?? null, cursorTs, cursorId, limit],
+          [input.storeId ?? null, cursorTs, cursorId, limit, scoped],
         );
         const items: ReconciliationRunView[] = rows.rows.map((r) => ({
           runId: r.id,
@@ -332,5 +363,10 @@ export class ErpnextSyncOpsReadModelService {
         return { items, nextCursor };
       },
     );
+  }
+
+  /** The caller's store scope from its role in the tenant (RLS-scoped read; the 017 rule). */
+  private scopeOf(client: PoolClient, input: ScopedReadInput): Promise<StoreScope> {
+    return callerStoreScope(client, this.memberships, input);
   }
 }

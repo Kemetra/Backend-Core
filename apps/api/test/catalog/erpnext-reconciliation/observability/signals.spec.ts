@@ -121,7 +121,7 @@ describe("reconciliation observability — erpnext_reconciliation_repair_total (
 
   it("a list (read-only, no repair) does NOT increment the counter", async () => {
     if (skip) return;
-    await svc().listPostingBacklog({ tenantId: TENANT_A, cursor: null, limit: 100 });
+    await svc().listPostingBacklog({ tenantId: TENANT_A, context: sessionCtx(TENANT_A), cursor: null, limit: 100 });
     expect(recordRepair).not.toHaveBeenCalled();
   });
 
@@ -131,6 +131,7 @@ describe("reconciliation observability — erpnext_reconciliation_repair_total (
     // + filter branches of listPostingBacklog. A high cursor returns an empty tail.
     const page = await svc().listPostingBacklog({
       tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
       cursor: 1n,
       limit: 50,
       storeId: undefined,

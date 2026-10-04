@@ -93,7 +93,7 @@ describe("017-US3 service — triggerRun", () => {
 describe("017-US3 service — getRun / listResults", () => {
   it("getRun returns the seeded run", async () => {
     if (skip) return;
-    const run = await svc().getRun({ tenantId: TENANT_A, runId: RUN_A });
+    const run = await svc().getRun({ tenantId: TENANT_A, context: sessionCtx(TENANT_A), runId: RUN_A });
     expect(run.id).toBe(RUN_A);
     expect(run.status).toBe("completed");
     expect(run.finishedAt).not.toBeNull();
@@ -101,17 +101,18 @@ describe("017-US3 service — getRun / listResults", () => {
 
   it("getRun for a foreign-tenant run → RunNotFoundError", async () => {
     if (skip) return;
-    await expect(svc().getRun({ tenantId: TENANT_A, runId: RUN_B })).rejects.toBeInstanceOf(
+    await expect(svc().getRun({ tenantId: TENANT_A, context: sessionCtx(TENANT_A), runId: RUN_B })).rejects.toBeInstanceOf(
       RunNotFoundError,
     );
   });
 
   it("listResults returns the run's classified results; class filter narrows", async () => {
     if (skip) return;
-    const all = await svc().listResults({ tenantId: TENANT_A, runId: RUN_A, cursor: null, limit: 100 });
+    const all = await svc().listResults({ tenantId: TENANT_A, context: sessionCtx(TENANT_A), runId: RUN_A, cursor: null, limit: 100 });
     expect(all.items.some((i) => i.id === RESULT_A)).toBe(true);
     const filtered = await svc().listResults({
       tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
       runId: RUN_A,
       cursor: null,
       limit: 100,
@@ -123,7 +124,7 @@ describe("017-US3 service — getRun / listResults", () => {
   it("listResults for a foreign run → RunNotFoundError", async () => {
     if (skip) return;
     await expect(
-      svc().listResults({ tenantId: TENANT_A, runId: RUN_B, cursor: null, limit: 100 }),
+      svc().listResults({ tenantId: TENANT_A, context: sessionCtx(TENANT_A), runId: RUN_B, cursor: null, limit: 100 }),
     ).rejects.toBeInstanceOf(RunNotFoundError);
   });
 });

@@ -77,6 +77,9 @@ class ConfigurableContextGuard implements CanActivate {
       storeId: this.storeId,
       isPlatformAdmin: false,
       source: "session",
+      // RT-192: the reads are bound to the membership store scope; this is what
+      // TenantContextGuard resolves for an 'all' membership.
+      storeAccess: { kind: "all" },
     };
     req.principal = { userId: this.userId };
     return true;

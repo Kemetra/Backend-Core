@@ -106,7 +106,7 @@ async function walk(
   const ids: string[] = [];
   let cursor: string | null = null;
   for (let pages = 0; pages < 50; pages += 1) {
-    const res = await get(path, session, { ...query, page_size: pageSize, ...(cursor ? { cursor } : {}) }).expect(200);
+    const res: request.Response = await get(path, session, { ...query, page_size: pageSize, ...(cursor ? { cursor } : {}) }).expect(200);
     ids.push(...(res.body.items as Array<Record<string, string>>).map((i) => i[key]!));
     cursor = res.body.nextCursor;
     if (cursor === null) return ids;
