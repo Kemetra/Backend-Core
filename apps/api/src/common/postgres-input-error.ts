@@ -6,7 +6,13 @@
  * Shared by GlobalExceptionFilter (response status) and LoggingInterceptor
  * (logged status and metrics) so the two cannot disagree (RT-60).
  */
-const POSTGRES_INPUT_ERROR_CODES: ReadonlySet<unknown> = new Set(["22003", "23514", "22P02"]);
+const POSTGRES_INPUT_ERROR_CODES: ReadonlySet<unknown> = new Set([
+  "22003", // numeric_value_out_of_range
+  "22007", // invalid_datetime_format (RT-180)
+  "22008", // datetime_field_overflow (RT-180)
+  "22P02", // invalid_text_representation
+  "23514", // check_violation
+]);
 
 export function isPostgresInputError(exception: unknown): boolean {
   let current = exception;
