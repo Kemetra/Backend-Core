@@ -51,7 +51,13 @@ cd Backend-Core
 git checkout <deploy-ref>                       # the reconciled origin/main commit being deployed
 
 cp deploy/prod.env.example deploy/prod.env      # then set private references/values
+cp deploy/grants.env.example deploy/grants.env  # then set private references/values
+```
 
+Then run the release sequence. Use it for the first deploy **and** for every
+redeploy of a new ref:
+
+```bash
 # 1. Apply migrations on their own first.
 op run --env-file=deploy/prod.env -- \
   docker compose -f docker-compose.prod.yml run --rm --build migrate
@@ -59,9 +65,10 @@ op run --env-file=deploy/prod.env -- \
 # 2. Domain-role grants for tables added by migrations. Runtime grants are not
 #    part of migrations (docs/operations/database-roles.md). The scripts are
 #    idempotent; run them on every deploy. Each one exits non-zero on failure,
-#    so stop here if one does.
-op run --env-file=deploy/prod.env -- sh -c \
-  'psql "$MIGRATION_DATABASE_URL" -v domain_role="$DOMAIN_DB_ROLE" \
+#    so stop here if one does. psql takes the migration-owner connection from
+#    the PG* variables in deploy/grants.env, never from a command-line URL.
+op run --env-file=deploy/grants.env -- sh -c \
+  'psql -X -v domain_role="$DOMAIN_DB_ROLE" \
         -f docs/operations/sql/cashier-admissions-domain-grants.sql'
 
 # 3. Start everything (migrate re-runs as a no-op, then api/worker start).
@@ -73,12 +80,18 @@ op run --env-file=deploy/prod.env -- \
 `migrate` service runs `migrate up` against `<managed-db>` and must exit 0 before
 `api`/`worker` start (compose `service_completed_successfully` gate).
 
-Step 2 must run between the migration and the app start. `DOMAIN_DB_ROLE` is
-the role name in `DATABASE_URL`; set it on the deploy host. It is a role name,
-not a secret. The API boot check verifies the domain role's posture
-(`NOBYPASSRLS`, not a superuser) but not its table grants. A skipped step 2
-therefore starts a healthy-looking API whose `/api/pos/v1/cashier-admissions`
-routes return 500. Step 2 needs a `psql` client on the deploy host.
+Step 2 must run between the migration and the app start. The API boot check
+verifies the domain role's posture (`NOBYPASSRLS`, not a superuser) but not its
+table grants. If step 2 is skipped, the API starts and looks healthy, but its
+`/api/pos/v1/cashier-admissions` routes return 500.
+
+Step 2 needs a `psql` client on the deploy host. It reads the connection from
+`PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` and `PGSSLMODE` in
+`deploy/grants.env`, which uses the same migration-owner credential as
+`MIGRATION_DATABASE_URL`. Never pass that URL to `psql` as an argument: the
+full command line, password included, is readable by other users through
+`/proc/<pid>/cmdline`. `DOMAIN_DB_ROLE` is the role name in `DATABASE_URL`; it
+is a name, not a secret.
 
 ## Verify
 
@@ -95,8 +108,13 @@ op run --env-file=deploy/prod.env -- \
 ```bash
 # logs
 docker compose -f docker-compose.prod.yml logs -f api
-# redeploy a new ref
-git pull && op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d --build
+# redeploy a new ref: pull, then run the full release sequence from "Deploy"
+# (1. migrate, 2. grants, 3. up). A bare `up` skips the grant step.
+git pull
+op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml run --rm --build migrate
+op run --env-file=deploy/grants.env -- sh -c \
+  'psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/cashier-admissions-domain-grants.sql'
+op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d --build
 # stop
 docker compose -f docker-compose.prod.yml down            # keeps volumes (redis AOF, caddy certs)
 ```

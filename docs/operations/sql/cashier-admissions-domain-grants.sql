@@ -3,9 +3,12 @@
 --
 -- Run ONCE per environment, AFTER `migrate up` has applied 0035, as the
 -- migration owner (or any role allowed to grant on these tables). This file
--- holds NO credential. Pass the environment's DATABASE_URL role name, e.g.:
---   psql "$MIGRATION_DATABASE_URL" -v domain_role=<role> \
+-- holds NO credential. Give psql the connection through libpq environment
+-- variables (PGHOST/PGUSER/PGPASSWORD/...; see deploy/grants.env.example),
+-- never as a URL argument, and pass the environment's DATABASE_URL role name:
+--   psql -X -v domain_role=<role> \
 --        -f docs/operations/sql/cashier-admissions-domain-grants.sql
+-- deploy/README.md runs this as step 2 of every release.
 -- Optionally also pass -v lookup_role=<AUTH_LOOKUP_DATABASE_URL role> to check
 -- that the lookup role holds no privilege of any kind on these tables.
 --
