@@ -240,7 +240,7 @@ export class PostingRequestedConsumer
           tenant_id: event.tenant_id,
           sale_id,
           source_ref_id,
-          outbox_event_id: event.event_id,
+          event_id: event.event_id,
           attempts: event.attempts,
         },
         "reversal dead-lettered: its sale_post row never appeared",
