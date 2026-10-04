@@ -79,3 +79,9 @@ RT-66 intentional (server already rejects an empty PATCH body; RT-59 contract dr
 RT-66 intentional (quantity declared as the numeric(19,4) rule the server already enforces; RT-59 contract drift, server unchanged): POST /api/inventory/v1/stores/{storeId}/counts added `#/components/schemas/NonNegativeDecimalQuantity` to the `countedQuantity` request property `allOf` list
 RT-66 intentional (quantity declared as the numeric(19,4) rule the server already enforces; RT-59 contract drift, server unchanged): POST /api/inventory/v1/stores/{storeId}/movements added `#/components/schemas/NonZeroDecimalQuantity` to the `quantity` request property `allOf` list
 RT-66 intentional (quantity declared as the numeric(19,4) rule the server already enforces; RT-59 contract drift, server unchanged): POST /api/inventory/v1/transfers added `#/components/schemas/PositiveDecimalQuantity` to the `quantity` request property `allOf` list
+#
+# RT-180: the run-history cursor is declared in the <timestamp>|<id> form the
+# server issues as nextCursor. Server-issued cursors still match; a token the
+# server already rejected with 400, or answered with 500 for an out-of-range
+# timestamp, is now a declared 400.
+RT-180 intentional (run cursor declared as the server-issued <timestamp>|<id> token; out-of-range timestamps were a 500, now a 400): GET /api/v1/catalog/erpnext-sync-ops/reconciliation-runs added the pattern `^(?:(?:000[1-9]|00[1-9][0-9]|0[1-9][0-9]{2}|[1-9][0-9]{3})-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:0[48]|[2468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\.[0-9]{3}Z\|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$` to the `query` request parameter `cursor`

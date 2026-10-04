@@ -228,7 +228,7 @@ describe("LoggingInterceptor – unit", () => {
   });
 
   // LI7-LI11 (RT-60): GlobalExceptionFilter answers a PostgreSQL input error
-  // (22003 / 23514 / 22P02) with 400. The request log must record that 400,
+  // (22003 / 23514 / 22P02, and 22007 / 22008 since RT-180) with 400. The request log must record that 400,
   // not the unhandled-error 500.
   function pgError(code: string): Error & { code: string; severity: string } {
     return Object.assign(new Error(`pg ${code}`), { code, severity: "ERROR" });
@@ -247,7 +247,7 @@ describe("LoggingInterceptor – unit", () => {
     return obj.status;
   }
 
-  it.each(["22003", "23514", "22P02"])(
+  it.each(["22003", "23514", "22P02", "22007", "22008"])(
     "LI7: PostgreSQL input error %s → logged status 400",
     async (code) => {
       expect(await loggedErrorStatus(pgError(code))).toBe(400);
