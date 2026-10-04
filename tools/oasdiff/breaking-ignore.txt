@@ -8,34 +8,10 @@
 # Example:
 #   RT-123 intentional: POST /api/v1/example added the new required request header 'X-Example'
 #
-# RT-181 (RT-66 follow-up): the POS sale writes and the two connector report/ack
-# writes declare Idempotency-Key as the rule the IdempotencyInterceptor ALREADY
-# enforces on them (^[\x21-\x7E]{16,128}$). A key outside it was already a 400,
-# so working clients keep working. Verified client keys: POS `pos-pulse:<UUID>`
-# (46 chars); Connector `<workItemRef>:posted|permanently_rejected` (<= 57),
-# `<workItemRef>:failed_transient:<itemCursor>` (<= 73), `binview-<requestRef>`
-# (44) and `binview-<requestRef>-<attemptRef>-w<windowSeq>` (83 + digits).
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/connector/v1/erpnext/bin-view-requests/{requestRef}/snapshot for the `header` request parameter `idempotency-key`, the maxLength was decreased from `255` to `128`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/connector/v1/erpnext/bin-view-requests/{requestRef}/snapshot for the `header` request parameter `idempotency-key`, the minLength was increased from `1` to `16`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/connector/v1/erpnext/bin-view-requests/{requestRef}/snapshot added the pattern `^[\x21-\x7E]{16,128}$` to the `header` request parameter `idempotency-key`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/connector/v1/erpnext/postings/{workItemRef}/outcome for the `header` request parameter `idempotency-key`, the maxLength was decreased from `255` to `128`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/connector/v1/erpnext/postings/{workItemRef}/outcome for the `header` request parameter `idempotency-key`, the minLength was increased from `1` to `16`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/connector/v1/erpnext/postings/{workItemRef}/outcome added the pattern `^[\x21-\x7E]{16,128}$` to the `header` request parameter `idempotency-key`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales for the `header` request parameter `idempotency-key`, the maxLength was decreased from `255` to `128`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales for the `header` request parameter `idempotency-key`, the minLength was increased from `1` to `16`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales added the pattern `^[\x21-\x7E]{16,128}$` to the `header` request parameter `idempotency-key`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales/{saleRef}/refund for the `header` request parameter `idempotency-key`, the maxLength was decreased from `255` to `128`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales/{saleRef}/refund for the `header` request parameter `idempotency-key`, the minLength was increased from `1` to `16`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales/{saleRef}/refund added the pattern `^[\x21-\x7E]{16,128}$` to the `header` request parameter `idempotency-key`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales/{saleRef}/returns for the `header` request parameter `idempotency-key`, the maxLength was decreased from `255` to `128`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales/{saleRef}/returns for the `header` request parameter `idempotency-key`, the minLength was increased from `1` to `16`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales/{saleRef}/returns added the pattern `^[\x21-\x7E]{16,128}$` to the `header` request parameter `idempotency-key`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales/{saleRef}/void for the `header` request parameter `idempotency-key`, the maxLength was decreased from `255` to `128`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales/{saleRef}/void for the `header` request parameter `idempotency-key`, the minLength was increased from `1` to `16`
-RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales/{saleRef}/void added the pattern `^[\x21-\x7E]{16,128}$` to the `header` request parameter `idempotency-key`
-#
-# RT-180: the run-history cursor is declared in the <timestamp>|<id> form the
-# server issues as nextCursor. Server-issued cursors still match; a token the
-# server already rejected with 400, or answered with 500 for an out-of-range
-# timestamp, is now a declared 400.
-RT-180 intentional (run cursor declared as the server-issued <timestamp>|<id> token; out-of-range timestamps were a 500, now a 400): GET /api/v1/catalog/erpnext-sync-ops/reconciliation-runs added the pattern `^(?:(?:000[1-9]|00[1-9][0-9]|0[1-9][0-9]{2}|[1-9][0-9]{3})-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:0[48]|[2468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\.[0-9]{3}Z\|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$` to the `query` request parameter `cursor`
+# RT-208: the pos-operators roster declares `branch_id` required. The runtime
+# already refused a roster request without it (generic 401, reason
+# branch_id_required), so the wire behaviour is unchanged. Consumers verified:
+# every POS call puts the paired terminal's branch_id in the query
+# (BackendClient.listRoster); the Admin-Console does not call /api/pos/.
+# [GATED] approval: Jira RT-208 comment 10855.
+RT-208 intentional (roster branch_id declared required as the runtime already enforces; generic 401 unchanged): GET /api/pos/v1/operators/roster the `query` request parameter `branch_id` became required

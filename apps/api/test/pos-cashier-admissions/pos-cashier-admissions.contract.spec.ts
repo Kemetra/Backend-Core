@@ -23,7 +23,11 @@
  *   6. AJV fixtures: valid payloads pass, each invalid one fails.
  *   7. pos-operators 1.1.1-draft: the prose no longer claims a device-token
  *      header or device-token branch scope (RT-182), and nothing in its
- *      security, parameters or schemas changed.
+ *      security or schemas changed.
+ *   8. pos-operators 1.2.0-draft (RT-208, `[GATED]` approval in RT-208
+ *      comment 10855): the roster `branch_id` query parameter is declared
+ *      `required: true`, matching the runtime's `branch_id_required` refusal.
+ *      The refusal stays the generic 401; no other parameter changed.
  */
 import "reflect-metadata";
 
@@ -613,10 +617,6 @@ describe("pos-operators — RT-113 BC1 prose fix", () => {
     throw new Error(`${id} not found`);
   }
 
-  it("is bumped to 1.1.1-draft", () => {
-    expect(operatorsDoc.info?.version).toBe("1.1.1-draft");
-  });
-
   it("no longer claims a device-token header", () => {
     expect(operatorsDoc.info?.description).not.toMatch(/device-token header \(per/);
     expect(operatorsDoc.info?.description).toMatch(/There is NO\s+device-token header/);
@@ -640,16 +640,51 @@ describe("pos-operators — RT-113 BC1 prose fix", () => {
     expect(p?.description).toMatch(/runtime REQUIRES it/);
   });
 
-  it("keeps the security, parameters and RT-150-gated behaviour unchanged", () => {
+  it("keeps the security, the active-session parameters and RT-150-gated behaviour unchanged", () => {
     for (const id of OPERATOR_OPERATION_IDS) {
       expect(opById(id).security).toEqual([{ "operator-identity": [] }]);
     }
-    const roster = (opById("posOperatorRoster").parameters ?? []).map((p) => [p.name, p.in, p.required]);
-    expect(roster).toEqual([["branch_id", "query", false]]);
+    // The roster parameter is pinned by the RT-208 block below.
     const active = (opById("posOperatorActiveSession").parameters ?? []).map((p) => [p.name, p.in, p.required]);
     expect(active).toEqual([
       ["branch_id", "query", true],
       ["operator_id", "query", true],
     ]);
+  });
+});
+
+// ===========================================================================
+// 9. pos-operators 1.2.0-draft (RT-208): roster branch_id is required
+// ===========================================================================
+describe("pos-operators — RT-208 roster branch_id required", () => {
+  function opById(id: OperatorOperationId): OperationObject {
+    for (const item of Object.values(operatorsDoc.paths ?? {})) {
+      for (const o of Object.values(item)) if (o.operationId === id) return o;
+    }
+    throw new Error(`${id} not found`);
+  }
+
+  it("is bumped to 1.2.0-draft with an RT-208 version note", () => {
+    expect(operatorsDoc.info?.version).toBe("1.2.0-draft");
+    expect(operatorsDoc.info?.description).toMatch(/1\.2\.0-draft \(RT-208\)/);
+  });
+
+  it("declares the roster branch_id query parameter required (uuid), and nothing else", () => {
+    const params = opById("posOperatorRoster").parameters ?? [];
+    expect(params.map((p) => [p.name, p.in, p.required])).toEqual([["branch_id", "query", true]]);
+    expect(params[0]?.schema).toEqual({ type: "string", format: "uuid" });
+  });
+
+  it("no longer says the parameter is declared optional", () => {
+    const p = (opById("posOperatorRoster").parameters ?? []).find((x) => x.name === "branch_id");
+    expect(p?.description).not.toMatch(/required: false/);
+    expect(p?.description).not.toMatch(/separate, acknowledged contract change/);
+  });
+
+  it("keeps a missing branch_id inside the generic 401 refusal (runtime unchanged)", () => {
+    const op = opById("posOperatorRoster");
+    expect(Object.keys(op.responses ?? {}).sort()).toEqual(["200", "401"]);
+    const unauthorized = (op.responses?.["401"] ?? {}) as { description?: string };
+    expect(unauthorized.description).toMatch(/a missing\s+`branch_id`/);
   });
 });
