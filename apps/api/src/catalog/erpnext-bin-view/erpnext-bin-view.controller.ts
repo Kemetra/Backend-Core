@@ -17,7 +17,9 @@
  * the SERVICE additionally provides O-3 echo (a fresh key re-reporting an
  * already-recorded request) → 200 `Idempotent-Replayed: true`; a first record →
  * 201. A cross-tenant/foreign `requestRef` → non-disclosing 404; a contradicting
- * re-report → 409 `idempotency_key_conflict`.
+ * re-report → 409 `idempotency_key_conflict`. v1.2 (RT-175): a multi-window report
+ * window that does not fit the recorded read attempt → 409
+ * `window_sequence_conflict`.
  */
 import {
   Body,
@@ -55,6 +57,7 @@ import {
 import {
   BinViewConflictError,
   BinViewNotFoundError,
+  BinViewWindowSequenceConflictError,
   ErpnextBinViewService,
   type BinViewRequest,
   type RecordedBinView,
@@ -144,6 +147,15 @@ export class ErpnextBinViewController {
           code: "idempotency_key_conflict",
           message:
             "This bin-view request was already reported with a different snapshot.",
+        });
+      }
+      if (err instanceof BinViewWindowSequenceConflictError) {
+        // v1.2 (RT-175): the window does not fit the recorded read attempt —
+        // deterministic, nothing recorded, the run is unchanged.
+        throw new ConflictException({
+          code: "window_sequence_conflict",
+          message:
+            "This bin-view report window does not fit the recorded read attempt.",
         });
       }
       throw err;
