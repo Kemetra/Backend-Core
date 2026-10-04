@@ -92,10 +92,13 @@ accepted.**
 | `POST /api/v1/memberships/invite` | `role_code` must name an existing role (state-dependent; answered 400 `Unknown role_code`) |
 | `GET /api/v1/audit/events` | Opaque base64url `cursor` whose decoded content is validated; not expressible as a pattern |
 | `GET /api/v1/admin/outbox/dead-letters` | Same opaque base64url `cursor` |
-| `GET /api/v1/catalog/erpnext-sync-ops/reconciliation-runs` | `cursor` shape left undeclared on purpose: a shape-valid token with an out-of-range timestamp returns 500 today. Declare it once that is fixed |
 | `POST /api/v1/catalog/unknown-items/bulk-dismiss` | Schemathesis 4.28 artifact: a fuzzing case with a negative component is relabelled positive after a resource-pool draw and sent without the declared, required `Idempotency-Key` |
 | `POST /api/v1/connector/instances/{id}/credentials/rotate` | Same Schemathesis artifact |
 | `POST /api/v1/connector/credentials/{credentialId}/revoke` | Same Schemathesis artifact |
+
+RT-180 removed the `GET /api/v1/catalog/erpnext-sync-ops/reconciliation-runs`
+entry: the run cursor now rejects an out-of-range timestamp with 400 instead of
+500, and the contract declares its `<timestamp>|<id>` pattern.
 
 Record or refresh entries with `BASELINE_UPDATE=1 bash tools/schemathesis/run.sh report`,
 then keep only entries with a reason in this table.
