@@ -182,6 +182,11 @@ describe("database pool boundary", () => {
     ["memberships", "TRIGGER"],
     ["store_access", "TRUNCATE"],
     ["store_access", "TRIGGER"],
+    // RT-213: the BYPASSRLS lookup role must not read tenants (it would see
+    // every tenant row); device auth reads tenant status on the domain role.
+    ["tenants", "SELECT"],
+    ["tenants", "UPDATE"],
+    ["tenants", "TRUNCATE"],
   ])("rejects a lookup role holding %s %s", async (table, privilege) => {
     const grants = new Set([...REQUIRED, `${table}:${privilege}`]);
     await expect(
@@ -194,7 +199,7 @@ describe("database pool boundary", () => {
 
   it("RT-212: forbids every table privilege on each fully forbidden table", () => {
     const ALL = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"];
-    for (const table of ["sales", "receivable", "audit_events", "cashier_admissions"]) {
+    for (const table of ["sales", "receivable", "audit_events", "cashier_admissions", "tenants"]) {
       const entry = AUTH_LOOKUP_FORBIDDEN_GRANTS.find(([t]) => t === table);
       expect(entry).toBeDefined();
       const listed = entry![1].split(",").map((p) => p.trim());

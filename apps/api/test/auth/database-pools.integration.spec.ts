@@ -120,7 +120,8 @@ describe("production database pool separation", () => {
     }
 
     // RT-113 BC2: a grant on either cashier-admission table fails boot too.
-    for (const table of ["cashier_admissions", "cashier_admission_requests"]) {
+    // RT-213: so does any grant on tenants (BYPASSRLS would expose every row).
+    for (const table of ["cashier_admissions", "cashier_admission_requests", "tenants"]) {
       await admin.query(`GRANT SELECT ON ${table} TO ${LOOKUP_ROLE}`);
       try {
         await expect(verifyDatabasePoolBoundary(app, lookupPool)).rejects.toThrow(
