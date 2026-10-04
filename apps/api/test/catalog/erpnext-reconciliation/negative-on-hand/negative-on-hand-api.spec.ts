@@ -71,8 +71,10 @@ import {
   RUN_PEND,
   RUN_STALE,
   SES_ADMIN,
+  SES_ADMIN_ACTIVE,
   SES_MGR,
   SES_OWNER,
+  SES_OWNER_ACTIVE,
   SES_STAFF,
   S_DELETED,
   S_FIX,
@@ -92,7 +94,12 @@ const READ_AT_2 = "2026-10-04T10:00:00.000+02:00";
 
 const BASE = "/api/v1/catalog/erpnext-reconciliation";
 const STORES = `${BASE}/negative-on-hand/stores`;
-const items = (storeId: string): string => `${BASE}/stores/${storeId}/negative-on-hand`;
+
+/** A store addressed by the per-store operation. */
+interface StoreRef {
+  readonly storeId: string;
+}
+const itemsPath = (store: StoreRef): string => `${BASE}/stores/${store.storeId}/negative-on-hand`;
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -156,14 +163,17 @@ function skip(): boolean {
   return false;
 }
 
-function as(sessionId: string | null) {
-  const server = app!.getHttpServer();
-  return (path: string) => {
-    const req = request(server).get(path);
-    return sessionId ? req.set("x-test-session", sessionId) : req;
-  };
+/** One GET: a path, an optional raw query string, and the session (default owner; null = none). */
+interface GetRequest {
+  readonly path: string;
+  readonly query?: string;
+  readonly session?: string | null;
 }
-const owner = () => as(SES_OWNER);
+function get(req: GetRequest) {
+  const call = request(app!.getHttpServer()).get(`${req.path}${req.query ?? ""}`);
+  const session = req.session === undefined ? SES_OWNER : req.session;
+  return session ? call.set("x-test-session", session) : call;
+}
 
 // ---------------------------------------------------------------------------
 // Contract validators (AC1 — every 200 body conforms)
@@ -209,29 +219,45 @@ interface ItemsPage { storeId: string; snapshot: SnapshotBody; items: ItemBody[]
 interface SummaryBody { storeId: string; storeName: string; snapshot: SnapshotBody; negativeItemCount: number }
 interface StoresPage { items: SummaryBody[]; nextCursor: string | null }
 
-async function getItems(storeId: string, query = "", session: string = SES_OWNER): Promise<ItemsPage> {
-  const res = await as(session)(`${items(storeId)}${query}`).expect(200);
-  const ok = contract().items(res.body);
-  if (!ok) throw new Error(JSON.stringify(contract().items.errors));
-  return res.body as ItemsPage;
+/** Page parameters of either operation; `session` defaults to the owner. */
+interface PageQuery {
+  readonly limit?: number;
+  readonly cursor?: string | null;
+  readonly session?: string;
+}
+interface ItemsQuery extends PageQuery, StoreRef {}
+
+function queryString(q: PageQuery): string {
+  const parts: string[] = [];
+  if (q.limit !== undefined) parts.push(`limit=${q.limit}`);
+  if (q.cursor) parts.push(`cursor=${q.cursor}`);
+  return parts.length > 0 ? `?${parts.join("&")}` : "";
 }
 
-async function getStores(query = "", session: string = SES_OWNER): Promise<StoresPage> {
-  const res = await as(session)(`${STORES}${query}`).expect(200);
-  const ok = contract().stores(res.body);
-  if (!ok) throw new Error(JSON.stringify(contract().stores.errors));
-  return res.body as StoresPage;
+/** GET a page, assert 200, and validate it against the contract schema. */
+async function getPage<T>(req: GetRequest, validate: ValidateFunction): Promise<T> {
+  const res = await get(req).expect(200);
+  if (!validate(res.body)) throw new Error(JSON.stringify(validate.errors));
+  return res.body as T;
 }
 
-async function allStores(session: string, limit: number): Promise<SummaryBody[]> {
+async function getItems(q: ItemsQuery): Promise<ItemsPage> {
+  const req = { path: itemsPath(q), query: queryString(q), session: q.session ?? SES_OWNER };
+  return getPage<ItemsPage>(req, contract().items);
+}
+
+async function getStores(q: PageQuery = {}): Promise<StoresPage> {
+  const req = { path: STORES, query: queryString(q), session: q.session ?? SES_OWNER };
+  return getPage<StoresPage>(req, contract().stores);
+}
+
+/** Walk every summary page at `limit` and return the concatenation. */
+async function allStores(q: Required<Pick<PageQuery, "session" | "limit">>): Promise<SummaryBody[]> {
   const out: SummaryBody[] = [];
   let cursor: string | null = null;
   for (let i = 0; i < 100; i++) {
-    const page: StoresPage = await getStores(
-      `?limit=${limit}${cursor ? `&cursor=${cursor}` : ""}`,
-      session,
-    );
-    expect(page.items.length).toBeLessThanOrEqual(limit);
+    const page: StoresPage = await getStores({ ...q, cursor });
+    expect(page.items.length).toBeLessThanOrEqual(q.limit);
     out.push(...page.items);
     cursor = page.nextCursor;
     if (cursor === null) return out;
@@ -239,26 +265,37 @@ async function allStores(session: string, limit: number): Promise<SummaryBody[]>
   throw new Error("paging did not terminate");
 }
 
-function summaryOf(list: readonly SummaryBody[], storeId: string): SummaryBody {
-  const s = list.find((x) => x.storeId === storeId);
-  if (!s) throw new Error(`store ${storeId} missing from the summary`);
+/** The tenant-wide summary row of one store (owner session, one page of 500). */
+async function summaryFor(store: StoreRef): Promise<SummaryBody> {
+  return summaryIn({ list: (await getStores({ limit: 500 })).items, ...store });
+}
+
+function summaryIn(q: StoreRef & { readonly list: readonly SummaryBody[] }): SummaryBody {
+  const s = q.list.find((x) => x.storeId === q.storeId);
+  if (!s) throw new Error(`store ${q.storeId} missing from the summary`);
   return s;
 }
 
+/** One Connector Bin entry, as the Connector reports it. */
+interface ReportedEntry {
+  readonly name: string;
+  readonly quantity: string;
+}
+
 /** Record a Connector snapshot for a running run through the real 019 service. */
-async function report(runId: string, readAt: string, entries: Array<[string, string]>): Promise<void> {
+async function report(r: { runId: string; readAt: string; entries: readonly ReportedEntry[] }): Promise<void> {
   await binView.reportSnapshot({
     tenantId: TENANT_A,
-    requestRef: deterministicId(BIN_VIEW_REQUEST_NS, `${runId}:0`),
+    requestRef: deterministicId(BIN_VIEW_REQUEST_NS, `${r.runId}:0`),
     body: {
-      readAt,
-      entries: entries.map(([name, quantity]) => ({
-        erpnextItemRef: { doctype: "Item" as const, name },
-        quantity,
+      readAt: r.readAt,
+      entries: r.entries.map((e) => ({
+        erpnextItemRef: { doctype: "Item" as const, name: e.name },
+        quantity: e.quantity,
         stockUom: "Nos",
       })),
     },
-    idempotencyKey: `rt177-${runId}`,
+    idempotencyKey: `rt177-${r.runId}`,
   });
 }
 
@@ -269,7 +306,7 @@ async function report(runId: string, readAt: string, entries: Array<[string, str
 describe("RT-177 AC2/AC3/AC4 — snapshot lifecycle of a mapped store", () => {
   it("before any report: no_snapshot, items [], count 0", async () => {
     if (skip()) return;
-    const page = await getItems(S_FIX);
+    const page = await getItems({ storeId: S_FIX });
     expect(page.storeId).toBe(S_FIX);
     expect(page.items).toEqual([]);
     expect(page.nextCursor).toBeNull();
@@ -289,13 +326,21 @@ describe("RT-177 AC2/AC3/AC4 — snapshot lifecycle of a mapped store", () => {
     if (skip()) return;
     await insertRun(env!.admin, { id: RUN_FIX_1, storeId: S_FIX, status: "running", startedAt: hoursAgo(0.5) });
     // Before the Connector reports, the run is a pending request with no snapshot.
-    const waiting = await getItems(S_FIX);
+    const waiting = await getItems({ storeId: S_FIX });
     expect(waiting.snapshot.status).toBe("no_snapshot");
     expect(waiting.snapshot.pendingRequest?.runId).toBe(RUN_FIX_1);
 
-    await report(RUN_FIX_1, READ_AT_1, [[ITEM_A, "-3.000000"], [ITEM_B, "5.000000"], [ITEM_C, "-1.500000"]]);
+    await report({
+      runId: RUN_FIX_1,
+      readAt: READ_AT_1,
+      entries: [
+        { name: ITEM_A, quantity: "-3.000000" },
+        { name: ITEM_B, quantity: "5.000000" },
+        { name: ITEM_C, quantity: "-1.500000" },
+      ],
+    });
 
-    const page = await getItems(S_FIX);
+    const page = await getItems({ storeId: S_FIX });
     expect(page.snapshot.status).toBe("fresh");
     expect(page.snapshot.runId).toBe(RUN_FIX_1);
     expect(page.snapshot.readAt).toBe(READ_AT_1);
@@ -326,7 +371,7 @@ describe("RT-177 AC2/AC3/AC4 — snapshot lifecycle of a mapped store", () => {
     ]);
     expect(page.nextCursor).toBeNull();
 
-    const summary = summaryOf((await getStores("?limit=500")).items, S_FIX);
+    const summary = await summaryFor({ storeId: S_FIX });
     expect(summary.negativeItemCount).toBe(2);
     expect(summary.snapshot).toEqual(page.snapshot);
   });
@@ -334,7 +379,7 @@ describe("RT-177 AC2/AC3/AC4 — snapshot lifecycle of a mapped store", () => {
   it("AC3: a newer running run without a report → pendingRequest, previous snapshot still served", async () => {
     if (skip()) return;
     await insertRun(env!.admin, { id: RUN_FIX_2, storeId: S_FIX, status: "running", startedAt: new Date().toISOString() });
-    const page = await getItems(S_FIX);
+    const page = await getItems({ storeId: S_FIX });
     expect(page.snapshot.status).toBe("fresh");
     expect(page.snapshot.runId).toBe(RUN_FIX_1);
     expect(page.snapshot.pendingRequest?.runId).toBe(RUN_FIX_2);
@@ -344,18 +389,22 @@ describe("RT-177 AC2/AC3/AC4 — snapshot lifecycle of a mapped store", () => {
 
   it("AC4: the newer report supersedes; A=0 removes A; -0.000000 is not negative", async () => {
     if (skip()) return;
-    await report(RUN_FIX_2, READ_AT_2, [
-      [ITEM_A, "0"],
-      [ITEM_C, "-1.500000"],
-      ["RT177-ITEM-Z", "-0.000000"],
-    ]);
-    const page = await getItems(S_FIX);
+    await report({
+      runId: RUN_FIX_2,
+      readAt: READ_AT_2,
+      entries: [
+        { name: ITEM_A, quantity: "0" },
+        { name: ITEM_C, quantity: "-1.500000" },
+        { name: "RT177-ITEM-Z", quantity: "-0.000000" },
+      ],
+    });
+    const page = await getItems({ storeId: S_FIX });
     expect(page.snapshot.runId).toBe(RUN_FIX_2);
     expect(page.snapshot.readAt).toBe(READ_AT_2);
     expect(page.snapshot.reportedEntryCount).toBe(3);
     expect(page.snapshot.pendingRequest).toBeNull();
     expect(page.items.map((i) => [i.erpnextItemRef.name, i.quantity])).toEqual([[ITEM_C, "-1.500000"]]);
-    expect(summaryOf((await getStores("?limit=500")).items, S_FIX).negativeItemCount).toBe(1);
+    expect((await summaryFor({ storeId: S_FIX })).negativeItemCount).toBe(1);
   });
 });
 
@@ -366,7 +415,7 @@ describe("RT-177 AC2/AC3/AC4 — snapshot lifecycle of a mapped store", () => {
 describe("RT-177 AC3 — snapshot freshness states", () => {
   it("no active stock map (only returns + retired maps, old snapshot) → no_warehouse_mapping", async () => {
     if (skip()) return;
-    const page = await getItems(S_UNMAPPED);
+    const page = await getItems({ storeId: S_UNMAPPED });
     expect(page.items).toEqual([]);
     expect(page.snapshot).toEqual({
       status: "no_warehouse_mapping",
@@ -378,12 +427,12 @@ describe("RT-177 AC3 — snapshot freshness states", () => {
       reportedEntryCount: null,
       pendingRequest: null,
     });
-    expect(summaryOf((await getStores("?limit=500")).items, S_UNMAPPED).negativeItemCount).toBe(0);
+    expect((await summaryFor({ storeId: S_UNMAPPED })).negativeItemCount).toBe(0);
   });
 
   it("mapped with no report → no_snapshot, items []", async () => {
     if (skip()) return;
-    const page = await getItems(S_NOSNAP);
+    const page = await getItems({ storeId: S_NOSNAP });
     expect(page.snapshot.status).toBe("no_snapshot");
     expect(page.snapshot.pendingRequest).toBeNull();
     expect(page.items).toEqual([]);
@@ -391,25 +440,25 @@ describe("RT-177 AC3 — snapshot freshness states", () => {
 
   it("mapped with only a running request → no_snapshot + pendingRequest", async () => {
     if (skip()) return;
-    const page = await getItems(S_PEND);
+    const page = await getItems({ storeId: S_PEND });
     expect(page.snapshot.status).toBe("no_snapshot");
     expect(page.snapshot.pendingRequest?.runId).toBe(RUN_PEND);
     expect(page.items).toEqual([]);
-    expect(summaryOf((await getStores("?limit=500")).items, S_PEND).negativeItemCount).toBe(0);
+    expect((await summaryFor({ storeId: S_PEND })).negativeItemCount).toBe(0);
   });
 
   it("recordedAt older than staleAfterSeconds → stale, items still returned", async () => {
     if (skip()) return;
-    const page = await getItems(S_STALE);
+    const page = await getItems({ storeId: S_STALE });
     expect(page.snapshot.status).toBe("stale");
     expect(page.snapshot.runId).toBe(RUN_STALE);
     expect(page.items.map((i) => [i.erpnextItemRef.name, i.quantity])).toEqual([["STALE-X", "-2.000000"]]);
-    expect(summaryOf((await getStores("?limit=500")).items, S_STALE).negativeItemCount).toBe(1);
+    expect((await summaryFor({ storeId: S_STALE })).negativeItemCount).toBe(1);
   });
 
   it("a report with complete:false is not a snapshot; its running run is the pending request", async () => {
     if (skip()) return;
-    const page = await getItems(S_INCOMPLETE);
+    const page = await getItems({ storeId: S_INCOMPLETE });
     expect(page.snapshot.status).toBe("fresh");
     expect(page.snapshot.runId).toBe(RUN_INC_OLD);
     expect(page.snapshot.pendingRequest?.runId).toBe(RUN_INC_NEW);
@@ -424,14 +473,14 @@ describe("RT-177 AC3 — snapshot freshness states", () => {
 describe("RT-177 AC6 — pagination", () => {
   it("items: default limit 100, then the rest; ordered by exact quantity then name", async () => {
     if (skip()) return;
-    const first = await getItems(S_PAGE);
+    const first = await getItems({ storeId: S_PAGE });
     expect(first.items).toHaveLength(100);
     expect(first.nextCursor).not.toBeNull();
-    const second = await getItems(S_PAGE, `?cursor=${first.nextCursor}`);
+    const second = await getItems({ storeId: S_PAGE, cursor: first.nextCursor });
     expect(second.items).toHaveLength(5);
     expect(second.nextCursor).toBeNull();
 
-    const all = (await getItems(S_PAGE, "?limit=500")).items;
+    const all = (await getItems({ storeId: S_PAGE, limit: 500 })).items;
     expect(all).toHaveLength(105);
     expect([...first.items, ...second.items]).toEqual(all);
     expect(all.some((i) => i.erpnextItemRef.name === "ZERO")).toBe(false);
@@ -446,12 +495,12 @@ describe("RT-177 AC6 — pagination", () => {
 
   it("items: small pages cover every row exactly once, in order", async () => {
     if (skip()) return;
-    const all = (await getItems(S_PAGE, "?limit=500")).items;
+    const all = (await getItems({ storeId: S_PAGE, limit: 500 })).items;
     for (const limit of [1, 7, 104, 105]) {
       const seen: ItemBody[] = [];
       let cursor: string | null = null;
       for (let i = 0; i < 200; i++) {
-        const page: ItemsPage = await getItems(S_PAGE, `?limit=${limit}${cursor ? `&cursor=${cursor}` : ""}`);
+        const page: ItemsPage = await getItems({ storeId: S_PAGE, limit, cursor });
         expect(page.items.length).toBeLessThanOrEqual(limit);
         seen.push(...page.items);
         cursor = page.nextCursor;
@@ -463,8 +512,8 @@ describe("RT-177 AC6 — pagination", () => {
 
   it("stores: limit=1 paging covers every visible store exactly once, ordered by id", async () => {
     if (skip()) return;
-    const full = (await getStores("?limit=500")).items;
-    const paged = await allStores(SES_OWNER, 1);
+    const full = (await getStores({ limit: 500 })).items;
+    const paged = await allStores({ session: SES_OWNER, limit: 1 });
     expect(paged.map((s) => s.storeId)).toEqual(full.map((s) => s.storeId));
     expect(new Set(paged.map((s) => s.storeId)).size).toBe(paged.length);
     const ids = full.map((s) => s.storeId);
@@ -473,20 +522,20 @@ describe("RT-177 AC6 — pagination", () => {
     expect(ids.sort()).toEqual(
       [S_FIX, S_STALE, S_UNMAPPED, S_NOSNAP, S_PEND, S_INCOMPLETE, S_PAGE].sort(),
     );
-    expect(summaryOf(full, S_PAGE).negativeItemCount).toBe(105);
+    expect(summaryIn({ list: full, storeId: S_PAGE }).negativeItemCount).toBe(105);
   });
 
   it.each([
-    ["limit=0", "?limit=0"],
-    ["limit=501", "?limit=501"],
-    ["limit=abc", "?limit=abc"],
-    ["garbage cursor", "?cursor=bm90LWpzb24"],
-    ["non-base64url cursor", "?cursor=a.b"],
-    ["unknown query key", "?storeId=" + S_FIX],
-  ])("400 validation_error on %s (both operations)", async (_label, query) => {
+    { label: "limit=0", query: "?limit=0" },
+    { label: "limit=501", query: "?limit=501" },
+    { label: "limit=abc", query: "?limit=abc" },
+    { label: "garbage cursor", query: "?cursor=bm90LWpzb24" },
+    { label: "non-base64url cursor", query: "?cursor=a.b" },
+    { label: "unknown query key", query: "?storeId=" + S_FIX },
+  ])("400 validation_error on $label (both operations)", async ({ query }) => {
     if (skip()) return;
-    for (const path of [STORES, items(S_PAGE)]) {
-      const res = await owner()(`${path}${query}`).expect(400);
+    for (const path of [STORES, itemsPath({ storeId: S_PAGE })]) {
+      const res = await get({ path, query }).expect(400);
       expect(res.body.error.code).toBe("validation_error");
       // Envelope shape only: the shared ZodValidationPipe adds `error.details`,
       // which this file's `Error` schema does not declare (pre-existing for every
@@ -497,15 +546,25 @@ describe("RT-177 AC6 — pagination", () => {
 
   it("a cursor issued by one operation is a 400 on the other", async () => {
     if (skip()) return;
-    const itemsPage = await getItems(S_PAGE, "?limit=1");
-    const storesPage = await getStores("?limit=1");
-    await owner()(`${STORES}?cursor=${itemsPage.nextCursor}`).expect(400);
-    await owner()(`${items(S_PAGE)}?cursor=${storesPage.nextCursor}`).expect(400);
+    const itemsPage = await getItems({ storeId: S_PAGE, limit: 1 });
+    const storesPage = await getStores({ limit: 1 });
+    await get({ path: STORES, query: `?cursor=${itemsPage.nextCursor}` }).expect(400);
+    await get({ path: itemsPath({ storeId: S_PAGE }), query: `?cursor=${storesPage.nextCursor}` }).expect(400);
+  });
+
+  it("an item cursor is bound to its store: replaying it on another store is a 400", async () => {
+    if (skip()) return;
+    const itemsPage = await getItems({ storeId: S_PAGE, limit: 1 });
+    expect(itemsPage.nextCursor).not.toBeNull();
+    const res = await get({ path: itemsPath({ storeId: S_STALE }), query: `?cursor=${itemsPage.nextCursor}` }).expect(400);
+    expect(res.body.error.code).toBe("validation_error");
+    // The same cursor still continues its own store.
+    await getItems({ storeId: S_PAGE, cursor: itemsPage.nextCursor });
   });
 
   it("a malformed storeId → 400 validation_error", async () => {
     if (skip()) return;
-    const res = await owner()(items("not-a-uuid")).expect(400);
+    const res = await get({ path: itemsPath({ storeId: "not-a-uuid" }) }).expect(400);
     expect(res.body.error.code).toBe("validation_error");
   });
 });
@@ -517,26 +576,40 @@ describe("RT-177 AC6 — pagination", () => {
 describe("RT-177 AC5 — authorization + non-disclosure", () => {
   it("store_manager scoped to S1 sees only S1 in the summary and gets 404 on S2", async () => {
     if (skip()) return;
-    const list = await allStores(SES_MGR, 500);
+    const list = await allStores({ session: SES_MGR, limit: 500 });
     expect(list.map((s) => s.storeId)).toEqual([S_FIX]);
-    await getItems(S_FIX, "", SES_MGR);
-    const res = await as(SES_MGR)(items(S_STALE)).expect(404);
+    await getItems({ storeId: S_FIX, session: SES_MGR });
+    const res = await get({ path: itemsPath({ storeId: S_STALE }), session: SES_MGR }).expect(404);
     expect(res.body.error.code).toBe("not_found");
     expect(contract().error(res.body)).toBe(true);
   });
 
+  it.each([
+    { role: "owner", session: SES_OWNER_ACTIVE },
+    { role: "tenant_admin", session: SES_ADMIN_ACTIVE },
+  ])("$role with an active store selected still reads tenant-wide", async ({ session }) => {
+    if (skip()) return;
+    const tenantWide = (await allStores({ session: SES_OWNER, limit: 500 })).map((s) => s.storeId);
+    const list = await allStores({ session, limit: 500 });
+    expect(list.map((s) => s.storeId)).toEqual(tenantWide);
+    expect(tenantWide.length).toBeGreaterThan(1);
+    // A store other than the active one (S_PAGE) is readable.
+    const stale = await getItems({ storeId: S_STALE, session });
+    expect(stale.items.map((i) => i.erpnextItemRef.name)).toEqual(["STALE-X"]);
+  });
+
   it("tenant_admin reads tenant-wide", async () => {
     if (skip()) return;
-    const list = await allStores(SES_ADMIN, 500);
+    const list = await allStores({ session: SES_ADMIN, limit: 500 });
     expect(list.map((s) => s.storeId)).toContain(S_STALE);
-    await getItems(S_STALE, "", SES_ADMIN);
+    await getItems({ storeId: S_STALE, session: SES_ADMIN });
   });
 
   it("cross-tenant, deleted and nonexistent stores → identical 404 not_found", async () => {
     if (skip()) return;
     const bodies = [];
     for (const storeId of [STORE_B_X, S_DELETED, NON_EXISTENT]) {
-      const res = await owner()(items(storeId)).expect(404);
+      const res = await get({ path: itemsPath({ storeId }) }).expect(404);
       bodies.push({ code: res.body.error.code, message: res.body.error.message });
     }
     expect(new Set(bodies.map((b) => JSON.stringify(b))).size).toBe(1);
@@ -548,21 +621,21 @@ describe("RT-177 AC5 — authorization + non-disclosure", () => {
     // store_staff is an authenticated member of tenant A with 'all' store access:
     // TenantContextGuard admits it, so only RolesGuard (resolved from the real
     // ErpnextReconciliationModule graph, not hand-registered) can deny it.
-    for (const path of [STORES, items(S_FIX)]) {
-      const res = await as(SES_STAFF)(path).expect(404);
+    for (const path of [STORES, itemsPath({ storeId: S_FIX })]) {
+      const res = await get({ path, session: SES_STAFF }).expect(404);
       expect(res.body.error.code).toBe("not_found");
       expect(contract().error(res.body)).toBe(true);
     }
     // The existing 017 routes in the same module are gated by the same guard.
-    await as(SES_STAFF)(`${BASE}/postings/backlog`).expect(404);
-    await as(SES_STAFF)(`${BASE}/runs/${RUN_STALE}`).expect(404);
-    await as(SES_OWNER)(`${BASE}/runs/${RUN_STALE}`).expect(200);
+    await get({ path: `${BASE}/postings/backlog`, session: SES_STAFF }).expect(404);
+    await get({ path: `${BASE}/runs/${RUN_STALE}`, session: SES_STAFF }).expect(404);
+    await get({ path: `${BASE}/runs/${RUN_STALE}` }).expect(200);
   });
 
   it("no session → 401 on both operations", async () => {
     if (skip()) return;
-    await as(null)(STORES).expect(401);
-    await as(null)(items(S_FIX)).expect(401);
+    await get({ path: STORES, session: null }).expect(401);
+    await get({ path: itemsPath({ storeId: S_FIX }), session: null }).expect(401);
   });
 });
 
@@ -587,12 +660,12 @@ describe("RT-177 AC7 — the reads write nothing", () => {
       return r.rows[0]!.f;
     };
     const before = await fingerprint();
-    await getStores("?limit=500");
-    await getStores("?limit=500", SES_MGR);
-    for (const s of [S_FIX, S_STALE, S_UNMAPPED, S_NOSNAP, S_PEND, S_INCOMPLETE, S_PAGE]) {
-      await getItems(s, "?limit=500");
+    await getStores({ limit: 500 });
+    await getStores({ limit: 500, session: SES_MGR });
+    for (const storeId of [S_FIX, S_STALE, S_UNMAPPED, S_NOSNAP, S_PEND, S_INCOMPLETE, S_PAGE]) {
+      await getItems({ storeId, limit: 500 });
     }
-    await owner()(items(STORE_B_X)).expect(404);
+    await get({ path: itemsPath({ storeId: STORE_B_X }) }).expect(404);
     expect(await fingerprint()).toBe(before);
   });
 });

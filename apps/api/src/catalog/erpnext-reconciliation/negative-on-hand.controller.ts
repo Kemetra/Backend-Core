@@ -11,9 +11,10 @@
  *
  * Same human `cookieAuth` boundary as the rest of the 017 surface
  * (`DashboardAuthGuard` → `TenantContextGuard` → `RolesGuard`). Read access is
- * `owner` / `tenant_admin` (tenant-wide) and `store_manager` (its store scope,
- * `resolveStoreScope`, RT-131); every other role gets the default non-disclosing
- * 404 (RT-51 D6). Tenant and store scope come from the session, never the query
+ * `owner` / `tenant_admin` (tenant-wide, not narrowed by the active store) and
+ * `store_manager` (its store scope, `resolveStoreScope`, RT-131); every other
+ * role gets the default non-disclosing 404 (RT-51 D6). The service derives the
+ * scope from the session context and the caller's role (`readScope`). Tenant and store scope come from the session, never the query
  * (§XII). No write path, no `@Idempotent`, no audit row: this is a pure read.
  */
 import {
@@ -32,7 +33,6 @@ import { DashboardAuthGuard } from "../../auth/dashboard-auth.guard";
 import { Roles } from "../../auth/roles.decorator";
 import { RolesGuard } from "../../auth/roles.guard";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe";
-import { resolveStoreScope } from "../../context/store-scope";
 import { TenantContextGuard } from "../../context/tenant-context.guard";
 import type { ResolvedContext, TenantContextRequest } from "../../context/types";
 import {
@@ -68,7 +68,7 @@ export class NegativeOnHandController {
     return mapErrors(() =>
       this.service.listStores({
         tenantId,
-        storeScope: resolveStoreScope(ctx),
+        context: ctx,
         cursor: query.cursor ?? null,
         limit: query.limit ?? DEFAULT_LIMIT,
       }),
@@ -87,7 +87,7 @@ export class NegativeOnHandController {
     return mapErrors(() =>
       this.service.listItems({
         tenantId,
-        storeScope: resolveStoreScope(ctx),
+        context: ctx,
         storeId,
         cursor: query.cursor ?? null,
         limit: query.limit ?? DEFAULT_LIMIT,

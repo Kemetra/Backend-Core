@@ -13,9 +13,9 @@
  * class and touches no run/result row (RT-51 D2/D3/D5). No outbound HTTP.
  *
  * Scope: tenant from the session principal via `runWithTenantContext` (RLS);
- * store scope from `resolveStoreScope` (RT-131), applied as a store filter —
- * `stores` and `erpnext_reconciliation_run` carry tenant-only RLS. An
- * out-of-scope store is indistinguishable from a nonexistent one (404).
+ * store scope from `readScope` (below), applied as a store filter — `stores` and
+ * `erpnext_reconciliation_run` carry tenant-only RLS. An out-of-scope store is
+ * indistinguishable from a nonexistent one (404).
  */
 import { Inject, Injectable } from "@nestjs/common";
 import type { Pool, PoolClient } from "pg";
@@ -23,7 +23,9 @@ import type { Pool, PoolClient } from "pg";
 import { runWithTenantContext } from "@data-pulse-2/db";
 
 import { PG_POOL } from "../../auth/auth.module";
-import type { StoreScope } from "../../context/store-scope";
+import { MembershipRepository } from "../../context/membership.repository";
+import { resolveStoreScope, type StoreScope } from "../../context/store-scope";
+import type { ResolvedContext } from "../../context/types";
 import {
   decodeItemCursor,
   decodeStoreCursor,
@@ -55,17 +57,34 @@ export class NegativeOnHandStoreNotFoundError extends Error {
 
 export interface ListStoresInput {
   readonly tenantId: string;
-  readonly storeScope: StoreScope;
+  /** The session context; the store scope is derived from it (`readScope`). */
+  readonly context: ResolvedContext;
   readonly cursor: string | null;
   readonly limit: number;
 }
 
-export interface ListItemsInput {
-  readonly tenantId: string;
-  readonly storeScope: StoreScope;
+export interface ListItemsInput extends ListStoresInput {
   readonly storeId: string;
-  readonly cursor: string | null;
-  readonly limit: number;
+}
+
+/** Roles that read this surface tenant-wide (RT-51 D6; contract: listErpnextNegativeOnHand*). */
+const TENANT_WIDE_ROLES: ReadonlySet<string> = new Set(["owner", "tenant_admin"]);
+
+/**
+ * The stores this caller may read on this surface (RT-51 D6).
+ *
+ * `owner` / `tenant_admin` are not narrowed by the session's ACTIVE store: their
+ * scope is their membership's store authority (`'all'` → tenant-wide). Their
+ * membership still bounds it — a `'specific'` grant stays specific (RT-131: the
+ * role never widens a membership). Every other role (`store_manager`) gets the
+ * standard `resolveStoreScope` (RT-131), including the active-store narrowing.
+ */
+export function readScope(input: {
+  readonly context: ResolvedContext;
+  readonly roleCode: string | null;
+}): StoreScope {
+  const tenantWide = input.roleCode !== null && TENANT_WIDE_ROLES.has(input.roleCode);
+  return resolveStoreScope(tenantWide ? { ...input.context, storeId: null } : input.context);
 }
 
 /**
@@ -152,21 +171,24 @@ interface StoreFacts {
 
 @Injectable()
 export class NegativeOnHandService {
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+  constructor(
+    @Inject(PG_POOL) private readonly pool: Pool,
+    @Inject(MembershipRepository) private readonly memberships: MembershipRepository,
+  ) {}
 
   /** Per-store summaries for every store the caller may read, by store id. */
   async listStores(input: ListStoresInput): Promise<StoreNegativeOnHandSummaryPage> {
     const limit = clampLimit(input.limit);
-    const after = input.cursor !== null ? decodeStoreCursor(input.cursor) : null;
-    const scopedIds = input.storeScope.kind === "stores" ? input.storeScope.storeIds : null;
-    if (scopedIds !== null && scopedIds.length === 0) {
-      return { items: [], nextCursor: null };
-    }
+    const { tenantId } = input;
+    const after = input.cursor !== null ? decodeStoreCursor({ tenantId, cursor: input.cursor }) : null;
 
     return runWithTenantContext(
       this.pool,
-      { tenantId: input.tenantId, isPlatformAdmin: false },
+      { tenantId, isPlatformAdmin: false },
       async (client): Promise<StoreNegativeOnHandSummaryPage> => {
+        const scope = await this.scopeOf(client, input);
+        const scopedIds = scope.kind === "stores" ? scope.storeIds : null;
+        if (scopedIds !== null && scopedIds.length === 0) return { items: [], nextCursor: null };
         const stores = await client.query<{ id: string; name: string }>(
           `SELECT id, name
              FROM stores
@@ -190,7 +212,9 @@ export class NegativeOnHandService {
             };
           }),
           nextCursor:
-            stores.rows.length > limit ? encodeStoreCursor(page[page.length - 1]!.id) : null,
+            stores.rows.length > limit
+              ? encodeStoreCursor({ tenantId, storeId: page[page.length - 1]!.id })
+              : null,
         };
       },
     );
@@ -199,16 +223,18 @@ export class NegativeOnHandService {
   /** One store's negative items, most negative first. Invisible store → 404. */
   async listItems(input: ListItemsInput): Promise<StoreNegativeOnHandPage> {
     const limit = clampLimit(input.limit);
-    const cursor = input.cursor !== null ? decodeItemCursor(input.cursor) : null;
-    const storeId = input.storeId.toLowerCase();
-    if (input.storeScope.kind === "stores" && !input.storeScope.storeIds.includes(storeId)) {
-      throw new NegativeOnHandStoreNotFoundError();
-    }
+    const scope = { tenantId: input.tenantId, storeId: input.storeId.toLowerCase() };
+    const { storeId } = scope;
+    const cursor = input.cursor !== null ? decodeItemCursor({ ...scope, cursor: input.cursor }) : null;
 
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<StoreNegativeOnHandPage> => {
+        const storeScope = await this.scopeOf(client, input);
+        if (storeScope.kind === "stores" && !storeScope.storeIds.includes(storeId)) {
+          throw new NegativeOnHandStoreNotFoundError();
+        }
         const store = await client.query<{ id: string }>(
           `SELECT id FROM stores WHERE id = $1 AND deleted_at IS NULL`,
           [storeId],
@@ -216,7 +242,7 @@ export class NegativeOnHandService {
         if (!store.rows[0]) throw new NegativeOnHandStoreNotFoundError();
 
         const facts = (await this.storeFacts(client, [storeId])).get(storeId)!;
-        const { page, nextCursor } = pageEntries(facts.negatives, cursor, limit);
+        const { page, nextCursor } = pageEntries({ ordered: facts.negatives, cursor, limit, scope });
         const names = await this.productNames(client, page);
         const warehouseRef = facts.status.erpnextWarehouseRef!;
         return {
@@ -227,6 +253,16 @@ export class NegativeOnHandService {
         };
       },
     );
+  }
+
+  /** The caller's store scope on this surface, from its role in the tenant (RLS-scoped read). */
+  private async scopeOf(client: PoolClient, input: ListStoresInput): Promise<StoreScope> {
+    const userId = input.context.userId;
+    const roleCode =
+      userId !== null
+        ? await this.memberships.findRoleCodeForUserInTenant(userId, input.tenantId, client)
+        : null;
+    return readScope({ context: input.context, roleCode });
   }
 
   private async storeFacts(

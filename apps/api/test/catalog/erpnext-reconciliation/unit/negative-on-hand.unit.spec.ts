@@ -37,10 +37,12 @@ import {
   snapshotStatus,
   toNegativeOnHandItem,
   toScaledQuantity,
+  type NegativeEntry,
   type PositionedEntry,
 } from "../../../../src/catalog/erpnext-reconciliation/negative-on-hand.projection";
 import {
   NegativeOnHandStoreNotFoundError,
+  readScope,
   type NegativeOnHandService,
 } from "../../../../src/catalog/erpnext-reconciliation/negative-on-hand.service";
 import type { TenantContextRequest } from "../../../../src/context/types";
@@ -147,36 +149,58 @@ describe("RT-177 §2 — entry filtering + view order", () => {
   });
 });
 
-describe("RT-177 §3 — opaque cursors + keyset paging", () => {
-  it("store cursor round-trips", () => {
-    expect(decodeStoreCursor(encodeStoreCursor(STORE))).toBe(STORE);
+describe("RT-177 §3 — opaque, scope-bound cursors + keyset paging", () => {
+  const OTHER_TENANT = "01900000-0000-7000-8000-0000000000a2";
+  const OTHER_STORE = "01900000-0000-7000-8000-0000000000c2";
+  const itemScope = { tenantId: TENANT, storeId: STORE };
+  const b64 = (payload: unknown): string => Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const firstEntry = (): NegativeEntry => negativeEntries(positioned([["Ä-ü", "-1.25"]]))[0]!;
+
+  it("store cursor round-trips under its tenant", () => {
+    const cursor = encodeStoreCursor({ tenantId: TENANT, storeId: STORE });
+    expect(decodeStoreCursor({ tenantId: TENANT, cursor })).toBe(STORE);
   });
 
-  it("item cursor round-trips", () => {
-    const [entry] = negativeEntries(positioned([["Ä-ü", "-1.25"]]));
-    const c = decodeItemCursor(encodeItemCursor(entry!));
-    expect(c).toEqual({ scaled: -1250000n, name: "Ä-ü", ordinal: 1 });
+  it("item cursor round-trips under its tenant + store", () => {
+    const cursor = encodeItemCursor({ ...itemScope, entry: firstEntry() });
+    expect(decodeItemCursor({ ...itemScope, cursor })).toEqual({ scaled: -1250000n, name: "Ä-ü", ordinal: 1 });
   });
 
   it.each([
-    ["garbage", "!!!"],
-    ["not json", Buffer.from("nope").toString("base64url")],
-    ["json array", Buffer.from("[]").toString("base64url")],
-    ["extra key", Buffer.from(JSON.stringify({ k: "s", s: STORE, x: 1 })).toString("base64url")],
-  ])("rejects a %s cursor", (_label, cursor) => {
-    expect(() => decodeStoreCursor(cursor)).toThrow(InvalidCursorError);
-    expect(() => decodeItemCursor(cursor)).toThrow(InvalidCursorError);
+    { label: "garbage", cursor: "!!!" },
+    { label: "not json", cursor: Buffer.from("nope").toString("base64url") },
+    { label: "json array", cursor: b64([]) },
+    { label: "extra key", cursor: b64({ k: "s", t: TENANT, s: STORE, x: 1 }) },
+    { label: "unbound (pre-binding shape)", cursor: b64({ k: "s", s: STORE }) },
+  ])("rejects a $label cursor on both operations", ({ cursor }) => {
+    expect(() => decodeStoreCursor({ tenantId: TENANT, cursor })).toThrow(InvalidCursorError);
+    expect(() => decodeItemCursor({ ...itemScope, cursor })).toThrow(InvalidCursorError);
   });
 
-  it("a cursor of one operation is rejected by the other", () => {
-    const [entry] = negativeEntries(positioned([["A", "-1"]]));
-    expect(() => decodeStoreCursor(encodeItemCursor(entry!))).toThrow(InvalidCursorError);
-    expect(() => decodeItemCursor(encodeStoreCursor(STORE))).toThrow(InvalidCursorError);
+  it("a cursor of one operation is rejected by the other (kinds cannot be swapped)", () => {
+    const itemCursor = encodeItemCursor({ ...itemScope, entry: firstEntry() });
+    const storeCursor = encodeStoreCursor({ tenantId: TENANT, storeId: STORE });
+    expect(() => decodeStoreCursor({ tenantId: TENANT, cursor: itemCursor })).toThrow(InvalidCursorError);
+    expect(() => decodeItemCursor({ ...itemScope, cursor: storeCursor })).toThrow(InvalidCursorError);
+  });
+
+  it("an item cursor is bound to its store and tenant; a store cursor to its tenant", () => {
+    const itemCursor = encodeItemCursor({ ...itemScope, entry: firstEntry() });
+    expect(() => decodeItemCursor({ tenantId: TENANT, storeId: OTHER_STORE, cursor: itemCursor })).toThrow(
+      InvalidCursorError,
+    );
+    expect(() => decodeItemCursor({ tenantId: OTHER_TENANT, storeId: STORE, cursor: itemCursor })).toThrow(
+      InvalidCursorError,
+    );
+    const storeCursor = encodeStoreCursor({ tenantId: TENANT, storeId: STORE });
+    expect(() => decodeStoreCursor({ tenantId: OTHER_TENANT, cursor: storeCursor })).toThrow(InvalidCursorError);
+    // uuid comparison is case-insensitive.
+    expect(decodeItemCursor({ tenantId: TENANT.toUpperCase(), storeId: STORE.toUpperCase(), cursor: itemCursor }).ordinal).toBe(1);
   });
 
   it("an item cursor with a non-decimal quantity is rejected", () => {
-    const bad = Buffer.from(JSON.stringify({ k: "i", q: "-1e3", n: "A", o: 1 })).toString("base64url");
-    expect(() => decodeItemCursor(bad)).toThrow(InvalidCursorError);
+    const bad = b64({ k: "i", t: TENANT, st: STORE, q: "-1e3", n: "A", o: 1 });
+    expect(() => decodeItemCursor({ ...itemScope, cursor: bad })).toThrow(InvalidCursorError);
   });
 
   it("pages cover every entry exactly once, in order, at every page size", () => {
@@ -188,11 +212,8 @@ describe("RT-177 §3 — opaque cursors + keyset paging", () => {
       let cursor: string | null = null;
       let pages = 0;
       do {
-        const { page, nextCursor } = pageEntries(
-          ordered,
-          cursor ? decodeItemCursor(cursor) : null,
-          limit,
-        );
+        const position = cursor ? decodeItemCursor({ ...itemScope, cursor }) : null;
+        const { page, nextCursor } = pageEntries({ ordered, cursor: position, limit, scope: itemScope });
         expect(page.length).toBeLessThanOrEqual(limit);
         seen.push(...page.map((e) => e.ordinal));
         cursor = nextCursor;
@@ -349,7 +370,7 @@ describe("RT-177 §6 — controller", () => {
     }
   });
 
-  it("passes the session store scope, default limit 100 and the cursor to the service", async () => {
+  it("passes the session context, default limit 100 and the cursor to the service", async () => {
     const listStores = jest.fn().mockResolvedValue({ items: [], nextCursor: null });
     const listItems = jest.fn().mockResolvedValue({ storeId: STORE, items: [], nextCursor: null });
     const c = controllerWith({ listStores, listItems });
@@ -357,13 +378,13 @@ describe("RT-177 §6 — controller", () => {
     await c.listErpnextNegativeOnHand(authed, STORE, { cursor: "abc", limit: 7 });
     expect(listStores).toHaveBeenCalledWith({
       tenantId: TENANT,
-      storeScope: { kind: "stores", storeIds: [STORE] },
+      context: ctx,
       cursor: null,
       limit: 100,
     });
     expect(listItems).toHaveBeenCalledWith({
       tenantId: TENANT,
-      storeScope: { kind: "stores", storeIds: [STORE] },
+      context: ctx,
       storeId: STORE,
       cursor: "abc",
       limit: 7,
@@ -395,5 +416,44 @@ describe("RT-177 §6 — controller", () => {
     const boom = new Error("boom");
     const c = controllerWith({ listStores: jest.fn().mockRejectedValue(boom) });
     await expect(c.listErpnextNegativeOnHandStores(authed, {})).rejects.toBe(boom);
+  });
+});
+
+describe("RT-177 §7 — read scope by role (RT-51 D6)", () => {
+  const OTHER = "01900000-0000-7000-8000-0000000000c2";
+  const base = {
+    userId: USER,
+    tenantId: TENANT,
+    isPlatformAdmin: false,
+    source: "session" as const,
+  };
+  const allAccess = { kind: "all" as const };
+  const specific = { kind: "specific" as const, storeIds: [STORE, OTHER] };
+
+  it.each([{ roleCode: "owner" }, { roleCode: "tenant_admin" }])(
+    "$roleCode with an active store and 'all' access → tenant-wide",
+    ({ roleCode }) => {
+      const context = { ...base, storeId: STORE, storeAccess: allAccess };
+      expect(readScope({ context, roleCode })).toEqual({ kind: "tenant" });
+    },
+  );
+
+  it("owner with a 'specific' membership keeps its grant (the role never widens a membership)", () => {
+    const context = { ...base, storeId: STORE, storeAccess: specific };
+    expect(readScope({ context, roleCode: "owner" })).toEqual({ kind: "stores", storeIds: [STORE, OTHER] });
+  });
+
+  it("store_manager with an active store → that store only (RT-131)", () => {
+    const context = { ...base, storeId: STORE, storeAccess: specific };
+    expect(readScope({ context, roleCode: "store_manager" })).toEqual({ kind: "stores", storeIds: [STORE] });
+  });
+
+  it("store_manager without an active store → its granted stores; unknown role → standard scope", () => {
+    const context = { ...base, storeId: null, storeAccess: specific };
+    expect(readScope({ context, roleCode: "store_manager" })).toEqual({ kind: "stores", storeIds: [STORE, OTHER] });
+    expect(readScope({ context: { ...context, storeId: OTHER }, roleCode: null })).toEqual({
+      kind: "stores",
+      storeIds: [OTHER],
+    });
   });
 });

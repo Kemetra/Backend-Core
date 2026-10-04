@@ -10,7 +10,8 @@
  *     never negative, and no float ever touches a quantity;
  *   - the item order (quantity ascending, then ERPNext item name, then the
  *     entry's position in the report as a final tie-break);
- *   - the opaque cursors (base64url JSON, strictly validated on the way in);
+ *   - the opaque cursors (base64url JSON bound to operation, tenant and
+ *     store; strictly validated on the way in);
  *   - the freshness classification (RT-51 D4);
  *   - the wire projections (`additionalProperties:false` shapes of the contract).
  *
@@ -143,6 +144,16 @@ export function compareEntries(
 // ---------------------------------------------------------------------------
 // Opaque cursors
 // ---------------------------------------------------------------------------
+//
+// Repo convention (010 read-down `read-down.cursor.ts`, audit, outbox admin):
+// unsigned base64url JSON, bound to the scope it was issued for and rejected
+// when presented under another one. Each cursor here carries its operation kind
+// (`s` store list / `i` item list) and the tenant it was issued under; the item
+// cursor also carries its store. A token from the other operation, another
+// tenant or another store is a 400. A hand-built token that passes these checks
+// can only reposition the keyset inside rows the caller may already read (the
+// same as choosing a start point): scope and RLS are applied to the query, never
+// taken from the cursor.
 
 /** Raised for a cursor this operation did not issue → 400 validation_error. */
 export class InvalidCursorError extends Error {
@@ -152,13 +163,25 @@ export class InvalidCursorError extends Error {
   }
 }
 
+/** The scope a store-list cursor is bound to. */
+export interface StoreListScope {
+  readonly tenantId: string;
+}
+
+/** The scope an item-list cursor is bound to. */
+export interface ItemListScope extends StoreListScope {
+  readonly storeId: string;
+}
+
 const StoreCursorSchema = z
-  .object({ k: z.literal("s"), s: z.string().regex(UUID_RE) })
+  .object({ k: z.literal("s"), t: z.string().regex(UUID_RE), s: z.string().regex(UUID_RE) })
   .strict();
 
 const ItemCursorSchema = z
   .object({
     k: z.literal("i"),
+    t: z.string().regex(UUID_RE),
+    st: z.string().regex(UUID_RE),
     q: z.string().regex(QUANTITY_RE),
     n: z.string().min(1).max(140),
     o: z.number().int().min(1),
@@ -175,31 +198,41 @@ function encode(payload: object): string {
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
 
-function decode(cursor: string): unknown {
+function decode(token: { readonly cursor: string }): unknown {
   try {
-    return JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    return JSON.parse(Buffer.from(token.cursor, "base64url").toString("utf8"));
   } catch {
     throw new InvalidCursorError();
   }
 }
 
-export function encodeStoreCursor(storeId: string): string {
-  return encode({ k: "s", s: storeId });
+/** Case-insensitive uuid equality (uuids are compared lower-cased). */
+function sameId(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
 }
 
-export function decodeStoreCursor(cursor: string): string {
-  const parsed = StoreCursorSchema.safeParse(decode(cursor));
-  if (!parsed.success) throw new InvalidCursorError();
+export function encodeStoreCursor(c: StoreListScope & { readonly storeId: string }): string {
+  return encode({ k: "s", t: c.tenantId, s: c.storeId });
+}
+
+/** The last store id of the previous page, if the cursor was issued for this tenant. */
+export function decodeStoreCursor(c: StoreListScope & { readonly cursor: string }): string {
+  const parsed = StoreCursorSchema.safeParse(decode(c));
+  if (!parsed.success || !sameId(parsed.data.t, c.tenantId)) throw new InvalidCursorError();
   return parsed.data.s.toLowerCase();
 }
 
-export function encodeItemCursor(entry: NegativeEntry): string {
-  return encode({ k: "i", q: entry.quantity, n: entry.name, o: entry.ordinal });
+export function encodeItemCursor(c: ItemListScope & { readonly entry: NegativeEntry }): string {
+  const { entry } = c;
+  return encode({ k: "i", t: c.tenantId, st: c.storeId, q: entry.quantity, n: entry.name, o: entry.ordinal });
 }
 
-export function decodeItemCursor(cursor: string): ItemCursor {
-  const parsed = ItemCursorSchema.safeParse(decode(cursor));
+/** The keyset position, if the cursor was issued for this tenant and store. */
+export function decodeItemCursor(c: ItemListScope & { readonly cursor: string }): ItemCursor {
+  const parsed = ItemCursorSchema.safeParse(decode(c));
   if (!parsed.success) throw new InvalidCursorError();
+  const bound = sameId(parsed.data.t, c.tenantId) && sameId(parsed.data.st, c.storeId);
+  if (!bound) throw new InvalidCursorError();
   return {
     // The schema regex guarantees an exact-decimal string.
     scaled: toScaledQuantity(parsed.data.q)!,
@@ -210,19 +243,20 @@ export function decodeItemCursor(cursor: string): ItemCursor {
 
 /**
  * One keyset page of the ordered negative entries: the entries strictly after
- * `cursor`, at most `limit`, and the cursor of the last one when more follow.
+ * `cursor`, at most `limit`, and the (scope-bound) cursor of the last one when
+ * more follow.
  */
-export function pageEntries(
-  ordered: readonly NegativeEntry[],
-  cursor: ItemCursor | null,
-  limit: number,
-): { page: NegativeEntry[]; nextCursor: string | null } {
-  const after = cursor
-    ? ordered.filter((e) => compareEntries(e, cursor) > 0)
-    : ordered;
-  const page = after.slice(0, limit);
+export function pageEntries(p: {
+  readonly ordered: readonly NegativeEntry[];
+  readonly cursor: ItemCursor | null;
+  readonly limit: number;
+  readonly scope: ItemListScope;
+}): { page: NegativeEntry[]; nextCursor: string | null } {
+  const { cursor } = p;
+  const after = cursor ? p.ordered.filter((e) => compareEntries(e, cursor) > 0) : p.ordered;
+  const page = after.slice(0, p.limit);
   const nextCursor =
-    after.length > limit ? encodeItemCursor(page[page.length - 1]!) : null;
+    after.length > p.limit ? encodeItemCursor({ ...p.scope, entry: page[page.length - 1]! }) : null;
   return { page, nextCursor };
 }
 

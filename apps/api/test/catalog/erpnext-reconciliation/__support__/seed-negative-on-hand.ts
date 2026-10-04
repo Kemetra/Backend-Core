@@ -7,7 +7,8 @@
  *
  *   - extra tenant-A stores, one per snapshot state, plus a soft-deleted store;
  *   - members: owner (all), store_manager (S_FIX only), store_staff (all),
- *     tenant_admin (all), each with a live session and no active store;
+ *     tenant_admin (all), each with a live session and no active store, plus
+ *     owner + tenant_admin sessions with S_PAGE selected as the active store;
  *   - a confirmed 013 item map for ITEM_A (ITEM_C stays unmapped);
  *   - 014 warehouse maps (S_UNMAPPED has only a `returns` map and a retired one);
  *   - stored Connector snapshots in the exact shape `reportSnapshot` writes (019).
@@ -64,12 +65,17 @@ export const SES_OWNER = "0a000000-0000-7000-8000-0000017704a1";
 export const SES_MGR = "0a000000-0000-7000-8000-0000017704a2";
 export const SES_STAFF = "0a000000-0000-7000-8000-0000017704a3";
 export const SES_ADMIN = "0a000000-0000-7000-8000-0000017704a4";
+/** Owner / tenant_admin sessions with an ACTIVE store selected (S_PAGE). */
+export const SES_OWNER_ACTIVE = "0a000000-0000-7000-8000-0000017704a5";
+export const SES_ADMIN_ACTIVE = "0a000000-0000-7000-8000-0000017704a6";
 
 const SESSION_USER: Readonly<Record<string, string>> = {
   [SES_OWNER]: USER_OWNER,
   [SES_MGR]: USER_MGR,
   [SES_STAFF]: USER_STAFF,
   [SES_ADMIN]: USER_ADMIN,
+  [SES_OWNER_ACTIVE]: USER_OWNER,
+  [SES_ADMIN_ACTIVE]: USER_ADMIN,
 };
 
 export const RUN_FIX_1 = "0a000000-0000-7000-8000-0000017705a1";
@@ -204,18 +210,22 @@ async function insertSnapshotRun(
   });
 }
 
-async function mapStore(
-  admin: Pool,
-  storeId: string,
-  warehouse: string,
-  opts: { tenantId?: string; purpose?: "stock" | "returns"; retired?: boolean } = {},
-): Promise<void> {
+/** One 014 warehouse map row (tenant A, purpose `stock`, active unless stated). */
+interface WarehouseMapSeed {
+  readonly storeId: string;
+  readonly warehouse: string;
+  readonly tenantId?: string;
+  readonly purpose?: "stock" | "returns";
+  readonly retired?: boolean;
+}
+
+async function mapStore(admin: Pool, m: WarehouseMapSeed): Promise<void> {
   await admin.query(
     `INSERT INTO erpnext_warehouse_map
        (id, tenant_id, store_id, purpose, erpnext_warehouse_ref, set_by, version, retired_at)
      VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 1,
              CASE WHEN $6::boolean THEN now() ELSE NULL END)`,
-    [opts.tenantId ?? TENANT_A, storeId, opts.purpose ?? "stock", warehouse, USER_OWNER, opts.retired ?? false],
+    [m.tenantId ?? TENANT_A, m.storeId, m.purpose ?? "stock", m.warehouse, USER_OWNER, m.retired ?? false],
   );
 }
 
@@ -289,6 +299,14 @@ async function seedMembershipsAndSessions(admin: Pool): Promise<void> {
        ($7, $8, $9, NULL, now() + interval '1 hour', decode(md5(random()::text), 'hex'))`,
     [SES_OWNER, USER_OWNER, SES_MGR, USER_MGR, SES_STAFF, USER_STAFF, SES_ADMIN, USER_ADMIN, TENANT_A],
   );
+  await admin.query(
+    `INSERT INTO sessions
+       (id, user_id, active_tenant_id, active_store_id, absolute_expires_at, credential_hash)
+     VALUES
+       ($1, $2, $5, $6, now() + interval '1 hour', decode(md5(random()::text), 'hex')),
+       ($3, $4, $5, $6, now() + interval '1 hour', decode(md5(random()::text), 'hex'))`,
+    [SES_OWNER_ACTIVE, USER_OWNER, SES_ADMIN_ACTIVE, USER_ADMIN, TENANT_A, S_PAGE],
+  );
 }
 
 /** ITEM_A resolves to PRODUCT_A_ACTIVE (confirmed 013 map); ITEM_C does not. Returns the product name. */
@@ -308,17 +326,21 @@ async function seedItemMap(admin: Pool): Promise<string> {
 }
 
 /** S_UNMAPPED has only a `returns` map and a RETIRED stock map. */
+const WAREHOUSE_MAPS: readonly WarehouseMapSeed[] = [
+  { storeId: S_FIX, warehouse: "WH-FIX" },
+  { storeId: S_STALE, warehouse: "WH-STALE" },
+  { storeId: S_NOSNAP, warehouse: "WH-NOSNAP" },
+  { storeId: S_PEND, warehouse: "WH-PEND" },
+  { storeId: S_INCOMPLETE, warehouse: "WH-INC" },
+  { storeId: S_PAGE, warehouse: "WH-PAGE" },
+  { storeId: S_DELETED, warehouse: "WH-DEL" },
+  { storeId: S_UNMAPPED, warehouse: "WH-RET", purpose: "returns" },
+  { storeId: S_UNMAPPED, warehouse: "WH-OLD", retired: true },
+  { storeId: STORE_B_X, warehouse: "WH-B", tenantId: TENANT_B },
+];
+
 async function seedWarehouseMaps(admin: Pool): Promise<void> {
-  await mapStore(admin, S_FIX, "WH-FIX");
-  await mapStore(admin, S_STALE, "WH-STALE");
-  await mapStore(admin, S_NOSNAP, "WH-NOSNAP");
-  await mapStore(admin, S_PEND, "WH-PEND");
-  await mapStore(admin, S_INCOMPLETE, "WH-INC");
-  await mapStore(admin, S_PAGE, "WH-PAGE");
-  await mapStore(admin, S_DELETED, "WH-DEL");
-  await mapStore(admin, S_UNMAPPED, "WH-RET", { purpose: "returns" });
-  await mapStore(admin, S_UNMAPPED, "WH-OLD", { retired: true });
-  await mapStore(admin, STORE_B_X, "WH-B", { tenantId: TENANT_B });
+  for (const m of WAREHOUSE_MAPS) await mapStore(admin, m);
 }
 
 /** Stale (3 days), pending-only and paging-volume snapshots. */
