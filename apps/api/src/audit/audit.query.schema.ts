@@ -46,7 +46,10 @@ export interface AuditCursor {
  * Encode `(occurredAt, id)` to an opaque base64url string. Uses the
  * full ISO with milliseconds so the round-trip is exact at the Date
  * resolution `node-pg` exposes (timestamptz from PG comes back as a
- * ms-truncated `Date`; sub-ms precision is lost on the wire regardless).
+ * ms-truncated `Date`). The cursor's timestamp is therefore the row's
+ * `occurred_at` FLOORED to the millisecond; the repository restores the
+ * sub-ms digits by anchoring on the cursor row's id (RT-211), so this wire
+ * format is unchanged.
  */
 export function encodeCursor(occurredAt: Date, id: string): string {
   const payload = `${occurredAt.toISOString()}|${id}`;

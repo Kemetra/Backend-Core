@@ -32,19 +32,31 @@
  * here; this repository just honours `input.limit` verbatim. The service
  * trims the extra row and emits `next_cursor` from the LAST kept row.
  *
- * Microsecond precision
- * ---------------------
+ * Microsecond precision (RT-211)
+ * ------------------------------
  * PG stores `timestamptz` at µs resolution; node-pg returns `Date`
- * (ms-truncated). The cursor encodes the ms-truncated Date back as ISO.
- * Two rows in the same ms but distinct µs *could* be skipped on the
- * next page; in practice the `id` tiebreaker covers same-ms collisions.
- * A future hardening pass can switch the cursor source to
- * `to_char(occurred_at, '...US')` if µs collisions ever surface.
+ * (ms-truncated), so the cursor's `occurred_at` is the last row's value
+ * FLOORED to the millisecond, i.e. at or below the real one. The `id`
+ * tiebreaker only resolves EXACT `occurred_at` ties: comparing against the
+ * floored value directly skips an older event in the same millisecond with
+ * larger microseconds. So the keyset boundary is ANCHORED on the cursor's
+ * own row: its full-precision `occurred_at` is read back by primary key
+ * (a one-row InitPlan), restricted to rows this same list could have served
+ * (same tenant via RLS + the explicit tenant predicate, same filters) and to
+ * the cursor's own millisecond, so it only restores the sub-ms digits the
+ * cursor dropped and never moves the page elsewhere. If no such row exists
+ * (a hand-built cursor) the boundary falls back to the millisecond value.
+ * Audit rows are append-only and never deleted (0034; retention only marks
+ * them, and this list does not filter on the mark). A redundant plain
+ * `occurred_at < cursorTs + 1ms` bound keeps the
+ * `(tenant_id, occurred_at DESC)` index range scan. The cursor wire format
+ * is unchanged.
  */
 import { Inject, Injectable, Optional } from "@nestjs/common";
 import type { Pool, PoolClient } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { and, desc, eq, gte, lte, like, sql } from "drizzle-orm";
+import { and, desc, eq, gte, lte, like, sql, type SQL } from "drizzle-orm";
+import { alias, type BuildAliasTable } from "drizzle-orm/pg-core";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import { auditEvents } from "@data-pulse-2/db/schema";
 
@@ -133,35 +145,37 @@ export class DrizzleAuditRepository implements AuditRepository {
   ): Promise<AuditEventRecord[]> {
     const db = drizzle(client);
 
-    const predicates = [
-      // Defence-in-depth tenant scope (closes the platform-admin RLS hole).
-      eq(auditEvents.tenantId, input.tenantId),
-    ];
+    const predicates = filterPredicates(auditEvents, input);
 
-    if (input.action !== undefined) {
-      // Prefix match. `like` is safe — `action` is an internal-controlled
-      // enum-ish string (e.g., `auth.signin.ok`); Drizzle parameterises
-      // the value, and the `%` is server-appended (not user-supplied).
-      predicates.push(like(auditEvents.action, `${input.action}%`));
-    }
-    if (input.actorUserId !== undefined) {
-      predicates.push(eq(auditEvents.actorUserId, input.actorUserId));
-    }
-    if (input.storeId !== undefined) {
-      predicates.push(eq(auditEvents.storeId, input.storeId));
-    }
-    if (input.from !== undefined) {
-      predicates.push(gte(auditEvents.occurredAt, input.from));
-    }
-    if (input.to !== undefined) {
-      predicates.push(lte(auditEvents.occurredAt, input.to));
-    }
     if (input.cursor !== null) {
-      // Row-tuple comparison: (occurred_at, id) < (cursor.occurred_at, cursor.id)
-      // ensures stable DESC pagination with an `id` tiebreaker for the
-      // same-occurred_at case.
+      // Row-tuple keyset: (occurred_at, id) < (anchorTs, cursor.id), with an
+      // `id` tiebreaker for exact `occurred_at` ties. `anchorTs` is the
+      // cursor row's FULL-precision occurred_at (RT-211, see header), looked
+      // up under the same scope + filters and only inside the cursor's own
+      // millisecond; it falls back to the cursor's millisecond value.
+      const cursorTs = input.cursor.occurredAt.toISOString();
+      const cursorId = input.cursor.id;
+      const anchor: AnchorTable = alias(auditEvents, ANCHOR_ALIAS);
+      const anchorTs = db
+        .select({ occurredAt: anchor.occurredAt })
+        .from(anchor)
+        .where(
+          and(
+            eq(anchor.id, cursorId),
+            ...filterPredicates(anchor, input),
+            sql`${anchor.occurredAt} >= ${cursorTs}::timestamptz`,
+            sql`${anchor.occurredAt} < ${cursorTs}::timestamptz + interval '1 millisecond'`,
+          ),
+        );
       predicates.push(
-        sql`(${auditEvents.occurredAt}, ${auditEvents.id}) < (${input.cursor.occurredAt.toISOString()}::timestamptz, ${input.cursor.id}::uuid)`,
+        sql`(${auditEvents.occurredAt}, ${auditEvents.id}) < (COALESCE((${anchorTs}), ${cursorTs}::timestamptz), ${cursorId}::uuid)`,
+      );
+      // Redundant upper bound (the anchor is < cursorTs + 1ms): a plain range
+      // on the bare column that the planner turns into an Index Cond on
+      // (tenant_id, occurred_at DESC); the tuple compare against the
+      // InitPlan anchor alone is only a Filter.
+      predicates.push(
+        sql`${auditEvents.occurredAt} < ${cursorTs}::timestamptz + interval '1 millisecond'`,
       );
     }
 
@@ -188,4 +202,41 @@ export class DrizzleAuditRepository implements AuditRepository {
       metadata: (row.metadata ?? {}) as Record<string, unknown>,
     }));
   }
+}
+
+const ANCHOR_ALIAS = "anchor";
+type AnchorTable = BuildAliasTable<typeof auditEvents, typeof ANCHOR_ALIAS>;
+
+/**
+ * The list's scope + filter predicates, applied to `table` — the outer
+ * `audit_events` or the cursor-anchor alias, so the anchor lookup sees
+ * exactly the rows the list query sees (RT-211).
+ */
+function filterPredicates(
+  table: typeof auditEvents | AnchorTable,
+  input: ListPageInput,
+): SQL[] {
+  const predicates: SQL[] = [
+    // Defence-in-depth tenant scope (closes the platform-admin RLS hole).
+    eq(table.tenantId, input.tenantId),
+  ];
+  if (input.action !== undefined) {
+    // Prefix match. `like` is safe — `action` is an internal-controlled
+    // enum-ish string (e.g., `auth.signin.ok`); Drizzle parameterises
+    // the value, and the `%` is server-appended (not user-supplied).
+    predicates.push(like(table.action, `${input.action}%`));
+  }
+  if (input.actorUserId !== undefined) {
+    predicates.push(eq(table.actorUserId, input.actorUserId));
+  }
+  if (input.storeId !== undefined) {
+    predicates.push(eq(table.storeId, input.storeId));
+  }
+  if (input.from !== undefined) {
+    predicates.push(gte(table.occurredAt, input.from));
+  }
+  if (input.to !== undefined) {
+    predicates.push(lte(table.occurredAt, input.to));
+  }
+  return predicates;
 }
