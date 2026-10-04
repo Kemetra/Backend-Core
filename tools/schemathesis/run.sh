@@ -2,9 +2,9 @@
 # Run Schemathesis against the stack from stack-up.sh (RT-59).
 #
 #   run.sh gate    not_a_server_error. Fails on any 5xx not in 5xx-baseline.json.
-#   run.sh report  positive_data_acceptance. Findings are informational: they
-#                  are written to $FUZZ_OUT/report.md (and the job summary) and
-#                  do not fail the step.
+#   run.sh report  positive_data_acceptance. Findings not in report-baseline.json
+#                  are informational: they are written to $FUZZ_OUT/report.md
+#                  (and the job summary) and do not fail the step.
 #
 # In both modes, a run that could not execute (schema load, network or tool
 # error) fails the step, so a broken check never looks green.
@@ -25,8 +25,9 @@ ST_IMAGE="${ST_IMAGE:-schemathesis/schemathesis:4.28.0@sha256:0a71757c60ccdba270
 SEED="${SEED:-38}"
 MAX_EXAMPLES="${MAX_EXAMPLES:-200}"
 
-# BASELINE_UPDATE=1 (maintainers only) records this run's gate failures into
-# 5xx-baseline.json, so the config dir is mounted writable for that run only.
+# BASELINE_UPDATE=1 (maintainers only) records this run's failures into the
+# mode's baseline file (5xx-baseline.json or report-baseline.json), so the config
+# dir is mounted writable for that run only.
 CFG_MODE=ro
 if [ -n "${BASELINE_UPDATE:-}" ]; then CFG_MODE=rw; fi
 
@@ -49,7 +50,11 @@ case "$MODE" in
     extra=(--baseline /cfg/5xx-baseline.json)
     if [ -n "${BASELINE_UPDATE:-}" ]; then extra+=(--baseline-update); fi
     ;;
-  report) check=positive_data_acceptance; extra=() ;;
+  report)
+    check=positive_data_acceptance
+    extra=(--baseline /cfg/report-baseline.json)
+    if [ -n "${BASELINE_UPDATE:-}" ]; then extra+=(--baseline-update); fi
+    ;;
   *) echo "unknown mode: $MODE" >&2; exit 2 ;;
 esac
 

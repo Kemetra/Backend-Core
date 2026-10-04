@@ -193,7 +193,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/InstanceId"
       requestBody:
-        required: false
+        # The server requires a JSON object body; send `{}` to take the default expiry.
+        required: true
         content:
           application/json:
             schema:
@@ -364,8 +365,9 @@ components:
       required: true
       schema:
         type: string
-        minLength: 1
-        maxLength: 255
+        minLength: 16
+        maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
       description: >
         Required on rotate + revoke (reuses the platform idempotency
         interceptor). Keyed per resource: the resolved `{id}` / `{credentialId}`
@@ -390,12 +392,19 @@ components:
           type: string
           minLength: 1
           maxLength: 180
-          description: Operator-facing label. Non-empty/trimmed (server-enforced).
+          pattern: "\\S"
+          description: >
+            Operator-facing label. Non-empty after trimming (server-enforced):
+            a whitespace-only value is a 400.
         erpnext_site_ref:
           type: string
           minLength: 1
           maxLength: 255
-          description: The ERPNext site this instance targets (label/ref, NOT a secret).
+          pattern: "\\S"
+          description: >
+            The ERPNext site this instance targets (label/ref, NOT a secret).
+            Non-empty after trimming (server-enforced): a whitespace-only value
+            is a 400.
         environment:
           type: string
           enum: [dev, staging, pilot, prod]
@@ -406,7 +415,8 @@ components:
       additionalProperties: false
       description: >
         Issue command. All identity/actor fields are server-resolved (§XII).
-        Body is optional; omit to take the server default expiry.
+        A JSON object body is required; send `{}` to take the server default
+        expiry.
       properties:
         expires_in_days:
           type: integer

@@ -201,7 +201,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
-        required: false
+        # The server requires a JSON object body; v1 sends `{}`.
+        required: true
         content:
           application/json:
             schema:
@@ -289,6 +290,7 @@ components:
         type: string
         minLength: 16
         maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
       description: >
         Required on the mutating ops (repair, trigger-run). Reuses the platform
         idempotency interceptor — a replay returns the recorded outcome; a token
@@ -309,7 +311,11 @@ components:
       required: false
       schema:
         type: string
-      description: Opaque pagination cursor (the last item id the caller saw).
+        format: uuid
+      description: >
+        Opaque pagination cursor (the last item id the caller saw). The server
+        accepts only a UUID here; anything else is a 400 `validation_error`
+        (RT-66: declared to match the runtime Zod `uuid()` rule).
 
     LimitQuery:
       in: query

@@ -167,7 +167,7 @@ paths:
         - $ref: "#/components/parameters/StoreIdQuery"
         - $ref: "#/components/parameters/ReceivableStateQuery"
         - $ref: "#/components/parameters/PayerRefQuery"
-        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/ReceivableCursor"
         - $ref: "#/components/parameters/PageSize"
       responses:
         "200":
@@ -477,6 +477,17 @@ components:
         type: string
         minLength: 1
       description: Opaque keyset cursor from a prior page's `nextCursor`. Omit for the first page.
+    ReceivableCursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: >
+        Opaque keyset cursor from a prior page's `nextCursor`. Omit for the first
+        page. The value is a receivable reference (a UUID); anything else is a
+        400 `validation_error`.
     PageSize:
       name: page_size
       in: query
@@ -512,8 +523,9 @@ components:
       required: true
       schema:
         type: string
-        minLength: 1
-        maxLength: 255
+        minLength: 16
+        maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
       description: >
         REQUIRED on every write. Reuses the existing IdempotencyInterceptor —
         identical retry replays the stored response; key-reuse with a different

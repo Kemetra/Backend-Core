@@ -235,10 +235,11 @@ components:
       required: false
       schema:
         type: string
-        minLength: 1
+        pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
       description: >
         Opaque keyset pagination cursor from a prior page's `nextCursor`. Opaque
-        — do not decode or construct. Omit for the first page.
+        — do not decode or construct. Omit for the first page. The value is a
+        UUIDv7 sale reference; anything else is a 400 `validation_error`.
     PageSize:
       name: page_size
       in: query
@@ -255,8 +256,9 @@ components:
       required: true
       schema:
         type: string
-        minLength: 1
-        maxLength: 255
+        minLength: 16
+        maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
       description: >
         REQUIRED on the repair write. Reuses the existing IdempotencyInterceptor
         — identical retry replays the stored response; key-reuse with a

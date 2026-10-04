@@ -1,0 +1,96 @@
+{
+  "format_version": 1,
+  "schemathesis_version": "4.28.0",
+  "entries": [
+    {
+      "id": "8861cd",
+      "operation": "GET /api/v1/admin/outbox/dead-letters",
+      "check": "positive_data_acceptance",
+      "failure": "RejectedPositiveData",
+      "signature": "400",
+      "first_seen": "2026-10-04",
+      "last_seen": "2026-10-04"
+    },
+    {
+      "id": "173292",
+      "operation": "GET /api/v1/audit/events",
+      "check": "positive_data_acceptance",
+      "failure": "RejectedPositiveData",
+      "signature": "400",
+      "first_seen": "2026-10-04",
+      "last_seen": "2026-10-04"
+    },
+    {
+      "id": "e9751e",
+      "operation": "GET /api/v1/catalog/erpnext-sync-ops/reconciliation-runs",
+      "check": "positive_data_acceptance",
+      "failure": "RejectedPositiveData",
+      "signature": "400",
+      "first_seen": "2026-10-04",
+      "last_seen": "2026-10-04"
+    },
+    {
+      "id": "5f360e",
+      "operation": "PATCH /api/v1/memberships/{membership_id}",
+      "check": "positive_data_acceptance",
+      "failure": "RejectedPositiveData",
+      "signature": "400",
+      "first_seen": "2026-10-04",
+      "last_seen": "2026-10-04"
+    },
+    {
+      "id": "2b3e32",
+      "operation": "POST /api/inventory/v1/stores/{storeId}/movements",
+      "check": "positive_data_acceptance",
+      "failure": "RejectedPositiveData",
+      "signature": "400",
+      "first_seen": "2026-10-04",
+      "last_seen": "2026-10-04"
+    },
+    {
+      "id": "1ab80a",
+      "operation": "POST /api/v1/catalog/erpnext-product-reconciliation/repairs",
+      "check": "positive_data_acceptance",
+      "failure": "RejectedPositiveData",
+      "signature": "400",
+      "first_seen": "2026-10-04",
+      "last_seen": "2026-10-04"
+    },
+    {
+      "id": "519f1a",
+      "operation": "POST /api/v1/catalog/unknown-items/bulk-dismiss",
+      "check": "positive_data_acceptance",
+      "failure": "RejectedPositiveData",
+      "signature": "400",
+      "first_seen": "2026-10-04",
+      "last_seen": "2026-10-04"
+    },
+    {
+      "id": "847706",
+      "operation": "POST /api/v1/connector/credentials/{credentialId}/revoke",
+      "check": "positive_data_acceptance",
+      "failure": "RejectedPositiveData",
+      "signature": "400",
+      "first_seen": "2026-10-04",
+      "last_seen": "2026-10-04"
+    },
+    {
+      "id": "d3f7d9",
+      "operation": "POST /api/v1/connector/instances/{id}/credentials/rotate",
+      "check": "positive_data_acceptance",
+      "failure": "RejectedPositiveData",
+      "signature": "400",
+      "first_seen": "2026-10-04",
+      "last_seen": "2026-10-04"
+    },
+    {
+      "id": "e544f0",
+      "operation": "POST /api/v1/memberships/invite",
+      "check": "positive_data_acceptance",
+      "failure": "RejectedPositiveData",
+      "signature": "400",
+      "first_seen": "2026-10-04",
+      "last_seen": "2026-10-04"
+    }
+  ]
+}

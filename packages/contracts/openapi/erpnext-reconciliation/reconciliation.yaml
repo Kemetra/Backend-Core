@@ -236,7 +236,7 @@ paths:
         is a non-disclosing 404.
       parameters:
         - $ref: "#/components/parameters/RunId"
-        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/ResultsCursor"
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/ClassFilter"
       responses:
@@ -320,8 +320,21 @@ components:
       required: false
       schema:
         type: string
-        minLength: 1
-      description: Opaque pagination cursor from a prior page. Omit to start.
+        pattern: "^[0-9]{1,18}$"
+      description: >
+        Opaque pagination cursor from a prior page's `nextCursor`. Omit to start.
+        The posting backlog's cursor is a numeric token (1–18 digits); anything
+        else is a 400 `validation_error`.
+    ResultsCursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: >
+        Opaque pagination cursor from a prior page's `nextCursor`. Omit to start.
+        A run-results cursor is a UUID; anything else is a 400 `validation_error`.
     Limit:
       name: limit
       in: query
@@ -346,6 +359,8 @@ components:
       required: false
       schema:
         type: string
+        minLength: 1
+        maxLength: 100
       description: Optional mismatch-class / rejection-category filter.
     WorkItemRef:
       name: workItemRef
@@ -382,6 +397,7 @@ components:
         type: string
         minLength: 16
         maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
       description: >
         REQUIRED on repair + run-trigger. Reuses the existing
         `IdempotencyInterceptor` — identical retry replays the stored response;
