@@ -15,3 +15,11 @@ export * from "./helpers/with-tenant";
 export * from "./middleware/tenant-context";
 export { insertAuditEvent, type AuditEventInsertRow } from "./helpers/audit-insert";
 export * from "./outbox";
+export {
+  createStockReconciliationRun,
+  STOCK_RECONCILIATION_RUN_COLUMNS,
+  type CreateStockReconciliationRunInput,
+  type CreateStockReconciliationRunResult,
+  type StockReconciliationRunRow,
+  type StockReconciliationRunTrigger,
+} from "./helpers/stock-reconciliation-run";
