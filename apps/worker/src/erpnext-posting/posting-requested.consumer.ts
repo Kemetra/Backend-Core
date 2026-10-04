@@ -208,7 +208,7 @@ export class PostingRequestedConsumer
     event: OutboxEventEnvelope<PostingRequestedPayload>,
     payload: PostingRequestedPayload,
   ): Promise<void> {
-    const { sale_id, source_ref_id } = payload;
+    const { sale_id, store_id, source_ref_id } = payload;
     const found = await client.query(
       `SELECT 1 FROM erpnext_posting_status
         WHERE tenant_id = $1 AND source_ref_id = $2 AND sale_id = $2
@@ -231,13 +231,19 @@ export class PostingRequestedConsumer
 
     // RT-207: this is the last attempt, so the drainer dead-letters the outbox
     // row on the throw below. Count it once and log it once — identifiers only
-    // as log fields (never metric labels), no payload / money / PII.
+    // as log fields (never metric labels), no payload / money / PII. The
+    // signals.md §4 async-work fields are included: request_id is the job's
+    // unique id (the outbox event); correlation_id is null when absent.
     if (isFinalOutboxAttempt(event.attempts)) {
       recordErpnextPostingReversalDeferredDeadLetter();
       this.logger.error(
         {
           event: "posting.reversal.dead_lettered",
+          outcome: "failure",
+          request_id: event.event_id,
+          correlation_id: event.correlation_id ?? null,
           tenant_id: event.tenant_id,
+          store_id,
           sale_id,
           source_ref_id,
           event_id: event.event_id,
