@@ -47,9 +47,10 @@ info:
     online takeover. Admissions are serialised per `(tenant, store, user)`,
     so concurrent takeovers resolve to exactly one winner. A live admission
     expires server-side after a TTL so a dead terminal cannot block a cashier
-    forever. The TTL is server policy (10763 proposes 12 h; BC2 sets it) and
-    is not on the wire. An online-confirmed session keeps its admission live
-    with a heartbeat (see `posCreateCashierAdmission`); every `admitted`
+    forever. The TTL value is server policy (10763 proposes 12 h; BC2 sets
+    it), and every `admitted` response carries the TTL it applied as
+    `admission_ttl_seconds`. An online-confirmed session keeps its admission
+    live with a heartbeat (see `posCreateCashierAdmission`); every `admitted`
     response renews the TTL.
 
 
@@ -131,7 +132,8 @@ paths:
 
         **Heartbeat (liveness).** An online-confirmed session MUST re-call
         this operation with `mode: online`, `takeover: false` and a fresh
-        `idempotency_key` at an interval strictly shorter than the server TTL.
+        `idempotency_key` at an interval of at most half of
+        `admission_ttl_seconds` from the latest `admitted` response.
         A heartbeat answered `admitted` renews the TTL and returns the SAME
         `admission_id`. A heartbeat answered `active_elsewhere` means the
         admission was taken over, or expired and was re-claimed on another
@@ -472,7 +474,7 @@ components:
           active_elsewhere: "#/components/schemas/PosCashierAdmissionActiveElsewhere"
     PosCashierAdmissionAdmitted:
       type: object
-      required: [kind, admission_id, offline_grace_seconds, server_time, display_name]
+      required: [kind, admission_id, offline_grace_seconds, admission_ttl_seconds, server_time, display_name]
       additionalProperties: false
       description: >
         The cashier holds the live admission for `(tenant, store, user)` on
@@ -497,6 +499,16 @@ components:
             86400 (24 h, 028 OQ-1). The terminal clamps it to its 72 h
             ceiling and computes expiry from its own receipt time, not from
             `server_time`.
+        admission_ttl_seconds:
+          type: integer
+          minimum: 1
+          description: >
+            The TTL, in seconds, that the server applied to this admission;
+            it expires this long after this response unless renewed. The
+            server MUST return the TTL it actually applied, not a fixed
+            constant, so a changed server policy reaches the terminal on its
+            next heartbeat. The terminal MUST heartbeat at an interval of at
+            most half of the value from its latest `admitted` response.
         server_time:
           type: string
           format: date-time
