@@ -39,6 +39,21 @@ import {
 } from "../../_helpers/postgres-container";
 
 // ---------------------------------------------------------------------------
+// Domain aliases for the harness API (ids, keys and labels are not
+// interchangeable strings at the call sites)
+// ---------------------------------------------------------------------------
+/** A UUID: a user, admission, tenant, store, device or request id. */
+export type Uuid = string;
+/** A 4-hex-digit fixture suffix, e.g. "0001". */
+type FixtureSuffix = string;
+/** A rate-limiter key. */
+type RedisKey = string;
+/** The spec name a skip warning is reported under. */
+type SuiteLabel = string;
+/** Extra (or overriding) admission request body fields. */
+export type BodyFields = Record<string, unknown>;
+
+// ---------------------------------------------------------------------------
 // Fixture identifiers (hex-only suffixes; UUID v4 shape)
 // ---------------------------------------------------------------------------
 export const TENANT_A = "0c000000-0000-4000-8000-0000000a0001";
@@ -53,48 +68,54 @@ const ROLE_A_MANAGER = "0c000000-0000-4000-8000-0000000a7002";
 const ROLE_B_STAFF = "0c000000-0000-4000-8000-0000000b7001";
 
 export interface FixtureUser {
-  readonly id: string;
+  readonly id: Uuid;
   readonly clerk: string | null;
   readonly name: string | null;
-  readonly membership: string;
+  readonly membership: Uuid;
 }
 
-function user(n: string, clerk: string | null, name: string | null): FixtureUser {
+interface UserSpec {
+  readonly suffix: FixtureSuffix;
+  readonly clerk: string | null;
+  readonly name: string | null;
+}
+
+function user(spec: UserSpec): FixtureUser {
   return {
-    id: `0c000000-0000-4000-8000-0000000c${n}`,
-    clerk,
-    name,
-    membership: `0c000000-0000-4000-8000-0000000d${n}`,
+    id: `0c000000-0000-4000-8000-0000000c${spec.suffix}`,
+    clerk: spec.clerk,
+    name: spec.name,
+    membership: `0c000000-0000-4000-8000-0000000d${spec.suffix}`,
   };
 }
 
 /** store_staff, access to every store of tenant A. */
-export const CASHIER = user("0001", "user_rt113_cashier", "Mona A.");
+export const CASHIER = user({ suffix: "0001", clerk: "user_rt113_cashier", name: "Mona A." });
 /** store_staff, specific access to STORE_A1 only. */
-export const CASHIER_SPECIFIC = user("0002", "user_rt113_specific", "Karim S.");
+export const CASHIER_SPECIFIC = user({ suffix: "0002", clerk: "user_rt113_specific", name: "Karim S." });
 /** store_staff, specific access to STORE_A2 only (not A1). */
-export const CASHIER_OTHER_STORE = user("0003", "user_rt113_other_store", "Other Store");
+export const CASHIER_OTHER_STORE = user({ suffix: "0003", clerk: "user_rt113_other_store", name: "Other Store" });
 /** store_manager: not a POS-eligible cashier role. */
-export const MANAGER = user("0004", "user_rt113_manager", "Manager M.");
+export const MANAGER = user({ suffix: "0004", clerk: "user_rt113_manager", name: "Manager M." });
 /** store_staff, soft-deleted user. */
-export const DELETED = user("0005", "user_rt113_deleted", "Deleted D.");
+export const DELETED = user({ suffix: "0005", clerk: "user_rt113_deleted", name: "Deleted D." });
 /** store_staff, revoked membership. */
-export const REVOKED = user("0006", "user_rt113_revoked", "Revoked R.");
+export const REVOKED = user({ suffix: "0006", clerk: "user_rt113_revoked", name: "Revoked R." });
 /** store_staff without a provider subject (not in the roster). */
-export const NO_CLERK = user("0007", null, "No Clerk");
+export const NO_CLERK = user({ suffix: "0007", clerk: null, name: "No Clerk" });
 /** store_staff whose state individual tests mutate (reset after each test). */
-export const MUTABLE = user("0008", "user_rt113_mutable", "Mutable M.");
+export const MUTABLE = user({ suffix: "0008", clerk: "user_rt113_mutable", name: "Mutable M." });
 /** store_staff with specific access to A1, used by the store-removed test. */
-export const MUTABLE_SPECIFIC = user("0009", "user_rt113_mutable_specific", "Mutable S.");
+export const MUTABLE_SPECIFIC = user({ suffix: "0009", clerk: "user_rt113_mutable_specific", name: "Mutable S." });
 /** store_staff in TENANT_B. */
-export const CASHIER_B = user("000b", "user_rt113_cashier_b", "Tenant B Cashier");
+export const CASHIER_B = user({ suffix: "000b", clerk: "user_rt113_cashier_b", name: "Tenant B Cashier" });
 
 export interface FixtureDevice {
-  readonly id: string;
+  readonly id: Uuid;
   readonly token: string;
 }
 
-function device(n: string): FixtureDevice {
+function device(n: FixtureSuffix): FixtureDevice {
   return { id: `0c000000-0000-4000-8000-0000000e${n}`, token: `rt113-device-token-${n}-aaaaaaaaaaaaaaaa` };
 }
 
@@ -109,7 +130,7 @@ export const DEV_B1 = device("000b");
 
 export const ADMIT = "/api/pos/v1/cashier-admissions";
 export const ROSTER = "/api/pos/v1/cashier-admissions/roster";
-export const endPath = (admissionId: string): string =>
+export const endPath = (admissionId: Uuid): string =>
   `/api/pos/v1/cashier-admissions/${admissionId}/end`;
 
 // ---------------------------------------------------------------------------
@@ -117,7 +138,7 @@ export const endPath = (admissionId: string): string =>
 // ---------------------------------------------------------------------------
 export class MemoryRedis implements RedisLike {
   private readonly counts = new Map<string, number>();
-  async incr(key: string): Promise<number> {
+  async incr(key: RedisKey): Promise<number> {
     const next = (this.counts.get(key) ?? 0) + 1;
     this.counts.set(key, next);
     return next;
@@ -125,15 +146,15 @@ export class MemoryRedis implements RedisLike {
   async pexpireNx(): Promise<number> {
     return 1;
   }
-  async pttl(key: string): Promise<number> {
+  async pttl(key: RedisKey): Promise<number> {
     return this.counts.has(key) ? 60_000 : -2;
   }
-  async decr(key: string): Promise<number> {
+  async decr(key: RedisKey): Promise<number> {
     const next = (this.counts.get(key) ?? 0) - 1;
     this.counts.set(key, next);
     return next;
   }
-  async del(key: string): Promise<number> {
+  async del(key: RedisKey): Promise<number> {
     return this.counts.delete(key) ? 1 : 0;
   }
   clear(): void {
@@ -165,7 +186,7 @@ export function skipped(): boolean {
   return true;
 }
 
-export async function startHarness(label: string): Promise<void> {
+export async function startHarness(label: SuiteLabel): Promise<void> {
   let env: PgTestEnv;
   try {
     env = await startPgEnv();
@@ -271,8 +292,10 @@ async function seed(admin: Pool): Promise<void> {
     [MUTABLE, ROLE_A_STAFF, "all"],
     [MUTABLE_SPECIFIC, ROLE_A_STAFF, "specific"],
   ];
-  for (const [u, role, access] of tenantA) await seedMember(admin, u, TENANT_A, role, access);
-  await seedMember(admin, CASHIER_B, TENANT_B, ROLE_B_STAFF, "all");
+  for (const [u, roleId, access] of tenantA) {
+    await seedMember(admin, { user: u, tenantId: TENANT_A, roleId, access });
+  }
+  await seedMember(admin, { user: CASHIER_B, tenantId: TENANT_B, roleId: ROLE_B_STAFF, access: "all" });
   await admin.query("UPDATE users SET deleted_at = now() WHERE id = $1", [DELETED.id]);
   await admin.query("UPDATE memberships SET revoked_at = now() WHERE id = $1", [REVOKED.membership]);
   await admin.query(
@@ -298,20 +321,22 @@ async function seed(admin: Pool): Promise<void> {
   await admin.query("UPDATE devices SET revoked_at = now() WHERE id = $1", [DEV_REVOKED.id]);
 }
 
-async function seedMember(
-  admin: Pool,
-  u: FixtureUser,
-  tenantId: string,
-  roleId: string,
-  access: "all" | "specific",
-): Promise<void> {
+interface MemberSeed {
+  readonly user: FixtureUser;
+  readonly tenantId: Uuid;
+  readonly roleId: Uuid;
+  readonly access: "all" | "specific";
+}
+
+async function seedMember(admin: Pool, m: MemberSeed): Promise<void> {
+  const u = m.user;
   await admin.query(
     `INSERT INTO users (id, email, display_name, clerk_user_id) VALUES ($1, $2, $3, $4)`,
     [u.id, `${u.id}@rt113.example`, u.name, u.clerk],
   );
   await admin.query(
     `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES ($1, $2, $3, $4, $5)`,
-    [u.membership, tenantId, u.id, roleId, access],
+    [u.membership, m.tenantId, u.id, m.roleId, m.access],
   );
 }
 
@@ -322,11 +347,11 @@ export function newKey(): string {
   return `rt113-test:${randomUUID()}`;
 }
 
-export function online(userId: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+export function online(userId: Uuid, extra: BodyFields = {}): BodyFields {
   return { mode: "online", user_id: userId, idempotency_key: newKey(), ...extra };
 }
 
-export function reconcile(userId: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+export function reconcile(userId: Uuid, extra: BodyFields = {}): BodyFields {
   return {
     mode: "reconcile_offline",
     user_id: userId,
@@ -340,7 +365,7 @@ export function http(): ReturnType<typeof request> {
   return request(h().app.getHttpServer());
 }
 
-export function admitAs(d: FixtureDevice, body: Record<string, unknown>, requestId = randomUUID()) {
+export function admitAs(d: FixtureDevice, body: BodyFields, requestId: Uuid = randomUUID()) {
   return http()
     .post(ADMIT)
     .set("authorization", `Bearer ${d.token}`)
@@ -348,7 +373,7 @@ export function admitAs(d: FixtureDevice, body: Record<string, unknown>, request
     .send(body);
 }
 
-export function endAs(d: FixtureDevice, admissionId: string, requestId = randomUUID()) {
+export function endAs(d: FixtureDevice, admissionId: Uuid, requestId: Uuid = randomUUID()) {
   return http()
     .post(endPath(admissionId))
     .set("authorization", `Bearer ${d.token}`)
@@ -376,7 +401,7 @@ export interface AdmissionProbe {
   end_reason: string | null;
 }
 
-export async function admissionsFor(userId: string): Promise<AdmissionProbe[]> {
+export async function admissionsFor(userId: Uuid): Promise<AdmissionProbe[]> {
   const r = await h().admin.query<AdmissionProbe>(
     `SELECT id, tenant_id, store_id, user_id, device_id, mode, offline_admitted_at,
             takeover_of, expires_at, ended_at, end_reason
@@ -386,7 +411,7 @@ export async function admissionsFor(userId: string): Promise<AdmissionProbe[]> {
   return r.rows;
 }
 
-export async function liveFor(userId: string): Promise<AdmissionProbe[]> {
+export async function liveFor(userId: Uuid): Promise<AdmissionProbe[]> {
   return (await admissionsFor(userId)).filter((a) => a.ended_at === null);
 }
 
@@ -399,7 +424,7 @@ export interface AuditProbe {
   metadata: Record<string, unknown>;
 }
 
-export async function auditsFor(requestId: string): Promise<AuditProbe[]> {
+export async function auditsFor(requestId: Uuid): Promise<AuditProbe[]> {
   const r = await h().admin.query<AuditProbe>(
     `SELECT action, actor_user_id, tenant_id, store_id, target_id, metadata
        FROM audit_events WHERE request_id = $1 ORDER BY occurred_at, id`,

@@ -17,13 +17,19 @@ export interface DeviceScope {
   readonly storeId: string;
 }
 
+/** The scope the guard published, or null when any part is missing. */
+function publishedScope(request: TenantContextRequest): DeviceScope | null {
+  const scope = {
+    deviceId: request.posDeviceId ?? "",
+    tenantId: request.context?.tenantId ?? "",
+    storeId: request.context?.storeId ?? "",
+  };
+  return Object.values(scope).every((part) => part.length > 0) ? scope : null;
+}
+
 /** Fail closed (generic 401) if the guard did not publish a full device scope. */
 export function deviceScopeOf(request: TenantContextRequest): DeviceScope {
-  const deviceId = request.posDeviceId;
-  const tenantId = request.context?.tenantId;
-  const storeId = request.context?.storeId;
-  if (!deviceId || !tenantId || !storeId) {
-    throw new UnauthorizedException("Unauthorized");
-  }
-  return { deviceId, tenantId, storeId };
+  const scope = publishedScope(request);
+  if (scope === null) throw new UnauthorizedException("Unauthorized");
+  return scope;
 }
