@@ -587,3 +587,100 @@ describe("RT-179 eligibility is atomic with run creation", () => {
     }
   });
 });
+
+describe("RT-179 one scheduled run per UTC day, whatever the processing delay", () => {
+  const TENANT_E = "0e000000-0000-7000-8000-000000179e01";
+  const E_MAPPED = "0e000000-0000-7000-8000-000000179e10";
+  const DAY0 = Date.parse("2026-12-01T00:00:00.000Z");
+
+  beforeAll(async () => {
+    if (!env) return;
+    await env.admin.query(
+      `INSERT INTO tenants (id, slug, name, status) VALUES ($1, 'rt179-e', 'E', 'active')`,
+      [TENANT_E],
+    );
+    await env.admin.query(
+      `INSERT INTO stores (id, tenant_id, code, name) VALUES ($1, $2, 'EM', 'E mapped')`,
+      [E_MAPPED, TENANT_E],
+    );
+    await env.admin.query(
+      `INSERT INTO erpnext_warehouse_map (tenant_id, store_id, purpose, erpnext_warehouse_ref, set_by)
+       VALUES ($1, $2, 'stock', 'WH-E1', $3)`,
+      [TENANT_E, E_MAPPED, ACTOR],
+    );
+  });
+
+  /** Sweeps tenant E only, with a given processing clock. */
+  function sweeperE(clockMs: number): StockRunSweepProcessor {
+    const real = new PgStockRunSweepRepository(pg().app);
+    const onlyE: StockRunSweepRepository = {
+      listActiveTenantIds: async () =>
+        (await real.listActiveTenantIds()).filter((t) => t === TENANT_E),
+      listMappedStoreIds: (t) => real.listMappedStoreIds(t),
+      sweepStore: (input) => real.sweepStore(input),
+    };
+    return new StockRunSweepProcessor(onlyE, DAY, () => new Date(clockMs), () => undefined);
+  }
+
+  async function runsPerUtcDay(): Promise<Record<string, number>> {
+    const r = await pg().admin.query<{ day: string; n: string }>(
+      `SELECT to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, count(*)::text AS n
+         FROM erpnext_reconciliation_run
+        WHERE store_id = $1 AND trigger = 'scheduled'
+        GROUP BY 1 ORDER BY 1`,
+      [E_MAPPED],
+    );
+    return Object.fromEntries(r.rows.map((row) => [row.day, Number(row.n)]));
+  }
+
+  /**
+   * Drives one tick per day. `scheduled(d)` is the tick's scheduled time (what
+   * BullMQ puts in the job id); `processedAt(d)` the worker clock when it runs.
+   * Each tick is delivered twice (a BullMQ retry) and the run is completed
+   * between days, as the connector would.
+   */
+  async function driveDays(
+    days: number,
+    scheduled: (d: number) => number,
+    processedAt: (d: number) => number,
+  ): Promise<void> {
+    for (let d = 0; d < days; d += 1) {
+      const job = {
+        name: STOCK_RUN_SWEEP_JOB_NAME,
+        data: {},
+        scheduledAt: new Date(scheduled(d)),
+      };
+      await sweeperE(processedAt(d)).processJob(job);
+      await sweeperE(processedAt(d) + 15_000).processJob(job); // retry
+      await completeRuns(E_MAPPED);
+    }
+  }
+
+  it("boundary-anchored ticks, processed late or with the clock a little early", async () => {
+    if (skipped()) return;
+    const slot = (d: number): number => DAY0 + d * DAY; // midnight, offset 0
+    // Day 0 on time, day 1 ten ms "early" (clock skew), day 2 forty s late,
+    // day 3 nearly an hour late.
+    const lag = [0, -10, 40_000, 3_500_000];
+    await driveDays(4, slot, (d) => slot(d) + lag[d]!);
+    expect(await runsPerUtcDay()).toEqual({
+      "2026-12-01": 1,
+      "2026-12-02": 1,
+      "2026-12-03": 1,
+      "2026-12-04": 1,
+    });
+  });
+
+  it("even a schedule anchored a second before midnight keeps one run per UTC day", async () => {
+    if (skipped()) return;
+    // A legacy, un-anchored schedule: every tick at 23:59:59.000, each picked
+    // up after midnight by queue delay. The period follows the SCHEDULED time,
+    // so every tick still counts for its own day.
+    const lastSecond = (d: number): number => DAY0 + 10 * DAY + d * DAY - 1000;
+    await driveDays(3, lastSecond, (d) => lastSecond(d) + 2_500);
+    const perDay = await runsPerUtcDay();
+    expect(perDay["2026-12-10"]).toBe(1);
+    expect(perDay["2026-12-11"]).toBe(1);
+    expect(perDay["2026-12-12"]).toBe(1);
+  });
+});

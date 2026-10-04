@@ -97,7 +97,10 @@ a `running` stock run, or when it already has a scheduled run in the current
 period. It is also skipped when, at creation time, its tenant is no longer
 active, the store is inactive or deleted, or its stock map is retired; the
 sweep re-checks these with row locks just before creating the run. Periods are the interval aligned to the Unix epoch. For the daily
-default, that is the UTC day. The run then waits for the connector's Bin
+default, that is the UTC day. Ticks are anchored on those boundaries: a new
+schedule first fires at the next boundary (for the daily default, the next UTC
+midnight), and each tick counts for the period it was scheduled in even if it
+is processed late. The run then waits for the connector's Bin
 snapshot, the same as an on-demand run.
 
 `ERPNEXT_STOCK_RECONCILIATION_SWEEP_INTERVAL_MS` must be a whole number of

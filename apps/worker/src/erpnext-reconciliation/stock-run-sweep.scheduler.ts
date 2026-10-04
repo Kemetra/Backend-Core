@@ -16,9 +16,32 @@ import { Injectable, type OnModuleDestroy, type OnModuleInit } from "@nestjs/com
 import { Queue, type JobsOptions } from "bullmq";
 import { DEFAULT_JOB_OPTIONS } from "@data-pulse-2/shared/queues/queue-config";
 
-import { resolveStockRunSweepIntervalMs } from "./stock-run-sweep.config";
+import { resolveStockRunSweepIntervalMs, sweepPeriodStart } from "./stock-run-sweep.config";
 import { STOCK_RUN_SWEEP_JOB_NAME } from "./stock-run-sweep.processor";
 import { STOCK_RUN_SWEEP_QUEUE_NAME } from "./stock-run-sweep.worker";
+
+/**
+ * First tick of a NEW schedule: the next period boundary (epoch-aligned, the
+ * same alignment the sweep's period check uses; for the daily default, the
+ * next UTC midnight).
+ *
+ * Why: BullMQ 5's `every` scheduler fires its first job at registration time
+ * and then every `every` ms from there (offset = registration time mod
+ * `every`). Registered at 23:59:59 UTC, every tick would land a second before
+ * midnight, and a little queue delay pushes it into the next day, giving one
+ * day two ticks and the next none. With `startDate` on a boundary, BullMQ's
+ * offset is 0 and every tick is scheduled exactly at a period start; the
+ * processor also takes the period from the tick's scheduled time (its job id),
+ * so a late or early-processed tick still counts for its own period.
+ *
+ * BullMQ applies `startDate` only when the scheduler has no previous
+ * iteration (first registration, or a changed interval). Re-registering an
+ * existing schedule on boot keeps its slots. The first sweep after a fresh
+ * deploy therefore runs at the next boundary.
+ */
+export function firstTickAt(now: Date, every: number): Date {
+  return new Date(sweepPeriodStart(now, every).getTime() + every);
+}
 
 @Injectable()
 export class StockRunSweepScheduler implements OnModuleInit, OnModuleDestroy {
@@ -52,7 +75,7 @@ export class StockRunSweepScheduler implements OnModuleInit, OnModuleDestroy {
     });
     await this.queue.upsertJobScheduler(
       STOCK_RUN_SWEEP_JOB_NAME,
-      { every },
+      { every, startDate: firstTickAt(new Date(Date.now()), every) },
       { name: STOCK_RUN_SWEEP_JOB_NAME, data: {}, opts: jobOptions },
     );
   }

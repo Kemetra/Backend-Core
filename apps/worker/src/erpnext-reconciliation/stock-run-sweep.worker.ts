@@ -22,7 +22,11 @@ import {
   type WorkerLike,
   WORKER_FACTORY,
 } from "../email/email.worker";
-import { errorClassName, StockRunSweepProcessor } from "./stock-run-sweep.processor";
+import {
+  errorClassName,
+  scheduledAtFromJobId,
+  StockRunSweepProcessor,
+} from "./stock-run-sweep.processor";
 
 export const STOCK_RUN_SWEEP_QUEUE_NAME = QUEUE_NAMES.erpnextStockReconciliationSweep;
 
@@ -58,7 +62,11 @@ export class StockRunSweepWorker implements OnModuleDestroy {
     this.worker = this.workerFactory.create(
       STOCK_RUN_SWEEP_QUEUE_NAME,
       async (job: JobLike) => {
-        await this.processor.process(job.name, job.data);
+        await this.processor.processJob({
+          name: job.name,
+          data: job.data,
+          scheduledAt: scheduledAtFromJobId(job.id),
+        });
       },
       DEFAULT_WORKER_OPTIONS,
     );

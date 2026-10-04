@@ -14,7 +14,10 @@ import { DEFAULT_JOB_OPTIONS } from "@data-pulse-2/shared/queues/queue-config";
 
 import { STOCK_RUN_SWEEP_INTERVAL_ENV } from "../../src/erpnext-reconciliation/stock-run-sweep.config";
 import { STOCK_RUN_SWEEP_JOB_NAME } from "../../src/erpnext-reconciliation/stock-run-sweep.processor";
-import { StockRunSweepScheduler } from "../../src/erpnext-reconciliation/stock-run-sweep.scheduler";
+import {
+  firstTickAt,
+  StockRunSweepScheduler,
+} from "../../src/erpnext-reconciliation/stock-run-sweep.scheduler";
 import { STOCK_RUN_SWEEP_QUEUE_NAME } from "../../src/erpnext-reconciliation/stock-run-sweep.worker";
 
 const MockQueue = Queue as unknown as jest.Mock;
@@ -53,7 +56,7 @@ describe("RT-179 StockRunSweepScheduler", () => {
     expect(STOCK_RUN_SWEEP_JOB_NAME).toBe("erpnext-stock-reconciliation-sweep");
     expect(lastQueue().upsertJobScheduler).toHaveBeenCalledWith(
       STOCK_RUN_SWEEP_JOB_NAME,
-      { every: 24 * 60 * 60 * 1000 },
+      { every: 24 * 60 * 60 * 1000, startDate: expect.any(Date) },
       { name: STOCK_RUN_SWEEP_JOB_NAME, data: {}, opts: DEFAULT_JOB_OPTIONS },
     );
   });
@@ -81,7 +84,7 @@ describe("RT-179 StockRunSweepScheduler", () => {
     await new StockRunSweepScheduler().onModuleInit();
     expect(lastQueue().upsertJobScheduler).toHaveBeenCalledWith(
       STOCK_RUN_SWEEP_JOB_NAME,
-      { every: 3_600_000 },
+      { every: 3_600_000, startDate: expect.any(Date) },
       expect.anything(),
     );
   });
@@ -120,5 +123,32 @@ describe("RT-179 StockRunSweepScheduler", () => {
     await scheduler.onModuleDestroy();
     await scheduler.onModuleDestroy();
     expect(q.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("RT-179 StockRunSweepScheduler — ticks anchored on period boundaries", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it("a schedule registered a second before midnight first ticks AT midnight", async () => {
+    process.env["REDIS_URL"] = FAKE_REDIS_URL;
+    delete process.env[STOCK_RUN_SWEEP_INTERVAL_ENV];
+    jest.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-04T23:59:59.000Z"));
+    await new StockRunSweepScheduler().onModuleInit();
+    const repeat = lastQueue().upsertJobScheduler.mock.calls[0]![1] as {
+      every: number;
+      startDate: Date;
+    };
+    expect(repeat.startDate.toISOString()).toBe("2026-10-05T00:00:00.000Z");
+    // BullMQ's every-offset is startDate mod every: 0, i.e. on the boundary.
+    expect(repeat.startDate.getTime() % repeat.every).toBe(0);
+  });
+
+  it("firstTickAt is always the next boundary, never the current instant", () => {
+    expect(firstTickAt(new Date("2026-10-04T00:00:00.000Z"), DAY).toISOString()).toBe(
+      "2026-10-05T00:00:00.000Z",
+    );
+    expect(firstTickAt(new Date("2026-10-04T12:34:56.789Z"), 3_600_000).toISOString()).toBe(
+      "2026-10-04T13:00:00.000Z",
+    );
   });
 });

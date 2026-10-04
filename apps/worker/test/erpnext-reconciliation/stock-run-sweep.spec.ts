@@ -30,6 +30,8 @@ import {
   StockRunSweepIncompleteError,
   StockRunSweepProcessor,
   UnknownStockRunSweepJobError,
+  errorFields,
+  scheduledAtFromJobId,
   type StockRunSweepLogLine,
 } from "../../src/erpnext-reconciliation/stock-run-sweep.processor";
 import {
@@ -162,6 +164,7 @@ describe("RT-179 StockRunSweepProcessor", () => {
       skippedPeriod: 1,
       skippedIneligible: 1,
       failedTenants: 0,
+      failedStores: 0,
     });
     expect(repo.calls.map((c) => [c.target.tenantId, c.target.storeId])).toEqual([
       ["t-a", "s-1"],
@@ -233,7 +236,7 @@ describe("RT-179 StockRunSweepProcessor", () => {
     };
     const lines: StockRunSweepLogLine[] = [];
     await expect(makeProcessor(repo, lines).process(STOCK_RUN_SWEEP_JOB_NAME, {})).rejects.toThrow(
-      "1 tenant(s) failed",
+      "1 tenant(s) and 0 store(s) failed",
     );
     expect(lines[0]).toMatchObject({ errorName: "UnknownError" });
   });
@@ -251,6 +254,107 @@ describe("RT-179 StockRunSweepProcessor", () => {
     const lines: StockRunSweepLogLine[] = [];
     await expect(makeProcessor(repo, lines).process(STOCK_RUN_SWEEP_JOB_NAME, {})).rejects.toThrow();
     expect(lines[0]).toMatchObject({ errorName: "Error" });
+  });
+
+  it("a store that fails does not stop the stores after it; the job still fails for a retry", async () => {
+    const real = new FakeRepo({ "t-a": ["s-1", "s-2", "s-3"] });
+    const repo: StockRunSweepRepository = {
+      listActiveTenantIds: () => real.listActiveTenantIds(),
+      listMappedStoreIds: (t) => real.listMappedStoreIds(t),
+      sweepStore: async (input) => {
+        if (input.target.storeId === "s-2") {
+          throw Object.assign(new Error("deadlock detected: row (42, 'secret')"), {
+            name: "error",
+            code: "40P01",
+          });
+        }
+        return real.sweepStore(input);
+      },
+    };
+    const lines: StockRunSweepLogLine[] = [];
+    let thrown: unknown;
+    try {
+      await makeProcessor(repo, lines).process(STOCK_RUN_SWEEP_JOB_NAME, {});
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(StockRunSweepIncompleteError);
+    expect((thrown as Error).message).toContain("0 tenant(s) and 1 store(s) failed");
+    // Store 3 still got its run.
+    expect(real.calls.map((c) => c.target.storeId)).toEqual(["s-1", "s-3"]);
+    expect(lines.find((l) => l["message"] === "store_sweep_failed")).toEqual({
+      level: "error",
+      component: "erpnext-reconciliation.stock-run-sweep",
+      message: "store_sweep_failed",
+      tenant_id: "t-a",
+      store_id: "s-2",
+      errorName: "error",
+      errorCode: "40P01",
+    });
+    expect(JSON.stringify(lines)).not.toContain("secret");
+    expect(lines.find((l) => l["message"] === "sweep_complete")).toMatchObject({
+      level: "warn",
+      created: 2,
+      failed_tenants: 0,
+      failed_stores: 1,
+    });
+  });
+
+  it("errorFields logs a short code (SQLSTATE / Node) and drops anything else", () => {
+    const pgError = Object.assign(new Error("m"), { name: "error", code: "23505" });
+    expect(errorFields(pgError)).toEqual({ errorName: "error", errorCode: "23505" });
+    const nodeError = Object.assign(new Error("m"), { code: "ECONNRESET" });
+    expect(errorFields(nodeError)).toEqual({ errorName: "Error", errorCode: "ECONNRESET" });
+    for (const code of ["has spaces", "lower", 40001, "X".repeat(33), ""]) {
+      expect(errorFields(Object.assign(new Error("m"), { code }))).toEqual({ errorName: "Error" });
+    }
+    expect(errorFields(null)).toEqual({ errorName: "UnknownError" });
+    expect(errorFields("str")).toEqual({ errorName: "UnknownError" });
+  });
+
+  it("a tenant listing failure logs its SQLSTATE too", async () => {
+    const repo: StockRunSweepRepository = {
+      listActiveTenantIds: async () => ["t-a"],
+      listMappedStoreIds: async () => {
+        throw Object.assign(new Error("x"), { name: "error", code: "57P01" });
+      },
+      sweepStore: async () => ({ outcome: "created", runId: "r" }),
+    };
+    const lines: StockRunSweepLogLine[] = [];
+    await expect(makeProcessor(repo, lines).process(STOCK_RUN_SWEEP_JOB_NAME, {})).rejects.toThrow();
+    expect(lines[0]).toMatchObject({
+      message: "tenant_sweep_failed",
+      errorName: "error",
+      errorCode: "57P01",
+    });
+  });
+
+  it("takes the period from the job's scheduled time, not the processing clock", async () => {
+    const repo = new FakeRepo({ "t-a": ["s-1"] });
+    const scheduledAt = new Date("2026-10-05T00:00:00.000Z");
+    // The worker's clock reads a few ms BEFORE the scheduled boundary (skew).
+    const proc = new StockRunSweepProcessor(
+      repo,
+      DAY,
+      () => new Date("2026-10-04T23:59:59.990Z"),
+      () => undefined,
+    );
+    const result = await proc.processJob({ name: STOCK_RUN_SWEEP_JOB_NAME, data: {}, scheduledAt });
+    expect(result.periodStart).toBe("2026-10-05T00:00:00.000Z");
+    expect(repo.calls[0]!.period).toEqual({
+      start: new Date("2026-10-05T00:00:00.000Z"),
+      now: scheduledAt,
+    });
+  });
+
+  it("scheduledAtFromJobId reads only this scheduler's job ids", () => {
+    expect(scheduledAtFromJobId(`repeat:${STOCK_RUN_SWEEP_JOB_NAME}:1759622400000`)).toEqual(
+      new Date(1759622400000),
+    );
+    expect(scheduledAtFromJobId(undefined)).toBeUndefined();
+    expect(scheduledAtFromJobId("42")).toBeUndefined();
+    expect(scheduledAtFromJobId("repeat:other-scheduler:1759622400000")).toBeUndefined();
+    expect(scheduledAtFromJobId(`repeat:${STOCK_RUN_SWEEP_JOB_NAME}:12abc`)).toBeUndefined();
   });
 
   it("no tenants → an empty, successful pass", async () => {
@@ -346,13 +450,28 @@ describe("RT-179 StockRunSweepWorker", () => {
     expect(factory.calls[0]!.options).toBe(DEFAULT_WORKER_OPTIONS);
   });
 
-  it("delegates (job.name, job.data) to the processor", async () => {
+  it("delegates the job, with its scheduled time from the job id, to the processor", async () => {
     const factory = new FakeWorkerFactory();
     const processor = makeProcessor(new NoOpStockRunSweepRepository(), []);
-    const spy = jest.spyOn(processor, "process");
+    const spy = jest.spyOn(processor, "processJob");
     new StockRunSweepWorker(processor, factory).start();
+    const scheduled = Date.parse("2026-10-05T00:00:00.000Z");
+    await factory.calls[0]!.handler({
+      name: STOCK_RUN_SWEEP_JOB_NAME,
+      data: {},
+      id: `repeat:${STOCK_RUN_SWEEP_JOB_NAME}:${scheduled}`,
+    });
+    expect(spy).toHaveBeenCalledWith({
+      name: STOCK_RUN_SWEEP_JOB_NAME,
+      data: {},
+      scheduledAt: new Date(scheduled),
+    });
     await factory.calls[0]!.handler({ name: STOCK_RUN_SWEEP_JOB_NAME, data: {} });
-    expect(spy).toHaveBeenCalledWith(STOCK_RUN_SWEEP_JOB_NAME, {});
+    expect(spy).toHaveBeenLastCalledWith({
+      name: STOCK_RUN_SWEEP_JOB_NAME,
+      data: {},
+      scheduledAt: undefined,
+    });
   });
 
   it("logs worker errors through the shared pino logger with the error class only", () => {

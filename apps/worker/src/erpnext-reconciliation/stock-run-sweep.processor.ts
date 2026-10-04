@@ -25,10 +25,16 @@
  * so the sweep creates no run for them — the unmapped case stays the operator's
  * on-demand trigger, which completes as `unmapped_store`.
  *
- * Tenants are swept independently: a failure in one is logged and the sweep
- * continues; the job then fails with `StockRunSweepIncompleteError` so BullMQ
- * retries it, and the idempotency rules make the retry a no-op for the stores
- * already handled.
+ * Tenants AND stores are swept independently: a failure in one store (or in a
+ * tenant's store listing) is logged and the sweep continues with the rest; the
+ * job then fails with `StockRunSweepIncompleteError` so BullMQ retries it, and
+ * the idempotency rules make the retry a no-op for the stores already handled.
+ *
+ * The period is taken from the tick's SCHEDULED time when the job carries it
+ * (a job-scheduler job id is `repeat:<scheduler>:<scheduledMillis>`), not from
+ * the wall clock at processing time, so queue delay or a worker clock running
+ * slightly behind Redis cannot move a tick into the wrong period. The
+ * scheduler anchors ticks on period boundaries (see the scheduler).
  */
 import { z } from "zod";
 
@@ -62,6 +68,8 @@ function writeStderr(line: StockRunSweepLogLine): void {
 export interface SweepJob {
   readonly name: string;
   readonly data: unknown;
+  /** The tick's scheduled time, when known (see `scheduledAtFromJobId`). */
+  readonly scheduledAt?: Date | undefined;
 }
 
 /** One tenant of one sweep pass. */
@@ -77,6 +85,7 @@ export interface StockRunSweepResult {
   readonly skippedPeriod: number;
   readonly skippedIneligible: number;
   readonly failedTenants: number;
+  readonly failedStores: number;
 }
 
 export class UnknownStockRunSweepJobError extends Error {
@@ -95,7 +104,10 @@ export class MalformedStockRunSweepJobError extends Error {
 
 export class StockRunSweepIncompleteError extends Error {
   constructor(result: StockRunSweepResult) {
-    super(`stock run sweep incomplete: ${result.failedTenants} tenant(s) failed`);
+    super(
+      `stock run sweep incomplete: ${result.failedTenants} tenant(s) and ` +
+        `${result.failedStores} store(s) failed`,
+    );
     this.name = "StockRunSweepIncompleteError";
   }
 }
@@ -110,6 +122,7 @@ class SweepTally {
   };
   private tenants = 0;
   private failedTenants = 0;
+  private failedStores = 0;
 
   constructor(private readonly period: SweepPeriod) {}
 
@@ -122,6 +135,10 @@ class SweepTally {
     this.counts[swept.outcome] += 1;
   }
 
+  storeFailed(): void {
+    this.failedStores += 1;
+  }
+
   result(): StockRunSweepResult {
     return {
       periodStart: this.period.start.toISOString(),
@@ -131,6 +148,7 @@ class SweepTally {
       skippedPeriod: this.counts.skipped_period,
       skippedIneligible: this.counts.skipped_ineligible,
       failedTenants: this.failedTenants,
+      failedStores: this.failedStores,
     };
   }
 }
@@ -143,10 +161,15 @@ export class StockRunSweepProcessor {
     private readonly log: StockRunSweepLog = writeStderr,
   ) {}
 
+  /** Process a job without a known scheduled time (period from the clock). */
   async process(jobName: string, data: unknown): Promise<StockRunSweepResult> {
-    assertSweepJob({ name: jobName, data });
+    return this.processJob({ name: jobName, data });
+  }
 
-    const period = sweepPeriod(this.clock(), this.intervalMs);
+  async processJob(job: SweepJob): Promise<StockRunSweepResult> {
+    assertSweepJob(job);
+
+    const period = sweepPeriod(job.scheduledAt ?? this.clock(), this.intervalMs);
     const tally = new SweepTally(period);
     for (const tenantId of await this.repo.listActiveTenantIds()) {
       tally.tenantDone(await this.sweepTenantSafely({ tenantId }, period, tally));
@@ -154,11 +177,11 @@ export class StockRunSweepProcessor {
 
     const result = tally.result();
     this.logSummary(result);
-    if (result.failedTenants > 0) throw new StockRunSweepIncompleteError(result);
+    if (isIncomplete(result)) throw new StockRunSweepIncompleteError(result);
     return result;
   }
 
-  /** Sweep one tenant. A failure is logged (error class only) and returns false. */
+  /** Sweep one tenant. A listing failure is logged and returns false. */
   private async sweepTenantSafely(
     tenant: TenantSweepTarget,
     period: SweepPeriod,
@@ -168,13 +191,12 @@ export class StockRunSweepProcessor {
       await this.sweepTenant(tenant, period, tally);
       return true;
     } catch (err) {
-      // Error class only — a pg message can carry row values (§VII).
       this.log({
         level: "error",
         component: COMPONENT,
         message: "tenant_sweep_failed",
         tenant_id: tenant.tenantId,
-        errorName: errorClassName(err),
+        ...errorFields(err),
       });
       return false;
     }
@@ -186,10 +208,30 @@ export class StockRunSweepProcessor {
     tally: SweepTally,
   ): Promise<void> {
     for (const storeId of await this.repo.listMappedStoreIds(tenant.tenantId)) {
-      const target: StoreSweepTarget = { tenantId: tenant.tenantId, storeId };
+      await this.sweepStoreSafely({ tenantId: tenant.tenantId, storeId }, period, tally);
+    }
+  }
+
+  /** Sweep one store. A failure is logged and counted; the next store still runs. */
+  private async sweepStoreSafely(
+    target: StoreSweepTarget,
+    period: SweepPeriod,
+    tally: SweepTally,
+  ): Promise<void> {
+    try {
       const swept = await this.repo.sweepStore({ target, period });
       tally.storeDone(swept);
       this.recordOutcome(target, swept);
+    } catch (err) {
+      tally.storeFailed();
+      this.log({
+        level: "error",
+        component: COMPONENT,
+        message: "store_sweep_failed",
+        tenant_id: target.tenantId,
+        store_id: target.storeId,
+        ...errorFields(err),
+      });
     }
   }
 
@@ -208,7 +250,7 @@ export class StockRunSweepProcessor {
 
   private logSummary(result: StockRunSweepResult): void {
     this.log({
-      level: result.failedTenants > 0 ? "warn" : "info",
+      level: isIncomplete(result) ? "warn" : "info",
       component: COMPONENT,
       message: "sweep_complete",
       period_start: result.periodStart,
@@ -218,8 +260,13 @@ export class StockRunSweepProcessor {
       skipped_period: result.skippedPeriod,
       skipped_ineligible: result.skippedIneligible,
       failed_tenants: result.failedTenants,
+      failed_stores: result.failedStores,
     });
   }
+}
+
+function isIncomplete(result: StockRunSweepResult): boolean {
+  return result.failedTenants > 0 || result.failedStores > 0;
 }
 
 /** Rejects a job that is not the sweep, or whose payload is not an object. */
@@ -232,6 +279,18 @@ function assertSweepJob(job: SweepJob): void {
   }
 }
 
+const SCHEDULED_JOB_ID = new RegExp(`^repeat:${STOCK_RUN_SWEEP_JOB_NAME}:(\\d{1,15})$`);
+
+/**
+ * The scheduled time of a job-scheduler job, from its id
+ * (`repeat:<schedulerId>:<scheduledMillis>`, BullMQ 5 job schedulers). Any
+ * other id (a manually added job, none at all) → undefined.
+ */
+export function scheduledAtFromJobId(jobId: string | undefined): Date | undefined {
+  const match = jobId === undefined ? null : SCHEDULED_JOB_ID.exec(jobId);
+  return match ? new Date(Number(match[1])) : undefined;
+}
+
 /**
  * The error's class name for logs, never its message: a pg or Redis message
  * can carry row values or a connection string (§VII / §XIV).
@@ -239,4 +298,20 @@ function assertSweepJob(job: SweepJob): void {
 export function errorClassName(err: unknown): string {
   if (!(err instanceof Error)) return "UnknownError";
   return err.name || "Error";
+}
+
+/** Short identifier-like codes only: a SQLSTATE (`40P01`) or a Node code (`ECONNRESET`). */
+const ERROR_CODE = /^[A-Z0-9_]{1,32}$/;
+
+/**
+ * Loggable error fields: the class name plus, when present, the error's code.
+ * pg's `DatabaseError` names every failure "error", so the SQLSTATE in
+ * `err.code` is what makes a failure diagnosable. A code carries no row values;
+ * anything that is not a short identifier-like string is dropped.
+ */
+export function errorFields(err: unknown): { errorName: string; errorCode?: string } {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && ERROR_CODE.test(code)
+    ? { errorName: errorClassName(err), errorCode: code }
+    : { errorName: errorClassName(err) };
 }
