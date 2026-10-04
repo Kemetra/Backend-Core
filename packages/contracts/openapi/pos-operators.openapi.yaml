@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Operators API
-  version: "1.1.1-draft"
+  version: "1.2.0-draft"
   description: >
     POS-Pulse 004 Backend operator identity surface. Wave 1 (sign-in /
     sign-out) + Wave 3 (roster, takeover confirm, active-session).
@@ -38,6 +38,15 @@ info:
     branch scope that neither the `security` block nor the runtime uses
     (RT-182). The prose now states the runtime behaviour. No schema,
     parameter, security or response change.
+
+
+    1.2.0-draft (RT-208): the roster `branch_id` query parameter is declared
+    `required: true`. The runtime already refused a roster request without
+    `branch_id` (generic 401, reason `branch_id_required`), so the wire
+    behaviour is unchanged; only the declaration now matches it. The refusal
+    stays the generic 401, not a 400. Every POS call to this route puts the
+    paired terminal's `branch_id` in the query; the Admin-Console does not call
+    this surface. No other parameter, security or response change.
 
 
     Wave 3 minimum-disclosure principles (FR-013):
@@ -176,7 +185,7 @@ paths:
       parameters:
         - name: branch_id
           in: query
-          required: false
+          required: true
           schema:
             type: string
             format: uuid
@@ -184,10 +193,8 @@ paths:
             Branch (store) id to scope the roster. The runtime REQUIRES it:
             a request without `branch_id` is refused with the generic 401,
             because no device token is read on this route and the branch
-            cannot be resolved any other way. (The parameter is still
-            declared `required: false`; tightening the declaration is a
-            separate, acknowledged contract change.) The caller's own
-            membership must have access to this branch.
+            cannot be resolved any other way (RT-208, 1.2.0-draft). The
+            caller's own membership must have access to this branch.
       responses:
         "200":
           description: Cashier roster for the resolved branch.
