@@ -42,6 +42,17 @@ function writeStderr(line: ReplayPurgeLogLine): void {
   process.stderr.write(JSON.stringify(line) + "\n");
 }
 
+/** A BullMQ job as the purge receives it. */
+export interface PurgeJob {
+  readonly name: string;
+  readonly data: unknown;
+}
+
+/** One tenant of one purge pass. */
+interface TenantTarget {
+  readonly tenantId: string;
+}
+
 export interface ReplayPurgeResult {
   readonly tenants: number;
   readonly purged: number;
@@ -51,15 +62,15 @@ export interface ReplayPurgeResult {
 }
 
 export class UnknownReplayPurgeJobError extends Error {
-  constructor(jobName: string) {
-    super(`Unknown cashier-admission replay purge job name: '${jobName}'`);
+  constructor(job: PurgeJob) {
+    super(`Unknown cashier-admission replay purge job name: '${job.name}'`);
     this.name = "UnknownReplayPurgeJobError";
   }
 }
 
 export class MalformedReplayPurgeJobError extends Error {
-  constructor(jobName: string) {
-    super(`Malformed cashier-admission replay purge job '${jobName}': payload must be an object`);
+  constructor(job: PurgeJob) {
+    super(`Malformed cashier-admission replay purge job '${job.name}': payload must be an object`);
     this.name = "MalformedReplayPurgeJobError";
   }
 }
@@ -91,13 +102,13 @@ export class ReplayPurgeProcessor {
   }
 
   async process(jobName: string, data: unknown): Promise<ReplayPurgeResult> {
-    assertPurgeJob(jobName, data);
+    assertPurgeJob({ name: jobName, data });
 
     const startedAt = Date.now();
     const tally: Tally = { tenants: 0, purged: 0, batches: 0, failedTenants: 0 };
     for (const tenantId of await this.repo.listTenantIds()) {
       tally.tenants += 1;
-      await this.purgeTenantSafely(tenantId, tally);
+      await this.purgeTenantSafely({ tenantId }, tally);
     }
 
     const result: ReplayPurgeResult = { ...tally, durationMs: Date.now() - startedAt };
@@ -107,9 +118,9 @@ export class ReplayPurgeProcessor {
   }
 
   /** Purge one tenant. A failure is logged and counted; the next tenant still runs. */
-  private async purgeTenantSafely(tenantId: string, tally: Tally): Promise<void> {
+  private async purgeTenantSafely(target: TenantTarget, tally: Tally): Promise<void> {
     try {
-      await this.purgeTenant(tenantId, tally);
+      await this.purgeTenant(target, tally);
     } catch (err) {
       tally.failedTenants += 1;
       this.log({
@@ -122,10 +133,10 @@ export class ReplayPurgeProcessor {
   }
 
   /** Bounded batches until one comes back short (nothing more expired). */
-  private async purgeTenant(tenantId: string, tally: Tally): Promise<void> {
+  private async purgeTenant(target: TenantTarget, tally: Tally): Promise<void> {
     let purged: number;
     do {
-      purged = await this.repo.purgeExpiredBatch(tenantId, this.batchSize);
+      purged = await this.repo.purgeExpiredBatch(target.tenantId, this.batchSize);
       tally.purged += purged;
       tally.batches += 1;
     } while (purged >= this.batchSize);
@@ -146,9 +157,9 @@ export class ReplayPurgeProcessor {
 }
 
 /** Rejects a job that is not the purge, or whose payload is not an object. */
-function assertPurgeJob(jobName: string, data: unknown): void {
-  if (jobName !== REPLAY_PURGE_JOB_NAME) throw new UnknownReplayPurgeJobError(jobName);
-  if (!ReplayPurgeJobSchema.safeParse(data).success) {
-    throw new MalformedReplayPurgeJobError(jobName);
+function assertPurgeJob(job: PurgeJob): void {
+  if (job.name !== REPLAY_PURGE_JOB_NAME) throw new UnknownReplayPurgeJobError(job);
+  if (!ReplayPurgeJobSchema.safeParse(job.data).success) {
+    throw new MalformedReplayPurgeJobError(job);
   }
 }
