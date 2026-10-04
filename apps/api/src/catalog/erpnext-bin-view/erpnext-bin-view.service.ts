@@ -38,7 +38,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { emit, OUTBOX_EVENT_TYPES, runWithTenantContext } from "@data-pulse-2/db";
 import { deterministicId } from "@data-pulse-2/shared";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../../auth/auth.module";
 import {
@@ -53,6 +53,12 @@ const BIN_VIEW_FEED_MAX_PAGE = 500;
  * (not random) so the same (run, window) always derives the same ref.
  */
 const BIN_VIEW_REQUEST_NS = "0190b1de-0000-7000-8000-0000000be019";
+/**
+ * How many superseded attempt ids a report remembers (most recent last), so a
+ * late window 0 of a superseded attempt is refused instead of superseding the
+ * current attempt back (stock-view 1.2: a stale/superseded attempt → 409).
+ */
+const SUPERSEDED_ATTEMPTS_KEPT = 20;
 /** UUID shape guard for the opaque feed cursor (malformed → from-start, not 500). */
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -197,7 +203,9 @@ interface StoredWindow {
  * What lands in `run.summary.bin_view_report` (run-scoped evidence, Option B) —
  * the RT-21 §4 storage shape. `entries` stays FLAT (all windows of the attempt,
  * in window order) so readers (017 processor, RT-51) keep one list; `complete`
- * tells them whether it is the whole warehouse.
+ * tells them whether it is the whole warehouse. `supersededAttemptRefs` is an
+ * additive key (the last `SUPERSEDED_ATTEMPTS_KEPT` attempts this run discarded);
+ * readers that do not know it ignore it.
  */
 interface StoredBinViewReport {
   readonly requestRef: string;
@@ -212,11 +220,12 @@ interface StoredBinViewReport {
   readonly acceptedEntryCount: number;
   readonly windows: readonly StoredWindow[];
   readonly entries: readonly StoredEntry[];
+  readonly supersededAttemptRefs: readonly string[];
 }
 
 /**
  * A stored report as read back. Historical (pre-RT-175) reports lack
- * `attemptRef`/`complete`/`windows`/`windowsRecorded`.
+ * `attemptRef`/`complete`/`windows`/`windowsRecorded`/`supersededAttemptRefs`.
  */
 type RawStoredBinViewReport = Partial<StoredBinViewReport> & {
   readonly requestRef: string;
@@ -255,6 +264,7 @@ function normalizeStored(raw: RawStoredBinViewReport): StoredBinViewReport {
     acceptedEntryCount: raw.acceptedEntryCount ?? entries.length,
     windows,
     entries,
+    supersededAttemptRefs: raw.supersededAttemptRefs ?? [],
   };
 }
 
@@ -375,227 +385,350 @@ export class ErpnextBinViewService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<ReportSnapshotResult> => {
-        // Resolve the request → its running run + active 014 mapping. The
-        // requestRef is derived from (run, window); re-derive over running stock
-        // runs on a mapped store and match. RLS scopes to the tenant, so a
-        // cross-tenant ref reads nothing → non-disclosing not-found.
-        const runRow = await client.query<{
-          run_id: string;
-          store_id: string;
-          erpnext_warehouse_ref: string;
-          summary: Record<string, unknown> | null;
-        }>(
-          `SELECT run.id AS run_id,
-                  run.store_id,
-                  whm.erpnext_warehouse_ref,
-                  run.summary
-             FROM erpnext_reconciliation_run run
-             JOIN erpnext_warehouse_map whm
-               ON whm.store_id = run.store_id
-              AND whm.purpose = 'stock'
-              AND whm.retired_at IS NULL
-            WHERE run.kind = 'stock'
-              AND run.status = 'running'
-            FOR UPDATE OF run`,
-        );
-        // The derived requestRef binds to exactly one (run, window=0) — one
-        // request per run (v1.2 windows are report windows, not requests).
-        const match = runRow.rows.find(
-          (r) =>
-            deterministicId(BIN_VIEW_REQUEST_NS, `${r.run_id}:0`) ===
-            input.requestRef,
-        );
-        if (!match) throw new BinViewNotFoundError();
+        const run = await this.lockRun(client, input.requestRef);
+        const incoming = incomingWindow(input.body);
+        const existing = existingReport(run, input.requestRef);
 
-        const window = input.body.window;
-        const attemptRef = window?.attemptRef ?? null;
-        const windowSeq = window?.windowSeq ?? 0;
-        const isFinal = window?.isFinal ?? true;
-        const incoming = input.body.entries.map((e) => ({
-          erpnextItemRef: e.erpnextItemRef.name,
-          quantity: e.quantity,
-          stockUom: e.stockUom,
-        }));
-
-        const rawExisting = (
-          match.summary as { bin_view_report?: RawStoredBinViewReport } | null
-        )?.bin_view_report;
-        const existing =
-          rawExisting && rawExisting.requestRef === input.requestRef
-            ? normalizeStored(rawExisting)
-            : null;
-
-        // (1) O-3: this window of the recorded attempt is already recorded →
-        // replay (same content) or conflict (different content).
-        if (
-          existing &&
-          existing.attemptRef === attemptRef &&
-          windowSeq < existing.windowsRecorded
-        ) {
-          const storedWindow = existing.windows[windowSeq]!;
-          const offset = existing.windows
-            .slice(0, windowSeq)
-            .reduce((n, w) => n + w.entryCount, 0);
-          const storedEntries = existing.entries.slice(
-            offset,
-            offset + storedWindow.entryCount,
-          );
-          const a = entriesKey(storedEntries);
-          const b = entriesKey(incoming);
-          const same =
-            existing.readAt === input.body.readAt &&
-            storedWindow.isFinal === isFinal &&
-            a.length === b.length &&
-            a.every((v, i) => v === b[i]);
-          if (!same) throw new BinViewConflictError();
-          return {
-            replayed: true,
-            view: this.project(existing, storedWindow, window !== undefined),
-          };
+        // (1) O-3: an already-recorded window replays (same) or conflicts.
+        const replayed = existing ? recordedWindowReplay(existing, incoming) : null;
+        if (existing && replayed) {
+          return { replayed: true, view: project(existing, replayed, incoming.windowed) };
         }
 
-        // (2) A complete attempt accepts nothing else: a window after the final
-        // one, or any other attempt (v1 or windowed).
-        if (existing?.complete) throw new BinViewWindowSequenceConflictError();
-
-        // (3) Sequence: windowSeq 0 starts a (new) attempt, superseding any
-        // incomplete one; windowSeq k > 0 must extend the recorded incomplete
-        // attempt contiguously, with the same readAt and no repeated item.
-        let base: StoredBinViewReport | null = null;
-        if (windowSeq > 0) {
-          if (
-            !existing ||
-            existing.attemptRef !== attemptRef ||
-            windowSeq !== existing.windowsRecorded ||
-            existing.readAt !== input.body.readAt
-          ) {
-            throw new BinViewWindowSequenceConflictError();
-          }
-          const seenRefs = new Set(existing.entries.map((e) => e.erpnextItemRef));
-          if (incoming.some((e) => seenRefs.has(e.erpnextItemRef))) {
-            throw new BinViewWindowSequenceConflictError();
-          }
-          base = existing;
-        }
-
-        // Reverse-resolve erpnextItemRef → tenant_product_ref (confirmed 013 map),
-        // BATCHED into ONE query (= ANY) — not N per-entry round-trips. An unmapped
-        // ref records tenant_product_ref: null (the 017 run classes it erpnext_only
-        // later) — never a crash. `latest mapping wins` (ORDER BY confirmed_at DESC)
-        // makes the resolution deterministic if two confirmed maps share a ref.
-        const refNames = Array.from(new Set(incoming.map((e) => e.erpnextItemRef)));
-        const resolvedMap = new Map<string, string>();
-        if (refNames.length > 0) {
-          const maps = await client.query<{
-            erpnext_item_ref: string;
-            tenant_product_id: string;
-          }>(
-            `SELECT DISTINCT ON (erpnext_item_ref) erpnext_item_ref, tenant_product_id
-               FROM erpnext_item_map
-              WHERE erpnext_item_ref = ANY($1::text[])
-                AND state = 'confirmed'
-                AND retired_at IS NULL
-              ORDER BY erpnext_item_ref, confirmed_at DESC`,
-            [refNames],
-          );
-          for (const r of maps.rows) {
-            resolvedMap.set(r.erpnext_item_ref, r.tenant_product_id);
-          }
-        }
-        const resolvedEntries: StoredEntry[] = incoming.map((e) => ({
-          erpnextItemRef: e.erpnextItemRef,
-          tenant_product_ref: resolvedMap.get(e.erpnextItemRef) ?? null,
-          quantity: e.quantity,
-          stockUom: e.stockUom,
-        }));
-
-        const recordedAt = new Date().toISOString();
-        const thisWindow: StoredWindow = {
-          windowSeq,
-          entryCount: resolvedEntries.length,
-          isFinal,
-          recordedAt,
-        };
-        const windows = [...(base?.windows ?? []), thisWindow];
-        const entries = [...(base?.entries ?? []), ...resolvedEntries];
-        const stored: StoredBinViewReport = {
+        // (2)+(3) completion / supersede / sequence rules — throws on misfit.
+        const plan = planAttempt(existing, incoming);
+        const resolved = await this.resolveProductRefs(client, incoming.entries);
+        const { stored, thisWindow } = buildStored({
           requestRef: input.requestRef,
-          runRef: match.run_id,
-          erpnextWarehouseRef: match.erpnext_warehouse_ref,
-          attemptRef,
-          readAt: input.body.readAt,
-          recordedAt,
-          complete: isFinal,
-          windowsRecorded: windows.length,
-          acceptedEntryCount: entries.length,
-          windows,
-          entries,
-        };
-
-        // MERGE write — never a bare overwrite (keeps the 017 counts key under
-        // summary safe). COALESCE handles the NULL-summary first write. The
-        // bin_view_report key itself is replaced by the accumulated attempt (a
-        // superseded incomplete attempt is dropped here).
-        await client.query(
-          `UPDATE erpnext_reconciliation_run
-              SET summary = COALESCE(summary, '{}'::jsonb)
-                            || jsonb_build_object('bin_view_report', $2::jsonb),
-                  updated_at = now()
-            WHERE id = $1 AND status = 'running'`,
-          [match.run_id, JSON.stringify(stored)],
-        );
-
-        // 019-T041 lifecycle (shape a): once the connector's Bin snapshot is
-        // COMPLETELY recorded, emit erpnext.reconciliation.requested
-        // IN-TRANSACTION (atomic with the MERGE). The 017 consumer →
-        // ReconciliationRunProcessor then reads this run's summary via
-        // ReportBackedBinView and completes the run (running → completed) over
-        // REAL Bin data. A non-final window never emits (the compare would see a
-        // partial warehouse); a replay never re-emits; a complete attempt accepts
-        // no further window — so the event is emitted exactly once per run.
-        if (stored.complete) {
-          await emit(client, {
-            eventType: OUTBOX_EVENT_TYPES.ERPNEXT_RECONCILIATION_REQUESTED,
-            tenantId: input.tenantId,
-            storeId: match.store_id,
-            payload: { run_id: match.run_id, store_id: match.store_id },
-          });
-        }
-
-        return {
-          replayed: false,
-          view: this.project(stored, thisWindow, window !== undefined),
-        };
+          run,
+          incoming,
+          plan,
+          resolved,
+        });
+        await this.persist(client, { tenantId: input.tenantId, run, stored });
+        return { replayed: false, view: project(stored, thisWindow, incoming.windowed) };
       },
     );
   }
 
   /**
-   * Project a stored report + the acknowledged window into the RecordedBinView
-   * wire shape. A v1 (window-less) report gets today's exact shape; a windowed
-   * report adds `windowSeq`/`windowsRecorded`/`complete` AS OF that window's
-   * recording (windows are contiguous, so `windowsRecorded = windowSeq + 1` and
-   * `complete = isFinal`) — keeping a replay byte-stable with the original.
+   * Resolve `requestRef` → its running stock run on a mapped store and lock
+   * ONLY that run row. (a) The requestRef is derived from (run, window=0) — one
+   * request per run (v1.2 windows are report windows, not requests) — so it is
+   * re-derived over the tenant's running stock runs: ids only, no summary, NO
+   * lock. RLS scopes to the tenant, so a cross-tenant ref reads nothing →
+   * non-disclosing not-found. (b) `FOR UPDATE` on the target row re-checks it
+   * is still running (it may have completed since (a) → the same not-found).
+   * Every window of one run serializes on this lock; windows of different runs
+   * never block each other.
    */
-  private project(
-    stored: StoredBinViewReport,
-    window: StoredWindow,
-    windowed: boolean,
-  ): RecordedBinView {
-    const base: RecordedBinView = {
-      requestRef: stored.requestRef,
-      runRef: stored.runRef,
-      erpnextWarehouseRef: stored.erpnextWarehouseRef,
-      acceptedEntryCount: window.entryCount,
-      readAt: stored.readAt,
-      recordedAt: window.recordedAt,
-    };
-    if (!windowed) return base;
+  private async lockRun(client: PoolClient, requestRef: string): Promise<LockedRun> {
+    const candidates = await client.query<{ run_id: string }>(
+      `SELECT run.id AS run_id
+         FROM erpnext_reconciliation_run run
+         JOIN erpnext_warehouse_map whm
+           ON whm.store_id = run.store_id
+          AND whm.purpose = 'stock'
+          AND whm.retired_at IS NULL
+        WHERE run.kind = 'stock'
+          AND run.status = 'running'`,
+    );
+    const runId = candidates.rows.find(
+      (r) => deterministicId(BIN_VIEW_REQUEST_NS, `${r.run_id}:0`) === requestRef,
+    )?.run_id;
+    if (runId === undefined) throw new BinViewNotFoundError();
+
+    const locked = await client.query<LockedRun>(
+      `SELECT run.id AS run_id,
+              run.store_id,
+              whm.erpnext_warehouse_ref,
+              run.summary
+         FROM erpnext_reconciliation_run run
+         JOIN erpnext_warehouse_map whm
+           ON whm.store_id = run.store_id
+          AND whm.purpose = 'stock'
+          AND whm.retired_at IS NULL
+        WHERE run.id = $1
+          AND run.kind = 'stock'
+          AND run.status = 'running'
+        FOR UPDATE OF run`,
+      [runId],
+    );
+    const run = locked.rows[0];
+    if (!run) throw new BinViewNotFoundError();
+    return run;
+  }
+
+  /**
+   * Reverse-resolve erpnextItemRef → tenant_product_ref (confirmed 013 map),
+   * BATCHED into ONE query (= ANY) — not N per-entry round-trips. An unmapped
+   * ref records tenant_product_ref: null (the 017 run classes it erpnext_only
+   * later) — never a crash. `latest mapping wins` (ORDER BY confirmed_at DESC)
+   * makes the resolution deterministic if two confirmed maps share a ref.
+   */
+  private async resolveProductRefs(
+    client: PoolClient,
+    entries: readonly IncomingEntry[],
+  ): Promise<StoredEntry[]> {
+    const refNames = Array.from(new Set(entries.map((e) => e.erpnextItemRef)));
+    const resolvedMap = new Map<string, string>();
+    if (refNames.length > 0) {
+      const maps = await client.query<{ erpnext_item_ref: string; tenant_product_id: string }>(
+        `SELECT DISTINCT ON (erpnext_item_ref) erpnext_item_ref, tenant_product_id
+           FROM erpnext_item_map
+          WHERE erpnext_item_ref = ANY($1::text[])
+            AND state = 'confirmed'
+            AND retired_at IS NULL
+          ORDER BY erpnext_item_ref, confirmed_at DESC`,
+        [refNames],
+      );
+      for (const r of maps.rows) resolvedMap.set(r.erpnext_item_ref, r.tenant_product_id);
+    }
+    return entries.map((e) => ({
+      erpnextItemRef: e.erpnextItemRef,
+      tenant_product_ref: resolvedMap.get(e.erpnextItemRef) ?? null,
+      quantity: e.quantity,
+      stockUom: e.stockUom,
+    }));
+  }
+
+  /**
+   * MERGE write — never a bare overwrite (keeps the 017 counts key under
+   * summary safe). COALESCE handles the NULL-summary first write. The
+   * bin_view_report key itself is replaced by the accumulated attempt (a
+   * superseded incomplete attempt is dropped here).
+   *
+   * 019-T041 lifecycle (shape a): once the connector's Bin snapshot is
+   * COMPLETELY recorded, emit erpnext.reconciliation.requested IN-TRANSACTION
+   * (atomic with the MERGE). The 017 consumer → ReconciliationRunProcessor then
+   * reads this run's summary via ReportBackedBinView and completes the run
+   * (running → completed) over REAL Bin data. A non-final window never emits
+   * (the compare would see a partial warehouse); a replay never re-emits; a
+   * complete attempt accepts no further window — so the event is emitted
+   * exactly once per run.
+   */
+  private async persist(client: PoolClient, write: PersistInput): Promise<void> {
+    const { tenantId, run, stored } = write;
+    await client.query(
+      `UPDATE erpnext_reconciliation_run
+          SET summary = COALESCE(summary, '{}'::jsonb)
+                        || jsonb_build_object('bin_view_report', $2::jsonb),
+              updated_at = now()
+        WHERE id = $1 AND status = 'running'`,
+      [run.run_id, JSON.stringify(stored)],
+    );
+    if (stored.complete) {
+      await emit(client, {
+        eventType: OUTBOX_EVENT_TYPES.ERPNEXT_RECONCILIATION_REQUESTED,
+        tenantId,
+        storeId: run.store_id,
+        payload: { run_id: run.run_id, store_id: run.store_id },
+      });
+    }
+  }
+}
+
+/** The run row a report binds to, locked for the duration of the report. */
+interface LockedRun {
+  run_id: string;
+  store_id: string;
+  erpnext_warehouse_ref: string;
+  summary: Record<string, unknown> | null;
+}
+
+/** One reported entry, flattened to the connector ref string. */
+interface IncomingEntry {
+  readonly erpnextItemRef: string;
+  readonly quantity: string;
+  readonly stockUom: string;
+}
+
+/** The report body as a window: a v1 body is `{null, 0, isFinal true}`. */
+interface IncomingWindow {
+  readonly attemptRef: string | null;
+  readonly windowSeq: number;
+  readonly isFinal: boolean;
+  /** True when the body carried a `window` (v1.2 response fields apply). */
+  readonly windowed: boolean;
+  readonly readAt: string;
+  readonly entries: readonly IncomingEntry[];
+}
+
+/** Where the window lands: the attempt it extends (null = a fresh attempt). */
+interface AttemptPlan {
+  readonly base: StoredBinViewReport | null;
+  readonly supersededAttemptRefs: readonly string[];
+}
+
+interface BuildInput {
+  readonly requestRef: string;
+  readonly run: LockedRun;
+  readonly incoming: IncomingWindow;
+  readonly plan: AttemptPlan;
+  readonly resolved: readonly StoredEntry[];
+}
+
+interface PersistInput {
+  readonly tenantId: string;
+  readonly run: LockedRun;
+  readonly stored: StoredBinViewReport;
+}
+
+function incomingWindow(body: SnapshotReportBody): IncomingWindow {
+  const w = body.window;
+  return {
+    attemptRef: w?.attemptRef ?? null,
+    windowSeq: w?.windowSeq ?? 0,
+    isFinal: w?.isFinal ?? true,
+    windowed: w !== undefined,
+    readAt: body.readAt,
+    entries: body.entries.map((e) => ({
+      erpnextItemRef: e.erpnextItemRef.name,
+      quantity: e.quantity,
+      stockUom: e.stockUom,
+    })),
+  };
+}
+
+/** The run's recorded report for this request (normalized), if any. */
+function existingReport(run: LockedRun, requestRef: string): StoredBinViewReport | null {
+  const raw = (run.summary as { bin_view_report?: RawStoredBinViewReport } | null)
+    ?.bin_view_report;
+  return raw && raw.requestRef === requestRef ? normalizeStored(raw) : null;
+}
+
+/**
+ * O-3: when the incoming window is an already-recorded window of the recorded
+ * attempt, return that stored window if the content is identical (a replay) or
+ * throw `BinViewConflictError` if it differs. Null = not a recorded window.
+ */
+function recordedWindowReplay(
+  existing: StoredBinViewReport,
+  incoming: IncomingWindow,
+): StoredWindow | null {
+  const { windowSeq } = incoming;
+  if (existing.attemptRef !== incoming.attemptRef || windowSeq >= existing.windowsRecorded) {
+    return null;
+  }
+  const storedWindow = existing.windows[windowSeq]!;
+  const offset = existing.windows.slice(0, windowSeq).reduce((n, w) => n + w.entryCount, 0);
+  const a = entriesKey(existing.entries.slice(offset, offset + storedWindow.entryCount));
+  const b = entriesKey(incoming.entries);
+  const same =
+    existing.readAt === incoming.readAt &&
+    storedWindow.isFinal === incoming.isFinal &&
+    a.length === b.length &&
+    a.every((v, i) => v === b[i]);
+  if (!same) throw new BinViewConflictError();
+  return storedWindow;
+}
+
+/**
+ * Sequence rules for a window that is not a replay (throws
+ * `BinViewWindowSequenceConflictError` on any misfit, before anything is
+ * written):
+ *   - a complete attempt accepts nothing else (a window after the final one,
+ *     or any other attempt, v1 or windowed);
+ *   - windowSeq 0 starts a (new) attempt, superseding an incomplete one —
+ *     unless it is an attempt this run already superseded (a late retry must
+ *     not supersede the current attempt back);
+ *   - windowSeq k > 0 must extend the recorded incomplete attempt
+ *     contiguously, with the same readAt and no repeated item.
+ */
+function planAttempt(
+  existing: StoredBinViewReport | null,
+  incoming: IncomingWindow,
+): AttemptPlan {
+  if (existing?.complete) throw new BinViewWindowSequenceConflictError();
+  const superseded = existing?.supersededAttemptRefs ?? [];
+  if (incoming.windowSeq === 0) {
+    if (incoming.attemptRef !== null && superseded.includes(incoming.attemptRef)) {
+      throw new BinViewWindowSequenceConflictError();
+    }
+    const discarded = existing?.attemptRef ? [existing.attemptRef] : [];
     return {
-      ...base,
-      windowSeq: window.windowSeq,
-      windowsRecorded: window.windowSeq + 1,
-      complete: window.isFinal,
+      base: null,
+      supersededAttemptRefs: [...superseded, ...discarded].slice(-SUPERSEDED_ATTEMPTS_KEPT),
     };
   }
+  if (!extendsAttempt(existing, incoming)) throw new BinViewWindowSequenceConflictError();
+  return { base: existing, supersededAttemptRefs: superseded };
+}
+
+/** True when `incoming` is the next disjoint window of `existing`'s attempt. */
+function extendsAttempt(
+  existing: StoredBinViewReport | null,
+  incoming: IncomingWindow,
+): existing is StoredBinViewReport {
+  if (
+    !existing ||
+    existing.attemptRef !== incoming.attemptRef ||
+    incoming.windowSeq !== existing.windowsRecorded ||
+    existing.readAt !== incoming.readAt
+  ) {
+    return false;
+  }
+  const seenRefs = new Set(existing.entries.map((e) => e.erpnextItemRef));
+  return !incoming.entries.some((e) => seenRefs.has(e.erpnextItemRef));
+}
+
+/** The accumulated attempt (RT-21 §4 shape) after recording this window. */
+function buildStored(input: BuildInput): {
+  stored: StoredBinViewReport;
+  thisWindow: StoredWindow;
+} {
+  const { requestRef, run, incoming, plan, resolved } = input;
+  const recordedAt = new Date().toISOString();
+  const thisWindow: StoredWindow = {
+    windowSeq: incoming.windowSeq,
+    entryCount: resolved.length,
+    isFinal: incoming.isFinal,
+    recordedAt,
+  };
+  const windows = [...(plan.base?.windows ?? []), thisWindow];
+  const entries = [...(plan.base?.entries ?? []), ...resolved];
+  const stored: StoredBinViewReport = {
+    requestRef,
+    runRef: run.run_id,
+    erpnextWarehouseRef: run.erpnext_warehouse_ref,
+    attemptRef: incoming.attemptRef,
+    readAt: incoming.readAt,
+    recordedAt,
+    complete: incoming.isFinal,
+    windowsRecorded: windows.length,
+    acceptedEntryCount: entries.length,
+    windows,
+    entries,
+    supersededAttemptRefs: plan.supersededAttemptRefs,
+  };
+  return { stored, thisWindow };
+}
+
+/**
+ * Project a stored report + the acknowledged window into the RecordedBinView
+ * wire shape. A v1 (window-less) report gets today's exact shape; a windowed
+ * report adds `windowSeq`/`windowsRecorded`/`complete` AS OF that window's
+ * recording (windows are contiguous, so `windowsRecorded = windowSeq + 1` and
+ * `complete = isFinal`) — keeping a replay byte-stable with the original.
+ */
+function project(
+  stored: StoredBinViewReport,
+  window: StoredWindow,
+  windowed: boolean,
+): RecordedBinView {
+  const base: RecordedBinView = {
+    requestRef: stored.requestRef,
+    runRef: stored.runRef,
+    erpnextWarehouseRef: stored.erpnextWarehouseRef,
+    acceptedEntryCount: window.entryCount,
+    readAt: stored.readAt,
+    recordedAt: window.recordedAt,
+  };
+  if (!windowed) return base;
+  return {
+    ...base,
+    windowSeq: window.windowSeq,
+    windowsRecorded: window.windowSeq + 1,
+    complete: window.isFinal,
+  };
 }

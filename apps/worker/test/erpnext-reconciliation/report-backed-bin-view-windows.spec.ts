@@ -120,15 +120,46 @@ type StoredEntry = {
   stockUom: string;
 };
 
-const mappedEntry = (ref: string, product: string, quantity: string): StoredEntry => ({
+/** A stored entry the report resolved to a DP2 product. */
+interface MappedSpec {
+  readonly ref: string;
+  readonly product: string;
+  readonly qty: string;
+}
+
+/** `count` stored entries with no confirmed 013 map, named `${prefix}-00000..`. */
+interface UnmappedSpec {
+  readonly prefix: string;
+  readonly count: number;
+}
+
+/** The windows of one accumulated attempt and whether its final window landed. */
+interface AttemptSpec {
+  readonly windows: StoredEntry[][];
+  readonly complete: boolean;
+}
+
+/** A seeded run with `report` stored as its bin_view_report. */
+interface SeedSpec {
+  readonly e: PgTestEnv;
+  readonly report: Record<string, unknown>;
+}
+
+/** Reads one run in one test env. */
+interface RunRead {
+  readonly e: PgTestEnv;
+  readonly runId: string;
+}
+
+const mappedEntry = ({ ref, product, qty }: MappedSpec): StoredEntry => ({
   erpnextItemRef: ref,
   tenant_product_ref: product,
-  quantity,
+  quantity: qty,
   stockUom: "Nos",
 });
 
-const unmappedEntries = (prefix: string, n: number): StoredEntry[] =>
-  Array.from({ length: n }, (_, i) => ({
+const unmappedEntries = ({ prefix, count }: UnmappedSpec): StoredEntry[] =>
+  Array.from({ length: count }, (_, i) => ({
     erpnextItemRef: `${prefix}-${String(i).padStart(5, "0")}`,
     tenant_product_ref: null,
     quantity: `${i}.250000`,
@@ -136,7 +167,7 @@ const unmappedEntries = (prefix: string, n: number): StoredEntry[] =>
   }));
 
 /** Seed a running run whose summary holds `report` as bin_view_report. */
-async function runWithReport(e: PgTestEnv, report: Record<string, unknown>): Promise<string> {
+async function runWithReport({ e, report }: SeedSpec): Promise<string> {
   const r = await e.admin.query<{ id: string }>(
     `INSERT INTO erpnext_reconciliation_run
        (id, tenant_id, store_id, kind, trigger, status, actor_user_id, summary)
@@ -149,7 +180,7 @@ async function runWithReport(e: PgTestEnv, report: Record<string, unknown>): Pro
 }
 
 /** The RT-21 §4 storage shape for an accumulated attempt. */
-function windowedReport(windows: StoredEntry[][], complete: boolean): Record<string, unknown> {
+function windowedReport({ windows, complete }: AttemptSpec): Record<string, unknown> {
   const entries = windows.flat();
   return {
     requestRef: "00000000-0000-0000-0000-000000000000",
@@ -171,7 +202,7 @@ function windowedReport(windows: StoredEntry[][], complete: boolean): Record<str
   };
 }
 
-async function results(e: PgTestEnv, runId: string) {
+async function results({ e, runId }: RunRead) {
   const r = await e.admin.query<{
     mismatch_class: string;
     source_ref_id: string | null;
@@ -189,25 +220,36 @@ function countBy(rows: Array<{ mismatch_class: string }>): Record<string, number
   return out;
 }
 
+const PROCESSOR_ONCE = { counts: { match: 1, quantity_divergence: 1, erpnext_only: 1035 } };
+
+/** The AC1 attempt: 500 / 500 / 37 entries, one mapped item leading each window. */
+function threeWindowAttempt(): StoredEntry[][] {
+  const unmapped = unmappedEntries({ prefix: "ERP-175-UNM", count: 1034 });
+  return [
+    [mappedEntry({ ref: "ERP-175-MATCH", product: PROD_MATCH, qty: "10.000000" }), ...unmapped.slice(0, 499)],
+    [mappedEntry({ ref: "ERP-175-DIV", product: PROD_DIVERGE, qty: "7.000000" }), ...unmapped.slice(499, 998)],
+    [mappedEntry({ ref: "ERP-175-BINONLY", product: PROD_BIN_ONLY, qty: "4.000000" }), ...unmapped.slice(998)],
+  ];
+}
+
+let ac1RunId = "";
+
 describe("RT-175 — multi-window report feeds the reconciliation processor", () => {
-  it("AC1/AC8: a complete 500/500/37 report → one result per reported item; unmapped → erpnext_only with NULL source_ref_id", async () => {
+  it("AC1/AC8: a complete 500/500/37 report → one result per reported item; mapped classes unchanged", async () => {
     if (skip) return;
     const e = env!;
-    const unmapped = unmappedEntries("ERP-175-UNM", 1034);
-    const w0 = [mappedEntry("ERP-175-MATCH", PROD_MATCH, "10.000000"), ...unmapped.slice(0, 499)];
-    const w1 = [mappedEntry("ERP-175-DIV", PROD_DIVERGE, "7.000000"), ...unmapped.slice(499, 998)];
-    const w2 = [mappedEntry("ERP-175-BINONLY", PROD_BIN_ONLY, "4.000000"), ...unmapped.slice(998)];
-    expect([w0.length, w1.length, w2.length]).toEqual([500, 500, 37]);
-    const runId = await runWithReport(e, windowedReport([w0, w1, w2], true));
+    const windows = threeWindowAttempt();
+    expect(windows.map((w) => w.length)).toEqual([500, 500, 37]);
+    ac1RunId = await runWithReport({ e, report: windowedReport({ windows, complete: true }) });
 
     const processor = new ReconciliationRunProcessor(e.app, new ReportBackedBinView(e.app));
-    const out = await processor.process({ runId, tenantId: TENANT });
+    const out = await processor.process({ runId: ac1RunId, tenantId: TENANT });
     expect(out.status).toBe("completed");
-    expect(out.counts).toEqual({ match: 1, quantity_divergence: 1, erpnext_only: 1035 });
+    expect(out.counts).toEqual(PROCESSOR_ONCE.counts);
 
-    const rows = await results(e, runId);
+    const rows = await results({ e, runId: ac1RunId });
     expect(rows).toHaveLength(1037);
-    expect(countBy(rows)).toEqual({ match: 1, quantity_divergence: 1, erpnext_only: 1035 });
+    expect(countBy(rows)).toEqual(PROCESSOR_ONCE.counts);
 
     // Mapped classification unchanged (incl. the mapped erpnext_only path).
     const mappedOnly = rows.filter((r) => r.mismatch_class === "erpnext_only" && r.source_ref_id !== null);
@@ -216,7 +258,12 @@ describe("RT-175 — multi-window report feeds the reconciliation processor", ()
     expect(mappedOnly[0]!.detail).toEqual({ dp2_on_hand: null, erpnext_bin: "4.000000" });
     expect(rows.find((r) => r.mismatch_class === "match")!.source_ref_id).toBe(PROD_MATCH);
     expect(rows.find((r) => r.mismatch_class === "quantity_divergence")!.source_ref_id).toBe(PROD_DIVERGE);
+  });
 
+  it("AC8: every unmapped entry → erpnext_only with NULL source_ref_id + ref/qty/UOM detail; the run completes once", async () => {
+    if (skip) return;
+    const e = env!;
+    const rows = await results({ e, runId: ac1RunId });
     // Unmapped: NULL source_ref_id + ERPNext ref / qty / UOM detail, all 1,034.
     const unm = rows.filter((r) => r.mismatch_class === "erpnext_only" && r.source_ref_id === null);
     expect(unm).toHaveLength(1034);
@@ -229,12 +276,13 @@ describe("RT-175 — multi-window report feeds the reconciliation processor", ()
     });
 
     // The run completes ONCE: a second invocation is a no-op.
-    const again = await processor.process({ runId, tenantId: TENANT });
+    const processor = new ReconciliationRunProcessor(e.app, new ReportBackedBinView(e.app));
+    const again = await processor.process({ runId: ac1RunId, tenantId: TENANT });
     expect(again.status).toBe("skipped");
-    expect(await results(e, runId)).toHaveLength(1037);
+    expect(await results({ e, runId: ac1RunId })).toHaveLength(1037);
     const st = await e.admin.query<{ status: string }>(
       `SELECT status FROM erpnext_reconciliation_run WHERE id = $1`,
-      [runId],
+      [ac1RunId],
     );
     expect(st.rows[0]!.status).toBe("completed");
   });
@@ -242,10 +290,11 @@ describe("RT-175 — multi-window report feeds the reconciliation processor", ()
   it("an INCOMPLETE report (complete: false) is never returned as the warehouse", async () => {
     if (skip) return;
     const e = env!;
-    const runId = await runWithReport(
-      e,
-      windowedReport([[mappedEntry("ERP-175-MATCH", PROD_MATCH, "10.000000"), ...unmappedEntries("ERP-175-PART", 3)]], false),
-    );
+    const partial = [
+      mappedEntry({ ref: "ERP-175-MATCH", product: PROD_MATCH, qty: "10.000000" }),
+      ...unmappedEntries({ prefix: "ERP-175-PART", count: 3 }),
+    ];
+    const runId = await runWithReport({ e, report: windowedReport({ windows: [partial], complete: false }) });
     const view = await new ReportBackedBinView(e.app).fetchBinReport({ tenantId: TENANT, storeId: STORE, runId });
     expect(view.mapped.size).toBe(0);
     expect(view.unmapped).toHaveLength(0);
@@ -257,14 +306,20 @@ describe("RT-175 — multi-window report feeds the reconciliation processor", ()
   it("a historical report without `complete` is read as complete (mapped + unmapped exposed)", async () => {
     if (skip) return;
     const e = env!;
-    const runId = await runWithReport(e, {
-      requestRef: "00000000-0000-0000-0000-000000000000",
-      runRef: "00000000-0000-0000-0000-000000000000",
-      erpnextWarehouseRef: "ERP-WH-175",
-      readAt: "2026-06-08T10:00:00.000Z",
-      recordedAt: "2026-06-08T10:00:01.000Z",
-      acceptedEntryCount: 2,
-      entries: [mappedEntry("ERP-175-MATCH", PROD_MATCH, "10.000000"), ...unmappedEntries("ERP-175-HIST", 1)],
+    const runId = await runWithReport({
+      e,
+      report: {
+        requestRef: "00000000-0000-0000-0000-000000000000",
+        runRef: "00000000-0000-0000-0000-000000000000",
+        erpnextWarehouseRef: "ERP-WH-175",
+        readAt: "2026-06-08T10:00:00.000Z",
+        recordedAt: "2026-06-08T10:00:01.000Z",
+        acceptedEntryCount: 2,
+        entries: [
+          mappedEntry({ ref: "ERP-175-MATCH", product: PROD_MATCH, qty: "10.000000" }),
+          ...unmappedEntries({ prefix: "ERP-175-HIST", count: 1 }),
+        ],
+      },
     });
     const view = await new ReportBackedBinView(e.app).fetchBinReport({ tenantId: TENANT, storeId: STORE, runId });
     expect(Array.from(view.mapped.entries())).toEqual([[PROD_MATCH, "10.000000"]]);
@@ -276,7 +331,8 @@ describe("RT-175 — multi-window report feeds the reconciliation processor", ()
   it("RLS: another tenant's run reads as no report", async () => {
     if (skip) return;
     const e = env!;
-    const runId = await runWithReport(e, windowedReport([unmappedEntries("ERP-175-RLS", 2)], true));
+    const windows = [unmappedEntries({ prefix: "ERP-175-RLS", count: 2 })];
+    const runId = await runWithReport({ e, report: windowedReport({ windows, complete: true }) });
     const view = await new ReportBackedBinView(e.app).fetchBinReport({
       tenantId: "01900000-0000-7000-8000-0000000c17ff",
       storeId: STORE,

@@ -95,6 +95,9 @@ export function canonicalDecimal(value: string): string {
   return neg ? `-${canon}` : canon;
 }
 
+/** Rows per batched INSERT of unmapped `erpnext_only` results (RT-175). */
+const UNMAPPED_INSERT_BATCH = 1000;
+
 /** 014's mismatch-class vocabulary (014 data-model §6.2). */
 type MismatchClass =
   | "match"
@@ -178,10 +181,7 @@ export class ReconciliationRunProcessor {
           [storeId],
         );
 
-        const binInput = { tenantId: input.tenantId, storeId, runId: input.runId };
-        const binReport: BinReportView = this.bin.fetchBinReport
-          ? await this.bin.fetchBinReport(binInput)
-          : { mapped: await this.bin.fetchBinView(binInput), unmapped: [] };
+        const binReport = await this.readBinReport({ ...input, storeId });
         const binView = binReport.mapped;
 
         const counts: Record<string, number> = {};
@@ -207,21 +207,8 @@ export class ReconciliationRunProcessor {
             detail: { dp2_on_hand: null, erpnext_bin: binQty },
           });
         }
-        // RT-175 erpnext_only (unmapped): a reported Bin item with NO confirmed
-        // 013 map — DP2 cannot key it to a product, so source_ref_id is NULL and
-        // the ERPNext identity + quantity + UOM go in the detail.
-        for (const u of binReport.unmapped) {
-          counts["erpnext_only"] = (counts["erpnext_only"] ?? 0) + 1;
-          await this.insertResult(client, input.runId, input.tenantId, {
-            mismatchClass: "erpnext_only",
-            sourceRefId: null,
-            detail: {
-              erpnext_item_ref: u.erpnextItemRef,
-              erpnext_bin: u.quantity,
-              stock_uom: u.stockUom,
-            },
-          });
-        }
+        // RT-175 erpnext_only (unmapped Bin items, source_ref_id NULL).
+        await this.insertUnmappedErpnextOnly(client, { ...input, unmapped: binReport.unmapped, counts });
 
         await this.complete(client, input.runId);
         return { runId: input.runId, status: "completed", counts };
@@ -275,6 +262,61 @@ export class ReconciliationRunProcessor {
         opts.detail ? JSON.stringify(opts.detail) : null,
       ],
     );
+  }
+
+  /**
+   * RT-175 — a reported Bin item with NO confirmed 013 map: DP2 cannot key it
+   * to a product, so it is classed `erpnext_only` with source_ref_id NULL and
+   * the ERPNext identity + quantity + UOM in the detail (counted into
+   * `counts`). Inserts the results in batches of `UNMAPPED_INSERT_BATCH` rows
+   * per statement (a warehouse can report up to 10,000 entries; one
+   * round-trip per row under the run lock would be slow). Same row shape as
+   * `insertResult`: source_ref_id NULL, result_state 'open', detail
+   * {erpnext_item_ref, erpnext_bin, stock_uom}. The 1,034-entry worker spec
+   * exercises more than one batch.
+   */
+  private async insertUnmappedErpnextOnly(
+    client: PoolClient,
+    batch: {
+      runId: string;
+      tenantId: string;
+      unmapped: readonly UnmappedBinEntry[];
+      counts: Record<string, number>;
+    },
+  ): Promise<void> {
+    if (batch.unmapped.length > 0) {
+      batch.counts["erpnext_only"] = (batch.counts["erpnext_only"] ?? 0) + batch.unmapped.length;
+    }
+    for (let i = 0; i < batch.unmapped.length; i += UNMAPPED_INSERT_BATCH) {
+      const rows = batch.unmapped.slice(i, i + UNMAPPED_INSERT_BATCH).map((u) => ({
+        id: newId(),
+        detail: {
+          erpnext_item_ref: u.erpnextItemRef,
+          erpnext_bin: u.quantity,
+          stock_uom: u.stockUom,
+        },
+      }));
+      await client.query(
+        `INSERT INTO erpnext_reconciliation_result
+           (id, run_id, tenant_id, mismatch_class, source_ref_id, result_state, detail)
+         SELECT (r->>'id')::uuid, $1, $2, 'erpnext_only', NULL, 'open', r->'detail'
+           FROM jsonb_array_elements($3::jsonb) AS r`,
+        [batch.runId, batch.tenantId, JSON.stringify(rows)],
+      );
+    }
+  }
+
+  /**
+   * The run's reported Bin view — mapped compare map + unmapped entries in ONE
+   * read when the seam supports it (RT-175), else the mapped map only.
+   */
+  private async readBinReport(input: {
+    tenantId: string;
+    storeId: string;
+    runId: string;
+  }): Promise<BinReportView> {
+    if (this.bin.fetchBinReport) return this.bin.fetchBinReport(input);
+    return { mapped: await this.bin.fetchBinView(input), unmapped: [] };
   }
 
   /** Guarded terminal write — 0 rows means another invocation already finished it. */
