@@ -33,9 +33,40 @@ import { loadOpenApiContracts } from "../../src/openapi/loader";
 const CONTRACT_ID = "pos-cashier-admissions.openapi";
 const OPERATORS_ID = "pos-operators.openapi";
 
-const ADMIT_PATH = "/api/pos/v1/cashier-admissions";
-const END_PATH = "/api/pos/v1/cashier-admissions/{admission_id}/end";
-const ROSTER_PATH = "/api/pos/v1/cashier-admissions/roster";
+interface Route {
+  readonly path: string;
+  readonly method: "get" | "post";
+}
+
+const ADMIT: Route = { path: "/api/pos/v1/cashier-admissions", method: "post" };
+const END: Route = { path: "/api/pos/v1/cashier-admissions/{admission_id}/end", method: "post" };
+const ROSTER: Route = { path: "/api/pos/v1/cashier-admissions/roster", method: "get" };
+
+const SCHEMA_NAMES = [
+  "PosCashierAdmissionRequest",
+  "PosCashierAdmissionOnlineRequest",
+  "PosCashierAdmissionReconcileRequest",
+  "AdmissionIdempotencyKey",
+  "PosCashierAdmissionResponse",
+  "PosCashierAdmissionAdmitted",
+  "PosCashierAdmissionActiveElsewhere",
+  "PosCashierAdmissionEnded",
+  "PosCashierRosterResponse",
+  "PosCashierRosterEntry",
+  "RefusedError",
+] as const;
+type SchemaName = (typeof SCHEMA_NAMES)[number];
+
+type Status = "200" | "400" | "401" | "403" | "409";
+
+const OPERATOR_OPERATION_IDS = [
+  "posOperatorSignIn",
+  "posOperatorSignOut",
+  "posOperatorRoster",
+  "posOperatorTakeoverConfirm",
+  "posOperatorActiveSession",
+] as const;
+type OperatorOperationId = (typeof OPERATOR_OPERATION_IDS)[number];
 
 const OPERATION_IDS = [
   "posCreateCashierAdmission",
@@ -107,9 +138,9 @@ beforeAll(() => {
   ajv.addSchema(doc as object, CONTRACT_ID);
 });
 
-function op(path: string, method: string): OperationObject {
-  const found = doc.paths?.[path]?.[method];
-  if (!found) throw new Error(`${method.toUpperCase()} ${path} not declared`);
+function op(route: Route): OperationObject {
+  const found = doc.paths?.[route.path]?.[route.method];
+  if (!found) throw new Error(`${route.method.toUpperCase()} ${route.path} not declared`);
   return found;
 }
 
@@ -117,28 +148,38 @@ function allOperations(): OperationObject[] {
   return Object.values(doc.paths ?? {}).flatMap((item) => Object.values(item));
 }
 
-function schema(name: string): SchemaObject {
+function schema(name: SchemaName): SchemaObject {
   const s = doc.components?.schemas?.[name];
   if (!s) throw new Error(`schema ${name} not declared`);
   return s;
 }
 
-function validator(name: string): ValidateFunction {
+function validator(name: SchemaName): ValidateFunction {
   const v = ajv.getSchema(`${CONTRACT_ID}#/components/schemas/${name}`);
   if (!v) throw new Error(`ajv cannot resolve ${name}`);
   return v;
 }
 
-function responseRef(operation: OperationObject, status: string): string | undefined {
-  const r = operation.responses?.[status] as
-    | { $ref?: string; content?: Record<string, { schema?: { $ref?: string } }> }
-    | undefined;
-  if (!r) return undefined;
-  if (r.$ref) {
-    const name = r.$ref.replace("#/components/responses/", "");
-    return doc.components?.responses?.[name]?.content?.["application/json"]?.schema?.$ref;
-  }
-  return r.content?.["application/json"]?.schema?.$ref;
+interface ResponseObject {
+  $ref?: string;
+  content?: Record<string, { schema?: { $ref?: string } }>;
+}
+
+/** Follows a `#/components/responses/<Name>` reference; inline responses pass through. */
+function resolveResponse(response: ResponseObject): ResponseObject {
+  if (!response.$ref) return response;
+  const name = response.$ref.replace("#/components/responses/", "");
+  return doc.components?.responses?.[name] ?? {};
+}
+
+function contentSchemaRef(response: ResponseObject): string | undefined {
+  return response.content?.["application/json"]?.schema?.$ref;
+}
+
+/** The JSON body schema `$ref` an operation declares for `status`, if any. */
+function responseRef(route: Route, status: Status): string | undefined {
+  const response = op(route).responses?.[status] as ResponseObject | undefined;
+  return response ? contentSchemaRef(resolveResponse(response)) : undefined;
 }
 
 const USER_ID = "0190f5a2-3b4c-7d8e-9f01-23456789abcd";
@@ -155,9 +196,9 @@ describe("pos-cashier-admissions — document and operations", () => {
   });
 
   it("declares exactly the three 10763 §3 operations at their paths", () => {
-    expect(op(ADMIT_PATH, "post").operationId).toBe("posCreateCashierAdmission");
-    expect(op(END_PATH, "post").operationId).toBe("posEndCashierAdmission");
-    expect(op(ROSTER_PATH, "get").operationId).toBe("posListCashierAdmissionRoster");
+    expect(op(ADMIT).operationId).toBe("posCreateCashierAdmission");
+    expect(op(END).operationId).toBe("posEndCashierAdmission");
+    expect(op(ROSTER).operationId).toBe("posListCashierAdmissionRoster");
     expect(allOperations().map((o) => o.operationId).sort()).toEqual([...OPERATION_IDS].sort());
   });
 
@@ -209,12 +250,12 @@ describe("pos-cashier-admissions — device security and scope", () => {
         expect(scopeNames).not.toContain(p.name);
       }
     }
-    expect(op(ROSTER_PATH, "get").parameters ?? []).toEqual([]);
+    expect(op(ROSTER).parameters ?? []).toEqual([]);
   });
 
   it("no request schema carries a scope field", () => {
     const scopeNames = ["tenant_id", "branch_id", "store_id", "terminal_id", "device_id"];
-    for (const name of ["PosCashierAdmissionOnlineRequest", "PosCashierAdmissionReconcileRequest"]) {
+    for (const name of ["PosCashierAdmissionOnlineRequest", "PosCashierAdmissionReconcileRequest"] as const) {
       const keys = Object.keys(schema(name).properties ?? {});
       for (const forbidden of scopeNames) expect(keys).not.toContain(forbidden);
     }
@@ -260,9 +301,9 @@ describe("pos-cashier-admissions — admission request", () => {
   });
 
   it("the create operation is x-idempotency: required and declares 409 for key reuse", () => {
-    const o = op(ADMIT_PATH, "post");
+    const o = op(ADMIT);
     expect(o["x-idempotency"]).toBe("required");
-    expect(responseRef(o, "409")).toBe("#/components/schemas/Error");
+    expect(responseRef(ADMIT, "409")).toBe("#/components/schemas/Error");
   });
 });
 
@@ -271,11 +312,11 @@ describe("pos-cashier-admissions — admission request", () => {
 // ===========================================================================
 describe("pos-cashier-admissions — responses", () => {
   it("create declares 200 (union), 400, 401, 403 (refused) and 409", () => {
-    const o = op(ADMIT_PATH, "post");
+    const o = op(ADMIT);
     expect(Object.keys(o.responses ?? {}).sort()).toEqual(["200", "400", "401", "403", "409"]);
-    expect(responseRef(o, "200")).toBe("#/components/schemas/PosCashierAdmissionResponse");
-    expect(responseRef(o, "401")).toBe("#/components/schemas/Error");
-    expect(responseRef(o, "403")).toBe("#/components/schemas/RefusedError");
+    expect(responseRef(ADMIT, "200")).toBe("#/components/schemas/PosCashierAdmissionResponse");
+    expect(responseRef(ADMIT, "401")).toBe("#/components/schemas/Error");
+    expect(responseRef(ADMIT, "403")).toBe("#/components/schemas/RefusedError");
   });
 
   it("the 200 union is discriminated on `kind`: admitted | active_elsewhere", () => {
@@ -307,9 +348,9 @@ describe("pos-cashier-admissions — responses", () => {
   });
 
   it("end declares 200 {kind: ended}, 400 and 401; it takes no body", () => {
-    const o = op(END_PATH, "post");
+    const o = op(END);
     expect(Object.keys(o.responses ?? {}).sort()).toEqual(["200", "400", "401"]);
-    expect(responseRef(o, "200")).toBe("#/components/schemas/PosCashierAdmissionEnded");
+    expect(responseRef(END, "200")).toBe("#/components/schemas/PosCashierAdmissionEnded");
     expect(o.requestBody).toBeUndefined();
     const param = (o.parameters ?? []).find((p) => p.name === "admission_id");
     expect(param?.in).toBe("path");
@@ -317,7 +358,7 @@ describe("pos-cashier-admissions — responses", () => {
   });
 
   it("roster declares 200 and 401; entries are {user_id, operator_id, display_name}", () => {
-    const o = op(ROSTER_PATH, "get");
+    const o = op(ROSTER);
     expect(Object.keys(o.responses ?? {}).sort()).toEqual(["200", "401"]);
     const entry = schema("PosCashierRosterEntry");
     expect(Object.keys(entry.properties ?? {}).sort()).toEqual(["display_name", "operator_id", "user_id"]);
@@ -331,16 +372,17 @@ describe("pos-cashier-admissions — responses", () => {
 describe("pos-cashier-admissions — secrets and PII", () => {
   const FORBIDDEN = /pin|hash|salt|password|secret|token|jwt|credential|email|phone|attestation/i;
 
-  function propertyNames(node: unknown, out: string[] = []): string[] {
-    if (Array.isArray(node)) {
-      for (const n of node) propertyNames(n, out);
-    } else if (node && typeof node === "object") {
-      const obj = node as Record<string, unknown>;
-      const props = obj["properties"];
-      if (props && typeof props === "object") out.push(...Object.keys(props));
-      for (const v of Object.values(obj)) propertyNames(v, out);
-    }
-    return out;
+  function ownPropertyKeys(obj: Record<string, unknown>): string[] {
+    const props = obj["properties"];
+    return props && typeof props === "object" ? Object.keys(props) : [];
+  }
+
+  /** Every `properties` key in a schema tree, depth-first (own keys first). */
+  function propertyNames(node: unknown): string[] {
+    if (Array.isArray(node)) return node.flatMap(propertyNames);
+    if (!node || typeof node !== "object") return [];
+    const obj = node as Record<string, unknown>;
+    return [...ownPropertyKeys(obj), ...Object.values(obj).flatMap(propertyNames)];
   }
 
   it("no schema property is a PIN / hash / secret / token / contact field", () => {
@@ -452,7 +494,7 @@ describe("pos-cashier-admissions — AJV fixtures", () => {
 // 7. pos-operators 1.1.1-draft prose fix (RT-182): docs match security + runtime
 // ===========================================================================
 describe("pos-operators — RT-113 BC1 prose fix", () => {
-  function opById(id: string): OperationObject {
+  function opById(id: OperatorOperationId): OperationObject {
     for (const item of Object.values(operatorsDoc.paths ?? {})) {
       for (const o of Object.values(item)) if (o.operationId === id) return o;
     }
@@ -471,7 +513,7 @@ describe("pos-operators — RT-113 BC1 prose fix", () => {
   });
 
   it("roster / active-session prose names the operator JWT, RT-150 and the cashier-admissions replacement", () => {
-    for (const id of ["posOperatorRoster", "posOperatorActiveSession"]) {
+    for (const id of ["posOperatorRoster", "posOperatorActiveSession"] as const) {
       const d = opById(id).description ?? "";
       expect(d).not.toMatch(/resolved from the\s+device-token claim/);
       expect(d).toMatch(/no device token is read/);
@@ -487,13 +529,7 @@ describe("pos-operators — RT-113 BC1 prose fix", () => {
   });
 
   it("keeps the security, parameters and RT-150-gated behaviour unchanged", () => {
-    for (const id of [
-      "posOperatorSignIn",
-      "posOperatorSignOut",
-      "posOperatorRoster",
-      "posOperatorTakeoverConfirm",
-      "posOperatorActiveSession",
-    ]) {
+    for (const id of OPERATOR_OPERATION_IDS) {
       expect(opById(id).security).toEqual([{ "operator-identity": [] }]);
     }
     const roster = (opById("posOperatorRoster").parameters ?? []).map((p) => [p.name, p.in, p.required]);
