@@ -7,6 +7,7 @@ export * from "./memberships";
 export * from "./store_access";
 export * from "./sessions";
 export * from "./devices";
+export * from "./cashier-admissions";
 export * from "./connector_registration";
 export * from "./auth_tokens";
 export * from "./invitations";

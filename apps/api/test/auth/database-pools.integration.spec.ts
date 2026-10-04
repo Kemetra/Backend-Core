@@ -118,6 +118,18 @@ describe("production database pool separation", () => {
       await admin.query(`REVOKE SELECT ON sales FROM ${LOOKUP_ROLE}`);
     }
 
+    // RT-113 BC2: a grant on either cashier-admission table fails boot too.
+    for (const table of ["cashier_admissions", "cashier_admission_requests"]) {
+      await admin.query(`GRANT SELECT ON ${table} TO ${LOOKUP_ROLE}`);
+      try {
+        await expect(verifyDatabasePoolBoundary(app, lookupPool)).rejects.toThrow(
+          new RegExp(`forbidden grants on: ${table}`),
+        );
+      } finally {
+        await admin.query(`REVOKE SELECT ON ${table} FROM ${LOOKUP_ROLE}`);
+      }
+    }
+
     await admin.query(`REVOKE UPDATE ON users FROM ${LOOKUP_ROLE}`);
     try {
       await expect(verifyDatabasePoolBoundary(app, lookupPool)).rejects.toThrow(

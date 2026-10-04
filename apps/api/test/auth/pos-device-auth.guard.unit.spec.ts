@@ -126,6 +126,26 @@ describe("PosDeviceAuthGuard — valid device pairing token", () => {
       scope: "pos",
     });
   });
+
+  it("PDG1b (RT-113 BC2): publishes the authenticated device id as req.posDeviceId", async () => {
+    const { guard, devices } = buildGuard();
+    devices.findActiveByAttestation.mockResolvedValue(makeDevice());
+
+    const req = makeRequest({ authorization: "Bearer device-pairing-token" });
+    await guard.canActivate(makeCtx(req));
+
+    expect(req.posDeviceId).toBe(DEVICE_ID);
+  });
+
+  it("PDG1c: a refused credential publishes no device binding", async () => {
+    const { guard, devices } = buildGuard();
+    devices.findActiveByAttestation.mockResolvedValue(null);
+
+    const req = makeRequest({ authorization: "Bearer revoked-token" });
+    await expect(guard.canActivate(makeCtx(req))).rejects.toThrow();
+
+    expect(req.posDeviceId).toBeUndefined();
+  });
 });
 
 // ===========================================================================

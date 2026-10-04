@@ -92,7 +92,8 @@ export const AUTH_LOOKUP_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string
 
 /**
  * Tables the lookup role must hold NO listed privilege on (sales,
- * receivables, inventory, audit, idempotency, outbox, membership mutation).
+ * receivables, cashier admissions, inventory, audit, idempotency, outbox,
+ * membership mutation).
  * Each entry is a table and the privileges that are forbidden on it.
  */
 export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, string]> = [
@@ -112,6 +113,9 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     "payment_application",
     "remittance",
     "payer_account",
+    // RT-113 BC2: cashier admission state and its replay store.
+    "cashier_admissions",
+    "cashier_admission_requests",
     "stock_movements",
     "stock_counts",
     "audit_events",

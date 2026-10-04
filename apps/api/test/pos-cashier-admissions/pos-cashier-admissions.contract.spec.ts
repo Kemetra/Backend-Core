@@ -8,9 +8,11 @@
  * credential and got 401.
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas.
- * No app boot and no HTTP: the runtime is RT-113 BC2. What this pins:
+ * No app boot and no HTTP: the runtime (RT-113 BC2) is exercised by the
+ * cashier-admissions integration specs beside this file. What this pins:
  *
- *   1. The three operations, their paths, and `x-runtime-status: contract-only`.
+ *   1. The three operations and their paths; since RT-113 BC2 they are
+ *      implemented, so no operation carries `x-runtime-status: contract-only`.
  *   2. Security is the existing role-named `device` scheme (opaque bearer, no
  *      JWT); no operator credential; no client-supplied scope anywhere.
  *   3. The admission request is a union on `mode` with the 10763 §3 fields;
@@ -206,10 +208,15 @@ describe("pos-cashier-admissions — document and operations", () => {
     expect(OPERATION_IDS.filter((id) => otherOperationIds.has(id))).toEqual([]);
   });
 
-  it.each(OPERATION_IDS)("%s is marked contract-only with a note (runtime is BC2)", (id) => {
+  it.each(OPERATION_IDS)("%s is implemented (RT-113 BC2): no contract-only marker or note", (id) => {
     const o = allOperations().find((x) => x.operationId === id)!;
-    expect(o["x-runtime-status"]).toBe("contract-only");
-    expect(o["x-runtime-note"]?.trim().length).toBeGreaterThan(0);
+    expect(o["x-runtime-status"]).toBeUndefined();
+    expect(o["x-runtime-note"]).toBeUndefined();
+  });
+
+  it("the info prose no longer calls the surface contract-only", () => {
+    expect(doc.info?.description ?? "").not.toMatch(/Contract-only \(BC1\)/);
+    expect(doc.info?.description ?? "").toMatch(/Implemented \(RT-113 BC2;/);
   });
 });
 

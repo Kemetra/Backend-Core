@@ -1,6 +1,8 @@
 /**
- * PosDeviceAuthGuard — device-principal authentication for the 010 read-down
- * catalogue routes (issue #488, Option B-prime).
+ * PosDeviceAuthGuard — device-principal authentication for the POS routes a
+ * paired terminal calls with its device token alone: the 010 read-down
+ * catalogue routes (issue #488, Option B-prime) and, since RT-113 BC2, the
+ * cashier-admissions routes.
  *
  * Why this exists
  * ---------------
@@ -26,7 +28,8 @@
  *    operator sign-in uses; it needs no established tenant context).
  * 3. On success, publishes a device principal context onto `request.context`:
  *    `(tenant_id, store_id)` come from the device ROW — the authority — never
- *    from the request body/query (FR-002). The read-down controller's existing
+ *    from the request body/query (FR-002) — and the device id onto
+ *    `request.posDeviceId`. The read-down controller's existing
  *    `store_context_required` / non-disclosing `branch_id`-mismatch logic then
  *    runs unchanged.
  *
@@ -38,7 +41,25 @@
  * about why. Dashboard cookies are ignored entirely: this guard only ever
  * trusts a Bearer device token.
  *
- * READ-DOWN ROUTES ONLY. Do NOT register globally or reuse on operator routes.
+ * Where it may be used (widened deliberately by RT-113 BC2)
+ * -----------------------------------------------------------
+ * ONLY on routes whose contract declares the role-named `device` security
+ * scheme and nothing else, marked `@DeviceBearer()`:
+ *
+ *   - the 010 read-down routes (`/api/pos/v1/catalog/snapshot|deltas`);
+ *   - the RT-113 cashier-admissions routes (`/api/pos/v1/cashier-admissions`,
+ *     `…/{admission_id}/end`, `…/roster`; Jira RT-113 comments 10763 D2/D11,
+ *     10826, `[GATED]` approval 10832).
+ *
+ * Why the cashier routes need it: a cashier signs in with a PIN verified on
+ * the terminal and holds no provider JWT, so the cashier path cannot use the
+ * operator-identity routes (RT-150, RT-182). The device is the only
+ * credential there, and its row is the only source of tenant and store.
+ *
+ * Do NOT register it globally, and do NOT use it on operator routes
+ * (`/api/pos/v1/operators/*`) or on any route that needs a person's
+ * credential: it proves only which paired terminal is calling.
+ * `route-auth-markers.enforcement.spec.ts` pins the list of routes using it.
  */
 import {
   type CanActivate,
@@ -91,6 +112,10 @@ export class PosDeviceAuthGuard implements CanActivate {
       source: "token",
     };
     request.context = context;
+    // The authenticated device itself, for routes that act per device (the
+    // RT-113 cashier admissions: admission ownership, the idempotency scope,
+    // the takeover rate limit). Never taken from the request.
+    request.posDeviceId = device.id;
     return true;
   }
 }

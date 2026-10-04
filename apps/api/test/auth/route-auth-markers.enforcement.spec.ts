@@ -114,6 +114,10 @@ describe("route auth markers are enforced at the route (RT-129 / A9)", () => {
 
   it("finds the marked routes (the sweep is not vacuous)", () => {
     expect(deviceBearer.map((r) => r.id).sort()).toEqual([
+      // RT-113 BC2: the cashier-admissions surface (device bearer only).
+      "CashierAdmissionsController.admit",
+      "CashierAdmissionsController.end",
+      "CashierAdmissionsController.roster",
       "ReadDownController.getDeltas",
       "ReadDownController.getSnapshot",
     ]);
