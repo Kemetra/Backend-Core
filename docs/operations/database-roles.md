@@ -17,11 +17,26 @@ used by domain services.
 In production (or with `VERIFY_DATABASE_POOL_BOUNDARY=1`) both processes check
 their credentials before serving and refuse to start on a violation:
 
-- **API:** the domain role is not a superuser, does not have `BYPASSRLS`, and is
-  distinct from the lookup role; the lookup role is not a superuser, has
-  `BYPASSRLS`, holds every grant listed below, and holds none of the forbidden
-  grants (RT-143, `AUTH_LOOKUP_REQUIRED_GRANTS` / `AUTH_LOOKUP_FORBIDDEN_GRANTS`
-  in `apps/api/src/auth/database-pools.ts`).
+- **API, domain role:** it is not a superuser, does not have `BYPASSRLS`, is
+  distinct from the lookup role, and holds every required table grant
+  (RT-212, `DOMAIN_REQUIRED_GRANTS`). The required list starts with the tables
+  whose grants are provisioned as a separate deploy step:
+  - `cashier_admissions`: `SELECT`, `INSERT`, `UPDATE`
+  - `cashier_admission_requests`: `SELECT`, `INSERT`, `UPDATE`, `DELETE`
+
+  A deploy that skips that grant step now fails to boot, and the error names
+  each missing privilege and table, instead of starting healthy with those
+  routes returning 500.
+- **API, lookup role:** it is not a superuser, has `BYPASSRLS`, holds every
+  grant listed below, and holds none of the forbidden grants (RT-143,
+  `AUTH_LOOKUP_REQUIRED_GRANTS` / `AUTH_LOOKUP_FORBIDDEN_GRANTS`). The
+  forbidden check covers every table privilege (`SELECT`, `INSERT`, `UPDATE`,
+  `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`) on the sales, receivables,
+  cashier-admission, inventory, audit, idempotency and outbox tables, and every
+  privilege except `SELECT` on `memberships` and `store_access` (RT-212).
+  `TRUNCATE` matters most: it is not subject to row security.
+
+  All three lists are in `apps/api/src/auth/database-pools.ts`.
 - **Worker:** its `DATABASE_URL` role is not a superuser and does not have
   `BYPASSRLS` (RT-143, `apps/worker/src/database-role-verifier.ts`).
 
