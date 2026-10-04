@@ -6,8 +6,10 @@
  * `admit` runs in ONE tenant-scoped transaction and decides in the
  * contract's outcome order (401 is the guard's, 400 the DTO pipe's):
  *
- *   1. lock the idempotency key; same key + different body → 409
- *   2. lock the cashier (tenant, store, user); end an expired live admission
+ *   1. lock the idempotency key, then the cashier (tenant, store, user), then
+ *      read the clock ONCE (`clock_timestamp()`, after any wait on the locks;
+ *      every comparison and write below uses that instant)
+ *   2. same key + different body → 409; end an expired live admission
  *   3. replay candidate? (same body, its admission still live on this device)
  *   4. a fresh takeover over the per-device limit → 429
  *   5. eligibility → 403 `refused` (audited by category, logged by request_id)
@@ -56,8 +58,12 @@ export interface AdmissionPorts {
 type EligibleCashier = Extract<Eligibility, { eligible: true }>;
 
 /** Everything one admission request needs, normalised once. */
+type AdmitRequest = Omit<AdmitContext, "client" | "at">;
+
 interface AdmitContext {
   readonly client: PoolClient;
+  /** The clock reading taken after the locks. */
+  readonly at: Date;
   readonly scope: DeviceScope;
   readonly body: AdmissionRequestInput;
   readonly userId: string;
@@ -72,19 +78,18 @@ export class CashierAdmissionsService {
   constructor(private readonly ports: AdmissionPorts) {}
 
   async admit(scope: DeviceScope, body: AdmissionRequestInput, requestId: string | null): Promise<AdmitOutcome> {
-    const policy = this.ports.policy();
-    return this.ports.tx(scope.tenantId, (client) =>
-      this.admitInTx({
-        client,
-        scope,
-        body,
-        userId: body.user_id,
-        takeover: body.mode === "online" && body.takeover === true,
-        keyHash: keyDigest(body.idempotency_key),
-        requestHash: requestFingerprint(body),
-        policy,
-        requestId,
-      }),
+    const request: AdmitRequest = {
+      scope,
+      body,
+      userId: body.user_id,
+      takeover: body.mode === "online" && body.takeover === true,
+      keyHash: keyDigest(body.idempotency_key),
+      requestHash: requestFingerprint(body),
+      policy: this.ports.policy(),
+      requestId,
+    };
+    return this.ports.tx(scope.tenantId, async (client) =>
+      this.admitInTx({ ...request, client, at: await this.lockAndReadClock(client, request) }),
     );
   }
 
@@ -112,13 +117,18 @@ export class CashierAdmissionsService {
   // admit
   // -------------------------------------------------------------------------
 
-  private async admitInTx(ctx: AdmitContext): Promise<AdmitOutcome> {
+  /** Take both locks (key, then cashier), then read the clock once. */
+  private async lockAndReadClock(client: PoolClient, request: AdmitRequest): Promise<Date> {
     const { admissions } = this.ports;
-    await admissions.lockRequestKey(ctx.client, ctx.scope, ctx.keyHash);
-    const prior = await admissions.findRequest(ctx.client, ctx.scope, ctx.keyHash);
+    await admissions.lockRequestKey(client, request.scope, request.keyHash);
+    await admissions.lockCashier(client, request.scope, request.userId);
+    return admissions.clock(client);
+  }
+
+  private async admitInTx(ctx: AdmitContext): Promise<AdmitOutcome> {
+    const prior = await this.ports.admissions.findRequest(ctx.client, ctx.scope, { keyHash: ctx.keyHash, at: ctx.at });
     if (prior && !prior.requestHash.equals(ctx.requestHash)) return { kind: "idempotency_conflict" };
 
-    await admissions.lockCashier(ctx.client, ctx.scope, ctx.userId);
     await this.expireStale(ctx);
     const replay = await this.replayable(ctx, prior);
     if (!replay && !(await this.takeoverAllowed(ctx))) return { kind: "rate_limited" };
@@ -130,7 +140,7 @@ export class CashierAdmissionsService {
   }
 
   private async expireStale(ctx: AdmitContext): Promise<void> {
-    const expired = await this.ports.admissions.expireStale(ctx.client, ctx.scope, ctx.userId);
+    const expired = await this.ports.admissions.expireStale(ctx.client, ctx.scope, { userId: ctx.userId, at: ctx.at });
     for (const admissionId of expired) {
       await this.record(ctx, ADMISSION_AUDIT_ACTIONS.expired, admissionId, {
         device_id: ctx.scope.deviceId,
@@ -175,6 +185,7 @@ export class CashierAdmissionsService {
     const record = await this.apply(ctx, action, live);
     const body = admittedBody(record, cashier, ctx.policy);
     await this.ports.admissions.saveRequest(ctx.client, ctx.scope, {
+      at: ctx.at,
       keyHash: ctx.keyHash,
       requestHash: ctx.requestHash,
       admissionId: record.id,
@@ -196,19 +207,20 @@ export class CashierAdmissionsService {
 
   private async renew(ctx: AdmitContext, admissionId: string): Promise<AdmissionRecord> {
     const ttl = ctx.policy.admissionTtlSeconds;
-    const record = await this.ports.admissions.renew(ctx.client, ctx.scope, admissionId, ttl);
+    const record = await this.ports.admissions.renew(ctx.client, ctx.scope, { admissionId, at: ctx.at }, ttl);
     await this.record(ctx, ADMISSION_AUDIT_ACTIONS.renewed, record.id, admissionMetadata(ctx));
     return record;
   }
 
   private async takeOver(ctx: AdmitContext, priorId: string): Promise<AdmissionRecord> {
-    await this.ports.admissions.end(ctx.client, ctx.scope, priorId, "takeover");
+    await this.ports.admissions.end(ctx.client, ctx.scope, { admissionId: priorId, at: ctx.at }, "takeover");
     return this.create(ctx, priorId);
   }
 
   private async create(ctx: AdmitContext, takeoverOf: string | null): Promise<AdmissionRecord> {
     const record = await this.ports.admissions.create(ctx.client, {
       id: newId(),
+      at: ctx.at,
       scope: ctx.scope,
       userId: ctx.userId,
       mode: ctx.body.mode,
@@ -248,7 +260,8 @@ export class CashierAdmissionsService {
     const owned = await admissions.findOwned(client, scope, admissionId);
     if (!owned) return null;
     await admissions.lockCashier(client, scope, owned.userId);
-    return (await admissions.endOwned(client, scope, admissionId)) ? owned.userId : null;
+    const at = await admissions.clock(client);
+    return (await admissions.endOwned(client, scope, { admissionId, at })) ? owned.userId : null;
   }
 }
 

@@ -96,6 +96,7 @@ function build(w: World) {
     lockRequestKey: track("lockRequestKey", undefined),
     findRequest: track("findRequest", w.prior),
     lockCashier: track("lockCashier", undefined),
+    clock: track("clock", NOW),
     expireStale: track("expireStale", [] as string[]),
     isLiveOnDevice: track("isLiveOnDevice", w.priorLiveOnDevice),
     findLive: track("findLive", w.live),
@@ -222,12 +223,12 @@ describe("CashierAdmissionsService.admit — admitted", () => {
     expect(out).toEqual(expected(NEW_ID));
     expect(store.create).toHaveBeenCalledWith(
       CLIENT,
-      expect.objectContaining({ userId: USER, mode: "online", takeoverOf: null, ttlSeconds: 43200 }),
+      expect.objectContaining({ userId: USER, mode: "online", takeoverOf: null, ttlSeconds: 43200, at: NOW }),
     );
     expect(store.saveRequest).toHaveBeenCalledWith(
       CLIENT,
       SCOPE,
-      expect.objectContaining({ admissionId: NEW_ID, ttlSeconds: 43200 }),
+      expect.objectContaining({ admissionId: NEW_ID, ttlSeconds: 43200, at: NOW }),
     );
     expect(ports.audit.record).toHaveBeenCalledWith(
       CLIENT,
@@ -239,7 +240,7 @@ describe("CashierAdmissionsService.admit — admitted", () => {
     const { service, store } = build(world({ live: { id: LIVE_ID, deviceId: SCOPE.deviceId } }));
     const out = await service.admit(SCOPE, onlineBody(), "req-1");
     expect(out).toEqual(expected(LIVE_ID));
-    expect(store.renew).toHaveBeenCalledWith(CLIENT, SCOPE, LIVE_ID, 43200);
+    expect(store.renew).toHaveBeenCalledWith(CLIENT, SCOPE, { admissionId: LIVE_ID, at: NOW }, 43200);
     expect(store.create).not.toHaveBeenCalled();
   });
 
@@ -247,7 +248,7 @@ describe("CashierAdmissionsService.admit — admitted", () => {
     const { service, store, ports } = build(world({ live: { id: LIVE_ID, deviceId: OTHER_DEVICE } }));
     const out = await service.admit(SCOPE, onlineBody({ takeover: true }), "req-1");
     expect(out).toEqual(expected(NEW_ID));
-    expect(store.end).toHaveBeenCalledWith(CLIENT, SCOPE, LIVE_ID, "takeover");
+    expect(store.end).toHaveBeenCalledWith(CLIENT, SCOPE, { admissionId: LIVE_ID, at: NOW }, "takeover");
     expect(store.create).toHaveBeenCalledWith(CLIENT, expect.objectContaining({ takeoverOf: LIVE_ID }));
     expect(ports.audit.record).toHaveBeenCalledWith(
       CLIENT,
@@ -277,10 +278,19 @@ describe("CashierAdmissionsService.admit — admitted", () => {
     );
   });
 
-  it("serialises: the cashier lock and lazy expiry run before any decision", async () => {
+  it("serialises: both locks, then ONE clock reading, then lazy expiry, before any decision", async () => {
     const { service, calls } = build(world());
     await service.admit(SCOPE, onlineBody(), "req-1");
-    const order = ["lockRequestKey", "findRequest", "lockCashier", "expireStale", "eligibility.check", "findLive", "create"];
+    const order = [
+      "lockRequestKey",
+      "lockCashier",
+      "clock",
+      "findRequest",
+      "expireStale",
+      "eligibility.check",
+      "findLive",
+      "create",
+    ];
     expect(calls.filter((c) => order.includes(c))).toEqual(order);
   });
 });
@@ -375,5 +385,27 @@ describe("CashierAdmissionsService.roster", () => {
     (ports.eligibility.roster as jest.Mock).mockResolvedValueOnce(entries);
     expect(await service.roster(SCOPE)).toEqual({ cashiers: entries });
     expect(ports.eligibility.roster).toHaveBeenCalledWith(CLIENT, SCOPE);
+  });
+});
+
+describe("CashierAdmissionsService — one clock reading per request", () => {
+  it("every comparison and write in admit uses the post-lock clock reading", async () => {
+    const { service, store } = build(world({ live: { id: LIVE_ID, deviceId: OTHER_DEVICE } }));
+    await service.admit(SCOPE, onlineBody({ takeover: true }), "req-1");
+    expect(store.clock).toHaveBeenCalledTimes(1);
+    expect(store.findRequest).toHaveBeenCalledWith(CLIENT, SCOPE, expect.objectContaining({ at: NOW }));
+    expect(store.expireStale).toHaveBeenCalledWith(CLIENT, SCOPE, { userId: USER, at: NOW });
+    expect(store.end).toHaveBeenCalledWith(CLIENT, SCOPE, { admissionId: LIVE_ID, at: NOW }, "takeover");
+    expect(store.create).toHaveBeenCalledWith(CLIENT, expect.objectContaining({ at: NOW }));
+    expect(store.saveRequest).toHaveBeenCalledWith(CLIENT, SCOPE, expect.objectContaining({ at: NOW }));
+  });
+
+  it("end reads the clock after the cashier lock and ends at that instant", async () => {
+    const { service, store } = build(world());
+    store.findOwned.mockResolvedValueOnce({ id: LIVE_ID, userId: USER });
+    store.endOwned.mockResolvedValueOnce(true);
+    await service.end(SCOPE, LIVE_ID, "req-1");
+    expect(store.lockCashier.mock.invocationCallOrder[0]).toBeLessThan(store.clock.mock.invocationCallOrder[0]!);
+    expect(store.endOwned).toHaveBeenCalledWith(CLIENT, SCOPE, { admissionId: LIVE_ID, at: NOW });
   });
 });
