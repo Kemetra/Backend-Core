@@ -188,7 +188,7 @@ describe("T465 — label policy: every worker metric's labels pass validateMetri
 // ---------------------------------------------------------------------------
 
 describe("T465 — bounded enums: queue, job_name, and error_class are documented", () => {
-  it("RT-125/RT-179: WORKER_QUEUE_NAMES is exactly the six queues the worker consumes", () => {
+  it("RT-125/RT-179/RT-209: WORKER_QUEUE_NAMES is exactly the seven queues the worker consumes", () => {
     const expected = [
       "email",
       "audit",
@@ -196,6 +196,7 @@ describe("T465 — bounded enums: queue, job_name, and error_class are documente
       "sale-processing",
       "outbox-retention",
       "erpnext-stock-reconciliation-sweep",
+      "cashier-admission-replay-purge",
     ];
     expect([...WORKER_QUEUE_NAMES].sort()).toEqual([...expected].sort());
   });

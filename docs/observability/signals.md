@@ -175,7 +175,8 @@ only after the Track C first slice (P7) ships.
 `queue` values (RT-125). The lag gauge observes the queues the worker
 consumes, taken from the shared `QUEUE_NAMES`: `email`, `audit`,
 `audit-retention`, `sale-processing`, `outbox-retention`,
-`erpnext-stock-reconciliation-sweep` (RT-179). The three delivery
+`erpnext-stock-reconciliation-sweep` (RT-179),
+`cashier-admission-replay-purge` (RT-209). The three delivery
 counters also carry `outbox-drainer`, which is the outbox drainer's own
 retries and dead-letters. The drainer is not a BullMQ queue, so it has no lag.
 Before RT-125, the drainer reported as `audit-fanout`, which is a job name,

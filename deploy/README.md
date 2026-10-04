@@ -129,6 +129,7 @@ idempotent, so restarts and replicas share one schedule.
 | Audit retention sweep | 24 h | none |
 | Outbox retention sweep | 24 h | none |
 | ERPNext stock reconciliation run sweep (RT-179) | 24 h | `ERPNEXT_STOCK_RECONCILIATION_SWEEP_INTERVAL_MS` |
+| Cashier-admission replay purge (RT-209) | 1 h | `CASHIER_ADMISSION_REPLAY_PURGE_INTERVAL_MS` |
 
 The stock sweep creates one `scheduled` stock reconciliation run for every store
 that has an active `stock` warehouse map. A store is skipped when it already has
@@ -147,6 +148,19 @@ milliseconds, at least `300000` (5 minutes). Any other value stops the worker
 from booting. `docker-compose.prod.yml` does not pass this variable to the
 worker yet, so production runs the daily default. To override it, add it to
 the worker's `environment` block.
+
+The replay purge deletes every tenant's expired `cashier_admission_requests`
+rows, in batches of 500, under each tenant's own RLS context. These rows hold
+the replayable `admitted` response, including the cashier's display name, and
+the api stops replaying a row once it expires. Before this sweep, the api
+deleted a device's expired rows only when that same device saved another
+request. The purge uses the worker's `DATABASE_URL` (domain) role and needs no
+grant beyond those the api already has on that table (`SELECT`, `INSERT`,
+`UPDATE`, `DELETE`) and `SELECT` on `tenants`. It logs counts only.
+`CASHIER_ADMISSION_REPLAY_PURGE_INTERVAL_MS` must be a whole number of
+milliseconds, at least `60000` (1 minute). Any other value stops the worker
+from booting. `docker-compose.prod.yml` does not pass it, so production runs
+the hourly default.
 
 ## Known follow-ups (not in this artifact)
 
