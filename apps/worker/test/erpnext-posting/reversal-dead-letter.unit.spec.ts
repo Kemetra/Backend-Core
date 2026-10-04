@@ -141,7 +141,11 @@ describe("RT-207 — drainer + PostingRequestedConsumer: reversal awaiting sale_
     expect(errorLog).toHaveBeenCalledTimes(1);
     expect(errorLog.mock.calls[0]?.[0]).toMatchObject({
       event: "posting.reversal.dead_lettered",
+      outcome: "failure",
+      request_id: EVENT_ID,
+      correlation_id: null,
       tenant_id: TENANT,
+      store_id: STORE,
       sale_id: SALE,
       event_id: EVENT_ID,
     });

@@ -28,6 +28,7 @@ const STORE = "01900000-0000-7000-8000-0000000f2222";
 const SALE = "01900000-0000-7000-8000-0000000f3333";
 const VOID_ID = "01900000-0000-7000-8000-0000000f4444";
 const EVENT_ID = "01900000-0000-7000-8000-0000000f5555";
+const CORRELATION_ID = "01900000-0000-7000-8000-0000000f6666";
 
 interface Recorded {
   readonly sql: string;
@@ -179,7 +180,13 @@ describe("PostingRequestedConsumer — RT-207 reversal dead-letter while awaitin
     expect(error).toHaveBeenCalledWith(
       {
         event: "posting.reversal.dead_lettered",
+        outcome: "failure",
+        // signals.md §4 async-work fields: request_id is the job's unique id
+        // (the outbox event), correlation_id is null when the envelope has none.
+        request_id: EVENT_ID,
+        correlation_id: null,
         tenant_id: TENANT,
+        store_id: STORE,
         sale_id: SALE,
         source_ref_id: VOID_ID,
         event_id: EVENT_ID,
@@ -197,9 +204,30 @@ describe("PostingRequestedConsumer — RT-207 reversal dead-letter while awaitin
     await consumer.handle(atAttempt(MAX_ATTEMPTS)).catch(() => undefined);
 
     const [fields] = error.mock.calls[0] as [Record<string, unknown>];
-    expect(Object.keys(fields).sort()).toEqual(
-      ["attempts", "event", "event_id", "sale_id", "source_ref_id", "tenant_id"],
-    );
+    expect(Object.keys(fields).sort()).toEqual([
+      "attempts",
+      "correlation_id",
+      "event",
+      "event_id",
+      "outcome",
+      "request_id",
+      "sale_id",
+      "source_ref_id",
+      "store_id",
+      "tenant_id",
+    ]);
+  });
+
+  it("the dead-letter log carries the envelope correlation_id when there is one", async () => {
+    const { pool } = fakePool(false);
+    const error = jest.fn();
+    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn(), error });
+    const correlated = { ...atAttempt(MAX_ATTEMPTS), correlation_id: CORRELATION_ID };
+
+    await consumer.handle(correlated).catch(() => undefined);
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]?.[0]).toMatchObject({ correlation_id: CORRELATION_ID });
   });
 
   it("an attempt before the last (a retried deferral) neither counts nor logs an error", async () => {
