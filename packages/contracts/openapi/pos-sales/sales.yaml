@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.3.0-draft"
+  version: "1.4.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -102,6 +102,14 @@ info:
     `recordReturn`, a line sold in a whole quantity can only be returned in
     whole quantities (else 400 `validation_error`), so every return of a
     conforming line prices to exactly `unitPrice × q`.
+
+    RT-181 (1.4.0-draft; RT-66 follow-up): the `Idempotency-Key` header on
+    `captureSale`, `recordVoid`, `recordRefund` and `recordReturn` now
+    declares the rule the `IdempotencyInterceptor` already enforces — 16 to
+    128 printable ASCII characters, no whitespace (`^[\x21-\x7E]{16,128}$`)
+    — instead of 1 to 255. The server is unchanged: a key outside the rule
+    was already rejected with 400 before the handler ran. The POS sends
+    `pos-pulse:<UUID>` (46 characters), so it is unaffected.
 
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
@@ -586,10 +594,13 @@ components:
       required: true
       schema:
         type: string
-        minLength: 1
-        maxLength: 255
+        minLength: 16
+        maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
       description: >
-        REQUIRED on every write. Reuses the existing `IdempotencyInterceptor`
+        REQUIRED on every write. 16 to 128 printable ASCII characters with no
+        whitespace, as the interceptor enforces (RT-181); any other value is a
+        400. Reuses the existing `IdempotencyInterceptor`
         (FR-051) — keyed on `(method, route template, resolved path parameters,
         clientId = the authenticated operator's user id, key)`, per RT-82 K1.
         The same key on a DIFFERENT `saleRef` is therefore a separate operation
