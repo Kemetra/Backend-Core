@@ -12,6 +12,11 @@ The auth lookup credential exists because a device token, session, or bearer
 token must be resolved before a tenant GUC can be established. It must not be
 used by domain services.
 
+A resolved device is accepted only while its tenant is active (RT-213). That
+tenant-status read runs on the domain role, inside the device's own tenant
+context, so the lookup role needs no grant on `tenants` and must not be given
+one.
+
 ## Boot-time verification
 
 In production (or with `VERIFY_DATABASE_POOL_BOUNDARY=1`) both processes check

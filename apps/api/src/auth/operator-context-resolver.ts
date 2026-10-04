@@ -22,8 +22,9 @@
  *      `external_identity_links` ACTIVE link (NOT `users.clerk_user_id = sub` —
  *      029 D3 / G-3); reject if there is no active link (`user_unmapped`) or the
  *      user is soft-deleted (`user_disabled`).
- *   3. Resolve the device by attestation hash (active rows only); the device
- *      row carries the canonical `(tenant_id, store_id)`.
+ *   3. Resolve the device by attestation hash (active rows only: not revoked,
+ *      tenant active — RT-213); the device row carries the canonical
+ *      `(tenant_id, store_id)`.
  *   4. Resolve the operator's membership in the device's tenant; role MUST be
  *      one of {owner, tenant_admin, store_manager}; reject revoked / deleted.
  *   5. Store eligibility: `all` → any store in tenant; `specific` → must be in
@@ -311,8 +312,10 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
     deviceId: string,
     storeId: string,
   ): Promise<{ kind: "ok" } | { kind: "refused"; reason: ResolveOperatorRefusalReason }> {
-    // Device still active? (revoked devices are excluded.)
-    const device = await this.findActiveDeviceById(deviceId);
+    // Device still active? Revoked devices and devices of a suspended,
+    // pending or soft-deleted tenant are excluded (RT-213: the same
+    // DeviceRepository rule every device route uses).
+    const device = await this.deviceRepository.findActiveById(deviceId);
     if (!device) return { kind: "refused", reason: "device_invalid" };
 
     // Membership in the device's tenant still active + role still eligible?
@@ -332,17 +335,5 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
     }
 
     return { kind: "ok" };
-  }
-
-  private async findActiveDeviceById(
-    deviceId: string,
-  ): Promise<{ id: string; tenantId: string } | null> {
-    const r = await this.lookupPool.query<{ id: string; tenant_id: string }>(
-      `SELECT id, tenant_id FROM devices
-        WHERE id = $1 AND revoked_at IS NULL LIMIT 1`,
-      [deviceId],
-    );
-    const row = r.rows[0];
-    return row ? { id: row.id, tenantId: row.tenant_id } : null;
   }
 }

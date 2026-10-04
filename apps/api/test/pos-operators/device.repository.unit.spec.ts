@@ -24,7 +24,7 @@ describe("DeviceRepository.findActiveByAttestation — empty attestation guard",
       query: jest.fn().mockRejectedValue(new Error("should not be called")),
     } as unknown as Pool;
 
-    const repo = new DeviceRepository(fakePool);
+    const repo = new DeviceRepository(fakePool, fakePool);
     const result = await repo.findActiveByAttestation("");
 
     expect(result).toBeNull();

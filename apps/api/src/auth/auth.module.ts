@@ -266,7 +266,7 @@ export class AlwaysAllowRedis implements RedisLike {
         new PgOperatorContextResolver(
           pool,
           clerkIdentityProviderFactory(lookupPool),
-          new DeviceRepository(lookupPool),
+          new DeviceRepository(lookupPool, pool),
           undefined,
           lookupPool,
         ),

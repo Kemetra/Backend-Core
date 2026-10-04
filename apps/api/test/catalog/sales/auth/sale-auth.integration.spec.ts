@@ -185,7 +185,7 @@ beforeAll(async () => {
     resolver = new PgOperatorContextResolver(
       pool,
       new ClerkIdentityProviderAdapter(NOOP_VERIFIER, pool, "https://clerk.dp2.local"),
-      new DeviceRepository(pool),
+      new DeviceRepository(pool, env.app),
     );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

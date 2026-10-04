@@ -226,22 +226,27 @@ describe("PosDeviceAuthGuard — dashboard cookie rejected", () => {
 // test/auth/tenant-status-device-auth.http.integration.spec.ts.
 // ===========================================================================
 
+/** Valid UUIDs: runWithTenantContext validates the tenant id it scopes to. */
+const RT213_DEVICE_ID = "0a000000-0000-7000-8000-00000000de13";
+const RT213_TENANT_ID = "0a000000-0000-7000-8000-00000000a213";
+const RT213_STORE_ID = "0a000000-0000-7000-8000-00000000b213";
+
 interface TenantRowFake {
   status: string;
   deleted_at: Date | null;
 }
 
 /** The pre-tenant lookup pool: answers the drizzle device lookup (array rows). */
-function fakeLookupPool(deviceTenantId = TENANT_ID): Pool {
+function fakeLookupPool(): Pool {
   return {
     query: jest.fn(async (config: { rowMode?: string }) => {
       if (config && config.rowMode === "array") {
         return {
           rows: [
             [
-              DEVICE_ID,
-              deviceTenantId,
-              STORE_ID,
+              RT213_DEVICE_ID,
+              RT213_TENANT_ID,
+              RT213_STORE_ID,
               "Lane 1",
               Buffer.from("hash"),
               null,
@@ -305,10 +310,11 @@ describe("PosDeviceAuthGuard — RT-213 tenant status", () => {
     const req = makeRequest({ authorization: "Bearer device-pairing-token" });
 
     await expect(guard.canActivate(makeCtx(req))).resolves.toBe(true);
-    expect(req.posDeviceId).toBe(DEVICE_ID);
+    expect(req.posDeviceId).toBe(RT213_DEVICE_ID);
+    expect(req.context?.tenantId).toBe(RT213_TENANT_ID);
     // The tenants read is RLS-scoped to the DEVICE's tenant (constitution §II).
     const guc = domain.calls.find((c) => c.text.includes("app.current_tenant"));
-    expect(guc?.params).toEqual([TENANT_ID]);
+    expect(guc?.params).toEqual([RT213_TENANT_ID]);
     expect(domain.calls.some((c) => /\bfrom\s+tenants\b/i.test(c.text))).toBe(true);
   });
 

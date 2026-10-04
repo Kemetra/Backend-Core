@@ -62,8 +62,9 @@ import { SettlementController } from "./settlement.controller";
     },
     {
       provide: DeviceRepository,
-      useFactory: (pool: Pool): DeviceRepository => new DeviceRepository(pool),
-      inject: [AUTH_LOOKUP_POOL],
+      useFactory: (lookupPool: Pool, domainPool: Pool): DeviceRepository =>
+        new DeviceRepository(lookupPool, domainPool),
+      inject: [AUTH_LOOKUP_POOL, PG_POOL],
     },
     {
       provide: OPERATOR_CONTEXT_RESOLVER,

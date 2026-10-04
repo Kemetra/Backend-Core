@@ -24,8 +24,10 @@
  *    read-only surface).
  * 2. Resolves it via `DeviceRepository.findActiveByAttestation` — a stateless
  *    SHA-256 hash → UNIQUE-index probe on `devices.token_hash`, returning the
- *    store-bound `DeviceRow` iff `revoked_at IS NULL` (the same lookup POS
- *    operator sign-in uses; it needs no established tenant context).
+ *    store-bound `DeviceRow` iff `revoked_at IS NULL` AND the device's tenant
+ *    is active (`status = 'active'`, `deleted_at IS NULL`; RT-213). It is the
+ *    same lookup POS operator sign-in uses; it needs no established tenant
+ *    context.
  * 3. On success, publishes a device principal context onto `request.context`:
  *    `(tenant_id, store_id)` come from the device ROW — the authority — never
  *    from the request body/query (FR-002) — and the device id onto
@@ -35,8 +37,9 @@
  *
  * Failure posture (FR-001, non-disclosing)
  * ----------------------------------------
- * Missing/malformed Authorization header, an unknown/revoked device token, or
- * any non-device credential (a dashboard cookie session, a non-Bearer scheme)
+ * Missing/malformed Authorization header, an unknown/revoked device token, a
+ * device of a suspended, pending or soft-deleted tenant (RT-213), or any
+ * non-device credential (a dashboard cookie session, a non-Bearer scheme)
  * all collapse to the SAME generic `UnauthorizedException` (401) — no signal
  * about why. Dashboard cookies are ignored entirely: this guard only ever
  * trusts a Bearer device token.

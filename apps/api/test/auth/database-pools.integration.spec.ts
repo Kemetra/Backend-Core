@@ -200,8 +200,14 @@ describe("production database pool separation", () => {
 
     await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
 
-    const device = await new DeviceRepository(lookupPool).findActiveByAttestation("device-b");
+    // RT-213: the device on the lookup role, its tenant's status on the
+    // NOBYPASSRLS domain role under the device's tenant context. Neither role
+    // needs a new grant: the lookup role still cannot read `tenants`.
+    const device = await new DeviceRepository(lookupPool, app).findActiveByAttestation("device-b");
     expect(device?.id).toBe(DEVICE_B);
+    await expect(lookupPool.query("SELECT status FROM tenants LIMIT 1")).rejects.toThrow(
+      /permission denied/i,
+    );
 
     const visibleToTenantA = await runWithTenantContext(
       app,

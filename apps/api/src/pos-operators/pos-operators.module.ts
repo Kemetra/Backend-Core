@@ -54,8 +54,9 @@ export const POS_OPERATORS_LOGGER = "POS_OPERATORS_LOGGER";
     },
     {
       provide: DeviceRepository,
-      useFactory: (pool: Pool): DeviceRepository => new DeviceRepository(pool),
-      inject: [AUTH_LOOKUP_POOL],
+      useFactory: (lookupPool: Pool, domainPool: Pool): DeviceRepository =>
+        new DeviceRepository(lookupPool, domainPool),
+      inject: [AUTH_LOOKUP_POOL, PG_POOL],
     },
     {
       provide: PosOperatorsService,
