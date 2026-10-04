@@ -57,9 +57,15 @@ table the domain role must use needs a matching grant step at deploy time.
   - `cashier_admissions`: `SELECT`, `INSERT`, `UPDATE`
   - `cashier_admission_requests`: `SELECT`, `INSERT`, `UPDATE`, `DELETE`
 
-  The file ends with a verification query. Without these grants the
-  `/api/pos/v1/cashier-admissions` routes return 500. The auth lookup role must
-  hold no grant on either table; the API refuses to boot if it does.
+  The script runs with `ON_ERROR_STOP` and exits non-zero if a grant fails or
+  if the verification finds a missing grant. Without these grants the
+  `/api/pos/v1/cashier-admissions` routes return 500.
+
+  The auth lookup role must hold no privilege on either table. The API refuses
+  to boot if it holds `SELECT`, `INSERT`, `UPDATE` or `DELETE` on one; that
+  boot check does not cover `TRUNCATE`, `REFERENCES` or `TRIGGER` (and
+  `TRUNCATE` is not subject to row security). Pass `-v lookup_role=<role>` to
+  the script to check every privilege as well.
 
 ## Redis credential
 
