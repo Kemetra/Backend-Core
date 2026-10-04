@@ -37,21 +37,30 @@ import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../../audit/audit.module";
 import { AuthModule } from "../../auth/auth.module";
+import { RolesGuard } from "../../auth/roles.guard";
 import { ContextModule } from "../../context/context.module";
 import { ErpnextReconciliationController } from "./erpnext-reconciliation.controller";
 import { ErpnextReconciliationService } from "./erpnext-reconciliation.service";
+import { NegativeOnHandController } from "./negative-on-hand.controller";
+import { NegativeOnHandService } from "./negative-on-hand.service";
 
 /**
  * Wires the DP2-side reconciliation/repair surface. 017-US1-BACKLOG adds the
  * `listPostingBacklog` read-projection (controller + service + projection);
  * 017-US2-REPAIR + 017-US3-STOCK extend the same controller/service and add the
  * worker reconciliation-run processor. `AuthModule` provides `PG_POOL` + the
- * `DashboardAuthGuard` the human operator routes use.
+ * `DashboardAuthGuard` the human operator routes use. RT-177 adds the read-only
+ * ERPNext negative on-hand view (`NegativeOnHandController` + service), computed
+ * on read from the latest recorded Connector Bin snapshot per store.
  */
 @Module({
   imports: [AuthModule, AuditModule, ContextModule],
-  controllers: [ErpnextReconciliationController],
-  providers: [ErpnextReconciliationService],
+  controllers: [ErpnextReconciliationController, NegativeOnHandController],
+  // RolesGuard is listed explicitly (the erpnext-item-map / erpnext-warehouse-map
+  // / unknown-items pattern) so both controllers' `@UseGuards(RolesGuard)`
+  // resolve it from this module's own providers; its deps (MembershipRepository
+  // via ContextModule, PG_POOL via AuthModule, Reflector from core) are in scope.
+  providers: [ErpnextReconciliationService, NegativeOnHandService, RolesGuard],
   exports: [ErpnextReconciliationService],
 })
 export class ErpnextReconciliationModule {}

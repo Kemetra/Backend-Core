@@ -14,7 +14,7 @@ info:
     against the connector's ERPNext-Bin view per the 014 mapping, persisting
     mismatch reports in 014's vocabulary.
 
-    Six operations, all under `/api/v1/catalog/erpnext-reconciliation/...`:
+    Eight operations, all under `/api/v1/catalog/erpnext-reconciliation/...`:
 
       1. `listPostingBacklog` — list the tenant's 015 `permanently_rejected`
          posting dead-letters (a LIVE read-projection over `erpnext_posting_status`;
@@ -32,6 +32,18 @@ info:
          (014 vocabulary), paginated.
       6. `repairStockMismatch` — idempotent re-map / re-sync for an actionable
          stock-mismatch class; transitions the result `open → repaired`.
+      7. `listErpnextNegativeOnHandStores` — per-store summary of ERPNext
+         negative on-hand (RT-177), computed on read from each store's latest
+         recorded Connector Bin snapshot, with an honest snapshot-freshness block.
+      8. `listErpnextNegativeOnHand` — one store's ERPNext items whose snapshot
+         quantity is strictly below zero (RT-177), mapped and unmapped alike.
+
+    Operations 7 and 8 are READ-ONLY. They read only the latest recorded Connector
+    snapshot (`summary.bin_view_report` of the newest `kind='stock'` run that
+    carries one, ordered by its `recordedAt`; the run status does not matter).
+    They never read the 009 `stock_movements` ledger, never write, add no
+    mismatch class, and carry no valuation. A snapshot is a point-in-time ERPNext
+    read ("as of" `readAt`), never "live" stock.
 
     Authentication boundary:
 
@@ -301,6 +313,79 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /api/v1/catalog/erpnext-reconciliation/negative-on-hand/stores:
+    get:
+      summary: List per-store ERPNext negative on-hand summaries.
+      operationId: listErpnextNegativeOnHandStores
+      tags: [erpnext-reconciliation]
+      description: >
+        RT-177. One summary per store the caller may read. `owner` /
+        `tenant_admin` see every store within their membership's store scope:
+        every store of the session tenant for the default `all` membership, or
+        only the granted stores for a `specific` membership. The session's
+        active store never narrows them. A `store_manager` sees its standard
+        store scope (the active store when one is selected, otherwise its
+        granted stores). Each summary carries the store's
+        snapshot freshness block and the number of ERPNext items whose latest
+        recorded snapshot quantity is strictly below zero. `negativeItemCount` is
+        `0` when `snapshot.status` is `no_warehouse_mapping` or `no_snapshot`;
+        consumers must render those states as "unknown", never as "no issues".
+        Computed on read from the latest recorded Connector Bin snapshot; never
+        reads the 009 ledger; no write. Ordered by `storeId`; cursor-paginated.
+        Other roles get the default non-disclosing 404.
+      parameters:
+        - $ref: "#/components/parameters/NegativeOnHandCursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: A page of per-store negative on-hand summaries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreNegativeOnHandSummaryPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/catalog/erpnext-reconciliation/stores/{storeId}/negative-on-hand:
+    get:
+      summary: List one store's ERPNext items with negative on-hand.
+      operationId: listErpnextNegativeOnHand
+      tags: [erpnext-reconciliation]
+      description: >
+        RT-177. The ERPNext items whose quantity in the store's latest recorded
+        Connector Bin snapshot is strictly below zero (`-0.000000` is not
+        negative), including items not mapped to a Retail Tower product. Items
+        are ordered by `quantity` ascending (most negative first), then by
+        `erpnextItemRef.name`; cursor-paginated. `items` is empty when
+        `snapshot.status` is `no_warehouse_mapping` or `no_snapshot`. A `stale`
+        snapshot still returns its items. Computed on read; never reads the 009
+        ledger; no write. Readable stores are the same as for
+        `listErpnextNegativeOnHandStores` (membership store scope; the active
+        store never narrows `owner` / `tenant_admin`). A foreign-tenant,
+        out-of-scope, deleted or nonexistent store, or a role that may not read
+        this surface, is a non-disclosing 404.
+      parameters:
+        - $ref: "#/components/parameters/StoreId"
+        - $ref: "#/components/parameters/NegativeOnHandCursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: The store's snapshot block and a page of negative items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreNegativeOnHandPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 # All operations require a dashboard session (httpOnly cookie) — the human
 # Tenant-Admin scheme. NOT connectorBearer (012 machine), NOT clerkJwt (POS).
 security:
@@ -345,6 +430,30 @@ components:
         maximum: 500
         default: 100
       description: Maximum items per page (the 009 500/req ceiling).
+    NegativeOnHandCursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 2048
+        pattern: "^[A-Za-z0-9_-]{1,2048}$"
+      description: >
+        Opaque pagination cursor from a prior page's `nextCursor` on the same
+        operation. Omit to start. A cursor that was not issued by that operation
+        is a 400 `validation_error`.
+    StoreId:
+      name: storeId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        The store whose negative on-hand to list. Resolves only within the
+        session tenant and the caller's store scope; anything else is a
+        non-disclosing 404.
     StoreFilter:
       name: storeId
       in: query
@@ -429,8 +538,8 @@ components:
     NotFound:
       description: >
         `not_found` — a cross-tenant / out-of-scope / absent `workItemRef`,
-        `runId`, or `resultId`. Identical shape for all three (no existence leak,
-        §II/§XII).
+        `runId`, `resultId`, or `storeId`, or a role that may not use the
+        operation. Identical shape in every case (no existence leak, §II/§XII).
       content:
         application/json:
           schema:
@@ -615,7 +724,15 @@ components:
           format: date-time
         summary:
           type: [object, "null"]
-          description: Counts by mismatch class (counts only — no PII/money/qty values here).
+          description: >
+            Run-scoped evidence, not only counts. When the Connector has reported
+            a Bin snapshot for the run, `summary.bin_view_report` carries it: the
+            warehouse ref, `readAt` (Connector clock), `recordedAt` (Backend-Core
+            clock) and every reported entry with its ERPNext item ref, resolved
+            tenant product ref (or null), exact-decimal `quantity` string (which
+            may be negative) and stock UOM. No PII and no money/valuation values.
+            For a store-level view of negative ERPNext quantities use
+            `listErpnextNegativeOnHand`.
     ReconciliationResult:
       type: object
       additionalProperties: false
@@ -640,7 +757,13 @@ components:
             - dp2_only
             - erpnext_only
             - negative_balance_flagged
-          description: 014's mismatch-class vocabulary (014 data-model §6.2). 017 owns no class.
+          description: >
+            014's mismatch-class vocabulary (014 data-model §6.2). 017 owns no
+            class. `negative_balance_flagged` is derived from the 009
+            `stock_movements` ledger (a negative Retail Tower on-hand balance); it
+            is NOT an ERPNext Bin signal and must not be presented as "negative
+            ERPNext stock". Negative ERPNext Bin quantities are surfaced by
+            `listErpnextNegativeOnHand` / `listErpnextNegativeOnHandStores`.
         sourceRef:
           type: [string, "null"]
           format: uuid
@@ -664,6 +787,194 @@ components:
             $ref: "#/components/schemas/ReconciliationResult"
         nextCursor:
           type: [string, "null"]
+
+    # -----------------------------------------------------------------------
+    # ERPNext negative on-hand (RT-177) — compute-on-read over the latest
+    # recorded Connector Bin snapshot per store. Read-only; no 009 ledger.
+    # -----------------------------------------------------------------------
+    StockSnapshotStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - erpnextWarehouseRef
+        - runId
+        - readAt
+        - recordedAt
+        - staleAfterSeconds
+        - reportedEntryCount
+        - pendingRequest
+      description: >
+        How current the store's ERPNext evidence is. `no_warehouse_mapping`: the
+        store has no active `stock` warehouse map. `no_snapshot`: mapped, but no
+        Connector Bin snapshot has been recorded. `fresh` / `stale`: a snapshot
+        exists and its `recordedAt` is within / older than `staleAfterSeconds`.
+        A snapshot is a point-in-time ERPNext read, never live stock.
+      properties:
+        status:
+          type: string
+          enum: [no_warehouse_mapping, no_snapshot, fresh, stale]
+        erpnextWarehouseRef:
+          type: [string, "null"]
+          description: >
+            The snapshot's ERPNext Warehouse; without a snapshot, the active
+            `stock` map's Warehouse. Null for `no_warehouse_mapping`.
+        runId:
+          type: [string, "null"]
+          format: uuid
+          description: The reconciliation run that carries the snapshot.
+        readAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the Connector read ERPNext (Connector clock) — the "as of" time.
+        recordedAt:
+          type: [string, "null"]
+          format: date-time
+          description: When Backend-Core recorded the snapshot; drives `fresh` / `stale`.
+        staleAfterSeconds:
+          type: integer
+          minimum: 1
+          description: Age of `recordedAt` after which the snapshot is `stale` (v1 is 86400).
+        reportedEntryCount:
+          type: [integer, "null"]
+          minimum: 0
+          description: Number of Bin entries in the snapshot.
+        pendingRequest:
+          oneOf:
+            - $ref: "#/components/schemas/PendingSnapshotRequest"
+            - type: "null"
+          description: >
+            The newest `running` stock run, newer than the snapshot's run, that
+            has no snapshot yet. The previous snapshot (if any) is still served.
+            Null for `no_warehouse_mapping`.
+    PendingSnapshotRequest:
+      type: object
+      additionalProperties: false
+      required: [runId, requestedAt]
+      properties:
+        runId:
+          type: string
+          format: uuid
+        requestedAt:
+          type: string
+          format: date-time
+          description: When the run was started.
+    ErpnextItemRef:
+      type: object
+      additionalProperties: false
+      required: [doctype, name]
+      properties:
+        doctype:
+          type: string
+          const: Item
+        name:
+          type: string
+          minLength: 1
+          maxLength: 140
+    NegativeOnHandItem:
+      type: object
+      additionalProperties: false
+      required:
+        - discrepancyKind
+        - erpnextItemRef
+        - mappingStatus
+        - tenantProduct
+        - erpnextWarehouseRef
+        - quantity
+        - stockUom
+      description: >
+        One ERPNext item whose quantity in the store's latest recorded snapshot
+        is strictly below zero. No valuation, no 009 ledger value.
+      properties:
+        discrepancyKind:
+          type: string
+          const: erpnext_negative_on_hand
+        erpnextItemRef:
+          $ref: "#/components/schemas/ErpnextItemRef"
+        mappingStatus:
+          type: string
+          enum: [mapped, unmapped]
+          description: >
+            `mapped` when the snapshot resolved the ERPNext Item to a Retail Tower
+            product through a confirmed item map; otherwise `unmapped`.
+        tenantProduct:
+          oneOf:
+            - $ref: "#/components/schemas/NegativeOnHandTenantProduct"
+            - type: "null"
+          description: The Retail Tower product; null if and only if `unmapped`.
+        erpnextWarehouseRef:
+          type: string
+          minLength: 1
+        quantity:
+          type: string
+          pattern: "^-[0-9]{1,15}(\\.[0-9]{1,6})?$"
+          description: >
+            Signed exact-decimal string, strictly below zero, exactly as the
+            Connector reported it.
+        stockUom:
+          type: string
+          minLength: 1
+          maxLength: 140
+    NegativeOnHandTenantProduct:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+    StoreNegativeOnHandSummary:
+      type: object
+      additionalProperties: false
+      required: [storeId, storeName, snapshot, negativeItemCount]
+      properties:
+        storeId:
+          type: string
+          format: uuid
+        storeName:
+          type: string
+        snapshot:
+          $ref: "#/components/schemas/StockSnapshotStatus"
+        negativeItemCount:
+          type: integer
+          minimum: 0
+          description: >
+            Items strictly below zero in the snapshot. `0` for
+            `no_warehouse_mapping` / `no_snapshot`, which means unknown, not
+            "no issues".
+    StoreNegativeOnHandSummaryPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items:
+            $ref: "#/components/schemas/StoreNegativeOnHandSummary"
+        nextCursor:
+          type: [string, "null"]
+          description: Opaque continuation token; null on the last page.
+    StoreNegativeOnHandPage:
+      type: object
+      additionalProperties: false
+      required: [storeId, snapshot, items, nextCursor]
+      properties:
+        storeId:
+          type: string
+          format: uuid
+        snapshot:
+          $ref: "#/components/schemas/StockSnapshotStatus"
+        items:
+          type: array
+          maxItems: 500
+          items:
+            $ref: "#/components/schemas/NegativeOnHandItem"
+        nextCursor:
+          type: [string, "null"]
+          description: Opaque continuation token; null on the last page.
 
     # -----------------------------------------------------------------------
     # Canonical Error envelope (verbatim shared shape)
