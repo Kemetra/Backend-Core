@@ -56,6 +56,7 @@ import { EMAIL_QUEUE_NAME } from "../../src/email/email.worker";
 import { AUDIT_QUEUE_NAME } from "../../src/audit/audit.worker";
 import { AUDIT_RETENTION_QUEUE_NAME } from "../../src/audit/audit-retention.worker";
 import { SALE_PROCESSING_QUEUE_NAME } from "../../src/sales/sale.worker";
+import { STOCK_RUN_SWEEP_QUEUE_NAME } from "../../src/erpnext-reconciliation/stock-run-sweep.worker";
 import { OUTBOX_RETENTION_QUEUE_NAME } from "../../src/outbox/retention.worker";
 import { OUTBOX_AUDIT_QUEUE_NAME } from "../../src/outbox/consumers/audit-event-created.consumer";
 import { OUTBOX_SALE_PROCESSING_QUEUE_NAME } from "../../src/outbox/consumers/sale-captured.consumer";
@@ -94,6 +95,8 @@ describe("T465 — signal presence: every worker metric is in ALLOWED_METRIC_LAB
       // 015-POLISH: posting reconciliation / DLQ flag, emitted by the worker
       // PostingRequestedConsumer on a 015-RESOLVE creation-time rejection.
       "erpnext_posting_reconciliation_total",
+      // RT-179: scheduled stock reconciliation sweep outcomes.
+      "erpnext_stock_reconciliation_sweep_total",
     ];
     expect([...WORKER_METRIC_NAMES].sort()).toEqual([...expected].sort());
   });
@@ -185,13 +188,14 @@ describe("T465 — label policy: every worker metric's labels pass validateMetri
 // ---------------------------------------------------------------------------
 
 describe("T465 — bounded enums: queue, job_name, and error_class are documented", () => {
-  it("RT-125: WORKER_QUEUE_NAMES is exactly the five queues the worker consumes", () => {
+  it("RT-125/RT-179: WORKER_QUEUE_NAMES is exactly the six queues the worker consumes", () => {
     const expected = [
       "email",
       "audit",
       "audit-retention",
       "sale-processing",
       "outbox-retention",
+      "erpnext-stock-reconciliation-sweep",
     ];
     expect([...WORKER_QUEUE_NAMES].sort()).toEqual([...expected].sort());
   });
@@ -207,6 +211,7 @@ describe("T465 — bounded enums: queue, job_name, and error_class are documente
       AUDIT_RETENTION_QUEUE_NAME,
       SALE_PROCESSING_QUEUE_NAME,
       OUTBOX_RETENTION_QUEUE_NAME,
+      STOCK_RUN_SWEEP_QUEUE_NAME,
       OUTBOX_AUDIT_QUEUE_NAME,
       OUTBOX_SALE_PROCESSING_QUEUE_NAME,
     ]) {
