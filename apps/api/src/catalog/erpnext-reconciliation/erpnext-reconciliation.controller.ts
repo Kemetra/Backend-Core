@@ -40,7 +40,7 @@ import { Roles } from "../../auth/roles.decorator";
 import { RolesGuard } from "../../auth/roles.guard";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe";
 import { TenantContextGuard } from "../../context/tenant-context.guard";
-import type { TenantContextRequest } from "../../context/types";
+import type { ResolvedContext, TenantContextRequest } from "../../context/types";
 import {
   ListBacklogQuerySchema,
   type ListBacklogQuery,
@@ -84,15 +84,17 @@ export class ErpnextReconciliationController {
     return ctx.tenantId;
   }
 
+  /** The write context: tenant + actor, and the session context whose store scope bounds the write (RT-191). */
   private requireContext(request: TenantContextRequest): {
     tenantId: string;
     userId: string;
+    context: ResolvedContext;
   } {
     const ctx = request.context;
     if (!ctx || ctx.tenantId === null || ctx.userId === null) {
       throw new UnauthorizedException("Unauthorized");
     }
-    return { tenantId: ctx.tenantId, userId: ctx.userId };
+    return { tenantId: ctx.tenantId, userId: ctx.userId, context: ctx };
   }
 
   /** GET — the tenant's posting dead-letter backlog (US1; a read-projection over 015). */
@@ -134,10 +136,11 @@ export class ErpnextReconciliationController {
     @Body(new ZodValidationPipe(RepairPostingBodySchema)) _body: RepairPostingBody,
     @Res({ passthrough: true }) res: Response,
   ): Promise<RecordedRepair> {
-    const { tenantId, userId } = this.requireContext(request);
+    const { tenantId, userId, context } = this.requireContext(request);
     try {
       const result = await this.service.repairPosting({
         tenantId,
+        context,
         actorUserId: userId,
         workItemRef,
       });
@@ -169,10 +172,11 @@ export class ErpnextReconciliationController {
     @Req() request: TenantContextRequest,
     @Body(new ZodValidationPipe(TriggerRunBodySchema)) body: TriggerRunBody,
   ): Promise<ReconciliationRunBody> {
-    const { tenantId, userId } = this.requireContext(request);
+    const { tenantId, userId, context } = this.requireContext(request);
     try {
       return await this.service.triggerRun({
         tenantId,
+        context,
         actorUserId: userId,
         storeId: body.storeId,
       });
@@ -244,10 +248,11 @@ export class ErpnextReconciliationController {
     @Body(new ZodValidationPipe(RepairStockBodySchema)) body: RepairStockBody,
     @Res({ passthrough: true }) res: Response,
   ): Promise<RecordedRepair> {
-    const { tenantId, userId } = this.requireContext(request);
+    const { tenantId, userId, context } = this.requireContext(request);
     try {
       const result = await this.service.repairStock({
         tenantId,
+        context,
         actorUserId: userId,
         runId,
         resultId,

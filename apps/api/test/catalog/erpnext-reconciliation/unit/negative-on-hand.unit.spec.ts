@@ -42,9 +42,9 @@ import {
 } from "../../../../src/catalog/erpnext-reconciliation/negative-on-hand.projection";
 import {
   NegativeOnHandStoreNotFoundError,
-  readScope,
   type NegativeOnHandService,
 } from "../../../../src/catalog/erpnext-reconciliation/negative-on-hand.service";
+import { readScope } from "../../../../src/catalog/erpnext-reconciliation/reconciliation-store-scope";
 import type { TenantContextRequest } from "../../../../src/context/types";
 
 const TENANT = "01900000-0000-7000-8000-0000000000a1";

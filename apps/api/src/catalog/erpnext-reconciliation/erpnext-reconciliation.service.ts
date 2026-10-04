@@ -11,6 +11,12 @@
  * Repair (US2) + the stock run/report (US3) extend this service. All queries run
  * under the caller's tenant GUC via `runWithTenantContext` (tenant from the
  * dashboard session principal, never the body — §XII); RLS scopes the rows.
+ *
+ * RT-191: every WRITE (run trigger, posting repair, stock repair) is also bound
+ * to the caller's membership store scope (`reconciliation-store-scope.ts`, the
+ * RT-177 rule) and to a live (not soft-deleted) store. The tables carry
+ * tenant-only RLS, so the store check is applied here; a store outside the scope
+ * or deleted gets the same non-disclosing 404 as a missing one.
  */
 import { Inject, Injectable } from "@nestjs/common";
 import type { Pool, PoolClient } from "pg";
@@ -24,12 +30,15 @@ import {
 import { newId } from "@data-pulse-2/shared";
 
 import { PG_POOL } from "../../auth/auth.module";
+import { MembershipRepository } from "../../context/membership.repository";
+import type { ResolvedContext } from "../../context/types";
 import { recordErpnextReconciliationRepair } from "../../observability/metrics/api.metrics";
 import {
   toBacklogItem,
   type PostingBacklogItem,
   type PostingDeadletterRow,
 } from "./reconciliation-report.projection";
+import { callerStoreScope, inStoreScope } from "./reconciliation-store-scope";
 
 /** Hard ceiling on a single backlog page — the 012/009 500/req convention. */
 export const BACKLOG_MAX_PAGE = 500;
@@ -44,8 +53,13 @@ const REPAIR_RESET_RETRY_COUNT = 0;
 
 export type RepairOutcome = "eligible_again" | "still_failing" | "no_op_echo";
 
-export interface RepairPostingInput {
+/** The session context of a write; its store scope bounds the addressed store (RT-191). */
+interface ScopedWriteInput {
   readonly tenantId: string;
+  readonly context: ResolvedContext;
+}
+
+export interface RepairPostingInput extends ScopedWriteInput {
   readonly actorUserId: string;
   readonly workItemRef: string;
 }
@@ -82,7 +96,7 @@ export class RunNotFoundError extends Error {
   }
 }
 
-/** The addressed store is not found / out of scope (trigger). 404. */
+/** The addressed store is not found, out of scope or deleted (trigger). 404. */
 export class StoreNotFoundError extends Error {
   constructor() {
     super("not found");
@@ -110,14 +124,12 @@ export interface ReconciliationResultBody {
   readonly detail: Record<string, unknown> | null;
 }
 
-export interface TriggerRunInput {
-  readonly tenantId: string;
+export interface TriggerRunInput extends ScopedWriteInput {
   readonly actorUserId: string;
   readonly storeId: string;
 }
 
-export interface RepairStockInput {
-  readonly tenantId: string;
+export interface RepairStockInput extends ScopedWriteInput {
   readonly actorUserId: string;
   readonly runId: string;
   readonly resultId: string;
@@ -145,7 +157,10 @@ interface BacklogDbRow extends PostingDeadletterRow {
 
 @Injectable()
 export class ErpnextReconciliationService {
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
+  constructor(
+    @Inject(PG_POOL) private readonly pool: Pool,
+    @Inject(MembershipRepository) private readonly memberships: MembershipRepository,
+  ) {}
 
   /**
    * List the tenant's posting dead-letter backlog (US1) — a read-projection over
@@ -227,6 +242,11 @@ export class ErpnextReconciliationService {
         );
         const row = cur.rows[0];
         if (!row) throw new RepairNotFoundError();
+        // RT-191: a work item of a store outside the caller's scope (or of a
+        // deleted store) is indistinguishable from a missing one.
+        if (!(await this.storeWritable(client, input, row.store_id))) {
+          throw new RepairNotFoundError();
+        }
 
         // --- Already-terminal (posted) or in-flight (pending): no-op echo -------
         if (row.status === "posted") {
@@ -356,18 +376,19 @@ export class ErpnextReconciliationService {
    * The emit makes the DP2-INTERNAL loop live; it does NOT make the cross-system
    * connector→ERPNext-Bin read live (the consumer wires `EMPTY_BIN_VIEW` — the
    * stub-tolerant seam; the live read is the future [GATED] 017-STOCK-VIEW-CONTRACT).
-   * The target store must resolve in the tenant scope (RLS); else StoreNotFoundError.
+   * The target store must resolve in the tenant (RLS), be inside the caller's
+   * membership store scope and not be soft-deleted (RT-191); else
+   * StoreNotFoundError. The scheduled sweep (RT-179) is a system actor and
+   * calls `createStockReconciliationRun` directly, without this check.
    */
   async triggerRun(input: TriggerRunInput): Promise<ReconciliationRunBody> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<ReconciliationRunBody> => {
-        const store = await client.query<{ id: string }>(
-          `SELECT id FROM stores WHERE id = $1`,
-          [input.storeId],
-        );
-        if (!store.rows[0]) throw new StoreNotFoundError();
+        if (!(await this.storeWritable(client, input, input.storeId))) {
+          throw new StoreNotFoundError();
+        }
 
         // RT-179: the run insert + audit + 019-T041 conditional emit live in the
         // shared `createStockReconciliationRun` (packages/db), the same path the
@@ -458,8 +479,8 @@ export class ErpnextReconciliationService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<RepairResult> => {
-        const cur = await client.query<{ result_state: string }>(
-          `SELECT res.result_state
+        const cur = await client.query<{ result_state: string; store_id: string }>(
+          `SELECT res.result_state, run.store_id
              FROM erpnext_reconciliation_result res
              JOIN erpnext_reconciliation_run run ON run.id = res.run_id
             WHERE res.id = $1 AND res.run_id = $2
@@ -468,6 +489,11 @@ export class ErpnextReconciliationService {
         );
         const row = cur.rows[0];
         if (!row) throw new RunNotFoundError();
+        // RT-191: a result of a store outside the caller's scope (or of a
+        // deleted store) is indistinguishable from a missing one.
+        if (!(await this.storeWritable(client, input, row.store_id))) {
+          throw new RunNotFoundError();
+        }
 
         // Already repaired → idempotent no-op echo (no re-transition).
         const replayed = row.result_state !== "open";
@@ -513,6 +539,27 @@ export class ErpnextReconciliationService {
         };
       },
     );
+  }
+
+  /**
+   * RT-191: may this caller write against `storeId`? The store must be inside
+   * the caller's membership store scope (the RT-177 rule: `owner` /
+   * `tenant_admin` get their membership scope, not narrowed by the active
+   * store) and live (`deleted_at IS NULL`). Runs on the tenant-scoped client, so
+   * a foreign-tenant store never resolves either (RLS).
+   */
+  private async storeWritable(
+    client: PoolClient,
+    input: ScopedWriteInput,
+    storeId: string,
+  ): Promise<boolean> {
+    const scope = await callerStoreScope(client, this.memberships, input);
+    if (!inStoreScope(scope, storeId)) return false;
+    const store = await client.query<{ id: string }>(
+      `SELECT id FROM stores WHERE id = $1 AND deleted_at IS NULL`,
+      [storeId],
+    );
+    return store.rows.length > 0;
   }
 
   /** Shared in-transaction platform audit insert (FR-014; same tx client, no PII). */

@@ -27,6 +27,8 @@ import {
   ErpnextReconciliationService,
   RepairNotFoundError,
 } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.service";
+import { MembershipRepository } from "../../../../src/context/membership.repository";
+import type { ResolvedContext } from "../../../../src/context/types";
 import { SALE_A_X } from "../../sales/__support__/seed-sales";
 import { ACTOR_A, PRODUCT_A_ACTIVE, STORE_A_X } from "../../__support__/isolation-harness";
 import {
@@ -77,7 +79,23 @@ afterAll(async () => {
 
 function svc(): ErpnextReconciliationService {
   if (!env) throw new Error("Docker unavailable");
-  return new ErpnextReconciliationService(env.app);
+  return new ErpnextReconciliationService(env.app, new MembershipRepository(env.app));
+}
+
+/**
+ * RT-191: the session context the service's writes take. Tenant-wide store
+ * access, as `TenantContextGuard` resolves it for an `'all'` membership (ACTOR_A
+ * has no membership row here, so the scope comes from `storeAccess`).
+ */
+function sessionCtx(tenantId: string): ResolvedContext {
+  return {
+    userId: ACTOR_A,
+    tenantId,
+    storeId: null,
+    isPlatformAdmin: false,
+    source: "session",
+    storeAccess: { kind: "all" },
+  };
 }
 
 /** Reset the dead-letter to a pristine permanently_rejected, budget-exhausted state. */
@@ -109,6 +127,7 @@ describe("017-US2 §1 — repair re-offers a resolvable dead-letter", () => {
 
     const res = await svc().repairPosting({
       tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
       actorUserId: ACTOR_A,
       workItemRef: POSTING_DEADLETTER_A,
     });
@@ -151,6 +170,7 @@ describe("017-US2 §2 — repair of a still-unresolvable dead-letter", () => {
     );
     const res = await svc().repairPosting({
       tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
       actorUserId: ACTOR_A,
       workItemRef: POSTING_DEADLETTER_A,
     });
@@ -181,6 +201,7 @@ describe("017-US2 §2b — repair when the store IS mapped but a line is unmappe
     ]);
     const res = await svc().repairPosting({
       tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
       actorUserId: ACTOR_A,
       workItemRef: POSTING_DEADLETTER_A,
     });
@@ -203,6 +224,7 @@ describe("017-US2 §3 — repair of an already-posted row (O-3 echo)", () => {
     );
     const res = await svc().repairPosting({
       tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
       actorUserId: ACTOR_A,
       workItemRef: POSTING_DEADLETTER_A,
     });
@@ -224,6 +246,7 @@ describe("017-US2 §4 — repair of an in-flight pending row", () => {
     const seqBefore = (await statusRow()).sequence;
     const res = await svc().repairPosting({
       tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
       actorUserId: ACTOR_A,
       workItemRef: POSTING_DEADLETTER_A,
     });
@@ -239,6 +262,7 @@ describe("017-US2 §5 — cross-tenant non-disclosure", () => {
     await expect(
       svc().repairPosting({
         tenantId: TENANT_B,
+        context: sessionCtx(TENANT_B),
         actorUserId: ACTOR_A,
         workItemRef: POSTING_DEADLETTER_A,
       }),

@@ -46,6 +46,7 @@ import {
 } from "../../../../src/idempotency/in-progress-marker";
 import { ErpnextReconciliationController } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.controller";
 import { ErpnextReconciliationService } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.service";
+import { MembershipRepository } from "../../../../src/context/membership.repository";
 import {
   applyAllUpAndCreateAppRole,
   startPgEnv,
@@ -112,6 +113,8 @@ class ConfigurableContextGuard implements CanActivate {
       storeId: null,
       isPlatformAdmin: false,
       source: "session",
+      // RT-191: what TenantContextGuard resolves for an 'all' membership.
+      storeAccess: { kind: "all" },
     };
     req.principal = { userId: this.userId };
     return true;
@@ -186,6 +189,8 @@ beforeAll(async () => {
   const providers: Provider[] = [
     { provide: PG_POOL, useFactory: (): Pool => localEnv.app },
     ErpnextReconciliationService,
+    // RT-191: the service reads the caller's role for the store scope.
+    { provide: MembershipRepository, useFactory: (): MembershipRepository => new MembershipRepository(localEnv.app) },
     { provide: IDEMPOTENCY_KEY_STORE, useValue: idempStore },
     { provide: INFLIGHT_REDIS, useValue: fakeRedis },
     { provide: InProgressMarker, useValue: fakeMarker },
