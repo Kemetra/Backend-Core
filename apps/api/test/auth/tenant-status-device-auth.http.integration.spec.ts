@@ -67,14 +67,63 @@ import {
 delete process.env["REDIS_URL"];
 
 // ---------------------------------------------------------------------------
+// Domain aliases (ids, secrets and request ids are not interchangeable
+// strings at the call sites)
+// ---------------------------------------------------------------------------
+/** A UUID: a tenant, store, device, user, role or sale id. */
+type Uuid = string;
+/** A bearer secret: a device token, an operator envelope or a Clerk JWT. */
+type Secret = string;
+/** The X-Request-Id sent with a request. */
+type RequestId = string;
+/** An ISO-8601 timestamp. */
+type Timestamp = string;
+
+// ---------------------------------------------------------------------------
 // Fixtures (hex-only UUID suffixes)
 // ---------------------------------------------------------------------------
+/** A tenant and one of its stores. */
+interface TenantFixture {
+  readonly tenantId: Uuid;
+  readonly storeId: Uuid;
+}
+
+/** A paired till: its tenant and store, its device row id and its token. */
+interface Terminal extends TenantFixture {
+  readonly deviceId: Uuid;
+  readonly deviceToken: Secret;
+}
+
 /** The tenant whose status the tests change. */
-const TENANT = "0f213000-0000-4000-8000-000000000001";
+const SUBJECT: TenantFixture = {
+  tenantId: "0f213000-0000-4000-8000-000000000001",
+  storeId: "0f213000-0000-4000-8000-00000000a001",
+};
 /** A tenant that stays active: holds the revoked device and a control device. */
-const CONTROL = "0f213000-0000-4000-8000-000000000002";
-const STORE = "0f213000-0000-4000-8000-00000000a001";
-const CONTROL_STORE = "0f213000-0000-4000-8000-00000000a002";
+const CONTROL: TenantFixture = {
+  tenantId: "0f213000-0000-4000-8000-000000000002",
+  storeId: "0f213000-0000-4000-8000-00000000a002",
+};
+
+/** The active device of the SUBJECT tenant. */
+const TERMINAL: Terminal = {
+  ...SUBJECT,
+  deviceId: "0f213000-0000-4000-8000-00000000e001",
+  deviceToken: "rt213-device-token-active-aaaaaaaaaaaaaaaa",
+};
+/** A revoked device (CONTROL tenant, which stays active): the baseline refusal. */
+const REVOKED_TERMINAL: Terminal = {
+  ...CONTROL,
+  deviceId: "0f213000-0000-4000-8000-00000000e002",
+  deviceToken: "rt213-device-token-revoked-bbbbbbbbbbbbbbb",
+};
+/** An active device of the CONTROL tenant. */
+const CONTROL_TERMINAL: Terminal = {
+  ...CONTROL,
+  deviceId: "0f213000-0000-4000-8000-00000000e003",
+  deviceToken: "rt213-device-token-control-ccccccccccccccc",
+};
+
 const MANAGER_ROLE = "0f213000-0000-4000-8000-00000000b001";
 const STAFF_ROLE = "0f213000-0000-4000-8000-00000000b002";
 const CONTROL_STAFF_ROLE = "0f213000-0000-4000-8000-00000000b003";
@@ -83,23 +132,6 @@ const CASHIER = "0f213000-0000-4000-8000-00000000c002";
 const CONTROL_CASHIER = "0f213000-0000-4000-8000-00000000c003";
 const MANAGER_SUB = "user_rt213_manager";
 const MANAGER_JWT = "jwt-rt213-manager";
-
-interface FixtureDevice {
-  readonly id: string;
-  readonly token: string;
-}
-const DEV: FixtureDevice = {
-  id: "0f213000-0000-4000-8000-00000000e001",
-  token: "rt213-device-token-active-aaaaaaaaaaaaaaaa",
-};
-const DEV_REVOKED: FixtureDevice = {
-  id: "0f213000-0000-4000-8000-00000000e002",
-  token: "rt213-device-token-revoked-bbbbbbbbbbbbbbb",
-};
-const DEV_CONTROL: FixtureDevice = {
-  id: "0f213000-0000-4000-8000-00000000e003",
-  token: "rt213-device-token-control-ccccccccccccccc",
-};
 
 const ADMIT = "/api/pos/v1/cashier-admissions";
 const ROSTER = "/api/pos/v1/cashier-admissions/roster";
@@ -110,7 +142,7 @@ const AUDIT_EVENTS = "/api/pos/v1/audit-events";
 const SALES = "/api/pos/v1/sales";
 
 class StubClerkVerifier implements ClerkVerifier {
-  async verify(rawJwt: string): Promise<{ sub: string }> {
+  async verify(rawJwt: Secret): Promise<{ sub: string }> {
     if (rawJwt !== MANAGER_JWT) throw new Error("StubClerkVerifier: unknown jwt");
     return { sub: MANAGER_SUB };
   }
@@ -139,7 +171,7 @@ function skip(): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Tenant states
+// Tenant and device states
 // ---------------------------------------------------------------------------
 interface TenantState {
   readonly label: string;
@@ -153,82 +185,97 @@ const INACTIVE_STATES: ReadonlyArray<TenantState> = [
 ];
 
 async function setTenant(state: TenantState): Promise<void> {
-  await E().admin.query(state.sql, [TENANT]);
+  await E().admin.query(state.sql, [SUBJECT.tenantId]);
 }
 
 async function restoreTenant(): Promise<void> {
   await E().admin.query(
     "UPDATE tenants SET status = 'active', deleted_at = NULL WHERE id = $1",
-    [TENANT],
+    [SUBJECT.tenantId],
   );
 }
 
-async function setDeviceRevoked(revoked: boolean): Promise<void> {
-  await E().admin.query(
-    `UPDATE devices SET revoked_at = ${revoked ? "now()" : "NULL"} WHERE id = $1`,
-    [DEV.id],
-  );
+async function revokeDevice(): Promise<void> {
+  await E().admin.query("UPDATE devices SET revoked_at = now() WHERE id = $1", [
+    TERMINAL.deviceId,
+  ]);
+}
+
+async function restoreDevice(): Promise<void> {
+  await E().admin.query("UPDATE devices SET revoked_at = NULL WHERE id = $1", [
+    TERMINAL.deviceId,
+  ]);
 }
 
 // ---------------------------------------------------------------------------
 // Requests (each takes an X-Request-Id)
 // ---------------------------------------------------------------------------
-type Call = (requestId: string) => request.Test;
+type Call = (requestId: RequestId) => request.Test;
+type Calls = Record<string, Call>;
 
-function bearer(token: string, req: request.Test, requestId: string): request.Test {
-  return req.set("authorization", `Bearer ${token}`).set("x-request-id", requestId);
+/** A bearer credential and the request id to send it with. */
+interface Credential {
+  readonly token: Secret;
+  readonly requestId: RequestId;
 }
 
-function admissionCalls(d: FixtureDevice): Record<string, Call> {
+function withBearer(req: request.Test, cred: Credential): request.Test {
+  return req.set("authorization", `Bearer ${cred.token}`).set("x-request-id", cred.requestId);
+}
+
+function admissionCalls(t: Terminal): Calls {
+  const as = (requestId: RequestId): Credential => ({ token: t.deviceToken, requestId });
   return {
     admit: (rid) =>
-      bearer(d.token, http().post(ADMIT), rid).send({
+      withBearer(http().post(ADMIT), as(rid)).send({
         mode: "online",
         user_id: CASHIER,
         idempotency_key: `rt213-test:${randomUUID()}`,
       }),
-    roster: (rid) => bearer(d.token, http().get(ROSTER), rid),
-    end: (rid) => bearer(d.token, http().post(`${ADMIT}/${randomUUID()}/end`), rid),
+    roster: (rid) => withBearer(http().get(ROSTER), as(rid)),
+    end: (rid) => withBearer(http().post(`${ADMIT}/${randomUUID()}/end`), as(rid)),
   };
 }
 
-function readDownCalls(d: FixtureDevice): Record<string, Call> {
+function readDownCalls(t: Terminal): Calls {
+  const as = (requestId: RequestId): Credential => ({ token: t.deviceToken, requestId });
   return {
-    snapshot: (rid) => bearer(d.token, http().get(SNAPSHOT), rid),
-    deltas: (rid) => bearer(d.token, http().get(DELTAS).query({ since: "x" }), rid),
+    snapshot: (rid) => withBearer(http().get(SNAPSHOT), as(rid)),
+    deltas: (rid) => withBearer(http().get(DELTAS).query({ since: "x" }), as(rid)),
   };
 }
 
-function signInCall(d: FixtureDevice): Call {
+function signInCall(t: Terminal): Call {
   return (rid) =>
-    http()
-      .post(SIGN_IN)
-      .set("authorization", `Bearer ${MANAGER_JWT}`)
-      .set("x-request-id", rid)
-      .send({ kind: "manager_admin", device_token_attestation: d.token });
+    withBearer(http().post(SIGN_IN), { token: MANAGER_JWT, requestId: rid }).send({
+      kind: "manager_admin",
+      device_token_attestation: t.deviceToken,
+    });
 }
 
-function auditEventsCall(
-  d: FixtureDevice,
-  tenantId: string,
-  storeId: string,
-  createdAt = "2026-10-04T08:00:00.000Z",
-): Call {
+/** One audit event from `terminal`, stamped `createdAt`. */
+interface AuditEventSpec {
+  readonly terminal: Terminal;
+  readonly createdAt?: Timestamp;
+}
+
+function auditEventsCall(spec: AuditEventSpec): Call {
+  const t = spec.terminal;
   return (rid) =>
     http()
       .post(AUDIT_EVENTS)
       .set("x-request-id", rid)
       .send({
-        device_token_attestation: d.token,
+        device_token_attestation: t.deviceToken,
         events: [
           {
             event_id: randomUUID(),
-            tenant_id: tenantId,
-            branch_id: storeId,
-            originating_terminal_id: d.id,
+            tenant_id: t.tenantId,
+            branch_id: t.storeId,
+            originating_terminal_id: t.deviceId,
             acting_operator_id: MANAGER_SUB,
             action_category: "operator.session.takeover",
-            created_at: createdAt,
+            created_at: spec.createdAt ?? "2026-10-04T08:00:00.000Z",
             payload: {},
           },
         ],
@@ -257,27 +304,42 @@ function captureBody(): Record<string, unknown> {
   };
 }
 
-function saleCalls(envelope: string, saleRef: string): Record<string, Call> {
+/** An operator envelope issued by sign-in on TERMINAL. */
+interface OperatorSession {
+  readonly envelope: Secret;
+}
+
+/** A sale captured under an operator session. */
+interface OpenSale extends OperatorSession {
+  readonly saleRef: Uuid;
+}
+
+function captureCall(session: OperatorSession): Call {
+  return (rid) =>
+    withBearer(http().post(SALES), { token: session.envelope, requestId: rid })
+      .set("Idempotency-Key", randomUUID().replace(/-/g, ""))
+      .send(captureBody());
+}
+
+function saleCalls(sale: OpenSale): Calls {
   return {
-    capture: (rid) =>
-      bearer(envelope, http().post(SALES), rid)
-        .set("Idempotency-Key", randomUUID().replace(/-/g, ""))
-        .send(captureBody()),
-    read: (rid) => bearer(envelope, http().get(`${SALES}/${saleRef}`), rid),
+    capture: captureCall(sale),
+    read: (rid) =>
+      withBearer(http().get(`${SALES}/${sale.saleRef}`), { token: sale.envelope, requestId: rid }),
   };
 }
 
-async function signInEnvelope(): Promise<string> {
-  const res = await signInCall(DEV)(randomUUID());
+async function signIn(): Promise<OperatorSession> {
+  const res = await signInCall(TERMINAL)(randomUUID());
   expect(res.status).toBe(200);
   expect(res.body.kind).toBe("signed_in");
-  return res.body.operator_session.envelope as string;
+  return { envelope: res.body.operator_session.envelope as Secret };
 }
 
-async function captureSale(envelope: string): Promise<string> {
-  const res = await saleCalls(envelope, "unused").capture!(randomUUID());
+async function openSale(session: OperatorSession): Promise<OpenSale> {
+  const res = await captureCall(session)(randomUUID());
   expect(res.status).toBe(201);
-  return res.body.saleRef as string;
+  return { ...session, saleRef: res.body.saleRef as Uuid };
 }
 
 // ---------------------------------------------------------------------------
@@ -289,14 +351,20 @@ interface Captured {
   text: string;
 }
 
+/** A call and the request id to send it with. */
+interface Probe {
+  readonly call: Call;
+  readonly requestId: RequestId;
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * The response with its per-request `error.request_id` replaced by a marker
  * (after checking it is a UUID), so two refusals compare byte for byte.
  */
-async function run(call: Call, requestId: string): Promise<Captured> {
-  const res = await call(requestId);
+async function run(probe: Probe): Promise<Captured> {
+  const res = await probe.call(probe.requestId);
   let text = res.text;
   const body: unknown = res.body;
   const error = (body as { error?: { request_id?: unknown } } | null)?.error;
@@ -311,22 +379,33 @@ async function run(call: Call, requestId: string): Promise<Captured> {
   };
 }
 
+/** One route's refusal next to the revoked-device baseline. */
+interface RefusalPair {
+  readonly label: string;
+  readonly refused: Captured;
+  readonly baseline: Captured;
+}
+
 /** `refused` and `baseline` (a revoked device) must be the same 401, byte for byte. */
-function expectSameAsRevoked(refused: Captured, baseline: Captured, label: string): void {
+function expectSameAsRevoked(pair: RefusalPair): void {
+  const { label, refused, baseline } = pair;
   expect({ label, status: baseline.status }).toEqual({ label, status: 401 });
   expect({ label, ...refused }).toEqual({ label, ...baseline });
 }
 
-/** Run each call for `refusedDevice` and for the revoked baseline with one request id. */
-async function expectFamilyRefused(
-  refused: Record<string, Call>,
-  baseline: Record<string, Call>,
-): Promise<void> {
-  for (const [name, call] of Object.entries(refused)) {
-    const rid = randomUUID();
-    const got = await run(call, rid);
-    const want = await run(baseline[name]!, rid);
-    expectSameAsRevoked(got, want, name);
+/** The same routes called by the refused device and by the revoked baseline. */
+interface FamilyComparison {
+  readonly refused: Calls;
+  readonly baseline: Calls;
+}
+
+/** Run each route for both devices with one request id and compare. */
+async function expectFamilyRefused(family: FamilyComparison): Promise<void> {
+  for (const [label, call] of Object.entries(family.refused)) {
+    const requestId = randomUUID();
+    const refused = await run({ call, requestId });
+    const baseline = await run({ call: family.baseline[label]!, requestId });
+    expectSameAsRevoked({ label, refused, baseline });
   }
 }
 
@@ -380,10 +459,11 @@ afterAll(async () => {
   if (env) await stopPgEnv(env);
 }, 60_000);
 
+
 afterEach(async () => {
   if (!env) return;
   await restoreTenant();
-  await setDeviceRevoked(false);
+  await restoreDevice();
   // One live operator session / admission per user: start each test clean.
   await env.admin.query("DELETE FROM auth_tokens WHERE scope = 'pos_operator'");
   await env.admin.query("DELETE FROM cashier_admission_requests");
@@ -394,18 +474,18 @@ async function seed(e: PgTestEnv): Promise<void> {
   const a = e.admin;
   await a.query(
     `INSERT INTO tenants (id, slug, name) VALUES ($1, 'rt213-tenant', 'RT-213'), ($2, 'rt213-control', 'RT-213 Control')`,
-    [TENANT, CONTROL],
+    [SUBJECT.tenantId, CONTROL.tenantId],
   );
   await a.query(
     `INSERT INTO roles (id, tenant_id, code, name) VALUES
        ($1, $4, 'store_manager', 'Manager'),
        ($2, $4, 'store_staff', 'Staff'),
        ($3, $5, 'store_staff', 'Staff')`,
-    [MANAGER_ROLE, STAFF_ROLE, CONTROL_STAFF_ROLE, TENANT, CONTROL],
+    [MANAGER_ROLE, STAFF_ROLE, CONTROL_STAFF_ROLE, SUBJECT.tenantId, CONTROL.tenantId],
   );
   await a.query(
     `INSERT INTO stores (id, tenant_id, code, name) VALUES ($1, $2, 'T1', 'Store'), ($3, $4, 'C1', 'Control')`,
-    [STORE, TENANT, CONTROL_STORE, CONTROL],
+    [SUBJECT.storeId, SUBJECT.tenantId, CONTROL.storeId, CONTROL.tenantId],
   );
   await a.query(
     `INSERT INTO users (id, email, display_name, clerk_user_id) VALUES
@@ -423,26 +503,26 @@ async function seed(e: PgTestEnv): Promise<void> {
       "0f213000-0000-4000-8000-00000000d001",
       "0f213000-0000-4000-8000-00000000d002",
       "0f213000-0000-4000-8000-00000000d003",
-      TENANT,
+      SUBJECT.tenantId,
       MANAGER,
       MANAGER_ROLE,
       CASHIER,
       STAFF_ROLE,
-      CONTROL,
+      CONTROL.tenantId,
       CONTROL_CASHIER,
       CONTROL_STAFF_ROLE,
     ],
   );
-  const devices: Array<[FixtureDevice, string, string, boolean]> = [
-    [DEV, TENANT, STORE, false],
-    [DEV_REVOKED, CONTROL, CONTROL_STORE, true],
-    [DEV_CONTROL, CONTROL, CONTROL_STORE, false],
+  const terminals: Array<{ terminal: Terminal; revoked: boolean }> = [
+    { terminal: TERMINAL, revoked: false },
+    { terminal: REVOKED_TERMINAL, revoked: true },
+    { terminal: CONTROL_TERMINAL, revoked: false },
   ];
-  for (const [d, tenant, store, revoked] of devices) {
+  for (const { terminal: t, revoked } of terminals) {
     await a.query(
       `INSERT INTO devices (id, tenant_id, store_id, label, token_hash, revoked_at)
        VALUES ($1, $2, $3, 'till', $4, $5)`,
-      [d.id, tenant, store, hashToken(d.token), revoked ? new Date() : null],
+      [t.deviceId, t.tenantId, t.storeId, hashToken(t.deviceToken), revoked ? new Date() : null],
     );
   }
 }
@@ -453,7 +533,7 @@ async function seed(e: PgTestEnv): Promise<void> {
 describe("RT-213 — an active tenant's device still works", () => {
   it("cashier-admissions: admit → 200 admitted, roster → 200", async () => {
     if (skip()) return;
-    const calls = admissionCalls(DEV);
+    const calls = admissionCalls(TERMINAL);
     const admit = await calls.admit!(randomUUID());
     expect(admit.status).toBe(200);
     expect(admit.body.kind).toBe("admitted");
@@ -462,23 +542,23 @@ describe("RT-213 — an active tenant's device still works", () => {
 
   it("read-down: snapshot → 200", async () => {
     if (skip()) return;
-    const res = await readDownCalls(DEV).snapshot!(randomUUID());
+    const res = await readDownCalls(TERMINAL).snapshot!(randomUUID());
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("items");
   });
 
   it("pos-operators sign-in, then sales capture and read → 200 / 201 / 200", async () => {
     if (skip()) return;
-    const envelope = await signInEnvelope();
-    const saleRef = await captureSale(envelope);
-    expect((await saleCalls(envelope, saleRef).read!(randomUUID())).status).toBe(200);
+    const sale = await openSale(await signIn());
+    expect((await saleCalls(sale).read!(randomUUID())).status).toBe(200);
   });
 
   it("audit-event sync → 200, event accepted", async () => {
     if (skip()) return;
     // The event's actor must hold a pos_operator session on this device.
-    await signInEnvelope();
-    const res = await auditEventsCall(DEV, TENANT, STORE, new Date().toISOString())(randomUUID());
+    await signIn();
+    const call = auditEventsCall({ terminal: TERMINAL, createdAt: new Date().toISOString() });
+    const res = await call(randomUUID());
     expect(res.status).toBe(200);
     expect(res.body.accepted).toHaveLength(1);
   });
@@ -491,66 +571,70 @@ describe.each(INACTIVE_STATES)("RT-213 — $label tenant: refused like a revoked
   it("cashier-admissions: admit / roster / end", async () => {
     if (skip()) return;
     await setTenant(state);
-    await expectFamilyRefused(admissionCalls(DEV), admissionCalls(DEV_REVOKED));
+    await expectFamilyRefused({
+      refused: admissionCalls(TERMINAL),
+      baseline: admissionCalls(REVOKED_TERMINAL),
+    });
   });
 
   it("read-down: snapshot / deltas", async () => {
     if (skip()) return;
     await setTenant(state);
-    await expectFamilyRefused(readDownCalls(DEV), readDownCalls(DEV_REVOKED));
+    await expectFamilyRefused({
+      refused: readDownCalls(TERMINAL),
+      baseline: readDownCalls(REVOKED_TERMINAL),
+    });
   });
 
   it("pos-operators: sign-in", async () => {
     if (skip()) return;
     await setTenant(state);
-    await expectFamilyRefused({ signIn: signInCall(DEV) }, { signIn: signInCall(DEV_REVOKED) });
+    await expectFamilyRefused({
+      refused: { signIn: signInCall(TERMINAL) },
+      baseline: { signIn: signInCall(REVOKED_TERMINAL) },
+    });
   });
 
   it("audit-event sync", async () => {
     if (skip()) return;
     await setTenant(state);
-    await expectFamilyRefused(
-      { sync: auditEventsCall(DEV, TENANT, STORE) },
-      { sync: auditEventsCall(DEV_REVOKED, CONTROL, CONTROL_STORE) },
-    );
+    await expectFamilyRefused({
+      refused: { sync: auditEventsCall({ terminal: TERMINAL }) },
+      baseline: { sync: auditEventsCall({ terminal: REVOKED_TERMINAL }) },
+    });
   });
 
   it("sales capture / read: an envelope issued while active → same 401 as the device revoked mid-session", async () => {
     if (skip()) return;
-    const envelope = await signInEnvelope();
-    const saleRef = await captureSale(envelope);
-    const calls = saleCalls(envelope, saleRef);
-    const rids = { capture: randomUUID(), read: randomUUID() };
+    const calls = saleCalls(await openSale(await signIn()));
+    const probes = {
+      capture: { call: calls.capture!, requestId: randomUUID() },
+      read: { call: calls.read!, requestId: randomUUID() },
+    };
 
     await setTenant(state);
-    const refused = {
-      capture: await run(calls.capture!, rids.capture),
-      read: await run(calls.read!, rids.read),
-    };
+    const refused = { capture: await run(probes.capture), read: await run(probes.read) };
 
     await restoreTenant();
-    await setDeviceRevoked(true);
-    const revoked = {
-      capture: await run(calls.capture!, rids.capture),
-      read: await run(calls.read!, rids.read),
-    };
+    await revokeDevice();
+    const revoked = { capture: await run(probes.capture), read: await run(probes.read) };
 
-    expectSameAsRevoked(refused.capture, revoked.capture, "capture");
-    expectSameAsRevoked(refused.read, revoked.read, "read");
+    expectSameAsRevoked({ label: "capture", refused: refused.capture, baseline: revoked.capture });
+    expectSameAsRevoked({ label: "read", refused: refused.read, baseline: revoked.read });
   });
 
   it("another tenant's device is unaffected", async () => {
     if (skip()) return;
     await setTenant(state);
-    expect((await readDownCalls(DEV_CONTROL).snapshot!(randomUUID())).status).toBe(200);
-    expect((await admissionCalls(DEV_CONTROL).roster!(randomUUID())).status).toBe(200);
+    expect((await readDownCalls(CONTROL_TERMINAL).snapshot!(randomUUID())).status).toBe(200);
+    expect((await admissionCalls(CONTROL_TERMINAL).roster!(randomUUID())).status).toBe(200);
   });
 
   it("restoring the tenant re-admits the same device (the refusal is the live state)", async () => {
     if (skip()) return;
     await setTenant(state);
-    expect((await readDownCalls(DEV).snapshot!(randomUUID())).status).toBe(401);
+    expect((await readDownCalls(TERMINAL).snapshot!(randomUUID())).status).toBe(401);
     await restoreTenant();
-    expect((await readDownCalls(DEV).snapshot!(randomUUID())).status).toBe(200);
+    expect((await readDownCalls(TERMINAL).snapshot!(randomUUID())).status).toBe(200);
   });
 });
