@@ -53,7 +53,9 @@ table the domain role must use needs a matching grant step at deploy time.
 
 - **Migration `0035_cashier_admissions` (RT-113 BC2).** Run
   [`sql/cashier-admissions-domain-grants.sql`](sql/cashier-admissions-domain-grants.sql)
-  after `migrate up`. It grants the domain role:
+  after `migrate up` and before the API starts. That is step 2 of the deploy
+  sequence in [`deploy/README.md`](../../deploy/README.md#deploy).
+  `-v domain_role=<role>` is required. It grants the domain role:
   - `cashier_admissions`: `SELECT`, `INSERT`, `UPDATE`
   - `cashier_admission_requests`: `SELECT`, `INSERT`, `UPDATE`, `DELETE`
 

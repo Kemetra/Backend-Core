@@ -30,9 +30,12 @@
 
 \set ON_ERROR_STOP on
 
+-- The domain role must be named explicitly: guessing a default could grant to
+-- a role that DATABASE_URL does not use and still report success.
 \if :{?domain_role}
 \else
-  \set domain_role domain_runtime
+  \echo 'FAILED: pass -v domain_role=<the DATABASE_URL role name>.'
+  DO $$ BEGIN RAISE EXCEPTION 'domain_role not set'; END $$;
 \endif
 
 GRANT SELECT, INSERT, UPDATE         ON cashier_admissions         TO :"domain_role";
