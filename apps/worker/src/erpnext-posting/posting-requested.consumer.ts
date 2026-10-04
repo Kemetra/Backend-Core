@@ -39,6 +39,15 @@
  * sale_post's. This does not cover a sale_post that is later re-headed after a
  * `failed_transient` ack (the Connector side, RT-83 option 1, covers that).
  *
+ * Dead-letter visibility (RT-207): if the sale_post row never appears, the
+ * reversal's outbox row dead-letters after its last attempt. That dead-lettered
+ * outbox row is the record of truth (no synthetic posting-status row is
+ * written). On that final attempt the consumer increments the unlabeled
+ * `erpnext_posting_reversal_deferred_dead_letter_total` and writes one
+ * structured `posting.reversal.dead_lettered` error log (identifiers only), so
+ * operations can alert on it. The final attempt is decided by the drainer's own
+ * rule (`isFinalOutboxAttempt`).
+ *
  * Payload shape: IDs + provenance only (sale_id / store_id / kind / source_ref_id)
  * — NO money / PII. The ENVELOPE tenant_id is authoritative (a tampered payload
  * tenant must not redirect the write).
@@ -54,7 +63,11 @@ import {
 } from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
 
-import { recordErpnextPostingReconciliation } from "../observability/metrics/worker.metrics";
+import {
+  recordErpnextPostingReconciliation,
+  recordErpnextPostingReversalDeferredDeadLetter,
+} from "../observability/metrics/worker.metrics";
+import { isFinalOutboxAttempt } from "../outbox/drainer.processor";
 
 // ---------------------------------------------------------------------------
 // Payload schema — IDs + provenance only (no PII / money)
@@ -88,7 +101,7 @@ export class ReversalAwaitingSalePostError extends Error {
 }
 
 /** Log seam (tests inject one); production uses the shared pino logger. */
-export type PostingRequestedLogger = Pick<Logger, "warn">;
+export type PostingRequestedLogger = Pick<Logger, "warn" | "error">;
 
 function defaultLogger(): PostingRequestedLogger {
   return createLogger({ service: "worker", bindings: { component: POSTING_REQUESTED_CONSUMER_ID } });
@@ -195,7 +208,7 @@ export class PostingRequestedConsumer
     event: OutboxEventEnvelope<PostingRequestedPayload>,
     payload: PostingRequestedPayload,
   ): Promise<void> {
-    const { sale_id, source_ref_id } = payload;
+    const { sale_id, store_id, source_ref_id } = payload;
     const found = await client.query(
       `SELECT 1 FROM erpnext_posting_status
         WHERE tenant_id = $1 AND source_ref_id = $2 AND sale_id = $2
@@ -215,6 +228,30 @@ export class PostingRequestedConsumer
       },
       "reversal deferred: sale_post row not created yet",
     );
+
+    // RT-207: this is the last attempt, so the drainer dead-letters the outbox
+    // row on the throw below. Count it once and log it once — identifiers only
+    // as log fields (never metric labels), no payload / money / PII. The
+    // signals.md §4 async-work fields are included: request_id is the job's
+    // unique id (the outbox event); correlation_id is null when absent.
+    if (isFinalOutboxAttempt(event.attempts)) {
+      recordErpnextPostingReversalDeferredDeadLetter();
+      this.logger.error(
+        {
+          event: "posting.reversal.dead_lettered",
+          outcome: "failure",
+          request_id: event.event_id,
+          correlation_id: event.correlation_id ?? null,
+          tenant_id: event.tenant_id,
+          store_id,
+          sale_id,
+          source_ref_id,
+          event_id: event.event_id,
+          attempts: event.attempts,
+        },
+        "reversal dead-lettered: its sale_post row never appeared",
+      );
+    }
     throw new ReversalAwaitingSalePostError();
   }
 

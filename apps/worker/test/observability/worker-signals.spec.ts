@@ -97,6 +97,8 @@ describe("T465 — signal presence: every worker metric is in ALLOWED_METRIC_LAB
       "erpnext_posting_reconciliation_total",
       // RT-179: scheduled stock reconciliation sweep outcomes.
       "erpnext_stock_reconciliation_sweep_total",
+      // RT-207: a reversal dead-lettered while still awaiting its sale_post.
+      "erpnext_posting_reversal_deferred_dead_letter_total",
     ];
     expect([...WORKER_METRIC_NAMES].sort()).toEqual([...expected].sort());
   });
@@ -239,6 +241,8 @@ describe("T465 — bounded enums: queue, job_name, and error_class are documente
       "PostgresUniqueViolation",
       "RedisConnectionError",
       "Timeout",
+      // RT-207: the expected RT-173 reversal deferral, counted under its own class.
+      "ReversalAwaitingSalePostError",
       "UnknownError",
     ];
     expect([...WORKER_ERROR_CLASSES].sort()).toEqual([...expected].sort());
@@ -259,6 +263,10 @@ describe("T465 — sanitizeErrorClass: closed-allowlist coercion (plan §7.1)", 
       expect(sanitizeErrorClass(cls)).toBe(cls);
     });
   }
+
+  it("RT-207: keeps the reversal deferral class instead of coercing it to UnknownError", () => {
+    expect(sanitizeErrorClass("ReversalAwaitingSalePostError")).toBe("ReversalAwaitingSalePostError");
+  });
 
   it("coerces an unknown class name to UnknownError", () => {
     expect(sanitizeErrorClass("SomeNeverDeclaredError")).toBe("UnknownError");

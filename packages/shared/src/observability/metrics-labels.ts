@@ -204,6 +204,15 @@ export const ALLOWED_METRIC_LABELS: Readonly<Record<string, readonly string[]>> 
   // the run row + the sweep's structured log, NOT a metric label.
   erpnext_stock_reconciliation_sweep_total: ["outcome"],
 
+  // ---- ERPNext posting reversal dead-letter — RT-207 ----
+  // Increments once when an `erpnext.posting.requested` reversal dead-letters in
+  // the outbox while still awaiting its sale's `sale_post` posting row (the
+  // RT-173 deferral ran out of attempts). The dead-lettered outbox row is the
+  // record of truth; this counter is what operations alert on. UNLABELED — the
+  // (tenant, sale, outbox event) lives on the outbox row + the worker's
+  // structured `posting.reversal.dead_lettered` error log, NOT metric labels.
+  erpnext_posting_reversal_deferred_dead_letter_total: [],
+
   // ---- Connector boundary lifecycle — 018-POLISH (spec §FR-022a) ----
   // Increments on every connector credential/registration lifecycle action
   // (register / issue / rotate / revoke / disable) — operational visibility for

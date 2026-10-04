@@ -12,6 +12,7 @@
  * records every statement, so the tests assert what reached the database.
  */
 import type { Pool } from "pg";
+import { MAX_ATTEMPTS } from "@data-pulse-2/db";
 import type { OutboxEventEnvelope } from "@data-pulse-2/shared";
 
 import {
@@ -19,12 +20,15 @@ import {
   ReversalAwaitingSalePostError,
   type PostingRequestedPayload,
 } from "../../src/erpnext-posting/posting-requested.consumer";
+import * as workerMetrics from "../../src/observability/metrics/worker.metrics";
 
 const TENANT = "01900000-0000-7000-8000-0000000f1111";
 const PAYLOAD_TENANT = "01900000-0000-7000-8000-0000000f9999";
 const STORE = "01900000-0000-7000-8000-0000000f2222";
 const SALE = "01900000-0000-7000-8000-0000000f3333";
 const VOID_ID = "01900000-0000-7000-8000-0000000f4444";
+const EVENT_ID = "01900000-0000-7000-8000-0000000f5555";
+const CORRELATION_ID = "01900000-0000-7000-8000-0000000f6666";
 
 interface Recorded {
   readonly sql: string;
@@ -50,7 +54,7 @@ function fakePool(salePostExists: boolean): { pool: Pool; log: Recorded[] } {
 
 function reversalEvent(): OutboxEventEnvelope<PostingRequestedPayload> {
   return {
-    event_id: "01900000-0000-7000-8000-0000000f5555",
+    event_id: EVENT_ID,
     event_type: "erpnext.posting.requested",
     tenant_id: TENANT,
     store_id: STORE,
@@ -72,7 +76,7 @@ const salePostChecks = (log: Recorded[]) => log.filter((q) => /kind = 'sale_post
 describe("PostingRequestedConsumer — RT-173 reversal waits for its sale_post row", () => {
   it("reversal before the sale_post row exists → throws the typed retryable error and inserts nothing", async () => {
     const { pool, log } = fakePool(false);
-    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn() });
+    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn(), error: jest.fn() });
 
     await expect(consumer.handle(reversalEvent())).rejects.toBeInstanceOf(ReversalAwaitingSalePostError);
 
@@ -82,7 +86,7 @@ describe("PostingRequestedConsumer — RT-173 reversal waits for its sale_post r
 
   it("the deferral error is named, so the drainer records it as the outbox error class", async () => {
     const { pool } = fakePool(false);
-    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn() });
+    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn(), error: jest.fn() });
 
     const err = await consumer.handle(reversalEvent()).catch((e: unknown) => e);
 
@@ -91,7 +95,7 @@ describe("PostingRequestedConsumer — RT-173 reversal waits for its sale_post r
 
   it("the sale_post check is scoped to the ENVELOPE tenant and the payload sale", async () => {
     const { pool, log } = fakePool(false);
-    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn() });
+    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn(), error: jest.fn() });
     const ev = reversalEvent();
     const tampered = { ...ev, payload: { ...ev.payload, tenant_id: PAYLOAD_TENANT } };
 
@@ -105,7 +109,7 @@ describe("PostingRequestedConsumer — RT-173 reversal waits for its sale_post r
   it("logs a 'reversal deferred' warning with identifiers only", async () => {
     const { pool } = fakePool(false);
     const warn = jest.fn();
-    const consumer = new PostingRequestedConsumer(pool, { warn });
+    const consumer = new PostingRequestedConsumer(pool, { warn, error: jest.fn() });
 
     await consumer.handle(reversalEvent()).catch(() => undefined);
 
@@ -125,7 +129,7 @@ describe("PostingRequestedConsumer — RT-173 reversal waits for its sale_post r
   it("reversal after the sale_post row exists → the reversal row is inserted, no warning", async () => {
     const { pool, log } = fakePool(true);
     const warn = jest.fn();
-    const consumer = new PostingRequestedConsumer(pool, { warn });
+    const consumer = new PostingRequestedConsumer(pool, { warn, error: jest.fn() });
 
     await consumer.handle(reversalEvent());
 
@@ -136,11 +140,148 @@ describe("PostingRequestedConsumer — RT-173 reversal waits for its sale_post r
 
   it("a sale_post event is never gated (no sale_post existence check, row inserted)", async () => {
     const { pool, log } = fakePool(false);
-    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn() });
+    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn(), error: jest.fn() });
 
     await consumer.handle(salePostEvent());
 
     expect(salePostChecks(log)).toHaveLength(0);
     expect(inserts(log)).toHaveLength(1);
+  });
+});
+
+// RT-207: the outbox dead-letter of a reversal still awaiting its sale_post is
+// the record of truth, so it must be countable and logged. The drainer
+// dead-letters the row whose claim carries attempts >= MAX_ATTEMPTS.
+describe("PostingRequestedConsumer — RT-207 reversal dead-letter while awaiting sale_post", () => {
+  const atAttempt = (
+    attempts: number,
+    ev: OutboxEventEnvelope<PostingRequestedPayload> = reversalEvent(),
+  ): OutboxEventEnvelope<PostingRequestedPayload> => ({ ...ev, attempts });
+
+  let counter: jest.SpyInstance;
+  beforeEach(() => {
+    counter = jest
+      .spyOn(workerMetrics, "recordErpnextPostingReversalDeferredDeadLetter")
+      .mockImplementation(() => undefined);
+  });
+
+  it("final attempt still awaiting sale_post → counts once and logs one structured error", async () => {
+    const { pool } = fakePool(false);
+    const error = jest.fn();
+    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn(), error });
+
+    await expect(consumer.handle(atAttempt(MAX_ATTEMPTS))).rejects.toBeInstanceOf(
+      ReversalAwaitingSalePostError,
+    );
+
+    expect(counter).toHaveBeenCalledTimes(1);
+    expect(counter).toHaveBeenCalledWith();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith(
+      {
+        event: "posting.reversal.dead_lettered",
+        outcome: "failure",
+        // signals.md §4 async-work fields: request_id is the job's unique id
+        // (the outbox event), correlation_id is null when the envelope has none.
+        request_id: EVENT_ID,
+        correlation_id: null,
+        tenant_id: TENANT,
+        store_id: STORE,
+        sale_id: SALE,
+        source_ref_id: VOID_ID,
+        event_id: EVENT_ID,
+        attempts: MAX_ATTEMPTS,
+      },
+      "reversal dead-lettered: its sale_post row never appeared",
+    );
+  });
+
+  it("the dead-letter log carries identifiers only (no payload, no money, no PII)", async () => {
+    const { pool } = fakePool(false);
+    const error = jest.fn();
+    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn(), error });
+
+    await consumer.handle(atAttempt(MAX_ATTEMPTS)).catch(() => undefined);
+
+    const [fields] = error.mock.calls[0] as [Record<string, unknown>];
+    expect(Object.keys(fields).sort()).toEqual([
+      "attempts",
+      "correlation_id",
+      "event",
+      "event_id",
+      "outcome",
+      "request_id",
+      "sale_id",
+      "source_ref_id",
+      "store_id",
+      "tenant_id",
+    ]);
+  });
+
+  it("the dead-letter log carries the envelope correlation_id when there is one", async () => {
+    const { pool } = fakePool(false);
+    const error = jest.fn();
+    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn(), error });
+    const correlated = { ...atAttempt(MAX_ATTEMPTS), correlation_id: CORRELATION_ID };
+
+    await consumer.handle(correlated).catch(() => undefined);
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]?.[0]).toMatchObject({ correlation_id: CORRELATION_ID });
+  });
+
+  it("an attempt before the last (a retried deferral) neither counts nor logs an error", async () => {
+    const { pool } = fakePool(false);
+    const error = jest.fn();
+    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn(), error });
+
+    for (let attempts = 1; attempts < MAX_ATTEMPTS; attempts += 1) {
+      await expect(consumer.handle(atAttempt(attempts))).rejects.toBeInstanceOf(
+        ReversalAwaitingSalePostError,
+      );
+    }
+
+    expect(counter).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("final-attempt reversal whose sale_post exists → inserted, not counted", async () => {
+    const { pool, log } = fakePool(true);
+    const error = jest.fn();
+    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn(), error });
+
+    await consumer.handle(atAttempt(MAX_ATTEMPTS));
+
+    expect(inserts(log)).toHaveLength(1);
+    expect(counter).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("final-attempt failure for another reason (malformed payload) → not counted", async () => {
+    const { pool } = fakePool(false);
+    const error = jest.fn();
+    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn(), error });
+    const malformed = {
+      ...atAttempt(MAX_ATTEMPTS),
+      payload: { sale_id: "not-a-uuid" },
+    } as unknown as OutboxEventEnvelope<PostingRequestedPayload>;
+
+    await expect(consumer.handle(malformed)).rejects.not.toBeInstanceOf(
+      ReversalAwaitingSalePostError,
+    );
+
+    expect(counter).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("final-attempt sale_post event is never counted", async () => {
+    const { pool } = fakePool(false);
+    const error = jest.fn();
+    const consumer = new PostingRequestedConsumer(pool, { warn: jest.fn(), error });
+
+    await consumer.handle(atAttempt(MAX_ATTEMPTS, salePostEvent()));
+
+    expect(counter).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
   });
 });
