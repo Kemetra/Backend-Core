@@ -79,6 +79,12 @@ RT-66 intentional (server already rejects an empty PATCH body; RT-59 contract dr
 RT-66 intentional (quantity declared as the numeric(19,4) rule the server already enforces; RT-59 contract drift, server unchanged): POST /api/inventory/v1/stores/{storeId}/counts added `#/components/schemas/NonNegativeDecimalQuantity` to the `countedQuantity` request property `allOf` list
 RT-66 intentional (quantity declared as the numeric(19,4) rule the server already enforces; RT-59 contract drift, server unchanged): POST /api/inventory/v1/stores/{storeId}/movements added `#/components/schemas/NonZeroDecimalQuantity` to the `quantity` request property `allOf` list
 RT-66 intentional (quantity declared as the numeric(19,4) rule the server already enforces; RT-59 contract drift, server unchanged): POST /api/inventory/v1/transfers added `#/components/schemas/PositiveDecimalQuantity` to the `quantity` request property `allOf` list
+# RT-174: stock-view 1.2 expresses "a non-final multi-window report needs >=1
+# entry" as an if/then on the report body. The `if` applies only when the body
+# carries the new optional `window` property, which 1.1 rejected
+# (additionalProperties: false), so every body valid under 1.1 is still valid.
+RT-174 intentional (if/then applies only to bodies with the new optional `window`, which 1.1 rejected; v1 bodies unaffected): POST /api/connector/v1/erpnext/bin-view-requests/{requestRef}/snapshot added 'if' subschema to the request body
+RT-174 intentional (if/then applies only to bodies with the new optional `window`, which 1.1 rejected; v1 bodies unaffected): POST /api/connector/v1/erpnext/bin-view-requests/{requestRef}/snapshot added 'then' subschema to the request body
 #
 # RT-180: the run-history cursor is declared in the <timestamp>|<id> form the
 # server issues as nextCursor. Server-issued cursors still match; a token the
