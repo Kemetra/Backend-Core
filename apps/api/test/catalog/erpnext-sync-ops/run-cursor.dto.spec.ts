@@ -22,6 +22,11 @@ function accepts(cursor: string): boolean {
   return SyncOpsRunListQuerySchema.safeParse({ cursor }).success;
 }
 
+/** Zero-padded two-digit strings from `from` to `to`, inclusive. */
+function range(from: number, to: number): string[] {
+  return Array.from({ length: to - from + 1 }, (_, i) => String(from + i).padStart(2, "0"));
+}
+
 function contractPattern(): RegExp {
   const file = resolve(
     __dirname, "..", "..", "..", "..", "..",
@@ -96,20 +101,16 @@ describe("RT-180 run cursor — contract pattern matches the DTO", () => {
 
   it("agrees with the DTO on every month/day across leap, non-leap and century years", () => {
     const years = ["0000", "0001", "0004", "0100", "0400", "1900", "2000", "2023", "2024", "2100", "9999"];
+    const months = range(0, 13);
+    const days = range(0, 32);
     const times = ["00:00:00.000", "23:59:59.999", "24:00:00.000", "12:60:00.000"];
-    const disagreements: string[] = [];
-    for (const year of years) {
-      for (let month = 0; month <= 13; month += 1) {
-        for (let day = 0; day <= 32; day += 1) {
-          for (const time of times) {
-            const mm = String(month).padStart(2, "0");
-            const dd = String(day).padStart(2, "0");
-            const cursor = `${year}-${mm}-${dd}T${time}Z|${RUN_ID}`;
-            if (pattern.test(cursor) !== accepts(cursor)) disagreements.push(cursor);
-          }
-        }
-      }
-    }
+    const cursors = years.flatMap((year) =>
+      months.flatMap((mm) =>
+        days.flatMap((dd) => times.map((time) => `${year}-${mm}-${dd}T${time}Z|${RUN_ID}`)),
+      ),
+    );
+    expect(cursors).toHaveLength(years.length * 14 * 33 * times.length);
+    const disagreements = cursors.filter((cursor) => pattern.test(cursor) !== accepts(cursor));
     expect(disagreements).toEqual([]);
   });
 });
