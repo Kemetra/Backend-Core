@@ -319,9 +319,13 @@ paths:
       operationId: listErpnextNegativeOnHandStores
       tags: [erpnext-reconciliation]
       description: >
-        RT-177. One summary per store the caller may read: `owner` /
-        `tenant_admin` see every store of the session tenant; a `store_manager`
-        sees only the stores in its store scope. Each summary carries the store's
+        RT-177. One summary per store the caller may read. `owner` /
+        `tenant_admin` see every store within their membership's store scope:
+        every store of the session tenant for the default `all` membership, or
+        only the granted stores for a `specific` membership. The session's
+        active store never narrows them. A `store_manager` sees its standard
+        store scope (the active store when one is selected, otherwise its
+        granted stores). Each summary carries the store's
         snapshot freshness block and the number of ERPNext items whose latest
         recorded snapshot quantity is strictly below zero. `negativeItemCount` is
         `0` when `snapshot.status` is `no_warehouse_mapping` or `no_snapshot`;
@@ -359,8 +363,11 @@ paths:
         `erpnextItemRef.name`; cursor-paginated. `items` is empty when
         `snapshot.status` is `no_warehouse_mapping` or `no_snapshot`. A `stale`
         snapshot still returns its items. Computed on read; never reads the 009
-        ledger; no write. A foreign-tenant, out-of-scope, deleted or nonexistent
-        store, or a role that may not read this surface, is a non-disclosing 404.
+        ledger; no write. Readable stores are the same as for
+        `listErpnextNegativeOnHandStores` (membership store scope; the active
+        store never narrows `owner` / `tenant_admin`). A foreign-tenant,
+        out-of-scope, deleted or nonexistent store, or a role that may not read
+        this surface, is a non-disclosing 404.
       parameters:
         - $ref: "#/components/parameters/StoreId"
         - $ref: "#/components/parameters/NegativeOnHandCursor"

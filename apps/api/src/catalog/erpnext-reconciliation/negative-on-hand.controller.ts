@@ -11,7 +11,8 @@
  *
  * Same human `cookieAuth` boundary as the rest of the 017 surface
  * (`DashboardAuthGuard` → `TenantContextGuard` → `RolesGuard`). Read access is
- * `owner` / `tenant_admin` (tenant-wide, not narrowed by the active store) and
+ * `owner` / `tenant_admin` (their membership's store scope — tenant-wide for an
+ * `all` membership — never narrowed by the active store) and
  * `store_manager` (its store scope, `resolveStoreScope`, RT-131); every other
  * role gets the default non-disclosing 404 (RT-51 D6). The service derives the
  * scope from the session context and the caller's role (`readScope`). Tenant and store scope come from the session, never the query
