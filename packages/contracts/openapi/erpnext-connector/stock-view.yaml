@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Connector Stock-View (Bin) Read API
-  version: "1.1.0-draft"
+  version: "1.2.0-draft"
   description: >
     Spec 019 ERPNext live stock-view (Bin) read contract — the DP2 ↔ connector
     boundary by which DP2 obtains the connector's point-in-time ERPNext-Bin
@@ -55,7 +55,9 @@ info:
     `auth.openapi.yaml` / `outbox.openapi.yaml` / `pos-sales/sales.yaml` /
     `posting-feed.yaml`. Closed `error.code` set: `validation_error`,
     `snapshot_required` (stale pull cursor, 409), `idempotency_key_conflict`
-    (report key reused with a different report, 409), `not_found`
+    (report key reused with a different report, 409),
+    `window_sequence_conflict` (multi-window report out of sequence, 409,
+    v1.2), `not_found`
     (non-disclosing 404 for a cross-tenant / out-of-scope `requestRef` or
     foreign-scope cursor — no existence leak, §II/§XII), the generic bearer-auth
     refusal (401), `forbidden` (generic 403 for a connector registration whose
@@ -72,6 +74,43 @@ info:
     runtime (a future slice), the 017-rewire that replaces `EMPTY_BIN_VIEW`
     (FR-018, separate slice — precedent `017-RECON-WIRING`), or any live
     cross-system exercise (external: connector live Bin reader + staging ERPNext).
+
+    VERSION 1.2 — CONNECTOR-PAGED BIN-VIEW WINDOWS (RT-174, design RT-21 §4).
+    Backend-Core cannot list ERPNext items it has never mapped, so only the
+    connector can enumerate a warehouse's real Bin item set. v1.2 therefore
+    moves window boundaries to the connector while Backend-Core keeps issuing
+    the request, validating the sequence, deciding completion, and holding the
+    only trigger for the 017 compare:
+
+      * Still ONE `BinViewRequest` per reconciliation run (`itemWindow.windowSeq`
+        0); the feed cursor is unchanged. The request advertises
+        `itemWindow.maxWindows`; absent or 1 = the v1 single-window read, more
+        than 1 = the connector MAY split its read into up to `maxWindows`
+        windows of ≤500 entries. For a connector-paged request
+        `fromItemRef`/`toItemRef` stay null — the connector owns the boundaries.
+      * The connector reports each window as its own `binViewReportSnapshot`
+        call carrying the optional `window {attemptRef, windowSeq, isFinal}`
+        object. All windows of one read attempt share `attemptRef` and
+        `readAt` (one point-in-time snapshot).
+      * If the warehouse holds more than `maxWindows × 500` items, the connector
+        reports nothing and logs `bin_view.window.limit_exceeded` (the v1
+        loud-refuse behaviour, at the new limit).
+
+    The sequencing, supersede, completion and idempotency rules are normative on
+    `binViewReportSnapshot` and `BinViewReportWindow`.
+
+    v1 COMPATIBILITY (v1.2 is additive):
+      (i) a v1.2 Backend-Core receiving a v1 report (no `window`) treats it as
+          `{windowSeq 0, isFinal true}` — exactly the v1 behaviour;
+      (ii) a v1 connector ignores `maxWindows` and keeps refusing above 500
+           items;
+      (iii) a v1.2 connector sends `window` ONLY when the request advertises
+            `maxWindows > 1`, so it never sends the new field to a v1
+            Backend-Core;
+      (iv) a stored historical report without `complete` is read as complete.
+
+    DEPLOY ORDER: Backend-Core first (it accepts both shapes), then the
+    connector.
 
 servers:
   - url: https://api.example.com
@@ -149,6 +188,41 @@ paths:
         `IdempotencyInterceptor`. An identical retry replays the stored response
         (200 `Idempotent-Replayed: true`); a key reused for a DIFFERENT logical
         report returns 409 `idempotency_key_conflict`. No new primitive (§XI).
+
+        MULTI-WINDOW REPORTS (v1.2). When the pulled request advertised
+        `itemWindow.maxWindows > 1`, the connector MAY report its read as several
+        windows, each a separate call to this operation with the body's `window`
+        object. Backend-Core applies these rules under the run's row lock:
+
+          * Sequencing — `windowSeq k` is accepted only after windows 0..k-1 of
+            the same `attemptRef` are recorded. An `erpnextItemRef` must not
+            repeat across the windows of one attempt; Backend-Core checks only
+            uniqueness, never cross-window ordering (ERPNext collation does not
+            matter). Every window of an attempt carries the same `readAt`.
+          * `windowSeq ≥ maxWindows` of the request → 400 `validation_error`.
+          * Supersede / partial failure — `windowSeq 0` with a NEW `attemptRef`
+            discards an incomplete attempt (its recorded windows are dropped).
+            After an attempt's final window is recorded, any other attempt is
+            refused.
+          * Completion — when windows 0..N of one attempt are recorded and
+            window N has `isFinal: true`, Backend-Core marks the recorded report
+            `complete: true` and emits `erpnext.reconciliation.requested`
+            EXACTLY ONCE, in the same transaction. A non-final window never
+            triggers the compare.
+          * `window_sequence_conflict` (409, deterministic, no side effects) — a
+            gap or out-of-order `windowSeq`, a window after the final one, a
+            stale or superseded `attemptRef`, a duplicate `erpnextItemRef`
+            across windows of the attempt, or a `readAt` different from the
+            attempt's.
+          * Idempotency — the same (`attemptRef`, `windowSeq`, `entries`,
+            `readAt`) replays the stored response (200 `Idempotent-Replayed:
+            true`); the same (`attemptRef`, `windowSeq`) with different content
+            → 409 `idempotency_key_conflict`. Connector key per window:
+            `binview-{requestRef}-{attemptRef}-w{windowSeq}`. The v1 key
+            `binview-{requestRef}` is kept for v1 (window-less) reports.
+
+        A report without `window` is a v1 report and is treated as
+        `{windowSeq 0, isFinal true}` (v1 compatibility (i)).
       parameters:
         - $ref: "#/components/parameters/RequestRef"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -303,16 +377,17 @@ components:
         warehouse mapping, correlated to a 017 reconciliation run. Carries NO bin
         data (quantity belongs to the report) and no `tenant_id` (implicit scope).
 
-        ITEM WINDOWING (why a warehouse may span multiple requests): a real
-        ERPNext warehouse can hold far more distinct items than one report can
-        carry (the report's `entries` is capped at 500). DP2 therefore SPLITS a
-        warehouse into one BinViewRequest per ≤500-item `itemWindow`, so each
-        request maps cleanly to exactly one ≤500-entry report. Pagination lives on
-        the REQUEST (which already carries a cursor), NEVER on the report body —
-        the connector reports the Bin entries for the items in this request's
-        `itemWindow` only, and the 500-entry report cap becomes a guaranteed-safe
-        invariant rather than a truncation risk. A warehouse with ≤500 items is a
-        single request with one full window.
+        ITEM WINDOWING: a real ERPNext warehouse can hold far more distinct items
+        than one report can carry (the report's `entries` is capped at 500).
+        There is ONE BinViewRequest per reconciliation run (`itemWindow.windowSeq`
+        0, null bounds). In v1 (`itemWindow.maxWindows` absent or 1) the
+        connector reports the whole warehouse in one ≤500-entry report and
+        refuses a larger warehouse. From v1.2, when the request advertises
+        `itemWindow.maxWindows > 1`, the connector pages its read into up to
+        `maxWindows` report windows of ≤500 entries (see
+        `binViewReportSnapshot` and `BinViewReportWindow`); the connector owns
+        the window boundaries because only it can enumerate the ERPNext item
+        set.
       properties:
         requestRef:
           type: string
@@ -342,9 +417,9 @@ components:
         itemWindow:
           $ref: "#/components/schemas/BinViewItemWindow"
           description: >
-            The bounded item slice this request covers (≤500 items). The connector
-            reports Bin entries for the items in this window only; DP2 issues
-            additional requests for further windows of the same warehouse.
+            The item scope of this request. In v1 it is one ≤500-item window; when
+            `maxWindows > 1` (v1.2) the connector may report up to `maxWindows`
+            windows of ≤500 entries for this one request.
         itemCursor:
           type: string
           minLength: 1
@@ -357,31 +432,47 @@ components:
       additionalProperties: false
       required: [windowSeq, maxItems]
       description: >
-        A bounded item slice of a warehouse's Bin, so one BinViewRequest maps to at
-        most one ≤500-entry report. DP2 owns the windowing; the connector treats
-        the bounds as opaque scoping (it reports whatever Bin items fall in the
-        window, up to `maxItems`). The windowing scheme (item-ref range, hash
-        bucket, etc.) is a DP2 implementation concern behind these opaque bounds.
+        The item scope of one BinViewRequest. v1 (`maxWindows` absent or 1): one
+        ≤500-item window, reported in one ≤500-entry report; the connector treats
+        any bounds as opaque scoping. v1.2 (`maxWindows > 1`): the connector
+        pages its read into report windows (`BinViewSnapshotReport.window`) and
+        owns their boundaries; `fromItemRef`/`toItemRef` stay null.
       properties:
         windowSeq:
           type: integer
           minimum: 0
           description: >
-            Zero-based sequence of this window within the warehouse's full Bin set
-            for this run (window 0, 1, 2, …). Lets DP2 + the connector correlate
-            which slice a report covers; the final window is signalled by the feed
-            advancing past it (no more requests for this warehouse/run).
+            Zero-based sequence of this request window. Backend-Core issues one
+            request per run, so this is 0. It is NOT the connector's report
+            window sequence (`BinViewSnapshotReport.window.windowSeq`), which
+            the connector assigns when it pages a `maxWindows > 1` read.
         maxItems:
           type: integer
           minimum: 1
           maximum: 500
           description: >
-            The hard upper bound on items in this window — never exceeds the report
-            `entries` ceiling (500), so a report can always carry the full window.
+            The hard upper bound on entries in ONE report window — never exceeds
+            the report `entries` ceiling (500).
+        maxWindows:
+          type: integer
+          minimum: 1
+          description: >
+            v1.2, optional. The most report windows the connector may send for
+            this request (so at most `maxWindows × maxItems` items). Absent or 1
+            = the v1 single-window read: the connector sends one report with no
+            `window` object and refuses a warehouse above `maxItems`. More than
+            1 = the connector MAY page its read into windows 0..N (N <
+            `maxWindows`) and sends each with a `window` object; a warehouse
+            above `maxWindows × maxItems` items is refused (nothing reported,
+            `bin_view.window.limit_exceeded` logged). A report window with
+            `windowSeq ≥ maxWindows` is rejected with 400 `validation_error`.
+            Backend-Core sets this value (owner-tunable); a v1 connector ignores
+            it.
         fromItemRef:
           description: >
             Optional opaque lower bound of the window's item range (inclusive);
             null on the first window. Opaque — the connector does not decode it.
+            Always null on a connector-paged (`maxWindows > 1`) request.
           anyOf:
             - type: string
               minLength: 1
@@ -390,7 +481,8 @@ components:
         toItemRef:
           description: >
             Optional opaque upper bound of the window's item range (exclusive);
-            null on the last window. Opaque.
+            null on the last window. Opaque. Always null on a connector-paged
+            (`maxWindows > 1`) request.
           anyOf:
             - type: string
               minLength: 1
@@ -438,6 +530,27 @@ components:
         `{requestRef}`. An empty `entries[]` is valid (warehouse empty / nothing to
         report) and does NOT fail. No `tenant_id`, no `storeId` — scope is the
         principal's (§XII).
+
+        v1.2 multi-window rule (expressed by the `if`/`then` below): when
+        `window` is present, a window that is NOT (`windowSeq` 0 AND `isFinal`
+        true) must carry 1..500 entries. Zero entries is valid only as the
+        single window `{windowSeq 0, isFinal true}` (an empty warehouse) or as
+        a v1 report without `window`.
+      if:
+        required: [window]
+        properties:
+          window:
+            not:
+              required: [windowSeq, isFinal]
+              properties:
+                windowSeq:
+                  const: 0
+                isFinal:
+                  const: true
+      then:
+        properties:
+          entries:
+            minItems: 1
       properties:
         entries:
           type: array
@@ -447,14 +560,61 @@ components:
             $ref: "#/components/schemas/BinEntry"
           description: >
             Per-item Bin on-hand quantities read at ERPNext. Bounded by the same
-            500/page ceiling as the feed.
+            500/page ceiling as the feed. In a multi-window report (v1.2) these
+            are the entries of this window only; an `erpnextItemRef` must not
+            repeat across the windows of one attempt.
+        window:
+          $ref: "#/components/schemas/BinViewReportWindow"
+          description: >
+            v1.2, optional. Present only when the pulled request advertised
+            `itemWindow.maxWindows > 1` and the connector reports its read as
+            windows. Absent = a v1 report, treated as `{windowSeq 0, isFinal
+            true}`.
         readAt:
           type: string
           format: date-time
           description: >
             Connector-reported time the Bin was read at ERPNext. PRESERVED as
             received; NEVER a security clock (§X / FR-016). Distinct from DP2's
-            server-clock `recordedAt`.
+            server-clock `recordedAt`. Every window of one attempt carries the
+            same `readAt` (a different one → 409 `window_sequence_conflict`).
+
+    # -----------------------------------------------------------------------
+    # BinViewReportWindow — v1.2 connector-paged report window. Strict.
+    # -----------------------------------------------------------------------
+    BinViewReportWindow:
+      type: object
+      additionalProperties: false
+      required: [attemptRef, windowSeq, isFinal]
+      description: >
+        Identifies one window of a connector-paged read (v1.2). The connector
+        owns the boundaries; Backend-Core validates the sequence and decides
+        completion (rules on `binViewReportSnapshot`). Windows 0..N of one
+        `attemptRef`, recorded in order with `isFinal` true only on window N,
+        make the report complete.
+      properties:
+        attemptRef:
+          type: string
+          format: uuid
+          description: >
+            Connector-generated id of one read attempt. All windows of an
+            attempt share it and share `readAt`. `windowSeq 0` with a new
+            `attemptRef` supersedes (discards) an incomplete attempt; after an
+            attempt is complete, any other attempt is refused with 409
+            `window_sequence_conflict`.
+        windowSeq:
+          type: integer
+          minimum: 0
+          description: >
+            Zero-based window sequence within the attempt. Accepted only after
+            windows 0..windowSeq-1 of the same attempt are recorded; a value
+            ≥ the request's `itemWindow.maxWindows` → 400 `validation_error`.
+        isFinal:
+          type: boolean
+          description: >
+            True on the last window of the attempt only. A non-final window
+            carries 1..500 entries and never triggers the reconciliation
+            compare.
 
     # -----------------------------------------------------------------------
     # BinEntry — one item's Bin quantity. Exact-decimal, NO valuation.
@@ -545,6 +705,27 @@ components:
           description: >
             DP2 server-clock stamp when the snapshot was recorded (the security
             clock, §X) — distinct from the connector's `readAt`.
+        windowSeq:
+          type: integer
+          minimum: 0
+          description: >
+            v1.2, optional. The `window.windowSeq` this response acknowledges.
+            Absent on a response to a v1 (window-less) report, and from a
+            Backend-Core runtime that predates multi-window support.
+        windowsRecorded:
+          type: integer
+          minimum: 1
+          description: >
+            v1.2, optional. How many windows of the current attempt Backend-Core
+            has recorded, including this one. Absent as for `windowSeq`.
+        complete:
+          type: boolean
+          description: >
+            v1.2, optional. True once windows 0..N of the attempt are recorded
+            and window N is final — the report is the whole warehouse and the
+            reconciliation compare has been triggered (exactly once). False
+            after a non-final window. Absent = a v1 single-window report, which
+            is complete.
 
     # -----------------------------------------------------------------------
     # Canonical Error envelope (mirrors auth/outbox/pos-sales/posting-feed)
@@ -567,8 +748,8 @@ components:
               description: >
                 Stable machine-readable error code. Closed set on this surface:
                 validation_error | snapshot_required | idempotency_key_conflict |
-                not_found | forbidden | system_failure (plus the generic 401
-                refusal).
+                window_sequence_conflict | not_found | forbidden |
+                system_failure (plus the generic 401 refusal).
             message:
               type: string
               description: Human-readable summary. No sensitive data, no cause enumeration.
@@ -582,8 +763,10 @@ components:
       description: >
         `validation_error` — malformed query / body, unknown key (strict
         boundary), bad cursor format, a body-supplied server-owned field (e.g. a
-        `tenant_id`/`storeId` in the report body), or a malformed quantity.
-        Deterministic; no record created.
+        `tenant_id`/`storeId` in the report body), a malformed quantity, an
+        unknown key in the report `window`, a non-final (or `windowSeq > 0`)
+        window with no entries, or a report `window.windowSeq` ≥ the request's
+        `itemWindow.maxWindows` (v1.2). Deterministic; no record created.
       content:
         application/json:
           schema:
@@ -624,10 +807,20 @@ components:
             $ref: "#/components/schemas/Error"
     Conflict:
       description: >
-        `idempotency_key_conflict` (409) — the same `Idempotency-Key` reused on the
-        snapshot report for a DIFFERENT logical report. Deterministic, no side
-        effects. (A duplicate report with the SAME `Idempotency-Key` is an
-        idempotent 200 replay, not a conflict.)
+        One of two codes, both deterministic with no side effects:
+
+          * `idempotency_key_conflict` (409) — the same `Idempotency-Key` reused
+            on the snapshot report for a DIFFERENT logical report, or (v1.2)
+            the same (`attemptRef`, `windowSeq`) reported with different
+            content. (A duplicate report with the SAME `Idempotency-Key` and
+            content is an idempotent 200 replay, not a conflict.)
+          * `window_sequence_conflict` (409, v1.2) — a multi-window report that
+            does not fit the recorded attempt: a gap or out-of-order
+            `windowSeq`, a window after the final one, a stale or superseded
+            `attemptRef` (including any other attempt after one is complete),
+            an `erpnextItemRef` already reported in an earlier window of the
+            attempt, or a `readAt` different from the attempt's. Nothing is
+            recorded and the reconciliation run is unchanged.
       content:
         application/json:
           schema:
