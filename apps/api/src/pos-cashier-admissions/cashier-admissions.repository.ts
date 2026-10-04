@@ -63,6 +63,12 @@ export interface SavedRequest {
   readonly ttlSeconds: number;
 }
 
+/** An admission ended by lazy expiry, and the device that held it. */
+export interface ExpiredAdmission {
+  readonly id: string;
+  readonly deviceId: string;
+}
+
 export interface OwnedAdmission {
   readonly id: string;
   readonly userId: string;
@@ -92,8 +98,8 @@ export interface AdmissionStore {
   /** The database wall clock; read once per request, after the locks. */
   clock(client: PoolClient): Promise<Date>;
   findRequest(client: PoolClient, scope: DeviceScope, key: KeyAt): Promise<StoredRequest | null>;
-  /** End the cashier's expired live admission(s); returns the ended ids. */
-  expireStale(client: PoolClient, scope: DeviceScope, cashier: CashierAt): Promise<string[]>;
+  /** End the cashier's expired live admission(s); returns them with their holder. */
+  expireStale(client: PoolClient, scope: DeviceScope, cashier: CashierAt): Promise<ExpiredAdmission[]>;
   isLiveOnDevice(client: PoolClient, scope: DeviceScope, admissionId: string): Promise<boolean>;
   findLive(client: PoolClient, scope: DeviceScope, userId: string): Promise<LiveAdmission | null>;
   create(client: PoolClient, input: NewAdmission): Promise<AdmissionRecord>;
@@ -142,16 +148,16 @@ export class CashierAdmissionsRepository implements AdmissionStore {
     await advisoryLock(client, `cashier_admission:${scope.tenantId}:${scope.storeId}:${userId}`);
   }
 
-  async expireStale(client: PoolClient, scope: DeviceScope, cashier: CashierAt): Promise<string[]> {
-    const r = await client.query<{ id: string }>(
+  async expireStale(client: PoolClient, scope: DeviceScope, cashier: CashierAt): Promise<ExpiredAdmission[]> {
+    const r = await client.query<{ id: string; device_id: string }>(
       `UPDATE cashier_admissions
           SET ended_at = $4::timestamptz, end_reason = 'expired'
         WHERE tenant_id = $1 AND store_id = $2 AND user_id = $3
           AND ended_at IS NULL AND expires_at <= $4::timestamptz
-        RETURNING id`,
+        RETURNING id, device_id`,
       [scope.tenantId, scope.storeId, cashier.userId, cashier.at],
     );
-    return r.rows.map((row) => row.id);
+    return r.rows.map((row) => ({ id: row.id, deviceId: row.device_id }));
   }
 
   async isLiveOnDevice(client: PoolClient, scope: DeviceScope, admissionId: string): Promise<boolean> {
@@ -204,8 +210,11 @@ export class CashierAdmissionsRepository implements AdmissionStore {
     ttlSeconds: number,
   ): Promise<AdmissionRecord> {
     const r = await client.query<{ id: string; renewed_at: Date }>(
+      // Monotonic (defence in depth): a renewal never moves renewed_at back,
+      // so `renewed_at >= created_at` holds even for a stale instant.
       `UPDATE cashier_admissions
-          SET renewed_at = $5::timestamptz, expires_at = $5::timestamptz + $4::int * interval '1 second'
+          SET renewed_at = GREATEST($5::timestamptz, renewed_at),
+              expires_at = GREATEST($5::timestamptz, renewed_at) + $4::int * interval '1 second'
         WHERE id = $1 AND tenant_id = $2 AND device_id = $3 AND ended_at IS NULL
         RETURNING id, renewed_at`,
       [admission.admissionId, scope.tenantId, scope.deviceId, ttlSeconds, admission.at],

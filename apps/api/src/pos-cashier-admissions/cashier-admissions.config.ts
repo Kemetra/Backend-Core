@@ -12,6 +12,7 @@
  * | `CASHIER_OFFLINE_GRACE_SECONDS`        | 86400   | `offline_grace_seconds` on `admitted` (028 OQ-1: 24 h). ≥ 0. |
  * | `CASHIER_TAKEOVER_RATE_LIMIT`          | 10      | Takeover requests allowed per device per window. ≥ 1. |
  * | `CASHIER_TAKEOVER_RATE_WINDOW_SECONDS` | 3600    | The takeover window. ≥ 1. |
+ * | `CASHIER_TAKEOVER_LIMITER_TIMEOUT_MS`  | 250     | Max wait for the limiter's store before failing open. 1 … 10000. Read at boot. |
  *
  * An unset, non-integer or out-of-range value falls back to the default: a
  * typo must not disable the single-active rule or the rate limit.
@@ -22,6 +23,7 @@ export const DEFAULT_ADMISSION_TTL_SECONDS = 43_200;
 export const DEFAULT_OFFLINE_GRACE_SECONDS = 86_400;
 export const DEFAULT_TAKEOVER_RATE_LIMIT = 10;
 export const DEFAULT_TAKEOVER_RATE_WINDOW_SECONDS = 3_600;
+export const DEFAULT_TAKEOVER_LIMITER_TIMEOUT_MS = 250;
 
 const MAX_ADMISSION_TTL_SECONDS = 7 * 24 * 60 * 60;
 
@@ -48,6 +50,20 @@ function readInt(env: Env, setting: IntSetting): number {
   if (!/^\d+$/.test(raw)) return setting.fallback;
   const value = Number(raw);
   return value >= setting.min && value <= setting.max ? value : setting.fallback;
+}
+
+/**
+ * How long a takeover may wait for the rate limiter's store. The check runs
+ * inside the admission transaction while both advisory locks and a pool
+ * connection are held, so a slow or unreachable Redis must not stall it.
+ */
+export function readTakeoverLimiterTimeoutMs(env: Env = process.env): number {
+  return readInt(env, {
+    name: "CASHIER_TAKEOVER_LIMITER_TIMEOUT_MS",
+    fallback: DEFAULT_TAKEOVER_LIMITER_TIMEOUT_MS,
+    min: 1,
+    max: 10_000,
+  });
 }
 
 export function readCashierAdmissionPolicy(env: Env = process.env): CashierAdmissionPolicy {

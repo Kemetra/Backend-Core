@@ -34,6 +34,12 @@
 --      replay window to the admission TTL applied at the time. The raw key is
 --      never stored.
 --
+-- Cross-row references (takeover_of, a replay entry's admission_id) are
+-- composite FKs on (tenant_id, id), so they cannot cross tenants. device_id
+-- stays a single-column FK to devices(id) — a composite one would need a new
+-- UNIQUE on the existing devices table (the sales.device_id precedent, 0033);
+-- the service always takes the device, tenant and store from one devices row.
+--
 -- Both tables are tenant-RLS-forced. cashier_admissions has SELECT, INSERT
 -- and UPDATE policies and no DELETE policy: rows are ended, never removed.
 -- cashier_admission_requests is a replay cache, so it also has a DELETE
@@ -79,8 +85,9 @@ CREATE TABLE cashier_admissions (
   -- The terminal's local time of an offline admission (D8). Provenance for
   -- audit only; never authority.
   offline_admitted_at TIMESTAMPTZ,
-  -- The prior admission this one replaced by takeover (D9).
-  takeover_of         UUID        REFERENCES cashier_admissions(id) ON DELETE RESTRICT,
+  -- The prior admission this one replaced by takeover (D9); same tenant
+  -- (composite FK below).
+  takeover_of         UUID,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- Last time the admission was granted or renewed (the response's
   -- server_time).
@@ -88,8 +95,13 @@ CREATE TABLE cashier_admissions (
   expires_at          TIMESTAMPTZ NOT NULL,
   ended_at            TIMESTAMPTZ,
   end_reason          TEXT,
+  -- Target of the tenant-qualified composite FKs below.
+  CONSTRAINT uq_cashier_admissions_tenant_id UNIQUE (tenant_id, id),
   CONSTRAINT fk_cashier_admissions_store_tenant
     FOREIGN KEY (tenant_id, store_id) REFERENCES stores (tenant_id, id) ON DELETE RESTRICT,
+  -- A takeover can only name a prior admission of the same tenant.
+  CONSTRAINT fk_cashier_admissions_takeover_of_tenant
+    FOREIGN KEY (tenant_id, takeover_of) REFERENCES cashier_admissions (tenant_id, id) ON DELETE RESTRICT,
   CONSTRAINT cashier_admissions_mode_valid
     CHECK (mode IN ('online', 'reconcile_offline')),
   CONSTRAINT cashier_admissions_offline_time_reconcile_only
@@ -146,12 +158,15 @@ CREATE TABLE cashier_admission_requests (
   key_hash        BYTEA       NOT NULL,
   -- sha256 of the canonical request body.
   request_hash    BYTEA       NOT NULL,
-  admission_id    UUID        NOT NULL REFERENCES cashier_admissions(id) ON DELETE RESTRICT,
+  -- Same tenant as the entry (composite FK below).
+  admission_id    UUID        NOT NULL,
   -- The original `admitted` 200 body, replayed verbatim.
   response_body   JSONB       NOT NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   expires_at      TIMESTAMPTZ NOT NULL,
   CONSTRAINT uq_cashier_admission_requests_key UNIQUE (tenant_id, device_id, key_hash),
+  CONSTRAINT fk_cashier_admission_requests_admission_tenant
+    FOREIGN KEY (tenant_id, admission_id) REFERENCES cashier_admissions (tenant_id, id) ON DELETE RESTRICT,
   CONSTRAINT cashier_admission_requests_key_hash_len CHECK (octet_length(key_hash) = 32),
   CONSTRAINT cashier_admission_requests_request_hash_len CHECK (octet_length(request_hash) = 32),
   CONSTRAINT cashier_admission_requests_window_valid CHECK (expires_at > created_at)

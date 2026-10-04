@@ -141,11 +141,12 @@ export class CashierAdmissionsService {
 
   private async expireStale(ctx: AdmitContext): Promise<void> {
     const expired = await this.ports.admissions.expireStale(ctx.client, ctx.scope, { userId: ctx.userId, at: ctx.at });
-    for (const admissionId of expired) {
-      await this.record(ctx, ADMISSION_AUDIT_ACTIONS.expired, admissionId, {
-        device_id: ctx.scope.deviceId,
+    for (const admission of expired) {
+      // Attributed to the device that held the admission, not the requester.
+      await this.record(ctx, ADMISSION_AUDIT_ACTIONS.expired, admission.id, {
+        device_id: admission.deviceId,
         user_id: ctx.userId,
-        prior_admission_id: admissionId,
+        prior_admission_id: admission.id,
       });
     }
   }

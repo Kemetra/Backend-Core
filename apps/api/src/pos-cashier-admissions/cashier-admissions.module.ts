@@ -11,7 +11,8 @@
  *          │                roster and audit statement runs under RLS
  *          ├─ admissions    CashierAdmissionsRepository (0035 tables)
  *          ├─ eligibility   CashierEligibilityRepository
- *          ├─ takeoverLimit TakeoverRateLimit over the shared RateLimiter
+ *          ├─ takeoverLimit TakeoverRateLimit over the shared RateLimiter,
+ *          │                bounded by CASHIER_TAKEOVER_LIMITER_TIMEOUT_MS
  *          ├─ audit         AdmissionAuditRepository (in-transaction)
  *          └─ policy        readCashierAdmissionPolicy (env, per request)
  *
@@ -31,7 +32,7 @@ import { PosDeviceAuthGuard } from "../auth/pos-device-auth.guard";
 import { RateLimiter } from "../auth/rate-limit";
 import { DeviceRepository } from "../pos-operators/device.repository";
 import { AdmissionAuditRepository } from "./cashier-admissions.audit";
-import { readCashierAdmissionPolicy } from "./cashier-admissions.config";
+import { readCashierAdmissionPolicy, readTakeoverLimiterTimeoutMs } from "./cashier-admissions.config";
 import { CashierAdmissionsController } from "./cashier-admissions.controller";
 import { CashierAdmissionsRepository } from "./cashier-admissions.repository";
 import { CashierAdmissionsService, type TenantTransaction } from "./cashier-admissions.service";
@@ -70,7 +71,7 @@ function tenantTransaction(pool: Pool): TenantTransaction {
           tx: tenantTransaction(pool),
           admissions: new CashierAdmissionsRepository(),
           eligibility: new CashierEligibilityRepository(),
-          takeoverLimit: new TakeoverRateLimit(limiter, logger),
+          takeoverLimit: new TakeoverRateLimit(limiter, logger, { timeoutMs: readTakeoverLimiterTimeoutMs() }),
           audit: new AdmissionAuditRepository(),
           logger,
           policy: () => readCashierAdmissionPolicy(),

@@ -28,7 +28,6 @@ import {
   unique,
   uniqueIndex,
   uuid,
-  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { devices } from "./devices";
 import { stores } from "./stores";
@@ -57,9 +56,8 @@ export const cashierAdmissions = pgTable(
       .references(() => devices.id, { onDelete: "restrict" }),
     mode: text("mode").notNull(),
     offlineAdmittedAt: timestamp("offline_admitted_at", { withTimezone: true }),
-    takeoverOf: uuid("takeover_of").references((): AnyPgColumn => cashierAdmissions.id, {
-      onDelete: "restrict",
-    }),
+    // Same-tenant composite FK, declared below.
+    takeoverOf: uuid("takeover_of"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     renewedAt: timestamp("renewed_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -67,6 +65,12 @@ export const cashierAdmissions = pgTable(
     endReason: text("end_reason"),
   },
   (t) => [
+    unique("uq_cashier_admissions_tenant_id").on(t.tenantId, t.id),
+    foreignKey({
+      name: "fk_cashier_admissions_takeover_of_tenant",
+      columns: [t.tenantId, t.takeoverOf],
+      foreignColumns: [t.tenantId, t.id],
+    }).onDelete("restrict"),
     foreignKey({
       name: "fk_cashier_admissions_store_tenant",
       columns: [t.tenantId, t.storeId],
@@ -114,15 +118,19 @@ export const cashierAdmissionRequests = pgTable(
       .references(() => devices.id, { onDelete: "restrict" }),
     keyHash: bytea("key_hash").notNull(),
     requestHash: bytea("request_hash").notNull(),
-    admissionId: uuid("admission_id")
-      .notNull()
-      .references(() => cashierAdmissions.id, { onDelete: "restrict" }),
+    // Same-tenant composite FK, declared below.
+    admissionId: uuid("admission_id").notNull(),
     responseBody: jsonb("response_body").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
   (t) => [
     unique("uq_cashier_admission_requests_key").on(t.tenantId, t.deviceId, t.keyHash),
+    foreignKey({
+      name: "fk_cashier_admission_requests_admission_tenant",
+      columns: [t.tenantId, t.admissionId],
+      foreignColumns: [cashierAdmissions.tenantId, cashierAdmissions.id],
+    }).onDelete("restrict"),
     check("cashier_admission_requests_key_hash_len", sql`octet_length(${t.keyHash}) = 32`),
     check(
       "cashier_admission_requests_request_hash_len",
