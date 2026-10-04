@@ -27,13 +27,31 @@
  * re-delivery is a no-op and the FIRST verdict stands — never a throw-then-
  * dead-letter loop.
  *
+ * Ordering (RT-173, RT-83 option 2 — defense in depth): a reversal's
+ * `erpnext.posting.requested` is emitted in the void/refund/return transaction,
+ * but its sale's `sale_post` event only comes later from the async
+ * sale-processing drain, and the drainer runs a batch concurrently. So a
+ * reversal row is created ONLY once its sale's `sale_post` row exists (any
+ * status). Until then `handle()` inserts nothing and throws the retryable
+ * `ReversalAwaitingSalePostError`; the outbox backoff / dead-letter rules apply.
+ * `sequence` is an identity drawn at INSERT, and the check only sees a COMMITTED
+ * sale_post row, so the reversal's sequence is always greater than its
+ * sale_post's. This does not cover a sale_post that is later re-headed after a
+ * `failed_transient` ack (the Connector side, RT-83 option 1, covers that).
+ *
  * Payload shape: IDs + provenance only (sale_id / store_id / kind / source_ref_id)
  * — NO money / PII. The ENVELOPE tenant_id is authoritative (a tampered payload
  * tenant must not redirect the write).
  */
 import { z } from "zod";
 import { runWithTenantContext } from "@data-pulse-2/db";
-import { newId, type OutboxConsumer, type OutboxEventEnvelope } from "@data-pulse-2/shared";
+import {
+  createLogger,
+  newId,
+  type Logger,
+  type OutboxConsumer,
+  type OutboxEventEnvelope,
+} from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
 
 import { recordErpnextPostingReconciliation } from "../observability/metrics/worker.metrics";
@@ -57,13 +75,39 @@ export const POSTING_REQUESTED_CONSUMER_ID = "worker.erpnext.posting.requested";
 
 type RejectionCategory = "unmapped_item" | "unmapped_store";
 
+/**
+ * RT-173: thrown for a reversal whose sale has no `sale_post` posting-status row
+ * yet. Retryable — the drainer marks the outbox row failed with backoff and
+ * records this class name (never the message) as the error class.
+ */
+export class ReversalAwaitingSalePostError extends Error {
+  constructor() {
+    super("reversal deferred: the sale's sale_post posting row does not exist yet");
+    this.name = "ReversalAwaitingSalePostError";
+  }
+}
+
+/** Log seam (tests inject one); production uses the shared pino logger. */
+export type PostingRequestedLogger = Pick<Logger, "warn">;
+
+function defaultLogger(): PostingRequestedLogger {
+  return createLogger({ service: "worker", bindings: { component: POSTING_REQUESTED_CONSUMER_ID } });
+}
+
 export class PostingRequestedConsumer
   implements OutboxConsumer<PostingRequestedPayload>
 {
   readonly consumerId = POSTING_REQUESTED_CONSUMER_ID;
   readonly eventType = "erpnext.posting.requested";
 
-  constructor(private readonly pool: Pool) {}
+  private readonly logger: PostingRequestedLogger;
+
+  constructor(
+    private readonly pool: Pool,
+    logger?: PostingRequestedLogger,
+  ) {
+    this.logger = logger ?? defaultLogger();
+  }
 
   async handle(
     event: OutboxEventEnvelope<PostingRequestedPayload>,
@@ -86,6 +130,10 @@ export class PostingRequestedConsumer
       this.pool,
       { tenantId, isPlatformAdmin: false },
       async (client) => {
+        if (kind === "reversal") {
+          await this.assertSalePostExists(client, event, parsed.data);
+        }
+
         const verdict = await this.resolveEligibility(client, {
           saleId: sale_id,
           storeId: store_id,
@@ -133,6 +181,41 @@ export class PostingRequestedConsumer
         }
       },
     );
+  }
+
+  /**
+   * RT-173: a reversal row may only be created after its sale's `sale_post` row
+   * exists (any status — a permanently_rejected sale_post still counts). Scoped
+   * to the ENVELOPE tenant (RLS + explicit predicate). A sale_post's
+   * source_ref_id IS its sale id (data-model §5), so the lookup is a point read
+   * on the O-3 unique index (tenant_id, source_ref_id).
+   */
+  private async assertSalePostExists(
+    client: PoolClient,
+    event: OutboxEventEnvelope<PostingRequestedPayload>,
+    payload: PostingRequestedPayload,
+  ): Promise<void> {
+    const { sale_id, source_ref_id } = payload;
+    const found = await client.query(
+      `SELECT 1 FROM erpnext_posting_status
+        WHERE tenant_id = $1 AND source_ref_id = $2 AND sale_id = $2
+          AND kind = 'sale_post'`,
+      [event.tenant_id, sale_id],
+    );
+    if ((found.rowCount ?? 0) > 0) return;
+
+    // §VII signal — identifiers only (no money / PII), once per deferred attempt.
+    this.logger.warn(
+      {
+        event: "posting.reversal.deferred",
+        tenant_id: event.tenant_id,
+        sale_id,
+        source_ref_id,
+        attempts: event.attempts,
+      },
+      "reversal deferred: sale_post row not created yet",
+    );
+    throw new ReversalAwaitingSalePostError();
   }
 
   /**
