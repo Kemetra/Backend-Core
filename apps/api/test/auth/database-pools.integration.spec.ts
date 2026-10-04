@@ -166,7 +166,7 @@ describe("production database pool separation", () => {
     await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
   });
 
-  it("RT-212: a domain role missing a cashier-admissions grant fails boot verification", async () => {
+  it("RT-212 / RT-213: a domain role missing a cashier-admissions or tenants grant fails boot verification", async () => {
     if (dockerSkipped) return;
     const { app, admin } = env!;
     const lookupPool = lookup!;
@@ -188,6 +188,17 @@ describe("production database pool separation", () => {
       );
     } finally {
       await admin.query(`GRANT INSERT, UPDATE ON cashier_admissions TO ${APP_ROLE_NAME}`);
+    }
+
+    // RT-213: device auth reads tenants.status on the domain role. A missing
+    // grant must stop boot, not refuse every till at runtime.
+    await admin.query(`REVOKE SELECT ON tenants FROM ${APP_ROLE_NAME}`);
+    try {
+      await expect(verifyDatabasePoolBoundary(app, lookupPool)).rejects.toThrow(
+        /AuthModule: DATABASE_URL role is missing required grants: SELECT ON tenants\b/,
+      );
+    } finally {
+      await admin.query(`GRANT SELECT ON tenants TO ${APP_ROLE_NAME}`);
     }
 
     await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();

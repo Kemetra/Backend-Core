@@ -25,6 +25,10 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "cashier_admission_requests:INSERT",
   "cashier_admission_requests:UPDATE",
   "cashier_admission_requests:DELETE",
+  // RT-213: device auth reads the device's tenant status on the domain role
+  // (inside the tenant's RLS context). Without this grant every till would be
+  // refused at once, so a missing grant must fail boot instead.
+  "tenants:SELECT",
 ]);
 
 const LOOKUP_GRANTS: ReadonlySet<string> = new Set(
