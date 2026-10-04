@@ -415,7 +415,8 @@ components:
       additionalProperties: false
       description: >
         Issue command. All identity/actor fields are server-resolved (§XII).
-        Body is optional; omit to take the server default expiry.
+        A JSON object body is required; send `{}` to take the server default
+        expiry.
       properties:
         expires_in_days:
           type: integer
