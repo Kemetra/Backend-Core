@@ -98,25 +98,36 @@ function boundedText(value: unknown): value is string {
  * shape and is skipped (the 019 report DTO already rejects such entries).
  */
 export function negativeEntries(entries: readonly PositionedEntry[]): NegativeEntry[] {
-  const out: NegativeEntry[] = [];
-  for (const { entry, ordinal } of entries) {
-    const name = itemName(entry.erpnextItemRef);
-    const quantity = entry.quantity;
-    if (!boundedText(name) || typeof quantity !== "string") continue;
-    if (!boundedText(entry.stockUom)) continue;
-    const scaled = toScaledQuantity(quantity);
-    if (scaled === null || scaled >= 0n) continue;
-    const ref = entry.tenant_product_ref;
-    out.push({
-      name,
-      quantity,
-      scaled,
-      stockUom: entry.stockUom,
-      tenantProductRef: typeof ref === "string" && UUID_RE.test(ref) ? ref : null,
-      ordinal,
-    });
-  }
-  return out.sort(compareEntries);
+  return entries
+    .map(toNegativeEntry)
+    .filter((e): e is NegativeEntry => e !== null)
+    .sort(compareEntries);
+}
+
+/** The entry's scaled quantity when it is an exact-decimal string, else null. */
+function scaledOf(quantity: unknown): bigint | null {
+  return typeof quantity === "string" ? toScaledQuantity(quantity) : null;
+}
+
+/** The resolved product ref when it is a uuid, else null (treated as unmapped). */
+function productRefOf(ref: unknown): string | null {
+  return typeof ref === "string" && UUID_RE.test(ref) ? ref : null;
+}
+
+/** A well-formed, strictly-negative entry normalized for the view; else null. */
+function toNegativeEntry({ entry, ordinal }: PositionedEntry): NegativeEntry | null {
+  const name = itemName(entry.erpnextItemRef);
+  const scaled = scaledOf(entry.quantity);
+  const wellFormed = boundedText(name) && boundedText(entry.stockUom) && scaled !== null;
+  if (!wellFormed || scaled >= 0n) return null;
+  return {
+    name,
+    quantity: entry.quantity as string,
+    scaled,
+    stockUom: entry.stockUom as string,
+    tenantProductRef: productRefOf(entry.tenant_product_ref),
+    ordinal,
+  };
 }
 
 /** View order: quantity ascending, then item name, then report position. */

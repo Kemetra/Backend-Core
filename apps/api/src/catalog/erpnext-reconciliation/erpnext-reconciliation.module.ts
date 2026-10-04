@@ -37,6 +37,7 @@ import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../../audit/audit.module";
 import { AuthModule } from "../../auth/auth.module";
+import { RolesGuard } from "../../auth/roles.guard";
 import { ContextModule } from "../../context/context.module";
 import { ErpnextReconciliationController } from "./erpnext-reconciliation.controller";
 import { ErpnextReconciliationService } from "./erpnext-reconciliation.service";
@@ -55,7 +56,11 @@ import { NegativeOnHandService } from "./negative-on-hand.service";
 @Module({
   imports: [AuthModule, AuditModule, ContextModule],
   controllers: [ErpnextReconciliationController, NegativeOnHandController],
-  providers: [ErpnextReconciliationService, NegativeOnHandService],
+  // RolesGuard is listed explicitly (the erpnext-item-map / erpnext-warehouse-map
+  // / unknown-items pattern) so both controllers' `@UseGuards(RolesGuard)`
+  // resolve it from this module's own providers; its deps (MembershipRepository
+  // via ContextModule, PG_POOL via AuthModule, Reflector from core) are in scope.
+  providers: [ErpnextReconciliationService, NegativeOnHandService, RolesGuard],
   exports: [ErpnextReconciliationService],
 })
 export class ErpnextReconciliationModule {}
