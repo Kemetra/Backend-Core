@@ -178,7 +178,7 @@ describe("GlobalExceptionFilter", () => {
     expect(body.error.message).toBe("Internal Server Error");
   });
 
-  it.each(["22003", "23514", "22P02"])(
+  it.each(["22003", "23514", "22P02", "22007", "22008"])(
     "maps PostgreSQL input error %s to a non-disclosing 400 envelope",
     (sqlState) => {
       const captured: CapturedResponse = {};

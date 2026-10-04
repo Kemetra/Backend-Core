@@ -197,13 +197,15 @@ components:
       required: false
       schema:
         type: string
-        minLength: 1
+        # <startedAt>|<runId>: a real UTC instant (years 0001-9999, Gregorian
+        # calendar incl. leap years, millisecond precision, `Z`), `|`, a UUID.
+        pattern: '^(?:(?:000[1-9]|00[1-9][0-9]|0[1-9][0-9]{2}|[1-9][0-9]{3})-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:0[48]|[2468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\.[0-9]{3}Z\|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
       description: >
         Opaque pagination cursor from a prior page's `nextCursor`. Opaque — do not
-        decode or construct. Omit for the first page. (Run-history cursor; its
-        server-side `<timestamp>|<id>` shape is deliberately not declared yet —
-        see RT-66: a shape-valid token with an out-of-range timestamp currently
-        returns 500, so the format is published only once that is fixed.)
+        decode or construct. Omit for the first page. The run-history cursor is
+        `<startedAt>|<runId>`: a UTC instant in `YYYY-MM-DDTHH:mm:ss.sssZ` form
+        that exists on the calendar (no Feb 30, month 13, hour 24 or year 0000),
+        then `|`, then a UUID. Anything else is a 400 `validation_error`.
     PageSize:
       name: page_size
       in: query

@@ -33,3 +33,9 @@ RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule 
 RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales/{saleRef}/void for the `header` request parameter `idempotency-key`, the maxLength was decreased from `255` to `128`
 RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales/{saleRef}/void for the `header` request parameter `idempotency-key`, the minLength was increased from `1` to `16`
 RT-181 intentional (Idempotency-Key declared as the IdempotencyInterceptor rule ^[\x21-\x7E]{16,128}$; server unchanged): POST /api/pos/v1/sales/{saleRef}/void added the pattern `^[\x21-\x7E]{16,128}$` to the `header` request parameter `idempotency-key`
+#
+# RT-180: the run-history cursor is declared in the <timestamp>|<id> form the
+# server issues as nextCursor. Server-issued cursors still match; a token the
+# server already rejected with 400, or answered with 500 for an out-of-range
+# timestamp, is now a declared 400.
+RT-180 intentional (run cursor declared as the server-issued <timestamp>|<id> token; out-of-range timestamps were a 500, now a 400): GET /api/v1/catalog/erpnext-sync-ops/reconciliation-runs added the pattern `^(?:(?:000[1-9]|00[1-9][0-9]|0[1-9][0-9]{2}|[1-9][0-9]{3})-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:0[48]|[2468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\.[0-9]{3}Z\|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$` to the `query` request parameter `cursor`
