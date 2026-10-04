@@ -294,8 +294,8 @@ export class ErpnextSyncOpsReadModelService {
 
   /**
    * US3 — reconciliation run-history (a read-projection over 017
-   * `erpnext_reconciliation_run`), newest-first. Cursor is the epoch-millis of the
-   * last row's `started_at` (the table is indexed `(tenant_id, started_at DESC)`).
+   * `erpnext_reconciliation_run`), newest-first, keyset-paged on
+   * `(started_at, id)` (the table is indexed `(tenant_id, started_at DESC)`).
    * `mismatchSummary` comes from the run's `summary` jsonb (per-class counts).
    */
   async listReconciliationRuns(
@@ -306,11 +306,27 @@ export class ErpnextSyncOpsReadModelService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
-        // Composite keyset cursor `<startedAtISO>|<runId>` at FULL timestamp
-        // precision. `started_at` is not unique, so a timestamp-only cursor would
-        // skip/dup rows at a tie; the UUIDv7 `id` tiebreaker makes it stable +
-        // gap-free. Tuple comparison `(started_at, id) < (cursorTs, cursorId)`
-        // pages newer→older deterministically.
+        // Composite keyset cursor `<startedAtISO>|<runId>`. `started_at` is not
+        // unique, so the unique `id` tiebreaker keeps a tie stable + gap-free;
+        // tuple comparison `(started_at, id) < (anchorTs, cursorId)` pages
+        // newer→older deterministically.
+        //
+        // RT-210 — precision. `started_at` is a MICROSECOND timestamptz, but the
+        // cursor's timestamp is millisecond-precision (node-postgres yields a JS
+        // `Date`, and the contract `RunCursor` pins `.sssZ`), i.e. it sits at or
+        // below the last row's real `started_at`. Comparing against it directly
+        // skips an older run in the same millisecond with larger microseconds.
+        // So the boundary is ANCHORED on the cursor's run row: its full-precision
+        // `started_at` is read back by primary key (a one-row InitPlan). Every
+        // outer predicate and the ORDER BY use the bare `started_at` column, and
+        // a plain `started_at < $2 + 1ms` bound keeps the
+        // `(tenant_id, started_at DESC)` index range scan. The anchor must be
+        // a row this same query could have served (same tenant via RLS, same
+        // store filter + membership scope) AND lie inside the cursor's own
+        // millisecond, so it only restores the sub-millisecond digits the cursor
+        // dropped and never moves the page elsewhere. Runs are retained, never
+        // deleted (0020 §XIV), so the ms-precision fallback is only reached by a
+        // hand-built cursor.
         let cursorTs: string | null = null;
         let cursorId: string | null = null;
         if (input.cursor) {
@@ -339,7 +355,22 @@ export class ErpnextSyncOpsReadModelService {
              FROM erpnext_reconciliation_run
             WHERE ($1::uuid IS NULL OR store_id = $1::uuid)
               AND ($2::timestamptz IS NULL
-                   OR (started_at, id) < ($2::timestamptz, $3::uuid))
+                   OR (started_at, id) < (
+                        COALESCE(
+                          (SELECT anchor.started_at
+                             FROM erpnext_reconciliation_run anchor
+                            WHERE anchor.id = $3::uuid
+                              AND ($1::uuid IS NULL OR anchor.store_id = $1::uuid)
+                              AND ($5::uuid[] IS NULL OR anchor.store_id = ANY($5::uuid[]))
+                              AND anchor.started_at >= $2::timestamptz
+                              AND anchor.started_at < $2::timestamptz + interval '1 millisecond'),
+                          $2::timestamptz),
+                        $3::uuid))
+              -- Redundant upper bound (the anchor is < $2 + 1ms): a plain range on
+              -- the bare column that the planner turns into an Index Cond, which
+              -- the tuple compare against the InitPlan anchor alone does not.
+              AND ($2::timestamptz IS NULL
+                   OR started_at < $2::timestamptz + interval '1 millisecond')
               AND ($5::uuid[] IS NULL OR store_id = ANY($5::uuid[]))
             ORDER BY started_at DESC, id DESC
             LIMIT $4`,
@@ -356,6 +387,9 @@ export class ErpnextSyncOpsReadModelService {
           mismatchSummary: r.summary ?? null,
         }));
         const last = rows.rows[rows.rows.length - 1];
+        // The cursor timestamp is `started_at` FLOORED to the millisecond (pg's
+        // `Date` truncates the microseconds), which is exactly the window the
+        // anchor lookup above checks; the run id carries the rest (RT-210).
         const nextCursor =
           rows.rows.length === limit && last
             ? `${new Date(last.started_at).toISOString()}|${last.id}`
