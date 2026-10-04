@@ -21,15 +21,6 @@
       "last_seen": "2026-10-04"
     },
     {
-      "id": "e9751e",
-      "operation": "GET /api/v1/catalog/erpnext-sync-ops/reconciliation-runs",
-      "check": "positive_data_acceptance",
-      "failure": "RejectedPositiveData",
-      "signature": "400",
-      "first_seen": "2026-10-04",
-      "last_seen": "2026-10-04"
-    },
-    {
       "id": "5f360e",
       "operation": "PATCH /api/v1/memberships/{membership_id}",
       "check": "positive_data_acceptance",

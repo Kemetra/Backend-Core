@@ -20,11 +20,20 @@
  *         vocabulary ONLY (no 015 posting categories — READ-NOT-MIRROR); `kind` is
  *         stock-only; NO money/valuation field anywhere.
  *
+ * RT-177 adds the two read-only ERPNext negative on-hand operations
+ * (`listErpnextNegativeOnHandStores`, `listErpnextNegativeOnHand`): operation
+ * shape, strict schemas, the D4 freshness block, the signed strictly-negative
+ * quantity pattern, instance validation of fixture pages (Ajv 2020), and the D3
+ * description-only edits.
+ *
  * Structural / load-only (no app boot, no HTTP).
  */
 import "reflect-metadata";
 
 import { resolve } from "node:path";
+
+import Ajv2020, { type ValidateFunction } from "ajv/dist/2020";
+import addFormats from "ajv-formats";
 
 import { loadOpenApiContracts } from "../../../../src/openapi/loader";
 
@@ -256,5 +265,248 @@ describe("erpnext-reconciliation/reconciliation.yaml — projections (READ-NOT-M
     for (const name of ["PostingBacklogItem", "ReconciliationRun", "ReconciliationResult", "RecordedRepair", "PostingBacklogPage", "ReconciliationResultPage"]) {
       expect(schema(name)?.additionalProperties).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RT-177 — ERPNext negative on-hand read contract (RT-51 §C, D3)
+// ---------------------------------------------------------------------------
+
+const NEGATIVE_ON_HAND_OPS = {
+  listErpnextNegativeOnHandStores: {
+    path: "/api/v1/catalog/erpnext-reconciliation/negative-on-hand/stores",
+    page: "StoreNegativeOnHandSummaryPage",
+  },
+  listErpnextNegativeOnHand: {
+    path: "/api/v1/catalog/erpnext-reconciliation/stores/{storeId}/negative-on-hand",
+    page: "StoreNegativeOnHandPage",
+  },
+} as const;
+
+const NEGATIVE_ON_HAND_SCHEMAS = [
+  "StockSnapshotStatus",
+  "PendingSnapshotRequest",
+  "ErpnextItemRef",
+  "NegativeOnHandItem",
+  "NegativeOnHandTenantProduct",
+  "StoreNegativeOnHandSummary",
+  "StoreNegativeOnHandSummaryPage",
+  "StoreNegativeOnHandPage",
+] as const;
+
+type LooseSchema = Record<string, unknown> & {
+  properties?: Record<string, Record<string, unknown>>;
+  required?: string[];
+};
+function looseSchema(name: string): LooseSchema {
+  const s = doc.components?.schemas?.[name] as LooseSchema | undefined;
+  if (!s) throw new Error(`schema ${name} missing`);
+  return s;
+}
+
+function validatorFor(name: string): ValidateFunction {
+  const ajv = new Ajv2020({ strict: false, allErrors: true });
+  addFormats(ajv);
+  ajv.addSchema({ ...(doc as object), $id: "reconciliation" });
+  return ajv.compile({ $ref: `reconciliation#/components/schemas/${name}` });
+}
+
+const STORE_ID = "0a000000-0000-7000-8000-000001770001";
+const RUN_ID = "0a000000-0000-7000-8000-000001770002";
+const PRODUCT_ID = "0a000000-0000-7000-8000-000001770003";
+
+function freshSnapshot(): Record<string, unknown> {
+  return {
+    status: "fresh",
+    erpnextWarehouseRef: "Stores - RT",
+    runId: RUN_ID,
+    readAt: "2026-10-04T10:00:00.123456+02:00",
+    recordedAt: "2026-10-04T08:00:01.000Z",
+    staleAfterSeconds: 86400,
+    reportedEntryCount: 3,
+    pendingRequest: null,
+  };
+}
+
+function itemA(): Record<string, unknown> {
+  return {
+    discrepancyKind: "erpnext_negative_on_hand",
+    erpnextItemRef: { doctype: "Item", name: "ITEM-A" },
+    mappingStatus: "mapped",
+    tenantProduct: { id: PRODUCT_ID, name: "Apples" },
+    erpnextWarehouseRef: "Stores - RT",
+    quantity: "-3.000000",
+    stockUom: "Nos",
+  };
+}
+
+describe("reconciliation.yaml — RT-177 negative on-hand operations", () => {
+  it("declares both operations at the approved paths, GET only", () => {
+    for (const [id, spec] of Object.entries(NEGATIVE_ON_HAND_OPS)) {
+      const item = doc.paths?.[spec.path];
+      expect(Object.keys(item ?? {})).toEqual(["get"]);
+      expect(item?.["get"]?.operationId).toBe(id);
+    }
+  });
+
+  it("does NOT collide with any shipped operationId", () => {
+    for (const id of Object.keys(NEGATIVE_ON_HAND_OPS)) {
+      expect(shippedOperationIds.has(id)).toBe(false);
+    }
+  });
+
+  it("is read-only: no request body, no Idempotency-Key, no 409", () => {
+    for (const id of Object.keys(NEGATIVE_ON_HAND_OPS)) {
+      const op = findOp(id);
+      expect(op?.requestBody).toBeUndefined();
+      expect(
+        (op?.parameters ?? []).some((p) => p.$ref?.endsWith("/IdempotencyKey")),
+      ).toBe(false);
+      expect(op?.responses?.["409"]).toBeUndefined();
+    }
+  });
+
+  it("declares 200 + 400 + 401 + non-disclosing 404", () => {
+    for (const [id, spec] of Object.entries(NEGATIVE_ON_HAND_OPS)) {
+      const responses = findOp(id)?.responses ?? {};
+      expect(Object.keys(responses).sort()).toEqual(["200", "400", "401", "404"]);
+      expect(responses["404"]).toEqual({ $ref: "#/components/responses/NotFound" });
+      expect(JSON.stringify(responses["200"])).toContain(`#/components/schemas/${spec.page}`);
+    }
+  });
+
+  it("takes an opaque cursor + limit 1..500 (default 100); the item list adds a uuid storeId path param", () => {
+    const params = doc.components?.parameters as Record<string, Record<string, unknown>>;
+    const cursor = params["NegativeOnHandCursor"]!;
+    expect(cursor["in"]).toBe("query");
+    expect(cursor["required"]).toBe(false);
+    const limit = params["Limit"]!["schema"] as Record<string, unknown>;
+    expect(limit).toMatchObject({ type: "integer", minimum: 1, maximum: 500, default: 100 });
+    const storeId = params["StoreId"]!;
+    expect(storeId).toMatchObject({ name: "storeId", in: "path", required: true });
+    expect(storeId["schema"]).toEqual({ type: "string", format: "uuid" });
+
+    const refs = (id: string) => (findOp(id)?.parameters ?? []).map((p) => p.$ref);
+    expect(refs("listErpnextNegativeOnHandStores")).toEqual([
+      "#/components/parameters/NegativeOnHandCursor",
+      "#/components/parameters/Limit",
+    ]);
+    expect(refs("listErpnextNegativeOnHand")).toEqual([
+      "#/components/parameters/StoreId",
+      "#/components/parameters/NegativeOnHandCursor",
+      "#/components/parameters/Limit",
+    ]);
+  });
+
+  it("every RT-177 schema is strict (additionalProperties: false)", () => {
+    for (const name of NEGATIVE_ON_HAND_SCHEMAS) {
+      expect(looseSchema(name)["additionalProperties"]).toBe(false);
+    }
+  });
+
+  it("StockSnapshotStatus carries the D4 freshness block", () => {
+    const s = looseSchema("StockSnapshotStatus");
+    expect(s.required?.slice().sort()).toEqual([
+      "erpnextWarehouseRef", "pendingRequest", "readAt", "recordedAt",
+      "reportedEntryCount", "runId", "staleAfterSeconds", "status",
+    ]);
+    expect(s.properties?.["status"]?.["enum"]).toEqual([
+      "no_warehouse_mapping", "no_snapshot", "fresh", "stale",
+    ]);
+  });
+
+  it("NegativeOnHandItem: const kind, Item ref, mapped|unmapped, signed strictly-negative pattern", () => {
+    const s = looseSchema("NegativeOnHandItem");
+    expect(s.properties?.["discrepancyKind"]?.["const"]).toBe("erpnext_negative_on_hand");
+    expect(s.properties?.["mappingStatus"]?.["enum"]).toEqual(["mapped", "unmapped"]);
+    const pattern = new RegExp(String(s.properties?.["quantity"]?.["pattern"]));
+    for (const ok of ["-3.000000", "-1.5", "-1", "-999999999999999.999999"]) {
+      expect(pattern.test(ok)).toBe(true);
+    }
+    for (const bad of ["5.000000", "0", "3", "-1e3", "-1.0000001", "--1"]) {
+      expect(pattern.test(bad)).toBe(false);
+    }
+    const ref = looseSchema("ErpnextItemRef");
+    expect(ref.properties?.["doctype"]?.["const"]).toBe("Item");
+    expect(ref.properties?.["name"]).toMatchObject({ minLength: 1, maxLength: 140 });
+  });
+
+  it("no RT-177 schema carries a money / valuation / 009-ledger / acknowledge field", () => {
+    for (const name of NEGATIVE_ON_HAND_SCHEMAS) {
+      const props = Object.keys(looseSchema(name).properties ?? {});
+      for (const forbidden of [
+        "amount", "valuation", "valuationRate", "cost", "price", "stockValue",
+        "movementId", "ledgerBalance", "acknowledged", "acknowledgedAt", "resultState",
+      ]) {
+        expect(props).not.toContain(forbidden);
+      }
+    }
+  });
+
+  it("validates a store page fixture (A mapped, C unmapped) and rejects contract violations", () => {
+    const page = validatorFor("StoreNegativeOnHandPage");
+    const itemC = {
+      ...itemA(),
+      erpnextItemRef: { doctype: "Item", name: "ITEM-C" },
+      mappingStatus: "unmapped",
+      tenantProduct: null,
+      quantity: "-1.500000",
+    };
+    const body = { storeId: STORE_ID, snapshot: freshSnapshot(), items: [itemA(), itemC], nextCursor: null };
+    expect(page(body)).toBe(true);
+
+    expect(page({ ...body, items: [{ ...itemA(), quantity: "5.000000" }] })).toBe(false);
+    expect(page({ ...body, items: [{ ...itemA(), extra: 1 }] })).toBe(false);
+    expect(page({ ...body, items: [{ ...itemA(), erpnextItemRef: { doctype: "Bin", name: "X" } }] })).toBe(false);
+    expect(page({ ...body, snapshot: { ...freshSnapshot(), status: "live" } })).toBe(false);
+  });
+
+  it("validates every snapshot state, incl. pendingRequest, in a summary page", () => {
+    const summaries = validatorFor("StoreNegativeOnHandSummaryPage");
+    const unmappedState = {
+      status: "no_warehouse_mapping", erpnextWarehouseRef: null, runId: null, readAt: null,
+      recordedAt: null, staleAfterSeconds: 86400, reportedEntryCount: null, pendingRequest: null,
+    };
+    const pendingState = {
+      ...unmappedState, status: "no_snapshot", erpnextWarehouseRef: "Stores - RT",
+      pendingRequest: { runId: RUN_ID, requestedAt: "2026-10-04T08:00:00.000Z" },
+    };
+    const staleRow = {
+      storeId: STORE_ID, storeName: "S1",
+      snapshot: { ...freshSnapshot(), status: "stale" }, negativeItemCount: 2,
+    };
+    const body = {
+      items: [
+        { storeId: STORE_ID, storeName: "S1", snapshot: unmappedState, negativeItemCount: 0 },
+        { storeId: STORE_ID, storeName: "S1", snapshot: pendingState, negativeItemCount: 0 },
+        staleRow,
+      ],
+      nextCursor: "eyJrIjoicyJ9",
+    };
+    expect(summaries(body)).toBe(true);
+    expect(summaries({ ...body, items: [{ ...staleRow, negativeItemCount: -1 }] })).toBe(false);
+    expect(
+      summaries({
+        ...body,
+        items: [{ ...staleRow, snapshot: { ...pendingState, pendingRequest: { runId: RUN_ID } } }],
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("reconciliation.yaml — RT-177 description-only edits (D3)", () => {
+  it("negative_balance_flagged is described as 009-ledger-derived, not an ERPNext Bin signal (value kept)", () => {
+    const cls = looseSchema("ReconciliationResult").properties?.["mismatchClass"] ?? {};
+    expect(cls["enum"]).toContain("negative_balance_flagged");
+    const description = String(cls["description"]);
+    expect(description).toContain("negative_balance_flagged");
+    expect(description).toContain("009");
+    expect(description).toMatch(/NOT an ERPNext Bin signal/);
+  });
+
+  it("the run summary is no longer described as counts only", () => {
+    const summary = looseSchema("ReconciliationRun").properties?.["summary"] ?? {};
+    expect(String(summary["description"])).not.toMatch(/counts only/i);
+    expect(String(summary["description"])).toContain("bin_view_report");
   });
 });

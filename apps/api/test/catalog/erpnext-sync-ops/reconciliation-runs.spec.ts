@@ -12,6 +12,10 @@
  *   §1 newest-first ordering + projection (runId/status/trigger/timestamps/mismatchSummary).
  *   §2 tenant isolation — tenant B's run never appears for tenant A.
  *   §3 §XII strict DTO — smuggled tenant_id → 400.
+ *   §4 composite-cursor paging across same-timestamp ties.
+ *   §5 RT-180 — an out-of-range cursor timestamp is a 400, never a 500; a
+ *      server-issued cursor still pages; the Postgres datetime errors the cast
+ *      raises are classified as input errors (the 400 backstop).
  */
 import "reflect-metadata";
 
@@ -28,6 +32,7 @@ import { DashboardAuthGuard } from "../../../src/auth/dashboard-auth.guard";
 import { PG_POOL } from "../../../src/auth/auth.module";
 import { RolesGuard } from "../../../src/auth/roles.guard";
 import { GlobalExceptionFilter } from "../../../src/common/exception.filter";
+import { isPostgresInputError } from "../../../src/common/postgres-input-error";
 import { TenantContextGuard } from "../../../src/context/tenant-context.guard";
 import type { ResolvedContext } from "../../../src/context/types";
 import { ErpnextSyncOpsController } from "../../../src/catalog/erpnext-sync-ops/erpnext-sync-ops.controller";
@@ -220,4 +225,64 @@ describe("025-US3 §4 — pagination is stable + gap-free across same-timestamp 
     expect(seen.has(TIE_1)).toBe(true);
     expect(seen.has(TIE_2)).toBe(true);
   });
+});
+
+describe("RT-180 §5 — run cursor timestamp must be a real instant", () => {
+  const RUN_ID = "0a000000-0000-7000-8000-00000e0517f1";
+
+  it.each([`2000-02-30T00:00:00Z|${RUN_ID}`, `0000-00-00T0Z|${RUN_ID}`])(
+    "cursor %s → 400 validation_error (was 500)",
+    async (cursor) => {
+      if (skip()) return;
+      const res = await http().get(BASE).query({ cursor }).expect(400);
+      expect(res.body.error.code).toBe("validation_error");
+    },
+  );
+
+  it("a server-issued nextCursor is accepted and pages to older runs", async () => {
+    if (skip()) return;
+    // Two tenant-A runs at distinct instants so a page_size=1 walk has a second page.
+    await env!.admin.query(
+      `INSERT INTO erpnext_reconciliation_run
+         (id, tenant_id, store_id, kind, trigger, status, started_at, finished_at)
+       VALUES
+         ($1, $3, $4, 'stock', 'on_demand', 'completed', '2098-06-01T10:00:00.123Z', '2098-06-01T10:05:00Z'),
+         ($2, $3, $4, 'stock', 'on_demand', 'completed', '2098-06-01T09:00:00.456Z', '2098-06-01T09:05:00Z')
+       ON CONFLICT DO NOTHING`,
+      [
+        "0a000000-0000-7000-8000-0000000180a1",
+        "0a000000-0000-7000-8000-0000000180a2",
+        TENANT_A,
+        RECONCILIATION_FIXTURE_IDS.storeAMapped,
+      ],
+    );
+    const first = await http().get(BASE).query({ page_size: "1" }).expect(200);
+    const cursor: string | null = first.body.nextCursor;
+    expect(cursor).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\|/);
+    const second = await http().get(BASE).query({ page_size: "1", cursor }).expect(200);
+    expect(second.body.items).toHaveLength(1);
+    const [newer] = first.body.items as RunView[];
+    const [older] = second.body.items as RunView[];
+    expect(older!.runId).not.toBe(newer!.runId);
+    expect(Date.parse(older!.startedAt)).toBeLessThanOrEqual(Date.parse(newer!.startedAt));
+  });
+
+  it.each([`2000-02-30T00:00:00.000Z|${RUN_ID}`, `0000-00-00T0Z|${RUN_ID}`])(
+    "backstop: if %s reached the timestamptz cast, Postgres raises an input error (→ 400)",
+    async (cursor) => {
+      if (skip()) return;
+      // Bypass the DTO and hand the token straight to the read model, as a
+      // future caller without the DTO check would.
+      const service = app!.get(ErpnextSyncOpsReadModelService);
+      const err: unknown = await service
+        .listReconciliationRuns({ tenantId: TENANT_A, cursor, limit: 1 })
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+      expect(err).not.toBeNull();
+      expect(["22007", "22008"]).toContain((err as { code?: unknown }).code);
+      expect(isPostgresInputError(err)).toBe(true);
+    },
+  );
 });
