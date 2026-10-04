@@ -47,6 +47,7 @@ import { SaleWorker } from "./sales/sale.worker";
 import { AuditRetentionWorker } from "./audit/audit-retention.worker";
 import { OutboxRetentionWorker } from "./outbox/retention.worker";
 import { StockRunSweepWorker } from "./erpnext-reconciliation/stock-run-sweep.worker";
+import { ReplayPurgeWorker } from "./cashier-admissions/replay-purge.worker";
 import { WorkerModule } from "./worker.module";
 
 /**
@@ -85,14 +86,15 @@ const logger = new Logger("worker.bootstrap");
 /**
  * Bootstraps the worker. Returns the Nest context plus the workers it
  * resolved (`emailWorker`, `auditWorker`, `saleWorker`,
- * `auditRetentionWorker`, `outboxRetentionWorker`, `stockRunSweepWorker`),
- * and a `triggerShutdown`
+ * `auditRetentionWorker`, `outboxRetentionWorker`, `stockRunSweepWorker`,
+ * `replayPurgeWorker`), and a `triggerShutdown`
  * callable that tests can call to simulate a signal without actually
  * emitting one.
  *
- * All six workers are started by this function. The two retention workers
- * and the stock reconciliation sweep worker (RT-179) consume the repeatable
- * jobs their schedulers register at module init (RT-123); without a consumer
+ * All seven workers are started by this function. The two retention workers,
+ * the stock reconciliation sweep worker (RT-179) and the cashier-admission
+ * replay purge worker (RT-209) consume the repeatable jobs their schedulers
+ * register at module init (RT-123); without a consumer
  * those jobs accumulate unprocessed. Their shutdown is owned
  * by Nest's lifecycle: `app.close()` (called inside `shutdown()` below)
  * fires `onModuleDestroy` on every provider, which calls `close()` on
@@ -108,6 +110,7 @@ export async function bootstrap(
   auditRetentionWorker: AuditRetentionWorker;
   outboxRetentionWorker: OutboxRetentionWorker;
   stockRunSweepWorker: StockRunSweepWorker;
+  replayPurgeWorker: ReplayPurgeWorker;
   /** Test hook: invoke the registered shutdown sequence. */
   triggerShutdown: (signal: "SIGTERM" | "SIGINT") => Promise<void>;
 }> {
@@ -141,12 +144,14 @@ export async function bootstrap(
   const auditRetentionWorker = app.get(AuditRetentionWorker);
   const outboxRetentionWorker = app.get(OutboxRetentionWorker);
   const stockRunSweepWorker = app.get(StockRunSweepWorker);
+  const replayPurgeWorker = app.get(ReplayPurgeWorker);
   emailWorker.start();
   auditWorker.start();
   saleWorker.start();
   auditRetentionWorker.start();
   outboxRetentionWorker.start();
   stockRunSweepWorker.start();
+  replayPurgeWorker.start();
 
   writeLine(stderr, {
     level: "info",
@@ -195,6 +200,7 @@ export async function bootstrap(
     auditRetentionWorker,
     outboxRetentionWorker,
     stockRunSweepWorker,
+    replayPurgeWorker,
     triggerShutdown: shutdown,
   };
 }

@@ -78,6 +78,8 @@ export const WORKER_QUEUE_NAMES = [
   QUEUE_NAMES.outboxRetention,
   // RT-179: scheduled ERPNext stock reconciliation run sweep.
   QUEUE_NAMES.erpnextStockReconciliationSweep,
+  // RT-209: periodic purge of expired cashier-admission replay rows.
+  QUEUE_NAMES.cashierAdmissionReplayPurge,
 ] as const satisfies readonly string[];
 export type WorkerQueueName = (typeof WORKER_QUEUE_NAMES)[number];
 

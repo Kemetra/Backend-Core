@@ -148,6 +148,13 @@ import {
 } from "./outbox/drizzle-outbox-retention.repository";
 import { OutboxRetentionWorker } from "./outbox/retention.worker";
 import { OutboxRetentionScheduler } from "./outbox/retention.scheduler";
+import { ReplayPurgeProcessor } from "./cashier-admissions/replay-purge.processor";
+import {
+  NoOpReplayPurgeRepository,
+  PgReplayPurgeRepository,
+} from "./cashier-admissions/replay-purge.repository";
+import { ReplayPurgeScheduler } from "./cashier-admissions/replay-purge.scheduler";
+import { ReplayPurgeWorker } from "./cashier-admissions/replay-purge.worker";
 import { verifyWorkerDatabaseRole } from "./database-role-verifier";
 
 /**
@@ -457,6 +464,20 @@ export function stockRunSweepProcessorProviderFactory(
       ? new NoOpStockRunSweepRepository()
       : new PgStockRunSweepRepository(wrapper.pool);
   return new StockRunSweepProcessor(repo, resolveStockRunSweepIntervalMs());
+}
+
+/**
+ * Factory for the `ReplayPurgeProcessor` provider (RT-209).
+ *
+ * Reuses the shared `AuditDbPool` wrapper (no second pool). On the no-DB path
+ * the NoOp repository lists no tenants, so a purge is an empty pass.
+ */
+export function replayPurgeProcessorProviderFactory(wrapper: AuditDbPool): ReplayPurgeProcessor {
+  const repo =
+    wrapper.pool === null
+      ? new NoOpReplayPurgeRepository()
+      : new PgReplayPurgeRepository(wrapper.pool);
+  return new ReplayPurgeProcessor(repo);
 }
 
 /** DI token for the `AuditDbPool` Nest-managed wrapper. */
@@ -811,6 +832,19 @@ export class WorkerDatabaseRoleVerifier implements OnModuleInit {
     StockRunSweepWorker,
     StockRunSweepScheduler,
 
+    // ── Cashier-admission replay purge (RT-209) ───────────────────────
+    //
+    // A repeatable job (default hourly) that deletes every tenant's expired
+    // `cashier_admission_requests` rows, whose replay bodies carry the
+    // cashier's display name. Same quartet shape as the sweeps above.
+    {
+      provide: ReplayPurgeProcessor,
+      useFactory: replayPurgeProcessorProviderFactory,
+      inject: [AuditDbPool],
+    },
+    ReplayPurgeWorker,
+    ReplayPurgeScheduler,
+
     // ── Outbox drainer pipeline (T581) ────────────────────────────────
     //
     // The OUTBOX_DRAINER + OutboxDrainerRunner providers live here (not in
@@ -865,6 +899,8 @@ export class WorkerDatabaseRoleVerifier implements OnModuleInit {
     OutboxRetentionProcessor,
     StockRunSweepWorker,
     StockRunSweepProcessor,
+    ReplayPurgeWorker,
+    ReplayPurgeProcessor,
     OUTBOX_DRAINER,
     OutboxDrainerRunner,
     WorkerDbPoolGaugeRegistrar,
