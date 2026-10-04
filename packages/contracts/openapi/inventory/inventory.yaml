@@ -354,6 +354,7 @@ components:
         type: string
         minLength: 16
         maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
     StoreIdPath:
       name: storeId
       in: path
@@ -379,15 +380,14 @@ components:
           description: Write-off is a reason-coded `outbound`. transfer/count types are produced by their own operations only.
         quantity:
           allOf:
-            - $ref: "#/components/schemas/DecimalQuantity"
+            - $ref: "#/components/schemas/NonZeroDecimalQuantity"
           description: >
-            SIGNED quantity in the stocking unit — `inbound` is positive,
+            SIGNED, non-zero quantity in the stocking unit — `inbound` is positive,
             `outbound` is negative; `movementType` is the semantic label, the
             sign is authoritative for the on-hand SUM. The server validates that
             the sign agrees with `movementType` (FR-022).
         stockingUnit:
-          type: string
-          description: Unit the quantity is expressed in; MUST match the product's stocking unit (cross-unit rejected, FR-022).
+          $ref: "#/components/schemas/StockingUnit"
         tenantProductRef:
           type: [string, "null"]
           format: uuid
@@ -433,9 +433,10 @@ components:
         tenantProductRef: { type: string, format: uuid }
         quantity:
           allOf:
-            - $ref: "#/components/schemas/DecimalQuantity"
+            - $ref: "#/components/schemas/PositiveDecimalQuantity"
           description: Strictly positive; a zero-quantity transfer is a validation error.
-        stockingUnit: { type: string }
+        stockingUnit:
+          $ref: "#/components/schemas/StockingUnit"
         reason: { type: string }
     RecordStockCountCommand:
       type: object
@@ -448,9 +449,10 @@ components:
         tenantProductRef: { type: string, format: uuid }
         countedQuantity:
           allOf:
-            - $ref: "#/components/schemas/DecimalQuantity"
+            - $ref: "#/components/schemas/NonNegativeDecimalQuantity"
           description: The physical count (non-negative); the signed variance vs derived on-hand becomes the correction movement.
-        stockingUnit: { type: string }
+        stockingUnit:
+          $ref: "#/components/schemas/StockingUnit"
         countedAt:
           type: string
           format: date-time
@@ -587,6 +589,33 @@ components:
           description: Items skipped because their provenance pair already applied (idempotent re-run, FR-033).
 
     # ----- Shared
+    StockingUnit:
+      type: string
+      minLength: 1
+      maxLength: 32
+      pattern: "\\S"
+      description: >
+        Unit the quantity is expressed in; MUST match the product's stocking unit
+        (cross-unit rejected, FR-022). 1–32 characters and not whitespace-only
+        (the server trims it; a blank unit is a 400).
+    NonZeroDecimalQuantity:
+      type: string
+      pattern: '^-?(?!0+(?:\.0+)?$)[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: >
+        Signed, non-zero exact-decimal quantity as a STRING (`numeric(19,4)`):
+        ≤15 integer and ≤4 fraction digits. Zero is a 400 for every movement type.
+    PositiveDecimalQuantity:
+      type: string
+      pattern: '^(?!0+(?:\.0+)?$)[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: >
+        Strictly positive exact-decimal quantity as a STRING (`numeric(19,4)`):
+        unsigned, ≤15 integer and ≤4 fraction digits, and not zero.
+    NonNegativeDecimalQuantity:
+      type: string
+      pattern: '^[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: >
+        Non-negative exact-decimal quantity as a STRING (`numeric(19,4)`):
+        unsigned, ≤15 integer and ≤4 fraction digits.
     DecimalQuantity:
       type: string
       pattern: '^-?\d{1,15}(\.\d{1,4})?$'

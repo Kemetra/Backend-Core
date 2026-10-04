@@ -31,6 +31,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [tenant_id]
               properties:
                 tenant_id:
@@ -55,6 +56,7 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [store_id]
               properties:
                 store_id:

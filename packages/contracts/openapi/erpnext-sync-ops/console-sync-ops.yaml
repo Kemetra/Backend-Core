@@ -137,7 +137,7 @@ paths:
         READ-ONLY.
       parameters:
         - $ref: "#/components/parameters/StoreIdQuery"
-        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/RunCursor"
         - $ref: "#/components/parameters/PageSize"
       responses:
         "200":
@@ -186,10 +186,24 @@ components:
       required: false
       schema:
         type: string
+        pattern: "^[0-9]{1,18}$"
+      description: >
+        Opaque pagination cursor from a prior page's `nextCursor`. Opaque — do not
+        decode or construct. Omit for the first page. The posting-backlog cursor is
+        a numeric token (1–18 digits); anything else is a 400 `validation_error`.
+    RunCursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
         minLength: 1
       description: >
         Opaque pagination cursor from a prior page's `nextCursor`. Opaque — do not
-        decode or construct. Omit for the first page.
+        decode or construct. Omit for the first page. (Run-history cursor; its
+        server-side `<timestamp>|<id>` shape is deliberately not declared yet —
+        see RT-66: a shape-valid token with an out-of-range timestamp currently
+        returns 500, so the format is published only once that is fixed.)
     PageSize:
       name: page_size
       in: query

@@ -151,6 +151,7 @@ components:
           format: email
         role_code:
           type: string
+          minLength: 1
         store_access_kind:
           type: string
           enum: [all, specific]
@@ -176,7 +177,7 @@ components:
     MembershipUpdate:
       type: object
       properties:
-        role_code: { type: string }
+        role_code: { type: string, minLength: 1 }
         store_access_kind: { type: string, enum: [all, specific] }
         store_ids:
           type: array
