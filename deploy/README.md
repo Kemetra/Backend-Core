@@ -81,9 +81,8 @@ op run --env-file=deploy/prod.env -- \
 `api`/`worker` start (compose `service_completed_successfully` gate).
 
 Step 2 must run between the migration and the app start. The API boot check
-verifies the domain role's posture (`NOBYPASSRLS`, not a superuser) but not its
-table grants. If step 2 is skipped, the API starts and looks healthy, but its
-`/api/pos/v1/cashier-admissions` routes return 500.
+verifies the domain role's cashier-admissions table grants (RT-212). If step 2
+is skipped, the API refuses to start, and the error names each missing grant.
 
 Step 2 needs a `psql` client on the deploy host. It reads the connection from
 `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` and `PGSSLMODE` in
