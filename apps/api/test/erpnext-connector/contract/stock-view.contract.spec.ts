@@ -28,10 +28,20 @@
  *
  * Structural / load-only (no app boot, no HTTP, no Docker). The DP2-side
  * runtime + the 017-rewire are future slices (FR-018, out of 019 scope).
+ *
+ * RT-174 (stock-view 1.2.0-draft, connector-paged bin-view windows): section 8
+ * validates example request/report INSTANCES against the contract with Ajv
+ * (JSON Schema 2020-12, the OpenAPI 3.1 dialect), because "a non-final window
+ * needs at least one entry" is an `if`/`then` rule that only an instance check
+ * can prove. It also pins v1 compatibility: a request without `maxWindows` and
+ * a report without `window` still validate.
  */
 import "reflect-metadata";
 
 import { resolve } from "node:path";
+
+import Ajv2020, { type ValidateFunction } from "ajv/dist/2020";
+import addFormats from "ajv-formats";
 
 import { loadOpenApiContracts } from "../../../src/openapi/loader";
 
@@ -517,6 +527,7 @@ describe("stock-view.yaml — object safety", () => {
       "BinViewItemWindow",
       "BinViewPage",
       "BinViewSnapshotReport",
+      "BinViewReportWindow",
       "BinEntry",
       "ErpnextItemRef",
       "RecordedBinView",
@@ -539,6 +550,328 @@ describe("stock-view.yaml — object safety", () => {
       ]) {
         expect(props).not.toHaveProperty(leak);
       }
+    }
+  });
+});
+
+// ===========================================================================
+// 8. RT-174 — v1.2 connector-paged bin-view windows (instance validation)
+// ===========================================================================
+describe("stock-view.yaml — v1.2 connector-paged windows (RT-174)", () => {
+  let validateRequest: ValidateFunction;
+  let validateReport: ValidateFunction;
+  let validateRecorded: ValidateFunction;
+
+  beforeAll(() => {
+    const ajv = new Ajv2020({ strict: false, allErrors: true });
+    addFormats(ajv);
+    ajv.addSchema({ ...(doc as object), $id: "stock-view" });
+    const compile = (schema: string): ValidateFunction =>
+      ajv.compile({ $ref: `stock-view#/components/schemas/${schema}` });
+    validateRequest = compile("BinViewRequest");
+    validateReport = compile("BinViewSnapshotReport");
+    validateRecorded = compile("RecordedBinView");
+  });
+
+  const expectValid = (validate: ValidateFunction, instance: unknown): void => {
+    const ok = validate(instance);
+    expect(validate.errors ?? []).toEqual([]);
+    expect(ok).toBe(true);
+  };
+  const expectInvalid = (validate: ValidateFunction, instance: unknown): void => {
+    expect(validate(instance)).toBe(false);
+  };
+
+  const ATTEMPT = "00000000-0000-7000-8000-0000000a7701";
+  const READ_AT = "2026-10-04T08:00:00.000Z";
+  const entry = (code: string) => ({
+    erpnextItemRef: { doctype: "Item", name: code },
+    quantity: "12.500000",
+    stockUom: "Nos",
+  });
+  const entries = (prefix: string, n: number) =>
+    Array.from({ length: n }, (_, i) => entry(`${prefix}-${i}`));
+  const report = (
+    window: Record<string, unknown> | undefined,
+    items: unknown[],
+  ): Record<string, unknown> =>
+    window === undefined
+      ? { entries: items, readAt: READ_AT }
+      : { entries: items, readAt: READ_AT, window };
+
+  const request = (itemWindow: Record<string, unknown>) => ({
+    requestRef: "00000000-0000-7000-8000-00000000e001",
+    storeId: "00000000-0000-7000-8000-00000000570e",
+    erpnextWarehouseRef: "Stores - RT",
+    runRef: "00000000-0000-7000-8000-00000000a001",
+    itemWindow,
+    itemCursor: "c1",
+  });
+
+  it("is version 1.2.0-draft", () => {
+    expect(doc.info?.version).toBe("1.2.0-draft");
+  });
+
+  // --- Request (feed) --------------------------------------------------------
+
+  it("itemWindow.maxWindows is an OPTIONAL integer >= 1", () => {
+    const win = doc.components?.schemas?.["BinViewItemWindow"];
+    const maxWindows = (win?.properties ?? {})["maxWindows"] as {
+      type?: string;
+      minimum?: number;
+    };
+    expect(maxWindows?.type).toBe("integer");
+    expect(maxWindows?.minimum).toBe(1);
+    expect(win?.required ?? []).not.toContain("maxWindows");
+  });
+
+  it("a connector-paged request (maxWindows 20, null bounds, windowSeq 0) validates", () => {
+    expectValid(
+      validateRequest,
+      request({
+        windowSeq: 0,
+        maxItems: 500,
+        maxWindows: 20,
+        fromItemRef: null,
+        toItemRef: null,
+      }),
+    );
+  });
+
+  it("v1 compat: a request WITHOUT maxWindows still validates", () => {
+    expectValid(
+      validateRequest,
+      request({ windowSeq: 0, maxItems: 500, fromItemRef: null, toItemRef: null }),
+    );
+  });
+
+  it("maxWindows 0 is invalid", () => {
+    expectInvalid(validateRequest, request({ windowSeq: 0, maxItems: 500, maxWindows: 0 }));
+  });
+
+  it("a paged request (maxWindows >= 2) must have windowSeq 0 and null bounds (if/then)", () => {
+    // Bounds omitted is fine; present bounds must be null.
+    expectValid(validateRequest, request({ windowSeq: 0, maxItems: 500, maxWindows: 2 }));
+    expectInvalid(
+      validateRequest,
+      request({ windowSeq: 4, maxItems: 500, maxWindows: 2, fromItemRef: "A" }),
+    );
+    expectInvalid(validateRequest, request({ windowSeq: 1, maxItems: 500, maxWindows: 20 }));
+    expectInvalid(
+      validateRequest,
+      request({ windowSeq: 0, maxItems: 500, maxWindows: 20, fromItemRef: "A", toItemRef: null }),
+    );
+    expectInvalid(
+      validateRequest,
+      request({ windowSeq: 0, maxItems: 500, maxWindows: 20, fromItemRef: null, toItemRef: "Z" }),
+    );
+  });
+
+  it("v1 compat: the paged-request rule does not apply when maxWindows is absent or 1", () => {
+    const v1Window = { windowSeq: 3, maxItems: 500, fromItemRef: "A", toItemRef: "Z" };
+    expectValid(validateRequest, request(v1Window));
+    expectValid(validateRequest, request({ ...v1Window, maxWindows: 1 }));
+  });
+
+  it("the overflow cutoff is maxWindows × maxItems everywhere (never a hard-coded × 500)", () => {
+    const infoDescription = (doc.info as { description?: string } | undefined)?.description ?? "";
+    const maxWindows = (doc.components?.schemas?.["BinViewItemWindow"]?.properties ?? {})[
+      "maxWindows"
+    ] as { description?: string };
+    for (const text of [infoDescription, maxWindows?.description ?? ""]) {
+      expect(text).toContain("`maxWindows × maxItems`");
+      expect(text).not.toContain("maxWindows × 500");
+    }
+  });
+
+  // --- Report body -------------------------------------------------------------
+
+  it("the report `window` is a strict {attemptRef: uuid, windowSeq: int >= 0, isFinal: bool}", () => {
+    const win = doc.components?.schemas?.["BinViewReportWindow"];
+    expect(win?.additionalProperties).toBe(false);
+    expect(win?.required?.slice().sort()).toEqual(
+      ["attemptRef", "isFinal", "windowSeq"].sort(),
+    );
+    const props = (win?.properties ?? {}) as Record<
+      string,
+      { type?: string; format?: string; minimum?: number }
+    >;
+    expect(props["attemptRef"]).toMatchObject({ type: "string", format: "uuid" });
+    expect(props["windowSeq"]).toMatchObject({ type: "integer", minimum: 0 });
+    expect(props["isFinal"]).toMatchObject({ type: "boolean" });
+    const reportSchema = doc.components?.schemas?.["BinViewSnapshotReport"];
+    expect((reportSchema?.properties ?? {})["window"]).toMatchObject({
+      $ref: "#/components/schemas/BinViewReportWindow",
+    });
+    expect(reportSchema?.required ?? []).not.toContain("window");
+  });
+
+  it("a valid multi-window attempt (500 / 500 / 37) validates window by window", () => {
+    expectValid(
+      validateReport,
+      report({ attemptRef: ATTEMPT, windowSeq: 0, isFinal: false }, entries("A", 500)),
+    );
+    expectValid(
+      validateReport,
+      report({ attemptRef: ATTEMPT, windowSeq: 1, isFinal: false }, entries("B", 500)),
+    );
+    expectValid(
+      validateReport,
+      report({ attemptRef: ATTEMPT, windowSeq: 2, isFinal: true }, entries("C", 37)),
+    );
+  });
+
+  it("an empty warehouse is one empty final window {windowSeq 0, isFinal true}", () => {
+    expectValid(validateReport, report({ attemptRef: ATTEMPT, windowSeq: 0, isFinal: true }, []));
+  });
+
+  it("an unknown key in `window` is invalid (strict)", () => {
+    expectInvalid(
+      validateReport,
+      report(
+        { attemptRef: ATTEMPT, windowSeq: 0, isFinal: true, totalWindows: 1 },
+        entries("A", 1),
+      ),
+    );
+  });
+
+  it("a NON-final window with 0 entries is invalid (if/then)", () => {
+    expectInvalid(validateReport, report({ attemptRef: ATTEMPT, windowSeq: 0, isFinal: false }, []));
+    expectInvalid(validateReport, report({ attemptRef: ATTEMPT, windowSeq: 3, isFinal: false }, []));
+  });
+
+  it("a final window after window 0 with 0 entries is invalid (zero entries only as seq 0 + isFinal)", () => {
+    expectInvalid(validateReport, report({ attemptRef: ATTEMPT, windowSeq: 2, isFinal: true }, []));
+  });
+
+  it("a negative windowSeq is invalid", () => {
+    expectInvalid(
+      validateReport,
+      report({ attemptRef: ATTEMPT, windowSeq: -1, isFinal: false }, entries("A", 1)),
+    );
+  });
+
+  it("a window missing isFinal, or with a non-uuid attemptRef, is invalid", () => {
+    expectInvalid(validateReport, report({ attemptRef: ATTEMPT, windowSeq: 0 }, entries("A", 1)));
+    expectInvalid(
+      validateReport,
+      report({ attemptRef: "not-a-uuid", windowSeq: 0, isFinal: true }, entries("A", 1)),
+    );
+  });
+
+  it("a window still carries at most 500 entries", () => {
+    expectInvalid(
+      validateReport,
+      report({ attemptRef: ATTEMPT, windowSeq: 0, isFinal: false }, entries("A", 501)),
+    );
+  });
+
+  it("v1 compat: a report WITHOUT `window` still validates, empty or not", () => {
+    expectValid(validateReport, report(undefined, []));
+    expectValid(validateReport, report(undefined, entries("A", 500)));
+  });
+
+  // --- Response ----------------------------------------------------------------
+
+  it("RecordedBinView gains OPTIONAL windowSeq / windowsRecorded / complete", () => {
+    const rec = doc.components?.schemas?.["RecordedBinView"];
+    const props = (rec?.properties ?? {}) as Record<
+      string,
+      { type?: string; minimum?: number }
+    >;
+    expect(props["windowSeq"]).toMatchObject({ type: "integer", minimum: 0 });
+    expect(props["windowsRecorded"]).toMatchObject({ type: "integer", minimum: 1 });
+    expect(props["complete"]).toMatchObject({ type: "boolean" });
+    // Optional: the runtime deployed before RT-175 does not emit them.
+    for (const f of ["windowSeq", "windowsRecorded", "complete"]) {
+      expect(rec?.required ?? []).not.toContain(f);
+    }
+  });
+
+  const recorded = {
+    requestRef: "00000000-0000-7000-8000-00000000e001",
+    runRef: "00000000-0000-7000-8000-00000000a001",
+    erpnextWarehouseRef: "Stores - RT",
+    acceptedEntryCount: 37,
+    readAt: READ_AT,
+    recordedAt: "2026-10-04T08:00:01.000Z",
+  };
+
+  it("a v1 RecordedBinView (no window fields) and a v1.2 one both validate", () => {
+    expectValid(validateRecorded, recorded);
+    expectValid(validateRecorded, {
+      ...recorded,
+      windowSeq: 2,
+      windowsRecorded: 3,
+      complete: true,
+    });
+  });
+
+  // --- Error set + normative semantics ----------------------------------------
+
+  it("the closed error set includes window_sequence_conflict (409 Conflict on the report)", () => {
+    const errorSchema = doc.components?.schemas?.["Error"] as
+      | { properties?: { error?: { properties?: { code?: { description?: string } } } } }
+      | undefined;
+    const codeDescription = errorSchema?.properties?.error?.properties?.code?.description ?? "";
+    for (const code of [
+      "validation_error",
+      "snapshot_required",
+      "idempotency_key_conflict",
+      "window_sequence_conflict",
+      "not_found",
+      "forbidden",
+      "system_failure",
+    ]) {
+      expect(codeDescription).toContain(code);
+    }
+    const conflict = doc.components?.responses?.["Conflict"] as { description?: string };
+    expect(conflict?.description).toContain("window_sequence_conflict");
+    expect(conflict?.description).toContain("idempotency_key_conflict");
+    const report409 = (doc.paths?.[REPORT_PATH]?.["post"]?.responses ?? {})["409"] as {
+      $ref?: string;
+    };
+    expect(report409?.$ref).toBe("#/components/responses/Conflict");
+  });
+
+  it("the report operation states the sequencing / supersede / completion / idempotency rules", () => {
+    const description =
+      (findOp("binViewReportSnapshot") as { description?: string } | undefined)?.description ?? "";
+    for (const phrase of [
+      "windows 0..k-1",
+      "`windowSeq ≥ maxWindows` of the request → 400 `validation_error`",
+      "NEW `attemptRef`",
+      "EXACTLY ONCE",
+      "binview-{requestRef}-{attemptRef}-w{windowSeq}",
+      "binview-{requestRef}",
+      "Idempotent-Replayed",
+      "window_sequence_conflict",
+    ]) {
+      expect(description).toContain(phrase);
+    }
+  });
+
+  it("the replay identity is the whole body, isFinal included (IdempotencyInterceptor fingerprint)", () => {
+    // Folded YAML keeps line breaks inside more-indented bullets; compare on
+    // normalised whitespace.
+    const flat = (s: string | undefined): string => (s ?? "").replace(/\s+/g, " ");
+    const description = flat(
+      (findOp("binViewReportSnapshot") as { description?: string } | undefined)?.description,
+    );
+    expect(description).toContain(
+      "the replay identity is the full body (`attemptRef`, `windowSeq`, `isFinal`, `entries`, `readAt`)",
+    );
+    expect(description).toContain("including a changed `isFinal`, → 409 `idempotency_key_conflict`");
+    const conflict = doc.components?.responses?.["Conflict"] as { description?: string };
+    expect(flat(conflict?.description)).toContain(
+      "any difference in `attemptRef`, `windowSeq`, `isFinal`, `entries` or `readAt` conflicts",
+    );
+  });
+
+  it("the document states the v1 compatibility rules and the deploy order", () => {
+    const description = (doc.info as { description?: string } | undefined)?.description ?? "";
+    for (const phrase of ["(i)", "(ii)", "(iii)", "(iv)", "DEPLOY ORDER: Backend-Core first"]) {
+      expect(description).toContain(phrase);
     }
   });
 });
