@@ -143,7 +143,7 @@ describe("RT-207 — drainer + PostingRequestedConsumer: reversal awaiting sale_
       event: "posting.reversal.dead_lettered",
       tenant_id: TENANT,
       sale_id: SALE,
-      outbox_event_id: EVENT_ID,
+      event_id: EVENT_ID,
     });
   });
 

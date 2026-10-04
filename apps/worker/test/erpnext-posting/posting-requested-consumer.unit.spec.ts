@@ -182,7 +182,7 @@ describe("PostingRequestedConsumer — RT-207 reversal dead-letter while awaitin
         tenant_id: TENANT,
         sale_id: SALE,
         source_ref_id: VOID_ID,
-        outbox_event_id: EVENT_ID,
+        event_id: EVENT_ID,
         attempts: MAX_ATTEMPTS,
       },
       "reversal dead-lettered: its sale_post row never appeared",
@@ -198,7 +198,7 @@ describe("PostingRequestedConsumer — RT-207 reversal dead-letter while awaitin
 
     const [fields] = error.mock.calls[0] as [Record<string, unknown>];
     expect(Object.keys(fields).sort()).toEqual(
-      ["attempts", "event", "outbox_event_id", "sale_id", "source_ref_id", "tenant_id"],
+      ["attempts", "event", "event_id", "sale_id", "source_ref_id", "tenant_id"],
     );
   });
 
