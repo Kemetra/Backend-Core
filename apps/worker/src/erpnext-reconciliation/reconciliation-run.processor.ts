@@ -43,6 +43,30 @@ export interface ErpnextBinView {
     storeId: string;
     runId: string;
   }): Promise<ReadonlyMap<string, string>>;
+  /**
+   * RT-175 (optional): the full reported view in ONE read — the mapped compare
+   * map plus the reported entries with no confirmed 013 map. When present the
+   * processor uses it instead of `fetchBinView`.
+   */
+  fetchBinReport?(input: {
+    tenantId: string;
+    storeId: string;
+    runId: string;
+  }): Promise<BinReportView>;
+}
+
+/** A reported ERPNext Bin entry whose `erpnextItemRef` has no confirmed 013 map. */
+export interface UnmappedBinEntry {
+  readonly erpnextItemRef: string;
+  /** Exact-decimal string as reported (§III — never a float). */
+  readonly quantity: string;
+  readonly stockUom: string;
+}
+
+/** The connector-reported Bin view for a run (RT-175). */
+export interface BinReportView {
+  readonly mapped: ReadonlyMap<string, string>;
+  readonly unmapped: readonly UnmappedBinEntry[];
 }
 
 /** A stub-tolerant view: no connector report present → reports nothing. */
@@ -154,11 +178,11 @@ export class ReconciliationRunProcessor {
           [storeId],
         );
 
-        const binView = await this.bin.fetchBinView({
-          tenantId: input.tenantId,
-          storeId,
-          runId: input.runId,
-        });
+        const binInput = { tenantId: input.tenantId, storeId, runId: input.runId };
+        const binReport: BinReportView = this.bin.fetchBinReport
+          ? await this.bin.fetchBinReport(binInput)
+          : { mapped: await this.bin.fetchBinView(binInput), unmapped: [] };
+        const binView = binReport.mapped;
 
         const counts: Record<string, number> = {};
         const seen = new Set<string>();
@@ -181,6 +205,21 @@ export class ReconciliationRunProcessor {
             mismatchClass: "erpnext_only",
             sourceRefId: productRef,
             detail: { dp2_on_hand: null, erpnext_bin: binQty },
+          });
+        }
+        // RT-175 erpnext_only (unmapped): a reported Bin item with NO confirmed
+        // 013 map — DP2 cannot key it to a product, so source_ref_id is NULL and
+        // the ERPNext identity + quantity + UOM go in the detail.
+        for (const u of binReport.unmapped) {
+          counts["erpnext_only"] = (counts["erpnext_only"] ?? 0) + 1;
+          await this.insertResult(client, input.runId, input.tenantId, {
+            mismatchClass: "erpnext_only",
+            sourceRefId: null,
+            detail: {
+              erpnext_item_ref: u.erpnextItemRef,
+              erpnext_bin: u.quantity,
+              stock_uom: u.stockUom,
+            },
           });
         }
 
