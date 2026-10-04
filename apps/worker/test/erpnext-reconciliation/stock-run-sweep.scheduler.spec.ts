@@ -10,6 +10,7 @@ jest.mock("bullmq", () => ({
 }));
 
 import { Queue } from "bullmq";
+import { DEFAULT_JOB_OPTIONS } from "@data-pulse-2/shared/queues/queue-config";
 
 import { STOCK_RUN_SWEEP_INTERVAL_ENV } from "../../src/erpnext-reconciliation/stock-run-sweep.config";
 import { STOCK_RUN_SWEEP_JOB_NAME } from "../../src/erpnext-reconciliation/stock-run-sweep.processor";
@@ -47,13 +48,31 @@ describe("RT-179 StockRunSweepScheduler", () => {
 
     expect(MockQueue).toHaveBeenCalledWith(STOCK_RUN_SWEEP_QUEUE_NAME, {
       connection: { url: FAKE_REDIS_URL },
+      defaultJobOptions: DEFAULT_JOB_OPTIONS,
     });
     expect(STOCK_RUN_SWEEP_JOB_NAME).toBe("erpnext-stock-reconciliation-sweep");
     expect(lastQueue().upsertJobScheduler).toHaveBeenCalledWith(
       STOCK_RUN_SWEEP_JOB_NAME,
       { every: 24 * 60 * 60 * 1000 },
-      { name: STOCK_RUN_SWEEP_JOB_NAME, data: {} },
+      { name: STOCK_RUN_SWEEP_JOB_NAME, data: {}, opts: DEFAULT_JOB_OPTIONS },
     );
+  });
+
+  it("gives every scheduled job retries, so an incomplete sweep is retried", async () => {
+    process.env["REDIS_URL"] = FAKE_REDIS_URL;
+    await new StockRunSweepScheduler().onModuleInit();
+    const template = lastQueue().upsertJobScheduler.mock.calls[0]![2] as {
+      opts: { attempts: number; backoff: { type: string; delay: number } };
+    };
+    expect(template.opts.attempts).toBeGreaterThan(1);
+    expect(template.opts.attempts).toBe(5);
+    expect(template.opts.backoff).toEqual({ type: "exponential", delay: 1_000 });
+    // The whole retry window (1+2+4+8 s) is far inside the 5-minute minimum
+    // interval, so retries finish before the next tick.
+    const { attempts, backoff } = template.opts;
+    let windowMs = 0;
+    for (let n = 0; n < attempts - 1; n += 1) windowMs += backoff.delay * 2 ** n;
+    expect(windowMs).toBeLessThan(5 * 60 * 1000);
   });
 
   it("uses the configured interval", async () => {

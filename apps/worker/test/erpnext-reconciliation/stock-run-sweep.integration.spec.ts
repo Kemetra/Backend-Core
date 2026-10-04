@@ -32,13 +32,16 @@ import {
 } from "../../src/erpnext-reconciliation/reconciliation-run.processor";
 import {
   STOCK_RUN_SWEEP_JOB_NAME,
+  StockRunSweepIncompleteError,
   StockRunSweepProcessor,
   type StockRunSweepResult,
 } from "../../src/erpnext-reconciliation/stock-run-sweep.processor";
+import { sweepPeriod } from "../../src/erpnext-reconciliation/stock-run-sweep.config";
 import {
   PgStockRunSweepRepository,
   STOCK_RUN_SWEEP_ACTOR_LABEL,
   StockRunSweepStoreNotEligibleError,
+  type StockRunSweepRepository,
 } from "../../src/erpnext-reconciliation/stock-run-sweep.repository";
 
 const TENANT_A = "0a000000-0000-7000-8000-000000179a01";
@@ -306,7 +309,10 @@ describe("RT-179 AC3 — tenant isolation", () => {
     const before = await runsFor(B_MAPPED);
     const repo = new PgStockRunSweepRepository(pg().app);
     await expect(
-      repo.sweepStore({ tenantId: TENANT_A, storeId: B_MAPPED, periodStart: at(10 * DAY), now: at(10 * DAY) }),
+      repo.sweepStore({
+        target: { tenantId: TENANT_A, storeId: B_MAPPED },
+        period: sweepPeriod(at(10 * DAY), DAY),
+      }),
     ).rejects.toBeInstanceOf(StockRunSweepStoreNotEligibleError);
     expect(await runsFor(B_MAPPED)).toEqual(before);
   });
@@ -317,10 +323,11 @@ describe("RT-179 AC3 — tenant isolation", () => {
     // B_MAPPED gets a running run of its own in this period.
     const now = at(4 * DAY);
     const repo = new PgStockRunSweepRepository(pg().app);
-    const periodStart = new Date(Math.floor(now.getTime() / DAY) * DAY);
-    expect((await repo.sweepStore({ tenantId: TENANT_B, storeId: B_MAPPED, periodStart, now })).outcome).toBe(
-      "created",
-    );
+    const swept = await repo.sweepStore({
+      target: { tenantId: TENANT_B, storeId: B_MAPPED },
+      period: sweepPeriod(now, DAY),
+    });
+    expect(swept.outcome).toBe("created");
     const result = await tick(now);
     expect(result).toMatchObject({ created: 2, skippedRunning: 1, skippedPeriod: 0 });
   });
@@ -339,7 +346,10 @@ describe("RT-179 AC3 — tenant isolation", () => {
     if (skipped()) return;
     const repo = new PgStockRunSweepRepository(pg().app);
     await expect(
-      repo.sweepStore({ tenantId: TENANT_A, storeId: A_RETIRED, periodStart: at(20 * DAY), now: at(20 * DAY) }),
+      repo.sweepStore({
+        target: { tenantId: TENANT_A, storeId: A_RETIRED },
+        period: sweepPeriod(at(20 * DAY), DAY),
+      }),
     ).rejects.toBeInstanceOf(StockRunSweepStoreNotEligibleError);
   });
 });
@@ -386,5 +396,44 @@ describe("RT-179 AC4 — a returns-only map is unmapped everywhere", () => {
     });
     expect(res.status).toBe("completed");
     expect(res.counts["unmapped_store"]).toBeUndefined();
+  });
+});
+
+describe("RT-179 retry of an incomplete sweep", () => {
+  it("a retry creates only the runs the failed attempt missed, even across the period boundary", async () => {
+    if (skipped()) return;
+    for (const s of [A_MAPPED, A_MAPPED_2, B_MAPPED]) await completeRuns(s);
+    const real = new PgStockRunSweepRepository(pg().app);
+    let failB = true;
+    const flaky: StockRunSweepRepository = {
+      listActiveTenantIds: () => real.listActiveTenantIds(),
+      listMappedStoreIds: async (tenantId) => {
+        if (tenantId === TENANT_B && failB) throw new Error("transient");
+        return real.listMappedStoreIds(tenantId);
+      },
+      sweepStore: (input) => real.sweepStore(input),
+    };
+    const attemptAt = (now: Date): Promise<StockRunSweepResult> =>
+      new StockRunSweepProcessor(flaky, DAY, () => now, () => undefined).process(
+        STOCK_RUN_SWEEP_JOB_NAME,
+        {},
+      );
+
+    // First attempt, 1 s before the period ends: tenant B fails, A is swept.
+    const lastSecond = at(31 * DAY - 2 * 60 * 60 * 1000 - 1000);
+    await expect(attemptAt(lastSecond)).rejects.toBeInstanceOf(StockRunSweepIncompleteError);
+
+    // The BullMQ retry lands 15 s later, in the NEXT period. A's stores are
+    // still running, so only B gets its run, once.
+    failB = false;
+    const retry = await attemptAt(new Date(lastSecond.getTime() + 15_000));
+    expect(retry).toMatchObject({ created: 1, skippedRunning: 2, failedTenants: 0 });
+
+    // The next period's own tick then creates nothing more for anyone.
+    const tickResult = await attemptAt(new Date(lastSecond.getTime() + 60_000));
+    expect(tickResult).toMatchObject({ created: 0, skippedRunning: 3 });
+    for (const s of [A_MAPPED, A_MAPPED_2, B_MAPPED]) {
+      expect((await runsFor(s)).filter((r) => r.status === "running")).toHaveLength(1);
+    }
   });
 });

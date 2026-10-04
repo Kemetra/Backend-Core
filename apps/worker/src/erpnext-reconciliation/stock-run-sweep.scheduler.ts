@@ -13,7 +13,8 @@
  *   - REDIS_URL present → register the scheduler.
  */
 import { Injectable, type OnModuleDestroy, type OnModuleInit } from "@nestjs/common";
-import { Queue } from "bullmq";
+import { Queue, type JobsOptions } from "bullmq";
+import { DEFAULT_JOB_OPTIONS } from "@data-pulse-2/shared/queues/queue-config";
 
 import { resolveStockRunSweepIntervalMs } from "./stock-run-sweep.config";
 import { STOCK_RUN_SWEEP_JOB_NAME } from "./stock-run-sweep.processor";
@@ -36,11 +37,23 @@ export class StockRunSweepScheduler implements OnModuleInit, OnModuleDestroy {
       }
       return;
     }
-    this.queue = new Queue(STOCK_RUN_SWEEP_QUEUE_NAME, { connection: { url } });
+    // Retries: the processor fails the job with StockRunSweepIncompleteError
+    // when a tenant fails, so BullMQ must retry it. Without attempts/backoff
+    // the job runs once and the failed tenants wait a whole period. The shared
+    // DEFAULT_JOB_OPTIONS (5 attempts, exponential from 1 s, ~15 s in total)
+    // go on the queue AND on the scheduler's job template, so every generated
+    // job carries them. The whole retry window is far shorter than the 5-minute
+    // minimum interval, and each store's advisory lock plus the running /
+    // same-period checks make a retry that overlaps the next tick a no-op.
+    const jobOptions = DEFAULT_JOB_OPTIONS as JobsOptions;
+    this.queue = new Queue(STOCK_RUN_SWEEP_QUEUE_NAME, {
+      connection: { url },
+      defaultJobOptions: jobOptions,
+    });
     await this.queue.upsertJobScheduler(
       STOCK_RUN_SWEEP_JOB_NAME,
       { every },
-      { name: STOCK_RUN_SWEEP_JOB_NAME, data: {} },
+      { name: STOCK_RUN_SWEEP_JOB_NAME, data: {}, opts: jobOptions },
     );
   }
 

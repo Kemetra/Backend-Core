@@ -34,8 +34,12 @@ import {
   recordStockReconciliationSweep,
   type StockReconciliationSweepOutcome,
 } from "../observability/metrics/worker.metrics";
-import { sweepPeriodStart } from "./stock-run-sweep.config";
-import type { StockRunSweepRepository, SweepStoreResult } from "./stock-run-sweep.repository";
+import { sweepPeriod, type SweepPeriod } from "./stock-run-sweep.config";
+import type {
+  StockRunSweepRepository,
+  StoreSweepTarget,
+  SweepStoreResult,
+} from "./stock-run-sweep.repository";
 
 /** BullMQ job (and job-scheduler) name. Pinned by the scheduler spec. */
 export const STOCK_RUN_SWEEP_JOB_NAME = "erpnext-stock-reconciliation-sweep";
@@ -52,6 +56,17 @@ function writeStderr(line: StockRunSweepLogLine): void {
   process.stderr.write(JSON.stringify(line) + "\n");
 }
 
+/** A BullMQ job as the sweep receives it. */
+export interface SweepJob {
+  readonly name: string;
+  readonly data: unknown;
+}
+
+/** One tenant of one sweep pass. */
+interface TenantSweepTarget {
+  readonly tenantId: string;
+}
+
 export interface StockRunSweepResult {
   readonly periodStart: string;
   readonly tenants: number;
@@ -62,23 +77,56 @@ export interface StockRunSweepResult {
 }
 
 export class UnknownStockRunSweepJobError extends Error {
-  constructor(jobName: string) {
-    super(`Unknown stock-run-sweep job name: '${jobName}'`);
+  constructor(job: SweepJob) {
+    super(`Unknown stock-run-sweep job name: '${job.name}'`);
     this.name = "UnknownStockRunSweepJobError";
   }
 }
 
 export class MalformedStockRunSweepJobError extends Error {
-  constructor(jobName: string) {
-    super(`Malformed stock-run-sweep job '${jobName}': payload must be an object`);
+  constructor(job: SweepJob) {
+    super(`Malformed stock-run-sweep job '${job.name}': payload must be an object`);
     this.name = "MalformedStockRunSweepJobError";
   }
 }
 
 export class StockRunSweepIncompleteError extends Error {
-  constructor(failedTenants: number) {
-    super(`stock run sweep incomplete: ${failedTenants} tenant(s) failed`);
+  constructor(result: StockRunSweepResult) {
+    super(`stock run sweep incomplete: ${result.failedTenants} tenant(s) failed`);
     this.name = "StockRunSweepIncompleteError";
+  }
+}
+
+/** The running totals of one sweep pass. */
+class SweepTally {
+  private readonly counts: Record<StockReconciliationSweepOutcome, number> = {
+    created: 0,
+    skipped_running: 0,
+    skipped_period: 0,
+  };
+  private tenants = 0;
+  private failedTenants = 0;
+
+  constructor(private readonly period: SweepPeriod) {}
+
+  tenantDone(succeeded: boolean): void {
+    this.tenants += 1;
+    if (!succeeded) this.failedTenants += 1;
+  }
+
+  storeDone(swept: SweepStoreResult): void {
+    this.counts[swept.outcome] += 1;
+  }
+
+  result(): StockRunSweepResult {
+    return {
+      periodStart: this.period.start.toISOString(),
+      tenants: this.tenants,
+      created: this.counts.created,
+      skippedRunning: this.counts.skipped_running,
+      skippedPeriod: this.counts.skipped_period,
+      failedTenants: this.failedTenants,
+    };
   }
 }
 
@@ -91,34 +139,28 @@ export class StockRunSweepProcessor {
   ) {}
 
   async process(jobName: string, data: unknown): Promise<StockRunSweepResult> {
-    assertSweepJob(jobName, data);
+    assertSweepJob({ name: jobName, data });
 
-    const now = this.clock();
-    const periodStart = sweepPeriodStart(now, this.intervalMs);
-    const counts = emptyCounts();
-
-    const tenantIds = await this.repo.listActiveTenantIds();
-    let failedTenants = 0;
-    for (const tenantId of tenantIds) {
-      const ok = await this.sweepTenantSafely(tenantId, periodStart, now, counts);
-      if (!ok) failedTenants += 1;
+    const period = sweepPeriod(this.clock(), this.intervalMs);
+    const tally = new SweepTally(period);
+    for (const tenantId of await this.repo.listActiveTenantIds()) {
+      tally.tenantDone(await this.sweepTenantSafely({ tenantId }, period, tally));
     }
 
-    const result = toResult(periodStart, tenantIds.length, counts, failedTenants);
+    const result = tally.result();
     this.logSummary(result);
-    if (failedTenants > 0) throw new StockRunSweepIncompleteError(failedTenants);
+    if (result.failedTenants > 0) throw new StockRunSweepIncompleteError(result);
     return result;
   }
 
   /** Sweep one tenant. A failure is logged (error class only) and returns false. */
   private async sweepTenantSafely(
-    tenantId: string,
-    periodStart: Date,
-    now: Date,
-    counts: SweepCounts,
+    tenant: TenantSweepTarget,
+    period: SweepPeriod,
+    tally: SweepTally,
   ): Promise<boolean> {
     try {
-      await this.sweepTenant(tenantId, periodStart, now, counts);
+      await this.sweepTenant(tenant, period, tally);
       return true;
     } catch (err) {
       // Error class only — a pg message can carry row values (§VII).
@@ -126,7 +168,7 @@ export class StockRunSweepProcessor {
         level: "error",
         component: COMPONENT,
         message: "tenant_sweep_failed",
-        tenant_id: tenantId,
+        tenant_id: tenant.tenantId,
         errorName: errorClassName(err),
       });
       return false;
@@ -134,34 +176,28 @@ export class StockRunSweepProcessor {
   }
 
   private async sweepTenant(
-    tenantId: string,
-    periodStart: Date,
-    now: Date,
-    counts: SweepCounts,
+    tenant: TenantSweepTarget,
+    period: SweepPeriod,
+    tally: SweepTally,
   ): Promise<void> {
-    const storeIds = await this.repo.listMappedStoreIds(tenantId);
-    for (const storeId of storeIds) {
-      const swept = await this.repo.sweepStore({ tenantId, storeId, periodStart, now });
-      this.recordOutcome(tenantId, storeId, swept, counts);
+    for (const storeId of await this.repo.listMappedStoreIds(tenant.tenantId)) {
+      const target: StoreSweepTarget = { tenantId: tenant.tenantId, storeId };
+      const swept = await this.repo.sweepStore({ target, period });
+      tally.storeDone(swept);
+      this.recordOutcome(target, swept);
     }
   }
 
-  private recordOutcome(
-    tenantId: string,
-    storeId: string,
-    { outcome, runId }: SweepStoreResult,
-    counts: SweepCounts,
-  ): void {
-    counts[outcome] += 1;
-    recordStockReconciliationSweep(outcome);
+  private recordOutcome(target: StoreSweepTarget, swept: SweepStoreResult): void {
+    recordStockReconciliationSweep(swept.outcome);
     this.log({
       level: "info",
       component: COMPONENT,
       message: "store_swept",
-      outcome,
-      tenant_id: tenantId,
-      store_id: storeId,
-      run_id: runId,
+      outcome: swept.outcome,
+      tenant_id: target.tenantId,
+      store_id: target.storeId,
+      run_id: swept.runId,
     });
   }
 
@@ -180,40 +216,21 @@ export class StockRunSweepProcessor {
   }
 }
 
-type SweepCounts = Record<StockReconciliationSweepOutcome, number>;
-
-function emptyCounts(): SweepCounts {
-  return { created: 0, skipped_running: 0, skipped_period: 0 };
-}
-
 /** Rejects a job that is not the sweep, or whose payload is not an object. */
-function assertSweepJob(jobName: string, data: unknown): void {
-  if (jobName !== STOCK_RUN_SWEEP_JOB_NAME) {
-    throw new UnknownStockRunSweepJobError(jobName);
+function assertSweepJob(job: SweepJob): void {
+  if (job.name !== STOCK_RUN_SWEEP_JOB_NAME) {
+    throw new UnknownStockRunSweepJobError(job);
   }
-  if (!StockRunSweepJobSchema.safeParse(data).success) {
-    throw new MalformedStockRunSweepJobError(jobName);
+  if (!StockRunSweepJobSchema.safeParse(job.data).success) {
+    throw new MalformedStockRunSweepJobError(job);
   }
 }
 
-function toResult(
-  periodStart: Date,
-  tenants: number,
-  counts: SweepCounts,
-  failedTenants: number,
-): StockRunSweepResult {
-  return {
-    periodStart: periodStart.toISOString(),
-    tenants,
-    created: counts.created,
-    skippedRunning: counts.skipped_running,
-    skippedPeriod: counts.skipped_period,
-    failedTenants,
-  };
-}
-
-/** The error's class name for logs, never its message. */
-function errorClassName(err: unknown): string {
+/**
+ * The error's class name for logs, never its message: a pg or Redis message
+ * can carry row values or a connection string (§VII / §XIV).
+ */
+export function errorClassName(err: unknown): string {
   if (!(err instanceof Error)) return "UnknownError";
   return err.name || "Error";
 }

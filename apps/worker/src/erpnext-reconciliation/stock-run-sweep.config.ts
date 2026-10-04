@@ -40,3 +40,16 @@ export function resolveStockRunSweepIntervalMs(
 export function sweepPeriodStart(now: Date, intervalMs: number): Date {
   return new Date(Math.floor(now.getTime() / intervalMs) * intervalMs);
 }
+
+/**
+ * One sweep tick: the period it belongs to and the tick time itself. `now`
+ * becomes a created run's `started_at`; `start` bounds the period check.
+ */
+export interface SweepPeriod {
+  readonly start: Date;
+  readonly now: Date;
+}
+
+export function sweepPeriod(now: Date, intervalMs: number): SweepPeriod {
+  return { start: sweepPeriodStart(now, intervalMs), now };
+}

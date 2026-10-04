@@ -6,9 +6,14 @@
  * sweep registered by `StockRunSweepScheduler`, and hands each job to
  * `StockRunSweepProcessor`. Started by `bootstrap()` in main.ts; closed by
  * Nest's `onModuleDestroy` on shutdown.
+ *
+ * Worker-level errors go through the shared pino logger (`createLogger`, with
+ * the repo redaction paths) carrying the error CLASS only. A BullMQ / Redis
+ * error message can embed a connection string or credential, so it is never
+ * logged (§VII / §XIV, the outbox drainer's rule).
  */
-import { Inject, Injectable, type OnModuleDestroy } from "@nestjs/common";
-import { QUEUE_NAMES } from "@data-pulse-2/shared";
+import { Inject, Injectable, Optional, type OnModuleDestroy } from "@nestjs/common";
+import { createLogger, QUEUE_NAMES, type Logger } from "@data-pulse-2/shared";
 import { DEFAULT_WORKER_OPTIONS } from "@data-pulse-2/shared/queues/queue-config";
 
 import {
@@ -17,19 +22,36 @@ import {
   type WorkerLike,
   WORKER_FACTORY,
 } from "../email/email.worker";
-import { StockRunSweepProcessor } from "./stock-run-sweep.processor";
+import { errorClassName, StockRunSweepProcessor } from "./stock-run-sweep.processor";
 
 export const STOCK_RUN_SWEEP_QUEUE_NAME = QUEUE_NAMES.erpnextStockReconciliationSweep;
+
+const COMPONENT = "erpnext-reconciliation.stock-run-sweep.worker";
+
+/** DI token for an injected logger (tests); production uses the shared pino logger. */
+export const STOCK_RUN_SWEEP_WORKER_LOGGER = "STOCK_RUN_SWEEP_WORKER_LOGGER";
+
+export type StockRunSweepWorkerLogger = Pick<Logger, "error">;
+
+function defaultLogger(): StockRunSweepWorkerLogger {
+  return createLogger({ service: "worker", bindings: { component: COMPONENT } });
+}
 
 @Injectable()
 export class StockRunSweepWorker implements OnModuleDestroy {
   private worker: WorkerLike | null = null;
+  private readonly logger: StockRunSweepWorkerLogger;
 
   constructor(
     private readonly processor: StockRunSweepProcessor,
     @Inject(WORKER_FACTORY)
     private readonly workerFactory: WorkerFactory,
-  ) {}
+    @Optional()
+    @Inject(STOCK_RUN_SWEEP_WORKER_LOGGER)
+    logger?: StockRunSweepWorkerLogger,
+  ) {
+    this.logger = logger ?? defaultLogger();
+  }
 
   start(): void {
     if (this.worker !== null) return;
@@ -41,14 +63,7 @@ export class StockRunSweepWorker implements OnModuleDestroy {
       DEFAULT_WORKER_OPTIONS,
     );
     this.worker.on("error", (err) => {
-      process.stderr.write(
-        JSON.stringify({
-          level: "error",
-          component: "erpnext-reconciliation.stock-run-sweep.worker",
-          message: err.message,
-          name: err.name,
-        }) + "\n",
-      );
+      this.logger.error({ component: COMPONENT, errorName: errorClassName(err) }, "worker_error");
     });
   }
 

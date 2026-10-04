@@ -20,6 +20,7 @@ import { newId } from "@data-pulse-2/shared";
 import type { Pool } from "pg";
 
 import type { StockReconciliationSweepOutcome } from "../observability/metrics/worker.metrics";
+import type { SweepPeriod } from "./stock-run-sweep.config";
 
 /** `audit_events.actor_label` on a scheduled run's audit row (no human actor). */
 export const STOCK_RUN_SWEEP_ACTOR_LABEL = "system:erpnext-stock-reconciliation-sweep";
@@ -35,13 +36,16 @@ export class StockRunSweepStoreNotEligibleError extends Error {
   }
 }
 
-export interface SweepStoreInput {
+/** One store of one tenant, as the sweep addresses it. */
+export interface StoreSweepTarget {
   readonly tenantId: string;
   readonly storeId: string;
-  /** Start of the current sweep period (inclusive). */
-  readonly periodStart: Date;
-  /** The tick time — becomes the created run's `started_at`. */
-  readonly now: Date;
+}
+
+export interface SweepStoreInput {
+  readonly target: StoreSweepTarget;
+  /** The tick: `start` bounds the period check, `now` is the run's `started_at`. */
+  readonly period: SweepPeriod;
 }
 
 export interface SweepStoreResult {
@@ -97,17 +101,18 @@ export class PgStockRunSweepRepository implements StockRunSweepRepository {
     );
   }
 
-  async sweepStore(input: SweepStoreInput): Promise<SweepStoreResult> {
+  async sweepStore({ target, period }: SweepStoreInput): Promise<SweepStoreResult> {
+    const { tenantId, storeId } = target;
     return runWithTenantContext(
       this.pool,
-      { tenantId: input.tenantId, isPlatformAdmin: false },
+      { tenantId, isPlatformAdmin: false },
       async (client): Promise<SweepStoreResult> => {
         // Serialise concurrent sweeps of the same store (two worker replicas,
         // a retried job) so the checks below and the insert are atomic. The
         // lock is transaction-scoped and released on COMMIT/ROLLBACK.
         await client.query(
           `SELECT pg_advisory_xact_lock(hashtextextended('erpnext-stock-run-sweep:' || $1::text, 0))`,
-          [input.storeId],
+          [storeId],
         );
 
         // Re-check under the lock and the tenant GUC that the store is this
@@ -125,7 +130,7 @@ export class PgStockRunSweepRepository implements StockRunSweepRepository {
             WHERE s.id = $1 AND s.tenant_id = $2
               AND s.deleted_at IS NULL AND s.is_active
             LIMIT 1`,
-          [input.storeId, input.tenantId],
+          [storeId, tenantId],
         );
         if (!eligible.rows[0]) throw new StockRunSweepStoreNotEligibleError();
 
@@ -135,7 +140,7 @@ export class PgStockRunSweepRepository implements StockRunSweepRepository {
               AND kind = 'stock' AND status = 'running'
             ORDER BY started_at
             LIMIT 1`,
-          [input.tenantId, input.storeId],
+          [tenantId, storeId],
         );
         if (running.rows[0]) {
           return { outcome: "skipped_running", runId: running.rows[0].id };
@@ -148,7 +153,7 @@ export class PgStockRunSweepRepository implements StockRunSweepRepository {
               AND started_at >= $3
             ORDER BY started_at
             LIMIT 1`,
-          [input.tenantId, input.storeId, input.periodStart],
+          [tenantId, storeId, period.start],
         );
         if (inPeriod.rows[0]) {
           return { outcome: "skipped_period", runId: inPeriod.rows[0].id };
@@ -157,12 +162,12 @@ export class PgStockRunSweepRepository implements StockRunSweepRepository {
         const { run } = await createStockReconciliationRun(client, {
           runId: newId(),
           auditEventId: newId(),
-          tenantId: input.tenantId,
-          storeId: input.storeId,
+          tenantId,
+          storeId,
           trigger: "scheduled",
           actorUserId: null,
           actorLabel: STOCK_RUN_SWEEP_ACTOR_LABEL,
-          startedAt: input.now,
+          startedAt: period.now,
         });
         return { outcome: "created", runId: run.id };
       },

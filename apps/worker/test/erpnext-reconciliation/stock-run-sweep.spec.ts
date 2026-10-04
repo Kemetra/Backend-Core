@@ -11,7 +11,7 @@
  */
 import { Test } from "@nestjs/testing";
 import type { Pool } from "pg";
-import { QUEUE_NAMES } from "@data-pulse-2/shared";
+import { createLogger, QUEUE_NAMES } from "@data-pulse-2/shared";
 import {
   DEFAULT_WORKER_OPTIONS,
   type DefaultWorkerOptionsShape,
@@ -135,7 +135,7 @@ class FakeRepo implements StockRunSweepRepository {
   }
   async sweepStore(input: SweepStoreInput): Promise<SweepStoreResult> {
     this.calls.push(input);
-    return { outcome: this.outcomes[input.storeId] ?? "created", runId: `run-${input.storeId}` };
+    return { outcome: this.outcomes[input.target.storeId] ?? "created", runId: `run-${input.target.storeId}` };
   }
 }
 
@@ -160,14 +160,14 @@ describe("RT-179 StockRunSweepProcessor", () => {
       skippedPeriod: 1,
       failedTenants: 0,
     });
-    expect(repo.calls.map((c) => [c.tenantId, c.storeId])).toEqual([
+    expect(repo.calls.map((c) => [c.target.tenantId, c.target.storeId])).toEqual([
       ["t-a", "s-1"],
       ["t-a", "s-2"],
       ["t-b", "s-3"],
     ]);
     for (const c of repo.calls) {
-      expect(c.periodStart.toISOString()).toBe("2026-10-04T00:00:00.000Z");
-      expect(c.now).toBe(NOW);
+      expect(c.period.start.toISOString()).toBe("2026-10-04T00:00:00.000Z");
+      expect(c.period.now).toBe(NOW);
     }
 
     const perStore = lines.filter((l) => l["message"] === "store_swept");
@@ -196,7 +196,7 @@ describe("RT-179 StockRunSweepProcessor", () => {
       makeProcessor(repo, lines).process(STOCK_RUN_SWEEP_JOB_NAME, {}),
     ).rejects.toBeInstanceOf(StockRunSweepIncompleteError);
 
-    expect(repo.calls.map((c) => c.storeId)).toEqual(["s-1", "s-3"]);
+    expect(repo.calls.map((c) => c.target.storeId)).toEqual(["s-1", "s-3"]);
     const failure = lines.find((l) => l["message"] === "tenant_sweep_failed");
     expect(failure).toEqual({
       level: "error",
@@ -281,7 +281,7 @@ describe("RT-179 NoOpStockRunSweepRepository", () => {
     const repo = new NoOpStockRunSweepRepository();
     expect(await repo.listMappedStoreIds("t")).toEqual([]);
     await expect(
-      repo.sweepStore({ tenantId: "t", storeId: "s", periodStart: NOW, now: NOW }),
+      repo.sweepStore({ target: { tenantId: "t", storeId: "s" }, period: { start: NOW, now: NOW } }),
     ).rejects.toThrow("no database configured");
   });
 });
@@ -346,20 +346,46 @@ describe("RT-179 StockRunSweepWorker", () => {
     expect(spy).toHaveBeenCalledWith(STOCK_RUN_SWEEP_JOB_NAME, {});
   });
 
-  it("writes worker errors as structured JSON", () => {
-    const write = jest.spyOn(process.stderr, "write").mockImplementation(() => true);
+  it("logs worker errors through the shared pino logger with the error class only", () => {
+    const rendered: string[] = [];
+    const logger = createLogger({
+      service: "worker",
+      destination: { write: (msg: string) => void rendered.push(msg) },
+    });
     const factory = new FakeWorkerFactory();
-    new StockRunSweepWorker(makeProcessor(new NoOpStockRunSweepRepository(), []), factory).start();
-    const err = new Error("redis down");
+    new StockRunSweepWorker(
+      makeProcessor(new NoOpStockRunSweepRepository(), []),
+      factory,
+      logger,
+    ).start();
+    const err = new Error("connect ECONNREFUSED redis://:s3cret@redis:6379");
     err.name = "RedisConnectionError";
     factory.workers[0]!.errorListeners[0]!(err);
-    const line = JSON.parse(String(write.mock.calls[0]![0])) as Record<string, string>;
-    expect(line).toEqual({
+    const nameless = new Error("x");
+    nameless.name = "";
+    factory.workers[0]!.errorListeners[0]!(nameless);
+
+    const lines = rendered.map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(lines[0]).toMatchObject({
       level: "error",
       component: "erpnext-reconciliation.stock-run-sweep.worker",
-      message: "redis down",
-      name: "RedisConnectionError",
+      message: "worker_error",
+      errorName: "RedisConnectionError",
     });
+    expect(lines[1]!["errorName"]).toBe("Error");
+    // The raw error message (which may carry a credential) is never logged.
+    expect(rendered.join("")).not.toContain("s3cret");
+    expect(rendered.join("")).not.toContain("ECONNREFUSED");
+  });
+
+  it("falls back to the shared pino logger when none is injected", () => {
+    const factory = new FakeWorkerFactory();
+    const worker = new StockRunSweepWorker(
+      makeProcessor(new NoOpStockRunSweepRepository(), []),
+      factory,
+    );
+    worker.start();
+    expect(() => factory.workers[0]!.errorListeners[0]!(new Error("x"))).not.toThrow();
   });
 
   it("close() closes once; close before start and onModuleDestroy are safe", async () => {
