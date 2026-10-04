@@ -14,7 +14,7 @@ decision was a 5xx gate plus report-only contract checks.
 | Step | Check | Effect |
 | --- | --- | --- |
 | Gate | `not_a_server_error` | **Fails the PR** on any 5xx not listed in `5xx-baseline.json` |
-| Report | `positive_data_acceptance` | Findings **never fail the PR.** Lists requests the contract allows but the server rejects, in the job summary |
+| Report | `positive_data_acceptance` | Findings **never fail the PR.** Lists requests the contract allows but the server rejects, in the job summary, except those in `report-baseline.json` |
 
 Either step **fails if Schemathesis could not run** a contract file (schema
 load, network or tool error), so a broken check never looks green.
@@ -44,6 +44,7 @@ semantics.
 | `run.sh` | `gate` or `report` pass |
 | `ops.py` | Lists the cookieAuth operations per contract file (runs inside the Schemathesis image) |
 | `5xx-baseline.json` | Accepted known 5xx findings |
+| `report-baseline.json` | Accepted `positive_data_acceptance` findings that the contract cannot express (RT-66) |
 
 ## Safety
 
@@ -73,6 +74,31 @@ BASELINE_UPDATE=1 bash tools/schemathesis/run.sh gate   # records current failur
 
 After a fix, run the gate with `--baseline-prune` (or delete the entry by hand)
 and confirm it still passes.
+
+## The report baseline
+
+RT-66 aligned the contracts with the server's request validation, so the report
+step lists no findings on `main` except the entries in `report-baseline.json`.
+Each entry exists because the rule cannot be expressed in the contract, or because
+of a Schemathesis artifact. An entry matches the same way as in the 5xx baseline:
+**while it exists, any `positive_data_acceptance` 400 on that operation is
+accepted.**
+
+| Operation | Why it is baselined |
+| --- | --- |
+| `POST /api/v1/catalog/erpnext-product-reconciliation/repairs` | Cross-field rule: `confirm` and `re_point` need `mappingId` + `version` (RT-59 class D) |
+| `PATCH /api/v1/memberships/{membership_id}` | Cross-field rule: `store_ids` must be empty for `all` and non-empty for `specific` |
+| `POST /api/inventory/v1/stores/{storeId}/movements` | Cross-field rule: the quantity sign must match `movementType`, and `adjustment` needs a non-blank `reason` |
+| `POST /api/v1/memberships/invite` | `role_code` must name an existing role (state-dependent; answered 400 `Unknown role_code`) |
+| `GET /api/v1/audit/events` | Opaque base64url `cursor` whose decoded content is validated; not expressible as a pattern |
+| `GET /api/v1/admin/outbox/dead-letters` | Same opaque base64url `cursor` |
+| `GET /api/v1/catalog/erpnext-sync-ops/reconciliation-runs` | `cursor` shape left undeclared on purpose: a shape-valid token with an out-of-range timestamp returns 500 today. Declare it once that is fixed |
+| `POST /api/v1/catalog/unknown-items/bulk-dismiss` | Schemathesis 4.28 artifact: a fuzzing case with a negative component is relabelled positive after a resource-pool draw and sent without the declared, required `Idempotency-Key` |
+| `POST /api/v1/connector/instances/{id}/credentials/rotate` | Same Schemathesis artifact |
+| `POST /api/v1/connector/credentials/{credentialId}/revoke` | Same Schemathesis artifact |
+
+Record or refresh entries with `BASELINE_UPDATE=1 bash tools/schemathesis/run.sh report`,
+then keep only entries with a reason in this table.
 
 ## Running locally
 
