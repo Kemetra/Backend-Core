@@ -16,6 +16,8 @@ import {
   RunNotFoundError,
   StoreNotFoundError,
 } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.service";
+import { MembershipRepository } from "../../../../src/context/membership.repository";
+import type { ResolvedContext } from "../../../../src/context/types";
 import { ACTOR_A, PRODUCT_A_ACTIVE, STORE_A_X } from "../../__support__/isolation-harness";
 import {
   RECONCILIATION_FIXTURE_IDS,
@@ -52,13 +54,29 @@ afterAll(async () => {
 
 function svc(): ErpnextReconciliationService {
   if (!env) throw new Error("Docker unavailable");
-  return new ErpnextReconciliationService(env.app);
+  return new ErpnextReconciliationService(env.app, new MembershipRepository(env.app));
+}
+
+/**
+ * RT-191: the session context the service's writes take. Tenant-wide store
+ * access, as `TenantContextGuard` resolves it for an `'all'` membership (ACTOR_A
+ * has no membership row here, so the scope comes from `storeAccess`).
+ */
+function sessionCtx(tenantId: string): ResolvedContext {
+  return {
+    userId: ACTOR_A,
+    tenantId,
+    storeId: null,
+    isPlatformAdmin: false,
+    source: "session",
+    storeAccess: { kind: "all" },
+  };
 }
 
 describe("017-US3 service — triggerRun", () => {
   it("creates a running run for a real store", async () => {
     if (skip) return;
-    const run = await svc().triggerRun({ tenantId: TENANT_A, actorUserId: ACTOR_A, storeId: STORE_A_X });
+    const run = await svc().triggerRun({ tenantId: TENANT_A, context: sessionCtx(TENANT_A), actorUserId: ACTOR_A, storeId: STORE_A_X });
     expect(run.status).toBe("running");
     expect(run.kind).toBe("stock");
     expect(run.finishedAt).toBeNull();
@@ -67,7 +85,7 @@ describe("017-US3 service — triggerRun", () => {
   it("an unknown store → StoreNotFoundError", async () => {
     if (skip) return;
     await expect(
-      svc().triggerRun({ tenantId: TENANT_A, actorUserId: ACTOR_A, storeId: NON_EXISTENT }),
+      svc().triggerRun({ tenantId: TENANT_A, context: sessionCtx(TENANT_A), actorUserId: ACTOR_A, storeId: NON_EXISTENT }),
     ).rejects.toBeInstanceOf(StoreNotFoundError);
   });
 });
@@ -119,6 +137,7 @@ describe("017-US3 service — repairStock", () => {
     ]);
     const first = await svc().repairStock({
       tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
       actorUserId: ACTOR_A,
       runId: RUN_A,
       resultId: RESULT_A,
@@ -135,6 +154,7 @@ describe("017-US3 service — repairStock", () => {
 
     const second = await svc().repairStock({
       tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
       actorUserId: ACTOR_A,
       runId: RUN_A,
       resultId: RESULT_A,
@@ -149,6 +169,7 @@ describe("017-US3 service — repairStock", () => {
     await expect(
       svc().repairStock({
         tenantId: TENANT_A,
+        context: sessionCtx(TENANT_A),
         actorUserId: ACTOR_A,
         runId: RUN_A,
         resultId: NON_EXISTENT,

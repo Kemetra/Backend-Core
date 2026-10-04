@@ -24,6 +24,8 @@ import {
   type PgTestEnv,
 } from "../../../_helpers/postgres-container";
 import { ErpnextReconciliationService } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.service";
+import { MembershipRepository } from "../../../../src/context/membership.repository";
+import type { ResolvedContext } from "../../../../src/context/types";
 import { SALE_A_X } from "../../sales/__support__/seed-sales";
 import { ACTOR_A, PRODUCT_A_ACTIVE } from "../../__support__/isolation-harness";
 import {
@@ -75,7 +77,23 @@ beforeEach(() => recordRepair.mockClear());
 
 function svc(): ErpnextReconciliationService {
   if (!env) throw new Error("Docker unavailable");
-  return new ErpnextReconciliationService(env.app);
+  return new ErpnextReconciliationService(env.app, new MembershipRepository(env.app));
+}
+
+/**
+ * RT-191: the session context the service's writes take. Tenant-wide store
+ * access, as `TenantContextGuard` resolves it for an `'all'` membership (ACTOR_A
+ * has no membership row here, so the scope comes from `storeAccess`).
+ */
+function sessionCtx(tenantId: string): ResolvedContext {
+  return {
+    userId: ACTOR_A,
+    tenantId,
+    storeId: null,
+    isPlatformAdmin: false,
+    source: "session",
+    storeAccess: { kind: "all" },
+  };
 }
 
 async function resetDeadletter(): Promise<void> {
@@ -93,6 +111,7 @@ describe("reconciliation observability — erpnext_reconciliation_repair_total (
     await resetDeadletter();
     await svc().repairPosting({
       tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
       actorUserId: ACTOR_A,
       workItemRef: POSTING_DEADLETTER_A,
     });
