@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Connector Stock-View (Bin) Read API
-  version: "1.2.0-draft"
+  version: "1.3.0-draft"
   description: >
     Spec 019 ERPNext live stock-view (Bin) read contract — the DP2 ↔ connector
     boundary by which DP2 obtains the connector's point-in-time ERPNext-Bin
@@ -114,6 +114,15 @@ info:
 
     DEPLOY ORDER: Backend-Core first (it accepts both shapes), then the
     connector.
+
+    VERSION 1.3 (RT-181; RT-66 follow-up): the `Idempotency-Key` header on
+    `binViewReportSnapshot` now declares the rule the `IdempotencyInterceptor`
+    already enforces — 16 to 128 printable ASCII characters, no whitespace
+    (`^[\x21-\x7E]{16,128}$`) — instead of 1 to 255. The server is unchanged:
+    a key outside the rule was already rejected with 400 before the handler
+    ran. The connector's keys (`binview-<requestRef>`, 44 characters, and the
+    v1.2 per-window `binview-<requestRef>-<attemptRef>-w<windowSeq>`) fit the
+    rule, so it is unaffected.
 
 servers:
   - url: https://api.example.com
@@ -329,10 +338,13 @@ components:
       required: true
       schema:
         type: string
-        minLength: 1
-        maxLength: 255
+        minLength: 16
+        maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
       description: >
-        REQUIRED on the snapshot report. Reuses the existing
+        REQUIRED on the snapshot report. 16 to 128 printable ASCII characters
+        with no whitespace, as the interceptor enforces (RT-181); any other
+        value is a 400. Reuses the existing
         `IdempotencyInterceptor` — keyed on `(method, route, clientId = connector
         principal, key)`. Identical retry replays the stored response; key-reuse
         with a different logical report returns 409 `idempotency_key_conflict`.
