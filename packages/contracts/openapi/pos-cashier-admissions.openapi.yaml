@@ -1,0 +1,553 @@
+openapi: 3.1.0
+info:
+  title: Data-Pulse-2 POS Cashier Admissions API
+  version: "1.0.0-draft"
+  description: >
+    RT-113 BC1 (planning record: Jira RT-113 comment 10763, decisions D2 and
+    D11; `[GATED]` contract approval: RT-113 comment 10823). The
+    device-authenticated `cashier-admissions` resource: the server-side
+    authority for a POS cashier sign-in.
+
+
+    **Why this surface exists.** A cashier signs in on the terminal with a PIN
+    that is verified locally and never leaves the device. Cashiers hold no
+    provider-identity JWT, so the cashier path cannot use the
+    `operator-identity`-gated `GET /api/pos/v1/operators/roster` and
+    `GET /api/pos/v1/operators/active-session`, which are restricted to
+    manager-eligible callers (RT-150). RT-182 verified that the cashier path
+    called both without any credential and received 401. This contract
+    replaces the cashier path's use of those two routes (D2, D11). The
+    operator routes themselves are unchanged and stay manager-only.
+
+
+    **Authentication.** Every operation uses the role-named `device` security
+    scheme: the paired terminal's opaque device token as
+    `Authorization: Bearer <device_token>`. There is no operator credential on
+    this surface. `tenant_id` and `branch_id` (internally `store_id`) come
+    ONLY from the authenticated, non-revoked `devices` row. No request carries
+    a tenant, branch, store or terminal identifier, and the server never takes
+    scope from the client (Constitution §II, §XII).
+
+
+    **What the server records.** A cashier admission is a server record that
+    a cashier was admitted on a given device. The terminal calls
+    `posCreateCashierAdmission` only after it has verified the cashier's PIN
+    locally, so the call itself is the device's attestation that the PIN check
+    passed (D2; 028 CM-4 / AD-2). Before it admits, the server checks that the
+    device is active, the user is not deleted, the user's membership in the
+    device's tenant is active, the role is a POS-eligible cashier role (the
+    same set the roster returns), and the user has access to the device's
+    store.
+
+
+    **Single-active rule.** At most ONE live admission exists per
+    `(tenant, store, user)`. This is the server's single-active-session rule
+    for cashiers. A live admission held by another device yields the
+    minimum-disclosure `active_elsewhere` signal unless the request is an
+    online takeover. A live admission expires server-side after a TTL so a
+    dead terminal cannot block a cashier forever. The TTL is server policy
+    (10763 proposes 12 h; BC2 sets it) and is not on the wire. Every
+    `admitted` response starts a fresh TTL for the returned admission.
+
+
+    **Offline grant.** An `admitted` response carries `offline_grace_seconds`,
+    the bound for the terminal's sealed offline grant (D3/D4; default 86400 =
+    24 h, 028 OQ-1). The terminal clamps it to its own hard ceiling (72 h)
+    whatever the server says; the server does not need to enforce that
+    ceiling. Grant storage, counting and expiry are POS-local and are not part
+    of this contract.
+
+
+    **Secrets and PII.** No request or response carries a PIN, a PIN hash, a
+    salt, a password, a device token, a provider JWT or any other secret. The
+    only personal data on the wire is `display_name` and the identifiers
+    `user_id` (`users.id`) and `operator_id` (the provider subject,
+    `users.clerk_user_id`, the v1 bridge). No email, phone or membership
+    detail appears. Refusal causes are never returned; they are logged
+    server-side keyed by `request_id` (SR-6/7).
+
+
+    **Audit.** Every admission, takeover, refusal and end is audited
+    server-side. Audit payloads carry no PIN, grant body or secret.
+
+
+    **Runtime status.** Contract-only (BC1). The runtime (controller, guard
+    wiring, persistence and migration) is RT-113 BC2, a separately gated
+    slice. Each operation is marked `x-runtime-status: contract-only` until
+    BC2 ships it.
+
+
+    Cross-cutting conventions live in
+    `specs/001-foundation-auth-tenant-store/contracts/README.md`.
+servers:
+  - url: https://api.example.com
+tags:
+  - name: pos-cashier-admissions
+    description: Device-authenticated cashier admission authority (RT-113 D2 / D11).
+paths:
+  /api/pos/v1/cashier-admissions:
+    post:
+      summary: Admit a cashier on this device, or reconcile an offline admission.
+      description: >
+        Records (or refuses) a cashier admission for `user_id` on the
+        authenticated device. The request is a tagged union on `mode`.
+
+
+        **`mode: online`** (D2): called on every online cashier sign-in after
+        the local PIN check. If no other device holds a live admission for
+        `(tenant, store, user)`, the server records one for this device and
+        returns `admitted`. If another device holds one, the server returns
+        `active_elsewhere`, unless `takeover: true`: then the server ends the
+        other device's admission and admits this one (D9 "take over here").
+        The other device learns of it on its next reconcile and receives its
+        own `active_elsewhere`.
+
+
+        **`mode: reconcile_offline`** (D8): called by a terminal whose session
+        runs on an offline grant, on the first successful Backend-Core
+        response and then every 60 s until it is answered. The server's live
+        admission always wins: an offline admission is provisional and never
+        silently supersedes it. If another device holds a live admission, the
+        answer is `active_elsewhere` (a conflict; there is no takeover in this
+        mode). Otherwise the server records a live admission for this device
+        and returns `admitted`. When two terminals were both offline, the
+        first to reconcile wins (server arrival order). `offline_admitted_at`
+        is provenance for audit only. It is never authority, and the server
+        clock decides every outcome.
+
+
+        A live admission already held by THIS device for the same user is
+        replaced or refreshed, and the answer is `admitted`. The returned
+        `admission_id` may differ from an earlier one; the terminal MUST keep
+        the value from the latest `admitted` response.
+
+
+        **Idempotency** (Constitution §XI): `idempotency_key` is the dedup
+        key, scoped to the authenticated device. A retry with the same key and
+        the same body returns the first `200` response unchanged and applies
+        nothing again: no second admission, no second takeover, no second
+        audit event. Reusing a key with a different body returns `409`. Only
+        `200` outcomes are recorded; a retry after a `4xx` is evaluated
+        afresh. The replay window is server policy (BC2).
+      operationId: posCreateCashierAdmission
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-113 BC1 approves the contract only. The Backend-Core controller,
+        device-guard wiring, admission persistence and migration are RT-113
+        BC2, a separately gated slice; no route is shipped yet.
+      x-idempotency: required
+      tags: [pos-cashier-admissions]
+      security:
+        - device: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PosCashierAdmissionRequest"
+      responses:
+        "200":
+          description: >
+            Either `admitted` or the minimum-disclosure `active_elsewhere`
+            signal. The body is a tagged union on `kind`. Clients MUST switch
+            on `kind` and MUST NOT assume any other field until the variant is
+            confirmed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PosCashierAdmissionResponse"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Refused"
+        "409":
+          $ref: "#/components/responses/IdempotencyConflict"
+  /api/pos/v1/cashier-admissions/{admission_id}/end:
+    post:
+      summary: End a cashier admission held by this device.
+      description: >
+        Ends the admission on cashier sign-out or session end. An end that
+        happened while the terminal was offline is reported here on reconnect.
+        Only an admission held by the authenticated device can be ended.
+
+
+        Idempotent and non-disclosing: an admission that is already ended,
+        expired or superseded by a takeover, an unknown `admission_id`, and an
+        admission held by another device, store or tenant all return the same
+        `200 { kind: ended }`. Only an admission held by this device changes
+        state, so a device cannot end another device's admission (Constitution
+        §II, §XII). There is no request body.
+      operationId: posEndCashierAdmission
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-113 BC1 approves the contract only. The Backend-Core controller,
+        device-guard wiring, admission persistence and migration are RT-113
+        BC2, a separately gated slice; no route is shipped yet.
+      tags: [pos-cashier-admissions]
+      security:
+        - device: []
+      parameters:
+        - name: admission_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: >
+            The `admission_id` from the latest `admitted` response for this
+            cashier on this device.
+      responses:
+        "200":
+          description: >
+            The admission is not live on this device (any of the cases above).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PosCashierAdmissionEnded"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/pos/v1/cashier-admissions/roster:
+    get:
+      summary: List the cashiers of this device's store.
+      description: >
+        Returns the cashiers of the store bound to the authenticated device
+        (D11): users with an active membership in the device's tenant, a
+        POS-eligible cashier role and access to the device's store, who are
+        not deleted. This is the cashier picker's online source. It replaces
+        the cashier path's use of the `operator-identity`-gated
+        `GET /api/pos/v1/operators/roster`, which is unchanged.
+
+
+        The store comes only from the device. The operation takes no
+        parameters, so there is no `branch_id` to mismatch.
+
+
+        Minimum disclosure: each entry carries only `user_id`, `operator_id`
+        and `display_name`. There is no email, phone, PIN, PIN hash,
+        credential fragment, admission state or provisioning state. Order is
+        not significant.
+      operationId: posListCashierAdmissionRoster
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-113 BC1 approves the contract only. The Backend-Core controller,
+        device-guard wiring and roster read are RT-113 BC2, a separately gated
+        slice; no route is shipped yet.
+      tags: [pos-cashier-admissions]
+      security:
+        - device: []
+      responses:
+        "200":
+          description: The cashiers of the device's store. May be empty.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PosCashierRosterResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+components:
+  securitySchemes:
+    # The same role-named POS device-credential scheme as catalog/read-down.yaml
+    # (spec 030 / 028 DOC-1 / DOC-4): the paired terminal's opaque device token,
+    # NOT a JWT, so `bearerFormat: JWT` is intentionally omitted. Reused, not a
+    # new mechanism.
+    device:
+      type: http
+      scheme: bearer
+      description: >
+        Opaque, device-scoped bearer token (spec 030 / 028 §6 CM-2). The POS
+        terminal presents its `devices` PAIRING TOKEN as
+        `Authorization: Bearer <device_token>`, an opaque token (NOT a JWT),
+        with NO operator credential and NO `X-Terminal-Token` header. The token
+        is hashed and matched against an active (non-revoked) `devices` row; the
+        device row supplies the authoritative `(tenant_id, store_id)` scope.
+        Body/query scope is never trusted. Verified at the API edge;
+        fail-closed (any missing / malformed / unknown / revoked token, or a
+        non-device credential, returns a generic 401, non-disclosing).
+        Device-scoped only: it never proves sale ownership alone; an operator
+        identity JWT or dashboard session does NOT authenticate this surface.
+        The token is not propagated past the verifier.
+  responses:
+    ValidationFailure:
+      description: >
+        `validation_error`: a malformed body or path parameter, an unknown
+        field, a field that does not belong to the selected `mode`, or a
+        malformed `idempotency_key`. Nothing is recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        Generic 401: the device credential is missing, malformed, unknown or
+        revoked, or a non-device credential was presented. The terminal treats
+        it as device-revoked (RT-138 L6) and, under D8, ends the session
+        `terminal_session_terminated`. Non-disclosing.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Refused:
+      description: >
+        Generic 403 (10763 D2 `refused`): the device is valid but the user may
+        not be admitted. The body does not distinguish an unknown user, a user
+        outside the device's tenant, a deleted user, an inactive or revoked
+        membership, an ineligible role, or a store the user cannot access, so
+        it reveals neither existence nor cause. The cause is logged
+        server-side keyed by `request_id`. The terminal invalidates that
+        user's offline grant (D4) and, while reconciling, ends the session
+        `account_disabled_mid_session` (D8).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RefusedError"
+    IdempotencyConflict:
+      description: >
+        `idempotency_key_conflict`: the `idempotency_key` was already used by
+        this device with a different request body. Nothing is applied.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    # -------------------------------------------------------------------
+    # Admission request: tagged union on `mode`
+    # -------------------------------------------------------------------
+    PosCashierAdmissionRequest:
+      description: >
+        The 10763 §3 body `{ user_id, mode, takeover?, offline_admitted_at?,
+        idempotency_key }`, as a union on `mode`: `takeover` belongs only to
+        `online` (D9) and `offline_admitted_at` only to `reconcile_offline`,
+        where it is required (D8). A field outside its variant is a 400.
+        There is no `tenant_id`, `branch_id`, `store_id`, `terminal_id` or
+        `device_id` field: scope comes from the device credential.
+      oneOf:
+        - $ref: "#/components/schemas/PosCashierAdmissionOnlineRequest"
+        - $ref: "#/components/schemas/PosCashierAdmissionReconcileRequest"
+      discriminator:
+        propertyName: mode
+        mapping:
+          online: "#/components/schemas/PosCashierAdmissionOnlineRequest"
+          reconcile_offline: "#/components/schemas/PosCashierAdmissionReconcileRequest"
+    PosCashierAdmissionOnlineRequest:
+      type: object
+      required: [mode, user_id, idempotency_key]
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [online]
+          description: An online cashier sign-in on this device (D2).
+        user_id:
+          $ref: "#/components/schemas/CashierUserId"
+        takeover:
+          type: boolean
+          default: false
+          description: >
+            `true` only after the cashier chose "take over here" on the
+            conflict lock (D9). The server ends any live admission another
+            device holds for this user and admits this device.
+        idempotency_key:
+          $ref: "#/components/schemas/AdmissionIdempotencyKey"
+    PosCashierAdmissionReconcileRequest:
+      type: object
+      required: [mode, user_id, offline_admitted_at, idempotency_key]
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [reconcile_offline]
+          description: >
+            Reconcile a session admitted offline from the sealed grant with
+            the server (D8).
+        user_id:
+          $ref: "#/components/schemas/CashierUserId"
+        offline_admitted_at:
+          type: string
+          format: date-time
+          description: >
+            The terminal's local time of the offline admission. Provenance for
+            audit only; never authority. The server's clock decides the
+            outcome.
+        idempotency_key:
+          $ref: "#/components/schemas/AdmissionIdempotencyKey"
+    CashierUserId:
+      type: string
+      format: uuid
+      description: >
+        The cashier's provider-neutral identity key, `users.id` (028 §16), as
+        returned in the roster's `user_id`. The server resolves it within the
+        device's tenant and store only.
+    AdmissionIdempotencyKey:
+      type: string
+      minLength: 16
+      maxLength: 128
+      pattern: "^[\\x21-\\x7E]{16,128}$"
+      description: >
+        Client-generated dedup key, unique per admission attempt (a UUIDv4
+        with a prefix is enough). The same 16 to 128 printable-ASCII rule as
+        the platform `Idempotency-Key` header. It carries no secret and is
+        never logged raw.
+    # -------------------------------------------------------------------
+    # Admission 200: tagged union on `kind`
+    # -------------------------------------------------------------------
+    PosCashierAdmissionResponse:
+      oneOf:
+        - $ref: "#/components/schemas/PosCashierAdmissionAdmitted"
+        - $ref: "#/components/schemas/PosCashierAdmissionActiveElsewhere"
+      discriminator:
+        propertyName: kind
+        mapping:
+          admitted: "#/components/schemas/PosCashierAdmissionAdmitted"
+          active_elsewhere: "#/components/schemas/PosCashierAdmissionActiveElsewhere"
+    PosCashierAdmissionAdmitted:
+      type: object
+      required: [kind, admission_id, offline_grace_seconds, server_time, display_name]
+      additionalProperties: false
+      description: >
+        The cashier holds the live admission for `(tenant, store, user)` on
+        this device. The terminal refreshes the cashier's sealed offline grant
+        from this response (D3).
+      properties:
+        kind:
+          type: string
+          enum: [admitted]
+        admission_id:
+          type: string
+          format: uuid
+          description: >
+            The live admission's id. The terminal passes it to
+            `posEndCashierAdmission` and stores it in the offline grant.
+        offline_grace_seconds:
+          type: integer
+          minimum: 0
+          description: >
+            How long, in seconds, the terminal may admit this cashier offline
+            from the grant written from this response (D4). The default is
+            86400 (24 h, 028 OQ-1). The terminal clamps it to its 72 h
+            ceiling and computes expiry from its own receipt time, not from
+            `server_time`.
+        server_time:
+          type: string
+          format: date-time
+          description: >
+            The server's clock when the admission was recorded. Stored in the
+            grant as `server_time_at_issue` (D3).
+        display_name:
+          type: string
+          description: The cashier's display name, resolved server-side.
+    PosCashierAdmissionActiveElsewhere:
+      type: object
+      required: [kind]
+      additionalProperties: false
+      description: >
+        Minimum-disclosure conflict signal: another device holds the live
+        admission for this cashier in this store. The body carries ONLY
+        `kind`: no terminal, device, time, admission id or name (D2). Nothing
+        was recorded for this device.
+      properties:
+        kind:
+          type: string
+          enum: [active_elsewhere]
+    # -------------------------------------------------------------------
+    # End 200
+    # -------------------------------------------------------------------
+    PosCashierAdmissionEnded:
+      type: object
+      required: [kind]
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: [ended]
+    # -------------------------------------------------------------------
+    # Roster 200
+    # -------------------------------------------------------------------
+    PosCashierRosterResponse:
+      type: object
+      required: [cashiers]
+      additionalProperties: false
+      properties:
+        cashiers:
+          type: array
+          items:
+            $ref: "#/components/schemas/PosCashierRosterEntry"
+    PosCashierRosterEntry:
+      type: object
+      required: [user_id, operator_id, display_name]
+      additionalProperties: false
+      description: >
+        Minimum-disclosure cashier record (D11): only what the picker needs
+        and what the terminal keys local cashier records on.
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          description: >
+            Provider-neutral identity key, `users.id` (028 §16). The value to
+            send as `user_id` on `posCreateCashierAdmission`.
+        operator_id:
+          type: string
+          minLength: 1
+          description: >
+            Provider subject, `users.clerk_user_id` (the v1 bridge). The same
+            value as `id` in the operator roster; the terminal keeps it as the
+            session `operator_id` (RT-116 seam 1).
+        display_name:
+          type: string
+          description: The cashier's display name, resolved server-side.
+    # -------------------------------------------------------------------
+    # Error envelopes (Constitution §III canonical envelope)
+    # -------------------------------------------------------------------
+    Error:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              description: >
+                Stable error code: `validation_error` (400), `unauthorized`
+                (401), `idempotency_key_conflict` (409).
+            message:
+              type: string
+              description: Generic human-readable string. Never enumerates causes.
+            request_id:
+              type: string
+              description: >
+                Server-side correlation id. Any refusal cause is logged
+                server-side under this id and is never returned.
+            details:
+              description: >
+                Validation detail, present only on a 400. Never present on a
+                401, 403 or 409.
+    RefusedError:
+      type: object
+      required: [error]
+      additionalProperties: false
+      description: >
+        The canonical error envelope with the single fixed code `refused`
+        (10763 D2's generic `refused`). It never carries `details`.
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              enum: [refused]
+            message:
+              type: string
+              description: Generic human-readable string. Never names the cause.
+            request_id:
+              type: string
+              description: Server-side correlation id for the logged cause.

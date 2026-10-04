@@ -126,6 +126,10 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "backfillSaleLinkedMovements",
       "consoleCreatePayerAccount",
       "consoleListPayerAccounts",
+      // RT-113 BC1: cashier-admissions contract; the runtime is RT-113 BC2.
+      "posCreateCashierAdmission",
+      "posEndCashierAdmission",
+      "posListCashierAdmissionRoster",
       "posRedeemVoucher",
       "posReverseVoucher",
       "posValidateVoucher",
