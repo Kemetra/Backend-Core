@@ -43,10 +43,17 @@ import {
   type IdentityProviderPort,
 } from "../../auth/identity-provider.port";
 import { clerkIdentityProviderFactory } from "../../auth/clerk-identity-provider.adapter";
+import { PosDeviceAuthGuard } from "../../auth/pos-device-auth.guard";
 import { PosOperatorEnvelopeSaleGuard } from "../../auth/pos-operator-envelope-sale.guard";
 import { PosWriteRateLimitGuard } from "../../auth/pos-write-rate-limit.guard";
 import { SessionRepository } from "../../auth/session.repository";
 import { AuthTokenRepository } from "../../auth/auth-token.repository";
+import {
+  OPERATOR_ATTRIBUTION_VERIFIER,
+  PgOperatorAttributionVerifier,
+  type OperatorAttributionVerifier,
+} from "./operator-attribution";
+import { SaleCaptureAuthGuard } from "./sale-capture-auth.guard";
 
 /**
  * 008 Option Y wiring (its PosOperatorSaleAuthGuard is retired; 031 replaced
@@ -103,6 +110,20 @@ import { AuthTokenRepository } from "../../auth/auth-token.repository";
         new PosOperatorEnvelopeSaleGuard(sessions, authTokens, reverifier),
       inject: [SessionRepository, AuthTokenRepository, OPERATOR_CONTEXT_RESOLVER],
     },
+    // RT-224 (Option B): captureSale's credential gate. The envelope path is
+    // the PosOperatorEnvelopeSaleGuard above, untouched; the device path is
+    // PosDeviceAuthGuard (DeviceRepository on AUTH_LOOKUP_POOL, as for the
+    // cashier-admissions routes) plus the cashier-admission check, which runs
+    // on PG_POOL under the device's tenant (RLS).
+    PosDeviceAuthGuard,
+    {
+      provide: OPERATOR_ATTRIBUTION_VERIFIER,
+      useFactory: (pool: Pool): OperatorAttributionVerifier => new PgOperatorAttributionVerifier(pool),
+      inject: [PG_POOL],
+    },
+    // Class-referenced on captureSale, so reflection-instantiated from the
+    // tokens above (no factory), like PosWriteRateLimitGuard below.
+    SaleCaptureAuthGuard,
     // ADR 0009 (audit M-2): per-device write rate limit, layered AFTER the
     // envelope guard. A class-referenced @UseGuards enhancer is reflection-
     // instantiated, so it must use plain reflectable DI (no factory): RateLimiter
