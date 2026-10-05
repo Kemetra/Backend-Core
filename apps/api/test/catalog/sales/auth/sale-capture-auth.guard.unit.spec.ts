@@ -310,3 +310,65 @@ describe("SaleCaptureAuthGuard — refusal log (redaction matrix)", () => {
     expect(t.logger.warn).not.toHaveBeenCalled();
   });
 });
+
+// ===========================================================================
+// RT-225 — admissionCheckAt ([GATED] approval: Jira RT-225, sales.yaml
+// 1.6.0-draft). The guard hands it to the verifier, which compares it (not
+// occurredAt) with the admission window. The body rules are the DTO's: the
+// field needs operatorUserId, must not be after occurredAt and at most 7 days
+// before it. It is never logged.
+// ===========================================================================
+describe("SaleCaptureAuthGuard — RT-225 admissionCheckAt", () => {
+  const CHECK_AT = "2026-09-01T08:45:00.000Z";
+
+  it("passes admissionCheckAt to the verifier beside occurredAt", async () => {
+    const t = makeGuard({});
+    await t.guard.canActivate(
+      ctxFor(deviceRequest(saleBody({ operatorUserId: CASHIER_ID, admissionCheckAt: CHECK_AT }))),
+    );
+    expect(t.attribution.verify).toHaveBeenCalledTimes(1);
+    expect(t.attribution.verify.mock.calls[0]![0]).toEqual({
+      tenantId: TENANT_ID,
+      storeId: STORE_ID,
+      deviceId: DEVICE_ID,
+      userId: CASHIER_ID,
+      occurredAt: OCCURRED_AT,
+      admissionCheckAt: CHECK_AT,
+    });
+  });
+
+  it("without the field the verifier input carries no admissionCheckAt key (unchanged)", async () => {
+    const t = makeGuard({});
+    await t.guard.canActivate(ctxFor(deviceRequest(saleBody({ operatorUserId: CASHIER_ID }))));
+    expect(Object.keys(t.attribution.verify.mock.calls[0]![0] as object)).not.toContain("admissionCheckAt");
+  });
+
+  it("does not select the device path on its own: without operatorUserId the envelope guard runs", async () => {
+    const t = makeGuard({});
+    await t.guard.canActivate(ctxFor(deviceRequest(saleBody({ admissionCheckAt: CHECK_AT }))));
+    expect(t.envelope.canActivate).toHaveBeenCalledTimes(1);
+    expect(t.device.canActivate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["after occurredAt", "2026-09-01T09:00:00.001Z"],
+    ["more than 7 days before occurredAt", "2026-08-25T08:59:59.999Z"],
+    ["not a date-time", "2026-09-01 08:45"],
+  ])("an authenticated device with admissionCheckAt %s → the usual 400, the verifier never runs", async (_label, checkAt) => {
+    const t = makeGuard({});
+    const req = deviceRequest(saleBody({ operatorUserId: CASHIER_ID, admissionCheckAt: checkAt }));
+    await expect(t.guard.canActivate(ctxFor(req))).rejects.toBeInstanceOf(ZodError);
+    expect(t.attribution.verify).not.toHaveBeenCalled();
+  });
+
+  it("a refusal never logs admissionCheckAt or occurredAt", async () => {
+    const t = makeGuard({ attribution: verifier({ ok: false, cause: "no_covering_admission" }) });
+    const req = deviceRequest(saleBody({ operatorUserId: CASHIER_ID, admissionCheckAt: CHECK_AT }));
+    await expect(t.guard.canActivate(ctxFor(req))).rejects.toBeInstanceOf(ForbiddenException);
+    expect(t.logger.warn).toHaveBeenCalledTimes(1);
+    const serialized = JSON.stringify(t.logger.warn.mock.calls[0]);
+    expect(serialized).not.toContain(CHECK_AT);
+    expect(serialized).not.toContain(OCCURRED_AT);
+    expect(serialized).not.toContain(CASHIER_ID);
+  });
+});

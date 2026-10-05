@@ -37,6 +37,9 @@ import "reflect-metadata";
 
 import { resolve } from "node:path";
 
+import { z } from "zod";
+
+import { CaptureSaleRequestWithTendersSchema } from "../../../../src/catalog/sales/dto/capture-sale-request.dto";
 import { loadOpenApiContracts } from "../../../../src/openapi/loader";
 
 // ---------------------------------------------------------------------------
@@ -785,8 +788,7 @@ describe("pos-sales/sales.yaml — RT-224 device-bearer cashier capture", () => 
       | undefined;
   }
 
-  it("bumps the version to 1.5.0-draft with an RT-224 version note citing the approval", () => {
-    expect(salesDoc.info?.version).toBe("1.5.0-draft");
+  it("the version note records RT-224 at 1.5.0-draft, citing the approval (version moved on in RT-225)", () => {
     const info = salesDoc.info?.description ?? "";
     expect(info).toContain("RT-224 (1.5.0-draft");
     expect(info).toContain("comment 10889");
@@ -889,5 +891,83 @@ describe("pos-sales/sales.yaml — RT-224 device-bearer cashier capture", () => 
     expect(text).toContain("`refused`");
     expect(text).toContain("the device credential is valid");
     expect(text).toContain("never a sign that the device was revoked");
+  });
+});
+
+// ===========================================================================
+// RT-225 — admissionCheckAt ([GATED] approval: Jira RT-225, owner,
+// 2026-10-05: "optional CaptureSaleRequest.admissionCheckAt, contract
+// 1.6.0-draft, no migration; gap cap 7 days")
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-225 admissionCheckAt", () => {
+  type FieldNode = { type?: string; format?: string; description?: string };
+  function captureRequest(): SchemaObject | undefined {
+    return salesDoc.components?.schemas?.["CaptureSaleRequest"];
+  }
+  function field(name: string): FieldNode | undefined {
+    return (captureRequest()?.properties ?? {})[name] as FieldNode | undefined;
+  }
+  const text = (): string => field("admissionCheckAt")?.description ?? "";
+
+  /** The DTO's object keys and required keys, unwrapping any refinement. */
+  function dtoShape(schema: z.ZodTypeAny): { keys: string[]; required: string[] } {
+    let inner: z.ZodTypeAny = schema;
+    while (inner instanceof z.ZodEffects) inner = inner.innerType() as z.ZodTypeAny;
+    if (!(inner instanceof z.ZodObject)) return { keys: [], required: [] };
+    const shape = inner.shape as Record<string, z.ZodTypeAny>;
+    const keys = Object.keys(shape).sort();
+    return { keys, required: keys.filter((k) => !shape[k]!.isOptional()) };
+  }
+
+  it("bumps the version to 1.6.0-draft with an RT-225 version note citing the approval", () => {
+    expect(salesDoc.info?.version).toBe("1.6.0-draft");
+    const info = salesDoc.info?.description ?? "";
+    expect(info).toContain("RT-225 (1.6.0-draft");
+    expect(info).toContain("[GATED] approval Jira RT-225");
+    expect(info).toContain("A client that does not send `admissionCheckAt` sees no difference");
+  });
+
+  it("adds an OPTIONAL admissionCheckAt (date-time) to the strict capture body", () => {
+    expect(captureRequest()?.additionalProperties).toBe(false);
+    expect(captureRequest()?.required).not.toContain("admissionCheckAt");
+    expect(field("admissionCheckAt")?.type).toBe("string");
+    expect(field("admissionCheckAt")?.format).toBe("date-time");
+  });
+
+  it("states the cross-field rules OpenAPI cannot express, each a 400", () => {
+    expect(text()).toContain("ONLY together with `operatorUserId`");
+    expect(text()).toContain("`admissionCheckAt <= occurredAt`");
+    expect(text()).toContain("`occurredAt - admissionCheckAt <= 7 days`");
+    expect(text()).toContain("400 `validation_error`");
+  });
+
+  it("documents that it replaces occurredAt in the window comparison only; the caps and the refusal are unchanged", () => {
+    expect(text()).toContain(
+      "created_at - 120 s <= admissionCheckAt < LEAST(ended_at, expires_at) + 120 s",
+    );
+    expect(text()).toContain("only in the admission-window comparison");
+    expect(text()).toContain("future-dating cap applies to `occurredAt` and to `admissionCheckAt`");
+    expect(text()).toContain("back-dating cap is unchanged");
+    expect(text()).toContain("generic 403 `refused`");
+  });
+
+  it("keeps the field out of the sale facts: payload_hash, occurred_at and business_date", () => {
+    expect(text()).toContain("not part of the sale `payload_hash`");
+    expect(text()).toContain("`occurred_at`");
+    expect(text()).toContain("`business_date`");
+    expect(text()).toContain("idempotency fingerprint");
+  });
+
+  it("operatorUserId points at admissionCheckAt for the window instant", () => {
+    expect(field("operatorUserId")?.description ?? "").toContain("`admissionCheckAt` when present");
+  });
+
+  it("DTO/contract parity: the capture DTO accepts exactly the contract's properties and requires the same ones", () => {
+    const contractKeys = Object.keys(captureRequest()?.properties ?? {}).sort();
+    const contractRequired = [...(captureRequest()?.required ?? [])].sort();
+    const dto = dtoShape(CaptureSaleRequestWithTendersSchema);
+    expect(dto.keys).toEqual(contractKeys);
+    expect(dto.required).toEqual(contractRequired);
+    expect(dto.keys).toContain("admissionCheckAt");
   });
 });

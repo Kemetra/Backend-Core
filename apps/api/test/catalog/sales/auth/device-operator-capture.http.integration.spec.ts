@@ -54,6 +54,11 @@ import {
 import type { AuditJobPayload } from "../../../../src/audit/audit-job.types";
 import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../../../../src/auth/auth.module";
 import { FailClosedAuthGuard } from "../../../../src/auth/fail-closed-auth.guard";
+import {
+  OPERATOR_ATTRIBUTION_VERIFIER,
+  type OperatorAttributionInput,
+  type OperatorAttributionVerifier,
+} from "../../../../src/catalog/sales/operator-attribution";
 import { sha256CanonicalHex } from "../../../../src/catalog/sales/payload-hash";
 import { SalesModule } from "../../../../src/catalog/sales/sales.module";
 import { GlobalExceptionFilter } from "../../../../src/common/exception.filter";
@@ -151,6 +156,8 @@ function saleBody(opts: {
   operatorUserId?: string | null;
   occurredAt: string;
   externalId?: string;
+  /** RT-225: the instant checked against the admission window instead of occurredAt. */
+  admissionCheckAt?: string;
 }): Record<string, unknown> {
   const body: Record<string, unknown> = {
     sourceSystem: "pos-pulse",
@@ -178,6 +185,7 @@ function saleBody(opts: {
     ],
   };
   if (opts.operatorUserId !== undefined) body["operatorUserId"] = opts.operatorUserId;
+  if (opts.admissionCheckAt !== undefined) body["admissionCheckAt"] = opts.admissionCheckAt;
   return body;
 }
 
@@ -941,5 +949,308 @@ describe("RT-224 — cross-tenant isolation", () => {
     if (skip()) return;
     await liveAdmission();
     expect((await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER, token: TOKEN_OTHER })).status).toBe(403);
+  });
+});
+
+// ===========================================================================
+// RT-225 — `admissionCheckAt` ([GATED] approval: Jira RT-225, owner,
+// 2026-10-05; sales.yaml 1.6.0-draft). On the device path the POS may send the
+// instant it checked the cashier's admission (the sale's settled time). The
+// server then compares THAT instant, not occurredAt, with the admission window
+// (checkAt = admissionCheckAt ?? occurredAt). occurredAt stays the sale fact:
+// it is what is stored, hashed and dated, and the future-dating cap still
+// applies to it (and to checkAt). The DTO requires operatorUserId, checkAt <=
+// occurredAt and a gap of at most 7 days (else 400).
+// ===========================================================================
+
+async function saleTimes(saleRef: string): Promise<{ occurred_at: string; business_date: string }> {
+  const r = await E().admin.query(
+    `SELECT to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS occurred_at,
+            business_date::text AS business_date
+       FROM sales WHERE id = $1`,
+    [saleRef],
+  );
+  return r.rows[0];
+}
+
+/** A cashier sale (default CASHIER, till 1) that also carries `admissionCheckAt`. */
+function checkedSale(sale: CashierSale & { admissionCheckAt: string }): request.Test {
+  return capture({
+    bearer: sale.token ?? TOKEN,
+    body: saleBody({
+      operatorUserId: sale.user ?? CASHIER,
+      occurredAt: sale.occurredAt,
+      admissionCheckAt: sale.admissionCheckAt,
+    }),
+  });
+}
+
+describe("RT-225 — admissionCheckAt replaces occurredAt in the window check only", () => {
+  it("occurredAt after the window, admissionCheckAt inside it → 201; created_by is the cashier; occurred_at is occurredAt", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    // Control: the same sale without the field is refused (occurredAt is outside).
+    expect((await cashierSale({ occurredAt: at(13 * HOUR) })).status).toBe(403);
+    const res = await checkedSale({ occurredAt: at(13 * HOUR), admissionCheckAt: at(11 * HOUR) });
+    expect(res.status).toBe(201);
+    const saleRef = res.body.saleRef as string;
+    expect((await saleRow(saleRef)).created_by).toBe(CASHIER);
+    expect((await saleTimes(saleRef)).occurred_at).toBe(at(13 * HOUR));
+    const captured = audit.payloads.filter((p) => p.action === "sale.captured");
+    expect(captured.at(-1)?.actor_user_id).toBe(CASHIER);
+  });
+
+  it("occurredAt inside the window, admissionCheckAt before it → 403 (checkAt REPLACES occurredAt, it is not an alternative)", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    expect((await checkedSale({ occurredAt: at(1 * HOUR), admissionCheckAt: at(-121 * SECOND) })).status).toBe(403);
+  });
+
+  it("payload_hash, occurred_at and business_date are those of the same sale sent without the field", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    // Both bodies would be accepted: occurredAt and checkAt are both inside the window.
+    const withField = saleBody({ operatorUserId: CASHIER, occurredAt: at(2 * HOUR), admissionCheckAt: at(1 * HOUR) });
+    const res = await capture({ bearer: TOKEN, body: withField });
+    expect(res.status).toBe(201);
+    const saleRef = res.body.saleRef as string;
+    const { operatorUserId: _claim, admissionCheckAt: _check, ...facts } = withField;
+    expect((await saleRow(saleRef)).payload_hash).toBe(sha256CanonicalHex(facts));
+
+    // The same facts without the field (another sale id, same occurredAt).
+    const without = saleBody({ operatorUserId: CASHIER, occurredAt: at(2 * HOUR) });
+    const plain = await capture({ bearer: TOKEN, body: without });
+    expect(plain.status).toBe(201);
+    const { operatorUserId: _c2, ...plainFacts } = without;
+    expect((await saleRow(plain.body.saleRef as string)).payload_hash).toBe(sha256CanonicalHex(plainFacts));
+    expect(await saleTimes(saleRef)).toEqual(await saleTimes(plain.body.saleRef as string));
+    expect((await saleTimes(saleRef)).occurred_at).toBe(at(2 * HOUR));
+
+    // Provenance: re-sending the first sale WITHOUT the field (new key) is a
+    // 200 replay, not a 409 divergence, because the hash is the same.
+    const { admissionCheckAt: _drop, ...resend } = withField;
+    const replay = await capture({ bearer: TOKEN, body: resend });
+    expect(replay.status).toBe(200);
+    expect(replay.body.saleRef).toBe(saleRef);
+  });
+
+  it("a sale first sent without the field, re-sent with it (new key) → 200 provenance replay, no divergence", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    const externalId = nextExternalId();
+    const first = await capture({
+      bearer: TOKEN,
+      body: saleBody({ operatorUserId: CASHIER, occurredAt: at(2 * HOUR), externalId }),
+    });
+    expect(first.status).toBe(201);
+    const again = await capture({
+      bearer: TOKEN,
+      body: saleBody({ operatorUserId: CASHIER, occurredAt: at(2 * HOUR), externalId, admissionCheckAt: at(1 * HOUR) }),
+    });
+    expect(again.status).toBe(200);
+    expect(again.headers["idempotent-replayed"]).toBe("true");
+    expect(again.body.saleRef).toBe(first.body.saleRef);
+  });
+});
+
+describe("RT-225 — the 120 s tolerance applies to checkAt (occurredAt is after the window)", () => {
+  const LATE = 13 * HOUR; // occurredAt, outside [T0, T0 + 12h) + 120 s
+
+  it("checkAt exactly 120 s before created_at → 201; 121 s before → 403", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    expect((await checkedSale({ occurredAt: at(LATE), admissionCheckAt: at(-SKEW) })).status).toBe(201);
+    expect((await checkedSale({ occurredAt: at(LATE), admissionCheckAt: at(-121 * SECOND) })).status).toBe(403);
+  });
+
+  it("checkAt 119 s after expires_at → 201; exactly 120 s after → 403 (exclusive upper bound)", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    expect((await checkedSale({ occurredAt: at(LATE), admissionCheckAt: at(12 * HOUR + 119 * SECOND) })).status).toBe(201);
+    expect((await checkedSale({ occurredAt: at(LATE), admissionCheckAt: at(12 * HOUR + SKEW) })).status).toBe(403);
+  });
+
+  it("checkAt 119 s after ended_at → 201; 120 s after → 403 (an end cuts the window for checkAt too)", async () => {
+    if (skip()) return;
+    await admission({ createdAt: at(0), expiresAt: at(12 * HOUR), endedAt: at(2 * HOUR) });
+    expect((await checkedSale({ occurredAt: at(LATE), admissionCheckAt: at(2 * HOUR + 119 * SECOND) })).status).toBe(201);
+    expect((await checkedSale({ occurredAt: at(LATE), admissionCheckAt: at(2 * HOUR + SKEW) })).status).toBe(403);
+  });
+});
+
+describe("RT-225 — the dating caps", () => {
+  it("occurredAt future-dated beyond 120 s → 403 even when checkAt is inside the window (cap stays on occurredAt)", async () => {
+    if (skip()) return;
+    await admission({ createdAt: fromNow(-HOUR), expiresAt: fromNow(12 * HOUR) });
+    const before = await saleCount();
+    expect((await checkedSale({ occurredAt: fromNow(10 * MINUTE), admissionCheckAt: fromNow(-MINUTE) })).status).toBe(403);
+    expect(await saleCount()).toBe(before);
+  });
+
+  it("a future-dated checkAt (and so occurredAt) beyond 120 s → 403", async () => {
+    if (skip()) return;
+    await admission({ createdAt: fromNow(-HOUR), expiresAt: fromNow(12 * HOUR) });
+    expect((await checkedSale({ occurredAt: fromNow(10 * MINUTE), admissionCheckAt: fromNow(5 * MINUTE) })).status).toBe(403);
+  });
+
+  it("checkAt and occurredAt within the 120 s future tolerance → 201", async () => {
+    if (skip()) return;
+    await admission({ createdAt: fromNow(-HOUR), expiresAt: fromNow(12 * HOUR) });
+    expect((await checkedSale({ occurredAt: fromNow(100 * SECOND), admissionCheckAt: fromNow(90 * SECOND) })).status).toBe(201);
+  });
+
+  it("gap of exactly 7 days → 201 (the window ended less than 7 days ago)", async () => {
+    if (skip()) return;
+    await admission({ createdAt: fromNow(-(7 * DAY + HOUR)), expiresAt: fromNow(-(6 * DAY)) });
+    const checkAt = Date.now() - (7 * DAY + 30 * MINUTE);
+    const res = await checkedSale({
+      occurredAt: new Date(checkAt + 7 * DAY).toISOString(),
+      admissionCheckAt: new Date(checkAt).toISOString(),
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it("the back-dating cap is unchanged: checkAt inside a window that ended 8 days ago → 403", async () => {
+    if (skip()) return;
+    await admission({ createdAt: fromNow(-(8 * DAY + HOUR)), expiresAt: fromNow(-(8 * DAY)) });
+    const checkAt = Date.now() - (8 * DAY + 30 * MINUTE);
+    const res = await checkedSale({
+      occurredAt: new Date(checkAt + 7 * DAY - MINUTE).toISOString(),
+      admissionCheckAt: new Date(checkAt).toISOString(),
+    });
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("RT-225 — malformed admissionCheckAt is a 400 (DTO), nothing recorded", () => {
+  it("a gap over 7 days → 400", async () => {
+    if (skip()) return;
+    await admission({ createdAt: fromNow(-(7 * DAY + HOUR)), expiresAt: fromNow(-(6 * DAY)) });
+    const checkAt = Date.now() - (7 * DAY + 30 * MINUTE);
+    const before = await saleCount();
+    const res = await checkedSale({
+      occurredAt: new Date(checkAt + 7 * DAY + SECOND).toISOString(),
+      admissionCheckAt: new Date(checkAt).toISOString(),
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("validation_error");
+    expect(await saleCount()).toBe(before);
+  });
+
+  it("checkAt after occurredAt → 400 (even by 1 ms, with both inside the window)", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    const before = await saleCount();
+    const res = await checkedSale({ occurredAt: at(1 * HOUR), admissionCheckAt: at(1 * HOUR + 1) });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("validation_error");
+    expect(await saleCount()).toBe(before);
+  });
+
+  it("checkAt equal to occurredAt → 201 (the bound is inclusive)", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    expect((await checkedSale({ occurredAt: at(1 * HOUR), admissionCheckAt: at(1 * HOUR) })).status).toBe(201);
+  });
+
+  it("not a date-time → 400", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    expect((await checkedSale({ occurredAt: at(1 * HOUR), admissionCheckAt: "yesterday" })).status).toBe(400);
+  });
+});
+
+describe("RT-225 — the envelope path: the field is device-path only", () => {
+  it("an envelope request carrying admissionCheckAt without operatorUserId → 400, nothing recorded", async () => {
+    if (skip()) return;
+    const envelope = await signInManager();
+    const before = await saleCount();
+    const res = await capture({
+      bearer: envelope,
+      body: saleBody({ occurredAt: at(2 * HOUR), admissionCheckAt: at(1 * HOUR) }),
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("validation_error");
+    expect(await saleCount()).toBe(before);
+  });
+
+  it("a device token with admissionCheckAt but no operatorUserId → 401 (no operatorUserId: the envelope path, authentication first)", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    const res = await capture({
+      bearer: TOKEN,
+      body: saleBody({ occurredAt: at(13 * HOUR), admissionCheckAt: at(1 * HOUR) }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("regression: an envelope sale without the field → 201, created_by = the manager, occurred_at = occurredAt", async () => {
+    if (skip()) return;
+    const envelope = await signInManager();
+    const res = await capture({ bearer: envelope, body: saleBody({ occurredAt: at(1 * HOUR) }) });
+    expect(res.status).toBe(201);
+    expect((await saleRow(res.body.saleRef as string)).created_by).toBe(MANAGER);
+    expect((await saleTimes(res.body.saleRef as string)).occurred_at).toBe(at(1 * HOUR));
+  });
+});
+
+describe("RT-225 — idempotency: the field is part of the idempotency fingerprint", () => {
+  it("the same Idempotency-Key re-sent with admissionCheckAt added → 409 idempotency_key_conflict (any body change under one key is a conflict)", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    const key = randomUUID().replace(/-/g, "");
+    const externalId = nextExternalId();
+    const first = await capture({
+      bearer: TOKEN,
+      body: saleBody({ operatorUserId: CASHIER, occurredAt: at(2 * HOUR), externalId }),
+      key,
+    });
+    expect(first.status).toBe(201);
+    const withField = await capture({
+      bearer: TOKEN,
+      body: saleBody({ operatorUserId: CASHIER, occurredAt: at(2 * HOUR), externalId, admissionCheckAt: at(1 * HOUR) }),
+      key,
+    });
+    expect(withField.status).toBe(409);
+    expect(withField.body.error.code).toBe("idempotency_key_conflict");
+  });
+
+  it("the same key and the same body with the field → the stored 201 replayed", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    const key = randomUUID().replace(/-/g, "");
+    const body = saleBody({ operatorUserId: CASHIER, occurredAt: at(13 * HOUR), admissionCheckAt: at(11 * HOUR) });
+    const first = await capture({ bearer: TOKEN, body, key });
+    expect(first.status).toBe(201);
+    const again = await capture({ bearer: TOKEN, body, key });
+    expect(again.status).toBe(201);
+    expect(again.headers["idempotent-replayed"]).toBe("true");
+    expect(again.body.saleRef).toBe(first.body.saleRef);
+  });
+});
+
+describe("RT-225 — the verifier against Postgres (no DTO in front)", () => {
+  function verifier(): OperatorAttributionVerifier {
+    if (!app) throw new Error("app not initialized");
+    return app.get<OperatorAttributionVerifier>(OPERATOR_ATTRIBUTION_VERIFIER);
+  }
+  const scope = { tenantId: TENANT, storeId: STORE, deviceId: DEVICE, userId: CASHIER };
+
+  it("compares admissionCheckAt with the window, not occurredAt", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    const input = { ...scope, occurredAt: at(13 * HOUR), admissionCheckAt: at(11 * HOUR) } as OperatorAttributionInput;
+    expect(await verifier().verify(input)).toEqual({ ok: true });
+    expect(await verifier().verify({ ...scope, occurredAt: at(13 * HOUR) })).toEqual({
+      ok: false,
+      cause: "no_covering_admission",
+    });
+  });
+
+  it("caps future dating on checkAt as well: a future checkAt is refused even when occurredAt is not", async () => {
+    if (skip()) return;
+    await admission({ createdAt: fromNow(-HOUR), expiresAt: fromNow(12 * HOUR) });
+    const input = { ...scope, occurredAt: fromNow(-MINUTE), admissionCheckAt: fromNow(10 * MINUTE) } as OperatorAttributionInput;
+    expect(await verifier().verify(input)).toEqual({ ok: false, cause: "future_dated" });
   });
 });
