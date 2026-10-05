@@ -9,11 +9,17 @@
  *
  * and which side effects each outcome may have (only `admitted` writes; a
  * replay writes nothing; only a fresh takeover consults the rate limiter).
+ *
+ * RT-219: every `admitted` carries the record's `admission_generation`; `end`
+ * passes the echoed generation to the store and audits a stale one as a
+ * no-op; a replay entry stored before RT-219 gets a generation that never
+ * matches.
  */
 import type { PoolClient } from "pg";
 
 import {
   CashierAdmissionsService,
+  PRE_GENERATION_REPLAY,
   type AdmissionPorts,
   type AdmissionStore,
   type StoredRequest,
@@ -34,6 +40,10 @@ const LIVE_ID = "0190f5a2-3b4c-7d8e-9f01-00000000e001";
 const NEW_ID = "0190f5a2-3b4c-7d8e-9f01-00000000e002";
 const KEY = "pos-pulse:4f6f1c1e-8a52-4c1b-9a0e-6d1f2b3c4d5e";
 const NOW = new Date("2026-10-04T08:15:01.000Z");
+/** Opaque generations the fake store issues (RT-219). */
+const GEN_CREATED = "1791123301000001";
+const GEN_RENEWED = "1791123301000002";
+const GEN_STORED = "1791119200000000";
 const POLICY: CashierAdmissionPolicy = {
   admissionTtlSeconds: 43200,
   offlineGraceSeconds: 86400,
@@ -64,6 +74,7 @@ const STORED_BODY = {
   admission_ttl_seconds: 43200,
   server_time: "2026-10-04T07:00:00.000Z",
   display_name: "Mona A.",
+  admission_generation: GEN_STORED,
 };
 
 interface World {
@@ -100,12 +111,12 @@ function build(w: World) {
     expireStale: track("expireStale", [] as Array<{ id: string; deviceId: string }>),
     isLiveOnDevice: track("isLiveOnDevice", w.priorLiveOnDevice),
     findLive: track("findLive", w.live),
-    create: track("create", { id: NEW_ID, renewedAt: NOW }),
-    renew: track("renew", { id: LIVE_ID, renewedAt: NOW }),
+    create: track("create", { id: NEW_ID, renewedAt: NOW, generation: GEN_CREATED }),
+    renew: track("renew", { id: LIVE_ID, renewedAt: NOW, generation: GEN_RENEWED }),
     end: track("end", undefined),
     saveRequest: track("saveRequest", undefined),
     findOwned: track("findOwned", null),
-    endOwned: track("endOwned", false),
+    endOwned: track("endOwned", "not_live"),
   } as unknown as jest.Mocked<AdmissionStore>;
   const ports: AdmissionPorts = {
     tx: async (_tenantId, work) => work(CLIENT),
@@ -205,7 +216,7 @@ describe("CashierAdmissionsService.admit — outcome order", () => {
 // admitted variants
 // ===========================================================================
 describe("CashierAdmissionsService.admit — admitted", () => {
-  const expected = (id: string) => ({
+  const expected = (id: string, generation: string) => ({
     kind: "admitted",
     body: {
       kind: "admitted",
@@ -214,13 +225,14 @@ describe("CashierAdmissionsService.admit — admitted", () => {
       admission_ttl_seconds: 43200,
       server_time: NOW.toISOString(),
       display_name: "Mona A.",
+      admission_generation: generation,
     },
   });
 
   it("no live admission → create; the request is recorded for replay", async () => {
     const { service, store, ports } = build(world());
     const out = await service.admit(SCOPE, onlineBody(), "req-1");
-    expect(out).toEqual(expected(NEW_ID));
+    expect(out).toEqual(expected(NEW_ID, GEN_CREATED));
     expect(store.create).toHaveBeenCalledWith(
       CLIENT,
       expect.objectContaining({ userId: USER, mode: "online", takeoverOf: null, ttlSeconds: 43200, at: NOW }),
@@ -239,7 +251,7 @@ describe("CashierAdmissionsService.admit — admitted", () => {
   it("live on this device → renew the SAME admission (heartbeat)", async () => {
     const { service, store } = build(world({ live: { id: LIVE_ID, deviceId: SCOPE.deviceId } }));
     const out = await service.admit(SCOPE, onlineBody(), "req-1");
-    expect(out).toEqual(expected(LIVE_ID));
+    expect(out).toEqual(expected(LIVE_ID, GEN_RENEWED));
     expect(store.renew).toHaveBeenCalledWith(CLIENT, SCOPE, { admissionId: LIVE_ID, at: NOW }, 43200);
     expect(store.create).not.toHaveBeenCalled();
   });
@@ -247,7 +259,7 @@ describe("CashierAdmissionsService.admit — admitted", () => {
   it("live elsewhere + takeover → end it ('takeover') and create with takeover_of", async () => {
     const { service, store, ports } = build(world({ live: { id: LIVE_ID, deviceId: OTHER_DEVICE } }));
     const out = await service.admit(SCOPE, onlineBody({ takeover: true }), "req-1");
-    expect(out).toEqual(expected(NEW_ID));
+    expect(out).toEqual(expected(NEW_ID, GEN_CREATED));
     expect(store.end).toHaveBeenCalledWith(CLIENT, SCOPE, { admissionId: LIVE_ID, at: NOW }, "takeover");
     expect(store.create).toHaveBeenCalledWith(CLIENT, expect.objectContaining({ takeoverOf: LIVE_ID }));
     expect(ports.audit.record).toHaveBeenCalledWith(
@@ -354,8 +366,8 @@ describe("CashierAdmissionsService.end", () => {
   it("own live admission → locked, ended and audited with the user", async () => {
     const { service, store, ports } = build(world());
     store.findOwned.mockResolvedValueOnce({ id: LIVE_ID, userId: USER });
-    store.endOwned.mockResolvedValueOnce(true);
-    await service.end(SCOPE, LIVE_ID, "req-1");
+    store.endOwned.mockResolvedValueOnce("ended");
+    await service.end(SCOPE, { admissionId: LIVE_ID, generation: null }, "req-1");
     expect(store.lockCashier.mock.invocationCallOrder[0]).toBeLessThan(
       store.endOwned.mock.invocationCallOrder[0]!,
     );
@@ -371,7 +383,7 @@ describe("CashierAdmissionsService.end", () => {
 
   it("unknown or foreign admission → nothing ended; audited without a user", async () => {
     const { service, store, ports } = build(world());
-    await service.end(SCOPE, LIVE_ID, "req-1");
+    await service.end(SCOPE, { admissionId: LIVE_ID, generation: null }, "req-1");
     expect(store.endOwned).not.toHaveBeenCalled();
     expect(ports.audit.record).toHaveBeenCalledWith(
       CLIENT,
@@ -408,9 +420,81 @@ describe("CashierAdmissionsService — one clock reading per request", () => {
   it("end reads the clock after the cashier lock and ends at that instant", async () => {
     const { service, store } = build(world());
     store.findOwned.mockResolvedValueOnce({ id: LIVE_ID, userId: USER });
-    store.endOwned.mockResolvedValueOnce(true);
-    await service.end(SCOPE, LIVE_ID, "req-1");
+    store.endOwned.mockResolvedValueOnce("ended");
+    await service.end(SCOPE, { admissionId: LIVE_ID, generation: null }, "req-1");
     expect(store.lockCashier.mock.invocationCallOrder[0]).toBeLessThan(store.clock.mock.invocationCallOrder[0]!);
-    expect(store.endOwned).toHaveBeenCalledWith(CLIENT, SCOPE, { admissionId: LIVE_ID, at: NOW });
+    expect(store.endOwned).toHaveBeenCalledWith(CLIENT, SCOPE, { admissionId: LIVE_ID, at: NOW, generation: null });
+  });
+});
+
+// ===========================================================================
+// RT-219: the end generation guard
+// ===========================================================================
+describe("CashierAdmissionsService.end — generation guard (RT-219)", () => {
+  it("passes the echoed generation to the store, under the cashier lock", async () => {
+    const { service, store } = build(world());
+    store.findOwned.mockResolvedValueOnce({ id: LIVE_ID, userId: USER });
+    store.endOwned.mockResolvedValueOnce("ended");
+    const out = await service.end(SCOPE, { admissionId: LIVE_ID, generation: GEN_RENEWED }, "req-1");
+    expect(out).toEqual({ kind: "ended" });
+    expect(store.endOwned).toHaveBeenCalledWith(CLIENT, SCOPE, { admissionId: LIVE_ID, at: NOW, generation: GEN_RENEWED });
+    expect(store.lockCashier.mock.invocationCallOrder[0]).toBeLessThan(store.endOwned.mock.invocationCallOrder[0]!);
+  });
+
+  it("a stale generation answers the same `ended` and audits a no-op naming the cause", async () => {
+    const { service, store, ports } = build(world());
+    store.findOwned.mockResolvedValueOnce({ id: LIVE_ID, userId: USER });
+    store.endOwned.mockResolvedValueOnce("stale_generation");
+    const out = await service.end(SCOPE, { admissionId: LIVE_ID, generation: GEN_CREATED }, "req-7");
+    expect(out).toEqual({ kind: "ended" });
+    expect(ports.audit.record).toHaveBeenCalledTimes(1);
+    expect(ports.audit.record).toHaveBeenCalledWith(CLIENT, {
+      scope: SCOPE,
+      action: "pos.cashier_admission.ended",
+      actorUserId: USER,
+      targetId: LIVE_ID,
+      requestId: "req-7",
+      metadata: {
+        device_id: SCOPE.deviceId,
+        user_id: USER,
+        prior_admission_id: LIVE_ID,
+        changed: false,
+        stale_generation: true,
+      },
+    });
+  });
+
+  it("an admission that stopped being live before the lock is a plain no-op", async () => {
+    const { service, store, ports } = build(world());
+    store.findOwned.mockResolvedValueOnce({ id: LIVE_ID, userId: USER });
+    store.endOwned.mockResolvedValueOnce("not_live");
+    await service.end(SCOPE, { admissionId: LIVE_ID, generation: GEN_RENEWED }, "req-1");
+    expect(ports.audit.record).toHaveBeenCalledWith(
+      CLIENT,
+      expect.objectContaining({
+        actorUserId: null,
+        metadata: { device_id: SCOPE.deviceId, prior_admission_id: LIVE_ID, changed: false },
+      }),
+    );
+  });
+});
+
+describe("CashierAdmissionsService.admit — replay generation (RT-219)", () => {
+  it("a replay returns the generation it was issued with, not a newer one", async () => {
+    const body = onlineBody();
+    const { service, store } = build(world({ prior: storedRequest(body), priorLiveOnDevice: true }));
+    const out = await service.admit(SCOPE, body, "req-1");
+    expect(out).toEqual({ kind: "admitted", body: STORED_BODY });
+    expect(store.renew).not.toHaveBeenCalled();
+  });
+
+  it("a replay entry stored before RT-219 gets a generation that never matches", async () => {
+    const body = onlineBody();
+    const { admission_generation: _dropped, ...legacy } = STORED_BODY;
+    const prior = { ...storedRequest(body), responseBody: legacy } as unknown as StoredRequest;
+    const { service } = build(world({ prior, priorLiveOnDevice: true }));
+    const out = await service.admit(SCOPE, body, "req-1");
+    expect(out).toEqual({ kind: "admitted", body: { ...legacy, admission_generation: PRE_GENERATION_REPLAY } });
+    expect(PRE_GENERATION_REPLAY).toMatch(/^[\x21-\x7E]{1,64}$/);
   });
 });

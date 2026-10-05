@@ -19,6 +19,15 @@
  * processed one after the other and the second sees the first's outcome. The
  * partial UNIQUE index `uq_cashier_admissions_live` is the database backstop
  * for the single-active rule.
+ *
+ * Generation (RT-219): `renewed_at` moves on every grant and renewal of a row
+ * and on nothing else, so its exact microsecond value is the admission's
+ * generation. It is exposed as an opaque string (`GENERATION_OF`) and
+ * compared as text, so no new column is needed. A renewal is STRICTLY
+ * monotonic (`renewed_at + 1 µs` at least), so even a clock that stepped back
+ * yields a new generation. `endOwned` compares the echoed generation and ends
+ * in ONE statement on the row, under the cashier lock: an `end` racing a
+ * renewal is decided in arrival order and never ends a renewal it did not see.
  */
 import type { PoolClient } from "pg";
 
@@ -33,6 +42,8 @@ export interface AdmissionRecord {
   readonly id: string;
   /** When the admission was granted or last renewed (the `server_time`). */
   readonly renewedAt: Date;
+  /** Opaque generation of this grant or renewal (RT-219). */
+  readonly generation: string;
 }
 
 export interface NewAdmission {
@@ -47,10 +58,17 @@ export interface NewAdmission {
   readonly ttlSeconds: number;
 }
 
+/**
+ * A stored `admitted` body. An entry written before RT-219 has no
+ * `admission_generation` (the replay window bounds how long one can exist).
+ */
+export type StoredAdmittedBody = Omit<AdmittedBody, "admission_generation"> &
+  Partial<Pick<AdmittedBody, "admission_generation">>;
+
 export interface StoredRequest {
   readonly requestHash: Buffer;
   readonly admissionId: string;
-  readonly responseBody: AdmittedBody;
+  readonly responseBody: StoredAdmittedBody;
 }
 
 export interface SavedRequest {
@@ -92,6 +110,18 @@ export interface AdmissionAt {
   readonly at: Date;
 }
 
+/** An `end`: which admission, when, and the generation it echoed (RT-219). */
+export interface EndAt extends AdmissionAt {
+  /** null: no echo, the end is unconditional (the 1.0.0-draft behaviour). */
+  readonly generation: string | null;
+}
+
+/**
+ * What `endOwned` did: ended the admission; found it live on this device but
+ * renewed since the echoed generation (no-op); or found nothing live here.
+ */
+export type EndResult = "ended" | "stale_generation" | "not_live";
+
 export interface AdmissionStore {
   lockRequestKey(client: PoolClient, scope: DeviceScope, keyHash: Buffer): Promise<void>;
   lockCashier(client: PoolClient, scope: DeviceScope, userId: string): Promise<void>;
@@ -108,17 +138,30 @@ export interface AdmissionStore {
   saveRequest(client: PoolClient, scope: DeviceScope, input: SavedRequest): Promise<void>;
   /** This device's live admission `admissionId`, if any. */
   findOwned(client: PoolClient, scope: DeviceScope, admissionId: string): Promise<OwnedAdmission | null>;
-  /** End this device's live admission; false when nothing changed. */
-  endOwned(client: PoolClient, scope: DeviceScope, admission: AdmissionAt): Promise<boolean>;
+  /** End this device's live admission unless the echoed generation is stale. */
+  endOwned(client: PoolClient, scope: DeviceScope, end: EndAt): Promise<EndResult>;
 }
 
 async function advisoryLock(client: PoolClient, key: string): Promise<void> {
   await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [key]);
 }
 
-function toRecord(row: { id: string; renewed_at: Date } | undefined): AdmissionRecord {
+/**
+ * The generation of a row as opaque text: `renewed_at` in whole microseconds
+ * since the epoch. JS `Date` keeps only milliseconds, so it is computed and
+ * compared in SQL, never round-tripped through a `Date`.
+ */
+const GENERATION_OF = "(extract(epoch FROM renewed_at) * 1000000)::bigint::text";
+
+interface RecordRow {
+  id: string;
+  renewed_at: Date;
+  generation: string;
+}
+
+function toRecord(row: RecordRow | undefined): AdmissionRecord {
   if (!row) throw new Error("cashier admission write returned no row");
-  return { id: row.id, renewedAt: row.renewed_at };
+  return { id: row.id, renewedAt: row.renewed_at, generation: row.generation };
 }
 
 export class CashierAdmissionsRepository implements AdmissionStore {
@@ -132,7 +175,7 @@ export class CashierAdmissionsRepository implements AdmissionStore {
   }
 
   async findRequest(client: PoolClient, scope: DeviceScope, key: KeyAt): Promise<StoredRequest | null> {
-    const r = await client.query<{ request_hash: Buffer; admission_id: string; response_body: AdmittedBody }>(
+    const r = await client.query<{ request_hash: Buffer; admission_id: string; response_body: StoredAdmittedBody }>(
       `SELECT request_hash, admission_id, response_body
          FROM cashier_admission_requests
         WHERE tenant_id = $1 AND device_id = $2 AND key_hash = $3 AND expires_at > $4::timestamptz`,
@@ -180,13 +223,13 @@ export class CashierAdmissionsRepository implements AdmissionStore {
   }
 
   async create(client: PoolClient, input: NewAdmission): Promise<AdmissionRecord> {
-    const r = await client.query<{ id: string; renewed_at: Date }>(
+    const r = await client.query<RecordRow>(
       `INSERT INTO cashier_admissions
          (id, tenant_id, store_id, user_id, device_id, mode, offline_admitted_at,
           takeover_of, created_at, renewed_at, expires_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $10::timestamptz, $10::timestamptz,
                $10::timestamptz + $9::int * interval '1 second')
-       RETURNING id, renewed_at`,
+       RETURNING id, renewed_at, ${GENERATION_OF} AS generation`,
       [
         input.id,
         input.scope.tenantId,
@@ -209,14 +252,17 @@ export class CashierAdmissionsRepository implements AdmissionStore {
     admission: AdmissionAt,
     ttlSeconds: number,
   ): Promise<AdmissionRecord> {
-    const r = await client.query<{ id: string; renewed_at: Date }>(
-      // Monotonic (defence in depth): a renewal never moves renewed_at back,
-      // so `renewed_at >= created_at` holds even for a stale instant.
+    const r = await client.query<RecordRow>(
+      // STRICTLY monotonic: a renewal always moves renewed_at forward, by at
+      // least 1 µs, so `renewed_at >= created_at` holds even for a stale
+      // instant AND every renewal has a new generation (RT-219), even after
+      // the clock stepped back. (SET expressions read the old renewed_at.)
       `UPDATE cashier_admissions
-          SET renewed_at = GREATEST($5::timestamptz, renewed_at),
-              expires_at = GREATEST($5::timestamptz, renewed_at) + $4::int * interval '1 second'
+          SET renewed_at = GREATEST($5::timestamptz, renewed_at + interval '1 microsecond'),
+              expires_at = GREATEST($5::timestamptz, renewed_at + interval '1 microsecond')
+                           + $4::int * interval '1 second'
         WHERE id = $1 AND tenant_id = $2 AND device_id = $3 AND ended_at IS NULL
-        RETURNING id, renewed_at`,
+        RETURNING id, renewed_at, ${GENERATION_OF} AS generation`,
       [admission.admissionId, scope.tenantId, scope.deviceId, ttlSeconds, admission.at],
     );
     return toRecord(r.rows[0]);
@@ -272,15 +318,27 @@ export class CashierAdmissionsRepository implements AdmissionStore {
     return row ? { id: row.id, userId: row.user_id } : null;
   }
 
-  async endOwned(client: PoolClient, scope: DeviceScope, admission: AdmissionAt): Promise<boolean> {
-    const r = await client.query(
-      `UPDATE cashier_admissions
-          SET ended_at = $4::timestamptz,
-              end_reason = CASE WHEN expires_at <= $4::timestamptz THEN 'expired' ELSE 'device_end' END
-        WHERE id = $1 AND tenant_id = $2 AND device_id = $3 AND ended_at IS NULL
-        RETURNING id`,
-      [admission.admissionId, scope.tenantId, scope.deviceId, admission.at],
+  async endOwned(client: PoolClient, scope: DeviceScope, end: EndAt): Promise<EndResult> {
+    // One statement, one snapshot: `live` says whether the row is this
+    // device's live admission; `ended` ends it only when no generation was
+    // echoed or the echo is the row's current generation (RT-219).
+    const r = await client.query<{ live: boolean; ended: boolean }>(
+      `WITH live AS (
+         SELECT id FROM cashier_admissions
+          WHERE id = $1 AND tenant_id = $2 AND device_id = $3 AND ended_at IS NULL
+       ), ended AS (
+         UPDATE cashier_admissions
+            SET ended_at = $4::timestamptz,
+                end_reason = CASE WHEN expires_at <= $4::timestamptz THEN 'expired' ELSE 'device_end' END
+          WHERE id = $1 AND tenant_id = $2 AND device_id = $3 AND ended_at IS NULL
+            AND ($5::text IS NULL OR ${GENERATION_OF} = $5::text)
+          RETURNING id
+       )
+       SELECT EXISTS (SELECT 1 FROM live) AS live, EXISTS (SELECT 1 FROM ended) AS ended`,
+      [end.admissionId, scope.tenantId, scope.deviceId, end.at, end.generation],
     );
-    return r.rows.length > 0;
+    const row = r.rows[0];
+    if (row?.ended) return "ended";
+    return row?.live ? "stale_generation" : "not_live";
   }
 }

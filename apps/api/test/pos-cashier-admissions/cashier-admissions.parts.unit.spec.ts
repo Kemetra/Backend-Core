@@ -2,7 +2,7 @@
  * RT-113 BC2 — Docker-free units of the cashier-admissions runtime:
  * server policy config, the eligibility classifier, the request
  * fingerprint, the pure admission decision, the takeover limiter's
- * fail-open posture and the DTO.
+ * fail-open posture and the DTO (including the RT-219 optional `end` body).
  */
 import type { Logger } from "@data-pulse-2/shared";
 
@@ -24,7 +24,7 @@ import {
 import { classifyEligibility, type EligibilityRow } from "../../src/pos-cashier-admissions/cashier-eligibility";
 import type { TenantContextRequest } from "../../src/context/types";
 import { deviceScopeOf } from "../../src/pos-cashier-admissions/device-scope";
-import { AdmissionIdSchema, AdmissionRequestSchema } from "../../src/pos-cashier-admissions/dto";
+import { AdmissionIdSchema, AdmissionRequestSchema, EndRequestSchema } from "../../src/pos-cashier-admissions/dto";
 import { TakeoverRateLimit } from "../../src/pos-cashier-admissions/takeover-rate-limit";
 
 const USER = "0190f5a2-3b4c-7d8e-9f01-23456789abcd";
@@ -308,6 +308,31 @@ describe("AdmissionRequestSchema / AdmissionIdSchema", () => {
   it("the path id must be a uuid", () => {
     expect(AdmissionIdSchema.safeParse(USER).success).toBe(true);
     expect(AdmissionIdSchema.safeParse("not-a-uuid").success).toBe(false);
+  });
+});
+
+describe("EndRequestSchema (RT-219: optional body of posEndCashierAdmission)", () => {
+  it.each<[string, unknown, { admission_generation?: string } | undefined]>([
+    ["no body at all (Express 5 leaves req.body undefined)", undefined, undefined],
+    ["an empty object", {}, {}],
+    ["a generation", { admission_generation: "1791123301000123" }, { admission_generation: "1791123301000123" }],
+  ])("accepts %s", (_label, body, parsed) => {
+    const result = EndRequestSchema.safeParse(body);
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual(parsed);
+  });
+
+  it.each<[string, unknown]>([
+    ["an unknown field", { admission_generation: "1", reason: "sign_out" }],
+    ["a scope field", { device_id: USER }],
+    ["an empty generation", { admission_generation: "" }],
+    ["a generation over 64 characters", { admission_generation: "1".repeat(65) }],
+    ["a generation with whitespace", { admission_generation: "17911 23301" }],
+    ["a numeric generation", { admission_generation: 1791123301000123 }],
+    ["a null generation", { admission_generation: null }],
+    ["a non-object body", ["1791123301000123"]],
+  ])("rejects %s", (_label, body) => {
+    expect(EndRequestSchema.safeParse(body).success).toBe(false);
   });
 });
 

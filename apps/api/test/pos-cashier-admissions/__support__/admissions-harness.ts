@@ -380,6 +380,11 @@ export function endAs(d: FixtureDevice, admissionId: Uuid, requestId: Uuid = ran
     .set("x-request-id", requestId);
 }
 
+/** `end` with a JSON body (RT-219: the optional `admission_generation` echo). */
+export function endWith(d: FixtureDevice, admissionId: Uuid, body: unknown, requestId: Uuid = randomUUID()) {
+  return endAs(d, admissionId, requestId).send(body as object);
+}
+
 export function rosterAs(d: FixtureDevice) {
   return http().get(ROSTER).set("authorization", `Bearer ${d.token}`);
 }
@@ -480,6 +485,7 @@ export function admitted(res: { status: number; body: unknown }): {
   admission_ttl_seconds: number;
   server_time: string;
   display_name: string;
+  admission_generation: string;
 } {
   expect(res.status).toBe(200);
   expectSchema("PosCashierAdmissionResponse", res.body);

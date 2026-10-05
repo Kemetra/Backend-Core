@@ -22,7 +22,11 @@
  *   - scope comes from the device row only (tenant, store);
  *   - `end` is idempotent and non-disclosing; only an own admission changes;
  *   - roster: exactly the store's POS-eligible cashiers, minimum disclosure;
- *   - tenant isolation: a tenant-B device cannot see or end tenant-A state.
+ *   - tenant isolation: a tenant-B device cannot see or end tenant-A state;
+ *   - RT-219 (`[GATED]` approval: RT-219 comment 10877): `end` echoing a
+ *     stale `admission_generation` is a no-op, so a late `end` cannot end a
+ *     renewed admission; a matching one ends it; an absent one ends as
+ *     before; a renewal racing a stale `end` under the cashier lock.
  *
  * Idempotency, concurrency and the takeover rate limit are in
  * cashier-admissions.idempotency.integration.spec.ts.
@@ -60,6 +64,7 @@ import {
   auditsFor,
   endAs,
   endPath,
+  endWith,
   expectActiveElsewhere,
   expectRefused,
   expectSchema,
@@ -555,6 +560,255 @@ describe("end", () => {
     await endAs(DEV_A1, first.admission_id);
     const [row] = await admissionsFor(CASHIER.id);
     expect(row).toMatchObject({ end_reason: "expired" });
+  });
+});
+
+// ===========================================================================
+// RT-219 — a stale end can never end a renewed admission
+// ===========================================================================
+describe("end generation guard (RT-219)", () => {
+  type Admitted = ReturnType<typeof admitted>;
+
+  /** A sign-in or heartbeat of CASHIER on DEV_A1. */
+  async function signIn(): Promise<Admitted> {
+    return admitted(await admitAs(DEV_A1, online(CASHIER.id)));
+  }
+
+  function echo(a: Admitted): { admission_generation: string } {
+    return { admission_generation: a.admission_generation };
+  }
+
+  async function expectStillLive(admissionId: string): Promise<void> {
+    expect((await liveFor(CASHIER.id)).map((a) => a.id)).toEqual([admissionId]);
+  }
+
+  function expectEnded(res: { status: number; body: unknown }): void {
+    expect(res.status).toBe(200);
+    expectSchema("PosCashierAdmissionEnded", res.body);
+    expect(res.body).toEqual({ kind: "ended" });
+  }
+
+  it("every admitted carries a generation, and each renewal of the SAME admission changes it", async () => {
+    if (skipped()) return;
+    const answers = [await signIn(), await signIn(), await signIn()];
+    expect(new Set(answers.map((a) => a.admission_id)).size).toBe(1);
+    expect(new Set(answers.map((a) => a.admission_generation)).size).toBe(3);
+  });
+
+  it("the RT-219 race: a late end for the earlier sign-in is a no-op on the renewed admission", async () => {
+    if (skipped()) return;
+    const first = await signIn();
+    // The sign-out's end is still in flight when the cashier signs in again
+    // on the same till: the server renews the SAME admission.
+    const again = await signIn();
+    expect(again.admission_id).toBe(first.admission_id);
+    const requestId = randomUUID();
+    expectEnded(await endWith(DEV_A1, first.admission_id, echo(first), requestId));
+    await expectStillLive(first.admission_id);
+    // Still the cashier's live authority: the heartbeat keeps the id, and
+    // another till cannot admit the cashier without a takeover.
+    expect((await signIn()).admission_id).toBe(first.admission_id);
+    expectActiveElsewhere(await admitAs(DEV_A1_SECOND, online(CASHIER.id)));
+    expect(await auditsFor(requestId)).toEqual([
+      expect.objectContaining({
+        action: "pos.cashier_admission.ended",
+        actor_user_id: CASHIER.id,
+        target_id: first.admission_id,
+        metadata: {
+          device_id: DEV_A1.id,
+          user_id: CASHIER.id,
+          prior_admission_id: first.admission_id,
+          changed: false,
+          stale_generation: true,
+        },
+      }),
+    ]);
+  });
+
+  it("a slow heartbeat's orphan end (10869 item 2) is a no-op once a new sign-in renewed", async () => {
+    if (skipped()) return;
+    await signIn();
+    const lateHeartbeat = await signIn(); // answered after the sign-out
+    const newSession = await signIn(); // the cashier signs in again
+    expectEnded(await endWith(DEV_A1, lateHeartbeat.admission_id, echo(lateHeartbeat)));
+    await expectStillLive(newSession.admission_id);
+  });
+
+  it("a matching generation ends the admission; the next sign-in issues a new admission_id", async () => {
+    if (skipped()) return;
+    await signIn();
+    const latest = await signIn();
+    const requestId = randomUUID();
+    expectEnded(await endWith(DEV_A1, latest.admission_id, echo(latest), requestId));
+    expect(await liveFor(CASHIER.id)).toEqual([]);
+    const [row] = await admissionsFor(CASHIER.id);
+    expect(row).toMatchObject({ end_reason: "device_end" });
+    expect((await auditsFor(requestId))[0]?.metadata).toEqual({
+      device_id: DEV_A1.id,
+      user_id: CASHIER.id,
+      prior_admission_id: latest.admission_id,
+      changed: true,
+    });
+    expect((await signIn()).admission_id).not.toBe(latest.admission_id);
+  });
+
+  it.each<[string, (id: string) => ReturnType<typeof endAs>]>([
+    ["no body", (id) => endAs(DEV_A1, id)],
+    ["an empty object", (id) => endWith(DEV_A1, id, {})],
+  ])("without the field the end is unconditional, as before RT-219 (%s)", async (_label, send) => {
+    if (skipped()) return;
+    const first = await signIn();
+    await signIn();
+    expectEnded(await send(first.admission_id));
+    expect(await liveFor(CASHIER.id)).toEqual([]);
+  });
+
+  it("a replayed end is idempotent: the matching end twice ends once, then changes nothing", async () => {
+    if (skipped()) return;
+    const live = await signIn();
+    expectEnded(await endWith(DEV_A1, live.admission_id, echo(live)));
+    const [before] = await admissionsFor(CASHIER.id);
+    const requestId = randomUUID();
+    expectEnded(await endWith(DEV_A1, live.admission_id, echo(live), requestId));
+    const [after] = await admissionsFor(CASHIER.id);
+    expect(after).toEqual(before);
+    expect((await auditsFor(requestId))[0]?.metadata).toEqual({
+      device_id: DEV_A1.id,
+      prior_admission_id: live.admission_id,
+      changed: false,
+    });
+  });
+
+  it("a stale end repeated changes nothing each time", async () => {
+    if (skipped()) return;
+    const first = await signIn();
+    await signIn();
+    for (let i = 0; i < 3; i += 1) expectEnded(await endWith(DEV_A1, first.admission_id, echo(first)));
+    await expectStillLive(first.admission_id);
+  });
+
+  it("the generation changes even when the clock stepped back (renewal is strictly monotonic)", async () => {
+    if (skipped()) return;
+    const first = await signIn();
+    // A renewal recorded at a later instant than the clock now reads.
+    await h().admin.query(
+      `UPDATE cashier_admissions
+          SET renewed_at = clock_timestamp() + interval '1 hour', expires_at = clock_timestamp() + interval '2 hours'
+        WHERE id = $1`,
+      [first.admission_id],
+    );
+    const ahead = await signIn();
+    const again = await signIn();
+    expect(again.admission_generation).not.toBe(ahead.admission_generation);
+    expectEnded(await endWith(DEV_A1, ahead.admission_id, echo(ahead)));
+    await expectStillLive(first.admission_id);
+  });
+
+  it.each<[string, unknown]>([
+    ["an unknown field", { admission_generation: "1", reason: "sign_out" }],
+    ["an empty generation", { admission_generation: "" }],
+    ["a numeric generation", { admission_generation: 1791123301000123 }],
+    ["a generation over 64 characters", { admission_generation: "1".repeat(65) }],
+    ["a non-object body", ["1791123301000123"]],
+  ])("a body with %s is a 400 and changes nothing", async (_label, body) => {
+    if (skipped()) return;
+    const live = await signIn();
+    const res = await endWith(DEV_A1, live.admission_id, body);
+    expect(res.status).toBe(400);
+    expectSchema("Error", res.body);
+    expect((res.body as { error: { code: string } }).error.code).toBe("validation_error");
+    await expectStillLive(live.admission_id);
+  });
+
+  it("401 precedes 400: a revoked device with a malformed body gets 401", async () => {
+    if (skipped()) return;
+    const res = await endWith(DEV_REVOKED, randomUUID(), { unknown: true });
+    expect(res.status).toBe(401);
+  });
+
+  it.each([
+    ["another till of the same store", DEV_A1_SECOND],
+    ["a tenant-B till", DEV_B1],
+  ])("%s echoing the right generation cannot end it", async (_label, other) => {
+    if (skipped()) return;
+    const live = await signIn();
+    expectEnded(await endWith(other, live.admission_id, echo(live)));
+    await expectStillLive(live.admission_id);
+  });
+
+  describe("a renewal racing an end under the cashier's advisory lock", () => {
+    /** Hold the cashier's serialisation lock on a separate session. */
+    async function holdCashierLock() {
+      const client = await h().admin.connect();
+      const key = `cashier_admission:${TENANT_A}:${STORE_A1}:${CASHIER.id}`;
+      await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [key]);
+      return {
+        async release(): Promise<void> {
+          await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [key]);
+          client.release();
+        },
+      };
+    }
+
+    /** Resolve once `n` requests wait on an advisory lock (granted FIFO). */
+    async function waitUntilWaiting(n: number): Promise<void> {
+      for (let i = 0; i < 100; i += 1) {
+        const r = await h().admin.query(
+          `SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'`,
+        );
+        if (r.rows.length >= n) return;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      throw new Error(`fewer than ${n} requests blocked on the advisory lock`);
+    }
+
+    it("renewal first, stale end second: the end is a no-op and the renewal keeps the id", async () => {
+      if (skipped()) return;
+      const first = await signIn();
+      const lock = await holdCashierLock();
+      const renewal = admitAs(DEV_A1, online(CASHIER.id)).then((res) => res);
+      await waitUntilWaiting(1);
+      const staleEnd = endWith(DEV_A1, first.admission_id, echo(first)).then((res) => res);
+      await waitUntilWaiting(2);
+      await lock.release();
+      const renewed = admitted(await renewal);
+      expectEnded(await staleEnd);
+      expect(renewed.admission_id).toBe(first.admission_id);
+      await expectStillLive(first.admission_id);
+      expect((await signIn()).admission_id).toBe(first.admission_id);
+    });
+
+    it("end first, renewal second: the end ends it and the renewal issues a new id", async () => {
+      if (skipped()) return;
+      const first = await signIn();
+      const lock = await holdCashierLock();
+      const end = endWith(DEV_A1, first.admission_id, echo(first)).then((res) => res);
+      await waitUntilWaiting(1);
+      const renewal = admitAs(DEV_A1, online(CASHIER.id)).then((res) => res);
+      await waitUntilWaiting(2);
+      await lock.release();
+      expectEnded(await end);
+      const next = admitted(await renewal);
+      expect(next.admission_id).not.toBe(first.admission_id);
+      await expectStillLive(next.admission_id);
+    });
+
+    it("free-running: an admission a racing renewal kept is never ended by the stale end", async () => {
+      if (skipped()) return;
+      for (let i = 0; i < 20; i += 1) {
+        const first = await signIn();
+        const [renewal, staleEnd] = await Promise.all([
+          admitAs(DEV_A1, online(CASHIER.id)),
+          endWith(DEV_A1, first.admission_id, echo(first)),
+        ]);
+        expectEnded(staleEnd);
+        const renewed = admitted(renewal);
+        const live = (await liveFor(CASHIER.id)).map((a) => a.id);
+        // Either order is valid; the forbidden outcome is "renewed, then ended".
+        expect(live).toEqual([renewed.admission_id]);
+        expectEnded(await endAs(DEV_A1, renewed.admission_id));
+      }
+    }, 60_000);
   });
 });
 
