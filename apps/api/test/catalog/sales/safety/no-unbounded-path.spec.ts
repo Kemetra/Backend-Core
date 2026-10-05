@@ -68,8 +68,9 @@ describe("T091: capture body is single-sale — rejects an unbounded array (FR-0
     // path would require a NEW shape (and a [GATED] contract change), which
     // this assertion would force a reviewer to notice.
     // Public key-introspection API (`.keyof().options`), not the brittle
-    // internal `._def.shape()`.
-    const keys = CaptureSaleRequestSchema.keyof().options;
+    // internal `._def.shape()`. RT-225: the schema is the strict object plus a
+    // cross-field refinement, so introspect its inner object.
+    const keys = CaptureSaleRequestSchema.innerType().keyof().options;
     expect(keys).toContain("lines");
     expect(keys).not.toContain("sales");
   });
