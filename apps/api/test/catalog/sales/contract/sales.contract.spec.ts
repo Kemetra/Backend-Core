@@ -758,10 +758,95 @@ describe("pos-sales/sales.yaml — RT-181 Idempotency-Key bounds", () => {
     expect(pattern.test("pos-pulse key with spaces")).toBe(false);
   });
 
-  it("the version note records RT-181 at 1.4.0-draft", () => {
+  it("the version note records RT-181 at 1.4.0-draft (version moved on in RT-224)", () => {
     const info = salesDoc.info?.description ?? "";
     expect(info).toContain("RT-181 (1.4.0-draft");
     expect(info).toContain("The server is unchanged");
-    expect(salesDoc.info?.version).toBe("1.4.0-draft");
+  });
+});
+
+// ===========================================================================
+// RT-224 Option B — device-bearer sale capture with server-verified cashier
+// attribution ([GATED] approval: Jira RT-224 comment 10889)
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-224 device-bearer cashier capture", () => {
+  type DescribedNode = { description?: string };
+  function describedBy(node: unknown): string {
+    return (node as DescribedNode | undefined)?.description ?? "";
+  }
+  function captureRequest(): SchemaObject | undefined {
+    return salesDoc.components?.schemas?.["CaptureSaleRequest"];
+  }
+  function operatorUserId():
+    | { type?: string; format?: string; description?: string }
+    | undefined {
+    return (captureRequest()?.properties ?? {})["operatorUserId"] as
+      | { type?: string; format?: string; description?: string }
+      | undefined;
+  }
+
+  it("bumps the version to 1.5.0-draft with an RT-224 version note citing the approval", () => {
+    expect(salesDoc.info?.version).toBe("1.5.0-draft");
+    const info = salesDoc.info?.description ?? "";
+    expect(info).toContain("RT-224 (1.5.0-draft");
+    expect(info).toContain("comment 10889");
+  });
+
+  it("captureSale accepts the envelope OR the device bearer, as two alternatives", () => {
+    expect(findOp("captureSale")?.security).toEqual([
+      { operatorAuthorization: [] },
+      { device: [] },
+    ]);
+  });
+
+  it("no other sale operation accepts the device bearer (only captureSale changes)", () => {
+    for (const { op } of salesOperations()) {
+      if (op.operationId === "captureSale") continue;
+      expect(op.security).toEqual([{ operatorAuthorization: [] }]);
+    }
+  });
+
+  it("declares the role-named device scheme: opaque http bearer, not a JWT", () => {
+    const scheme = salesDoc.components?.securitySchemes?.["device"] as
+      | { type?: string; scheme?: string; bearerFormat?: string; description?: string }
+      | undefined;
+    expect(scheme?.type).toBe("http");
+    expect(scheme?.scheme).toBe("bearer");
+    expect(scheme?.bearerFormat).toBeUndefined();
+    // Device-scoped: never proves a sale's author alone.
+    expect(scheme?.description).toContain("operatorUserId");
+    expect(scheme?.description).toContain("cashier admission");
+  });
+
+  it("adds an OPTIONAL operatorUserId (uuid) to the strict capture body", () => {
+    expect(captureRequest()?.additionalProperties).toBe(false);
+    expect(captureRequest()?.required).not.toContain("operatorUserId");
+    expect(operatorUserId()?.type).toBe("string");
+    expect(operatorUserId()?.format).toBe("uuid");
+  });
+
+  it("documents which scheme the field selects and that it is a verified claim, never trusted", () => {
+    const text = describedBy(operatorUserId());
+    expect(text).toContain("REQUIRED with the `device` scheme");
+    expect(text).toContain("MUST be absent with `operatorAuthorization`");
+    expect(text).toContain("`created_by`");
+    expect(text).toContain("never trusted");
+  });
+
+  it("documents the admission window precisely, including ended and expired admissions", () => {
+    const text = describedBy(operatorUserId());
+    expect(text).toContain("created_at <= occurredAt < LEAST(ended_at, expires_at)");
+    expect(text).toContain("has since ended or expired");
+    expect(text).toContain("same device");
+  });
+
+  it("keeps the attribution out of the sale payload hash", () => {
+    expect(describedBy(operatorUserId())).toContain("not part of the sale `payload_hash`");
+  });
+
+  it("every device-path refusal is the generic 401", () => {
+    const text = describedBy(findOp("captureSale"));
+    expect(text).toContain("Cashier attribution (RT-224)");
+    expect(text).toContain("generic 401");
   });
 });

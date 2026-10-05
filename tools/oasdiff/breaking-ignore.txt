@@ -8,10 +8,9 @@
 # Example:
 #   RT-123 intentional: POST /api/v1/example added the new required request header 'X-Example'
 #
-# RT-208: the pos-operators roster declares `branch_id` required. The runtime
-# already refused a roster request without it (generic 401, reason
-# branch_id_required), so the wire behaviour is unchanged. Consumers verified:
-# every POS call puts the paired terminal's branch_id in the query
-# (BackendClient.listRoster); the Admin-Console does not call /api/pos/.
-# [GATED] approval: Jira RT-208 comment 10855.
-RT-208 intentional (roster branch_id declared required as the runtime already enforces; generic 401 unchanged): GET /api/pos/v1/operators/roster the `query` request parameter `branch_id` became required
+# RT-224 (Option B): captureSale gains `device` as a second, ALTERNATIVE
+# security requirement (envelope OR device bearer + verified operatorUserId),
+# not an added requirement on top of the envelope. Existing envelope clients
+# are unaffected; oasdiff cannot tell an OR-alternative from a new AND-scheme,
+# hence the WARN. [GATED] approval: Jira RT-224 comment 10889.
+RT-224 intentional (device bearer added as an alternative captureSale security requirement, envelope unchanged; [GATED] RT-224 comment 10889): in API POST /api/pos/v1/sales the endpoint scheme security `device` was added to the API [api-security-added].

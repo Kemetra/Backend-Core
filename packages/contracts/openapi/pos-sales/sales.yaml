@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.4.0-draft"
+  version: "1.5.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -111,6 +111,20 @@ info:
     was already rejected with 400 before the handler ran. The POS sends
     `pos-pulse:<UUID>` (46 characters), so it is unaffected.
 
+    RT-224 (1.5.0-draft; Option B, [GATED] approval Jira RT-224 comment
+    10889): `captureSale` gains a second, alternative security requirement,
+    `device` — the paired terminal's device bearer — used together with a new
+    OPTIONAL body field `CaptureSaleRequest.operatorUserId`. The server checks
+    the claimed cashier against a `cashier_admissions` row of the same device
+    whose window covers the sale's `occurredAt`, re-checks the cashier's
+    membership and store access live, and records the cashier as the sale's
+    `created_by`. This lets a cashier's sales sync, including after sign-out
+    and at end of shift. The change is additive: an added alternative security
+    requirement and an optional field. The `operatorAuthorization` path, every
+    other operation, the responses and the idempotency, rate-limit and
+    isolation rules are unchanged. A client that does not send
+    `operatorUserId` sees no difference.
+
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
     appears on the wire. Timestamps are RFC 3339 / `date-time` in UTC (FR-021).
@@ -152,6 +166,7 @@ paths:
       tags: [pos-sales]
       security:
         - operatorAuthorization: []
+        - device: []
       description: >
         Create the immutable `sales` header + frozen `sale_lines` snapshot from
         a completed POS sale. The authenticated principal supplies `tenant_id`
@@ -185,6 +200,23 @@ paths:
         answers `sale_tender_mismatch`. The invariant applies to a first capture
         only: a replay of a sale captured before RT-105 is never re-checked, and
         still returns 200 with the stored projection.
+
+        Cashier attribution (RT-224): a sale may instead be sent with the
+        `device` scheme (the paired terminal's device bearer) plus the
+        cashier's `operatorUserId` in the body. The presence of `operatorUserId`
+        selects this path; without it the request is an
+        `operatorAuthorization` request exactly as before. On this path the
+        device row supplies the tenant, store and device, and the server
+        accepts the sale only if the device is active, a cashier admission of
+        that device and store for that user covers `occurredAt` (see
+        `operatorUserId`), and the cashier's membership, store access and
+        account are still live. Every refusal on this path is the same
+        generic 401 as an invalid envelope: the response never reveals
+        whether the user, the admission or the device exists. A malformed
+        body from an authenticated device is the usual 400. Idempotency,
+        provenance dedup, the 409 divergence rule and the per-device rate
+        limit apply unchanged; the idempotency key is scoped to the verified
+        cashier, as it is scoped to the operator on the envelope path.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -581,6 +613,23 @@ components:
 
         Note: `bearerFormat` is intentionally omitted — the envelope is an
         opaque token, not a JWT.
+    device:
+      type: http
+      scheme: bearer
+      description: >
+        RT-224: the paired terminal's opaque `devices` pairing token,
+        presented as `Authorization: Bearer <device_token>` (the same
+        role-named scheme as `catalog/read-down.yaml` and
+        `pos-cashier-admissions.openapi.yaml`; NOT a JWT, so `bearerFormat`
+        is omitted). Accepted on `captureSale` only, and only together with
+        `operatorUserId` in the body: the device token is device-scoped and
+        never proves a sale's author alone. The token is hashed and matched
+        against a non-revoked `devices` row of an active tenant; that row
+        supplies the authoritative `(tenant_id, store_id, device_id)`. The
+        server then requires a cashier admission of that device, store and
+        user whose window covers the sale's `occurredAt`, and re-checks the
+        cashier's membership and store access live. Any failure is a generic
+        401 (non-disclosing).
 
   parameters:
     # DeviceAttestation (X-Device-Attestation) was the 008 Option-Y device
@@ -691,6 +740,9 @@ components:
         backend re-verifies membership / device / store-access / role LIVE per
         request (G-4). The resolved `(tenant_id, store_id, actor)` come from the
         session binding + membership — never from the body.
+
+        RT-224: with the `device` scheme the body carries `operatorUserId`, a
+        claim the server verifies (see the field); it is not a credential.
       properties:
         sourceSystem:
           type: string
@@ -739,6 +791,43 @@ components:
             `sale_tender_mismatch`). Absent = a tender-unknown sale (RT-10 D8).
             Accepted from RT-77; do not send before then (see the versioning
             note).
+        operatorUserId:
+          type: string
+          format: uuid
+          description: >
+            RT-224 (Option B). The `users.id` of the cashier who made the sale:
+            the `user_id` of the cashier admission the terminal holds (NOT the
+            provider subject `operator_id`). Named `operatorUserId`, not
+            `cashier…`, so that no sale field name contains a tender word
+            (gate A.5). REQUIRED with the `device` scheme
+            and MUST be absent with `operatorAuthorization`: its presence
+            selects the device path, so an envelope request that carries it is
+            refused (401).
+
+            It is a claim, never trusted on its own. The server accepts it only
+            if a `cashier_admissions` row exists for the device's tenant and
+            store, the same device and this user, whose window covers
+            `occurredAt`: `created_at <= occurredAt < LEAST(ended_at,
+            expires_at)`. Both bounds are server times; the lower bound is
+            inclusive and the upper bound exclusive, matching the admission's
+            own liveness (an admission is expired once `expires_at <= now`,
+            and ended from `ended_at` on). LEAST ignores a NULL `ended_at`, and
+            an admission ended lazily after it had expired still stops at
+            `expires_at`. An admission that has since ended or expired still
+            authorizes the sales that occurred inside its window, so a queue
+            drained after sign-out, at end of shift or after a takeover still
+            syncs. A sale outside every such window, or under another device,
+            store or tenant, is refused. The cashier's membership must still be
+            active, the user not deleted, the role the cashier role, the store
+            active and accessible to the user (the RT-113 cashier eligibility
+            rules, re-checked live per request).
+
+            On success the cashier is the sale's `created_by` and the audit
+            actor. The field is not part of the sale `payload_hash` (the hash
+            covers the sale facts only), so the same sale sent by two paths
+            hashes the same; it is part of the idempotency fingerprint like any
+            body field. A provenance replay returns the stored sale and never
+            re-attributes it.
     CaptureSaleLine:
       type: object
       additionalProperties: false
