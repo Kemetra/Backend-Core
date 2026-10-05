@@ -33,6 +33,7 @@ const DEVICE_ID = "0a000000-0000-7000-8000-0000000dev01";
 
 interface FakeRequest {
   principal?: { kind: string; scope: string; tokenId: string | null } | null;
+  posDeviceId?: string;
 }
 
 /**
@@ -66,15 +67,15 @@ function makeGuard(opts: {
   guard: PosWriteRateLimitGuard;
   checkSpy: jest.Mock;
   warnSpy: jest.Mock;
+  recoverSpy: jest.Mock;
 } {
   const checkSpy = jest.fn(async () => {
     if (opts.checkThrows) throw new Error("redis down");
     return opts.decision ?? ALLOW;
   });
   const rateLimiter = { check: checkSpy } as unknown as RateLimiter;
-  const reverifier = {
-    recoverDeviceId: jest.fn(async () => (opts.deviceId === undefined ? DEVICE_ID : opts.deviceId)),
-  } as unknown as OperatorReverifier;
+  const recoverSpy = jest.fn(async () => (opts.deviceId === undefined ? DEVICE_ID : opts.deviceId));
+  const reverifier = { recoverDeviceId: recoverSpy } as unknown as OperatorReverifier;
   const warnSpy = jest.fn();
   const logger = { warn: warnSpy, error: jest.fn(), info: jest.fn(), debug: jest.fn() };
   // Fake reflector mirrors the real `reflector.get(KEY, handler)` by reading the
@@ -83,7 +84,7 @@ function makeGuard(opts: {
     get: (_key: unknown, handler: { __bucket?: string }) => handler?.__bucket,
   } as unknown as Reflector;
   const guard = new PosWriteRateLimitGuard(rateLimiter, reverifier, reflector, logger as unknown as Logger);
-  return { guard, checkSpy, warnSpy };
+  return { guard, checkSpy, warnSpy, recoverSpy };
 }
 
 const POS_PRINCIPAL = { kind: "token", scope: "pos_operator", tokenId: TOKEN_ID };
@@ -138,5 +139,60 @@ describe("PosWriteRateLimitGuard — ADR 0009 per-device write rate limit", () =
     await guard.canActivate(ctxWith({ principal: POS_PRINCIPAL }, "posWriteSettlementIntent"));
     const [bucketName] = checkSpy.mock.calls[0] as [string, string, unknown];
     expect(bucketName).toBe("posWriteSettlementIntent");
+  });
+});
+
+/**
+ * RT-224: captureSale's device-bearer path. PosDeviceAuthGuard publishes a
+ * device principal (`scope: "pos"`, `tokenId` = the device id, NOT an
+ * auth_tokens row) and `request.posDeviceId`. The bucket must still be the
+ * device, so the device path is throttled exactly like the envelope path
+ * (same bucket, same device key) instead of failing open on a token lookup
+ * that can never match.
+ */
+describe("PosWriteRateLimitGuard — RT-224 device principal", () => {
+  const OTHER_DEVICE_ID = "0a000000-0000-7000-8000-0000000dev02";
+  const DEVICE_PRINCIPAL = { kind: "token", scope: "pos", tokenId: OTHER_DEVICE_ID };
+  // A device id is never an auth_tokens id: the token lookup misses (null),
+  // exactly as it does against the real table.
+  const TOKEN_LOOKUP_MISSES = { deviceId: null } as const;
+
+  it("keys the bucket by the device the device guard resolved; no token lookup", async () => {
+    const { guard, checkSpy, recoverSpy } = makeGuard({ decision: ALLOW, ...TOKEN_LOOKUP_MISSES });
+    const ok = await guard.canActivate(
+      ctxWith({ principal: DEVICE_PRINCIPAL, posDeviceId: OTHER_DEVICE_ID }, "posWriteSale"),
+    );
+    expect(ok).toBe(true);
+    expect(recoverSpy).not.toHaveBeenCalled();
+    const [bucketName, identifier] = checkSpy.mock.calls[0] as [string, string, unknown];
+    expect(bucketName).toBe("posWriteSale");
+    expect(identifier).toBe(OTHER_DEVICE_ID);
+  });
+
+  it("over the limit → 429, as on the envelope path", async () => {
+    const { guard } = makeGuard({ decision: DENY, ...TOKEN_LOOKUP_MISSES });
+    await expect(
+      guard.canActivate(
+        ctxWith({ principal: DEVICE_PRINCIPAL, posDeviceId: OTHER_DEVICE_ID }, "posWriteSale"),
+      ),
+    ).rejects.toMatchObject({ status: HttpStatus.TOO_MANY_REQUESTS } as Partial<HttpException>);
+  });
+
+  it("a device principal without a resolved device fails open (allow + warn), never invents a key", async () => {
+    const { guard, checkSpy, warnSpy } = makeGuard({ decision: DENY, ...TOKEN_LOOKUP_MISSES });
+    const ok = await guard.canActivate(ctxWith({ principal: DEVICE_PRINCIPAL }, "posWriteSale"));
+    expect(ok).toBe(true);
+    expect(checkSpy).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it("the envelope path is unchanged: it still recovers the device from the token", async () => {
+    const { guard, checkSpy, recoverSpy } = makeGuard({ decision: ALLOW });
+    await guard.canActivate(
+      ctxWith({ principal: POS_PRINCIPAL, posDeviceId: OTHER_DEVICE_ID }, "posWriteSale"),
+    );
+    expect(recoverSpy).toHaveBeenCalledWith(TOKEN_ID);
+    const [, identifier] = checkSpy.mock.calls[0] as [string, string, unknown];
+    expect(identifier).toBe(DEVICE_ID);
   });
 });

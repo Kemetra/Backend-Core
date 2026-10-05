@@ -495,6 +495,23 @@ describe("SalesController — guard + status branches (unit)", () => {
     ).rejects.toBe(boom);
   });
 
+  it("RT-224: the actor is the guard-verified context user; operatorUserId never reaches the service", async () => {
+    const svc = {
+      captureSale: jest.fn().mockResolvedValue({ created: true, projection: { saleRef: VALID_REF } }),
+    };
+    const c = new SalesController(svc as never, undefined as never);
+    const claimed = "0a224000-0000-4000-8000-0000000000ff";
+    await c.captureSale(
+      { context: ctx, posDeviceId: CAPTURE.deviceId } as never,
+      { ...body(), operatorUserId: claimed } as never,
+      makeRes() as never,
+    );
+    const input = svc.captureSale.mock.calls[0]![0] as { actorUserId: string; body: Record<string, unknown> };
+    expect(input.actorUserId).toBe(CAPTURE.actorUserId);
+    expect(input.body).not.toHaveProperty("operatorUserId");
+    expect(input.body).toEqual(body());
+  });
+
   it("readSale: null tenantId → 401", async () => {
     const c = new SalesController({ readSaleProjection: jest.fn() } as never, undefined as never);
     await expect(

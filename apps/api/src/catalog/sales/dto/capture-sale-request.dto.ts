@@ -68,6 +68,12 @@ export const CaptureSaleRequestSchema = z
     occurredAt: z.string().datetime(),
     sourceClockAt: z.string().datetime().optional(),
     lines: z.array(CaptureSaleLineSchema).min(1),
+    // RT-224 (Option B): the cashier's users.id on the device-bearer path. A
+    // CLAIM: SaleCaptureAuthGuard verifies it against a covering cashier
+    // admission before the handler runs, and the handler records the
+    // guard-verified actor, never this field. Its presence selects the
+    // device path (sales.yaml 1.5.0-draft).
+    operatorUserId: z.string().uuid().optional(),
   })
   .strict();
 

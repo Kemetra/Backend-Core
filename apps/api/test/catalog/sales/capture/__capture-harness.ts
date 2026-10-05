@@ -72,6 +72,7 @@ import {
 // (not at each spec's top) so the harness is the single point that references
 // the unbuilt module.
 import { SalesController } from "../../../../src/catalog/sales/sales.controller";
+import { SaleCaptureAuthGuard } from "../../../../src/catalog/sales/sale-capture-auth.guard";
 import { SalesService } from "../../../../src/catalog/sales/sales.service";
 import { SaleReturnsService } from "../../../../src/catalog/sales/sale-returns.service";
 
@@ -277,6 +278,11 @@ export async function startCaptureHarness(
       // covered by the guard/resolver unit specs + the sale-auth integration
       // spec.
       .overrideGuard(PosOperatorEnvelopeSaleGuard)
+      .useValue({ canActivate: () => true })
+      // RT-224: captureSale's route guard (envelope OR device + cashier
+      // admission). Covered by its unit spec and the device-operator-capture
+      // integration spec; a no-op here like the other auth guards.
+      .overrideGuard(SaleCaptureAuthGuard)
       .useValue({ canActivate: () => true })
       .overrideGuard(PosOperatorAuthGuard)
       .useValue({ canActivate: () => true })

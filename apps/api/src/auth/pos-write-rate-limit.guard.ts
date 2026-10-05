@@ -78,6 +78,7 @@ export class PosWriteRateLimitGuard implements CanActivate {
     const http = context.switchToHttp();
     const request = http.getRequest<{
       principal?: { kind: string; scope: string; tokenId: string | null } | null;
+      posDeviceId?: string;
     }>();
     const principal = request.principal;
 
@@ -92,7 +93,7 @@ export class PosWriteRateLimitGuard implements CanActivate {
     // hard-block a write because the device row could not be read.
     let deviceId: string | null;
     try {
-      deviceId = await this.reverifier.recoverDeviceId(principal.tokenId);
+      deviceId = await this.deviceOf(principal, request.posDeviceId);
     } catch (err) {
       this.logger?.warn(
         { err },
@@ -140,5 +141,21 @@ export class PosWriteRateLimitGuard implements CanActivate {
     }
 
     return true;
+  }
+
+  /**
+   * The device to key on. An envelope (`pos_operator`) principal's device is
+   * recovered from its auth_tokens row, as before. RT-224: a DEVICE principal
+   * (`scope: "pos"`, published by PosDeviceAuthGuard on captureSale's device
+   * path) has no auth_tokens row — its tokenId is the device id — so its key
+   * is the device that guard resolved (`request.posDeviceId`). Same bucket,
+   * same per-device key, on both paths.
+   */
+  private async deviceOf(
+    principal: { scope: string; tokenId: string | null },
+    posDeviceId: string | undefined,
+  ): Promise<string | null> {
+    if (principal.scope === "pos") return posDeviceId ?? null;
+    return this.reverifier.recoverDeviceId(principal.tokenId as string);
   }
 }

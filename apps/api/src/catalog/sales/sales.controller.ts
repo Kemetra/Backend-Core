@@ -45,6 +45,7 @@ import { PosOperatorAuthGuard } from "../../auth/pos-operator-auth.guard";
 import { PosOperatorEnvelopeSaleGuard } from "../../auth/pos-operator-envelope-sale.guard";
 import { PosWriteRateLimitGuard } from "../../auth/pos-write-rate-limit.guard";
 import { PosWriteRateLimitBucket } from "../../auth/pos-write-rate-limit.decorator";
+import { DeviceBearer } from "../../auth/route-auth";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe";
 import { TenantContextGuard } from "../../context/tenant-context.guard";
 import type { TenantContextRequest } from "../../context/types";
@@ -64,6 +65,7 @@ import {
   type RecordReturnRequestDto,
 } from "./dto/record-return-request.dto";
 import { isPosReturnsEnabled } from "./returns-gate";
+import { SaleCaptureAuthGuard } from "./sale-capture-auth.guard";
 import {
   SaleReturnsService,
   type SaleReturnProjection,
@@ -163,11 +165,17 @@ export class SalesController {
   ) {}
 
   @Post("api/pos/v1/sales")
-  // Guard order matters: the envelope guard runs FIRST (resolves
-  // request.principal + the bound device), THEN the per-device rate limit
-  // (ADR 0009) throttles on the resolved device. The rate limit fails open on a
-  // Redis/lookup error, so it never blocks a write the envelope guard admitted.
-  @UseGuards(PosOperatorEnvelopeSaleGuard, PosWriteRateLimitGuard)
+  // RT-224 (Option B): two alternative credentials. SaleCaptureAuthGuard runs
+  // the unchanged envelope guard, or — when the body carries `operatorUserId`
+  // — the device guard plus the cashier-admission check. @DeviceBearer makes
+  // the global FailClosedAuthGuard defer to it (its opaque-token lookup would
+  // reject a device token); both paths authenticate in the route guard.
+  // Guard order matters: the auth guard runs FIRST (resolves request.principal
+  // + the device), THEN the per-device rate limit (ADR 0009) throttles on that
+  // device. The rate limit fails open on a Redis/lookup error, so it never
+  // blocks a write the auth guard admitted.
+  @DeviceBearer()
+  @UseGuards(SaleCaptureAuthGuard, PosWriteRateLimitGuard)
   @PosWriteRateLimitBucket("posWriteSale")
   @Idempotent("required")
   @Auditable("sale.captured")
@@ -187,10 +195,16 @@ export class SalesController {
       // A POS sale MUST resolve a store binding (FR-001).
       throw new UnauthorizedException("store_context_required");
     }
-    // RT-77 (RT-10 D7(i)): the envelope guard's bound device is the sale's
-    // device — never a body field. A request the guard did not resolve to a
-    // device is refused (the settlement-intent precedent).
+    // RT-77 (RT-10 D7(i)): the guard's resolved device is the sale's device —
+    // never a body field. A request the guard did not resolve to a device is
+    // refused (the settlement-intent precedent).
     if (!request.posDeviceId) throw new UnauthorizedException("Unauthorized");
+
+    // RT-224: `operatorUserId` is the device path's attribution CLAIM. The
+    // guard verified it and published the cashier as ctx.userId, which is the
+    // only actor recorded. The claim is not a sale fact, so it is dropped
+    // before the service hashes the body into payload_hash.
+    const { operatorUserId: _attributionClaim, ...saleBody } = body;
 
     let result;
     try {
@@ -199,7 +213,7 @@ export class SalesController {
         storeId: ctx.storeId,
         actorUserId: ctx.userId,
         deviceId: request.posDeviceId,
-        body,
+        body: saleBody,
       });
     } catch (err) {
       throw toCaptureHttpError(err);

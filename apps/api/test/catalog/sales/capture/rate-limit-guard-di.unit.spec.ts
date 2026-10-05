@@ -24,6 +24,7 @@ import { SaleReturnsService } from "../../../../src/catalog/sales/sale-returns.s
 import { PG_POOL } from "../../../../src/auth/auth.module";
 import { OPERATOR_CONTEXT_RESOLVER } from "../../../../src/auth/operator-context-resolver";
 import { PosOperatorEnvelopeSaleGuard } from "../../../../src/auth/pos-operator-envelope-sale.guard";
+import { SaleCaptureAuthGuard } from "../../../../src/catalog/sales/sale-capture-auth.guard";
 import { PosOperatorAuthGuard } from "../../../../src/auth/pos-operator-auth.guard";
 import { TenantContextGuard } from "../../../../src/context/tenant-context.guard";
 import { PosWriteRateLimitGuard } from "../../../../src/auth/pos-write-rate-limit.guard";
@@ -37,7 +38,7 @@ const fakeRateLimiter = {
 /**
  * Build the module the way the integration harness does. `overrideRateLimitGuard`
  * toggles the FIX: whether `PosWriteRateLimitGuard` is overridden to a no-op.
- * The other three guards are always overridden (as the real harness does).
+ * The other auth guards are always overridden (as the real harness does).
  *
  * Key Nest behaviour: `.overrideGuard(X)` replaces X with a stub and Nest NEVER
  * instantiates the real X — so its `RateLimiter` constructor dependency is never
@@ -58,6 +59,9 @@ function compileSalesModule(overrideRateLimitGuard: boolean): Promise<unknown> {
   ];
   let builder = Test.createTestingModule({ controllers: [SalesController], providers })
     .overrideGuard(PosOperatorEnvelopeSaleGuard)
+    .useValue({ canActivate: () => true })
+    // RT-224: captureSale's route guard, overridden like the envelope guard.
+    .overrideGuard(SaleCaptureAuthGuard)
     .useValue({ canActivate: () => true })
     .overrideGuard(PosOperatorAuthGuard)
     .useValue({ canActivate: () => true })

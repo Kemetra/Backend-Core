@@ -1,8 +1,8 @@
 /**
  * PosDeviceAuthGuard — device-principal authentication for the POS routes a
  * paired terminal calls with its device token alone: the 010 read-down
- * catalogue routes (issue #488, Option B-prime) and, since RT-113 BC2, the
- * cashier-admissions routes.
+ * catalogue routes (issue #488, Option B-prime), since RT-113 BC2 the
+ * cashier-admissions routes, and since RT-224 one composite: captureSale.
  *
  * Why this exists
  * ---------------
@@ -59,10 +59,22 @@
  * operator-identity routes (RT-150, RT-182). The device is the only
  * credential there, and its row is the only source of tenant and store.
  *
+ * The one reviewed composite (RT-224 Option B; [GATED] approval Jira RT-224
+ * comment 10889): `captureSale` (`POST /api/pos/v1/sales`) declares `device`
+ * as an ALTERNATIVE to `operatorAuthorization`. There this guard never runs
+ * alone: `SaleCaptureAuthGuard` runs it only when the body carries
+ * `operatorUserId`, and then requires the attribution verifier to accept that
+ * cashier claim (a covering cashier admission of this device and store, plus
+ * the live cashier eligibility rules) before any actor is published. The
+ * device token alone never authors a sale. This guard's own failures stay the
+ * generic 401; a refused claim is the composite's generic 403 `refused`.
+ *
  * Do NOT register it globally, and do NOT use it on operator routes
  * (`/api/pos/v1/operators/*`) or on any route that needs a person's
- * credential: it proves only which paired terminal is calling.
- * `route-auth-markers.enforcement.spec.ts` pins the list of routes using it.
+ * credential: it proves only which paired terminal is calling. Any other use
+ * next to a person's claim needs its own reviewed composite.
+ * `route-auth-markers.enforcement.spec.ts` pins the list of routes using it
+ * and the composites that run it.
  */
 import {
   type CanActivate,
