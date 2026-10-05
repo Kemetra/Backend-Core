@@ -220,17 +220,19 @@ export class PostingRequestedConsumer
     // §VII signal — identifiers only (no money / PII), once per deferred attempt.
     // RT-216: carries the signals.md §4 async-work fields from the same sources
     // as the dead-letter log below. This attempt fails (the throw below makes
-    // the drainer retry it), so outcome is "failure"; correlation_id is null
-    // when absent.
+    // the drainer retry it), so outcome is "failure"; request_id is the job's
+    // unique id (the outbox event); correlation_id is null when absent.
     this.logger.warn(
       {
         event: "posting.reversal.deferred",
         outcome: "failure",
+        request_id: event.event_id,
         correlation_id: event.correlation_id ?? null,
         tenant_id: event.tenant_id,
         store_id,
         sale_id,
         source_ref_id,
+        event_id: event.event_id,
         attempts: event.attempts,
       },
       "reversal deferred: sale_post row not created yet",
