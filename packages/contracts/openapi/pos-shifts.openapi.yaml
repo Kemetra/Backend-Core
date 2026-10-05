@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Shifts API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     POS-Pulse 004 Backend shift-lifecycle surface. Wave 4.1b (stuck-shift
     discovery).
@@ -23,8 +23,95 @@ info:
 
     Cross-cutting conventions live in
     `specs/001-foundation-auth-tenant-store/contracts/README.md`.
+
+
+    RT-17 (1.1.0-draft; `[GATED]` approval: Jira RT-17 comment 10760, design
+    record comment 10919, owner confirmation 2026-10-05): additive. Three new
+    POS write operations record a thin, cash-only shift cash-up as immutable
+    facts: `openShift`, `recordCashMovement` and `closeShift`. `GET
+    /shifts/stuck`, its `operator-identity` scheme and its schemas are
+    unchanged. The new operations use camelCase bodies and projections, like
+    `pos-sales/sales.yaml`; the stuck-shift projection keeps its snake_case.
+    The paragraphs above describe `GET /shifts/stuck` only: the cash-up
+    bodies and projections do carry `users.id` values (the opening, closing
+    and recording users), as `captureSale` carries `operatorUserId`.
+
+
+    **Runtime status.** Contract-only. The three operations carry
+    `x-runtime-status: contract-only`; the migration, the routes and the
+    verification land in RT-17 slice 2. A POS MUST NOT call them before then.
+
+
+    **Model** (10919). A shift is one drawer session on one terminal: at most
+    ONE open shift per device. The POS owns the offline lifecycle and is
+    authoritative for the cash-up; Backend-Core receives the immutable record.
+    Each fact carries a client-generated UUIDv7 (`shiftId`, `movementId`), so
+    the POS can complete a whole shift offline and drain it later, in order:
+    open, then movements, then close. The server never closes, edits or
+    deletes a shift on its own. It validates the close arithmetic on ingest and
+    never rewrites a POS total (Constitution §III); a recompute against the
+    recorded sales and returns is a read-side flag (RT-18), never a block. The
+    opening and closing users may differ.
+
+
+    **Authentication** (same model as `captureSale`, RT-224). Each new
+    operation accepts either the `operatorAuthorization` envelope or the paired
+    terminal's `device` bearer. Tenant, store and device come only from the
+    credential (the envelope session's bound device, or the device row), never
+    from the request (Constitution §II, §XII). On the device path the body
+    carries `operatorUserId`, the `users.id` of the cashier making the change.
+    It is a claim the server verifies against a `cashier_admissions` row of the
+    same tenant, store, device and user whose window covers the fact's time
+    `t` (`openedAt`, `occurredAt` or `closedAt`), with the RT-224 120 s
+    clock-skew tolerance: `created_at - 120 s <= t < LEAST(ended_at,
+    expires_at) + 120 s`. An admission that has since ended or expired still
+    covers the facts inside its window, unless that window ended more than 7
+    days ago (back-dating cap); a fact whose time is more than 120 s after the
+    server's current time is refused (future-dating cap). The cashier's
+    membership, store access and role are re-checked live. A missing, invalid
+    or revoked credential, and an envelope request that carries
+    `operatorUserId`, is the generic 401. A refused claim from an
+    authenticated device is the generic 403 `refused`, with one body for every
+    cause; it is never a sign that the device was revoked. A fact made
+    offline outside every admission window is refused on the device path; the
+    POS dead-letters it and it is repaired on the manager-envelope path
+    (10919 decision 4, RT-113 P3/P4).
+
+
+    **Idempotency** (Constitution §XI). Every new operation REQUIRES the
+    `Idempotency-Key` header and reuses the existing `IdempotencyInterceptor`;
+    the key is scoped to the verified actor, as on `captureSale`. The facts are
+    also deduplicated on their natural key (`shiftId` for the open and the
+    close, `movementId` for a movement) with a payload hash: a re-delivery of
+    the same fact with a different key is a `200` replay; the same natural key
+    with a different payload is 409 `shift_payload_conflict`. The
+    `operatorUserId` claim is not part of that payload hash.
+
+
+    **Money.** Every amount is an exact-decimal string (never a float) in the
+    shift's currency, stored as `numeric(19,4)`. A shift has one currency, the
+    ISO-4217 `currencyCode` given at open: every amount on its movements and
+    its close is in that currency, and those bodies carry no currency field.
+    An amount may have at most as many fractional digits as the currency's
+    ISO-4217 minor unit (its exponent: JPY 0, EGP 2, OMR 3; never an assumed
+    2); more fractional digits than that, or a `currencyCode` with no ISO-4217
+    minor unit, is 400 `validation_error`. Cash amounts are net of change
+    (RT-160 D-3): cash sales count the cash kept (tendered − change), as the
+    sale's cash tender records it. Cash only: card and other tenders are out
+    of scope (10919 decision 3).
+
+
+    **PII.** No request or response carries a PIN, a secret or a contact
+    field. The only free text is the optional movement `note` and the forced
+    close's `forcedReason`, both short and documented "no PII"; the server
+    never logs either.
 servers:
   - url: https://api.example.com
+tags:
+  - name: pos-shifts
+    description: >
+      POS shift lifecycle: stuck-shift discovery (manager query) and the RT-17
+      thin cash-up (open, pay-in / pay-out, close).
 paths:
   /api/pos/v1/shifts/stuck:
     get:
@@ -74,6 +161,361 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/pos/v1/shifts:
+    post:
+      summary: Open a shift (record the opening float) on this terminal.
+      operationId: openShift
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-17 slice 1 approves the contract only. The migration, route, guard
+        wiring and persistence land in RT-17 slice 2; until then Backend-Core
+        has no route for this operation.
+      x-idempotency: required
+      tags: [pos-shifts]
+      security:
+        - operatorAuthorization: []
+        - device: []
+      description: >
+        Records the immutable `ShiftOpened` fact for the authenticated
+        terminal: the client-generated `shiftId`, the POS-clock `openedAt`, the
+        opening cashier, the shift's single currency and the opening float.
+        The device is the credential's device (see the info description);
+        no tenant, store or device field is accepted.
+
+
+        At most one open shift per device: if this device already has an open
+        shift with a different `shiftId`, the answer is 409
+        `shift_already_open` and nothing is recorded. Re-sending the same open
+        (same `shiftId`, same payload) is a replay and returns the shift's
+        current projection, even after it has been closed.
+
+
+        Attribution: on the device path `openingUserId` MUST equal the
+        verified `operatorUserId`, else 403 `refused`. On the envelope path the
+        envelope operator is the actor (a repair of a dead-lettered open), and
+        `openingUserId` is recorded as stated; it must be a user of the
+        caller's tenant with access to the store, else 403 `refused`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OpenShiftRequest"
+            examples:
+              open:
+                summary: A cashier opens a shift with a 500 EGP float (device path).
+                value:
+                  shiftId: "0192f5a2-3b4c-7d8e-9f01-23456789ab01"
+                  openedAt: "2026-10-05T08:00:00Z"
+                  openingUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abcd"
+                  currencyCode: EGP
+                  openingFloat: "500.00"
+                  operatorUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abcd"
+      responses:
+        "200":
+          description: >
+            Replay. Either the same `Idempotency-Key` again (the stored
+            response, with its stored status, normally `201`, RT-82 K4) or the
+            same open re-delivered under another key, which returns the
+            shift's current projection with `200`. Both carry
+            `Idempotent-Replayed: true`; nothing is recorded twice.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Shift"
+              examples:
+                open:
+                  $ref: "#/components/examples/ShiftOpen"
+        "201":
+          description: >
+            Shift opened for the first time. A retry with the same
+            `Idempotency-Key` replays this stored `201` with
+            `Idempotent-Replayed: true`.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Shift"
+              examples:
+                open:
+                  $ref: "#/components/examples/ShiftOpen"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Refused"
+        "409":
+          $ref: "#/components/responses/OpenShiftConflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+  /api/pos/v1/shifts/{shift_id}/cash-movements:
+    post:
+      summary: Record a pay-in or pay-out on an open shift.
+      operationId: recordCashMovement
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-17 slice 1 approves the contract only. The migration, route, guard
+        wiring and persistence land in RT-17 slice 2; until then Backend-Core
+        has no route for this operation.
+      x-idempotency: required
+      tags: [pos-shifts]
+      security:
+        - operatorAuthorization: []
+        - device: []
+      description: >
+        Records an immutable `CashMovement` fact on an open shift of this
+        device: cash put into the drawer (`pay_in`) or taken out of it
+        (`pay_out`), with a reason code. The amount is in the shift's
+        currency. A movement is never edited or deleted; a mistake is
+        corrected with an opposite movement.
+
+
+        The shift must be open: a NEW movement on a closed shift is 409
+        `shift_closed`. Re-sending a movement that is already recorded (same
+        `movementId`, same payload) is a replay, even after the close. A shift
+        that does not resolve to this device is the non-disclosing 404
+        `shift_not_found`.
+
+
+        Attribution: on the device path the verified `operatorUserId` is the
+        movement's actor; on the envelope path the envelope operator is.
+      parameters:
+        - $ref: "#/components/parameters/ShiftId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordCashMovementRequest"
+            examples:
+              payOut:
+                summary: A 120 EGP petty-cash pay-out (device path).
+                value:
+                  movementId: "0192f5a2-3b4c-7d8e-9f01-23456789ab02"
+                  kind: pay_out
+                  amount: "120.00"
+                  reasonCode: petty_expense
+                  note: Cleaning supplies
+                  occurredAt: "2026-10-05T11:30:00Z"
+                  operatorUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abcd"
+      responses:
+        "200":
+          description: >
+            Replay. Either the same `Idempotency-Key` again (the stored
+            response with its stored status, RT-82 K4) or the same movement
+            re-delivered under another key (`200` with the stored
+            projection). Both carry `Idempotent-Replayed: true`.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CashMovement"
+              examples:
+                payOut:
+                  $ref: "#/components/examples/CashMovementPayOut"
+        "201":
+          description: >
+            Movement recorded for the first time. A retry with the same
+            `Idempotency-Key` replays this stored `201` with
+            `Idempotent-Replayed: true`.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CashMovement"
+              examples:
+                payOut:
+                  $ref: "#/components/examples/CashMovementPayOut"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Refused"
+        "404":
+          $ref: "#/components/responses/ShiftNotFound"
+        "409":
+          $ref: "#/components/responses/CashMovementConflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+  /api/pos/v1/shifts/{shift_id}/close:
+    post:
+      summary: Close a shift with its cash-up (counted cash and variance).
+      operationId: closeShift
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-17 slice 1 approves the contract only. The migration, route, guard
+        wiring and persistence land in RT-17 slice 2; until then Backend-Core
+        has no route for this operation.
+      x-idempotency: required
+      tags: [pos-shifts]
+      security:
+        - operatorAuthorization: []
+        - device: []
+      description: >
+        Records the immutable `ShiftClosed` fact and moves the shift from open
+        to closed, once. The POS computed the cash-up and is authoritative for
+        it; the server records the POS totals verbatim and never rewrites them
+        (Constitution §III).
+
+
+        **Arithmetic invariant**, checked on ingest in exact decimal:
+        `expectedCash = openingFloat + cashSalesTotal − cashRefundsTotal + payInTotal − payOutTotal`
+        and `variance = countedCash − expectedCash`. `openingFloat` must equal
+        the float recorded at open. If any of these does not hold, the answer
+        is 422 `shift_cashup_inconsistent` and nothing is recorded. The
+        server does not check `cashSalesTotal`, `cashRefundsTotal`,
+        `payInTotal`, `payOutTotal` or `saleCount` against the sales, returns
+        and movements it has recorded: a movement or a sale can still be on
+        its way, or dead-lettered. That comparison is a read-side flag
+        (RT-18), never a block.
+
+
+        **Refund references.** `cashRefundReturnRefs` names the returns whose
+        cash refund was paid from this drawer during the shift. Each must be a
+        return of the caller's tenant and store with a cash refund tender, and
+        not already claimed by another shift's close, else 422
+        `refund_ref_invalid` (the same answer for an unknown, foreign or
+        already-claimed ref). A ref whose refund was paid in a currency other
+        than the shift's is 422 `currency_mismatch`.
+
+
+        **Forced close.** `closeKind: forced` closes a shift the cashier could
+        not close (a stuck shift) and requires `forcedReason`. Forced close is
+        manager-envelope only: it is accepted on the `operatorAuthorization`
+        path only, and a forced close sent with the `device` scheme is the
+        generic 403 `refused`.
+
+
+        **Variance approval.** `varianceApprovedByUserId` is the manager who
+        approved a non-zero variance on the terminal (the POS asks for a
+        manager PIN above its threshold, default 0; 10919 decision 1). The
+        server records it and re-checks that user's manager role for the
+        read-side flag, but never refuses the close because of it.
+
+
+        Attribution: on the device path `closingUserId` MUST equal the
+        verified `operatorUserId`, else 403 `refused`. On the envelope path
+        the envelope operator is the actor and `closingUserId` is recorded as
+        stated; it must be a user of the caller's tenant with access to the
+        store, else 403 `refused`.
+
+
+        Re-sending the same close (same payload) is a replay. A different
+        close for a shift that is already closed is 409
+        `shift_payload_conflict`. A shift that does not resolve to this device
+        is the non-disclosing 404 `shift_not_found`.
+      parameters:
+        - $ref: "#/components/parameters/ShiftId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CloseShiftRequest"
+            examples:
+              normal:
+                summary: A normal close, 5 EGP short, approved by a manager (device path).
+                value:
+                  closedAt: "2026-10-05T16:00:00Z"
+                  closingUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abcd"
+                  closeKind: normal
+                  openingFloat: "500.00"
+                  cashSalesTotal: "2450.00"
+                  cashRefundsTotal: "75.00"
+                  payInTotal: "0.00"
+                  payOutTotal: "120.00"
+                  expectedCash: "2755.00"
+                  countedCash: "2750.00"
+                  variance: "-5.00"
+                  saleCount: 37
+                  cashRefundReturnRefs:
+                    - "0192f5a2-3b4c-7d8e-9f01-23456789ab03"
+                  varianceApprovedByUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abce"
+                  operatorUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abcd"
+              forced:
+                summary: A forced close by a manager (envelope path only).
+                value:
+                  closedAt: "2026-10-06T09:10:00Z"
+                  closingUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abce"
+                  closeKind: forced
+                  forcedReason: Cashier left without closing; drawer counted by manager
+                  openingFloat: "500.00"
+                  cashSalesTotal: "0.00"
+                  cashRefundsTotal: "0.00"
+                  payInTotal: "0.00"
+                  payOutTotal: "0.00"
+                  expectedCash: "500.00"
+                  countedCash: "500.00"
+                  variance: "0.00"
+                  saleCount: 0
+                  cashRefundReturnRefs: []
+      responses:
+        "200":
+          description: >
+            Replay. Either the same `Idempotency-Key` again (the stored
+            response with its stored status, RT-82 K4) or the same close
+            re-delivered under another key (`200` with the shift's
+            projection). Both carry `Idempotent-Replayed: true`.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Shift"
+              examples:
+                closed:
+                  $ref: "#/components/examples/ShiftClosed"
+        "201":
+          description: >
+            Shift closed for the first time. A retry with the same
+            `Idempotency-Key` replays this stored `201` with
+            `Idempotent-Replayed: true`.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Shift"
+              examples:
+                closed:
+                  $ref: "#/components/examples/ShiftClosed"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Refused"
+        "404":
+          $ref: "#/components/responses/ShiftNotFound"
+        "409":
+          $ref: "#/components/responses/CloseShiftConflict"
+        "422":
+          $ref: "#/components/responses/CloseShiftUnprocessable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
 components:
   securitySchemes:
     # `operator-identity` is the role-named provider-identity scheme
@@ -90,6 +532,39 @@ components:
         enforced server-side. The provider is Clerk today, named only as the
         current implementation; the scheme name is provider-neutral. Verified at
         the API edge; fail-closed. The token is not propagated past the verifier.
+    # RT-17: the two schemes of `captureSale` (pos-sales/sales.yaml, RT-224),
+    # copied because the contracts are loaded per file. Same type, scheme and
+    # format; the contract test pins that they stay in step.
+    operatorAuthorization:
+      type: http
+      scheme: bearer
+      description: >
+        The operator-authorization ENVELOPE (031 D1+D2), as on
+        `pos-sales/sales.yaml`: an opaque, revocable, DP-2-issued
+        `pos_operator` bearer presented as `Authorization: Bearer <envelope>`,
+        minted at operator sign-in. An authorization credential, not an
+        identity proof (it is not the identity-proof-only `operator-identity`
+        JWT used by `GET /shifts/stuck`). The backend re-evaluates the full
+        operator predicate (membership, device, store access, role, expiry)
+        live on every request; its bound `(tenant_id, store_id, device_id,
+        user_id)` supply the scope and the actor. Every refusal is the same
+        generic 401. `bearerFormat` is omitted: the envelope is not a JWT.
+    device:
+      type: http
+      scheme: bearer
+      description: >
+        RT-224 / RT-17: the paired terminal's opaque `devices` pairing token,
+        presented as `Authorization: Bearer <device_token>` (the role-named
+        scheme of `catalog/read-down.yaml`, `pos-cashier-admissions` and
+        `captureSale`; NOT a JWT, so `bearerFormat` is omitted). Accepted on
+        the cash-up operations only together with `operatorUserId` in the
+        body: the device token is device-scoped and never proves who made a
+        change. The device row supplies the authoritative `(tenant_id,
+        store_id, device_id)`; the server then requires a covering cashier
+        admission of that device, store and user, and re-checks the cashier
+        live. A missing, invalid or revoked device token is the generic 401; a
+        refused cashier claim from a valid device is the generic 403
+        `refused`.
   schemas:
     StuckShift:
       type: object
@@ -160,3 +635,653 @@ components:
               type: string
               nullable: true
               example: "018f1234-0000-7000-8000-000000000099"
+
+    # -----------------------------------------------------------------------
+    # RT-17 cash-up: money (the pos-sales/sales.yaml shapes; no float)
+    # -----------------------------------------------------------------------
+    NonNegativeDecimalAmount:
+      type: string
+      pattern: '^[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: >
+        Exact-decimal amount as a string, never negative (the
+        `pos-sales/sales.yaml` component). At most 4 fractional digits on the
+        wire (`numeric(19,4)` at rest), and at most the shift currency's
+        ISO-4217 minor unit, else 400 `validation_error`.
+    PositiveDecimalAmount:
+      description: >
+        A `NonNegativeDecimalAmount` greater than zero: it must contain a
+        non-zero digit, so `"0"` and `"0.00"` are refused.
+      allOf:
+        - $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        - type: string
+          pattern: "[1-9]"
+    SignedDecimalAmount:
+      type: string
+      pattern: '^-?[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: >
+        Exact-decimal amount as a string that may be negative (the
+        `pos-sales/sales.yaml` `DecimalAmount` shape). Used for `variance`: a
+        shortage is negative, an overage positive. At most the shift
+        currency's ISO-4217 minor unit of fractional digits.
+    CurrencyCode:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      description: >
+        ISO-4217 alphabetic currency code. A code with no ISO-4217 minor unit
+        is 400 `validation_error`.
+    # -----------------------------------------------------------------------
+    # RT-17 cash-up: requests (strict; no tenant / store / device field)
+    # -----------------------------------------------------------------------
+    OpenShiftRequest:
+      type: object
+      additionalProperties: false
+      required: [shiftId, openedAt, openingUserId, currencyCode, openingFloat]
+      description: >
+        The `ShiftOpened` fact. Tenant, store and device come from the
+        credential and are rejected if present (strict body).
+      properties:
+        shiftId:
+          type: string
+          format: uuid
+          description: >
+            Client-generated UUIDv7 identifying the shift; the natural key of
+            the open and of the close.
+        openedAt:
+          type: string
+          format: date-time
+          description: >
+            When the shift was opened, on the POS clock (RFC 3339). Provenance
+            and the attribution time on the device path; may lag the server's
+            receipt time arbitrarily for an offline open.
+        openingUserId:
+          type: string
+          format: uuid
+          description: The `users.id` of the cashier who opened the shift.
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+        openingFloat:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        operatorUserId:
+          type: string
+          format: uuid
+          description: >
+            RT-224 attribution: the `users.id` of the cashier making the
+            change (the `user_id` of the cashier admission the terminal
+            holds). REQUIRED with the `device` scheme and MUST be absent with
+            `operatorAuthorization` (an envelope request that carries it is
+            the generic 401). A claim, never trusted on its own: accepted only
+            if a cashier admission of the device's tenant, store and device
+            for this user covers the fact's time and the cashier is still
+            eligible (see the info description), else the generic 403
+            `refused`. Not part of the fact's payload hash.
+    RecordCashMovementRequest:
+      type: object
+      additionalProperties: false
+      required: [movementId, kind, amount, reasonCode, occurredAt]
+      description: >
+        The `CashMovement` fact. The amount is in the shift's currency; there
+        is no currency field.
+      properties:
+        movementId:
+          type: string
+          format: uuid
+          description: Client-generated UUIDv7; the movement's natural key.
+        kind:
+          type: string
+          enum: [pay_in, pay_out]
+          description: >
+            `pay_in` puts cash into the drawer; `pay_out` takes cash out of it.
+        amount:
+          $ref: "#/components/schemas/PositiveDecimalAmount"
+        reasonCode:
+          type: string
+          enum: [bank_drop, float_top_up, petty_expense, other]
+          description: >
+            Why the cash moved. `bank_drop` (cash removed to the safe or bank)
+            and `petty_expense` are normally pay-outs and `float_top_up` a
+            pay-in; the server does not pair reason and kind.
+        note:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: >
+            Optional free text, 1 to 200 characters, with no PII: no
+            customer name, phone, card or other personal data. Never logged.
+        occurredAt:
+          type: string
+          format: date-time
+          description: >
+            When the cash moved, on the POS clock (RFC 3339). The attribution
+            time on the device path.
+        operatorUserId:
+          type: string
+          format: uuid
+          description: >
+            RT-224 attribution: the `users.id` of the cashier making the
+            change (the `user_id` of the cashier admission the terminal
+            holds). REQUIRED with the `device` scheme and MUST be absent with
+            `operatorAuthorization` (an envelope request that carries it is
+            the generic 401). A claim, never trusted on its own: accepted only
+            if a cashier admission of the device's tenant, store and device
+            for this user covers the fact's time and the cashier is still
+            eligible (see the info description), else the generic 403
+            `refused`. Not part of the fact's payload hash.
+    CloseShiftRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - closedAt
+        - closingUserId
+        - closeKind
+        - openingFloat
+        - cashSalesTotal
+        - cashRefundsTotal
+        - payInTotal
+        - payOutTotal
+        - expectedCash
+        - countedCash
+        - variance
+        - saleCount
+        - cashRefundReturnRefs
+      if:
+        properties:
+          closeKind:
+            const: forced
+        required: [closeKind]
+      then:
+        required: [forcedReason]
+      else:
+        not:
+          required: [forcedReason]
+      description: >
+        The `ShiftClosed` fact: the POS cash-up, recorded verbatim. All
+        amounts are in the shift's currency.
+
+
+        Arithmetic invariant, checked on ingest in exact decimal:
+        `expectedCash = openingFloat + cashSalesTotal − cashRefundsTotal + payInTotal − payOutTotal`
+        and `variance = countedCash − expectedCash`, with `openingFloat` equal
+        to the float recorded at open; else 422 `shift_cashup_inconsistent`.
+        `forcedReason` is required when `closeKind` is `forced` and must be
+        absent otherwise.
+      properties:
+        closedAt:
+          type: string
+          format: date-time
+          description: >
+            When the shift was closed, on the POS clock (RFC 3339). The
+            attribution time on the device path.
+        closingUserId:
+          type: string
+          format: uuid
+          description: >
+            The `users.id` of the user who closed the shift; may differ from
+            the opening user.
+        closeKind:
+          type: string
+          enum: [normal, forced]
+          description: >
+            `normal`: the cashier counted and closed. `forced`: a manager
+            closed a shift the cashier could not close. Forced close is
+            manager-envelope only: accepted with `operatorAuthorization`, and
+            the generic 403 `refused` with the `device` scheme.
+        forcedReason:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: >
+            Why the shift was force-closed. Required if and only if
+            `closeKind` is `forced`. 1 to 200 characters. No PII. Never
+            logged.
+        openingFloat:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        cashSalesTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        cashRefundsTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        payInTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        payOutTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        expectedCash:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        countedCash:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        variance:
+          $ref: "#/components/schemas/SignedDecimalAmount"
+        saleCount:
+          type: integer
+          minimum: 0
+          description: >
+            Number of sales the POS counted in the shift (this device,
+            finalized inside the shift). Recorded as reported.
+        cashRefundReturnRefs:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+          description: >
+            The returns whose cash refund was paid from this drawer during
+            the shift (their server return references); may be empty. Each
+            must resolve to a return of the caller's tenant and store with a
+            cash refund tender not claimed by another shift's close, else 422
+            `refund_ref_invalid`; one refunded in another currency is 422
+            `currency_mismatch`.
+        varianceApprovedByUserId:
+          type: string
+          format: uuid
+          description: >
+            The `users.id` of the manager who approved the variance on the
+            terminal. Recorded; the manager role is re-checked for the
+            read-side flag but never blocks the close.
+        operatorUserId:
+          type: string
+          format: uuid
+          description: >
+            RT-224 attribution: the `users.id` of the cashier making the
+            change (the `user_id` of the cashier admission the terminal
+            holds). REQUIRED with the `device` scheme and MUST be absent with
+            `operatorAuthorization` (an envelope request that carries it is
+            the generic 401). A claim, never trusted on its own: accepted only
+            if a cashier admission of the device's tenant, store and device
+            for this user covers the fact's time and the cashier is still
+            eligible (see the info description), else the generic 403
+            `refused`. Not part of the fact's payload hash.
+
+    # -----------------------------------------------------------------------
+    # RT-17 cash-up: projections (explicit wire shapes, never DB rows)
+    # -----------------------------------------------------------------------
+    Shift:
+      type: object
+      additionalProperties: false
+      required:
+        [shiftId, status, currencyCode, openingFloat, openedAt, openingUserId, receivedAt]
+      description: >
+        A cash-up shift as recorded. `close` is present if and only if
+        `status` is `closed`. Internal ids (tenant, store, device) are never
+        returned.
+      properties:
+        shiftId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [open, closed]
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+        openingFloat:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        openedAt:
+          type: string
+          format: date-time
+        openingUserId:
+          type: string
+          format: uuid
+        receivedAt:
+          type: string
+          format: date-time
+          description: When the server recorded the open (server clock).
+        close:
+          $ref: "#/components/schemas/ShiftClose"
+    ShiftClose:
+      type: object
+      additionalProperties: false
+      required:
+        - closedAt
+        - closingUserId
+        - closeKind
+        - openingFloat
+        - cashSalesTotal
+        - cashRefundsTotal
+        - payInTotal
+        - payOutTotal
+        - expectedCash
+        - countedCash
+        - variance
+        - saleCount
+        - cashRefundReturnRefs
+        - receivedAt
+      description: >
+        The recorded close, verbatim from the POS, plus the server's receipt
+        time. `forcedReason` is present only for a forced close and
+        `varianceApprovedByUserId` only when it was sent.
+      properties:
+        closedAt:
+          type: string
+          format: date-time
+        closingUserId:
+          type: string
+          format: uuid
+        closeKind:
+          type: string
+          enum: [normal, forced]
+        forcedReason:
+          type: string
+          minLength: 1
+          maxLength: 200
+        openingFloat:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        cashSalesTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        cashRefundsTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        payInTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        payOutTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        expectedCash:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        countedCash:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        variance:
+          $ref: "#/components/schemas/SignedDecimalAmount"
+        saleCount:
+          type: integer
+          minimum: 0
+        cashRefundReturnRefs:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+        varianceApprovedByUserId:
+          type: string
+          format: uuid
+        receivedAt:
+          type: string
+          format: date-time
+          description: When the server recorded the close (server clock).
+    CashMovement:
+      type: object
+      additionalProperties: false
+      required:
+        [movementId, shiftId, kind, amount, currencyCode, reasonCode, occurredAt, recordedByUserId, receivedAt]
+      description: A recorded pay-in or pay-out.
+      properties:
+        movementId:
+          type: string
+          format: uuid
+        shiftId:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [pay_in, pay_out]
+        amount:
+          $ref: "#/components/schemas/PositiveDecimalAmount"
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+        reasonCode:
+          type: string
+          enum: [bank_drop, float_top_up, petty_expense, other]
+        note:
+          type: string
+          minLength: 1
+          maxLength: 200
+        occurredAt:
+          type: string
+          format: date-time
+        recordedByUserId:
+          type: string
+          format: uuid
+          description: >
+            The verified actor: the `operatorUserId` on the device path, the
+            envelope operator on the envelope path.
+        receivedAt:
+          type: string
+          format: date-time
+          description: When the server recorded the movement (server clock).
+
+    # -----------------------------------------------------------------------
+    # RT-17 cash-up: canonical error envelope (pos-sales/sales.yaml `Error`).
+    # The legacy `Error` above stays as it is for GET /shifts/stuck.
+    # -----------------------------------------------------------------------
+    ApiError:
+      type: object
+      required: [error]
+      description: >
+        Canonical error envelope, the same shape as `Error` in
+        `pos-sales/sales.yaml`, `auth.openapi.yaml` and `outbox.openapi.yaml`.
+        `error.code` is one of the codes documented on each response.
+        Refusals never enumerate their cause; it is logged server-side under
+        `request_id`.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id; the actual cause is recorded server-side.
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
+      description: >
+        REQUIRED on every cash-up write. 16 to 128 printable ASCII characters
+        with no whitespace, as the `IdempotencyInterceptor` enforces (RT-181,
+        the `pos-sales/sales.yaml` rule); any other value is a 400. Keyed on
+        `(method, route template, resolved path parameters, clientId = the
+        verified actor's user id, key)` (RT-82 K1), so the same key on a
+        different `shift_id` is a separate operation. An identical retry
+        replays the stored response with its stored status and
+        `Idempotent-Replayed: true`; key reuse with a different payload is 409
+        `idempotency_key_conflict`. No new idempotency primitive.
+    ShiftId:
+      name: shift_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        The client-generated `shiftId` given to `openShift`. Resolves only to a
+        shift of the caller's tenant, store and device; anything else is the
+        non-disclosing 404 `shift_not_found`.
+
+  headers:
+    IdempotentReplayed:
+      description: >
+        Present and `true` on every idempotent-replay response: a natural-key
+        replay (`200`) and a same-`Idempotency-Key` replay, which carries the
+        stored status (normally `201`, RT-82 K4). Clients MUST detect a replay
+        by this header, not by the status code. Absent on a first-time record.
+      schema:
+        type: boolean
+    RetryAfter:
+      description: >
+        Seconds the caller should wait before retrying, on a 429 (ADR 0009).
+        Clamped to [1, 300]. A POS client treats a 429 as TRANSIENT, not as a
+        dead-letter.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 300
+
+  examples:
+    ShiftOpen:
+      summary: An open shift.
+      value:
+        shiftId: "0192f5a2-3b4c-7d8e-9f01-23456789ab01"
+        status: open
+        currencyCode: EGP
+        openingFloat: "500.00"
+        openedAt: "2026-10-05T08:00:00Z"
+        openingUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abcd"
+        receivedAt: "2026-10-05T08:00:02Z"
+    ShiftClosed:
+      summary: A closed shift with its cash-up.
+      value:
+        shiftId: "0192f5a2-3b4c-7d8e-9f01-23456789ab01"
+        status: closed
+        currencyCode: EGP
+        openingFloat: "500.00"
+        openedAt: "2026-10-05T08:00:00Z"
+        openingUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abcd"
+        receivedAt: "2026-10-05T08:00:02Z"
+        close:
+          closedAt: "2026-10-05T16:00:00Z"
+          closingUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abcd"
+          closeKind: normal
+          openingFloat: "500.00"
+          cashSalesTotal: "2450.00"
+          cashRefundsTotal: "75.00"
+          payInTotal: "0.00"
+          payOutTotal: "120.00"
+          expectedCash: "2755.00"
+          countedCash: "2750.00"
+          variance: "-5.00"
+          saleCount: 37
+          cashRefundReturnRefs:
+            - "0192f5a2-3b4c-7d8e-9f01-23456789ab03"
+          varianceApprovedByUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abce"
+          receivedAt: "2026-10-05T16:00:03Z"
+    CashMovementPayOut:
+      summary: A recorded pay-out.
+      value:
+        movementId: "0192f5a2-3b4c-7d8e-9f01-23456789ab02"
+        shiftId: "0192f5a2-3b4c-7d8e-9f01-23456789ab01"
+        kind: pay_out
+        amount: "120.00"
+        currencyCode: EGP
+        reasonCode: petty_expense
+        note: Cleaning supplies
+        occurredAt: "2026-10-05T11:30:00Z"
+        recordedByUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abcd"
+        receivedAt: "2026-10-05T11:30:01Z"
+
+  responses:
+    ValidationFailure:
+      description: >
+        400 `validation_error`: a malformed body, an unknown key (strict
+        body), a missing required field, a bad enum, uuid or date-time, an
+        amount that is not an exact-decimal string or has more fractional
+        digits than the shift currency's ISO-4217 minor unit, a currency with
+        no ISO-4217 minor unit, an invalid `shift_id`, or a missing or invalid
+        `Idempotency-Key`. Deterministic; nothing is recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    Unauthorized:
+      description: >
+        Generic 401 `unauthorized`: a missing, invalid, revoked or expired
+        envelope or device token, a failed live re-check of the envelope
+        operator, or an envelope request that carries `operatorUserId`. The
+        body does not distinguish the causes.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    Refused:
+      description: >
+        Generic 403 `refused`. The credential is valid but the change is not
+        accepted from this caller: on the device path, no covering cashier
+        admission, an ineligible cashier, a fact outside the admission window
+        or beyond the dating caps, an unknown or foreign `operatorUserId`, an
+        `openingUserId` / `closingUserId` that is not the verified
+        `operatorUserId`, or a forced close; on the envelope path, an
+        `openingUserId` / `closingUserId` that is not a user of the tenant
+        with access to the store. One body for every cause, revealing neither
+        existence nor cause; never a sign that the device was revoked (that
+        is a 401). Mirrors `captureSale` and the cashier-admissions API.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    ShiftNotFound:
+      description: >
+        404 `shift_not_found`: `shift_id` does not resolve to a shift of the
+        caller's tenant, store and device. Non-disclosing: identical for an
+        unknown id and for a shift of another tenant, another store or
+        another device (Constitution §II, §XII).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    OpenShiftConflict:
+      description: >
+        409 on `openShift`. `error.code` is one of:
+        `idempotency_key_conflict` (the same `Idempotency-Key` reused with a
+        different payload); `shift_payload_conflict` (this `shiftId` is
+        already recorded with a different payload); `shift_already_open`
+        (this device already has an open shift with another `shiftId`; close
+        it first). Deterministic; nothing is recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    CashMovementConflict:
+      description: >
+        409 on `recordCashMovement`. `error.code` is one of:
+        `idempotency_key_conflict` (the same `Idempotency-Key` reused with a
+        different payload); `shift_payload_conflict` (this `movementId` is
+        already recorded with a different payload or on another shift);
+        `shift_closed` (the shift is closed, so a new movement cannot be
+        added). Deterministic; nothing is recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    CloseShiftConflict:
+      description: >
+        409 on `closeShift`. `error.code` is one of:
+        `idempotency_key_conflict` (the same `Idempotency-Key` reused with a
+        different payload); `shift_payload_conflict` (the shift is already
+        closed with a different close; a shift closes once). Deterministic;
+        nothing is recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    CloseShiftUnprocessable:
+      description: >
+        422 on `closeShift`. `error.code` is one of:
+        `shift_cashup_inconsistent` (the arithmetic invariant does not hold,
+        or `openingFloat` is not the float recorded at open);
+        `currency_mismatch` (a `cashRefundReturnRefs` return was refunded in
+        a currency other than the shift's); `refund_ref_invalid` (a
+        `cashRefundReturnRefs` entry is not a cash-refunded return of the
+        caller's tenant and store, or is already claimed by another shift's
+        close; the same answer for each case). Deterministic; nothing is
+        recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    TooManyRequests:
+      description: >
+        429: the per-device write rate limit (ADR 0009), keyed on the bound
+        device as on `captureSale`. `error.code` is the limiter's
+        `RATE_LIMITED`. The `Retry-After` header carries the back-off; the
+        POS treats it as transient, not as a dead-letter.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    SystemFailure:
+      description: >
+        500: an unexpected server error. The cause is recorded server-side
+        under `request_id` and is never returned.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"

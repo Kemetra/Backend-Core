@@ -67,7 +67,7 @@ interface ParameterObject {
 
 interface MediaObject {
   schema?: { $ref?: string };
-  examples?: Record<string, { value?: unknown }>;
+  examples?: Record<string, { $ref?: string; value?: unknown }>;
 }
 
 interface ResponseObject {
@@ -113,6 +113,7 @@ interface OpenApiDocument {
     responses?: Record<string, ResponseObject>;
     parameters?: Record<string, ParameterObject>;
     headers?: Record<string, { description?: string; schema?: Record<string, unknown> }>;
+    examples?: Record<string, { value?: unknown }>;
     securitySchemes?: Record<string, Record<string, unknown>>;
   };
 }
@@ -769,9 +770,13 @@ describe("pos-shifts — projections and fixtures", () => {
     for (const m of media) {
       const ref = m.schema?.$ref;
       if (!ref) continue;
-      for (const ex of Object.values(m.examples ?? {})) {
+      for (const raw of Object.values(m.examples ?? {})) {
+        const ex = raw.$ref
+          ? doc.components?.examples?.[raw.$ref.replace("#/components/examples/", "")]
+          : raw;
+        expect(ex?.value).toBeDefined();
         const v = validator(ref.replace("#/components/schemas/", ""));
-        expect({ ok: v(ex.value), errors: v.errors }).toEqual({ ok: true, errors: null });
+        expect({ ok: v(ex?.value), errors: v.errors }).toEqual({ ok: true, errors: null });
         seen += 1;
       }
     }
