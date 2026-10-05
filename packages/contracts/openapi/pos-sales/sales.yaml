@@ -1379,7 +1379,10 @@ components:
         an invalid device token, a missing tenant/store binding, or rate-limit
         exhaustion. Combined `forbidden` semantics for in-scope-but-not-permitted
         principals also surface here as a non-disclosing refusal (FR-101
-        `forbidden`).
+        `forbidden`), with one exception: on `captureSale`'s device path a
+        refused cashier claim from a valid device is the 403 `Refused`
+        response, so that a 401 there always means a bad device credential
+        (RT-224).
       content:
         application/json:
           schema:
