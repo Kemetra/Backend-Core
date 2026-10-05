@@ -155,17 +155,27 @@ beforeAll(() => {
   doc = found.document;
   salesDoc = contracts.find((c) => c.dir === "pos-sales" && c.id === "sales")!.document;
 
-  otherOperationIds = new Set<string>();
-  for (const c of contracts) {
-    if (c.dir === "" && c.id === CONTRACT_ID) continue;
-    for (const item of Object.values(c.document.paths ?? {})) {
-      for (const o of Object.values(item)) {
-        if (typeof o?.operationId === "string") otherOperationIds.add(o.operationId);
-      }
-    }
-  }
+  otherOperationIds = new Set(
+    contracts
+      .filter((c) => !(c.dir === "" && c.id === CONTRACT_ID))
+      .flatMap((c) => operationsOf(c.document))
+      .map((o) => o.operationId)
+      .filter((id): id is string => typeof id === "string"),
+  );
   ajv.addSchema(doc as object, CONTRACT_ID);
 });
+
+/** Every operation object of a document, flattened. */
+function operationsOf(document: OpenApiDocument): OperationObject[] {
+  return Object.values(document.paths ?? {}).flatMap((item) => Object.values(item));
+}
+
+/** Every scheme name a document's operations reference. */
+function referencedSchemes(document: OpenApiDocument): string[] {
+  return operationsOf(document)
+    .flatMap((o) => o.security ?? [])
+    .flatMap((req) => Object.keys(req));
+}
 
 function op(route: Route): OperationObject {
   const found = doc.paths?.[route.path]?.[route.method];
@@ -209,18 +219,102 @@ function requestSchemaRef(route: Route): string | undefined {
   return op(route).requestBody?.content?.["application/json"]?.schema?.$ref;
 }
 
+/** The parameters an operation declares, with component refs resolved. */
+function parametersOf(route: Route): ParameterObject[] {
+  return (op(route).parameters ?? []).map(resolveParameter);
+}
+
+/** One property of a component schema; throws when it is not declared. */
+function prop(schemaName: string, field: string): SchemaObject {
+  const p = schema(schemaName).properties?.[field];
+  if (!p) throw new Error(`${schemaName}.${field} not declared`);
+  return p;
+}
+
+function sorted(values: readonly string[]): string[] {
+  return [...values].sort();
+}
+
+/** A closed object schema with exactly `fields`, of which exactly `required` are required. */
+function assertStrictObject(schemaName: string, fields: readonly string[], required: readonly string[]): void {
+  const s = schema(schemaName);
+  expect(s.additionalProperties).toBe(false);
+  expect(sorted(Object.keys(s.properties ?? {}))).toEqual(sorted(fields));
+  expect(sorted(s.required ?? [])).toEqual(sorted(required));
+}
+
+/** The JSON content of one of an operation's responses. */
+function responseMedia(route: Route, status: string): MediaObject | undefined {
+  return response(route, status).content?.["application/json"];
+}
+
+/** The JSON body schema of one of an operation's responses. */
+function responseSchema(route: Route, status: string): unknown {
+  return responseMedia(route, status)?.schema;
+}
+
+/** The status codes an operation declares, sorted. */
+function statusesOf(route: Route): string[] {
+  return sorted(Object.keys(op(route).responses ?? {}));
+}
+
+/** One security scheme of a document (empty when undefined). */
+function securityScheme(document: OpenApiDocument, name: string): Record<string, unknown> {
+  return document.components?.securitySchemes?.[name] ?? {};
+}
+
+/** A document's `IdempotencyKey` parameter component; throws when absent. */
+function idempotencyKeyParameter(document: OpenApiDocument): ParameterObject {
+  const p = document.components?.parameters?.["IdempotencyKey"];
+  if (!p) throw new Error("IdempotencyKey parameter not declared");
+  return p;
+}
+
+/** The JSON media objects of an operation: its request body and every response. */
+function mediaOf(route: Route): MediaObject[] {
+  const body = op(route).requestBody?.content?.["application/json"];
+  const responses = Object.keys(op(route).responses ?? {}).map((status) => responseMedia(route, status));
+  return [body, ...responses].filter((m): m is MediaObject => m !== undefined);
+}
+
+/** The schema name a `#/components/schemas/<Name>` reference points at. */
+function schemaFor(ref: string): string {
+  return ref.replace("#/components/schemas/", "");
+}
+
+/** An example's value, following a `#/components/examples/<Name>` reference. */
+function exampleValue(raw: { $ref?: string; value?: unknown }): unknown {
+  if (!raw.$ref) return raw.value;
+  return doc.components?.examples?.[raw.$ref.replace("#/components/examples/", "")]?.value;
+}
+
+/** Every example of an operation, paired with the schema it must satisfy. */
+function collectExamples(route: Route): Array<{ schemaName: string; value: unknown }> {
+  return mediaOf(route)
+    .filter((m) => m.schema?.$ref !== undefined)
+    .flatMap((m) =>
+      Object.values(m.examples ?? {}).map((raw) => ({
+        schemaName: schemaFor(m.schema!.$ref!),
+        value: exampleValue(raw),
+      })),
+    );
+}
+
+const PROSE_KEYS = new Set(["description", "example", "examples"]);
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Drop prose so two copies of a shared component compare on shape only. */
 function shape(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(shape);
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (k === "description" || k === "example" || k === "examples") continue;
-      out[k] = shape(v);
-    }
-    return out;
-  }
-  return value;
+  if (!isPlainObject(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([k]) => !PROSE_KEYS.has(k))
+      .map(([k, v]) => [k, shape(v)]),
+  );
 }
 
 const SHIFT_ID = "0192f5a2-3b4c-7d8e-9f01-23456789ab01";
@@ -279,7 +373,7 @@ describe("pos-shifts — document and version", () => {
     expect(info).toContain("additive");
   });
 
-  it("GET /shifts/stuck is unchanged: operationId, security, parameter, responses", () => {
+  it("GET /shifts/stuck is unchanged: operationId, security, parameter", () => {
     const stuck = op(STUCK);
     expect(stuck.operationId).toBe("posShiftsGetStuck");
     expect(stuck.security).toEqual([{ "operator-identity": [] }]);
@@ -293,15 +387,18 @@ describe("pos-shifts — document and version", () => {
         schema: { type: "string", format: "uuid" },
       },
     ]);
-    expect(Object.keys(stuck.responses ?? {}).sort()).toEqual(["200", "400", "401"]);
-    expect(stuck.responses?.["200"]?.content?.["application/json"]?.schema).toEqual({
-      $ref: "#/components/schemas/StuckShiftsResponse",
-    });
-    for (const status of ["400", "401"]) {
-      expect(stuck.responses?.[status]?.content?.["application/json"]?.schema).toEqual({
-        $ref: "#/components/schemas/Error",
-      });
-    }
+  });
+
+  it("GET /shifts/stuck still declares exactly 200, 400 and 401", () => {
+    expect(statusesOf(STUCK)).toEqual(["200", "400", "401"]);
+  });
+
+  it.each([
+    ["200", "StuckShiftsResponse"],
+    ["400", "Error"],
+    ["401", "Error"],
+  ])("GET /shifts/stuck %s still returns %s", (status, schemaName) => {
+    expect(responseSchema(STUCK, status)).toEqual({ $ref: `#/components/schemas/${schemaName}` });
   });
 
   it("the stuck-shift schemas and the operator-identity scheme are unchanged", () => {
@@ -335,10 +432,10 @@ describe("pos-shifts — document and version", () => {
         },
       },
     });
-    const identity = doc.components?.securitySchemes?.["operator-identity"];
-    expect(identity?.["type"]).toBe("http");
-    expect(identity?.["scheme"]).toBe("bearer");
-    expect(identity?.["bearerFormat"]).toBe("JWT");
+    const identity = securityScheme(doc, "operator-identity");
+    expect(identity["type"]).toBe("http");
+    expect(identity["scheme"]).toBe("bearer");
+    expect(identity["bearerFormat"]).toBe("JWT");
   });
 });
 
@@ -351,8 +448,7 @@ describe("pos-shifts — cash-up operations", () => {
   });
 
   it("declares exactly the stuck query plus the three cash-up operations", () => {
-    const ids = Object.values(doc.paths ?? {})
-      .flatMap((item) => Object.values(item))
+    const ids = operationsOf(doc)
       .map((o) => o.operationId)
       .sort();
     expect(ids).toEqual(["closeShift", "openShift", "posShiftsGetStuck", "recordCashMovement"]);
@@ -372,29 +468,33 @@ describe("pos-shifts — cash-up operations", () => {
     expect(op(route).tags).toEqual(["pos-shifts"]);
   });
 
-  it("the two shift-scoped operations take a required uuid `shift_id` path parameter", () => {
-    for (const route of [MOVEMENT, CLOSE]) {
-      const params = (op(route).parameters ?? []).map(resolveParameter);
-      const shiftId = params.find((p) => p.name === "shift_id");
-      expect(shiftId?.in).toBe("path");
-      expect(shiftId?.required).toBe(true);
-      expect(shiftId?.schema).toEqual({ type: "string", format: "uuid" });
-    }
+  it.each([
+    ["recordCashMovement", MOVEMENT],
+    ["closeShift", CLOSE],
+  ])("%s takes a required uuid `shift_id` path parameter", (_id, route) => {
+    const shiftId = parametersOf(route).find((p) => p.name === "shift_id");
+    expect(shiftId).toMatchObject({
+      in: "path",
+      required: true,
+      schema: { type: "string", format: "uuid" },
+    });
+    expect(shiftId!.schema).toEqual({ type: "string", format: "uuid" });
   });
 
-  it("no operation takes a tenant / branch / store / terminal / device parameter or body field", () => {
-    const scopeNames = ["tenant_id", "tenantId", "branch_id", "branchId", "store_id", "storeId", "device_id", "deviceId", "terminal_id", "terminalId"];
-    for (const [, route] of NEW_OPS) {
-      for (const p of (op(route).parameters ?? []).map(resolveParameter)) {
-        expect(scopeNames).not.toContain(p.name);
-      }
-    }
-    for (const name of ["OpenShiftRequest", "RecordCashMovementRequest", "CloseShiftRequest"]) {
-      for (const forbidden of scopeNames) {
-        expect(Object.keys(schema(name).properties ?? {})).not.toContain(forbidden);
-      }
-    }
+  const SCOPE_NAMES = ["tenant_id", "tenantId", "branch_id", "branchId", "store_id", "storeId", "device_id", "deviceId", "terminal_id", "terminalId"];
+
+  it.each(NEW_OPS)("%s takes no tenant / branch / store / terminal / device parameter", (_id, route) => {
+    const names = parametersOf(route).map((p) => p.name);
+    expect(names.filter((n) => SCOPE_NAMES.includes(n ?? ""))).toEqual([]);
   });
+
+  it.each(["OpenShiftRequest", "RecordCashMovementRequest", "CloseShiftRequest"])(
+    "%s carries no tenant / branch / store / terminal / device body field",
+    (name) => {
+      const fields = Object.keys(schema(name).properties ?? {});
+      expect(SCOPE_NAMES.filter((forbidden) => fields.includes(forbidden))).toEqual([]);
+    },
+  );
 });
 
 // ===========================================================================
@@ -408,8 +508,8 @@ describe("pos-shifts — security", () => {
   it.each(["operatorAuthorization", "device"])(
     "defines `%s` with the same type, scheme and format as pos-sales/sales.yaml",
     (name) => {
-      const ours = doc.components?.securitySchemes?.[name] ?? {};
-      const theirs = salesDoc.components?.securitySchemes?.[name] ?? {};
+      const ours = securityScheme(doc, name);
+      const theirs = securityScheme(salesDoc, name);
       expect(ours["type"]).toBe("http");
       expect(ours["scheme"]).toBe("bearer");
       expect(ours["bearerFormat"]).toBeUndefined();
@@ -422,14 +522,10 @@ describe("pos-shifts — security", () => {
   );
 
   it("every referenced scheme is defined", () => {
-    const defined = new Set(Object.keys(doc.components?.securitySchemes ?? {}));
-    for (const item of Object.values(doc.paths ?? {})) {
-      for (const o of Object.values(item)) {
-        for (const req of o.security ?? []) {
-          for (const name of Object.keys(req)) expect(defined.has(name)).toBe(true);
-        }
-      }
-    }
+    const defined = Object.keys(doc.components?.securitySchemes ?? {});
+    const referenced = referencedSchemes(doc);
+    expect(referenced.length).toBeGreaterThan(0);
+    expect(referenced.filter((name) => !defined.includes(name))).toEqual([]);
   });
 
   it.each([
@@ -472,18 +568,23 @@ describe("pos-shifts — security", () => {
 // 4. Idempotency
 // ===========================================================================
 describe("pos-shifts — idempotency", () => {
-  it("declares the Idempotency-Key header exactly as pos-sales/sales.yaml (RT-181 rule)", () => {
-    const ours = doc.components?.parameters?.["IdempotencyKey"];
-    expect(ours?.name).toBe("Idempotency-Key");
-    expect(ours?.in).toBe("header");
-    expect(ours?.required).toBe(true);
-    expect(ours?.schema).toEqual({
-      type: "string",
-      minLength: 16,
-      maxLength: 128,
-      pattern: "^[\\x21-\\x7E]{16,128}$",
+  it("declares the Idempotency-Key header (RT-181 rule)", () => {
+    expect(idempotencyKeyParameter(doc)).toEqual({
+      name: "Idempotency-Key",
+      in: "header",
+      required: true,
+      schema: {
+        type: "string",
+        minLength: 16,
+        maxLength: 128,
+        pattern: "^[\\x21-\\x7E]{16,128}$",
+      },
+      description: expect.any(String),
     });
-    expect(shape(ours)).toEqual(shape(salesDoc.components?.parameters?.["IdempotencyKey"]));
+  });
+
+  it("the Idempotency-Key header has exactly the pos-sales/sales.yaml shape", () => {
+    expect(shape(idempotencyKeyParameter(doc))).toEqual(shape(idempotencyKeyParameter(salesDoc)));
   });
 
   it.each(NEW_OPS)("%s requires the Idempotency-Key header and is x-idempotency: required", (_id, route) => {
@@ -492,14 +593,14 @@ describe("pos-shifts — idempotency", () => {
     expect(o.parameters).toContainEqual({ $ref: "#/components/parameters/IdempotencyKey" });
   });
 
-  it.each(NEW_OPS)("%s answers 201 (first record) and 200 (replay), both with Idempotent-Replayed", (_id, route) => {
-    for (const status of ["200", "201"]) {
-      const r = response(route, status);
-      expect(r.headers?.["Idempotent-Replayed"]).toEqual({
+  it.each(NEW_OPS.flatMap(([id, route]) => ["200", "201"].map((status) => [id, status, route] as const)))(
+    "%s answers %s with the Idempotent-Replayed header",
+    (_id, status, route) => {
+      expect(response(route, status).headers?.["Idempotent-Replayed"]).toEqual({
         $ref: "#/components/headers/IdempotentReplayed",
       });
-    }
-  });
+    },
+  );
 
   it("reuses the sales.yaml Idempotent-Replayed header shape", () => {
     expect(shape(doc.components?.headers?.["IdempotentReplayed"])).toEqual(
@@ -507,23 +608,24 @@ describe("pos-shifts — idempotency", () => {
     );
   });
 
-  it("each request body is required JSON referencing its strict schema", () => {
-    expect(op(OPEN).requestBody?.required).toBe(true);
-    expect(op(MOVEMENT).requestBody?.required).toBe(true);
-    expect(op(CLOSE).requestBody?.required).toBe(true);
-    expect(requestSchemaRef(OPEN)).toBe("#/components/schemas/OpenShiftRequest");
-    expect(requestSchemaRef(MOVEMENT)).toBe("#/components/schemas/RecordCashMovementRequest");
-    expect(requestSchemaRef(CLOSE)).toBe("#/components/schemas/CloseShiftRequest");
+  it.each([
+    ["openShift", "OpenShiftRequest", OPEN],
+    ["recordCashMovement", "RecordCashMovementRequest", MOVEMENT],
+    ["closeShift", "CloseShiftRequest", CLOSE],
+  ] as const)("%s takes a required JSON body referencing its strict schema %s", (_id, schemaName, route) => {
+    expect(op(route).requestBody?.required).toBe(true);
+    expect(requestSchemaRef(route)).toBe(`#/components/schemas/${schemaName}`);
   });
 
-  it("the success projections are Shift (open, close) and CashMovement (movement)", () => {
-    for (const status of ["200", "201"]) {
-      expect(response(OPEN, status).content?.["application/json"]?.schema).toEqual({ $ref: "#/components/schemas/Shift" });
-      expect(response(CLOSE, status).content?.["application/json"]?.schema).toEqual({ $ref: "#/components/schemas/Shift" });
-      expect(response(MOVEMENT, status).content?.["application/json"]?.schema).toEqual({
-        $ref: "#/components/schemas/CashMovement",
-      });
-    }
+  it.each([
+    ["openShift", "200", "Shift", OPEN],
+    ["openShift", "201", "Shift", OPEN],
+    ["closeShift", "200", "Shift", CLOSE],
+    ["closeShift", "201", "Shift", CLOSE],
+    ["recordCashMovement", "200", "CashMovement", MOVEMENT],
+    ["recordCashMovement", "201", "CashMovement", MOVEMENT],
+  ] as const)("%s answers %s with the %s projection", (_id, status, schemaName, route) => {
+    expect(responseSchema(route, status)).toEqual({ $ref: `#/components/schemas/${schemaName}` });
   });
 });
 
@@ -531,83 +633,95 @@ describe("pos-shifts — idempotency", () => {
 // 5. Request bodies
 // ===========================================================================
 describe("pos-shifts — request bodies", () => {
-  it("OpenShiftRequest: fields, required list, closed", () => {
-    const s = schema("OpenShiftRequest");
-    expect(s.additionalProperties).toBe(false);
-    expect(Object.keys(s.properties ?? {}).sort()).toEqual(
-      ["currencyCode", "openedAt", "openingFloat", "openingUserId", "operatorUserId", "shiftId"].sort(),
-    );
-    expect([...(s.required ?? [])].sort()).toEqual(
-      ["currencyCode", "openedAt", "openingFloat", "openingUserId", "shiftId"].sort(),
-    );
-    expect(s.properties?.["shiftId"]).toMatchObject({ type: "string", format: "uuid" });
-    expect(s.properties?.["openedAt"]).toMatchObject({ type: "string", format: "date-time" });
-    expect(s.properties?.["openingUserId"]).toMatchObject({ type: "string", format: "uuid" });
-    expect(s.properties?.["currencyCode"]).toEqual({ $ref: "#/components/schemas/CurrencyCode" });
-    expect(s.properties?.["openingFloat"]).toEqual({ $ref: "#/components/schemas/NonNegativeDecimalAmount" });
-    expect(s.properties?.["shiftId"]?.description ?? "").toContain("UUIDv7");
-  });
+  const UUID = { type: "string", format: "uuid" };
+  const DATE_TIME = { type: "string", format: "date-time" };
+  const SHORT_TEXT = { type: "string", minLength: 1, maxLength: 200 };
+  const ref = (name: string): { $ref: string } => ({ $ref: `#/components/schemas/${name}` });
+  const CLOSE_MONEY = [
+    "openingFloat",
+    "cashSalesTotal",
+    "cashRefundsTotal",
+    "payInTotal",
+    "payOutTotal",
+    "expectedCash",
+    "countedCash",
+  ];
 
-  it("RecordCashMovementRequest: fields, required list, enums, closed", () => {
-    const s = schema("RecordCashMovementRequest");
-    expect(s.additionalProperties).toBe(false);
-    expect(Object.keys(s.properties ?? {}).sort()).toEqual(
-      ["amount", "kind", "movementId", "note", "occurredAt", "operatorUserId", "reasonCode"].sort(),
-    );
-    expect([...(s.required ?? [])].sort()).toEqual(["amount", "kind", "movementId", "occurredAt", "reasonCode"].sort());
-    expect(s.properties?.["movementId"]).toMatchObject({ type: "string", format: "uuid" });
-    expect(s.properties?.["kind"]?.enum).toEqual(["pay_in", "pay_out"]);
-    expect(s.properties?.["reasonCode"]?.enum).toEqual(["bank_drop", "float_top_up", "petty_expense", "other"]);
-    expect(s.properties?.["amount"]).toEqual({ $ref: "#/components/schemas/PositiveDecimalAmount" });
-    expect(s.properties?.["occurredAt"]).toMatchObject({ type: "string", format: "date-time" });
-    expect(s.properties?.["note"]).toMatchObject({ type: "string", minLength: 1, maxLength: 200 });
-    expect(s.properties?.["note"]?.description ?? "").toMatch(/no PII/);
-  });
-
-  it("CloseShiftRequest: fields, required list, enums, closed", () => {
-    const s = schema("CloseShiftRequest");
-    expect(s.additionalProperties).toBe(false);
-    const money = [
-      "openingFloat",
-      "cashSalesTotal",
-      "cashRefundsTotal",
-      "payInTotal",
-      "payOutTotal",
-      "expectedCash",
-      "countedCash",
-    ];
-    expect(Object.keys(s.properties ?? {}).sort()).toEqual(
+  it.each([
+    [
+      "OpenShiftRequest",
+      ["currencyCode", "openedAt", "openingFloat", "openingUserId", "operatorUserId", "shiftId"],
+      ["currencyCode", "openedAt", "openingFloat", "openingUserId", "shiftId"],
+    ],
+    [
+      "RecordCashMovementRequest",
+      ["amount", "kind", "movementId", "note", "occurredAt", "operatorUserId", "reasonCode"],
+      ["amount", "kind", "movementId", "occurredAt", "reasonCode"],
+    ],
+    [
+      "CloseShiftRequest",
       [
         "closedAt",
         "closingUserId",
         "closeKind",
         "forcedReason",
-        ...money,
+        ...CLOSE_MONEY,
         "variance",
         "saleCount",
         "cashRefundReturnRefs",
         "varianceApprovedByUserId",
         "operatorUserId",
-      ].sort(),
-    );
-    expect([...(s.required ?? [])].sort()).toEqual(
-      ["closedAt", "closingUserId", "closeKind", ...money, "variance", "saleCount", "cashRefundReturnRefs"].sort(),
-    );
-    expect(s.properties?.["closeKind"]?.enum).toEqual(["normal", "forced"]);
-    for (const m of money) {
-      expect(s.properties?.[m]).toEqual({ $ref: "#/components/schemas/NonNegativeDecimalAmount" });
-    }
-    expect(s.properties?.["variance"]).toEqual({ $ref: "#/components/schemas/SignedDecimalAmount" });
-    expect(s.properties?.["saleCount"]).toMatchObject({ type: "integer", minimum: 0 });
-    expect(s.properties?.["cashRefundReturnRefs"]).toMatchObject({
-      type: "array",
-      uniqueItems: true,
-      items: { type: "string", format: "uuid" },
-    });
-    expect(s.properties?.["varianceApprovedByUserId"]).toMatchObject({ type: "string", format: "uuid" });
-    expect(s.properties?.["closedAt"]).toMatchObject({ type: "string", format: "date-time" });
-    expect(s.properties?.["closingUserId"]).toMatchObject({ type: "string", format: "uuid" });
-    expect(s.properties?.["forcedReason"]).toMatchObject({ type: "string", minLength: 1, maxLength: 200 });
+      ],
+      ["closedAt", "closingUserId", "closeKind", ...CLOSE_MONEY, "variance", "saleCount", "cashRefundReturnRefs"],
+    ],
+  ])("%s is closed with exactly its fields and required list", (schemaName, fields, required) => {
+    assertStrictObject(schemaName, fields, required);
+  });
+
+  // Fields that must match a shape (toMatchObject: extra keys such as a description are allowed).
+  it.each([
+    ["OpenShiftRequest", "shiftId", UUID],
+    ["OpenShiftRequest", "openedAt", DATE_TIME],
+    ["OpenShiftRequest", "openingUserId", UUID],
+    ["RecordCashMovementRequest", "movementId", UUID],
+    ["RecordCashMovementRequest", "occurredAt", DATE_TIME],
+    ["RecordCashMovementRequest", "note", SHORT_TEXT],
+    ["CloseShiftRequest", "saleCount", { type: "integer", minimum: 0 }],
+    ["CloseShiftRequest", "cashRefundReturnRefs", { type: "array", uniqueItems: true, items: UUID }],
+    ["CloseShiftRequest", "varianceApprovedByUserId", UUID],
+    ["CloseShiftRequest", "closedAt", DATE_TIME],
+    ["CloseShiftRequest", "closingUserId", UUID],
+    ["CloseShiftRequest", "forcedReason", SHORT_TEXT],
+  ])("%s.%s has the expected type", (schemaName, field, expected) => {
+    expect(prop(schemaName, field)).toMatchObject(expected);
+  });
+
+  // Fields that are exactly a reference to a shared component.
+  it.each([
+    ["OpenShiftRequest", "currencyCode", "CurrencyCode"],
+    ["OpenShiftRequest", "openingFloat", "NonNegativeDecimalAmount"],
+    ["RecordCashMovementRequest", "amount", "PositiveDecimalAmount"],
+    ...CLOSE_MONEY.map((m) => ["CloseShiftRequest", m, "NonNegativeDecimalAmount"]),
+    ["CloseShiftRequest", "variance", "SignedDecimalAmount"],
+  ])("%s.%s is exactly a $ref to %s", (schemaName, field, component) => {
+    expect(prop(schemaName!, field!)).toEqual(ref(component!));
+  });
+
+  it.each([
+    ["RecordCashMovementRequest", "kind", ["pay_in", "pay_out"]],
+    ["RecordCashMovementRequest", "reasonCode", ["bank_drop", "float_top_up", "petty_expense", "other"]],
+    ["CloseShiftRequest", "closeKind", ["normal", "forced"]],
+  ])("%s.%s is the enum %j", (schemaName, field, values) => {
+    expect(prop(schemaName, field).enum).toEqual(values);
+  });
+
+  it.each([
+    // Codex #4188345312: UUIDv7 preferred, UUIDv4 accepted (repo ID convention); not a v7-only pattern.
+    ["OpenShiftRequest", "shiftId", /client-generated UUID \(UUIDv7 preferred; UUIDv4 fallback\)/],
+    ["RecordCashMovementRequest", "movementId", /client-generated UUID \(UUIDv7 preferred; UUIDv4 fallback\)/],
+    ["RecordCashMovementRequest", "note", /no PII/],
+  ])("%s.%s documents %s", (schemaName, field, text) => {
+    expect(prop(schemaName, field).description ?? "").toMatch(text);
   });
 
   it("documents the cash-up arithmetic invariant and its 422", () => {
@@ -688,6 +802,8 @@ describe("pos-shifts — money", () => {
 // 7. Errors
 // ===========================================================================
 describe("pos-shifts — errors", () => {
+  const SUCCESS_STATUSES = ["200", "201"];
+
   const EXPECTED_STATUSES: Record<string, string[]> = {
     openShift: ["200", "201", "400", "401", "403", "409", "429", "500"],
     recordCashMovement: ["200", "201", "400", "401", "403", "404", "409", "429", "500"],
@@ -695,7 +811,7 @@ describe("pos-shifts — errors", () => {
   };
 
   it.each(NEW_OPS)("%s declares exactly its documented statuses", (id, route) => {
-    expect(Object.keys(op(route).responses ?? {}).sort()).toEqual(EXPECTED_STATUSES[id]!.sort());
+    expect(statusesOf(route)).toEqual(sorted(EXPECTED_STATUSES[id]!));
   });
 
   it("the cash-up error envelope is the canonical sales.yaml Error shape", () => {
@@ -703,12 +819,10 @@ describe("pos-shifts — errors", () => {
   });
 
   it.each(NEW_OPS)("%s: every error response uses the canonical envelope", (_id, route) => {
-    for (const status of Object.keys(op(route).responses ?? {})) {
-      if (status === "200" || status === "201") continue;
-      expect(response(route, status).content?.["application/json"]?.schema).toEqual({
-        $ref: "#/components/schemas/ApiError",
-      });
-    }
+    const errorStatuses = statusesOf(route).filter((status) => !SUCCESS_STATUSES.includes(status));
+    expect(errorStatuses.length).toBeGreaterThan(0);
+    const schemas = errorStatuses.map((status) => responseSchema(route, status));
+    expect(schemas).toEqual(errorStatuses.map(() => ({ $ref: "#/components/schemas/ApiError" })));
   });
 
   const CODES: Array<[string, Route, string, string[]]> = [
@@ -730,19 +844,17 @@ describe("pos-shifts — errors", () => {
 
   it.each(CODES)("%s %s documents error codes %s", (_id, route, status, codes) => {
     const text = response(route, status).description ?? "";
-    for (const code of codes) expect(text).toContain(`\`${code}\``);
+    expect(codes.filter((code) => !text.includes(`\`${code}\``))).toEqual([]);
   });
 
   it("the 404 is non-disclosing across tenant, store and device", () => {
     const text = response(MOVEMENT, "404").description ?? "";
     expect(text).toMatch(/non-disclosing/i);
-    for (const word of ["tenant", "store", "device"]) expect(text).toContain(word);
+    expect(["tenant", "store", "device"].filter((word) => !text.includes(word))).toEqual([]);
   });
 
-  it("the 429 carries Retry-After", () => {
-    for (const [, route] of NEW_OPS) {
-      expect(response(route, "429").headers?.["Retry-After"]).toEqual({ $ref: "#/components/headers/RetryAfter" });
-    }
+  it.each(NEW_OPS)("%s: the 429 carries Retry-After", (_id, route) => {
+    expect(response(route, "429").headers?.["Retry-After"]).toEqual({ $ref: "#/components/headers/RetryAfter" });
   });
 });
 
@@ -759,29 +871,48 @@ describe("pos-shifts — projections and fixtures", () => {
   });
 
   it.each(NEW_OPS)("%s: every request and response example validates against its schema", (_id, route) => {
-    const media: MediaObject[] = [];
-    const body = op(route).requestBody?.content?.["application/json"];
-    if (body) media.push(body);
-    for (const status of Object.keys(op(route).responses ?? {})) {
-      const m = response(route, status).content?.["application/json"];
-      if (m) media.push(m);
-    }
-    let seen = 0;
-    for (const m of media) {
-      const ref = m.schema?.$ref;
-      if (!ref) continue;
-      for (const raw of Object.values(m.examples ?? {})) {
-        const ex = raw.$ref
-          ? doc.components?.examples?.[raw.$ref.replace("#/components/examples/", "")]
-          : raw;
-        expect(ex?.value).toBeDefined();
-        const v = validator(ref.replace("#/components/schemas/", ""));
-        expect({ ok: v(ex?.value), errors: v.errors }).toEqual({ ok: true, errors: null });
-        seen += 1;
-      }
-    }
+    const examples = collectExamples(route);
     // A request example plus at least one success example per operation.
-    expect(seen).toBeGreaterThanOrEqual(2);
+    expect(examples.length).toBeGreaterThanOrEqual(2);
+    const results = examples.map(({ schemaName, value }) => {
+      const v = validator(schemaName);
+      return { schemaName, defined: value !== undefined, ok: v(value), errors: v.errors ?? null };
+    });
+    expect(results).toEqual(
+      examples.map(({ schemaName }) => ({ schemaName, defined: true, ok: true, errors: null })),
+    );
+  });
+
+  it("a UUIDv4 shiftId / movementId is accepted (UUIDv4 fallback)", () => {
+    const v4 = "4f6f1c1e-8a52-4c1b-9a0e-6d1f2b3c4d5e";
+    expect(validator("OpenShiftRequest")({ ...VALID_OPEN, shiftId: v4 })).toBe(true);
+    expect(validator("RecordCashMovementRequest")({ ...VALID_MOVEMENT, movementId: v4 })).toBe(true);
+  });
+
+  it("the info prose no longer calls the ids UUIDv7-only", () => {
+    expect(doc.info?.description ?? "").not.toContain("client-generated UUIDv7");
+  });
+
+  // Codex #4188345319: `close` is required iff `status` is `closed`.
+  it("Shift: `close` is required when closed and forbidden when open", () => {
+    const v = validator("Shift");
+    const closed = exampleValue({ $ref: "#/components/examples/ShiftClosed" }) as Record<string, unknown>;
+    const open = exampleValue({ $ref: "#/components/examples/ShiftOpen" }) as Record<string, unknown>;
+    expect(v(closed)).toBe(true);
+    expect(v(open)).toBe(true);
+    expect(v({ ...closed, close: undefined })).toBe(false);
+    expect(v({ ...open, close: closed["close"] })).toBe(false);
+  });
+
+  // Codex #4188345321: the response mirrors the request's forced-close rule.
+  it("ShiftClose: forcedReason is required when forced and forbidden when normal", () => {
+    const v = validator("ShiftClose");
+    const closed = exampleValue({ $ref: "#/components/examples/ShiftClosed" }) as { close: Record<string, unknown> };
+    const normal = closed.close;
+    expect(v(normal)).toBe(true);
+    expect(v({ ...normal, closeKind: "forced", forcedReason: "Drawer jammed, closed by manager" })).toBe(true);
+    expect(v({ ...normal, closeKind: "forced" })).toBe(false);
+    expect(v({ ...normal, forcedReason: "not forced" })).toBe(false);
   });
 
   it("the request examples are the fixtures this spec uses", () => {
