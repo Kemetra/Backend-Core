@@ -11,6 +11,8 @@
  * The pool is a scripted fake: it answers the consumer's SQL by shape and
  * records every statement, so the tests assert what reached the database.
  */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Pool } from "pg";
 import { MAX_ATTEMPTS } from "@data-pulse-2/db";
 import type { OutboxEventEnvelope } from "@data-pulse-2/shared";
@@ -117,13 +119,32 @@ describe("PostingRequestedConsumer — RT-173 reversal waits for its sale_post r
     expect(warn).toHaveBeenCalledWith(
       {
         event: "posting.reversal.deferred",
+        // RT-216: signals.md §4 async-work fields, from the same sources as the
+        // RT-207 dead-letter log. The deferred attempt fails (it throws and is
+        // retried), so outcome is "failure"; correlation_id is null when the
+        // envelope has none.
+        outcome: "failure",
+        correlation_id: null,
         tenant_id: TENANT,
+        store_id: STORE,
         sale_id: SALE,
         source_ref_id: VOID_ID,
         attempts: 2,
       },
       "reversal deferred: sale_post row not created yet",
     );
+  });
+
+  it("the deferred warning carries the envelope correlation_id when there is one (RT-216)", async () => {
+    const { pool } = fakePool(false);
+    const warn = jest.fn();
+    const consumer = new PostingRequestedConsumer(pool, { warn, error: jest.fn() });
+    const correlated = { ...reversalEvent(), correlation_id: CORRELATION_ID };
+
+    await consumer.handle(correlated).catch(() => undefined);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({ correlation_id: CORRELATION_ID });
   });
 
   it("reversal after the sale_post row exists → the reversal row is inserted, no warning", async () => {
@@ -283,5 +304,79 @@ describe("PostingRequestedConsumer — RT-207 reversal dead-letter while awaitin
 
     expect(counter).not.toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
+  });
+});
+
+// RT-216: signals.md §4 allows only its default structured-log fields; any other
+// field on a log line must be classified in the redaction matrix, or it must not
+// be emitted. Both posting-reversal logs must pass that rule, and the extra
+// fields must be classified `business` (§3.4), the only loggable class here.
+describe("PostingRequestedConsumer — RT-216 posting-reversal log fields are classified", () => {
+  const repoRoot = resolve(__dirname, "../../../..");
+
+  /** Backticked names in the first cell of each table row in one markdown section. */
+  function firstCellFields(file: string, startHeading: string, endHeading: string): Set<string> {
+    const text = readFileSync(resolve(repoRoot, file), "utf8");
+    const start = text.indexOf(startHeading);
+    const end = text.indexOf(endHeading, start + startHeading.length);
+    if (start < 0 || end < 0) throw new Error(`${file}: section "${startHeading}" not found`);
+    const fields = new Set<string>();
+    for (const line of text.slice(start, end).split("\n")) {
+      if (!line.startsWith("|") || /^\|\s*-/.test(line)) continue;
+      const firstCell = line.split("|")[1] ?? "";
+      for (const m of firstCell.matchAll(/`([^`]+)`/g)) fields.add(m[1] as string);
+    }
+    return fields;
+  }
+
+  const signalsDefaults = firstCellFields(
+    "docs/observability/signals.md",
+    "## 4. Structured-log field requirements",
+    "\n## 5.",
+  );
+  const matrixBusiness = firstCellFields(
+    ".specify/memory/redaction-matrix.md",
+    "### 3.4 Business",
+    "\n### 3.5",
+  );
+
+  async function emittedFields(): Promise<{ deferred: string[]; deadLettered: string[] }> {
+    jest
+      .spyOn(workerMetrics, "recordErpnextPostingReversalDeferredDeadLetter")
+      .mockImplementation(() => undefined);
+    const { pool } = fakePool(false);
+    const warn = jest.fn();
+    const error = jest.fn();
+    const consumer = new PostingRequestedConsumer(pool, { warn, error });
+
+    await consumer.handle({ ...reversalEvent(), attempts: MAX_ATTEMPTS }).catch(() => undefined);
+
+    const fieldsOf = (fn: jest.Mock) =>
+      Object.keys((fn.mock.calls[0] as [Record<string, unknown>])[0]);
+    return { deferred: fieldsOf(warn), deadLettered: fieldsOf(error) };
+  }
+
+  it("the section parsers find the documented tables", () => {
+    expect(signalsDefaults).toEqual(
+      new Set(["request_id", "tenant_id", "store_id", "actor_id", "correlation_id", "route", "method", "status", "outcome"]),
+    );
+    expect(matrixBusiness.has("tenant_id")).toBe(true);
+    expect(matrixBusiness.has("event_id")).toBe(true);
+  });
+
+  it("every field on both logs is a signals.md §4 default or a matrix §3.4 business field", async () => {
+    const { deferred, deadLettered } = await emittedFields();
+
+    const unclassified = [...new Set([...deferred, ...deadLettered])].filter(
+      (f) => !signalsDefaults.has(f) && !matrixBusiness.has(f),
+    );
+
+    expect(unclassified).toEqual([]);
+  });
+
+  it("the four RT-216 fields are classified business in the matrix", () => {
+    for (const field of ["sale_id", "source_ref_id", "attempts", "event"]) {
+      expect(matrixBusiness.has(field)).toBe(true);
+    }
   });
 });
