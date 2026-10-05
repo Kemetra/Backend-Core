@@ -120,7 +120,8 @@ describe("production database pool separation", () => {
     }
 
     // RT-113 BC2: a grant on either cashier-admission table fails boot too.
-    for (const table of ["cashier_admissions", "cashier_admission_requests"]) {
+    // RT-213: so does any grant on tenants (BYPASSRLS would expose every row).
+    for (const table of ["cashier_admissions", "cashier_admission_requests", "tenants"]) {
       await admin.query(`GRANT SELECT ON ${table} TO ${LOOKUP_ROLE}`);
       try {
         await expect(verifyDatabasePoolBoundary(app, lookupPool)).rejects.toThrow(
@@ -166,7 +167,7 @@ describe("production database pool separation", () => {
     await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
   });
 
-  it("RT-212: a domain role missing a cashier-admissions grant fails boot verification", async () => {
+  it("RT-212 / RT-213: a domain role missing a cashier-admissions or tenants grant fails boot verification", async () => {
     if (dockerSkipped) return;
     const { app, admin } = env!;
     const lookupPool = lookup!;
@@ -190,6 +191,17 @@ describe("production database pool separation", () => {
       await admin.query(`GRANT INSERT, UPDATE ON cashier_admissions TO ${APP_ROLE_NAME}`);
     }
 
+    // RT-213: device auth reads tenants.status on the domain role. A missing
+    // grant must stop boot, not refuse every till at runtime.
+    await admin.query(`REVOKE SELECT ON tenants FROM ${APP_ROLE_NAME}`);
+    try {
+      await expect(verifyDatabasePoolBoundary(app, lookupPool)).rejects.toThrow(
+        /AuthModule: DATABASE_URL role is missing required grants: SELECT ON tenants\b/,
+      );
+    } finally {
+      await admin.query(`GRANT SELECT ON tenants TO ${APP_ROLE_NAME}`);
+    }
+
     await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
   });
 
@@ -200,8 +212,14 @@ describe("production database pool separation", () => {
 
     await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
 
-    const device = await new DeviceRepository(lookupPool).findActiveByAttestation("device-b");
+    // RT-213: the device on the lookup role, its tenant's status on the
+    // NOBYPASSRLS domain role under the device's tenant context. Neither role
+    // needs a new grant: the lookup role still cannot read `tenants`.
+    const device = await new DeviceRepository(lookupPool, app).findActiveByAttestation("device-b");
     expect(device?.id).toBe(DEVICE_B);
+    await expect(lookupPool.query("SELECT status FROM tenants LIMIT 1")).rejects.toThrow(
+      /permission denied/i,
+    );
 
     const visibleToTenantA = await runWithTenantContext(
       app,

@@ -81,8 +81,10 @@ op run --env-file=deploy/prod.env -- \
 `api`/`worker` start (compose `service_completed_successfully` gate).
 
 Step 2 must run between the migration and the app start. The API boot check
-verifies the domain role's cashier-admissions table grants (RT-212). If step 2
-is skipped, the API refuses to start, and the error names each missing grant.
+verifies the domain role's cashier-admissions table grants (RT-212) and its
+`SELECT` on `tenants`, which POS device authentication reads (RT-213). If
+step 2 is skipped, the API refuses to start, and the error names each missing
+grant.
 
 Step 2 needs a `psql` client on the deploy host. It reads the connection from
 `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` and `PGSSLMODE` in

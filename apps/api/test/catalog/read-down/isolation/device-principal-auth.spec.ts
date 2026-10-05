@@ -116,7 +116,8 @@ beforeAll(async () => {
       // privilege explicit.
       {
         provide: DeviceRepository,
-        useValue: new DeviceRepository(theEnv.admin),
+        // RT-213: the tenant-status read runs on the RLS-bound app pool.
+        useValue: new DeviceRepository(theEnv.admin, theEnv.app),
       },
       PosDeviceAuthGuard,
     ],

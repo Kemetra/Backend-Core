@@ -25,6 +25,10 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "cashier_admission_requests:INSERT",
   "cashier_admission_requests:UPDATE",
   "cashier_admission_requests:DELETE",
+  // RT-213: device auth reads the device's tenant status on the domain role
+  // (inside the tenant's RLS context). Without this grant every till would be
+  // refused at once, so a missing grant must fail boot instead.
+  "tenants:SELECT",
 ]);
 
 const LOOKUP_GRANTS: ReadonlySet<string> = new Set(
@@ -178,6 +182,11 @@ describe("database pool boundary", () => {
     ["memberships", "TRIGGER"],
     ["store_access", "TRUNCATE"],
     ["store_access", "TRIGGER"],
+    // RT-213: the BYPASSRLS lookup role must not read tenants (it would see
+    // every tenant row); device auth reads tenant status on the domain role.
+    ["tenants", "SELECT"],
+    ["tenants", "UPDATE"],
+    ["tenants", "TRUNCATE"],
   ])("rejects a lookup role holding %s %s", async (table, privilege) => {
     const grants = new Set([...REQUIRED, `${table}:${privilege}`]);
     await expect(
@@ -190,7 +199,7 @@ describe("database pool boundary", () => {
 
   it("RT-212: forbids every table privilege on each fully forbidden table", () => {
     const ALL = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"];
-    for (const table of ["sales", "receivable", "audit_events", "cashier_admissions"]) {
+    for (const table of ["sales", "receivable", "audit_events", "cashier_admissions", "tenants"]) {
       const entry = AUTH_LOOKUP_FORBIDDEN_GRANTS.find(([t]) => t === table);
       expect(entry).toBeDefined();
       const listed = entry![1].split(",").map((p) => p.trim());

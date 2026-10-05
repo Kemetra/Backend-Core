@@ -180,7 +180,10 @@ beforeAll(async () => {
       },
       PairingService,
       // For the device_token-authenticates assertion: the REAL guard path.
-      { provide: DeviceRepository, useValue: new DeviceRepository(theEnv.admin) },
+      {
+        provide: DeviceRepository,
+        useValue: new DeviceRepository(theEnv.admin, theEnv.app),
+      },
       PosDeviceAuthGuard,
     ],
   }).compile();
@@ -241,7 +244,7 @@ describe("posPairTerminal — happy path + device_token credential", () => {
     expect(res.status).toBe(200);
     const token: string = res.body.device_token;
 
-    const repo = new DeviceRepository(env!.admin);
+    const repo = new DeviceRepository(env!.admin, env!.app);
     const device = await repo.findActiveByAttestation(token);
     expect(device).not.toBeNull();
     expect(device?.tenantId).toBe(TENANT);

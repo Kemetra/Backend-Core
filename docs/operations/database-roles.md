@@ -12,6 +12,12 @@ The auth lookup credential exists because a device token, session, or bearer
 token must be resolved before a tenant GUC can be established. It must not be
 used by domain services.
 
+A resolved device is accepted only while its tenant is active (RT-213). That
+tenant-status read runs on the domain role, inside the device's own tenant
+context, so the lookup role needs no grant on `tenants` and must not be given
+one: with `BYPASSRLS` it would see every tenant row. The API refuses to boot if
+the lookup role holds any privilege on `tenants` (`AUTH_LOOKUP_FORBIDDEN_GRANTS`).
+
 ## Boot-time verification
 
 In production (or with `VERIFY_DATABASE_POOL_BOUNDARY=1`) both processes check
@@ -23,6 +29,8 @@ their credentials before serving and refuse to start on a violation:
   whose grants are provisioned as a separate deploy step:
   - `cashier_admissions`: `SELECT`, `INSERT`, `UPDATE`
   - `cashier_admission_requests`: `SELECT`, `INSERT`, `UPDATE`, `DELETE`
+  - `tenants`: `SELECT` (RT-213: POS device authentication reads the
+    device's tenant status on this role)
 
   A deploy that skips that grant step now fails to boot, and the error names
   each missing privilege and table, instead of starting healthy with those
@@ -32,8 +40,9 @@ their credentials before serving and refuse to start on a violation:
   `AUTH_LOOKUP_REQUIRED_GRANTS` / `AUTH_LOOKUP_FORBIDDEN_GRANTS`). The
   forbidden check covers every table privilege (`SELECT`, `INSERT`, `UPDATE`,
   `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`) on the sales, receivables,
-  cashier-admission, inventory, audit, idempotency and outbox tables, and every
-  privilege except `SELECT` on `memberships` and `store_access` (RT-212).
+  cashier-admission, tenants (RT-213), inventory, audit, idempotency and outbox
+  tables, and every privilege except `SELECT` on `memberships` and
+  `store_access` (RT-212).
   `TRUNCATE` matters most: it is not subject to row security.
 
   All three lists are in `apps/api/src/auth/database-pools.ts`.
@@ -73,16 +82,19 @@ table the domain role must use needs a matching grant step at deploy time.
   `-v domain_role=<role>` is required. It grants the domain role:
   - `cashier_admissions`: `SELECT`, `INSERT`, `UPDATE`
   - `cashier_admission_requests`: `SELECT`, `INSERT`, `UPDATE`, `DELETE`
+  - `tenants`: `SELECT` (RT-213). Every device-authenticated POS request
+    reads its tenant's status on the domain role; without this grant every
+    till would be refused at once, so the API refuses to boot instead.
 
   The script runs with `ON_ERROR_STOP` and exits non-zero if a grant fails or
   if the verification finds a missing grant. Without these grants the API
   refuses to boot (`DOMAIN_REQUIRED_GRANTS`, see
   [Boot-time verification](#boot-time-verification)).
 
-  The auth lookup role must hold no privilege on either table. The API refuses
-  to boot if it holds any table privilege on one, `TRUNCATE`, `REFERENCES` and
-  `TRIGGER` included. Pass `-v lookup_role=<role>` to the script to run the
-  same check at deploy time.
+  The auth lookup role must hold no privilege on either table, nor on
+  `tenants` (RT-213). The API refuses to boot if it holds any table privilege
+  on one, `TRUNCATE`, `REFERENCES` and `TRIGGER` included. Pass
+  `-v lookup_role=<role>` to the script to run the same check at deploy time.
 
 ## Redis credential
 
