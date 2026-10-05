@@ -166,19 +166,32 @@ function saleBody(opts: {
   return body;
 }
 
-function capture(
-  bearer: string | null,
-  body: Record<string, unknown>,
-  key: string = randomUUID().replace(/-/g, ""),
-): request.Test {
-  const req = http().post("/api/pos/v1/sales").set("Idempotency-Key", key);
-  if (bearer !== null) req.set("Authorization", `Bearer ${bearer}`);
-  return req.send(body);
+/** One capture request: the presented bearer (none → null), the body, the idempotency key. */
+interface CaptureCall {
+  bearer: string | null;
+  body: Record<string, unknown>;
+  key?: string;
 }
 
-/** A cashier sale from the store's till 1 at `occurredAt`. */
-function cashierSale(occurredAt: string, user: string = CASHIER, token: string = TOKEN): request.Test {
-  return capture(token, saleBody({ operatorUserId: user, occurredAt }));
+function capture(call: CaptureCall): request.Test {
+  const key = call.key ?? randomUUID().replace(/-/g, "");
+  const req = http().post("/api/pos/v1/sales").set("Idempotency-Key", key);
+  if (call.bearer !== null) req.set("Authorization", `Bearer ${call.bearer}`);
+  return req.send(call.body);
+}
+
+/** A cashier sale claimed at `occurredAt` by `user` (default CASHIER) from the till `token` names (default till 1). */
+interface CashierSale {
+  occurredAt: string;
+  user?: string;
+  token?: string;
+}
+
+function cashierSale(sale: CashierSale): request.Test {
+  return capture({
+    bearer: sale.token ?? TOKEN,
+    body: saleBody({ operatorUserId: sale.user ?? CASHIER, occurredAt: sale.occurredAt }),
+  });
 }
 
 async function admission(opts: {
@@ -381,7 +394,7 @@ describe("RT-224 — a covering admission authorizes the cashier's sale", () => 
     if (skip()) return;
     await liveAdmission();
     const body = saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR) });
-    const res = await capture(TOKEN, body);
+    const res = await capture({ bearer: TOKEN, body });
     expect(res.status).toBe(201);
     expect(res.body.storeId).toBe(STORE);
 
@@ -402,7 +415,7 @@ describe("RT-224 — a covering admission authorizes the cashier's sale", () => 
     if (skip()) return;
     await liveAdmission();
     const body = saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR) });
-    const res = await capture(TOKEN, body);
+    const res = await capture({ bearer: TOKEN, body });
     expect(res.status).toBe(201);
     const { operatorUserId: _claim, ...facts } = body;
     expect((await saleRow(res.body.saleRef as string)).payload_hash).toBe(sha256CanonicalHex(facts));
@@ -416,7 +429,7 @@ describe("RT-224 — a covering admission authorizes the cashier's sale", () => 
       .send({ user_id: CASHIER_2, mode: "online", idempotency_key: randomUUID() });
     expect(admit.status).toBe(200);
     expect(admit.body.kind).toBe("admitted");
-    const res = await cashierSale(new Date(Date.now() + 1000).toISOString(), CASHIER_2);
+    const res = await cashierSale({ occurredAt: new Date(Date.now() + 1000).toISOString(), user: CASHIER_2 });
     expect(res.status).toBe(201);
     expect((await saleRow(res.body.saleRef as string)).created_by).toBe(CASHIER_2);
   });
@@ -426,38 +439,38 @@ describe("RT-224 — window edges: created_at <= occurredAt < LEAST(ended_at, ex
   it("occurredAt exactly at created_at → accepted (inclusive lower bound)", async () => {
     if (skip()) return;
     await liveAdmission();
-    expect((await cashierSale(at(0))).status).toBe(201);
+    expect((await cashierSale({ occurredAt: at(0) })).status).toBe(201);
   });
 
   it("occurredAt 1 ms before created_at → refused", async () => {
     if (skip()) return;
     await liveAdmission();
-    expect((await cashierSale(at(-1))).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(-1) })).status).toBe(401);
   });
 
   it("occurredAt 1 ms before expires_at → accepted", async () => {
     if (skip()) return;
     await liveAdmission();
-    expect((await cashierSale(at(12 * HOUR - 1))).status).toBe(201);
+    expect((await cashierSale({ occurredAt: at(12 * HOUR - 1) })).status).toBe(201);
   });
 
   it("occurredAt exactly at expires_at → refused (exclusive upper bound, as the admission's own expiry)", async () => {
     if (skip()) return;
     await liveAdmission();
-    expect((await cashierSale(at(12 * HOUR))).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(12 * HOUR) })).status).toBe(401);
   });
 
   it("occurredAt after expires_at → refused", async () => {
     if (skip()) return;
     await liveAdmission();
-    expect((await cashierSale(at(13 * HOUR))).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(13 * HOUR) })).status).toBe(401);
   });
 
   it("nothing is recorded for a refused sale", async () => {
     if (skip()) return;
     await liveAdmission();
     const before = await saleCount();
-    expect((await cashierSale(at(-1))).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(-1) })).status).toBe(401);
     expect(await saleCount()).toBe(before);
   });
 });
@@ -466,20 +479,20 @@ describe("RT-224 — ended and expired admissions still cover their own window",
   it("a sale inside the window of an admission that has since ENDED → accepted (queue drained after sign-out)", async () => {
     if (skip()) return;
     await admission({ createdAt: at(0), expiresAt: at(12 * HOUR), endedAt: at(2 * HOUR) });
-    expect((await cashierSale(at(1 * HOUR))).status).toBe(201);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR) })).status).toBe(201);
   });
 
   it("a sale 1 ms before ended_at → accepted; exactly at ended_at → refused", async () => {
     if (skip()) return;
     await admission({ createdAt: at(0), expiresAt: at(12 * HOUR), endedAt: at(2 * HOUR) });
-    expect((await cashierSale(at(2 * HOUR - 1))).status).toBe(201);
-    expect((await cashierSale(at(2 * HOUR))).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(2 * HOUR - 1) })).status).toBe(201);
+    expect((await cashierSale({ occurredAt: at(2 * HOUR) })).status).toBe(401);
   });
 
   it("a sale after the end but before the old expiry → refused (the end cuts the window)", async () => {
     if (skip()) return;
     await admission({ createdAt: at(0), expiresAt: at(12 * HOUR), endedAt: at(2 * HOUR) });
-    expect((await cashierSale(at(3 * HOUR))).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(3 * HOUR) })).status).toBe(401);
   });
 
   it("an admission ended lazily AFTER it expired stops at expires_at, not at ended_at", async () => {
@@ -490,8 +503,8 @@ describe("RT-224 — ended and expired admissions still cover their own window",
       endedAt: at(20 * HOUR),
       endReason: "expired",
     });
-    expect((await cashierSale(at(11 * HOUR))).status).toBe(201);
-    expect((await cashierSale(at(13 * HOUR))).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(11 * HOUR) })).status).toBe(201);
+    expect((await cashierSale({ occurredAt: at(13 * HOUR) })).status).toBe(401);
   });
 
   it("a takeover: the old device's window still covers its own sales; the new device's does not reach back", async () => {
@@ -499,10 +512,10 @@ describe("RT-224 — ended and expired admissions still cover their own window",
     // Till 1 admitted T0..T0+2h, taken over by till 2 at T0+2h.
     await admission({ createdAt: at(0), expiresAt: at(12 * HOUR), endedAt: at(2 * HOUR), endReason: "takeover" });
     await admission({ device: DEVICE_2, createdAt: at(2 * HOUR), expiresAt: at(14 * HOUR) });
-    expect((await cashierSale(at(1 * HOUR), CASHIER, TOKEN)).status).toBe(201);
-    expect((await cashierSale(at(3 * HOUR), CASHIER, TOKEN)).status).toBe(401);
-    expect((await cashierSale(at(3 * HOUR), CASHIER, TOKEN_2)).status).toBe(201);
-    expect((await cashierSale(at(1 * HOUR), CASHIER, TOKEN_2)).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER, token: TOKEN })).status).toBe(201);
+    expect((await cashierSale({ occurredAt: at(3 * HOUR), user: CASHIER, token: TOKEN })).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(3 * HOUR), user: CASHIER, token: TOKEN_2 })).status).toBe(201);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER, token: TOKEN_2 })).status).toBe(401);
   });
 });
 
@@ -510,37 +523,37 @@ describe("RT-224 — the admission must be this device's, this store's and this 
   it("a covering admission on ANOTHER device of the same store → refused", async () => {
     if (skip()) return;
     await liveAdmission({ device: DEVICE_2 });
-    expect((await cashierSale(at(1 * HOUR), CASHIER, TOKEN)).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER, token: TOKEN })).status).toBe(401);
   });
 
   it("a covering admission for ANOTHER store (same device id) → refused", async () => {
     if (skip()) return;
     await liveAdmission({ store: STORE_2 });
-    expect((await cashierSale(at(1 * HOUR), CASHIER, TOKEN)).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER, token: TOKEN })).status).toBe(401);
   });
 
   it("a covering admission of the other store's till, used from this store's till → refused", async () => {
     if (skip()) return;
     await liveAdmission({ user: CASHIER_2, device: DEVICE_S2, store: STORE_2 });
-    expect((await cashierSale(at(1 * HOUR), CASHIER_2, TOKEN)).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER_2, token: TOKEN })).status).toBe(401);
   });
 
   it("a covering admission for ANOTHER user → refused for this user", async () => {
     if (skip()) return;
     await liveAdmission({ user: CASHIER_2 });
-    expect((await cashierSale(at(1 * HOUR), CASHIER, TOKEN)).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER, token: TOKEN })).status).toBe(401);
   });
 
   it("a user of ANOTHER tenant (admitted there) → refused on this tenant's device", async () => {
     if (skip()) return;
     await liveAdmission({ tenant: TENANT_OTHER, store: STORE_OTHER, device: DEVICE_OTHER, user: CASHIER_OTHER });
-    expect((await cashierSale(at(1 * HOUR), CASHIER_OTHER, TOKEN)).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER_OTHER, token: TOKEN })).status).toBe(401);
   });
 
   it("an unknown user id → refused", async () => {
     if (skip()) return;
     await liveAdmission();
-    expect((await cashierSale(at(1 * HOUR), randomUUID(), TOKEN)).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR), user: randomUUID(), token: TOKEN })).status).toBe(401);
   });
 });
 
@@ -549,33 +562,35 @@ describe("RT-224 — the device is checked live (RT-213)", () => {
     if (skip()) return;
     await liveAdmission();
     await E().admin.query(`UPDATE devices SET revoked_at = now() WHERE id = $1`, [DEVICE]);
-    expect((await cashierSale(at(1 * HOUR))).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR) })).status).toBe(401);
   });
 
   it.each(["suspended", "pending"])("a device of a %s tenant → 401", async (status) => {
     if (skip()) return;
     await liveAdmission();
     await E().admin.query(`UPDATE tenants SET status = $1 WHERE id = $2`, [status, TENANT]);
-    expect((await cashierSale(at(1 * HOUR))).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR) })).status).toBe(401);
   });
 
   it("an unknown device token → 401", async () => {
     if (skip()) return;
     await liveAdmission();
-    expect((await cashierSale(at(1 * HOUR), CASHIER, "not-a-device-token")).status).toBe(401);
+    const res = await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER, token: "not-a-device-token" });
+    expect(res.status).toBe(401);
   });
 
   it("a device token WITHOUT operatorUserId is not a sale credential → 401", async () => {
     if (skip()) return;
     await liveAdmission();
-    expect((await capture(TOKEN, saleBody({ occurredAt: at(1 * HOUR) }))).status).toBe(401);
+    expect((await capture({ bearer: TOKEN, body: saleBody({ occurredAt: at(1 * HOUR) }) })).status).toBe(401);
   });
 
   it("no Authorization header on either path → 401", async () => {
     if (skip()) return;
     await liveAdmission();
-    expect((await capture(null, saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR) }))).status).toBe(401);
-    expect((await capture(null, saleBody({ occurredAt: at(1 * HOUR) }))).status).toBe(401);
+    const claimed = saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR) });
+    expect((await capture({ bearer: null, body: claimed })).status).toBe(401);
+    expect((await capture({ bearer: null, body: saleBody({ occurredAt: at(1 * HOUR) }) })).status).toBe(401);
   });
 });
 
@@ -611,9 +626,9 @@ describe("RT-224 — the cashier is re-checked live (RT-113 BC2 eligibility)", (
   it.each(revocations)("$axis → 401 even inside a covering window", async ({ revoke }) => {
     if (skip()) return;
     await liveAdmission();
-    expect((await cashierSale(at(1 * HOUR))).status).toBe(201);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR) })).status).toBe(201);
     await revoke();
-    expect((await cashierSale(at(1 * HOUR))).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR) })).status).toBe(401);
   });
 
   it("restoring the membership re-admits the same sale request (the refusal was the live state)", async () => {
@@ -621,9 +636,9 @@ describe("RT-224 — the cashier is re-checked live (RT-113 BC2 eligibility)", (
     await liveAdmission();
     await E().admin.query(`UPDATE memberships SET revoked_at = now() WHERE id = $1`, [M_CASHIER]);
     const body = saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR) });
-    expect((await capture(TOKEN, body)).status).toBe(401);
+    expect((await capture({ bearer: TOKEN, body })).status).toBe(401);
     await E().admin.query(`UPDATE memberships SET revoked_at = NULL WHERE id = $1`, [M_CASHIER]);
-    expect((await capture(TOKEN, body)).status).toBe(201);
+    expect((await capture({ bearer: TOKEN, body })).status).toBe(201);
   });
 });
 
@@ -633,19 +648,20 @@ describe("RT-224 — every refusal is the same generic 401", () => {
     await liveAdmission({ device: DEVICE_2 });
     const bodies: unknown[] = [];
     // No admission for this device.
-    bodies.push(genericBody(await cashierSale(at(1 * HOUR))));
+    bodies.push(genericBody(await cashierSale({ occurredAt: at(1 * HOUR) })));
     // Unknown user.
-    bodies.push(genericBody(await cashierSale(at(1 * HOUR), randomUUID())));
+    bodies.push(genericBody(await cashierSale({ occurredAt: at(1 * HOUR), user: randomUUID() })));
     // Admission exists on till 2, but the window is checked against till 1.
-    bodies.push(genericBody(await cashierSale(at(1 * HOUR), CASHIER, TOKEN)));
+    bodies.push(genericBody(await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER, token: TOKEN })));
     // Revoked membership, covering admission on till 2 used from till 2.
     await E().admin.query(`UPDATE memberships SET revoked_at = now() WHERE id = $1`, [M_CASHIER]);
-    bodies.push(genericBody(await cashierSale(at(1 * HOUR), CASHIER, TOKEN_2)));
+    bodies.push(genericBody(await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER, token: TOKEN_2 })));
     // Revoked device.
     await E().admin.query(`UPDATE devices SET revoked_at = now() WHERE id = $1`, [DEVICE_2]);
-    bodies.push(genericBody(await cashierSale(at(1 * HOUR), CASHIER, TOKEN_2)));
+    bodies.push(genericBody(await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER, token: TOKEN_2 })));
     // The envelope path's refusal, for reference.
-    bodies.push(genericBody(await capture("not-an-envelope", saleBody({ occurredAt: at(1 * HOUR) }))));
+    const unclaimed = saleBody({ occurredAt: at(1 * HOUR) });
+    bodies.push(genericBody(await capture({ bearer: "not-an-envelope", body: unclaimed })));
 
     expect(bodies[0]).toMatchObject({ status: 401 });
     for (const b of bodies) expect(b).toEqual(bodies[0]);
@@ -654,14 +670,17 @@ describe("RT-224 — every refusal is the same generic 401", () => {
   it("an authenticated device with a malformed operatorUserId → the usual 400, nothing recorded", async () => {
     if (skip()) return;
     const before = await saleCount();
-    const res = await capture(TOKEN, saleBody({ operatorUserId: "not-a-uuid", occurredAt: at(1 * HOUR) }));
+    const res = await capture({
+      bearer: TOKEN,
+      body: saleBody({ operatorUserId: "not-a-uuid", occurredAt: at(1 * HOUR) }),
+    });
     expect(res.status).toBe(400);
     expect(await saleCount()).toBe(before);
   });
 
   it("an unknown device with a malformed body → 401, not 400 (authentication first)", async () => {
     if (skip()) return;
-    const res = await capture("not-a-device-token", { operatorUserId: "not-a-uuid" });
+    const res = await capture({ bearer: "not-a-device-token", body: { operatorUserId: "not-a-uuid" } });
     expect(res.status).toBe(401);
   });
 });
@@ -670,7 +689,7 @@ describe("RT-224 — the manager envelope path is unchanged", () => {
   it("envelope (no operatorUserId) → 201 with created_by = the manager", async () => {
     if (skip()) return;
     const envelope = await signInManager();
-    const res = await capture(envelope, saleBody({ occurredAt: at(1 * HOUR) }));
+    const res = await capture({ bearer: envelope, body: saleBody({ occurredAt: at(1 * HOUR) }) });
     expect(res.status).toBe(201);
     expect((await saleRow(res.body.saleRef as string)).created_by).toBe(MANAGER);
     expect(audit.payloads.find((p) => p.action === "sale.captured")?.actor_user_id).toBe(MANAGER);
@@ -680,7 +699,7 @@ describe("RT-224 — the manager envelope path is unchanged", () => {
     if (skip()) return;
     const envelope = await signInManager();
     await E().admin.query(`UPDATE memberships SET revoked_at = now() WHERE id = $1`, [M_MANAGER]);
-    expect((await capture(envelope, saleBody({ occurredAt: at(1 * HOUR) }))).status).toBe(401);
+    expect((await capture({ bearer: envelope, body: saleBody({ occurredAt: at(1 * HOUR) }) })).status).toBe(401);
   });
 
   it("an envelope carrying operatorUserId is refused: the field selects the device path, and created_by is never taken from the body", async () => {
@@ -688,7 +707,10 @@ describe("RT-224 — the manager envelope path is unchanged", () => {
     await liveAdmission();
     const envelope = await signInManager();
     const before = await saleCount();
-    const res = await capture(envelope, saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR) }));
+    const res = await capture({
+      bearer: envelope,
+      body: saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR) }),
+    });
     expect(res.status).toBe(401);
     expect(await saleCount()).toBe(before);
   });
@@ -700,10 +722,10 @@ describe("RT-224 — idempotency and divergence are unchanged on the device path
     await liveAdmission();
     const key = randomUUID().replace(/-/g, "");
     const body = saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR) });
-    const first = await capture(TOKEN, body, key);
+    const first = await capture({ bearer: TOKEN, body, key });
     expect(first.status).toBe(201);
     const before = await saleCount();
-    const again = await capture(TOKEN, body, key);
+    const again = await capture({ bearer: TOKEN, body, key });
     expect(again.status).toBe(201);
     expect(again.headers["idempotent-replayed"]).toBe("true");
     expect(again.body.saleRef).toBe(first.body.saleRef);
@@ -715,12 +737,15 @@ describe("RT-224 — idempotency and divergence are unchanged on the device path
     await liveAdmission();
     await liveAdmission({ user: CASHIER_2 });
     const externalId = nextExternalId();
-    const first = await capture(TOKEN, saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR), externalId }));
+    const first = await capture({
+      bearer: TOKEN,
+      body: saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR), externalId }),
+    });
     expect(first.status).toBe(201);
-    const replay = await capture(
-      TOKEN,
-      saleBody({ operatorUserId: CASHIER_2, occurredAt: at(1 * HOUR), externalId }),
-    );
+    const replay = await capture({
+      bearer: TOKEN,
+      body: saleBody({ operatorUserId: CASHIER_2, occurredAt: at(1 * HOUR), externalId }),
+    });
     expect(replay.status).toBe(200);
     expect(replay.headers["idempotent-replayed"]).toBe("true");
     expect(replay.body.saleRef).toBe(first.body.saleRef);
@@ -731,9 +756,17 @@ describe("RT-224 — idempotency and divergence are unchanged on the device path
     if (skip()) return;
     await liveAdmission();
     const key = randomUUID().replace(/-/g, "");
-    const first = await capture(TOKEN, saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR) }), key);
+    const first = await capture({
+      bearer: TOKEN,
+      body: saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR) }),
+      key,
+    });
     expect(first.status).toBe(201);
-    const diverged = await capture(TOKEN, saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR) }), key);
+    const diverged = await capture({
+      bearer: TOKEN,
+      body: saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR) }),
+      key,
+    });
     expect(diverged.status).toBe(409);
     expect(diverged.body.error.code).toBe("idempotency_key_conflict");
   });
@@ -743,9 +776,9 @@ describe("RT-224 — idempotency and divergence are unchanged on the device path
     await liveAdmission();
     const key = randomUUID().replace(/-/g, "");
     const body = saleBody({ operatorUserId: CASHIER, occurredAt: at(1 * HOUR) });
-    expect((await capture(TOKEN, body, key)).status).toBe(201);
+    expect((await capture({ bearer: TOKEN, body, key })).status).toBe(201);
     await E().admin.query(`UPDATE memberships SET revoked_at = now() WHERE id = $1`, [M_CASHIER]);
-    expect((await capture(TOKEN, body, key)).status).toBe(401);
+    expect((await capture({ bearer: TOKEN, body, key })).status).toBe(401);
   });
 });
 
@@ -753,7 +786,7 @@ describe("RT-224 — cross-tenant isolation", () => {
   it("the other tenant's cashier on the other tenant's device → 201 in THAT tenant, invisible to this tenant", async () => {
     if (skip()) return;
     await liveAdmission({ tenant: TENANT_OTHER, store: STORE_OTHER, device: DEVICE_OTHER, user: CASHIER_OTHER });
-    const res = await cashierSale(at(1 * HOUR), CASHIER_OTHER, TOKEN_OTHER);
+    const res = await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER_OTHER, token: TOKEN_OTHER });
     expect(res.status).toBe(201);
     const row = await saleRow(res.body.saleRef as string);
     expect(row).toMatchObject({ tenant_id: TENANT_OTHER, store_id: STORE_OTHER, created_by: CASHIER_OTHER });
@@ -778,6 +811,6 @@ describe("RT-224 — cross-tenant isolation", () => {
   it("this tenant's cashier claimed on the other tenant's device → 401 (no admission there)", async () => {
     if (skip()) return;
     await liveAdmission();
-    expect((await cashierSale(at(1 * HOUR), CASHIER, TOKEN_OTHER)).status).toBe(401);
+    expect((await cashierSale({ occurredAt: at(1 * HOUR), user: CASHIER, token: TOKEN_OTHER })).status).toBe(401);
   });
 });
