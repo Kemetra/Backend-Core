@@ -45,8 +45,9 @@ info:
     **Model** (10919). A shift is one drawer session on one terminal: at most
     ONE open shift per device. The POS owns the offline lifecycle and is
     authoritative for the cash-up; Backend-Core receives the immutable record.
-    Each fact carries a client-generated UUIDv7 (`shiftId`, `movementId`), so
-    the POS can complete a whole shift offline and drain it later, in order:
+    Each fact carries a client-generated UUID (UUIDv7 preferred; UUIDv4
+    fallback, the platform ID rule) as `shiftId` or `movementId`, so the POS
+    can complete a whole shift offline and drain it later, in order:
     open, then movements, then close. The server never closes, edits or
     deletes a shift on its own. It validates the close arithmetic on ingest and
     never rewrites a POS total (Constitution §III); a recompute against the
@@ -684,8 +685,9 @@ components:
           type: string
           format: uuid
           description: >
-            Client-generated UUIDv7 identifying the shift; the natural key of
-            the open and of the close.
+            A client-generated UUID (UUIDv7 preferred; UUIDv4 fallback)
+            identifying the shift; the natural key of the open and of the
+            close. Any RFC 4122 UUID is accepted (`format: uuid`).
         openedAt:
           type: string
           format: date-time
@@ -725,7 +727,10 @@ components:
         movementId:
           type: string
           format: uuid
-          description: Client-generated UUIDv7; the movement's natural key.
+          description: >
+            A client-generated UUID (UUIDv7 preferred; UUIDv4 fallback); the
+            movement's natural key. Any RFC 4122 UUID is accepted
+            (`format: uuid`).
         kind:
           type: string
           enum: [pay_in, pay_out]
@@ -897,10 +902,20 @@ components:
       additionalProperties: false
       required:
         [shiftId, status, currencyCode, openingFloat, openedAt, openingUserId, receivedAt]
+      if:
+        properties:
+          status:
+            const: closed
+        required: [status]
+      then:
+        required: [close]
+      else:
+        not:
+          required: [close]
       description: >
-        A cash-up shift as recorded. `close` is present if and only if
-        `status` is `closed`. Internal ids (tenant, store, device) are never
-        returned.
+        A cash-up shift as recorded. `close` is required when `status` is
+        `closed` and absent when it is `open` (enforced by the schema).
+        Internal ids (tenant, store, device) are never returned.
       properties:
         shiftId:
           type: string
@@ -942,10 +957,22 @@ components:
         - saleCount
         - cashRefundReturnRefs
         - receivedAt
+      if:
+        properties:
+          closeKind:
+            const: forced
+        required: [closeKind]
+      then:
+        required: [forcedReason]
+      else:
+        not:
+          required: [forcedReason]
       description: >
         The recorded close, verbatim from the POS, plus the server's receipt
-        time. `forcedReason` is present only for a forced close and
-        `varianceApprovedByUserId` only when it was sent.
+        time. As on `CloseShiftRequest`, `forcedReason` is required when
+        `closeKind` is `forced` and absent when it is `normal` (enforced by
+        the schema). `varianceApprovedByUserId` is present only when it was
+        sent.
       properties:
         closedAt:
           type: string
