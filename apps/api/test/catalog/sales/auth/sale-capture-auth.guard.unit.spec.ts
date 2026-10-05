@@ -10,14 +10,20 @@
  *     this path. PosDeviceAuthGuard resolves the device (tenant, store,
  *     device), the body is validated, and the attribution verifier must accept
  *     (device, store, user, occurredAt). Only then is the verified user
- *     published as the actor. Any refusal is the generic 401.
+ *     published as the actor.
+ *
+ * Refusals (RT-224 rev709 F1): a bad, revoked or missing device credential is
+ * the generic 401; a refused cashier claim from an AUTHENTICATED device is the
+ * generic 403 `refused`, the same body for every cause. A device 401 means
+ * "device revoked" to the POS (RT-113 D4/D8), so a refused sale must never
+ * look like one.
  *
  * The SQL behind the verifier is covered by
  * device-operator-capture.http.integration.spec.ts against real Postgres.
  */
 import "reflect-metadata";
 
-import { UnauthorizedException, type ExecutionContext } from "@nestjs/common";
+import { ForbiddenException, UnauthorizedException, type ExecutionContext } from "@nestjs/common";
 import { ZodError } from "zod";
 
 import type { Principal } from "../../../../src/auth/auth.guard";
@@ -241,17 +247,16 @@ describe("SaleCaptureAuthGuard — device path", () => {
   });
 
   it.each(Object.keys(ATTRIBUTION_REFUSAL_EVENTS))(
-    "refusal %s → the same generic 401, and the cashier is never published",
+    "refusal %s → the same generic 403 refused (never the device's 401), and the cashier is never published",
     async (cause) => {
       const t = makeGuard({
         attribution: verifier({ ok: false, cause } as AttributionVerdict),
       });
       const req = deviceRequest(saleBody({ operatorUserId: CASHIER_ID }));
       const err = await t.guard.canActivate(ctxFor(req)).catch((e: unknown) => e);
-      expect(err).toBeInstanceOf(UnauthorizedException);
-      expect((err as UnauthorizedException).getResponse()).toEqual(
-        new UnauthorizedException("Unauthorized").getResponse(),
-      );
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect((err as ForbiddenException).getStatus()).toBe(403);
+      expect((err as ForbiddenException).getResponse()).toEqual({ code: "refused", message: "Forbidden" });
       expect(req.context?.userId ?? null).toBeNull();
       expect(req.principal?.userId ?? null).toBeNull();
     },
@@ -260,7 +265,7 @@ describe("SaleCaptureAuthGuard — device path", () => {
 
 describe("SaleCaptureAuthGuard — refusal log (redaction matrix)", () => {
   // signals.md §4 defaults + redaction-matrix §3.4 business fields only.
-  const ALLOWED = new Set(["event", "request_id", "tenant_id", "store_id", "outcome"]);
+  const ALLOWED = new Set(["event", "request_id", "tenant_id", "store_id", "status", "outcome"]);
 
   it("logs one warn with allowlisted fields and a closed-set event name", async () => {
     const t = makeGuard({ attribution: verifier({ ok: false, cause: "no_covering_admission" }) });
@@ -274,6 +279,7 @@ describe("SaleCaptureAuthGuard — refusal log (redaction matrix)", () => {
       request_id: "req-1",
       tenant_id: TENANT_ID,
       store_id: STORE_ID,
+      status: 403,
       outcome: "failure",
     });
     // Never the claimed user, the token or the body.
@@ -281,6 +287,12 @@ describe("SaleCaptureAuthGuard — refusal log (redaction matrix)", () => {
     expect(serialized).not.toContain(CASHIER_ID);
     expect(serialized).not.toContain("device-token");
     expect(serialized).not.toContain(OCCURRED_AT);
+  });
+
+  it("the closed set covers the rev709 F3 caps: a future-dated sale and a too-old admission window", () => {
+    expect(Object.keys(ATTRIBUTION_REFUSAL_EVENTS)).toEqual(
+      expect.arrayContaining(["no_covering_admission", "future_dated", "admission_too_old"]),
+    );
   });
 
   it("event names are fixed, code-defined strings (one per refusal cause)", () => {

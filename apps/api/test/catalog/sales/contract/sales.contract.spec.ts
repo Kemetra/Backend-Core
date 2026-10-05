@@ -833,20 +833,61 @@ describe("pos-sales/sales.yaml — RT-224 device-bearer cashier capture", () => 
     expect(text).toContain("never trusted");
   });
 
-  it("documents the admission window precisely, including ended and expired admissions", () => {
+  it("documents the admission window precisely, with the 120 s clock-skew tolerance (rev709 F2)", () => {
     const text = describedBy(operatorUserId());
-    expect(text).toContain("created_at <= occurredAt < LEAST(ended_at, expires_at)");
+    expect(text).toContain(
+      "created_at - 120 s <= occurredAt < LEAST(ended_at, expires_at) + 120 s",
+    );
     expect(text).toContain("has since ended or expired");
     expect(text).toContain("same device");
+  });
+
+  it("documents the back-dating and future-dating caps (rev709 F3)", () => {
+    const text = describedBy(operatorUserId());
+    expect(text).toContain("more than 7 days ago");
+    expect(text).toContain("more than 120 s after the server's current time");
   });
 
   it("keeps the attribution out of the sale payload hash", () => {
     expect(describedBy(operatorUserId())).toContain("not part of the sale `payload_hash`");
   });
 
-  it("every device-path refusal is the generic 401", () => {
+  it("a bad device credential is the generic 401; a refused claim is the generic 403 (rev709 F1)", () => {
     const text = describedBy(findOp("captureSale"));
     expect(text).toContain("Cashier attribution (RT-224)");
     expect(text).toContain("generic 401");
+    expect(text).toContain("generic 403 `refused`");
+    const scheme = describedBy(salesDoc.components?.securitySchemes?.["device"]);
+    expect(scheme).toContain("generic 401");
+    expect(scheme).toContain("generic 403");
+    expect(describedBy(operatorUserId())).toContain("403 `refused`");
+  });
+
+  it("captureSale declares the 403 Refused response; no other sale operation does", () => {
+    const responses = (op: unknown): Record<string, unknown> =>
+      ((op as { responses?: Record<string, unknown> }).responses ?? {});
+    expect(responses(findOp("captureSale"))["403"]).toEqual({
+      $ref: "#/components/responses/Refused",
+    });
+    expect(responses(findOp("captureSale"))["401"]).toEqual({
+      $ref: "#/components/responses/Unauthorized",
+    });
+    for (const { op } of salesOperations()) {
+      if (op.operationId === "captureSale") continue;
+      expect(responses(op)["403"]).toBeUndefined();
+    }
+  });
+
+  it("the Refused response is the generic Error envelope and says the device itself is valid", () => {
+    const refused = salesDoc.components?.responses?.["Refused"] as
+      | { description?: string; content?: Record<string, { schema?: unknown }> }
+      | undefined;
+    expect(refused?.content?.["application/json"]?.schema).toEqual({
+      $ref: "#/components/schemas/Error",
+    });
+    const text = refused?.description ?? "";
+    expect(text).toContain("`refused`");
+    expect(text).toContain("the device credential is valid");
+    expect(text).toContain("never a sign that the device was revoked");
   });
 });
