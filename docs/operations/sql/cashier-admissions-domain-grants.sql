@@ -11,7 +11,8 @@
 --        -f docs/operations/sql/cashier-admissions-domain-grants.sql
 -- deploy/README.md runs this as step 2 of every release.
 -- Optionally also pass -v lookup_role=<AUTH_LOOKUP_DATABASE_URL role> to check
--- that the lookup role holds no privilege of any kind on these tables.
+-- that the lookup role holds no privilege of any kind on these tables or on
+-- tenants.
 --
 -- The script stops on the first error and exits non-zero (ON_ERROR_STOP), and
 -- also exits non-zero if the verification below finds a missing grant or a
@@ -26,7 +27,10 @@
 -- RT-213: every device-authenticated POS request reads its tenant's status
 -- (`tenants.status`, `deleted_at`) on the domain role, inside that tenant's RLS
 -- context. Without SELECT on `tenants` every till is refused at once; the
--- API refuses to boot instead (DOMAIN_REQUIRED_GRANTS).
+-- API refuses to boot instead (DOMAIN_REQUIRED_GRANTS). The lookup role must
+-- hold no privilege on `tenants`: it has BYPASSRLS, so even SELECT would expose
+-- every tenant row (AUTH_LOOKUP_FORBIDDEN_GRANTS; checked below with
+-- lookup_role).
 --
 -- `cashier_admissions` has no DELETE grant: admissions are ended, never
 -- removed. `cashier_admission_requests` needs DELETE to purge expired replay
@@ -77,16 +81,17 @@ SELECT bool_and(has_table_privilege(:'domain_role', t.tbl, t.priv)) AS domain_ok
   DO $$ BEGIN RAISE EXCEPTION 'cashier-admissions domain grants incomplete'; END $$;
 \endif
 
--- Optional: the lookup role must hold no privilege of any kind on these tables.
+-- Optional: the lookup role must hold no privilege of any kind on these tables
+-- or on tenants (RT-213).
 \if :{?lookup_role}
   SELECT NOT bool_or(has_table_privilege(:'lookup_role', t.tbl, p.priv)) AS lookup_ok
-    FROM (VALUES ('cashier_admissions'), ('cashier_admission_requests')) AS t(tbl)
+    FROM (VALUES ('cashier_admissions'), ('cashier_admission_requests'), ('tenants')) AS t(tbl)
    CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'),
                       ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')) AS p(priv) \gset
   \if :lookup_ok
-    \echo 'OK: lookup role holds no privilege on the cashier-admissions tables.'
+    \echo 'OK: lookup role holds no privilege on the cashier-admissions tables or tenants.'
   \else
-    \echo 'FAILED: the lookup role holds a privilege on a cashier-admissions table.'
-    DO $$ BEGIN RAISE EXCEPTION 'lookup role holds a cashier-admissions privilege'; END $$;
+    \echo 'FAILED: the lookup role holds a privilege on a cashier-admissions table or tenants.'
+    DO $$ BEGIN RAISE EXCEPTION 'lookup role holds a cashier-admissions or tenants privilege'; END $$;
   \endif
 \endif

@@ -101,8 +101,8 @@ const ALL_PRIVILEGES_EXCEPT_SELECT = "INSERT, UPDATE, DELETE, TRUNCATE, REFERENC
 
 /**
  * Tables the lookup role must hold NO listed privilege on (sales,
- * receivables, cashier admissions, inventory, audit, idempotency, outbox,
- * membership mutation).
+ * receivables, cashier admissions, tenants, inventory, audit, idempotency,
+ * outbox, membership mutation).
  * Each entry is a table and the privileges that are forbidden on it.
  */
 export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, string]> = [
@@ -125,6 +125,9 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     // RT-113 BC2: cashier admission state and its replay store.
     "cashier_admissions",
     "cashier_admission_requests",
+    // RT-213: with BYPASSRLS any grant on tenants would expose every tenant
+    // row. Device auth reads tenant status on the domain role instead.
+    "tenants",
     "stock_movements",
     "stock_counts",
     "audit_events",
