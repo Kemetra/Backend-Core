@@ -124,11 +124,14 @@ describe("OpenAPI operations map to registered Nest routes", () => {
     expect(explicitContractOnly.sort()).toEqual([
       "acceptInvitation",
       "backfillSaleLinkedMovements",
+      "closeShift",
       "consoleCreatePayerAccount",
       "consoleListPayerAccounts",
+      "openShift",
       "posRedeemVoucher",
       "posReverseVoucher",
       "posValidateVoucher",
+      "recordCashMovement",
     ]);
     expect(missing).toEqual([]);
   });
