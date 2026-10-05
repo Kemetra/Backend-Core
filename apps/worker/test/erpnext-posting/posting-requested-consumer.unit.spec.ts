@@ -121,14 +121,16 @@ describe("PostingRequestedConsumer — RT-173 reversal waits for its sale_post r
         event: "posting.reversal.deferred",
         // RT-216: signals.md §4 async-work fields, from the same sources as the
         // RT-207 dead-letter log. The deferred attempt fails (it throws and is
-        // retried), so outcome is "failure"; correlation_id is null when the
-        // envelope has none.
+        // retried), so outcome is "failure"; request_id is the job's unique id
+        // (the outbox event); correlation_id is null when the envelope has none.
         outcome: "failure",
+        request_id: EVENT_ID,
         correlation_id: null,
         tenant_id: TENANT,
         store_id: STORE,
         sale_id: SALE,
         source_ref_id: VOID_ID,
+        event_id: EVENT_ID,
         attempts: 2,
       },
       "reversal deferred: sale_post row not created yet",
@@ -356,6 +358,15 @@ describe("PostingRequestedConsumer — RT-216 posting-reversal log fields are cl
     return { deferred: fieldsOf(warn), deadLettered: fieldsOf(error) };
   }
 
+  // signals.md §4 fields that apply to every worker (outbox-job) log line. The
+  // other §4 rows do not apply here: `route` / `method` / `status` are HTTP-only
+  // and `actor_id` needs an authenticated request, which an outbox job lacks.
+  // The repo has no shared constant for this set; the subset test below ties it
+  // to the §4 table so it cannot drift from the doc.
+  const SIGNALS_S4_WORKER_REQUIRED = ["request_id", "tenant_id", "store_id", "correlation_id", "outcome"];
+  // Both posting-reversal logs also carry the outbox `event_id` (matrix §3.4).
+  const POSTING_REVERSAL_REQUIRED = [...SIGNALS_S4_WORKER_REQUIRED, "event_id"];
+
   it("the section parsers find the documented tables", () => {
     expect(signalsDefaults).toEqual(
       new Set(["request_id", "tenant_id", "store_id", "actor_id", "correlation_id", "route", "method", "status", "outcome"]),
@@ -372,6 +383,23 @@ describe("PostingRequestedConsumer — RT-216 posting-reversal log fields are cl
     );
 
     expect(unclassified).toEqual([]);
+  });
+
+  it("the worker-required set is taken from the signals.md §4 table", () => {
+    for (const field of SIGNALS_S4_WORKER_REQUIRED) {
+      expect(signalsDefaults.has(field)).toBe(true);
+    }
+  });
+
+  it("both logs carry every required field (signals.md §4 + event_id)", async () => {
+    const { deferred, deadLettered } = await emittedFields();
+
+    const missing = (fields: string[]) => POSTING_REVERSAL_REQUIRED.filter((f) => !fields.includes(f));
+
+    expect({ deferred: missing(deferred), deadLettered: missing(deadLettered) }).toEqual({
+      deferred: [],
+      deadLettered: [],
+    });
   });
 
   it("the four RT-216 fields are classified business in the matrix", () => {
