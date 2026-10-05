@@ -20,16 +20,25 @@
  *           never reaches this step: authentication comes first.
  *        c. The attribution verifier must accept (device scope, claimed user,
  *           occurredAt): a covering cashier admission of this device and
- *           store, plus the live cashier eligibility rules.
+ *           store (with the rev709 clock-skew tolerance and dating caps),
+ *           plus the live cashier eligibility rules.
  *        d. Only then is the VERIFIED user published as the actor
  *           (`request.context.userId`, `request.principal.userId`), which is
  *           what the controller records as `created_by`, the idempotency
  *           layer scopes the key to, and the audit emitter records as actor.
  *
- * Every refusal on either path is the same generic 401 (no factor
- * disclosure). A refusal of the claimed cashier is logged once with
- * allowlisted fields only (signals.md §4 / redaction matrix §3.4): never the
- * claimed user, the token, the body or occurredAt.
+ * Refusals (RT-224 rev709 F1):
+ *   - a bad, revoked or missing credential on either path (including an
+ *     envelope that carries `operatorUserId`, which is not a device token) is
+ *     the same generic 401;
+ *   - a refused cashier claim from an AUTHENTICATED device is the generic 403
+ *     `refused`, one body for every cause (no factor disclosure). It must not
+ *     be a 401: to the POS a device 401 means "device revoked" (RT-113 D4/D8)
+ *     and wipes the offline grants. This mirrors the cashier-admissions API
+ *     (401 bad device, generic 403 `refused` ineligible user).
+ * A refused claim is logged once with allowlisted fields only (signals.md §4
+ * / redaction matrix §3.4): never the claimed user, the token, the body or
+ * occurredAt.
  *
  * The route carries @DeviceBearer() so the global FailClosedAuthGuard defers
  * to this guard (its opaque-token lookup would reject a device token). Both
@@ -39,10 +48,10 @@
 import {
   type CanActivate,
   type ExecutionContext,
+  ForbiddenException,
   Inject,
   Injectable,
   Optional,
-  UnauthorizedException,
 } from "@nestjs/common";
 import type { Logger } from "@data-pulse-2/shared";
 
@@ -100,7 +109,7 @@ export class SaleCaptureAuthGuard implements CanActivate {
     // b. The body (400 on a malformed body, as the handler's pipe would).
     const body = this.bodyPipe.transform(request.body, { type: "body" });
     const userId = body.operatorUserId;
-    if (userId === undefined) throw unauthorized();
+    if (userId === undefined) throw refused();
 
     // c. The claimed cashier.
     const verdict = await this.attribution.verify({
@@ -117,11 +126,12 @@ export class SaleCaptureAuthGuard implements CanActivate {
           request_id: request.requestId ?? null,
           tenant_id: scope.tenantId,
           store_id: scope.storeId,
+          status: 403,
           outcome: "failure",
         },
         "captureSale: operator attribution refused",
       );
-      throw unauthorized();
+      throw refused();
     }
 
     // d. The verified cashier is the actor. Scope stays the device's.
@@ -144,6 +154,7 @@ export class SaleCaptureAuthGuard implements CanActivate {
   }
 }
 
-function unauthorized(): UnauthorizedException {
-  return new UnauthorizedException("Unauthorized");
+/** The generic claim refusal: the cashier-admissions `refused` body (rev709 F1). */
+function refused(): ForbiddenException {
+  return new ForbiddenException({ code: "refused", message: "Forbidden" });
 }

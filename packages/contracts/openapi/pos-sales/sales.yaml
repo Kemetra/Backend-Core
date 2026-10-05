@@ -120,10 +120,15 @@ info:
     membership and store access live, and records the cashier as the sale's
     `created_by`. This lets a cashier's sales sync, including after sign-out
     and at end of shift. The change is additive: an added alternative security
-    requirement and an optional field. The `operatorAuthorization` path, every
-    other operation, the responses and the idempotency, rate-limit and
+    requirement, an optional field, and a new `403` response on
+    `captureSale` (the generic `refused`, returned only on the device path for
+    a refused cashier claim). The `operatorAuthorization` path, every other
+    operation, the other responses and the idempotency, rate-limit and
     isolation rules are unchanged. A client that does not send
-    `operatorUserId` sees no difference.
+    `operatorUserId` sees no difference. The window carries a 120 s
+    clock-skew tolerance and the device path caps back-dating at 7 days and
+    future dating at 120 s (adversarial review of PR #709: F1 403, F2
+    tolerance, F3 caps).
 
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
@@ -210,10 +215,15 @@ paths:
         accepts the sale only if the device is active, a cashier admission of
         that device and store for that user covers `occurredAt` (see
         `operatorUserId`), and the cashier's membership, store access and
-        account are still live. Every refusal on this path is the same
-        generic 401 as an invalid envelope: the response never reveals
-        whether the user, the admission or the device exists. A malformed
-        body from an authenticated device is the usual 400. Idempotency,
+        account are still live. A missing, invalid or revoked device
+        credential is the same generic 401 as an invalid envelope. A refused
+        cashier claim from an authenticated device (no covering admission,
+        an ineligible cashier, a sale outside the window or beyond the dating
+        caps, an unknown or foreign `operatorUserId`) is the generic 403
+        `refused`, with one body for every cause: it never reveals whether
+        the user or the admission exists, and it is never a sign that the
+        device was revoked. A malformed body from an authenticated device is
+        the usual 400. Idempotency,
         provenance dedup, the 409 divergence rule and the per-device rate
         limit apply unchanged; the idempotency key is scoped to the verified
         cashier, as it is scoped to the operator on the envelope path.
@@ -260,6 +270,8 @@ paths:
           $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Refused"
         "409":
           $ref: "#/components/responses/Conflict"
         "422":
@@ -628,8 +640,9 @@ components:
         supplies the authoritative `(tenant_id, store_id, device_id)`. The
         server then requires a cashier admission of that device, store and
         user whose window covers the sale's `occurredAt`, and re-checks the
-        cashier's membership and store access live. Any failure is a generic
-        401 (non-disclosing).
+        cashier's membership and store access live. A missing, invalid or
+        revoked device token is the generic 401; a refused cashier claim from
+        a valid device is the generic 403 `refused` (both non-disclosing).
 
   parameters:
     # DeviceAttestation (X-Device-Attestation) was the 008 Option-Y device
@@ -802,25 +815,37 @@ components:
             (gate A.5). REQUIRED with the `device` scheme
             and MUST be absent with `operatorAuthorization`: its presence
             selects the device path, so an envelope request that carries it is
-            refused (401).
+            refused with the generic 401 (an envelope is not a device
+            credential).
 
             It is a claim, never trusted on its own. The server accepts it only
             if a `cashier_admissions` row exists for the device's tenant and
-            store, the same device and this user, whose window covers
-            `occurredAt`: `created_at <= occurredAt < LEAST(ended_at,
-            expires_at)`. Both bounds are server times; the lower bound is
-            inclusive and the upper bound exclusive, matching the admission's
-            own liveness (an admission is expired once `expires_at <= now`,
-            and ended from `ended_at` on). LEAST ignores a NULL `ended_at`, and
-            an admission ended lazily after it had expired still stops at
-            `expires_at`. An admission that has since ended or expired still
-            authorizes the sales that occurred inside its window, so a queue
-            drained after sign-out, at end of shift or after a takeover still
-            syncs. A sale outside every such window, or under another device,
-            store or tenant, is refused. The cashier's membership must still be
-            active, the user not deleted, the role the cashier role, the store
-            active and accessible to the user (the RT-113 cashier eligibility
-            rules, re-checked live per request).
+            store, the same device and this user, whose window, widened by a
+            120 s clock-skew tolerance on both edges, covers `occurredAt`:
+            `created_at - 120 s <= occurredAt < LEAST(ended_at, expires_at) + 120 s`.
+            The bounds are server times and `occurredAt` is the till's; the
+            tolerance absorbs a till clock that drifts. The lower bound is
+            inclusive and the upper bound exclusive (without the tolerance it
+            matches the admission's own liveness: an admission is expired once
+            `expires_at <= now`, and ended from `ended_at` on). LEAST ignores a
+            NULL `ended_at`, and an admission ended lazily after it had expired
+            still stops at `expires_at`. An admission that has since ended or
+            expired still authorizes the sales that occurred inside its window,
+            so a queue drained after sign-out, at end of shift or after a
+            takeover still syncs, unless that window ended more than 7 days ago
+            (back-dating cap). A sale whose `occurredAt` is more than 120 s
+            after the server's current time is refused (future-dating cap). A
+            sale outside every such window, or under another device, store or
+            tenant, is refused. The cashier's membership must still be active,
+            the user not deleted, the role the cashier role, the store active
+            and accessible to the user (the RT-113 cashier eligibility rules,
+            re-checked live per request). Every such refusal is the generic
+            403 `refused`; only a bad device credential is a 401. Sales made
+            offline outside every server-side admission window (after the
+            admission's expiry, before a `reconcile_offline` admission, or
+            after a takeover on an offline till) are not covered yet (RT-113
+            P3/P4) and are refused; they can be sent on the
+            `operatorAuthorization` path.
 
             On success the cashier is the sale's `created_by` and the audit
             actor. The field is not part of the sale `payload_hash` (the hash
@@ -1355,6 +1380,22 @@ components:
         exhaustion. Combined `forbidden` semantics for in-scope-but-not-permitted
         principals also surface here as a non-disclosing refusal (FR-101
         `forbidden`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Refused:
+      description: >
+        Generic 403 `refused` (RT-224, `captureSale` device path only): the
+        device credential is valid, but the cashier claim (`operatorUserId`)
+        is not accepted for this sale. The body is the same for every cause:
+        no covering cashier admission, an ineligible cashier (membership,
+        user, role, store or store access), a sale outside the admission
+        window or beyond the dating caps, an unknown user or a user of
+        another tenant. It reveals neither existence nor cause; the cause is
+        logged server-side keyed by `request_id`. It concerns this sale only
+        and is never a sign that the device was revoked (that is a 401).
+        Mirrors the cashier-admissions API (`Refused`).
       content:
         application/json:
           schema:
