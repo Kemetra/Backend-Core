@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.5.0-draft"
+  version: "1.6.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -130,6 +130,19 @@ info:
     future dating at 120 s (adversarial review of PR #709: F1 403, F2
     tolerance, F3 caps).
 
+    RT-225 (1.6.0-draft; [GATED] approval Jira RT-225, owner, 2026-10-05):
+    `CaptureSaleRequest` gains an OPTIONAL `admissionCheckAt` (date-time),
+    allowed only with `operatorUserId`. When present, the device path checks
+    the cashier admission window against `admissionCheckAt` (the sale's
+    settled time) instead of `occurredAt`, so a sale finalized after the
+    admission window (for example by boot recovery) still syncs.
+    `occurredAt` stays the sale fact: the stored `occurred_at`, the
+    `business_date`, the `payload_hash` and the posting feed are unchanged,
+    and the future-dating cap still applies to it. The change is additive:
+    one optional request field and new `400` causes for that field only. No
+    response, security requirement, operation or migration changes. A client
+    that does not send `admissionCheckAt` sees no difference.
+
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
     appears on the wire. Timestamps are RFC 3339 / `date-time` in UTC (FR-021).
@@ -227,6 +240,11 @@ paths:
         provenance dedup, the 409 divergence rule and the per-device rate
         limit apply unchanged; the idempotency key is scoped to the verified
         cashier, as it is scoped to the operator on the envelope path.
+
+        Admission check time (RT-225): on this path the body may also carry
+        `admissionCheckAt`, which then replaces `occurredAt` in the
+        admission-window comparison only (see the field). Sent without
+        `operatorUserId`, it is a 400.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -756,6 +774,12 @@ components:
 
         RT-224: with the `device` scheme the body carries `operatorUserId`, a
         claim the server verifies (see the field); it is not a credential.
+
+        RT-225: `admissionCheckAt` is allowed ONLY together with
+        `operatorUserId`, must not be after `occurredAt`, and must be at most
+        7 days before it; otherwise the request is a 400. OpenAPI cannot
+        express these cross-field rules, so they are stated here and on the
+        field and enforced by the server.
       properties:
         sourceSystem:
           type: string
@@ -853,6 +877,42 @@ components:
             hashes the same; it is part of the idempotency fingerprint like any
             body field. A provenance replay returns the stored sale and never
             re-attributes it.
+
+            RT-225: when the body also carries `admissionCheckAt`, the window
+            above is checked against `admissionCheckAt` when present, instead
+            of `occurredAt` (see that field).
+        admissionCheckAt:
+          type: string
+          format: date-time
+          description: >
+            RT-225 (OPTIONAL; [GATED] approval Jira RT-225). The till's
+            instant at which the cashier's admission held for this sale: the
+            sale's settled time. Send it when the sale's `occurredAt` can be
+            later than that, for example a sale finalized by boot recovery.
+
+            Allowed ONLY together with `operatorUserId` (the `device` path).
+            Rules, each a 400 `validation_error` (OpenAPI cannot express them):
+            sent without `operatorUserId`; `admissionCheckAt <= occurredAt` is
+            violated (compared at full precision); or
+            `occurredAt - admissionCheckAt <= 7 days` is violated.
+
+            When present it replaces `occurredAt` only in the admission-window
+            comparison:
+            `created_at - 120 s <= admissionCheckAt < LEAST(ended_at, expires_at) + 120 s`,
+            with the same device, store, user and live-eligibility rules as
+            `operatorUserId`. The future-dating cap applies to `occurredAt` and to `admissionCheckAt`
+            (neither may be more than 120 s after the server's current time);
+            the back-dating cap is unchanged (the covering window must have
+            ended no more than 7 days ago). Every refusal is the same generic
+            403 `refused`.
+
+            It is not a sale fact. It is not part of the sale `payload_hash`
+            and changes neither the stored `occurred_at` nor the
+            `business_date` (both derive from `occurredAt`), so the same sale
+            sent with or without it hashes the same and a provenance replay
+            does not diverge. Like any body field it is part of the idempotency fingerprint:
+            re-sending under the same `Idempotency-Key` with the field added or
+            changed is a 409 `idempotency_key_conflict`.
     CaptureSaleLine:
       type: object
       additionalProperties: false

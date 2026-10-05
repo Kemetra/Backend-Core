@@ -59,7 +59,72 @@ export const CaptureSaleLineSchema = z
   })
   .strict();
 
-export const CaptureSaleRequestSchema = z
+/**
+ * RT-225 ([GATED] approval: Jira RT-225, owner, 2026-10-05): the widest
+ * allowed gap between `admissionCheckAt` and `occurredAt`.
+ */
+export const MAX_ADMISSION_CHECK_GAP_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * An RFC 3339 UTC instant (`z.string().datetime()`: `...THH:MM:SS[.f+]Z`)
+ * split into its whole-second epoch milliseconds and its fraction digits, so
+ * two instants compare at FULL precision (Date.parse truncates to the
+ * millisecond; Postgres keeps microseconds).
+ */
+interface Instant {
+  readonly secondsMs: number;
+  readonly fraction: string;
+}
+
+function toInstant(value: string): Instant {
+  const match = /^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z$/.exec(value);
+  return { secondsMs: Date.parse(`${match?.[1] ?? value}Z`), fraction: match?.[2] ?? "" };
+}
+
+/** -1, 0 or 1 as `a` is before, equal to or after `b` (shifted by `shiftMs`). */
+function compareInstants(a: Instant, b: Instant, shiftMs = 0): number {
+  const bSeconds = b.secondsMs + shiftMs;
+  if (a.secondsMs !== bSeconds) return a.secondsMs < bSeconds ? -1 : 1;
+  const width = Math.max(a.fraction.length, b.fraction.length);
+  const fa = a.fraction.padEnd(width, "0");
+  const fb = b.fraction.padEnd(width, "0");
+  if (fa === fb) return 0;
+  return fa < fb ? -1 : 1;
+}
+
+/**
+ * RT-225: the cross-field rules for `admissionCheckAt` (sales.yaml
+ * 1.6.0-draft states them in prose; OpenAPI cannot express them). Each breach
+ * is a validation issue, so the usual 400 `validation_error`:
+ *   - allowed ONLY with `operatorUserId` (the device path);
+ *   - `admissionCheckAt <= occurredAt`;
+ *   - `occurredAt - admissionCheckAt <= 7 days`.
+ */
+function checkAdmissionCheckAt(
+  body: { occurredAt: string; operatorUserId?: string | undefined; admissionCheckAt?: string | undefined },
+  ctx: z.RefinementCtx,
+): void {
+  if (body.admissionCheckAt === undefined) return;
+  const path = ["admissionCheckAt"];
+  if (body.operatorUserId === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: "allowed only with operatorUserId" });
+    return;
+  }
+  const checkAt = toInstant(body.admissionCheckAt);
+  const occurredAt = toInstant(body.occurredAt);
+  if (compareInstants(checkAt, occurredAt) > 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: "must not be after occurredAt" });
+  } else if (compareInstants(occurredAt, checkAt, MAX_ADMISSION_CHECK_GAP_MS) > 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: "must be at most 7 days before occurredAt" });
+  }
+}
+
+/**
+ * The capture body's object shape (strict). The exported schemas below add
+ * the RT-225 cross-field refinement; use this one only for shape
+ * introspection or extension.
+ */
+const CaptureSaleRequestObject = z
   .object({
     sourceSystem: z.string().min(1).max(100),
     externalId: z.string().min(1).max(200),
@@ -74,8 +139,16 @@ export const CaptureSaleRequestSchema = z
     // guard-verified actor, never this field. Its presence selects the
     // device path (sales.yaml 1.5.0-draft).
     operatorUserId: z.string().uuid().optional(),
+    // RT-225: the till's instant at which the cashier's admission held for
+    // this sale (its settled time). It replaces occurredAt ONLY in the
+    // admission-window comparison; it is never a sale fact (the controller
+    // drops it before payload_hash). Device path only; see
+    // checkAdmissionCheckAt for the cross-field rules.
+    admissionCheckAt: z.string().datetime().optional(),
   })
   .strict();
+
+export const CaptureSaleRequestSchema = CaptureSaleRequestObject.superRefine(checkAdmissionCheckAt);
 
 /**
  * RT-77 (RT-10 D1/D2) — one way the sale was paid, mirroring `SaleTender` in
@@ -104,7 +177,7 @@ export const SaleTenderSchema = z.discriminatedUnion("method", [
  * duplicate is a validation failure (400), per the contract. The Σ = posTotal
  * rule needs exact decimal math and runs in the service (422).
  */
-export const CaptureSaleRequestWithTendersSchema = CaptureSaleRequestSchema.extend({
+export const CaptureSaleRequestWithTendersSchema = CaptureSaleRequestObject.extend({
   tenders: z
     .array(SaleTenderSchema)
     .min(1)
@@ -112,7 +185,9 @@ export const CaptureSaleRequestWithTendersSchema = CaptureSaleRequestSchema.exte
       message: "at most one tender per method",
     })
     .optional(),
-}).strict();
+})
+  .strict()
+  .superRefine(checkAdmissionCheckAt);
 
 export type CaptureSaleRequestDto = z.infer<typeof CaptureSaleRequestWithTendersSchema>;
 export type SaleTenderDto = z.infer<typeof SaleTenderSchema>;

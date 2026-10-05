@@ -47,6 +47,20 @@
  *      membership active and not deleted, user not deleted, the cashier role,
  *      store active and accessible, profile complete). Reused, not copied.
  *
+ * RT-225 ([GATED] approval: Jira RT-225, owner, 2026-10-05; sales.yaml
+ * 1.6.0-draft): the body may carry `admissionCheckAt`, the till's instant at
+ * which the cashier's admission held for the sale (its settled time; a sale
+ * finalized later, e.g. by boot recovery, has a later `occurredAt`). Then
+ *
+ *        checkAt = admissionCheckAt ?? occurredAt
+ *
+ * replaces `occurredAt` ONLY in the window comparison of step 1. The
+ * future-dating cap of step 0 stays on `occurredAt` and ALSO applies to
+ * `checkAt` (the later of the two is capped); the back-dating cap is
+ * unchanged. A refusal is the same generic 403 with the same closed-set
+ * events. The DTO has already required `operatorUserId`, `checkAt <=
+ * occurredAt` and a gap of at most 7 days; this verifier does not rely on it.
+ *
  * The tenant, store and device always come from the authenticated device row
  * (PosDeviceAuthGuard); nothing here reads scope from the request.
  *
@@ -91,6 +105,12 @@ export interface OperatorAttributionInput {
   readonly userId: string;
   /** The sale's `occurredAt`, validated as an RFC 3339 instant. */
   readonly occurredAt: string;
+  /**
+   * RT-225: the body's `admissionCheckAt`, validated as an RFC 3339 instant
+   * (absent when the body has none). Compared with the window instead of
+   * `occurredAt`.
+   */
+  readonly admissionCheckAt?: string;
 }
 
 export interface OperatorAttributionVerifier {
@@ -131,22 +151,23 @@ export const ATTRIBUTION_REFUSAL_EVENTS: Readonly<Record<AttributionRefusal, str
 
 /**
  * $1 tenant, $2 store, $3 device, $4 user, $5 occurredAt, $6 skew tolerance
- * (s), $7 max window age (s). One scan, always one row (an aggregate with no
- * GROUP BY):
- *   future_dated  occurredAt is beyond now() + tolerance;
- *   fresh         NULL when no window covers occurredAt, else whether any
+ * (s), $7 max window age (s), $8 checkAt (RT-225: admissionCheckAt ??
+ * occurredAt). One scan, always one row (an aggregate with no GROUP BY):
+ *   future_dated  the later of occurredAt and checkAt is beyond now() +
+ *                 tolerance;
+ *   fresh         NULL when no window covers checkAt, else whether any
  *                 covering window ended no more than max-age ago.
  */
 export const COVERING_ADMISSION_SQL = `
-  SELECT $5::timestamptz > now() + $6::int * interval '1 second' AS future_dated,
+  SELECT GREATEST($5::timestamptz, $8::timestamptz) > now() + $6::int * interval '1 second' AS future_dated,
          bool_or(LEAST(ended_at, expires_at) >= now() - $7::int * interval '1 second') AS fresh
     FROM cashier_admissions
    WHERE tenant_id = $1
      AND store_id  = $2
      AND device_id = $3
      AND user_id   = $4
-     AND created_at - $6::int * interval '1 second' <= $5::timestamptz
-     AND $5::timestamptz < LEAST(ended_at, expires_at) + $6::int * interval '1 second'`;
+     AND created_at - $6::int * interval '1 second' <= $8::timestamptz
+     AND $8::timestamptz < LEAST(ended_at, expires_at) + $6::int * interval '1 second'`;
 
 interface CoveringRow {
   future_dated: boolean;
@@ -173,6 +194,8 @@ export class PgOperatorAttributionVerifier implements OperatorAttributionVerifie
           input.occurredAt,
           CLOCK_SKEW_TOLERANCE_SECONDS,
           MAX_WINDOW_AGE_SECONDS,
+          // RT-225: the window instant.
+          input.admissionCheckAt ?? input.occurredAt,
         ]);
         const row = covering.rows[0];
         // The aggregate always returns one row; fail closed if it did not.

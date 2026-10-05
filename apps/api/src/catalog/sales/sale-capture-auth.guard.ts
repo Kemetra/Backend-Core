@@ -37,8 +37,8 @@
  *     and wipes the offline grants. This mirrors the cashier-admissions API
  *     (401 bad device, generic 403 `refused` ineligible user).
  * A refused claim is logged once with allowlisted fields only (signals.md §4
- * / redaction matrix §3.4): never the claimed user, the token, the body or
- * occurredAt.
+ * / redaction matrix §3.4): never the claimed user, the token, the body,
+ * occurredAt or admissionCheckAt (RT-225).
  *
  * The route carries @DeviceBearer() so the global FailClosedAuthGuard defers
  * to this guard (its opaque-token lookup would reject a device token). Both
@@ -111,13 +111,16 @@ export class SaleCaptureAuthGuard implements CanActivate {
     const userId = body.operatorUserId;
     if (userId === undefined) throw refused();
 
-    // c. The claimed cashier.
+    // c. The claimed cashier. RT-225: an `admissionCheckAt` (validated by the
+    // pipe: device path only, <= occurredAt, at most 7 days before it) is the
+    // instant the verifier compares with the window instead of occurredAt.
     const verdict = await this.attribution.verify({
       tenantId: scope.tenantId,
       storeId: scope.storeId,
       deviceId: scope.deviceId,
       userId,
       occurredAt: body.occurredAt,
+      ...(body.admissionCheckAt !== undefined ? { admissionCheckAt: body.admissionCheckAt } : {}),
     });
     if (!verdict.ok) {
       this.logger?.warn(

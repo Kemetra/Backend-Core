@@ -204,7 +204,15 @@ export class SalesController {
     // guard verified it and published the cashier as ctx.userId, which is the
     // only actor recorded. The claim is not a sale fact, so it is dropped
     // before the service hashes the body into payload_hash.
-    const { operatorUserId: _attributionClaim, ...saleBody } = body;
+    // RT-225: `admissionCheckAt` is only the guard's window instant, not a
+    // sale fact either: dropped the same way, so payload_hash, the stored
+    // occurred_at / business_date and the posting feed are unchanged. (Both
+    // stay in the idempotency fingerprint, which covers the raw body.)
+    const {
+      operatorUserId: _attributionClaim,
+      admissionCheckAt: _admissionCheckAt,
+      ...saleBody
+    } = body;
 
     let result;
     try {
