@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Cashier Admissions API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     RT-113 BC1 (planning record: Jira RT-113 comment 10763, decisions D2 and
     D11; `[GATED]` contract approval: RT-113 comment 10823). The
@@ -82,6 +82,17 @@ info:
     wire; BC2 shipped the controller, the device-guard wiring, the
     persistence and migration 0035, so no operation carries
     `x-runtime-status: contract-only`.
+
+
+    1.1.0-draft (RT-219; `[GATED]` approval: RT-219 comment 10877): additive.
+    `admitted` gains the required, opaque `admission_generation`, which the
+    server changes on every grant and every renewal of an admission.
+    `posEndCashierAdmission` accepts an optional body that echoes it: an
+    `end` whose echoed value is no longer the admission's current generation
+    is a no-op that still answers `200 { kind: ended }`, so a late `end` sent
+    for an earlier sign-in (or by a slow heartbeat's orphan release) cannot
+    end an admission renewed after it. Without the body or the field, `end`
+    behaves as in 1.0.0-draft. No status code, security or path changed.
 
 
     Cross-cutting conventions live in
@@ -173,7 +184,10 @@ paths:
         requests with the same key, exactly one is processed and the other
         receives the same outcome. Only `200` outcomes are recorded; a retry
         after a `4xx` is evaluated afresh. The replay window is server policy
-        (BC2) and MUST NOT exceed the admission TTL.
+        (BC2) and MUST NOT exceed the admission TTL. A replayed response is
+        the original one, so it carries the `admission_generation` it was
+        issued with even if the admission has been renewed since; an `end`
+        echoing that value is then a no-op (RT-219).
 
 
         **Audit.** Every admission, refusal and takeover is audited
@@ -226,7 +240,35 @@ paths:
         admission held by another device, store or tenant all return the same
         `200 { kind: ended }`. Only an admission held by this device changes
         state, so a device cannot end another device's admission (Constitution
-        §II, §XII). There is no request body.
+        §II, §XII).
+
+
+        **Generation guard (RT-219).** A cashier who signs in again on
+        the same device renews the SAME live admission (same
+        `admission_id`), so an `end` sent for the earlier sign-in
+        could otherwise land after that renewal and end it. The
+        optional body carries `admission_generation`. When it is
+        present and is not the admission's current generation (the
+        admission was renewed after the `admitted` response it came
+        from), the `end` is a no-op: nothing changes and the answer is
+        the same `200 { kind: ended }`. When it matches, the admission
+        is ended. When the body or the field is absent, the `end` is
+        unconditional, as in 1.0.0-draft. The comparison and the end
+        happen under the same per-`(tenant, store, user)`
+        serialisation as admissions, so an `end` racing a renewal
+        either ends the admission first (the renewal then issues a new
+        `admission_id`) or is a no-op after it.
+
+
+        **Which value to echo.** The terminal SHOULD send the
+        `admission_generation` of the latest `admitted` response it
+        received for this `admission_id`. A heartbeat that lands
+        before the `end` also renews the admission, which makes the
+        echoed value stale. A terminal that receives an `admitted` for
+        an admission it has already ended locally, and that no current
+        session uses, MUST end again echoing that response's
+        `admission_generation`. Otherwise the admission lapses at its
+        TTL.
 
 
         Every `end` is audited server-side with the calling `device_id`, the
@@ -247,6 +289,12 @@ paths:
           description: >
             The `admission_id` from the latest `admitted` response for this
             cashier on this device.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PosCashierAdmissionEndRequest"
       responses:
         "200":
           description: >
@@ -460,7 +508,7 @@ components:
           active_elsewhere: "#/components/schemas/PosCashierAdmissionActiveElsewhere"
     PosCashierAdmissionAdmitted:
       type: object
-      required: [kind, admission_id, offline_grace_seconds, admission_ttl_seconds, server_time, display_name]
+      required: [kind, admission_id, offline_grace_seconds, admission_ttl_seconds, server_time, display_name, admission_generation]
       additionalProperties: false
       description: >
         The cashier holds the live admission for `(tenant, store, user)` on
@@ -504,6 +552,22 @@ components:
         display_name:
           type: string
           description: The cashier's display name, resolved server-side.
+        admission_generation:
+          $ref: "#/components/schemas/AdmissionGeneration"
+    AdmissionGeneration:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: "^[\\x21-\\x7E]{1,64}$"
+      description: >
+        Opaque renewal generation of one admission (RT-219). The server issues
+        a new value on every `admitted` response that grants or renews the
+        admission, including a heartbeat that returns the SAME `admission_id`,
+        so the value names one renewal of one admission. Clients MUST treat it
+        as opaque: store it as received and echo it unchanged as
+        `admission_generation` on `posEndCashierAdmission`. Clients MUST NOT
+        parse it, order it or construct it. It is neither a secret nor
+        personal data.
     PosCashierAdmissionActiveElsewhere:
       type: object
       required: [kind]
@@ -520,6 +584,16 @@ components:
     # -------------------------------------------------------------------
     # End 200
     # -------------------------------------------------------------------
+    PosCashierAdmissionEndRequest:
+      type: object
+      additionalProperties: false
+      description: >
+        The optional body of `posEndCashierAdmission` (RT-219). An absent
+        body, an empty object and an absent `admission_generation` all mean
+        an unconditional `end`, as in 1.0.0-draft. Any other field is a 400.
+      properties:
+        admission_generation:
+          $ref: "#/components/schemas/AdmissionGeneration"
     PosCashierAdmissionEnded:
       type: object
       required: [kind]
