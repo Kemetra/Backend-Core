@@ -13,6 +13,13 @@ by every future feature that emits logs.
 
 ## Changelog
 
+- **2026-10-05** — RT-216 amendment. Classifies four log fields emitted by the
+  worker's ERPNext posting-reversal logs (`posting.reversal.deferred`, RT-173;
+  `posting.reversal.dead_lettered`, RT-207) as **business** in §3.4: `sale_id`,
+  `source_ref_id`, `attempts` and `event`. They are opaque identifiers, a
+  retry counter and a fixed event name, with no PII. signals.md §4 requires
+  every non-default log field to be classified here. Add-only per FR-B-005;
+  no existing field reclassified, no redaction rule removed.
 - **2026-05-21** — T565 amendment (004 P7 Track C). Adds `actor_label` to the
   PII §3.2 table (audit job payloads carry it as a free-text identifier
   substitute when no `actor_user_id` is present — same protection level as
@@ -130,6 +137,10 @@ Every field that may be encountered in a log statement falls into one of:
 | `route`, `method`, `status_class` | business | HTTP shape; safe. |
 | `job_name`, `queue_name`, `event_type` | business | Operational; safe. |
 | `error_class` (the *class* name, not the message) | business | Safe; message may be PII-suspect and is redacted separately. |
+| `sale_id` | business | Opaque sale identifier (UUID); no PII. Log field only, never a metric label. Added by RT-216. |
+| `source_ref_id` | business | Opaque identifier of the source record a posting row comes from (the sale, or the void / refund / return for a reversal); UUID, no PII. Log field only, never a metric label. Added by RT-216. |
+| `attempts` | business | Delivery-attempt counter of an outbox event or job; an integer, no PII. Added by RT-216. |
+| `event` | business | Fixed, code-defined log event name (e.g. `posting.reversal.deferred`); never user input, no PII. Added by RT-216. |
 
 ### 3.5 Public
 
