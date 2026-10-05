@@ -218,10 +218,17 @@ export class PostingRequestedConsumer
     if ((found.rowCount ?? 0) > 0) return;
 
     // §VII signal — identifiers only (no money / PII), once per deferred attempt.
+    // RT-216: carries the signals.md §4 async-work fields from the same sources
+    // as the dead-letter log below. This attempt fails (the throw below makes
+    // the drainer retry it), so outcome is "failure"; correlation_id is null
+    // when absent.
     this.logger.warn(
       {
         event: "posting.reversal.deferred",
+        outcome: "failure",
+        correlation_id: event.correlation_id ?? null,
         tenant_id: event.tenant_id,
+        store_id,
         sale_id,
         source_ref_id,
         attempts: event.attempts,
