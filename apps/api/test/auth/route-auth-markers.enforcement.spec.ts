@@ -10,13 +10,14 @@
  */
 import "reflect-metadata";
 
-import { Controller, Get, type INestApplication, type Type } from "@nestjs/common";
+import { Controller, Get, UseGuards, type INestApplication, type Type } from "@nestjs/common";
 import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { NestFactory, ModulesContainer } from "@nestjs/core";
 import request from "supertest";
 
 import { AppModule } from "../../src/app.module";
 import { PosDeviceAuthGuard } from "../../src/auth/pos-device-auth.guard";
+import { SaleCaptureAuthGuard } from "../../src/catalog/sales/sale-capture-auth.guard";
 import { DEVICE_ATTESTED_KEY, DEVICE_BEARER_KEY, DeviceBearer } from "../../src/auth/route-auth";
 
 const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "ALL", "OPTIONS", "HEAD"];
@@ -27,6 +28,19 @@ const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "ALL", "OPTIONS",
  * Adding a route here is a security review decision.
  */
 const REVIEWED_DEVICE_ATTESTED = ["PosAuditEventsController.syncBatch"];
+
+/**
+ * Route guards reviewed to run PosDeviceAuthGuard internally, for a route
+ * that accepts the device bearer as one of several alternative credentials.
+ * RT-224: SaleCaptureAuthGuard (captureSale) runs PosDeviceAuthGuard on its
+ * device path and PosOperatorEnvelopeSaleGuard on its envelope path; both
+ * paths authenticate in the route guard, which is why captureSale carries the
+ * marker (the global guard's opaque-token lookup would reject a device
+ * token). Delegation is covered by sale-capture-auth.guard.unit.spec.ts and
+ * device-operator-capture.http.integration.spec.ts. Adding a guard here is a
+ * security review decision.
+ */
+const REVIEWED_DEVICE_GUARD_COMPOSITES: readonly unknown[] = [SaleCaptureAuthGuard];
 
 interface MarkedRoute {
   id: string;
@@ -73,8 +87,15 @@ export function markedRoutes(controller: Type<unknown>, marker: string): MarkedR
     });
 }
 
+function runsDeviceGuard(guards: unknown[]): boolean {
+  return (
+    guards.includes(PosDeviceAuthGuard) ||
+    guards.some((g) => REVIEWED_DEVICE_GUARD_COMPOSITES.includes(g))
+  );
+}
+
 function missingDeviceGuard(routes: MarkedRoute[]): string[] {
-  return routes.filter((r) => !r.guards.includes(PosDeviceAuthGuard)).map((r) => r.id);
+  return routes.filter((r) => !runsDeviceGuard(r.guards)).map((r) => r.id);
 }
 
 describe("route auth markers are enforced at the route (RT-129 / A9)", () => {
@@ -120,6 +141,9 @@ describe("route auth markers are enforced at the route (RT-129 / A9)", () => {
       "CashierAdmissionsController.roster",
       "ReadDownController.getDeltas",
       "ReadDownController.getSnapshot",
+      // RT-224 (Option B): captureSale accepts the device bearer as an
+      // alternative to the operator envelope; SaleCaptureAuthGuard runs both.
+      "SalesController.captureSale",
     ]);
     expect(deviceAttested.length).toBeGreaterThan(0);
   });
@@ -139,6 +163,20 @@ describe("route auth markers are enforced at the route (RT-129 / A9)", () => {
       ](route.path);
       expect({ route: route.id, status: res.status }).toEqual({ route: route.id, status: 401 });
     }
+  });
+
+  it("the checker flags a @DeviceBearer route whose guard is not a reviewed composite", () => {
+    class UnreviewedCompositeGuard {}
+    @Controller("probe")
+    class UnreviewedProbeController {
+      @Get("unreviewed")
+      @DeviceBearer()
+      @UseGuards(UnreviewedCompositeGuard)
+      read(): void {}
+    }
+    expect(
+      missingDeviceGuard(markedRoutes(UnreviewedProbeController, DEVICE_BEARER_KEY)),
+    ).toEqual(["UnreviewedProbeController.read"]);
   });
 
   it("the checker flags a @DeviceBearer route that lost its guard", () => {
