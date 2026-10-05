@@ -15,6 +15,10 @@
  * service decides 409 / 429 / 403 / `active_elsewhere` / `admitted`. Every
  * refusal is the generic `{error:{code:'refused'}}` 403 — the cause is only
  * in the server log and audit, keyed by request_id.
+ *
+ * `end` takes an OPTIONAL body `{ admission_generation? }` (RT-219): a stale
+ * echo is a no-op that still answers `{ kind: 'ended' }`; no echo ends as
+ * before. A malformed body is a 400 (after the guard's 401).
  */
 import {
   Body,
@@ -40,7 +44,9 @@ import { deviceScopeOf } from "./device-scope";
 import {
   AdmissionIdSchema,
   AdmissionRequestSchema,
+  EndRequestSchema,
   type AdmissionRequestInput,
+  type EndRequestInput,
   type AdmissionResponseBody,
   type EndedBody,
   type RosterBody,
@@ -87,8 +93,10 @@ export class CashierAdmissionsController {
   async end(
     @Req() request: TenantContextRequest,
     @Param("admission_id", new ZodValidationPipe(AdmissionIdSchema)) admissionId: string,
+    @Body(new ZodValidationPipe(EndRequestSchema)) body: EndRequestInput,
   ): Promise<EndedBody> {
-    return this.service.end(deviceScopeOf(request), admissionId, request.requestId ?? null);
+    const target = { admissionId, generation: body?.admission_generation ?? null };
+    return this.service.end(deviceScopeOf(request), target, request.requestId ?? null);
   }
 
   @Get("roster")

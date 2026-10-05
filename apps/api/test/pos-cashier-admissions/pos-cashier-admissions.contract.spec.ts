@@ -28,6 +28,10 @@
  *      comment 10855): the roster `branch_id` query parameter is declared
  *      `required: true`, matching the runtime's `branch_id_required` refusal.
  *      The refusal stays the generic 401; no other parameter changed.
+ *   9. pos-cashier-admissions 1.1.0-draft (RT-219, `[GATED]` approval in
+ *      RT-219 comment 10877): `admitted` carries the opaque
+ *      `admission_generation`, and `end` takes an OPTIONAL body echoing it; a
+ *      stale echo is a no-op `ended`, an absent one ends as before.
  */
 import "reflect-metadata";
 
@@ -57,6 +61,8 @@ const SCHEMA_NAMES = [
   "PosCashierAdmissionAdmitted",
   "PosCashierAdmissionActiveElsewhere",
   "PosCashierAdmissionEnded",
+  "PosCashierAdmissionEndRequest",
+  "AdmissionGeneration",
   "PosCashierRosterResponse",
   "PosCashierRosterEntry",
   "RefusedError",
@@ -196,9 +202,9 @@ const KEY = "pos-pulse:4f6f1c1e-8a52-4c1b-9a0e-6d1f2b3c4d5e";
 // 1. Document + operations
 // ===========================================================================
 describe("pos-cashier-admissions — document and operations", () => {
-  it("is an OpenAPI 3.1 document at version 1.0.0-draft", () => {
+  it("is an OpenAPI 3.1 document at version 1.1.0-draft", () => {
     expect(doc.openapi).toBe("3.1.0");
-    expect(doc.info?.version).toBe("1.0.0-draft");
+    expect(doc.info?.version).toBe("1.1.0-draft");
   });
 
   it("declares exactly the three 10763 §3 operations at their paths", () => {
@@ -336,9 +342,10 @@ describe("pos-cashier-admissions — responses", () => {
     expect(Object.keys(s.discriminator?.mapping ?? {}).sort()).toEqual(["active_elsewhere", "admitted"]);
   });
 
-  it("admitted carries exactly the 10763 fields plus the applied admission_ttl_seconds", () => {
+  it("admitted carries exactly the 10763 fields plus admission_ttl_seconds and admission_generation", () => {
     const s = schema("PosCashierAdmissionAdmitted");
     const fields = [
+      "admission_generation",
       "admission_id",
       "admission_ttl_seconds",
       "display_name",
@@ -367,11 +374,14 @@ describe("pos-cashier-admissions — responses", () => {
     expect(err.additionalProperties).toBe(false);
   });
 
-  it("end declares 200 {kind: ended}, 400 and 401; it takes no body", () => {
+  it("end declares 200 {kind: ended}, 400 and 401; its body is optional (RT-219)", () => {
     const o = op(END);
     expect(Object.keys(o.responses ?? {}).sort()).toEqual(["200", "400", "401"]);
     expect(responseRef(END, "200")).toBe("#/components/schemas/PosCashierAdmissionEnded");
-    expect(o.requestBody).toBeUndefined();
+    expect(o.requestBody).toEqual({
+      required: false,
+      content: { "application/json": { schema: { $ref: "#/components/schemas/PosCashierAdmissionEndRequest" } } },
+    });
     const param = (o.parameters ?? []).find((p) => p.name === "admission_id");
     expect(param?.in).toBe("path");
     expect(param?.schema?.["format"]).toBe("uuid");
@@ -472,6 +482,7 @@ describe("pos-cashier-admissions — AJV fixtures", () => {
     admission_ttl_seconds: 43200,
     server_time: "2026-10-04T08:15:01Z",
     display_name: "Mona A.",
+    admission_generation: "1791123301000123",
   };
 
   it("admitted and active_elsewhere responses validate", () => {
@@ -489,6 +500,9 @@ describe("pos-cashier-admissions — AJV fixtures", () => {
     ["zero admission_ttl_seconds", { ...admitted, admission_ttl_seconds: 0 }],
     ["fractional admission_ttl_seconds", { ...admitted, admission_ttl_seconds: 1.5 }],
     ["admitted with an extra field", { ...admitted, operator_id: "user_2abc" }],
+    ["admitted without admission_generation", { ...admitted, admission_generation: undefined }],
+    ["empty admission_generation", { ...admitted, admission_generation: "" }],
+    ["non-string admission_generation", { ...admitted, admission_generation: 1791123301000123 }],
     ["unknown kind", { kind: "refused" }],
   ])("response %s is rejected", (_label, body) => {
     const v = validator("PosCashierAdmissionResponse");
@@ -603,6 +617,95 @@ describe("pos-cashier-admissions — liveness, replay, ordering and audit rules"
     expect(responseRef(ADMIT, "429")).toBe("#/components/schemas/Error");
     const takeover = schema("PosCashierAdmissionOnlineRequest").properties?.["takeover"];
     expect(String(takeover?.["description"])).toMatch(/rate-limited per device/);
+  });
+});
+
+// ===========================================================================
+// 7b. RT-219 (`[GATED]` approval: RT-219 comment 10877): a stale `end` can
+//     never end a renewed admission. `admitted` carries an opaque
+//     `admission_generation`; `end` optionally echoes it.
+// ===========================================================================
+describe("pos-cashier-admissions — RT-219 end generation guard", () => {
+  const GENERATION_REF = { $ref: "#/components/schemas/AdmissionGeneration" };
+
+  it("the version note names RT-219, its approval and the additive change", () => {
+    const note = (doc.info?.description ?? "").split("\n").find((para) => para.startsWith("1.1.0-draft (RT-219"));
+    expect(note).toBeDefined();
+    expect(note).toMatch(/RT-219 comment 10877/);
+    expect(note).toMatch(/`admission_generation`/);
+    expect(note).toMatch(/optional/i);
+    expect(note).toMatch(/no-op/);
+    expect(note).toMatch(/as in 1\.0\.0-draft/);
+  });
+
+  it("AdmissionGeneration is an opaque, bounded, printable-ASCII string", () => {
+    const g = schema("AdmissionGeneration");
+    expect(g["type"]).toBe("string");
+    expect(g["minLength"]).toBe(1);
+    expect(g["maxLength"]).toBe(64);
+    expect(g["pattern"]).toBe("^[\\x21-\\x7E]{1,64}$");
+    const d = String(g["description"]);
+    expect(d).toMatch(/opaque/i);
+    expect(d).toMatch(/every `admitted` response/);
+    expect(d).toMatch(/MUST NOT parse/);
+  });
+
+  it("admitted requires admission_generation, by reference to the one schema", () => {
+    const s = schema("PosCashierAdmissionAdmitted");
+    expect(s.required).toContain("admission_generation");
+    expect(s.properties?.["admission_generation"]).toEqual(GENERATION_REF);
+  });
+
+  it("the end body is closed, with one OPTIONAL field echoing the same schema", () => {
+    const s = schema("PosCashierAdmissionEndRequest");
+    expect(s["type"]).toBe("object");
+    expect(s.additionalProperties).toBe(false);
+    expect(Object.keys(s.properties ?? {})).toEqual(["admission_generation"]);
+    expect(s.properties?.["admission_generation"]).toEqual(GENERATION_REF);
+    expect(s.required ?? []).toEqual([]);
+  });
+
+  it("the end prose states the three cases: stale → no-op ended, match → ended, absent → unconditional", () => {
+    const d = op(END).description ?? "";
+    const p = d.split("\n").find((para) => /\*\*Generation guard \(RT-219\)/.test(para));
+    expect(p).toBeDefined();
+    expect(p).toMatch(/not the admission's current generation/);
+    expect(p).toMatch(/no-op/);
+    expect(p).toMatch(/same `200 \{ kind: ended \}`/);
+    expect(p).toMatch(/When it matches, the admission is ended/);
+    expect(p).toMatch(/absent, the `end` is unconditional/);
+    expect(p).toMatch(/serialisation/);
+    expect(d).not.toMatch(/There is no request body/);
+  });
+
+  it("the end prose tells the terminal which value to echo and when to end again", () => {
+    const d = op(END).description ?? "";
+    expect(d).toMatch(/latest `admitted` response/);
+    expect(d).toMatch(/end again/);
+  });
+
+  it("the replay rule says a replayed response keeps the generation it was issued with", () => {
+    const p = (op(ADMIT).description ?? "").split("\n").find((para) => /^\*\*Idempotency/.test(para)) ?? "";
+    expect(p).toMatch(/`admission_generation` it was issued with/);
+  });
+
+  it.each<[string, unknown]>([
+    ["an empty object", {}],
+    ["a generation", { admission_generation: "1791123301000123" }],
+  ])("end request %s validates", (_label, body) => {
+    expect(validator("PosCashierAdmissionEndRequest")(body)).toBe(true);
+  });
+
+  it.each<[string, unknown]>([
+    ["an unknown field", { admission_generation: "1", reason: "sign_out" }],
+    ["a scope field", { branch_id: USER_ID }],
+    ["an empty generation", { admission_generation: "" }],
+    ["a generation over 64 characters", { admission_generation: "1".repeat(65) }],
+    ["a generation with whitespace", { admission_generation: "17911 23301" }],
+    ["a numeric generation", { admission_generation: 1791123301000123 }],
+    ["a null generation", { admission_generation: null }],
+  ])("end request with %s is rejected", (_label, body) => {
+    expect(validator("PosCashierAdmissionEndRequest")(body)).toBe(false);
   });
 });
 

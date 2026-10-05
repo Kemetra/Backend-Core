@@ -19,6 +19,10 @@
  *
  * Takeover rate limit (contract 429 `rate_limited`): per device, decided
  * before eligibility, nothing applied.
+ *
+ * RT-219: a replay returns the `admission_generation` it was issued with, so
+ * a retried sign-in cannot hand an old session the generation of a newer
+ * renewal; a replay entry stored before RT-219 gets one that never matches.
  */
 import { createHash, randomUUID } from "node:crypto";
 
@@ -35,6 +39,7 @@ import {
   admitted,
   auditsFor,
   endAs,
+  endWith,
   expectActiveElsewhere,
   expectRefused,
   expectSchema,
@@ -77,6 +82,34 @@ describe("idempotent replay", () => {
     expect(await admissionsFor(CASHIER.id)).toHaveLength(1);
     expect(await auditsFor(firstId)).toHaveLength(1);
     expect(await auditsFor(replayId)).toEqual([]);
+  });
+
+  it("RT-219: a replay keeps its original generation; an end echoing it after a renewal is a no-op", async () => {
+    if (skipped()) return;
+    const body = online(CASHIER.id);
+    const first = admitted(await admitAs(DEV_A1, body));
+    const renewed = admitted(await admitAs(DEV_A1, online(CASHIER.id)));
+    const replay = admitted(await admitAs(DEV_A1, body));
+    expect(replay).toEqual(first);
+    expect(replay.admission_generation).not.toBe(renewed.admission_generation);
+    const ended = await endWith(DEV_A1, replay.admission_id, { admission_generation: replay.admission_generation });
+    expect(ended.body).toEqual({ kind: "ended" });
+    expect((await liveFor(CASHIER.id)).map((a) => a.id)).toEqual([first.admission_id]);
+  });
+
+  it("RT-219: a replay entry stored before RT-219 is completed with a generation that never matches", async () => {
+    if (skipped()) return;
+    const body = online(CASHIER.id);
+    const first = admitted(await admitAs(DEV_A1, body));
+    await h().admin.query(
+      `UPDATE cashier_admission_requests SET response_body = response_body - 'admission_generation'
+        WHERE admission_id = $1`,
+      [first.admission_id],
+    );
+    const replay = admitted(await admitAs(DEV_A1, body));
+    expect(replay).toEqual({ ...first, admission_generation: "0" });
+    await endWith(DEV_A1, replay.admission_id, { admission_generation: replay.admission_generation });
+    expect((await liveFor(CASHIER.id)).map((a) => a.id)).toEqual([first.admission_id]);
   });
 
   it("a replayed takeover does not take over again", async () => {

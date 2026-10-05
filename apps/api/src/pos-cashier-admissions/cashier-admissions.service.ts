@@ -19,6 +19,13 @@
  *
  * Only an `admitted` outcome writes the replay entry (contract: only 200
  * outcomes are recorded; `active_elsewhere` records nothing).
+ *
+ * `end` (RT-219, `[GATED]` approval: RT-219 comment 10877): an `end` that
+ * echoes an `admission_generation` ends the admission only while that is its
+ * current generation. A stale echo (the admission was renewed after the
+ * `admitted` it came from, e.g. the same cashier signed in again on this
+ * till) changes nothing and still answers `ended`. Without an echo the end is
+ * unconditional, as in 1.0.0-draft.
  */
 import type { Logger } from "@data-pulse-2/shared";
 import { newId } from "@data-pulse-2/shared";
@@ -27,13 +34,34 @@ import type { PoolClient } from "pg";
 import { admissionAction, keyDigest, requestFingerprint, type LiveAdmission } from "./admission-request";
 import { ADMISSION_AUDIT_ACTIONS, type AdmissionAuditEvent, type AdmissionAuditWriter } from "./cashier-admissions.audit";
 import type { CashierAdmissionPolicy } from "./cashier-admissions.config";
-import type { AdmissionStore, AdmissionRecord, StoredRequest } from "./cashier-admissions.repository";
+import type {
+  AdmissionStore,
+  AdmissionRecord,
+  EndResult,
+  StoredAdmittedBody,
+  StoredRequest,
+} from "./cashier-admissions.repository";
 import type { CashierEligibilityReader, Eligibility, RefusalReason } from "./cashier-eligibility";
 import type { DeviceScope } from "./device-scope";
 import type { AdmissionRequestInput, AdmittedBody, EndedBody, RosterBody } from "./dto";
 import type { TakeoverLimit } from "./takeover-rate-limit";
 
 export type { AdmissionStore, StoredRequest } from "./cashier-admissions.repository";
+
+/**
+ * The generation completed into a replay entry stored before RT-219. Real
+ * generations are microseconds since the epoch of a recent instant, so "0"
+ * never matches: an `end` echoing it is a no-op (the safe direction), and the
+ * terminal gets a real generation on its next heartbeat.
+ */
+export const PRE_GENERATION_REPLAY = "0";
+
+/** Which admission an `end` targets, and the generation it echoed (RT-219). */
+export interface EndTarget {
+  readonly admissionId: string;
+  /** null: no echo — the end is unconditional. */
+  readonly generation: string | null;
+}
 
 export type AdmitOutcome =
   | { readonly kind: "admitted"; readonly body: AdmittedBody }
@@ -93,18 +121,20 @@ export class CashierAdmissionsService {
     );
   }
 
-  async end(scope: DeviceScope, admissionId: string, requestId: string | null): Promise<EndedBody> {
+  async end(scope: DeviceScope, target: EndTarget, requestId: string | null): Promise<EndedBody> {
     await this.ports.tx(scope.tenantId, async (client) => {
-      const userId = await this.endIfOwned(client, scope, admissionId);
+      const outcome = await this.endIfOwned(client, scope, target);
       await this.ports.audit.record(client, {
         scope,
         action: ADMISSION_AUDIT_ACTIONS.ended,
-        actorUserId: userId,
-        targetId: admissionId,
+        actorUserId: outcome.userId,
+        targetId: target.admissionId,
         requestId,
-        metadata: endMetadata(scope, admissionId, userId),
+        metadata: endMetadata(scope, target.admissionId, outcome),
       });
     });
+    // The same answer whatever happened: `end` is idempotent and
+    // non-disclosing, and a stale generation must not change the POS flow.
     return { kind: "ended" };
   }
 
@@ -135,7 +165,7 @@ export class CashierAdmissionsService {
 
     const eligibility = await this.ports.eligibility.check(ctx.client, ctx.scope, ctx.userId);
     if (!eligibility.eligible) return this.refuse(ctx, eligibility.reason);
-    if (replay) return { kind: "admitted", body: replay.responseBody };
+    if (replay) return { kind: "admitted", body: replayBody(replay.responseBody) };
     return this.decide(ctx, eligibility);
   }
 
@@ -255,15 +285,33 @@ export class CashierAdmissionsService {
   // end
   // -------------------------------------------------------------------------
 
-  /** Ends this device's live admission; returns its user when it changed. */
-  private async endIfOwned(client: PoolClient, scope: DeviceScope, admissionId: string): Promise<string | null> {
+  /**
+   * Ends this device's live admission unless the echoed generation is stale.
+   * The generation is compared under the cashier lock, after any renewal
+   * queued before this end has committed.
+   */
+  private async endIfOwned(client: PoolClient, scope: DeviceScope, target: EndTarget): Promise<EndOutcome> {
     const { admissions } = this.ports;
-    const owned = await admissions.findOwned(client, scope, admissionId);
-    if (!owned) return null;
+    const owned = await admissions.findOwned(client, scope, target.admissionId);
+    if (!owned) return NOT_LIVE;
     await admissions.lockCashier(client, scope, owned.userId);
     const at = await admissions.clock(client);
-    return (await admissions.endOwned(client, scope, { admissionId, at })) ? owned.userId : null;
+    const result = await admissions.endOwned(client, scope, { ...target, at });
+    return result === "not_live" ? NOT_LIVE : { result, userId: owned.userId };
   }
+}
+
+/** What an `end` did, and the cashier when the admission was live here. */
+type EndOutcome = { readonly result: "not_live"; readonly userId: null } | {
+  readonly result: Exclude<EndResult, "not_live">;
+  readonly userId: string;
+};
+
+const NOT_LIVE: EndOutcome = { result: "not_live", userId: null };
+
+/** A stored body, completed with a never-matching generation if it predates RT-219. */
+function replayBody(body: StoredAdmittedBody): AdmittedBody {
+  return { ...body, admission_generation: body.admission_generation ?? PRE_GENERATION_REPLAY };
 }
 
 function admittedBody(record: AdmissionRecord, cashier: EligibleCashier, policy: CashierAdmissionPolicy): AdmittedBody {
@@ -274,6 +322,7 @@ function admittedBody(record: AdmissionRecord, cashier: EligibleCashier, policy:
     admission_ttl_seconds: policy.admissionTtlSeconds,
     server_time: record.renewedAt.toISOString(),
     display_name: cashier.displayName,
+    admission_generation: record.generation,
   };
 }
 
@@ -286,11 +335,13 @@ function admissionMetadata(ctx: AdmitContext): Record<string, unknown> {
 }
 
 /**
- * An `end` that changed nothing records only what the device itself sent
- * (the contract: only what is visible in the device's own tenant scope).
+ * An `end` on an admission not live on this device records only what the
+ * device itself sent (the contract: only what is visible in the device's own
+ * tenant scope). A stale-generation no-op is on the device's OWN live
+ * admission, so it names the cashier and the cause (RT-219).
  */
-function endMetadata(scope: DeviceScope, admissionId: string, userId: string | null): Record<string, unknown> {
-  return userId === null
-    ? { device_id: scope.deviceId, prior_admission_id: admissionId, changed: false }
-    : { device_id: scope.deviceId, user_id: userId, prior_admission_id: admissionId, changed: true };
+function endMetadata(scope: DeviceScope, admissionId: string, outcome: EndOutcome): Record<string, unknown> {
+  if (outcome.userId === null) return { device_id: scope.deviceId, prior_admission_id: admissionId, changed: false };
+  const base = { device_id: scope.deviceId, user_id: outcome.userId, prior_admission_id: admissionId };
+  return outcome.result === "ended" ? { ...base, changed: true } : { ...base, changed: false, stale_generation: true };
 }
