@@ -247,6 +247,14 @@ export const ALLOWED_METRIC_LABELS: Readonly<Record<string, readonly string[]>> 
   // domain-keyed-not-attribute-keyed precedent; a per-tenant/payer label would be
   // a cardinality + PII hazard).
   settlement_receivable_total: [],
+
+  // ---- POS shift close approver — RT-17 follow-up (Jira RT-17 10955, option A) ----
+  // Increments once when a shift close is FIRST recorded with a
+  // `varianceApprovedByUserId` that fails the ingest standing check (the close
+  // is still recorded; never refused). `reason` is the closed set
+  // {approver_is_closer, inactive_membership, not_manager, no_store_access,
+  // check_unavailable}. The tenant, store, shift and users are never labels.
+  shift_close_approver_unverified_total: ["reason"],
 };
 
 /**

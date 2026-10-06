@@ -124,6 +124,12 @@ they are not part of the original T444 platform catalogue.
   uses the singular form because each increment is one item; the
   collection is `unknown_items` (plural in the DB table name only).
 
+## 1.2 POS shift signals (RT-17)
+
+| Signal | Type | Labels (low-cardinality only) | Source |
+|---|---|---|---|
+| `shift_close_approver_unverified_total` | counter | `reason` ∈ {`approver_is_closer`, `inactive_membership`, `not_manager`, `no_store_access`, `check_unavailable`} — one increment when a shift close is first recorded (201, never a replay) with a `varianceApprovedByUserId` that is the closer, has no active membership, holds no `owner` / `tenant_admin` / `store_manager` role, has no access to the store, or could not be looked up. The close is recorded regardless (detect, never refuse). Paired with one `shift.close.approver_unverified` warning carrying the same `reason` and no ids | Jira RT-17 comment 10955, option A |
+
 ---
 
 ## 2. Database signals (T445)
