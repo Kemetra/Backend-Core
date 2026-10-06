@@ -15,8 +15,21 @@
  * envelope replay answered before the stated closer's live check; the 425,
  * the per-device rate-limit key on both paths and the envelope 429; and that
  * no log line carries a note, a forcedReason or an operatorUserId claim.
+ *
+ * RT-17 follow-up (Jira RT-17 comment 10955, option A): the approver's
+ * standing is checked once a close is first recorded, never refusing it; a
+ * failure is one `shift.close.approver_unverified` warning and one
+ * `shift_close_approver_unverified_total{reason}` count (the helper is mocked
+ * here: the OTel instrument is a no-op without a reader).
  */
+jest.mock("../../src/observability/metrics/api.metrics", () => {
+  const actual = jest.requireActual("../../src/observability/metrics/api.metrics");
+  return { ...actual, recordShiftCloseApproverUnverified: jest.fn() };
+});
+
 import { randomUUID } from "node:crypto";
+
+import { recordShiftCloseApproverUnverified } from "../../src/observability/metrics/api.metrics";
 
 import {
   CASHIER,
@@ -369,6 +382,97 @@ describe("closeShift — variance approval (recorded; the role never blocks)", (
     const res = await closeFrom(DEV_A1, shiftId, closeBody({ varianceApprovedByUserId: approver }));
     expectError(res, { status: 400, code: "validation_error" });
     expect(await stateOf(shiftId)).toEqual(STILL_OPEN);
+  });
+});
+
+describe("closeShift — the approver's standing is checked at ingest, never refusing (RT-17 10955, option A)", () => {
+  const counted = recordShiftCloseApproverUnverified as jest.MockedFunction<typeof recordShiftCloseApproverUnverified>;
+  const ADMIN = { id: "0e170000-0000-4000-8000-0000000c00a1", membership: "0e170000-0000-4000-8000-0000000d00a1" };
+  const ROLE_A_ADMIN = "0e170000-0000-4000-8000-0000000a7003";
+
+  beforeAll(async () => {
+    if (skipped()) return;
+    await admin().query(
+      `INSERT INTO roles (id, tenant_id, code, name) VALUES ($1, $2, 'tenant_admin', 'Admin')`,
+      [ROLE_A_ADMIN, MANAGER.tenant],
+    );
+    await admin().query(
+      `INSERT INTO users (id, email, display_name, clerk_user_id) VALUES ($1, 'admin@rt17-s2b.example', 'admin', 'user_clerk_rt17_s2b_admin')`,
+      [ADMIN.id],
+    );
+    await admin().query(
+      `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES ($1, $2, $3, $4, 'all')`,
+      [ADMIN.membership, MANAGER.tenant, ADMIN.id, ROLE_A_ADMIN],
+    );
+  });
+
+  beforeEach(() => counted.mockReset());
+
+  /** The approver-check log lines written so far, parsed. */
+  const approverLines = (): Array<Record<string, unknown>> =>
+    h()
+      .logs.lines.filter((line) => line.includes("shift.close.approver_unverified"))
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  /** Opens a shift on `device` and closes it with `approver`; the close's status. */
+  async function closeApprovedBy(device: FixtureDevice, approver: string): Promise<{ shiftId: string; status: number }> {
+    const shiftId = await openOn(device);
+    const res = await closeFrom(device, shiftId, closeBody({ varianceApprovedByUserId: approver }));
+    return { shiftId, status: res.status };
+  }
+
+  it.each([
+    ["a store manager with access to the store", DEV_A1, MANAGER.id],
+    ["a tenant admin (all stores)", DEV_A2, ADMIN.id],
+  ])("approved by %s: 201, no warning, no count", async (_label, device, approver) => {
+    if (skipped()) return;
+    const { shiftId, status } = await closeApprovedBy(device, approver);
+    expect(status).toBe(201);
+    expect((await closeRow(shiftId))?.["variance_approved_by_user_id"]).toBe(approver);
+    expect([counted.mock.calls.length, approverLines().length]).toEqual([0, 0]);
+  });
+
+  it.each([
+    ["a user without a manager role", DEV_A1, CASHIER_UNADMITTED.id, "not_manager"],
+    ["the store manager on a store they have no access to", DEV_A2, MANAGER.id, "no_store_access"],
+    ["the closing cashier", DEV_A1, CASHIER.id, "approver_is_closer"],
+  ])("approved by %s: still 201 and recorded; one warning and one count (%s)", async (_label, device, approver, reason) => {
+    if (skipped()) return;
+    const { shiftId, status } = await closeApprovedBy(device, approver);
+    expect(status).toBe(201);
+    expect(await stateOf(shiftId)).toEqual({ lifecycle: "closed", closed: true });
+    expect((await closeRow(shiftId))?.["variance_approved_by_user_id"]).toBe(approver);
+    expect(counted.mock.calls).toEqual([[{ reason }]]);
+    expect(approverLines()).toEqual([expect.objectContaining({ event: "shift.close.approver_unverified", reason, level: "warn" })]);
+  });
+
+  it("a manager whose membership was revoked since: 201, inactive_membership (the tenant rule still admits a past member)", async () => {
+    if (skipped()) return;
+    await admin().query(`UPDATE memberships SET revoked_at = now() WHERE id = $1`, [MANAGER.membership]);
+    const { status } = await closeApprovedBy(DEV_A1, MANAGER.id);
+    expect(status).toBe(201);
+    expect(counted.mock.calls).toEqual([[{ reason: "inactive_membership" }]]);
+  });
+
+  it("the warning carries no tenant, store, device, shift or user id and no amount", async () => {
+    if (skipped()) return;
+    const { shiftId } = await closeApprovedBy(DEV_A2, MANAGER.id);
+    const text = JSON.stringify(approverLines());
+    const secrets = [MANAGER.tenant, DEV_A2.store, DEV_A2.id, shiftId, MANAGER.id, CASHIER.id, "2750", "-5.00"];
+    expect(approverLines()).toHaveLength(1);
+    expect(secrets.filter((secret) => text.includes(secret))).toEqual([]);
+  });
+
+  it("a replay of the recorded close (same key, then another key) checks and counts nothing more", async () => {
+    if (skipped()) return;
+    const shiftId = await openOn(DEV_A1);
+    const body = closeBody({ varianceApprovedByUserId: CASHIER_UNADMITTED.id });
+    const call = { bearer: DEV_A1.token, shiftId, body, key: newKey() };
+    expect((await close(call)).status).toBe(201);
+    expect((await close(call)).status).toBe(201);
+    expectReplay(await closeFrom(DEV_A1, shiftId, { ...body, countedCash: "2750" }));
+    expect(counted.mock.calls).toEqual([[{ reason: "not_manager" }]]);
+    expect(approverLines()).toHaveLength(1);
   });
 });
 

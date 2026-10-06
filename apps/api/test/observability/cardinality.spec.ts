@@ -217,6 +217,8 @@ describe("Drift contract: every signal in the catalogue is represented", () => {
     "erpnext_product_reconciliation_total",
     // Settlement & receivables domain — 035 T034 (spec section 7). Unlabeled.
     "settlement_receivable_total",
+    // POS shift close approver unverified at ingest — RT-17 10955 option A. `reason` (closed set).
+    "shift_close_approver_unverified_total",
   ];
 
   for (const name of expectedSignals) {
