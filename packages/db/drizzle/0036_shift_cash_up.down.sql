@@ -23,6 +23,7 @@ DROP TABLE IF EXISTS shift_cash_movements;
 DROP TRIGGER IF EXISTS shifts_cash_up_guard_row ON shifts;
 DROP TRIGGER IF EXISTS shifts_cash_up_guard_truncate ON shifts;
 DROP FUNCTION IF EXISTS shifts_cash_up_guard();
+DROP FUNCTION IF EXISTS shift_closes_require_open_shift();
 DROP FUNCTION IF EXISTS shift_cash_movements_require_open_shift();
 DROP FUNCTION IF EXISTS shift_cash_up_append_only();
 

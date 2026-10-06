@@ -115,6 +115,13 @@ export const shiftCloses = pgTable(
         AND ${t.payInTotal} >= 0 AND ${t.payOutTotal} >= 0 AND ${t.expectedCash} >= 0
         AND ${t.countedCash} >= 0`,
     ),
+    check(
+      "shift_closes_amounts_not_nan",
+      sql`${t.openingFloat} <> 'NaN'::numeric AND ${t.cashSalesTotal} <> 'NaN'::numeric
+        AND ${t.cashRefundsTotal} <> 'NaN'::numeric AND ${t.payInTotal} <> 'NaN'::numeric
+        AND ${t.payOutTotal} <> 'NaN'::numeric AND ${t.expectedCash} <> 'NaN'::numeric
+        AND ${t.countedCash} <> 'NaN'::numeric AND ${t.variance} <> 'NaN'::numeric`,
+    ),
     check("shift_closes_sale_count_non_negative", sql`${t.saleCount} >= 0`),
     check(
       "shift_closes_expected_cash_arithmetic",
@@ -170,6 +177,7 @@ export const shiftCashMovements = pgTable(
     }).onDelete("restrict"),
     check("shift_cash_movements_kind_valid", sql`${t.kind} IN ('pay_in', 'pay_out')`),
     check("shift_cash_movements_amount_positive", sql`${t.amount} > 0`),
+    check("shift_cash_movements_amount_not_nan", sql`${t.amount} <> 'NaN'::numeric`),
     check(
       "shift_cash_movements_reason_code_valid",
       sql`${t.reasonCode} IN ('bank_drop', 'float_top_up', 'petty_expense', 'other')`,

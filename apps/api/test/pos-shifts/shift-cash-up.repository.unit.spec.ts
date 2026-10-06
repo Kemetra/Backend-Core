@@ -7,7 +7,10 @@ import type { PoolClient } from "pg";
 import {
   OPEN_DEVICE_INDEX,
   ShiftCashUpRepository,
+  ShiftCloseNotAppliedError,
   isOpenDeviceConflict,
+  type CashUpShiftRow,
+  type ShiftCloseFact,
 } from "../../src/pos-shifts/shift-cash-up.repository";
 
 describe("isOpenDeviceConflict", () => {
@@ -67,5 +70,68 @@ describe("ShiftCashUpRepository.insertShift error path", () => {
     const { client, sql } = clientFailingInsertWith(boom);
     await expect(new ShiftCashUpRepository().insertShift(client, scope, shift)).rejects.toBe(boom);
     expect(sql).toContain("ROLLBACK TO SAVEPOINT shift_cash_up_open");
+  });
+});
+
+describe("ShiftCashUpRepository.insertClose (review P3-4)", () => {
+  const shift: CashUpShiftRow = {
+    shiftId: "s",
+    tenantId: "t",
+    storeId: "st",
+    deviceId: "d",
+    openingUserId: "u",
+    openedAt: new Date("2026-10-05T08:00:00Z"),
+    lifecycleState: "open",
+    currencyCode: "EGP",
+    openingFloat: "500.0000",
+    businessDate: "2026-10-05",
+    receivedAt: new Date("2026-10-05T08:00:02Z"),
+    recordedByUserId: "u",
+    payloadHash: Buffer.alloc(32),
+  };
+  const close: ShiftCloseFact = {
+    closedAt: "2026-10-05T16:00:00Z",
+    closingUserId: "u",
+    closeKind: "normal",
+    forcedReason: null,
+    openingFloat: "500.00",
+    cashSalesTotal: "0.00",
+    cashRefundsTotal: "0.00",
+    payInTotal: "0.00",
+    payOutTotal: "0.00",
+    expectedCash: "500.00",
+    countedCash: "500.00",
+    variance: "0.00",
+    saleCount: 0,
+    cashRefundReturnRefs: [],
+    varianceApprovedByUserId: null,
+    recordedByUserId: "u",
+    payloadHash: Buffer.alloc(32),
+  };
+
+  function clientWhoseCloseUpdateHits(rowCount: number): PoolClient {
+    const query = jest.fn(async (text: string) => {
+      if (text.includes("INSERT INTO shift_closes")) {
+        return { rows: [{ shift_id: "s", closed_at: new Date(), sale_count: 0 }], rowCount: 1 };
+      }
+      if (text.includes("UPDATE shifts")) return { rows: [], rowCount };
+      return { rows: [], rowCount: 0 };
+    });
+    return { query } as unknown as PoolClient;
+  }
+
+  it.each([0, 2])(
+    "throws ShiftCloseNotAppliedError when the shift UPDATE hits %i rows, so the close rolls back",
+    async (rowCount) => {
+      await expect(
+        new ShiftCashUpRepository().insertClose(clientWhoseCloseUpdateHits(rowCount), shift, close),
+      ).rejects.toBeInstanceOf(ShiftCloseNotAppliedError);
+    },
+  );
+
+  it("returns the close when exactly one shift row moves to closed", async () => {
+    await expect(
+      new ShiftCashUpRepository().insertClose(clientWhoseCloseUpdateHits(1), shift, close),
+    ).resolves.toMatchObject({ shiftId: "s", cashRefundReturnRefs: [] });
   });
 });

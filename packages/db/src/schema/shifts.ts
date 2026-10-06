@@ -9,9 +9,10 @@
  *     time, the recording actor and the payload hash. At most one is open per
  *     (tenant, device) (`uq_shifts_cash_up_open_device`).
  *
- * A cash-up row is guarded by a trigger (`shifts_cash_up_guard`): it moves
- * open → closed / closed_forced once, only with its `shift_closes` row, and
- * is never deleted. Policies, CHECKs and triggers live in the SQL migrations.
+ * A cash-up row is guarded by a trigger (`shifts_cash_up_guard`): it is
+ * inserted open, moves open → closed / closed_forced once, only with its
+ * `shift_closes` row, and is never deleted. An open legacy row may be
+ * ADOPTED once (legacy → cash_up, setting only the cash-up columns). Policies, CHECKs and triggers live in the SQL migrations.
  */
 import {
   char,
@@ -91,6 +92,10 @@ export const shifts = pgTable(
     check(
       "shifts_opening_float_non_negative",
       sql`${t.openingFloat} IS NULL OR ${t.openingFloat} >= 0`,
+    ),
+    check(
+      "shifts_opening_float_not_nan",
+      sql`${t.openingFloat} IS NULL OR ${t.openingFloat} <> 'NaN'::numeric`,
     ),
     check(
       "shifts_payload_hash_len",

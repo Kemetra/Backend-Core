@@ -25,25 +25,44 @@
 --        close can only name a cash_up shift of the SAME tenant, store,
 --        device and currency, and a close only with the float recorded at
 --        open. Legacy rows (NULL currency) can never be referenced.
---      - shifts_cash_up_guard (row trigger): a cash_up row changes once,
---        open → closed / closed_forced, with every other column unchanged,
---        and only when its matching shift_closes row exists. `source` never
---        changes. A cash_up row is never deleted. TRUNCATE is refused.
---        Legacy rows keep their pre-0036 behaviour (row UPDATE / DELETE).
+--      - shifts_cash_up_guard (row trigger):
+--          * a cash_up row is INSERTed only as `open`;
+--          * a cash_up row changes once, open → closed / closed_forced, with
+--            every other column unchanged, and only when its matching
+--            shift_closes row exists;
+--          * ADOPTION (RT-17 review P2-1, option b): an OPEN legacy row may
+--            become an open cash_up row once, setting only the cash-up
+--            columns (all of them); its id, tenant, store, device, opened_at
+--            and opening user stay unchanged. This lets openShift adopt the
+--            row the audit-ingest `shift.open` writer already wrote for the
+--            same shift. cash_up → legacy is refused;
+--          * a cash_up row is never deleted; TRUNCATE is refused;
+--          * legacy rows otherwise keep their pre-0036 behaviour (row UPDATE
+--            / DELETE).
 --   2. shift_closes — the ShiftClosed fact, one per shift (PK shift_id).
 --      Arithmetic CHECKs in exact numeric:
 --        expected_cash = opening_float + cash_sales_total − cash_refunds_total
 --                        + pay_in_total − pay_out_total
 --        variance      = counted_cash − expected_cash
---      forced_reason is present if and only if close_kind = 'forced'.
+--      forced_reason is present if and only if close_kind = 'forced'. A
+--      close is inserted only while its shift is open (row trigger, which
+--      locks the shift row FOR UPDATE).
 --   3. shift_cash_movements — the CashMovement facts (pay_in / pay_out). A
---      movement can only be inserted while its shift is open (row trigger).
+--      movement can only be inserted while its shift is open (row trigger,
+--      which locks the shift row FOR SHARE, so a movement racing a close
+--      waits for it and re-checks).
 --   4. shift_refund_claims — the close's cashRefundReturnRefs, one row per
 --      return. return_id is the PK: a return is claimed by at most one
 --      shift's close. Composite FKs keep the return and the close in the
 --      claim's tenant and store.
 --   5. idx_sales_tenant_device_occurred — sales (tenant_id, device_id,
 --      occurred_at) for the RT-18 read-side recompute (10919).
+--
+-- Every cash amount column refuses 'NaN' (numeric NaN compares equal to
+-- itself and greater than every number, so it would pass the >= 0 and
+-- arithmetic CHECKs). Infinity cannot be stored in numeric(19,4).
+-- Every trigger function pins `search_path = pg_catalog, public` and
+-- schema-qualifies its table references.
 --
 -- The three new tables are append-only for every role, the owner included:
 -- UPDATE, DELETE and TRUNCATE raise 42501 (the 0034 audit_events precedent).
@@ -62,13 +81,22 @@
 -- No PIN, secret, token, customer or contact datum is stored. Retained with
 -- the sales they reconcile; never deleted (append-only).
 --
--- Lock duration: ALTER TABLE shifts takes ACCESS EXCLUSIVE on shifts while
--- the columns (constant default: metadata-only), CHECKs (one scan) and three
--- indexes (one build each) are added; shifts holds one row per legacy POS
--- shift.open event. CREATE INDEX on sales takes SHARE on sales for one index
--- build (writes wait, reads continue). The new tables take only catalog
--- locks plus SHARE ROW EXCLUSIVE on the referenced tables while their FKs
--- are created (brief: the new tables are empty).
+-- Lock impact: the whole migration is ONE transaction, and every lock below
+-- is held until its COMMIT, i.e. including the non-concurrent sales index
+-- build at the end (CREATE INDEX CONCURRENTLY cannot run in a transaction).
+--   - shifts: ACCESS EXCLUSIVE (ALTER TABLE: columns with a constant default
+--     are metadata-only; the CHECKs scan the table once; three index builds;
+--     the triggers). Every read and write of shifts waits until COMMIT.
+--   - users, devices, stores, tenants, sale_returns: SHARE ROW EXCLUSIVE,
+--     taken by the new FKs (shifts.recorded_by_user_id and the three new
+--     tables). INSERT / UPDATE / DELETE on those tables wait until COMMIT —
+--     including writes on devices during device authentication and new
+--     sale returns; plain reads continue.
+--   - sales: SHARE for the idx_sales_tenant_device_occurred build: sale
+--     capture waits until COMMIT; reads continue.
+-- Duration is dominated by the sales index build (one pass over sales).
+-- Run it in a maintenance window (no POS sync in flight); at pilot volume
+-- the whole migration is expected to take well under a second.
 -- Grants: none here — runtime grants are provisioned outside migrations
 -- (docs/operations/database-roles.md); the domain-role grant step for these
 -- tables ships with the runtime routes (RT-17 slice 2b).
@@ -111,6 +139,8 @@ ALTER TABLE shifts
     CHECK (currency_code IS NULL OR currency_code ~ '^[A-Z]{3}$'),
   ADD CONSTRAINT shifts_opening_float_non_negative
     CHECK (opening_float IS NULL OR opening_float >= 0),
+  ADD CONSTRAINT shifts_opening_float_not_nan
+    CHECK (opening_float IS NULL OR opening_float <> 'NaN'::numeric),
   ADD CONSTRAINT shifts_payload_hash_len
     CHECK (payload_hash IS NULL OR octet_length(payload_hash) = 32),
   -- Composite FK targets (shift_id is the PK, so both are trivially unique).
@@ -169,6 +199,11 @@ CREATE TABLE shift_closes (
     opening_float >= 0 AND cash_sales_total >= 0 AND cash_refunds_total >= 0
     AND pay_in_total >= 0 AND pay_out_total >= 0 AND expected_cash >= 0
     AND counted_cash >= 0),
+  CONSTRAINT shift_closes_amounts_not_nan CHECK (
+    opening_float <> 'NaN'::numeric AND cash_sales_total <> 'NaN'::numeric
+    AND cash_refunds_total <> 'NaN'::numeric AND pay_in_total <> 'NaN'::numeric
+    AND pay_out_total <> 'NaN'::numeric AND expected_cash <> 'NaN'::numeric
+    AND counted_cash <> 'NaN'::numeric AND variance <> 'NaN'::numeric),
   CONSTRAINT shift_closes_sale_count_non_negative CHECK (sale_count >= 0),
   CONSTRAINT shift_closes_expected_cash_arithmetic CHECK (
     expected_cash = opening_float + cash_sales_total - cash_refunds_total
@@ -207,6 +242,7 @@ CREATE TABLE shift_cash_movements (
     ON DELETE RESTRICT,
   CONSTRAINT shift_cash_movements_kind_valid CHECK (kind IN ('pay_in', 'pay_out')),
   CONSTRAINT shift_cash_movements_amount_positive CHECK (amount > 0),
+  CONSTRAINT shift_cash_movements_amount_not_nan CHECK (amount <> 'NaN'::numeric),
   CONSTRAINT shift_cash_movements_reason_code_valid
     CHECK (reason_code IN ('bank_drop', 'float_top_up', 'petty_expense', 'other')),
   CONSTRAINT shift_cash_movements_note_length
@@ -284,7 +320,9 @@ CREATE POLICY shift_refund_claims_tenant_insert ON shift_refund_claims
 -- Append-only for every role (the 0034 precedent): any UPDATE, DELETE or
 -- TRUNCATE of a cash-up fact raises 42501. Break-glass is a deliberate DDL step.
 CREATE FUNCTION shift_cash_up_append_only() RETURNS trigger
-  LANGUAGE plpgsql AS $$
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, public
+AS $$
 BEGIN
   RAISE EXCEPTION '% is append-only: % is not permitted', TG_TABLE_NAME, TG_OP
     USING ERRCODE = 'insufficient_privilege',
@@ -315,17 +353,24 @@ CREATE TRIGGER shift_refund_claims_append_only_truncate
 
 -- A movement is recorded only while its shift is open (the service checks
 -- first under the shift row lock; this is the database backstop). 55000.
--- Only a matching shift that is no longer open is refused here: a shift of
--- another tenant, store, device or currency is left to the composite FK and
--- the RLS WITH CHECK, which run after BEFORE triggers.
+-- The shift row is locked FOR SHARE: a movement racing a close waits for the
+-- close's row lock and then re-checks the committed state. Only a matching
+-- shift that is no longer open is refused here: a shift of another tenant,
+-- store, device or currency is left to the composite FK and the RLS WITH
+-- CHECK, which run after BEFORE triggers.
 CREATE FUNCTION shift_cash_movements_require_open_shift() RETURNS trigger
-  LANGUAGE plpgsql AS $$
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_state text;
 BEGIN
-  IF EXISTS (
-    SELECT 1 FROM shifts s
-     WHERE s.shift_id = NEW.shift_id
-       AND s.tenant_id = NEW.tenant_id
-       AND s.lifecycle_state <> 'open') THEN
+  SELECT s.lifecycle_state INTO v_state
+    FROM public.shifts s
+   WHERE s.shift_id = NEW.shift_id
+     AND s.tenant_id = NEW.tenant_id
+     FOR SHARE;
+  IF FOUND AND v_state <> 'open' THEN
     RAISE EXCEPTION 'shift % is not open: a cash movement cannot be recorded', NEW.shift_id
       USING ERRCODE = 'object_not_in_prerequisite_state';
   END IF;
@@ -337,16 +382,55 @@ CREATE TRIGGER shift_cash_movements_require_open_shift
   BEFORE INSERT ON shift_cash_movements
   FOR EACH ROW EXECUTE FUNCTION shift_cash_movements_require_open_shift();
 
--- shifts: a cash_up row moves open → closed / closed_forced once, with every
--- other column unchanged (updated_at aside), and only when its shift_closes
--- row of the matching kind exists. It is never deleted. Legacy rows are not
--- constrained (pre-0036 behaviour). TRUNCATE is refused outright.
+-- A close is recorded only while its shift is open. The shift row is locked
+-- FOR UPDATE (the close then updates it), so a second close or a movement
+-- waits and re-checks. 55000. As above, a foreign shift is left to the FK /
+-- RLS.
+CREATE FUNCTION shift_closes_require_open_shift() RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_state text;
+BEGIN
+  SELECT s.lifecycle_state INTO v_state
+    FROM public.shifts s
+   WHERE s.shift_id = NEW.shift_id
+     AND s.tenant_id = NEW.tenant_id
+     FOR UPDATE;
+  IF FOUND AND v_state <> 'open' THEN
+    RAISE EXCEPTION 'shift % is not open: it cannot be closed again', NEW.shift_id
+      USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER shift_closes_require_open_shift
+  BEFORE INSERT ON shift_closes
+  FOR EACH ROW EXECUTE FUNCTION shift_closes_require_open_shift();
+
+-- shifts guard (see the header). The cash-up columns, as one list, for the
+-- adoption shape check.
 CREATE FUNCTION shifts_cash_up_guard() RETURNS trigger
-  LANGUAGE plpgsql AS $$
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  cash_up_columns CONSTANT text[] := ARRAY['source', 'currency_code', 'opening_float',
+    'business_date', 'received_at', 'recorded_by_user_id', 'payload_hash', 'updated_at'];
 BEGIN
   IF TG_OP = 'TRUNCATE' THEN
     RAISE EXCEPTION 'shifts holds cash-up facts: TRUNCATE is not permitted'
       USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.source = 'cash_up' AND NEW.lifecycle_state <> 'open' THEN
+      RAISE EXCEPTION 'a cash-up shift is recorded open; it closes with its close'
+        USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    RETURN NEW;
   END IF;
 
   IF TG_OP = 'DELETE' THEN
@@ -357,21 +441,37 @@ BEGIN
     RETURN OLD;
   END IF;
 
-  -- UPDATE
-  IF NEW.source IS DISTINCT FROM OLD.source THEN
-    RAISE EXCEPTION 'shifts.source never changes'
+  -- UPDATE of a legacy row.
+  IF OLD.source = 'legacy' THEN
+    IF NEW.source = 'legacy' THEN
+      RETURN NEW;
+    END IF;
+    -- Adoption: open legacy → open cash_up, every cash-up column set, and
+    -- nothing else changed (id, tenant, store, device, opened_at, opening
+    -- user, lifecycle, created_at).
+    IF OLD.lifecycle_state = 'open'
+       AND NEW.lifecycle_state = 'open'
+       AND NEW.currency_code IS NOT NULL AND NEW.opening_float IS NOT NULL
+       AND NEW.business_date IS NOT NULL AND NEW.received_at IS NOT NULL
+       AND NEW.recorded_by_user_id IS NOT NULL AND NEW.payload_hash IS NOT NULL
+       AND (to_jsonb(NEW) - cash_up_columns) = (to_jsonb(OLD) - cash_up_columns) THEN
+      RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'a legacy shift is adopted only while open, setting the cash-up columns only'
       USING ERRCODE = 'insufficient_privilege';
   END IF;
-  IF OLD.source = 'legacy' THEN
-    RETURN NEW;
-  END IF;
 
+  -- UPDATE of a cash_up row.
+  IF NEW.source IS DISTINCT FROM OLD.source THEN
+    RAISE EXCEPTION 'a cash-up shift never becomes legacy'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
   IF OLD.lifecycle_state = 'open'
      AND NEW.lifecycle_state IN ('closed', 'closed_forced')
      AND (to_jsonb(NEW) - 'lifecycle_state' - 'updated_at')
          = (to_jsonb(OLD) - 'lifecycle_state' - 'updated_at')
      AND EXISTS (
-       SELECT 1 FROM shift_closes c
+       SELECT 1 FROM public.shift_closes c
         WHERE c.shift_id = NEW.shift_id
           AND c.tenant_id = NEW.tenant_id
           AND c.close_kind = CASE NEW.lifecycle_state
@@ -386,7 +486,7 @@ END
 $$;
 
 CREATE TRIGGER shifts_cash_up_guard_row
-  BEFORE UPDATE OR DELETE ON shifts
+  BEFORE INSERT OR UPDATE OR DELETE ON shifts
   FOR EACH ROW EXECUTE FUNCTION shifts_cash_up_guard();
 CREATE TRIGGER shifts_cash_up_guard_truncate
   BEFORE TRUNCATE ON shifts

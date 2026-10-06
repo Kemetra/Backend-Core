@@ -63,7 +63,8 @@ export interface NewCashUpShift {
 }
 
 export type InsertShiftOutcome =
-  | { readonly kind: "inserted"; readonly shift: CashUpShiftRow }
+  /** Recorded; `adoptedLegacy` when an open legacy row of this scope became it. */
+  | { readonly kind: "inserted"; readonly shift: CashUpShiftRow; readonly adoptedLegacy: boolean }
   /** The shiftId is already recorded — in scope or not. Never its row. */
   | { readonly kind: "shift_id_taken" }
   /** The device already has another open cash-up shift. */
@@ -149,6 +150,17 @@ export class RefundRefAlreadyClaimedError extends Error {
   }
 }
 
+/**
+ * The close's shift UPDATE did not move exactly one row to closed. Thrown so
+ * the caller's transaction rolls back: nothing of the close is recorded.
+ */
+export class ShiftCloseNotAppliedError extends Error {
+  constructor() {
+    super("the shift close transition did not apply to exactly one shift");
+    this.name = "ShiftCloseNotAppliedError";
+  }
+}
+
 /** The one-open-per-device partial UNIQUE index (0036). */
 export const OPEN_DEVICE_INDEX = "uq_shifts_cash_up_open_device";
 
@@ -168,6 +180,43 @@ const CLOSE_COLUMNS = `
   pay_out_total::text AS pay_out_total, expected_cash::text AS expected_cash,
   counted_cash::text AS counted_cash, variance::text AS variance, sale_count,
   variance_approved_by_user_id, recorded_by_user_id, received_at, payload_hash`;
+
+/**
+ * $1 shift, $2 tenant, $3 store, $4 device, $5 opening user, $6 openedAt,
+ * $7 currency, $8 opening float, $9 recording actor, $10 payload hash.
+ */
+const INSERT_SHIFT_SQL = `
+  INSERT INTO shifts
+    (shift_id, tenant_id, store_id, opening_device_id, opening_cashier_user_id, opened_at,
+     source, currency_code, opening_float, business_date, received_at, recorded_by_user_id,
+     payload_hash)
+  VALUES ($1, $2, $3, $4, $5, $6::timestamptz, 'cash_up', $7, $8::numeric,
+          (SELECT ($6::timestamptz AT TIME ZONE s.timezone)::date
+             FROM stores s WHERE s.id = $3 AND s.tenant_id = $2),
+          now(), $9, $10)
+  ON CONFLICT (shift_id) DO NOTHING
+  RETURNING ${SHIFT_COLUMNS}`;
+
+/** Same parameters: adopt an open legacy row of this scope, opened_at and opening user. */
+const ADOPT_LEGACY_SHIFT_SQL = `
+  UPDATE shifts
+     SET source = 'cash_up',
+         currency_code = $7,
+         opening_float = $8::numeric,
+         business_date = (SELECT (shifts.opened_at AT TIME ZONE s.timezone)::date
+                            FROM stores s WHERE s.id = shifts.store_id AND s.tenant_id = shifts.tenant_id),
+         received_at = now(),
+         recorded_by_user_id = $9,
+         payload_hash = $10
+   WHERE shift_id = $1
+     AND tenant_id = $2
+     AND store_id = $3
+     AND opening_device_id = $4
+     AND opening_cashier_user_id = $5
+     AND opened_at = $6::timestamptz
+     AND source = 'legacy'
+     AND lifecycle_state = 'open'
+  RETURNING ${SHIFT_COLUMNS}`;
 
 interface ShiftDbRow {
   shift_id: string;
@@ -331,6 +380,14 @@ export class ShiftCashUpRepository {
    * Records an open. The business date is the store-local day of `openedAt`
    * (store timezone, RT-63 P2); `received_at` is the server's now().
    *
+   * When `shiftId` is already a LEGACY row (written by the audit-ingest
+   * `shift.open` writer) of THIS tenant, store and device, still open, with
+   * the same `opened_at` and opening user, the open ADOPTS it: the row
+   * becomes the cash-up shift (RT-17 review P2-1, option b; the 0036 guard
+   * allows exactly this legacy → cash_up shape). Any other existing row —
+   * another scope, closed, a different opened_at or opening user, or already
+   * cash-up — is `shift_id_taken`, and is never changed or disclosed.
+   *
    * A concurrent open of another shift on the same device trips the partial
    * UNIQUE index; that refusal is rolled back to a savepoint so the caller's
    * transaction stays usable. Any other error is rethrown.
@@ -340,41 +397,38 @@ export class ShiftCashUpRepository {
     scope: DeviceScope,
     shift: NewCashUpShift,
   ): Promise<InsertShiftOutcome> {
+    const params = [
+      shift.shiftId,
+      scope.tenantId,
+      scope.storeId,
+      scope.deviceId,
+      shift.openingUserId,
+      shift.openedAt,
+      shift.currencyCode,
+      shift.openingFloat,
+      shift.recordedByUserId,
+      shift.payloadHash,
+    ];
     await client.query("SAVEPOINT shift_cash_up_open");
-    let inserted: ShiftDbRow | undefined;
+    let outcome: InsertShiftOutcome;
     try {
-      const r = await client.query<ShiftDbRow>(
-        `INSERT INTO shifts
-           (shift_id, tenant_id, store_id, opening_device_id, opening_cashier_user_id, opened_at,
-            source, currency_code, opening_float, business_date, received_at, recorded_by_user_id,
-            payload_hash)
-         VALUES ($1, $2, $3, $4, $5, $6::timestamptz, 'cash_up', $7, $8::numeric,
-                 (SELECT ($6::timestamptz AT TIME ZONE s.timezone)::date
-                    FROM stores s WHERE s.id = $3 AND s.tenant_id = $2),
-                 now(), $9, $10)
-         ON CONFLICT (shift_id) DO NOTHING
-         RETURNING ${SHIFT_COLUMNS}`,
-        [
-          shift.shiftId,
-          scope.tenantId,
-          scope.storeId,
-          scope.deviceId,
-          shift.openingUserId,
-          shift.openedAt,
-          shift.currencyCode,
-          shift.openingFloat,
-          shift.recordedByUserId,
-          shift.payloadHash,
-        ],
-      );
-      inserted = r.rows[0];
+      const inserted = await client.query<ShiftDbRow>(INSERT_SHIFT_SQL, params);
+      const adopted =
+        inserted.rows[0] === undefined
+          ? await client.query<ShiftDbRow>(ADOPT_LEGACY_SHIFT_SQL, params)
+          : null;
+      const row = inserted.rows[0] ?? adopted?.rows[0];
+      outcome =
+        row === undefined
+          ? { kind: "shift_id_taken" }
+          : { kind: "inserted", shift: toShift(row), adoptedLegacy: adopted !== null };
     } catch (err) {
       await client.query("ROLLBACK TO SAVEPOINT shift_cash_up_open");
       if (isOpenDeviceConflict(err)) return { kind: "device_has_open_shift" };
       throw err;
     }
     await client.query("RELEASE SAVEPOINT shift_cash_up_open");
-    return inserted === undefined ? { kind: "shift_id_taken" } : { kind: "inserted", shift: toShift(inserted) };
+    return outcome;
   }
 
   /** The movement `movementId` recorded on THIS tenant, store and device, or null. */
@@ -499,7 +553,9 @@ export class ShiftCashUpRepository {
    * `closed_forced`. The caller holds the shift row lock and has validated
    * the fact (arithmetic, opening float, refs); the database re-checks the
    * arithmetic and the float. A ref claimed meanwhile by another close throws
-   * RefundRefAlreadyClaimedError, so the caller's transaction rolls back.
+   * RefundRefAlreadyClaimedError, and a shift UPDATE that does not move
+   * exactly one row throws ShiftCloseNotAppliedError, so the caller's
+   * transaction rolls back.
    */
   async insertClose(
     client: PoolClient,
@@ -554,7 +610,7 @@ export class ShiftCashUpRepository {
       if (claimed.rowCount !== refs.length) throw new RefundRefAlreadyClaimedError();
     }
 
-    await client.query(
+    const moved = await client.query(
       `UPDATE shifts SET lifecycle_state = $2
         WHERE shift_id = $1 AND tenant_id = $3 AND store_id = $4 AND opening_device_id = $5`,
       [
@@ -565,6 +621,7 @@ export class ShiftCashUpRepository {
         shift.deviceId,
       ],
     );
+    if (moved.rowCount !== 1) throw new ShiftCloseNotAppliedError();
     return toClose(row, refs);
   }
 }

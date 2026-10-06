@@ -257,7 +257,7 @@ afterEach(async () => {
     DELETE FROM shift_refund_claims;
     DELETE FROM shift_closes;
     DELETE FROM shift_cash_movements;
-    DELETE FROM shifts WHERE source = 'cash_up';
+    DELETE FROM shifts WHERE shift_id <> '${LEGACY_SHIFT}';
     ALTER TABLE shift_refund_claims ENABLE TRIGGER USER;
     ALTER TABLE shift_closes ENABLE TRIGGER USER;
     ALTER TABLE shift_cash_movements ENABLE TRIGGER USER;
@@ -592,4 +592,170 @@ describe("insertClose / findClose", () => {
 
 async function closeNormally(shift: CashUpShiftRow): Promise<void> {
   await inTenant(shift.tenantId, (c) => repo.insertClose(c, shift, closeFact()));
+}
+
+// ---------------------------------------------------------------------------
+// Round-1 review fixes (PR #712)
+// ---------------------------------------------------------------------------
+
+/** A legacy (audit-ingest `shift.open`) row to adopt. */
+interface LegacyRow {
+  scope: DeviceScope;
+  openedAt?: string;
+  openingUserId?: string;
+  state?: "open" | "closed";
+}
+
+async function insertLegacy(legacy: LegacyRow): Promise<string> {
+  const id = randomUUID();
+  await pg().admin.query(
+    `INSERT INTO shifts
+       (shift_id, tenant_id, store_id, opening_cashier_user_id, opening_device_id, opened_at,
+        lifecycle_state)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [
+      id,
+      legacy.scope.tenantId,
+      legacy.scope.storeId,
+      legacy.openingUserId ?? USER_A,
+      legacy.scope.deviceId,
+      legacy.openedAt ?? "2026-10-05T08:00:00Z",
+      legacy.state ?? "open",
+    ],
+  );
+  return id;
+}
+
+async function sourceOf(shiftId: string): Promise<string | undefined> {
+  const r = await pg().admin.query<{ source: string }>(
+    `SELECT source FROM shifts WHERE shift_id = $1`,
+    [shiftId],
+  );
+  return r.rows[0]?.source;
+}
+
+describe("insertShift adopts an open legacy row of the same scope (review P2-1, option b)", () => {
+  it("adopts it: same id, now a cash-up shift with the open fact's columns", async () => {
+    if (skip()) return;
+    const id = await insertLegacy({ scope: SCOPE_A1, openedAt: "2026-10-05T22:30:00Z" });
+    const input = newShift({ shiftId: id, openedAt: "2026-10-05T22:30:00Z" });
+    const outcome = await inTenant(TENANT_A, (c) => repo.insertShift(c, SCOPE_A1, input));
+    expect(outcome).toMatchObject({ kind: "inserted", adoptedLegacy: true });
+    const shift = await inTenant(TENANT_A, (c) => repo.findShift(c, SCOPE_A1, id));
+    expect(shift).toMatchObject({
+      shiftId: id,
+      deviceId: DEVICE_A1,
+      openingUserId: USER_A,
+      lifecycleState: "open",
+      currencyCode: "EGP",
+      openingFloat: "500.0000",
+      // Store-local day in Cairo, as for a fresh open.
+      businessDate: "2026-10-06",
+      recordedByUserId: USER_A,
+    });
+    expect(shift?.payloadHash.equals(input.payloadHash)).toBe(true);
+  });
+
+  it("a fresh open reports adoptedLegacy: false", async () => {
+    if (skip()) return;
+    const outcome = await inTenant(TENANT_A, (c) => repo.insertShift(c, SCOPE_A1, newShift()));
+    expect(outcome).toMatchObject({ kind: "inserted", adoptedLegacy: false });
+  });
+
+  it.each<[string, DeviceScope]>([
+    ["another device", SCOPE_A1_OTHER],
+    ["another store", SCOPE_A2],
+    ["another tenant", SCOPE_B1],
+  ])("never adopts a legacy row of %s: shift_id_taken, row untouched", async (_label, scope) => {
+    if (skip()) return;
+    const id = await insertLegacy({ scope: SCOPE_A1 });
+    const outcome = await inTenant(scope.tenantId, (c) =>
+      repo.insertShift(c, scope, newShift({ shiftId: id })),
+    );
+    expect(outcome).toEqual({ kind: "shift_id_taken" });
+    expect(await sourceOf(id)).toBe("legacy");
+  });
+
+  it.each<[string, Partial<LegacyRow>]>([
+    ["a closed legacy row", { state: "closed" }],
+    ["another opened_at", { openedAt: "2026-10-05T08:00:01Z" }],
+    ["another opening user", { openingUserId: MANAGER_A }],
+  ])("never adopts %s", async (_label, legacy) => {
+    if (skip()) return;
+    const id = await insertLegacy({ scope: SCOPE_A1, ...legacy });
+    const outcome = await inTenant(TENANT_A, (c) =>
+      repo.insertShift(c, SCOPE_A1, newShift({ shiftId: id })),
+    );
+    expect(outcome).toEqual({ kind: "shift_id_taken" });
+    expect(await sourceOf(id)).toBe("legacy");
+  });
+
+  it("an already cash-up id stays unchanged (shift_id_taken)", async () => {
+    if (skip()) return;
+    const shift = await open(SCOPE_A1);
+    const outcome = await inTenant(TENANT_A, (c) =>
+      repo.insertShift(c, SCOPE_A1, newShift({ shiftId: shift.shiftId, openingFloat: "1.00" })),
+    );
+    expect(outcome).toEqual({ kind: "shift_id_taken" });
+    const after = await inTenant(TENANT_A, (c) => repo.findShift(c, SCOPE_A1, shift.shiftId));
+    expect(after).toEqual(shift);
+  });
+
+  it("adoption respects one open shift per device", async () => {
+    if (skip()) return;
+    await open(SCOPE_A1);
+    const id = await insertLegacy({ scope: SCOPE_A1 });
+    const outcome = await inTenant(TENANT_A, (c) =>
+      repo.insertShift(c, SCOPE_A1, newShift({ shiftId: id })),
+    );
+    expect(outcome).toEqual({ kind: "device_has_open_shift" });
+    expect(await sourceOf(id)).toBe("legacy");
+  });
+});
+
+describe("insertClose under a concurrent close claiming the same return (review P3-10)", () => {
+  it("the second close waits, then throws RefundRefAlreadyClaimedError and records nothing", async () => {
+    if (skip()) return;
+    const first = await open(SCOPE_A1);
+    const second = await open(SCOPE_A1_OTHER);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let claimed: () => void = () => undefined;
+    const firstClaimed = new Promise<void>((resolve) => {
+      claimed = resolve;
+    });
+    const firstClose = inTenant(TENANT_A, async (c) => {
+      await repo.insertClose(c, first, closeFact({ cashRefundReturnRefs: [RET_CASH] }));
+      claimed();
+      await gate;
+    });
+    await firstClaimed;
+    const secondClose = inTenant(TENANT_A, (c) =>
+      repo.insertClose(c, second, closeFact({ cashRefundReturnRefs: [RET_CASH] })),
+    );
+    secondClose.catch(() => undefined);
+    await waitForLockWaiter();
+    release();
+    await firstClose;
+    await expect(secondClose).rejects.toBeInstanceOf(RefundRefAlreadyClaimedError);
+    await inTenant(TENANT_A, async (c) => {
+      expect(await repo.findClose(c, second)).toBeNull();
+      expect((await repo.findShift(c, SCOPE_A1_OTHER, second.shiftId))?.lifecycleState).toBe("open");
+    });
+  });
+});
+
+/** Polls until at least one backend waits on a lock (a two-connection barrier). */
+async function waitForLockWaiter(timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const r = await pg().admin.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted`,
+    );
+    if ((r.rows[0]?.n ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("no backend started waiting on a lock");
 }
