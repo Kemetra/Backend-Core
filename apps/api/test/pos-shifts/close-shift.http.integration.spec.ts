@@ -16,6 +16,8 @@
  * the per-device rate-limit key on both paths and the envelope 429; and that
  * no log line carries a note, a forcedReason or an operatorUserId claim.
  */
+import { randomUUID } from "node:crypto";
+
 import {
   CASHIER,
   CASHIER_A2_ONLY,
@@ -200,6 +202,8 @@ describe("closeShift — strict body (400)", () => {
     ["a non-RFC 3339 closedAt", { closedAt: "2026-10-05T16:00:00+0200" }],
     ["more fractional digits than EGP's 2", { countedCash: "2750.001", variance: "-4.999" }],
     ["an unknown key (a scope field)", { storeId: DEV_A2.store }],
+    ["a saleCount beyond a database integer", { saleCount: 2147483648 }],
+    ["more than 1000 refund refs", { cashRefundReturnRefs: Array.from({ length: 1001 }, () => randomUUID()) }],
   ])("%s is 400 validation_error, recording nothing", async (_label, overrides) => {
     if (skipped()) return;
     const shiftId = await openOn(DEV_A1);
@@ -288,6 +292,16 @@ describe("closeShift — refund refs (RT-17 10929 P3-6)", () => {
     const res = await closeFrom(DEV_A1, shiftId, closeBody({ cashRefundReturnRefs: [ref] }));
     expectError(res, { status: 422, code: "refund_ref_invalid" });
     expect(JSON.stringify(res.body)).not.toContain(other);
+  });
+
+  it("an upper-case ref resolves to the same return (201, echoed lower-case); one return in two spellings is 400 (PR #714 round 1)", async () => {
+    if (skipped()) return;
+    const ref = await seedReturn({ at: DEV_A1 });
+    const shiftId = await openOn(DEV_A1);
+    const duplicate = closeBody({ cashRefundReturnRefs: [ref, ref.toUpperCase()] });
+    expectError(await closeFrom(DEV_A1, shiftId, duplicate), { status: 400, code: "validation_error" });
+    const res = await closeFrom(DEV_A1, shiftId.toUpperCase(), closeBody({ cashRefundReturnRefs: [ref.toUpperCase()] }));
+    expect([res.status, res.body.shiftId, res.body.close?.cashRefundReturnRefs]).toEqual([201, shiftId, [ref]]);
   });
 
   it("a cash refund in another currency is 422 currency_mismatch", async () => {

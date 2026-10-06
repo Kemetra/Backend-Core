@@ -160,6 +160,16 @@ describe("openShift — idempotency and natural-key dedupe", () => {
     }
   });
 
+  it("the same open with its ids upper-cased under another key is a 200 replay (PR #714 round 1)", async () => {
+    if (skipped()) return;
+    const body = openBody();
+    const first = await openFrom(DEV_A1, body);
+    const upper = { ...body, shiftId: String(body["shiftId"]).toUpperCase(), openingUserId: CASHIER.id.toUpperCase() };
+    const replay = await openFrom(DEV_A1, upper);
+    expectReplay(replay);
+    expect(replay.body).toEqual(first.body);
+  });
+
   it("the same key with a different body is 409 idempotency_key_conflict", async () => {
     if (skipped()) return;
     const key = newKey();

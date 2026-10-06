@@ -98,6 +98,8 @@ interface RepoState {
   readonly close?: ShiftCloseRow | null;
   readonly refs?: RefundRefRow[];
   readonly insertError?: Error;
+  /** Errors `insertClose` throws once each, in order, before it succeeds. */
+  readonly insertFailures?: unknown[];
 }
 
 /** The stated users the store-user double accepts. */
@@ -109,12 +111,14 @@ interface UserState {
 function harness(repoState: RepoState, users: UserState = {}) {
   const recorded: ShiftCloseFact[] = [];
   const finds = [...repoState.shifts];
+  const failures = [...(repoState.insertFailures ?? [])];
   const repo = {
     findShift: jest.fn(async () => (finds.length > 1 ? finds.shift() : finds[0]) ?? null),
     findClose: jest.fn(async () => repoState.close ?? null),
     readRefundRefs: jest.fn(async () => repoState.refs ?? [cashRef()]),
     insertClose: jest.fn(async (_c: unknown, _s: unknown, fact: ShiftCloseFact) => {
       if (repoState.insertError) throw repoState.insertError;
+      if (failures.length > 0) throw failures.shift();
       recorded.push(fact);
       return closeRowOf(fact);
     }),
@@ -253,5 +257,38 @@ describe("closeShift — a close that did not apply (ShiftCloseNotAppliedError)"
   it("a shift still open afterwards is not hidden: the error propagates (500)", async () => {
     const { service } = harness({ shifts: [shiftRow("open")], insertError: new ShiftCloseNotAppliedError() });
     await expect(service.closeShift(DEVICE, SHIFT_ID, FACT)).rejects.toBeInstanceOf(ShiftCloseNotAppliedError);
+  });
+});
+
+describe("closeShift — a transaction conflict on the refund claims is retried once (PR #714 round 1, Codex P2)", () => {
+  /** A Postgres error with this SQLSTATE. */
+  const pgError = (code: string): Error => Object.assign(new Error(`pg ${code}`), { code });
+
+  it.each([
+    ["a deadlock (40P01)", "40P01"],
+    ["a serialization failure (40001)", "40001"],
+  ])("%s once: the close is re-run in a fresh transaction and recorded (201)", async (_label, code) => {
+    const { service, repo } = harness({ shifts: [shiftRow("open")], insertFailures: [pgError(code)] });
+    expect(await outcomeOf(service)).toBe("created");
+    expect(repo.insertClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("the retry answers what the database now holds: a rival's claim is 422 refund_ref_invalid", async () => {
+    const claimed = cashRef({ claimedByShiftId: "0e170000-0000-4000-8000-0000000a1001" });
+    const { service, repo } = harness({ shifts: [shiftRow("open")], insertFailures: [pgError("40P01")] });
+    repo.readRefundRefs.mockResolvedValueOnce([cashRef()]).mockResolvedValueOnce([claimed]);
+    expect(await outcomeOf(service)).toBe("refund_ref_invalid");
+  });
+
+  it("twice: the second conflict is not hidden (500, the POS retries a transient error)", async () => {
+    const deadlock = pgError("40P01");
+    const { service } = harness({ shifts: [shiftRow("open")], insertFailures: [pgError("40P01"), deadlock] });
+    await expect(service.closeShift(DEVICE, SHIFT_ID, FACT)).rejects.toBe(deadlock);
+  });
+
+  it("any other database error is not retried", async () => {
+    const { service, repo } = harness({ shifts: [shiftRow("open")], insertFailures: [pgError("23503")] });
+    await expect(service.closeShift(DEVICE, SHIFT_ID, FACT)).rejects.toMatchObject({ code: "23503" });
+    expect(repo.insertClose).toHaveBeenCalledTimes(1);
   });
 });

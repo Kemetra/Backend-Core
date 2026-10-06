@@ -15,6 +15,7 @@ import {
 
 const UUID = "0192f5a2-3b4c-7d8e-9f01-23456789ab01";
 const UUID_V4 = "0e170000-0000-4000-8000-000000000001";
+const UUID_UPPER = UUID.toUpperCase();
 
 const OPEN = {
   shiftId: UUID,
@@ -193,5 +194,55 @@ describe("ShiftIdParamSchema", () => {
     ["", false],
   ])("%s → %s", (value, ok) => {
     expect(ShiftIdParamSchema.safeParse(value).success).toBe(ok);
+  });
+
+  it("an upper-case shift_id is the same id, lower-cased", () => {
+    expect(ShiftIdParamSchema.parse(UUID_UPPER)).toBe(UUID);
+  });
+});
+
+describe("every id is normalised to lower case (PR #714 round 1, Codex P2)", () => {
+  /** One id field of a body schema, given upper-case. */
+  interface IdCase {
+    readonly schema: ZodTypeAny;
+    readonly base: Record<string, unknown>;
+    readonly field: string;
+  }
+
+  const idCases: Array<[string, IdCase]> = [
+    ["OpenShiftRequest.shiftId", { schema: OpenShiftRequestSchema, base: OPEN, field: "shiftId" }],
+    ["OpenShiftRequest.openingUserId", { schema: OpenShiftRequestSchema, base: OPEN, field: "openingUserId" }],
+    ["OpenShiftRequest.operatorUserId", { schema: OpenShiftRequestSchema, base: OPEN, field: "operatorUserId" }],
+    ["RecordCashMovementRequest.movementId", { schema: RecordCashMovementRequestSchema, base: MOVEMENT, field: "movementId" }],
+    ["RecordCashMovementRequest.operatorUserId", { schema: RecordCashMovementRequestSchema, base: MOVEMENT, field: "operatorUserId" }],
+    ["CloseShiftRequest.closingUserId", { schema: CloseShiftRequestSchema, base: CLOSE, field: "closingUserId" }],
+    ["CloseShiftRequest.varianceApprovedByUserId", { schema: CloseShiftRequestSchema, base: CLOSE, field: "varianceApprovedByUserId" }],
+    ["CloseShiftRequest.operatorUserId", { schema: CloseShiftRequestSchema, base: CLOSE, field: "operatorUserId" }],
+  ];
+
+  it.each(idCases)("%s", (_label, c) => {
+    const parsed = c.schema.parse({ ...c.base, [c.field]: UUID_UPPER }) as Record<string, unknown>;
+    expect(parsed[c.field]).toBe(UUID);
+  });
+
+  it("cashRefundReturnRefs are lower-cased, in order", () => {
+    const parsed = CloseShiftRequestSchema.parse({ ...CLOSE, cashRefundReturnRefs: [UUID_UPPER, UUID_V4] });
+    expect(parsed.cashRefundReturnRefs).toEqual([UUID, UUID_V4]);
+  });
+
+  it("the same return in two spellings is a duplicate (400), never two refs", () => {
+    expect(accepts({ schema: CloseShiftRequestSchema, base: CLOSE, overrides: { cashRefundReturnRefs: [UUID, UUID_UPPER] } })).toBe(false);
+  });
+});
+
+describe("cashRefundReturnRefs is capped at 1000 (contract maxItems)", () => {
+  const refs = (count: number): string[] =>
+    Array.from({ length: count }, (_v, i) => `0e170000-0000-4000-8000-${i.toString(16).padStart(12, "0")}`);
+
+  it.each([
+    [1000, true],
+    [1001, false],
+  ])("%i refs → %s", (count, ok) => {
+    expect(accepts({ schema: CloseShiftRequestSchema, base: CLOSE, overrides: { cashRefundReturnRefs: refs(count) } })).toBe(ok);
   });
 });
