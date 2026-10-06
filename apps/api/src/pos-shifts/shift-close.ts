@@ -82,3 +82,12 @@ export function isRacedClose(err: unknown): boolean {
   const closeTaken = code === "23505" && constraint === "shift_closes_pkey";
   return err instanceof ShiftCloseNotAppliedError || code === "55000" || closeTaken;
 }
+
+/**
+ * True for a deadlock (40P01) or a serialization failure (40001): the
+ * database rolled the whole transaction back and a fresh attempt may succeed.
+ */
+export function isTransactionConflict(err: unknown): boolean {
+  const { code } = pgFields(err);
+  return code === "40P01" || code === "40001";
+}

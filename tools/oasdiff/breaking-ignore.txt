@@ -7,3 +7,10 @@
 #
 # Example:
 #   RT-123 intentional: POST /api/v1/example added the new required request header 'X-Example'
+# RT-17 slice 2b-2 (PR #714 round 1): closeShift's request declares the
+# limits the runtime already enforces (a database integer saleCount; at most
+# 1000 refund refs, refused with 400). pos-shifts.openapi.yaml is a
+# 1.1.0-draft contract and closeShift had no runtime route and no consumer
+# before this PR. [GATED] approval: Jira RT-17 comments 10760 + 10920.
+RT-17 intentional (closeShift saleCount bounded to the database integer the runtime enforces; draft contract, no consumer yet; [GATED] RT-17 10760/10920): in API POST /api/pos/v1/shifts/{shift_id}/close the `saleCount` request property's max was set to `2147483647.00` [request-property-max-set].
+RT-17 intentional (closeShift cashRefundReturnRefs capped at 1000 as the runtime enforces; draft contract, no consumer yet; [GATED] RT-17 10760/10920): in API POST /api/pos/v1/shifts/{shift_id}/close the `cashRefundReturnRefs` request property's maxItems was set to `1000` [request-property-max-items-set].

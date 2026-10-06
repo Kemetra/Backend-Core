@@ -53,7 +53,7 @@ import {
   type ShiftCloseFact,
   type ShiftCloseRow,
 } from "./shift-cash-up.repository";
-import { closeHash, closedShift, isRacedClose, toCloseRecord } from "./shift-close";
+import { closeHash, closedShift, isRacedClose, isTransactionConflict, toCloseRecord } from "./shift-close";
 import { refundRefFailure } from "./shift-refund-refs";
 import { ShiftStoreUserReader } from "./shift-store-user";
 import { canonicalInstant, fitsCurrencyPrecision, formatMoney } from "./shift-money";
@@ -179,10 +179,27 @@ export class ShiftCashUpService {
   ): Promise<ShiftWriteResult<ShiftProjection>> {
     const request: CloseRequest = { ctx, shiftId, fact };
     try {
-      return await this.inTenant(ctx, (client) => this.closeInTenant(client, request));
+      return await this.closeOnce(request);
+    } catch (err) {
+      // A deadlock (40P01) or serialization failure (40001) rolled the whole
+      // close back. Retried ONCE in a fresh transaction rather than answered
+      // as a lost claim (PR #714 round 1, Codex P2): the rival may have rolled
+      // back too, so a 422 could dead-letter a valid close on the POS; the
+      // retry answers what the database now holds (201, a replay, 409 or
+      // 422). Claims are taken in return_id order, so this is a backstop; a
+      // second conflict propagates as a transient 500 the POS retries.
+      if (!isTransactionConflict(err)) throw err;
+      return this.closeOnce(request);
+    }
+  }
+
+  /** One close transaction, with a raced close settled in a second one. */
+  private async closeOnce(request: CloseRequest): Promise<ShiftWriteResult<ShiftProjection>> {
+    try {
+      return await this.inTenant(request.ctx, (client) => this.closeInTenant(client, request));
     } catch (err) {
       if (!isRacedClose(err)) throw err;
-      return this.inTenant(ctx, (client) => this.settleRacedClose(client, { request, err }));
+      return this.inTenant(request.ctx, (client) => this.settleRacedClose(client, { request, err }));
     }
   }
 

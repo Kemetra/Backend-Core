@@ -16,7 +16,18 @@ import { z } from "zod";
 import { minorUnitExponent } from "../catalog/sales/iso4217-minor-units";
 import { fitsCurrencyPrecision } from "./shift-money";
 
-const uuid = z.string().uuid();
+/**
+ * A UUID, normalised to lower case (PR #714 round 1, Codex P2). RFC 4122
+ * hex is case-insensitive and Postgres stores `uuid` lower-case, so an
+ * upper-case spelling is the same id: normalising before any comparison,
+ * de-duplication or payload hash keeps "ABC…" and "abc…" one id. A
+ * lower-case id passes through unchanged, so every recorded hash stays the
+ * same (shift-fact-hashes.unit.spec.ts pins them).
+ */
+const uuid = z
+  .string()
+  .uuid()
+  .transform((id) => id.toLowerCase());
 
 /**
  * An RFC 3339 `date-time` on the POS clock (Codex P2, PR #713): `Z` or a
@@ -105,6 +116,9 @@ export const RecordCashMovementRequestSchema = z
 /** The largest `saleCount` the database stores (`integer`): a larger one is a 400, never a 500. */
 const MAX_SALE_COUNT = 2_147_483_647;
 
+/** The most refund refs one close may claim (contract `maxItems`). */
+const MAX_REFUND_REFS = 1000;
+
 /**
  * `CloseShiftRequest`. The service checks what depends on the recorded
  * shift: the amounts' precision against its currency (400), the arithmetic
@@ -129,6 +143,7 @@ export const CloseShiftRequestSchema = z
     saleCount: z.number().int().min(0).max(MAX_SALE_COUNT),
     cashRefundReturnRefs: z
       .array(uuid)
+      .max(MAX_REFUND_REFS)
       .refine((refs) => new Set(refs).size === refs.length, "must not repeat a return"),
     varianceApprovedByUserId: uuid.optional(),
     operatorUserId,

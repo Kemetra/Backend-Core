@@ -91,7 +91,10 @@ info:
     close, `movementId` for a movement) with a payload hash: a re-delivery of
     the same fact with a different key is a `200` replay; the same natural key
     with a different payload is 409 `shift_payload_conflict`. The
-    `operatorUserId` claim is not part of that payload hash. A request whose
+    `operatorUserId` claim is not part of that payload hash. Every id (`format:
+    uuid`, in a body or the `shift_id` path) is case-insensitive: it is
+    normalised to lower case before any comparison, de-duplication or hash,
+    so an upper-case re-delivery is the same fact. A request whose
     `Idempotency-Key` is still being processed is 425 `idempotency_in_progress`
     (retry with the same key and body after `Retry-After`); a missing key is
     400 `idempotency_key_required` and a malformed one 400
@@ -881,18 +884,23 @@ components:
         saleCount:
           type: integer
           minimum: 0
+          maximum: 2147483647
           description: >
             Number of sales the POS counted in the shift (this device,
-            finalized inside the shift). Recorded as reported.
+            finalized inside the shift). Recorded as reported; at most
+            2147483647 (a database integer).
         cashRefundReturnRefs:
           type: array
           uniqueItems: true
+          maxItems: 1000
           items:
             type: string
             format: uuid
           description: >
             The returns whose cash refund was paid from this drawer during
-            the shift (their server return references); may be empty. Each
+            the shift (their server return references); may be empty, at
+            most 1000. Ids are case-insensitive (normalised to lower case,
+            so one return in two spellings is a duplicate, 400). Each
             must resolve to a return of the caller's tenant and store with a
             cash refund tender not claimed by another shift's close, else 422
             `refund_ref_invalid`; one refunded in another currency is 422
@@ -1033,9 +1041,11 @@ components:
         saleCount:
           type: integer
           minimum: 0
+          maximum: 2147483647
         cashRefundReturnRefs:
           type: array
           uniqueItems: true
+          maxItems: 1000
           items:
             type: string
             format: uuid
