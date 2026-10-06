@@ -79,6 +79,14 @@ function countAppendOnlyTriggers(): Promise<string> {
   );
 }
 
+/** How many of 0036's shifts cash-up guard triggers exist (RT-17). */
+function countShiftGuardTriggers(): Promise<string> {
+  return queryCount(
+    `SELECT COUNT(*)::text AS count FROM pg_trigger
+     WHERE tgname IN ('shifts_cash_up_guard_row', 'shifts_cash_up_guard_truncate')`,
+  );
+}
+
 /** How many of the named public-schema tables currently exist. */
 function countPublicTables(names: string[]): Promise<string> {
   return queryCount(
@@ -199,6 +207,7 @@ describe("data-pulse-migrate CLI", () => {
     "0033_sale_tenders",
     "0034_audit_events_append_only",
     "0035_cashier_admissions",
+    "0036_shift_cash_up",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -206,6 +215,9 @@ describe("data-pulse-migrate CLI", () => {
 
   /** The two tables created by 0035_cashier_admissions (RT-113 BC2). */
   const ADMISSION_TABLES = ["cashier_admissions", "cashier_admission_requests"];
+
+  /** The three append-only fact tables created by 0036_shift_cash_up (RT-17). */
+  const SHIFT_CASH_UP_TABLES = ["shift_closes", "shift_cash_movements", "shift_refund_claims"];
 
   /** The three return tables created by 0032_sale_returns (RT-73). */
   const RETURN_TABLES = ["sale_returns", "sale_return_lines", "sale_return_tenders"];
@@ -291,6 +303,12 @@ describe("data-pulse-migrate CLI", () => {
     // 0035's cashier admission tables and their 3 + 4 policies (RT-113 BC2).
     expect(await countPublicTables(ADMISSION_TABLES)).toBe("2");
     expect(await countPolicies(ADMISSION_TABLES)).toBe("7");
+    // 0036's cash-up fact tables (SELECT + INSERT policies each), the shifts
+    // cash-up columns and guard triggers (RT-17).
+    expect(await countPublicTables(SHIFT_CASH_UP_TABLES)).toBe("3");
+    expect(await countPolicies(SHIFT_CASH_UP_TABLES)).toBe("6");
+    expect(await countPublicColumn("shifts", "source")).toBe("1");
+    expect(await countShiftGuardTriggers()).toBe("2");
   });
 
   it("up is idempotent on a second run", async () => {
@@ -326,11 +344,16 @@ describe("data-pulse-migrate CLI", () => {
 
       expect(await ledgerIds()).toEqual(EXPECTED_MIGRATIONS.slice(0, -1));
 
-      // 0035 removes the cashier admission tables (RT-113 BC2).
-      expect(await countPublicTables(ADMISSION_TABLES)).toBe("0");
+      // 0036 removes the cash-up fact tables, the shifts cash-up columns and
+      // the guard triggers (RT-17).
+      expect(await countPublicTables(SHIFT_CASH_UP_TABLES)).toBe("0");
+      expect(await countPublicColumn("shifts", "source")).toBe("0");
+      expect(await countShiftGuardTriggers()).toBe("0");
 
-      // Sanity: everything older SURVIVES the 0035 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0036 rollback (down reverses
       // only the latest migration) —
+      // 0035's cashier admission tables (RT-113 BC2);
+      expect(await countPublicTables(ADMISSION_TABLES)).toBe("2");
       // 0034's audit_events append-only triggers (RT-133);
       expect(await countAppendOnlyTriggers()).toBe("2");
       // 0033's sale_tenders table and the two sales columns (RT-77);
@@ -425,6 +448,8 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicTables(CATALOG_TABLES)).toBe("7");
     expect(await countAppendOnlyTriggers()).toBe("2");
     expect(await countPublicTables(ADMISSION_TABLES)).toBe("2");
+    expect(await countPublicTables(SHIFT_CASH_UP_TABLES)).toBe("3");
+    expect(await countShiftGuardTriggers()).toBe("2");
   });
 
   it(
