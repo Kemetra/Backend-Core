@@ -151,12 +151,17 @@ interface CloseInput {
   payloadHash?: Buffer;
 }
 
+/** A close fixture: the shift it closes plus any overrides. */
+interface CloseFixture extends CloseInput {
+  shiftId: string;
+}
+
 /** Inserts a shift_closes row; defaults satisfy the arithmetic. */
 async function insertCloseRow(
-  shiftId: string,
-  input: CloseInput = {},
+  close: CloseFixture,
   client: { query: PoolClient["query"] } = pg().admin,
 ): Promise<void> {
+  const { shiftId, ...input } = close;
   await client.query(
     `INSERT INTO shift_closes
        (shift_id, tenant_id, store_id, device_id, currency_code, closed_at, closing_user_id,
@@ -189,11 +194,11 @@ async function insertCloseRow(
 }
 
 /** Records the close and moves the shift to its closed state. */
-async function closeShift(shiftId: string, input: CloseInput = {}): Promise<void> {
-  await insertCloseRow(shiftId, input);
+async function closeShift(close: CloseFixture): Promise<void> {
+  await insertCloseRow(close);
   await pg().admin.query(`UPDATE shifts SET lifecycle_state = $2 WHERE shift_id = $1`, [
-    shiftId,
-    input.kind === "forced" ? "closed_forced" : "closed",
+    close.shiftId,
+    close.kind === "forced" ? "closed_forced" : "closed",
   ]);
 }
 
@@ -209,7 +214,13 @@ interface MovementInput {
   note?: string | null;
 }
 
-async function insertMovement(shiftId: string, input: MovementInput = {}): Promise<string> {
+/** A movement fixture: the shift it is recorded on plus any overrides. */
+interface MovementFixture extends MovementInput {
+  shiftId: string;
+}
+
+async function insertMovement(movement: MovementFixture): Promise<string> {
+  const { shiftId, ...input } = movement;
   const id = input.id ?? randomUUID();
   await pg().admin.query(
     `INSERT INTO shift_cash_movements
@@ -234,25 +245,40 @@ async function insertMovement(shiftId: string, input: MovementInput = {}): Promi
   return id;
 }
 
-async function insertClaim(
-  shiftId: string,
-  returnId: string,
-  opts: { tenant?: string; store?: string; ordinal?: number } = {},
-): Promise<void> {
+/** A refund claim: the close's shift, the claimed return and any overrides. */
+interface ClaimFixture {
+  shiftId: string;
+  returnId: string;
+  tenant?: string;
+  store?: string;
+  ordinal?: number;
+}
+
+async function insertClaim(claim: ClaimFixture): Promise<void> {
   await pg().admin.query(
     `INSERT INTO shift_refund_claims (return_id, shift_id, tenant_id, store_id, ordinal)
      VALUES ($1, $2, $3, $4, $5)`,
-    [returnId, shiftId, opts.tenant ?? TENANT_A, opts.store ?? STORE_A1, opts.ordinal ?? 0],
+    [
+      claim.returnId,
+      claim.shiftId,
+      claim.tenant ?? TENANT_A,
+      claim.store ?? STORE_A1,
+      claim.ordinal ?? 0,
+    ],
   );
 }
 
-async function seedSaleAndReturn(
-  saleId: string,
-  returnIds: string[],
-  tenant: string,
-  store: string,
-  actor: string,
-): Promise<void> {
+/** A seeded sale with its returns, in one tenant and store. */
+interface SaleFixture {
+  saleId: string;
+  returnIds: string[];
+  tenant: string;
+  store: string;
+  actor: string;
+}
+
+async function seedSaleAndReturn(sale: SaleFixture): Promise<void> {
+  const { saleId, returnIds, tenant, store, actor } = sale;
   await pg().admin.query(
     `INSERT INTO sales
        (id, tenant_id, store_id, currency_code, pos_total, occurred_at, business_date,
@@ -327,9 +353,27 @@ beforeAll(async () => {
   );
   await env.admin.query(readFileSync(UP_PATH, "utf8"));
   await ensureAppRole(env);
-  await seedSaleAndReturn(SALE_A1, [RETURN_A1, RETURN_A1_SECOND], TENANT_A, STORE_A1, USER_A);
-  await seedSaleAndReturn(SALE_A2, [RETURN_A2], TENANT_A, STORE_A2, USER_A);
-  await seedSaleAndReturn(SALE_B1, [RETURN_B1], TENANT_B, STORE_B1, USER_B);
+  await seedSaleAndReturn({
+    saleId: SALE_A1,
+    returnIds: [RETURN_A1, RETURN_A1_SECOND],
+    tenant: TENANT_A,
+    store: STORE_A1,
+    actor: USER_A,
+  });
+  await seedSaleAndReturn({
+    saleId: SALE_A2,
+    returnIds: [RETURN_A2],
+    tenant: TENANT_A,
+    store: STORE_A2,
+    actor: USER_A,
+  });
+  await seedSaleAndReturn({
+    saleId: SALE_B1,
+    returnIds: [RETURN_B1],
+    tenant: TENANT_B,
+    store: STORE_B1,
+    actor: USER_B,
+  });
 }, 240_000);
 
 afterAll(async () => {
@@ -445,7 +489,7 @@ describe("0036 — one open cash_up shift per device (uq_shifts_cash_up_open_dev
   it("allows a new open shift once the previous one is closed", async () => {
     if (skip()) return;
     const first = await insertShift();
-    await closeShift(first);
+    await closeShift({ shiftId: first });
     await insertShift();
   });
 
@@ -463,7 +507,7 @@ describe("0036 — the shifts guard trigger", () => {
   it("closes a cash_up shift once its normal close is recorded", async () => {
     if (skip()) return;
     const id = await insertShift();
-    await closeShift(id);
+    await closeShift({ shiftId: id });
     const r = await pg().admin.query(`SELECT lifecycle_state FROM shifts WHERE shift_id = $1`, [id]);
     expect(r.rows[0]).toEqual({ lifecycle_state: "closed" });
   });
@@ -471,7 +515,7 @@ describe("0036 — the shifts guard trigger", () => {
   it("closes a cash_up shift as closed_forced once its forced close is recorded", async () => {
     if (skip()) return;
     const id = await insertShift();
-    await closeShift(id, { kind: "forced", forcedReason: "Cashier left" });
+    await closeShift({ shiftId: id, kind: "forced", forcedReason: "Cashier left" });
     const r = await pg().admin.query(`SELECT lifecycle_state FROM shifts WHERE shift_id = $1`, [id]);
     expect(r.rows[0]).toEqual({ lifecycle_state: "closed_forced" });
   });
@@ -487,7 +531,7 @@ describe("0036 — the shifts guard trigger", () => {
   it("refuses a closed state that does not match the close kind", async () => {
     if (skip()) return;
     const id = await insertShift();
-    await insertCloseRow(id);
+    await insertCloseRow({ shiftId: id });
     await expect(
       pg().admin.query(`UPDATE shifts SET lifecycle_state = 'closed_forced' WHERE shift_id = $1`, [id]),
     ).rejects.toMatchObject({ code: "42501" });
@@ -499,7 +543,7 @@ describe("0036 — the shifts guard trigger", () => {
     await expect(
       pg().admin.query(`UPDATE shifts SET opening_float = 1 WHERE shift_id = $1`, [id]),
     ).rejects.toMatchObject({ code: "42501" });
-    await closeShift(id);
+    await closeShift({ shiftId: id });
     for (const sql of [
       `UPDATE shifts SET lifecycle_state = 'open' WHERE shift_id = $1`,
       `UPDATE shifts SET lifecycle_state = 'closed' WHERE shift_id = $1`,
@@ -512,7 +556,7 @@ describe("0036 — the shifts guard trigger", () => {
   it("refuses to change the closing state together with another column", async () => {
     if (skip()) return;
     const id = await insertShift();
-    await insertCloseRow(id);
+    await insertCloseRow({ shiftId: id });
     await expect(
       pg().admin.query(
         `UPDATE shifts SET lifecycle_state = 'closed', opened_at = now() WHERE shift_id = $1`,
@@ -574,13 +618,14 @@ describe("0036 — shift_closes", () => {
   ])("rejects %s", async (_label, input, error) => {
     if (skip()) return;
     const id = await insertShift();
-    await expect(insertCloseRow(id, input)).rejects.toThrow(error);
+    await expect(insertCloseRow({ shiftId: id, ...input })).rejects.toThrow(error);
   });
 
   it("checks the arithmetic in exact numeric (no float rounding)", async () => {
     if (skip()) return;
     const id = await insertShift({ openingFloat: "0.1000" });
-    await insertCloseRow(id, {
+    await insertCloseRow({
+      shiftId: id,
       openingFloat: "0.1000",
       cashSales: "0.2000",
       cashRefunds: "0.0000",
@@ -601,19 +646,19 @@ describe("0036 — shift_closes", () => {
   ])("refuses a close with %s (fk_shift_closes_shift)", async (_label, input) => {
     if (skip()) return;
     const id = await insertShift();
-    await expect(insertCloseRow(id, input)).rejects.toThrow(/fk_shift_closes_shift/);
+    await expect(insertCloseRow({ shiftId: id, ...input })).rejects.toThrow(/fk_shift_closes_shift/);
   });
 
   it("can never reference a legacy shift", async () => {
     if (skip()) return;
-    await expect(insertCloseRow(LEGACY_SHIFT)).rejects.toThrow(/fk_shift_closes_shift/);
+    await expect(insertCloseRow({ shiftId: LEGACY_SHIFT })).rejects.toThrow(/fk_shift_closes_shift/);
   });
 
   it("records one close per shift", async () => {
     if (skip()) return;
     const id = await insertShift();
-    await insertCloseRow(id);
-    await expect(insertCloseRow(id)).rejects.toMatchObject({ code: "23505" });
+    await insertCloseRow({ shiftId: id });
+    await expect(insertCloseRow({ shiftId: id })).rejects.toMatchObject({ code: "23505" });
   });
 });
 
@@ -621,15 +666,15 @@ describe("0036 — shift_cash_movements", () => {
   it("records a movement on an open shift", async () => {
     if (skip()) return;
     const id = await insertShift();
-    await insertMovement(id);
-    await insertMovement(id, { kind: "pay_in", reason: "float_top_up", note: null, amount: "0.0001" });
+    await insertMovement({ shiftId: id });
+    await insertMovement({ shiftId: id, kind: "pay_in", reason: "float_top_up", note: null, amount: "0.0001" });
   });
 
   it("refuses a movement once the shift is closed (55000)", async () => {
     if (skip()) return;
     const id = await insertShift();
-    await closeShift(id);
-    await expect(insertMovement(id)).rejects.toMatchObject({ code: "55000" });
+    await closeShift({ shiftId: id });
+    await expect(insertMovement({ shiftId: id })).rejects.toMatchObject({ code: "55000" });
   });
 
   it.each<[string, MovementInput, RegExp]>([
@@ -641,7 +686,7 @@ describe("0036 — shift_cash_movements", () => {
   ])("rejects %s", async (_label, input, error) => {
     if (skip()) return;
     const id = await insertShift();
-    await expect(insertMovement(id, input)).rejects.toThrow(error);
+    await expect(insertMovement({ shiftId: id, ...input })).rejects.toThrow(error);
   });
 
   it.each<[string, MovementInput]>([
@@ -652,12 +697,12 @@ describe("0036 — shift_cash_movements", () => {
   ])("refuses a movement with %s (fk_shift_cash_movements_shift)", async (_label, input) => {
     if (skip()) return;
     const id = await insertShift();
-    await expect(insertMovement(id, input)).rejects.toThrow(/fk_shift_cash_movements_shift/);
+    await expect(insertMovement({ shiftId: id, ...input })).rejects.toThrow(/fk_shift_cash_movements_shift/);
   });
 
   it("can never reference a legacy shift", async () => {
     if (skip()) return;
-    await expect(insertMovement(LEGACY_SHIFT)).rejects.toThrow(/fk_shift_cash_movements_shift/);
+    await expect(insertMovement({ shiftId: LEGACY_SHIFT })).rejects.toThrow(/fk_shift_cash_movements_shift/);
   });
 });
 
@@ -665,19 +710,19 @@ describe("0036 — shift_refund_claims", () => {
   it("claims returns of the close's tenant and store, in order", async () => {
     if (skip()) return;
     const id = await insertShift();
-    await insertCloseRow(id);
-    await insertClaim(id, RETURN_A1, { ordinal: 0 });
-    await insertClaim(id, RETURN_A1_SECOND, { ordinal: 1 });
+    await insertCloseRow({ shiftId: id });
+    await insertClaim({ shiftId: id, returnId: RETURN_A1, ordinal: 0 });
+    await insertClaim({ shiftId: id, returnId: RETURN_A1_SECOND, ordinal: 1 });
   });
 
   it("a return is claimed by at most one shift's close", async () => {
     if (skip()) return;
     const first = await insertShift();
-    await closeShift(first);
-    await insertClaim(first, RETURN_A1);
+    await closeShift({ shiftId: first });
+    await insertClaim({ shiftId: first, returnId: RETURN_A1 });
     const second = await insertShift();
-    await insertCloseRow(second);
-    await expect(insertClaim(second, RETURN_A1)).rejects.toMatchObject({
+    await insertCloseRow({ shiftId: second });
+    await expect(insertClaim({ shiftId: second, returnId: RETURN_A1 })).rejects.toMatchObject({
       code: "23505",
       constraint: "shift_refund_claims_pkey",
     });
@@ -686,26 +731,26 @@ describe("0036 — shift_refund_claims", () => {
   it("refuses a return of another store or another tenant (fk_shift_refund_claims_return)", async () => {
     if (skip()) return;
     const id = await insertShift();
-    await insertCloseRow(id);
-    await expect(insertClaim(id, RETURN_A2)).rejects.toThrow(/fk_shift_refund_claims_return/);
-    await expect(insertClaim(id, RETURN_B1)).rejects.toThrow(/fk_shift_refund_claims_return/);
+    await insertCloseRow({ shiftId: id });
+    await expect(insertClaim({ shiftId: id, returnId: RETURN_A2 })).rejects.toThrow(/fk_shift_refund_claims_return/);
+    await expect(insertClaim({ shiftId: id, returnId: RETURN_B1 })).rejects.toThrow(/fk_shift_refund_claims_return/);
   });
 
   it("refuses a claim without a recorded close (fk_shift_refund_claims_close)", async () => {
     if (skip()) return;
     const id = await insertShift();
-    await expect(insertClaim(id, RETURN_A1)).rejects.toThrow(/fk_shift_refund_claims_close/);
+    await expect(insertClaim({ shiftId: id, returnId: RETURN_A1 })).rejects.toThrow(/fk_shift_refund_claims_close/);
   });
 
   it("orders the claims of one close uniquely", async () => {
     if (skip()) return;
     const id = await insertShift();
-    await insertCloseRow(id);
-    await insertClaim(id, RETURN_A1, { ordinal: 0 });
-    await expect(insertClaim(id, RETURN_A1_SECOND, { ordinal: 0 })).rejects.toThrow(
+    await insertCloseRow({ shiftId: id });
+    await insertClaim({ shiftId: id, returnId: RETURN_A1, ordinal: 0 });
+    await expect(insertClaim({ shiftId: id, returnId: RETURN_A1_SECOND, ordinal: 0 })).rejects.toThrow(
       /uq_shift_refund_claims_shift_ordinal/,
     );
-    await expect(insertClaim(id, RETURN_A1_SECOND, { ordinal: -1 })).rejects.toThrow(
+    await expect(insertClaim({ shiftId: id, returnId: RETURN_A1_SECOND, ordinal: -1 })).rejects.toThrow(
       /shift_refund_claims_ordinal_non_negative/,
     );
   });
@@ -725,9 +770,9 @@ describe("0036 — the fact tables are append-only for every role", () => {
   ])("%s: `%s` raises 42501 even as the owner", async (_table, sql) => {
     if (skip()) return;
     const id = await insertShift();
-    await insertMovement(id);
-    await insertCloseRow(id);
-    await insertClaim(id, RETURN_A1);
+    await insertMovement({ shiftId: id });
+    await insertCloseRow({ shiftId: id });
+    await insertClaim({ shiftId: id, returnId: RETURN_A1 });
     await expect(pg().admin.query(sql)).rejects.toMatchObject({ code: "42501" });
   });
 });
@@ -757,8 +802,14 @@ describe("0036 — RLS", () => {
        VALUES ($1, $2, $3, $4, $5, 'EGP', 'pay_in', 1, 'other', now(), $6, $7)`,
       [randomUUID(), theirs, TENANT_B, STORE_B1, DEVICE_B1, USER_B, digest("m")],
     );
-    await insertCloseRow(theirs, { tenant: TENANT_B, store: STORE_B1, device: DEVICE_B1, user: USER_B });
-    await insertClaim(theirs, RETURN_B1, { tenant: TENANT_B, store: STORE_B1 });
+    await insertCloseRow({
+      shiftId: theirs,
+      tenant: TENANT_B,
+      store: STORE_B1,
+      device: DEVICE_B1,
+      user: USER_B,
+    });
+    await insertClaim({ shiftId: theirs, returnId: RETURN_B1, tenant: TENANT_B, store: STORE_B1 });
     const mine = await insertShift();
 
     await asTenant(TENANT_A, async (client) => {
@@ -778,11 +829,20 @@ describe("0036 — RLS", () => {
     await asTenant(TENANT_A, async (client) => {
       await client.query("SAVEPOINT s");
       await expect(
-        insertMovementVia(client, theirs, TENANT_B, STORE_B1, DEVICE_B1, USER_B),
+        insertMovementVia(client, {
+          shiftId: theirs,
+          tenant: TENANT_B,
+          store: STORE_B1,
+          device: DEVICE_B1,
+          user: USER_B,
+        }),
       ).rejects.toThrow(/row-level security/);
       await client.query("ROLLBACK TO SAVEPOINT s");
       await expect(
-        insertCloseRow(theirs, { tenant: TENANT_B, store: STORE_B1, device: DEVICE_B1, user: USER_B }, client),
+        insertCloseRow(
+          { shiftId: theirs, tenant: TENANT_B, store: STORE_B1, device: DEVICE_B1, user: USER_B },
+          client,
+        ),
       ).rejects.toThrow(/row-level security/);
       await client.query("ROLLBACK TO SAVEPOINT s");
     });
@@ -792,8 +852,14 @@ describe("0036 — RLS", () => {
     if (skip()) return;
     const mine = await insertShift();
     await asTenant(TENANT_A, async (client) => {
-      await insertMovementVia(client, mine, TENANT_A, STORE_A1, DEVICE_A1, USER_A);
-      await insertCloseRow(mine, {}, client);
+      await insertMovementVia(client, {
+        shiftId: mine,
+        tenant: TENANT_A,
+        store: STORE_A1,
+        device: DEVICE_A1,
+        user: USER_A,
+      });
+      await insertCloseRow({ shiftId: mine }, client);
       await client.query(
         `INSERT INTO shift_refund_claims (return_id, shift_id, tenant_id, store_id, ordinal)
          VALUES ($1, $2, $3, $4, 0)`,
@@ -810,22 +876,25 @@ describe("0036 — RLS", () => {
   it("without a tenant GUC the app role sees no fact", async () => {
     if (skip()) return;
     const id = await insertShift();
-    await insertMovement(id);
-    await insertCloseRow(id);
+    await insertMovement({ shiftId: id });
+    await insertCloseRow({ shiftId: id });
     for (const table of FACT_TABLES) {
       expect((await pg().app.query(`SELECT 1 FROM ${table}`)).rowCount).toBe(0);
     }
   });
 });
 
-async function insertMovementVia(
-  client: PoolClient,
-  shiftId: string,
-  tenant: string,
-  store: string,
-  device: string,
-  user: string,
-): Promise<void> {
+/** A movement inserted through an app-role client, with its full scope. */
+interface ScopedMovement {
+  shiftId: string;
+  tenant: string;
+  store: string;
+  device: string;
+  user: string;
+}
+
+async function insertMovementVia(client: PoolClient, movement: ScopedMovement): Promise<void> {
+  const { shiftId, tenant, store, device, user } = movement;
   await client.query(
     `INSERT INTO shift_cash_movements
        (id, shift_id, tenant_id, store_id, device_id, currency_code, kind, amount, reason_code,
@@ -873,8 +942,8 @@ describe("0036 — down → up round-trip", () => {
 
     // A recorded cash-up history does not block the rollback.
     const id = await insertShift();
-    await insertMovement(id);
-    await closeShift(id);
+    await insertMovement({ shiftId: id });
+    await closeShift({ shiftId: id });
 
     await pg().admin.query(readFileSync(DOWN_PATH, "utf8"));
     expect(await tables()).toBe(0);
