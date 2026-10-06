@@ -85,6 +85,10 @@ export const RATE_LIMIT_BUCKETS = {
 export const POS_WRITE_RATE_LIMIT_BUCKETS = {
   posWriteSale: { limit: 300, windowMs: 60 * 60 * 1000 },
   posWriteSettlementIntent: { limit: 120, windowMs: 60 * 60 * 1000 },
+  // RT-17: the shift cash-up writes (open, pay-in / pay-out, close). A shift
+  // is one open, a few movements and one close per terminal, so this sits
+  // far above a real till's rate, including an offline backlog drain.
+  posWriteShift: { limit: 120, windowMs: 60 * 60 * 1000 },
 } as const satisfies Record<string, RateLimitBucket>;
 
 export interface RateLimitBucket {

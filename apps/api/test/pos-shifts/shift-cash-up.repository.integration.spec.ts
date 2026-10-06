@@ -417,7 +417,10 @@ describe("findOpenShiftOnDevice", () => {
     await inTenant(IN_A, async (c) => {
       expect((await repo.findOpenShiftOnDevice(c, SCOPE_A1))?.shiftId).toBe(shift.shiftId);
       expect(await repo.findOpenShiftOnDevice(c, SCOPE_A1_OTHER)).toBeNull();
-      expect(await repo.findOpenShiftOnDevice(c, SCOPE_A1_WRONG_STORE)).toBeNull();
+      // RT-17 10929 P3-7: keyed like uq_shifts_cash_up_open_device —
+      // (tenant, device) — so a device whose store changed still sees the
+      // open shift the index would refuse a second open for.
+      expect((await repo.findOpenShiftOnDevice(c, SCOPE_A1_WRONG_STORE))?.shiftId).toBe(shift.shiftId);
     });
     await inTenant(IN_B, async (c) => {
       expect(await repo.findOpenShiftOnDevice(c, SCOPE_A1)).toBeNull();
@@ -447,7 +450,7 @@ describe("insertMovement / findMovement", () => {
     });
     expect(row?.occurredAt.toISOString()).toBe("2026-10-05T11:30:00.000Z");
     expect(row?.payloadHash.equals(input.payloadHash)).toBe(true);
-    const read = await inTenant(IN_A, (c) => repo.findMovement(c, SCOPE_A1, input.movementId));
+    const read = await inTenant(IN_A, (c) => repo.findMovement(c, shift, input.movementId));
     expect(read).toEqual(row);
 
     const noNote = await inTenant(IN_A, (c) =>
@@ -456,18 +459,23 @@ describe("insertMovement / findMovement", () => {
     expect(noNote).toMatchObject({ kind: "pay_in", note: null });
   });
 
-  it("a movementId resolves only within the tenant + store + device", async () => {
+  it("a movementId resolves only on its own shift, tenant, store and device", async () => {
     if (skip()) return;
     const shift = await open(SCOPE_A1);
     const input = newMovement();
     await inTenant(IN_A, (c) => repo.insertMovement(c, shift, input));
+    await closeNormally(shift);
+    // RT-17 10929 P3-5: another shift of the SAME device does not resolve it.
+    const next = await open(SCOPE_A1);
     await inTenant(IN_A, async (c) => {
-      expect(await repo.findMovement(c, SCOPE_A1_OTHER, input.movementId)).toBeNull();
-      expect(await repo.findMovement(c, SCOPE_A2, input.movementId)).toBeNull();
-      expect(await repo.findMovement(c, SCOPE_A1_WRONG_STORE, input.movementId)).toBeNull();
+      expect((await repo.findMovement(c, shift, input.movementId))?.movementId).toBe(input.movementId);
+      expect(await repo.findMovement(c, next, input.movementId)).toBeNull();
+      for (const scope of [SCOPE_A1_OTHER, SCOPE_A2, SCOPE_A1_WRONG_STORE]) {
+        expect(await repo.findMovement(c, { ...shift, ...scope }, input.movementId)).toBeNull();
+      }
     });
     await inTenant(IN_B, async (c) => {
-      expect(await repo.findMovement(c, SCOPE_A1, input.movementId)).toBeNull();
+      expect(await repo.findMovement(c, shift, input.movementId)).toBeNull();
     });
   });
 

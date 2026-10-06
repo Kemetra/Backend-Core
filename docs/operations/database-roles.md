@@ -31,6 +31,9 @@ their credentials before serving and refuse to start on a violation:
   - `cashier_admission_requests`: `SELECT`, `INSERT`, `UPDATE`, `DELETE`
   - `tenants`: `SELECT` (RT-213: POS device authentication reads the
     device's tenant status on this role)
+  - `shifts`: `SELECT`, `INSERT`, `UPDATE`; `shift_closes`,
+    `shift_cash_movements`, `shift_refund_claims`: `SELECT`, `INSERT`
+    (RT-17, migration 0036)
 
   A deploy that skips that grant step now fails to boot, and the error names
   each missing privilege and table, instead of starting healthy with those
@@ -40,8 +43,8 @@ their credentials before serving and refuse to start on a violation:
   `AUTH_LOOKUP_REQUIRED_GRANTS` / `AUTH_LOOKUP_FORBIDDEN_GRANTS`). The
   forbidden check covers every table privilege (`SELECT`, `INSERT`, `UPDATE`,
   `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`) on the sales, receivables,
-  cashier-admission, tenants (RT-213), inventory, audit, idempotency and outbox
-  tables, and every privilege except `SELECT` on `memberships` and
+  cashier-admission, shift cash-up (RT-17), tenants (RT-213), inventory, audit,
+  idempotency and outbox tables, and every privilege except `SELECT` on `memberships` and
   `store_access` (RT-212).
   `TRUNCATE` matters most: it is not subject to row security.
 
@@ -95,6 +98,25 @@ table the domain role must use needs a matching grant step at deploy time.
   `tenants` (RT-213). The API refuses to boot if it holds any table privilege
   on one, `TRUNCATE`, `REFERENCES` and `TRIGGER` included. Pass
   `-v lookup_role=<role>` to the script to run the same check at deploy time.
+
+- **Migration `0036_shift_cash_up` (RT-17).** Run
+  [`sql/shift-cash-up-domain-grants.sql`](sql/shift-cash-up-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role:
+  - `shifts`: `SELECT`, `INSERT`, `UPDATE`. `UPDATE` is needed because a
+    close moves the shift to closed, an open may adopt the audit-ingest row
+    of the same shift, and the 0036 triggers lock the shift row
+    `FOR SHARE` / `FOR UPDATE`, which requires `UPDATE`. No `DELETE`: a
+    cash-up shift is never deleted.
+  - `shift_closes`, `shift_cash_movements`, `shift_refund_claims`: `SELECT`,
+    `INSERT`. They are append-only for every role.
+
+  It runs with `ON_ERROR_STOP` and exits non-zero if a grant fails or the
+  verification finds a missing grant. Without these grants the API refuses
+  to boot (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold no
+  privilege on any of the four tables (`AUTH_LOOKUP_FORBIDDEN_GRANTS`); pass
+  `-v lookup_role=<role>` to run the same check at deploy time.
 
 ## Redis credential
 

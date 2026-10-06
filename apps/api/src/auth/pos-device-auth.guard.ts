@@ -68,6 +68,9 @@
  * the live cashier eligibility rules) before any actor is published. The
  * device token alone never authors a sale. This guard's own failures stay the
  * generic 401; a refused claim is the composite's generic 403 `refused`.
+ * RT-17 slice 2b-1 reuses the same composite shape for the shift cash-up
+ * writes (`openShift`, `recordCashMovement`): `ShiftCashUpAuthGuard`, with
+ * the same envelope guard, this guard and the same attribution verifier.
  *
  * Do NOT register it globally, and do NOT use it on operator routes
  * (`/api/pos/v1/operators/*`) or on any route that needs a person's

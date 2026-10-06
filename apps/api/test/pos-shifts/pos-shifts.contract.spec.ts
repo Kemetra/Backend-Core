@@ -25,6 +25,14 @@
  *   7. The canonical error envelope and every documented `error.code`.
  *   8. AJV fixtures: the contract's own examples validate; valid payloads
  *      pass and each invalid one fails.
+ *
+ * RT-17 slice 2b-1 (same [GATED] approval): `openShift` and
+ * `recordCashMovement` have routes, so they are no longer contract-only
+ * (`closeShift` stays contract-only until 2b-2); the interceptor's real 425
+ * `idempotency_in_progress` body and its 400 `idempotency_key_required` /
+ * `idempotency_key_malformed` codes are documented; `openShift` states its
+ * natural-key scoping (Codex P2, RT-17 comment 10925) and
+ * `recordCashMovement` its path-shift replay scope (comment 10929).
  */
 import "reflect-metadata";
 
@@ -458,10 +466,24 @@ describe("pos-shifts — cash-up operations", () => {
     expect(NEW_OPERATION_IDS.filter((id) => otherOperationIds.has(id))).toEqual([]);
   });
 
-  it.each(NEW_OPS)("%s is contract-only until RT-17 slice 2, with a runtime note", (_id, route) => {
+  it.each([
+    ["openShift", OPEN],
+    ["recordCashMovement", MOVEMENT],
+  ])("%s has a runtime route since RT-17 slice 2b-1 (no contract-only marker)", (_id, route) => {
     const o = op(route);
+    expect([o["x-runtime-status"], o["x-runtime-note"]]).toEqual([undefined, undefined]);
+  });
+
+  it("closeShift stays contract-only until RT-17 slice 2b-2, with a runtime note", () => {
+    const o = op(CLOSE);
     expect(o["x-runtime-status"]).toBe("contract-only");
-    expect(o["x-runtime-note"] ?? "").toContain("RT-17 slice 2");
+    expect(o["x-runtime-note"] ?? "").toContain("RT-17 slice 2b-2");
+  });
+
+  it("the info runtime-status note names what is implemented and what is not", () => {
+    const info = (doc.info?.description ?? "").replace(/\s+/g, " ");
+    expect(info).toContain("`openShift` and `recordCashMovement` are implemented");
+    expect(info).toContain("`closeShift` stays `x-runtime-status: contract-only` until RT-17 slice 2b-2");
   });
 
   it.each(NEW_OPS)("%s is tagged pos-shifts", (_id, route) => {
@@ -805,9 +827,9 @@ describe("pos-shifts — errors", () => {
   const SUCCESS_STATUSES = ["200", "201"];
 
   const EXPECTED_STATUSES: Record<string, string[]> = {
-    openShift: ["200", "201", "400", "401", "403", "409", "429", "500"],
-    recordCashMovement: ["200", "201", "400", "401", "403", "404", "409", "429", "500"],
-    closeShift: ["200", "201", "400", "401", "403", "404", "409", "422", "429", "500"],
+    openShift: ["200", "201", "400", "401", "403", "409", "425", "429", "500"],
+    recordCashMovement: ["200", "201", "400", "401", "403", "404", "409", "425", "429", "500"],
+    closeShift: ["200", "201", "400", "401", "403", "404", "409", "422", "425", "429", "500"],
   };
 
   it.each(NEW_OPS)("%s declares exactly its documented statuses", (id, route) => {
@@ -818,28 +840,32 @@ describe("pos-shifts — errors", () => {
     expect(shape(schema("ApiError"))).toEqual(shape(salesDoc.components?.schemas?.["Error"]));
   });
 
-  it.each(NEW_OPS)("%s: every error response uses the canonical envelope", (_id, route) => {
-    const errorStatuses = statusesOf(route).filter((status) => !SUCCESS_STATUSES.includes(status));
+  // The 425 is the IdempotencyInterceptor's own body, not the envelope (below).
+  const NON_ENVELOPE_STATUSES = [...SUCCESS_STATUSES, "425"];
+
+  it.each(NEW_OPS)("%s: every other error response uses the canonical envelope", (_id, route) => {
+    const errorStatuses = statusesOf(route).filter((status) => !NON_ENVELOPE_STATUSES.includes(status));
     expect(errorStatuses.length).toBeGreaterThan(0);
     const schemas = errorStatuses.map((status) => responseSchema(route, status));
     expect(schemas).toEqual(errorStatuses.map(() => ({ $ref: "#/components/schemas/ApiError" })));
   });
 
   const CODES: Array<[string, Route, string, string[]]> = [
-    ["openShift", OPEN, "400", ["validation_error"]],
+    ["openShift", OPEN, "400", ["validation_error", "idempotency_key_required", "idempotency_key_malformed"]],
     ["openShift", OPEN, "403", ["refused"]],
     ["openShift", OPEN, "409", ["idempotency_key_conflict", "shift_payload_conflict", "shift_already_open"]],
     ["openShift", OPEN, "401", ["unauthorized"]],
     ["openShift", OPEN, "429", ["RATE_LIMITED"]],
-    ["recordCashMovement", MOVEMENT, "400", ["validation_error"]],
+    ["recordCashMovement", MOVEMENT, "400", ["validation_error", "idempotency_key_required", "idempotency_key_malformed"]],
     ["recordCashMovement", MOVEMENT, "403", ["refused"]],
     ["recordCashMovement", MOVEMENT, "404", ["shift_not_found"]],
     ["recordCashMovement", MOVEMENT, "409", ["idempotency_key_conflict", "shift_payload_conflict", "shift_closed"]],
-    ["closeShift", CLOSE, "400", ["validation_error"]],
+    ["closeShift", CLOSE, "400", ["validation_error", "idempotency_key_required", "idempotency_key_malformed"]],
     ["closeShift", CLOSE, "403", ["refused"]],
     ["closeShift", CLOSE, "404", ["shift_not_found"]],
     ["closeShift", CLOSE, "409", ["idempotency_key_conflict", "shift_payload_conflict"]],
     ["closeShift", CLOSE, "422", ["shift_cashup_inconsistent", "currency_mismatch", "refund_ref_invalid"]],
+    ...NEW_OPS.map(([id, route]): [string, Route, string, string[]] => [id, route, "425", ["idempotency_in_progress"]]),
   ];
 
   it.each(CODES)("%s %s documents error codes %s", (_id, route, status, codes) => {
@@ -855,6 +881,46 @@ describe("pos-shifts — errors", () => {
 
   it.each(NEW_OPS)("%s: the 429 carries Retry-After", (_id, route) => {
     expect(response(route, "429").headers?.["Retry-After"]).toEqual({ $ref: "#/components/headers/RetryAfter" });
+  });
+
+  it.each(NEW_OPS)("%s: the 425 is the interceptor's own body with Retry-After", (_id, route) => {
+    expect(op(route).responses?.["425"]).toEqual({ $ref: "#/components/responses/IdempotencyInProgress" });
+    expect(responseSchema(route, "425")).toEqual({ $ref: "#/components/schemas/IdempotencyInProgressBody" });
+    expect(response(route, "425").headers?.["Retry-After"]).toEqual({
+      $ref: "#/components/headers/RetryAfterInProgress",
+    });
+  });
+
+  it("IdempotencyInProgressBody is exactly what IdempotencyInterceptor writes", () => {
+    assertStrictObject("IdempotencyInProgressBody", ["error", "retryAfterSec"], ["error", "retryAfterSec"]);
+    const valid = validator("IdempotencyInProgressBody");
+    // The interceptor's literal body (idempotency.interceptor.ts replyInProgress).
+    expect(valid({ error: "idempotency_in_progress", retryAfterSec: 2 })).toBe(true);
+    expect(valid({ error: { code: "idempotency_in_progress", message: "x" } })).toBe(false);
+    expect(valid({ error: "other", retryAfterSec: 2 })).toBe(false);
+  });
+});
+
+// ===========================================================================
+// 7b. Scope of the natural keys (Codex P2, RT-17 comments 10925 / 10929)
+// ===========================================================================
+describe("pos-shifts — natural-key scope", () => {
+  it("openShift states that an out-of-scope shiftId is a non-disclosing 409 shift_payload_conflict", () => {
+    const text = op(OPEN).description ?? "";
+    expect(text).toContain("**Scope of `shiftId`**");
+    expect(text).toMatch(/another device, another store or another tenant\) is 409\s+`shift_payload_conflict`/);
+    expect(text).toMatch(/never returns that shift's projection/);
+  });
+
+  it("openShift states the one adoption case (the audit-ingest open of the same shift) as a 201", () => {
+    const text = op(OPEN).description ?? "";
+    expect(text).toMatch(/audit-ingest `shift\.open`[\s\S]*adopted by this open and answered\s+`201`/);
+  });
+
+  it("recordCashMovement scopes the movement replay to the path shift_id", () => {
+    const text = op(MOVEMENT).description ?? "";
+    expect(text).toMatch(/resolves `movementId` only on the path `shift_id`/);
+    expect(text).toMatch(/any other shift[\s\S]*409 `shift_payload_conflict` and is never returned/);
   });
 });
 

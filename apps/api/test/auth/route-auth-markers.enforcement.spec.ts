@@ -18,6 +18,7 @@ import request from "supertest";
 import { AppModule } from "../../src/app.module";
 import { PosDeviceAuthGuard } from "../../src/auth/pos-device-auth.guard";
 import { SaleCaptureAuthGuard } from "../../src/catalog/sales/sale-capture-auth.guard";
+import { ShiftCashUpAuthGuard } from "../../src/pos-shifts/shift-cash-up-auth.guard";
 import { DEVICE_ATTESTED_KEY, DEVICE_BEARER_KEY, DeviceBearer } from "../../src/auth/route-auth";
 
 const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "ALL", "OPTIONS", "HEAD"];
@@ -39,8 +40,12 @@ const REVIEWED_DEVICE_ATTESTED = ["PosAuditEventsController.syncBatch"];
  * token). Delegation is covered by sale-capture-auth.guard.unit.spec.ts and
  * device-operator-capture.http.integration.spec.ts. Adding a guard here is a
  * security review decision.
+ * RT-17 slice 2b-1: ShiftCashUpAuthGuard (openShift, recordCashMovement) is
+ * the same composite for the shift cash-up writes (the same two guards plus
+ * the same attribution verifier); covered by
+ * shift-cash-up-auth.guard.unit.spec.ts and the shift cash-up HTTP suites.
  */
-const REVIEWED_DEVICE_GUARD_COMPOSITES: readonly unknown[] = [SaleCaptureAuthGuard];
+const REVIEWED_DEVICE_GUARD_COMPOSITES: readonly unknown[] = [SaleCaptureAuthGuard, ShiftCashUpAuthGuard];
 
 interface MarkedRoute {
   id: string;
@@ -144,6 +149,9 @@ describe("route auth markers are enforced at the route (RT-129 / A9)", () => {
       // RT-224 (Option B): captureSale accepts the device bearer as an
       // alternative to the operator envelope; SaleCaptureAuthGuard runs both.
       "SalesController.captureSale",
+      // RT-17 slice 2b-1: the shift cash-up writes, the captureSale model.
+      "ShiftCashUpController.openShift",
+      "ShiftCashUpController.recordCashMovement",
     ]);
     expect(deviceAttested.length).toBeGreaterThan(0);
   });

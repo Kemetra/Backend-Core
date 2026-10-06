@@ -69,7 +69,9 @@ op run --env-file=deploy/prod.env -- \
 #    the PG* variables in deploy/grants.env, never from a command-line URL.
 op run --env-file=deploy/grants.env -- sh -c \
   'psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/cashier-admissions-domain-grants.sql'
+        -f docs/operations/sql/cashier-admissions-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
+        -f docs/operations/sql/shift-cash-up-domain-grants.sql'
 
 # 3. Start everything (migrate re-runs as a no-op, then api/worker start).
 op run --env-file=deploy/prod.env -- \
@@ -81,10 +83,10 @@ op run --env-file=deploy/prod.env -- \
 `api`/`worker` start (compose `service_completed_successfully` gate).
 
 Step 2 must run between the migration and the app start. The API boot check
-verifies the domain role's cashier-admissions table grants (RT-212) and its
-`SELECT` on `tenants`, which POS device authentication reads (RT-213). If
-step 2 is skipped, the API refuses to start, and the error names each missing
-grant.
+verifies the domain role's cashier-admissions table grants (RT-212), its
+`SELECT` on `tenants`, which POS device authentication reads (RT-213), and its
+shift cash-up table grants (RT-17, migration 0036). If step 2 is skipped, the
+API refuses to start, and the error names each missing grant.
 
 Step 2 needs a `psql` client on the deploy host. It reads the connection from
 `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` and `PGSSLMODE` in
@@ -114,7 +116,8 @@ docker compose -f docker-compose.prod.yml logs -f api
 git pull
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml run --rm --build migrate
 op run --env-file=deploy/grants.env -- sh -c \
-  'psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/cashier-admissions-domain-grants.sql'
+  'psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/cashier-admissions-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/shift-cash-up-domain-grants.sql'
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d --build
 # stop
 docker compose -f docker-compose.prod.yml down            # keeps volumes (redis AOF, caddy certs)

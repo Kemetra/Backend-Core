@@ -29,6 +29,17 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   // (inside the tenant's RLS context). Without this grant every till would be
   // refused at once, so a missing grant must fail boot instead.
   "tenants:SELECT",
+  // RT-17 (0036): the shift cash-up writes. UPDATE on shifts: the close moves
+  // it to closed and the 0036 triggers take FOR SHARE / FOR UPDATE row locks.
+  "shifts:SELECT",
+  "shifts:INSERT",
+  "shifts:UPDATE",
+  "shift_closes:SELECT",
+  "shift_closes:INSERT",
+  "shift_cash_movements:SELECT",
+  "shift_cash_movements:INSERT",
+  "shift_refund_claims:SELECT",
+  "shift_refund_claims:INSERT",
 ]);
 
 const LOOKUP_GRANTS: ReadonlySet<string> = new Set(
@@ -187,6 +198,12 @@ describe("database pool boundary", () => {
     ["tenants", "SELECT"],
     ["tenants", "UPDATE"],
     ["tenants", "TRUNCATE"],
+    // RT-17 (0036): shift cash-up facts are tenant data behind FORCE RLS.
+    ["shifts", "SELECT"],
+    ["shifts", "TRUNCATE"],
+    ["shift_closes", "SELECT"],
+    ["shift_cash_movements", "INSERT"],
+    ["shift_refund_claims", "REFERENCES"],
   ])("rejects a lookup role holding %s %s", async (table, privilege) => {
     const grants = new Set([...REQUIRED, `${table}:${privilege}`]);
     await expect(
@@ -199,7 +216,17 @@ describe("database pool boundary", () => {
 
   it("RT-212: forbids every table privilege on each fully forbidden table", () => {
     const ALL = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"];
-    for (const table of ["sales", "receivable", "audit_events", "cashier_admissions", "tenants"]) {
+    for (const table of [
+      "sales",
+      "receivable",
+      "audit_events",
+      "cashier_admissions",
+      "tenants",
+      "shifts",
+      "shift_closes",
+      "shift_cash_movements",
+      "shift_refund_claims",
+    ]) {
       const entry = AUTH_LOOKUP_FORBIDDEN_GRANTS.find(([t]) => t === table);
       expect(entry).toBeDefined();
       const listed = entry![1].split(",").map((p) => p.trim());

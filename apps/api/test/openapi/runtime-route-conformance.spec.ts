@@ -127,11 +127,9 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "closeShift",
       "consoleCreatePayerAccount",
       "consoleListPayerAccounts",
-      "openShift",
       "posRedeemVoucher",
       "posReverseVoucher",
       "posValidateVoucher",
-      "recordCashMovement",
     ]);
     expect(missing).toEqual([]);
   });
