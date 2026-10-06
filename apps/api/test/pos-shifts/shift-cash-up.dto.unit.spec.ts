@@ -9,6 +9,7 @@ import {
   OpenShiftRequestSchema,
   RecordCashMovementRequestSchema,
   ShiftIdParamSchema,
+  ShiftInstantSchema,
 } from "../../src/pos-shifts/shift-cash-up.dto";
 
 const UUID = "0192f5a2-3b4c-7d8e-9f01-23456789ab01";
@@ -48,6 +49,7 @@ describe("OpenShiftRequestSchema", () => {
     ["a JPY float", { currencyCode: "JPY", openingFloat: "5000" }],
     ["a KWD float with 3 digits", { currencyCode: "KWD", openingFloat: "1.250" }],
     ["a fractional-second openedAt", { openedAt: "2026-10-05T08:00:00.123456Z" }],
+    ["an RFC 3339 offset openedAt (Codex P2)", { openedAt: "2026-10-05T10:00:00+02:00" }],
   ])("accepts %s", (_label, overrides) => {
     expect(accepts({ schema: OpenShiftRequestSchema, base: OPEN, overrides })).toBe(true);
   });
@@ -61,7 +63,7 @@ describe("OpenShiftRequestSchema", () => {
     ["a negative float", { openingFloat: "-1" }],
     ["a float in exponent form", { openingFloat: "5e2" }],
     ["a numeric float", { openingFloat: 500 }],
-    ["an offset openedAt", { openedAt: "2026-10-05T10:00:00+02:00" }],
+    ["a non-RFC 3339 offset openedAt", { openedAt: "2026-10-05T10:00:00+0200" }],
     ["a non-uuid opener", { openingUserId: "cashier-1" }],
     ["a null claim", { operatorUserId: null }],
   ])("rejects %s", (_label, overrides) => {
@@ -80,6 +82,7 @@ describe("RecordCashMovementRequestSchema", () => {
     ["a pay-in without a note", { kind: "pay_in", reasonCode: "float_top_up", note: undefined }],
     ["a 200-code-point note", { note: "€".repeat(200) }],
     ["4 fractional digits (checked against the shift later)", { amount: "1.0001" }],
+    ["an RFC 3339 offset occurredAt (Codex P2)", { occurredAt: "2026-10-05T13:30:00+02:00" }],
   ])("accepts %s", (_label, overrides) => {
     expect(accepts({ schema: RecordCashMovementRequestSchema, base: MOVEMENT, overrides })).toBe(true);
   });
@@ -95,8 +98,30 @@ describe("RecordCashMovementRequestSchema", () => {
     ["a note with a NUL", { note: "a\u0000b" }],
     ["a currency field", { currencyCode: "EGP" }],
     ["a shift field", { shiftId: UUID }],
+    ["an out-of-range offset occurredAt", { occurredAt: "2026-10-05T13:30:00+24:00" }],
   ])("rejects %s", (_label, overrides) => {
     expect(accepts({ schema: RecordCashMovementRequestSchema, base: MOVEMENT, overrides })).toBe(false);
+  });
+});
+
+describe("ShiftInstantSchema — an RFC 3339 date-time, Z or a ±HH:MM offset (Codex P2)", () => {
+  it.each([
+    ["2026-10-05T08:00:00Z", true],
+    ["2026-10-05T08:00:00.123456Z", true],
+    ["2026-10-05T10:00:00+02:00", true],
+    ["2026-10-05T03:00:00.5-05:00", true],
+    ["2026-10-05T08:00:00-00:00", true],
+    ["2026-10-05T23:59:59+23:59", true],
+    ["2026-10-05T10:00:00+0200", false],
+    ["2026-10-05T10:00:00+02", false],
+    ["2026-10-05T10:00:00+2:00", false],
+    ["2026-10-05T10:00:00+24:00", false],
+    ["2026-10-05T10:00:00+02:60", false],
+    ["2026-10-05T10:00:00", false],
+    ["2026-10-05T08:00:00z", false],
+    ["2026-10-05 08:00:00Z", false],
+  ])("%s → %s", (value, ok) => {
+    expect(ShiftInstantSchema.safeParse(value).success).toBe(ok);
   });
 });
 

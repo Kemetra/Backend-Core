@@ -41,11 +41,15 @@ describe("formatMoney — the currency's minor-unit digits, padding or dropping 
   });
 });
 
-describe("canonicalInstant — one form per instant, full precision", () => {
+describe("canonicalInstant — one form per instant, any RFC 3339 offset, full precision", () => {
   it.each([
     ["2026-10-05T08:00:00Z", "2026-10-05T08:00:00.000Z"],
     ["2026-10-05T08:00:00.5Z", "2026-10-05T08:00:00.500Z"],
     ["2026-10-05T08:00:00.123456Z", "2026-10-05T08:00:00.1234560Z"],
+    ["2026-10-05T10:00:00+02:00", "2026-10-05T08:00:00Z"],
+    ["2026-10-05T03:00:00.5-05:00", "2026-10-05T08:00:00.500Z"],
+    ["2026-10-05T08:00:00-00:00", "2026-10-05T08:00:00Z"],
+    ["2026-10-06T01:30:00.123456+05:30", "2026-10-05T20:00:00.123456Z"],
   ])("%s and %s are the same instant", (a, b) => {
     expect(canonicalInstant(a)).toBe(canonicalInstant(b));
   });
@@ -53,6 +57,7 @@ describe("canonicalInstant — one form per instant, full precision", () => {
   it.each([
     ["2026-10-05T08:00:00Z", "2026-10-05T08:00:01Z"],
     ["2026-10-05T08:00:00.123456Z", "2026-10-05T08:00:00.123457Z"],
+    ["2026-10-05T08:00:00+02:00", "2026-10-05T08:00:00Z"],
   ])("%s and %s differ", (a, b) => {
     expect(canonicalInstant(a)).not.toBe(canonicalInstant(b));
   });

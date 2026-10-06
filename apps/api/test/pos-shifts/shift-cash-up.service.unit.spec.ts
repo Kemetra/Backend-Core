@@ -3,9 +3,12 @@
  *
  * Covers what the HTTP suites cannot reach deterministically: an identical
  * open committed by a concurrent request between the scoped read and the
- * insert (`shift_id_taken`, then the scoped re-read replays it), the payload
- * hash's independence from the claim and from amount / instant spelling, the
- * contract mapping of every refusal, and the 401 when the guard published no
+ * insert — whether the loser trips the shift_id key (`shift_id_taken`) or
+ * the one-open-shift-per-device index (`device_has_open_shift`, PR #713
+ * review #1), the scoped re-read replays it — the payload hash's
+ * independence from the claim and from amount / instant spelling and offset,
+ * the contract mapping of every refusal, the auth path taken from the
+ * guard's principal (review #3), and the 401 when the guard published no
  * full scope.
  */
 import "reflect-metadata";
@@ -80,10 +83,33 @@ async function recordedHash(fact: typeof FACT): Promise<Buffer> {
   return inserted[0]!.payloadHash;
 }
 
+/** What the scoped re-read after a refused insert finds. */
+type ReRead = "same fact" | "other payload" | "nothing";
+
+async function reReadRow(found: ReRead): Promise<CashUpShiftRow | null> {
+  if (found === "nothing") return null;
+  return shiftRow(found === "same fact" ? await recordedHash(FACT) : Buffer.alloc(32));
+}
+
 describe("ShiftCashUpService.openShift — a concurrent identical open", () => {
-  it("shift_id_taken, then the scoped re-read finds the same fact → a replay, not a conflict", async () => {
-    const hash = await recordedHash(FACT);
-    const { repo } = fakeRepo([null, shiftRow(hash)], { kind: "shift_id_taken" });
+  it.each([
+    ["shift_id_taken", "same fact", "replay"],
+    ["shift_id_taken", "other payload", "shift_payload_conflict"],
+    ["shift_id_taken", "nothing", "shift_payload_conflict"],
+    ["device_has_open_shift", "same fact", "replay"],
+    ["device_has_open_shift", "other payload", "shift_already_open"],
+    ["device_has_open_shift", "nothing", "shift_already_open"],
+  ] as const)("%s, then the scoped re-read finds %s → %s", async (kind, found, answer) => {
+    const { repo } = fakeRepo([null, await reReadRow(found)], { kind });
+    const opened = new ShiftCashUpService(pool, repo).openShift(CTX, FACT).then(
+      (result) => (result.created ? "created" : "replay"),
+      (err: ShiftCashUpError) => err.failure,
+    );
+    expect(await opened).toBe(answer);
+  });
+
+  it("the replay after a refused insert is the stored projection", async () => {
+    const { repo } = fakeRepo([null, await reReadRow("same fact")], { kind: "device_has_open_shift" });
     const result = await new ShiftCashUpService(pool, repo).openShift(CTX, FACT);
     expect([result.created, result.projection.openingFloat]).toEqual([false, "500.00"]);
   });
@@ -96,7 +122,8 @@ describe("ShiftCashUpService.openShift — a concurrent identical open", () => {
   it("the hash ignores amount and instant spelling, and the actor", async () => {
     const base = await recordedHash(FACT);
     const respelled = await recordedHash({ ...FACT, openingFloat: "500", openedAt: "2026-10-05T08:00:00.000Z" });
-    expect(respelled.equals(base)).toBe(true);
+    const offset = await recordedHash({ ...FACT, openedAt: "2026-10-05T10:00:00+02:00" });
+    expect([respelled.equals(base), offset.equals(base)]).toEqual([true, true]);
     expect((await recordedHash({ ...FACT, openingFloat: "500.01" })).equals(base)).toBe(false);
   });
 });
@@ -120,26 +147,29 @@ describe("toShiftHttpError — every refusal maps to its contract status and cod
   });
 });
 
-describe("shiftWriteContext — the scope, actor and path the guard published", () => {
-  const published = {
-    context: { userId: CASHIER, tenantId: SCOPE.tenantId, storeId: SCOPE.storeId, isPlatformAdmin: false, source: "token" },
-    posDeviceId: SCOPE.deviceId,
-  };
+describe("shiftWriteContext — the scope, actor and path the guard published (review #3)", () => {
+  const context = { userId: CASHIER, tenantId: SCOPE.tenantId, storeId: SCOPE.storeId, isPlatformAdmin: false, source: "token" };
+  const principalOf = (scope: string) => ({ kind: "token", tokenId: "t-1", tenantId: SCOPE.tenantId, userId: CASHIER, storeId: SCOPE.storeId, scope });
+  const published = { context, posDeviceId: SCOPE.deviceId, principal: principalOf("pos") };
 
   it.each([
-    ["a device-path body", { operatorUserId: CASHIER }, "device"],
-    ["an envelope body", {}, "envelope"],
-  ])("%s → the %s path", (_label, body, path) => {
-    const ctx = shiftWriteContext(published as unknown as TenantContextRequest, body);
+    ["a device principal (pos)", "device", "pos"],
+    ["an envelope principal (pos_operator)", "envelope", "pos_operator"],
+  ])("%s → the %s path, whatever the body says", (_label, path, scope) => {
+    const request = { ...published, principal: principalOf(scope), body: { operatorUserId: CASHIER } };
+    const ctx = shiftWriteContext(request as unknown as TenantContextRequest);
     expect(ctx).toEqual({ scope: SCOPE, actorUserId: CASHIER, path });
   });
 
   it.each([
-    ["no context", { posDeviceId: SCOPE.deviceId }],
-    ["no device", { context: published.context }],
-    ["no actor", { ...published, context: { ...published.context, userId: null } }],
-    ["no store", { ...published, context: { ...published.context, storeId: null } }],
+    ["no context", { posDeviceId: SCOPE.deviceId, principal: published.principal }],
+    ["no device", { context, principal: published.principal }],
+    ["no actor", { ...published, context: { ...context, userId: null } }],
+    ["no store", { ...published, context: { ...context, storeId: null } }],
+    ["no principal", { context, posDeviceId: SCOPE.deviceId }],
+    ["a session principal", { ...published, principal: { kind: "session", sessionId: "s-1", userId: CASHIER } }],
+    ["a dashboard_api principal", { ...published, principal: principalOf("dashboard_api") }],
   ])("%s → the generic 401", (_label, request) => {
-    expect(() => shiftWriteContext(request as unknown as TenantContextRequest, {})).toThrow(UnauthorizedException);
+    expect(() => shiftWriteContext(request as unknown as TenantContextRequest)).toThrow(UnauthorizedException);
   });
 });

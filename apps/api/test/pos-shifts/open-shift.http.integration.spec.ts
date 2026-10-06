@@ -5,11 +5,12 @@
  * harness).
  *
  * Proves: the device path and the envelope path; idempotency (same key →
- * stored replay; another key, same fact → 200 replay; different payload →
- * 409); one open shift per device; the non-disclosing 409 for an
- * out-of-scope `shiftId` (Codex P2, RT-17 comment 10925); legacy adoption
- * answered 201 (RT-17 comment 10929); strict wire precision (400); the
- * device-path 401 / 403 split; the 400 idempotency codes; the 429 shape.
+ * stored replay; another key, same fact → 200 replay, at any RFC 3339
+ * offset of the same instant; different payload → 409); one open shift per
+ * device; the non-disclosing 409 for an out-of-scope `shiftId` (Codex P2,
+ * RT-17 comment 10925); legacy adoption answered 201 (RT-17 comment 10929);
+ * strict wire precision and RFC 3339 instants (400); the device-path 401 /
+ * 403 split; the 400 idempotency codes; the 429 shape.
  */
 import {
   CASHIER,
@@ -23,6 +24,7 @@ import {
   MANAGER,
   OPEN_PATH,
   admin,
+  atOffset,
   auditsOf,
   closeOpenShifts,
   expectError,
@@ -141,6 +143,21 @@ describe("openShift — idempotency and natural-key dedupe", () => {
     expectError(await openFrom(DEV_A1, { ...body, [field]: value }), { status: 409, code: "shift_payload_conflict" });
   });
 
+  it("an RFC 3339 offset openedAt is the same instant: 201, stored and projected in UTC, then a 200 replay at any other offset (Codex P2)", async () => {
+    if (skipped()) return;
+    const instant = minutesAgo(60);
+    const body = openBody({ openedAt: atOffset(instant, 2) });
+    const first = await openFrom(DEV_A1, body);
+    expect([first.status, first.body.openedAt]).toEqual([201, instant]);
+    const stored = await admin().query(`SELECT opened_at FROM shifts WHERE shift_id = $1`, [body["shiftId"]]);
+    expect((stored.rows[0]?.opened_at as Date).toISOString()).toBe(instant);
+    for (const openedAt of [atOffset(instant, -5), instant]) {
+      const replay = await openFrom(DEV_A1, { ...body, openedAt });
+      expectReplay(replay);
+      expect(replay.body).toEqual(first.body);
+    }
+  });
+
   it("the same key with a different body is 409 idempotency_key_conflict", async () => {
     if (skipped()) return;
     const key = newKey();
@@ -213,6 +230,8 @@ describe("openShift — wire precision and strict body (400)", () => {
     ["a currency with no ISO-4217 minor unit", { currencyCode: "XAU", openingFloat: "1" }],
     ["an unknown key (a scope field)", { storeId: DEV_A2.store }],
     ["a negative float", { openingFloat: "-1.00" }],
+    ["a non-RFC 3339 offset (+0200)", { openedAt: "2026-10-05T10:00:00+0200" }],
+    ["an out-of-range offset (+24:00)", { openedAt: "2026-10-05T10:00:00+24:00" }],
   ])("%s is 400 validation_error", async (_label, overrides) => {
     if (skipped()) return;
     expectError(await openFrom(DEV_A1, openBody(overrides)), { status: 400, code: "validation_error" });

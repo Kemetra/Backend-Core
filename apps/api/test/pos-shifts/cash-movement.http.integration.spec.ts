@@ -6,9 +6,9 @@
  *
  * Proves: the device path and the envelope path; the non-disclosing 404
  * across device, store and tenant; idempotency (same key → stored replay;
- * another key, same fact → 200 replay, even after the close; different
- * payload → 409); the replay scoped to the PATH shift (RT-17 comment 10929,
- * P3-5); 409 `shift_closed` for a new movement on a closed shift; strict wire
+ * another key, same fact → 200 replay, even after the close, and at any
+ * RFC 3339 offset of the same instant; different payload → 409); the
+ * replay scoped to the PATH shift (RT-17 comment 10929, P3-5); 409 `shift_closed` for a new movement on a closed shift; strict wire
  * precision against the shift's currency (400); the device-path 403.
  */
 import {
@@ -20,12 +20,14 @@ import {
   DEV_B1,
   MANAGER,
   admin,
+  atOffset,
   auditsOf,
   closeOpenShifts,
   expectError,
   expectReplay,
   expectSchema,
   managerEnvelope,
+  minutesAgo,
   movementBody,
   movementPath,
   newKey,
@@ -160,6 +162,18 @@ describe("recordCashMovement — idempotency and natural-key dedupe", () => {
     expect(replay.body).toEqual(first.body);
     await closeOpenShifts();
     expectReplay(await record({ device: DEV_A1, shiftId, body }));
+  });
+
+  it("an RFC 3339 offset occurredAt is the same instant: projected in UTC, then a 200 replay at any other offset (Codex P2)", async () => {
+    if (skipped()) return;
+    const shiftId = await openOn(DEV_A1);
+    const instant = minutesAgo(30);
+    const body = movementBody({ occurredAt: atOffset(instant, 3) });
+    const first = await record({ device: DEV_A1, shiftId, body });
+    expect([first.status, first.body.occurredAt]).toEqual([201, instant]);
+    const replay = await record({ device: DEV_A1, shiftId, body: { ...body, occurredAt: atOffset(instant, -4) } });
+    expectReplay(replay);
+    expect(replay.body).toEqual(first.body);
   });
 
   it.each([

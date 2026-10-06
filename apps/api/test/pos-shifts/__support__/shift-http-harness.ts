@@ -120,6 +120,13 @@ export const movementPath = (shiftId: string): string => `/api/pos/v1/shifts/${s
 /** An instant `minutesAgo` minutes before now (inside every seeded admission window). */
 export const minutesAgo = (minutes: number): string => new Date(Date.now() - minutes * 60_000).toISOString();
 
+/** The same instant as `instant` (a `Z` timestamp), written at a whole-hour UTC offset ("+02:00", "-05:00"). */
+export function atOffset(instant: string, hours: number): string {
+  const local = new Date(Date.parse(instant) + hours * 3_600_000).toISOString().slice(0, -1);
+  const sign = hours < 0 ? "-" : "+";
+  return `${local}${sign}${String(Math.abs(hours)).padStart(2, "0")}:00`;
+}
+
 // ---------------------------------------------------------------------------
 // Substitutes
 // ---------------------------------------------------------------------------

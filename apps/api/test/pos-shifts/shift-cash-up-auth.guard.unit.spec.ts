@@ -11,7 +11,8 @@
  */
 import "reflect-metadata";
 
-import { ForbiddenException, UnauthorizedException, type ExecutionContext } from "@nestjs/common";
+import { ForbiddenException, HttpException, UnauthorizedException, type ExecutionContext } from "@nestjs/common";
+import { GUARDS_METADATA } from "@nestjs/common/constants";
 import { ZodError } from "zod";
 
 import type { AttributionVerdict } from "../../src/catalog/sales/operator-attribution";
@@ -22,6 +23,7 @@ import {
   shiftRefusalEvent,
   type ShiftFactRouteSpec,
 } from "../../src/pos-shifts/shift-cash-up-auth.guard";
+import { ShiftCashUpController } from "../../src/pos-shifts/shift-cash-up.controller";
 import { OpenShiftRequestSchema, RecordCashMovementRequestSchema } from "../../src/pos-shifts/shift-cash-up.dto";
 
 const SCOPE = {
@@ -144,15 +146,34 @@ describe("ShiftCashUpAuthGuard — device path", () => {
     expect(verify).not.toHaveBeenCalled();
   });
 
-  it("a route without a spec fails closed with the generic 401", async () => {
-    const { ctx } = contextFor({ body: openBody() });
-    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
-  });
 
   it("a refused device credential is the device guard's 401, never a 403", async () => {
     deviceGate.canActivate.mockRejectedValueOnce(new UnauthorizedException("Unauthorized"));
     const { ctx } = contextFor({ body: openBody(), route: OPEN_ROUTE });
     await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
     expect(verify).not.toHaveBeenCalled();
+  });
+});
+
+describe("ShiftCashUpAuthGuard — a route without @ShiftFactRoute is a configuration error (review #2)", () => {
+  it.each([
+    ["a device-path body", openBody()],
+    ["an envelope body", { shiftId: "x" }],
+  ])("%s: a plain Error (500) before any credential check, never a 401 the POS would read as revoked", async (_label, body) => {
+    const { ctx } = contextFor({ body });
+    const refusal = await guard.canActivate(ctx).catch((err: unknown) => err);
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal).not.toBeInstanceOf(HttpException);
+    expect([deviceGate.canActivate.mock.calls.length, envelopeGate.canActivate.mock.calls.length]).toEqual([0, 0]);
+  });
+
+  it("every ShiftCashUpController handler behind this guard carries a spec", () => {
+    const proto = ShiftCashUpController.prototype as unknown as Record<string, object>;
+    const guarded = Object.getOwnPropertyNames(proto).filter((name) => {
+      const guards = (Reflect.getMetadata(GUARDS_METADATA, proto[name] as object) ?? []) as unknown[];
+      return guards.includes(ShiftCashUpAuthGuard);
+    });
+    const unspecified = guarded.filter((name) => Reflect.getMetadata(SHIFT_FACT_ROUTE_KEY, proto[name] as object) === undefined);
+    expect({ guarded: guarded.length > 0, unspecified }).toEqual({ guarded: true, unspecified: [] });
   });
 });
