@@ -71,11 +71,13 @@ export const POS_SHIFTS_LOGGER = "POS_SHIFTS_LOGGER";
         new PosShiftsService(pool, verifier, logger),
       inject: [PG_POOL, CLERK_VERIFIER, POS_SHIFTS_LOGGER],
     },
-    // RT-17 slice 2b: the cash-up writes.
+    // RT-17 slice 2b: the cash-up writes. The logger receives the close
+    // approver warning (RT-17 comment 10955, option A).
     {
       provide: ShiftCashUpService,
-      useFactory: (pool: Pool): ShiftCashUpService => new ShiftCashUpService(pool),
-      inject: [PG_POOL],
+      useFactory: (pool: Pool, logger: Logger): ShiftCashUpService =>
+        new ShiftCashUpService(pool, undefined, undefined, logger),
+      inject: [PG_POOL, POS_SHIFTS_LOGGER],
     },
     {
       provide: IDENTITY_PROVIDER_PORT,

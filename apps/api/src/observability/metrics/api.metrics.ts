@@ -82,6 +82,22 @@ export const UNKNOWN_ITEM_RESOLVED_ACTIONS = [
 ] as const satisfies readonly string[];
 export type UnknownItemResolvedAction = (typeof UNKNOWN_ITEM_RESOLVED_ACTIONS)[number];
 
+/**
+ * Bounded reasons for `shift_close_approver_unverified_total` (RT-17
+ * follow-up, Jira RT-17 comment 10955 option A). Why the approver of a
+ * recorded shift close could not be verified at ingest; the close is
+ * recorded regardless. Closed set: never an id, a role code from the
+ * database, or an error message.
+ */
+export const SHIFT_CLOSE_APPROVER_UNVERIFIED_REASONS = [
+  "approver_is_closer",
+  "inactive_membership",
+  "not_manager",
+  "no_store_access",
+  "check_unavailable",
+] as const satisfies readonly string[];
+export type ShiftCloseApproverUnverifiedReason = (typeof SHIFT_CLOSE_APPROVER_UNVERIFIED_REASONS)[number];
+
 // ---------------------------------------------------------------------------
 // Module-load label-policy validation
 // ---------------------------------------------------------------------------
@@ -136,6 +152,9 @@ assertMetricLabels("erpnext_product_reconciliation_total", []);
 // payment_application / claim / remittance / reconciliation_result rows +
 // audit_events, not metric labels (the 009/010/015/017/018/020/021 precedent).
 assertMetricLabels("settlement_receivable_total", []);
+// POS shift close approver — RT-17 follow-up (10955 option A). `reason` is the
+// closed SHIFT_CLOSE_APPROVER_UNVERIFIED_REASONS set; no tenant/store/user label.
+assertMetricLabels("shift_close_approver_unverified_total", ["reason"]);
 
 // ---------------------------------------------------------------------------
 // Instruments
@@ -278,6 +297,14 @@ const _settlementReceivable: Counter = meter.createCounter(
   },
 );
 
+const _shiftCloseApproverUnverified: Counter = meter.createCounter(
+  "shift_close_approver_unverified_total",
+  {
+    description:
+      "Shift closes first recorded with a variance approver that failed the ingest standing check (RT-17 10955 option A): the approver is the closer, has no active membership, holds no owner / tenant_admin / store_manager role, has no access to the store, or the check could not run. The close is recorded regardless (never refused). Labeled by the closed `reason` set only — the tenant, store, shift and users are on the shift_closes row, not metric labels.",
+  },
+);
+
 // ---------------------------------------------------------------------------
 // Attribute types — TypeScript compile-time label enforcement (FR-B-006)
 // ---------------------------------------------------------------------------
@@ -332,6 +359,11 @@ export interface IdempotencyRouteAttrs {
  */
 export interface UnknownItemResolvedAttrs {
   action: UnknownItemResolvedAction;
+}
+
+/** Attributes for `shift_close_approver_unverified_total`: the closed `reason` only. */
+export interface ShiftCloseApproverUnverifiedAttrs {
+  reason: ShiftCloseApproverUnverifiedReason;
 }
 
 // ---------------------------------------------------------------------------
@@ -569,6 +601,17 @@ export function recordSettlementReceivable(): void {
   _settlementReceivable.add(1);
 }
 
+/**
+ * Increment shift_close_approver_unverified_total{reason} (RT-17 follow-up,
+ * Jira RT-17 comment 10955 option A).
+ * Emission site: ShiftCashUpService.closeShift, once per FIRST record of a
+ * close whose `varianceApprovedByUserId` fails the standing check (never on a
+ * replay). A SIGNAL — emission MUST NOT alter or refuse the close.
+ */
+export function recordShiftCloseApproverUnverified(attrs: ShiftCloseApproverUnverifiedAttrs): void {
+  _shiftCloseApproverUnverified.add(1, attrs as unknown as Attributes);
+}
+
 // ---------------------------------------------------------------------------
 // Signal-name registry — used by T460 signal-presence tests
 // ---------------------------------------------------------------------------
@@ -626,3 +669,13 @@ export const INVENTORY_METRIC_NAMES = [
 ] as const satisfies readonly string[];
 
 export type InventoryMetricName = (typeof INVENTORY_METRIC_NAMES)[number];
+
+/**
+ * Canonical names of POS shift signals (RT-17). Sibling registry of the
+ * per-track lists above; adding here does not perturb API_METRIC_NAMES.
+ */
+export const POS_SHIFTS_METRIC_NAMES = [
+  "shift_close_approver_unverified_total",
+] as const satisfies readonly string[];
+
+export type PosShiftsMetricName = (typeof POS_SHIFTS_METRIC_NAMES)[number];

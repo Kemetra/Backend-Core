@@ -27,13 +27,21 @@
  * another device's projection. A movement replay resolves only on the PATH
  * shift (RT-17 comment 10929): a `movementId` recorded on any other shift is
  * a 409 `shift_payload_conflict`, never echoed.
+ *
+ * The close approver (RT-17 follow-up, comment 10955 option A). Once a close
+ * with `varianceApprovedByUserId` is FIRST recorded (201), its approver's
+ * standing is checked in a separate read after the commit; a failure is a
+ * warning log and a count only (`shift-close-approver.ts`). Never on a
+ * replay, never refusing, and a failed lookup never fails the close.
  */
 import { createHash } from "node:crypto";
 
 import { runWithTenantContext } from "@data-pulse-2/db";
+import type { Logger } from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
 
 import { canonicalJson } from "../idempotency/canonical-json";
+import type { ShiftCloseApproverUnverifiedReason } from "../observability/metrics/api.metrics";
 import type { DeviceScope } from "../pos-cashier-admissions/device-scope";
 import { closeFitsCurrency, isCashUpConsistent } from "./shift-cash-arithmetic";
 import type { CashMovementFact, CloseShiftFact, OpenShiftFact } from "./shift-cash-up.dto";
@@ -54,6 +62,7 @@ import {
   type ShiftCloseRow,
 } from "./shift-cash-up.repository";
 import { closeHash, closedShift, isRacedClose, isTransactionConflict, toCloseRecord } from "./shift-close";
+import { reportUnverifiedApprover, standingFinding } from "./shift-close-approver";
 import { refundRefFailure } from "./shift-refund-refs";
 import { ShiftStoreUserReader } from "./shift-store-user";
 import { canonicalInstant, fitsCurrencyPrecision, formatMoney } from "./shift-money";
@@ -107,6 +116,8 @@ export class ShiftCashUpService {
     private readonly pool: Pool,
     private readonly repo: ShiftCashUpRepository = new ShiftCashUpRepository(),
     private readonly storeUsers: ShiftStoreUserReader = new ShiftStoreUserReader(),
+    /** Where an unverified close approver is logged (POS_SHIFTS_LOGGER); none in bare tests. */
+    private readonly logger?: Pick<Logger, "warn">,
   ) {}
 
   /**
@@ -170,14 +181,50 @@ export class ShiftCashUpService {
    * `shift_payload_conflict` for a different close of a closed shift; 422
    * `shift_cashup_inconsistent`, `refund_ref_invalid` or `currency_mismatch`.
    * A refusal records nothing; a ref claimed concurrently rolls the whole
-   * close back.
+   * close back. A first record (201) then has its approver's standing
+   * checked (`checkApprover`), which never changes the answer.
    */
   async closeShift(
     ctx: ShiftWriteContext,
     shiftId: string,
     fact: CloseShiftFact,
   ): Promise<ShiftWriteResult<ShiftProjection>> {
-    const request: CloseRequest = { ctx, shiftId, fact };
+    const result = await this.closeWithRetry({ ctx, shiftId, fact });
+    if (result.created) await this.checkApprover(ctx, fact);
+    return result;
+  }
+
+  /**
+   * RT-17 comment 10955, option A: after a close was first recorded, checks
+   * its variance approver and reports a failure (log + count) without ever
+   * refusing. Runs in its own read transaction AFTER the close committed, so
+   * a failing lookup cannot roll the close back; it reports
+   * `check_unavailable` instead. Never throws.
+   */
+  private async checkApprover(ctx: ShiftWriteContext, fact: CloseShiftFact): Promise<void> {
+    const approver = fact.varianceApprovedByUserId;
+    if (approver === undefined) return;
+    const reason = approver === fact.closingUserId ? "approver_is_closer" : await this.approverFinding(ctx, approver);
+    if (reason !== null) reportUnverifiedApprover(this.logger, { reason, authPath: ctx.path });
+  }
+
+  /** The approver's standing in the credential's tenant and store, as a finding. */
+  private async approverFinding(
+    ctx: ShiftWriteContext,
+    approver: string,
+  ): Promise<ShiftCloseApproverUnverifiedReason | null> {
+    try {
+      const standing = await this.inTenant(ctx, (client) =>
+        this.storeUsers.approverStanding(client, { scope: ctx.scope, userId: approver }),
+      );
+      return standingFinding(standing);
+    } catch {
+      return "check_unavailable";
+    }
+  }
+
+  /** The close, retried once after a transaction conflict. */
+  private async closeWithRetry(request: CloseRequest): Promise<ShiftWriteResult<ShiftProjection>> {
     try {
       return await this.closeOnce(request);
     } catch (err) {
