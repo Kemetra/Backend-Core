@@ -12,12 +12,15 @@ export type ShiftCashUpFailure =
   | "shift_not_found"
   | "shift_payload_conflict"
   | "shift_already_open"
-  | "shift_closed";
+  | "shift_closed"
+  | "shift_cashup_inconsistent"
+  | "currency_mismatch"
+  | "refund_ref_invalid";
 
 const RESPONSES: Readonly<Record<ShiftCashUpFailure, { status: HttpStatus; message: string }>> = {
   validation_error: {
     status: HttpStatus.BAD_REQUEST,
-    message: "an amount has more fractional digits than the shift currency's minor unit",
+    message: "the request does not fit the recorded shift",
   },
   refused: { status: HttpStatus.FORBIDDEN, message: "Forbidden" },
   shift_not_found: { status: HttpStatus.NOT_FOUND, message: "shift not found" },
@@ -32,6 +35,18 @@ const RESPONSES: Readonly<Record<ShiftCashUpFailure, { status: HttpStatus; messa
   shift_closed: {
     status: HttpStatus.CONFLICT,
     message: "the shift is closed; a new cash movement cannot be added",
+  },
+  shift_cashup_inconsistent: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: "the cash-up arithmetic does not hold",
+  },
+  currency_mismatch: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: "a refund reference was refunded in another currency",
+  },
+  refund_ref_invalid: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: "a refund reference cannot be claimed by this close",
   },
 };
 
