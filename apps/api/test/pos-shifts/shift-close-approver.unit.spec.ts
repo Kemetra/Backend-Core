@@ -333,6 +333,10 @@ describe("closeShift — nothing is checked or emitted", () => {
 });
 
 describe("shift_close_approver_unverified_total — registration", () => {
+  it("the warning's event name is fixed (dashboards and alerts key on it)", () => {
+    expect(APPROVER_UNVERIFIED_EVENT).toBe("shift.close.approver_unverified");
+  });
+
   it("the reason set is closed", () => {
     expect([...SHIFT_CLOSE_APPROVER_UNVERIFIED_REASONS].sort()).toEqual(
       ["approver_is_closer", "check_unavailable", "inactive_membership", "no_store_access", "not_manager"],
