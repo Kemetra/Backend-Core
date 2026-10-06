@@ -2,10 +2,10 @@
  * PosShiftsModule — POS shift lifecycle.
  *
  *   - `GET /api/pos/v1/shifts/stuck` (PosShiftsController, operator-identity).
- *   - RT-17 slice 2b: the cash-up writes `openShift` and `recordCashMovement`
- *     (ShiftCashUpController), with the captureSale credential model
- *     (RT-224): the operator envelope OR the device bearer plus a verified
- *     `operatorUserId`.
+ *   - RT-17 slices 2b-1 / 2b-2: the cash-up writes `openShift`,
+ *     `recordCashMovement` and `closeShift` (ShiftCashUpController), with the
+ *     captureSale credential model (RT-224): the operator envelope OR the
+ *     device bearer plus a verified `operatorUserId`.
  *
  * Cash-up guard wiring mirrors SalesModule / SettlementModule: the envelope
  * path is PosOperatorEnvelopeSaleGuard (live operator re-check through the

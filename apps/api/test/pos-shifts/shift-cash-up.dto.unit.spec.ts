@@ -6,6 +6,7 @@
 import type { ZodTypeAny } from "zod";
 
 import {
+  CloseShiftRequestSchema,
   OpenShiftRequestSchema,
   RecordCashMovementRequestSchema,
   ShiftIdParamSchema,
@@ -14,6 +15,7 @@ import {
 
 const UUID = "0192f5a2-3b4c-7d8e-9f01-23456789ab01";
 const UUID_V4 = "0e170000-0000-4000-8000-000000000001";
+const UUID_UPPER = UUID.toUpperCase();
 
 const OPEN = {
   shiftId: UUID,
@@ -104,6 +106,65 @@ describe("RecordCashMovementRequestSchema", () => {
   });
 });
 
+const CLOSE = {
+  closedAt: "2026-10-05T16:00:00Z",
+  closingUserId: UUID_V4,
+  closeKind: "normal",
+  openingFloat: "500.00",
+  cashSalesTotal: "2450.00",
+  cashRefundsTotal: "75.00",
+  payInTotal: "0.00",
+  payOutTotal: "120.00",
+  expectedCash: "2755.00",
+  countedCash: "2750.00",
+  variance: "-5.00",
+  saleCount: 37,
+  cashRefundReturnRefs: [UUID],
+};
+
+describe("CloseShiftRequestSchema", () => {
+  it.each([
+    ["the contract example", {}],
+    ["a device-path claim and an approver", { operatorUserId: UUID_V4, varianceApprovedByUserId: UUID }],
+    ["a forced close with its reason", { closeKind: "forced", forcedReason: "Cashier left" }],
+    ["a positive variance", { countedCash: "2760.00", variance: "5.00" }],
+    ["no refund refs", { cashRefundReturnRefs: [] }],
+    ["an RFC 3339 offset closedAt", { closedAt: "2026-10-05T18:00:00+02:00" }],
+    ["4 fractional digits (checked against the shift later)", { countedCash: "2750.0001" }],
+  ])("accepts %s", (_label, overrides) => {
+    expect(accepts({ schema: CloseShiftRequestSchema, base: CLOSE, overrides })).toBe(true);
+  });
+
+  it.each([
+    ["a normal close with a forcedReason", { forcedReason: "no" }],
+    ["a forced close without a forcedReason", { closeKind: "forced" }],
+    ["an empty forcedReason", { closeKind: "forced", forcedReason: "" }],
+    ["a 201-character forcedReason", { closeKind: "forced", forcedReason: "x".repeat(201) }],
+    ["an unknown closeKind", { closeKind: "abandoned" }],
+    ["a negative total", { payOutTotal: "-1.00" }],
+    ["a total in exponent form", { cashSalesTotal: "2.45e3" }],
+    ["a numeric total", { countedCash: 2750 }],
+    ["a variance with 5 fractional digits", { variance: "-5.00001" }],
+    ["a negative saleCount", { saleCount: -1 }],
+    ["a fractional saleCount", { saleCount: 1.5 }],
+    ["a saleCount beyond a database integer", { saleCount: 2 ** 31 }],
+    ["a string saleCount", { saleCount: "37" }],
+    ["duplicate refund refs", { cashRefundReturnRefs: [UUID, UUID] }],
+    ["a non-uuid refund ref", { cashRefundReturnRefs: ["return-1"] }],
+    ["a non-uuid approver", { varianceApprovedByUserId: "manager" }],
+    ["a currency field", { currencyCode: "EGP" }],
+    ["a non-RFC 3339 closedAt", { closedAt: "2026-10-05T16:00:00+0200" }],
+  ])("rejects %s", (_label, overrides) => {
+    expect(accepts({ schema: CloseShiftRequestSchema, base: CLOSE, overrides })).toBe(false);
+  });
+
+  it.each(Object.keys(CLOSE))("rejects a body missing %s", (field) => {
+    const body: Record<string, unknown> = { ...CLOSE };
+    delete body[field];
+    expect(CloseShiftRequestSchema.safeParse(body).success).toBe(false);
+  });
+});
+
 describe("ShiftInstantSchema — an RFC 3339 date-time, Z or a ±HH:MM offset (Codex P2)", () => {
   it.each([
     ["2026-10-05T08:00:00Z", true],
@@ -133,5 +194,55 @@ describe("ShiftIdParamSchema", () => {
     ["", false],
   ])("%s → %s", (value, ok) => {
     expect(ShiftIdParamSchema.safeParse(value).success).toBe(ok);
+  });
+
+  it("an upper-case shift_id is the same id, lower-cased", () => {
+    expect(ShiftIdParamSchema.parse(UUID_UPPER)).toBe(UUID);
+  });
+});
+
+describe("every id is normalised to lower case (PR #714 round 1, Codex P2)", () => {
+  /** One id field of a body schema, given upper-case. */
+  interface IdCase {
+    readonly schema: ZodTypeAny;
+    readonly base: Record<string, unknown>;
+    readonly field: string;
+  }
+
+  const idCases: Array<[string, IdCase]> = [
+    ["OpenShiftRequest.shiftId", { schema: OpenShiftRequestSchema, base: OPEN, field: "shiftId" }],
+    ["OpenShiftRequest.openingUserId", { schema: OpenShiftRequestSchema, base: OPEN, field: "openingUserId" }],
+    ["OpenShiftRequest.operatorUserId", { schema: OpenShiftRequestSchema, base: OPEN, field: "operatorUserId" }],
+    ["RecordCashMovementRequest.movementId", { schema: RecordCashMovementRequestSchema, base: MOVEMENT, field: "movementId" }],
+    ["RecordCashMovementRequest.operatorUserId", { schema: RecordCashMovementRequestSchema, base: MOVEMENT, field: "operatorUserId" }],
+    ["CloseShiftRequest.closingUserId", { schema: CloseShiftRequestSchema, base: CLOSE, field: "closingUserId" }],
+    ["CloseShiftRequest.varianceApprovedByUserId", { schema: CloseShiftRequestSchema, base: CLOSE, field: "varianceApprovedByUserId" }],
+    ["CloseShiftRequest.operatorUserId", { schema: CloseShiftRequestSchema, base: CLOSE, field: "operatorUserId" }],
+  ];
+
+  it.each(idCases)("%s", (_label, c) => {
+    const parsed = c.schema.parse({ ...c.base, [c.field]: UUID_UPPER }) as Record<string, unknown>;
+    expect(parsed[c.field]).toBe(UUID);
+  });
+
+  it("cashRefundReturnRefs are lower-cased, in order", () => {
+    const parsed = CloseShiftRequestSchema.parse({ ...CLOSE, cashRefundReturnRefs: [UUID_UPPER, UUID_V4] });
+    expect(parsed.cashRefundReturnRefs).toEqual([UUID, UUID_V4]);
+  });
+
+  it("the same return in two spellings is a duplicate (400), never two refs", () => {
+    expect(accepts({ schema: CloseShiftRequestSchema, base: CLOSE, overrides: { cashRefundReturnRefs: [UUID, UUID_UPPER] } })).toBe(false);
+  });
+});
+
+describe("cashRefundReturnRefs is capped at 1000 (contract maxItems)", () => {
+  const refs = (count: number): string[] =>
+    Array.from({ length: count }, (_v, i) => `0e170000-0000-4000-8000-${i.toString(16).padStart(12, "0")}`);
+
+  it.each([
+    [1000, true],
+    [1001, false],
+  ])("%i refs → %s", (count, ok) => {
+    expect(accepts({ schema: CloseShiftRequestSchema, base: CLOSE, overrides: { cashRefundReturnRefs: refs(count) } })).toBe(ok);
   });
 });

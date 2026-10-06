@@ -573,7 +573,11 @@ export class ShiftCashUpRepository {
    * claims its refund refs in order and moves the shift to `closed` /
    * `closed_forced`. The caller holds the shift row lock and has validated
    * the fact (arithmetic, opening float, refs); the database re-checks the
-   * arithmetic and the float. A ref claimed meanwhile by another close throws
+   * arithmetic and the float. The claims are inserted in `return_id` order
+   * (PR #714 round 1, Codex P2): every close takes the claims' key locks in
+   * one global order, so two closes claiming the same returns in opposite
+   * request orders wait on each other instead of deadlocking. The stored
+   * `ordinal` stays the request order, so a replay echoes the refs as sent. A ref claimed meanwhile by another close throws
    * RefundRefAlreadyClaimedError, and a shift UPDATE that does not move
    * exactly one row throws ShiftCloseNotAppliedError, so the caller's
    * transaction rolls back.
@@ -625,6 +629,7 @@ export class ShiftCashUpRepository {
         `INSERT INTO shift_refund_claims (return_id, shift_id, tenant_id, store_id, ordinal)
          SELECT ref.return_id, $1, $2, $3, (ref.ord - 1)::int
            FROM unnest($4::uuid[]) WITH ORDINALITY AS ref(return_id, ord)
+          ORDER BY ref.return_id
          ON CONFLICT (return_id) DO NOTHING`,
         [shift.shiftId, shift.tenantId, shift.storeId, refs],
       );

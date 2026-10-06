@@ -37,13 +37,14 @@ info:
     and recording users), as `captureSale` carries `operatorUserId`.
 
 
-    **Runtime status.** `openShift` and `recordCashMovement` are implemented
-    (RT-17 slice 2b-1, on migration `0036_shift_cash_up` from slice 2a).
-    `closeShift` stays `x-runtime-status: contract-only` until RT-17 slice
-    2b-2; a POS MUST NOT call it before then. Slice 2b-1 also documents what
-    the shared `IdempotencyInterceptor` already answers on every operation (the
-    425 and the two `Idempotency-Key` 400 codes) and the `openShift` scoping
-    rule; no request or projection shape changed.
+    **Runtime status.** `openShift`, `recordCashMovement` and `closeShift` are
+    implemented: the first two in RT-17 slice 2b-1, `closeShift` in slice
+    2b-2, on migration `0036_shift_cash_up` from slice 2a. Slice 2b-1 also
+    documents what the shared `IdempotencyInterceptor` already answers on
+    every operation (the 425 and the two `Idempotency-Key` 400 codes) and the
+    `openShift` scoping rule; slice 2b-2 documents the replay order below and
+    the variance approver's tenant rule. No request or projection shape
+    changed.
 
 
     **Model** (10919). A shift is one drawer session on one terminal: at most
@@ -90,11 +91,20 @@ info:
     close, `movementId` for a movement) with a payload hash: a re-delivery of
     the same fact with a different key is a `200` replay; the same natural key
     with a different payload is 409 `shift_payload_conflict`. The
-    `operatorUserId` claim is not part of that payload hash. A request whose
+    `operatorUserId` claim is not part of that payload hash. Every id (`format:
+    uuid`, in a body or the `shift_id` path) is case-insensitive: it is
+    normalised to lower case before any comparison, de-duplication or hash,
+    so an upper-case re-delivery is the same fact. A request whose
     `Idempotency-Key` is still being processed is 425 `idempotency_in_progress`
     (retry with the same key and body after `Retry-After`); a missing key is
     400 `idempotency_key_required` and a malformed one 400
-    `idempotency_key_malformed`.
+    `idempotency_key_malformed`. On the `operatorAuthorization` path, a
+    re-delivery whose payload hash matches the recorded fact is answered as
+    that replay before the stated user's live store check (the opening or
+    closing user's tenant membership and store access), so a repair retry of
+    a fact already recorded still replays after that user's access was
+    revoked; nothing is written, and every other request goes through every
+    check (RT-17 comment 10931).
 
 
     **Money.** Every amount is an exact-decimal string (never a float) in the
@@ -378,12 +388,6 @@ paths:
     post:
       summary: Close a shift with its cash-up (counted cash and variance).
       operationId: closeShift
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-17 slice 2a landed the migration and slice 2b-1 the open and
-        movement routes. The close route, its guard wiring and its
-        verification land in RT-17 slice 2b-2; until then Backend-Core has no
-        route for this operation.
       x-idempotency: required
       tags: [pos-shifts]
       security:
@@ -428,7 +432,9 @@ paths:
         approved a non-zero variance on the terminal (the POS asks for a
         manager PIN above its threshold, default 0; 10919 decision 1). The
         server records it and re-checks that user's manager role for the
-        read-side flag, but never refuses the close because of it.
+        read-side flag, but never refuses the close because of that role.
+        It must name a user of the caller's tenant, else 400
+        `validation_error`.
 
 
         Attribution: on the device path `closingUserId` MUST equal the
@@ -878,18 +884,23 @@ components:
         saleCount:
           type: integer
           minimum: 0
+          maximum: 2147483647
           description: >
             Number of sales the POS counted in the shift (this device,
-            finalized inside the shift). Recorded as reported.
+            finalized inside the shift). Recorded as reported; at most
+            2147483647 (a database integer).
         cashRefundReturnRefs:
           type: array
           uniqueItems: true
+          maxItems: 1000
           items:
             type: string
             format: uuid
           description: >
             The returns whose cash refund was paid from this drawer during
-            the shift (their server return references); may be empty. Each
+            the shift (their server return references); may be empty, at
+            most 1000. Ids are case-insensitive (normalised to lower case,
+            so one return in two spellings is a duplicate, 400). Each
             must resolve to a return of the caller's tenant and store with a
             cash refund tender not claimed by another shift's close, else 422
             `refund_ref_invalid`; one refunded in another currency is 422
@@ -899,8 +910,11 @@ components:
           format: uuid
           description: >
             The `users.id` of the manager who approved the variance on the
-            terminal. Recorded; the manager role is re-checked for the
-            read-side flag but never blocks the close.
+            terminal. Recorded. It must be a user of the caller's tenant (a
+            membership of any state: the manager may have left since the
+            offline close), else 400 `validation_error`; the manager role
+            is re-checked for the read-side flag only, and never refuses the
+            close.
         operatorUserId:
           type: string
           format: uuid
@@ -1027,9 +1041,11 @@ components:
         saleCount:
           type: integer
           minimum: 0
+          maximum: 2147483647
         cashRefundReturnRefs:
           type: array
           uniqueItems: true
+          maxItems: 1000
           items:
             type: string
             format: uuid
@@ -1247,8 +1263,9 @@ components:
         body), a missing required field, a bad enum, uuid or date-time, an
         amount that is not an exact-decimal string or has more fractional
         digits than the shift currency's ISO-4217 minor unit, a currency with
-        no ISO-4217 minor unit, or an invalid `shift_id`: `error.code` is
-        `validation_error`. A missing `Idempotency-Key` is
+        no ISO-4217 minor unit, a close's `varianceApprovedByUserId` that is
+        not a user of the caller's tenant, or an invalid `shift_id`:
+        `error.code` is `validation_error`. A missing `Idempotency-Key` is
         `idempotency_key_required` and one that is not 16 to 128 printable
         ASCII characters is `idempotency_key_malformed` (the
         `IdempotencyInterceptor`'s codes). Deterministic; nothing is recorded.

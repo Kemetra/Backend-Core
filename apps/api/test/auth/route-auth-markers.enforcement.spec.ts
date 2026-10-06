@@ -149,7 +149,8 @@ describe("route auth markers are enforced at the route (RT-129 / A9)", () => {
       // RT-224 (Option B): captureSale accepts the device bearer as an
       // alternative to the operator envelope; SaleCaptureAuthGuard runs both.
       "SalesController.captureSale",
-      // RT-17 slice 2b-1: the shift cash-up writes, the captureSale model.
+      // RT-17 slices 2b-1 / 2b-2: the shift cash-up writes, the captureSale model.
+      "ShiftCashUpController.closeShift",
       "ShiftCashUpController.openShift",
       "ShiftCashUpController.recordCashMovement",
     ]);

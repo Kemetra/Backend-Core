@@ -177,3 +177,52 @@ describe("ShiftCashUpAuthGuard — a route without @ShiftFactRoute is a configur
     expect({ guarded: guarded.length > 0, unspecified }).toEqual({ guarded: true, unspecified: [] });
   });
 });
+
+describe("ShiftCashUpAuthGuard — closeShift on the device path (RT-17 slice 2b-2)", () => {
+  /** The spec the real closeShift handler carries. */
+  const CLOSE_ROUTE = Reflect.getMetadata(
+    SHIFT_FACT_ROUTE_KEY,
+    ShiftCashUpController.prototype.closeShift,
+  ) as ShiftFactRouteSpec;
+
+  const closeBody = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    closedAt: "2026-10-05T16:00:00+02:00",
+    closingUserId: CASHIER,
+    closeKind: "normal",
+    openingFloat: "500.00",
+    cashSalesTotal: "0.00",
+    cashRefundsTotal: "0.00",
+    payInTotal: "0.00",
+    payOutTotal: "0.00",
+    expectedCash: "500.00",
+    countedCash: "500.00",
+    variance: "0.00",
+    saleCount: 0,
+    cashRefundReturnRefs: [],
+    operatorUserId: CASHIER,
+    ...extra,
+  });
+
+  it("a normal close is verified at closedAt with closingUserId as the stated user", async () => {
+    const { ctx } = contextFor({ body: closeBody(), route: CLOSE_ROUTE });
+    await expect(guard.canActivate(ctx)).resolves.toBe(true);
+    expect(verify).toHaveBeenCalledWith({ ...SCOPE, userId: CASHIER, occurredAt: "2026-10-05T16:00:00+02:00" });
+  });
+
+  it.each([
+    ["envelope_only", { closeKind: "forced", forcedReason: "Cashier left" }],
+    ["actor_mismatch", { closingUserId: OTHER_USER }],
+  ])("%s → the generic 403 refused, before the verifier", async (cause, extra) => {
+    const { ctx } = contextFor({ body: closeBody(extra), route: CLOSE_ROUTE });
+    await expect(guard.canActivate(ctx)).rejects.toEqual(new ForbiddenException({ code: "refused", message: "Forbidden" }));
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({ event: shiftRefusalEvent(cause as never), status: 403 });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it("a forced close on the envelope path goes to the envelope guard alone", async () => {
+    const { operatorUserId: _claim, ...body } = closeBody({ closeKind: "forced", forcedReason: "Cashier left" });
+    const { ctx } = contextFor({ body, route: CLOSE_ROUTE });
+    await expect(guard.canActivate(ctx)).resolves.toBe(true);
+    expect([envelopeGate.canActivate.mock.calls.length, deviceGate.canActivate.mock.calls.length]).toEqual([1, 0]);
+  });
+});

@@ -5,6 +5,7 @@
  *
  *   POST /api/pos/v1/shifts                            → openShift
  *   POST /api/pos/v1/shifts/{shift_id}/cash-movements  → recordCashMovement
+ *   POST /api/pos/v1/shifts/{shift_id}/close           → closeShift (slice 2b-2)
  *
  * The captureSale device path, reused (RT-224): `@DeviceBearer()` +
  * `ShiftCashUpAuthGuard` (envelope OR device bearer with a verified
@@ -41,9 +42,11 @@ import { Idempotent } from "../idempotency/idempotent.decorator";
 import { deviceScopeOf } from "../pos-cashier-admissions/device-scope";
 import { ShiftCashUpAuthGuard, ShiftFactRoute } from "./shift-cash-up-auth.guard";
 import {
+  CloseShiftRequestSchema,
   OpenShiftRequestSchema,
   RecordCashMovementRequestSchema,
   ShiftIdParamSchema,
+  type CloseShiftRequestDto,
   type OpenShiftRequestDto,
   type RecordCashMovementRequestDto,
 } from "./shift-cash-up.dto";
@@ -74,6 +77,11 @@ export function shiftWriteContext(request: TenantContextRequest): ShiftWriteCont
   const path = principal?.kind === "token" ? PATH_OF_SCOPE.get(principal.scope) : undefined;
   if (!actorUserId || path === undefined) throw new UnauthorizedException("Unauthorized");
   return { scope, actorUserId, path };
+}
+
+/** A forced close is manager-envelope only (contract "Forced close"). */
+function isForcedClose(body: Readonly<Record<string, unknown>>): boolean {
+  return body["closeKind"] === "forced";
 }
 
 /** Run a write, answering 201 or a 200 replay, with refusals mapped to the contract. */
@@ -130,5 +138,28 @@ export class ShiftCashUpController {
     const ctx = shiftWriteContext(request);
     const { operatorUserId: _claim, ...fact } = body;
     return respond(res, () => this.shifts.recordCashMovement(ctx, shiftId, fact));
+  }
+
+  @Post(":shift_id/close")
+  @DeviceBearer()
+  @UseGuards(ShiftCashUpAuthGuard, PosWriteRateLimitGuard)
+  @ShiftFactRoute({
+    schema: CloseShiftRequestSchema,
+    timeField: "closedAt",
+    actorField: "closingUserId",
+    envelopeOnly: isForcedClose,
+  })
+  @PosWriteRateLimitBucket("posWriteShift")
+  @Idempotent("required")
+  @Auditable("shift.closed")
+  async closeShift(
+    @Req() request: TenantContextRequest,
+    @Param("shift_id", new ZodValidationPipe(ShiftIdParamSchema)) shiftId: string,
+    @Body(new ZodValidationPipe(CloseShiftRequestSchema)) body: CloseShiftRequestDto,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<ShiftProjection> {
+    const ctx = shiftWriteContext(request);
+    const { operatorUserId: _claim, ...fact } = body;
+    return respond(res, () => this.shifts.closeShift(ctx, shiftId, fact));
   }
 }

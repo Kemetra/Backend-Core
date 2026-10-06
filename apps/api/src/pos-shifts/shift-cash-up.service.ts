@@ -1,7 +1,7 @@
 /**
- * ShiftCashUpService — RT-17 slice 2b ([GATED] approval: Jira RT-17 comments
- * 10760 + 10919 + 10920): `openShift` and `recordCashMovement` over the 0036
- * schema and the scoped `ShiftCashUpRepository`.
+ * ShiftCashUpService — RT-17 slices 2b-1 / 2b-2 ([GATED] approval: Jira RT-17
+ * comments 10760 + 10919 + 10920): `openShift`, `recordCashMovement` and
+ * `closeShift` over the 0036 schema and the scoped `ShiftCashUpRepository`.
  *
  * Every call runs in ONE transaction under the credential's tenant (RLS on
  * the NOBYPASSRLS domain pool). Scope (tenant, store, device) and the actor
@@ -16,7 +16,10 @@
  *     `shift_payload_conflict`.
  *
  * A concurrent identical open under another key is a replay too, whichever
- * constraint refuses the loser's insert (PR #713 review #1).
+ * constraint refuses the loser's insert (PR #713 review #1); so is the loser
+ * of two identical closes (it waits on the shift row lock, then re-reads).
+ * On the envelope path an exact replay is answered before the live check of
+ * the stated opener / closer (RT-17 comment 10931 #4, `requireStatedUser`).
  *
  * Non-disclosure (Codex P2, RT-17 comment 10925). A `shiftId` resolves only
  * within the credential's tenant + store + device. An open whose `shiftId` is
@@ -32,7 +35,8 @@ import type { Pool, PoolClient } from "pg";
 
 import { canonicalJson } from "../idempotency/canonical-json";
 import type { DeviceScope } from "../pos-cashier-admissions/device-scope";
-import type { CashMovementFact, OpenShiftFact } from "./shift-cash-up.dto";
+import { closeFitsCurrency, isCashUpConsistent } from "./shift-cash-arithmetic";
+import type { CashMovementFact, CloseShiftFact, OpenShiftFact } from "./shift-cash-up.dto";
 import { ShiftCashUpError } from "./shift-cash-up.errors";
 import {
   toCashMovementProjection,
@@ -41,12 +45,17 @@ import {
   type ShiftProjection,
 } from "./shift-cash-up.projections";
 import {
+  RefundRefAlreadyClaimedError,
   ShiftCashUpRepository,
   type CashMovementRow,
   type CashUpShiftRow,
   type InsertShiftOutcome,
+  type ShiftCloseFact,
+  type ShiftCloseRow,
 } from "./shift-cash-up.repository";
-import { ShiftStoreUserReader, type StoreUser } from "./shift-store-user";
+import { closeHash, closedShift, isRacedClose, isTransactionConflict, toCloseRecord } from "./shift-close";
+import { refundRefFailure } from "./shift-refund-refs";
+import { ShiftStoreUserReader } from "./shift-store-user";
 import { canonicalInstant, fitsCurrencyPrecision, formatMoney } from "./shift-money";
 
 /** Which credential admitted the request (the guard decided it). */
@@ -110,11 +119,12 @@ export class ShiftCashUpService {
   async openShift(ctx: ShiftWriteContext, fact: OpenShiftFact): Promise<ShiftWriteResult<ShiftProjection>> {
     const hash = openHash(fact);
     return this.inTenant(ctx, async (client) => {
-      if (ctx.path === "envelope") {
-        await this.requireStoreUser(client, { scope: ctx.scope, userId: fact.openingUserId });
-      }
+      // An exact replay is answered before the envelope path's live check of
+      // the stated opener (RT-17 comment 10931 #4); see replaysBeforeLiveCheck.
       const existing = await this.repo.findShift(client, ctx.scope, fact.shiftId);
-      if (existing !== null) return this.replayShift(client, existing, hash);
+      if (existing !== null && existing.payloadHash.equals(hash)) return this.replayShift(client, existing, hash);
+      await this.requireStatedUser(client, { ctx, userId: fact.openingUserId });
+      if (existing !== null) throw new ShiftCashUpError("shift_payload_conflict");
 
       const outcome = await this.repo.insertShift(client, ctx.scope, {
         ...fact,
@@ -150,12 +160,83 @@ export class ShiftCashUpService {
     });
   }
 
+  /**
+   * Records the ShiftClosed fact and closes the shift, once. The shift row
+   * is locked FOR UPDATE first, so closes (and movements) of one shift
+   * serialise: the loser of two identical closes re-reads a closed shift and
+   * replays. 404 `shift_not_found` outside scope; 400 for a precision breach
+   * or an approver who is not a user of the tenant; 200 for the same close
+   * again; 403 for an envelope closer who is not a store user; 409
+   * `shift_payload_conflict` for a different close of a closed shift; 422
+   * `shift_cashup_inconsistent`, `refund_ref_invalid` or `currency_mismatch`.
+   * A refusal records nothing; a ref claimed concurrently rolls the whole
+   * close back.
+   */
+  async closeShift(
+    ctx: ShiftWriteContext,
+    shiftId: string,
+    fact: CloseShiftFact,
+  ): Promise<ShiftWriteResult<ShiftProjection>> {
+    const request: CloseRequest = { ctx, shiftId, fact };
+    try {
+      return await this.closeOnce(request);
+    } catch (err) {
+      // A deadlock (40P01) or serialization failure (40001) rolled the whole
+      // close back. Retried ONCE in a fresh transaction rather than answered
+      // as a lost claim (PR #714 round 1, Codex P2): the rival may have rolled
+      // back too, so a 422 could dead-letter a valid close on the POS; the
+      // retry answers what the database now holds (201, a replay, 409 or
+      // 422). Claims are taken in return_id order, so this is a backstop; a
+      // second conflict propagates as a transient 500 the POS retries.
+      if (!isTransactionConflict(err)) throw err;
+      return this.closeOnce(request);
+    }
+  }
+
+  /** One close transaction, with a raced close settled in a second one. */
+  private async closeOnce(request: CloseRequest): Promise<ShiftWriteResult<ShiftProjection>> {
+    try {
+      return await this.inTenant(request.ctx, (client) => this.closeInTenant(client, request));
+    } catch (err) {
+      if (!isRacedClose(err)) throw err;
+      return this.inTenant(request.ctx, (client) => this.settleRacedClose(client, { request, err }));
+    }
+  }
+
+  private async closeInTenant(client: PoolClient, request: CloseRequest): Promise<ShiftWriteResult<ShiftProjection>> {
+    const { ctx, fact } = request;
+    const shift = await this.lockShift(client, { scope: ctx.scope, shiftId: request.shiftId });
+    if (!closeFitsCurrency({ totals: fact, currencyCode: shift.currencyCode })) {
+      throw new ShiftCashUpError("validation_error");
+    }
+    const hash = closeHash(shift, fact);
+    const replay = await this.replayClose(client, { shift, hash });
+    if (replay !== null) return replay;
+    await this.requireStatedUser(client, { ctx, userId: fact.closingUserId });
+    if (shift.lifecycleState !== "open") throw new ShiftCashUpError("shift_payload_conflict");
+    await this.checkClose(client, { shift, fact });
+    return this.recordClose(client, { shift, fact, record: toCloseRecord(fact, { recordedByUserId: ctx.actorUserId, payloadHash: hash }) });
+  }
+
   private inTenant<T>(ctx: ShiftWriteContext, work: (client: PoolClient) => Promise<T>): Promise<T> {
     return runWithTenantContext(this.pool, { tenantId: ctx.scope.tenantId, isPlatformAdmin: false }, work);
   }
 
-  private async requireStoreUser(client: PoolClient, user: StoreUser): Promise<void> {
-    if (!(await this.storeUsers.isStoreUser(client, user))) throw new ShiftCashUpError("refused");
+  /**
+   * The envelope path's live check of a stated opener / closer (#711 review
+   * note 1): a user of the tenant with access to the store, else 403. The
+   * device path's stated user was matched to the verified cashier by the
+   * guard. Runs AFTER the exact-replay lookup (RT-17 comment 10931 #4): a
+   * repair retry of an already recorded fact replays even after the stated
+   * user's access was revoked. That answers nothing new: the replay is the
+   * caller's own device's fact, whose whole payload the caller just sent,
+   * the envelope operator was re-verified live by the guard, and nothing is
+   * written. Any other request still runs this check.
+   */
+  private async requireStatedUser(client: PoolClient, stated: StatedUser): Promise<void> {
+    if (stated.ctx.path !== "envelope") return;
+    const ok = await this.storeUsers.isStoreUser(client, { scope: stated.ctx.scope, userId: stated.userId });
+    if (!ok) throw new ShiftCashUpError("refused");
   }
 
   private async replayShift(
@@ -166,6 +247,61 @@ export class ShiftCashUpService {
     if (!shift.payloadHash.equals(hash)) throw new ShiftCashUpError("shift_payload_conflict");
     const close = shift.lifecycleState === "open" ? null : await this.repo.findClose(client, shift);
     return { created: false, projection: toShiftProjection(shift, close) };
+  }
+
+  /** The shift in scope, locked FOR UPDATE; 404 when it does not resolve. */
+  private async lockShift(client: PoolClient, target: ShiftTarget): Promise<CashUpShiftRow> {
+    const shift = await this.repo.findShift(client, target.scope, target.shiftId, { forUpdate: true });
+    if (shift === null) throw new ShiftCashUpError("shift_not_found");
+    return shift;
+  }
+
+  /** The 200 replay when `shift` is closed with exactly this close, else null. */
+  private async replayClose(client: PoolClient, candidate: CloseCandidate): Promise<ShiftWriteResult<ShiftProjection> | null> {
+    if (candidate.shift.lifecycleState === "open") return null;
+    const close = await this.repo.findClose(client, candidate.shift);
+    if (close === null || !close.payloadHash.equals(candidate.hash)) return null;
+    return { created: false, projection: toShiftProjection(candidate.shift, close) };
+  }
+
+  /** The close's own rules: arithmetic (422), the approver (400), the refund refs (422). */
+  private async checkClose(client: PoolClient, close: OpenShiftClose): Promise<void> {
+    const { shift, fact } = close;
+    if (!isCashUpConsistent(fact, shift.openingFloat)) throw new ShiftCashUpError("shift_cashup_inconsistent");
+    const approver = fact.varianceApprovedByUserId;
+    if (approver !== undefined && !(await this.storeUsers.isTenantUser(client, { scope: shift, userId: approver }))) {
+      throw new ShiftCashUpError("validation_error");
+    }
+    const rows = await this.repo.readRefundRefs(client, shift, fact.cashRefundReturnRefs);
+    const refusal = refundRefFailure(rows, { refs: fact.cashRefundReturnRefs, currencyCode: shift.currencyCode });
+    if (refusal !== null) throw new ShiftCashUpError(refusal);
+  }
+
+  /** Records the close (201). A ref claimed meanwhile rolls it back as 422 `refund_ref_invalid`. */
+  private async recordClose(client: PoolClient, close: CloseToRecord): Promise<ShiftWriteResult<ShiftProjection>> {
+    let recorded: ShiftCloseRow;
+    try {
+      recorded = await this.repo.insertClose(client, close.shift, close.record);
+    } catch (err) {
+      if (err instanceof RefundRefAlreadyClaimedError) throw new ShiftCashUpError("refund_ref_invalid");
+      throw err;
+    }
+    return { created: true, projection: toShiftProjection(closedShift(close.shift, close.fact), recorded) };
+  }
+
+  /**
+   * A close whose transaction failed because another close of the shift
+   * committed first (`isRacedClose`). The same close is a 200 replay; another
+   * close is 409 `shift_payload_conflict`; a shift still open is not a race,
+   * and the original error stands.
+   */
+  private async settleRacedClose(client: PoolClient, raced: RacedClose): Promise<ShiftWriteResult<ShiftProjection>> {
+    const { ctx, shiftId, fact } = raced.request;
+    const shift = await this.repo.findShift(client, ctx.scope, shiftId);
+    if (shift === null || shift.lifecycleState === "open") throw raced.err;
+    const replay = await this.replayClose(client, { shift, hash: closeHash(shift, fact) });
+    if (replay === null) throw new ShiftCashUpError("shift_payload_conflict");
+    return replay;
   }
 
   /**
@@ -190,8 +326,7 @@ export class ShiftCashUpService {
 
   /** The path shift, locked FOR UPDATE: 404 outside scope, 400 for a precision breach. */
   private async lockMovementShift(client: PoolClient, target: MovementTarget): Promise<CashUpShiftRow> {
-    const shift = await this.repo.findShift(client, target.scope, target.shiftId, { forUpdate: true });
-    if (shift === null) throw new ShiftCashUpError("shift_not_found");
+    const shift = await this.lockShift(client, target);
     if (!fitsCurrencyPrecision({ amount: target.fact.amount, currencyCode: shift.currencyCode })) {
       throw new ShiftCashUpError("validation_error");
     }
@@ -227,6 +362,48 @@ interface RefusedOpen {
   readonly scope: DeviceScope;
   readonly shiftId: string;
   readonly hash: Buffer;
+}
+
+/** A close as the controller hands it over. */
+interface CloseRequest {
+  readonly ctx: ShiftWriteContext;
+  readonly shiftId: string;
+  readonly fact: CloseShiftFact;
+}
+
+/** A close whose transaction failed with `err`. */
+interface RacedClose {
+  readonly request: CloseRequest;
+  readonly err: unknown;
+}
+
+/** A shift in the credential's scope. */
+interface ShiftTarget {
+  readonly scope: DeviceScope;
+  readonly shiftId: string;
+}
+
+/** A recorded shift and the hash of the close being asked for. */
+interface CloseCandidate {
+  readonly shift: CashUpShiftRow;
+  readonly hash: Buffer;
+}
+
+/** A close of a locked, open shift. */
+interface OpenShiftClose {
+  readonly shift: CashUpShiftRow;
+  readonly fact: CloseShiftFact;
+}
+
+/** A checked close and the record to write. */
+interface CloseToRecord extends OpenShiftClose {
+  readonly record: ShiftCloseFact;
+}
+
+/** A stated opener / closer and the write it is stated on. */
+interface StatedUser {
+  readonly ctx: ShiftWriteContext;
+  readonly userId: string;
 }
 
 /** The path shift a movement names, in the credential's scope. */

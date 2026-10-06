@@ -581,6 +581,20 @@ describe("insertClose / findClose", () => {
     expect(after?.lifecycleState).toBe("closed");
   });
 
+  it("claims its refs in return_id order (one lock order for every close: no deadlock), keeping the request order as the ordinal (PR #714 round 1)", async () => {
+    if (skip()) return;
+    const shift = await open(SCOPE_A1);
+    await inTenant(IN_A, (c) => repo.insertClose(c, shift, closeFact({ cashRefundReturnRefs: [RET_CASH_2, RET_CASH] })));
+    const inserted = await pg().admin.query<{ return_id: string; ordinal: number }>(
+      `SELECT return_id, ordinal FROM shift_refund_claims WHERE shift_id = $1 ORDER BY ctid`,
+      [shift.shiftId],
+    );
+    expect(inserted.rows).toEqual([
+      { return_id: RET_CASH, ordinal: 1 },
+      { return_id: RET_CASH_2, ordinal: 0 },
+    ]);
+  });
+
   it("records a forced close as closed_forced, with no variance approver", async () => {
     if (skip()) return;
     const shift = await open(SCOPE_A1);

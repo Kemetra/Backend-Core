@@ -33,6 +33,14 @@
  * `idempotency_key_malformed` codes are documented; `openShift` states its
  * natural-key scoping (Codex P2, RT-17 comment 10925) and
  * `recordCashMovement` its path-shift replay scope (comment 10929).
+ *
+ * RT-17 slice 2b-2 (same [GATED] approval): `closeShift` has its route, so
+ * no operation is contract-only; the info note states that an exact
+ * envelope replay is answered before the stated user's live check (RT-17
+ * comment 10931 #4), and `varianceApprovedByUserId` that the approver must
+ * be a user of the caller's tenant while its role never refuses the close.
+ * PR #714 round 1: `saleCount` declares the database integer maximum and
+ * `cashRefundReturnRefs` at most 1000 items, as the runtime enforces.
  */
 import "reflect-metadata";
 
@@ -347,6 +355,10 @@ const VALID_MOVEMENT = {
   occurredAt: "2026-10-05T11:30:00Z",
 };
 
+/** `count` distinct return ids. */
+const manyRefs = (count: number): string[] =>
+  Array.from({ length: count }, (_v, i) => `0192f5a2-3b4c-7d8e-9f01-${i.toString(16).padStart(12, "0")}`);
+
 const VALID_CLOSE = {
   closedAt: "2026-10-05T16:00:00Z",
   closingUserId: USER_ID,
@@ -469,21 +481,27 @@ describe("pos-shifts — cash-up operations", () => {
   it.each([
     ["openShift", OPEN],
     ["recordCashMovement", MOVEMENT],
-  ])("%s has a runtime route since RT-17 slice 2b-1 (no contract-only marker)", (_id, route) => {
+    ["closeShift", CLOSE],
+  ])("%s has a runtime route since RT-17 slices 2b-1 / 2b-2 (no contract-only marker)", (_id, route) => {
     const o = op(route);
     expect([o["x-runtime-status"], o["x-runtime-note"]]).toEqual([undefined, undefined]);
   });
 
-  it("closeShift stays contract-only until RT-17 slice 2b-2, with a runtime note", () => {
-    const o = op(CLOSE);
-    expect(o["x-runtime-status"]).toBe("contract-only");
-    expect(o["x-runtime-note"] ?? "").toContain("RT-17 slice 2b-2");
+  it("the info runtime-status note says all three cash-up operations are implemented", () => {
+    const info = (doc.info?.description ?? "").replace(/\s+/g, " ");
+    expect(info).toContain("`openShift`, `recordCashMovement` and `closeShift` are implemented");
+    expect(info).not.toContain("contract-only");
   });
 
-  it("the info runtime-status note names what is implemented and what is not", () => {
+  it("the idempotency note says an exact envelope replay is answered before the stated user's live check", () => {
     const info = (doc.info?.description ?? "").replace(/\s+/g, " ");
-    expect(info).toContain("`openShift` and `recordCashMovement` are implemented");
-    expect(info).toContain("`closeShift` stays `x-runtime-status: contract-only` until RT-17 slice 2b-2");
+    expect(info).toContain("answered as that replay before the stated user's live store check");
+  });
+
+  it("the variance approver must be a user of the caller's tenant, never refused for its role", () => {
+    const text = (prop("CloseShiftRequest", "varianceApprovedByUserId").description ?? "").replace(/\s+/g, " ");
+    expect(text).toContain("must be a user of the caller's tenant");
+    expect(text).toContain("never refuses the close");
   });
 
   it.each(NEW_OPS)("%s is tagged pos-shifts", (_id, route) => {
@@ -708,8 +726,10 @@ describe("pos-shifts — request bodies", () => {
     ["RecordCashMovementRequest", "movementId", UUID],
     ["RecordCashMovementRequest", "occurredAt", DATE_TIME],
     ["RecordCashMovementRequest", "note", SHORT_TEXT],
-    ["CloseShiftRequest", "saleCount", { type: "integer", minimum: 0 }],
-    ["CloseShiftRequest", "cashRefundReturnRefs", { type: "array", uniqueItems: true, items: UUID }],
+    ["CloseShiftRequest", "saleCount", { type: "integer", minimum: 0, maximum: 2147483647 }],
+    ["CloseShiftRequest", "cashRefundReturnRefs", { type: "array", uniqueItems: true, maxItems: 1000, items: UUID }],
+    ["ShiftClose", "saleCount", { type: "integer", minimum: 0, maximum: 2147483647 }],
+    ["ShiftClose", "cashRefundReturnRefs", { type: "array", uniqueItems: true, maxItems: 1000, items: UUID }],
     ["CloseShiftRequest", "varianceApprovedByUserId", UUID],
     ["CloseShiftRequest", "closedAt", DATE_TIME],
     ["CloseShiftRequest", "closingUserId", UUID],
@@ -1021,6 +1041,8 @@ describe("pos-shifts — projections and fixtures", () => {
     ["CloseShiftRequest", "numeric variance", { ...VALID_CLOSE, variance: -5 }],
     ["CloseShiftRequest", "negative saleCount", { ...VALID_CLOSE, saleCount: -1 }],
     ["CloseShiftRequest", "fractional saleCount", { ...VALID_CLOSE, saleCount: 1.5 }],
+    ["CloseShiftRequest", "saleCount beyond a database integer", { ...VALID_CLOSE, saleCount: 2147483648 }],
+    ["CloseShiftRequest", "1001 return refs", { ...VALID_CLOSE, cashRefundReturnRefs: manyRefs(1001) }],
     ["CloseShiftRequest", "duplicate return refs", { ...VALID_CLOSE, cashRefundReturnRefs: [RETURN_ID, RETURN_ID] }],
     ["CloseShiftRequest", "non-uuid return ref", { ...VALID_CLOSE, cashRefundReturnRefs: ["r-1"] }],
     ["CloseShiftRequest", "missing expectedCash", { ...VALID_CLOSE, expectedCash: undefined }],

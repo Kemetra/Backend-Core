@@ -16,10 +16,11 @@
  *           an active tenant; scope comes from that row only.
  *        b. The route's strict body schema runs (a malformed body from an
  *           authenticated device is the usual 400).
- *        c. The route's stated user (`openingUserId`) must equal the claim
- *           (#711 review note 1).
+ *        c. A body only the envelope may send (a forced close) is refused;
+ *           the route's stated user (`openingUserId` / `closingUserId`)
+ *           must equal the claim (#711 review note 1).
  *        d. `PgOperatorAttributionVerifier` must accept the claim at the
- *           fact's own time (`openedAt` / `occurredAt`): a covering cashier
+ *           fact's own time (`openedAt` / `occurredAt` / `closedAt`): a covering cashier
  *           admission of this device and store with the RT-224 tolerance and
  *           dating caps, plus the live cashier eligibility rules.
  *        e. Only then is the VERIFIED cashier published as the actor, which
@@ -73,6 +74,11 @@ export interface ShiftFactRouteSpec {
   readonly timeField: string;
   /** The body field naming the stated user, which must equal the claim. */
   readonly actorField?: string;
+  /**
+   * True for a body only the manager envelope may send (a forced close):
+   * on the device path it is the generic 403 `refused`, before the verifier.
+   */
+  readonly envelopeOnly?: (body: Readonly<Record<string, unknown>>) => boolean;
 }
 
 export const SHIFT_FACT_ROUTE_KEY = "dp2:shift-cash-up:fact-route";
@@ -81,7 +87,7 @@ export const SHIFT_FACT_ROUTE_KEY = "dp2:shift-cash-up:fact-route";
 export const ShiftFactRoute = (spec: ShiftFactRouteSpec) => SetMetadata(SHIFT_FACT_ROUTE_KEY, spec);
 
 /** Why a device-path claim was refused. A closed set, logged and never returned. */
-export type ShiftClaimRefusal = AttributionRefusal | "operator_missing" | "actor_mismatch";
+export type ShiftClaimRefusal = AttributionRefusal | "operator_missing" | "actor_mismatch" | "envelope_only";
 
 /** The refusal log's fixed `event` for a cause. */
 export function shiftRefusalEvent(cause: ShiftClaimRefusal): string {
@@ -139,6 +145,7 @@ export class ShiftCashUpAuthGuard implements CanActivate {
   ): Promise<ShiftClaimRefusal | null> {
     const userId = body["operatorUserId"];
     if (typeof userId !== "string") return "operator_missing";
+    if (route.envelopeOnly?.(body) === true) return "envelope_only";
     if (route.actorField !== undefined && body[route.actorField] !== userId) return "actor_mismatch";
     const verdict = await this.attribution.verify({
       ...scope,

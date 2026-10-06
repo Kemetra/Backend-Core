@@ -16,7 +16,18 @@ import { z } from "zod";
 import { minorUnitExponent } from "../catalog/sales/iso4217-minor-units";
 import { fitsCurrencyPrecision } from "./shift-money";
 
-const uuid = z.string().uuid();
+/**
+ * A UUID, normalised to lower case (PR #714 round 1, Codex P2). RFC 4122
+ * hex is case-insensitive and Postgres stores `uuid` lower-case, so an
+ * upper-case spelling is the same id: normalising before any comparison,
+ * de-duplication or payload hash keeps "ABC…" and "abc…" one id. A
+ * lower-case id passes through unchanged, so every recorded hash stays the
+ * same (shift-fact-hashes.unit.spec.ts pins them).
+ */
+const uuid = z
+  .string()
+  .uuid()
+  .transform((id) => id.toLowerCase());
 
 /**
  * An RFC 3339 `date-time` on the POS clock (Codex P2, PR #713): `Z` or a
@@ -38,6 +49,11 @@ const instant = ShiftInstantSchema;
 const nonNegativeAmount = z
   .string()
   .regex(/^[0-9]{1,15}(\.[0-9]{1,4})?$/, "must be a non-negative exact-decimal string");
+
+/** `SignedDecimalAmount`: a non-negative amount, optionally negative (the close's variance). */
+const signedAmount = z
+  .string()
+  .regex(/^-?[0-9]{1,15}(\.[0-9]{1,4})?$/, "must be an exact-decimal string");
 
 /** `PositiveDecimalAmount`: a non-negative amount with a non-zero digit. */
 const positiveAmount = nonNegativeAmount.regex(/[1-9]/, "must be greater than zero");
@@ -97,6 +113,52 @@ export const RecordCashMovementRequestSchema = z
   })
   .strict();
 
+/** The largest `saleCount` the database stores (`integer`): a larger one is a 400, never a 500. */
+const MAX_SALE_COUNT = 2_147_483_647;
+
+/** The most refund refs one close may claim (contract `maxItems`). */
+const MAX_REFUND_REFS = 1000;
+
+/**
+ * `CloseShiftRequest`. The service checks what depends on the recorded
+ * shift: the amounts' precision against its currency (400), the arithmetic
+ * and the opening float (422), the refund refs (422) and the approver (400).
+ * Here: the shape, and `forcedReason` present if and only if the close is
+ * forced (the contract's if / then / else).
+ */
+export const CloseShiftRequestSchema = z
+  .object({
+    closedAt: instant,
+    closingUserId: uuid,
+    closeKind: z.enum(["normal", "forced"]),
+    forcedReason: shortText.optional(),
+    openingFloat: nonNegativeAmount,
+    cashSalesTotal: nonNegativeAmount,
+    cashRefundsTotal: nonNegativeAmount,
+    payInTotal: nonNegativeAmount,
+    payOutTotal: nonNegativeAmount,
+    expectedCash: nonNegativeAmount,
+    countedCash: nonNegativeAmount,
+    variance: signedAmount,
+    saleCount: z.number().int().min(0).max(MAX_SALE_COUNT),
+    cashRefundReturnRefs: z
+      .array(uuid)
+      .max(MAX_REFUND_REFS)
+      .refine((refs) => new Set(refs).size === refs.length, "must not repeat a return"),
+    varianceApprovedByUserId: uuid.optional(),
+    operatorUserId,
+  })
+  .strict()
+  .superRefine((body, ctx) => {
+    if ((body.closeKind === "forced") !== (body.forcedReason !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["forcedReason"],
+        message: "is required for a forced close and absent otherwise",
+      });
+    }
+  });
+
 export type OpenShiftRequestDto = z.infer<typeof OpenShiftRequestSchema>;
 export type RecordCashMovementRequestDto = z.infer<typeof RecordCashMovementRequestSchema>;
 
@@ -104,3 +166,6 @@ export type RecordCashMovementRequestDto = z.infer<typeof RecordCashMovementRequ
 export type OpenShiftFact = Omit<OpenShiftRequestDto, "operatorUserId">;
 /** The CashMovement fact: the body without the attribution claim. */
 export type CashMovementFact = Omit<RecordCashMovementRequestDto, "operatorUserId">;
+export type CloseShiftRequestDto = z.infer<typeof CloseShiftRequestSchema>;
+/** The ShiftClosed fact: the body without the attribution claim. */
+export type CloseShiftFact = Omit<CloseShiftRequestDto, "operatorUserId">;
