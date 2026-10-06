@@ -11,8 +11,11 @@
  * the NOBYPASSRLS `app_test` role (every shift query runs under the tenant
  * GUC and the 0002 / 0036 policies); and the GLOBAL FailClosedAuthGuard, so
  * the routes' @DeviceBearer marker is exercised as the app runs it.
- * Substituted: the Clerk JWKS check, the audit fan-out (a spy) and the
- * rate-limiter decision (a switch, to prove the 429 shape).
+ * Substituted: the Clerk JWKS check, the audit fan-out (a spy), the
+ * rate-limiter decision (a recording switch that denies one bucket and key,
+ * to prove the 429 shape and the per-device key on both paths) and the log
+ * destination (every logger of the graph, plus the production
+ * LoggingInterceptor, writes to one in-memory capture, RT-17 10931).
  *
  * Response bodies are checked against `pos-shifts.openapi.yaml` with AJV.
  */
@@ -24,6 +27,7 @@ import type { INestApplication } from "@nestjs/common";
 import { APP_GUARD } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
 import { hashToken } from "@data-pulse-2/auth";
+import { createLogger, type Logger } from "@data-pulse-2/shared";
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
 import cookieParser from "cookie-parser";
@@ -36,12 +40,14 @@ import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../../../src/auth/auth.mo
 import { FailClosedAuthGuard } from "../../../src/auth/fail-closed-auth.guard";
 import { RateLimiter, type RateLimitDecision } from "../../../src/auth/rate-limit";
 import { GlobalExceptionFilter } from "../../../src/common/exception.filter";
+import { LoggingInterceptor, ROOT_LOGGER } from "../../../src/common/logging.interceptor";
+import { RootLoggerModule } from "../../../src/common/root-logger.module";
 import { RequestIdInterceptor } from "../../../src/common/request-id.interceptor";
 import { ZodValidationPipe } from "../../../src/common/zod-validation.pipe";
 import { loadOpenApiContracts } from "../../../src/openapi/loader";
 import { CLERK_VERIFIER, type ClerkVerifier } from "../../../src/pos-operators/clerk-verifier";
 import { PosOperatorsModule } from "../../../src/pos-operators/pos-operators.module";
-import { PosShiftsModule } from "../../../src/pos-shifts/pos-shifts.module";
+import { POS_SHIFTS_LOGGER, PosShiftsModule } from "../../../src/pos-shifts/pos-shifts.module";
 import {
   applyAllUpAndCreateAppRole,
   startPgEnv,
@@ -116,6 +122,7 @@ const MANAGER_JWT = "jwt-rt17-s2b-manager";
 
 export const OPEN_PATH = "/api/pos/v1/shifts";
 export const movementPath = (shiftId: string): string => `/api/pos/v1/shifts/${shiftId}/cash-movements`;
+export const closePath = (shiftId: string): string => `/api/pos/v1/shifts/${shiftId}/close`;
 
 /** An instant `minutesAgo` minutes before now (inside every seeded admission window). */
 export const minutesAgo = (minutes: number): string => new Date(Date.now() - minutes * 60_000).toISOString();
@@ -144,13 +151,36 @@ export class SpyAuditEnqueuer implements AuditJobEnqueuer {
   }
 }
 
-/** The per-device limiter with a switch: allowed unless `deny` is set. */
+/** One limiter check: the bucket and the key it was asked about. */
+export interface LimiterCall {
+  readonly bucket: string;
+  readonly key: string;
+}
+
+/**
+ * The per-device limiter, recording every check. It denies exactly the
+ * `posWriteShift` bucket for `denyKey` (null: allow everything), so a 429
+ * proves the guard asked about the right bucket AND the right device.
+ */
 export class SwitchRateLimiter {
-  deny = false;
-  async check(): Promise<RateLimitDecision> {
-    return { allowed: !this.deny, count: 1, remaining: 0, resetMs: 30_000 };
+  denyKey: string | null = null;
+  readonly calls: LimiterCall[] = [];
+  async check(bucket: string, key: string): Promise<RateLimitDecision> {
+    this.calls.push({ bucket, key });
+    const allowed = !(bucket === "posWriteShift" && key === this.denyKey);
+    return { allowed, count: 1, remaining: 0, resetMs: 30_000 };
   }
   async release(): Promise<void> {}
+}
+
+/** Every log line any logger of the app wrote, as raw JSON text. */
+export class LogCapture {
+  readonly lines: string[] = [];
+  readonly logger: Logger = createLogger({
+    service: "api",
+    level: "trace",
+    destination: { write: (line: string) => void this.lines.push(line) },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +191,14 @@ export interface Harness {
   readonly app: INestApplication;
   readonly audit: SpyAuditEnqueuer;
   readonly limiter: SwitchRateLimiter;
+  readonly logs: LogCapture;
+}
+
+/** The test doubles the app is built with. */
+interface Doubles {
+  readonly audit: SpyAuditEnqueuer;
+  readonly limiter: SwitchRateLimiter;
+  readonly logs: LogCapture;
 }
 
 let harness: Harness | null = null;
@@ -251,9 +289,10 @@ async function seedDevices(a: Pool): Promise<void> {
   }
 }
 
-async function buildApp(env: PgTestEnv, audit: SpyAuditEnqueuer, limiter: SwitchRateLimiter): Promise<INestApplication> {
+async function buildApp(env: PgTestEnv, doubles: Doubles): Promise<INestApplication> {
+  const { audit, limiter, logs } = doubles;
   const moduleRef = await Test.createTestingModule({
-    imports: [AuthModule, PosOperatorsModule, PosShiftsModule],
+    imports: [RootLoggerModule, AuthModule, PosOperatorsModule, PosShiftsModule],
     providers: [{ provide: APP_GUARD, useClass: FailClosedAuthGuard }],
   })
     .overrideProvider(PG_POOL)
@@ -266,10 +305,14 @@ async function buildApp(env: PgTestEnv, audit: SpyAuditEnqueuer, limiter: Switch
     .useValue(audit)
     .overrideProvider(RateLimiter)
     .useValue(limiter)
+    .overrideProvider(ROOT_LOGGER)
+    .useValue(logs.logger)
+    .overrideProvider(POS_SHIFTS_LOGGER)
+    .useValue(logs.logger)
     .compile();
   const app = moduleRef.createNestApplication({ bufferLogs: true, logger: false });
   app.use(cookieParser());
-  app.useGlobalInterceptors(new RequestIdInterceptor());
+  app.useGlobalInterceptors(new RequestIdInterceptor(), new LoggingInterceptor(logs.logger));
   app.useGlobalFilters(new GlobalExceptionFilter());
   app.useGlobalPipes(new ZodValidationPipe());
   await app.init();
@@ -291,9 +334,8 @@ export async function startHarness(label: string): Promise<void> {
   await applyAllUpAndCreateAppRole(env);
   await seedPeople(env.admin);
   await seedDevices(env.admin);
-  const audit = new SpyAuditEnqueuer();
-  const limiter = new SwitchRateLimiter();
-  harness = { env, app: await buildApp(env, audit, limiter), audit, limiter };
+  const doubles: Doubles = { audit: new SpyAuditEnqueuer(), limiter: new SwitchRateLimiter(), logs: new LogCapture() };
+  harness = { env, app: await buildApp(env, doubles), ...doubles };
 }
 
 export async function stopHarness(): Promise<void> {
@@ -306,7 +348,8 @@ export async function stopHarness(): Promise<void> {
 /**
  * Between tests: every open cash-up shift is closed (a cash-up shift can
  * never be deleted, and a device holds one open shift at most), legacy rows
- * are removed, envelopes are revoked, the limiter allows and the audit spy is
+ * are removed, envelopes are revoked, revoked memberships are restored, the
+ * limiter allows and forgets, and the audit spy and the log capture are
  * emptied.
  */
 export async function resetState(): Promise<void> {
@@ -314,8 +357,11 @@ export async function resetState(): Promise<void> {
   await closeOpenShifts();
   await admin().query(`DELETE FROM shifts WHERE source = 'legacy'`);
   await admin().query(`DELETE FROM auth_tokens WHERE scope = 'pos_operator'`);
-  harness.limiter.deny = false;
+  await admin().query(`UPDATE memberships SET revoked_at = NULL WHERE revoked_at IS NOT NULL`);
+  harness.limiter.denyKey = null;
+  harness.limiter.calls.length = 0;
   harness.audit.payloads.length = 0;
+  harness.logs.lines.length = 0;
 }
 
 /** Closes every open cash-up shift with a zero-movement, zero-variance close. */
@@ -403,6 +449,96 @@ export async function openOn(d: FixtureDevice, overrides: Record<string, unknown
   return body["shiftId"] as string;
 }
 
+/**
+ * A device-path normal close by CASHIER of a shift opened with EGP 500.00,
+ * 5 minutes ago, arithmetically consistent: 500 + 2450 − 75 + 0 − 120 =
+ * 2755 expected, 2750 counted, −5 variance.
+ */
+export function closeBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    closedAt: minutesAgo(5),
+    closingUserId: CASHIER.id,
+    closeKind: "normal",
+    openingFloat: "500.00",
+    cashSalesTotal: "2450.00",
+    cashRefundsTotal: "75.00",
+    payInTotal: "0.00",
+    payOutTotal: "120.00",
+    expectedCash: "2755.00",
+    countedCash: "2750.00",
+    variance: "-5.00",
+    saleCount: 37,
+    cashRefundReturnRefs: [],
+    operatorUserId: CASHIER.id,
+    ...overrides,
+  };
+}
+
+/** A return to seed: the till whose tenant and store it belongs to, its currency and tender. */
+export interface ReturnSeed {
+  readonly at: FixtureDevice;
+  readonly currency?: string;
+  readonly cashTender?: boolean;
+}
+
+/** Seeds a sale and one return of it (EGP, cash-refunded unless told otherwise); returns the return id. */
+export async function seedReturn(seed: ReturnSeed): Promise<string> {
+  const [saleId, returnId] = [randomUUID(), randomUUID()];
+  const creator = seed.at.tenant === TENANT_B ? CASHIER_B.id : CASHIER.id;
+  const currency = seed.currency ?? "EGP";
+  await admin().query(
+    `INSERT INTO sales
+       (id, tenant_id, store_id, currency_code, pos_total, occurred_at, business_date,
+        source_system, external_id, payload_hash, created_by, device_id)
+     VALUES ($1, $2, $3, $4, 100, now(), current_date, 'pos', $5, $6, $7, NULL)`,
+    [saleId, seed.at.tenant, seed.at.store, currency, `sale-${saleId}`, "b".repeat(64), creator],
+  );
+  await admin().query(
+    `INSERT INTO sale_returns
+       (id, sale_id, tenant_id, store_id, return_seq, business_date, currency_code, return_total,
+        source_system, external_id, payload_hash, created_by)
+     VALUES ($1, $2, $3, $4, 1, current_date, $5, 25, 'pos', $6, $7, $8)`,
+    [returnId, saleId, seed.at.tenant, seed.at.store, currency, `return-${returnId}`, "c".repeat(64), creator],
+  );
+  if (seed.cashTender ?? true) {
+    await admin().query(
+      `INSERT INTO sale_return_tenders (return_id, tenant_id, store_id, ordinal, method, amount)
+       VALUES ($1, $2, $3, 0, 'cash', 25)`,
+      [returnId, seed.at.tenant, seed.at.store],
+    );
+  }
+  return returnId;
+}
+
+/**
+ * Holds the shift's row lock on an admin connection (another transaction in
+ * flight), so the next close of that shift waits. `release` rolls back.
+ */
+export async function holdShiftLock(shiftId: string): Promise<{ release: () => Promise<void> }> {
+  const client = await admin().connect();
+  await client.query("BEGIN");
+  await client.query(`SELECT 1 FROM shifts WHERE shift_id = $1 FOR UPDATE`, [shiftId]);
+  return {
+    release: async () => {
+      await client.query("ROLLBACK");
+      client.release();
+    },
+  };
+}
+
+const LOCK_WAIT_TIMEOUT_MS = 10_000;
+
+/** Polls until `count` backends wait on a lock (a two-connection barrier). */
+export async function waitForLockWaiters(count = 1): Promise<void> {
+  const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const r = await admin().query<{ n: number }>(`SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted`);
+    if ((r.rows[0]?.n ?? 0) >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`fewer than ${count} backends started waiting on a lock`);
+}
+
 // ---------------------------------------------------------------------------
 // Assertions
 // ---------------------------------------------------------------------------
@@ -419,7 +555,7 @@ function contractAjv(): Ajv {
   return ajv;
 }
 
-export type ContractSchema = "Shift" | "CashMovement" | "ApiError";
+export type ContractSchema = "Shift" | "CashMovement" | "ApiError" | "IdempotencyInProgressBody";
 
 /** The body satisfies the named contract schema. */
 export function expectSchema(schema: ContractSchema, body: unknown): void {

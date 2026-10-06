@@ -10,7 +10,9 @@
  * device; the non-disclosing 409 for an out-of-scope `shiftId` (Codex P2,
  * RT-17 comment 10925); legacy adoption answered 201 (RT-17 comment 10929);
  * strict wire precision and RFC 3339 instants (400); the device-path 401 /
- * 403 split; the 400 idempotency codes; the 429 shape.
+ * 403 split; the 400 idempotency codes; the 429 shape; on the envelope
+ * path, legacy adoption and an exact replay answered before the stated
+ * opener's live check (RT-17 comment 10931).
  */
 import {
   CASHIER,
@@ -210,6 +212,20 @@ describe("openShift — adopts the audit-ingest legacy row of the same shift (RT
     expect(await shiftRow(body)).toMatchObject({ source: "cash_up", recorded_by_user_id: CASHIER.id });
   });
 
+  it("on the manager envelope path too: 201, the row is now cash_up, recorded by the envelope operator (RT-17 10931)", async () => {
+    if (skipped()) return;
+    const { operatorUserId: _claim, ...body } = openBody();
+    await seedLegacy({ shiftId: body["shiftId"] as string, device: DEV_A1, openedAt: body["openedAt"] as string });
+    const res = await post({ path: OPEN_PATH, bearer: await managerEnvelope(DEV_A1), body });
+    expect(res.status).toBe(201);
+    expectSchema("Shift", res.body);
+    expect(await shiftRow(body)).toMatchObject({
+      source: "cash_up",
+      opening_cashier_user_id: CASHIER.id,
+      recorded_by_user_id: MANAGER.id,
+    });
+  });
+
   it.each([
     ["of another device", { device: DEV_A1_SECOND, openedAt: null }],
     ["with another opened_at", { device: DEV_A1, openedAt: minutesAgo(90) }],
@@ -297,12 +313,28 @@ describe("openShift — manager envelope (repair) path", () => {
     const { operatorUserId: _claim, ...body } = openBody({ openingUserId });
     expectError(await post({ path: OPEN_PATH, bearer: envelope, body }), { status: 403, code: "refused" });
   });
+
+  it.each([
+    ["the same open", {}, 200],
+    ["a different open of the same shiftId", { openingFloat: "600.00" }, 403],
+  ])(
+    "after the stated opener's access is revoked, %s → %i (an exact replay is answered before the live check, RT-17 10931 #4)",
+    async (_label, change, status) => {
+      if (skipped()) return;
+      const envelope = await managerEnvelope(DEV_A1);
+      const { operatorUserId: _claim, ...body } = openBody();
+      expect((await post({ path: OPEN_PATH, bearer: envelope, body })).status).toBe(201);
+      await admin().query(`UPDATE memberships SET revoked_at = now() WHERE id = $1`, [CASHIER.membership]);
+      const res = await post({ path: OPEN_PATH, bearer: envelope, body: { ...body, ...change } });
+      expect(res.status).toBe(status);
+    },
+  );
 });
 
 describe("openShift — rate limit", () => {
   it("over the per-device limit is 429 RATE_LIMITED with Retry-After", async () => {
     if (skipped()) return;
-    h().limiter.deny = true;
+    h().limiter.denyKey = DEV_A1.id;
     const res = await openFrom(DEV_A1, openBody());
     expectError(res, { status: 429, code: "RATE_LIMITED" });
     expect(Number(res.headers["retry-after"])).toBeGreaterThanOrEqual(1);

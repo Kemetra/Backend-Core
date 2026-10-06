@@ -6,6 +6,7 @@
 import type { ZodTypeAny } from "zod";
 
 import {
+  CloseShiftRequestSchema,
   OpenShiftRequestSchema,
   RecordCashMovementRequestSchema,
   ShiftIdParamSchema,
@@ -101,6 +102,65 @@ describe("RecordCashMovementRequestSchema", () => {
     ["an out-of-range offset occurredAt", { occurredAt: "2026-10-05T13:30:00+24:00" }],
   ])("rejects %s", (_label, overrides) => {
     expect(accepts({ schema: RecordCashMovementRequestSchema, base: MOVEMENT, overrides })).toBe(false);
+  });
+});
+
+const CLOSE = {
+  closedAt: "2026-10-05T16:00:00Z",
+  closingUserId: UUID_V4,
+  closeKind: "normal",
+  openingFloat: "500.00",
+  cashSalesTotal: "2450.00",
+  cashRefundsTotal: "75.00",
+  payInTotal: "0.00",
+  payOutTotal: "120.00",
+  expectedCash: "2755.00",
+  countedCash: "2750.00",
+  variance: "-5.00",
+  saleCount: 37,
+  cashRefundReturnRefs: [UUID],
+};
+
+describe("CloseShiftRequestSchema", () => {
+  it.each([
+    ["the contract example", {}],
+    ["a device-path claim and an approver", { operatorUserId: UUID_V4, varianceApprovedByUserId: UUID }],
+    ["a forced close with its reason", { closeKind: "forced", forcedReason: "Cashier left" }],
+    ["a positive variance", { countedCash: "2760.00", variance: "5.00" }],
+    ["no refund refs", { cashRefundReturnRefs: [] }],
+    ["an RFC 3339 offset closedAt", { closedAt: "2026-10-05T18:00:00+02:00" }],
+    ["4 fractional digits (checked against the shift later)", { countedCash: "2750.0001" }],
+  ])("accepts %s", (_label, overrides) => {
+    expect(accepts({ schema: CloseShiftRequestSchema, base: CLOSE, overrides })).toBe(true);
+  });
+
+  it.each([
+    ["a normal close with a forcedReason", { forcedReason: "no" }],
+    ["a forced close without a forcedReason", { closeKind: "forced" }],
+    ["an empty forcedReason", { closeKind: "forced", forcedReason: "" }],
+    ["a 201-character forcedReason", { closeKind: "forced", forcedReason: "x".repeat(201) }],
+    ["an unknown closeKind", { closeKind: "abandoned" }],
+    ["a negative total", { payOutTotal: "-1.00" }],
+    ["a total in exponent form", { cashSalesTotal: "2.45e3" }],
+    ["a numeric total", { countedCash: 2750 }],
+    ["a variance with 5 fractional digits", { variance: "-5.00001" }],
+    ["a negative saleCount", { saleCount: -1 }],
+    ["a fractional saleCount", { saleCount: 1.5 }],
+    ["a saleCount beyond a database integer", { saleCount: 2 ** 31 }],
+    ["a string saleCount", { saleCount: "37" }],
+    ["duplicate refund refs", { cashRefundReturnRefs: [UUID, UUID] }],
+    ["a non-uuid refund ref", { cashRefundReturnRefs: ["return-1"] }],
+    ["a non-uuid approver", { varianceApprovedByUserId: "manager" }],
+    ["a currency field", { currencyCode: "EGP" }],
+    ["a non-RFC 3339 closedAt", { closedAt: "2026-10-05T16:00:00+0200" }],
+  ])("rejects %s", (_label, overrides) => {
+    expect(accepts({ schema: CloseShiftRequestSchema, base: CLOSE, overrides })).toBe(false);
+  });
+
+  it.each(Object.keys(CLOSE))("rejects a body missing %s", (field) => {
+    const body: Record<string, unknown> = { ...CLOSE };
+    delete body[field];
+    expect(CloseShiftRequestSchema.safeParse(body).success).toBe(false);
   });
 });
 

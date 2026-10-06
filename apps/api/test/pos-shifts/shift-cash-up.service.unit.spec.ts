@@ -26,6 +26,7 @@ import type {
   ShiftCashUpRepository,
 } from "../../src/pos-shifts/shift-cash-up.repository";
 import { ShiftCashUpService, type ShiftWriteContext } from "../../src/pos-shifts/shift-cash-up.service";
+import type { ShiftStoreUserReader } from "../../src/pos-shifts/shift-store-user";
 
 const SCOPE = {
   tenantId: "0e170000-0000-4000-8000-0000000a0001",
@@ -128,6 +129,29 @@ describe("ShiftCashUpService.openShift — a concurrent identical open", () => {
   });
 });
 
+describe("ShiftCashUpService.openShift — envelope path: an exact replay before the live stated-user check (RT-17 10931 #4)", () => {
+  const ENVELOPE: ShiftWriteContext = { ...CTX, path: "envelope" };
+
+  /** The open's outcome with a recorded row of `found` and a stated user that is (not) a store user. */
+  async function openAgain(found: Exclude<ReRead, "nothing">, storeUser: boolean): Promise<string> {
+    const { repo } = fakeRepo([await reReadRow(found)], { kind: "shift_id_taken" });
+    const users = { isStoreUser: jest.fn(async () => storeUser) } as unknown as ShiftStoreUserReader;
+    return new ShiftCashUpService(pool, repo, users).openShift(ENVELOPE, FACT).then(
+      (result) => (result.created ? "created" : "replay"),
+      (err: ShiftCashUpError) => err.failure,
+    );
+  }
+
+  it.each([
+    ["the same fact, the opener's access since revoked", "same fact", false, "replay"],
+    ["the same fact, the opener still a store user", "same fact", true, "replay"],
+    ["another payload, the opener's access revoked", "other payload", false, "refused"],
+    ["another payload, the opener still a store user", "other payload", true, "shift_payload_conflict"],
+  ] as const)("%s → %s", async (_label, found, storeUser, answer) => {
+    expect(await openAgain(found, storeUser)).toBe(answer);
+  });
+});
+
 describe("toShiftHttpError — every refusal maps to its contract status and code", () => {
   it.each([
     ["validation_error", 400],
@@ -136,6 +160,9 @@ describe("toShiftHttpError — every refusal maps to its contract status and cod
     ["shift_payload_conflict", 409],
     ["shift_already_open", 409],
     ["shift_closed", 409],
+    ["shift_cashup_inconsistent", 422],
+    ["currency_mismatch", 422],
+    ["refund_ref_invalid", 422],
   ])("%s → %i", (failure, status) => {
     const err = toShiftHttpError(new ShiftCashUpError(failure as ShiftCashUpFailure)) as HttpException;
     expect([err.getStatus(), (err.getResponse() as { code: string }).code]).toEqual([status, failure]);
