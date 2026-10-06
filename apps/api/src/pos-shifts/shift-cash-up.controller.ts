@@ -14,8 +14,8 @@
  * `idempotency_key_conflict`; in flight → 425) and `@Auditable`.
  *
  * Status: 201 for a first record; 200 with `Idempotent-Replayed: true` for a
- * natural-key replay under another key. Scope and actor come from the guard,
- * never from the body; the `operatorUserId` claim is dropped before the
+ * natural-key replay under another key. Scope, actor and auth path come from
+ * the guard, never from the body; the `operatorUserId` claim is dropped before the
  * service hashes the fact.
  */
 import {
@@ -49,17 +49,31 @@ import {
 } from "./shift-cash-up.dto";
 import { toShiftHttpError } from "./shift-cash-up.errors";
 import type { CashMovementProjection, ShiftProjection } from "./shift-cash-up.projections";
-import { ShiftCashUpService, type ShiftWriteContext, type ShiftWriteResult } from "./shift-cash-up.service";
+import {
+  ShiftCashUpService,
+  type ShiftAuthPath,
+  type ShiftWriteContext,
+  type ShiftWriteResult,
+} from "./shift-cash-up.service";
+
+/**
+ * The auth path, from the principal the guard published (PR #713 review #3):
+ * `pos` is the device path (ShiftCashUpAuthGuard), `pos_operator` the
+ * envelope path (PosOperatorEnvelopeSaleGuard). Never re-read from the body.
+ */
+const PATH_OF_SCOPE: ReadonlyMap<string, ShiftAuthPath> = new Map([
+  ["pos", "device"],
+  ["pos_operator", "envelope"],
+]);
 
 /** The scope, actor and path the guard published; a gap is the generic 401. */
-export function shiftWriteContext(
-  request: TenantContextRequest,
-  body: { readonly operatorUserId?: string | undefined },
-): ShiftWriteContext {
+export function shiftWriteContext(request: TenantContextRequest): ShiftWriteContext {
   const scope = deviceScopeOf(request);
   const actorUserId = request.context?.userId;
-  if (!actorUserId) throw new UnauthorizedException("Unauthorized");
-  return { scope, actorUserId, path: body.operatorUserId !== undefined ? "device" : "envelope" };
+  const principal = request.principal;
+  const path = principal?.kind === "token" ? PATH_OF_SCOPE.get(principal.scope) : undefined;
+  if (!actorUserId || path === undefined) throw new UnauthorizedException("Unauthorized");
+  return { scope, actorUserId, path };
 }
 
 /** Run a write, answering 201 or a 200 replay, with refusals mapped to the contract. */
@@ -95,7 +109,7 @@ export class ShiftCashUpController {
     @Body(new ZodValidationPipe(OpenShiftRequestSchema)) body: OpenShiftRequestDto,
     @Res({ passthrough: true }) res: Response,
   ): Promise<ShiftProjection> {
-    const ctx = shiftWriteContext(request, body);
+    const ctx = shiftWriteContext(request);
     const { operatorUserId: _claim, ...fact } = body;
     return respond(res, () => this.shifts.openShift(ctx, fact));
   }
@@ -113,7 +127,7 @@ export class ShiftCashUpController {
     @Body(new ZodValidationPipe(RecordCashMovementRequestSchema)) body: RecordCashMovementRequestDto,
     @Res({ passthrough: true }) res: Response,
   ): Promise<CashMovementProjection> {
-    const ctx = shiftWriteContext(request, body);
+    const ctx = shiftWriteContext(request);
     const { operatorUserId: _claim, ...fact } = body;
     return respond(res, () => this.shifts.recordCashMovement(ctx, shiftId, fact));
   }

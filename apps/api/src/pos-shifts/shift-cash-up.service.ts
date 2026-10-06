@@ -15,6 +15,9 @@
  *   - the same natural key with a different payload → 409
  *     `shift_payload_conflict`.
  *
+ * A concurrent identical open under another key is a replay too, whichever
+ * constraint refuses the loser's insert (PR #713 review #1).
+ *
  * Non-disclosure (Codex P2, RT-17 comment 10925). A `shiftId` resolves only
  * within the credential's tenant + store + device. An open whose `shiftId` is
  * taken outside that scope is the same 409 `shift_payload_conflict`, never
@@ -41,6 +44,7 @@ import {
   ShiftCashUpRepository,
   type CashMovementRow,
   type CashUpShiftRow,
+  type InsertShiftOutcome,
 } from "./shift-cash-up.repository";
 import { ShiftStoreUserReader, type StoreUser } from "./shift-store-user";
 import { canonicalInstant, fitsCurrencyPrecision, formatMoney } from "./shift-money";
@@ -120,12 +124,7 @@ export class ShiftCashUpService {
       if (outcome.kind === "inserted") {
         return { created: true, projection: toShiftProjection(outcome.shift, null) };
       }
-      if (outcome.kind === "device_has_open_shift") throw new ShiftCashUpError("shift_already_open");
-      // shift_id_taken: an identical open that committed meanwhile resolves
-      // here; an out-of-scope or legacy id does not, and is never disclosed.
-      const raced = await this.repo.findShift(client, ctx.scope, fact.shiftId);
-      if (raced !== null) return this.replayShift(client, raced, hash);
-      throw new ShiftCashUpError("shift_payload_conflict");
+      return this.settleRefusedOpen(client, { scope: ctx.scope, shiftId: fact.shiftId, hash }, outcome.kind);
     });
   }
 
@@ -143,30 +142,11 @@ export class ShiftCashUpService {
     fact: CashMovementFact,
   ): Promise<ShiftWriteResult<CashMovementProjection>> {
     return this.inTenant(ctx, async (client) => {
-      const shift = await this.repo.findShift(client, ctx.scope, shiftId, { forUpdate: true });
-      if (shift === null) throw new ShiftCashUpError("shift_not_found");
-      if (!fitsCurrencyPrecision({ amount: fact.amount, currencyCode: shift.currencyCode })) {
-        throw new ShiftCashUpError("validation_error");
-      }
+      const shift = await this.lockMovementShift(client, { scope: ctx.scope, shiftId, fact });
       const hash = movementHash(shift, fact);
       const existing = await this.repo.findMovement(client, shift, fact.movementId);
       if (existing !== null) return replayMovement(existing, hash);
-      if (shift.lifecycleState !== "open") throw new ShiftCashUpError("shift_closed");
-
-      const recorded = await this.repo.insertMovement(client, shift, {
-        movementId: fact.movementId,
-        kind: fact.kind,
-        amount: fact.amount,
-        reasonCode: fact.reasonCode,
-        note: fact.note ?? null,
-        occurredAt: fact.occurredAt,
-        recordedByUserId: ctx.actorUserId,
-        payloadHash: hash,
-      });
-      // Null: the movementId is taken on another shift, device, store or
-      // tenant (the path shift's own rows resolved above, under its lock).
-      if (recorded === null) throw new ShiftCashUpError("shift_payload_conflict");
-      return { created: true, projection: toCashMovementProjection(recorded) };
+      return this.insertMovement(client, { shift, fact, hash, actorUserId: ctx.actorUserId });
     });
   }
 
@@ -187,6 +167,81 @@ export class ShiftCashUpService {
     const close = shift.lifecycleState === "open" ? null : await this.repo.findClose(client, shift);
     return { created: false, projection: toShiftProjection(shift, close) };
   }
+
+  /**
+   * An open the insert refused. An identical open that a concurrent request
+   * committed meanwhile resolves on the scoped re-read and is a 200 replay,
+   * whichever constraint refused the loser: the shift_id key
+   * (`shift_id_taken`) or the one-open-shift-per-device index
+   * (`device_has_open_shift`, PR #713 review #1). Otherwise the refusal
+   * stands: `shift_already_open` for the device's other open shift,
+   * `shift_payload_conflict` for a taken id, which is never disclosed (an
+   * out-of-scope or legacy row does not resolve).
+   */
+  private async settleRefusedOpen(
+    client: PoolClient,
+    open: RefusedOpen,
+    kind: Exclude<InsertShiftOutcome["kind"], "inserted">,
+  ): Promise<ShiftWriteResult<ShiftProjection>> {
+    const raced = await this.repo.findShift(client, open.scope, open.shiftId);
+    if (raced !== null && raced.payloadHash.equals(open.hash)) return this.replayShift(client, raced, open.hash);
+    throw new ShiftCashUpError(kind === "device_has_open_shift" ? "shift_already_open" : "shift_payload_conflict");
+  }
+
+  /** The path shift, locked FOR UPDATE: 404 outside scope, 400 for a precision breach. */
+  private async lockMovementShift(client: PoolClient, target: MovementTarget): Promise<CashUpShiftRow> {
+    const shift = await this.repo.findShift(client, target.scope, target.shiftId, { forUpdate: true });
+    if (shift === null) throw new ShiftCashUpError("shift_not_found");
+    if (!fitsCurrencyPrecision({ amount: target.fact.amount, currencyCode: shift.currencyCode })) {
+      throw new ShiftCashUpError("validation_error");
+    }
+    return shift;
+  }
+
+  /** A new movement: 409 `shift_closed` on a closed shift, 201 once recorded. */
+  private async insertMovement(
+    client: PoolClient,
+    movement: NewMovement,
+  ): Promise<ShiftWriteResult<CashMovementProjection>> {
+    const { shift, fact } = movement;
+    if (shift.lifecycleState !== "open") throw new ShiftCashUpError("shift_closed");
+    const recorded = await this.repo.insertMovement(client, shift, {
+      movementId: fact.movementId,
+      kind: fact.kind,
+      amount: fact.amount,
+      reasonCode: fact.reasonCode,
+      note: fact.note ?? null,
+      occurredAt: fact.occurredAt,
+      recordedByUserId: movement.actorUserId,
+      payloadHash: movement.hash,
+    });
+    // Null: the movementId is taken on another shift, device, store or
+    // tenant (the path shift's own rows resolved first, under its lock).
+    if (recorded === null) throw new ShiftCashUpError("shift_payload_conflict");
+    return { created: true, projection: toCashMovementProjection(recorded) };
+  }
+}
+
+/** An open the insert refused: where it was, its id and its payload hash. */
+interface RefusedOpen {
+  readonly scope: DeviceScope;
+  readonly shiftId: string;
+  readonly hash: Buffer;
+}
+
+/** The path shift a movement names, in the credential's scope. */
+interface MovementTarget {
+  readonly scope: DeviceScope;
+  readonly shiftId: string;
+  readonly fact: CashMovementFact;
+}
+
+/** A movement to record on its resolved, locked shift. */
+interface NewMovement {
+  readonly shift: CashUpShiftRow;
+  readonly fact: CashMovementFact;
+  readonly hash: Buffer;
+  readonly actorUserId: string;
 }
 
 function replayMovement(movement: CashMovementRow, hash: Buffer): ShiftWriteResult<CashMovementProjection> {

@@ -18,8 +18,21 @@ import { fitsCurrencyPrecision } from "./shift-money";
 
 const uuid = z.string().uuid();
 
-/** An RFC 3339 UTC instant (POS clock). */
-const instant = z.string().datetime();
+/**
+ * An RFC 3339 `date-time` on the POS clock (Codex P2, PR #713): `Z` or a
+ * numeric `±HH:MM` offset, any fractional-second precision. Zod's
+ * `offset: true` also admits `±HHMM` and out-of-range offsets, which RFC 3339
+ * does not, so the zone is checked again. Every offset of one instant is the
+ * same fact: `canonicalInstant` hashes it, Postgres stores it and the
+ * projections echo it in UTC. Shared by every cash-up fact (2b-2's
+ * `closedAt` included).
+ */
+export const ShiftInstantSchema = z
+  .string()
+  .datetime({ offset: true })
+  .regex(/(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/, "must be an RFC 3339 date-time (Z or a ±HH:MM offset)");
+
+const instant = ShiftInstantSchema;
 
 /** `NonNegativeDecimalAmount`: up to 15 integer and 4 fractional digits. */
 const nonNegativeAmount = z

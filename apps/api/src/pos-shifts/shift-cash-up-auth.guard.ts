@@ -29,11 +29,14 @@
  * Refusals: a bad, revoked or missing credential on either path is the
  * generic 401; a refused claim from an AUTHENTICATED device is the generic
  * 403 `refused`, one body for every cause (to the POS a device 401 means
- * "device revoked"). A refusal is logged once with allowlisted fields and a
+ * "device revoked"). The published principal's scope (`pos` here,
+ * `pos_operator` on the envelope path) is what the handler reads the path
+ * from (PR #713 review #3). A refusal is logged once with allowlisted fields and a
  * fixed event name; never the claimed user, the token, the body or a time.
  *
  * Per-route policy is route metadata (`@ShiftFactRoute`), read straight from
- * the handler: a class-referenced guard is one shared instance. The route
+ * the handler: a class-referenced guard is one shared instance. A route
+ * without it is a configuration error (500), never a credential refusal. The route
  * also carries `@DeviceBearer()`, so the global FailClosedAuthGuard defers
  * here; route-auth-markers.enforcement.spec.ts lists this guard as a
  * reviewed composite that runs PosDeviceAuthGuard.
@@ -46,7 +49,6 @@ import {
   Injectable,
   Optional,
   SetMetadata,
-  UnauthorizedException,
 } from "@nestjs/common";
 import type { Logger } from "@data-pulse-2/shared";
 import type { ZodTypeAny } from "zod";
@@ -99,6 +101,7 @@ export class ShiftCashUpAuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    const route = routeSpecOf(context);
     const request = context.switchToHttp().getRequest<TenantContextRequest>();
     if (!selectsDevicePath(request.body)) {
       return (await this.envelope.canActivate(context)) as boolean;
@@ -106,7 +109,6 @@ export class ShiftCashUpAuthGuard implements CanActivate {
 
     await this.device.canActivate(context);
     const scope = deviceScopeOf(request);
-    const route = routeSpecOf(context);
     const body = route.schema.parse(request.body) as FactBody;
 
     const refusal = await this.refusalOf(scope, route, body);
@@ -147,12 +149,20 @@ export class ShiftCashUpAuthGuard implements CanActivate {
   }
 }
 
-/** The route's spec; a route without one fails closed (generic 401). */
+/**
+ * The route's spec. A route without one is a configuration error, refused
+ * before any credential is checked as a plain Error (the generic 500), never
+ * a 401: to the POS a device 401 means "device revoked" and wipes its grants
+ * (PR #713 review #2). shift-cash-up-auth.guard.unit.spec.ts asserts that
+ * every ShiftCashUpController handler behind this guard carries one.
+ */
 function routeSpecOf(context: ExecutionContext): ShiftFactRouteSpec {
   const spec = Reflect.getMetadata(SHIFT_FACT_ROUTE_KEY, context.getHandler()) as
     | ShiftFactRouteSpec
     | undefined;
-  if (spec === undefined) throw new UnauthorizedException("Unauthorized");
+  if (spec === undefined) {
+    throw new Error("ShiftCashUpAuthGuard: the route has no @ShiftFactRoute spec (configuration error)");
+  }
   return spec;
 }
 

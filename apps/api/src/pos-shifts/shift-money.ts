@@ -66,14 +66,17 @@ export function formatMoney(money: Money): string {
 }
 
 /**
- * A canonical form of an RFC 3339 UTC instant (`...THH:MM:SS[.f+]Z`, as
- * `z.string().datetime()` admits) for payload hashing: epoch seconds plus the
- * fraction without trailing zeros, so "08:00:00Z" and "08:00:00.000Z" are the
- * same instant. Full precision, unlike Date.parse (milliseconds only).
+ * A canonical form of an RFC 3339 instant (`...THH:MM:SS[.f+]` then `Z` or
+ * `±HH:MM`, as `ShiftInstantSchema` admits) for payload hashing: epoch
+ * seconds plus the fraction without trailing zeros, so "08:00:00Z",
+ * "08:00:00.000Z" and "10:00:00+02:00" are the same instant (Codex P2,
+ * PR #713). Full precision, unlike Date.parse (milliseconds only): the
+ * whole seconds are parsed with their zone, the fraction is carried as
+ * written (a whole-minute offset never changes it).
  */
 export function canonicalInstant(value: string): string {
-  const match = /^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z$/.exec(value);
-  const seconds = Date.parse(`${match?.[1] ?? value}Z`) / 1000;
+  const match = /^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  const seconds = Date.parse(match === null ? value : `${match[1]}${match[3]}`) / 1000;
   const fraction = (match?.[2] ?? "").replace(/0+$/, "");
   return fraction === "" ? `${seconds}` : `${seconds}.${fraction}`;
 }
