@@ -101,8 +101,8 @@ const ALL_PRIVILEGES_EXCEPT_SELECT = "INSERT, UPDATE, DELETE, TRUNCATE, REFERENC
 
 /**
  * Tables the lookup role must hold NO listed privilege on (sales,
- * receivables, cashier admissions, tenants, inventory, audit, idempotency,
- * outbox, membership mutation).
+ * receivables, cashier admissions, shift cash-up, tenants, inventory, audit,
+ * idempotency, outbox, membership mutation).
  * Each entry is a table and the privileges that are forbidden on it.
  */
 export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, string]> = [
@@ -125,6 +125,11 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     // RT-113 BC2: cashier admission state and its replay store.
     "cashier_admissions",
     "cashier_admission_requests",
+    // RT-17 (0036): shift cash-up facts. `shifts` holds the cash-up opens.
+    "shifts",
+    "shift_closes",
+    "shift_cash_movements",
+    "shift_refund_claims",
     // RT-213: with BYPASSRLS any grant on tenants would expose every tenant
     // row. Device auth reads tenant status on the domain role instead.
     "tenants",
@@ -145,8 +150,8 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
  * entry is one privilege; boot fails if any is missing.
  *
  * Starts with the tables whose grants are documented as a separate deploy
- * step (migration 0035, docs/operations/database-roles.md). Add a table here
- * when a migration adds one the domain role must use.
+ * step (migrations 0035 and 0036, docs/operations/database-roles.md). Add a
+ * table here when a migration adds one the domain role must use.
  */
 export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = [
   // RT-113 BC2 (0035): admissions are ended, never deleted.
@@ -162,6 +167,19 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   // status on this role (DeviceRepository, inside the tenant's RLS context).
   // Without the grant every till would be refused at once, so boot fails.
   ["tenants", "SELECT"],
+  // RT-17 (0036): the shift cash-up writes. `shifts` gains cash-up rows and
+  // needs UPDATE: the close moves the shift to closed, and the 0036 triggers
+  // lock the shift row FOR SHARE / FOR UPDATE, which requires UPDATE. The
+  // three fact tables are append-only (no UPDATE, DELETE or TRUNCATE).
+  ["shifts", "SELECT"],
+  ["shifts", "INSERT"],
+  ["shifts", "UPDATE"],
+  ["shift_closes", "SELECT"],
+  ["shift_closes", "INSERT"],
+  ["shift_cash_movements", "SELECT"],
+  ["shift_cash_movements", "INSERT"],
+  ["shift_refund_claims", "SELECT"],
+  ["shift_refund_claims", "INSERT"],
 ];
 
 interface GrantRow {

@@ -37,9 +37,13 @@ info:
     and recording users), as `captureSale` carries `operatorUserId`.
 
 
-    **Runtime status.** Contract-only. The three operations carry
-    `x-runtime-status: contract-only`; the migration, the routes and the
-    verification land in RT-17 slice 2. A POS MUST NOT call them before then.
+    **Runtime status.** `openShift` and `recordCashMovement` are implemented
+    (RT-17 slice 2b-1, on migration `0036_shift_cash_up` from slice 2a).
+    `closeShift` stays `x-runtime-status: contract-only` until RT-17 slice
+    2b-2; a POS MUST NOT call it before then. Slice 2b-1 also documents what
+    the shared `IdempotencyInterceptor` already answers on every operation (the
+    425 and the two `Idempotency-Key` 400 codes) and the `openShift` scoping
+    rule; no request or projection shape changed.
 
 
     **Model** (10919). A shift is one drawer session on one terminal: at most
@@ -86,7 +90,11 @@ info:
     close, `movementId` for a movement) with a payload hash: a re-delivery of
     the same fact with a different key is a `200` replay; the same natural key
     with a different payload is 409 `shift_payload_conflict`. The
-    `operatorUserId` claim is not part of that payload hash.
+    `operatorUserId` claim is not part of that payload hash. A request whose
+    `Idempotency-Key` is still being processed is 425 `idempotency_in_progress`
+    (retry with the same key and body after `Retry-After`); a missing key is
+    400 `idempotency_key_required` and a malformed one 400
+    `idempotency_key_malformed`.
 
 
     **Money.** Every amount is an exact-decimal string (never a float) in the
@@ -166,11 +174,6 @@ paths:
     post:
       summary: Open a shift (record the opening float) on this terminal.
       operationId: openShift
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-17 slice 1 approves the contract only. The migration, route, guard
-        wiring and persistence land in RT-17 slice 2; until then Backend-Core
-        has no route for this operation.
       x-idempotency: required
       tags: [pos-shifts]
       security:
@@ -189,6 +192,19 @@ paths:
         `shift_already_open` and nothing is recorded. Re-sending the same open
         (same `shiftId`, same payload) is a replay and returns the shift's
         current projection, even after it has been closed.
+
+
+        **Scope of `shiftId`** (as for `recordCashMovement` and `closeShift`).
+        The natural-key replay resolves `shiftId` only within the caller's
+        tenant, store and device. A `shiftId` already recorded anywhere else
+        (another device, another store or another tenant) is 409
+        `shift_payload_conflict`, the same answer as a different payload: it
+        never returns that shift's projection and nothing is recorded. One
+        exception: an OPEN shift that the audit-ingest `shift.open` event
+        already recorded for this same tenant, store and device, with the
+        same `openedAt` and opening user, is adopted by this open and answered
+        `201` like a first open. Any other audit-ingest shift with this
+        `shiftId` is 409 `shift_payload_conflict`.
 
 
         Attribution: on the device path `openingUserId` MUST equal the
@@ -255,6 +271,8 @@ paths:
           $ref: "#/components/responses/Refused"
         "409":
           $ref: "#/components/responses/OpenShiftConflict"
+        "425":
+          $ref: "#/components/responses/IdempotencyInProgress"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "500":
@@ -263,11 +281,6 @@ paths:
     post:
       summary: Record a pay-in or pay-out on an open shift.
       operationId: recordCashMovement
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-17 slice 1 approves the contract only. The migration, route, guard
-        wiring and persistence land in RT-17 slice 2; until then Backend-Core
-        has no route for this operation.
       x-idempotency: required
       tags: [pos-shifts]
       security:
@@ -283,7 +296,10 @@ paths:
 
         The shift must be open: a NEW movement on a closed shift is 409
         `shift_closed`. Re-sending a movement that is already recorded (same
-        `movementId`, same payload) is a replay, even after the close. A shift
+        `movementId`, same payload) is a replay, even after the close. The
+        replay resolves `movementId` only on the path `shift_id`: a
+        `movementId` already recorded on any other shift (of this device or
+        not) is 409 `shift_payload_conflict` and is never returned. A shift
         that does not resolve to this device is the non-disclosing 404
         `shift_not_found`.
 
@@ -352,6 +368,8 @@ paths:
           $ref: "#/components/responses/ShiftNotFound"
         "409":
           $ref: "#/components/responses/CashMovementConflict"
+        "425":
+          $ref: "#/components/responses/IdempotencyInProgress"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "500":
@@ -362,9 +380,10 @@ paths:
       operationId: closeShift
       x-runtime-status: contract-only
       x-runtime-note: >
-        RT-17 slice 1 approves the contract only. The migration, route, guard
-        wiring and persistence land in RT-17 slice 2; until then Backend-Core
-        has no route for this operation.
+        RT-17 slice 2a landed the migration and slice 2b-1 the open and
+        movement routes. The close route, its guard wiring and its
+        verification land in RT-17 slice 2b-2; until then Backend-Core has no
+        route for this operation.
       x-idempotency: required
       tags: [pos-shifts]
       security:
@@ -513,6 +532,8 @@ paths:
           $ref: "#/components/responses/CloseShiftConflict"
         "422":
           $ref: "#/components/responses/CloseShiftUnprocessable"
+        "425":
+          $ref: "#/components/responses/IdempotencyInProgress"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "500":
@@ -1089,6 +1110,23 @@ components:
               format: uuid
               description: Server-side correlation id; the actual cause is recorded server-side.
 
+    IdempotencyInProgressBody:
+      type: object
+      additionalProperties: false
+      required: [error, retryAfterSec]
+      description: >
+        The body the shared `IdempotencyInterceptor` writes on a 425, as it is
+        today. It is NOT the `ApiError` envelope: `error` is the bare code
+        string and `retryAfterSec` repeats the `Retry-After` header.
+      properties:
+        error:
+          type: string
+          const: idempotency_in_progress
+        retryAfterSec:
+          type: integer
+          minimum: 1
+          description: Seconds to wait before retrying (currently always 2).
+
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -1108,7 +1146,10 @@ components:
         different `shift_id` is a separate operation. An identical retry
         replays the stored response with its stored status and
         `Idempotent-Replayed: true`; key reuse with a different payload is 409
-        `idempotency_key_conflict`. No new idempotency primitive.
+        `idempotency_key_conflict`; a key whose first request is still being
+        processed is 425 `idempotency_in_progress`. A missing key is 400
+        `idempotency_key_required`, a malformed one 400
+        `idempotency_key_malformed`. No new idempotency primitive.
     ShiftId:
       name: shift_id
       in: path
@@ -1139,6 +1180,13 @@ components:
         type: integer
         minimum: 1
         maximum: 300
+    RetryAfterInProgress:
+      description: >
+        Seconds to wait before retrying a 425 with the same `Idempotency-Key`
+        and body (the `IdempotencyInterceptor` sends `2`).
+      schema:
+        type: integer
+        minimum: 1
 
   examples:
     ShiftOpen:
@@ -1199,8 +1247,11 @@ components:
         body), a missing required field, a bad enum, uuid or date-time, an
         amount that is not an exact-decimal string or has more fractional
         digits than the shift currency's ISO-4217 minor unit, a currency with
-        no ISO-4217 minor unit, an invalid `shift_id`, or a missing or invalid
-        `Idempotency-Key`. Deterministic; nothing is recorded.
+        no ISO-4217 minor unit, or an invalid `shift_id`: `error.code` is
+        `validation_error`. A missing `Idempotency-Key` is
+        `idempotency_key_required` and one that is not 16 to 128 printable
+        ASCII characters is `idempotency_key_malformed` (the
+        `IdempotencyInterceptor`'s codes). Deterministic; nothing is recorded.
       content:
         application/json:
           schema:
@@ -1304,6 +1355,27 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ApiError"
+    IdempotencyInProgress:
+      description: >
+        425 Too Early, `idempotency_in_progress`: the first request with this
+        `Idempotency-Key` (same route, `shift_id` and verified actor) is still
+        being processed. Nothing is recorded by this request. Retry after
+        `Retry-After` seconds with the same key and body; the retry gets the
+        stored response once the first request completes. Transient, never a
+        dead-letter. The body is the interceptor's own shape
+        (`IdempotencyInProgressBody`), not the `ApiError` envelope.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfterInProgress"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/IdempotencyInProgressBody"
+          examples:
+            inProgress:
+              value:
+                error: idempotency_in_progress
+                retryAfterSec: 2
     SystemFailure:
       description: >
         500: an unexpected server error. The cause is recorded server-side

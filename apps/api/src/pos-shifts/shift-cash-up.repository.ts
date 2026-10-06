@@ -360,17 +360,31 @@ export class ShiftCashUpRepository {
     return row === undefined ? null : toShift(row);
   }
 
-  /** The device's open cash-up shift, or null. Legacy rows never count. */
-  async findOpenShiftOnDevice(client: PoolClient, scope: DeviceScope): Promise<CashUpShiftRow | null> {
+  /**
+   * The device's open cash-up shift, or null. Legacy rows never count.
+   *
+   * Keyed exactly like `uq_shifts_cash_up_open_device` — (tenant, device),
+   * no store (RT-17 comment 10929, P3-7). The index is the authority on
+   * "one open shift per device", so this read must agree with it: a device
+   * whose `devices.store_id` was changed while a shift was open still has
+   * that open shift (the index refuses a second one), and a store-filtered
+   * read would wrongly answer "none". Nothing in the API changes a device's
+   * store, but nothing in the schema forbids it either, so this does not
+   * rely on it. The row is the same device's own shift; it is never
+   * projected to another device.
+   */
+  async findOpenShiftOnDevice(
+    client: PoolClient,
+    scope: Pick<DeviceScope, "tenantId" | "deviceId">,
+  ): Promise<CashUpShiftRow | null> {
     const r = await client.query<ShiftDbRow>(
       `SELECT ${SHIFT_COLUMNS}
          FROM shifts
         WHERE tenant_id = $1
-          AND store_id = $2
-          AND opening_device_id = $3
+          AND opening_device_id = $2
           AND source = 'cash_up'
           AND lifecycle_state = 'open'`,
-      [scope.tenantId, scope.storeId, scope.deviceId],
+      [scope.tenantId, scope.deviceId],
     );
     const row = r.rows[0];
     return row === undefined ? null : toShift(row);
@@ -431,20 +445,27 @@ export class ShiftCashUpRepository {
     return outcome;
   }
 
-  /** The movement `movementId` recorded on THIS tenant, store and device, or null. */
+  /**
+   * The movement `movementId` recorded on `shift` (a row the caller resolved
+   * in scope), or null. Scoped to that ONE shift and its tenant, store and
+   * device (RT-17 comment 10929, P3-5): a movement of any other shift — even
+   * one of the same device — never resolves, so a replay through another
+   * shift's path is never answered with it.
+   */
   async findMovement(
     client: PoolClient,
-    scope: DeviceScope,
+    shift: CashUpShiftRow,
     movementId: string,
   ): Promise<CashMovementRow | null> {
     const r = await client.query<MovementDbRow>(
       `SELECT ${MOVEMENT_COLUMNS}
          FROM shift_cash_movements
         WHERE id = $1
-          AND tenant_id = $2
-          AND store_id = $3
-          AND device_id = $4`,
-      [movementId, scope.tenantId, scope.storeId, scope.deviceId],
+          AND shift_id = $2
+          AND tenant_id = $3
+          AND store_id = $4
+          AND device_id = $5`,
+      [movementId, shift.shiftId, shift.tenantId, shift.storeId, shift.deviceId],
     );
     const row = r.rows[0];
     return row === undefined ? null : toMovement(row);
@@ -452,8 +473,8 @@ export class ShiftCashUpRepository {
 
   /**
    * Records a movement on `shift` (its tenant, store, device and currency).
-   * Returns null when `movementId` is already recorded, in scope or not; the
-   * caller resolves an in-scope replay with `findMovement`. The database
+   * Returns null when `movementId` is already recorded, on this shift or any
+   * other; the caller resolves a replay on this shift with `findMovement`. The database
    * refuses a movement on a shift that is no longer open (55000).
    */
   async insertMovement(
