@@ -158,8 +158,8 @@ async function seedSale(saleId: string, tenant: string, store: string, actor: st
     `INSERT INTO sales
        (id, tenant_id, store_id, currency_code, pos_total, occurred_at, business_date,
         source_system, external_id, payload_hash, created_by, device_id)
-     VALUES ($1, $2, $3, 'EGP', 100, '2026-10-05T09:00:00Z', '2026-10-05', 'pos', $1, $4, $5, NULL)`,
-    [saleId, tenant, store, "b".repeat(64), actor],
+     VALUES ($1, $2, $3, 'EGP', 100, '2026-10-05T09:00:00Z', '2026-10-05', 'pos', $6, $4, $5, NULL)`,
+    [saleId, tenant, store, "b".repeat(64), actor, `sale-${saleId}`],
   );
 }
 
@@ -175,8 +175,8 @@ async function seedReturn(
     `INSERT INTO sale_returns
        (id, sale_id, tenant_id, store_id, return_seq, business_date, currency_code, return_total,
         source_system, external_id, payload_hash, created_by)
-     VALUES ($1, $2, $3, $4, $5, '2026-10-05', $6, 25, 'pos', $1, $7, $8)`,
-    [returnId, saleId, tenant, store, seq, opts.currency ?? "EGP", "c".repeat(64), USER_A],
+     VALUES ($1, $2, $3, $4, $5, '2026-10-05', $6, 25, 'pos', $9, $7, $8)`,
+    [returnId, saleId, tenant, store, seq, opts.currency ?? "EGP", "c".repeat(64), USER_A, `return-${returnId}`],
   );
   if (opts.cashTender ?? true) {
     await pg().admin.query(

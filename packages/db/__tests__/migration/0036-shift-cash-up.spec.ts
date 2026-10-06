@@ -257,16 +257,16 @@ async function seedSaleAndReturn(
     `INSERT INTO sales
        (id, tenant_id, store_id, currency_code, pos_total, occurred_at, business_date,
         source_system, external_id, payload_hash, created_by)
-     VALUES ($1, $2, $3, 'EGP', 100, '2026-10-05T09:00:00Z', '2026-10-05', 'pos', $1, $4, $5)`,
-    [saleId, tenant, store, "b".repeat(64), actor],
+     VALUES ($1, $2, $3, 'EGP', 100, '2026-10-05T09:00:00Z', '2026-10-05', 'pos', $6, $4, $5)`,
+    [saleId, tenant, store, "b".repeat(64), actor, `sale-${saleId}`],
   );
   for (const [i, returnId] of returnIds.entries()) {
     await pg().admin.query(
       `INSERT INTO sale_returns
          (id, sale_id, tenant_id, store_id, return_seq, business_date, currency_code,
           return_total, source_system, external_id, payload_hash, created_by)
-       VALUES ($1, $2, $3, $4, $5, '2026-10-05', 'EGP', 25, 'pos', $1, $6, $7)`,
-      [returnId, saleId, tenant, store, i + 1, "c".repeat(64), actor],
+       VALUES ($1, $2, $3, $4, $5, '2026-10-05', 'EGP', 25, 'pos', $8, $6, $7)`,
+      [returnId, saleId, tenant, store, i + 1, "c".repeat(64), actor, `return-${returnId}`],
     );
   }
 }
@@ -404,8 +404,18 @@ describe("0036 — the shifts table", () => {
     expect(r.rows[0]).toEqual({ source: "cash_up", currency_code: "EGP", opening_float: "500.0000" });
   });
 
+  it("rejects an unknown source (shifts_source_valid)", async () => {
+    if (skip()) return;
+    // CHECKs are evaluated in name order, so a field CHECK may report first;
+    // the refusal is a 23514 either way, and the source CHECK is pinned below.
+    await expect(insertShift({ source: "manual" })).rejects.toMatchObject({ code: "23514" });
+    const def = await pg().admin.query<{ def: string }>(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'shifts_source_valid'`,
+    );
+    expect(def.rows[0]?.def).toMatch(/source = ANY \(ARRAY\['legacy'::text, 'cash_up'::text\]\)/);
+  });
+
   it.each<[string, ShiftInput, RegExp]>([
-    ["an unknown source", { source: "manual" }, /shifts_source_valid/],
     ["a cash_up row without a currency", { currency: null }, /shifts_cash_up_fields_present/],
     ["a cash_up row without a float", { openingFloat: null }, /shifts_cash_up_fields_present/],
     ["a cash_up row without a business date", { businessDate: null }, /shifts_cash_up_fields_present/],

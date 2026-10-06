@@ -14,6 +14,7 @@ export * from "./invitations";
 export * from "./audit_events";
 export * from "./idempotency_keys";
 export * from "./shifts";
+export * from "./shift-cash-up";
 export * from "./outbox_events";
 export * from "./catalog/global-products";
 export * from "./catalog/tenant-product-categories";
