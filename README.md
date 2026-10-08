@@ -4,7 +4,7 @@
 
 # Retail Tower OS
 
-**The command tower for modern retail. Control every branch from one secure core, with AI embedded in its architecture.**
+**One product, four development tracks. The command tower for modern retail: control every branch from one secure core, with AI native to its architecture and design.**
 
 <p align="center">
   <a href="docs/brand/retail-tower-os.md"><img alt="Product: Retail Tower OS" src="https://img.shields.io/badge/product-Retail%20Tower%20OS-0f766e?style=flat-square"></a>
@@ -27,7 +27,7 @@
   <a href="packages/contracts"><img alt="API: contract-first" src="https://img.shields.io/badge/API-contract--first-2563eb?style=flat-square"></a>
   <a href=".specify/memory/constitution.md"><img alt="Audit: provenance first" src="https://img.shields.io/badge/audit-provenance%20first-7c3aed?style=flat-square"></a>
   <a href="SECURITY.md"><img alt="Security: default deny" src="https://img.shields.io/badge/security-default%20deny-dc2626?style=flat-square"></a>
-  <a href="#-ai-embedded-by-design"><img alt="AI: embedded by design" src="https://img.shields.io/badge/AI-embedded%20by%20design-8b5cf6?style=flat-square"></a>
+  <a href="#-ai-is-native-to-the-architecture-and-the-design"><img alt="AI: embedded by design" src="https://img.shields.io/badge/AI-embedded%20by%20design-8b5cf6?style=flat-square"></a>
   <a href="docs/agent-os/standing-rules.md"><img alt="Work: Jira governed, GitHub main is truth" src="https://img.shields.io/badge/work-Jira%20governed-111827?style=flat-square"></a>
 </p>
 
@@ -43,18 +43,45 @@ See [`docs/brand/retail-tower-os.md`](docs/brand/retail-tower-os.md) for the ful
 
 ---
 
-## 🧠 AI-embedded by design
+## 🧩 One project, four development tracks
 
-Retail Tower OS is **AI-embedded**, not AI-integrated. Intelligence is part of the platform's
-architecture from the ground up. It is not an add-on module, a chatbot, or a third-party API
-attached to a finished product afterwards.
+**Retail Tower OS is one product.** The repositories below are its development divisions, split by responsibility so each can be built, tested and released independently. They are not separate products: they share one architecture, one set of contracts and one AI-embedded design.
+
+| Track | Repository | Responsibility |
+| --- | --- | --- |
+| **Backend-Core** ◀ you are here | [`Kemetra/Backend-Core`](https://github.com/Kemetra/Backend-Core) | The contract and orchestration boundary: APIs, data, workers, tenant/store context, sync operations |
+| **POS** | [`Kemetra/POS`](https://github.com/Kemetra/POS) | Windows cashier terminal: Electron app, offline state, receipts, POS ↔ Backend-Core sync |
+| **Admin-Console** | [`Kemetra/Admin-Console`](https://github.com/Kemetra/Admin-Console) | Admin/operator web frontend: tenant/store operations, catalog, inventory views, sync operations |
+| **ERPNext-Connector** | [`Kemetra/ERPNext-Connector`](https://github.com/Kemetra/ERPNext-Connector) | The only ERPNext/Frappe adapter: DocType mapping and posting |
+
+```text
+POS / Admin-Console  ─▶  Backend-Core  ─▶  ERPNext-Connector  ─▶  ERPNext / Frappe
+```
+
+[`Kemetra/Orchestrator`](https://github.com/Kemetra/Orchestrator) is the technical handbook (architecture, ADRs, runbooks). It is not a development track and holds no application code.
+
+---
+
+## 🧠 AI is native to the architecture and the design
+
+Retail Tower OS is **AI-embedded**, not AI-integrated. Intelligence is a founding part of the platform's **architecture and design**, built in from the inside. It is not a layer added to a finished product, a chatbot, or a third-party API attached afterwards.
 
 | AI-integrated (what Retail Tower OS is **not**) | AI-embedded (what Retail Tower OS **is**) |
 | --- | --- |
-| AI is a feature bolted on top of an existing system | AI is a native layer of the system itself |
+| AI is a feature bolted on top of an existing system | AI is a native participant in the system itself |
 | Reads data through side channels or exports | Works on the same tenant-scoped data model, contracts, and events as every other component |
 | Sits outside the security and audit model | Runs inside it: tenant isolation (RLS), default-deny authorization, and audit provenance apply to AI-driven actions like any other actor |
-| Can be removed without changing the architecture | Shapes the architecture: contract-first APIs, the outbox/event pipeline, and structured, auditable data are built to be understood and acted on by intelligent components |
+| Can be removed without changing the architecture | Shapes the architecture: contract-first APIs, the outbox/event pipeline, and structured, auditable data are built so intelligent components can understand and act on them |
+| Added to the UX at the end | Part of the product design: workflows and surfaces are designed with intelligence as a native participant, with people keeping authority |
+
+It runs through all four tracks of the one project:
+
+| Track | What "embedded" means there |
+| --- | --- |
+| **Backend-Core** (this repo) | Contracts, events, and audit provenance are the substrate every intelligent component works through |
+| **POS** | Cashier workflow and offline-first local state designed to accept intelligent assistance without breaking the sale |
+| **Admin-Console** | Operator surfaces designed around intelligent assistance, over the same contracts and permissions |
+| **ERPNext-Connector** | ERP mapping and posting behind the same boundary, so intelligent behavior never reaches ERPNext directly |
 
 What this means for this repository:
 
@@ -67,7 +94,7 @@ What this means for this repository:
   platform invariant ([Constitution](.specify/memory/constitution.md)).
 - **Human-governed.** Authority, scope, and approval stay with people. AI works inside them.
 
-> AI-embedded describes the platform's architectural direction. Which capabilities are shipped
+> AI-embedded describes the platform's architectural and design direction. Which capabilities are shipped
 > today is tracked in [Current implementation status](#current-implementation-status) and the
 > per-feature specs under [`specs/`](specs).
 
