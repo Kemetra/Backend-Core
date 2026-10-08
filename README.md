@@ -33,7 +33,9 @@
 
 </div>
 
-> **Retail Tower OS** is the product; this repository, [`Kemetra/Backend-Core`](https://github.com/Kemetra/Backend-Core), is its backend track. It contains no POS, frontend or ERPNext code: those live in the sibling tracks below and connect only through the OpenAPI contracts in `packages/contracts/openapi/`. Legacy internal names (`@data-pulse-2/*`, `data_pulse_2`, `dp2-*`) stay stable. Brand record: [`docs/brand/retail-tower-os.md`](docs/brand/retail-tower-os.md).
+> **Retail Tower OS** is the product; this repository, [`Kemetra/Backend-Core`](https://github.com/Kemetra/Backend-Core), is its backend track. Brand record: [`docs/brand/retail-tower-os.md`](docs/brand/retail-tower-os.md).
+>
+> _Also known as:_ Data-Pulse-2 / DP2 (Backend-Core) · POS-Pulse (POS) · Retail-Tower-Console (Admin-Console) · Retail-Tower-ERP-Next-Connector (ERPNext-Connector). Internal identifiers (`@data-pulse-2/*`, `data_pulse_2`, `dp2-*`) keep the legacy names and stay stable.
 
 ---
 
@@ -52,6 +54,8 @@
 
 <sub>One architecture, one set of contracts, one AI-embedded design. [`Kemetra/Orchestrator`](https://github.com/Kemetra/Orchestrator) is the technical handbook, not a track.</sub>
 
+Resolved catalog flows **down** to the edges; sales and inventory rise **up** toward ERPNext through the connector posting feed. Full flow, sequence and boundary guarantees: [Synchronization](docs/architecture/synchronization.md).
+
 ---
 
 ## 🧠 AI is native to the architecture and the design
@@ -62,7 +66,7 @@
 
 <table>
 <tr>
-<td width="25%" valign="top"><b>🔒 Same boundary</b><br/><sub>Same OpenAPI contracts, tenant/store context and idempotency as POS and Console. No side door.</sub></td>
+<td width="25%" valign="top"><b>🔒 Same boundary</b><br/><sub>Same OpenAPI contracts, tenant/store context and idempotency as POS and Admin-Console. No side door.</sub></td>
 <td width="25%" valign="top"><b>🧾 Auditable</b><br/><sub>Every action keeps its provenance, so AI-driven decisions can be traced, reviewed and reversed.</sub></td>
 <td width="25%" valign="top"><b>🏢 Tenant-safe</b><br/><sub>RLS-enforced isolation is a platform invariant (<a href=".specify/memory/constitution.md">constitution</a>). Intelligence never crosses it.</sub></td>
 <td width="25%" valign="top"><b>🧑‍⚖️ Human-governed</b><br/><sub>Authority, scope and approval stay with people. AI works inside them.</sub></td>
@@ -73,62 +77,11 @@
 
 ---
 
-## 🔗 Synchronization — Backend-Core at the Core
-
-Backend-Core is the **single contract boundary** of Retail Tower OS. Every edge (POS-Pulse,
-Console) syncs through it; only the ERPNext Connector ever reaches ERPNext. Resolved catalog
-flows **down** to the edges; sales & inventory rise **up** toward ERPNext via the connector
-posting feed.
-
-<p align="center">
-  <img src="docs/assets/architecture/retail-tower-sync-flow.svg" alt="Animated Retail Tower OS synchronization diagram, Backend-Core at the core" width="100%"/>
-</p>
-
-```text
-POS-Pulse ─┐
-           ├─▶  Backend-Core  ─▶  ERPNext Connector  ─▶  ERPNext / Frappe
-Console  ──┘        ▲ the only contract boundary
-```
-
-### Where Backend-Core sits — the full ecosystem
-
-Zooming out from the sync flow above, the diagram below places **Backend-Core** within the complete five-repository Retail Tower OS ecosystem, governed by the Retail Tower Orchestrator control plane on top.
-
-<p align="center">
-  <img src="docs/assets/architecture/retail-tower-ecosystem.svg" alt="Retail Tower OS ecosystem: the Retail Tower Orchestrator control plane governs five repositories; POS and Admin-Console synchronize through Backend-Core, the single contract boundary, which reaches ERPNext only through the ERPNext-Connector" width="100%"/>
-</p>
-
-<p align="center"><sub>Backend-Core (the gold <strong>★ THIS REPO</strong> node) is the highlighted contract-boundary hub. Live animated SVG; motion is suppressed under <code>prefers-reduced-motion</code>.</sub></p>
-
-Full detail (flow + sequence + boundary guarantees):
-[docs/architecture/synchronization.md](docs/architecture/synchronization.md) ·
-Program control plane: [Orchestrator](https://github.com/Kemetra/Orchestrator).
-
----
-
-## Live architecture control map
-
-[![Retail Tower OS live architecture control map preview](docs/assets/architecture/retail-tower-live-map-preview.svg)](docs/architecture/retail-tower-live-map.html)
-
-Open the [interactive Three.js architecture map](docs/architecture/retail-tower-live-map.html) for a full-screen, repo-backed view of the platform topology. The live map reads [topology JSON](docs/architecture/retail-tower-live-map.json), links every node back to source paths, and keeps the README safe by using a static SVG preview here.
-
----
-
-## Repository structure flow
-
-Every layer of the platform — from client ingress to durable state — is laid out in a single animated diagram, framed by contracts & governance on the left and observability & ops on the right.
-
-![Retail Tower OS animated repository structure flow](docs/assets/architecture/retail-tower-os-structure-flowchart.svg)
-
-Open [the full-resolution animated view](docs/assets/architecture/retail-tower-os-structure-flowchart.svg). Tokens trace each authenticated path: dashboard cookies and POS bearer tokens into the NestJS API, through auth → tenant → roles → idempotency guards, into the RLS-bound service layer, into PostgreSQL, with outbox events fanning out via Redis to the worker — and live contract, observability, and audit taps illuminated alongside.
-
----
-
 ## Current implementation status
 
 > **Source of truth.** GitHub `main` is the technical truth for what is implemented; active work and priorities are tracked in Jira (project **RT**). The `Status:` headers inside individual `specs/*/spec.md` files are written at spec time and often lag the code, so the table below is derived from what exists on `main` (controllers, workers, migrations, OpenAPI contracts), not from those headers.
 
-The backend is well past the foundation slices. As of the baseline below it ships the full retail-to-ERP loop on the Retail Tower side: catalog, POS sale capture, inventory ledger, shifts and cash-up, receivable settlement, and the contracts the ERPNext Connector consumes.
+The backend is well past the foundation slices. As of the baseline below it ships the full retail-to-ERP loop on the Retail Tower side: catalog, POS sale capture, inventory ledger, shifts and cash-up, receivable settlement, and the contracts the ERPNext-Connector consumes.
 
 | Capability | State on `main` | Contract (`packages/contracts/openapi`) | Spec |
 | --- | --- | --- | --- |
@@ -151,17 +104,20 @@ Not yet owned or deferred here: tax and fiscal rules for Egypt, and any payment-
 
 ---
 
-## What you can verify today
+## Guarantees and evidence
 
-| Claim | Repo-backed evidence |
-| --- | --- |
-| Tenant isolation is a platform invariant | [Constitution](.specify/memory/constitution.md) · [database package](packages/db) |
-| API behavior is contract-first | [OpenAPI contracts](packages/contracts/openapi) · [contracts package](packages/contracts/README.md) |
-| Audit provenance is first-class | [audit API module](apps/api/src/audit) · [outbox lifecycle](docs/outbox/lifecycle.md) |
-| Async work belongs in workers | [worker app](apps/worker) · [queue config](packages/shared/src/queues) |
-| Security posture is default-deny | [Security policy](SECURITY.md) · [request pipeline](#request-pipeline) |
-| Work is issue-governed; `main` is the technical truth | [Standing rules](docs/agent-os/standing-rules.md) · [Constitution](.specify/memory/constitution.md) (the Maestro slice-dispatch workflow in `docs/agent-os` is historical) |
-| Liveness and readiness probes are public and credential-free | [`health.openapi.yaml`](packages/contracts/openapi/health.openapi.yaml) · [`apps/api/src/health`](apps/api/src/health) |
+Retail data systems become expensive when tenant boundaries, store ownership, audit trails, and POS integration contracts are treated as afterthoughts. This platform makes those rules explicit from the start.
+
+| Guarantee | What it enforces | Repo-backed evidence |
+| --- | --- | --- |
+| <img src="docs/assets/icons/tenant-isolation.svg" width="32" alt=""> **Tenant isolation** | Tenant and store context are first-class at the API, database, and test layers; a platform invariant. | [Constitution](.specify/memory/constitution.md) · [database package](packages/db) |
+| <img src="docs/assets/icons/contracts.svg" width="32" alt=""> **Contract-first APIs** | OpenAPI 3.1 contracts are the integration source of truth, not generated side effects. | [OpenAPI contracts](packages/contracts/openapi) · [contracts package](packages/contracts/README.md) |
+| <img src="docs/assets/icons/audit.svg" width="32" alt=""> **Auditability** | Security-sensitive workflows preserve actor, tenant, operation, outcome, and correlation context. | [audit API module](apps/api/src/audit) · [outbox lifecycle](docs/outbox/lifecycle.md) |
+| <img src="docs/assets/icons/worker.svg" width="32" alt=""> **Worker-owned async jobs** | Email, fanout, retries, and future scheduled work live outside request handlers. | [worker app](apps/worker) · [queue config](packages/shared/src/queues) |
+| <img src="docs/assets/icons/observability.svg" width="32" alt=""> **Operational visibility** | Request IDs, structured logging, and OpenTelemetry primitives are built into the platform layer. Liveness and readiness probes are public and credential-free. | [`health.openapi.yaml`](packages/contracts/openapi/health.openapi.yaml) · [`apps/api/src/health`](apps/api/src/health) |
+| <img src="docs/assets/icons/database.svg" width="32" alt=""> **Durable source of truth** | PostgreSQL remains authoritative; Redis-backed state is disposable coordination. | [database package](packages/db) |
+| **Default-deny security** | Security posture is default-deny. | [Security policy](SECURITY.md) · [request pipeline](#request-pipeline) |
+| **Issue-governed work** | Work is issue-governed; `main` is the technical truth. | [Standing rules](docs/agent-os/standing-rules.md) · [Constitution](.specify/memory/constitution.md) (the Maestro slice-dispatch workflow in `docs/agent-os` is historical) |
 
 ---
 
@@ -204,7 +160,100 @@ During development, package-level `start:dev` scripts compile in watch mode wher
 
 ---
 
-## What Retail Tower OS controls
+## Integration surfaces
+
+Each edge talks to Backend-Core through its own contract family. Nothing else may reach the database or ERPNext.
+
+| Consumer | Path prefix | Contracts |
+| --- | --- | --- |
+| **POS terminals** (`Kemetra/POS`) | `/api/pos/v1/*` | `pos-terminal-pairing` · `pos-operators` · `pos-cashier-admissions` · `pos-shifts` · `pos-sales` · `catalog/read-down` · `catalog/unknown-items` · `pos-audit-events` |
+| **Admin-Console** (`Kemetra/Admin-Console`) | `/api/v1/*` | `auth` · `tenants` · `stores` · `memberships` · `context` · `audit` · `settlement` · `sale-sync-ops` · `erpnext-sync-ops` · `catalog/*` |
+| **ERPNext-Connector** (`Kemetra/ERPNext-Connector`) | `/api/connector/v1/erpnext/*` | `erpnext-connector/posting-feed` · `erpnext-connector/stock-view` · `erpnext-connector/connector-health` |
+
+Inventory is exposed under `/api/inventory/v1/*` (`inventory`). The ERPNext boundary is pull-based: the connector fetches the posting feed and reports an outcome per work item, and Backend-Core never calls ERPNext/Frappe directly.
+
+---
+
+## Architecture at a glance
+
+![Retail Tower OS animated system map](docs/assets/architecture/retail-tower-os-system-map.svg)
+
+Retail Tower OS is implemented here as the `Backend-Core` backend platform: a NestJS API, BullMQ worker runtime, OpenAPI contracts, PostgreSQL source of truth, Redis coordination, and shared platform packages. The diagram above renders animated data tokens travelling each authenticated path: clients to gateway, gateway to system of record, gateway to queue, queue to async runtime.
+
+See [Architecture](docs/ARCHITECTURE.md) for request flow, tenant boundaries, worker flow, and catalog source-of-truth layers.
+
+---
+
+## Request pipeline
+
+Every authenticated call travels the same guard chain. The animated token below traces one request from ingress to response envelope.
+
+<div align="center">
+<img src="docs/assets/architecture/retail-tower-os-request-flow.svg" width="560" alt="Retail Tower OS animated API request flow"/>
+</div>
+
+| Step | Guard / stage | Purpose |
+| :--: | --- | --- |
+| **1** | Ingress | Assign request id · helmet · cookies · body parse |
+| **2** | Validation | Zod body validation · uniform error envelope |
+| **3** | `AuthGuard` | Session token or bearer · constant-time compare |
+| **4** | `TenantContextGuard` | Resolve tenant + store · cross-tenant access → safe 404 |
+| **5** | `RolesGuard` | Role · permission · default deny |
+| **6** | Service layer | Business logic · tenant-scoped DB access · RLS-enforced |
+| **7** | Audit log | Actor · tenant · store · op · outcome · correlationId |
+| **8** | Response | Uniform envelope · includes request id |
+
+<details>
+<summary><b>More architecture views</b></summary>
+
+&nbsp;
+
+**Repository structure flow**
+
+Every layer of the platform, from client ingress to durable state, is laid out in a single animated diagram, framed by contracts & governance on the left and observability & ops on the right.
+
+![Retail Tower OS animated repository structure flow](docs/assets/architecture/retail-tower-os-structure-flowchart.svg)
+
+Open [the full-resolution animated view](docs/assets/architecture/retail-tower-os-structure-flowchart.svg). Tokens trace each authenticated path: dashboard cookies and POS bearer tokens into the NestJS API, through auth → tenant → roles → idempotency guards, into the RLS-bound service layer, into PostgreSQL, with outbox events fanning out via Redis to the worker — and live contract, observability, and audit taps illuminated alongside.
+
+**Live architecture control map**
+
+[![Retail Tower OS live architecture control map preview](docs/assets/architecture/retail-tower-live-map-preview.svg)](docs/architecture/retail-tower-live-map.html)
+
+Open the [interactive Three.js architecture map](docs/architecture/retail-tower-live-map.html) for a full-screen, repo-backed view of the platform topology. The live map reads [topology JSON](docs/architecture/retail-tower-live-map.json), links every node back to source paths, and keeps the README safe by using a static SVG preview here.
+
+**Platform shape**
+
+`Backend-Core` is a pnpm workspace with two deployable services and four internal packages. The API owns synchronous HTTP behavior; the worker owns asynchronous processing; PostgreSQL owns durable state; Redis coordinates queues.
+
+```mermaid
+flowchart LR
+  clients["Admin-Console<br/>external repo"]
+  pos["POS terminals<br/>external repo"]
+  connector["ERPNext-Connector<br/>external repo"]
+  api["apps/api<br/>NestJS HTTP API"]
+  worker["apps/worker<br/>NestJS worker"]
+  contracts["packages/contracts<br/>OpenAPI 3.1"]
+  auth["packages/auth<br/>passwords and tokens"]
+  db["packages/db<br/>schema and migrations"]
+  shared["packages/shared<br/>errors, logs, ids, queues"]
+  pg[("PostgreSQL 16<br/>system of record")]
+  redis[("Redis 7<br/>BullMQ coordination")]
+
+  clients --> api
+  pos -. authenticated contracts .-> api
+  connector -. posting feed and stock view .-> api
+  api --> contracts
+  api --> auth
+  api --> db
+  api --> shared
+  api --> pg
+  api -- enqueue jobs --> redis
+  worker -- consume jobs --> redis
+  worker --> shared
+```
+
+**Platform scope**
 
 The platform that stands behind every branch — multi-tenant architecture, catalog authority, POS connectivity, access control, and audit provenance unified under one secure operating core.
 
@@ -254,98 +303,7 @@ The platform that stands behind every branch — multi-tenant architecture, cata
 
 > This table describes **platform scope and product vision**, not a list of implemented UI features. The POS terminal ([`Kemetra/POS`](https://github.com/Kemetra/POS)) and the admin frontend ([`Kemetra/Admin-Console`](https://github.com/Kemetra/Admin-Console)) are separate repositories that consume this backend.
 
----
-
-## Integration surfaces
-
-Each edge talks to Backend-Core through its own contract family. Nothing else may reach the database or ERPNext.
-
-| Consumer | Path prefix | Contracts |
-| --- | --- | --- |
-| **POS terminals** (`Kemetra/POS`) | `/api/pos/v1/*` | `pos-terminal-pairing` · `pos-operators` · `pos-cashier-admissions` · `pos-shifts` · `pos-sales` · `catalog/read-down` · `catalog/unknown-items` · `pos-audit-events` |
-| **Admin-Console** (`Kemetra/Admin-Console`) | `/api/v1/*` | `auth` · `tenants` · `stores` · `memberships` · `context` · `audit` · `settlement` · `sale-sync-ops` · `erpnext-sync-ops` · `catalog/*` |
-| **ERPNext-Connector** (`Kemetra/ERPNext-Connector`) | `/api/connector/v1/erpnext/*` | `erpnext-connector/posting-feed` · `erpnext-connector/stock-view` · `erpnext-connector/connector-health` |
-
-Inventory is exposed under `/api/inventory/v1/*` (`inventory`). The ERPNext boundary is pull-based: the connector fetches the posting feed and reports an outcome per work item, and Backend-Core never calls ERPNext/Frappe directly.
-
----
-
-## Architecture at a glance
-
-![Retail Tower OS animated system map](docs/assets/architecture/retail-tower-os-system-map.svg)
-
-Retail Tower OS is implemented here as the `Backend-Core` backend platform: a NestJS API, BullMQ worker runtime, OpenAPI contracts, PostgreSQL source of truth, Redis coordination, and shared platform packages. The diagram above renders animated data tokens travelling each authenticated path — clients to gateway, gateway to system of record, gateway to queue, queue to async runtime.
-
-See [Architecture](docs/ARCHITECTURE.md) for request flow, tenant boundaries, worker flow, and catalog source-of-truth layers.
-
----
-
-## Request pipeline
-
-Every authenticated call travels the same guard chain. The animated token below traces one request from ingress to response envelope.
-
-<div align="center">
-<img src="docs/assets/architecture/retail-tower-os-request-flow.svg" width="560" alt="Retail Tower OS animated API request flow"/>
-</div>
-
-| Step | Guard / stage | Purpose |
-| :--: | --- | --- |
-| **1** | Ingress | Assign request id · helmet · cookies · body parse |
-| **2** | Validation | Zod body validation · uniform error envelope |
-| **3** | `AuthGuard` | Session token or bearer · constant-time compare |
-| **4** | `TenantContextGuard` | Resolve tenant + store · cross-tenant access → safe 404 |
-| **5** | `RolesGuard` | Role · permission · default deny |
-| **6** | Service layer | Business logic · tenant-scoped DB access · RLS-enforced |
-| **7** | Audit log | Actor · tenant · store · op · outcome · correlationId |
-| **8** | Response | Uniform envelope · includes request id |
-
----
-
-## Platform guarantees
-
-Retail data systems become expensive when tenant boundaries, store ownership, audit trails, and POS integration contracts are treated as afterthoughts. This platform makes those rules explicit from the start.
-
-| Guarantee | What it enforces |
-| --- | --- |
-| <img src="docs/assets/icons/tenant-isolation.svg" width="32" alt=""> **Tenant isolation** | Tenant and store context are first-class at the API, database, and test layers. |
-| <img src="docs/assets/icons/contracts.svg" width="32" alt=""> **Contract-first APIs** | OpenAPI 3.1 contracts are the integration source of truth, not generated side effects. |
-| <img src="docs/assets/icons/audit.svg" width="32" alt=""> **Auditability** | Security-sensitive workflows preserve actor, tenant, operation, outcome, and correlation context. |
-| <img src="docs/assets/icons/worker.svg" width="32" alt=""> **Worker-owned async jobs** | Email, fanout, retries, and future scheduled work live outside request handlers. |
-| <img src="docs/assets/icons/observability.svg" width="32" alt=""> **Operational visibility** | Request IDs, structured logging, and OpenTelemetry primitives are built into the platform layer. |
-| <img src="docs/assets/icons/database.svg" width="32" alt=""> **Durable source of truth** | PostgreSQL remains authoritative; Redis-backed state is disposable coordination. |
-
----
-
-## Platform shape
-
-`Backend-Core` is a pnpm workspace with two deployable services and four internal packages. The API owns synchronous HTTP behavior; the worker owns asynchronous processing; PostgreSQL owns durable state; Redis coordinates queues.
-
-```mermaid
-flowchart LR
-  clients["Admin-Console<br/>external repo"]
-  pos["POS terminals<br/>external repo"]
-  connector["ERPNext-Connector<br/>external repo"]
-  api["apps/api<br/>NestJS HTTP API"]
-  worker["apps/worker<br/>NestJS worker"]
-  contracts["packages/contracts<br/>OpenAPI 3.1"]
-  auth["packages/auth<br/>passwords and tokens"]
-  db["packages/db<br/>schema and migrations"]
-  shared["packages/shared<br/>errors, logs, ids, queues"]
-  pg[("PostgreSQL 16<br/>system of record")]
-  redis[("Redis 7<br/>BullMQ coordination")]
-
-  clients --> api
-  pos -. authenticated contracts .-> api
-  connector -. posting feed and stock view .-> api
-  api --> contracts
-  api --> auth
-  api --> db
-  api --> shared
-  api --> pg
-  api -- enqueue jobs --> redis
-  worker -- consume jobs --> redis
-  worker --> shared
-```
+</details>
 
 ---
 
@@ -372,6 +330,8 @@ Backend and orchestration boundary: APIs and OpenAPI contracts · database schem
 
 ### What this repo does **not** own
 POS terminal code ([`Kemetra/POS`](https://github.com/Kemetra/POS)) · admin/operator frontend ([`Kemetra/Admin-Console`](https://github.com/Kemetra/Admin-Console)) · any ERPNext/Frappe call or DocType mapping ([`Kemetra/ERPNext-Connector`](https://github.com/Kemetra/ERPNext-Connector) is the only ERPNext adapter) · production infrastructure beyond the deploy assets in `deploy/` · legacy `Data-Pulse` code as source material (reference only, must be re-specified).
+
+The sibling tracks connect to this repository only through the OpenAPI contracts in `packages/contracts/openapi/`.
 
 ---
 
