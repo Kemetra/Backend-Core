@@ -4,7 +4,7 @@
 
 # Retail Tower OS
 
-**The command tower for modern retail. Control every branch from one secure core.**
+**The command tower for modern retail. Control every branch from one secure core, with AI embedded in its architecture.**
 
 <p align="center">
   <a href="docs/brand/retail-tower-os.md"><img alt="Product: Retail Tower OS" src="https://img.shields.io/badge/product-Retail%20Tower%20OS-0f766e?style=flat-square"></a>
@@ -27,7 +27,8 @@
   <a href="packages/contracts"><img alt="API: contract-first" src="https://img.shields.io/badge/API-contract--first-2563eb?style=flat-square"></a>
   <a href=".specify/memory/constitution.md"><img alt="Audit: provenance first" src="https://img.shields.io/badge/audit-provenance%20first-7c3aed?style=flat-square"></a>
   <a href="SECURITY.md"><img alt="Security: default deny" src="https://img.shields.io/badge/security-default%20deny-dc2626?style=flat-square"></a>
-  <a href="docs/agent-os/standing-rules.md"><img alt="Agent OS: slice governed" src="https://img.shields.io/badge/Agent%20OS-slice%20governed-111827?style=flat-square"></a>
+  <a href="#-ai-embedded-by-design"><img alt="AI: embedded by design" src="https://img.shields.io/badge/AI-embedded%20by%20design-8b5cf6?style=flat-square"></a>
+  <a href="docs/agent-os/standing-rules.md"><img alt="Work: Jira governed, GitHub main is truth" src="https://img.shields.io/badge/work-Jira%20governed-111827?style=flat-square"></a>
 </p>
 
 ![Retail Tower OS — The command tower for modern retail](docs/assets/brand/exterior/retail-tower-os-exterior-hero.png)
@@ -36,9 +37,39 @@
 
 > **Retail Tower OS** is the external product identity for this platform. The canonical backend repository is [`Kemetra/Backend-Core`](https://github.com/Kemetra/Backend-Core). Legacy internal namespaces such as `@data-pulse-2/*`, `data_pulse_2`, and `dp2-*` remain intentionally stable.
 >
-> The image above represents **product vision**. It does not imply that a dashboard frontend, POS application, or production operations UI is implemented in this repository. The POS application is a separate repository that integrates through the OpenAPI contracts in `packages/contracts/openapi/`.
+> The image above represents **product vision**. This repository is the backend only: it contains no POS application, dashboard frontend, or ERPNext/Frappe code. Those live in sibling repositories ([`Kemetra/POS`](https://github.com/Kemetra/POS), [`Kemetra/Admin-Console`](https://github.com/Kemetra/Admin-Console), [`Kemetra/ERPNext-Connector`](https://github.com/Kemetra/ERPNext-Connector)) and integrate only through the OpenAPI contracts in `packages/contracts/openapi/`.
 
 See [`docs/brand/retail-tower-os.md`](docs/brand/retail-tower-os.md) for the full brand identity record, approved imagery, scope notes, and usage guidelines.
+
+---
+
+## 🧠 AI-embedded by design
+
+Retail Tower OS is **AI-embedded**, not AI-integrated. Intelligence is part of the platform's
+architecture from the ground up. It is not an add-on module, a chatbot, or a third-party API
+attached to a finished product afterwards.
+
+| AI-integrated (what Retail Tower OS is **not**) | AI-embedded (what Retail Tower OS **is**) |
+| --- | --- |
+| AI is a feature bolted on top of an existing system | AI is a native layer of the system itself |
+| Reads data through side channels or exports | Works on the same tenant-scoped data model, contracts, and events as every other component |
+| Sits outside the security and audit model | Runs inside it: tenant isolation (RLS), default-deny authorization, and audit provenance apply to AI-driven actions like any other actor |
+| Can be removed without changing the architecture | Shapes the architecture: contract-first APIs, the outbox/event pipeline, and structured, auditable data are built to be understood and acted on by intelligent components |
+
+What this means for this repository:
+
+- **Same boundary, same rules.** Backend-Core stays the single contract boundary. AI-driven
+  behavior goes through the same OpenAPI contracts, tenant/store context, and idempotency
+  guarantees as POS and Console. It gets no privileged side door.
+- **Auditable by default.** Every action keeps its provenance, so decisions made or assisted by
+  AI can be traced, reviewed, and reversed.
+- **Tenant-safe.** Intelligence never crosses tenant boundaries. RLS-enforced isolation is a
+  platform invariant ([Constitution](.specify/memory/constitution.md)).
+- **Human-governed.** Authority, scope, and approval stay with people. AI works inside them.
+
+> AI-embedded describes the platform's architectural direction. Which capabilities are shipped
+> today is tracked in [Current implementation status](#current-implementation-status) and the
+> per-feature specs under [`specs/`](specs).
 
 ---
 
@@ -95,17 +126,28 @@ Open [the full-resolution animated view](docs/assets/architecture/retail-tower-o
 
 ## Current implementation status
 
-No single feature is currently active in this repository. The backend platform has shipped several foundation slices; dashboard UI and POS app implementation remain separate/deferred surfaces.
+> **Source of truth.** GitHub `main` is the technical truth for what is implemented; active work and priorities are tracked in Jira (project **RT**). The `Status:` headers inside individual `specs/*/spec.md` files are written at spec time and often lag the code, so the table below is derived from what exists on `main` (controllers, workers, migrations, OpenAPI contracts), not from those headers.
 
-| Area | Status | Evidence |
-| --- | --- | --- |
-| Auth, tenant/store foundation, memberships, audit | Shipped | [`specs/001-foundation-auth-tenant-store`](specs/001-foundation-auth-tenant-store) |
-| POS operator identity | Spec and contracts | [`specs/002-pos-operator-identity`](specs/002-pos-operator-identity) |
-| Catalog foundation | Shipped | [`specs/003-catalog-foundation`](specs/003-catalog-foundation) |
-| Production readiness | PASS for exercised paths; documented partials remain | [`docs/production-readiness/004-closeout-status.md`](docs/production-readiness/004-closeout-status.md) |
-| POS catalog sync and reconciliation | Closed on `main` | [`specs/005-pos-catalog-sync-reconciliation`](specs/005-pos-catalog-sync-reconciliation) |
-| Unknown items review queue | Docs-only product brief complete | [`specs/006-unknown-items-review-queue`](specs/006-unknown-items-review-queue) |
-| Unknown items review queue API | Execution map in place | [`specs/007-unknown-items-review-queue-api`](specs/007-unknown-items-review-queue-api) |
+The backend is well past the foundation slices. As of the baseline below it ships the full retail-to-ERP loop on the Retail Tower side: catalog, POS sale capture, inventory ledger, shifts and cash-up, receivable settlement, and the contracts the ERPNext Connector consumes.
+
+| Capability | State on `main` | Contract (`packages/contracts/openapi`) | Spec |
+| --- | --- | --- | --- |
+| Auth, tenants, stores, memberships, audit | Implemented | `auth` · `tenants` · `stores` · `memberships` · `context` · `audit` · `health` | [`001`](specs/001-foundation-auth-tenant-store) |
+| POS operator identity, terminal pairing, cashier admissions | Implemented | `pos-operators` · `pos-terminal-pairing` · `pos-cashier-admissions` | [`002`](specs/002-pos-operator-identity) · [`027`](specs/027-pos-terminal-pairing-consume) · [`028`](specs/028-pos-auth-boundary-and-operator-lifecycle)–[`034`](specs/034-pos-roster-cashier-user-id) |
+| Catalog (tenant, store override, unknown-items review) and POS catalog read-down | Implemented | `catalog/unknown-items` · `catalog/read-down` | [`003`](specs/003-catalog-foundation) · [`005`](specs/005-pos-catalog-sync-reconciliation)–[`007`](specs/007-unknown-items-review-queue-api) · [`010`](specs/010-pos-catalog-read-down-sync) |
+| POS sale capture, void / refund / returns, sync status and repair | Implemented | `pos-sales` · `sale-sync-ops` | [`008`](specs/008-sales-transaction-capture) · [`032`](specs/032-pos-sale-capture-sync-status-and-idempotency-contract) |
+| Inventory stock ledger, transfers, counts | Implemented | `inventory` | [`009`](specs/009-inventory-stock-ledger) |
+| POS shifts, cash-up, stuck-shift handling | Implemented | `pos-shifts` | tracked in Jira RT |
+| Sale settlement and receivables (payer accounts, claims, remittance reconciliation) | Implemented | `settlement` | [`035`](specs/035-sale-settlement-and-receivables-model) · [`036`](specs/036-settlement-posting-feed-extension) |
+| ERPNext integration: posting feed, stock view, item/warehouse maps, product and stock reconciliation, connector health | Implemented on the Backend-Core side; live cross-system validation against a staging ERPNext is tracked separately | `erpnext-connector` · `erpnext-reconciliation` · `erpnext-sync-ops` · `catalog/erpnext-*` · `connector` | [`011`](specs/011-erpnext-pos-reference-and-integration-foundation)–[`021`](specs/021-product-master-reconciliation-v1) · [`025`](specs/025-console-sync-ops-read-model-v1) |
+| Observability (pino, OpenTelemetry, Prometheus) | Implemented | n/a | [`004`](specs/004-platform-production-readiness) · [`docs/observability`](docs/observability) |
+| Sentry / Datadog export | Spec only; no implementation on `main` | n/a | [`037`](specs/037-observability-sentry-datadog-export) |
+| Sales-posting command contract | Plan only | n/a | [`023`](specs/023-sales-posting-command-contract-v1) |
+| Returns / reversal contract to ERP | Open determination, not a build slice | n/a | [`026`](specs/026-returns-reversal-contract) |
+
+Not yet owned or deferred here: tax and fiscal rules for Egypt, and any payment-card capture. See [`docs/production-readiness`](docs/production-readiness) for what was exercised and the documented partials.
+
+**Baseline for this table:** 36 SQL migrations (`packages/db/drizzle`, numbered `0000`–`0036`), 29 OpenAPI contract files, an API with 33 controller files, and a worker with outbox, ERP posting, ERP reconciliation, sale processing, audit, email and cleanup processors. Re-verify against `main` before relying on it.
 
 ---
 
@@ -118,7 +160,8 @@ No single feature is currently active in this repository. The backend platform h
 | Audit provenance is first-class | [audit API module](apps/api/src/audit) · [outbox lifecycle](docs/outbox/lifecycle.md) |
 | Async work belongs in workers | [worker app](apps/worker) · [queue config](packages/shared/src/queues) |
 | Security posture is default-deny | [Security policy](SECURITY.md) · [request pipeline](#request-pipeline) |
-| Agent work is slice-governed | [Agent OS standing rules](docs/agent-os/standing-rules.md) · [Maestro playbook](docs/agent-os/maestro-playbook.md) |
+| Work is issue-governed; `main` is the technical truth | [Standing rules](docs/agent-os/standing-rules.md) · [Constitution](.specify/memory/constitution.md) (the Maestro slice-dispatch workflow in `docs/agent-os` is historical) |
+| Liveness and readiness probes are public and credential-free | [`health.openapi.yaml`](packages/contracts/openapi/health.openapi.yaml) · [`apps/api/src/health`](apps/api/src/health) |
 
 ---
 
@@ -157,7 +200,7 @@ pnpm --filter @data-pulse-2/worker start
 
 During development, package-level `start:dev` scripts compile in watch mode where available.
 
-**Verify startup.** After starting the API, check the terminal output for a pino log line confirming the server is listening (default port `3000`). No unauthenticated health endpoint is exposed — a clean startup log is the expected signal. For a full behavior walkthrough, see the [foundation quickstart](specs/001-foundation-auth-tenant-store/quickstart.md).
+**Verify startup.** After starting the API, check the terminal output for a pino log line confirming the server is listening (default port `3000`). Then probe `GET /api/v1/health/live` (process is up) and `GET /api/v1/health/ready` (returns 503 when a required dependency is down); both are unauthenticated. For a full behavior walkthrough, see the [foundation quickstart](specs/001-foundation-auth-tenant-store/quickstart.md).
 
 ---
 
@@ -209,7 +252,21 @@ The platform that stands behind every branch — multi-tenant architecture, cata
 </tr>
 </table>
 
-> This table describes **platform scope and product vision**, not a list of implemented UI features. The POS application is a separate repository. Dashboard UI is a separate future feature.
+> This table describes **platform scope and product vision**, not a list of implemented UI features. The POS terminal ([`Kemetra/POS`](https://github.com/Kemetra/POS)) and the admin frontend ([`Kemetra/Admin-Console`](https://github.com/Kemetra/Admin-Console)) are separate repositories that consume this backend.
+
+---
+
+## Integration surfaces
+
+Each edge talks to Backend-Core through its own contract family. Nothing else may reach the database or ERPNext.
+
+| Consumer | Path prefix | Contracts |
+| --- | --- | --- |
+| **POS terminals** (`Kemetra/POS`) | `/api/pos/v1/*` | `pos-terminal-pairing` · `pos-operators` · `pos-cashier-admissions` · `pos-shifts` · `pos-sales` · `catalog/read-down` · `catalog/unknown-items` · `pos-audit-events` |
+| **Admin-Console** (`Kemetra/Admin-Console`) | `/api/v1/*` | `auth` · `tenants` · `stores` · `memberships` · `context` · `audit` · `settlement` · `sale-sync-ops` · `erpnext-sync-ops` · `catalog/*` |
+| **ERPNext-Connector** (`Kemetra/ERPNext-Connector`) | `/api/connector/v1/erpnext/*` | `erpnext-connector/posting-feed` · `erpnext-connector/stock-view` · `erpnext-connector/connector-health` |
+
+Inventory is exposed under `/api/inventory/v1/*` (`inventory`). The ERPNext boundary is pull-based: the connector fetches the posting feed and reports an outcome per work item, and Backend-Core never calls ERPNext/Frappe directly.
 
 ---
 
@@ -265,8 +322,9 @@ Retail data systems become expensive when tenant boundaries, store ownership, au
 
 ```mermaid
 flowchart LR
-  clients["Dashboard / API clients<br/>future consumers"]
-  pos["POS clients<br/>external repo"]
+  clients["Admin-Console<br/>external repo"]
+  pos["POS terminals<br/>external repo"]
+  connector["ERPNext-Connector<br/>external repo"]
   api["apps/api<br/>NestJS HTTP API"]
   worker["apps/worker<br/>NestJS worker"]
   contracts["packages/contracts<br/>OpenAPI 3.1"]
@@ -278,6 +336,7 @@ flowchart LR
 
   clients --> api
   pos -. authenticated contracts .-> api
+  connector -. posting feed and stock view .-> api
   api --> contracts
   api --> auth
   api --> db
@@ -300,23 +359,19 @@ flowchart LR
 | `packages/contracts` | OpenAPI 3.1 YAML contracts of record |
 | `packages/db` | Drizzle schema · explicit SQL migrations · tenant helpers · migration CLI |
 | `packages/shared` | Shared Zod helpers · error envelopes · logging · observability · IDs · queue config |
-| `specs/001-foundation-auth-tenant-store` | Foundation feature artifacts (shipped) |
-| `specs/002-pos-operator-identity` | POS operator identity specification and contracts (POS app lives in a separate repo) |
-| `specs/003-catalog-foundation` | Catalog foundation feature (shipped) |
-| `specs/004-platform-production-readiness` | Production readiness artifacts; exercised API/worker/outbox paths passed with documented partials |
-| `specs/005-pos-catalog-sync-reconciliation` | POS catalog sync and reconciliation feature (closed on `main`) |
-| `specs/006-unknown-items-review-queue` | Unknown items review queue product brief (docs-only scope complete) |
-| `specs/007-unknown-items-review-queue-api` | Unknown items review queue API execution map and coordination artifacts |
+| `specs` | Spec Kit artifacts per feature, `001`–`037`: foundation and auth (`001`–`004`), catalog and POS sync (`005`–`010`), ERPNext integration arc (`011`–`026`), POS auth boundary and operator lifecycle (`027`–`034`), settlement and receivables (`035`–`036`), observability export (`037`). Design records, not the authority for current behavior; see [Current implementation status](#current-implementation-status) |
+| `apps/api/src/{catalog,inventory,settlement,pos-*,connector*}` | Domain modules: catalog and ERPNext maps/reconciliation, sales capture and sync ops, inventory ledger, settlement, POS operators, shifts, cashier admissions, terminal pairing, connector registration and health |
+| `apps/worker/src/{outbox,erpnext-*,sales,inventory,audit,email,cleanup}` | Outbox drainer and consumers · ERP posting and reconciliation runs · sale processing and dead-letter · inventory backfill · audit fan-out and retention · email · soft-delete sweep |
 | `docs` | Architecture · live control map · documentation index · brand · agent-os · presentation assets |
 | `.specify` | Constitution v3.0.0 · architecture impact · redaction matrix · slice templates · integration manifests |
 | `.github` | CI workflows · PR + issue templates |
 | `scripts`, `tools`, `loadtests` | LOC badge automation · custom ESLint rules · k6 perf scenarios |
 
 ### What this repo owns
-Multi-tenant SaaS backend foundation · admin/dashboard backend APIs and shared contracts · worker runtime and queue integration patterns · PostgreSQL schema, migrations, and tenant helpers · shared platform primitives for auth, observability, validation, and errors.
+Backend and orchestration boundary: APIs and OpenAPI contracts · database schema, migrations and tenant/store context · tenant catalog and store overrides · inventory ledger · sales capture and sync operations · settlement and receivables · ERP posting orchestration and the integration contracts the connector consumes · worker runtime and queue patterns · shared platform primitives for auth, observability, validation, and errors.
 
 ### What this repo does **not** own
-POS application code · dashboard frontend implementation · production infrastructure manifests beyond local development support · legacy `Data-Pulse` code as source material (reference only, must be re-specified).
+POS terminal code ([`Kemetra/POS`](https://github.com/Kemetra/POS)) · admin/operator frontend ([`Kemetra/Admin-Console`](https://github.com/Kemetra/Admin-Console)) · any ERPNext/Frappe call or DocType mapping ([`Kemetra/ERPNext-Connector`](https://github.com/Kemetra/ERPNext-Connector) is the only ERPNext adapter) · production infrastructure beyond the deploy assets in `deploy/` · legacy `Data-Pulse` code as source material (reference only, must be re-specified).
 
 ---
 
@@ -330,7 +385,8 @@ POS application code · dashboard frontend implementation · production infrastr
 | Jobs | Redis 7 · BullMQ |
 | Observability | pino · OpenTelemetry SDK · HTTP/Postgres/Redis instrumentation · Prometheus exporter |
 | Auth | argon2id · opaque revocable bearer tokens · httpOnly cookie sessions |
-| Testing | Jest · ts-jest · Supertest · Testcontainers PostgreSQL |
+| Contracts | OpenAPI 3.1 of record · Zod runtime validation · `openapi-breaking` CI check |
+| Testing | Jest · ts-jest · Supertest · Testcontainers PostgreSQL · k6 load scenarios · API fuzzing in CI |
 | IDs | UUIDv7 with UUIDv4 fallback |
 
 ---
@@ -344,14 +400,14 @@ The [documentation index](docs/README.md) is the main hub, with audience-based n
 | **Product & brand** | [Brand identity](docs/brand/retail-tower-os.md) · [Icon system](docs/brand/icon-system.md) |
 | **Engineering** | [Architecture](docs/ARCHITECTURE.md) · [Foundation quickstart](specs/001-foundation-auth-tenant-store/quickstart.md) · [Contributing](CONTRIBUTING.md) |
 | **Security** | [Security policy](SECURITY.md) · [Constitution](.specify/memory/constitution.md) |
-| **Integration** | [Contracts package](packages/contracts/README.md) · [POS operator identity spec](specs/002-pos-operator-identity/spec.md) |
-| **Operations** | [Observability signals](docs/observability/signals.md) · [Outbox lifecycle](docs/outbox/lifecycle.md) · [Idempotency strategy](docs/idempotency/strategy.md) |
+| **Integration** | [Contracts package](packages/contracts/README.md) · [Synchronization](docs/architecture/synchronization.md) · [Repo boundaries](docs/architecture/repo-boundaries.md) · [POS operator identity spec](specs/002-pos-operator-identity/spec.md) |
+| **Operations** | [Observability signals](docs/observability/signals.md) · [Outbox lifecycle](docs/outbox/lifecycle.md) · [Idempotency strategy](docs/idempotency/strategy.md) · [Database roles](docs/operations/database-roles.md) · [Deploy](deploy/README.md) |
 
 ---
 
 ## Development agreement
 
-This platform follows the active Constitution and Spec Kit workflow. Start from the current spec, keep changes thin, preserve tenant isolation, and do not change dependency manifests, lockfiles, SQL migrations, or database schema without explicit approval.
+This platform follows the active [Constitution](.specify/memory/constitution.md) and the Spec Kit workflow. The unit of work is a Jira issue (project RT); start from `origin/main`, keep changes to the issue's scope, preserve tenant isolation, and do not change dependency manifests, lockfiles, SQL migrations, OpenAPI contracts or CI workflows without explicit approval. See [standing rules](docs/agent-os/standing-rules.md).
 
 ---
 
