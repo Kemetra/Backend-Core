@@ -191,9 +191,11 @@ export class ErpnextPostingService {
           external_id: string;
           payload_hash: string;
           sequence: string;
+          current_resolution_version: number | null;
         }>(
           `SELECT id, kind, sale_id, source_ref_id, source_system, external_id,
-                  payload_hash, sequence::text AS sequence
+                  payload_hash, sequence::text AS sequence,
+                  current_resolution_version
              FROM erpnext_posting_status
             WHERE status = 'pending'
               AND ($1::bigint IS NULL OR sequence > $1::bigint)
@@ -213,6 +215,7 @@ export class ErpnextPostingService {
             externalId: row.external_id,
             payloadHash: row.payload_hash,
             sequence: row.sequence,
+            currentResolutionVersion: row.current_resolution_version,
           });
           if (item) items.push(item);
         }

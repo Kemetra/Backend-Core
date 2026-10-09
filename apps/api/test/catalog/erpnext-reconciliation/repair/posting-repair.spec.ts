@@ -269,3 +269,38 @@ describe("017-US2 §5 — cross-tenant non-disclosure", () => {
     ).rejects.toBeInstanceOf(RepairNotFoundError);
   });
 });
+
+describe("RT-330 — a repair re-offer freezes a new resolution version", () => {
+  it("eligible_again leaves the row on an operator-resolved version covering every line", async () => {
+    if (skip) return;
+    await resetDeadletter(0);
+    const before = await env!.admin.query<{ v: number | null }>(
+      `SELECT current_resolution_version AS v FROM erpnext_posting_status WHERE id = $1`,
+      [POSTING_DEADLETTER_A],
+    );
+
+    const res = await svc().repairPosting({
+      tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
+      actorUserId: ACTOR_A,
+      workItemRef: POSTING_DEADLETTER_A,
+    });
+    expect(res.repair.outcome).toBe("eligible_again");
+
+    const after = await env!.admin.query<{ v: number | null }>(
+      `SELECT current_resolution_version AS v FROM erpnext_posting_status WHERE id = $1`,
+      [POSTING_DEADLETTER_A],
+    );
+    const version = after.rows[0]!.v;
+    expect(version).toBe((before.rows[0]!.v ?? 0) + 1);
+
+    const rows = await env!.admin.query<{ by: string }>(
+      `SELECT resolved_by AS by FROM erpnext_posting_resolution
+        WHERE intent_id = $1 AND resolution_version = $2`,
+      [POSTING_DEADLETTER_A, version],
+    );
+    const lines = await env!.admin.query(`SELECT 1 FROM sale_lines WHERE sale_id = $1`, [SALE_A_X]);
+    expect(rows.rowCount).toBe(lines.rowCount);
+    expect(rows.rows.every((r) => r.by === "operator")).toBe(true);
+  });
+});

@@ -48,7 +48,8 @@ const CATALOG_TABLE_EXPORTS: ReadonlyArray<readonly [string, string]> = [
 // `packages/db/src/schema/index.ts`. The original seven are data-model.md §1–§8
 // (003); `catalog-change-log` is the 010 read-down change-log (spec 010
 // data-model §3); `erpnext-item-map` is the 013 product-master identity mapping
-// (spec 013 data-model §2). Any extra `./catalog/<module>` line in the barrel
+// (spec 013 data-model §2); `erpnext-posting-resolution` is the RT-330 frozen
+// posting resolution (migration 0037). Any extra `./catalog/<module>` line in the barrel
 // signals an unsanctioned table leaking through the public API.
 const EXPECTED_CATALOG_MODULES: readonly string[] = [
   "global-products",
@@ -62,6 +63,7 @@ const EXPECTED_CATALOG_MODULES: readonly string[] = [
   "erpnext-item-map",
   "erpnext-warehouse-map",
   "erpnext-posting-status",
+  "erpnext-posting-resolution",
   "erpnext-reconciliation",
   "erpnext-product-reconciliation",
 ];

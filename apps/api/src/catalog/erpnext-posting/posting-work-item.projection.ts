@@ -13,10 +13,12 @@
  *      worker cannot import api code, and only one live copy must exist.
  *
  *   2. WIRE ASSEMBLY — at PULL (this file, `buildWorkItem()`). A pure read: it
- *      re-joins an already-`pending` row's sale + frozen lines + confirmed
- *      item-map to populate the 012 `PostingWorkItem` (each line's
- *      `erpnextItemRef`). NO status mutation → re-pulling the same cursor yields
- *      the same logical set (012 idempotent replay).
+ *      re-joins an already-`pending` row's sale + frozen lines and takes each
+ *      line's `erpnextItemRef` from the row's FROZEN resolution
+ *      (`erpnext_posting_resolution`, RT-330) when it has one, else from the
+ *      live confirmed item-map (pre-0037 rows only). NO status mutation →
+ *      re-pulling the same cursor yields the same logical set (012 idempotent
+ *      replay).
  *
  * All queries run under the caller's tenant GUC (the caller wraps in
  * `runWithTenantContext`); RLS does the tenant scoping.
@@ -27,6 +29,21 @@ import { SaleTendersNotVisibleError } from "../sales/sale-errors";
 
 // RT-77: shared with the sale read path; re-exported for existing importers.
 export { SaleTendersNotVisibleError } from "../sales/sale-errors";
+
+/**
+ * RT-330: a row names a frozen resolution version that does not cover every
+ * one of its sale lines. Every writer inserts all lines in one statement, so
+ * this is an invariant breach: the pull fails loudly rather than omit the row
+ * and advance the cursor past it (the RT-316 strand).
+ */
+export class PostingResolutionIncompleteError extends Error {
+  constructor(workItemRef: string, version: number) {
+    super(
+      `posting ${workItemRef}: resolution v${version} does not cover every sale line`,
+    );
+    this.name = "PostingResolutionIncompleteError";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Wire shape — the 012 PostingWorkItem (subset 015 populates in the interim mode)
@@ -156,6 +173,8 @@ export async function buildWorkItem(
     readonly externalId: string;
     readonly payloadHash: string;
     readonly sequence: string;
+    /** RT-330: the frozen resolution version to read; null/absent = live map join. */
+    readonly currentResolutionVersion?: number | null;
   },
 ): Promise<PostingWorkItem | null> {
   const sale = await client.query<{
@@ -178,6 +197,9 @@ export async function buildWorkItem(
   const s = sale.rows[0];
   if (!s) return null;
 
+  // RT-330: a row with a frozen resolution reads ONLY that version, so a later
+  // retire / re-point of the item map can neither omit nor retarget it.
+  const frozenVersion = row.currentResolutionVersion ?? null;
   const lines = await client.query<{
     line_ref: string;
     line_name: string;
@@ -194,36 +216,40 @@ export async function buildWorkItem(
             sl.unit_price::text AS unit_price, sl.currency_code,
             sl.quantity::text AS quantity, sl.line_amount::text AS line_amount,
             sl.tax_amount::text AS tax_amount, sl.unit,
-            m.erpnext_item_ref, sl.tenant_product_ref::text AS tenant_product_ref
+            COALESCE(r.erpnext_item_ref, m.erpnext_item_ref) AS erpnext_item_ref,
+            sl.tenant_product_ref::text AS tenant_product_ref
        FROM sale_lines sl
+       LEFT JOIN erpnext_posting_resolution r
+         ON $2::int IS NOT NULL
+        AND r.intent_id = $3::uuid
+        AND r.resolution_version = $2::int
+        AND r.sale_line_id = sl.id
        LEFT JOIN erpnext_item_map m
-         ON m.tenant_product_id = sl.tenant_product_ref
+         ON $2::int IS NULL
+        AND m.tenant_product_id = sl.tenant_product_ref
         AND m.state = 'confirmed'
         AND m.retired_at IS NULL
       WHERE sl.sale_id = $1
       ORDER BY sl.id`,
-    [row.saleId],
+    [row.saleId, frozenVersion, row.id],
   );
 
-  // A `pending` row was only created when eligibility resolved at CREATION, so
-  // every line normally re-resolves here. EDGE CASE: a confirmed item-map can be
-  // retired (013 REPOINT) BETWEEN creation and this pull, leaving a line's
-  // `erpnext_item_ref` NULL. We MUST NOT ship an empty/contract-violating
-  // `erpnextItemRef` (012 O-1 self-sufficiency). Returning null here makes the
-  // feed OMIT the whole work-item (the service's `if (item)` filter), so the
-  // connector never receives a malformed item.
+  // A FROZEN row (RT-330) always resolves every line; a gap is an invariant
+  // breach and fails the pull loudly rather than stranding the row.
   //
-  // KNOWN LIMITATION (MVP): the omitted row stays `pending` in the DB but the
-  // pull cursor advances past its `sequence`, so it is not re-offered until a
-  // re-resolution pass flips stranded rows to `permanently_rejected`. That
-  // re-resolution is US4-RESOLVE-FAIL / 017 work, NOT this read-only feed (a
-  // status write inside the GET would break the 012 idempotent-replay invariant).
-  // In the MVP no map-retirement path is exercised against a pending posting, so
-  // this is a latent edge handled safely (omit, never corrupt), not a live gap.
+  // A pre-0037 row WITHOUT a frozen resolution keeps the live join. If its item
+  // map was retired since creation, a line's `erpnext_item_ref` is NULL; we MUST
+  // NOT ship an empty `erpnextItemRef` (012 O-1), so the work-item is omitted
+  // (the service's `if (item)` filter). Such a row is the RT-316 strand; the
+  // 0037 backfill froze every row that still resolved, and every writer since
+  // freezes at creation or repair, so only rows unresolvable at backfill remain.
   const wireLines: WorkItemLine[] = [];
   for (const l of lines.rows) {
     if (l.erpnext_item_ref === null || l.erpnext_item_ref.length === 0) {
-      return null; // stale/retired map → omit the work-item rather than ship "".
+      if (frozenVersion !== null) {
+        throw new PostingResolutionIncompleteError(row.id, frozenVersion);
+      }
+      return null; // pre-0037 row, stale/retired map → omit rather than ship "".
     }
     wireLines.push({
       lineRef: l.line_ref,

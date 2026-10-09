@@ -487,3 +487,85 @@ describe("PostingRequestedConsumer.handle — RT-173 reversal waits for its sale
     expect(await postingRows(e, voidedSale)).toEqual([]);
   });
 });
+
+/** RT-330: the frozen resolution an intent carries (version, refs, provenance). */
+async function resolutionOf(
+  e: PgTestEnv,
+  sourceRefId: string,
+): Promise<{
+  version: number | null;
+  rows: Array<{ item: string; warehouse: string; by: string; version: number }>;
+}> {
+  const s = await e.admin.query<{ id: string; v: number | null }>(
+    `SELECT id, current_resolution_version AS v FROM erpnext_posting_status
+      WHERE tenant_id = $1 AND source_ref_id = $2`,
+    [TENANT, sourceRefId],
+  );
+  const r = await e.admin.query<{ item: string; warehouse: string; by: string; version: number }>(
+    `SELECT erpnext_item_ref AS item, warehouse_ref AS warehouse, resolved_by AS by,
+            resolution_version AS version
+       FROM erpnext_posting_resolution WHERE intent_id = $1 ORDER BY resolution_version`,
+    [s.rows[0]?.id ?? null],
+  );
+  return { version: s.rows[0]?.v ?? null, rows: r.rows };
+}
+
+// Last in the file: the lineage case re-points TPRODUCT's shared item map.
+describe("PostingRequestedConsumer.handle — RT-330 frozen resolution at creation", () => {
+  it("a pending sale_post carries resolution v1 with the item and warehouse it resolved", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleId = "01900000-0000-7000-8000-00000050e001";
+    await seedSale(e, { id: saleId, store: STORE_MAPPED, externalId: "rt330-1", tenantProductRef: TPRODUCT });
+    await new PostingRequestedConsumer(e.app).handle(
+      salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev0e1"),
+    );
+
+    const res = await resolutionOf(e, saleId);
+    expect(res.version).toBe(1);
+    expect(res.rows).toEqual([{ item: "ERP-ITEM-1", warehouse: "ERP-WH-1", by: "system", version: 1 }]);
+  });
+
+  it("a permanently_rejected sale_post carries no resolution", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleId = "01900000-0000-7000-8000-00000050e002";
+    await seedSale(e, { id: saleId, store: STORE_MAPPED, externalId: "rt330-2", tenantProductRef: null });
+    await new PostingRequestedConsumer(e.app).handle(
+      salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev0e2"),
+    );
+
+    expect((await statusRow(e, saleId)).status).toBe("permanently_rejected");
+    expect(await resolutionOf(e, saleId)).toEqual({ version: null, rows: [] });
+  });
+
+  it("a reversal created after a re-point keeps its sale's frozen item (lineage)", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleId = "01900000-0000-7000-8000-00000050e003";
+    await seedSale(e, { id: saleId, store: STORE_MAPPED, externalId: "rt330-3", tenantProductRef: TPRODUCT });
+    const c = new PostingRequestedConsumer(e.app);
+    await c.handle(salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev0e3"));
+
+    // Re-point the product to another ERP item before the void is drained.
+    await e.admin.query(
+      `UPDATE erpnext_item_map SET retired_at = now()
+        WHERE tenant_id = $1 AND tenant_product_id = $2 AND retired_at IS NULL`,
+      [TENANT, TPRODUCT],
+    );
+    await e.admin.query(
+      `INSERT INTO erpnext_item_map
+         (id, tenant_id, tenant_product_id, erpnext_item_ref, state,
+          suggestion_source, confirmed_by, confirmed_at)
+       VALUES (gen_random_uuid(), $1, $2, 'ERP-ITEM-2', 'confirmed', 'manual', $3, now())`,
+      [TENANT, TPRODUCT, ACTOR],
+    );
+
+    const voidId = await seedVoid(e, saleId, "01900000-0000-7000-8000-0000005ee3d1");
+    await c.handle(reversalEvent(saleId, voidId, { eventId: "01900000-0000-7000-8000-0000000ev0e4" }));
+
+    const res = await resolutionOf(e, voidId);
+    expect(res.version).toBe(1);
+    expect(res.rows.map((r) => r.item)).toEqual(["ERP-ITEM-1"]);
+  });
+});
