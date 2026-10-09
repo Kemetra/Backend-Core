@@ -237,10 +237,15 @@ export class PostingRequestedConsumer
     payload: PostingRequestedPayload,
   ): Promise<void> {
     const { sale_id, store_id, source_ref_id } = payload;
+    // RT-333 FOR SHARE (held to commit): serializes this reversal's lineage copy
+    // with an operator re-resolution of the sale, which holds the row FOR UPDATE.
+    // Either the re-resolution sees this reversal and refuses, or this waits for
+    // it to commit and copies the version it wrote — never the superseded one.
     const found = await client.query(
       `SELECT 1 FROM erpnext_posting_status
         WHERE tenant_id = $1 AND source_ref_id = $2 AND sale_id = $2
-          AND kind = 'sale_post'`,
+          AND kind = 'sale_post'
+        FOR SHARE`,
       [event.tenant_id, sale_id],
     );
     if ((found.rowCount ?? 0) > 0) return;
