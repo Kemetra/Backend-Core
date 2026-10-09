@@ -97,9 +97,18 @@ op run --env-file=deploy/grants.env -- \
   psql -X -f docs/operations/sql/erpnext-posting-resolution-catchup.sql
 ```
 
-`op run` resolves private references into the container env in memory only. The
-`migrate` service runs `migrate up` against `<managed-db>` and must exit 0 before
-`api`/`worker` start (compose `service_completed_successfully` gate).
+`op run` resolves private references in memory and does not write them back to
+`deploy/prod.env`. The values Compose passes into a service's `environment` are,
+however, stored in that container's configuration: anyone who can reach the
+Docker daemon (root or the `docker` group) can read them with `docker inspect`,
+so restrict Docker access on `<app-host>` to trusted operators.
+Run every `docker compose -f docker-compose.prod.yml` command under it, including
+`ps`, `logs` and `down`, which only inspect or stop containers. Compose resolves
+the file's required `${VAR:?...}` variables whenever it loads the project, so
+without the env loader any command fails with
+`required variable ... is missing a value`. The `migrate` service runs
+`migrate up` against `<managed-db>` and must exit 0 before `api`/`worker` start
+(compose `service_completed_successfully` gate).
 
 Step 2 must run between the migration and the app start. The API boot check
 verifies the domain role's cashier-admissions table grants (RT-212), its
@@ -187,7 +196,8 @@ hashed) as immutable, so browsers pick up a new release on the next load.
 ## Verify
 
 ```bash
-docker compose -f docker-compose.prod.yml ps          # all healthy; migrate Exited(0)
+op run --env-file=deploy/prod.env -- \
+  docker compose -f docker-compose.prod.yml ps          # all healthy; migrate Exited(0)
 curl -sS https://api.example.test/api/v1/health/live    # {"status":"ok"}: the edge and the process are up
 curl -sS https://api.example.test/api/v1/health/ready   # 200 ready / 503 not_ready, with per-check ok|failed
 deploy/console-smoke.sh https://api.example.test        # Console at /, API at /api/*, headers, SPA fallback
@@ -199,7 +209,7 @@ op run --env-file=deploy/prod.env -- \
 
 ```bash
 # logs
-docker compose -f docker-compose.prod.yml logs -f api
+op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml logs -f api
 # redeploy a new ref: pull, then run the full release sequence from "Deploy"
 # (1. migrate, 2. grants, 3. up, 4. catch-up). A bare `up` skips the grant step.
 git pull
@@ -211,7 +221,7 @@ op run --env-file=deploy/grants.env -- sh -c \
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d --build
 op run --env-file=deploy/grants.env -- psql -X -f docs/operations/sql/erpnext-posting-resolution-catchup.sql
 # stop
-docker compose -f docker-compose.prod.yml down            # keeps volumes (redis AOF, caddy certs)
+op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml down   # keeps volumes (redis AOF, caddy certs)
 ```
 
 ### Worker schedules
