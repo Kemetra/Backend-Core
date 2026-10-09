@@ -97,7 +97,11 @@ op run --env-file=deploy/grants.env -- \
   psql -X -f docs/operations/sql/erpnext-posting-resolution-catchup.sql
 ```
 
-`op run` resolves private references into the container env in memory only.
+`op run` resolves private references in memory and does not write them back to
+`deploy/prod.env`. The values Compose passes into a service's `environment` are,
+however, stored in that container's configuration: anyone who can reach the
+Docker daemon (root or the `docker` group) can read them with `docker inspect`,
+so restrict Docker access on `<app-host>` to trusted operators.
 Run every `docker compose -f docker-compose.prod.yml` command under it, including
 `ps`, `logs` and `down`, which only inspect or stop containers. Compose resolves
 the file's required `${VAR:?...}` variables whenever it loads the project, so
