@@ -220,8 +220,17 @@ describe("data-pulse-migrate CLI", () => {
   /** The three append-only fact tables created by 0036_shift_cash_up (RT-17). */
   const SHIFT_CASH_UP_TABLES = ["shift_closes", "shift_cash_movements", "shift_refund_claims"];
 
+  /** 0036 is fully applied: its fact tables, shifts cash-up column and guard triggers. */
+  async function expectShiftCashUpApplied(): Promise<void> {
+    expect(await countPublicTables(SHIFT_CASH_UP_TABLES)).toBe("3");
+    expect(await countPublicColumn("shifts", "source")).toBe("1");
+    expect(await countShiftGuardTriggers()).toBe("2");
+  }
+
   /** The append-only resolution table created by 0037_erpnext_posting_resolution (RT-330). */
   const RESOLUTION_TABLES = ["erpnext_posting_resolution"];
+  const countResolutionVersionColumn = (): Promise<string> =>
+    countPublicColumn("erpnext_posting_status", "current_resolution_version");
 
   /** The three return tables created by 0032_sale_returns (RT-73). */
   const RETURN_TABLES = ["sale_returns", "sale_return_lines", "sale_return_tenders"];
@@ -309,15 +318,13 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPolicies(ADMISSION_TABLES)).toBe("7");
     // 0036's cash-up fact tables (SELECT + INSERT policies each), the shifts
     // cash-up columns and guard triggers (RT-17).
-    expect(await countPublicTables(SHIFT_CASH_UP_TABLES)).toBe("3");
+    await expectShiftCashUpApplied();
     expect(await countPolicies(SHIFT_CASH_UP_TABLES)).toBe("6");
-    expect(await countPublicColumn("shifts", "source")).toBe("1");
-    expect(await countShiftGuardTriggers()).toBe("2");
     // 0037's resolution table (SELECT + INSERT policies) and the posting
     // status column the feed reads (RT-330).
     expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
     expect(await countPolicies(RESOLUTION_TABLES)).toBe("2");
-    expect(await countPublicColumn("erpnext_posting_status", "current_resolution_version")).toBe("1");
+    expect(await countResolutionVersionColumn()).toBe("1");
   });
 
   it("up is idempotent on a second run", async () => {
@@ -355,16 +362,12 @@ describe("data-pulse-migrate CLI", () => {
 
       // 0037 removes the resolution table and the posting status column (RT-330).
       expect(await countPublicTables(RESOLUTION_TABLES)).toBe("0");
-      expect(
-        await countPublicColumn("erpnext_posting_status", "current_resolution_version"),
-      ).toBe("0");
+      expect(await countResolutionVersionColumn()).toBe("0");
 
       // Sanity: everything older SURVIVES the 0037 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
-      expect(await countPublicTables(SHIFT_CASH_UP_TABLES)).toBe("3");
-      expect(await countPublicColumn("shifts", "source")).toBe("1");
-      expect(await countShiftGuardTriggers()).toBe("2");
+      await expectShiftCashUpApplied();
       // 0035's cashier admission tables (RT-113 BC2);
       expect(await countPublicTables(ADMISSION_TABLES)).toBe("2");
       // 0034's audit_events append-only triggers (RT-133);
@@ -461,8 +464,7 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicTables(CATALOG_TABLES)).toBe("7");
     expect(await countAppendOnlyTriggers()).toBe("2");
     expect(await countPublicTables(ADMISSION_TABLES)).toBe("2");
-    expect(await countPublicTables(SHIFT_CASH_UP_TABLES)).toBe("3");
-    expect(await countShiftGuardTriggers()).toBe("2");
+    await expectShiftCashUpApplied();
     expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
   });
 
