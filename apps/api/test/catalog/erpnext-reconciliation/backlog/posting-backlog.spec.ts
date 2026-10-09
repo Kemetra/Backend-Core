@@ -264,3 +264,54 @@ describe("017-US1 §6 — §XII strict DTO", () => {
     await http().get(BASE).query({ limit: 501 }).expect(400);
   });
 });
+
+/**
+ * RT-325: give every tenant-A dead-letter a sequence from 9 upward (repair's
+ * `sequence = DEFAULT` re-head), so the backlog crosses the 9 -> 10 boundary.
+ * Turns the fixture's other tenant-A `pending` rows into dead-letters first.
+ */
+async function straddleDigitBoundary(admin: Pool): Promise<number> {
+  await admin.query(
+    `UPDATE erpnext_posting_status
+        SET status = 'permanently_rejected', rejection_category = 'unmapped_item'
+      WHERE tenant_id = $1 AND status = 'pending'`,
+    [TENANT_A],
+  );
+  const ids = await admin.query<{ id: string }>(
+    `SELECT id FROM erpnext_posting_status
+      WHERE tenant_id = $1 AND status = 'permanently_rejected' ORDER BY sequence`,
+    [TENANT_A],
+  );
+  if (ids.rows.length < 2) throw new Error("RT-325 fixture needs >= 2 tenant-A dead-letters");
+  await admin.query(
+    `SELECT setval(pg_get_serial_sequence('erpnext_posting_status', 'sequence'), 8)`,
+  );
+  for (const { id } of ids.rows) {
+    await admin.query(`UPDATE erpnext_posting_status SET sequence = DEFAULT WHERE id = $1`, [id]);
+  }
+  return ids.rows.length;
+}
+
+describe("RT-325 — backlog pages in numeric sequence order", () => {
+  it("one-row pages across 9 -> 10 visit every dead-letter", async () => {
+    if (skip()) return;
+    const n = await straddleDigitBoundary(env!.admin);
+    const all = await http().get(BASE).query({ limit: 500 }).expect(200);
+    expect(all.body.items).toHaveLength(n);
+
+    const seen: unknown[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i <= n; i += 1) {
+      const query: Record<string, string | number> =
+        cursor === null ? { limit: 1 } : { limit: 1, cursor };
+      const page: { body: { items: unknown[]; nextCursor: string | null } } = await http()
+        .get(BASE)
+        .query(query)
+        .expect(200);
+      seen.push(...page.body.items);
+      cursor = page.body.nextCursor;
+      if (page.body.items.length === 0 || cursor === null) break;
+    }
+    expect(seen).toHaveLength(n);
+  });
+});

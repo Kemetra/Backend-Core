@@ -179,7 +179,9 @@ export class ErpnextPostingService {
       async (client) => {
         // Pending rows only, after the `since` cursor, ordered + capped. RLS
         // scopes to the connector principal's tenant; the partial index
-        // idx_erpnext_posting_status_pending backs this scan.
+        // idx_erpnext_posting_status_pending backs this scan. ORDER BY names the
+        // table column: a bare `sequence` would resolve to the ::text alias and
+        // sort "10" before "9", advancing the cursor past unsent rows (RT-325).
         const rows = await client.query<{
           id: string;
           kind: "sale_post" | "reversal";
@@ -195,7 +197,7 @@ export class ErpnextPostingService {
              FROM erpnext_posting_status
             WHERE status = 'pending'
               AND ($1::bigint IS NULL OR sequence > $1::bigint)
-            ORDER BY sequence
+            ORDER BY erpnext_posting_status.sequence
             LIMIT $2`,
           [input.since !== null ? input.since.toString() : null, limit],
         );

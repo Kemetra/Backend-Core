@@ -209,7 +209,7 @@ export class ErpnextReconciliationService {
               AND ($2::uuid IS NULL OR store_id = $2::uuid)
               AND ($3::text IS NULL OR rejection_category = $3::text)
               AND ($5::uuid[] IS NULL OR store_id = ANY($5::uuid[]))
-            ORDER BY sequence
+            ORDER BY erpnext_posting_status.sequence -- not the ::text alias (RT-325)
             LIMIT $4`,
           [
             input.cursor !== null ? input.cursor.toString() : null,

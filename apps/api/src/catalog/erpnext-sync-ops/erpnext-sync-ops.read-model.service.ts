@@ -265,7 +265,7 @@ export class ErpnextSyncOpsReadModelService {
               AND ($1::bigint IS NULL OR sequence > $1::bigint)
               AND ($2::uuid IS NULL OR store_id = $2::uuid)
               AND ($4::uuid[] IS NULL OR store_id = ANY($4::uuid[]))
-            ORDER BY sequence
+            ORDER BY erpnext_posting_status.sequence -- not the ::text alias (RT-325)
             LIMIT $3`,
           [
             input.cursor !== null ? input.cursor.toString() : null,
