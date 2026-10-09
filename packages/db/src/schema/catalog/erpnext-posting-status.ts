@@ -108,6 +108,10 @@ export const erpnextPostingStatus = pgTable(
     // (erpnext_posting_resolution). NULL = no frozen resolution; the feed
     // then keeps the pre-0037 live item-map join for that row only.
     currentResolutionVersion: integer("current_resolution_version"),
+    // 0039 (RT-332): the EXISTING ERP document a `reconciliation_required` ack
+    // (or a stale-version `posted` ack) reported, as ErpnextDocumentRef JSON.
+    // Set only on a `permanently_rejected` row; separate from `document_ref`.
+    reconciliationDocumentRef: text("reconciliation_document_ref"),
   },
   (t) => [
     check(
@@ -134,6 +138,10 @@ export const erpnextPostingStatus = pgTable(
     check(
       "erpnext_posting_status_resolution_version_positive",
       sql`${t.currentResolutionVersion} IS NULL OR ${t.currentResolutionVersion} >= 1`,
+    ),
+    check(
+      "erpnext_posting_status_reconciliation_ref_when_rejected",
+      sql`${t.reconciliationDocumentRef} IS NULL OR ${t.status} = 'permanently_rejected'`,
     ),
     // 0037: composite target for erpnext_posting_resolution (same-tenant intent).
     uniqueIndex("UQ_idx_erpnext_posting_status_id_tenant").on(t.id, t.tenantId),

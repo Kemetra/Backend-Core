@@ -64,7 +64,8 @@ async function resetPending(version: number | null): Promise<void> {
   await env!.admin.query(
     `UPDATE erpnext_posting_status
         SET status = 'pending', document_ref = NULL, rejection_category = NULL,
-            retry_count = 0, current_resolution_version = $2
+            reconciliation_document_ref = NULL, retry_count = 0,
+            current_resolution_version = $2
       WHERE id = $1`,
     [POST_A_PENDING, version],
   );
@@ -188,5 +189,46 @@ describe("RT-332 review — reconciliation always wins over an earlier rejection
     const retry = await svc().ackOutcome(stale);
     expect(retry.replayed).toBe(true);
     expect(retry.outcome.outcome).toBe("permanently_rejected");
+  });
+});
+
+describe("RT-332 review — the reported document is kept as reconciliation evidence", () => {
+  async function evidence(): Promise<unknown> {
+    const r = await env!.admin.query<{ ev: string | null }>(
+      `SELECT reconciliation_document_ref AS ev FROM erpnext_posting_status WHERE id = $1`,
+      [POST_A_PENDING],
+    );
+    const ev = r.rows[0]!.ev;
+    return ev === null ? null : JSON.parse(ev);
+  }
+
+  it("a reconciliation_required ack stores the existing document reference", async () => {
+    if (skip) return;
+    await resetPending(1);
+    await svc().ackOutcome({
+      tenantId: TENANT_A,
+      workItemRef: POST_A_PENDING,
+      outcome: "reconciliation_required",
+      documentRef: DOC,
+      reason: REASON,
+    });
+    expect(await evidence()).toEqual(DOC);
+  });
+
+  it("a stale posted ack stores the document it posted", async () => {
+    if (skip) return;
+    await resetPending(2);
+    await env!.admin.query(
+      `UPDATE erpnext_posting_status SET reconciliation_document_ref = NULL WHERE id = $1`,
+      [POST_A_PENDING],
+    );
+    await svc().ackOutcome({
+      tenantId: TENANT_A,
+      workItemRef: POST_A_PENDING,
+      outcome: "posted",
+      documentRef: DOC,
+      resolutionVersion: 1,
+    });
+    expect(await evidence()).toEqual(DOC);
   });
 });

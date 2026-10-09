@@ -568,6 +568,7 @@ components:
         - sourceSystem
         - externalId
         - deadLetteredAt
+        - reconciliationDocumentRef
       description: >
         One 015 `permanently_rejected` posting dead-letter, projected (§IV) — NOT
         a raw DB row, NOT a stored 017 row (read in place over
@@ -586,7 +587,8 @@ components:
           description: >
             The 015 rejection category (`unmapped_item` / `unmapped_store` /
             `unmapped_account` / `validation` / `closed_period` /
-            `retry_budget_exhausted`). 015's vocabulary, read in place.
+            `retry_budget_exhausted` / RT-332 `reconciliation_required`). 015's
+            vocabulary, read in place.
         saleRef:
           type: [string, "null"]
           format: uuid
@@ -602,6 +604,24 @@ components:
           type: string
           format: date-time
           description: When the posting became `permanently_rejected` (the 015 row's updated_at).
+        reconciliationDocumentRef:
+          description: >
+            RT-332 — for a `reconciliation_required` dead-letter, the EXISTING
+            ERP document the connector reported (it does not match the intent's
+            frozen resolution; an ERP side effect exists, so repair never
+            re-offers the row — reconcile it in ERPNext). Null otherwise.
+          anyOf:
+            - type: object
+              additionalProperties: false
+              required: [doctype, name]
+              properties:
+                doctype:
+                  type: string
+                  minLength: 1
+                name:
+                  type: string
+                  minLength: 1
+            - type: "null"
     PostingBacklogPage:
       type: object
       additionalProperties: false

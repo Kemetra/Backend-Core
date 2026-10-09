@@ -332,14 +332,7 @@ export class ErpnextPostingService {
       if (row.rejection_category === RECONCILIATION_REQUIRED_CATEGORY) {
         return { replayed: true, outcome: this.project(input.workItemRef, row) };
       }
-      return {
-        replayed: false,
-        outcome: await this.applyRejected(
-          client,
-          input.workItemRef,
-          RECONCILIATION_REQUIRED_CATEGORY,
-        ),
-      };
+      return { replayed: false, outcome: await this.applyReconciliation(client, input) };
     }
     if (this.sameLogicalOutcome(row, input)) {
       return { replayed: true, outcome: this.project(input.workItemRef, row) };
@@ -358,10 +351,10 @@ export class ErpnextPostingService {
         // RT-332: a post made from a superseded resolution version is not the
         // intent's current one — record it for reconciliation, never as posted.
         return isStaleResolution(input, row)
-          ? this.applyRejected(client, input.workItemRef, RECONCILIATION_REQUIRED_CATEGORY)
+          ? this.applyReconciliation(client, input)
           : this.applyPosted(client, input);
       case "reconciliation_required":
-        return this.applyRejected(client, input.workItemRef, RECONCILIATION_REQUIRED_CATEGORY);
+        return this.applyReconciliation(client, input);
       case "permanently_rejected":
         return this.applyRejected(client, input.workItemRef, input.reason?.category ?? "other");
       case "failed_transient":
@@ -415,17 +408,35 @@ export class ErpnextPostingService {
     };
   }
 
+  /**
+   * RT-332: dead-letter the row as `reconciliation_required`, keeping the ERP
+   * document the connector reported as evidence (`reconciliation_document_ref`).
+   */
+  private applyReconciliation(
+    client: PoolClient,
+    input: AckOutcomeInput,
+  ): Promise<RecordedOutcome> {
+    return this.applyRejected(
+      client,
+      input.workItemRef,
+      RECONCILIATION_REQUIRED_CATEGORY,
+      input.documentRef ? serializeDocRef(input.documentRef) : null,
+    );
+  }
+
   private async applyRejected(
     client: PoolClient,
     workItemRef: string,
     category: string,
+    reconciliationDocumentRef: string | null = null,
   ): Promise<RecordedOutcome> {
     const r = await client.query<{ updated_at: Date }>(
       `UPDATE erpnext_posting_status
-          SET status='permanently_rejected', rejection_category=$2, updated_at=now()
+          SET status='permanently_rejected', rejection_category=$2,
+              reconciliation_document_ref=$3, updated_at=now()
         WHERE id=$1
         RETURNING updated_at`,
-      [workItemRef, category],
+      [workItemRef, category, reconciliationDocumentRef],
     );
     // §VII reconciliation / DLQ signal — a posting row just dead-lettered. A
     // SIGNAL: it never alters the ack outcome (the row is already updated above).

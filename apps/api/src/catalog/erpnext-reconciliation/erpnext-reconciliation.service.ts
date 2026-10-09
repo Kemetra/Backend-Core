@@ -203,6 +203,7 @@ export class ErpnextReconciliationService {
         const rows = await client.query<BacklogDbRow>(
           `SELECT id, kind, rejection_category, sale_id,
                   source_system, external_id, updated_at,
+                  reconciliation_document_ref,
                   sequence::text AS sequence
              FROM erpnext_posting_status
             WHERE status = 'permanently_rejected'
