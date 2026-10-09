@@ -268,8 +268,12 @@ describe("RT-325 — backlog pages in numeric sequence order", () => {
     const seen: unknown[] = [];
     let cursor: string | null = null;
     for (let i = 0; i <= n; i += 1) {
-      const query = cursor === null ? { page_size: 1 } : { page_size: 1, cursor };
-      const page = await http().get(BASE).query(query).expect(200);
+      const query: Record<string, string | number> =
+        cursor === null ? { page_size: 1 } : { page_size: 1, cursor };
+      const page: { body: { items: unknown[]; nextCursor: string | null } } = await http()
+        .get(BASE)
+        .query(query)
+        .expect(200);
       seen.push(...page.body.items);
       cursor = page.body.nextCursor;
       if (page.body.items.length === 0 || cursor === null) break;
