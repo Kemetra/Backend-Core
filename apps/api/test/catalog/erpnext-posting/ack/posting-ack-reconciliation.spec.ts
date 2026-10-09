@@ -134,7 +134,10 @@ describe("RT-332 — a posted ack is checked against the frozen resolution versi
     });
   });
 
-  it("posted with the current resolutionVersion is recorded as posted", async () => {
+  it.each([
+    ["the current resolutionVersion", 2],
+    ["no resolutionVersion (older connector)", undefined],
+  ])("posted with %s is recorded as posted", async (_label, resolutionVersion) => {
     if (skip) return;
     await resetPending(2);
     const rec = await svc().ackOutcome({
@@ -142,21 +145,9 @@ describe("RT-332 — a posted ack is checked against the frozen resolution versi
       workItemRef: POST_A_PENDING,
       outcome: "posted",
       documentRef: DOC,
-      resolutionVersion: 2,
+      ...(resolutionVersion === undefined ? {} : { resolutionVersion }),
     });
     expect(rec.outcome.outcome).toBe("posted");
     expect((await row()).status).toBe("posted");
-  });
-
-  it("posted without resolutionVersion (older connector) is recorded as posted", async () => {
-    if (skip) return;
-    await resetPending(2);
-    const rec = await svc().ackOutcome({
-      tenantId: TENANT_A,
-      workItemRef: POST_A_PENDING,
-      outcome: "posted",
-      documentRef: DOC,
-    });
-    expect(rec.outcome.outcome).toBe("posted");
   });
 });
