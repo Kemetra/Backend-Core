@@ -34,6 +34,7 @@ their credentials before serving and refuse to start on a violation:
   - `shifts`: `SELECT`, `INSERT`, `UPDATE`; `shift_closes`,
     `shift_cash_movements`, `shift_refund_claims`: `SELECT`, `INSERT`
     (RT-17, migration 0036)
+  - `erpnext_posting_resolution`: `SELECT`, `INSERT` (RT-330, migration 0037)
 
   A deploy that skips that grant step now fails to boot, and the error names
   each missing privilege and table, instead of starting healthy with those
@@ -117,6 +118,21 @@ table the domain role must use needs a matching grant step at deploy time.
   to boot (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold no
   privilege on any of the four tables (`AUTH_LOOKUP_FORBIDDEN_GRANTS`); pass
   `-v lookup_role=<role>` to run the same check at deploy time.
+
+- **Migration `0037_erpnext_posting_resolution` (RT-330).** Run
+  [`sql/erpnext-posting-resolution-domain-grants.sql`](sql/erpnext-posting-resolution-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT`, `INSERT` on
+  `erpnext_posting_resolution`, which is append-only for every role (a
+  correction is a new `resolution_version`). The worker freezes each posting
+  intent's resolution with it, and the connector feed and posting repair read
+  it. Without the grants the API refuses to boot (`DOMAIN_REQUIRED_GRANTS`).
+  After the new release is up, deploy step 4 runs
+  [`sql/erpnext-posting-resolution-catchup.sql`](sql/erpnext-posting-resolution-catchup.sql)
+  as the migration owner: it re-runs the idempotent 0038 backfill to freeze
+  any intent the previous release's worker or repair wrote during the
+  migration.
 
 ## Redis credential
 

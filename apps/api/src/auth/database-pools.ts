@@ -180,6 +180,10 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   ["shift_cash_movements", "INSERT"],
   ["shift_refund_claims", "SELECT"],
   ["shift_refund_claims", "INSERT"],
+  // RT-330 (0037): the worker freezes a posting intent's resolution and the
+  // feed and repair read it. Append-only (no UPDATE / DELETE policy).
+  ["erpnext_posting_resolution", "SELECT"],
+  ["erpnext_posting_resolution", "INSERT"],
 ];
 
 interface GrantRow {

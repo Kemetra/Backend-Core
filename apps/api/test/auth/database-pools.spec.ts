@@ -40,6 +40,9 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "shift_cash_movements:INSERT",
   "shift_refund_claims:SELECT",
   "shift_refund_claims:INSERT",
+  // RT-330 (0037): the frozen posting resolution (append-only).
+  "erpnext_posting_resolution:SELECT",
+  "erpnext_posting_resolution:INSERT",
 ]);
 
 const LOOKUP_GRANTS: ReadonlySet<string> = new Set(

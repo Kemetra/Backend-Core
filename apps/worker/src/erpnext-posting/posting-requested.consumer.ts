@@ -100,6 +100,18 @@ export class ReversalAwaitingSalePostError extends Error {
   }
 }
 
+/**
+ * RT-330: an intent judged `pending` could not freeze its ERP resolution (a map
+ * changed between the eligibility read and the freeze). Thrown inside the
+ * creation transaction so the insert rolls back and the outbox redelivers.
+ */
+export class PostingResolutionNotFrozenError extends Error {
+  constructor(intentId: string) {
+    super(`posting intent ${intentId}: resolution could not be frozen; retrying`);
+    this.name = "PostingResolutionNotFrozenError";
+  }
+}
+
 /** Log seam (tests inject one); production uses the shared pino logger. */
 export type PostingRequestedLogger = Pick<Logger, "warn" | "error">;
 
@@ -147,7 +159,9 @@ export class PostingRequestedConsumer
           await this.assertSalePostExists(client, event, parsed.data);
         }
 
-        const verdict = await this.resolveEligibility(client, {
+        const verdict = await this.creationVerdict(client, {
+          tenantId,
+          kind,
           saleId: sale_id,
           storeId: store_id,
         });
@@ -181,6 +195,20 @@ export class PostingRequestedConsumer
             event.correlation_id,
           ],
         );
+
+        // RT-330: a FRESH pending intent freezes its ERP resolution (v1) in this
+        // same transaction, so a later retire / re-point of a map can neither
+        // strand nor retarget it. A re-delivery no-op inserted nothing.
+        const intentId = inserted.rows[0]?.id;
+        if (intentId !== undefined && verdict.status === "pending") {
+          await this.freezeResolution(client, {
+            tenantId,
+            intentId,
+            kind,
+            saleId: sale_id,
+            storeId: store_id,
+          });
+        }
 
         // §VII reconciliation / DLQ signal — a posting dead-lettered at
         // 015-RESOLVE creation time. Fires only on a FRESH insert of a
@@ -262,6 +290,111 @@ export class PostingRequestedConsumer
       );
     }
     throw new ReversalAwaitingSalePostError();
+  }
+
+  /**
+   * RT-330: a reversal whose sale's `sale_post` carries a frozen resolution is
+   * eligible regardless of the LIVE maps: it posts with that frozen resolution
+   * (original lineage), so a map retired since the sale cannot dead-letter its
+   * void / refund / return. Every other intent runs 015-RESOLVE.
+   */
+  private async creationVerdict(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      kind: "sale_post" | "reversal";
+      saleId: string;
+      storeId: string;
+    },
+  ): Promise<
+    | { status: "pending" }
+    | { status: "permanently_rejected"; rejectionCategory: RejectionCategory }
+  > {
+    if (input.kind === "reversal") {
+      const frozen = await client.query(
+        `SELECT 1 FROM erpnext_posting_status
+          WHERE tenant_id = $1 AND kind = 'sale_post' AND sale_id = $2
+            AND source_ref_id = $2 AND current_resolution_version IS NOT NULL`,
+        [input.tenantId, input.saleId],
+      );
+      if ((frozen.rowCount ?? 0) > 0) return { status: "pending" };
+    }
+    return this.resolveEligibility(client, { saleId: input.saleId, storeId: input.storeId });
+  }
+
+  /**
+   * RT-330: write resolution v1 for a fresh pending intent and point the row at
+   * it. A reversal copies its sale's `sale_post` current resolution (original
+   * lineage, ERP Integration baseline); when that sale_post has none it
+   * resolves from the current maps like a sale_post. Each INSERT is all-or-
+   * nothing: it writes every line or none, so the feed never sees a partial
+   * version. If nothing could be frozen it throws
+   * {@link PostingResolutionNotFrozenError}, rolling the intent back.
+   */
+  private async freezeResolution(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      intentId: string;
+      kind: "sale_post" | "reversal";
+      saleId: string;
+      storeId: string;
+    },
+  ): Promise<void> {
+    let written = 0;
+    if (input.kind === "reversal") {
+      const copied = await client.query(
+        `INSERT INTO erpnext_posting_resolution
+           (tenant_id, intent_id, resolution_version, sale_line_id,
+            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by)
+         SELECT $1, $2, 1, r.sale_line_id,
+                r.erpnext_item_ref, r.item_map_id, r.warehouse_ref, r.warehouse_map_id, 'system'
+           FROM erpnext_posting_status sp
+           JOIN erpnext_posting_resolution r
+             ON r.intent_id = sp.id AND r.resolution_version = sp.current_resolution_version
+          WHERE sp.tenant_id = $1 AND sp.kind = 'sale_post'
+            AND sp.sale_id = $3 AND sp.source_ref_id = $3`,
+        [input.tenantId, input.intentId, input.saleId],
+      );
+      written = copied.rowCount ?? 0;
+    }
+    if (written === 0) {
+      const resolved = await client.query(
+        `INSERT INTO erpnext_posting_resolution
+           (tenant_id, intent_id, resolution_version, sale_line_id,
+            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by)
+         SELECT $1, $2, 1, sl.id, m.erpnext_item_ref, m.id,
+                w.erpnext_warehouse_ref, w.id, 'system'
+           FROM sale_lines sl
+           JOIN erpnext_warehouse_map w
+             ON w.store_id = $4 AND w.purpose = 'stock' AND w.retired_at IS NULL
+           JOIN erpnext_item_map m
+             ON m.tenant_product_id = sl.tenant_product_ref
+            AND m.state = 'confirmed' AND m.retired_at IS NULL
+          WHERE sl.sale_id = $3
+            AND NOT EXISTS (
+              SELECT 1 FROM sale_lines ul
+                LEFT JOIN erpnext_item_map um
+                  ON um.tenant_product_id = ul.tenant_product_ref
+                 AND um.state = 'confirmed' AND um.retired_at IS NULL
+               WHERE ul.sale_id = $3
+                 AND (ul.tenant_product_ref IS NULL OR um.id IS NULL))`,
+        [input.tenantId, input.intentId, input.saleId, input.storeId],
+      );
+      written = resolved.rowCount ?? 0;
+    }
+    // A mapping can change between the eligibility read and this INSERT
+    // (READ COMMITTED). A pending intent left without a frozen version would
+    // fall back to the live join, so abort: the transaction (and the insert)
+    // rolls back and the outbox redelivers, re-evaluating eligibility.
+    if (written === 0) {
+      throw new PostingResolutionNotFrozenError(input.intentId);
+    }
+    await client.query(
+      `UPDATE erpnext_posting_status SET current_resolution_version = 1
+        WHERE id = $1`,
+      [input.intentId],
+    );
   }
 
   /**

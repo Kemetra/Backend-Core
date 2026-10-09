@@ -104,6 +104,10 @@ export const erpnextPostingStatus = pgTable(
       .notNull()
       .defaultNow(),
     correlationId: uuid("correlation_id"),
+    // 0037 (RT-330): the frozen resolution version the feed reads
+    // (erpnext_posting_resolution). NULL = no frozen resolution; the feed
+    // then keeps the pre-0037 live item-map join for that row only.
+    currentResolutionVersion: integer("current_resolution_version"),
   },
   (t) => [
     check(
@@ -127,6 +131,12 @@ export const erpnextPostingStatus = pgTable(
       "erpnext_posting_status_document_ref_when_posted",
       sql`(${t.status} = 'posted') = (${t.documentRef} IS NOT NULL)`,
     ),
+    check(
+      "erpnext_posting_status_resolution_version_positive",
+      sql`${t.currentResolutionVersion} IS NULL OR ${t.currentResolutionVersion} >= 1`,
+    ),
+    // 0037: composite target for erpnext_posting_resolution (same-tenant intent).
+    uniqueIndex("UQ_idx_erpnext_posting_status_id_tenant").on(t.id, t.tenantId),
     // O-3 idempotency: exactly one posting target per ORIGINATING row.
     uniqueIndex("UQ_idx_erpnext_posting_status_source_ref").on(
       t.tenantId,

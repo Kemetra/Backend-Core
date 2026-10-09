@@ -257,8 +257,9 @@ export class ErpnextReconciliationService {
           document_ref: string | null;
           sale_id: string;
           store_id: string;
+          kind: "sale_post" | "reversal";
         }>(
-          `SELECT status, document_ref, sale_id, store_id
+          `SELECT status, document_ref, sale_id, store_id, kind
              FROM erpnext_posting_status
             WHERE id = $1
             FOR UPDATE`,
@@ -282,28 +283,145 @@ export class ErpnextReconciliationService {
         }
 
         // --- permanently_rejected: re-evaluate 015-RESOLVE ----------------------
-        const resolvable = await this.resolvePostingEligibility(client, {
-          saleId: row.sale_id,
-          storeId: row.store_id,
-        });
+        const resolvable = await this.repairEligibility(client, input.tenantId, row);
         if (!resolvable) {
           // Cause still unfixed — stays dead-lettered, returns to the backlog.
           return this.recordRepair(client, input, "still_failing", null, false);
         }
 
-        // Re-offer: flip to pending, re-head the sequence, RESET retry_count.
-        // Do NOT touch document_ref (NULL on a non-posted row; the
-        // (status='posted')=(document_ref IS NOT NULL) CHECK would otherwise bite).
-        await client.query(
-          `UPDATE erpnext_posting_status
-              SET status = 'pending', sequence = DEFAULT,
-                  retry_count = $2, updated_at = now()
-            WHERE id = $1`,
-          [input.workItemRef, REPAIR_RESET_RETRY_COUNT],
-        );
-        return this.recordRepair(client, input, "eligible_again", null, false);
+        return this.reofferPosting(client, input, row);
       },
     );
+  }
+
+  /**
+   * Re-offer a resolvable dead-letter. RT-330: freeze the re-offer's resolution
+   * FIRST; if nothing could be frozen (a map changed since the eligibility
+   * read), do not re-offer, since a pending row without a version would fall
+   * back to the live join. Otherwise flip to pending, re-head the sequence,
+   * RESET retry_count and point at the frozen version. Do NOT touch
+   * document_ref (NULL on a non-posted row; the
+   * (status='posted')=(document_ref IS NOT NULL) CHECK would otherwise bite).
+   */
+  private async reofferPosting(
+    client: PoolClient,
+    input: RepairPostingInput,
+    row: { kind: "sale_post" | "reversal"; sale_id: string; store_id: string },
+  ): Promise<RepairResult> {
+    const version = await this.freezeRepairResolution(client, {
+      tenantId: input.tenantId,
+      intentId: input.workItemRef,
+      kind: row.kind,
+      saleId: row.sale_id,
+      storeId: row.store_id,
+    });
+    if (version === null) {
+      return this.recordRepair(client, input, "still_failing", null, false);
+    }
+    await client.query(
+      `UPDATE erpnext_posting_status
+          SET status = 'pending', sequence = DEFAULT,
+              retry_count = $2, current_resolution_version = $3,
+              updated_at = now()
+        WHERE id = $1`,
+      [input.workItemRef, REPAIR_RESET_RETRY_COUNT, version],
+    );
+    return this.recordRepair(client, input, "eligible_again", null, false);
+  }
+
+  /**
+   * RT-330: a reversal whose sale's `sale_post` carries a frozen resolution is
+   * re-offerable regardless of the LIVE maps (it re-posts with that frozen
+   * resolution — original lineage). Every other row re-runs 015-RESOLVE.
+   */
+  private async repairEligibility(
+    client: PoolClient,
+    tenantId: string,
+    row: { kind: "sale_post" | "reversal"; sale_id: string; store_id: string },
+  ): Promise<boolean> {
+    if (row.kind === "reversal") {
+      const frozen = await client.query(
+        `SELECT 1 FROM erpnext_posting_status
+          WHERE tenant_id = $1 AND kind = 'sale_post' AND sale_id = $2
+            AND source_ref_id = $2 AND current_resolution_version IS NOT NULL`,
+        [tenantId, row.sale_id],
+      );
+      if ((frozen.rowCount ?? 0) > 0) return true;
+    }
+    return this.resolvePostingEligibility(client, {
+      saleId: row.sale_id,
+      storeId: row.store_id,
+    });
+  }
+
+  /**
+   * RT-330: a repair re-offer happens before any ERP side effect, so it is an
+   * explicit, audited re-resolution (ERP Integration baseline): write version
+   * n+1 (`resolved_by = 'operator'`) and point the row at it. A reversal copies
+   * its sale's `sale_post` current resolution (original lineage); otherwise the
+   * current maps are read. Each INSERT is all-or-nothing over the sale lines
+   * (the worker's `freezeResolution` copy — SQL is duplicated per package).
+   * Returns the frozen version, or null when nothing could be frozen.
+   */
+  private async freezeRepairResolution(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      intentId: string;
+      kind: "sale_post" | "reversal";
+      saleId: string;
+      storeId: string;
+    },
+  ): Promise<number | null> {
+    const next = await client.query<{ v: number }>(
+      `SELECT COALESCE(MAX(resolution_version), 0) + 1 AS v
+         FROM erpnext_posting_resolution WHERE intent_id = $1`,
+      [input.intentId],
+    );
+    const version = next.rows[0]!.v;
+    let written = 0;
+    if (input.kind === "reversal") {
+      const copied = await client.query(
+        `INSERT INTO erpnext_posting_resolution
+           (tenant_id, intent_id, resolution_version, sale_line_id,
+            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by)
+         SELECT $1, $2, $3, r.sale_line_id,
+                r.erpnext_item_ref, r.item_map_id, r.warehouse_ref, r.warehouse_map_id, 'operator'
+           FROM erpnext_posting_status sp
+           JOIN erpnext_posting_resolution r
+             ON r.intent_id = sp.id AND r.resolution_version = sp.current_resolution_version
+          WHERE sp.tenant_id = $1 AND sp.kind = 'sale_post'
+            AND sp.sale_id = $4 AND sp.source_ref_id = $4`,
+        [input.tenantId, input.intentId, version, input.saleId],
+      );
+      written = copied.rowCount ?? 0;
+    }
+    if (written === 0) {
+      const resolved = await client.query(
+        `INSERT INTO erpnext_posting_resolution
+           (tenant_id, intent_id, resolution_version, sale_line_id,
+            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by)
+         SELECT $1, $2, $3, sl.id, m.erpnext_item_ref, m.id,
+                w.erpnext_warehouse_ref, w.id, 'operator'
+           FROM sale_lines sl
+           JOIN erpnext_warehouse_map w
+             ON w.store_id = $5 AND w.purpose = 'stock' AND w.retired_at IS NULL
+           JOIN erpnext_item_map m
+             ON m.tenant_product_id = sl.tenant_product_ref
+            AND m.state = 'confirmed' AND m.retired_at IS NULL
+          WHERE sl.sale_id = $4
+            AND NOT EXISTS (
+              SELECT 1 FROM sale_lines ul
+                LEFT JOIN erpnext_item_map um
+                  ON um.tenant_product_id = ul.tenant_product_ref
+                 AND um.state = 'confirmed' AND um.retired_at IS NULL
+               WHERE ul.sale_id = $4
+                 AND (ul.tenant_product_ref IS NULL OR um.id IS NULL))`,
+        [input.tenantId, input.intentId, version, input.saleId, input.storeId],
+      );
+      written = resolved.rowCount ?? 0;
+    }
+    return written > 0 ? version : null;
   }
 
   /**

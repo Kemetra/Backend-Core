@@ -29,7 +29,8 @@ import {
 } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.service";
 import { MembershipRepository } from "../../../../src/context/membership.repository";
 import type { ResolvedContext } from "../../../../src/context/types";
-import { SALE_A_X } from "../../sales/__support__/seed-sales";
+import { SALES_SOURCE_SYSTEM, SALE_A_X, SALE_VOIDED_A_X } from "../../sales/__support__/seed-sales";
+import { POST_A_REVERSAL } from "../../erpnext-posting/__support__/seed-posting-status";
 import { ACTOR_A, PRODUCT_A_ACTIVE, STORE_A_X } from "../../__support__/isolation-harness";
 import {
   RECONCILIATION_FIXTURE_IDS,
@@ -267,5 +268,126 @@ describe("017-US2 §5 — cross-tenant non-disclosure", () => {
         workItemRef: POSTING_DEADLETTER_A,
       }),
     ).rejects.toBeInstanceOf(RepairNotFoundError);
+  });
+});
+
+describe("RT-330 — a repair re-offer freezes a new resolution version", () => {
+  it("eligible_again leaves the row on an operator-resolved version covering every line", async () => {
+    if (skip) return;
+    await resetDeadletter(0);
+    const before = await env!.admin.query<{ v: number | null }>(
+      `SELECT current_resolution_version AS v FROM erpnext_posting_status WHERE id = $1`,
+      [POSTING_DEADLETTER_A],
+    );
+
+    const res = await svc().repairPosting({
+      tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
+      actorUserId: ACTOR_A,
+      workItemRef: POSTING_DEADLETTER_A,
+    });
+    expect(res.repair.outcome).toBe("eligible_again");
+
+    const after = await env!.admin.query<{ v: number | null }>(
+      `SELECT current_resolution_version AS v FROM erpnext_posting_status WHERE id = $1`,
+      [POSTING_DEADLETTER_A],
+    );
+    const version = after.rows[0]!.v;
+    expect(version).toBe((before.rows[0]!.v ?? 0) + 1);
+
+    const rows = await env!.admin.query<{ by: string }>(
+      `SELECT resolved_by AS by FROM erpnext_posting_resolution
+        WHERE intent_id = $1 AND resolution_version = $2`,
+      [POSTING_DEADLETTER_A, version],
+    );
+    const lines = await env!.admin.query(`SELECT 1 FROM sale_lines WHERE sale_id = $1`, [SALE_A_X]);
+    expect(rows.rowCount).toBe(lines.rowCount);
+    expect(rows.rows.every((r) => r.by === "operator")).toBe(true);
+  });
+});
+
+describe("RT-330 — a repair that cannot freeze does not re-offer", () => {
+  it("eligible but no 'stock' warehouse to freeze → still_failing, row stays dead-lettered", async () => {
+    if (skip) return;
+    await resetDeadletter(0);
+    // Eligibility accepts any active warehouse purpose; the freeze needs 'stock'.
+    await env!.admin.query(
+      `UPDATE erpnext_warehouse_map SET purpose = 'returns'
+        WHERE tenant_id = $1 AND store_id = $2 AND retired_at IS NULL`,
+      [TENANT_A, STORE_A_X],
+    );
+    try {
+      const res = await svc().repairPosting({
+        tenantId: TENANT_A,
+        context: sessionCtx(TENANT_A),
+        actorUserId: ACTOR_A,
+        workItemRef: POSTING_DEADLETTER_A,
+      });
+      expect(res.repair.outcome).toBe("still_failing");
+      expect((await statusRow()).status).toBe("permanently_rejected");
+    } finally {
+      await env!.admin.query(
+        `UPDATE erpnext_warehouse_map SET purpose = 'stock'
+          WHERE tenant_id = $1 AND store_id = $2 AND retired_at IS NULL`,
+        [TENANT_A, STORE_A_X],
+      );
+    }
+  });
+});
+
+describe("RT-330 — a reversal repair follows its sale's frozen resolution", () => {
+  it("re-offers a dead-lettered reversal by copying the sale_post resolution, even with no live map", async () => {
+    if (skip) return;
+    const a = env!.admin;
+    const salePost = "0a000000-0000-7000-8000-00000e0533a1";
+    const line = "0a000000-0000-7000-8000-00000e0533a2";
+    // An ad-hoc line (no tenant product): unmapped for any live eligibility check.
+    await a.query(
+      `INSERT INTO sale_lines
+         (id, sale_id, tenant_id, store_id, line_name, unit_price, currency_code,
+          quantity, line_amount, tax_amount, unit)
+       VALUES ($1, $2, $3, $4, 'Adhoc', 5.0000, 'USD', 1.000000, 5.0000, 0.0000, 'ea')`,
+      [line, SALE_VOIDED_A_X, TENANT_A, STORE_A_X],
+    );
+    // The voided sale's sale_post, frozen when its maps still existed.
+    await a.query(
+      `INSERT INTO erpnext_posting_status
+         (id, tenant_id, store_id, sale_id, kind, source_ref_id, source_system,
+          external_id, payload_hash, status, current_resolution_version)
+       VALUES ($1, $2, $3, $4, 'sale_post', $4, $5, 'rt330-sp', $6, 'pending', 1)`,
+      [salePost, TENANT_A, STORE_A_X, SALE_VOIDED_A_X, SALES_SOURCE_SYSTEM, "b".repeat(64)],
+    );
+    await a.query(
+      `INSERT INTO erpnext_posting_resolution
+         (tenant_id, intent_id, resolution_version, sale_line_id, erpnext_item_ref,
+          item_map_id, warehouse_ref, warehouse_map_id, resolved_by)
+       VALUES ($1, $2, 1, $3, 'ERP-FROZEN', gen_random_uuid(), 'WH-FROZEN', gen_random_uuid(), 'system')`,
+      [TENANT_A, salePost, line],
+    );
+    await a.query(
+      `UPDATE erpnext_posting_status
+          SET status = 'permanently_rejected', rejection_category = 'unmapped_item',
+              current_resolution_version = NULL
+        WHERE id = $1`,
+      [POST_A_REVERSAL],
+    );
+
+    const res = await svc().repairPosting({
+      tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
+      actorUserId: ACTOR_A,
+      workItemRef: POST_A_REVERSAL,
+    });
+    expect(res.repair.outcome).toBe("eligible_again");
+
+    const frozen = await a.query<{ item: string; by: string }>(
+      `SELECT r.erpnext_item_ref AS item, r.resolved_by AS by
+         FROM erpnext_posting_status ps
+         JOIN erpnext_posting_resolution r
+           ON r.intent_id = ps.id AND r.resolution_version = ps.current_resolution_version
+        WHERE ps.id = $1`,
+      [POST_A_REVERSAL],
+    );
+    expect(frozen.rows).toEqual([{ item: "ERP-FROZEN", by: "operator" }]);
   });
 });
