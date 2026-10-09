@@ -600,3 +600,31 @@ describe("PostingRequestedConsumer.handle — RT-330 a pending intent is never l
     expect(await postingRows(e, saleId)).toEqual([]);
   });
 });
+
+// Last in the file: retires TPRODUCT's map with no replacement.
+describe("PostingRequestedConsumer.handle — RT-330 a reversal follows its sale's frozen resolution", () => {
+  it("is created pending with the sale's frozen item even when the live map is retired", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleId = "01900000-0000-7000-8000-00000050e006";
+    await seedSale(e, { id: saleId, store: STORE_MAPPED, externalId: "rt330-6", tenantProductRef: TPRODUCT });
+    const c = new PostingRequestedConsumer(e.app);
+    await c.handle(salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev0e6"));
+    const frozen = (await resolutionOf(e, saleId)).rows.map((r) => r.item);
+    expect(frozen).toHaveLength(1);
+
+    // The product loses its mapping entirely before the void is drained.
+    await e.admin.query(
+      `UPDATE erpnext_item_map SET retired_at = now()
+        WHERE tenant_id = $1 AND tenant_product_id = $2 AND retired_at IS NULL`,
+      [TENANT, TPRODUCT],
+    );
+    const voidId = await seedVoid(e, saleId, "01900000-0000-7000-8000-0000005ee6d1");
+    await c.handle(reversalEvent(saleId, voidId, { eventId: "01900000-0000-7000-8000-0000000ev0e7" }));
+
+    expect((await statusRow(e, voidId)).status).toBe("pending");
+    const res = await resolutionOf(e, voidId);
+    expect(res.version).toBe(1);
+    expect(res.rows.map((r) => r.item)).toEqual(frozen);
+  });
+});

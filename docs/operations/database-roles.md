@@ -128,6 +128,11 @@ table the domain role must use needs a matching grant step at deploy time.
   correction is a new `resolution_version`). The worker freezes each posting
   intent's resolution with it, and the connector feed and posting repair read
   it. Without the grants the API refuses to boot (`DOMAIN_REQUIRED_GRANTS`).
+  After the new release is up, deploy step 4 runs
+  [`sql/erpnext-posting-resolution-catchup.sql`](sql/erpnext-posting-resolution-catchup.sql)
+  as the migration owner: it re-runs the idempotent 0038 backfill to freeze
+  any intent the previous release's worker or repair wrote during the
+  migration.
 
 ## Redis credential
 

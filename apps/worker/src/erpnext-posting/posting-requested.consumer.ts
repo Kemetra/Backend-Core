@@ -159,7 +159,9 @@ export class PostingRequestedConsumer
           await this.assertSalePostExists(client, event, parsed.data);
         }
 
-        const verdict = await this.resolveEligibility(client, {
+        const verdict = await this.creationVerdict(client, {
+          tenantId,
+          kind,
           saleId: sale_id,
           storeId: store_id,
         });
@@ -288,6 +290,36 @@ export class PostingRequestedConsumer
       );
     }
     throw new ReversalAwaitingSalePostError();
+  }
+
+  /**
+   * RT-330: a reversal whose sale's `sale_post` carries a frozen resolution is
+   * eligible regardless of the LIVE maps: it posts with that frozen resolution
+   * (original lineage), so a map retired since the sale cannot dead-letter its
+   * void / refund / return. Every other intent runs 015-RESOLVE.
+   */
+  private async creationVerdict(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      kind: "sale_post" | "reversal";
+      saleId: string;
+      storeId: string;
+    },
+  ): Promise<
+    | { status: "pending" }
+    | { status: "permanently_rejected"; rejectionCategory: RejectionCategory }
+  > {
+    if (input.kind === "reversal") {
+      const frozen = await client.query(
+        `SELECT 1 FROM erpnext_posting_status
+          WHERE tenant_id = $1 AND kind = 'sale_post' AND sale_id = $2
+            AND source_ref_id = $2 AND current_resolution_version IS NOT NULL`,
+        [input.tenantId, input.saleId],
+      );
+      if ((frozen.rowCount ?? 0) > 0) return { status: "pending" };
+    }
+    return this.resolveEligibility(client, { saleId: input.saleId, storeId: input.storeId });
   }
 
   /**

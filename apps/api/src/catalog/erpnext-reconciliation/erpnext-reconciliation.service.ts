@@ -283,10 +283,7 @@ export class ErpnextReconciliationService {
         }
 
         // --- permanently_rejected: re-evaluate 015-RESOLVE ----------------------
-        const resolvable = await this.resolvePostingEligibility(client, {
-          saleId: row.sale_id,
-          storeId: row.store_id,
-        });
+        const resolvable = await this.repairEligibility(client, input.tenantId, row);
         if (!resolvable) {
           // Cause still unfixed — stays dead-lettered, returns to the backlog.
           return this.recordRepair(client, input, "still_failing", null, false);
@@ -330,6 +327,31 @@ export class ErpnextReconciliationService {
       [input.workItemRef, REPAIR_RESET_RETRY_COUNT, version],
     );
     return this.recordRepair(client, input, "eligible_again", null, false);
+  }
+
+  /**
+   * RT-330: a reversal whose sale's `sale_post` carries a frozen resolution is
+   * re-offerable regardless of the LIVE maps (it re-posts with that frozen
+   * resolution — original lineage). Every other row re-runs 015-RESOLVE.
+   */
+  private async repairEligibility(
+    client: PoolClient,
+    tenantId: string,
+    row: { kind: "sale_post" | "reversal"; sale_id: string; store_id: string },
+  ): Promise<boolean> {
+    if (row.kind === "reversal") {
+      const frozen = await client.query(
+        `SELECT 1 FROM erpnext_posting_status
+          WHERE tenant_id = $1 AND kind = 'sale_post' AND sale_id = $2
+            AND source_ref_id = $2 AND current_resolution_version IS NOT NULL`,
+        [tenantId, row.sale_id],
+      );
+      if ((frozen.rowCount ?? 0) > 0) return true;
+    }
+    return this.resolvePostingEligibility(client, {
+      saleId: row.sale_id,
+      storeId: row.store_id,
+    });
   }
 
   /**
