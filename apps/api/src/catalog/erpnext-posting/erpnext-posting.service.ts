@@ -304,6 +304,12 @@ export class ErpnextPostingService {
         const row = cur.rows[0];
         if (!row) throw new AckNotFoundError();
 
+        // --- RT-333: an attempt from a superseded resolution version (an
+        // operator re-resolved the intent meanwhile) never changes the row. ---
+        if (isSupersededAttempt(input, row)) {
+          return { replayed: true, outcome: this.supersededEcho(input.workItemRef, row) };
+        }
+
         // --- Already-TERMINAL row (posted / permanently_rejected): O-3 echo or
         // conflict, NO re-transition. `recordedAt` echoes the STORED updated_at
         // so an idempotent re-ack returns a STABLE body (does not drift). ------
@@ -363,6 +369,28 @@ export class ErpnextPostingService {
       throw new AckConflictError();
     }
     return { replayed: true, outcome: this.project(input.workItemRef, row) };
+  }
+
+  /**
+   * RT-333: the benign answer to a superseded attempt — never a 409, which the
+   * connector treats as an operator alarm. A terminal row echoes its stored
+   * outcome; a row still pending at the newer version answers
+   * `failed_transient` (it is re-offered on the feed), with no retry spent.
+   */
+  private supersededEcho(
+    workItemRef: string,
+    row: { status: string; document_ref: string | null; updated_at: Date },
+  ): RecordedOutcome {
+    if (row.status === "posted" || row.status === "permanently_rejected") {
+      return this.project(workItemRef, row);
+    }
+    return {
+      workItemRef,
+      outcome: "failed_transient",
+      documentRef: null,
+      recordedAt: row.updated_at.toISOString(),
+      dlqueued: false,
+    };
   }
 
   /** Apply a first-time outcome to a re-offerable row. */
@@ -545,6 +573,22 @@ function isStaleResolution(
     input.resolutionVersion !== undefined &&
     row.current_resolution_version !== null &&
     input.resolutionVersion !== row.current_resolution_version
+  );
+}
+
+/**
+ * RT-333: a `failed_transient` / `permanently_rejected` ack from a superseded
+ * resolution version reports on a resolution that no longer applies. (A stale
+ * `posted` / `reconciliation_required` still records reconciliation: an ERP
+ * document exists.)
+ */
+function isSupersededAttempt(
+  input: AckOutcomeInput,
+  row: { current_resolution_version: number | null },
+): boolean {
+  return (
+    (input.outcome === "failed_transient" || input.outcome === "permanently_rejected") &&
+    isStaleResolution(input, row)
   );
 }
 

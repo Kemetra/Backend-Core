@@ -192,9 +192,12 @@ paths:
         `audit_events` row in the same transaction. Only a `pending` intent can
         be re-resolved: a `posted` row has an ERP side effect (reconciliation,
         never a remap) and a dead-letter goes through `repairPosting`. A
+        reversal is never re-resolved (it must credit exactly what its sale
+        posted), nor is a sale that already has a reversal intent. A
         connector post that raced the re-resolution acks the superseded
         `resolutionVersion` and is recorded `reconciliation_required`, never
-        `posted` (012 1.6.0-draft). The 008 sale fact is NEVER mutated.
+        `posted`, and its failed / rejected ack changes nothing (012
+        1.6.0-draft). The 008 sale fact is NEVER mutated.
         `Idempotency-Key` REQUIRED.
       parameters:
         - $ref: "#/components/parameters/WorkItemRef"
@@ -617,8 +620,9 @@ components:
             $ref: "#/components/schemas/Error"
     NotReResolvable:
       description: >
-        `not_re_resolvable` (409) — the intent is not `pending`, or the current
-        mappings do not resolve it (nothing is written; the intent keeps its
+        `not_re_resolvable` (409) — the intent is not `pending`, is a reversal or
+        a sale that already has a reversal intent, or the current mappings do not
+        resolve it (nothing is written; the intent keeps its
         resolution version). `idempotency_key_conflict` (409) — the same
         `Idempotency-Key` reused with a DIFFERENT body.
       content:

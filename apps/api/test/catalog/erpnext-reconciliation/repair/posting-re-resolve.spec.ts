@@ -25,9 +25,16 @@ import {
   ErpnextPostingReResolutionService,
   ReResolveConflictError,
 } from "../../../../src/catalog/erpnext-reconciliation/posting-re-resolution.service";
-import { SALE_A_X } from "../../sales/__support__/seed-sales";
-import { ACTOR_A, PRODUCT_A_ACTIVE } from "../../__support__/isolation-harness";
-import { POST_A_PENDING } from "../../erpnext-posting/__support__/seed-posting-status";
+import {
+  SALES_SOURCE_SYSTEM,
+  SALE_A_X,
+  SALE_VOIDED_A_X,
+} from "../../sales/__support__/seed-sales";
+import { ACTOR_A, PRODUCT_A_ACTIVE, STORE_A_X } from "../../__support__/isolation-harness";
+import {
+  POST_A_PENDING,
+  POST_A_REVERSAL,
+} from "../../erpnext-posting/__support__/seed-posting-status";
 import {
   RECONCILIATION_FIXTURE_IDS,
   seedReconciliationFixture,
@@ -95,12 +102,12 @@ function sessionCtx(tenantId: string): ResolvedContext {
   };
 }
 
-function reResolve(tenantId = TENANT_A) {
+function reResolve(tenantId = TENANT_A, workItemRef = POST_A_PENDING) {
   return svc().reResolvePosting({
     tenantId,
     context: sessionCtx(tenantId),
     actorUserId: ACTOR_A,
-    workItemRef: POST_A_PENDING,
+    workItemRef,
   });
 }
 
@@ -175,5 +182,35 @@ describe("RT-333 — only a pending intent can be re-resolved", () => {
   it("another tenant's ref is not found (non-disclosing)", async () => {
     if (skip) return;
     await expect(reResolve(TENANT_B)).rejects.toBeInstanceOf(RepairNotFoundError);
+  });
+});
+
+// A reversal must credit exactly what its sale posted: its frozen refs are the
+// sale's lineage, never re-read from the current maps. So a reversal is not
+// re-resolvable, and neither is a sale that already has a reversal intent (the
+// reversal's copy is pinned to the sale's current version).
+const SALE_POST_VOIDED = "0a000000-0000-7000-8000-00000e0533a1";
+
+describe("RT-333 — a reversal's lineage is never re-resolved", () => {
+  it("a pending reversal is a conflict", async () => {
+    if (skip) return;
+    const err = await reResolve(TENANT_A, POST_A_REVERSAL).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ReResolveConflictError);
+    expect((err as Error).message).toMatch(/reversal/);
+  });
+
+  it("a pending sale_post whose sale already has a reversal intent is a conflict", async () => {
+    if (skip) return;
+    await env!.admin.query(
+      `INSERT INTO erpnext_posting_status
+         (id, tenant_id, store_id, sale_id, kind, source_ref_id,
+          source_system, external_id, payload_hash, status)
+       VALUES ($1, $2, $3, $4, 'sale_post', $4, $5, 'sale-A-voided', $6, 'pending')
+       ON CONFLICT DO NOTHING`,
+      [SALE_POST_VOIDED, TENANT_A, STORE_A_X, SALE_VOIDED_A_X, SALES_SOURCE_SYSTEM, "a".repeat(64)],
+    );
+    const err = await reResolve(TENANT_A, SALE_POST_VOIDED).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ReResolveConflictError);
+    expect((err as Error).message).toMatch(/reversal/);
   });
 });

@@ -12,6 +12,10 @@
  *
  * Only a `pending` intent can be re-resolved: a `posted` row has an ERP side
  * effect (reconciliation, never a remap) and a dead-letter goes through repair.
+ * A reversal is never re-resolved: it must credit exactly what its sale posted,
+ * so its frozen refs are the sale's lineage, not the current maps. Neither is a
+ * sale that already has a reversal intent — that reversal's copy is pinned to
+ * the sale's current version.
  * A connector post that raced the re-resolution echoes the superseded version
  * on its ack and is recorded for reconciliation, never as posted (RT-332).
  */
@@ -68,6 +72,7 @@ export class ErpnextPostingReResolutionService {
             `only a pending posting intent can be re-resolved (this one is ${row.status})`,
           );
         }
+        await assertNoReversalLineage(client, row);
         const version = await freezeOperatorResolution(client, {
           tenantId: input.tenantId,
           intentId: input.workItemRef,
@@ -127,5 +132,23 @@ export class ErpnextPostingReResolutionService {
       previousResolutionVersion: previous,
       recordedAt: r.rows[0]!.updated_at.toISOString(),
     };
+  }
+}
+
+/** A reversal, or a sale a reversal intent already copies, keeps its lineage. */
+async function assertNoReversalLineage(client: PoolClient, row: IntentRow): Promise<void> {
+  if (row.kind === "reversal") {
+    throw new ReResolveConflictError(
+      "a reversal follows its sale's resolution and cannot be re-resolved",
+    );
+  }
+  const reversal = await client.query(
+    `SELECT 1 FROM erpnext_posting_status WHERE sale_id = $1 AND kind = 'reversal' LIMIT 1`,
+    [row.sale_id],
+  );
+  if (reversal.rows.length > 0) {
+    throw new ReResolveConflictError(
+      "this sale already has a reversal intent pinned to its current resolution",
+    );
   }
 }
