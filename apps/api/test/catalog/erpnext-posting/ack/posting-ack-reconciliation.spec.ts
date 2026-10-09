@@ -20,7 +20,10 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../../../_helpers/postgres-container";
-import { ErpnextPostingService } from "../../../../src/catalog/erpnext-posting/erpnext-posting.service";
+import {
+  AckConflictError,
+  ErpnextPostingService,
+} from "../../../../src/catalog/erpnext-posting/erpnext-posting.service";
 import {
   POSTING_STATUS_FIXTURE_IDS,
   POST_A_PENDING,
@@ -230,5 +233,33 @@ describe("RT-332 review — the reported document is kept as reconciliation evid
       resolutionVersion: 1,
     });
     expect(await evidence()).toEqual(DOC);
+  });
+});
+
+describe("RT-332 review — contradictory reconciliation evidence is a conflict", () => {
+  it("a retry reporting a DIFFERENT document is a 409 conflict, the first evidence stays", async () => {
+    if (skip) return;
+    await resetPending(1);
+    await svc().ackOutcome({
+      tenantId: TENANT_A,
+      workItemRef: POST_A_PENDING,
+      outcome: "reconciliation_required",
+      documentRef: DOC,
+      reason: REASON,
+    });
+    await expect(
+      svc().ackOutcome({
+        tenantId: TENANT_A,
+        workItemRef: POST_A_PENDING,
+        outcome: "reconciliation_required",
+        documentRef: { doctype: "Sales Invoice", name: "ACC-SINV-A-0100" },
+        reason: REASON,
+      }),
+    ).rejects.toBeInstanceOf(AckConflictError);
+    const r = await env!.admin.query<{ ev: string }>(
+      `SELECT reconciliation_document_ref AS ev FROM erpnext_posting_status WHERE id = $1`,
+      [POST_A_PENDING],
+    );
+    expect(JSON.parse(r.rows[0]!.ev)).toEqual(DOC);
   });
 });

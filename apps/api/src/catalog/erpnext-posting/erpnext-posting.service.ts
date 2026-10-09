@@ -282,9 +282,10 @@ export class ErpnextPostingService {
           retry_count: number;
           updated_at: Date;
           current_resolution_version: number | null;
+          reconciliation_document_ref: string | null;
         }>(
           `SELECT status, document_ref, rejection_category, retry_count, updated_at,
-                  current_resolution_version
+                  current_resolution_version, reconciliation_document_ref
              FROM erpnext_posting_status
             WHERE id = $1
             FOR UPDATE`,
@@ -326,10 +327,16 @@ export class ErpnextPostingService {
       rejection_category: string | null;
       updated_at: Date;
       current_resolution_version: number | null;
+      reconciliation_document_ref: string | null;
     },
   ): Promise<AckOutcomeResult> {
     if (reportsReconciliation(input, row) && row.status === "permanently_rejected") {
       if (row.rejection_category === RECONCILIATION_REQUIRED_CATEGORY) {
+        // An echo only for the SAME evidence: a retry reporting another document
+        // contradicts the recorded one (O-3 conflict), and the first stays.
+        if (!sameDocument(row.reconciliation_document_ref, input.documentRef)) {
+          throw new AckConflictError();
+        }
         return { replayed: true, outcome: this.project(input.workItemRef, row) };
       }
       return { replayed: false, outcome: await this.applyReconciliation(client, input) };
@@ -534,5 +541,19 @@ function reportsReconciliation(
   return (
     input.outcome === "reconciliation_required" ||
     (input.outcome === "posted" && isStaleResolution(input, row))
+  );
+}
+
+/**
+ * RT-332: the stored reconciliation evidence names the same document as the
+ * incoming ack. No stored evidence (a row upgraded before 0039) accepts any.
+ */
+function sameDocument(stored: string | null, incoming: AckDocumentRef | undefined): boolean {
+  const recorded = parseDocRef(stored);
+  if (recorded === null) return true;
+  return (
+    incoming !== undefined &&
+    recorded.doctype === incoming.doctype &&
+    recorded.name === incoming.name
   );
 }
