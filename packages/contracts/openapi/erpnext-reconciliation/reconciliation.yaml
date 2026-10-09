@@ -210,19 +210,14 @@ paths:
             schema:
               $ref: "#/components/schemas/ReResolvePostingRequest"
       responses:
-        "200":
+        "201":
           description: >
-            Idempotent replay — the same `Idempotency-Key` with the same body.
-            Echoes the recorded re-resolution; `Idempotent-Replayed: true`.
+            Re-resolution recorded. A retry with the same `Idempotency-Key` and
+            the same body replays the stored response with its stored status
+            (201) and `Idempotent-Replayed: true`; nothing is re-applied.
           headers:
             Idempotent-Replayed:
               $ref: "#/components/headers/IdempotentReplayed"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RecordedReResolution"
-        "201":
-          description: Re-resolution recorded.
           content:
             application/json:
               schema:
@@ -581,7 +576,7 @@ components:
 
   headers:
     IdempotentReplayed:
-      description: Present and `true` on a 200 idempotent-replay response.
+      description: Present and `true` on an idempotent-replay response.
       schema:
         type: boolean
 

@@ -198,6 +198,16 @@ describe("erpnext-reconciliation/reconciliation.yaml — idempotency (O-3, no ne
   });
 });
 
+describe("erpnext-reconciliation/reconciliation.yaml — RT-333 re-resolve replay", () => {
+  // The IdempotencyInterceptor replays the stored status: this route records 201,
+  // so a same-key retry is 201 + Idempotent-Replayed, never a 200.
+  it("declares the replay on 201 (with the header) and no 200", () => {
+    const responses = (findOp("reResolvePosting")?.responses ?? {}) as Record<string, { headers?: object }>;
+    expect(responses["200"]).toBeUndefined();
+    expect(Object.keys(responses["201"]?.headers ?? {})).toContain("Idempotent-Replayed");
+  });
+});
+
 describe("erpnext-reconciliation/reconciliation.yaml — request DTOs (§XII)", () => {
   it("trigger-run request is strict and carries ONLY storeId (no tenant/kind/trigger/actor)", () => {
     const s = schema("TriggerRunRequest");
