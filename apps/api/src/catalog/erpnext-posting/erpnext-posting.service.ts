@@ -176,6 +176,16 @@ export interface PullPostingsResult {
   readonly nextPageToken: string | null;
 }
 
+/** The columns an ack reads from an already-terminal posting row. */
+interface TerminalRow {
+  readonly status: string;
+  readonly document_ref: string | null;
+  readonly rejection_category: string | null;
+  readonly updated_at: Date;
+  readonly current_resolution_version: number | null;
+  readonly reconciliation_document_ref: string | null;
+}
+
 @Injectable()
 export class ErpnextPostingService {
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
@@ -321,30 +331,38 @@ export class ErpnextPostingService {
   private async terminalAck(
     client: PoolClient,
     input: AckOutcomeInput,
-    row: {
-      status: string;
-      document_ref: string | null;
-      rejection_category: string | null;
-      updated_at: Date;
-      current_resolution_version: number | null;
-      reconciliation_document_ref: string | null;
-    },
+    row: TerminalRow,
   ): Promise<AckOutcomeResult> {
     if (reportsReconciliation(input, row) && row.status === "permanently_rejected") {
-      if (row.rejection_category === RECONCILIATION_REQUIRED_CATEGORY) {
-        // An echo only for the SAME evidence: a retry reporting another document
-        // contradicts the recorded one (O-3 conflict), and the first stays.
-        if (!sameDocument(row.reconciliation_document_ref, input.documentRef)) {
-          throw new AckConflictError();
-        }
-        return { replayed: true, outcome: this.project(input.workItemRef, row) };
-      }
-      return { replayed: false, outcome: await this.applyReconciliation(client, input) };
+      return this.reconcileTerminal(client, input, row);
     }
-    if (this.sameLogicalOutcome(row, input)) {
+    // A post from a superseded resolution is never confirmed as posted — not
+    // even on a row a current-version post already completed.
+    if (!isStaleResolution(input, row) && this.sameLogicalOutcome(row, input)) {
       return { replayed: true, outcome: this.project(input.workItemRef, row) };
     }
     throw new AckConflictError();
+  }
+
+  /**
+   * RT-332: a reconciliation report on a dead-lettered row. Already in the
+   * reconciliation category → an echo only for the SAME evidence (a retry
+   * reporting another document contradicts the recorded one: O-3 conflict, the
+   * first stays). Any other category → upgrade it: an ERP document now exists,
+   * so repair must never re-offer the row.
+   */
+  private async reconcileTerminal(
+    client: PoolClient,
+    input: AckOutcomeInput,
+    row: TerminalRow,
+  ): Promise<AckOutcomeResult> {
+    if (row.rejection_category !== RECONCILIATION_REQUIRED_CATEGORY) {
+      return { replayed: false, outcome: await this.applyReconciliation(client, input) };
+    }
+    if (!sameDocument(row.reconciliation_document_ref, input.documentRef)) {
+      throw new AckConflictError();
+    }
+    return { replayed: true, outcome: this.project(input.workItemRef, row) };
   }
 
   /** Apply a first-time outcome to a re-offerable row. */

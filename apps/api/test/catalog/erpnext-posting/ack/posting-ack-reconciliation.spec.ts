@@ -107,6 +107,14 @@ describe("RT-332 — reconciliation_required outcome", () => {
 
   it("a repeated reconciliation_required ack is an idempotent echo", async () => {
     if (skip) return;
+    await resetPending(1);
+    await svc().ackOutcome({
+      tenantId: TENANT_A,
+      workItemRef: POST_A_PENDING,
+      outcome: "reconciliation_required",
+      documentRef: DOC,
+      reason: REASON,
+    });
     const rec = await svc().ackOutcome({
       tenantId: TENANT_A,
       workItemRef: POST_A_PENDING,
@@ -300,5 +308,29 @@ describe("RT-332 review — a stale posted ack first, then a retry", () => {
       [POST_A_PENDING],
     );
     expect(JSON.parse(r.rows[0]!.ev)).toEqual(DOC);
+  });
+});
+
+describe("RT-332 review — a stale posted ack never confirms an already-posted row", () => {
+  it("is a conflict, and the row stays posted with its document", async () => {
+    if (skip) return;
+    await resetPending(2);
+    await svc().ackOutcome({
+      tenantId: TENANT_A,
+      workItemRef: POST_A_PENDING,
+      outcome: "posted",
+      documentRef: DOC,
+      resolutionVersion: 2,
+    });
+    await expect(
+      svc().ackOutcome({
+        tenantId: TENANT_A,
+        workItemRef: POST_A_PENDING,
+        outcome: "posted",
+        documentRef: DOC,
+        resolutionVersion: 1,
+      }),
+    ).rejects.toBeInstanceOf(AckConflictError);
+    expect((await row()).status).toBe("posted");
   });
 });
