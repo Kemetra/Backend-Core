@@ -136,6 +136,10 @@ describe("RT-333 — re-resolving a pending intent", () => {
   it("writes an operator version from the current maps, re-heads the row and audits it", async () => {
     if (skip) return;
     await setRow("pending", 1);
+    // The wrong mapping spent retries; the controlled retry starts a fresh budget.
+    await env!.admin.query(`UPDATE erpnext_posting_status SET retry_count = 4 WHERE id = $1`, [
+      POST_A_PENDING,
+    ]);
     const before = await row();
 
     const rec = await reResolve();
@@ -156,6 +160,26 @@ describe("RT-333 — re-resolving a pending intent", () => {
       [POST_A_PENDING],
     );
     expect(audit.rowCount).toBe(1);
+    const retries = await env!.admin.query<{ n: number }>(
+      `SELECT retry_count AS n FROM erpnext_posting_status WHERE id = $1`,
+      [POST_A_PENDING],
+    );
+    expect(retries.rows[0]!.n).toBe(0);
+  });
+
+  it("re-resolving to the refs already frozen is a conflict and writes no version", async () => {
+    if (skip) return;
+    // Version 2 (from the test above) already carries the current maps' refs.
+    await setRow("pending", 2);
+    const err = await reResolve().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ReResolveConflictError);
+    expect((err as Error).message).toMatch(/already/);
+    expect((await row()).v).toBe(2);
+    const versions = await env!.admin.query(
+      `SELECT DISTINCT resolution_version FROM erpnext_posting_resolution WHERE intent_id = $1`,
+      [POST_A_PENDING],
+    );
+    expect(versions.rowCount).toBe(2);
   });
 });
 

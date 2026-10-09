@@ -83,6 +83,7 @@ export class ErpnextPostingReResolutionService {
         if (version === null) {
           throw new ReResolveConflictError("the current mappings do not resolve this posting intent");
         }
+        await assertResolutionChanged(client, input.workItemRef, version, row.current_resolution_version);
         return this.record(client, input, version, row.current_resolution_version);
       },
     );
@@ -106,7 +107,7 @@ export class ErpnextPostingReResolutionService {
     return row;
   }
 
-  /** Point the row at the new version, re-head it, and audit — same transaction. */
+  /** Point the row at the new version, re-head it with a fresh retry budget, and audit — same transaction. */
   private async record(
     client: PoolClient,
     input: RepairPostingInput,
@@ -115,7 +116,8 @@ export class ErpnextPostingReResolutionService {
   ): Promise<RecordedReResolution> {
     const r = await client.query<{ updated_at: Date }>(
       `UPDATE erpnext_posting_status
-          SET current_resolution_version = $2, sequence = DEFAULT, updated_at = now()
+          SET current_resolution_version = $2, sequence = DEFAULT, retry_count = 0,
+              updated_at = now()
         WHERE id = $1
         RETURNING updated_at`,
       [input.workItemRef, version],
@@ -150,5 +152,38 @@ async function assertNoReversalLineage(client: PoolClient, row: IntentRow): Prom
     throw new ReResolveConflictError(
       "this sale already has a reversal intent pinned to its current resolution",
     );
+  }
+}
+
+/**
+ * The new version must differ from the current one: an identical re-freeze would
+ * only turn an in-flight post of the (still correct) current version into a
+ * reconciliation case. Throwing rolls the new version back.
+ */
+async function assertResolutionChanged(
+  client: PoolClient,
+  intentId: string,
+  version: number,
+  previous: number | null,
+): Promise<void> {
+  if (previous === null) return;
+  const diff = await client.query<{ changed: boolean }>(
+    `SELECT EXISTS (
+       (SELECT sale_line_id, erpnext_item_ref, warehouse_ref
+          FROM erpnext_posting_resolution WHERE intent_id = $1 AND resolution_version = $2
+        EXCEPT
+        SELECT sale_line_id, erpnext_item_ref, warehouse_ref
+          FROM erpnext_posting_resolution WHERE intent_id = $1 AND resolution_version = $3)
+       UNION ALL
+       (SELECT sale_line_id, erpnext_item_ref, warehouse_ref
+          FROM erpnext_posting_resolution WHERE intent_id = $1 AND resolution_version = $3
+        EXCEPT
+        SELECT sale_line_id, erpnext_item_ref, warehouse_ref
+          FROM erpnext_posting_resolution WHERE intent_id = $1 AND resolution_version = $2)
+     ) AS changed`,
+    [intentId, version, previous],
+  );
+  if (!diff.rows[0]!.changed) {
+    throw new ReResolveConflictError("the current mappings already resolve to the frozen version");
   }
 }

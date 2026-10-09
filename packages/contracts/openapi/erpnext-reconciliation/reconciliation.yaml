@@ -188,7 +188,8 @@ paths:
         that creates a new resolution version and a controlled retry. The
         operator corrects the item / warehouse mapping first, then calls this:
         DP2 writes resolution version n+1 (`resolved_by = operator`) from the
-        CURRENT mappings, points the intent at it and re-heads it, with an
+        CURRENT mappings, points the intent at it and re-heads it with a fresh
+        retry budget, with an
         `audit_events` row in the same transaction. Only a `pending` intent can
         be re-resolved: a `posted` row has an ERP side effect (reconciliation,
         never a remap) and a dead-letter goes through `repairPosting`. A
@@ -622,7 +623,7 @@ components:
       description: >
         `not_re_resolvable` (409) — the intent is not `pending`, is a reversal or
         a sale that already has a reversal intent, or the current mappings do not
-        resolve it (nothing is written; the intent keeps its
+        resolve it or resolve it to the refs already frozen (nothing is written; the intent keeps its
         resolution version). `idempotency_key_conflict` (409) — the same
         `Idempotency-Key` reused with a DIFFERENT body.
       content:
