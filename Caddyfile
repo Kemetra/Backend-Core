@@ -1,16 +1,53 @@
-# Caddy — automatic HTTPS for the public API edge template.
+# Caddy — automatic HTTPS for the public edge template: one origin for the
+# Backend-Core API and the Admin Console (RT-336, owner decision 2026-10-09).
 #
-# DNS for api.example.test should point at <app-host>. Caddy auto-provisions and
-# renews a TLS certificate where the chosen hostname and CA support it, then
-# reverse-proxies cleartext to the api container on the internal compose network.
+#   /api, /api/*  -> api:3000 (Admin, POS and Connector API traffic, untouched)
+#   everything else -> the current pinned Admin Console release (RT-337 artifact)
+#
+# The site address comes from CADDY_SITE_ADDRESS (default: the placeholder
+# api.example.test). DNS for that hostname should point at <app-host>; Caddy
+# auto-provisions and renews a TLS certificate where the hostname and CA support
+# it, then reverse-proxies cleartext to the api container on the internal network.
 #
 # Real deployment hostnames belong in private ops config or the host environment,
 # not public git.
 # Requires: ports 80 + 443 open and DNS A/AAAA records pointing to <app-host>.
 
-api.example.test {
+{$CADDY_SITE_ADDRESS:api.example.test} {
 	encode gzip
-	reverse_proxy api:3000
+
+	# Matched before the Console: an unknown /api path gets the API's own 404,
+	# never the SPA's index.html. The API keeps its own (helmet) headers.
+	@api path /api /api/*
+	handle @api {
+		reverse_proxy api:3000
+	}
+
+	# Admin Console: /srv/console/current is a relative symlink to one unpacked,
+	# checksum-verified release, so a release or rollback is a symlink swap with
+	# no Caddy restart (deploy/README.md).
+	handle {
+		root * /srv/console/current
+		header {
+			Content-Security-Policy "default-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+			Strict-Transport-Security "max-age=31536000"
+			X-Content-Type-Options "nosniff"
+			Referrer-Policy "strict-origin-when-cross-origin"
+		}
+
+		# Content-hashed by Vite. A missing asset is a 404, not index.html.
+		handle /assets/* {
+			header Cache-Control "public, max-age=31536000, immutable"
+			file_server
+		}
+
+		# index.html, version.json and client-side routes (SPA fallback).
+		handle {
+			header Cache-Control "no-cache"
+			try_files {path} /index.html
+			file_server
+		}
+	}
 
 	log {
 		output stdout

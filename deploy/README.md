@@ -2,7 +2,8 @@
 
 Deploys the Backend-Core backend (`api` + `worker`) onto `<app-host>`, behind
 `api.example.test`, using `<managed-db>` for PostgreSQL and `<redis-service>` for
-Redis.
+Redis. The same Caddy origin also serves the Admin Console (RT-336): `/api/*`
+goes to the API and every other path to the pinned Console release.
 
 This public template intentionally avoids real deployment names. Real hostnames,
 service names, secret-manager references, and provider-specific values belong in
@@ -11,12 +12,17 @@ private ops config or the host environment, not public git.
 ## Topology
 
 ```
-Internet -> 443 -> Caddy (TLS) -> api:3000 (NestJS)
-                                  |-> <redis-service>:6379 (BullMQ, sessions, locks)
-                                  `-> <managed-db> (PostgreSQL, SSL required)
+Internet -> 443 -> Caddy (TLS, one origin)
+                   |-> /api, /api/*  -> api:3000 (NestJS)
+                   |                    |-> <redis-service>:6379 (BullMQ, sessions, locks)
+                   |                    `-> <managed-db> (PostgreSQL, SSL required)
+                   `-> everything else -> /srv/console/current (Admin Console static release)
 worker -> <redis-service> + <managed-db>
 migrate (one-shot) -> <managed-db>  (runs before api/worker)
 ```
+
+The Admin Console calls the API on its own origin with the `dp2_session` cookie,
+so CORS stays off (`ALLOWED_ORIGINS` empty) and no cross-origin auth is needed.
 
 PostgreSQL is expected to be an external managed service, not a container in this
 compose stack. Redis is containerized by default.
@@ -42,6 +48,12 @@ compose stack. Redis is containerized by default.
    [`docs/operations/sql/auth-lookup-role.sql`](../docs/operations/sql/auth-lookup-role.sql)
    after the first `migrate up`. The API and worker refuse to boot when a role's
    posture or grants are wrong.
+8. An Admin Console releases directory on `<app-host>` (for example
+   `/opt/dp2-console`), set as `CONSOLE_RELEASES_DIR` in `deploy/prod.env`. Compose
+   refuses to start without it. It must hold at least one verified release and a
+   `current` symlink before the first `up`: run steps 1-3 of
+   [Admin Console release](#admin-console-release) first, and its smoke test (step 4)
+   after `up`.
 
 ## Deploy
 
@@ -103,12 +115,82 @@ full command line, password included, is readable by other users through
 `/proc/<pid>/cmdline`. `DOMAIN_DB_ROLE` is the role name in `DATABASE_URL`; it
 is a name, not a secret.
 
+## Admin Console release
+
+The Admin Console is a static bundle built and published by `Kemetra/Admin-Console`
+(RT-337): release tag `admin-console-<sha12>` with `admin-console-<sha12>.tar.gz`
+and its `.sha256`. Caddy serves `/srv/console/current`, which is a **relative**
+symlink inside `CONSOLE_RELEASES_DIR`, so a release or rollback is a symlink swap
+with no Caddy restart (and no interruption of API or POS traffic).
+
+Run this from the Backend-Core checkout. `op run` passes `deploy/prod.env` only
+to its child process, so set the (non-secret) directory explicitly here, with
+the same value as `CONSOLE_RELEASES_DIR` in `deploy/prod.env`.
+
+```bash
+CONSOLE_RELEASES_DIR=/opt/dp2-console   # same value as in deploy/prod.env
+REL=admin-console-<sha12>
+
+# Steps 1-3 run in a subshell: it stops at the first failure, and this shell
+# stays in the repo checkout. Paste the whole block at once.
+(
+  set -e
+  cd "$CONSOLE_RELEASES_DIR"
+
+  # 1. Fetch the pinned release and verify its checksum.
+  gh release download "$REL" --repo Kemetra/Admin-Console --dir incoming
+  (cd incoming && sha256sum -c "$REL.tar.gz.sha256")
+
+  # 2. Unpack into its own directory and check what it is.
+  mkdir -p "releases/$REL"
+  tar -xzf "incoming/$REL.tar.gz" -C "releases/$REL"
+  cat "releases/$REL/version.json"   # sha + backendContractPin
+
+  # 3. Switch atomically (relative target, resolved inside the container too).
+  ln -sfn "releases/$REL" current.next && mv -Tf current.next current
+)
+# Keep the subshell out of an `&&` list: bash ignores `set -e` inside it there.
+if [ $? -eq 0 ]; then
+  echo "Console release $REL is now current."
+else
+  echo "Console release aborted; current was not switched." >&2
+fi
+```
+
+4. Smoke-test the origin from the repo checkout (read-only, no credentials) once
+   the block above reported success. Caddy must be running: on a redeploy run it
+   now; on the **first deploy** run it after step 3 of [Deploy](#deploy) (`up`),
+   as part of [Verify](#verify).
+
+```bash
+deploy/console-smoke.sh https://api.example.test
+```
+
+Record every deployment as a pair: the Console `sha` and `backendContractPin` from
+`version.json`, plus the Backend-Core commit (`<deploy-ref>`) and image digests.
+Only pair a Console release with a Backend-Core release whose API contract it was
+built against.
+
+**Rollback:** point `current` back at the previously recorded release, then rerun
+the smoke test from the repo checkout. Keep previous release directories until
+the new one is accepted.
+
+```bash
+CONSOLE_RELEASES_DIR=/opt/dp2-console   # same value as in deploy/prod.env
+(cd "$CONSOLE_RELEASES_DIR" && ln -sfn releases/<previous-release> current.next && mv -Tf current.next current) &&
+  deploy/console-smoke.sh https://api.example.test
+```
+
+`index.html` and `version.json` are served `no-cache` and `/assets/*` (content-
+hashed) as immutable, so browsers pick up a new release on the next load.
+
 ## Verify
 
 ```bash
 docker compose -f docker-compose.prod.yml ps          # all healthy; migrate Exited(0)
 curl -sS https://api.example.test/api/v1/health/live    # {"status":"ok"}: the edge and the process are up
 curl -sS https://api.example.test/api/v1/health/ready   # 200 ready / 503 not_ready, with per-check ok|failed
+deploy/console-smoke.sh https://api.example.test        # Console at /, API at /api/*, headers, SPA fallback
 op run --env-file=deploy/prod.env -- \
   docker compose -f docker-compose.prod.yml run --rm migrate node dist/cli/migrate.js status
 ```
@@ -179,4 +261,3 @@ the hourly default.
 
 - **Hardening:** run containers as a non-root user; add resource limits; offsite backups
   for `<managed-db>`; monitoring/alerting; log shipping.
-- **Console** (`<console-host>`) is a separate later deployment.

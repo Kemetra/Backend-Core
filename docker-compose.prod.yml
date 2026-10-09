@@ -9,6 +9,7 @@
 # environment, not public git.
 #
 # Service order: migrate (one-shot) -> api + worker (wait for migrate success) ; redis + caddy alongside.
+# Caddy is the single public origin: /api/* -> api, everything else -> Admin Console (RT-336).
 
 name: dp2-template
 
@@ -150,8 +151,16 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      # Public hostname for automatic HTTPS. Real hostnames come from private ops
+      # config or the host environment, never this public template.
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-api.example.test}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # RT-336: Admin Console on the same origin as the API. The directory holds
+      # unpacked, checksum-verified RT-337 releases plus a relative `current`
+      # symlink; see deploy/README.md for release and rollback.
+      - ${CONSOLE_RELEASES_DIR:?CONSOLE_RELEASES_DIR required (pinned Admin Console releases + current symlink)}:/srv/console:ro
       - dp2_caddy_data:/data
       - dp2_caddy_config:/config
     networks: [dp2]
