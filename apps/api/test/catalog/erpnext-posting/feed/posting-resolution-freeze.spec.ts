@@ -171,4 +171,12 @@ describe("RT-330 — a posting intent stays bound to its frozen ERP item", () =>
     expect(row.rows[0]).toEqual({ status: "pending", v: 1 });
     expect(new Set(await offeredItems(null))).toEqual(new Set(["ERP-ITEM-A"]));
   });
+
+  it("RT-332: the work item carries its frozen resolution version and warehouse", async () => {
+    if (skip) return;
+    const page = await feed().pullPostings({ tenantId: TENANT_A, since: null, limit: 100 });
+    const item = page.items.find((i: PostingWorkItem) => i.workItemRef === POST_A_PENDING);
+    expect(item?.resolutionVersion).toBe(1);
+    expect(item?.sale.warehouseRef).toEqual({ doctype: "Warehouse", name: "ERP-WH-A" });
+  });
 });
