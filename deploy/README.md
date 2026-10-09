@@ -121,22 +121,40 @@ and its `.sha256`. Caddy serves `/srv/console/current`, which is a **relative**
 symlink inside `CONSOLE_RELEASES_DIR`, so a release or rollback is a symlink swap
 with no Caddy restart (and no interruption of API or POS traffic).
 
+Run this from the Backend-Core checkout. `op run` passes `deploy/prod.env` only
+to its child process, so set the (non-secret) directory explicitly here, with
+the same value as `CONSOLE_RELEASES_DIR` in `deploy/prod.env`.
+
 ```bash
-# 1. Fetch the pinned release and verify its checksum. Stop if this fails.
-cd "$CONSOLE_RELEASES_DIR"
-gh release download admin-console-<sha12> --repo Kemetra/Admin-Console --dir incoming
-(cd incoming && sha256sum -c admin-console-<sha12>.tar.gz.sha256)
+CONSOLE_RELEASES_DIR=/opt/dp2-console   # same value as in deploy/prod.env
+REL=admin-console-<sha12>
 
-# 2. Unpack into its own directory and check what it is.
-mkdir -p releases/admin-console-<sha12>
-tar -xzf incoming/admin-console-<sha12>.tar.gz -C releases/admin-console-<sha12>
-cat releases/admin-console-<sha12>/version.json   # sha + backendContractPin
+# Steps 1-3 run in a subshell: it stops at the first failure, and this shell
+# stays in the repo checkout. Step 4 runs only if steps 1-3 succeeded.
+# Paste the whole block at once.
+(
+  set -e
+  cd "$CONSOLE_RELEASES_DIR"
 
-# 3. Switch atomically (relative target, resolved inside the container too).
-ln -sfn releases/admin-console-<sha12> current.next && mv -Tf current.next current
+  # 1. Fetch the pinned release and verify its checksum.
+  gh release download "$REL" --repo Kemetra/Admin-Console --dir incoming
+  (cd incoming && sha256sum -c "$REL.tar.gz.sha256")
 
-# 4. Smoke-test the origin (read-only, no credentials).
-deploy/console-smoke.sh https://api.example.test
+  # 2. Unpack into its own directory and check what it is.
+  mkdir -p "releases/$REL"
+  tar -xzf "incoming/$REL.tar.gz" -C "releases/$REL"
+  cat "releases/$REL/version.json"   # sha + backendContractPin
+
+  # 3. Switch atomically (relative target, resolved inside the container too).
+  ln -sfn "releases/$REL" current.next && mv -Tf current.next current
+)
+# Keep the subshell out of an `&&` list: bash ignores `set -e` inside it there.
+if [ $? -eq 0 ]; then
+  # 4. Smoke-test the origin (read-only, no credentials).
+  deploy/console-smoke.sh https://api.example.test
+else
+  echo "Console release aborted; current was not switched." >&2
+fi
 ```
 
 Record every deployment as a pair: the Console `sha` and `backendContractPin` from
@@ -144,9 +162,15 @@ Record every deployment as a pair: the Console `sha` and `backendContractPin` fr
 Only pair a Console release with a Backend-Core release whose API contract it was
 built against.
 
-**Rollback:** point `current` back at the previously recorded release directory
-with the same `ln -sfn ... && mv -Tf ...` swap, then rerun the smoke test. Keep
-previous release directories until the new one is accepted.
+**Rollback:** point `current` back at the previously recorded release, then rerun
+the smoke test from the repo checkout. Keep previous release directories until
+the new one is accepted.
+
+```bash
+CONSOLE_RELEASES_DIR=/opt/dp2-console   # same value as in deploy/prod.env
+(cd "$CONSOLE_RELEASES_DIR" && ln -sfn releases/<previous-release> current.next && mv -Tf current.next current) &&
+  deploy/console-smoke.sh https://api.example.test
+```
 
 `index.html` and `version.json` are served `no-cache` and `/assets/*` (content-
 hashed) as immutable, so browsers pick up a new release on the next load.
