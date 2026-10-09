@@ -6,17 +6,23 @@
 #
 # Read-only GET requests, no credentials. Prints one line per check and exits
 # non-zero if any check fails. Needs bash, curl, grep, sed and cmp.
+#
+# Every request is bounded, so a stalled origin fails its checks instead of
+# hanging: SMOKE_CONNECT_TIMEOUT (default 5 s) and SMOKE_MAX_TIME (default 10 s).
 set -uo pipefail
 
 base="${1:?usage: deploy/console-smoke.sh <base-url>}"
 base="${base%/}"
+connect_timeout="${SMOKE_CONNECT_TIMEOUT:-5}"
+max_time="${SMOKE_MAX_TIME:-10}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 failures=0
 
 # get <path> <name>: body -> $work/<name>.body, headers -> $work/<name>.hdr, status -> stdout
 get() {
-  curl -sS -o "$work/$2.body" -D "$work/$2.hdr" -w '%{http_code}' "$base$1" || echo "000"
+  curl -sS --connect-timeout "$connect_timeout" --max-time "$max_time" \
+    -o "$work/$2.body" -D "$work/$2.hdr" -w '%{http_code}' "$base$1" || echo "000"
 }
 
 # header <name> <header>: value of the first matching response header

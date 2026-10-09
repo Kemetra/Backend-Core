@@ -51,7 +51,9 @@ compose stack. Redis is containerized by default.
 8. An Admin Console releases directory on `<app-host>` (for example
    `/opt/dp2-console`), set as `CONSOLE_RELEASES_DIR` in `deploy/prod.env`. Compose
    refuses to start without it. It must hold at least one verified release and a
-   `current` symlink before the first `up`; see [Admin Console release](#admin-console-release).
+   `current` symlink before the first `up`: run steps 1-3 of
+   [Admin Console release](#admin-console-release) first, and its smoke test (step 4)
+   after `up`.
 
 ## Deploy
 
@@ -130,8 +132,7 @@ CONSOLE_RELEASES_DIR=/opt/dp2-console   # same value as in deploy/prod.env
 REL=admin-console-<sha12>
 
 # Steps 1-3 run in a subshell: it stops at the first failure, and this shell
-# stays in the repo checkout. Step 4 runs only if steps 1-3 succeeded.
-# Paste the whole block at once.
+# stays in the repo checkout. Paste the whole block at once.
 (
   set -e
   cd "$CONSOLE_RELEASES_DIR"
@@ -150,11 +151,19 @@ REL=admin-console-<sha12>
 )
 # Keep the subshell out of an `&&` list: bash ignores `set -e` inside it there.
 if [ $? -eq 0 ]; then
-  # 4. Smoke-test the origin (read-only, no credentials).
-  deploy/console-smoke.sh https://api.example.test
+  echo "Console release $REL is now current."
 else
   echo "Console release aborted; current was not switched." >&2
 fi
+```
+
+4. Smoke-test the origin from the repo checkout (read-only, no credentials) once
+   the block above reported success. Caddy must be running: on a redeploy run it
+   now; on the **first deploy** run it after step 3 of [Deploy](#deploy) (`up`),
+   as part of [Verify](#verify).
+
+```bash
+deploy/console-smoke.sh https://api.example.test
 ```
 
 Record every deployment as a pair: the Console `sha` and `backendContractPin` from
