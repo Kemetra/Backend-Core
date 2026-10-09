@@ -511,6 +511,63 @@ async function resolutionOf(
   return { version: s.rows[0]?.v ?? null, rows: r.rows };
 }
 
+// RT-333: an operator re-resolution of the sale (api) holds the sale_post row
+// FOR UPDATE while it writes v(n+1). A reversal created meanwhile must not copy
+// the superseded version: its freeze waits on that lock, then copies the
+// committed one — the sale and its reversal keep the same lineage.
+describe("PostingRequestedConsumer.handle — RT-333 a reversal freeze waits for an in-flight re-resolution", () => {
+  it("copies the sale's re-resolved version, not the superseded one", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleId = "01900000-0000-7000-8000-00000050e010";
+    await seedSale(e, { id: saleId, store: STORE_MAPPED, externalId: "rt333-1", tenantProductRef: TPRODUCT });
+    const c = new PostingRequestedConsumer(e.app);
+    await c.handle(salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev0f1"));
+    const salePost = await e.admin.query<{ id: string }>(
+      `SELECT id FROM erpnext_posting_status WHERE tenant_id = $1 AND source_ref_id = $2`,
+      [TENANT, saleId],
+    );
+    const salePostId = salePost.rows[0]!.id;
+    const voidId = await seedVoid(e, saleId, "01900000-0000-7000-8000-0000005ef1d1");
+
+    // The re-resolution transaction, still open: v2 written, row pointed at it.
+    const reResolution = await e.admin.connect();
+    try {
+      await reResolution.query("BEGIN");
+      await reResolution.query(
+        `SELECT 1 FROM erpnext_posting_status WHERE id = $1 FOR UPDATE`,
+        [salePostId],
+      );
+      await reResolution.query(
+        `INSERT INTO erpnext_posting_resolution
+           (tenant_id, intent_id, resolution_version, sale_line_id, erpnext_item_ref,
+            item_map_id, warehouse_ref, warehouse_map_id, resolved_by)
+         SELECT tenant_id, intent_id, 2, sale_line_id, 'ERP-ITEM-RR',
+                item_map_id, warehouse_ref, warehouse_map_id, 'operator'
+           FROM erpnext_posting_resolution WHERE intent_id = $1 AND resolution_version = 1`,
+        [salePostId],
+      );
+      await reResolution.query(
+        `UPDATE erpnext_posting_status SET current_resolution_version = 2 WHERE id = $1`,
+        [salePostId],
+      );
+
+      const reversal = c.handle(
+        reversalEvent(saleId, voidId, { eventId: "01900000-0000-7000-8000-0000000ev0f2" }),
+      );
+      // Give an unfenced freeze time to copy the superseded v1 before the commit.
+      await new Promise((r) => setTimeout(r, 500));
+      await reResolution.query("COMMIT");
+      await reversal;
+    } finally {
+      reResolution.release();
+    }
+
+    const res = await resolutionOf(e, voidId);
+    expect(res.rows.map((r) => r.item)).toEqual(["ERP-ITEM-RR"]);
+  });
+});
+
 // Last in the file: the lineage case re-points TPRODUCT's shared item map.
 describe("PostingRequestedConsumer.handle — RT-330 frozen resolution at creation", () => {
   it("a pending sale_post carries resolution v1 with the item and warehouse it resolved", async () => {

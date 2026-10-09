@@ -887,8 +887,12 @@ components:
           description: >
             RT-332 — echo of the work item's `resolutionVersion`. A `posted` ack
             echoing a version other than the intent's current one is recorded as
-            a `reconciliation_required` dead-letter. Optional; omit it when the
-            work item carried none.
+            a `reconciliation_required` dead-letter. RT-333 — a `failed_transient`
+            / `permanently_rejected` ack echoing a superseded version (an operator
+            re-resolved the intent meanwhile) changes nothing: the intent keeps its
+            state and is answered with an idempotent echo (`failed_transient` while
+            it is still pending and re-offered). Echo it on every outcome; omit it
+            when the work item carried none.
 
     ErpnextDocumentRef:
       type: object

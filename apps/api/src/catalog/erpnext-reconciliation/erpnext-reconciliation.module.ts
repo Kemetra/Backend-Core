@@ -42,6 +42,7 @@ import { ContextModule } from "../../context/context.module";
 import { ErpnextReconciliationController } from "./erpnext-reconciliation.controller";
 import { ErpnextReconciliationService } from "./erpnext-reconciliation.service";
 import { NegativeOnHandController } from "./negative-on-hand.controller";
+import { ErpnextPostingReResolutionService } from "./posting-re-resolution.service";
 import { NegativeOnHandService } from "./negative-on-hand.service";
 
 /**
@@ -60,7 +61,12 @@ import { NegativeOnHandService } from "./negative-on-hand.service";
   // / unknown-items pattern) so both controllers' `@UseGuards(RolesGuard)`
   // resolve it from this module's own providers; its deps (MembershipRepository
   // via ContextModule, PG_POOL via AuthModule, Reflector from core) are in scope.
-  providers: [ErpnextReconciliationService, NegativeOnHandService, RolesGuard],
+  providers: [
+    ErpnextReconciliationService,
+    ErpnextPostingReResolutionService,
+    NegativeOnHandService,
+    RolesGuard,
+  ],
   exports: [ErpnextReconciliationService],
 })
 export class ErpnextReconciliationModule {}

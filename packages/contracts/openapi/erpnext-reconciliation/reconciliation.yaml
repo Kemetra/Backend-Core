@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Reconciliation & Repair API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     Spec 017 (erpnext-reconciliation-and-repair) — the ERPNext arc's OPERATIONAL
     reconciliation surface (011→017): run → report → repair. The human
@@ -14,7 +14,7 @@ info:
     against the connector's ERPNext-Bin view per the 014 mapping, persisting
     mismatch reports in 014's vocabulary.
 
-    Eight operations, all under `/api/v1/catalog/erpnext-reconciliation/...`:
+    Nine operations, all under `/api/v1/catalog/erpnext-reconciliation/...`:
 
       1. `listPostingBacklog` — list the tenant's 015 `permanently_rejected`
          posting dead-letters (a LIVE read-projection over `erpnext_posting_status`;
@@ -37,6 +37,12 @@ info:
          recorded Connector Bin snapshot, with an honest snapshot-freshness block.
       8. `listErpnextNegativeOnHand` — one store's ERPNext items whose snapshot
          quantity is strictly below zero (RT-177), mapped and unmapped alike.
+      9. `reResolvePosting` — RT-333 (1.1.0-draft): an audited operator
+         re-resolution of a PENDING posting intent whose frozen ERP item /
+         warehouse resolution (012 1.6.0-draft `resolutionVersion`) is wrong.
+         Writes resolution version n+1 (`resolved_by = operator`) from the
+         CURRENT mappings, points the intent at it and re-heads it so the
+         connector is offered it again. `Idempotency-Key` REQUIRED.
 
     Operations 7 and 8 are READ-ONLY. They read only the latest recorded Connector
     snapshot (`summary.bin_view_report` of the newest `kind='stock'` run that
@@ -66,7 +72,7 @@ info:
     transitions only 015 posting state / 017 result state (§IX).
 
     Idempotency (O-3): `repairPosting` + `triggerReconciliationRun` +
-    `repairStockMismatch` require the `Idempotency-Key` header, reusing the
+    `repairStockMismatch` + `reResolvePosting` require the `Idempotency-Key` header, reusing the
     existing `IdempotencyInterceptor` — no new primitive. Same-key replay echoes
     the stored response (`Idempotent-Replayed: true`); a duplicate logical repair
     of an already-resolved target echoes its recorded outcome, never double-applies.
@@ -169,6 +175,61 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+
+  /api/v1/catalog/erpnext-reconciliation/postings/{workItemRef}/re-resolve:
+    post:
+      summary: Re-resolve a pending posting intent from the current mappings.
+      operationId: reResolvePosting
+      x-idempotency: required
+      tags: [erpnext-reconciliation]
+      description: >
+        RT-333. ERP Integration baseline: an incorrect mapping discovered BEFORE
+        any ERP side effect may be fixed by an explicit, audited re-resolution
+        that creates a new resolution version and a controlled retry. The
+        operator corrects the item / warehouse mapping first, then calls this:
+        DP2 writes resolution version n+1 (`resolved_by = operator`) from the
+        CURRENT mappings, points the intent at it and re-heads it with a fresh
+        retry budget, with an
+        `audit_events` row in the same transaction. Only a `pending` intent can
+        be re-resolved: a `posted` row has an ERP side effect (reconciliation,
+        never a remap) and a dead-letter goes through `repairPosting`. A
+        reversal is never re-resolved (it must credit exactly what its sale
+        posted), nor is a sale that already has a reversal intent. A
+        connector post that raced the re-resolution acks the superseded
+        `resolutionVersion` and is recorded `reconciliation_required`, never
+        `posted`, and its failed / rejected ack changes nothing (012
+        1.6.0-draft). The 008 sale fact is NEVER mutated.
+        `Idempotency-Key` REQUIRED.
+      parameters:
+        - $ref: "#/components/parameters/WorkItemRef"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReResolvePostingRequest"
+      responses:
+        "201":
+          description: >
+            Re-resolution recorded. A retry with the same `Idempotency-Key` and
+            the same body replays the stored response with its stored status
+            (201) and `Idempotent-Replayed: true`; nothing is re-applied.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecordedReResolution"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/NotReResolvable"
 
   /api/v1/catalog/erpnext-reconciliation/runs:
     post:
@@ -515,7 +576,7 @@ components:
 
   headers:
     IdempotentReplayed:
-      description: Present and `true` on a 200 idempotent-replay response.
+      description: Present and `true` on an idempotent-replay response.
       schema:
         type: boolean
 
@@ -549,6 +610,17 @@ components:
         `idempotency_key_conflict` (409) — the same `Idempotency-Key` reused with a
         DIFFERENT body. (A duplicate repair of an already-resolved target with the
         same outcome is an idempotent 200 echo, not a conflict.)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotReResolvable:
+      description: >
+        `not_re_resolvable` (409) — the intent is not `pending`, is a reversal or
+        a sale that already has a reversal intent, or the current mappings do not
+        resolve it or resolve it to the refs already frozen (nothing is written; the intent keeps its
+        resolution version). `idempotency_key_conflict` (409) — the same
+        `Idempotency-Key` reused with a DIFFERENT body.
       content:
         application/json:
           schema:
@@ -667,6 +739,17 @@ components:
         note:
           type: [string, "null"]
           maxLength: 1000
+    ReResolvePostingRequest:
+      type: object
+      additionalProperties: false
+      description: >
+        Re-resolution command (RT-333). Strict (§XII): tenant + actor are
+        server-resolved from the session and MUST NOT appear here. `note` is an
+        optional operator annotation (no PII).
+      properties:
+        note:
+          type: [string, "null"]
+          maxLength: 1000
     TriggerRunRequest:
       type: object
       additionalProperties: false
@@ -711,6 +794,28 @@ components:
             The ERPNext document reference echoed when a posting repair targets an
             already-`posted` row (O-3 — the stored document, never a new one). Null
             otherwise.
+        recordedAt:
+          type: string
+          format: date-time
+    RecordedReResolution:
+      type: object
+      additionalProperties: false
+      required: [workItemRef, resolutionVersion, previousResolutionVersion, recordedAt]
+      description: >
+        The recorded re-resolution (RT-333): the intent now carries
+        `resolutionVersion` and is offered to the connector again.
+      properties:
+        workItemRef:
+          type: string
+          format: uuid
+        resolutionVersion:
+          type: integer
+          minimum: 1
+          description: The new frozen resolution version (`resolved_by = operator`).
+        previousResolutionVersion:
+          type: [integer, "null"]
+          minimum: 1
+          description: The superseded version; null when the intent had none frozen.
         recordedAt:
           type: string
           format: date-time
@@ -1018,7 +1123,7 @@ components:
               description: >
                 Stable machine-readable error code. Closed set on this surface:
                 validation_error | not_found | idempotency_key_conflict |
-                system_failure (plus the generic 401 refusal).
+                not_re_resolvable | system_failure (plus the generic 401 refusal).
             message:
               type: string
               description: Human-readable summary. No sensitive data, no cause enumeration.
