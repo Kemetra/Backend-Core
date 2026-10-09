@@ -874,9 +874,10 @@ components:
             - type: "null"
         reason:
           description: >
-            Structured rejection reason — required when `outcome =
-            permanently_rejected`, so the 017 reconciliation flag is actionable.
-            Null otherwise.
+            Structured rejection reason — required when `outcome` is
+            `permanently_rejected` (so the 017 reconciliation flag is
+            actionable) or `reconciliation_required` (RT-332: what does not
+            match the frozen resolution). Null otherwise.
           anyOf:
             - $ref: "#/components/schemas/RejectionReason"
             - type: "null"
@@ -952,8 +953,10 @@ components:
         name:
           type: string
           minLength: 1
-          maxLength: 140
-          description: ERPNext Warehouse name (the 014 `erpnext_warehouse_ref` string). Opaque.
+          maxLength: 180
+          description: >
+            ERPNext Warehouse name (the 014 `erpnext_warehouse_ref` string, 1–180
+            characters as the warehouse-mapping API and database accept). Opaque.
 
     EtaStatus:
       type: object

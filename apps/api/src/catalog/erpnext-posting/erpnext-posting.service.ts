@@ -297,13 +297,7 @@ export class ErpnextPostingService {
         // conflict, NO re-transition. `recordedAt` echoes the STORED updated_at
         // so an idempotent re-ack returns a STABLE body (does not drift). ------
         if (row.status === "posted" || row.status === "permanently_rejected") {
-          if (this.sameLogicalOutcome(row, input)) {
-            return {
-              replayed: true,
-              outcome: this.project(input.workItemRef, row),
-            };
-          }
-          throw new AckConflictError();
+          return this.terminalAck(client, input, row);
         }
 
         // --- Re-offerable row (status = 'pending'; a stored 'failed_transient'
@@ -312,6 +306,45 @@ export class ErpnextPostingService {
         return { replayed: false, outcome: await this.transition(client, input, row) };
       },
     );
+  }
+
+  /**
+   * An ack for an already-TERMINAL row: O-3 echo, a reconciliation upgrade, or
+   * a conflict — never a re-transition out of the terminal state.
+   *
+   * RT-332: an ack that reports reconciliation (`reconciliation_required`, or a
+   * `posted` from a superseded resolution version) on a dead-lettered row is an
+   * echo when the row already carries that category, and otherwise UPGRADES the
+   * row to it: an ERP document now exists, so repair must never re-offer it.
+   */
+  private async terminalAck(
+    client: PoolClient,
+    input: AckOutcomeInput,
+    row: {
+      status: string;
+      document_ref: string | null;
+      rejection_category: string | null;
+      updated_at: Date;
+      current_resolution_version: number | null;
+    },
+  ): Promise<AckOutcomeResult> {
+    if (reportsReconciliation(input, row) && row.status === "permanently_rejected") {
+      if (row.rejection_category === RECONCILIATION_REQUIRED_CATEGORY) {
+        return { replayed: true, outcome: this.project(input.workItemRef, row) };
+      }
+      return {
+        replayed: false,
+        outcome: await this.applyRejected(
+          client,
+          input.workItemRef,
+          RECONCILIATION_REQUIRED_CATEGORY,
+        ),
+      };
+    }
+    if (this.sameLogicalOutcome(row, input)) {
+      return { replayed: true, outcome: this.project(input.workItemRef, row) };
+    }
+    throw new AckConflictError();
   }
 
   /** Apply a first-time outcome to a re-offerable row. */
@@ -476,5 +509,19 @@ function isStaleResolution(
     input.resolutionVersion !== undefined &&
     row.current_resolution_version !== null &&
     input.resolutionVersion !== row.current_resolution_version
+  );
+}
+
+/**
+ * RT-332: the ack reports that an ERP document exists that does not match the
+ * intent's current frozen resolution.
+ */
+function reportsReconciliation(
+  input: AckOutcomeInput,
+  row: { current_resolution_version: number | null },
+): boolean {
+  return (
+    input.outcome === "reconciliation_required" ||
+    (input.outcome === "posted" && isStaleResolution(input, row))
   );
 }

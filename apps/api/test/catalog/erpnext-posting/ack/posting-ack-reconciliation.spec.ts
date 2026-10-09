@@ -151,3 +151,42 @@ describe("RT-332 — a posted ack is checked against the frozen resolution versi
     expect((await row()).status).toBe("posted");
   });
 });
+
+describe("RT-332 review — reconciliation always wins over an earlier rejection", () => {
+  it("a reconciliation_required ack upgrades a row rejected for another category", async () => {
+    if (skip) return;
+    await resetPending(1);
+    await env!.admin.query(
+      `UPDATE erpnext_posting_status
+          SET status = 'permanently_rejected', rejection_category = 'validation'
+        WHERE id = $1`,
+      [POST_A_PENDING],
+    );
+    const rec = await svc().ackOutcome({
+      tenantId: TENANT_A,
+      workItemRef: POST_A_PENDING,
+      outcome: "reconciliation_required",
+      documentRef: DOC,
+      reason: REASON,
+    });
+    expect(rec.replayed).toBe(false);
+    expect(rec.outcome.outcome).toBe("permanently_rejected");
+    expect((await row()).category).toBe("reconciliation_required");
+  });
+
+  it("a retried stale posted ack is an idempotent echo, not a conflict", async () => {
+    if (skip) return;
+    await resetPending(2);
+    const stale = {
+      tenantId: TENANT_A,
+      workItemRef: POST_A_PENDING,
+      outcome: "posted" as const,
+      documentRef: DOC,
+      resolutionVersion: 1,
+    };
+    await svc().ackOutcome(stale);
+    const retry = await svc().ackOutcome(stale);
+    expect(retry.replayed).toBe(true);
+    expect(retry.outcome.outcome).toBe("permanently_rejected");
+  });
+});

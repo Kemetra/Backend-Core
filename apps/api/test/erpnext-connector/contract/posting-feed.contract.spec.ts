@@ -767,6 +767,11 @@ describe("erpnext-connector/posting-feed.yaml — RT-332 frozen resolution (1.6.
     expect(ref?.additionalProperties).toBe(false);
     expect(ref?.required?.slice().sort()).toEqual(["doctype", "name"]);
     expect(prop<{ const?: string }>("ErpnextWarehouseRef", "doctype")?.const).toBe("Warehouse");
+    // Same bound as the 014 warehouse-mapping DTO and DB CHECK (1..180).
+    expect(prop<{ minLength?: number; maxLength?: number }>("ErpnextWarehouseRef", "name")).toMatchObject({
+      minLength: 1,
+      maxLength: 180,
+    });
   });
 
   it("the ack carries an optional resolutionVersion echo", () => {
