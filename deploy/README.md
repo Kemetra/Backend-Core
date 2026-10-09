@@ -101,9 +101,10 @@ op run --env-file=deploy/grants.env -- \
 Run every `docker compose -f docker-compose.prod.yml` command under it, including
 `ps`, `logs` and `down`, which only inspect or stop containers. Compose resolves
 the file's required `${VAR:?...}` variables whenever it loads the project, so
-without the env loader any command fails with `required variable ... is missing
-a value`. The `migrate` service runs `migrate up` against `<managed-db>` and must exit 0 before
-`api`/`worker` start (compose `service_completed_successfully` gate).
+without the env loader any command fails with
+`required variable ... is missing a value`. The `migrate` service runs
+`migrate up` against `<managed-db>` and must exit 0 before `api`/`worker` start
+(compose `service_completed_successfully` gate).
 
 Step 2 must run between the migration and the app start. The API boot check
 verifies the domain role's cashier-admissions table grants (RT-212), its
