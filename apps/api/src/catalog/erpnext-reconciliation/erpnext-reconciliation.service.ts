@@ -45,6 +45,7 @@ import {
   type PostingDeadletterRow,
 } from "./reconciliation-report.projection";
 import { callerStoreScope, inStoreScope, scopeStoreIds } from "../../context/operator-store-scope";
+import { RECONCILIATION_REQUIRED_CATEGORY } from "../erpnext-posting/erpnext-posting.service";
 
 /** Hard ceiling on a single backlog page — the 012/009 500/req convention. */
 export const BACKLOG_MAX_PAGE = 500;
@@ -202,6 +203,7 @@ export class ErpnextReconciliationService {
         const rows = await client.query<BacklogDbRow>(
           `SELECT id, kind, rejection_category, sale_id,
                   source_system, external_id, updated_at,
+                  reconciliation_document_ref,
                   sequence::text AS sequence
              FROM erpnext_posting_status
             WHERE status = 'permanently_rejected'
@@ -258,8 +260,9 @@ export class ErpnextReconciliationService {
           sale_id: string;
           store_id: string;
           kind: "sale_post" | "reversal";
+          rejection_category: string | null;
         }>(
-          `SELECT status, document_ref, sale_id, store_id, kind
+          `SELECT status, document_ref, sale_id, store_id, kind, rejection_category
              FROM erpnext_posting_status
             WHERE id = $1
             FOR UPDATE`,
@@ -330,6 +333,7 @@ export class ErpnextReconciliationService {
   }
 
   /**
+   * RT-332: a `reconciliation_required` dead-letter is never re-offerable.
    * RT-330: a reversal whose sale's `sale_post` carries a frozen resolution is
    * re-offerable regardless of the LIVE maps (it re-posts with that frozen
    * resolution — original lineage). Every other row re-runs 015-RESOLVE.
@@ -337,8 +341,16 @@ export class ErpnextReconciliationService {
   private async repairEligibility(
     client: PoolClient,
     tenantId: string,
-    row: { kind: "sale_post" | "reversal"; sale_id: string; store_id: string },
+    row: {
+      kind: "sale_post" | "reversal";
+      sale_id: string;
+      store_id: string;
+      rejection_category: string | null;
+    },
   ): Promise<boolean> {
+    // RT-332: an ERP document already exists for this intent, so it is never
+    // re-offered — reconciliation only (ERP Integration baseline).
+    if (row.rejection_category === RECONCILIATION_REQUIRED_CATEGORY) return false;
     if (row.kind === "reversal") {
       const frozen = await client.query(
         `SELECT 1 FROM erpnext_posting_status

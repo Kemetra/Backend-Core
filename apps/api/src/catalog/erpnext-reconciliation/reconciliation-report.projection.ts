@@ -21,6 +21,11 @@ export interface PostingBacklogItem {
   readonly reason: string | null;
   /** When the posting became permanently_rejected (the 015 row's updated_at). */
   readonly deadLetteredAt: string;
+  /**
+   * RT-332: for a `reconciliation_required` dead-letter, the EXISTING ERP document
+   * the connector reported; null otherwise.
+   */
+  readonly reconciliationDocumentRef: { readonly doctype: string; readonly name: string } | null;
 }
 
 /** The DB row shape read from erpnext_posting_status for a dead-letter. */
@@ -32,6 +37,7 @@ export interface PostingDeadletterRow {
   readonly source_system: string;
   readonly external_id: string;
   readonly updated_at: Date;
+  readonly reconciliation_document_ref: string | null;
 }
 
 /**
@@ -50,5 +56,21 @@ export function toBacklogItem(row: PostingDeadletterRow): PostingBacklogItem {
     externalId: row.external_id,
     reason: row.rejection_category,
     deadLetteredAt: row.updated_at.toISOString(),
+    reconciliationDocumentRef: parseEvidence(row.reconciliation_document_ref),
   };
+}
+
+/** RT-332: the stored ErpnextDocumentRef JSON, or null when absent or unreadable. */
+function parseEvidence(
+  raw: string | null,
+): { doctype: string; name: string } | null {
+  if (raw === null) return null;
+  try {
+    const parsed = JSON.parse(raw) as { doctype?: unknown; name?: unknown };
+    return typeof parsed.doctype === "string" && typeof parsed.name === "string"
+      ? { doctype: parsed.doctype, name: parsed.name }
+      : null;
+  } catch {
+    return null;
+  }
 }

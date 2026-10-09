@@ -146,6 +146,9 @@ export class ErpnextPostingController {
         outcome: body.outcome,
         ...(body.documentRef ? { documentRef: body.documentRef } : {}),
         ...(body.reason ? { reason: body.reason } : {}),
+        ...(body.resolutionVersion !== undefined
+          ? { resolutionVersion: body.resolutionVersion }
+          : {}),
       });
       if (result.replayed) {
         // Service-level O-3 echo (fresh key, already-terminal row): the HTTP

@@ -315,3 +315,24 @@ describe("RT-325 — backlog pages in numeric sequence order", () => {
     expect(seen).toHaveLength(n);
   });
 });
+
+describe("RT-332 — the backlog shows a reconciliation dead-letter's existing document", () => {
+  it("exposes reconciliationDocumentRef for that row and null for the others", async () => {
+    if (skip()) return;
+    const doc = { doctype: "Sales Invoice", name: "ACC-SINV-2026-00777" };
+    await env!.admin.query(
+      `UPDATE erpnext_posting_status
+          SET status = 'permanently_rejected', rejection_category = 'reconciliation_required',
+              reconciliation_document_ref = $2
+        WHERE id = $1`,
+      [POSTING_DEADLETTER_A, JSON.stringify(doc)],
+    );
+    const page = await http().get(BASE).query({ limit: 500 }).expect(200);
+    const items = page.body.items as Array<{ workItemRef: string; reconciliationDocumentRef: unknown }>;
+    const target = items.find((i) => i.workItemRef === POSTING_DEADLETTER_A);
+    expect(target?.reconciliationDocumentRef).toEqual(doc);
+    for (const other of items.filter((i) => i.workItemRef !== POSTING_DEADLETTER_A)) {
+      expect(other.reconciliationDocumentRef).toBeNull();
+    }
+  });
+});

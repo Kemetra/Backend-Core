@@ -151,8 +151,19 @@ export interface PostingWorkItem {
      * Connector that predates settlement (posting-feed.yaml ROLLOUT ORDER).
      */
     readonly tenders?: readonly SaleWorkTender[];
+    /**
+     * RT-332: the ERP warehouse frozen with the intent's resolution. OMITTED for
+     * a row without a frozen resolution (pre-0037); the connector then keeps its
+     * local warehouse configuration.
+     */
+    readonly warehouseRef?: { readonly doctype: "Warehouse"; readonly name: string };
   };
   readonly itemCursor: string;
+  /**
+   * RT-332: the frozen resolution version this work item was built from. Echo it
+   * on the outcome ack; OMITTED for a row without a frozen resolution.
+   */
+  readonly resolutionVersion?: number;
 }
 
 /**
@@ -211,13 +222,15 @@ export async function buildWorkItem(
     unit: string;
     erpnext_item_ref: string | null;
     tenant_product_ref: string | null;
+    warehouse_ref: string | null;
   }>(
     `SELECT sl.id::text AS line_ref, sl.line_name,
             sl.unit_price::text AS unit_price, sl.currency_code,
             sl.quantity::text AS quantity, sl.line_amount::text AS line_amount,
             sl.tax_amount::text AS tax_amount, sl.unit,
             COALESCE(r.erpnext_item_ref, m.erpnext_item_ref) AS erpnext_item_ref,
-            sl.tenant_product_ref::text AS tenant_product_ref
+            sl.tenant_product_ref::text AS tenant_product_ref,
+            r.warehouse_ref
        FROM sale_lines sl
        LEFT JOIN erpnext_posting_resolution r
          ON $2::int IS NOT NULL
@@ -300,9 +313,27 @@ export async function buildWorkItem(
       externalId: s.external_id,
       lines: wireLines,
       ...(tenders.length === 0 ? {} : { tenders }),
+      ...frozenWarehouse(frozenVersion, lines.rows),
     },
     itemCursor: row.sequence,
+    ...frozenVersionField(frozenVersion),
   };
+}
+
+/** RT-332: `sale.warehouseRef` for a frozen row; nothing for a pre-0037 row. */
+function frozenWarehouse(
+  version: number | null,
+  lines: ReadonlyArray<{ warehouse_ref: string | null }>,
+): { warehouseRef?: { doctype: "Warehouse"; name: string } } {
+  // Every line of one resolution version carries the same store warehouse.
+  const warehouseRef = lines[0]?.warehouse_ref;
+  if (version === null || !warehouseRef) return {};
+  return { warehouseRef: { doctype: "Warehouse", name: warehouseRef } };
+}
+
+/** RT-332: `resolutionVersion` for a frozen row; nothing for a pre-0037 row. */
+function frozenVersionField(version: number | null): { resolutionVersion?: number } {
+  return version === null ? {} : { resolutionVersion: version };
 }
 
 /** Classify the reversal row and project its RT-63 time + (return) lines. */

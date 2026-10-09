@@ -2,9 +2,14 @@
  * outcome-ack.dto.ts — Zod body schema for `connectorAckOutcome`.
  *
  * Mirrors the 012 `OutcomeAckRequest` (strict, O-2):
- *   - `outcome`: posted | failed_transient | permanently_rejected (required);
- *   - `documentRef` ({doctype,name}) — REQUIRED iff outcome=posted, else absent;
- *   - `reason` ({category,message}) — REQUIRED iff outcome=permanently_rejected;
+ *   - `outcome`: posted | failed_transient | permanently_rejected |
+ *     reconciliation_required (required; RT-332);
+ *   - `documentRef` ({doctype,name}) — REQUIRED iff outcome is posted or
+ *     reconciliation_required (the EXISTING document), else absent;
+ *   - `reason` ({category,message}) — REQUIRED iff outcome is
+ *     permanently_rejected or reconciliation_required;
+ *   - `resolutionVersion` — optional echo of the work item's frozen resolution
+ *     version (RT-332); a positive integer;
  *   - `etaStatus` accepted + ignored in the interim mode (016 owns it).
  *
  * `.strict()` rejects unknown keys AND any body-supplied tenant/store/actor or
@@ -46,39 +51,51 @@ const EtaStatusSchema = z
 
 export const OutcomeAckBodySchema = z
   .object({
-    outcome: z.enum(["posted", "failed_transient", "permanently_rejected"]),
+    outcome: z.enum([
+      "posted",
+      "failed_transient",
+      "permanently_rejected",
+      "reconciliation_required",
+    ]),
     documentRef: DocumentRefSchema.nullish(),
     reason: RejectionReasonSchema.nullish(),
     etaStatus: EtaStatusSchema.nullish(),
+    resolutionVersion: z.number().int().positive().optional(),
   })
   .strict()
   .superRefine((val, ctx) => {
-    if (val.outcome === "posted" && !val.documentRef) {
+    const needsDocument =
+      val.outcome === "posted" || val.outcome === "reconciliation_required";
+    const needsReason =
+      val.outcome === "permanently_rejected" ||
+      val.outcome === "reconciliation_required";
+    if (needsDocument && !val.documentRef) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["documentRef"],
-        message: "documentRef is required when outcome is 'posted'",
+        message: `documentRef is required when outcome is '${val.outcome}'`,
       });
     }
-    if (val.outcome === "permanently_rejected" && !val.reason) {
+    if (needsReason && !val.reason) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["reason"],
-        message: "reason is required when outcome is 'permanently_rejected'",
+        message: `reason is required when outcome is '${val.outcome}'`,
       });
     }
-    if (val.outcome !== "posted" && val.documentRef) {
+    if (!needsDocument && val.documentRef) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["documentRef"],
-        message: "documentRef is only valid when outcome is 'posted'",
+        message: "documentRef is only valid when outcome is 'posted' or 'reconciliation_required'",
       });
     }
-    if (val.outcome !== "permanently_rejected" && val.reason) {
+    if (!needsReason && val.reason) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["reason"],
-        message: "reason is only valid when outcome is 'permanently_rejected'",
+        message:
+          "reason is only valid when outcome is 'permanently_rejected' or 'reconciliation_required'",
       });
     }
   });

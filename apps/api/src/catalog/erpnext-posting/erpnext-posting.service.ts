@@ -57,10 +57,22 @@ export interface AckRejectionReason {
   readonly message: string;
 }
 
-export type AckOutcomeKind =
+/** The outcome a posting row is RECORDED with (012 RecordedOutcome.outcome). */
+export type RecordedOutcomeKind =
   | "posted"
   | "failed_transient"
   | "permanently_rejected";
+
+/**
+ * The outcome a connector may REPORT (012 OutcomeAckRequest.outcome). RT-332:
+ * `reconciliation_required` — an existing ERP document does not match the
+ * frozen resolution; it is recorded as `permanently_rejected` with
+ * `rejection_category = 'reconciliation_required'`.
+ */
+export type AckOutcomeKind = RecordedOutcomeKind | "reconciliation_required";
+
+/** RT-332: the dead-letter category of a replay / stale post that needs reconciliation. */
+export const RECONCILIATION_REQUIRED_CATEGORY = "reconciliation_required";
 
 export interface AckOutcomeInput {
   readonly tenantId: string;
@@ -68,12 +80,14 @@ export interface AckOutcomeInput {
   readonly outcome: AckOutcomeKind;
   readonly documentRef?: AckDocumentRef;
   readonly reason?: AckRejectionReason;
+  /** RT-332: the frozen resolution version the connector posted with, when it echoes one. */
+  readonly resolutionVersion?: number;
 }
 
 /** The 012 RecordedOutcome wire projection (DP2 → connector). */
 export interface RecordedOutcome {
   readonly workItemRef: string;
-  readonly outcome: AckOutcomeKind;
+  readonly outcome: RecordedOutcomeKind;
   readonly documentRef: AckDocumentRef | null;
   readonly recordedAt: string;
   readonly dlqueued: boolean;
@@ -160,6 +174,16 @@ export interface PullPostingsResult {
   readonly cursor: string | null;
   /** Next-page token (the same advanced cursor) when the page was full. */
   readonly nextPageToken: string | null;
+}
+
+/** The columns an ack reads from an already-terminal posting row. */
+interface TerminalRow {
+  readonly status: string;
+  readonly document_ref: string | null;
+  readonly rejection_category: string | null;
+  readonly updated_at: Date;
+  readonly current_resolution_version: number | null;
+  readonly reconciliation_document_ref: string | null;
 }
 
 @Injectable()
@@ -267,8 +291,11 @@ export class ErpnextPostingService {
           rejection_category: string | null;
           retry_count: number;
           updated_at: Date;
+          current_resolution_version: number | null;
+          reconciliation_document_ref: string | null;
         }>(
-          `SELECT status, document_ref, rejection_category, retry_count, updated_at
+          `SELECT status, document_ref, rejection_category, retry_count, updated_at,
+                  current_resolution_version, reconciliation_document_ref
              FROM erpnext_posting_status
             WHERE id = $1
             FOR UPDATE`,
@@ -281,45 +308,83 @@ export class ErpnextPostingService {
         // conflict, NO re-transition. `recordedAt` echoes the STORED updated_at
         // so an idempotent re-ack returns a STABLE body (does not drift). ------
         if (row.status === "posted" || row.status === "permanently_rejected") {
-          if (this.sameLogicalOutcome(row, input)) {
-            return {
-              replayed: true,
-              outcome: this.project(input.workItemRef, row),
-            };
-          }
-          throw new AckConflictError();
+          return this.terminalAck(client, input, row);
         }
 
         // --- Re-offerable row (status = 'pending'; a stored 'failed_transient'
         // is never produced by 015 — applyTransient always resets to 'pending' —
         // but is treated as re-offerable too for forward-compat). -------------
-        switch (input.outcome) {
-          case "posted":
-            return {
-              replayed: false,
-              outcome: await this.applyPosted(client, input),
-            };
-          case "permanently_rejected":
-            return {
-              replayed: false,
-              outcome: await this.applyRejected(
-                client,
-                input.workItemRef,
-                input.reason?.category ?? "other",
-              ),
-            };
-          case "failed_transient":
-            return {
-              replayed: false,
-              outcome: await this.applyTransient(
-                client,
-                input.workItemRef,
-                row.retry_count,
-              ),
-            };
-        }
+        return { replayed: false, outcome: await this.transition(client, input, row) };
       },
     );
+  }
+
+  /**
+   * An ack for an already-TERMINAL row: O-3 echo, a reconciliation upgrade, or
+   * a conflict — never a re-transition out of the terminal state.
+   *
+   * RT-332: an ack that reports reconciliation (`reconciliation_required`, or a
+   * `posted` from a superseded resolution version) on a dead-lettered row is an
+   * echo when the row already carries that category, and otherwise UPGRADES the
+   * row to it: an ERP document now exists, so repair must never re-offer it.
+   */
+  private async terminalAck(
+    client: PoolClient,
+    input: AckOutcomeInput,
+    row: TerminalRow,
+  ): Promise<AckOutcomeResult> {
+    if (reportsReconciliation(input, row) && row.status === "permanently_rejected") {
+      return this.reconcileTerminal(client, input, row);
+    }
+    // A post from a superseded resolution is never confirmed as posted — not
+    // even on a row a current-version post already completed.
+    if (!isStaleResolution(input, row) && this.sameLogicalOutcome(row, input)) {
+      return { replayed: true, outcome: this.project(input.workItemRef, row) };
+    }
+    throw new AckConflictError();
+  }
+
+  /**
+   * RT-332: a reconciliation report on a dead-lettered row. Already in the
+   * reconciliation category → an echo only for the SAME evidence (a retry
+   * reporting another document contradicts the recorded one: O-3 conflict, the
+   * first stays). Any other category → upgrade it: an ERP document now exists,
+   * so repair must never re-offer the row.
+   */
+  private async reconcileTerminal(
+    client: PoolClient,
+    input: AckOutcomeInput,
+    row: TerminalRow,
+  ): Promise<AckOutcomeResult> {
+    if (row.rejection_category !== RECONCILIATION_REQUIRED_CATEGORY) {
+      return { replayed: false, outcome: await this.applyReconciliation(client, input) };
+    }
+    if (!sameDocument(row.reconciliation_document_ref, input.documentRef)) {
+      throw new AckConflictError();
+    }
+    return { replayed: true, outcome: this.project(input.workItemRef, row) };
+  }
+
+  /** Apply a first-time outcome to a re-offerable row. */
+  private async transition(
+    client: PoolClient,
+    input: AckOutcomeInput,
+    row: { retry_count: number; current_resolution_version: number | null },
+  ): Promise<RecordedOutcome> {
+    switch (input.outcome) {
+      case "posted":
+        // RT-332: a post made from a superseded resolution version is not the
+        // intent's current one — record it for reconciliation, never as posted.
+        return isStaleResolution(input, row)
+          ? this.applyReconciliation(client, input)
+          : this.applyPosted(client, input);
+      case "reconciliation_required":
+        return this.applyReconciliation(client, input);
+      case "permanently_rejected":
+        return this.applyRejected(client, input.workItemRef, input.reason?.category ?? "other");
+      case "failed_transient":
+        return this.applyTransient(client, input.workItemRef, row.retry_count);
+    }
   }
 
   /** True when an already-terminal row matches the incoming ack (O-3 echo). */
@@ -327,7 +392,7 @@ export class ErpnextPostingService {
     row: { status: string; document_ref: string | null; updated_at: Date },
     input: AckOutcomeInput,
   ): boolean {
-    if (row.status !== input.outcome) return false;
+    if (row.status !== recordedKindOf(input.outcome)) return false;
     if (row.status === "posted") {
       const stored = parseDocRef(row.document_ref);
       return (
@@ -368,17 +433,35 @@ export class ErpnextPostingService {
     };
   }
 
+  /**
+   * RT-332: dead-letter the row as `reconciliation_required`, keeping the ERP
+   * document the connector reported as evidence (`reconciliation_document_ref`).
+   */
+  private applyReconciliation(
+    client: PoolClient,
+    input: AckOutcomeInput,
+  ): Promise<RecordedOutcome> {
+    return this.applyRejected(
+      client,
+      input.workItemRef,
+      RECONCILIATION_REQUIRED_CATEGORY,
+      input.documentRef ? serializeDocRef(input.documentRef) : null,
+    );
+  }
+
   private async applyRejected(
     client: PoolClient,
     workItemRef: string,
     category: string,
+    reconciliationDocumentRef: string | null = null,
   ): Promise<RecordedOutcome> {
     const r = await client.query<{ updated_at: Date }>(
       `UPDATE erpnext_posting_status
-          SET status='permanently_rejected', rejection_category=$2, updated_at=now()
+          SET status='permanently_rejected', rejection_category=$2,
+              reconciliation_document_ref=$3, updated_at=now()
         WHERE id=$1
         RETURNING updated_at`,
-      [workItemRef, category],
+      [workItemRef, category, reconciliationDocumentRef],
     );
     // §VII reconciliation / DLQ signal — a posting row just dead-lettered. A
     // SIGNAL: it never alters the ack outcome (the row is already updated above).
@@ -436,10 +519,59 @@ export class ErpnextPostingService {
   ): RecordedOutcome {
     return {
       workItemRef,
-      outcome: row.status as AckOutcomeKind,
+      outcome: row.status as RecordedOutcomeKind,
       documentRef: parseDocRef(row.document_ref),
       recordedAt: row.updated_at.toISOString(),
       dlqueued: row.status === "permanently_rejected",
     };
   }
+}
+
+/** RT-332: the status a reported outcome is recorded with. */
+function recordedKindOf(outcome: AckOutcomeKind): RecordedOutcomeKind {
+  return outcome === "reconciliation_required" ? "permanently_rejected" : outcome;
+}
+
+/**
+ * RT-332: the connector echoed a resolution version that is not the row's
+ * current frozen version. Rows without a frozen version (pre-0037) and acks
+ * without an echo (older connectors) are never stale.
+ */
+function isStaleResolution(
+  input: AckOutcomeInput,
+  row: { current_resolution_version: number | null },
+): boolean {
+  return (
+    input.resolutionVersion !== undefined &&
+    row.current_resolution_version !== null &&
+    input.resolutionVersion !== row.current_resolution_version
+  );
+}
+
+/**
+ * RT-332: the ack reports that an ERP document exists that does not match the
+ * intent's current frozen resolution.
+ */
+function reportsReconciliation(
+  input: AckOutcomeInput,
+  row: { current_resolution_version: number | null },
+): boolean {
+  return (
+    input.outcome === "reconciliation_required" ||
+    (input.outcome === "posted" && isStaleResolution(input, row))
+  );
+}
+
+/**
+ * RT-332: the stored reconciliation evidence names the same document as the
+ * incoming ack. No stored evidence (a row upgraded before 0039) accepts any.
+ */
+function sameDocument(stored: string | null, incoming: AckDocumentRef | undefined): boolean {
+  const recorded = parseDocRef(stored);
+  if (recorded === null) return true;
+  return (
+    incoming !== undefined &&
+    recorded.doctype === incoming.doctype &&
+    recorded.name === incoming.name
+  );
 }

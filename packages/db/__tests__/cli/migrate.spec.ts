@@ -210,6 +210,7 @@ describe("data-pulse-migrate CLI", () => {
     "0036_shift_cash_up",
     "0037_erpnext_posting_resolution",
     "0038_erpnext_posting_resolution_backfill",
+    "0039_erpnext_posting_reconciliation_evidence",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -232,6 +233,8 @@ describe("data-pulse-migrate CLI", () => {
   const RESOLUTION_TABLES = ["erpnext_posting_resolution"];
   const countResolutionVersionColumn = (): Promise<string> =>
     countPublicColumn("erpnext_posting_status", "current_resolution_version");
+  const countEvidenceColumn = (): Promise<string> =>
+    countPublicColumn("erpnext_posting_status", "reconciliation_document_ref");
 
   /** The three return tables created by 0032_sale_returns (RT-73). */
   const RETURN_TABLES = ["sale_returns", "sale_return_lines", "sale_return_tenders"];
@@ -326,6 +329,7 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
     expect(await countPolicies(RESOLUTION_TABLES)).toBe("2");
     expect(await countResolutionVersionColumn()).toBe("1");
+    expect(await countEvidenceColumn()).toBe("1"); // 0039 (RT-332)
   });
 
   it("up is idempotent on a second run", async () => {
@@ -361,12 +365,13 @@ describe("data-pulse-migrate CLI", () => {
 
       expect(await ledgerIds()).toEqual(EXPECTED_MIGRATIONS.slice(0, -1));
 
-      // 0038's down is a data no-op (RT-330): 0037's resolution table and the
-      // posting status column survive it.
+      // 0039 removes the reconciliation evidence column (RT-332); 0037/0038's
+      // resolution table and version column survive.
+      expect(await countEvidenceColumn()).toBe("0");
       expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
       expect(await countResolutionVersionColumn()).toBe("1");
 
-      // Sanity: everything older SURVIVES the 0038 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0039 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();

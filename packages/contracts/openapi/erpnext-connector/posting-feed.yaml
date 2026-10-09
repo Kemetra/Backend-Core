@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Connector Posting-Feed API
-  version: "1.5.0-draft"
+  version: "1.6.0-draft"
   description: >
     Spec 012 ERPNext Connector Contracts surface — the DP2 ↔ connector boundary
     that realises the signed 011 posting + version-pin decisions over a
@@ -159,6 +159,24 @@ info:
     `<workItemRef>:permanently_rejected`, and the RT-171
     `<workItemRef>:failed_transient:<itemCursor>`, at most 73 characters)
     fit the rule, so it is unaffected.
+
+    RT-332 (1.6.0-draft; RT-326 decisions 1–2): FROZEN RESOLUTION. Backend-Core
+    freezes each work item's ERP resolution when the posting intent is created
+    (RT-330). The work item now carries `resolutionVersion` and
+    `sale.warehouseRef` (the frozen ERP warehouse); both are omitted for an
+    intent created before the freeze. The connector echoes `resolutionVersion`
+    on the outcome ack. A `posted` ack echoing a version other than the intent's
+    current one posted a superseded resolution and is recorded for
+    reconciliation, never as posted. New ack outcome `reconciliation_required`:
+    the connector found an EXISTING ERP document for the work item (replay or
+    duplicate recovery) that does not match the frozen resolution; it carries
+    that `documentRef` and a `reason`. DP2 records it as a dead-letter
+    (`permanently_rejected`, rejection category `reconciliation_required`) that
+    repair never re-offers, so the recorded outcome it returns is
+    `permanently_rejected`. ROLLOUT ORDER (Backend-Core first): every addition is
+    optional on the feed and ignored by a connector that predates it; a
+    connector MUST NOT send `reconciliation_required` or `resolutionVersion` to a
+    Backend-Core that predates 1.6.0-draft (the strict ack DTO rejects them).
 
 servers:
   - url: https://api.example.com
@@ -467,6 +485,13 @@ components:
           description: >
             Opaque advanced cursor after this work-item (≤ the page cursor).
             Clients MUST treat as opaque.
+        resolutionVersion:
+          type: integer
+          minimum: 1
+          description: >
+            RT-332 — the frozen resolution version this work item was built from
+            (RT-330). Echo it as `OutcomeAckRequest.resolutionVersion`. Omitted
+            for an intent created before the freeze.
 
     ReversalRef:
       type: object
@@ -666,6 +691,8 @@ components:
             with one payment per tender. Absent or empty: a tender-unknown sale,
             posted unpaid as before (RT-10 D8). Optional; emitted only once the
             Connector supports settlement (see ROLLOUT ORDER).
+        warehouseRef:
+          $ref: "#/components/schemas/ErpnextWarehouseRef"
     SaleTender:
       type: object
       additionalProperties: false
@@ -810,23 +837,30 @@ components:
       description: >
         The outcome of posting the `{workItemRef}` work-item. Tenant/store/actor
         resolve from the connector principal and are rejected if body-supplied
-        (§XII strict boundary). `documentRef` is required when `outcome = posted`;
-        `reason` is required when `outcome = permanently_rejected`.
+        (§XII strict boundary). `documentRef` is required when `outcome` is
+        `posted` or `reconciliation_required`; `reason` is required when
+        `outcome` is `permanently_rejected` or `reconciliation_required`.
       properties:
         outcome:
           type: string
-          enum: [posted, failed_transient, permanently_rejected]
+          enum: [posted, failed_transient, permanently_rejected, reconciliation_required]
           description: >
             `posted` — submitted to ERPNext (carries `documentRef`).
             `failed_transient` — a retryable failure; DP2 re-offers the work-item
             on the next pull (bounded by a retry budget).
             `permanently_rejected` — non-retryable (carries `reason`); DP2
             dead-letters it and raises a reconciliation flag (017).
+            `reconciliation_required` (RT-332) — an EXISTING ERP document for this
+            work item (replay or duplicate recovery) does not match its frozen
+            resolution; carries that document's `documentRef` and a `reason`. DP2
+            records it as a dead-letter that repair never re-offers.
         documentRef:
           description: >
             The ERPNext document reference (the submitted Sales Invoice or
             reversing-document id) — required on `posted`, echoed back
-            unchanged on an idempotent duplicate `posted` (O-3). Null otherwise.
+            unchanged on an idempotent duplicate `posted` (O-3). On
+            `reconciliation_required` (RT-332) it names the EXISTING document that
+            does not match the frozen resolution. Null otherwise.
           anyOf:
             - $ref: "#/components/schemas/ErpnextDocumentRef"
             - type: "null"
@@ -840,12 +874,21 @@ components:
             - type: "null"
         reason:
           description: >
-            Structured rejection reason — required when `outcome =
-            permanently_rejected`, so the 017 reconciliation flag is actionable.
-            Null otherwise.
+            Structured rejection reason — required when `outcome` is
+            `permanently_rejected` (so the 017 reconciliation flag is
+            actionable) or `reconciliation_required` (RT-332: what does not
+            match the frozen resolution). Null otherwise.
           anyOf:
             - $ref: "#/components/schemas/RejectionReason"
             - type: "null"
+        resolutionVersion:
+          type: integer
+          minimum: 1
+          description: >
+            RT-332 — echo of the work item's `resolutionVersion`. A `posted` ack
+            echoing a version other than the intent's current one is recorded as
+            a `reconciliation_required` dead-letter. Optional; omit it when the
+            work item carried none.
 
     ErpnextDocumentRef:
       type: object
@@ -891,6 +934,29 @@ components:
           description: >
             ERPNext Item code/name (the 013 `erpnext_item_ref` string). Opaque —
             no FK, version-independent (O-6).
+
+    ErpnextWarehouseRef:
+      type: object
+      additionalProperties: false
+      required: [doctype, name]
+      description: >
+        RT-332 — the ERPNext **Warehouse** frozen with the posting intent's
+        resolution (the 014 `erpnext_warehouse_map` stock warehouse at intent
+        creation). Optional on `Sale`: omitted for an intent created before the
+        freeze, when the connector keeps its local warehouse configuration.
+        Mirrors `ErpnextItemRef` (O-6 version-independence).
+      properties:
+        doctype:
+          type: string
+          const: "Warehouse"
+          description: Always "Warehouse".
+        name:
+          type: string
+          minLength: 1
+          maxLength: 180
+          description: >
+            ERPNext Warehouse name (the 014 `erpnext_warehouse_ref` string, 1–180
+            characters as the warehouse-mapping API and database accept). Opaque.
 
     EtaStatus:
       type: object

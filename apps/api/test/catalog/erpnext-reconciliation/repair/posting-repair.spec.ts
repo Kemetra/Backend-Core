@@ -391,3 +391,24 @@ describe("RT-330 — a reversal repair follows its sale's frozen resolution", ()
     expect(frozen.rows).toEqual([{ item: "ERP-FROZEN", by: "operator" }]);
   });
 });
+
+describe("RT-332 — repair never re-offers a reconciliation_required row", () => {
+  it("leaves it dead-lettered → still_failing (an ERP document already exists)", async () => {
+    if (skip) return;
+    await env!.admin.query(
+      `UPDATE erpnext_posting_status
+          SET status = 'permanently_rejected', document_ref = NULL,
+              rejection_category = 'reconciliation_required', retry_count = 0
+        WHERE id = $1`,
+      [POSTING_DEADLETTER_A],
+    );
+    const res = await svc().repairPosting({
+      tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
+      actorUserId: ACTOR_A,
+      workItemRef: POSTING_DEADLETTER_A,
+    });
+    expect(res.repair.outcome).toBe("still_failing");
+    expect((await statusRow()).status).toBe("permanently_rejected");
+  });
+});

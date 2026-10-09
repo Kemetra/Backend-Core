@@ -459,11 +459,11 @@ describe("erpnext-connector/posting-feed.yaml — outcome ack (O-2/O-3)", () => 
     expect(findOp("connectorPullPostings")).not.toHaveProperty("requestBody");
   });
 
-  it("the outcome enumerates posted | failed_transient | permanently_rejected (O-2)", () => {
+  it("the outcome enumerates posted | failed_transient | permanently_rejected | reconciliation_required (O-2, RT-332)", () => {
     const outcome = (feedDoc.components?.schemas?.["OutcomeAckRequest"]
       ?.properties ?? {})["outcome"] as { enum?: string[] } | undefined;
     expect(outcome?.enum?.sort()).toEqual(
-      ["failed_transient", "permanently_rejected", "posted"].sort(),
+      ["failed_transient", "permanently_rejected", "posted", "reconciliation_required"].sort(),
     );
   });
 
@@ -679,8 +679,9 @@ describe("erpnext-connector/posting-feed.yaml — RT-76 settlement", () => {
   it("the ack is unchanged — one documentRef per work item (D4)", () => {
     const kind = prop<{ enum?: string[] }>("PostingWorkItem", "kind");
     expect(kind?.enum?.slice().sort()).toEqual(["reversal", "sale_post"]);
+    // RT-332 adds only the optional resolutionVersion echo; still one documentRef.
     expect(Object.keys(schema("OutcomeAckRequest")?.properties ?? {}).sort()).toEqual(
-      ["documentRef", "etaStatus", "outcome", "reason"],
+      ["documentRef", "etaStatus", "outcome", "reason", "resolutionVersion"],
     );
   });
 
@@ -731,6 +732,53 @@ describe("erpnext-connector/posting-feed.yaml — RT-181 Idempotency-Key bounds"
 
   it("the version note records RT-181 at 1.5.0-draft", () => {
     expect(feedDoc.info?.description ?? "").toContain("RT-181 (1.5.0-draft");
-    expect(feedDoc.info?.version).toBe("1.5.0-draft");
+  });
+});
+
+describe("erpnext-connector/posting-feed.yaml — RT-332 frozen resolution (1.6.0-draft)", () => {
+  function schema(name: string): SchemaObject | undefined {
+    return feedDoc.components?.schemas?.[name];
+  }
+  function prop<T>(name: string, field: string): T | undefined {
+    return (schema(name)?.properties ?? {})[field] as T | undefined;
+  }
+
+  it("is 1.6.0-draft and its note records RT-332 with the Backend-Core-first rollout", () => {
+    expect(feedDoc.info?.version).toBe("1.6.0-draft");
+    const description = feedDoc.info?.description ?? "";
+    expect(description).toContain("RT-332 (1.6.0-draft");
+    expect(description).toContain("ROLLOUT ORDER (Backend-Core first)");
+  });
+
+  it("the work item and sale carry the frozen version and warehouse as OPTIONAL fields", () => {
+    expect(prop<{ type?: string; minimum?: number }>("PostingWorkItem", "resolutionVersion")).toMatchObject({
+      type: "integer",
+      minimum: 1,
+    });
+    expect(schema("PostingWorkItem")?.required).not.toContain("resolutionVersion");
+    expect(prop<{ $ref?: string }>("Sale", "warehouseRef")?.$ref).toBe(
+      "#/components/schemas/ErpnextWarehouseRef",
+    );
+    expect(schema("Sale")?.required).not.toContain("warehouseRef");
+  });
+
+  it("ErpnextWarehouseRef is a strict {doctype: Warehouse, name}", () => {
+    const ref = schema("ErpnextWarehouseRef");
+    expect(ref?.additionalProperties).toBe(false);
+    expect(ref?.required?.slice().sort()).toEqual(["doctype", "name"]);
+    expect(prop<{ const?: string }>("ErpnextWarehouseRef", "doctype")?.const).toBe("Warehouse");
+    // Same bound as the 014 warehouse-mapping DTO and DB CHECK (1..180).
+    expect(prop<{ minLength?: number; maxLength?: number }>("ErpnextWarehouseRef", "name")).toMatchObject({
+      minLength: 1,
+      maxLength: 180,
+    });
+  });
+
+  it("the ack carries an optional resolutionVersion echo", () => {
+    expect(prop<{ type?: string; minimum?: number }>("OutcomeAckRequest", "resolutionVersion")).toMatchObject({
+      type: "integer",
+      minimum: 1,
+    });
+    expect(schema("OutcomeAckRequest")?.required ?? []).not.toContain("resolutionVersion");
   });
 });
