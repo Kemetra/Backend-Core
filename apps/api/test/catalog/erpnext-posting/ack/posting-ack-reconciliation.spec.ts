@@ -263,3 +263,42 @@ describe("RT-332 review — contradictory reconciliation evidence is a conflict"
     expect(JSON.parse(r.rows[0]!.ev)).toEqual(DOC);
   });
 });
+
+describe("RT-332 review — a stale posted ack first, then a retry", () => {
+  const OTHER = { doctype: "Sales Invoice", name: "ACC-SINV-A-0200" };
+  const retries = [
+    ["stale posted, same document → echo", "posted", DOC, "echo"],
+    ["stale posted, different document → conflict", "posted", OTHER, "conflict"],
+    ["reconciliation_required, same document → echo", "reconciliation_required", DOC, "echo"],
+    ["reconciliation_required, different document → conflict", "reconciliation_required", OTHER, "conflict"],
+  ] as const;
+
+  it.each(retries)("%s", async (_label, outcome, documentRef, expected) => {
+    if (skip) return;
+    await resetPending(2);
+    await svc().ackOutcome({
+      tenantId: TENANT_A,
+      workItemRef: POST_A_PENDING,
+      outcome: "posted",
+      documentRef: DOC,
+      resolutionVersion: 1,
+    });
+    const retry = svc().ackOutcome({
+      tenantId: TENANT_A,
+      workItemRef: POST_A_PENDING,
+      outcome,
+      documentRef,
+      ...(outcome === "posted" ? { resolutionVersion: 1 } : { reason: REASON }),
+    });
+    if (expected === "conflict") {
+      await expect(retry).rejects.toBeInstanceOf(AckConflictError);
+    } else {
+      expect((await retry).replayed).toBe(true);
+    }
+    const r = await env!.admin.query<{ ev: string }>(
+      `SELECT reconciliation_document_ref AS ev FROM erpnext_posting_status WHERE id = $1`,
+      [POST_A_PENDING],
+    );
+    expect(JSON.parse(r.rows[0]!.ev)).toEqual(DOC);
+  });
+});
