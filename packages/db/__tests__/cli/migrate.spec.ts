@@ -209,6 +209,7 @@ describe("data-pulse-migrate CLI", () => {
     "0035_cashier_admissions",
     "0036_shift_cash_up",
     "0037_erpnext_posting_resolution",
+    "0038_erpnext_posting_resolution_backfill",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -360,11 +361,12 @@ describe("data-pulse-migrate CLI", () => {
 
       expect(await ledgerIds()).toEqual(EXPECTED_MIGRATIONS.slice(0, -1));
 
-      // 0037 removes the resolution table and the posting status column (RT-330).
-      expect(await countPublicTables(RESOLUTION_TABLES)).toBe("0");
-      expect(await countResolutionVersionColumn()).toBe("0");
+      // 0038's down is a data no-op (RT-330): 0037's resolution table and the
+      // posting status column survive it.
+      expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
+      expect(await countResolutionVersionColumn()).toBe("1");
 
-      // Sanity: everything older SURVIVES the 0037 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0038 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();

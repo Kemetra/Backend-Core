@@ -30,6 +30,7 @@ import {
 import {
   PostingRequestedConsumer,
   ReversalAwaitingSalePostError,
+  PostingResolutionNotFrozenError,
 } from "../../src/erpnext-posting/posting-requested.consumer";
 import type { OutboxEventEnvelope } from "@data-pulse-2/shared";
 
@@ -567,5 +568,35 @@ describe("PostingRequestedConsumer.handle — RT-330 frozen resolution at creati
     const res = await resolutionOf(e, voidId);
     expect(res.version).toBe(1);
     expect(res.rows.map((r) => r.item)).toEqual(["ERP-ITEM-1"]);
+  });
+});
+
+describe("PostingRequestedConsumer.handle — RT-330 a pending intent is never left unfrozen", () => {
+  it("eligible but nothing to freeze (no 'stock' warehouse) → throws and inserts nothing", async () => {
+    if (skip) return;
+    const e = guard();
+    const storeId = "01900000-0000-7000-8000-0000000ac333";
+    await e.admin.query(
+      `INSERT INTO stores (id, tenant_id, code, name) VALUES ($1, $2, 'PRCR', 'Returns only')`,
+      [storeId, TENANT],
+    );
+    await e.admin.query(
+      `INSERT INTO erpnext_warehouse_map
+         (id, tenant_id, store_id, purpose, erpnext_warehouse_ref, set_by, version)
+       VALUES (gen_random_uuid(), $1, $2, 'returns', 'ERP-WH-R', $3, 1)`,
+      [TENANT, storeId, ACTOR],
+    );
+    const saleId = "01900000-0000-7000-8000-00000050e005";
+    await seedSale(e, { id: saleId, store: storeId, externalId: "rt330-5", tenantProductRef: TPRODUCT });
+
+    await expect(
+      new PostingRequestedConsumer(e.app).handle(
+        envelope(
+          { sale_id: saleId, store_id: storeId, kind: "sale_post", source_ref_id: saleId },
+          "01900000-0000-7000-8000-0000000ev0e5",
+        ),
+      ),
+    ).rejects.toBeInstanceOf(PostingResolutionNotFrozenError);
+    expect(await postingRows(e, saleId)).toEqual([]);
   });
 });

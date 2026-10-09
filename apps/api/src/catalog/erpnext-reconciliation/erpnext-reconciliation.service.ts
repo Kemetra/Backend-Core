@@ -292,26 +292,44 @@ export class ErpnextReconciliationService {
           return this.recordRepair(client, input, "still_failing", null, false);
         }
 
-        // Re-offer: flip to pending, re-head the sequence, RESET retry_count.
-        // Do NOT touch document_ref (NULL on a non-posted row; the
-        // (status='posted')=(document_ref IS NOT NULL) CHECK would otherwise bite).
-        await client.query(
-          `UPDATE erpnext_posting_status
-              SET status = 'pending', sequence = DEFAULT,
-                  retry_count = $2, updated_at = now()
-            WHERE id = $1`,
-          [input.workItemRef, REPAIR_RESET_RETRY_COUNT],
-        );
-        await this.freezeRepairResolution(client, {
-          tenantId: input.tenantId,
-          intentId: input.workItemRef,
-          kind: row.kind,
-          saleId: row.sale_id,
-          storeId: row.store_id,
-        });
-        return this.recordRepair(client, input, "eligible_again", null, false);
+        return this.reofferPosting(client, input, row);
       },
     );
+  }
+
+  /**
+   * Re-offer a resolvable dead-letter. RT-330: freeze the re-offer's resolution
+   * FIRST; if nothing could be frozen (a map changed since the eligibility
+   * read), do not re-offer, since a pending row without a version would fall
+   * back to the live join. Otherwise flip to pending, re-head the sequence,
+   * RESET retry_count and point at the frozen version. Do NOT touch
+   * document_ref (NULL on a non-posted row; the
+   * (status='posted')=(document_ref IS NOT NULL) CHECK would otherwise bite).
+   */
+  private async reofferPosting(
+    client: PoolClient,
+    input: RepairPostingInput,
+    row: { kind: "sale_post" | "reversal"; sale_id: string; store_id: string },
+  ): Promise<RepairResult> {
+    const version = await this.freezeRepairResolution(client, {
+      tenantId: input.tenantId,
+      intentId: input.workItemRef,
+      kind: row.kind,
+      saleId: row.sale_id,
+      storeId: row.store_id,
+    });
+    if (version === null) {
+      return this.recordRepair(client, input, "still_failing", null, false);
+    }
+    await client.query(
+      `UPDATE erpnext_posting_status
+          SET status = 'pending', sequence = DEFAULT,
+              retry_count = $2, current_resolution_version = $3,
+              updated_at = now()
+        WHERE id = $1`,
+      [input.workItemRef, REPAIR_RESET_RETRY_COUNT, version],
+    );
+    return this.recordRepair(client, input, "eligible_again", null, false);
   }
 
   /**
@@ -321,6 +339,7 @@ export class ErpnextReconciliationService {
    * its sale's `sale_post` current resolution (original lineage); otherwise the
    * current maps are read. Each INSERT is all-or-nothing over the sale lines
    * (the worker's `freezeResolution` copy — SQL is duplicated per package).
+   * Returns the frozen version, or null when nothing could be frozen.
    */
   private async freezeRepairResolution(
     client: PoolClient,
@@ -331,7 +350,7 @@ export class ErpnextReconciliationService {
       saleId: string;
       storeId: string;
     },
-  ): Promise<void> {
+  ): Promise<number | null> {
     const next = await client.query<{ v: number }>(
       `SELECT COALESCE(MAX(resolution_version), 0) + 1 AS v
          FROM erpnext_posting_resolution WHERE intent_id = $1`,
@@ -380,12 +399,7 @@ export class ErpnextReconciliationService {
       );
       written = resolved.rowCount ?? 0;
     }
-    if (written > 0) {
-      await client.query(
-        `UPDATE erpnext_posting_status SET current_resolution_version = $2 WHERE id = $1`,
-        [input.intentId, version],
-      );
-    }
+    return written > 0 ? version : null;
   }
 
   /**

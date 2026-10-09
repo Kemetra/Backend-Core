@@ -304,3 +304,32 @@ describe("RT-330 — a repair re-offer freezes a new resolution version", () => 
     expect(rows.rows.every((r) => r.by === "operator")).toBe(true);
   });
 });
+
+describe("RT-330 — a repair that cannot freeze does not re-offer", () => {
+  it("eligible but no 'stock' warehouse to freeze → still_failing, row stays dead-lettered", async () => {
+    if (skip) return;
+    await resetDeadletter(0);
+    // Eligibility accepts any active warehouse purpose; the freeze needs 'stock'.
+    await env!.admin.query(
+      `UPDATE erpnext_warehouse_map SET purpose = 'returns'
+        WHERE tenant_id = $1 AND store_id = $2 AND retired_at IS NULL`,
+      [TENANT_A, STORE_A_X],
+    );
+    try {
+      const res = await svc().repairPosting({
+        tenantId: TENANT_A,
+        context: sessionCtx(TENANT_A),
+        actorUserId: ACTOR_A,
+        workItemRef: POSTING_DEADLETTER_A,
+      });
+      expect(res.repair.outcome).toBe("still_failing");
+      expect((await statusRow()).status).toBe("permanently_rejected");
+    } finally {
+      await env!.admin.query(
+        `UPDATE erpnext_warehouse_map SET purpose = 'stock'
+          WHERE tenant_id = $1 AND store_id = $2 AND retired_at IS NULL`,
+        [TENANT_A, STORE_A_X],
+      );
+    }
+  });
+});

@@ -1,13 +1,15 @@
 /**
- * 0037_erpnext_posting_resolution — migration spec (RT-330).
+ * 0037_erpnext_posting_resolution + 0038 backfill — migration spec (RT-330).
  *
  * Seeds two pending sale_post intents BEFORE 0037 runs: one whose line resolves
- * from the current maps and one whose line is unmapped. After 0037:
+ * from the current maps and one whose line is unmapped. After 0037 + 0038:
  *   - the resolvable intent carries resolution v1 (resolved_by = 'backfill')
  *     with the map's ERP item and the store's stock warehouse;
  *   - the unresolvable intent keeps a NULL version and no resolution rows;
- *   - the down migration removes the table and the column, and re-applying
- *     the up migration backfills again.
+ *   - 0037 alone (before 0038) leaves every version NULL: the DDL migration
+ *     does no bulk work while it holds its locks;
+ *   - 0038 is idempotent, and 0037's down removes the table and the column;
+ *     re-applying both backfills again.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -18,6 +20,11 @@ const DRIZZLE_DIR = resolve(__dirname, "..", "..", "drizzle");
 const UP_NAME = "0037_erpnext_posting_resolution.sql";
 const UP_PATH = resolve(DRIZZLE_DIR, UP_NAME);
 const DOWN_PATH = resolve(DRIZZLE_DIR, "0037_erpnext_posting_resolution.down.sql");
+const BACKFILL_PATH = resolve(DRIZZLE_DIR, "0038_erpnext_posting_resolution_backfill.sql");
+const BACKFILL_DOWN_PATH = resolve(
+  DRIZZLE_DIR,
+  "0038_erpnext_posting_resolution_backfill.down.sql",
+);
 
 const TENANT = "0a000000-0000-7000-8000-000000037a01";
 const STORE = "0a000000-0000-7000-8000-000000037a02";
@@ -31,6 +38,7 @@ const INTENT_UNMAPPED = "0a000000-0000-7000-8000-000000037a09";
 const HASH = "c".repeat(64);
 
 let env: PgTestEnv | null = null;
+let versionAfterDdlOnly: number | null | undefined;
 
 function pg(): PgTestEnv {
   if (!env) throw new Error("env not initialized");
@@ -127,13 +135,28 @@ beforeAll(async () => {
   await seedSaleWithIntent(SALE_OK, INTENT_OK, PRODUCT_MAPPED);
   await seedSaleWithIntent(SALE_UNMAPPED, INTENT_UNMAPPED, PRODUCT_UNMAPPED);
   await a.query(readFileSync(UP_PATH, "utf8"));
+  versionAfterDdlOnly = (await resolutionOf(INTENT_OK)).version;
+  await a.query(readFileSync(BACKFILL_PATH, "utf8"));
 }, 240_000);
 
 afterAll(async () => {
   if (env) await stopPgEnv(env);
 }, 60_000);
 
-describe("0037 — backfill freezes resolvable intents only", () => {
+describe("0037 + 0038 — the backfill is a separate migration", () => {
+  it("0037 alone freezes nothing (no bulk work under its locks)", () => {
+    expect(versionAfterDdlOnly).toBeNull();
+  });
+
+  it("0038 is idempotent: a second run leaves exactly one version", async () => {
+    await pg().admin.query(readFileSync(BACKFILL_PATH, "utf8"));
+    const rows = await resolutionOf(INTENT_OK);
+    expect(rows.version).toBe(1);
+    expect(rows.rows).toHaveLength(1);
+  });
+});
+
+describe("0038 — backfill freezes resolvable intents only", () => {
   it("a resolvable pending intent gets resolution v1 from the current maps", async () => {
     expect(await resolutionOf(INTENT_OK)).toEqual({
       version: 1,
@@ -148,6 +171,7 @@ describe("0037 — backfill freezes resolvable intents only", () => {
 
 describe("0037 — reversible", () => {
   it("down removes the table and column; up re-applies and backfills again", async () => {
+    await pg().admin.query(readFileSync(BACKFILL_DOWN_PATH, "utf8"));
     await pg().admin.query(readFileSync(DOWN_PATH, "utf8"));
     const gone = await pg().admin.query(
       `SELECT to_regclass('erpnext_posting_resolution') AS t,
@@ -158,6 +182,7 @@ describe("0037 — reversible", () => {
     expect(gone.rows[0]).toEqual({ t: null, c: 0 });
 
     await pg().admin.query(readFileSync(UP_PATH, "utf8"));
+    await pg().admin.query(readFileSync(BACKFILL_PATH, "utf8"));
     expect((await resolutionOf(INTENT_OK)).version).toBe(1);
   });
 });

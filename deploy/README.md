@@ -71,7 +71,9 @@ op run --env-file=deploy/grants.env -- sh -c \
   'psql -X -v domain_role="$DOMAIN_DB_ROLE" \
         -f docs/operations/sql/cashier-admissions-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/shift-cash-up-domain-grants.sql'
+        -f docs/operations/sql/shift-cash-up-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
+        -f docs/operations/sql/erpnext-posting-resolution-domain-grants.sql'
 
 # 3. Start everything (migrate re-runs as a no-op, then api/worker start).
 op run --env-file=deploy/prod.env -- \
@@ -117,7 +119,8 @@ git pull
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml run --rm --build migrate
 op run --env-file=deploy/grants.env -- sh -c \
   'psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/cashier-admissions-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/shift-cash-up-domain-grants.sql'
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/shift-cash-up-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/erpnext-posting-resolution-domain-grants.sql'
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d --build
 # stop
 docker compose -f docker-compose.prod.yml down            # keeps volumes (redis AOF, caddy certs)

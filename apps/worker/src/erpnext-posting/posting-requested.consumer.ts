@@ -100,6 +100,18 @@ export class ReversalAwaitingSalePostError extends Error {
   }
 }
 
+/**
+ * RT-330: an intent judged `pending` could not freeze its ERP resolution (a map
+ * changed between the eligibility read and the freeze). Thrown inside the
+ * creation transaction so the insert rolls back and the outbox redelivers.
+ */
+export class PostingResolutionNotFrozenError extends Error {
+  constructor(intentId: string) {
+    super(`posting intent ${intentId}: resolution could not be frozen; retrying`);
+    this.name = "PostingResolutionNotFrozenError";
+  }
+}
+
 /** Log seam (tests inject one); production uses the shared pino logger. */
 export type PostingRequestedLogger = Pick<Logger, "warn" | "error">;
 
@@ -284,7 +296,8 @@ export class PostingRequestedConsumer
    * lineage, ERP Integration baseline); when that sale_post has none it
    * resolves from the current maps like a sale_post. Each INSERT is all-or-
    * nothing: it writes every line or none, so the feed never sees a partial
-   * version. If nothing was written the row keeps the live join (NULL version).
+   * version. If nothing could be frozen it throws
+   * {@link PostingResolutionNotFrozenError}, rolling the intent back.
    */
   private async freezeResolution(
     client: PoolClient,
@@ -338,13 +351,18 @@ export class PostingRequestedConsumer
       );
       written = resolved.rowCount ?? 0;
     }
-    if (written > 0) {
-      await client.query(
-        `UPDATE erpnext_posting_status SET current_resolution_version = 1
-          WHERE id = $1`,
-        [input.intentId],
-      );
+    // A mapping can change between the eligibility read and this INSERT
+    // (READ COMMITTED). A pending intent left without a frozen version would
+    // fall back to the live join, so abort: the transaction (and the insert)
+    // rolls back and the outbox redelivers, re-evaluating eligibility.
+    if (written === 0) {
+      throw new PostingResolutionNotFrozenError(input.intentId);
     }
+    await client.query(
+      `UPDATE erpnext_posting_status SET current_resolution_version = 1
+        WHERE id = $1`,
+      [input.intentId],
+    );
   }
 
   /**
