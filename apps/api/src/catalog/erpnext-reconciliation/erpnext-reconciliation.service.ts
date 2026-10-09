@@ -46,6 +46,13 @@ import {
 } from "./reconciliation-report.projection";
 import { callerStoreScope, inStoreScope, scopeStoreIds } from "../../context/operator-store-scope";
 import { RECONCILIATION_REQUIRED_CATEGORY } from "../erpnext-posting/erpnext-posting.service";
+import {
+  type AuditEventInput,
+  type FreezeResolutionInput,
+  freezeOperatorResolution,
+  insertAuditEvent,
+  isStoreWritable,
+} from "./posting-resolution.writer";
 
 /** Hard ceiling on a single backlog page — the 012/009 500/req convention. */
 export const BACKLOG_MAX_PAGE = 500;
@@ -367,73 +374,14 @@ export class ErpnextReconciliationService {
   }
 
   /**
-   * RT-330: a repair re-offer happens before any ERP side effect, so it is an
-   * explicit, audited re-resolution (ERP Integration baseline): write version
-   * n+1 (`resolved_by = 'operator'`) and point the row at it. A reversal copies
-   * its sale's `sale_post` current resolution (original lineage); otherwise the
-   * current maps are read. Each INSERT is all-or-nothing over the sale lines
-   * (the worker's `freezeResolution` copy — SQL is duplicated per package).
-   * Returns the frozen version, or null when nothing could be frozen.
+   * RT-330: a repair re-offer is an explicit, audited re-resolution before any
+   * ERP side effect — see {@link freezeOperatorResolution}.
    */
-  private async freezeRepairResolution(
+  private freezeRepairResolution(
     client: PoolClient,
-    input: {
-      tenantId: string;
-      intentId: string;
-      kind: "sale_post" | "reversal";
-      saleId: string;
-      storeId: string;
-    },
+    input: FreezeResolutionInput,
   ): Promise<number | null> {
-    const next = await client.query<{ v: number }>(
-      `SELECT COALESCE(MAX(resolution_version), 0) + 1 AS v
-         FROM erpnext_posting_resolution WHERE intent_id = $1`,
-      [input.intentId],
-    );
-    const version = next.rows[0]!.v;
-    let written = 0;
-    if (input.kind === "reversal") {
-      const copied = await client.query(
-        `INSERT INTO erpnext_posting_resolution
-           (tenant_id, intent_id, resolution_version, sale_line_id,
-            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by)
-         SELECT $1, $2, $3, r.sale_line_id,
-                r.erpnext_item_ref, r.item_map_id, r.warehouse_ref, r.warehouse_map_id, 'operator'
-           FROM erpnext_posting_status sp
-           JOIN erpnext_posting_resolution r
-             ON r.intent_id = sp.id AND r.resolution_version = sp.current_resolution_version
-          WHERE sp.tenant_id = $1 AND sp.kind = 'sale_post'
-            AND sp.sale_id = $4 AND sp.source_ref_id = $4`,
-        [input.tenantId, input.intentId, version, input.saleId],
-      );
-      written = copied.rowCount ?? 0;
-    }
-    if (written === 0) {
-      const resolved = await client.query(
-        `INSERT INTO erpnext_posting_resolution
-           (tenant_id, intent_id, resolution_version, sale_line_id,
-            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by)
-         SELECT $1, $2, $3, sl.id, m.erpnext_item_ref, m.id,
-                w.erpnext_warehouse_ref, w.id, 'operator'
-           FROM sale_lines sl
-           JOIN erpnext_warehouse_map w
-             ON w.store_id = $5 AND w.purpose = 'stock' AND w.retired_at IS NULL
-           JOIN erpnext_item_map m
-             ON m.tenant_product_id = sl.tenant_product_ref
-            AND m.state = 'confirmed' AND m.retired_at IS NULL
-          WHERE sl.sale_id = $4
-            AND NOT EXISTS (
-              SELECT 1 FROM sale_lines ul
-                LEFT JOIN erpnext_item_map um
-                  ON um.tenant_product_id = ul.tenant_product_ref
-                 AND um.state = 'confirmed' AND um.retired_at IS NULL
-               WHERE ul.sale_id = $4
-                 AND (ul.tenant_product_ref IS NULL OR um.id IS NULL))`,
-        [input.tenantId, input.intentId, version, input.saleId, input.storeId],
-      );
-      written = resolved.rowCount ?? 0;
-    }
-    return written > 0 ? version : null;
+    return freezeOperatorResolution(client, input);
   }
 
   /**
@@ -704,32 +652,22 @@ export class ErpnextReconciliationService {
    * store) and live (`deleted_at IS NULL`). Runs on the tenant-scoped client, so
    * a foreign-tenant store never resolves either (RLS).
    */
-  private async storeWritable(
+  private storeWritable(
     client: PoolClient,
     input: ScopedInput,
     storeId: string,
   ): Promise<boolean> {
-    const scope = await callerStoreScope(client, this.memberships, input);
-    if (!inStoreScope(scope, storeId)) return false;
-    const store = await client.query<{ id: string }>(
-      `SELECT id FROM stores WHERE id = $1 AND deleted_at IS NULL`,
-      [storeId],
-    );
-    return store.rows.length > 0;
+    return isStoreWritable(client, this.memberships, input, storeId);
   }
 
   /** Shared in-transaction platform audit insert (FR-014; same tx client, no PII). */
-  private async insertAudit(
+  private insertAudit(
     client: PoolClient,
     tenantId: string,
     actorUserId: string,
-    opts: { action: string; targetType: string; targetId: string; metadata: Record<string, unknown> },
+    opts: AuditEventInput,
   ): Promise<void> {
-    await client.query(
-      `INSERT INTO audit_events (id, actor_user_id, tenant_id, action, target_type, target_id, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
-      [newId(), actorUserId, tenantId, opts.action, opts.targetType, opts.targetId, JSON.stringify(opts.metadata)],
-    );
+    return insertAuditEvent(client, tenantId, actorUserId, opts);
   }
 }
 

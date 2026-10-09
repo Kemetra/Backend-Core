@@ -16,6 +16,7 @@ import { AUDIT_JOB_ENQUEUER } from "../../../../src/audit/audit-job.enqueuer";
 import { RolesGuard } from "../../../../src/auth/roles.guard";
 import { ErpnextReconciliationModule } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.module";
 import { ErpnextReconciliationController } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.controller";
+import { ErpnextPostingReResolutionService } from "../../../../src/catalog/erpnext-reconciliation/posting-re-resolution.service";
 import { ErpnextReconciliationService } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.service";
 import { NegativeOnHandController } from "../../../../src/catalog/erpnext-reconciliation/negative-on-hand.controller";
 import { NegativeOnHandService } from "../../../../src/catalog/erpnext-reconciliation/negative-on-hand.service";
@@ -38,6 +39,10 @@ describe("ErpnextReconciliationModule — DI wiring", () => {
     );
     expect(moduleRef.get(ErpnextReconciliationService)).toBeInstanceOf(
       ErpnextReconciliationService,
+    );
+    // RT-333 — the re-resolve route's service is wired in the same module.
+    expect(moduleRef.get(ErpnextPostingReResolutionService)).toBeInstanceOf(
+      ErpnextPostingReResolutionService,
     );
     // RT-177 — the read-only negative on-hand view is wired in the same module.
     expect(moduleRef.get(NegativeOnHandController)).toBeInstanceOf(NegativeOnHandController);

@@ -38,6 +38,7 @@ import { TenantContextGuard } from "../../../../src/context/tenant-context.guard
 import type { ResolvedContext } from "../../../../src/context/types";
 import { ErpnextReconciliationController } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.controller";
 import { ErpnextReconciliationService } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.service";
+import { ErpnextPostingReResolutionService } from "../../../../src/catalog/erpnext-reconciliation/posting-re-resolution.service";
 import { MembershipRepository } from "../../../../src/context/membership.repository";
 import {
   applyAllUpAndCreateAppRole,
@@ -127,6 +128,7 @@ beforeAll(async () => {
     providers: [
       { provide: PG_POOL, useFactory: (): Pool => localEnv.app },
       ErpnextReconciliationService,
+      ErpnextPostingReResolutionService,
       // RT-191: the service reads the caller's role for the store scope.
       { provide: MembershipRepository, useFactory: (): MembershipRepository => new MembershipRepository(localEnv.app) },
     ],

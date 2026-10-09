@@ -47,12 +47,14 @@ const OPERATION_IDS = [
   "getReconciliationRun",
   "listReconciliationResults",
   "repairStockMismatch",
+  "reResolvePosting",
 ] as const;
 
 const MUTATING_IDEMPOTENT_OPS = [
   "repairPosting",
   "triggerReconciliationRun",
   "repairStockMismatch",
+  "reResolvePosting",
 ] as const;
 
 function openapiSubDir(sub: string): string {
@@ -154,7 +156,7 @@ describe("erpnext-reconciliation/reconciliation.yaml — loadability", () => {
 });
 
 describe("erpnext-reconciliation/reconciliation.yaml — operations", () => {
-  it("declares all six 017 operationIds", () => {
+  it("declares the 017 operationIds (+ RT-333 reResolvePosting)", () => {
     for (const id of OPERATION_IDS) expect(findOp(id)).toBeDefined();
   });
   it("does NOT collide with or rename any shipped operationId", () => {

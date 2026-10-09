@@ -21,6 +21,7 @@ import {
   StoreNotFoundError,
   type ErpnextReconciliationService,
 } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.service";
+import type { ErpnextPostingReResolutionService } from "../../../../src/catalog/erpnext-reconciliation/posting-re-resolution.service";
 import type { TenantContextRequest } from "../../../../src/context/types";
 
 const TENANT = "01900000-0000-7000-8000-0000000000a1";
@@ -41,7 +42,10 @@ const noCtxReq = reqWith(undefined);
 const res = () => ({ setHeader: jest.fn(), status: jest.fn() }) as never;
 
 function controllerWith(svc: Partial<ErpnextReconciliationService>): ErpnextReconciliationController {
-  return new ErpnextReconciliationController(svc as ErpnextReconciliationService);
+  return new ErpnextReconciliationController(
+    svc as ErpnextReconciliationService,
+    {} as ErpnextPostingReResolutionService,
+  );
 }
 
 describe("017 controller — auth context guards", () => {

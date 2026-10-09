@@ -12,6 +12,10 @@
  *     same-key/different-body;
  *   - cross-tenant workItemRef → non-disclosing 404;
  *   - strict body: a smuggled server-owned field → 400.
+ * RT-333 adds the re-resolve route on the same surface: the key is required, the
+ * body is strict, a cross-tenant ref is a 404 and a non-pending intent is a 409
+ * `not_re_resolvable` (the re-resolution itself is proven in
+ * ../repair/posting-re-resolve.spec.ts).
  *
  * Docker policy: HARD failure unless MIGRATION_TEST_ALLOW_SKIP=1.
  */
@@ -46,6 +50,7 @@ import {
 } from "../../../../src/idempotency/in-progress-marker";
 import { ErpnextReconciliationController } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.controller";
 import { ErpnextReconciliationService } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.service";
+import { ErpnextPostingReResolutionService } from "../../../../src/catalog/erpnext-reconciliation/posting-re-resolution.service";
 import { MembershipRepository } from "../../../../src/context/membership.repository";
 import {
   applyAllUpAndCreateAppRole,
@@ -189,6 +194,7 @@ beforeAll(async () => {
   const providers: Provider[] = [
     { provide: PG_POOL, useFactory: (): Pool => localEnv.app },
     ErpnextReconciliationService,
+    ErpnextPostingReResolutionService,
     // RT-191: the service reads the caller's role for the store scope.
     { provide: MembershipRepository, useFactory: (): MembershipRepository => new MembershipRepository(localEnv.app) },
     { provide: IDEMPOTENCY_KEY_STORE, useValue: idempStore },
@@ -289,6 +295,45 @@ describe("017-US2 HTTP — §XII", () => {
     await http()
       .post(repairUrl(DEADLETTER_B)) // tenant B's row, tenant A session
       .set("idempotency-key", idemp("c"))
+      .send({})
+      .expect(404);
+  });
+});
+
+const reResolveUrl = (ref: string) =>
+  `/api/v1/catalog/erpnext-reconciliation/postings/${ref}/re-resolve`;
+
+describe("RT-333 HTTP — re-resolve", () => {
+  it("missing Idempotency-Key → 400", async () => {
+    if (skip()) return;
+    await http().post(reResolveUrl(POSTING_DEADLETTER_A)).send({}).expect(400);
+  });
+
+  it("a smuggled server-owned field → 400 (strict body)", async () => {
+    if (skip()) return;
+    await http()
+      .post(reResolveUrl(POSTING_DEADLETTER_A))
+      .set("idempotency-key", idemp("rr-x"))
+      .send({ tenant_id: TENANT_B })
+      .expect(400);
+  });
+
+  it("a dead-lettered (non-pending) intent → 409 not_re_resolvable", async () => {
+    if (skip()) return;
+    await resetDeadletter();
+    const res = await http()
+      .post(reResolveUrl(POSTING_DEADLETTER_A))
+      .set("idempotency-key", idemp("rr-c"))
+      .send({})
+      .expect(409);
+    expect(res.body.error.code).toBe("not_re_resolvable");
+  });
+
+  it("a cross-tenant workItemRef → 404 not_found", async () => {
+    if (skip()) return;
+    await http()
+      .post(reResolveUrl(DEADLETTER_B))
+      .set("idempotency-key", idemp("rr-n"))
       .send({})
       .expect(404);
   });

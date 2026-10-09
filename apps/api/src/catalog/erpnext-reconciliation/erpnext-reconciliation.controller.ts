@@ -18,6 +18,7 @@
  */
 import {
   Body,
+  ConflictException,
   Controller,
   Get,
   HttpCode,
@@ -64,6 +65,11 @@ import {
   type ReconciliationRunBody,
   type ReconciliationResultBody,
 } from "./erpnext-reconciliation.service";
+import {
+  ErpnextPostingReResolutionService,
+  ReResolveConflictError,
+  type RecordedReResolution,
+} from "./posting-re-resolution.service";
 import type { PostingBacklogItem } from "./reconciliation-report.projection";
 
 interface PostingBacklogPageResponse {
@@ -74,7 +80,10 @@ interface PostingBacklogPageResponse {
 @Controller()
 @UseGuards(DashboardAuthGuard, TenantContextGuard)
 export class ErpnextReconciliationController {
-  constructor(private readonly service: ErpnextReconciliationService) {}
+  constructor(
+    private readonly service: ErpnextReconciliationService,
+    private readonly reResolution: ErpnextPostingReResolutionService,
+  ) {}
 
   /** The read context: tenant + the session context whose store scope bounds the read (RT-192). */
   private requireTenant(request: TenantContextRequest): { tenantId: string; context: ResolvedContext } {
@@ -153,6 +162,37 @@ export class ErpnextReconciliationController {
     } catch (err) {
       if (err instanceof RepairNotFoundError) {
         throw new NotFoundException({ code: "not_found", message: "Work item not found." });
+      }
+      throw err;
+    }
+  }
+
+  /** POST — re-resolve a pending posting intent from the current maps (RT-333). */
+  // NO @Auditable: the service writes the audit_events row IN-TRANSACTION, as repair does.
+  @Post("api/v1/catalog/erpnext-reconciliation/postings/:workItemRef/re-resolve")
+  @Idempotent("required")
+  @UseGuards(RolesGuard)
+  @Roles("owner", "tenant_admin")
+  @HttpCode(201)
+  async reResolvePosting(
+    @Req() request: TenantContextRequest,
+    @Param("workItemRef", new ParseUUIDPipe()) workItemRef: string,
+    @Body(new ZodValidationPipe(RepairPostingBodySchema)) _body: RepairPostingBody,
+  ): Promise<RecordedReResolution> {
+    const { tenantId, userId, context } = this.requireContext(request);
+    try {
+      return await this.reResolution.reResolvePosting({
+        tenantId,
+        context,
+        actorUserId: userId,
+        workItemRef,
+      });
+    } catch (err) {
+      if (err instanceof RepairNotFoundError) {
+        throw new NotFoundException({ code: "not_found", message: "Work item not found." });
+      }
+      if (err instanceof ReResolveConflictError) {
+        throw new ConflictException({ code: "not_re_resolvable", message: err.message });
       }
       throw err;
     }
