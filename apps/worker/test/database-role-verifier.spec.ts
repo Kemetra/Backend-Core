@@ -110,6 +110,7 @@ describe("verifyWorkerDatabaseRole — RT-353 retention marker", () => {
 
 interface RetentionRow {
   role_name: string;
+  session_role: string;
   is_superuser: boolean;
   bypass_rls: boolean;
   can_select: boolean;
@@ -119,6 +120,7 @@ interface RetentionRow {
 
 const GOOD_RETENTION: RetentionRow = {
   role_name: "audit_retention_worker",
+  session_role: "audit_retention_worker",
   is_superuser: false,
   bypass_rls: false,
   can_select: true,
@@ -158,10 +160,19 @@ describe("verifyAuditRetentionRole (RT-353)", () => {
     ).rejects.toThrow(/must be non-superuser and must not have BYPASSRLS/);
   });
 
+  it("rejects a session that only switched to the role (session_user differs)", async () => {
+    await expect(
+      verifyAuditRetentionRole(
+        retentionPool({ ...GOOD_RETENTION, session_role: "postgres" }),
+        domainPool(),
+      ),
+    ).rejects.toThrow(/must log in as itself/);
+  });
+
   it("rejects the same role as DATABASE_URL", async () => {
     await expect(
       verifyAuditRetentionRole(
-        retentionPool({ ...GOOD_RETENTION, role_name: "app_domain" }),
+        retentionPool({ ...GOOD_RETENTION, role_name: "app_domain", session_role: "app_domain" }),
         domainPool("app_domain"),
       ),
     ).rejects.toThrow(/must be a different role from DATABASE_URL/);

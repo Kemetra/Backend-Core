@@ -154,8 +154,9 @@ their credentials before serving and refuse to start on a violation:
   is not covered. The check also refuses a role that is a member, even
   without `INHERIT`, of any role that can mark retention, since `SET ROLE`
   would reach it.
-- **Worker, audit retention role:** its `AUDIT_RETENTION_DATABASE_URL` role is
-  a different role from `DATABASE_URL`, is not a superuser, does not have
+- **Worker, audit retention role:** its `AUDIT_RETENTION_DATABASE_URL` login is
+  the role itself (no `options=-c role=…` switch from another login), is a
+  different role from `DATABASE_URL`, is not a superuser, does not have
   `BYPASSRLS`, holds `SELECT` and `UPDATE (retention_marked_at)` on
   `audit_events`, holds no other privilege on that table, and is a member of
   no role (RT-353). Its grants on other tables are not checked: grant it

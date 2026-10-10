@@ -55,6 +55,7 @@ export async function verifyWorkerDatabaseRole(pool: Pool): Promise<void> {
 
 interface RetentionRoleRow {
   role_name: string;
+  session_role: string;
   is_superuser: boolean;
   bypass_rls: boolean;
   can_select: boolean;
@@ -75,6 +76,7 @@ export async function verifyAuditRetentionRole(
 ): Promise<void> {
   const result = await retentionPool.query<RetentionRoleRow>(
     `SELECT current_user AS role_name,
+            session_user AS session_role,
             r.rolsuper AS is_superuser,
             r.rolbypassrls AS bypass_rls,
             has_table_privilege('audit_events', 'SELECT') AS can_select,
@@ -107,6 +109,16 @@ export async function verifyAuditRetentionRole(
   const role = result.rows[0];
   if (!role) {
     throw new Error("WorkerModule: AUDIT_RETENTION_DATABASE_URL role could not be resolved");
+  }
+  // A URL can log in as a privileged role and switch with `options=-c role=…`:
+  // current_user is then the retention role, but RESET ROLE restores the
+  // login's own privileges. Every check below is about current_user, so the
+  // login itself must be the retention role.
+  if (role.session_role !== role.role_name) {
+    throw new Error(
+      "WorkerModule: AUDIT_RETENTION_DATABASE_URL role must log in as itself, " +
+        "not switch to it from another login",
+    );
   }
   if (role.is_superuser || role.bypass_rls) {
     throw new Error(

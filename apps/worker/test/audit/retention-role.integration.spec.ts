@@ -14,7 +14,7 @@
  * The boot checks are run against real grants, so their privilege SQL is
  * proven, not just their branching.
  */
-import type { Pool } from "pg";
+import { Pool } from "pg";
 
 import {
   applyAllUpAndCreateAppRole,
@@ -145,6 +145,27 @@ describe("RT-353 — boot checks against real grants", () => {
     await expect(verifyAuditRetentionRole(h.env.app, h.env.app)).rejects.toThrow(
       /must be a different role from DATABASE_URL/,
     );
+  });
+
+  it("refuse a privileged login that only switches to the retention role", async () => {
+    const h = handles();
+    if (!h) return;
+    // A URL with `options=-c role=...` makes current_user the retention role
+    // while session_user stays privileged (RESET ROLE would restore it).
+    const masquerade = new Pool({
+      connectionString: h.env.adminUri,
+      options: `-c role=${RETENTION_WORKER_ROLE}`,
+      max: 1,
+    });
+    try {
+      const who = await masquerade.query<{ cu: string }>("SELECT current_user AS cu");
+      expect(who.rows[0]!.cu).toBe(RETENTION_WORKER_ROLE); // the switch did happen
+      await expect(verifyAuditRetentionRole(masquerade, h.env.app)).rejects.toThrow(
+        /must log in as itself/,
+      );
+    } finally {
+      await masquerade.end();
+    }
   });
 
   it("refuse a retention role without its column grant", async () => {
