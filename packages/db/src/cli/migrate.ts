@@ -22,7 +22,7 @@
 import { readFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { Client } from "pg";
+import { Client, DatabaseError } from "pg";
 
 const ADVISORY_LOCK_NAMESPACE = "data-pulse-2:migrate";
 
@@ -81,6 +81,22 @@ async function releaseLock(client: Client): Promise<void> {
   );
 }
 
+/**
+ * RT-346: run one migration's SQL and, if it fails, name the migration and
+ * the database's SQLSTATE in the error the operator sees.
+ */
+async function withMigrationContext<T>(id: string, work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Only a server error carries a SQLSTATE; a dropped socket's code
+    // (ECONNRESET, EPIPE) is not one.
+    const sqlstate = err instanceof DatabaseError && err.code ? ` (SQLSTATE ${err.code})` : "";
+    throw new Error(`${id}: ${message}${sqlstate}`, { cause: err });
+  }
+}
+
 async function runUp(client: Client, dir: string): Promise<void> {
   const all = await listMigrations(dir);
   const applied = await appliedIds(client);
@@ -94,7 +110,7 @@ async function runUp(client: Client, dir: string): Promise<void> {
   for (const m of pending) {
     console.log(`up: applying ${m.id}`);
     const sql = readFileSync(m.upPath, "utf8");
-    await client.query(sql);
+    await withMigrationContext(m.id, () => client.query(sql));
     await client.query("INSERT INTO _drizzle_migrations (id) VALUES ($1)", [
       m.id,
     ]);
@@ -124,7 +140,7 @@ async function runDown(client: Client, dir: string): Promise<void> {
   }
   console.log(`down: rolling back ${lastId}`);
   const sql = readFileSync(target.downPath, "utf8");
-  await client.query(sql);
+  await withMigrationContext(`${lastId}.down`, () => client.query(sql));
   await client.query("DELETE FROM _drizzle_migrations WHERE id = $1", [lastId]);
   console.log(`down: rolled back ${lastId}`);
 }
@@ -153,6 +169,28 @@ function resolveMigrationsDir(): string {
   return resolve(__dirname, "..", "..", "drizzle");
 }
 
+/**
+ * Run `work` under the advisory lock, then release it. A migration file
+ * carries its own BEGIN/COMMIT, so a failure leaves the connection in an
+ * aborted transaction: roll it back before unlocking, and never let an
+ * unlock error replace the original one (RT-346).
+ */
+async function runThenUnlock(client: Client, work: () => Promise<void>): Promise<void> {
+  let failure: unknown = null;
+  try {
+    await work();
+  } catch (err: unknown) {
+    failure = err;
+    await client.query("ROLLBACK").catch(() => undefined);
+  }
+  try {
+    await releaseLock(client);
+  } catch (unlockErr: unknown) {
+    if (failure === null) throw unlockErr;
+  }
+  if (failure !== null) throw failure;
+}
+
 async function main(): Promise<void> {
   const cmd = process.argv[2];
   if (!cmd) {
@@ -177,13 +215,11 @@ async function main(): Promise<void> {
   try {
     await ensureLedger(client);
     await takeLock(client);
-    try {
+    await runThenUnlock(client, async () => {
       if (cmd === "up") await runUp(client, dir);
       else if (cmd === "down") await runDown(client, dir);
       else await runStatus(client, dir);
-    } finally {
-      await releaseLock(client);
-    }
+    });
   } finally {
     await client.end();
   }
