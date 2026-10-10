@@ -4,7 +4,7 @@ Production uses three independent PostgreSQL credentials.
 
 | Environment variable | Purpose | Required posture |
 | --- | --- | --- |
-| `MIGRATION_DATABASE_URL` | One-shot schema migration | DDL-capable owner, `NOCREATEROLE`; never injected into API or worker |
+| `MIGRATION_DATABASE_URL` | One-shot schema migration | DDL-capable owner, `NOSUPERUSER NOCREATEROLE`; never injected into API or worker |
 | `DATABASE_URL` | Tenant/domain runtime | Non-superuser, `NOBYPASSRLS`; tenant access only inside `runWithTenantContext` |
 | `AUTH_LOOKUP_DATABASE_URL` | Pre-tenant authentication/bootstrap | Distinct non-superuser role with only the table operations listed below |
 
@@ -23,7 +23,8 @@ the lookup role holds any privilege on `tenants` (`AUTH_LOOKUP_FORBIDDEN_GRANTS`
 Migration `0005_audit_retention_privileges` grants the audit-retention
 privileges to a `NOLOGIN` role, `audit_retention_worker`, and creates it only
 when it does not exist yet. Creating a role needs `CREATEROLE`, and the
-migration owner does not have it: it keeps least privilege (RT-345). So a
+migration owner does not have it: it keeps least privilege (RT-345), so it is
+also not a superuser (a superuser bypasses the `CREATEROLE` check). So a
 superuser (on managed PostgreSQL, the provider's admin user or any role with
 `CREATEROLE`) creates the role **once per database cluster, before the first
 `migrate up`**:
@@ -37,11 +38,17 @@ create role`; the earlier migrations stay applied, and re-running after
 creating the role resumes at 0005. The role is created `NOLOGIN`; 0005 still issues its grants,
 as the owner of `audit_events` and of the database.
 
-Rolling 0005 back (`0005_audit_retention_privileges.down.sql`) drops the role,
-which also needs `CREATEROLE`:
+Rolling 0005 back (`0005_audit_retention_privileges.down.sql`) revokes the
+grants on `audit_events` and `public` and then drops the role, in one
+transaction. The revokes need the objects' owner and the drop needs
+`CREATEROLE`, so neither the migration owner nor a managed-PostgreSQL admin
+user can run it alone:
 
-- `migrate down` uses `MIGRATION_DATABASE_URL`, so run that rollback with a
-  superuser connection.
+- `migrate down` uses `MIGRATION_DATABASE_URL`, so roll 0005 back only with a
+  true superuser connection.
+- On managed PostgreSQL without a superuser, rolling 0005 back is not
+  supported: leave it applied. It only adds a `NOLOGIN` role and its grants;
+  roll back the migrations above it as usual.
 - Re-create the role before 0005 is applied again.
 - Roles are cluster-wide but grants are per database: if another database in
   the cluster still grants privileges to the role, `DROP ROLE` fails until
