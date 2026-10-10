@@ -168,6 +168,25 @@ describe("RT-353 — boot checks against real grants", () => {
     }
   });
 
+  it("refuse a retention URL that reaches another database", async () => {
+    const h = handles();
+    if (!h) return;
+    // Same server, same role, another database: think of a staging copy.
+    await h.env.admin.query("CREATE DATABASE rt353_other");
+    const other = new Pool({
+      connectionString: `postgres://${RETENTION_WORKER_ROLE}:${RETENTION_WORKER_PASSWORD}@${h.env.host}:${h.env.port}/rt353_other`,
+      max: 1,
+    });
+    try {
+      await expect(verifyAuditRetentionRole(other, h.env.app)).rejects.toThrow(
+        /must connect to the same database as DATABASE_URL/,
+      );
+    } finally {
+      await other.end();
+      await h.env.admin.query("DROP DATABASE rt353_other");
+    }
+  });
+
   it("refuse a retention role without its column grant", async () => {
     const h = handles();
     if (!h) return;

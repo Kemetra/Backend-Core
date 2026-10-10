@@ -108,9 +108,14 @@ describe("verifyWorkerDatabaseRole — RT-353 retention marker", () => {
   });
 });
 
+const DB_ID = { db_name: "rt", db_oid: "16384", server_started: "2026-10-10 14:00:00+00" };
+
 interface RetentionRow {
   role_name: string;
   session_role: string;
+  db_name: string;
+  db_oid: string;
+  server_started: string;
   is_superuser: boolean;
   bypass_rls: boolean;
   can_select: boolean;
@@ -121,6 +126,7 @@ interface RetentionRow {
 const GOOD_RETENTION: RetentionRow = {
   role_name: "audit_retention_worker",
   session_role: "audit_retention_worker",
+  ...DB_ID,
   is_superuser: false,
   bypass_rls: false,
   can_select: true,
@@ -133,8 +139,8 @@ function retentionPool(row: RetentionRow | null): Pool {
   return { query } as unknown as Pool;
 }
 
-function domainPool(roleName = "app_domain"): Pool {
-  const query = jest.fn(async () => ({ rows: [{ role_name: roleName }] }));
+function domainPool(roleName = "app_domain", id: Partial<typeof DB_ID> = {}): Pool {
+  const query = jest.fn(async () => ({ rows: [{ role_name: roleName, ...DB_ID, ...id }] }));
   return { query } as unknown as Pool;
 }
 
@@ -167,6 +173,15 @@ describe("verifyAuditRetentionRole (RT-353)", () => {
         domainPool(),
       ),
     ).rejects.toThrow(/must log in as itself/);
+  });
+
+  it.each([
+    ["another database on the same server", { db_name: "rt_staging", db_oid: "16999" }],
+    ["the same database name on another server", { server_started: "2026-10-01 09:00:00+00" }],
+  ])("rejects a retention URL pointing at %s", async (_name, id) => {
+    await expect(
+      verifyAuditRetentionRole(retentionPool(GOOD_RETENTION), domainPool("app_domain", id)),
+    ).rejects.toThrow(/must connect to the same database as DATABASE_URL/);
   });
 
   it("rejects the same role as DATABASE_URL", async () => {

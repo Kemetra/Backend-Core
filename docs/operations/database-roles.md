@@ -155,7 +155,8 @@ their credentials before serving and refuse to start on a violation:
   without `INHERIT`, of any role that can mark retention, since `SET ROLE`
   would reach it.
 - **Worker, audit retention role:** its `AUDIT_RETENTION_DATABASE_URL` login is
-  the role itself (no `options=-c role=…` switch from another login), is a
+  the role itself (no `options=-c role=…` switch from another login), reaches
+  the same database as `DATABASE_URL` (same name, OID and server), is a
   different role from `DATABASE_URL`, is not a superuser, does not have
   `BYPASSRLS`, holds `SELECT` and `UPDATE (retention_marked_at)` on
   `audit_events`, holds no other privilege on that table, and is a member of
