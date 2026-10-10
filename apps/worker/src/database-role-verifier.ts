@@ -25,7 +25,8 @@ export async function verifyWorkerDatabaseRole(pool: Pool): Promise<void> {
             r.rolbypassrls AS bypass_rls,
             (has_column_privilege('audit_events', 'retention_marked_at', 'UPDATE')
               -- has_column_privilege counts inherited privileges only; a
-              -- NOINHERIT membership is still reachable through SET ROLE.
+              -- NOINHERIT membership can still be reached through SET ROLE
+              -- (unless granted WITH SET FALSE, PG16+). Refuse any membership.
               OR EXISTS (
                 SELECT 1
                   FROM pg_roles g
@@ -56,11 +57,13 @@ export async function verifyWorkerDatabaseRole(pool: Pool): Promise<void> {
 /**
  * The database a connection reached: name and OID within the server, and the
  * server's start time, which tells two servers (say production and a staging
- * copy with the same roles) apart. All three are readable by any role.
+ * copy with the same roles) apart. All three are readable by any role. The
+ * start time is compared as an epoch: its text form follows each session's
+ * TimeZone and DateStyle.
  */
 const DB_IDENTITY_COLUMNS = `current_database() AS db_name,
             (SELECT d.oid FROM pg_database d WHERE d.datname = current_database())::text AS db_oid,
-            pg_postmaster_start_time()::text AS server_started`;
+            extract(epoch FROM pg_postmaster_start_time())::text AS server_started`;
 
 interface DbIdentity {
   db_name: string;
@@ -166,8 +169,9 @@ export async function verifyAuditRetentionRole(
                       THEN has_table_privilege('audit_events', 'MAINTAIN')
                       ELSE false END
               -- has_*_privilege counts inherited privileges only: a NOINHERIT
-              -- membership could still reach more through SET ROLE, so the
-              -- retention role may be a member of no role at all.
+              -- membership can still reach more through SET ROLE (unless granted
+              -- WITH SET FALSE, PG16+). As a conservative rule, the retention
+              -- role may be a member of no role at all.
               OR EXISTS (
                 SELECT 1
                   FROM pg_auth_members m

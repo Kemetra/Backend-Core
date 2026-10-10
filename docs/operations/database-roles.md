@@ -50,7 +50,8 @@ creating the role resumes at 0005. 0005 then issues its grants, as the owner of
 `audit_events` and of the database. Do not grant the role anything else: the
 worker refuses to boot if it holds any other privilege on `audit_events`
 (`MAINTAIN` included, on PostgreSQL 17+) or is a member of any role, even
-without `INHERIT`.
+without `INHERIT` or `SET` (a conservative rule: such a membership could
+otherwise reach more privileges through `SET ROLE`).
 
 **Existing databases** (deployed before RT-353). Before upgrading:
 
@@ -151,9 +152,11 @@ their credentials before serving and refuse to start on a violation:
   this role but does not run this check itself: in production the worker's
   check covers it, because both use the same `DATABASE_URL`. A deployment
   that runs the API without this worker, or with a different `DATABASE_URL`,
-  is not covered. The check also refuses a role that is a member, even
-  without `INHERIT`, of any role that can mark retention, since `SET ROLE`
-  would reach it.
+  is not covered. As a conservative rule, the check also refuses a role
+  that is a member, even without `INHERIT`, of any role that can mark
+  retention. Such a membership can reach the privilege through `SET ROLE`
+  unless it was granted `WITH SET FALSE` (PostgreSQL 16+); the check does not
+  make that distinction.
 - **Worker, audit retention role:** its `AUDIT_RETENTION_DATABASE_URL` login is
   the role itself (no `options=-c role=…` switch from another login), reaches
   the same database as `DATABASE_URL` (same name, OID and server), is a

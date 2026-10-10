@@ -17,6 +17,8 @@
 import { Pool } from "pg";
 
 import {
+  APP_ROLE_NAME,
+  APP_ROLE_PASSWORD,
   applyAllUpAndCreateAppRole,
   createRetentionWorkerPool,
   RETENTION_WORKER_PASSWORD,
@@ -165,6 +167,22 @@ describe("RT-353 — boot checks against real grants", () => {
       );
     } finally {
       await masquerade.end();
+    }
+  });
+
+  it("accept the same database when the two sessions use different TimeZone and DateStyle", async () => {
+    const h = handles();
+    if (!h) return;
+    // Session settings change how timestamps print, not which database it is.
+    const tokyo = new Pool({
+      connectionString: `postgres://${APP_ROLE_NAME}:${APP_ROLE_PASSWORD}@${h.env.host}:${h.env.port}/test`,
+      options: "-c TimeZone=Asia/Tokyo -c DateStyle=SQL,DMY",
+      max: 1,
+    });
+    try {
+      await expect(verifyAuditRetentionRole(h.retentionPool, tokyo)).resolves.toBeUndefined();
+    } finally {
+      await tokyo.end();
     }
   });
 
