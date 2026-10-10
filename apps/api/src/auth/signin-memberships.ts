@@ -3,7 +3,8 @@
  * (`SignInResponse.memberships`, OpenAPI `MembershipSummary`).
  *
  * Reads on the DOMAIN pool, never the auth-lookup pool: the lookup role may
- * hold no privilege on `tenants` (RT-213) and none on `memberships`. The
+ * hold no privilege on `tenants` (RT-213), which the read joins, and its
+ * provisioning template grants nothing on `memberships`. The
  * tables are row-level secured and no tenant is active yet at sign-in, so the
  * read runs in the same platform-admin bootstrap context that
  * `ContextService` uses for `GET /api/v1/context/me` (nil tenant id +

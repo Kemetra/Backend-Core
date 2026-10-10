@@ -205,6 +205,27 @@ describe("production database pool separation", () => {
     await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
   });
 
+  it("RT-343: a domain role missing SELECT on memberships or roles fails boot verification", async () => {
+    if (dockerSkipped) return;
+    const { app, admin } = env!;
+    const lookupPool = lookup!;
+
+    // Sign-in reads the user's memberships (joined to roles and tenants) on
+    // the domain role. A missing grant must stop boot, not fail every sign-in.
+    for (const table of ["memberships", "roles"]) {
+      await admin.query(`REVOKE SELECT ON ${table} FROM ${APP_ROLE_NAME}`);
+      try {
+        await expect(verifyDatabasePoolBoundary(app, lookupPool)).rejects.toThrow(
+          new RegExp(`AuthModule: DATABASE_URL role is missing required grants: SELECT ON ${table}\\b`),
+        );
+      } finally {
+        await admin.query(`GRANT SELECT ON ${table} TO ${APP_ROLE_NAME}`);
+      }
+    }
+
+    await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
+  });
+
   it("keeps bootstrap resolution available while the domain pool remains RLS-bound", async () => {
     if (dockerSkipped) return;
     const { app } = env!;

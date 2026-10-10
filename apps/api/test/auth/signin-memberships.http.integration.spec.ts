@@ -150,8 +150,9 @@ beforeAll(async () => {
   const moduleRef = await Test.createTestingModule({ imports: [AuthModule] })
     .overrideProvider(PG_POOL)
     .useValue(singleConnectionPool)
-    // The real lookup role (no privilege on memberships or tenants): the
-    // memberships read must not run on it.
+    // The real lookup role, which may hold no privilege on tenants (RT-213)
+    // and is granted nothing on memberships: the memberships read must not
+    // run on it.
     .overrideProvider(AUTH_LOOKUP_POOL)
     .useValue(lookupPool)
     .overrideProvider(EMAIL_JOB_ENQUEUER)

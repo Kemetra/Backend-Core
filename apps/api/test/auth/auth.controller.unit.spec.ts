@@ -20,7 +20,7 @@
  *   - null userId guard in requestEmailVerification
  *
  * Endpoints:
- *   POST /api/v1/auth/signin                 → 200 { user, memberships: [] }
+ *   POST /api/v1/auth/signin                 → 200 { user, memberships }
  *   POST /api/v1/auth/signout                → 204 No Content
  *   POST /api/v1/auth/refresh                → 204 No Content
  *   POST /api/v1/auth/password-reset/request → 202 No Content
@@ -272,7 +272,7 @@ function http() {
 // ---------------------------------------------------------------------------
 
 describe("POST /api/v1/auth/signin", () => {
-  it("happy path: 200 with user body and memberships: []", async () => {
+  it("happy path: 200 with user body and the service's memberships (here none)", async () => {
     const res = await http()
       .post("/api/v1/auth/signin")
       .send({ email: "user@example.com", password: "secret123" });

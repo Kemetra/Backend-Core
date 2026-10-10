@@ -31,6 +31,8 @@ their credentials before serving and refuse to start on a violation:
   - `cashier_admission_requests`: `SELECT`, `INSERT`, `UPDATE`, `DELETE`
   - `tenants`: `SELECT` (RT-213: POS device authentication reads the
     device's tenant status on this role)
+  - `memberships`, `roles`: `SELECT` (RT-343: sign-in reads the user's
+    memberships on this role, as `/context/me` does)
   - `shifts`: `SELECT`, `INSERT`, `UPDATE`; `shift_closes`,
     `shift_cash_movements`, `shift_refund_claims`: `SELECT`, `INSERT`
     (RT-17, migration 0036)
