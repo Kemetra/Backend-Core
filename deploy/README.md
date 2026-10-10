@@ -85,7 +85,9 @@ op run --env-file=deploy/grants.env -- sh -c \
    psql -X -v domain_role="$DOMAIN_DB_ROLE" \
         -f docs/operations/sql/shift-cash-up-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/erpnext-posting-resolution-domain-grants.sql'
+        -f docs/operations/sql/erpnext-posting-resolution-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
+        -f docs/operations/sql/signin-memberships-domain-grants.sql'
 
 # 3. Start everything (migrate re-runs as a no-op, then api/worker start).
 op run --env-file=deploy/prod.env -- \
@@ -112,8 +114,9 @@ without the env loader any command fails with
 
 Step 2 must run between the migration and the app start. The API boot check
 verifies the domain role's cashier-admissions table grants (RT-212), its
-`SELECT` on `tenants`, which POS device authentication reads (RT-213), and its
-shift cash-up table grants (RT-17, migration 0036). If step 2 is skipped, the
+`SELECT` on `tenants`, which POS device authentication reads (RT-213), its
+shift cash-up table grants (RT-17, migration 0036), and its `SELECT` on
+`memberships` and `roles`, which sign-in reads (RT-343). If step 2 is skipped, the
 API refuses to start, and the error names each missing grant.
 
 Step 2 needs a `psql` client on the deploy host. It reads the connection from
@@ -217,7 +220,8 @@ op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml r
 op run --env-file=deploy/grants.env -- sh -c \
   'psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/cashier-admissions-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/shift-cash-up-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/erpnext-posting-resolution-domain-grants.sql'
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/erpnext-posting-resolution-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/signin-memberships-domain-grants.sql'
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d --build
 op run --env-file=deploy/grants.env -- psql -X -f docs/operations/sql/erpnext-posting-resolution-catchup.sql
 # stop

@@ -136,6 +136,14 @@ table the domain role must use needs a matching grant step at deploy time.
   any intent the previous release's worker or repair wrote during the
   migration.
 
+- **Sign-in memberships (RT-343).** Run
+  [`sql/signin-memberships-domain-grants.sql`](sql/signin-memberships-domain-grants.sql)
+  in the same step 2, with the same `-v domain_role=<role>`. It grants the
+  domain role `SELECT` on `memberships` and `roles`: sign-in reads the user's
+  memberships on this role (as `/context/me` does). Without the grants the API
+  refuses to boot (`DOMAIN_REQUIRED_GRANTS`) rather than failing every Console
+  sign-in with 500.
+
 ## Redis credential
 
 `docker-compose.prod.yml` requires `REDIS_PASSWORD` and starts Redis with
