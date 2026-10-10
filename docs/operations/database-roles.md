@@ -5,7 +5,7 @@ Production uses four independent PostgreSQL credentials.
 | Environment variable | Purpose | Required posture |
 | --- | --- | --- |
 | `MIGRATION_DATABASE_URL` | One-shot schema migration | DDL-capable owner, `NOSUPERUSER NOCREATEROLE`; never injected into API or worker |
-| `DATABASE_URL` | Tenant/domain runtime | Non-superuser, `NOBYPASSRLS`; tenant access only inside `runWithTenantContext`; no `UPDATE` or `DELETE` on `audit_events` (RT-353) |
+| `DATABASE_URL` | Tenant/domain runtime | Non-superuser, `NOBYPASSRLS`; tenant access only inside `runWithTenantContext`; no `UPDATE` or `DELETE` on `audit_events` (the worker's boot check enforces no `UPDATE` on `retention_marked_at`, RT-353) |
 | `AUTH_LOOKUP_DATABASE_URL` | Pre-tenant authentication/bootstrap | Distinct non-superuser role with only the table operations listed below |
 | `AUDIT_RETENTION_DATABASE_URL` | The worker's audit retention sweep only | `audit_retention_worker`: non-superuser, `NOBYPASSRLS`, only `SELECT` and `UPDATE (retention_marked_at)` on `audit_events`, member of no role (RT-353) |
 
@@ -77,6 +77,11 @@ without `INHERIT`.
    ```sql
    REVOKE UPDATE, DELETE ON audit_events FROM <domain role>;
    ```
+
+   Re-run the check. A `REVOKE` removes only grants made to that role
+   directly: if the check still returns `t`, the privilege comes from
+   `PUBLIC` or from a role the domain role inherits (see `\dp audit_events`
+   and `\drg <domain role>` in `psql`), so revoke it there.
 
    Otherwise the worker refuses to boot, and with it audit fan-out, sale
    processing, the outbox drainer and email.

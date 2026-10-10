@@ -46,13 +46,12 @@ compose stack. Redis is containerized by default.
    [`docs/operations/database-roles.md`](../docs/operations/database-roles.md).
    The migration owner has no `CREATEROLE`, so a superuser (or, on managed
    PostgreSQL, the provider's admin user) first creates
-   `audit_retention_worker` with `LOGIN` once, before the first `migrate up`
+   `audit_retention_worker` with `LOGIN` and a password once, before the first `migrate up`
    ([details](../docs/operations/database-roles.md#before-the-first-migration-audit_retention_worker)).
    The worker's audit retention sweep connects as that role through
    `AUDIT_RETENTION_DATABASE_URL` (RT-353). **Upgrading a deployment from
-   before RT-353:** follow
-   [Existing databases](../docs/operations/database-roles.md#before-the-first-migration-audit_retention_worker)
-   first. That means giving the role `LOGIN` and a password, revoking
+   before RT-353:** first follow the "Existing databases" steps in
+   [Before the first migration](../docs/operations/database-roles.md#before-the-first-migration-audit_retention_worker). That means giving the role `LOGIN` and a password, revoking
    `UPDATE` and `DELETE` on `audit_events` from the domain role if it holds
    them, and setting the URL. Otherwise compose refuses to run, and the
    worker refuses to boot.

@@ -267,7 +267,9 @@ flowchart LR
 
 Required production configuration:
 
-- `DATABASE_URL` for non-BYPASSRLS tenant/domain API database access.
+- `DATABASE_URL` for non-BYPASSRLS tenant/domain API database access. The
+  worker's boot check also rejects this role if it can `UPDATE`
+  `audit_events.retention_marked_at` (RT-353).
 - `AUTH_LOOKUP_DATABASE_URL` for narrowly privileged pre-tenant identity,
   session, token, device, and store-scope resolution. Production boot rejects a
   missing credential or a role shared with `DATABASE_URL`.
