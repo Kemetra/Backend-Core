@@ -1,12 +1,13 @@
 # Database runtime roles
 
-Production uses three independent PostgreSQL credentials.
+Production uses four independent PostgreSQL credentials.
 
 | Environment variable | Purpose | Required posture |
 | --- | --- | --- |
 | `MIGRATION_DATABASE_URL` | One-shot schema migration | DDL-capable owner, `NOSUPERUSER NOCREATEROLE`; never injected into API or worker |
-| `DATABASE_URL` | Tenant/domain runtime | Non-superuser, `NOBYPASSRLS`; tenant access only inside `runWithTenantContext` |
+| `DATABASE_URL` | Tenant/domain runtime | Non-superuser, `NOBYPASSRLS`; tenant access only inside `runWithTenantContext`; no `UPDATE` or `DELETE` on `audit_events` (the worker's boot check enforces no `UPDATE` on `retention_marked_at`, RT-353) |
 | `AUTH_LOOKUP_DATABASE_URL` | Pre-tenant authentication/bootstrap | Distinct non-superuser role with only the table operations listed below |
+| `AUDIT_RETENTION_DATABASE_URL` | The worker's audit retention sweep only | `audit_retention_worker`: non-superuser, `NOBYPASSRLS`, only `SELECT` and `UPDATE (retention_marked_at)` on `audit_events`, member of no role (RT-353) |
 
 The auth lookup credential exists because a device token, session, or bearer
 token must be resolved before a tenant GUC can be established. It must not be
@@ -21,22 +22,75 @@ the lookup role holds any privilege on `tenants` (`AUTH_LOOKUP_FORBIDDEN_GRANTS`
 ## Before the first migration: `audit_retention_worker`
 
 Migration `0005_audit_retention_privileges` grants the audit-retention
-privileges to a `NOLOGIN` role, `audit_retention_worker`, and creates it only
-when it does not exist yet. Creating a role needs `CREATEROLE`, and the
+privileges to the role `audit_retention_worker`, and creates it (as `NOLOGIN`)
+only when it does not exist yet. Creating a role needs `CREATEROLE`, and the
 migration owner does not have it: it keeps least privilege (RT-345), so it is
 also not a superuser (a superuser bypasses the `CREATEROLE` check). So a
 superuser (on managed PostgreSQL, the provider's admin user or any role with
 `CREATEROLE`) creates the role **once per database cluster, before the first
-`migrate up`**:
+`migrate up`**.
+
+The worker's retention sweep connects as this role through
+`AUDIT_RETENTION_DATABASE_URL` (RT-353), so it is created with `LOGIN`. In
+`psql`, set its password with `\password`, which prompts and sends only a
+hash, so the password never appears in a command, the shell history or the
+server log:
 
 ```sql
-CREATE ROLE audit_retention_worker NOLOGIN;
+CREATE ROLE audit_retention_worker LOGIN;
+\password audit_retention_worker
 ```
 
-Without it, the first `migrate up` stops at 0005 with `permission denied to
-create role`; the earlier migrations stay applied, and re-running after
-creating the role resumes at 0005. The role is created `NOLOGIN`; 0005 still issues its grants,
-as the owner of `audit_events` and of the database.
+Store the resulting `AUDIT_RETENTION_DATABASE_URL` in the secret manager, like
+the other database URLs.
+
+Without the role, the first `migrate up` stops at 0005 with `permission denied
+to create role`; the earlier migrations stay applied, and re-running after
+creating the role resumes at 0005. 0005 then issues its grants, as the owner of
+`audit_events` and of the database. Do not grant the role anything else: the
+worker refuses to boot if it holds any other privilege on `audit_events`
+(`MAINTAIN` included, on PostgreSQL 17+) or is a member of any role, even
+without `INHERIT` or `SET` (a conservative rule: such a membership could
+otherwise reach more privileges through `SET ROLE`).
+
+**Existing databases** (deployed before RT-353). Before upgrading:
+
+1. Give the role `LOGIN` and a password, once. Run this as a superuser or, on
+   managed PostgreSQL, as the admin user that created the role (from
+   PostgreSQL 16, `CREATEROLE` alone is not enough: the user also needs
+   `ADMIN OPTION` on the role, which the role's creator has):
+
+   ```sql
+   ALTER ROLE audit_retention_worker LOGIN;
+   \password audit_retention_worker
+   ```
+
+2. Check that the domain role cannot mark retention. As the table owner:
+
+   ```sql
+   SELECT has_column_privilege('<domain role>', 'audit_events', 'retention_marked_at', 'UPDATE');
+   ```
+
+   If it returns `t` (typical when the role was given DML on every table),
+   revoke it. The API only inserts audit rows, and the append-only triggers
+   (0034) refuse every other update or delete anyway:
+
+   ```sql
+   REVOKE UPDATE, DELETE ON audit_events FROM <domain role>;
+   ```
+
+   Re-run the check. A `REVOKE` removes only grants made to that role
+   directly: if the check still returns `t`, the privilege comes from
+   `PUBLIC` or from a role the domain role inherits (see `\dp audit_events`
+   and `\drg <domain role>` in `psql`), so revoke it there.
+
+   Otherwise the worker refuses to boot, and with it audit fan-out, sale
+   processing, the outbox drainer and email.
+
+3. Set `AUDIT_RETENTION_DATABASE_URL` in the secret manager and in
+   `deploy/prod.env`. Until it is set, `docker compose` refuses every command
+   for this file (its interpolation requires the variable), and a worker
+   started without it refuses to boot in production.
 
 Rolling 0005 back (`0005_audit_retention_privileges.down.sql`) revokes the
 grants on `audit_events` and `public` and then drops the role, in one
@@ -47,9 +101,12 @@ user can run it alone:
 - `migrate down` uses `MIGRATION_DATABASE_URL`, so roll 0005 back only with a
   true superuser connection.
 - On managed PostgreSQL without a superuser, rolling 0005 back is not
-  supported: leave it applied. It only adds a `NOLOGIN` role and its grants;
-  roll back the migrations above it as usual.
-- Re-create the role before 0005 is applied again.
+  supported: leave it applied. It only adds the retention role's grants (and
+  the role, if it did not exist); roll back the migrations above it as usual.
+- After 0005 is rolled back, the role no longer exists, so the production
+  worker refuses to boot (its retention boot check cannot connect). Re-create
+  the role with `LOGIN` and a new password before 0005 is applied again, and
+  update the stored `AUDIT_RETENTION_DATABASE_URL`.
 - Roles are cluster-wide but grants are per database: if another database in
   the cluster still grants privileges to the role, `DROP ROLE` fails until
   those grants are revoked.
@@ -88,8 +145,28 @@ their credentials before serving and refuse to start on a violation:
   `TRUNCATE` matters most: it is not subject to row security.
 
   All three lists are in `apps/api/src/auth/database-pools.ts`.
-- **Worker:** its `DATABASE_URL` role is not a superuser and does not have
-  `BYPASSRLS` (RT-143, `apps/worker/src/database-role-verifier.ts`).
+- **Worker, domain role:** its `DATABASE_URL` role is not a superuser and does
+  not have `BYPASSRLS` (RT-143), and cannot `UPDATE`
+  `audit_events.retention_marked_at` (RT-353). The retention decision record
+  allows the API's role only to read and insert audit rows. The API shares
+  this role but does not run this check itself: in production the worker's
+  check covers it, because both use the same `DATABASE_URL`. A deployment
+  that runs the API without this worker, or with a different `DATABASE_URL`,
+  is not covered. As a conservative rule, the check also refuses a role
+  that is a member, even without `INHERIT`, of any role that can mark
+  retention. Such a membership can reach the privilege through `SET ROLE`
+  unless it was granted `WITH SET FALSE` (PostgreSQL 16+); the check does not
+  make that distinction.
+- **Worker, audit retention role:** its `AUDIT_RETENTION_DATABASE_URL` login is
+  the role itself (no `options=-c role=…` switch from another login), reaches
+  the same database as `DATABASE_URL` (same name, OID and server), is a
+  different role from `DATABASE_URL`, is not a superuser, does not have
+  `BYPASSRLS`, holds `SELECT` and `UPDATE (retention_marked_at)` on
+  `audit_events`, holds no other privilege on that table, and is a member of
+  no role (RT-353). Its grants on other tables are not checked: grant it
+  nothing else.
+
+  Both worker checks are in `apps/worker/src/database-role-verifier.ts`.
 
 Provision the lookup login outside migrations because login credentials belong
 to the deployment environment. A template with the exact grants and a verify
@@ -199,7 +276,10 @@ provisioned outside migrations. Only two writes besides `INSERT` remain:
 
 - **Retention marking:** `retention_marked_at` may be set once, from `NULL` to
   a timestamp, with every other column unchanged. The column grant from
-  `0005_audit_retention_privileges` keeps this to `audit_retention_worker`.
+  `0005_audit_retention_privileges` keeps this to `audit_retention_worker`,
+  which the worker's sweep connects as (`AUDIT_RETENTION_DATABASE_URL`,
+  RT-353). The trigger itself allows the marker write for any role, so the
+  worker refuses to boot if the domain role holds that `UPDATE`.
   Retention never deletes audit rows.
 - **`ON DELETE SET NULL`:** hard-deleting a referenced user or store nulls
   `actor_user_id` / `store_id` through the foreign key's referential action.

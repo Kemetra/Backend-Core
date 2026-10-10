@@ -267,10 +267,17 @@ flowchart LR
 
 Required production configuration:
 
-- `DATABASE_URL` for non-BYPASSRLS tenant/domain API database access.
+- `DATABASE_URL` for non-BYPASSRLS tenant/domain API database access. The
+  worker's boot check also rejects this role if it can `UPDATE`
+  `audit_events.retention_marked_at` (RT-353).
 - `AUTH_LOOKUP_DATABASE_URL` for narrowly privileged pre-tenant identity,
   session, token, device, and store-scope resolution. Production boot rejects a
   missing credential or a role shared with `DATABASE_URL`.
+- `AUDIT_RETENTION_DATABASE_URL` for the worker's audit retention sweep, as
+  `audit_retention_worker`: only `SELECT` and `UPDATE (retention_marked_at)` on
+  `audit_events` (RT-353). Production boot rejects a missing credential, a role
+  shared with `DATABASE_URL`, any other privilege on that table, or any role
+  membership.
 - `MIGRATION_DATABASE_URL` for the deployment-only migration owner credential.
 - `REDIS_URL` for production API email job enqueueing and worker queue
   consumption.

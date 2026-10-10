@@ -121,6 +121,10 @@ import {
   NoOpAuditRetentionRepository,
 } from "./audit/drizzle-audit-retention.repository";
 import { AuditRetentionWorker } from "./audit/audit-retention.worker";
+import {
+  AuditRetentionDbPool,
+  auditRetentionPoolProviderFactory,
+} from "./audit/audit-retention-db-pool";
 import { AuditRetentionScheduler } from "./audit/audit-retention.scheduler";
 import { OutboxModule, OutboxDrainerRunner } from "./outbox/outbox.module";
 import { OutboxConsumerRegistry } from "./outbox/registry";
@@ -155,7 +159,7 @@ import {
 } from "./cashier-admissions/replay-purge.repository";
 import { ReplayPurgeScheduler } from "./cashier-admissions/replay-purge.scheduler";
 import { ReplayPurgeWorker } from "./cashier-admissions/replay-purge.worker";
-import { verifyWorkerDatabaseRole } from "./database-role-verifier";
+import { verifyAuditRetentionRole, verifyWorkerDatabaseRole } from "./database-role-verifier";
 
 /**
  * Real BullMQ-backed factory. Constructs a `bullmq.Worker` that
@@ -417,10 +421,11 @@ export function saleWorkerProviderFactory(
  *
  * Mirrors `auditDbProviderFactory`: delegates to the NoOp implementation
  * on the safe no-DB path, and to the Drizzle implementation when a real
- * pool is available. The pool lifecycle remains on `AuditDbPool`.
+ * pool is available. The module passes `AuditRetentionDbPool` (RT-353: the
+ * sweep's own `audit_retention_worker` credential), which owns the pool.
  */
 export function auditRetentionRepoProviderFactory(
-  wrapper: AuditDbPool,
+  wrapper: { readonly pool: Pool | null },
 ): AuditRetentionRepository {
   if (wrapper.pool === null) {
     return new NoOpAuditRetentionRepository();
@@ -703,6 +708,39 @@ export class WorkerDatabaseRoleVerifier implements OnModuleInit {
   }
 }
 
+/**
+ * Boot-time check of the audit retention role (RT-353), under the same
+ * production / `VERIFY_DATABASE_POOL_BOUNDARY=1` gate as the domain-role
+ * check. Skipped on the no-DB path.
+ */
+@Injectable()
+export class AuditRetentionRoleVerifier implements OnModuleInit {
+  constructor(
+    private readonly domain: AuditDbPool,
+    private readonly retention: AuditRetentionDbPool,
+  ) {}
+
+  async onModuleInit(): Promise<void> {
+    const domainPool = this.domain.pool;
+    const retentionPool = this.retention.pool;
+    if (domainPool === null || retentionPool === null) return;
+    if (
+      process.env["NODE_ENV"] === "production" ||
+      process.env["VERIFY_DATABASE_POOL_BOUNDARY"] === "1"
+    ) {
+      if (!this.retention.dedicated) {
+        // Only reachable outside production (production requires the URL):
+        // name the cause instead of failing the distinct-role check.
+        throw new Error(
+          "WorkerModule: AUDIT_RETENTION_DATABASE_URL is not set, so the audit retention " +
+            "sweep would run on the DATABASE_URL role (RT-353)",
+        );
+      }
+      await verifyAuditRetentionRole(retentionPool, domainPool);
+    }
+  }
+}
+
 @Module({
   imports: [OutboxModule],
   providers: [
@@ -778,10 +816,21 @@ export class WorkerDatabaseRoleVerifier implements OnModuleInit {
     // with a runtime default. NestJS reflects it as `Function` and tries to
     // inject it; we bypass that by constructing the processor explicitly so the
     // TypeScript default value is used in production.
+    //
+    // RT-353: the sweep runs on its own credential (AUDIT_RETENTION_DATABASE_URL,
+    // the `audit_retention_worker` role), never on the shared DATABASE_URL role.
+    // AuditRetentionDbPool is a class-token provider so Nest closes its pool.
+    {
+      provide: AuditRetentionDbPool,
+      useFactory: (domain: AuditDbPool): AuditRetentionDbPool =>
+        auditRetentionPoolProviderFactory(domain.pool),
+      inject: [AuditDbPool],
+    },
+    AuditRetentionRoleVerifier,
     {
       provide: AUDIT_RETENTION_REPO,
       useFactory: auditRetentionRepoProviderFactory,
-      inject: [AuditDbPool],
+      inject: [AuditRetentionDbPool],
     },
     {
       provide: AuditRetentionProcessor,
