@@ -22,7 +22,7 @@
 import { readFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { Client } from "pg";
+import { Client, DatabaseError } from "pg";
 
 const ADVISORY_LOCK_NAMESPACE = "data-pulse-2:migrate";
 
@@ -90,8 +90,9 @@ async function withMigrationContext<T>(id: string, work: () => Promise<T>): Prom
     return await work();
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    const code = (err as { code?: unknown } | null)?.code;
-    const sqlstate = typeof code === "string" ? ` (SQLSTATE ${code})` : "";
+    // Only a server error carries a SQLSTATE; a dropped socket's code
+    // (ECONNRESET, EPIPE) is not one.
+    const sqlstate = err instanceof DatabaseError && err.code ? ` (SQLSTATE ${err.code})` : "";
     throw new Error(`${id}: ${message}${sqlstate}`, { cause: err });
   }
 }

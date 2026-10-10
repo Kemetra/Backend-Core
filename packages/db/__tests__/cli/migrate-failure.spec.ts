@@ -22,8 +22,12 @@ interface CliResult {
 }
 
 function runUp(env: Record<string, string>): Promise<CliResult> {
+  return runCli(["up"], env);
+}
+
+function runCli(args: string[], env: Record<string, string>): Promise<CliResult> {
   return new Promise((done, fail) => {
-    const child = spawn(process.execPath, [CLI_PATH, "up"], {
+    const child = spawn(process.execPath, [CLI_PATH, ...args], {
       env: { ...process.env, ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -109,5 +113,22 @@ describe("migrate up reports the failing migration's own error (RT-346)", () => 
     const rerun = await runUp({ DATABASE_URL: env.adminUri, MIGRATIONS_DIR: dir });
     expect(rerun.code).toBe(0);
     expect(rerun.stdout).toContain("up: applied 0002_boom");
+  });
+});
+
+describe("migrate down reports the failing down migration's own error (RT-346)", () => {
+  // Runs after the `up` block above: 0001_ok and 0002_boom are applied.
+  it("names the .down migration and its SQLSTATE, and keeps its ledger row", async () => {
+    if (!env) return;
+    writeFileSync(join(dir, "0002_boom.down.sql"), "BEGIN;\nSELECT 1 / 0;\nCOMMIT;\n");
+
+    const result = await runCli(["down"], { DATABASE_URL: env.adminUri, MIGRATIONS_DIR: dir });
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("0002_boom.down");
+    expect(result.stderr).toContain("division by zero");
+    expect(result.stderr).toContain("22012");
+    expect(result.stderr).not.toContain("current transaction is aborted");
+    expect(await count("SELECT COUNT(*)::text AS count FROM _drizzle_migrations WHERE id = '0002_boom'")).toBe("1");
   });
 });
