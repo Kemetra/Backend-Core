@@ -44,8 +44,10 @@ const healthScript = required(redis.healthcheck.test[1], "healthcheck script");
 const password = randomBytes(18).toString("hex");
 const name = `rt344-redis-${randomBytes(4).toString("hex")}`;
 
+/** Each Docker CLI call is bounded so a stalled daemon fails the test instead of hanging the job. */
 function docker(...args: string[]): string {
-  return execFileSync("docker", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const timeout = args[0] === "pull" ? 90_000 : 20_000;
+  return execFileSync("docker", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout });
 }
 
 function healthy(): boolean {
@@ -68,7 +70,7 @@ async function waitUntilHealthy(timeoutMs: number): Promise<boolean> {
 
 function logs(): string {
   try {
-    return execFileSync("docker", ["logs", "--tail", "20", name], { encoding: "utf8", stdio: "pipe" });
+    return execFileSync("docker", ["logs", "--tail", "20", name], { encoding: "utf8", stdio: "pipe", timeout: 20_000 });
   } catch (err) {
     return String(err);
   }
@@ -110,7 +112,16 @@ describe("prod Redis survives a container restart (RT-344)", () => {
       );
     }
   }, 60_000);
+});
 
+// The runtime test above only fails without the fix on hosts where
+// fs.protected_regular >= 1, so the fix itself is also pinned on the template.
+describe("prod Redis command clears the previous config file first (RT-344)", () => {
+  it("removes /tmp/redis-auth.conf before creating it", () => {
+    expect(required(redis.command[2], "startup script")).toMatch(
+      /^rm -f \/tmp\/redis-auth\.conf && umask 077 && /,
+    );
+  });
 });
 
 /**
