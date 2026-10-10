@@ -67,6 +67,8 @@ their credentials before serving and refuse to start on a violation:
   - `cashier_admission_requests`: `SELECT`, `INSERT`, `UPDATE`, `DELETE`
   - `tenants`: `SELECT` (RT-213: POS device authentication reads the
     device's tenant status on this role)
+  - `memberships`, `roles`: `SELECT` (RT-343: sign-in reads the user's
+    memberships on this role, as `/context/me` does)
   - `shifts`: `SELECT`, `INSERT`, `UPDATE`; `shift_closes`,
     `shift_cash_movements`, `shift_refund_claims`: `SELECT`, `INSERT`
     (RT-17, migration 0036)
@@ -169,6 +171,14 @@ table the domain role must use needs a matching grant step at deploy time.
   as the migration owner: it re-runs the idempotent 0038 backfill to freeze
   any intent the previous release's worker or repair wrote during the
   migration.
+
+- **Sign-in memberships (RT-343).** Run
+  [`sql/signin-memberships-domain-grants.sql`](sql/signin-memberships-domain-grants.sql)
+  in the same step 2, with the same `-v domain_role=<role>`. It grants the
+  domain role `SELECT` on `memberships` and `roles`: sign-in reads the user's
+  memberships on this role (as `/context/me` does). Without the grants the API
+  refuses to boot (`DOMAIN_REQUIRED_GRANTS`) rather than failing every Console
+  sign-in with 500.
 
 ## Redis credential
 

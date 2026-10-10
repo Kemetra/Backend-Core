@@ -188,6 +188,7 @@ class FakeAuthService {
     }
     return {
       sessionId: FAKE_SESSION_ID,
+      sessionCredential: "contract-session-credential",
       userId: FAKE_USER_ID,
       absoluteExpiresAt: new Date(Date.now() + 86_400_000),
       user: {
@@ -196,7 +197,16 @@ class FakeAuthService {
         display_name: null,
         is_platform_admin: false,
       },
-    } as SignInResult;
+      // RT-343: a real entry, so the response is checked against MembershipSummary.
+      memberships: [
+        {
+          tenant_id: "0b000000-0000-7000-8000-000000000343",
+          tenant_name: "Contract Tenant",
+          role_code: "tenant_admin",
+          store_access_kind: "all",
+        },
+      ],
+    };
   }
 
   async signOut(_sessionId: string): Promise<void> {}

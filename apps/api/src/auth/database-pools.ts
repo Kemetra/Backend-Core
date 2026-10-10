@@ -167,6 +167,11 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   // status on this role (DeviceRepository, inside the tenant's RLS context).
   // Without the grant every till would be refused at once, so boot fails.
   ["tenants", "SELECT"],
+  // RT-343: sign-in reads the user's memberships, joined to roles and
+  // tenants, on this role (as /context/me and TenantContextGuard do).
+  // Without these grants every Console sign-in would return 500.
+  ["memberships", "SELECT"],
+  ["roles", "SELECT"],
   // RT-17 (0036): the shift cash-up writes. `shifts` gains cash-up rows and
   // needs UPDATE: the close moves the shift to closed, and the 0036 triggers
   // lock the shift row FOR SHARE / FOR UPDATE, which requires UPDATE. The

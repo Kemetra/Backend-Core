@@ -29,6 +29,9 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   // (inside the tenant's RLS context). Without this grant every till would be
   // refused at once, so a missing grant must fail boot instead.
   "tenants:SELECT",
+  // RT-343: sign-in reads the user's memberships (joined to roles) on this role.
+  "memberships:SELECT",
+  "roles:SELECT",
   // RT-17 (0036): the shift cash-up writes. UPDATE on shifts: the close moves
   // it to closed and the 0036 triggers take FOR SHARE / FOR UPDATE row locks.
   "shifts:SELECT",

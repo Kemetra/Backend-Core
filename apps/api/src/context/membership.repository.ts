@@ -290,25 +290,7 @@ export class MembershipRepository {
     client?: PoolClient,
   ): Promise<readonly MembershipSummary[]> {
     const db = client ? drizzle(client) : this.db;
-    const baseRows = await db
-      .select({
-        membershipId: memberships.id,
-        tenantId: memberships.tenantId,
-        tenantName: tenants.name,
-        roleCode: roles.code,
-        storeAccessKind: memberships.storeAccessKind,
-      })
-      .from(memberships)
-      .innerJoin(tenants, eq(tenants.id, memberships.tenantId))
-      .innerJoin(roles, eq(roles.id, memberships.roleId))
-      .where(
-        and(
-          eq(memberships.userId, userId),
-          isNull(memberships.revokedAt),
-          isNull(memberships.deletedAt),
-          isNull(tenants.deletedAt),
-        ),
-      );
+    const baseRows = await this.activeMembershipRows(db, userId);
 
     const summaries: MembershipSummary[] = [];
     for (const row of baseRows) {
@@ -336,6 +318,50 @@ export class MembershipRepository {
       });
     }
     return summaries;
+  }
+
+  /**
+   * The same active memberships as `listForUser`, without the per-membership
+   * `accessible_store_ids` queries: one query. Used by sign-in (RT-343), whose
+   * response carries no store ids.
+   *
+   * @param client — Optional `PoolClient` from `runWithTenantContext`.
+   */
+  async listTenantRolesForUser(
+    userId: string,
+    client?: PoolClient,
+  ): Promise<readonly Omit<MembershipSummary, "accessibleStoreIds">[]> {
+    const db = client ? drizzle(client) : this.db;
+    const rows = await this.activeMembershipRows(db, userId);
+    return rows.map((row) => ({
+      tenantId: row.tenantId,
+      tenantName: row.tenantName,
+      roleCode: row.roleCode,
+      storeAccessKind: row.storeAccessKind as StoreAccessKind,
+    }));
+  }
+
+  /** The user's unrevoked, undeleted memberships in undeleted tenants. */
+  private activeMembershipRows(db: NodePgDatabase, userId: string) {
+    return db
+      .select({
+        membershipId: memberships.id,
+        tenantId: memberships.tenantId,
+        tenantName: tenants.name,
+        roleCode: roles.code,
+        storeAccessKind: memberships.storeAccessKind,
+      })
+      .from(memberships)
+      .innerJoin(tenants, eq(tenants.id, memberships.tenantId))
+      .innerJoin(roles, eq(roles.id, memberships.roleId))
+      .where(
+        and(
+          eq(memberships.userId, userId),
+          isNull(memberships.revokedAt),
+          isNull(memberships.deletedAt),
+          isNull(tenants.deletedAt),
+        ),
+      );
   }
 
   /**

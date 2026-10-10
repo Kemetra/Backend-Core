@@ -77,6 +77,7 @@ import { EmailQueueProducer } from "./email-queue.producer";
 import { IoredisIdempotencyAdapter } from "./ioredis-idempotency-adapter";
 import { RateLimiter, type RedisLike } from "./rate-limit";
 import { SessionRepository } from "./session.repository";
+import { signInMembershipsReader } from "./signin-memberships";
 import { QUEUE_NAMES } from "@data-pulse-2/shared";
 
 /** Name of the BullMQ queue both the producer and the (future) worker bind to. */
@@ -281,9 +282,12 @@ export class AlwaysAllowRedis implements RedisLike {
         authTokens: AuthTokenRepository,
         emailJobs: EmailJobEnqueuer,
         auditEnqueuer: AuditJobEnqueuer,
+        domainPool: Pool,
       ): AuthService =>
         new AuthService(pool, sessions, authTokens, emailJobs, {
           auditEnqueuer,
+          // RT-343: memberships are read on the domain pool, never the lookup pool.
+          listMemberships: signInMembershipsReader(domainPool),
         }),
       inject: [
         AUTH_LOOKUP_POOL,
@@ -291,6 +295,7 @@ export class AlwaysAllowRedis implements RedisLike {
         AuthTokenRepository,
         EMAIL_JOB_ENQUEUER,
         AUDIT_JOB_ENQUEUER,
+        PG_POOL,
       ],
     },
     DatabasePoolBoundaryVerifier,

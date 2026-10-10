@@ -22,6 +22,7 @@ import type { SessionRepository } from "../../src/auth/session.repository";
 import type { AuthTokenRepository } from "../../src/auth/auth-token.repository";
 import type { EmailJobEnqueuer } from "../../src/auth/email-job.enqueuer";
 import type { AuditJobEnqueuer } from "../../src/audit/audit-job.enqueuer";
+import type { SignInMembershipsReader } from "../../src/auth/signin-memberships";
 import type { SessionRow } from "@data-pulse-2/db/schema";
 import type { AuthTokenRow } from "@data-pulse-2/db/schema";
 
@@ -182,6 +183,7 @@ function buildService(opts: {
   authTokens?: FakeAuthTokenRepository;
   emailJobs?: FakeEmailJobEnqueuer;
   auditEnqueuer?: FakeAuditJobEnqueuer;
+  listMemberships?: SignInMembershipsReader;
 } = {}) {
   const sessions = opts.sessions ?? new FakeSessionRepository();
   const authTokens = opts.authTokens ?? new FakeAuthTokenRepository();
@@ -195,7 +197,7 @@ function buildService(opts: {
     sessions as unknown as SessionRepository,
     authTokens as unknown as AuthTokenRepository,
     emailJobs,
-    { auditEnqueuer },
+    { auditEnqueuer, ...(opts.listMemberships ? { listMemberships: opts.listMemberships } : {}) },
   );
 
   return { service, sessions, authTokens, emailJobs, auditEnqueuer };
@@ -356,6 +358,54 @@ describe("AuthService.signIn — RT-130 rehash of stale hashes", () => {
 
     expect(mockNeedsRehash).not.toHaveBeenCalled();
     expect(mockHashPassword).not.toHaveBeenCalled();
+  });
+});
+
+describe("AuthService.signIn — memberships (RT-343)", () => {
+  const membership = {
+    tenant_id: "aaaaaaaa-3430-4343-8343-aaaaaaaaaaa1",
+    tenant_name: "Northstar Retail",
+    role_code: "owner",
+    store_access_kind: "all" as const,
+  };
+
+  it("M1: returns the reader's memberships for the verified user", async () => {
+    selectRows = [makeUserRow()];
+    mockVerifyPassword.mockResolvedValue(true);
+    const listMemberships = jest.fn().mockResolvedValue([membership]);
+
+    const { service } = buildService({ listMemberships });
+    const result = await service.signIn({ email: USER_EMAIL, password: "correct" });
+
+    expect(listMemberships).toHaveBeenCalledTimes(1);
+    expect(listMemberships).toHaveBeenCalledWith(USER_ID);
+    expect(result.memberships).toEqual([membership]);
+  });
+
+  it("M2: a failed read rejects the sign-in and creates no session", async () => {
+    selectRows = [makeUserRow()];
+    mockVerifyPassword.mockResolvedValue(true);
+    const listMemberships = jest.fn().mockRejectedValue(new Error("domain pool down"));
+
+    const { service, sessions } = buildService({ listMemberships });
+    const attempt = service.signIn({ email: USER_EMAIL, password: "correct" });
+
+    await expect(attempt).rejects.toThrow("domain pool down");
+    await expect(attempt).rejects.not.toBeInstanceOf(UnauthorizedException);
+    expect(sessions.create).not.toHaveBeenCalled();
+  });
+
+  it("M3: bad credentials never read memberships", async () => {
+    selectRows = [makeUserRow()];
+    mockVerifyPassword.mockResolvedValue(false);
+    const listMemberships = jest.fn().mockResolvedValue([membership]);
+
+    const { service } = buildService({ listMemberships });
+    await expect(service.signIn({ email: USER_EMAIL, password: "wrong" })).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+
+    expect(listMemberships).not.toHaveBeenCalled();
   });
 });
 
