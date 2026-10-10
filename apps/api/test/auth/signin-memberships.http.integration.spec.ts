@@ -17,7 +17,10 @@ import cookieParser from "cookie-parser";
 import { Pool } from "pg";
 import request from "supertest";
 
-import { AuthModule, PG_POOL } from "../../src/auth/auth.module";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../../src/auth/auth.module";
 import { EMAIL_JOB_ENQUEUER, NoOpEmailJobEnqueuer } from "../../src/auth/email-job.enqueuer";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
 import { LoggingInterceptor } from "../../src/common/logging.interceptor";
@@ -35,6 +38,7 @@ import {
 delete process.env["REDIS_URL"]; // AuthModule falls back to its in-process Redis stub
 
 const PASSWORD = "Rt343-Password-123!";
+const LOOKUP_PASSWORD = "rt343-lookup-test-only";
 const USER_ID = "11111111-3430-4343-8343-111111111111";
 const USER_EMAIL = "rt343-member@example.com";
 const LONER_ID = "22222222-3430-4343-8343-222222222222";
@@ -49,14 +53,28 @@ const T_OTHER = "aaaaaaaa-3430-4343-8343-aaaaaaaaaaa5";
 
 let env: PgTestEnv | null = null;
 let singleConnectionPool: Pool | null = null;
+let lookupPool: Pool | null = null;
 let app: INestApplication | null = null;
 let dockerSkipped = false;
 
-function appRoleUri(adminUri: string): string {
+function roleUri(adminUri: string, user: string, password: string): string {
   const url = new URL(adminUri);
-  url.username = APP_ROLE_NAME;
-  url.password = APP_ROLE_PASSWORD;
+  url.username = user;
+  url.password = password;
   return url.toString();
+}
+
+function appRoleUri(adminUri: string): string {
+  return roleUri(adminUri, APP_ROLE_NAME, APP_ROLE_PASSWORD);
+}
+
+/** The production auth-lookup role, from the repo's own provisioning template. */
+async function createLookupRolePool(pgEnv: PgTestEnv): Promise<Pool> {
+  const repoRoot = resolve(__dirname, "..", "..", "..", "..");
+  const template = readFileSync(resolve(repoRoot, "docs/operations/sql/auth-lookup-role.sql"), "utf8");
+  await pgEnv.admin.query(template);
+  await pgEnv.admin.query(`ALTER ROLE auth_lookup PASSWORD '${LOOKUP_PASSWORD}'`);
+  return new Pool({ connectionString: roleUri(pgEnv.adminUri, "auth_lookup", LOOKUP_PASSWORD), max: 2 });
 }
 
 /** One tenant with an owner and a store_staff role; returns the role ids. */
@@ -127,10 +145,15 @@ beforeAll(async () => {
   await seed(env.admin);
 
   singleConnectionPool = new Pool({ connectionString: appRoleUri(env.adminUri), max: 1 });
+  lookupPool = await createLookupRolePool(env);
 
   const moduleRef = await Test.createTestingModule({ imports: [AuthModule] })
     .overrideProvider(PG_POOL)
     .useValue(singleConnectionPool)
+    // The real lookup role (no privilege on memberships or tenants): the
+    // memberships read must not run on it.
+    .overrideProvider(AUTH_LOOKUP_POOL)
+    .useValue(lookupPool)
     .overrideProvider(EMAIL_JOB_ENQUEUER)
     .useValue(new NoOpEmailJobEnqueuer())
     .compile();
@@ -148,6 +171,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (app) await app.close().catch(() => undefined);
   if (singleConnectionPool) await singleConnectionPool.end().catch(() => undefined);
+  if (lookupPool) await lookupPool.end().catch(() => undefined);
   if (env) await stopPgEnv(env);
 }, 60_000);
 
