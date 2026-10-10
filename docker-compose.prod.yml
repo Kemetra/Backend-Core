@@ -26,12 +26,16 @@ services:
     # image's docker-entrypoint.sh so redis-server still drops to the `redis`
     # user. ($$ escapes compose interpolation so the shell expands the
     # variable inside the container.)
+    # RT-344: on a restart the file from the previous start still exists and
+    # belongs to `redis`. With fs.protected_regular >= 1 (Ubuntu's default) root
+    # may not re-open it for writing in the sticky /tmp, so it is removed first
+    # and created fresh.
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
     command:
       - sh
       - -c
-      - umask 077 && printf 'requirepass %s\n' "$$REDIS_PASSWORD" > /tmp/redis-auth.conf && chown redis:redis /tmp/redis-auth.conf && unset REDIS_PASSWORD && exec docker-entrypoint.sh redis-server /tmp/redis-auth.conf --appendonly yes
+      - rm -f /tmp/redis-auth.conf && umask 077 && printf 'requirepass %s\n' "$$REDIS_PASSWORD" > /tmp/redis-auth.conf && chown redis:redis /tmp/redis-auth.conf && unset REDIS_PASSWORD && exec docker-entrypoint.sh redis-server /tmp/redis-auth.conf --appendonly yes
     volumes:
       - dp2_redis_data:/data
     networks: [dp2]
