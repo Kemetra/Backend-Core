@@ -44,7 +44,11 @@ import {
   DrizzleAuditRetentionRepository,
   NoOpAuditRetentionRepository,
 } from "../src/audit/drizzle-audit-retention.repository";
-import { AuditRetentionProcessor } from "../src/audit/audit-retention.processor";
+import {
+  AUDIT_RETENTION_REPO,
+  AuditRetentionProcessor,
+} from "../src/audit/audit-retention.processor";
+import { AuditRetentionDbPool } from "../src/audit/audit-retention-db-pool";
 import { AuditRetentionWorker } from "../src/audit/audit-retention.worker";
 import { AuditRetentionScheduler } from "../src/audit/audit-retention.scheduler";
 import { DEFAULT_WORKER_OPTIONS } from "@data-pulse-2/shared/queues/queue-config";
@@ -533,6 +537,47 @@ describe("WorkerModule — AUDIT_RETENTION_REPO resolves via DI graph", () => {
     expect(wrapper.pool).not.toBeNull();
     const repo = auditRetentionRepoProviderFactory(wrapper);
     expect(repo).toBeInstanceOf(DrizzleAuditRetentionRepository);
+    await moduleRef.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RT-353 — the audit retention sweep runs on its own pool
+// ---------------------------------------------------------------------------
+
+describe("WorkerModule — audit retention pool wiring (RT-353)", () => {
+  it("builds the retention repository on AuditRetentionDbPool, not the domain pool", async () => {
+    delete process.env["NODE_ENV"];
+    delete process.env["REDIS_URL"];
+    delete process.env["DATABASE_URL"];
+    const domain = { end: jest.fn(async () => undefined) } as unknown as Pool;
+    const retention = { end: jest.fn(async () => undefined) } as unknown as Pool;
+
+    const moduleRef = await Test.createTestingModule({ imports: [WorkerModule] })
+      .overrideProvider(AuditDbPool)
+      .useValue(new AuditDbPool(domain))
+      .overrideProvider(AuditRetentionDbPool)
+      .useValue(new AuditRetentionDbPool(retention, true))
+      .compile();
+
+    const repo = moduleRef.get<DrizzleAuditRetentionRepository>(AUDIT_RETENTION_REPO);
+    expect(repo).toBeInstanceOf(DrizzleAuditRetentionRepository);
+    expect((repo as unknown as { pool: Pool }).pool).toBe(retention);
+
+    await moduleRef.close();
+    expect(retention.end).toHaveBeenCalledTimes(1);
+    expect(domain.end).toHaveBeenCalledTimes(1);
+  });
+
+  it("borrows the domain pool outside production without AUDIT_RETENTION_DATABASE_URL", async () => {
+    delete process.env["NODE_ENV"];
+    delete process.env["REDIS_URL"];
+    delete process.env["AUDIT_RETENTION_DATABASE_URL"];
+    process.env["DATABASE_URL"] = FAKE_DB_URL;
+
+    const moduleRef = await Test.createTestingModule({ imports: [WorkerModule] }).compile();
+
+    expect(moduleRef.get(AuditRetentionDbPool).pool).toBe(moduleRef.get(AuditDbPool).pool);
     await moduleRef.close();
   });
 });

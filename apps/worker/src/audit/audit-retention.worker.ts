@@ -46,7 +46,15 @@ export class AuditRetentionWorker implements OnModuleDestroy {
     this.worker = this.workerFactory.create(
       AUDIT_RETENTION_QUEUE_NAME,
       async (job: JobLike) => {
-        await this.processor.process(job.name, job.data);
+        try {
+          await this.processor.process(job.name, job.data);
+        } catch (err) {
+          // RT-353: a rejected sweep is a BullMQ job failure, not a worker
+          // `error` event, so the listener below never sees it. Log it here
+          // and rethrow so BullMQ still records the failure and retries.
+          logJobFailure(job, err);
+          throw err;
+        }
       },
       DEFAULT_WORKER_OPTIONS,
     );
@@ -72,4 +80,21 @@ export class AuditRetentionWorker implements OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     await this.close();
   }
+}
+
+/** One structured stderr line per failed sweep; `undefined` fields are omitted. */
+function logJobFailure(job: JobLike, err: unknown): void {
+  const e = err instanceof Error ? err : new Error(String(err));
+  const code = (err as { code?: unknown } | null)?.code;
+  const line = JSON.stringify({
+    level: "error",
+    component: "audit-retention.worker",
+    event: "job_failed",
+    job_name: job.name,
+    job_id: job.id,
+    name: e.name,
+    code: typeof code === "string" ? code : undefined,
+    message: e.message,
+  });
+  process.stderr.write(line + "\n");
 }

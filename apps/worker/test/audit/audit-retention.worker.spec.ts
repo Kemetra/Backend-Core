@@ -185,6 +185,39 @@ describe("AuditRetentionWorker.start — error logging", () => {
   });
 });
 
+describe("AuditRetentionWorker.start — failed job logging (RT-353)", () => {
+  it("logs a failed sweep as structured JSON on stderr, then rethrows", async () => {
+    const failure = Object.assign(new Error("permission denied for table audit_events"), {
+      code: "42501",
+    });
+    processor.reject = failure;
+    worker.start();
+    const handler = factory.calls[0]!.handler;
+
+    await expect(handler({ name: "audit-retention-sweep", data: {}, id: "job-7" })).rejects.toBe(
+      failure,
+    );
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    const parsed = JSON.parse(String(stderrSpy.mock.calls[0]![0]).trim()) as Record<string, unknown>;
+    expect(parsed).toEqual({
+      level: "error",
+      component: "audit-retention.worker",
+      event: "job_failed",
+      job_name: "audit-retention-sweep",
+      job_id: "job-7",
+      name: "Error",
+      code: "42501",
+      message: "permission denied for table audit_events",
+    });
+  });
+
+  it("writes nothing to stderr for a successful sweep", async () => {
+    worker.start();
+    await factory.calls[0]!.handler({ name: "audit-retention-sweep", data: {} });
+    expect(stderrSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("AuditRetentionWorker.start — idempotency", () => {
   it("second start() is a no-op — factory.create called only once", () => {
     worker.start();
