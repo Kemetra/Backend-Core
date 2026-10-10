@@ -4,7 +4,7 @@ Production uses three independent PostgreSQL credentials.
 
 | Environment variable | Purpose | Required posture |
 | --- | --- | --- |
-| `MIGRATION_DATABASE_URL` | One-shot schema migration | DDL-capable owner; never injected into API or worker |
+| `MIGRATION_DATABASE_URL` | One-shot schema migration | DDL-capable owner, `NOCREATEROLE`; never injected into API or worker |
 | `DATABASE_URL` | Tenant/domain runtime | Non-superuser, `NOBYPASSRLS`; tenant access only inside `runWithTenantContext` |
 | `AUTH_LOOKUP_DATABASE_URL` | Pre-tenant authentication/bootstrap | Distinct non-superuser role with only the table operations listed below |
 
@@ -24,7 +24,8 @@ Migration `0005_audit_retention_privileges` grants the audit-retention
 privileges to a `NOLOGIN` role, `audit_retention_worker`, and creates it only
 when it does not exist yet. Creating a role needs `CREATEROLE`, and the
 migration owner does not have it: it keeps least privilege (RT-345). So a
-superuser creates the role **once per database cluster, before the first
+superuser (on managed PostgreSQL, the provider's admin user or any role with
+`CREATEROLE`) creates the role **once per database cluster, before the first
 `migrate up`**:
 
 ```sql
@@ -32,11 +33,19 @@ CREATE ROLE audit_retention_worker NOLOGIN;
 ```
 
 Without it, the first `migrate up` stops at 0005 with `permission denied to
-create role`. The role holds no login and no password; 0005 still issues its
-grants, as the table owner.
+create role`; the earlier migrations stay applied, and re-running after
+creating the role resumes at 0005. The role is created `NOLOGIN`; 0005 still issues its grants,
+as the owner of `audit_events` and of the database.
 
 Rolling 0005 back (`0005_audit_retention_privileges.down.sql`) drops the role,
-which also needs `CREATEROLE`, so that rollback is a superuser step as well.
+which also needs `CREATEROLE`:
+
+- `migrate down` uses `MIGRATION_DATABASE_URL`, so run that rollback with a
+  superuser connection.
+- Re-create the role before 0005 is applied again.
+- Roles are cluster-wide but grants are per database: if another database in
+  the cluster still grants privileges to the role, `DROP ROLE` fails until
+  those grants are revoked.
 
 ## Boot-time verification
 

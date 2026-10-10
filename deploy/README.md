@@ -44,7 +44,8 @@ compose stack. Redis is containerized by default.
 7. Three distinct database roles on `<managed-db>` (migration owner, domain
    runtime, auth lookup), provisioned per
    [`docs/operations/database-roles.md`](../docs/operations/database-roles.md).
-   The migration owner has no `CREATEROLE`, so a superuser first creates
+   The migration owner has no `CREATEROLE`, so a superuser (or, on managed
+   PostgreSQL, the provider's admin user) first creates
    `audit_retention_worker` once, before the first `migrate up`
    ([details](../docs/operations/database-roles.md#before-the-first-migration-audit_retention_worker)).
    Create the lookup role from
