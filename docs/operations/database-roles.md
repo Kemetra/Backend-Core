@@ -18,6 +18,26 @@ context, so the lookup role needs no grant on `tenants` and must not be given
 one: with `BYPASSRLS` it would see every tenant row. The API refuses to boot if
 the lookup role holds any privilege on `tenants` (`AUTH_LOOKUP_FORBIDDEN_GRANTS`).
 
+## Before the first migration: `audit_retention_worker`
+
+Migration `0005_audit_retention_privileges` grants the audit-retention
+privileges to a `NOLOGIN` role, `audit_retention_worker`, and creates it only
+when it does not exist yet. Creating a role needs `CREATEROLE`, and the
+migration owner does not have it: it keeps least privilege (RT-345). So a
+superuser creates the role **once per database cluster, before the first
+`migrate up`**:
+
+```sql
+CREATE ROLE audit_retention_worker NOLOGIN;
+```
+
+Without it, the first `migrate up` stops at 0005 with `permission denied to
+create role`. The role holds no login and no password; 0005 still issues its
+grants, as the table owner.
+
+Rolling 0005 back (`0005_audit_retention_privileges.down.sql`) drops the role,
+which also needs `CREATEROLE`, so that rollback is a superuser step as well.
+
 ## Boot-time verification
 
 In production (or with `VERIFY_DATABASE_POOL_BOUNDARY=1`) both processes check
