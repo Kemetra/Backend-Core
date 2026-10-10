@@ -91,6 +91,7 @@ class FakeAuthService {
     userId: USER_ID,
     absoluteExpiresAt: FUTURE,
     user: { id: USER_ID, email: "user@example.com", display_name: null, is_platform_admin: false },
+    memberships: [],
   };
   refreshResult: RefreshResult | null = {
     sessionId: SESSION_ID,
@@ -253,6 +254,7 @@ beforeEach(() => {
     userId: USER_ID,
     absoluteExpiresAt: FUTURE,
     user: { id: USER_ID, email: "user@example.com", display_name: null, is_platform_admin: false },
+    memberships: [],
   };
   svc.refreshResult = {
     sessionId: SESSION_ID,

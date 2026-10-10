@@ -52,6 +52,7 @@ import {
   type PasswordResetConfirmInput,
   type PasswordResetRequestInput,
   type SignInInput,
+  type SignInMembership,
   type SignInResult,
 } from "./dto";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
@@ -79,12 +80,8 @@ interface SignInResponseBody {
     display_name: string | null;
     is_platform_admin: boolean;
   };
-  /**
-   * Memberships are part of the contract but the slice-3c surface does
-   * not yet ship a memberships repository — controller returns an empty
-   * array. The dashboard chooser feature lands in a later slice.
-   */
-  memberships: never[];
+  /** The user's active memberships; drives the Console chooser (RT-343). */
+  memberships: readonly SignInMembership[];
 }
 
 const RATE_LIMIT_429: HttpException = new HttpException(
@@ -135,12 +132,9 @@ export class AuthController {
 
     setSessionCookie(res, result.sessionCredential, result.absoluteExpiresAt);
 
-    // `memberships` is part of the OpenAPI shape but its source
-    // repository isn't in this slice — return an empty array so the
-    // wire schema is satisfied; a later slice fills it in.
     return {
       user: result.user,
-      memberships: [],
+      memberships: result.memberships,
     };
   }
 

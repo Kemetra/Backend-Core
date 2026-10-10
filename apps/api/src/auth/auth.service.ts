@@ -38,6 +38,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import type { Pool } from "pg";
 import type { SignInInput, SignInResult } from "./dto";
+import type { SignInMembershipsReader } from "./signin-memberships";
 import { SessionRepository } from "./session.repository";
 import { AuthTokenRepository } from "./auth-token.repository";
 import {
@@ -105,6 +106,13 @@ export interface AuthServiceOptions {
    * a `AuthModule ↔ AuditModule` cycle).
    */
   auditEnqueuer?: AuditJobEnqueuer;
+  /**
+   * Lists the signing-in user's memberships for the sign-in response
+   * (RT-343). `AuthModule` always wires the domain-pool reader
+   * (`signInMembershipsReader`); omitted only by unit specs, where sign-in
+   * then reports no memberships.
+   */
+  listMemberships?: SignInMembershipsReader;
 }
 
 /** Audit action strings emitted from the sign-in flow (per `tasks.md` T230). */
@@ -131,6 +139,7 @@ export class AuthService {
   private readonly rateLimiter: RateLimiter;
   private readonly emailJobs: EmailJobEnqueuer;
   private readonly auditEnqueuer: AuditJobEnqueuer;
+  private readonly listMemberships: SignInMembershipsReader;
 
   constructor(
     private readonly pool: Pool,
@@ -149,6 +158,7 @@ export class AuthService {
     this.rateLimiter = opts.rateLimiter ?? new NoOpRateLimiter();
     this.emailJobs = emailJobs ?? new NoOpEmailJobEnqueuer();
     this.auditEnqueuer = opts.auditEnqueuer ?? new NoOpAuditJobEnqueuer();
+    this.listMemberships = opts.listMemberships ?? (async () => []);
   }
 
   private requireAuthTokens(): AuthTokenRepository {
@@ -218,6 +228,10 @@ export class AuthService {
     // RT-130: only after a successful verify, so failure timing is untouched.
     await this.upgradeStalePasswordHash(userRow.id, userRow.passwordHash, password);
 
+    // RT-343: read before the session exists, so a failed read leaves no
+    // session behind.
+    const memberships = await this.listMemberships(userRow.id);
+
     const sessionId = newId();
     const sessionCredential = generateRawToken();
     const absoluteExpiresAt = new Date(Date.now() + SESSION_ABSOLUTE_EXPIRY_MS);
@@ -255,6 +269,7 @@ export class AuthService {
         display_name: userRow.displayName,
         is_platform_admin: userRow.isPlatformAdmin,
       },
+      memberships,
     };
   }
 

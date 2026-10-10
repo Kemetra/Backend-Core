@@ -98,4 +98,14 @@ export interface SignInResult {
   userId: string;
   absoluteExpiresAt: Date;
   user: UserSummary;
+  /** The user's active memberships (RT-343). */
+  memberships: readonly SignInMembership[];
+}
+
+/** One entry of `SignInResponse.memberships` (OpenAPI `MembershipSummary`). */
+export interface SignInMembership {
+  tenant_id: string;
+  tenant_name: string;
+  role_code: string;
+  store_access_kind: "all" | "specific";
 }
