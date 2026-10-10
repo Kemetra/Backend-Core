@@ -151,8 +151,9 @@ their credentials before serving and refuse to start on a violation:
   this role but does not run this check itself: in production the worker's
   check covers it, because both use the same `DATABASE_URL`. A deployment
   that runs the API without this worker, or with a different `DATABASE_URL`,
-  is not covered. The check counts inherited privileges only, so a
-  `NOINHERIT` membership in a role that can mark retention is not detected.
+  is not covered. The check also refuses a role that is a member, even
+  without `INHERIT`, of any role that can mark retention, since `SET ROLE`
+  would reach it.
 - **Worker, audit retention role:** its `AUDIT_RETENTION_DATABASE_URL` role is
   a different role from `DATABASE_URL`, is not a superuser, does not have
   `BYPASSRLS`, holds `SELECT` and `UPDATE (retention_marked_at)` on

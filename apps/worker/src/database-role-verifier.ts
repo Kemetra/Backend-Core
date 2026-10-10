@@ -23,8 +23,16 @@ export async function verifyWorkerDatabaseRole(pool: Pool): Promise<void> {
     `SELECT current_user AS role_name,
             r.rolsuper AS is_superuser,
             r.rolbypassrls AS bypass_rls,
-            has_column_privilege('audit_events', 'retention_marked_at', 'UPDATE')
-              AS can_mark_retention
+            (has_column_privilege('audit_events', 'retention_marked_at', 'UPDATE')
+              -- has_column_privilege counts inherited privileges only; a
+              -- NOINHERIT membership is still reachable through SET ROLE.
+              OR EXISTS (
+                SELECT 1
+                  FROM pg_roles g
+                 WHERE g.oid <> r.oid
+                   AND pg_has_role(current_user, g.oid, 'MEMBER')
+                   AND has_column_privilege(g.oid, 'audit_events', 'retention_marked_at', 'UPDATE')
+              )) AS can_mark_retention
        FROM pg_roles r
       WHERE r.rolname = current_user`,
   );

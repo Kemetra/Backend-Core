@@ -115,6 +115,30 @@ describe("RT-353 — boot checks against real grants", () => {
     );
   });
 
+  it("refuse a domain role that can SET ROLE to a marker-capable role (NOINHERIT)", async () => {
+    const h = handles();
+    if (!h) return;
+    // has_column_privilege ignores NOINHERIT memberships, yet SET ROLE reaches them.
+    await h.env.admin.query("CREATE ROLE rt353_marker NOLOGIN");
+    await h.env.admin.query("GRANT UPDATE (retention_marked_at) ON audit_events TO rt353_marker");
+    try {
+      await withGrant(
+        h.env.admin,
+        "GRANT rt353_marker TO app_test WITH INHERIT FALSE",
+        "REVOKE rt353_marker FROM app_test",
+        async () => {
+          await expect(verifyWorkerDatabaseRole(h.env.app)).rejects.toThrow(
+            /must not hold UPDATE on audit_events\.retention_marked_at/,
+          );
+        },
+      );
+    } finally {
+      await h.env.admin.query(
+        "REVOKE UPDATE (retention_marked_at) ON audit_events FROM rt353_marker; DROP ROLE rt353_marker",
+      );
+    }
+  });
+
   it("refuse the domain role as the retention role", async () => {
     const h = handles();
     if (!h) return;
