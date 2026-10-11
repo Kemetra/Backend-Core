@@ -30,6 +30,15 @@ export function encodeCursor(c: SnapshotCursor): string {
 }
 
 /**
+ * True iff a decoded token body is a JSON object. `null`, a primitive or an
+ * array is a malformed token (RT-386: reading a field of `null` threw a
+ * TypeError that escaped as HTTP 500 instead of the FR-024 404).
+ */
+export function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
  * Decode + scope-validate an opaque cursor. Throws `ReadDownCursorError` if the
  * token is malformed OR bound to a different (tenant, store) than the caller's
  * device principal (FR-024 non-disclosing).
@@ -39,10 +48,13 @@ export function decodeCursor(
   tenantId: string,
   storeId: string,
 ): SnapshotCursor {
-  let payload: { t?: string; s?: string; q?: string };
+  let payload: unknown;
   try {
     payload = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
   } catch {
+    throw new ReadDownCursorError("malformed cursor");
+  }
+  if (!isJsonObject(payload)) {
     throw new ReadDownCursorError("malformed cursor");
   }
   if (
