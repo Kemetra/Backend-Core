@@ -156,8 +156,17 @@ export const CaptureSaleRequestSchema = CaptureSaleRequestObject.superRefine(che
  * NonNegativeDecimalAmount; RT-77 comment 10509). `reference` is the card
  * terminal's short code, card_external only — never card data.
  */
+/**
+ * RT-360 (contract RT-359): the tender line's identity, minted by the POS, and
+ * its 1-based apply order. `sequence` is bounded by its SMALLINT column.
+ */
+const tenderLineIdentity = {
+  tenderRef: z.string().uuid("must be a uuid").optional(),
+  sequence: z.number().int().min(1).max(32767).optional(),
+};
+
 export const SaleTenderSchema = z.discriminatedUnion("method", [
-  z.object({ method: z.literal("cash"), amount: decimalAmount }).strict(),
+  z.object({ method: z.literal("cash"), amount: decimalAmount, ...tenderLineIdentity }).strict(),
   z
     .object({
       method: z.literal("card_external"),
@@ -166,9 +175,48 @@ export const SaleTenderSchema = z.discriminatedUnion("method", [
         .string()
         .regex(/^[A-Z0-9]{1,6}$/, "must be a short card terminal reference")
         .optional(),
+      ...tenderLineIdentity,
     })
     .strict(),
 ]);
+
+type SaleTenderInput = z.infer<typeof SaleTenderSchema>;
+
+/** True when `values` holds a repeat; `undefined` entries are ignored. */
+function hasRepeat(values: ReadonlyArray<string | number | undefined>): boolean {
+  const present = values.filter((v) => v !== undefined);
+  return new Set(present).size !== present.length;
+}
+
+/**
+ * The per-sale tender rules (contract RT-359), each a 400: `tenderRef` and
+ * `sequence` are unique within the sale; more than one tender of a method is
+ * accepted only when `allowSameMethod` (the RT-360 deploy gate) AND every
+ * entry carries a `tenderRef`.
+ */
+function tenderList(allowSameMethod: boolean) {
+  return z
+    .array(SaleTenderSchema)
+    .min(1)
+    .superRefine((ts: SaleTenderInput[], ctx) => {
+      if (hasRepeat(ts.map((t) => t.tenderRef))) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "tenderRef must be unique within the sale" });
+      }
+      if (hasRepeat(ts.map((t) => t.sequence))) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "sequence must be unique within the sale" });
+      }
+      if (!hasRepeat(ts.map((t) => t.method))) return;
+      if (!allowSameMethod) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "at most one tender per method" });
+      } else if (ts.some((t) => t.tenderRef === undefined)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "tenders sharing a method must each carry a tenderRef",
+        });
+      }
+    })
+    .optional();
+}
 
 /**
  * The tender-aware capture body (RT-77). Selected by `CaptureSaleRequestPipe`
@@ -178,13 +226,18 @@ export const SaleTenderSchema = z.discriminatedUnion("method", [
  * rule needs exact decimal math and runs in the service (422).
  */
 export const CaptureSaleRequestWithTendersSchema = CaptureSaleRequestObject.extend({
-  tenders: z
-    .array(SaleTenderSchema)
-    .min(1)
-    .refine((ts) => new Set(ts.map((t) => t.method)).size === ts.length, {
-      message: "at most one tender per method",
-    })
-    .optional(),
+  tenders: tenderList(false),
+})
+  .strict()
+  .superRefine(checkAdmissionCheckAt);
+
+/**
+ * RT-360 — the same body, also accepting same-method split tenders that each
+ * carry a `tenderRef`. Selected only while `POS_SALE_TENDERS_SAME_METHOD_ENABLED`
+ * is on as well (after RT-361).
+ */
+export const CaptureSaleRequestWithSameMethodTendersSchema = CaptureSaleRequestObject.extend({
+  tenders: tenderList(true),
 })
   .strict()
   .superRefine(checkAdmissionCheckAt);

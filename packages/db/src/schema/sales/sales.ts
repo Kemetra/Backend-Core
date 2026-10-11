@@ -96,7 +96,8 @@ export const sales = pgTable(
       sql`${t.currencyCode} ~ '^[A-Z]{3}$'`,
     ),
     check("sales_pos_total_non_negative", sql`${t.posTotal} >= 0`),
-    check("sales_tender_count_range", sql`${t.tenderCount} BETWEEN 0 AND 2`),
+    // RT-360 (0041): no longer capped at one tender per method.
+    check("sales_tender_count_range", sql`${t.tenderCount} >= 0`),
     // Backs the composite FK from each child table (sale_lines / sale_voids /
     // sale_refunds reference (id, tenant_id, store_id) so a child can never
     // attach to a sale in a different tenant/store).

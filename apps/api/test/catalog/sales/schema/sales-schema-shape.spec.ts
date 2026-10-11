@@ -274,6 +274,14 @@ describe("sales schema shape — sale tenders + device attribution (RT-77, 0033)
     expect(cols.get("device_id")?.notNull).toBe(false);
     expect(cols.get("tender_count")?.notNull).toBe(true);
   });
+
+  it("RT-360 (0041): tender_ref (uuid) and sequence (smallint) are nullable — legacy tenders carry neither", () => {
+    const cols = columns(saleTenders);
+    expect(cols.get("tender_ref")?.columnType).toBe("PgUUID");
+    expect(cols.get("tender_ref")?.notNull).toBe(false);
+    expect(cols.get("sequence")?.columnType).toBe("PgSmallInt");
+    expect(cols.get("sequence")?.notNull).toBe(false);
+  });
 });
 
 describe("sales schema shape — load-bearing negatives", () => {
@@ -287,8 +295,13 @@ describe("sales schema shape — load-bearing negatives", () => {
     // Gate A.5 is lifted only by RT-10/RT-77: tenders live in the child
     // `sale_tenders` (method/amount/reference), and `sales.tender_count` is
     // the one reviewed payment-named column (a count, not payment data).
+    // RT-360 (RT-264 D1): `sale_tenders.tender_ref`, the tender line's opaque
+    // identity, is the second reviewed one (a UUID, not payment data).
     const banned = ["tender", "payment", "card", "cash"];
-    const allowed: Readonly<Record<string, readonly string[]>> = { sales: ["tender_count"] };
+    const allowed: Readonly<Record<string, readonly string[]>> = {
+      sales: ["tender_count"],
+      sale_tenders: ["tender_ref"],
+    };
     for (const { name, table } of ALL_TABLES) {
       const offending = [...columns(table).keys()].filter(
         (col) =>

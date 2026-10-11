@@ -195,6 +195,9 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
   // `card_external`. Method + amount are sale facts; `reference` is the card
   // terminal's short approval code, CHECK-constrained to ^[A-Z0-9]{1,6}$ so no
   // PAN / expiry / customer identifier fits. No card, account or customer column.
+  // RT-360 (0041) — re-reviewed under SI-012: `tender_ref` is the POS tender
+  // line's opaque UUID and `sequence` its apply ordinal; neither carries card,
+  // account or customer data.
   {
     name: "sale_tenders",
     table: saleTenders,
@@ -208,6 +211,8 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       "currency_code",
       "reference",
       "created_at",
+      "tender_ref",
+      "sequence",
     ],
   },
 ];
@@ -216,9 +221,11 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
  * Columns that carry a payment-class NAME fragment but no payment data, each
  * re-reviewed under SI-012 when it landed. `sales.tender_count` (RT-77) is the
  * number of `sale_tenders` rows capture wrote — the feed's visibility guard.
+ * `sale_tenders.tender_ref` (RT-360) is the tender line's opaque identity.
  */
 const REVIEWED_PAYMENT_NAMED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   sales: ["tender_count"],
+  sale_tenders: ["tender_ref"],
 };
 
 /**

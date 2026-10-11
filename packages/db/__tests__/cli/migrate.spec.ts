@@ -211,6 +211,7 @@ describe("data-pulse-migrate CLI", () => {
     "0037_erpnext_posting_resolution",
     "0038_erpnext_posting_resolution_backfill",
     "0039_erpnext_posting_reconciliation_evidence",
+    "0041_sale_tender_ref",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -235,6 +236,12 @@ describe("data-pulse-migrate CLI", () => {
     countPublicColumn("erpnext_posting_status", "current_resolution_version");
   const countEvidenceColumn = (): Promise<string> =>
     countPublicColumn("erpnext_posting_status", "reconciliation_document_ref");
+  /** 0041's tender-line identity columns on sale_tenders (RT-360). */
+  const countTenderRefColumns = async (): Promise<string> =>
+    String(
+      Number(await countPublicColumn("sale_tenders", "tender_ref")) +
+        Number(await countPublicColumn("sale_tenders", "sequence")),
+    );
 
   /** The three return tables created by 0032_sale_returns (RT-73). */
   const RETURN_TABLES = ["sale_returns", "sale_return_lines", "sale_return_tenders"];
@@ -330,6 +337,7 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPolicies(RESOLUTION_TABLES)).toBe("2");
     expect(await countResolutionVersionColumn()).toBe("1");
     expect(await countEvidenceColumn()).toBe("1"); // 0039 (RT-332)
+    expect(await countTenderRefColumns()).toBe("2"); // 0041 (RT-360)
   });
 
   it("up is idempotent on a second run", async () => {
@@ -365,14 +373,16 @@ describe("data-pulse-migrate CLI", () => {
 
       expect(await ledgerIds()).toEqual(EXPECTED_MIGRATIONS.slice(0, -1));
 
-      // 0039 removes the reconciliation evidence column (RT-332); 0037/0038's
-      // resolution table and version column survive.
-      expect(await countEvidenceColumn()).toBe("0");
+      // 0041 removes the sale_tenders tender_ref / sequence columns (RT-360).
+      expect(await countTenderRefColumns()).toBe("0");
+
+      // Sanity: everything older SURVIVES the 0041 rollback (down reverses
+      // only the latest migration) —
+      // 0039's reconciliation evidence column and 0037/0038's resolution
+      // table and version column (RT-332 / RT-330);
+      expect(await countEvidenceColumn()).toBe("1");
       expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
       expect(await countResolutionVersionColumn()).toBe("1");
-
-      // Sanity: everything older SURVIVES the 0039 rollback (down reverses
-      // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
       // 0035's cashier admission tables (RT-113 BC2);

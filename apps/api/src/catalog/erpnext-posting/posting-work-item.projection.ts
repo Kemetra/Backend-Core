@@ -97,6 +97,10 @@ export interface SaleWorkTender {
   readonly amount: string;
   /** card_external only — the card terminal's short reference. */
   readonly reference?: string;
+  /** RT-360: the tender line's identity; omitted for a legacy tender. */
+  readonly tenderRef?: string;
+  /** RT-360: the tender's 1-based apply order; omitted for a legacy tender. */
+  readonly sequence?: number;
 }
 
 /** RT-86: one recorded payout of a return (RT-14 D3, cash only), a non-negative magnitude. */
@@ -398,8 +402,9 @@ async function buildReversalRef(
 }
 
 /**
- * RT-77: the sale's recorded tenders in a fixed order (`method`, unique per sale) so every
- * re-pull is byte-identical. The visible row count must equal `sales.tender_count`, else
+ * RT-77: the sale's recorded tenders in a fixed order so every re-pull is byte-identical:
+ * RT-360 `sequence` first (the Connector builds payment rows in that order), then `method`
+ * (unique per sale for legacy tenders, which carry no sequence), then `tender_ref`. The visible row count must equal `sales.tender_count`, else
  * {@link SaleTendersNotVisibleError}: zero visible rows is otherwise indistinguishable from a
  * tender-unknown sale, and offering a tender-bearing sale without its tenders posts it unpaid.
  */
@@ -415,9 +420,12 @@ async function loadSaleTenders(
     method: "cash" | "card_external";
     amount: string;
     reference: string | null;
+    tender_ref: string | null;
+    sequence: number | null;
   }>(
-    `SELECT method, amount::text AS amount, reference
-       FROM sale_tenders WHERE sale_id = $1 ORDER BY method`,
+    `SELECT method, amount::text AS amount, reference, tender_ref, sequence
+       FROM sale_tenders WHERE sale_id = $1
+      ORDER BY sequence NULLS LAST, method, tender_ref`,
     [saleId],
   );
   if (st.rows.length !== expected) {
@@ -427,6 +435,8 @@ async function loadSaleTenders(
     method: t.method,
     amount: t.amount,
     ...(t.reference === null ? {} : { reference: t.reference }),
+    ...(t.tender_ref === null ? {} : { tenderRef: t.tender_ref }),
+    ...(t.sequence === null ? {} : { sequence: t.sequence }),
   }));
 }
 

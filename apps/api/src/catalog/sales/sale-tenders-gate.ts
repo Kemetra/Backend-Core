@@ -12,6 +12,24 @@
  * "true" or "yes", case-insensitive, trimmed.
  */
 export function isPosSaleTendersEnabled(): boolean {
-  const raw = (process.env["POS_SALE_TENDERS_ENABLED"] ?? "").trim().toLowerCase();
+  return isEnvFlagOn("POS_SALE_TENDERS_ENABLED");
+}
+
+/**
+ * RT-360 deployment gate for same-method split tenders (contract RT-359).
+ *
+ * The posting feed MUST NOT offer a sale carrying two tenders of one method
+ * until the Connector has shown it settles such a sale exactly in ERPNext
+ * (RT-361). So capture accepts them only once the API runs with
+ * `POS_SALE_TENDERS_SAME_METHOD_ENABLED=true`, a deploy step AFTER RT-361, and
+ * only while `POS_SALE_TENDERS_ENABLED` is on too. Until then at most one
+ * tender per method is accepted, as before. Same parsing as above.
+ */
+export function isPosSaleTendersSameMethodEnabled(): boolean {
+  return isEnvFlagOn("POS_SALE_TENDERS_SAME_METHOD_ENABLED");
+}
+
+function isEnvFlagOn(name: string): boolean {
+  const raw = (process.env[name] ?? "").trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes";
 }
