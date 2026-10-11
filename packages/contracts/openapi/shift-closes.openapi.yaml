@@ -60,10 +60,12 @@ info:
     pagination with an opaque cursor that encodes the position only (the last
     row's `closedAt` and `shiftId`). Walking the pages with the same filters
     returns every matching close that existed when the walk began exactly once,
-    and no close twice. `closedAt` is the POS clock and an offline terminal
-    drains late, so a close that arrives during a walk with a `closedAt` older
-    than the walk's position is not returned by that walk; a fresh first page
-    includes it.
+    and no close twice (closes are immutable and the order is total). The walk
+    is not a snapshot: `closedAt` is the POS clock and an offline terminal
+    drains late, so a close recorded during a walk is returned by that walk
+    only if it sorts after the walk's current position (an older `closedAt`);
+    one that sorts before it is not returned by that walk, and a fresh first
+    page includes it.
 
 
     **Not on this surface (do not fabricate).** The AD-CASH-001 D-7 policy
