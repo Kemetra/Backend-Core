@@ -212,6 +212,7 @@ describe("data-pulse-migrate CLI", () => {
     "0038_erpnext_posting_resolution_backfill",
     "0039_erpnext_posting_reconciliation_evidence",
     "0040_device_lifecycle",
+    "0041_sale_tender_ref",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -245,13 +246,22 @@ describe("data-pulse-migrate CLI", () => {
     ];
   }
 
+  /** 0041_sale_tender_ref (RT-360): tender-line identity on sale_tenders. */
+  async function countTenderRefColumns(): Promise<[string, string]> {
+    return [
+      await countPublicColumn("sale_tenders", "tender_ref"),
+      await countPublicColumn("sale_tenders", "sequence"),
+    ];
+  }
+
   /**
-   * After one `down` from head: 0040's device lifecycle columns are gone, while
-   * 0039's evidence column and 0037/0038's resolution table and version column
-   * survive.
+   * After one `down` from head: 0041's tender_ref / sequence columns are gone,
+   * while 0040's device lifecycle columns, 0039's evidence column and
+   * 0037/0038's resolution table and version column survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countDeviceLifecycleColumns()).toEqual(["0", "0"]);
+    expect(await countTenderRefColumns()).toEqual(["0", "0"]);
+    expect(await countDeviceLifecycleColumns()).toEqual(["1", "1"]);
     expect(await countEvidenceColumn()).toBe("1");
     expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
     expect(await countResolutionVersionColumn()).toBe("1");
@@ -352,6 +362,7 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countResolutionVersionColumn()).toBe("1");
     expect(await countEvidenceColumn()).toBe("1"); // 0039 (RT-332)
     expect(await countDeviceLifecycleColumns()).toEqual(["1", "1"]); // 0040 (RT-364)
+    expect(await countTenderRefColumns()).toEqual(["1", "1"]); // 0041 (RT-360)
   });
 
   it("up is idempotent on a second run", async () => {
@@ -389,7 +400,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0040 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0041 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
@@ -492,6 +503,7 @@ describe("data-pulse-migrate CLI", () => {
     await expectShiftCashUpApplied();
     expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
     expect(await countDeviceLifecycleColumns()).toEqual(["1", "1"]);
+    expect(await countTenderRefColumns()).toEqual(["1", "1"]);
   });
 
   it(

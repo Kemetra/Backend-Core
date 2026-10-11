@@ -102,11 +102,16 @@ export interface SaleProjection {
   readonly tenders: ReadonlyArray<SaleTenderProjection>;
 }
 
-/** RT-77: one recorded tender (contract `SaleTender`); `reference` only when set. */
+/**
+ * RT-77: one recorded tender (contract `SaleTender`); `reference` only when set.
+ * RT-360: `tenderRef` / `sequence` only when recorded (never on a legacy tender).
+ */
 export interface SaleTenderProjection {
   readonly method: "cash" | "card_external";
   readonly amount: string;
   readonly reference?: string;
+  readonly tenderRef?: string;
+  readonly sequence?: number;
 }
 
 export interface SaleLineProjection {
@@ -188,6 +193,8 @@ interface SaleTenderRow {
   method: "cash" | "card_external";
   amount: string;
   reference: string | null;
+  tender_ref: string | null;
+  sequence: number | null;
 }
 
 interface SaleLineRow {
@@ -469,8 +476,9 @@ export class SalesService {
           row.tender_count > 0
             ? (
                 await client.query<SaleTenderRow>(
-                  `SELECT method, amount::text AS amount, reference
-                     FROM sale_tenders WHERE sale_id = $1 ORDER BY method`,
+                  `SELECT method, amount::text AS amount, reference, tender_ref, sequence
+                     FROM sale_tenders WHERE sale_id = $1
+                    ORDER BY sequence NULLS LAST, method, tender_ref`,
                   [saleId],
                 )
               ).rows
@@ -787,6 +795,8 @@ function toBody(
       method: t.method,
       amount: t.amount,
       ...(t.reference === null ? {} : { reference: t.reference }),
+      ...(t.tender_ref === null ? {} : { tenderRef: t.tender_ref }),
+      ...(t.sequence === null ? {} : { sequence: t.sequence }),
     })),
   };
 }
@@ -809,7 +819,7 @@ async function assertTendersMatchTotal(
   if (r.rows[0]?.matches !== true) throw new SaleTenderMismatchError();
 }
 
-/** RT-77: write the sale's tenders in its capture transaction (one row per method). */
+/** RT-77: write the sale's tenders in its capture transaction (one row per tender line). */
 async function insertTenders(
   client: PoolClient,
   sale: {
@@ -823,10 +833,11 @@ async function insertTenders(
   const { tenders } = sale;
   await client.query(
     `INSERT INTO sale_tenders
-       (id, sale_id, tenant_id, store_id, method, amount, currency_code, reference)
-     SELECT t.id, $1, $2, $3, t.method, t.amount, $4, t.reference
-       FROM unnest($5::uuid[], $6::text[], $7::numeric[], $8::text[])
-            AS t(id, method, amount, reference)`,
+       (id, sale_id, tenant_id, store_id, method, amount, currency_code, reference,
+        tender_ref, sequence)
+     SELECT t.id, $1, $2, $3, t.method, t.amount, $4, t.reference, t.tender_ref, t.sequence
+       FROM unnest($5::uuid[], $6::text[], $7::numeric[], $8::text[], $9::uuid[], $10::smallint[])
+            AS t(id, method, amount, reference, tender_ref, sequence)`,
     [
       sale.saleId,
       sale.tenantId,
@@ -836,14 +847,19 @@ async function insertTenders(
       tenders.map((t) => t.method),
       tenders.map((t) => t.amount),
       tenders.map(tenderReference),
+      tenders.map((t) => t.tenderRef ?? null),
+      tenders.map((t) => t.sequence ?? null),
     ],
   );
 }
 
 /**
- * RT-77: a provenance replay must carry the tender set that was recorded —
- * compared as a set by (method, numeric amount, reference), so "10.5" and
- * "10.5000" are the same tender. A difference is a different payload (409).
+ * RT-77: a provenance replay must carry the tenders that were recorded —
+ * compared by (method, numeric amount, reference, tenderRef, sequence), so
+ * "10.5" and "10.5000" are the same tender. RT-360: compared as a MULTISET
+ * (`EXCEPT ALL`) with the line identity included, so tenders that share a
+ * method can neither swap amounts nor collapse into one another unnoticed.
+ * A difference is a different payload (409).
  * The stored `tender_count` settles the common cases without reading
  * sale_tenders: both empty (every legacy replay) is the same payload, and a
  * different count is a conflict.
@@ -858,22 +874,26 @@ async function assertSameTenders(
   const saleId = winner.id;
   const r = await client.query<{ same: boolean }>(
     `WITH req AS (
-       SELECT * FROM unnest($2::text[], $3::numeric[], $4::text[]) AS r(method, amount, reference)
+       SELECT * FROM unnest($2::text[], $3::numeric[], $4::text[], $5::uuid[], $6::smallint[])
+              AS r(method, amount, reference, tender_ref, sequence)
      ), stored AS (
-       SELECT method, amount::numeric AS amount, reference FROM sale_tenders WHERE sale_id = $1
+       SELECT method, amount::numeric AS amount, reference, tender_ref, sequence
+         FROM sale_tenders WHERE sale_id = $1
      )
      SELECT NOT EXISTS (
-       (SELECT method, amount, reference FROM req
-        EXCEPT SELECT method, amount, reference FROM stored)
+       (SELECT method, amount, reference, tender_ref, sequence FROM req
+        EXCEPT ALL SELECT method, amount, reference, tender_ref, sequence FROM stored)
        UNION ALL
-       (SELECT method, amount, reference FROM stored
-        EXCEPT SELECT method, amount, reference FROM req)
+       (SELECT method, amount, reference, tender_ref, sequence FROM stored
+        EXCEPT ALL SELECT method, amount, reference, tender_ref, sequence FROM req)
      ) AS same`,
     [
       saleId,
       tenders.map((t) => t.method),
       tenders.map((t) => t.amount),
       tenders.map(tenderReference),
+      tenders.map((t) => t.tenderRef ?? null),
+      tenders.map((t) => t.sequence ?? null),
     ],
   );
   if (r.rows[0]?.same !== true) throw new SaleTenderReplayConflictError();

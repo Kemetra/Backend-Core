@@ -7,7 +7,11 @@
  * (copied from the sale), and sum to `sales.pos_total` exactly — enforced by
  * the capture service. It is not a payment-allocation ledger (ADR-0005).
  *
- *   - one entry per method (`uq_sale_tenders_sale_method`); D2 methods only;
+ *   - RT-360 (0041): `tender_ref` is the tender line's identity and
+ *     `sequence` its apply order (both NULL on legacy rows). A ref-less tender
+ *     is one per method (`uq_sale_tenders_sale_method_legacy`); ref-bearing
+ *     tenders may share a method and are unique by ref and by sequence;
+ *   - D2 methods only;
  *   - `reference` is card_external only, in the contract shape;
  *   - composite FK to `sales (id, tenant_id, store_id)`.
  */
@@ -19,9 +23,10 @@ import {
   index,
   numeric,
   pgTable,
+  smallint,
   text,
   timestamp,
-  unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { stores } from "../stores";
@@ -43,6 +48,8 @@ export const saleTenders = pgTable(
     amount: numeric("amount", { precision: 19, scale: 4 }).notNull(),
     currencyCode: char("currency_code", { length: 3 }).notNull(),
     reference: text("reference"),
+    tenderRef: uuid("tender_ref"),
+    sequence: smallint("sequence"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -53,7 +60,16 @@ export const saleTenders = pgTable(
       "sale_tenders_reference_card_only",
       sql`${t.reference} IS NULL OR (${t.method} = 'card_external' AND ${t.reference} ~ '^[A-Z0-9]{1,6}$')`,
     ),
-    unique("uq_sale_tenders_sale_method").on(t.saleId, t.method),
+    check("sale_tenders_sequence_positive", sql`${t.sequence} IS NULL OR ${t.sequence} >= 1`),
+    uniqueIndex("uq_sale_tenders_sale_method_legacy")
+      .on(t.saleId, t.method)
+      .where(sql`${t.tenderRef} IS NULL`),
+    uniqueIndex("uq_sale_tenders_sale_tender_ref")
+      .on(t.saleId, t.tenderRef)
+      .where(sql`${t.tenderRef} IS NOT NULL`),
+    uniqueIndex("uq_sale_tenders_sale_sequence")
+      .on(t.saleId, t.sequence)
+      .where(sql`${t.sequence} IS NOT NULL`),
     index("idx_sale_tenders_tenant_store").on(t.tenantId, t.storeId),
     foreignKey({
       name: "fk_sale_tenders_sale_tenant_store",

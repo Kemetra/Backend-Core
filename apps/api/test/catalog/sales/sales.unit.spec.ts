@@ -253,7 +253,14 @@ describe("SalesService — capture branches (unit)", () => {
     const params = ins[1] as unknown[];
     // (saleId, tenant, store, currency from the SALE, ids, methods, amounts, references)
     expect(params.slice(1, 4)).toEqual([CAPTURE.tenantId, CAPTURE.storeId, "USD"]);
-    expect(params.slice(5)).toEqual([["cash", "card_external"], ["2.5", "10"], [null, "A1B2C3"]]);
+    // RT-360: tenderRef / sequence columns, NULL for a ref-less tender.
+    expect(params.slice(5)).toEqual([
+      ["cash", "card_external"],
+      ["2.5", "10"],
+      [null, "A1B2C3"],
+      [null, null],
+      [null, null],
+    ]);
   });
 
   it("RT-77: Σ tenders ≠ posTotal → SaleTenderMismatchError before any write", async () => {
@@ -313,7 +320,8 @@ describe("SalesService — capture branches (unit)", () => {
     });
     expect(res.created).toBe(false);
     const cmp = clientQuery.mock.calls.find((c) => /WITH req AS/.test(String(c[0])))!;
-    expect(cmp[1]).toEqual([VALID_REF, ["cash"], ["12.5"], [null]]);
+    // RT-360: the line identity is compared too (NULL for a ref-less tender).
+    expect(cmp[1]).toEqual([VALID_REF, ["cash"], ["12.5"], [null], [null], [null]]);
     expect(clientQuery.mock.calls.some((c) => /INSERT INTO sale_tenders/.test(String(c[0])))).toBe(false);
   });
 
