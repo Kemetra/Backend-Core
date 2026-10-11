@@ -211,6 +211,7 @@ describe("data-pulse-migrate CLI", () => {
     "0037_erpnext_posting_resolution",
     "0038_erpnext_posting_resolution_backfill",
     "0039_erpnext_posting_reconciliation_evidence",
+    "0040_device_lifecycle",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -235,6 +236,26 @@ describe("data-pulse-migrate CLI", () => {
     countPublicColumn("erpnext_posting_status", "current_resolution_version");
   const countEvidenceColumn = (): Promise<string> =>
     countPublicColumn("erpnext_posting_status", "reconciliation_document_ref");
+
+  /** 0040_device_lifecycle (RT-364): device expiry + pairing replacement link. */
+  async function countDeviceLifecycleColumns(): Promise<[string, string]> {
+    return [
+      await countPublicColumn("devices", "expires_at"),
+      await countPublicColumn("pairing_codes", "replaces_device_id"),
+    ];
+  }
+
+  /**
+   * After one `down` from head: 0040's device lifecycle columns are gone, while
+   * 0039's evidence column and 0037/0038's resolution table and version column
+   * survive.
+   */
+  async function expectOnlyLatestRolledBack(): Promise<void> {
+    expect(await countDeviceLifecycleColumns()).toEqual(["0", "0"]);
+    expect(await countEvidenceColumn()).toBe("1");
+    expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
+    expect(await countResolutionVersionColumn()).toBe("1");
+  }
 
   /** The three return tables created by 0032_sale_returns (RT-73). */
   const RETURN_TABLES = ["sale_returns", "sale_return_lines", "sale_return_tenders"];
@@ -330,6 +351,7 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPolicies(RESOLUTION_TABLES)).toBe("2");
     expect(await countResolutionVersionColumn()).toBe("1");
     expect(await countEvidenceColumn()).toBe("1"); // 0039 (RT-332)
+    expect(await countDeviceLifecycleColumns()).toEqual(["1", "1"]); // 0040 (RT-364)
   });
 
   it("up is idempotent on a second run", async () => {
@@ -365,13 +387,9 @@ describe("data-pulse-migrate CLI", () => {
 
       expect(await ledgerIds()).toEqual(EXPECTED_MIGRATIONS.slice(0, -1));
 
-      // 0039 removes the reconciliation evidence column (RT-332); 0037/0038's
-      // resolution table and version column survive.
-      expect(await countEvidenceColumn()).toBe("0");
-      expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
-      expect(await countResolutionVersionColumn()).toBe("1");
+      await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0039 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0040 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
@@ -473,6 +491,7 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicTables(ADMISSION_TABLES)).toBe("2");
     await expectShiftCashUpApplied();
     expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
+    expect(await countDeviceLifecycleColumns()).toEqual(["1", "1"]);
   });
 
   it(
