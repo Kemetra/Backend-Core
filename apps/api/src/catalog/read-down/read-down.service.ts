@@ -151,7 +151,7 @@ export class ReadDownService {
         const cursor = encodeCursor(head);
 
         // Page boundary: products are ordered by product_id; page_token carries
-        // the last product_id emitted at this cursor point.
+        // the last product_id SCANNED at this cursor point (sellable or not).
         const afterProductId = opts.pageToken
           ? decodePageToken(opts.pageToken, tenantId, storeId)
           : null;
@@ -163,11 +163,15 @@ export class ReadDownService {
           limit: limit + 1,
         });
 
+        // Scan exactly the first `limit` products; the +1 over-fetch row is
+        // only the next-page sentinel and is never consumed here. Continuation
+        // follows the SCANNED products, not the emitted ones (RT-394): a page
+        // may hold fewer than `limit` items — even none, when every scanned
+        // product is excluded — yet still carry a token, so excluded products
+        // can never end the snapshot before later sellable ones.
+        const scanned = resolved.slice(0, limit);
         const items: SellableCatalogRow[] = [];
-        let emitted = 0;
-        let lastProductId: string | null = null;
-        for (const row of resolved) {
-          if (emitted >= limit) break; // the +1 over-fetch row signals next page
+        for (const row of scanned) {
           const sellable = this.classifySellable(row);
           if (sellable.kind === "excluded") {
             // R5/R6 — absent from the stream + recorded as an unpriced issue.
@@ -176,19 +180,13 @@ export class ReadDownService {
             continue;
           }
           items.push(toSellableRow(sellable.row, cursor));
-          lastProductId = row.product_id;
-          emitted += 1;
         }
 
-        // A next page exists iff the over-fetch returned a row beyond the last
-        // one we emitted.
-        const hasMore =
-          lastProductId !== null
-            ? resolved.some((r) => r.product_id > (lastProductId as string))
-            : resolved.length > limit;
+        // A next page exists iff the over-fetch returned a row beyond the scan.
+        const lastScanned = scanned[scanned.length - 1];
         const next_page_token =
-          hasMore && lastProductId
-            ? encodePageToken({ tenantId, storeId, afterProductId: lastProductId })
+          resolved.length > limit && lastScanned
+            ? encodePageToken({ tenantId, storeId, afterProductId: lastScanned.product_id })
             : null;
 
         return { items, cursor, next_page_token };
