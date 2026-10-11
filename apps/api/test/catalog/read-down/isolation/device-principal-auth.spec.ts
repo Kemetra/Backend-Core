@@ -197,3 +197,78 @@ describe("read-down — real device-principal auth (#488 B-prime)", () => {
     expect(res.status).not.toBe(401);
   });
 });
+
+// RT-386 — a cursor whose decoded body is not a JSON object is malformed: after
+// real device auth it is the non-disclosing 404 (FR-024), never a 500. The JSON
+// text `null` (base64url `bnVsbA`) used to throw a TypeError in both decoders.
+describe("read-down — malformed cursor bodies after real device auth (RT-386)", () => {
+  const token = (json: string): string => Buffer.from(json, "utf8").toString("base64url");
+  const MALFORMED: ReadonlyArray<readonly [string, string]> = [
+    ["JSON null (bnVsbA)", token("null")],
+    ["a JSON number", token("1")],
+    ["a JSON string", token('"x"')],
+    ["a JSON array", token("[]")],
+  ];
+
+  it.each(MALFORMED)("deltas since=%s → 404", async (_label, since) => {
+    if (skip()) return;
+    const res = await http()
+      .get("/api/pos/v1/catalog/deltas")
+      .query({ since })
+      .set("authorization", `Bearer ${ACTIVE_TOKEN}`);
+    expect(res.status).toBe(404);
+  });
+
+  it.each(MALFORMED)("snapshot page_token=%s → 404", async (_label, pageToken) => {
+    if (skip()) return;
+    const res = await http()
+      .get("/api/pos/v1/catalog/snapshot")
+      .query({ page_token: pageToken })
+      .set("authorization", `Bearer ${ACTIVE_TOKEN}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("snapshot page_token with a non-string product id → 404", async () => {
+    if (skip()) return;
+    const pageToken = token(JSON.stringify({ t: TENANT_A, s: STORE_A_X, a: 1 }));
+    const res = await http()
+      .get("/api/pos/v1/catalog/snapshot")
+      .query({ page_token: pageToken })
+      .set("authorization", `Bearer ${ACTIVE_TOKEN}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("control: the snapshot cursor still opens a deltas page (200)", async () => {
+    if (skip()) return;
+    const snapshot = await http()
+      .get("/api/pos/v1/catalog/snapshot")
+      .set("authorization", `Bearer ${ACTIVE_TOKEN}`);
+    expect(snapshot.status).toBe(200);
+    const res = await http()
+      .get("/api/pos/v1/catalog/deltas")
+      .query({ since: snapshot.body.cursor as string })
+      .set("authorization", `Bearer ${ACTIVE_TOKEN}`);
+    expect(res.status).toBe(200);
+  });
+
+  it("control: a real next_page_token still opens the next snapshot page (200)", async () => {
+    if (skip()) return;
+    // limit=3 over-fetches 4 rows in product-id order: the two unsellable base
+    // products, the sellable product, then an excluded one beyond it, so the
+    // page emits the sellable product and issues a next_page_token.
+    const first = await http()
+      .get("/api/pos/v1/catalog/snapshot")
+      .query({ limit: 3 })
+      .set("authorization", `Bearer ${ACTIVE_TOKEN}`);
+    expect(first.status).toBe(200);
+    const pageToken = first.body.next_page_token as string | null;
+    expect(typeof pageToken).toBe("string");
+
+    const second = await http()
+      .get("/api/pos/v1/catalog/snapshot")
+      .query({ limit: 3, page_token: pageToken })
+      .set("authorization", `Bearer ${ACTIVE_TOKEN}`);
+    expect(second.status).toBe(200);
+    expect(second.body.cursor).toBe(first.body.cursor);
+  });
+});

@@ -37,6 +37,7 @@ import { recordCatalogUnpricedIssue } from "../../observability/metrics/api.metr
 import {
   encodeCursor,
   decodeCursor,
+  isJsonObject,
   ReadDownCursorError,
   type SnapshotCursor,
 } from "./read-down.cursor";
@@ -470,13 +471,21 @@ function decodePageToken(
   tenantId: string,
   storeId: string,
 ): string {
-  let payload: { t?: string; s?: string; a?: string };
+  let payload: unknown;
   try {
     payload = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
   } catch {
     throw new ReadDownCursorError("malformed page_token");
   }
-  if (payload.t !== tenantId || payload.s !== storeId || !payload.a) {
+  if (!isJsonObject(payload)) {
+    throw new ReadDownCursorError("malformed page_token");
+  }
+  if (
+    payload.t !== tenantId ||
+    payload.s !== storeId ||
+    typeof payload.a !== "string" ||
+    payload.a === ""
+  ) {
     // Scope-bound: a page token from another scope is non-disclosingly rejected.
     throw new ReadDownCursorError("page_token scope mismatch");
   }
