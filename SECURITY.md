@@ -7,11 +7,12 @@ contracts.
 
 ## Reporting a Vulnerability
 
-If GitHub private vulnerability reporting is enabled for this repository, use
-that channel first.
+Report vulnerabilities privately by email to **security@kemetralabs.com**.
 
-If private reporting is not available, contact the maintainers through GitHub
-and request a private disclosure channel. Do not publish exploit details,
+If GitHub private vulnerability reporting is enabled for this repository, you
+may use that channel instead.
+
+Do not publish exploit details,
 secrets, credentials, tokens, tenant data, or proof-of-concept payloads in a
 public issue.
 
