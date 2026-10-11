@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.6.0-draft"
+  version: "1.7.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -143,6 +143,28 @@ info:
     response, security requirement, operation or migration changes. A client
     that does not send `admissionCheckAt` sees no difference.
 
+    RT-359 (1.7.0-draft; [GATED] approval Jira RT-359, owner, 2026-10-11;
+    decisions RT-264 D1–D4, Sales & Returns 1002–1013): TENDER-LINE IDENTITY.
+    `SaleTender` gains an OPTIONAL `tenderRef` (uuid), the tender line's own
+    stable identity, and an OPTIONAL `sequence` (integer >= 1), its position in
+    the order the lines were applied. Tender method is no longer tender
+    identity: a sale may carry more than one entry with the same `method` (a
+    same-method split tender), each its own line. The `tenderRef` is minted by
+    the producer (the POS) when the tender line is created and is part of the
+    payload hash, so it never changes on a retry. A tender recorded without a
+    `tenderRef` (every tender captured before this version) is a legacy tender:
+    it was written under the one-entry-per-method rule, so it stays addressed
+    by `(sale, method)`. Its ref is never backfilled or derived. ROLLOUT ORDER:
+    the server accepts `tenderRef` and `sequence` from RT-360, and until then
+    the strict capture DTO rejects them (400), so the POS MUST NOT send
+    `tenderRef` or `sequence` before RT-360 is deployed. The server keeps at
+    most one entry per `method` until RT-360's same-method deploy flag is on,
+    which waits for the Connector's same-method settlement check (RT-361, see
+    `erpnext-connector/posting-feed.yaml`). Both fields are OPTIONAL on `Sale`
+    as well, but `Sale` is `additionalProperties: false`, so a client that
+    validates responses strictly must re-pin this version before RT-360
+    deploys. A producer that sends neither field sees no difference.
+
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
     appears on the wire. Timestamps are RFC 3339 / `date-time` in UTC (FR-021).
@@ -204,7 +226,8 @@ paths:
 
         Tender (RT-10 D1, from RT-77): the optional `tenders` list records how
         the sale was paid. Each `amount` is NET of change (cash = tendered −
-        change), there is at most one entry per `method` (else 400), and the
+        change), each entry is one tender line (RT-359: `tenderRef` /
+        `sequence`; see the `tenders` field for the per-sale rules), and the
         amounts MUST sum to `posTotal` exactly (else 422
         `sale_tender_mismatch`); nothing is recorded on either failure. The
         tender list is hashed into the payload, so a replay that adds, drops or
@@ -823,11 +846,17 @@ components:
           items:
             $ref: "#/components/schemas/SaleTender"
           description: >
-            OPTIONAL (RT-10 D1) — how the sale was paid. Net of change, at most
-            one entry per method, and summing to `posTotal` exactly (else 422
+            OPTIONAL (RT-10 D1) — how the sale was paid, one entry per tender
+            line. Net of change, and summing to `posTotal` exactly (else 422
             `sale_tender_mismatch`). Absent = a tender-unknown sale (RT-10 D8).
             Accepted from RT-77; do not send before then (see the versioning
-            note).
+            note). Per-sale rules (RT-359), each a 400 `validation_error`:
+            `tenderRef` is unique within the sale; `sequence` is unique within
+            the sale; more than one entry with the same `method` is accepted
+            only when EVERY entry carries a `tenderRef`, and only once RT-360's
+            same-method flag is on (until then at most one entry per method).
+            `tenderRef` / `sequence`: Accepted from RT-360; do not send before
+            then.
         operatorUserId:
           type: string
           format: uuid
@@ -1121,6 +1150,25 @@ components:
             OPTIONAL, `card_external` only (else 400): the short reference the
             card terminal printed, as keyed by the cashier. NEVER a card number
             or any other card data.
+        tenderRef:
+          type: string
+          format: uuid
+          description: >
+            OPTIONAL (RT-359) — the tender line's own stable identity, minted
+            by the producer when the tender line is created (the POS tender
+            line id), and part of the payload hash, so it never changes on a
+            retry. Tender method is not tender identity (Sales & Returns
+            1004): refunds, card-outcome recovery and settlement address a
+            tender by `tenderRef`. Absent = a legacy tender, addressed by
+            `(sale, method)`. External evidence such as `reference` augments it
+            and never replaces it.
+        sequence:
+          type: integer
+          minimum: 1
+          description: >
+            OPTIONAL (RT-359) — the line's 1-based position among the sale's
+            tender lines, in the order they were applied. Unique within the
+            sale. Gives a deterministic order to tenders that share a `method`.
 
     # -----------------------------------------------------------------------
     # Response projections (toBody) — NOT the DB row shape (§IV)

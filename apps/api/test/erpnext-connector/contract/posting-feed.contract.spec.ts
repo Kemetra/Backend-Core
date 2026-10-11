@@ -743,8 +743,7 @@ describe("erpnext-connector/posting-feed.yaml — RT-332 frozen resolution (1.6.
     return (schema(name)?.properties ?? {})[field] as T | undefined;
   }
 
-  it("is 1.6.0-draft and its note records RT-332 with the Backend-Core-first rollout", () => {
-    expect(feedDoc.info?.version).toBe("1.6.0-draft");
+  it("its note records RT-332 at 1.6.0-draft with the Backend-Core-first rollout (version moved on in RT-359)", () => {
     const description = feedDoc.info?.description ?? "";
     expect(description).toContain("RT-332 (1.6.0-draft");
     expect(description).toContain("ROLLOUT ORDER (Backend-Core first)");
@@ -780,5 +779,40 @@ describe("erpnext-connector/posting-feed.yaml — RT-332 frozen resolution (1.6.
       minimum: 1,
     });
     expect(schema("OutcomeAckRequest")?.required ?? []).not.toContain("resolutionVersion");
+  });
+});
+
+describe("erpnext-connector/posting-feed.yaml — RT-359 tender-line identity (1.7.0-draft)", () => {
+  type FieldNode = { type?: string; format?: string; minimum?: number; description?: string };
+  function tender(): SchemaObject | undefined {
+    return feedDoc.components?.schemas?.["SaleTender"];
+  }
+  function field(name: string): FieldNode | undefined {
+    return (tender()?.properties ?? {})[name] as FieldNode | undefined;
+  }
+
+  it("is 1.7.0-draft and its note records RT-359", () => {
+    expect(feedDoc.info?.version).toBe("1.7.0-draft");
+    expect(feedDoc.info?.description ?? "").toContain("RT-359 (1.7.0-draft");
+  });
+
+  it("the feed tender mirrors the capture tender's OPTIONAL tenderRef and sequence", () => {
+    expect(tender()?.additionalProperties).toBe(false);
+    expect(tender()?.required?.slice().sort()).toEqual(["amount", "method"]);
+    expect(field("tenderRef")).toMatchObject({ type: "string", format: "uuid" });
+    expect(field("sequence")).toMatchObject({ type: "integer", minimum: 1 });
+  });
+
+  it("the Connector orders payments by sequence and keeps tenderRef out of ERPNext (RT-264 D4)", () => {
+    expect(field("sequence")?.description ?? "").toContain("one payment row per tender in `sequence` order");
+    expect(field("tenderRef")?.description ?? "").toContain("not written to the ERPNext document");
+  });
+
+  it("holds same-method tenders off the feed until the Connector proves it settles them (RT-361)", () => {
+    const description = feedDoc.info?.description ?? "";
+    expect(description).toContain(
+      "MUST NOT offer a work item whose `sale.tenders` has more than one entry with the same `method`",
+    );
+    expect(description).toContain("RT-361");
   });
 });
