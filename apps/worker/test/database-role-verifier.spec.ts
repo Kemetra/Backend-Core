@@ -20,10 +20,17 @@ import {
 } from "../src/worker.module";
 
 function fakePool(
-  row: { is_superuser: boolean; bypass_rls: boolean; can_mark_retention?: boolean } | null,
+  row: {
+    is_superuser: boolean;
+    bypass_rls: boolean;
+    can_mark_retention?: boolean;
+    /** The login role (`session_user`). Default: the role itself. */
+    session_role?: string;
+  } | null,
 ): Pool {
   const query = jest.fn(async () => ({
-    rows: row === null ? [] : [{ role_name: "app_runtime", ...row }],
+    rows:
+      row === null ? [] : [{ role_name: "app_runtime", session_role: "app_runtime", ...row }],
   }));
   return { query } as unknown as Pool;
 }
@@ -61,6 +68,14 @@ describe("verifyWorkerDatabaseRole", () => {
     await expect(verifyWorkerDatabaseRole(fakePool(null))).rejects.toThrow(
       /database role could not be resolved/,
     );
+  });
+
+  it("RT-357: rejects a session that only switched to the role (session_user differs)", async () => {
+    await expect(
+      verifyWorkerDatabaseRole(
+        fakePool({ is_superuser: false, bypass_rls: false, session_role: "postgres" }),
+      ),
+    ).rejects.toThrow(/DATABASE_URL role must log in as itself/);
   });
 });
 

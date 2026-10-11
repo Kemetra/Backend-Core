@@ -52,6 +52,8 @@ export function authLookupPoolFactory(domainPool: Pool): Pool {
 
 interface RoleRow {
   role_name: string;
+  /** The login role. Differs from role_name after `options=-c role=…`. */
+  session_role: string;
   is_superuser: boolean;
   bypass_rls: boolean;
 }
@@ -59,6 +61,7 @@ interface RoleRow {
 async function readRole(pool: Pool): Promise<RoleRow> {
   const result = await pool.query<RoleRow>(
     `SELECT current_user AS role_name,
+            session_user AS session_role,
             r.rolsuper AS is_superuser,
             r.rolbypassrls AS bypass_rls
        FROM pg_roles r
@@ -257,6 +260,20 @@ async function assertLookupGrants(lookupPool: Pool): Promise<void> {
   }
 }
 
+/**
+ * RT-357: a URL can log in as a privileged role and switch with
+ * `options=-c role=…`. current_user then passes every posture and grant check
+ * below, while RESET ROLE restores the login's own privileges (a superuser,
+ * BYPASSRLS, the migration owner). The login itself must be the checked role.
+ */
+function assertLogsInAsItself(role: RoleRow, variable: string): void {
+  if (role.session_role !== role.role_name) {
+    throw new Error(
+      `AuthModule: ${variable} role must log in as itself, not switch to it from another login`,
+    );
+  }
+}
+
 /** Exported for Testcontainers proof of the production role boundary. */
 export async function verifyDatabasePoolBoundary(
   domainPool: Pool,
@@ -267,6 +284,8 @@ export async function verifyDatabasePoolBoundary(
     readRole(lookupPool),
   ]);
 
+  assertLogsInAsItself(domainRole, "DATABASE_URL");
+  assertLogsInAsItself(lookupRole, "AUTH_LOOKUP_DATABASE_URL");
   assertDomainRole(domainRole);
   assertLookupRole(lookupRole, domainRole.role_name);
   await assertDomainGrants(domainPool);

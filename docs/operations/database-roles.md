@@ -114,7 +114,14 @@ user can run it alone:
 ## Boot-time verification
 
 In production (or with `VERIFY_DATABASE_POOL_BOUNDARY=1`) both processes check
-their credentials before serving and refuse to start on a violation:
+their credentials before serving and refuse to start on a violation.
+
+Every check below first requires the URL to log in as the checked role itself
+(`session_user = current_user`, RT-357). A URL that logs in as another role and
+switches with `options=-c role=…` is refused, naming the variable: every other
+check reads `current_user`, which would pass, while `RESET ROLE` would restore
+the login's own privileges (a superuser, `BYPASSRLS`, or the migration owner).
+Legitimate deployments never set a role option.
 
 - **API, domain role:** it is not a superuser, does not have `BYPASSRLS`, is
   distinct from the lookup role, and holds every required table grant
@@ -158,7 +165,7 @@ their credentials before serving and refuse to start on a violation:
   unless it was granted `WITH SET FALSE` (PostgreSQL 16+); the check does not
   make that distinction.
 - **Worker, audit retention role:** its `AUDIT_RETENTION_DATABASE_URL` login is
-  the role itself (no `options=-c role=…` switch from another login), reaches
+  the role itself (RT-353, the first such check), reaches
   the same database as `DATABASE_URL` (same name, OID and server), is a
   different role from `DATABASE_URL`, is not a superuser, does not have
   `BYPASSRLS`, holds `SELECT` and `UPDATE (retention_marked_at)` on

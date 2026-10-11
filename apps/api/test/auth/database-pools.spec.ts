@@ -54,6 +54,8 @@ const LOOKUP_GRANTS: ReadonlySet<string> = new Set(
 
 function rolePool(input: {
   roleName: string;
+  /** The login role (`session_user`). Default: the role itself. */
+  sessionRole?: string;
   superuser?: boolean;
   bypassRls?: boolean;
   /**
@@ -84,6 +86,7 @@ function rolePool(input: {
         rows: [
           {
             role_name: input.roleName,
+            session_role: input.sessionRole ?? input.roleName,
             is_superuser: input.superuser ?? false,
             bypass_rls: input.bypassRls ?? false,
           },
@@ -155,6 +158,28 @@ describe("database pool boundary", () => {
       message: /must use distinct database roles/,
     },
   ])("rejects $name", async ({ domain, lookup, message }) => {
+    await expect(
+      verifyDatabasePoolBoundary(rolePool(domain), rolePool(lookup)),
+    ).rejects.toThrow(message);
+  });
+
+  // RT-357 — a URL can log in as a privileged role and switch with
+  // `options=-c role=…`: current_user then passes every check below, while
+  // RESET ROLE restores the login's own privileges.
+  it.each([
+    {
+      name: "a domain URL that switched from another login",
+      domain: { roleName: "app_domain", sessionRole: "postgres" },
+      lookup: { roleName: "app_auth_lookup", bypassRls: true },
+      message: /DATABASE_URL role must log in as itself/,
+    },
+    {
+      name: "a lookup URL that switched from another login",
+      domain: { roleName: "app_domain" },
+      lookup: { roleName: "app_auth_lookup", sessionRole: "postgres", bypassRls: true },
+      message: /AUTH_LOOKUP_DATABASE_URL role must log in as itself/,
+    },
+  ])("RT-357: rejects $name", async ({ domain, lookup, message }) => {
     await expect(
       verifyDatabasePoolBoundary(rolePool(domain), rolePool(lookup)),
     ).rejects.toThrow(message);

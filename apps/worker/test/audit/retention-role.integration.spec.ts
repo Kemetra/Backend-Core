@@ -170,6 +170,27 @@ describe("RT-353 — boot checks against real grants", () => {
     }
   });
 
+  it("RT-357: refuse a privileged login that only switches to the domain role", async () => {
+    const h = handles();
+    if (!h) return;
+    const masquerade = new Pool({
+      connectionString: h.env.adminUri,
+      options: `-c role=${APP_ROLE_NAME}`,
+      max: 1,
+    });
+    try {
+      const who = await masquerade.query<{ cu: string }>("SELECT current_user AS cu");
+      expect(who.rows[0]!.cu).toBe(APP_ROLE_NAME); // the switch did happen
+      await expect(verifyWorkerDatabaseRole(masquerade)).rejects.toThrow(
+        /DATABASE_URL role must log in as itself/,
+      );
+    } finally {
+      await masquerade.end();
+    }
+    // The real domain login still passes.
+    await expect(verifyWorkerDatabaseRole(h.env.app)).resolves.toBeUndefined();
+  });
+
   it("accept the same database when the two sessions use different TimeZone and DateStyle", async () => {
     const h = handles();
     if (!h) return;
