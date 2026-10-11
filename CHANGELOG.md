@@ -14,6 +14,12 @@ This project follows [Semantic Versioning](https://semver.org/).
   (1.0.0-draft, contract-only). It defines the device-authenticated cashier
   admission, admission end and cashier roster routes that replace the cashier
   path's use of the operator-identity-gated roster and active-session routes.
+- RT-383 `[GATED]`, pending owner approval: OpenAPI contract
+  `shift-closes.openapi.yaml` (1.0.0-draft, contract-only). It defines the
+  admin-facing read of recorded RT-17 shift closes for Admin-Console RT-18:
+  `GET /api/v1/shift-closes` (filtered, keyset-paginated list) and
+  `GET /api/v1/shift-closes/{shiftId}` (one close with its movements). No
+  runtime change; the POS shift operations are unchanged.
 
 ### Changed
 - RT-113 BC1: `pos-operators.openapi.yaml` 1.1.1-draft is a prose-only fix.
