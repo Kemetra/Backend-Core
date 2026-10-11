@@ -70,18 +70,23 @@ async function insertSale(id: string, externalId: string, tenderCount = 0): Prom
   );
 }
 
+/** A ref-bearing tender's line identity; omitted for a legacy (unref'd) tender. */
+interface TenderIdentity {
+  tenderRef: string;
+  sequence: number;
+}
+
 async function insertTender(
   saleId: string,
   method: string,
   amount: string,
-  tenderRef: string | null = null,
-  sequence: number | null = null,
+  identity?: TenderIdentity,
 ): Promise<void> {
   await pg().admin.query(
     `INSERT INTO sale_tenders
        (sale_id, tenant_id, store_id, method, amount, currency_code, tender_ref, sequence)
      VALUES ($1, $2, $3, $4, $5::numeric, 'EGP', $6, $7)`,
-    [saleId, TENANT, STORE, method, amount, tenderRef, sequence],
+    [saleId, TENANT, STORE, method, amount, identity?.tenderRef ?? null, identity?.sequence ?? null],
   );
 }
 
@@ -143,8 +148,8 @@ describe("0041_sale_tender_ref — upgrade over existing tenders", () => {
 describe("0041_sale_tender_ref — tender-line identity", () => {
   it("accepts same-method tenders that each carry a distinct tender_ref and sequence", async () => {
     if (skip()) return;
-    await insertTender(REF_SALE, "cash", "6", REF_1, 1);
-    await insertTender(REF_SALE, "cash", "4", REF_2, 2);
+    await insertTender(REF_SALE, "cash", "6", { tenderRef: REF_1, sequence: 1 });
+    await insertTender(REF_SALE, "cash", "4", { tenderRef: REF_2, sequence: 2 });
     const r = await pg().admin.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM sale_tenders WHERE sale_id = $1 AND method = 'cash'`,
       [REF_SALE],
@@ -154,23 +159,23 @@ describe("0041_sale_tender_ref — tender-line identity", () => {
 
   it("rejects a tender_ref repeated within one sale", async () => {
     if (skip()) return;
-    await expect(insertTender(REF_SALE, "card_external", "1", REF_1, 3)).rejects.toThrow(
-      /uq_sale_tenders_sale_tender_ref/,
-    );
+    await expect(
+      insertTender(REF_SALE, "card_external", "1", { tenderRef: REF_1, sequence: 3 }),
+    ).rejects.toThrow(/uq_sale_tenders_sale_tender_ref/);
   });
 
   it("rejects a sequence repeated within one sale", async () => {
     if (skip()) return;
-    await expect(insertTender(REF_SALE, "card_external", "1", REF_3, 2)).rejects.toThrow(
-      /uq_sale_tenders_sale_sequence/,
-    );
+    await expect(
+      insertTender(REF_SALE, "card_external", "1", { tenderRef: REF_3, sequence: 2 }),
+    ).rejects.toThrow(/uq_sale_tenders_sale_sequence/);
   });
 
   it("rejects a sequence below 1", async () => {
     if (skip()) return;
-    await expect(insertTender(REF_SALE, "card_external", "1", REF_3, 0)).rejects.toThrow(
-      /sale_tenders_sequence_positive/,
-    );
+    await expect(
+      insertTender(REF_SALE, "card_external", "1", { tenderRef: REF_3, sequence: 0 }),
+    ).rejects.toThrow(/sale_tenders_sequence_positive/);
   });
 
   it("no longer caps sales.tender_count at 2, but still rejects a negative count", async () => {

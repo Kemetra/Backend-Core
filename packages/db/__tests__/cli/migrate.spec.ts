@@ -211,6 +211,7 @@ describe("data-pulse-migrate CLI", () => {
     "0037_erpnext_posting_resolution",
     "0038_erpnext_posting_resolution_backfill",
     "0039_erpnext_posting_reconciliation_evidence",
+    "0040_device_lifecycle",
     "0041_sale_tender_ref",
   ] as const;
 
@@ -236,12 +237,35 @@ describe("data-pulse-migrate CLI", () => {
     countPublicColumn("erpnext_posting_status", "current_resolution_version");
   const countEvidenceColumn = (): Promise<string> =>
     countPublicColumn("erpnext_posting_status", "reconciliation_document_ref");
-  /** 0041's tender-line identity columns on sale_tenders (RT-360). */
-  const countTenderRefColumns = async (): Promise<string> =>
-    String(
-      Number(await countPublicColumn("sale_tenders", "tender_ref")) +
-        Number(await countPublicColumn("sale_tenders", "sequence")),
-    );
+
+  /** 0040_device_lifecycle (RT-364): device expiry + pairing replacement link. */
+  async function countDeviceLifecycleColumns(): Promise<[string, string]> {
+    return [
+      await countPublicColumn("devices", "expires_at"),
+      await countPublicColumn("pairing_codes", "replaces_device_id"),
+    ];
+  }
+
+  /** 0041_sale_tender_ref (RT-360): tender-line identity on sale_tenders. */
+  async function countTenderRefColumns(): Promise<[string, string]> {
+    return [
+      await countPublicColumn("sale_tenders", "tender_ref"),
+      await countPublicColumn("sale_tenders", "sequence"),
+    ];
+  }
+
+  /**
+   * After one `down` from head: 0041's tender_ref / sequence columns are gone,
+   * while 0040's device lifecycle columns, 0039's evidence column and
+   * 0037/0038's resolution table and version column survive.
+   */
+  async function expectOnlyLatestRolledBack(): Promise<void> {
+    expect(await countTenderRefColumns()).toEqual(["0", "0"]);
+    expect(await countDeviceLifecycleColumns()).toEqual(["1", "1"]);
+    expect(await countEvidenceColumn()).toBe("1");
+    expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
+    expect(await countResolutionVersionColumn()).toBe("1");
+  }
 
   /** The three return tables created by 0032_sale_returns (RT-73). */
   const RETURN_TABLES = ["sale_returns", "sale_return_lines", "sale_return_tenders"];
@@ -337,7 +361,8 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPolicies(RESOLUTION_TABLES)).toBe("2");
     expect(await countResolutionVersionColumn()).toBe("1");
     expect(await countEvidenceColumn()).toBe("1"); // 0039 (RT-332)
-    expect(await countTenderRefColumns()).toBe("2"); // 0041 (RT-360)
+    expect(await countDeviceLifecycleColumns()).toEqual(["1", "1"]); // 0040 (RT-364)
+    expect(await countTenderRefColumns()).toEqual(["1", "1"]); // 0041 (RT-360)
   });
 
   it("up is idempotent on a second run", async () => {
@@ -373,16 +398,10 @@ describe("data-pulse-migrate CLI", () => {
 
       expect(await ledgerIds()).toEqual(EXPECTED_MIGRATIONS.slice(0, -1));
 
-      // 0041 removes the sale_tenders tender_ref / sequence columns (RT-360).
-      expect(await countTenderRefColumns()).toBe("0");
+      await expectOnlyLatestRolledBack();
 
       // Sanity: everything older SURVIVES the 0041 rollback (down reverses
       // only the latest migration) —
-      // 0039's reconciliation evidence column and 0037/0038's resolution
-      // table and version column (RT-332 / RT-330);
-      expect(await countEvidenceColumn()).toBe("1");
-      expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
-      expect(await countResolutionVersionColumn()).toBe("1");
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
       // 0035's cashier admission tables (RT-113 BC2);
@@ -483,6 +502,8 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicTables(ADMISSION_TABLES)).toBe("2");
     await expectShiftCashUpApplied();
     expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
+    expect(await countDeviceLifecycleColumns()).toEqual(["1", "1"]);
+    expect(await countTenderRefColumns()).toEqual(["1", "1"]);
   });
 
   it(
