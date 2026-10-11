@@ -226,6 +226,38 @@ describe("production database pool separation", () => {
     await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
   });
 
+  it("RT-357: a superuser URL that switches with options=-c role= fails boot verification", async () => {
+    if (dockerSkipped) return;
+    const { app, adminUri } = env!;
+    const lookupPool = lookup!;
+    // current_user becomes the checked role while session_user stays the
+    // superuser, so RESET ROLE would restore superuser privileges.
+    const switchedTo = (role: string): Pool =>
+      new Pool({ connectionString: adminUri, options: `-c role=${role}`, max: 1 });
+
+    const domainSwitch = switchedTo(APP_ROLE_NAME);
+    const lookupSwitch = switchedTo(LOOKUP_ROLE);
+    try {
+      const who = await domainSwitch.query<{ cu: string; su: string }>(
+        "SELECT current_user AS cu, session_user AS su",
+      );
+      expect(who.rows[0]!.cu).toBe(APP_ROLE_NAME); // the switch did happen
+      expect(who.rows[0]!.su).not.toBe(APP_ROLE_NAME);
+
+      await expect(verifyDatabasePoolBoundary(domainSwitch, lookupPool)).rejects.toThrow(
+        /DATABASE_URL role must log in as itself/,
+      );
+      await expect(verifyDatabasePoolBoundary(app, lookupSwitch)).rejects.toThrow(
+        /AUTH_LOOKUP_DATABASE_URL role must log in as itself/,
+      );
+    } finally {
+      await domainSwitch.end().catch(() => undefined);
+      await lookupSwitch.end().catch(() => undefined);
+    }
+    // The real logins still pass.
+    await expect(verifyDatabasePoolBoundary(app, lookupPool)).resolves.toBeUndefined();
+  });
+
   it("keeps bootstrap resolution available while the domain pool remains RLS-bound", async () => {
     if (dockerSkipped) return;
     const { app } = env!;

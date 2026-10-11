@@ -13,6 +13,8 @@ import type { Pool } from "pg";
 
 interface RoleRow {
   role_name: string;
+  /** The login role. Differs from role_name after `options=-c role=…`. */
+  session_role: string;
   is_superuser: boolean;
   bypass_rls: boolean;
   can_mark_retention?: boolean;
@@ -21,6 +23,7 @@ interface RoleRow {
 export async function verifyWorkerDatabaseRole(pool: Pool): Promise<void> {
   const result = await pool.query<RoleRow>(
     `SELECT current_user AS role_name,
+            session_user AS session_role,
             r.rolsuper AS is_superuser,
             r.rolbypassrls AS bypass_rls,
             (has_column_privilege('audit_events', 'retention_marked_at', 'UPDATE')
@@ -39,6 +42,13 @@ export async function verifyWorkerDatabaseRole(pool: Pool): Promise<void> {
   );
   const role = result.rows[0];
   if (!role) throw new Error("WorkerModule: database role could not be resolved");
+  // RT-357: a login that switched with `options=-c role=…` passes every check
+  // below on current_user, while RESET ROLE restores its own privileges.
+  if (role.session_role !== role.role_name) {
+    throw new Error(
+      "WorkerModule: DATABASE_URL role must log in as itself, not switch to it from another login",
+    );
+  }
   if (role.is_superuser || role.bypass_rls) {
     throw new Error(
       "WorkerModule: DATABASE_URL role must be non-superuser and must not have BYPASSRLS",
