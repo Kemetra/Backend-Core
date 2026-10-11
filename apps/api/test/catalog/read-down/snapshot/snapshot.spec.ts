@@ -162,7 +162,9 @@ describe("posGetCatalogSnapshot — resolved override (T032)", () => {
 describe("posGetCatalogSnapshot — pagination (T033)", () => {
   it("paginates via next_page_token; all pages share the SAME cursor", async () => {
     if (skip()) return;
-    // limit=1 forces multiple pages if >1 sellable row exists in tenant A.
+    // limit=1 over tenant A's 5 store A-X products forces multiple pages. The
+    // token is asserted, not branched on: a null token here was the RT-394
+    // early-termination bug (the first product is unsellable).
     const first = await h.harness!
       .http()
       .get("/api/pos/v1/catalog/snapshot")
@@ -170,21 +172,20 @@ describe("posGetCatalogSnapshot — pagination (T033)", () => {
     expect(first.status).toBe(200);
     const firstBody = first.body as SnapshotPage;
     expect(firstBody.items.length).toBeLessThanOrEqual(1);
+    expect(typeof firstBody.next_page_token).toBe("string");
 
-    if (firstBody.next_page_token) {
-      const second = await h.harness!
-        .http()
-        .get("/api/pos/v1/catalog/snapshot")
-        .query({ limit: 1, page_token: firstBody.next_page_token });
-      expect(second.status).toBe(200);
-      const secondBody = second.body as SnapshotPage;
-      // Same consistent cursor point across pages (FR-012).
-      expect(secondBody.cursor).toBe(firstBody.cursor);
-      // No duplicate product across the two pages.
-      const firstIds = firstBody.items.map((r) => r.product_id);
-      const secondIds = secondBody.items.map((r) => r.product_id);
-      expect(firstIds.filter((id) => secondIds.includes(id))).toEqual([]);
-    }
+    const second = await h.harness!
+      .http()
+      .get("/api/pos/v1/catalog/snapshot")
+      .query({ limit: 1, page_token: firstBody.next_page_token });
+    expect(second.status).toBe(200);
+    const secondBody = second.body as SnapshotPage;
+    // Same consistent cursor point across pages (FR-012).
+    expect(secondBody.cursor).toBe(firstBody.cursor);
+    // No duplicate product across the two pages.
+    const firstIds = firstBody.items.map((r) => r.product_id);
+    const secondIds = secondBody.items.map((r) => r.product_id);
+    expect(firstIds.filter((id) => secondIds.includes(id))).toEqual([]);
   });
 });
 
