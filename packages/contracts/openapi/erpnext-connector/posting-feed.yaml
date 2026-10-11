@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Connector Posting-Feed API
-  version: "1.6.0-draft"
+  version: "1.7.0-draft"
   description: >
     Spec 012 ERPNext Connector Contracts surface — the DP2 ↔ connector boundary
     that realises the signed 011 posting + version-pin decisions over a
@@ -177,6 +177,22 @@ info:
     optional on the feed and ignored by a connector that predates it; a
     connector MUST NOT send `reconciliation_required` or `resolutionVersion` to a
     Backend-Core that predates 1.6.0-draft (the strict ack DTO rejects them).
+
+    RT-359 (1.7.0-draft; [GATED] approval Jira RT-359, owner, 2026-10-11;
+    decisions RT-264 D1–D4): TENDER-LINE IDENTITY. `SaleTender` gains an
+    OPTIONAL `tenderRef` (uuid, the tender line's stable Retail identity) and
+    an OPTIONAL `sequence` (integer >= 1), mirroring `pos-sales/sales.yaml`.
+    A sale may now carry more than one tender with the same `method`. The
+    Connector builds one payment row per tender in `sequence` order and does not
+    write `tenderRef` to the ERPNext document (RT-264 D4). A tender without
+    `tenderRef` is a legacy tender (one per method). ROLLOUT ORDER: the two
+    fields are optional and additive, and the Connector's parser on main ignores
+    unknown tender keys, but `SaleTender` is `additionalProperties: false`, so a
+    Connector that validates the feed strictly must re-pin first. Backend-Core
+    MUST NOT offer a work item whose `sale.tenders` has more than one entry with
+    the same `method` until the Connector has shown that it settles such a
+    sale exactly in ERPNext (RT-361); until then such work items are held, not
+    offered, exactly as the RT-76 INVARIANT holds tender-bearing sales.
 
 servers:
   - url: https://api.example.com
@@ -723,6 +739,21 @@ components:
           description: >
             `card_external` only — the card terminal's short reference. Never
             card data.
+        tenderRef:
+          type: string
+          format: uuid
+          description: >
+            OPTIONAL (RT-359) — the tender line's stable Retail identity
+            (mirrors `pos-sales/sales.yaml`). The Connector records it in its
+            own evidence; it is not written to the ERPNext document (RT-264
+            D4). Absent = a legacy tender, one per method.
+        sequence:
+          type: integer
+          minimum: 1
+          description: >
+            OPTIONAL (RT-359) — the tender's 1-based position, unique within
+            the sale. The Connector builds one payment row per tender in
+            `sequence` order (tenders without it keep the order given).
     RefundTender:
       type: object
       additionalProperties: false

@@ -81,6 +81,8 @@ const APPROVED_TENDER_FIELDS = [
   "SaleReturn.refundTenders",
   "CaptureSaleRequest.tenders",
   "Sale.tenders",
+  // RT-359 (RT-264 D1/D3): the tender line's own identity.
+  "SaleTender.tenderRef",
 ];
 
 /** RT-10 D2: the pilot tender methods. `voucher` is deliberately excluded. */
@@ -608,8 +610,9 @@ describe("pos-sales/sales.yaml — RT-76 sale tender contract", () => {
   it("a sale tender is strict {method, amount, reference?} with non-negative decimal money (D1)", () => {
     expect(schema("SaleTender")?.additionalProperties).toBe(false);
     expect(schema("SaleTender")?.required?.sort()).toEqual(["amount", "method"]);
+    // RT-359 adds the optional tender-line identity (tenderRef, sequence).
     expect(Object.keys(schema("SaleTender")?.properties ?? {}).sort()).toEqual(
-      ["amount", "method", "reference"],
+      ["amount", "method", "reference", "sequence", "tenderRef"],
     );
     expect(prop<{ $ref?: string }>("SaleTender", "amount")?.$ref).toBe(
       "#/components/schemas/NonNegativeDecimalAmount",
@@ -919,8 +922,7 @@ describe("pos-sales/sales.yaml — RT-225 admissionCheckAt", () => {
     return { keys, required: keys.filter((k) => !shape[k]!.isOptional()) };
   }
 
-  it("bumps the version to 1.6.0-draft with an RT-225 version note citing the approval", () => {
-    expect(salesDoc.info?.version).toBe("1.6.0-draft");
+  it("the version note records RT-225 at 1.6.0-draft, citing the approval (version moved on in RT-359)", () => {
     const info = salesDoc.info?.description ?? "";
     expect(info).toContain("RT-225 (1.6.0-draft");
     expect(info).toContain("[GATED] approval Jira RT-225");
@@ -969,5 +971,64 @@ describe("pos-sales/sales.yaml — RT-225 admissionCheckAt", () => {
     expect(dto.keys).toEqual(contractKeys);
     expect(dto.required).toEqual(contractRequired);
     expect(dto.keys).toContain("admissionCheckAt");
+  });
+});
+
+// ===========================================================================
+// RT-359 (RT-264 G1 decisions D1–D4) — tender-line identity (1.7.0-draft)
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-359 tender-line identity", () => {
+  type FieldNode = { type?: string; format?: string; minimum?: number; description?: string };
+  function tender(): SchemaObject | undefined {
+    return salesDoc.components?.schemas?.["SaleTender"];
+  }
+  function field(name: string): FieldNode | undefined {
+    return (tender()?.properties ?? {})[name] as FieldNode | undefined;
+  }
+  function tendersText(): string {
+    const props = salesDoc.components?.schemas?.["CaptureSaleRequest"]?.properties ?? {};
+    return (props["tenders"] as { description?: string } | undefined)?.description ?? "";
+  }
+
+  it("bumps the version to 1.7.0-draft with an RT-359 note citing the [GATED] approval", () => {
+    expect(salesDoc.info?.version).toBe("1.7.0-draft");
+    const info = salesDoc.info?.description ?? "";
+    expect(info).toContain("RT-359 (1.7.0-draft");
+    expect(info).toContain("[GATED] approval Jira RT-359");
+  });
+
+  it("adds an OPTIONAL tenderRef (uuid) and sequence (integer >= 1); the tender stays strict", () => {
+    expect(tender()?.additionalProperties).toBe(false);
+    expect(tender()?.required?.slice().sort()).toEqual(["amount", "method"]);
+    expect(field("tenderRef")).toMatchObject({ type: "string", format: "uuid" });
+    expect(field("sequence")).toMatchObject({ type: "integer", minimum: 1 });
+  });
+
+  it("tenderRef is the POS-minted tender-line identity, stable across retries", () => {
+    const text = field("tenderRef")?.description ?? "";
+    expect(text).toContain("minted by the producer when the tender line is created");
+    expect(text).toContain("never changes on a retry");
+    expect(text).toContain("Tender method is not tender identity");
+  });
+
+  it("states the per-sale uniqueness rules OpenAPI cannot express, each a 400", () => {
+    const text = tendersText();
+    expect(text).toContain("`tenderRef` is unique within the sale");
+    expect(text).toContain("`sequence` is unique within the sale");
+    expect(text).toContain("only when EVERY entry carries a `tenderRef`");
+    expect(text).toContain("400 `validation_error`");
+  });
+
+  it("keeps a legacy (ref-less) tender addressable by (sale, method), with no backfill", () => {
+    const info = salesDoc.info?.description ?? "";
+    expect(info).toContain("addressed by `(sale, method)`");
+    expect(info).toContain("never backfilled or derived");
+  });
+
+  it("orders the rollout: no tenderRef before RT-360, no same-method tenders before the flag", () => {
+    const info = salesDoc.info?.description ?? "";
+    expect(info).toContain("MUST NOT send `tenderRef` or `sequence` before RT-360 is deployed");
+    expect(info).toContain("at most one entry per `method` until");
+    expect(tendersText()).toContain("Accepted from RT-360");
   });
 });

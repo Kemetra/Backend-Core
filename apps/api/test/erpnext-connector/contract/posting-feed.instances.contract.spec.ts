@@ -193,4 +193,34 @@ describe("posting-feed.yaml — RT-77 sale tenders validate against PostingWorkI
     };
     expect(validate(bad)).toBe(false);
   });
+
+  it("RT-359: two same-method tenders carrying tenderRef + sequence validate", async () => {
+    const sale = await buildWorkItem(
+      fakeClient([{ rows: [TENDERED] }, { rows: [LINE_ROW] }, TENDERS]),
+      STATUS_ROW,
+    );
+    expectValid({
+      ...sale,
+      sale: {
+        ...sale!.sale,
+        tenders: [
+          { method: "cash", amount: "6.0000", tenderRef: "3f1c2a4e-5b6d-4e7f-8a9b-0c1d2e3f4a5b", sequence: 1 },
+          { method: "cash", amount: "4.0000", tenderRef: "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", sequence: 2 },
+        ],
+      },
+    });
+  });
+
+  it("RT-359 negative controls: a non-uuid tenderRef and a sequence below 1 are rejected", async () => {
+    const sale = await buildWorkItem(
+      fakeClient([{ rows: [TENDERED] }, { rows: [LINE_ROW] }, TENDERS]),
+      STATUS_ROW,
+    );
+    const withTender = (t: Record<string, unknown>): unknown => ({
+      ...sale,
+      sale: { ...sale!.sale, tenders: [{ method: "cash", amount: "10.0000", ...t }] },
+    });
+    expect(validate(withTender({ tenderRef: "not-a-uuid" }))).toBe(false);
+    expect(validate(withTender({ sequence: 0 }))).toBe(false);
+  });
 });
