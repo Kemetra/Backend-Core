@@ -1,0 +1,679 @@
+openapi: 3.1.0
+info:
+  title: Data-Pulse-2 — Admin Shift-Close Read API
+  version: "1.0.0-draft"
+  description: >
+    Jira RT-383 (AD-CASH-001 follow-up 4): the admin-facing read of recorded
+    shift closes that Admin-Console RT-18 (shift / cash variance exception
+    review) consumes. Two read operations over the RT-17 `shift_closes` facts
+    (migration `0036_shift_cash_up`):
+
+      1. `consoleListShiftCloses` — a filtered, cursor-paginated list of
+         recorded closes, newest first.
+      2. `consoleGetShiftClose`   — one recorded close, with its shift's
+         opening, its cash movements and its cash-refund return references.
+
+    There is NO write here. Nothing on this surface changes a shift, a close or
+    a movement, and the POS-facing shift operations (`pos-shifts.openapi.yaml`:
+    `/api/pos/v1/shifts`, `/stuck`, `/{shift_id}/cash-movements`,
+    `/{shift_id}/close`) are unchanged.
+
+
+    **Posture.** `1.0.0-draft`, contract-only: both operations carry
+    `x-runtime-status: contract-only` until the RT-383 implementation ships.
+    `[GATED]` contract: implementation starts only after the owner approves
+    this contract on RT-383.
+
+
+    **What is read.** Only closes Backend-Core has recorded: one `shift_closes`
+    row per closed cash-up shift, verbatim from the POS (Constitution §III:
+    Backend-Core never rewrites a POS total). An open shift, a legacy
+    (pre-RT-17) shift row and a shift whose close has not drained yet have no
+    close and are not listed. The close is immutable (append-only table), so a
+    row never changes after it is listed.
+
+
+    **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`),
+    gated `DashboardAuthGuard` → `TenantContextGuard` → `RolesGuard`, as on the
+    other Console operator surfaces (`sale-sync-ops.yaml`,
+    `console-sync-ops.yaml`). Roles: `owner`, `tenant_admin`, `store_manager`.
+    The tenant comes from the session, never from the request (§II, §XII). The
+    store scope is the operator-surface rule (`operator-store-scope.ts`,
+    RT-51 D6 / RT-131 / RT-193): `owner` and `tenant_admin` see their
+    membership's store authority (tenant-wide for an `all` grant, never
+    narrowed by the active store); `store_manager` sees the standard resolved
+    store scope, including active-store narrowing. A role outside the list
+    (`store_staff`), a shift of another tenant, a shift of a store outside the
+    caller's scope and a shift with no recorded close are the same
+    non-disclosing 404 (`RolesGuard` default `denyAs: 404`, FR-ISO-4); so is a
+    `store_id` filter naming a store outside the scope.
+
+
+    **Money.** Every amount is an exact-decimal string (never a float) in the
+    close's currency, `currencyCode` (ISO-4217, the currency given at the
+    shift's open), stored as `numeric(19,4)`. Amounts are returned as recorded;
+    the server does not convert currencies or re-round.
+
+
+    **Ordering and paging.** Newest first by `closedAt` (the POS clock), ties
+    broken by `shiftId`, both descending: a total, stable order. Keyset
+    pagination with an opaque cursor that encodes the position only (the last
+    row's `closedAt` and `shiftId`). Walking the pages with the same filters
+    returns every matching close that existed when the walk began exactly once,
+    and no close twice. `closedAt` is the POS clock and an offline terminal
+    drains late, so a close that arrives during a walk with a `closedAt` older
+    than the walk's position is not returned by that walk; a fresh first page
+    includes it.
+
+
+    **Not on this surface (do not fabricate).** The AD-CASH-001 D-7 policy
+    values (`policySource`, `policyRevisionId`, the frozen value,
+    `approvalRequiredByPolicy`, `approvalMissing`) and the persisted
+    `approverCheck` do not exist yet; they are added to these projections
+    additively by the policy contract and RT-384 / RT-385, together with their
+    filters. Also absent by design: more than one count per close (RT-17
+    records one counted amount), any review / acknowledgement workflow state,
+    a recompute-against-recorded-sales flag, user display names and the
+    terminal (device) id.
+
+
+    **PII.** User references are `users.id` values only; no name, e-mail,
+    phone, PIN or credential. The only free text is the forced close's
+    `forcedReason` and a movement's `note`, both documented "no PII" on the POS
+    contract; they are returned to the authorised operator and never logged.
+
+
+    **Error envelope.** The canonical `{ error: { code, message, request_id } }`
+    shape (`auth` / `pos-sales` / `sale-sync-ops`). Status mapping: 400
+    `validation_error` (malformed path, query, cursor or filter, an unknown
+    query key, an empty date range), 401 unauthenticated, 404 non-disclosing
+    not-found, 500 internal.
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: shift-closes
+    description: >
+      Console-facing read of recorded RT-17 shift closes (RT-383), for the
+      RT-18 shift / cash variance exception review.
+
+security:
+  - cookieAuth: []
+
+paths:
+  /api/v1/shift-closes:
+    get:
+      summary: List recorded shift closes (newest first, keyset paginated).
+      operationId: consoleListShiftCloses
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-383 contract PR; the controller ships in the RT-383 implementation
+        after the owner approves this contract.
+      tags: [shift-closes]
+      description: >
+        The recorded closes in the caller's tenant and store scope, newest
+        first by (`closedAt`, `shiftId`). Every filter is optional and they
+        combine with AND. With no `store_id`, every store in the caller's scope
+        is listed. An empty page (`items: []`, `nextCursor: null`) is a 200.
+      parameters:
+        - $ref: "#/components/parameters/StoreIdQuery"
+        - $ref: "#/components/parameters/ClosedFrom"
+        - $ref: "#/components/parameters/ClosedTo"
+        - $ref: "#/components/parameters/CloseKindQuery"
+        - $ref: "#/components/parameters/MinAbsVariance"
+        - $ref: "#/components/parameters/CurrencyCodeQuery"
+        - $ref: "#/components/parameters/ApprovalQuery"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of recorded closes, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShiftClosePage"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/shift-closes/{shiftId}:
+    get:
+      summary: Read one recorded shift close with its movements.
+      operationId: consoleGetShiftClose
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-383 contract PR; the controller ships in the RT-383 implementation
+        after the owner approves this contract.
+      tags: [shift-closes]
+      description: >
+        One recorded close, plus its shift's opening (time, user), its cash
+        movements (pay-in / pay-out with reason codes) and the returns whose
+        cash refund it claimed. A shift that is open, legacy, of another
+        tenant, of a store outside the caller's scope, or absent is the same
+        non-disclosing 404.
+      parameters:
+        - $ref: "#/components/parameters/ShiftIdPath"
+      responses:
+        "200":
+          description: The recorded close.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShiftCloseDetail"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: dp2_session
+      description: >
+        The human dashboard session cookie (httpOnly `dp2_session`), verified
+        by `DashboardAuthGuard`. The only accepted credential on this surface:
+        a machine bearer, a POS `device` token or an `operatorAuthorization`
+        envelope is rejected (401). `RolesGuard` + `@Roles("owner",
+        "tenant_admin", "store_manager")` gate both routes (default deny →
+        404). 401 semantics are owned by 028 (G10).
+
+  parameters:
+    ShiftIdPath:
+      name: shiftId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        The shift's client-generated id (`shiftId` on the POS contract). Case
+        insensitive: normalised to lower case before the lookup. A value that
+        is not a UUID is 400 `validation_error` and never reaches the
+        database.
+    StoreIdQuery:
+      name: store_id
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: >
+        Only closes of this store. Validated against the caller's store scope:
+        a store outside it, or of another tenant, is the non-disclosing 404.
+    ClosedFrom:
+      name: closed_from
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date-time
+      description: >
+        Only closes with `closedAt` at or after this instant (inclusive), RFC
+        3339 with an offset. Compared with the POS-clock `closedAt`.
+    ClosedTo:
+      name: closed_to
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date-time
+      description: >
+        Only closes with `closedAt` strictly before this instant (exclusive),
+        RFC 3339 with an offset. With `closed_from`, `closed_to` must be later
+        than `closed_from`, else 400 `validation_error`.
+    CloseKindQuery:
+      name: close_kind
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/CloseKind"
+      description: Only closes of this kind.
+    MinAbsVariance:
+      name: min_abs_variance
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/NonNegativeDecimalAmount"
+      description: >
+        Only closes whose absolute `variance` is at least this amount
+        (inclusive), compared in exact decimal. The amount is compared in each
+        close's own currency, with no conversion; pair it with `currency_code`
+        when the scope holds more than one currency.
+    CurrencyCodeQuery:
+      name: currency_code
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/CurrencyCode"
+      description: Only closes in this currency.
+    ApprovalQuery:
+      name: approval
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [approved, not_approved]
+      description: >
+        `approved`: closes that recorded a `varianceApprovedByUserId`.
+        `not_approved`: closes that did not (including zero-variance closes;
+        combine with `min_abs_variance` to find unapproved variances). Whether
+        the recorded approver was verified is not filterable until the
+        persisted `approverCheck` exists (RT-384 / RT-385).
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 512
+        pattern: "^[A-Za-z0-9_-]+$"
+      description: >
+        Opaque keyset cursor from a prior page's `nextCursor`. Do not decode
+        or construct it; omit it for the first page. Reuse it only with the
+        same filters. A value the server did not issue, or cannot decode, is
+        400 `validation_error`.
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+      description: Maximum items per page (bounded). The server MAY return fewer.
+
+  schemas:
+    # -----------------------------------------------------------------------
+    # Vocabularies and money (the pos-shifts.openapi.yaml shapes; no float)
+    # -----------------------------------------------------------------------
+    CloseKind:
+      type: string
+      enum: [normal, forced]
+      description: >
+        `normal`: the cashier counted and closed. `forced`: a manager closed a
+        shift the cashier could not close (RT-17).
+    CurrencyCode:
+      type: string
+      pattern: "^[A-Z]{3}$"
+      description: ISO-4217 alphabetic currency code.
+    NonNegativeDecimalAmount:
+      type: string
+      pattern: '^[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: >
+        Exact-decimal amount as a string, never negative; at most 15 integer
+        and 4 fractional digits (`numeric(19,4)`).
+    PositiveDecimalAmount:
+      description: A `NonNegativeDecimalAmount` greater than zero.
+      allOf:
+        - $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        - type: string
+          pattern: "[1-9]"
+    SignedDecimalAmount:
+      type: string
+      pattern: '^-?[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: >
+        Exact-decimal amount as a string that may be negative. Used for
+        `variance`: a shortage is negative, an overage positive.
+
+    # -----------------------------------------------------------------------
+    # Projections (explicit wire shapes, never DB rows)
+    # -----------------------------------------------------------------------
+    ShiftCloseSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - shiftId
+        - storeId
+        - currencyCode
+        - closedAt
+        - closeKind
+        - forcedReason
+        - closingUserId
+        - varianceApprovedByUserId
+        - openingFloat
+        - cashSalesTotal
+        - cashRefundsTotal
+        - payInTotal
+        - payOutTotal
+        - expectedCash
+        - countedCash
+        - variance
+        - saleCount
+        - receivedAt
+      if:
+        properties:
+          closeKind:
+            const: forced
+        required: [closeKind]
+      then:
+        properties:
+          forcedReason:
+            type: string
+      else:
+        properties:
+          forcedReason:
+            type: "null"
+      description: >
+        One recorded close, as listed. Every key is always present; a value
+        that was not recorded is `null`. `forcedReason` is a string when
+        `closeKind` is `forced` and `null` when it is `normal`. No tenant id,
+        device id, payload hash or recording actor (see `ShiftCloseDetail`).
+        The arithmetic holds exactly, as checked on ingest:
+        `expectedCash = openingFloat + cashSalesTotal − cashRefundsTotal + payInTotal − payOutTotal`
+        and `variance = countedCash − expectedCash`.
+      properties:
+        shiftId:
+          type: string
+          format: uuid
+        storeId:
+          type: string
+          format: uuid
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+        closedAt:
+          type: string
+          format: date-time
+          description: When the shift was closed, on the POS clock.
+        closeKind:
+          $ref: "#/components/schemas/CloseKind"
+        forcedReason:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 200
+          description: Why the shift was force-closed; `null` for a normal close. No PII.
+        closingUserId:
+          type: string
+          format: uuid
+          description: The `users.id` of the user who closed the shift.
+        varianceApprovedByUserId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            The `users.id` the terminal recorded as the variance approver, or
+            `null` when none was recorded. Recorded as sent: this read does not
+            say whether the approver was verified (the persisted
+            `approverCheck`, RT-384 / RT-385, is added later).
+        openingFloat:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        cashSalesTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        cashRefundsTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        payInTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        payOutTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        expectedCash:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        countedCash:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        variance:
+          $ref: "#/components/schemas/SignedDecimalAmount"
+        saleCount:
+          type: integer
+          minimum: 0
+          maximum: 2147483647
+          description: Number of sales the POS counted in the shift, as reported.
+        receivedAt:
+          type: string
+          format: date-time
+          description: When the server recorded the close (server clock).
+
+    ShiftClosePage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      description: A keyset page of recorded closes, newest first.
+      properties:
+        items:
+          type: array
+          # Mirrors the page_size maximum (200).
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/ShiftCloseSummary"
+        nextCursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page; `null` on the last page.
+
+    ShiftCloseDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - shiftId
+        - storeId
+        - currencyCode
+        - openedAt
+        - openingUserId
+        - closedAt
+        - closeKind
+        - forcedReason
+        - closingUserId
+        - recordedByUserId
+        - varianceApprovedByUserId
+        - openingFloat
+        - cashSalesTotal
+        - cashRefundsTotal
+        - payInTotal
+        - payOutTotal
+        - expectedCash
+        - countedCash
+        - variance
+        - saleCount
+        - receivedAt
+        - cashRefundReturnRefs
+        - cashMovements
+      if:
+        properties:
+          closeKind:
+            const: forced
+        required: [closeKind]
+      then:
+        properties:
+          forcedReason:
+            type: string
+      else:
+        properties:
+          forcedReason:
+            type: "null"
+      description: >
+        One recorded close with its shift's opening, its cash movements and its
+        claimed cash-refund returns. The close fields are the
+        `ShiftCloseSummary` fields, with the same rules.
+      properties:
+        shiftId:
+          type: string
+          format: uuid
+        storeId:
+          type: string
+          format: uuid
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+        openedAt:
+          type: string
+          format: date-time
+          description: When the shift was opened, on the POS clock.
+        openingUserId:
+          type: string
+          format: uuid
+          description: The `users.id` of the user who opened the shift; may differ from the closing user.
+        closedAt:
+          type: string
+          format: date-time
+          description: When the shift was closed, on the POS clock.
+        closeKind:
+          $ref: "#/components/schemas/CloseKind"
+        forcedReason:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 200
+          description: Why the shift was force-closed; `null` for a normal close. No PII.
+        closingUserId:
+          type: string
+          format: uuid
+          description: The `users.id` of the user who closed the shift.
+        recordedByUserId:
+          type: string
+          format: uuid
+          description: >
+            The verified actor who delivered the close: the admitted cashier on
+            the device path, the envelope operator on the manager path.
+        varianceApprovedByUserId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            The `users.id` the terminal recorded as the variance approver, or
+            `null`. Recorded as sent; verification is not reported yet.
+        openingFloat:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        cashSalesTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        cashRefundsTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        payInTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        payOutTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        expectedCash:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        countedCash:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        variance:
+          $ref: "#/components/schemas/SignedDecimalAmount"
+        saleCount:
+          type: integer
+          minimum: 0
+          maximum: 2147483647
+        receivedAt:
+          type: string
+          format: date-time
+          description: When the server recorded the close (server clock).
+        cashRefundReturnRefs:
+          type: array
+          uniqueItems: true
+          maxItems: 1000
+          items:
+            type: string
+            format: uuid
+          description: >
+            The returns whose cash refund the close claimed from this drawer,
+            in the order the POS sent them; may be empty.
+        cashMovements:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShiftCashMovement"
+          description: >
+            Every pay-in and pay-out recorded on the shift, oldest first by
+            `occurredAt`, ties broken by `movementId`; may be empty.
+
+    ShiftCashMovement:
+      type: object
+      additionalProperties: false
+      required: [movementId, kind, amount, reasonCode, note, occurredAt, recordedByUserId, receivedAt]
+      description: >
+        A recorded pay-in or pay-out, in the shift's currency (the close's
+        `currencyCode`). `note` is `null` when none was recorded.
+      properties:
+        movementId:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [pay_in, pay_out]
+        amount:
+          $ref: "#/components/schemas/PositiveDecimalAmount"
+        reasonCode:
+          type: string
+          enum: [bank_drop, float_top_up, petty_expense, other]
+        note:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 200
+          description: Optional free text from the terminal. No PII.
+        occurredAt:
+          type: string
+          format: date-time
+          description: When the movement happened, on the POS clock.
+        recordedByUserId:
+          type: string
+          format: uuid
+          description: The verified actor who recorded the movement.
+        receivedAt:
+          type: string
+          format: date-time
+          description: When the server recorded the movement (server clock).
+
+    # -----------------------------------------------------------------------
+    # Canonical error envelope (auth / pos-sales / sale-sync-ops)
+    # -----------------------------------------------------------------------
+    Error:
+      type: object
+      required: [error]
+      description: >
+        Canonical error envelope. Out-of-scope and cross-tenant refusals are
+        non-disclosing (§II, §XII): they never name the cause.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id; the cause is recorded server-side.
+
+  responses:
+    ValidationFailure:
+      description: >
+        validation_error (400): a malformed path or query value, an unknown
+        query key, a cursor the server cannot decode, or `closed_to` not later
+        than `closed_from`. Checked before any database read.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        Unauthenticated (401): a missing or invalid session cookie, or a
+        non-cookie credential. Non-disclosing. Owned by 028 (G10).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >
+        not_found (404), non-disclosing: identical for a role outside
+        `owner` / `tenant_admin` / `store_manager`, another tenant's shift or
+        store, a store outside the caller's scope, a shift with no recorded
+        close and an absent id.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SystemFailure:
+      description: >
+        system_failure (500): unexpected server error; the cause is recorded
+        server-side under `request_id`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

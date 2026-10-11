@@ -125,7 +125,10 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "acceptInvitation",
       "backfillSaleLinkedMovements",
       "consoleCreatePayerAccount",
+      // RT-383: admin shift-close read contract; the runtime ships after owner approval.
+      "consoleGetShiftClose",
       "consoleListPayerAccounts",
+      "consoleListShiftCloses",
       "posRedeemVoucher",
       "posReverseVoucher",
       "posValidateVoucher",
