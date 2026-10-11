@@ -245,6 +245,18 @@ describe("data-pulse-migrate CLI", () => {
     ];
   }
 
+  /**
+   * After one `down` from head: 0040's device lifecycle columns are gone, while
+   * 0039's evidence column and 0037/0038's resolution table and version column
+   * survive.
+   */
+  async function expectOnlyLatestRolledBack(): Promise<void> {
+    expect(await countDeviceLifecycleColumns()).toEqual(["0", "0"]);
+    expect(await countEvidenceColumn()).toBe("1");
+    expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
+    expect(await countResolutionVersionColumn()).toBe("1");
+  }
+
   /** The three return tables created by 0032_sale_returns (RT-73). */
   const RETURN_TABLES = ["sale_returns", "sale_return_lines", "sale_return_tenders"];
 
@@ -375,12 +387,7 @@ describe("data-pulse-migrate CLI", () => {
 
       expect(await ledgerIds()).toEqual(EXPECTED_MIGRATIONS.slice(0, -1));
 
-      // 0040 removes the device lifecycle columns (RT-364); 0039's evidence
-      // column and 0037/0038's resolution table and version column survive.
-      expect(await countDeviceLifecycleColumns()).toEqual(["0", "0"]);
-      expect(await countEvidenceColumn()).toBe("1");
-      expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
-      expect(await countResolutionVersionColumn()).toBe("1");
+      await expectOnlyLatestRolledBack();
 
       // Sanity: everything older SURVIVES the 0040 rollback (down reverses
       // only the latest migration) —
