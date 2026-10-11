@@ -28,7 +28,11 @@ import {
   type HarnessHandle,
 } from "./__snapshot-harness";
 
-/** Sellable, right after the non-representable product (Mode B at limit=2). */
+/**
+ * Sellable, right after the non-representable product. At limit=2 the old code
+ * hit Mode B on page 1 (window a401, a402, d010111 → token null), so this
+ * product was never served.
+ */
 const SELLABLE_AFTER_NONREPR = "0a000000-0000-7000-8000-00000d010444";
 /** A run of unpriced products longer than the small limits walked below. */
 const EXCLUDED_RUN = [
@@ -164,12 +168,4 @@ describe("posGetCatalogSnapshot — pagination completeness (RT-394)", () => {
       expect(pages[pages.length - 1]!.next_page_token).toBeNull();
     },
   );
-
-  it("the final page of a walk is terminal: its token is null and no product follows", async () => {
-    if (skip()) return;
-    const pages = await walkSnapshot(TOTAL_PRODUCTS);
-    const last = pages[pages.length - 1]!;
-    expect(last.next_page_token).toBeNull();
-    expect(emittedIds(pages).sort()).toEqual(ALL_SELLABLE);
-  });
 });
