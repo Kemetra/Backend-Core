@@ -6,10 +6,11 @@
  *   GET /api/v1/shift-closes            consoleListShiftCloses
  *   GET /api/v1/shift-closes/{shiftId}  consoleGetShiftClose
  *
- * Auth as on the other Console operator surfaces (`sale-sync-ops`): the HUMAN
- * `cookieAuth` → `DashboardAuthGuard`, then `TenantContextGuard` (publishes
- * `request.context`), then `RolesGuard` + `@Roles("owner", "tenant_admin",
- * "store_manager")` (default deny → 404). The tenant is the session's, never
+ * Auth: the HUMAN `cookieAuth` session only → `SessionOnlyAdminGuard` (any
+ * bearer, `dashboard_api` included, is 401: the contract accepts the session
+ * cookie alone), then `TenantContextGuard` (publishes `request.context`), then
+ * `RolesGuard` + `@Roles("owner", "tenant_admin", "store_manager")` (default
+ * deny → 404). The tenant is the session's, never
  * the request's (§XII); the store scope is the operator-surface rule, applied
  * by the service.
  *
@@ -30,9 +31,9 @@ import {
 } from "@nestjs/common";
 
 import { Auditable } from "../audit/auditable.decorator";
-import { DashboardAuthGuard } from "../auth/dashboard-auth.guard";
 import { Roles } from "../auth/roles.decorator";
 import { RolesGuard } from "../auth/roles.guard";
+import { SessionOnlyAdminGuard } from "../auth/session-only-admin.guard";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { TenantContextGuard } from "../context/tenant-context.guard";
 import type { TenantContextRequest } from "../context/types";
@@ -62,7 +63,7 @@ import {
 const NOT_FOUND = { code: "not_found", message: "Not Found" } as const;
 
 @Controller()
-@UseGuards(DashboardAuthGuard, TenantContextGuard)
+@UseGuards(SessionOnlyAdminGuard, TenantContextGuard)
 export class ShiftClosesController {
   constructor(private readonly service: ShiftClosesReadService) {}
 

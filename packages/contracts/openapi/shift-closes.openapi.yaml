@@ -33,10 +33,10 @@ info:
     row never changes after it is listed.
 
 
-    **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`),
-    gated `DashboardAuthGuard` → `TenantContextGuard` → `RolesGuard`, as on the
-    other Console operator surfaces (`sale-sync-ops.yaml`,
-    `console-sync-ops.yaml`). Roles: `owner`, `tenant_admin`, `store_manager`.
+    **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`)
+    only, gated `SessionOnlyAdminGuard` → `TenantContextGuard` → `RolesGuard`;
+    the session-only guard is what rejects every bearer (a `dashboard_api`
+    token included) with 401. Roles: `owner`, `tenant_admin`, `store_manager`.
     The tenant comes from the session, never from the request (§II, §XII). The
     store scope is the operator-surface rule (`operator-store-scope.ts`,
     RT-51 D6 / RT-131 / RT-193): `owner` and `tenant_admin` see their
@@ -177,7 +177,7 @@ components:
       name: dp2_session
       description: >
         The human dashboard session cookie (httpOnly `dp2_session`), verified
-        by `DashboardAuthGuard`. The only accepted credential on this surface:
+        by `SessionOnlyAdminGuard`. The only accepted credential on this surface:
         a machine bearer, a POS `device` token or an `operatorAuthorization`
         envelope is rejected (401). `RolesGuard` + `@Roles("owner",
         "tenant_admin", "store_manager")` gate both routes (default deny →

@@ -29,6 +29,7 @@ import { AUTH_LOOKUP_POOL } from "../../../../src/auth/database-pools";
 import { AuthTokenRepository } from "../../../../src/auth/auth-token.repository";
 import { DashboardAuthGuard } from "../../../../src/auth/dashboard-auth.guard";
 import { SessionRepository } from "../../../../src/auth/session.repository";
+import { SessionOnlyAdminGuard } from "../../../../src/auth/session-only-admin.guard";
 import { GlobalExceptionFilter } from "../../../../src/common/exception.filter";
 import type { PgTestEnv } from "../../../_helpers/postgres-container";
 import { SALE_A_X, SALE_A_Y, SALE_B_X, SALES_SOURCE_SYSTEM } from "../../sales/__support__/seed-sales";
@@ -102,9 +103,9 @@ const SALE_DEL = "0a000000-0000-7000-8000-0000019208a1";
 // Cookie-auth stand-in
 // ---------------------------------------------------------------------------
 
-/** A test header names the session; without it the real `DashboardAuthGuard` decides. */
+/** A test header names the session; without it the real guard (cookie / bearer) decides. */
 class HeaderSessionAuthGuard implements CanActivate {
-  constructor(private readonly real: DashboardAuthGuard) {}
+  constructor(private readonly real: { canActivate(ctx: ExecutionContext): Promise<boolean> }) {}
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest<{
       headers: Record<string, string | undefined>;
@@ -240,26 +241,33 @@ export async function seedReadStoreScope(env: PgTestEnv): Promise<void> {
 /**
  * Boot `module` over the app pool with only cookie authentication faked.
  * `auditEnqueuer` replaces the default no-op so a spec can observe audit emission.
+ * Both dashboard guards (`DashboardAuthGuard`, `SessionOnlyAdminGuard`) take the
+ * test header; without it the real guard decides. `authLookupPool` (default: the
+ * app pool) resolves sessions and bearer tokens for that real guard; pass the
+ * RLS-exempt admin pool, as the production auth-lookup role is, to exercise a
+ * real bearer token (RT-383).
  */
 export async function bootScopedApp(
   env: PgTestEnv,
   module: Type<unknown> | DynamicModule,
   auditEnqueuer: AuditJobEnqueuer = { enqueue: async () => undefined },
+  options: { readonly authLookupPool?: Pool } = {},
 ): Promise<INestApplication> {
   const appPool = env.app;
-  const realDashboardGuard = new DashboardAuthGuard(
-    new SessionRepository(appPool),
-    new AuthTokenRepository(appPool),
-  );
+  const lookupPool = options.authLookupPool ?? appPool;
+  const sessions = new SessionRepository(lookupPool);
+  const authTokens = new AuthTokenRepository(lookupPool);
   const moduleRef = await Test.createTestingModule({ imports: [module] })
     .overrideProvider(PG_POOL)
     .useValue(appPool)
     .overrideProvider(AUTH_LOOKUP_POOL)
-    .useValue(appPool)
+    .useValue(lookupPool)
     .overrideProvider(AUDIT_JOB_ENQUEUER)
     .useValue(auditEnqueuer)
     .overrideGuard(DashboardAuthGuard)
-    .useValue(new HeaderSessionAuthGuard(realDashboardGuard))
+    .useValue(new HeaderSessionAuthGuard(new DashboardAuthGuard(sessions, authTokens)))
+    .overrideGuard(SessionOnlyAdminGuard)
+    .useValue(new HeaderSessionAuthGuard(new SessionOnlyAdminGuard(sessions, authTokens)))
     .compile();
   const app = moduleRef.createNestApplication({ bufferLogs: true });
   app.useGlobalFilters(new GlobalExceptionFilter());

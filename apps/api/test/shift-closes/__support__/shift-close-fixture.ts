@@ -33,6 +33,7 @@
  */
 import { createHash } from "node:crypto";
 
+import { generateRawToken, hashToken } from "@data-pulse-2/auth";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool, PoolClient } from "pg";
 
@@ -91,6 +92,8 @@ export const SES_MANAGER = "0a000000-0000-7000-8000-0000038305a1";
 export const SES_MANAGER_ACTIVE = "0a000000-0000-7000-8000-0000038305a2";
 export const SES_STAFF = "0a000000-0000-7000-8000-0000038305a3";
 export const SES_ADMIN_EMPTY = "0a000000-0000-7000-8000-0000038305a4";
+/** A tenant-bound `dashboard_api` bearer of the store_manager (an allowed role, in scope). */
+export const MANAGER_DASHBOARD_TOKEN = generateRawToken();
 
 const DEVICE_AX = "0a000000-0000-7000-8000-0000038308a1";
 const DEVICE_AX_OPEN = "0a000000-0000-7000-8000-0000038308a2";
@@ -357,6 +360,11 @@ async function seedMembers(admin: Pool): Promise<void> {
       SES_MANAGER, USER_MANAGER, SES_MANAGER_ACTIVE, SES_STAFF, USER_STAFF, SES_ADMIN_EMPTY, USER_ADMIN_EMPTY,
       TENANT_A, STORE_A_Y,
     ],
+  );
+  await admin.query(
+    `INSERT INTO auth_tokens (id, token_hash, tenant_id, user_id, scope, expires_at)
+     VALUES (gen_random_uuid(), $1, $2, $3, 'dashboard_api', now() + interval '1 hour')`,
+    [hashToken(MANAGER_DASHBOARD_TOKEN), TENANT_A, USER_MANAGER],
   );
   registerTestSession(SES_MANAGER, USER_MANAGER);
   registerTestSession(SES_MANAGER_ACTIVE, USER_MANAGER);

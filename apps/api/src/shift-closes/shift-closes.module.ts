@@ -3,7 +3,8 @@
  * (`shift-closes.openapi.yaml`) for Admin-Console RT-18. Read only.
  *
  * Imports:
- *   - `AuthModule`    — `PG_POOL` + the human `DashboardAuthGuard`.
+ *   - `AuthModule`    — `PG_POOL` + the session/token repositories the
+ *                       session-only `SessionOnlyAdminGuard` uses.
  *   - `ContextModule` — `TenantContextGuard` (publishes `request.context`) and
  *                       `MembershipRepository` (the caller's role → store scope).
  *   - `AuditModule`   — the global `AuditEmitterInterceptor` the `@Auditable`

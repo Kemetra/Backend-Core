@@ -61,6 +61,7 @@ import {
   CLOSE_Y5,
   CLOSE_Y6,
   LEGACY_X,
+  MANAGER_DASHBOARD_TOKEN,
   MOVEMENT_X3_PAY_IN,
   MOVEMENT_X3_PAY_OUT,
   NO_SHIFT,
@@ -120,7 +121,8 @@ beforeAll(async () => {
     }
     throw new Error(`Container start failed: ${msg}`);
   }
-  app = await bootScopedApp(env, ShiftClosesModule);
+  // Bearer tokens resolve on the RLS-exempt pool, as the production auth-lookup role does.
+  app = await bootScopedApp(env, ShiftClosesModule, undefined, { authLookupPool: env.admin });
 }, 240_000);
 
 afterAll(async () => {
@@ -227,6 +229,15 @@ describe("RT-383 shift-closes — role and store scope", () => {
     if (skip()) return;
     expect((await get(LIST, null)).status).toBe(401);
     expect((await get(detail(CLOSE_X1), null)).status).toBe(401);
+  });
+
+  it("a dashboard_api bearer of an allowed, in-scope member is 401 (cookie session only)", async () => {
+    if (skip()) return;
+    for (const path of [LIST, detail(CLOSE_X1)]) {
+      const res = await get(path, null).set("Authorization", `Bearer ${MANAGER_DASHBOARD_TOKEN}`);
+      expect(res.status).toBe(401);
+      expectValid(errorSchema, res.body);
+    }
   });
 });
 
@@ -432,7 +443,13 @@ describe("RT-383 shift-closes — list projection and ordering", () => {
       shiftId: CLOSE_X3,
     });
     const otherShape = Buffer.from(JSON.stringify({ k: "i", t: TENANT_A }), "utf8").toString("base64url");
-    for (const cursor of [foreign, otherShape, "bm90LWpzb24"]) {
+    // Well-formed and same-tenant, but no such day: refused before the timestamptz cast.
+    const impossibleDay = encodeShiftCloseCursor({
+      tenantId: TENANT_A,
+      closedAtKey: "2026-02-31T00:00:00.000000Z",
+      shiftId: CLOSE_X3,
+    });
+    for (const cursor of [foreign, otherShape, impossibleDay, "bm90LWpzb24"]) {
       await expectValidationError(await get(LIST, SES_OWNER_ALL, { cursor }));
     }
   });

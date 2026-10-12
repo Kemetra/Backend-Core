@@ -50,6 +50,8 @@ describe("shift-close cursor", () => {
     ["an extra key", b64({ k: "shift_closes", t: TENANT, c: KEY, s: SHIFT, x: 1 })],
     ["a millisecond-only key", b64({ k: "shift_closes", t: TENANT, c: "2026-10-04T10:00:00.000Z", s: SHIFT })],
     ["an impossible date", b64({ k: "shift_closes", t: TENANT, c: "2026-13-45T10:00:00.000001Z", s: SHIFT })],
+    ["a day Date.parse rolls over", b64({ k: "shift_closes", t: TENANT, c: "2026-02-31T00:00:00.000000Z", s: SHIFT })],
+    ["an hour Date.parse rolls over", b64({ k: "shift_closes", t: TENANT, c: "2026-10-03T24:00:00.000000Z", s: SHIFT })],
     ["an upper-case shift id", b64({ k: "shift_closes", t: TENANT, c: KEY, s: SHIFT.toUpperCase() })],
     ["a JSON array", b64([TENANT, KEY, SHIFT])],
   ])("rejects %s", (_label, cursor) => {

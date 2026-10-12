@@ -78,8 +78,18 @@ export function decodeShiftCloseCursor(input: { readonly tenantId: string; reado
   if (!parsed.success || parsed.data.t !== input.tenantId.toLowerCase()) {
     throw new InvalidShiftCloseCursorError();
   }
-  if (Number.isNaN(Date.parse(parsed.data.c))) throw new InvalidShiftCloseCursorError();
+  if (!isCalendarInstant(parsed.data.c)) throw new InvalidShiftCloseCursorError();
   return { closedAtKey: parsed.data.c, shiftId: parsed.data.s };
+}
+
+/**
+ * True when the key names a real UTC instant. `Date.parse` rolls an
+ * out-of-range day over ("02-31" → "03-03") where Postgres refuses the cast,
+ * so the date and time are checked to survive the round trip unchanged.
+ */
+function isCalendarInstant(key: string): boolean {
+  const ms = Date.parse(key);
+  return !Number.isNaN(ms) && new Date(ms).toISOString().slice(0, 19) === key.slice(0, 19);
 }
 
 // ---------------------------------------------------------------------------
