@@ -286,7 +286,7 @@ components:
           items:
             type: object
             additionalProperties: false
-            required: [code]
+            required: [code, count]
             properties:
               code:
                 type: string
