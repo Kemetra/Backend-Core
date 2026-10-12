@@ -14,7 +14,7 @@ PostgreSQL is the authority, because every business date is computed with `AT TI
 
 The rule is applied in two stages:
 
-1. **Shape check in Zod (no database):** the value is `UTC`, or it matches `^[A-Z][A-Za-z_]+(/[A-Za-z0-9_+\-]+){1,2}$`. It must also not start with `posix/`, `right/` or `Etc/GMT`. Anything else returns `400 validation_error`.
+1. **Shape check in Zod (no database):** the value is `UTC`, or an `Area/Location[/Sub]` name under a canonical IANA area: Africa, America, Antarctica, Arctic, Asia, Atlantic, Australia, Europe, Indian or Pacific. This rejects `Etc/*` and the legacy alias trees such as `US/Eastern` and `posix/*`. Distributions may ship those aliases separately (Debian's `tzdata-legacy`), so a stored alias could disappear from a server. Anything else returns `400 validation_error`.
 2. **Existence check inside the write transaction:** `SELECT 1 FROM pg_timezone_names WHERE name = $1`. A miss returns `400 invalid_timezone`.
 
 The value is stored exactly as supplied. The match is case-sensitive, so `africa/cairo` is rejected.

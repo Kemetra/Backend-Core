@@ -105,7 +105,7 @@ const DEVICE = {
 const REVIEWED_FROM_UTC = { expected_current_timezone: "UTC", timezone_impact_reviewed: true };
 const CHANGE_TO_CAIRO = { timezone: "Africa/Cairo", ...REVIEWED_FROM_UTC };
 const CHANGE_TO_TOKYO = { timezone: "Asia/Tokyo", ...REVIEWED_FROM_UTC };
-const CHANGE_TO_UNKNOWN = { timezone: "Mars/Olympus_Mons", ...REVIEWED_FROM_UTC };
+const CHANGE_TO_UNKNOWN = { timezone: "Europe/Atlantis", ...REVIEWED_FROM_UTC };
 
 /** The device scope each shift-bearing store opens its shifts under. */
 const SCOPE: Record<"openShift" | "closedShift" | "raceShiftFirst" | "raceChangeFirst", DeviceScope> = {
@@ -364,7 +364,7 @@ describe("POST /api/v1/stores with timezone", () => {
     const unknown = await http()
       .post("/api/v1/stores")
       .set("Cookie", await bob())
-      .send({ code: "BAD-2", name: "Bad", timezone: "Mars/Olympus_Mons" })
+      .send({ code: "BAD-2", name: "Bad", timezone: "Europe/Atlantis" })
       .expect(400);
     expect(unknown.body.error.code).toBe("invalid_timezone");
     const r = await admin().query(`SELECT 1 FROM stores WHERE code IN ('BAD-1', 'BAD-2')`);
@@ -431,7 +431,7 @@ describe("GET /api/v1/stores/:store_id/timezone-change-preview", () => {
     if (maybeSkip()) return;
     const malformed = await http().get(url({ storeId: STORE_MISC, zone: "EET" })).set("Cookie", await bob()).expect(400);
     expect(malformed.body.error.code).toBe("validation_error");
-    const unknown = await http().get(url({ storeId: STORE_MISC, zone: "Mars/Olympus_Mons" })).set("Cookie", await bob()).expect(400);
+    const unknown = await http().get(url({ storeId: STORE_MISC, zone: "Europe/Atlantis" })).set("Cookie", await bob()).expect(400);
     expect(unknown.body.error.code).toBe("invalid_timezone");
   });
 

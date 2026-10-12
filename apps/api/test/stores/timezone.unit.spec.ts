@@ -18,7 +18,8 @@ describe("isIanaTimezoneShape", () => {
     "America/Argentina/Buenos_Aires",
     "America/Port-au-Prince",
     "America/North_Dakota/New_Salem",
-    "Etc/UTC",
+    "Antarctica/McMurdo",
+    "Indian/Maldives",
   ])("accepts %s", (zone) => {
     expect(isIanaTimezoneShape(zone)).toBe(true);
   });
@@ -37,6 +38,11 @@ describe("isIanaTimezoneShape", () => {
     ["too many segments", "America/Argentina/Buenos_Aires/X"],
     ["the empty string", ""],
     ["lower-case utc", "utc"],
+    ["a legacy US alias", "US/Eastern"],
+    ["a legacy Canada alias", "Canada/Pacific"],
+    ["a legacy country alias", "Egypt"],
+    ["Etc/UTC", "Etc/UTC"],
+    ["a non-canonical area", "Mars/Olympus_Mons"],
   ])("rejects %s (%s)", (_label, zone) => {
     expect(isIanaTimezoneShape(zone)).toBe(false);
   });

@@ -5,25 +5,27 @@
  * (sales, returns, shifts) is computed with `AT TIME ZONE` in SQL. So a
  * zone is accepted in two stages:
  *
- *   1. Shape, here, with no database: `UTC` or a case-sensitive IANA
- *      `Area/Location[/Sub]` name. This rejects abbreviations (`EET`) and
- *      POSIX strings (`UTC+2`, `+02:00`), which PostgreSQL would accept but
- *      reads with an inverted sign, plus the `posix/`, `right/` and
- *      `Etc/GMT±N` names (`Etc/GMT-2` means UTC+2, an easy mistake).
+ *   1. Shape, here, with no database: `UTC` or a case-sensitive
+ *      `Area/Location[/Sub]` name under one of the canonical IANA areas.
+ *      This rejects abbreviations (`EET`) and POSIX strings (`UTC+2`,
+ *      `+02:00`), which PostgreSQL would accept but reads with an inverted
+ *      sign; `Etc/GMT±N` (`Etc/GMT-2` means UTC+2, an easy mistake); and the
+ *      legacy alias trees (`US/Eastern`, `Canada/*`, `posix/*`, …), which
+ *      distributions may ship separately (Debian's `tzdata-legacy`) and so
+ *      could vanish from a server holding a store's zone.
  *   2. Existence, in the service's transaction, against
  *      `pg_timezone_names` (StoresRepository.describeZone). A miss is
  *      `400 invalid_timezone`.
  */
 import { z } from "zod";
 
-const AREA_LOCATION = /^[A-Z][A-Za-z_]+(\/[A-Za-z0-9_+-]+){1,2}$/;
-const REJECTED_PREFIXES = ["posix/", "right/", "Etc/GMT"] as const;
+/** The canonical IANA areas; every other top-level tree is legacy or `Etc`. */
+const CANONICAL_AREA_LOCATION =
+  /^(Africa|America|Antarctica|Arctic|Asia|Atlantic|Australia|Europe|Indian|Pacific)(\/[A-Za-z0-9_+-]+){1,2}$/;
 
 /** The `IanaTimezone` contract shape (stage 1). */
 export function isIanaTimezoneShape(value: string): boolean {
-  if (value === "UTC") return true;
-  if (!AREA_LOCATION.test(value)) return false;
-  return !REJECTED_PREFIXES.some((prefix) => value.startsWith(prefix));
+  return value === "UTC" || CANONICAL_AREA_LOCATION.test(value);
 }
 
 export const IanaTimezoneSchema = z
@@ -31,7 +33,7 @@ export const IanaTimezoneSchema = z
   .min(3)
   .max(64)
   .refine(isIanaTimezoneShape, {
-    message: "Must be `UTC` or an IANA Area/Location time zone name.",
+    message: "Must be `UTC` or a canonical IANA Area/Location time zone name.",
   });
 
 /** Contract `error.code` for a well-formed name PostgreSQL does not know. */

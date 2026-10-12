@@ -171,10 +171,12 @@ components:
     IanaTimezone:
       type: string
       description: >
-        IANA time zone name, case-sensitive: `UTC` or a canonical
-        `Area/Location[/Sub]` name that the server's PostgreSQL resolves.
-        Abbreviations (`EET`), POSIX strings (`UTC+2`, `+02:00`), and the
-        `posix/`, `right/` and `Etc/GMT` names are rejected.
+        IANA time zone name, case-sensitive: `UTC` or an `Area/Location[/Sub]`
+        name under a canonical IANA area (Africa, America, Antarctica, Arctic,
+        Asia, Atlantic, Australia, Europe, Indian, Pacific) that the server's
+        PostgreSQL resolves. Abbreviations (`EET`), POSIX strings (`UTC+2`,
+        `+02:00`), `Etc/*` and the legacy alias trees (`US/Eastern`,
+        `posix/*`, …) are rejected.
       minLength: 3
       maxLength: 64
       examples: ["Africa/Cairo", "UTC"]

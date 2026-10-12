@@ -184,7 +184,7 @@ describe("StoresService.update — time zone change", () => {
   it("400 invalid_timezone for a zone PostgreSQL does not know; nothing written", async () => {
     const repo = new FakeRepo();
     const err = await makeService(repo)
-      .update(CTX, STORE_ID, {}, { timezone: "Mars/Olympus_Mons", expectedCurrentTimezone: "UTC" })
+      .update(CTX, STORE_ID, {}, { timezone: "Europe/Atlantis", expectedCurrentTimezone: "UTC" })
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(BadRequestException);
     expect((err as BadRequestException).getResponse()).toMatchObject({
@@ -263,7 +263,7 @@ describe("StoresService.create — time zone", () => {
   it("400 invalid_timezone for an unknown zone; nothing inserted", async () => {
     const repo = new FakeRepo();
     await expect(
-      makeService(repo).create(CTX, { code: "BR-2", name: "B", timezone: "Mars/Olympus_Mons" }),
+      makeService(repo).create(CTX, { code: "BR-2", name: "B", timezone: "Europe/Atlantis" }),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(repo.creates).toHaveLength(0);
   });
@@ -312,7 +312,7 @@ describe("StoresService.previewTimezoneChange", () => {
   it("404 for an invisible store; 400 for an unknown zone", async () => {
     const repo = new FakeRepo();
     await expect(
-      makeService(repo).previewTimezoneChange(CTX, STORE_ID, "Mars/Olympus_Mons"),
+      makeService(repo).previewTimezoneChange(CTX, STORE_ID, "Europe/Atlantis"),
     ).rejects.toBeInstanceOf(BadRequestException);
     repo.current = null;
     await expect(
