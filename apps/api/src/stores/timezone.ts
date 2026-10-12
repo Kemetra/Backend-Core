@@ -19,13 +19,19 @@
  */
 import { z } from "zod";
 
-/** The canonical IANA areas; every other top-level tree is legacy or `Etc`. */
-const CANONICAL_AREA_LOCATION =
-  /^(Africa|America|Antarctica|Arctic|Asia|Atlantic|Australia|Europe|Indian|Pacific)(\/[A-Za-z0-9_+-]+){1,2}$/;
+/**
+ * The `IanaTimezone` contract `pattern` (stage 1): `UTC`, or a name under a
+ * canonical IANA area; every other top-level tree is legacy or `Etc`.
+ * `stores.openapi.yaml` carries the same string, pinned by
+ * `timezone.unit.spec.ts`.
+ */
+export const IANA_TIMEZONE_PATTERN =
+  "^(UTC|(Africa|America|Antarctica|Arctic|Asia|Atlantic|Australia|Europe|Indian|Pacific)(/[A-Za-z0-9_+-]+){1,2})$";
+const IANA_TIMEZONE = new RegExp(IANA_TIMEZONE_PATTERN);
 
 /** The `IanaTimezone` contract shape (stage 1). */
 export function isIanaTimezoneShape(value: string): boolean {
-  return value === "UTC" || CANONICAL_AREA_LOCATION.test(value);
+  return IANA_TIMEZONE.test(value);
 }
 
 export const IanaTimezoneSchema = z

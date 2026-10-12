@@ -8,7 +8,21 @@ import {
   StoreUpdateSchema,
   TimezonePreviewQuerySchema,
 } from "../../src/stores/dto";
-import { isIanaTimezoneShape } from "../../src/stores/timezone";
+import { loadOpenApiContracts } from "../../src/openapi/loader";
+import {
+  IANA_TIMEZONE_PATTERN,
+  isIanaTimezoneShape,
+} from "../../src/stores/timezone";
+
+describe("IanaTimezone contract pattern", () => {
+  it("is the same pattern the runtime shape check uses", () => {
+    const stores = loadOpenApiContracts().find((c) => c.id === "stores.openapi");
+    const schemas = (stores?.document as {
+      components: { schemas: Record<string, { pattern?: string }> };
+    }).components.schemas;
+    expect(schemas["IanaTimezone"]?.pattern).toBe(IANA_TIMEZONE_PATTERN);
+  });
+});
 
 describe("isIanaTimezoneShape", () => {
   it.each([

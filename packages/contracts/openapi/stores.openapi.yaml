@@ -193,6 +193,7 @@ components:
         `posix/*`, …) are rejected.
       minLength: 3
       maxLength: 64
+      pattern: "^(UTC|(Africa|America|Antarctica|Arctic|Asia|Atlantic|Australia|Europe|Indian|Pacific)(/[A-Za-z0-9_+-]+){1,2})$"
       examples: ["Africa/Cairo", "UTC"]
     Store:
       type: object
