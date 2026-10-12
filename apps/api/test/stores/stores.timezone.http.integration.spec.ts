@@ -69,12 +69,15 @@ class AlwaysAllowRedis implements RedisLike {
 
 // ---- Fixture IDs ---------------------------------------------------------
 
+interface Credentials {
+  readonly email: string;
+  readonly password: string;
+}
+
 const BOB_ID = "22222222-2222-4222-8222-222222222222"; // tenant_admin of acme
-const BOB_EMAIL = "bob@example.com";
-const BOB_PASSWORD = "Bob-Password-123!";
+const BOB: Credentials = { email: "bob@example.com", password: "Bob-Password-123!" };
 const CAROL_ID = "33333333-3333-4333-8333-333333333333"; // store_staff of acme
-const CAROL_EMAIL = "carol@example.com";
-const CAROL_PASSWORD = "Carol-Password-123!";
+const CAROL: Credentials = { email: "carol@example.com", password: "Carol-Password-123!" };
 
 const ACME_ID = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
 const GLOBEX_ID = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
@@ -98,11 +101,22 @@ const DEVICE = {
   raceChangeFirst: "30000000-aaaa-4aaa-8aaa-000000000006",
 };
 
-const CHANGE_FROM_UTC = (to: string) => ({
-  timezone: to,
-  expected_current_timezone: "UTC",
-  timezone_impact_reviewed: true,
-});
+/** Every scenario store starts on UTC, so a change previews from it. */
+const REVIEWED_FROM_UTC = { expected_current_timezone: "UTC", timezone_impact_reviewed: true };
+const CHANGE_TO_CAIRO = { timezone: "Africa/Cairo", ...REVIEWED_FROM_UTC };
+const CHANGE_TO_TOKYO = { timezone: "Asia/Tokyo", ...REVIEWED_FROM_UTC };
+const CHANGE_TO_UNKNOWN = { timezone: "Mars/Olympus_Mons", ...REVIEWED_FROM_UTC };
+
+/** The device scope each shift-bearing store opens its shifts under. */
+const SCOPE: Record<"openShift" | "closedShift" | "raceShiftFirst" | "raceChangeFirst", DeviceScope> = {
+  openShift: { tenantId: ACME_ID, storeId: STORE_OPEN_SHIFT, deviceId: DEVICE.openShift },
+  closedShift: { tenantId: ACME_ID, storeId: STORE_CLOSED_SHIFT, deviceId: DEVICE.closedShift },
+  raceShiftFirst: { tenantId: ACME_ID, storeId: STORE_RACE_SHIFT_FIRST, deviceId: DEVICE.raceShiftFirst },
+  raceChangeFirst: { tenantId: ACME_ID, storeId: STORE_RACE_CHANGE_FIRST, deviceId: DEVICE.raceChangeFirst },
+};
+
+/** 22:30 UTC on 5 Oct is already 6 Oct in Tokyo (UTC+9, no DST). */
+const LATE_EVENING_UTC = new Date("2026-10-05T22:30:00Z");
 
 // ---- Bootstrap -----------------------------------------------------------
 
@@ -122,8 +136,8 @@ async function seed(): Promise<void> {
     `INSERT INTO users (id, email, password_hash, is_platform_admin)
      VALUES ($1, $2, $3, false), ($4, $5, $6, false)`,
     [
-      BOB_ID, BOB_EMAIL, await hashPassword(BOB_PASSWORD),
-      CAROL_ID, CAROL_EMAIL, await hashPassword(CAROL_PASSWORD),
+      BOB_ID, BOB.email, await hashPassword(BOB.password),
+      CAROL_ID, CAROL.email, await hashPassword(CAROL.password),
     ],
   );
   await pg.query(
@@ -233,7 +247,8 @@ function http() {
 const cookies = new Map<string, string>();
 
 /** Sign in and select acme; cached per user. */
-async function cookieFor(email: string, password: string): Promise<string> {
+async function cookieFor(user: Credentials): Promise<string> {
+  const { email, password } = user;
   const cached = cookies.get(email);
   if (cached) return cached;
   const res = await http().post("/api/v1/auth/signin").send({ email, password }).expect(200);
@@ -250,8 +265,8 @@ async function cookieFor(email: string, password: string): Promise<string> {
   return cookie;
 }
 
-const bob = () => cookieFor(BOB_EMAIL, BOB_PASSWORD);
-const carol = () => cookieFor(CAROL_EMAIL, CAROL_PASSWORD);
+const bob = () => cookieFor(BOB);
+const carol = () => cookieFor(CAROL);
 
 async function storeZone(storeId: string): Promise<string> {
   const r = await admin().query<{ timezone: string }>(
@@ -274,15 +289,11 @@ function inAcme<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
   return runWithTenantContext(env!.app, { tenantId: ACME_ID, isPlatformAdmin: false }, work);
 }
 
-function scope(storeId: string, deviceId: string): DeviceScope {
-  return { tenantId: ACME_ID, storeId, deviceId };
-}
-
-function newShift(openedAt: string): NewCashUpShift {
+function newShift(openedAt: Date): NewCashUpShift {
   const shiftId = randomUUID();
   return {
     shiftId,
-    openedAt,
+    openedAt: openedAt.toISOString(),
     openingUserId: BOB_ID,
     currencyCode: "EGP",
     openingFloat: "0.00",
@@ -294,7 +305,7 @@ function newShift(openedAt: string): NewCashUpShift {
 async function openShift(
   client: PoolClient,
   s: DeviceScope,
-  openedAt = "2026-10-05T08:00:00Z",
+  openedAt = new Date("2026-10-05T08:00:00Z"),
 ): Promise<CashUpShiftRow> {
   const outcome = await shifts.insertShift(client, s, newShift(openedAt));
   if (outcome.kind !== "inserted") throw new Error(`open failed: ${outcome.kind}`);
@@ -377,13 +388,13 @@ describe("GET /api/v1/stores exposes timezone", () => {
 // ===== Preview ==============================================================
 
 describe("GET /api/v1/stores/:store_id/timezone-change-preview", () => {
-  const url = (storeId: string, zone: string) =>
-    `/api/v1/stores/${storeId}/timezone-change-preview?timezone=${encodeURIComponent(zone)}`;
+  const url = (target: { storeId: string; zone: string }) =>
+    `/api/v1/stores/${target.storeId}/timezone-change-preview?timezone=${encodeURIComponent(target.zone)}`;
 
   it("200 reports both zones as PostgreSQL computes them, and writes nothing", async () => {
     if (maybeSkip()) return;
     // Pacific/Kiritimati is UTC+14 with no DST, so its offset is fixed.
-    const res = await http().get(url(STORE_MISC, "Pacific/Kiritimati")).set("Cookie", await bob()).expect(200);
+    const res = await http().get(url({ storeId: STORE_MISC, zone: "Pacific/Kiritimati" })).set("Cookie", await bob()).expect(200);
     const expected = await admin().query<{ utc: string; kiri: string }>(
       `SELECT ($1::timestamptz AT TIME ZONE 'UTC')::date::text AS utc,
               ($1::timestamptz AT TIME ZONE 'Pacific/Kiritimati')::date::text AS kiri`,
@@ -411,24 +422,24 @@ describe("GET /api/v1/stores/:store_id/timezone-change-preview", () => {
 
   it("the current zone is a no-op", async () => {
     if (maybeSkip()) return;
-    const res = await http().get(url(STORE_MISC, "UTC")).set("Cookie", await bob()).expect(200);
+    const res = await http().get(url({ storeId: STORE_MISC, zone: "UTC" })).set("Cookie", await bob()).expect(200);
     expect(res.body.no_op).toBe(true);
     expect(res.body.can_apply).toBe(false);
   });
 
   it("400 for a malformed or unknown zone", async () => {
     if (maybeSkip()) return;
-    const malformed = await http().get(url(STORE_MISC, "EET")).set("Cookie", await bob()).expect(400);
+    const malformed = await http().get(url({ storeId: STORE_MISC, zone: "EET" })).set("Cookie", await bob()).expect(400);
     expect(malformed.body.error.code).toBe("validation_error");
-    const unknown = await http().get(url(STORE_MISC, "Mars/Olympus_Mons")).set("Cookie", await bob()).expect(400);
+    const unknown = await http().get(url({ storeId: STORE_MISC, zone: "Mars/Olympus_Mons" })).set("Cookie", await bob()).expect(400);
     expect(unknown.body.error.code).toBe("invalid_timezone");
   });
 
   it("404 for store_staff, another tenant's store, or an unknown store", async () => {
     if (maybeSkip()) return;
-    await http().get(url(STORE_MISC, "Africa/Cairo")).set("Cookie", await carol()).expect(404);
-    await http().get(url(STORE_GLOBEX, "Africa/Cairo")).set("Cookie", await bob()).expect(404);
-    await http().get(url(randomUUID(), "Africa/Cairo")).set("Cookie", await bob()).expect(404);
+    await http().get(url({ storeId: STORE_MISC, zone: "Africa/Cairo" })).set("Cookie", await carol()).expect(404);
+    await http().get(url({ storeId: STORE_GLOBEX, zone: "Africa/Cairo" })).set("Cookie", await bob()).expect(404);
+    await http().get(url({ storeId: randomUUID(), zone: "Africa/Cairo" })).set("Cookie", await bob()).expect(404);
   });
 });
 
@@ -442,7 +453,7 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
       .patch(`/api/v1/stores/${STORE_CHANGE}`)
       .set("Cookie", await bob())
       .set("X-Request-Id", requestId)
-      .send(CHANGE_FROM_UTC("Africa/Cairo"))
+      .send(CHANGE_TO_CAIRO)
       .expect(200);
     expect(res.body.timezone).toBe("Africa/Cairo");
     expect(await storeZone(STORE_CHANGE)).toBe("Africa/Cairo");
@@ -475,7 +486,7 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
     const res = await http()
       .patch(`/api/v1/stores/${STORE_STALE}`)
       .set("Cookie", await bob())
-      .send({ ...CHANGE_FROM_UTC("Africa/Cairo"), name: "Renamed" })
+      .send({ ...CHANGE_TO_CAIRO, name: "Renamed" })
       .expect(409);
     expect(res.body.error.code).toBe("timezone_changed_concurrently");
     expect(await storeZone(STORE_STALE)).toBe("Europe/London");
@@ -489,7 +500,7 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
     const res = await http()
       .patch(`/api/v1/stores/${STORE_MISC}`)
       .set("Cookie", await bob())
-      .send(CHANGE_FROM_UTC("Mars/Olympus_Mons"))
+      .send(CHANGE_TO_UNKNOWN)
       .expect(400);
     expect(res.body.error.code).toBe("invalid_timezone");
     expect(await storeZone(STORE_MISC)).toBe("UTC");
@@ -507,7 +518,7 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
 
   it("409 store_has_open_shift while a shift is open; the preview shows the blocker", async () => {
     if (maybeSkip()) return;
-    await inAcme((c) => openShift(c, scope(STORE_OPEN_SHIFT, DEVICE.openShift)));
+    await inAcme((c) => openShift(c, SCOPE.openShift));
 
     const preview = await http()
       .get(`/api/v1/stores/${STORE_OPEN_SHIFT}/timezone-change-preview?timezone=Africa%2FCairo`)
@@ -520,7 +531,7 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
     const res = await http()
       .patch(`/api/v1/stores/${STORE_OPEN_SHIFT}`)
       .set("Cookie", await bob())
-      .send(CHANGE_FROM_UTC("Africa/Cairo"))
+      .send(CHANGE_TO_CAIRO)
       .expect(409);
     expect(res.body.error.code).toBe("store_has_open_shift");
     expect(await storeZone(STORE_OPEN_SHIFT)).toBe("UTC");
@@ -532,12 +543,12 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_MISC}`)
       .set("Cookie", await carol())
-      .send(CHANGE_FROM_UTC("Africa/Cairo"))
+      .send(CHANGE_TO_CAIRO)
       .expect(404);
     await http()
       .patch(`/api/v1/stores/${STORE_GLOBEX}`)
       .set("Cookie", await bob())
-      .send(CHANGE_FROM_UTC("Africa/Cairo"))
+      .send(CHANGE_TO_CAIRO)
       .expect(404);
     expect(await storeZone(STORE_MISC)).toBe("UTC");
     expect(await storeZone(STORE_GLOBEX)).toBe("UTC");
@@ -549,9 +560,7 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
 describe("FR-009 / decision 215", () => {
   it("a closed shift keeps the business date it was opened under", async () => {
     if (maybeSkip()) return;
-    // 22:30 UTC on 5 Oct is already 6 Oct in Tokyo (UTC+9, no DST).
-    const s = scope(STORE_CLOSED_SHIFT, DEVICE.closedShift);
-    const shift = await inAcme((c) => openShift(c, s, "2026-10-05T22:30:00Z"));
+    const shift = await inAcme((c) => openShift(c, SCOPE.closedShift, LATE_EVENING_UTC));
     expect(shift.businessDate).toBe("2026-10-05");
     await inAcme((c) =>
       shifts.insertClose(c, shift, {
@@ -578,7 +587,7 @@ describe("FR-009 / decision 215", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_CLOSED_SHIFT}`)
       .set("Cookie", await bob())
-      .send(CHANGE_FROM_UTC("Asia/Tokyo"))
+      .send(CHANGE_TO_TOKYO)
       .expect(200);
 
     const r = await admin().query<{ business_date: string; lifecycle_state: string }>(
@@ -594,11 +603,10 @@ describe("FR-009 / decision 215", () => {
 describe("FR-007 — the store row lock", () => {
   it("a change that races an uncommitted shift open waits for it, then refuses", async () => {
     if (maybeSkip()) return;
-    const s = scope(STORE_RACE_SHIFT_FIRST, DEVICE.raceShiftFirst);
     const opened = gate();
     const release = gate();
     const shiftTx = inAcme(async (c) => {
-      await openShift(c, s);
+      await openShift(c, SCOPE.raceShiftFirst);
       opened.open();
       await release.wait; // hold the shift open, uncommitted, with FOR SHARE on the store
     });
@@ -607,7 +615,7 @@ describe("FR-007 — the store row lock", () => {
     const patch = http()
       .patch(`/api/v1/stores/${STORE_RACE_SHIFT_FIRST}`)
       .set("Cookie", await bob())
-      .send(CHANGE_FROM_UTC("Asia/Tokyo"))
+      .send(CHANGE_TO_TOKYO)
       .then((res) => res);
     expect(await stillPending(patch)).toBe(true);
 
@@ -621,7 +629,6 @@ describe("FR-007 — the store row lock", () => {
 
   it("a shift open that races an uncommitted change waits for it, then takes the new zone", async () => {
     if (maybeSkip()) return;
-    const s = scope(STORE_RACE_CHANGE_FIRST, DEVICE.raceChangeFirst);
     const locked = gate();
     const release = gate();
     // Stand-in for the change transaction: the row lock and write it takes.
@@ -633,8 +640,7 @@ describe("FR-007 — the store row lock", () => {
     });
     await locked.wait;
 
-    // 22:30 UTC on 5 Oct: 5 Oct under UTC, 6 Oct under Tokyo.
-    const shiftOpen = inAcme((c) => openShift(c, s, "2026-10-05T22:30:00Z"));
+    const shiftOpen = inAcme((c) => openShift(c, SCOPE.raceChangeFirst, LATE_EVENING_UTC));
     expect(await stillPending(shiftOpen)).toBe(true);
 
     release.open();
