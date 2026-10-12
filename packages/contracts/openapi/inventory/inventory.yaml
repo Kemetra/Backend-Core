@@ -137,7 +137,7 @@ paths:
                 $ref: "#/components/schemas/StockMovement"
         "400": { $ref: "#/components/responses/ValidationFailure" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
+        "403": { $ref: "#/components/responses/ForbiddenOrOriginRejected" }
         "404": { $ref: "#/components/responses/NotFoundOrCrossTenant" }
         "409": { $ref: "#/components/responses/IdempotencyConflict" }
         "5XX": { $ref: "#/components/responses/SystemFailure" }
@@ -246,7 +246,7 @@ paths:
                 $ref: "#/components/schemas/StockTransfer"
         "400": { $ref: "#/components/responses/ValidationFailure" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
+        "403": { $ref: "#/components/responses/ForbiddenOrOriginRejected" }
         "404": { $ref: "#/components/responses/NotFoundOrCrossTenant" }
         "409": { $ref: "#/components/responses/IdempotencyConflict" }
         "5XX": { $ref: "#/components/responses/SystemFailure" }
@@ -286,7 +286,7 @@ paths:
                 $ref: "#/components/schemas/StockCountResult"
         "400": { $ref: "#/components/responses/ValidationFailure" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
+        "403": { $ref: "#/components/responses/ForbiddenOrOriginRejected" }
         "404": { $ref: "#/components/responses/NotFoundOrCrossTenant" }
         "409": { $ref: "#/components/responses/IdempotencyConflict" }
         "5XX": { $ref: "#/components/responses/SystemFailure" }
@@ -705,6 +705,12 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     Forbidden:
+      description: 403 — authenticated but insufficient role within the resolved tenant.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ForbiddenOrOriginRejected:
       description: >
         403 — authenticated but insufficient role within the resolved tenant.
         Also `origin_rejected` (RT-430): the request is authenticated by the

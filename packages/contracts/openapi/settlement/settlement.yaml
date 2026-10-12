@@ -118,7 +118,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/ForbiddenOrOriginRejected"
         "409":
           $ref: "#/components/responses/Conflict"
         "500":
@@ -261,7 +261,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/ForbiddenOrOriginRejected"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -303,7 +303,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/ForbiddenOrOriginRejected"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -352,7 +352,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/ForbiddenOrOriginRejected"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -897,6 +897,12 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     Forbidden:
+      description: Insufficient role (403) — authenticated but lacks the required role. 028 (G10).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ForbiddenOrOriginRejected:
       description: >
         Insufficient role (403) — authenticated but lacks the required role. 028
         (G10). Also `origin_rejected` (RT-430): the request is authenticated by

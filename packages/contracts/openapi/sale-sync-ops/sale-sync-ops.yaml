@@ -187,7 +187,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          $ref: "#/components/responses/ForbiddenOrOriginRejected"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -455,6 +455,14 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     Forbidden:
+      description: >
+        Insufficient role (403) — authenticated but the operator lacks the
+        required role. 403 semantics owned by 028 (G10).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ForbiddenOrOriginRejected:
       description: >
         Insufficient role (403) — authenticated but the operator lacks the
         required role. 403 semantics owned by 028 (G10).
