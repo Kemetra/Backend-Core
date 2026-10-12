@@ -65,6 +65,16 @@ frames 015 as **the keystone of the ERPNext arc** — *"turns the DP2 sale fact
 into ERPNext accounting + stock truth. Needs items (013) and stock model (014)
 settled."*
 
+> **Authority wording clarified (RT-288, Inventory Planning Gate 1, recorded 2026-10-12).** In this feature, "turns the DP2 sale fact into ERPNext accounting + stock truth" (here and in this feature's `plan.md`) and "DP2 stays the sale-fact and operational-on-hand authority" (`plan.md`) read as follows under the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389):
+>
+> - Backend-Core owns *operational* inventory authority and Available To Sell (721, 722).
+> - ERPNext Stock Ledger/Bin is the *financial/book* quantity authority, and ERPNext also owns valuation, COGS and
+>   GL (719, 720).
+> - 009 evolves into an Inventory Effects Journal plus operational projection (724, 726).
+> - ERP Bin snapshots are evidence/book state, never an overwrite master (729, 782, 783).
+>
+> Here, "stock truth" means ERPNext *book* stock quantity. §5.3 carries its own note. Shipped code, data and history are unchanged (727). Whether and how sale effects are activated, and how ERP confirmation avoids double counting, is decided by Jira RT-289 (Gates 2+3).
+
 The transport already exists: the **012 posting-feed contract**
 (`packages/contracts/openapi/erpnext-connector/posting-feed.yaml`, `1.0.0-draft`,
 on `main`) ships a **pull/feed bidirectional** surface — the connector PULLS
@@ -241,6 +251,17 @@ accounting ledger**, not a second operational count:
   negative-stock rejection is a `permanently_rejected` (`validation`-class)
   outcome → DLQ + reconciliation flag (017). The DP2 flagged operational reality
   is **never** overwritten to satisfy ERPNext [stock-impact §6].
+
+> **Superseded (RT-288, Inventory Planning Gate 1, recorded 2026-10-12):** two bullets above no longer describe the product direction.
+>
+> - "DP2's 009 ledger independently records the operational outbound movement (009 US4)" is not an activation
+>   instruction. Whether and how sale effects become active, and how ERP confirmation avoids double counting
+>   (769, 771, 776), is decided by Jira RT-289 (Gates 2+3).
+> - The negative-balance posture (an ERPNext negative-stock rejection is `permanently_rejected` → DLQ) was
+>   superseded by Jira RT-47 D3. Negative stock is allowed on the V1 stock path, and a negative Bin is an
+>   observable operational discrepancy, not a posting failure (730, 743).
+>
+> Source: the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389). Shipped code, data and history are unchanged (727).
 
 ### 5.4 Void / refund — a new reversing document, never an edit of the original
 
