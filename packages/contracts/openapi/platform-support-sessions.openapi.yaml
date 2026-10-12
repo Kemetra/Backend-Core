@@ -84,7 +84,7 @@ info:
 
 
     **Audit (RT-135).** Every row is written with `tenant_id` = the target
-    tenant, `actor_user_id` = the platform admin, `actor_label` =
+    tenant (null only for an unresolvable path tenant, below), `actor_user_id` = the platform admin, `actor_label` =
     `platform_support` (never an email), and the server `request_id`. Metadata
     is the allowlist in `SupportSessionAuditMetadata` / `CrossTenantAccessAuditMetadata`:
     no email, token, secret, cookie or request body. Actions:
@@ -96,6 +96,16 @@ info:
         covered route by a platform admin in a non-member tenant, admitted
         (`outcome: succeeded`) or refused (`outcome: rejected`). A route's own
         `@Auditable` row, if any, is a separate action and is not counted.
+
+    **Unresolvable path tenant.** On `listMembers` and `updateTenant` the
+    target comes from the `{tenant_id}` path segment, and enforcement runs
+    before the handler and its UUID pipe. When that segment is not a UUID or
+    does not name an existing tenant, the request is refused like any other
+    non-member tenant (403 `support_session_required`, identical to the
+    existing-tenant case; FR-ISO-4), and its `platform.cross_tenant.accessed`
+    row is written platform-scoped with `tenant_id` null, because
+    `audit_events.tenant_id` references `tenants.id`. Such a row is visible only
+    to platform admins. The one-row-per-request rule still holds.
 
     Passive expiry writes no row: it is computed from `expires_at`. Tenant
     `owner` and `tenant_admin` see all of these rows through `listAuditEvents`

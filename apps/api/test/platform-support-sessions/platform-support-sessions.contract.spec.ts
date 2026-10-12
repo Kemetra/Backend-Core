@@ -308,6 +308,14 @@ describe("platform-support-sessions — audit metadata allowlists", () => {
     expect(text).toMatch(/exactly one row per request to a\s+covered route/);
   });
 
+  it("writes an unresolvable path tenant's row platform-scoped and refuses it like a non-member", () => {
+    const text = doc.info?.description ?? "";
+    expect(text).toContain("**Unresolvable path tenant.**");
+    expect(text).toMatch(/not a UUID or\s+does not name an existing tenant/);
+    expect(text).toMatch(/403 `support_session_required`, identical to the\s+existing-tenant case/);
+    expect(text).toMatch(/platform-scoped with `tenant_id` null/);
+  });
+
   it("accepts admitted and refused access rows and rejects an email in metadata", () => {
     const v = validator("CrossTenantAccessAuditMetadata");
     const admitted = {
