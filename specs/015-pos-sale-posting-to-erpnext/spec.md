@@ -65,6 +65,18 @@ frames 015 as **the keystone of the ERPNext arc** — *"turns the DP2 sale fact
 into ERPNext accounting + stock truth. Needs items (013) and stock model (014)
 settled."*
 
+> **Authority wording clarified — 2026-10-07 (RT-288, Inventory Planning Gate 1).** In this spec, "DP2 operational
+> on-hand authority (009 ledger); ERPNext owns valuation", "the 009 stock ledger" and "ERPNext accounting + stock
+> truth" read as follows under the Inventory Operations baseline (Confluence RETAIL page 22544389):
+>
+> - Backend-Core owns *operational* inventory authority and Available To Sell (721, 722).
+> - ERPNext Stock Ledger/Bin is the *financial/book* quantity authority, and ERPNext also owns valuation, COGS and
+>   GL (719, 720).
+> - 009 evolves into an Inventory Effects Journal plus operational projection (724, 726).
+> - ERP Bin snapshots are evidence/book state, never an overwrite master (729, 782).
+>
+> Shipped behavior and history are unchanged (727). Effect/confirmation semantics belong to Jira RT-289.
+
 The transport already exists: the **012 posting-feed contract**
 (`packages/contracts/openapi/erpnext-connector/posting-feed.yaml`, `1.0.0-draft`,
 on `main`) ships a **pull/feed bidirectional** surface — the connector PULLS

@@ -39,6 +39,12 @@ So ERPNext POS is a **reference model**: it tells us how a mature ERP turns a ca
 
 **Reading the table**: anything marked *Reference-only* or *Reference* is **studied, not wired**. The "Owner of truth" column is the load-bearing one — it shows that **DP2 keeps ownership of the sale, the catalog, and the stock movement**, while **ERPNext owns the general ledger / accounting valuation** that DP2 deliberately does not model.
 
+> **Superseded (RT-288, 2026-10-07):** the Stock Entry / Bin rows above and the §3 "DP2 owns the stock ledger
+> (009)" row now read as follows. Backend-Core owns operational inventory effects (721, 724). ERPNext Stock
+> Ledger/Bin is the financial/book quantity authority (719). ERPNext stock is posted through the Sales Invoice with
+> `update_stock=1` (Jira RT-47 D1), not mirrored from 009. Effect/confirmation semantics belong to Jira RT-289.
+> Source: Inventory Operations baseline, decisions 719–727 (Confluence RETAIL page 22544389).
+
 ---
 
 ## 3. What ERPNext POS does that we explicitly do NOT adopt

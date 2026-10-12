@@ -40,6 +40,10 @@
 - **Owns** the OpenAPI contracts that POS-Pulse and Retail-Tower-Console consume — including any future ERP-backed endpoints.
 - **Is the only system permitted to talk to ERPNext**, and only via the future connector — never via ad-hoc direct calls scattered through the codebase.
 - **Keeps source-of-truth ownership** of the sale fact (008), catalog (003), and stock ledger (009). ERPNext receives **postings**; it does not become the origin of these facts.
+  - **Superseded (RT-288, 2026-10-07):** for inventory, "source-of-truth ownership of … stock ledger (009)" means
+    operational inventory authority only (721, 722). ERPNext Stock Ledger/Bin remains the financial/book quantity
+    authority (719), and 009 evolves into an Inventory Effects Journal (724). Source: Inventory Operations
+    baseline, decisions 719–727 (Confluence RETAIL page 22544389).
 - **Does not become a general ledger.** The chart-of-accounts / GL valuation that DP2 deliberately does not model is exactly what ERPNext provides.
 
 ### POS-Pulse (cashier terminal)

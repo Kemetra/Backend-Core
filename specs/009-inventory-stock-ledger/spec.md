@@ -8,6 +8,22 @@
 
 **Input**: User description: "009 inventory — a decoupled, append-only stock movement ledger with derived on-hand balance. v1 must NOT depend on the gated 008 live capture→process loop. Generic-retail core with a pharmacy-ready extension seam (lot/batch/expiry/FEFO as a future decision gate, not implemented in v1). Comprehensive Inventory & Stock Movements domain boundary, phased execution. Purchasing/receiving (011), payments (010), reporting (012) out of scope."
 
+> **Authority wording superseded — 2026-10-07 (RT-288, Inventory Planning Gate 1).** As product direction, the
+> inventory-authority wording in this spec is superseded by the Inventory Operations baseline, decisions 719–727
+> (Confluence RETAIL page 22544389). This covers "Data-Pulse-2 owns Inventory as a source-of-truth domain" (§Overview) and
+> FR-003's rule that on-hand "always equals the signed sum of its movements". Under that baseline:
+>
+> - ERPNext Stock Ledger/Bin is the financial/book stock quantity authority (719, 720).
+> - Backend-Core owns operational inventory authority and Available To Sell (721, 722), without a competing
+>   financial stock ledger (723).
+> - 009 evolves conceptually from a Stock Ledger into an **Inventory Effects Journal plus operational
+>   projection** (724).
+> - `SUM(stock_movements)` is not the universal definition of inventory truth (726).
+>
+> Per decision 727, this note changes no code and rewrites no history. The shipped 009 implementation on `main`
+> (append-only `stock_movements`, compute-on-read on-hand, idempotent dedup) is unchanged, and its foundations
+> are preserved where useful (725). Whether and how sale-linked effects become active (US4 backfill, FR-025,
+> FR-032, FR-060) is decided by the Event/Effect/Origin contract in Jira RT-289 (Gates 2+3), not by this spec.
 ## Overview
 
 Data-Pulse-2 owns **Inventory as a source-of-truth domain** (Constitution §Repository Scope). This feature establishes that foundation: an **append-only stock movement ledger** per `(tenant, store, product)` and a **derived on-hand balance** computed from the movement history. Every change to stock is a recorded, auditable movement — never an in-place edit of a quantity. On-hand is always *explainable* by listing the movements behind it.

@@ -13,6 +13,35 @@
 > OS gates, consistent with this decision. Any deviation from it is a
 > STOP-and-raise condition, not a silent override.
 
+> **Amendment — 2026-10-07 (RT-288, Inventory Planning Gate 1).** This record stays SIGNED as a historical
+> decision. Several of its rules remain consistent with the Inventory Operations baseline (Confluence RETAIL page 22544389):
+>
+> - the operational-vs-accounting split;
+> - "never merged or summed";
+> - correlation-ID reconciliation;
+> - the rejection of ERPNext Bin as an overwrite master (721–723, 729, 782, 783).
+>
+> The following points are superseded or clarified:
+>
+> 1. **"On-hand authority = DP2"** is clarified. Backend-Core is the *operational* authority (Physical / Sellable
+>    / Available To Sell; 721, 722, 732, 733). ERPNext Stock Ledger/Bin is the *financial/book* quantity
+>    authority (719). Operator surfaces distinguish Physical, Available and ERP Book quantities (745).
+> 2. **"The DP2 stock ledger (009)"** is superseded by 724 and 726. 009 evolves into an Inventory Effects Journal
+>    plus operational projection. A signed SUM is not the universal definition of inventory truth.
+> 3. **Sub-question 3 ("DP2's 009 ledger independently records the operational outbound movement")** is
+>    consistent in direction with 769 and 771. Retail-origin events create the operational effect first in
+>    Backend-Core. ERP confirmation updates integration state and never creates a second quantity effect.
+>    Jira RT-47 D7 had reversed this direction, and 724 now restores it. The *mechanism* belongs to Jira RT-289
+>    (Gates 2+3), not this record: an Inventory Effects Journal instead of a SUM ledger, origin and integration
+>    state, double-count protection (776), and whether and when sale effects are activated. The V1 ERPNext
+>    posting shape stays RT-47 D1/D5 (Sales Invoice with `update_stock=1`; return invoice with `return_against`).
+> 4. **Sub-question 6 (ERPNext rejects negative stock → DLQ/repair)** was already superseded by RT-47 D3.
+>    Negative stock is allowed on the V1 stock path, and a negative Bin is an observable operational discrepancy,
+>    not a posting failure (see also 743).
+>
+> The "014 / 015 / 017 downstream obligations" below are historical. No code, data or history is changed by this
+> amendment (727).
+
 ---
 
 ## Question to be decided

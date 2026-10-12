@@ -64,6 +64,9 @@
 - **Depends on**: 012, 013, 014.
 - **Gated by**: `posting-decision-record` + `stock-impact-decision-record`.
 - **Why here**: the keystone of the ERPNext arc — turns the DP2 sale fact into ERPNext accounting + stock truth. Needs items (013) and stock model (014) settled.
+- **Terminology (RT-288, 2026-10-07)**: "accounting + stock truth" means ERPNext accounting and *book* stock
+  quantity (719, 720). Operational inventory authority stays in Backend-Core (721). Source: Inventory Operations
+  baseline (Confluence RETAIL page 22544389).
 
 ### 016 — `tax-and-fiscal-egypt-v1`
 - **Domain**: Egypt tax/fiscal compliance (e-invoice / ETA) layered over the posting path.
