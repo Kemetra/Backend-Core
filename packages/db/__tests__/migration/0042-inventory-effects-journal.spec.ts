@@ -49,6 +49,8 @@ const MOVE_B1 = "0b000000-0000-7000-8000-000000042b11";
 const MOVE_B2 = "0b000000-0000-7000-8000-000000042b12";
 const MOVE_A_LATE = "0a000000-0000-7000-8000-000000042a13";
 const MOVE_A_EVENT = "0a000000-0000-7000-8000-000000042a14";
+const SALE_A = "0a000000-0000-7000-8000-000000042a21";
+const INTENT_A = "0a000000-0000-7000-8000-000000042a22";
 
 let env: PgTestEnv | null = null;
 
@@ -384,7 +386,7 @@ describe("0042 — down → up round-trip", () => {
     expect(await effectColumns()).toBe(7);
   });
 
-  it("down removes the effect columns, the integration table and posted_at; up + 0043 restore them", async () => {
+  it("down refuses an ERP confirmation time; otherwise removes the effect columns, the integration table and posted_at; up + 0043 restore them", async () => {
     if (skip()) return;
     // Remove the post-0042 rows (and their records) so the guard allows the down.
     await pg().admin.query(`DELETE FROM inventory_effect_integration`);
@@ -392,6 +394,26 @@ describe("0042 — down → up round-trip", () => {
       `DELETE FROM stock_movements
         WHERE origin <> 'retail' OR event_type IS NOT NULL OR compensates_effect_id IS NOT NULL`,
     );
+    // A posting intent with an ERP confirmation time is a fact the pre-0042 schema cannot hold.
+    await pg().admin.query(
+      `INSERT INTO sales
+         (id, tenant_id, store_id, currency_code, pos_total, occurred_at,
+          business_date, source_system, external_id, payload_hash, created_by)
+       VALUES ($1, $2, $3, 'EGP', 5.00, now(), '2026-10-01', 'pos-0042', 'ext-0042', $4, $5)`,
+      [SALE_A, TENANT_A, STORE_A, "a".repeat(64), ACTOR],
+    );
+    await pg().admin.query(
+      `INSERT INTO erpnext_posting_status
+         (id, tenant_id, store_id, sale_id, kind, source_ref_id, source_system,
+          external_id, payload_hash, status, document_ref, posted_at)
+       VALUES ($1, $2, $3, $4, 'sale_post', $4, 'pos-0042', 'ext-0042', $5, 'posted', 'SINV-0042', now())`,
+      [INTENT_A, TENANT_A, STORE_A, SALE_A, "a".repeat(64)],
+    );
+    await expect(pg().admin.query(readFileSync(DOWN_PATH, "utf8"))).rejects.toThrow(
+      /erpnext_posting_status row\(s\) carry an ERP confirmation time/,
+    );
+    expect(await effectColumns()).toBe(7);
+    await pg().admin.query(`DELETE FROM erpnext_posting_status WHERE id = $1`, [INTENT_A]);
     await pg().admin.query(readFileSync(DOWN_PATH, "utf8"));
     expect(await effectColumns()).toBe(0);
     const table = await pg().admin.query(`SELECT to_regclass('public.inventory_effect_integration') AS t`);

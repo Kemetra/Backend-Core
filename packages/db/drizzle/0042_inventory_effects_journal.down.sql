@@ -2,9 +2,10 @@
 -- 0042_inventory_effects_journal.sql (RT-425).
 --
 -- Drops the integration table, the posted_at column and the stock_movements
--- effect columns. Refuses (the whole down rolls back) when an effect carries
--- data the pre-0042 schema cannot hold: a non-retail origin, an owning event,
--- a compensation link or a position placeholder value. Those are effect facts
+-- effect columns. Refuses (the whole down rolls back) when a row carries data
+-- the pre-0042 schema cannot hold: an effect with a non-retail origin, an
+-- owning event, a compensation link or a position placeholder value, or a
+-- posting intent with an ERP confirmation time (posted_at). Those are facts
 -- and are never silently dropped. Rows written by the RT-425 write paths carry
 -- an owning event, so once any exist this down refuses; that is intended
 -- (981: rollback preserves historical inventory effects).
@@ -19,6 +20,7 @@ DO $$
 DECLARE
   t uuid;
   n bigint := 0;
+  posted bigint := 0;
 BEGIN
   PERFORM set_config('app.is_platform_admin', 'true', true);
   FOR t IN SELECT id FROM tenants LOOP
@@ -32,10 +34,17 @@ BEGIN
               OR stock_location_id IS NOT NULL
               OR inventory_status IS NOT NULL
               OR tracking_identity IS NOT NULL));
+    posted := posted + (
+      SELECT count(*) FROM erpnext_posting_status
+       WHERE tenant_id = t AND posted_at IS NOT NULL);
   END LOOP;
   IF n > 0 THEN
     RAISE EXCEPTION
       '0042 down refused: % stock_movements row(s) carry effect data the pre-0042 schema cannot hold', n;
+  END IF;
+  IF posted > 0 THEN
+    RAISE EXCEPTION
+      '0042 down refused: % erpnext_posting_status row(s) carry an ERP confirmation time (posted_at)', posted;
   END IF;
 END
 $$;

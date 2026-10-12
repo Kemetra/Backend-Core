@@ -62,11 +62,19 @@
 -- docs/operations/sql/inventory-effect-integration-domain-grants.sql
 -- (deploy/README.md step 2). The API refuses to boot without them
 -- (DOMAIN_REQUIRED_GRANTS, apps/api/src/auth/database-pools.ts, RT-212).
--- Lock duration: stock_movements takes ACCESS EXCLUSIVE for the ADD COLUMNs
--- (nullable or constant-default, metadata-only), the CHECKs (added NOT VALID:
--- no scan; every existing row satisfies them by construction) and the
--- self-FK; SHARE for the two index builds. erpnext_posting_status takes
--- ACCESS EXCLUSIVE for one nullable ADD COLUMN and a NOT VALID CHECK.
+-- Lock impact: the whole migration is ONE transaction, and every lock below
+-- is held until its COMMIT (the 0036 precedent):
+--   - stock_movements: ACCESS EXCLUSIVE for the ADD COLUMNs (nullable or
+--     constant-default, metadata-only), the CHECKs and the self-FK (all added
+--     NOT VALID: no scan; every existing row satisfies them by construction),
+--     plus the two index builds (one pass over stock_movements each). Every
+--     read and write of stock_movements waits until COMMIT.
+--   - erpnext_posting_status: ACCESS EXCLUSIVE for one nullable ADD COLUMN and
+--     a NOT VALID CHECK; SHARE ROW EXCLUSIVE for the new table's FK.
+--   - inventory_effect_integration is created empty, so its FKs scan nothing.
+-- Duration is dominated by the two stock_movements index builds. Run it in a
+-- maintenance window (no inventory writes in flight); at pilot volume the
+-- whole migration is expected to take well under a second.
 -- Reversible via 0042_inventory_effects_journal.down.sql.
 
 BEGIN;
@@ -118,10 +126,14 @@ ALTER TABLE stock_movements
 CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_movements_id_tenant
   ON stock_movements (id, tenant_id);
 
+-- NOT VALID: no validation scan. Every existing row has a NULL
+-- compensates_effect_id (the column is new), so nothing is left unchecked;
+-- every new row is still checked.
 ALTER TABLE stock_movements
   ADD CONSTRAINT fk_stock_movements_compensates_tenant
     FOREIGN KEY (compensates_effect_id, tenant_id)
-    REFERENCES stock_movements (id, tenant_id) ON DELETE RESTRICT;
+    REFERENCES stock_movements (id, tenant_id) ON DELETE RESTRICT
+    NOT VALID;
 
 -- Looks an event's effects up (RT-427 writes, RT-426 transitions).
 CREATE INDEX IF NOT EXISTS idx_stock_movements_tenant_event
