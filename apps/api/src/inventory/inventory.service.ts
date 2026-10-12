@@ -506,32 +506,29 @@ export class InventoryService {
         // Store scope is the WHERE clause + object-level authz at the
         // controller; 0014 has tenant RLS only (no store policy), so no
         // app.current_store GUC is needed.
-        // SUM in SQL; COALESCE handles the empty-key (zero-row → NULL) case.
-        // stocking_unit is taken from any movement for the key (consistent per
-        // product by FR-022); NULL when there are no movements.
-        const r = await client.query<{
+        // RT-432: ONE statement, so the total and its per-status split come from
+        // the same snapshot (two statements under READ COMMITTED could see
+        // different commits and break "the entries sum to quantity"). SUM in
+        // SQL at the column's numeric(19,4) scale (uniform "7.0000" wire
+        // format); the total is the exact BigInt sum of the group rows. A
+        // movement recorded before 0044 has no status and counts as sellable
+        // (G4-5). stocking_unit is consistent per product (FR-022, 0016); NULL
+        // when there are no movements.
+        const byStatus = await client.query<{
+          inventory_status: string;
           quantity: string;
-          stocking_unit: string | null;
+          stocking_unit: string;
         }>(
-          // ::numeric(19,4)::text gives a uniform wire format ("0.0000" /
-          // "7.0000") — the empty-key COALESCE literal and the SUM both render
-          // at the column's scale, so a client never sees mixed "0" vs "7.0000".
-          `SELECT COALESCE(SUM(quantity), 0)::numeric(19,4)::text AS quantity,
-                  MIN(stocking_unit) AS stocking_unit
-             FROM stock_movements
-            WHERE store_id = $1 AND tenant_product_ref = $2`,
-          [input.storeId, input.productId],
-        );
-        const quantity = r.rows[0]?.quantity ?? '0.0000';
-        // RT-432: the same movements split by inventory status. A movement
-        // recorded before 0044 has no status and counts as sellable (G4-5).
-        const byStatus = await client.query<{ inventory_status: string; quantity: string }>(
           `SELECT COALESCE(inventory_status, '${DEFAULT_INVENTORY_STATUS}') AS inventory_status,
-                  SUM(quantity)::numeric(19,4)::text AS quantity
+                  SUM(quantity)::numeric(19,4)::text AS quantity,
+                  MIN(stocking_unit) AS stocking_unit
              FROM stock_movements
             WHERE store_id = $1 AND tenant_product_ref = $2
             GROUP BY 1`,
           [input.storeId, input.productId],
+        );
+        const quantity = formatQuantity(
+          byStatus.rows.reduce((sum, row) => sum + parseQuantity(row.quantity), 0n),
         );
         const statusQuantities = INVENTORY_STATUSES.map((status) => ({
           inventoryStatus: status,
@@ -542,7 +539,7 @@ export class InventoryService {
           storeId: input.storeId,
           productId: input.productId,
           quantity,
-          stockingUnit: r.rows[0]?.stocking_unit ?? null,
+          stockingUnit: byStatus.rows[0]?.stocking_unit ?? null,
           negativeBalance: parseQuantity(quantity) < 0n,
           sellableQuantity:
             statusQuantities.find((q) => q.inventoryStatus === DEFAULT_INVENTORY_STATUS)
