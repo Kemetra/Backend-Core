@@ -180,6 +180,9 @@ components:
       examples: ["Africa/Cairo", "UTC"]
     Store:
       type: object
+      # Every response carries the zone (spec 038 plan 1.1). The older fields
+      # keep their pre-038 optional declaration.
+      required: [timezone]
       properties:
         id: { type: string, format: uuid }
         tenant_id: { type: string, format: uuid }
