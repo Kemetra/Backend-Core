@@ -1,5 +1,12 @@
 # Feature Specification: DP-012 Posting-Feed Settlement Extension
 
+> **SUPERSEDED (RT-415, recorded 2026-10-12). Do not implement this spec.** RT-78 settles the sale on the
+> ERPNext Sales Invoice itself, with immediate tenders as SI `payments` rows and **no separate Payment Entry**,
+> so the settlement Payment-Entry work-item kind this spec proposes is no longer needed. A/R allocation, cash
+> application and later collections are **ERPNext-native** per [RT-413](https://rahmaqanater.atlassian.net/browse/RT-413)
+> (035 narrowed to Option B; 035-DR-SETTLEMENT OQ-7 superseded by Amendment A1). The text below, `plan.md` and
+> `tasks.md` are kept unchanged as historical record; the tasks remain unchecked and are not to be executed.
+
 **Feature Branch**: `036-settlement-posting-feed-extension`
 
 **Created**: 2026-06-17
