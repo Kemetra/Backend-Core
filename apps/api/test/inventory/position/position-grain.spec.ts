@@ -277,7 +277,10 @@ describe('RT-432 — a manual movement may name its location and status', () => 
     expect(await stored(m.id)).toEqual({ stock_location_id: BACKROOM_A_X, inventory_status: 'damaged' });
   });
 
-  it('a location of another store (same tenant) is a 404 and writes nothing', async () => {
+  it.each([
+    ['another store of the same tenant', STORE_A_Y],
+    ['another tenant (RLS hides it)', STORE_B_X],
+  ])('a location of %s is a 404 and writes nothing', async (_label, foreignStore) => {
     if (maybeSkip()) return;
     const before = await movementCount();
     await expect(
@@ -286,22 +289,7 @@ describe('RT-432 — a manual movement may name its location and status', () => 
         movementType: 'inbound',
         quantity: '1.0000',
         stockingUnit: 'ea',
-        stockLocationId: await primaryOf(STORE_A_Y),
-      }),
-    ).rejects.toBeInstanceOf(NotFoundException);
-    expect(await movementCount()).toBe(before);
-  });
-
-  it('a location of another tenant is a 404 (RLS hides it) and writes nothing', async () => {
-    if (maybeSkip()) return;
-    const before = await movementCount();
-    await expect(
-      service.createStockMovement({
-        ...principal,
-        movementType: 'inbound',
-        quantity: '1.0000',
-        stockingUnit: 'ea',
-        stockLocationId: await primaryOf(STORE_B_X),
+        stockLocationId: await primaryOf(foreignStore),
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(await movementCount()).toBe(before);
