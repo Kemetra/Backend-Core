@@ -164,6 +164,21 @@ describe("shift-close query schema", () => {
     expect(parse({ closed_to: "2026-10-03T10:00:00Z" }).success).toBe(true);
   });
 
+  it.each([
+    ["2026-10-01T10:00:00Z", true],
+    ["2026-10-01T10:00:00.123456+15:59", true],
+    ["2026-10-01T10:00:00-15:59", true],
+    ["0001-01-01T00:00:00Z", true],
+    ["2026-10-01T10:00:00+16:00", false],
+    ["2026-10-01T10:00:00-23:59", false],
+    ["2026-10-01T10:00:00+99:99", false],
+    ["2026-10-01T10:00:00+05:99", false],
+    ["2026-10-01T10:00:00+0530", false],
+    ["0000-01-01T00:00:00Z", false],
+  ])("closed_from %s: valid=%s (an instant Postgres can represent)", (value, valid) => {
+    expect(parse({ closed_from: value }).success).toBe(valid);
+  });
+
   it("rejects an unknown key", () => {
     expect(parse({ tenant_id: TENANT }).success).toBe(false);
   });

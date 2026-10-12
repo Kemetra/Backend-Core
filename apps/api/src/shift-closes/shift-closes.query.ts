@@ -22,8 +22,28 @@ const UuidSchema = z
   .uuid()
   .transform((id) => id.toLowerCase());
 
-/** RFC 3339 with `Z` or a numeric offset (the contract's `date-time`). */
-const InstantSchema = z.string().datetime({ offset: true });
+/** RFC 3339 `date-time`: `Z` or a `±HH:MM` offset (the colon is required). */
+const RFC3339_INSTANT_RE = /^(\d{4})-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
+/** The widest offset a Postgres `timestamptz` input accepts (±15:59); beyond it is SQLSTATE 22009. */
+const MAX_OFFSET_MINUTES = 15 * 60 + 59;
+
+/**
+ * An RFC 3339 instant Postgres can represent. Zod's `datetime({ offset: true })`
+ * also admits `+0530` and offsets up to `±99:99`; Postgres refuses offsets
+ * beyond ±15:59 (22009) and year 0000 (22008). Both are refused here, as a 400,
+ * before any database read.
+ */
+const InstantSchema = z
+  .string()
+  .datetime({ offset: true })
+  .refine((value) => {
+    const m = RFC3339_INSTANT_RE.exec(value);
+    if (m === null || Number(m[1]) === 0) return false;
+    if (m[2] === undefined) return true;
+    const minutes = Number(m[3]);
+    return minutes <= 59 && Number(m[2]) * 60 + minutes <= MAX_OFFSET_MINUTES;
+  }, "must be an RFC 3339 date-time with an offset between -15:59 and +15:59");
 
 /** `NonNegativeDecimalAmount`: at most 15 integer and 4 fractional digits. */
 const NON_NEGATIVE_DECIMAL_RE = /^[0-9]{1,15}(\.[0-9]{1,4})?$/;

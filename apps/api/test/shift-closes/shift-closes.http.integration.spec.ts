@@ -480,6 +480,11 @@ describe("RT-383 shift-closes — filters", () => {
     ],
     ["closed_to is exclusive", { closed_to: "2026-10-03T10:00:00Z" }, [CLOSE_Y2, CLOSE_X1]],
     [
+      "the widest offset Postgres represents (+15:59), at microsecond precision",
+      { closed_from: "2026-10-05T01:59:00.000001+15:59" },
+      [CLOSE_DEL, CLOSE_Y6, CLOSE_Y5],
+    ],
+    [
       "closed_from honours its offset",
       { closed_from: "2026-10-03T12:00:00+02:00" },
       [CLOSE_DEL, CLOSE_Y6, CLOSE_Y5, CLOSE_X4, CLOSE_X3],
@@ -536,6 +541,12 @@ describe("RT-383 shift-closes — filters", () => {
     ["a lower-case currency_code", { currency_code: "egp" }],
     ["a date without a time", { closed_from: "2026-10-01" }],
     ["a date-time without an offset", { closed_from: "2026-10-01T10:00:00" }],
+    // Offsets Zod's datetime() admits but Postgres cannot represent (22009 → was a 500).
+    ["an offset beyond ±15:59", { closed_from: "2026-10-01T10:00:00+16:00" }],
+    ["an offset of -23:59", { closed_to: "2026-10-01T10:00:00-23:59" }],
+    ["an offset of +99:99", { closed_from: "2026-10-01T10:00:00+99:99" }],
+    ["an offset without its colon (not RFC 3339)", { closed_from: "2026-10-01T10:00:00+0530" }],
+    ["year 0000", { closed_from: "0000-01-01T00:00:00Z" }],
     ["closed_to equal to closed_from", { closed_from: "2026-10-03T10:00:00Z", closed_to: "2026-10-03T12:00:00+02:00" }],
     ["closed_to before closed_from", { closed_from: "2026-10-04T00:00:00Z", closed_to: "2026-10-03T00:00:00Z" }],
     [
