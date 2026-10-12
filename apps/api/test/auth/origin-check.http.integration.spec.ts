@@ -226,101 +226,91 @@ function expectOriginRejected(res: request.Response): void {
 
 // ===== refused =============================================================
 
+interface RefusedWrite {
+  name: string;
+  /** Omitted: the request carries no Origin at all. */
+  origin?: string;
+  nodeEnv?: string;
+  send: (cookie: string) => request.Test;
+  /** Read before and after: the refusal must leave it unchanged. */
+  state: (cookie: string) => Promise<unknown>;
+}
+
+async function storeDeletedAt(): Promise<Date | null> {
+  const { rows } = await admin!.query<{ deleted_at: Date | null }>(
+    "SELECT deleted_at FROM stores WHERE id = $1",
+    [STORE_BR1],
+  );
+  return rows[0]!.deleted_at;
+}
+
+/** The session's context, which also proves the session is still live. */
+async function contextMe(cookie: string): Promise<unknown> {
+  const res = await http().get("/api/v1/context/me").set("Cookie", cookie).expect(200);
+  return res.body;
+}
+
+const REFUSED_WRITES: RefusedWrite[] = [
+  {
+    name: "a sibling-origin HTML form POST /stores",
+    origin: SIBLING,
+    send: (cookie) =>
+      http().post("/api/v1/stores").set("Cookie", cookie).type("form").send("code=BR-EVIL&name=Evil+Branch"),
+    state: storeCount,
+  },
+  {
+    name: "a form POST with the opaque `null` Origin (sandboxed frame)",
+    origin: "null",
+    send: (cookie) =>
+      http().post("/api/v1/stores").set("Cookie", cookie).type("form").send("code=BR-NULL&name=Null+Branch"),
+    state: storeCount,
+  },
+  {
+    name: "a write with no Origin (fail closed)",
+    send: (cookie) => http().patch(`/api/v1/tenants/${ACME_ID}`).set("Cookie", cookie).send({ name: "Pwned" }),
+    state: tenantName,
+  },
+  {
+    name: "a sibling-origin DELETE /stores/:id",
+    origin: SIBLING,
+    send: (cookie) => http().delete(`/api/v1/stores/${STORE_BR1}`).set("Cookie", cookie),
+    state: storeDeletedAt,
+  },
+  {
+    name: "a sibling-origin form POST /context/store",
+    origin: SIBLING,
+    send: (cookie) =>
+      http().post("/api/v1/context/store").set("Cookie", cookie).type("form").send(`store_id=${STORE_BR1}`),
+    state: contextMe,
+  },
+  {
+    name: "a sibling-origin POST /auth/signout (the session stays live)",
+    origin: SIBLING,
+    send: (cookie) => http().post("/api/v1/auth/signout").set("Cookie", cookie),
+    state: contextMe,
+  },
+  {
+    name: "an http Origin, which is not the API's https origin outside test/development",
+    origin: `http://${HOST}`,
+    nodeEnv: "production",
+    send: (cookie) => http().patch(`/api/v1/tenants/${ACME_ID}`).set("Cookie", cookie).send({ name: "Pwned" }),
+    state: tenantName,
+  },
+];
+
 describe("RT-430 — cookie-authenticated writes from an untrusted Origin are refused", () => {
-  it("a sibling-origin HTML form POST /stores → 403 origin_rejected, no store created", async () => {
+  it.each(REFUSED_WRITES)("$name → 403 origin_rejected, nothing changes", async (write) => {
     if (maybeSkip()) return;
     const cookie = await bobSession();
-    const before = await storeCount();
-    const res = await http()
-      .post("/api/v1/stores")
-      .set("Host", HOST)
-      .set("Origin", SIBLING)
-      .set("Cookie", cookie)
-      .type("form")
-      .send("code=BR-EVIL&name=Evil+Branch");
-    expectOriginRejected(res);
-    expect(await storeCount()).toBe(before);
-  });
+    const before = await write.state(cookie);
+    if (write.nodeEnv !== undefined) process.env["NODE_ENV"] = write.nodeEnv;
 
-  it("a form POST with the opaque `null` Origin (sandboxed frame) → 403 origin_rejected", async () => {
-    if (maybeSkip()) return;
-    const cookie = await bobSession();
-    const before = await storeCount();
-    const res = await http()
-      .post("/api/v1/stores")
-      .set("Host", HOST)
-      .set("Origin", "null")
-      .set("Cookie", cookie)
-      .type("form")
-      .send("code=BR-NULL&name=Null+Branch");
-    expectOriginRejected(res);
-    expect(await storeCount()).toBe(before);
-  });
+    const req = write.send(cookie).set("Host", HOST);
+    const res = await (write.origin === undefined ? req : req.set("Origin", write.origin));
 
-  it("a write with no Origin → 403 origin_rejected (fail closed)", async () => {
-    if (maybeSkip()) return;
-    const cookie = await bobSession();
-    const res = await http()
-      .patch(`/api/v1/tenants/${ACME_ID}`)
-      .set("Host", HOST)
-      .set("Cookie", cookie)
-      .send({ name: "Pwned" });
+    process.env["NODE_ENV"] = envBackup["NODE_ENV"];
     expectOriginRejected(res);
-    expect(await tenantName()).toBe("Acme");
-  });
-
-  it("a sibling-origin DELETE /stores/:id → 403 origin_rejected, store not deleted", async () => {
-    if (maybeSkip()) return;
-    const cookie = await bobSession();
-    const res = await http()
-      .delete(`/api/v1/stores/${STORE_BR1}`)
-      .set("Host", HOST)
-      .set("Origin", SIBLING)
-      .set("Cookie", cookie);
-    expectOriginRejected(res);
-    const { rows } = await admin!.query<{ deleted_at: Date | null }>(
-      "SELECT deleted_at FROM stores WHERE id = $1",
-      [STORE_BR1],
-    );
-    expect(rows[0]!.deleted_at).toBeNull();
-  });
-
-  it("a sibling-origin form POST /context/store → 403 origin_rejected", async () => {
-    if (maybeSkip()) return;
-    const cookie = await bobSession();
-    const res = await http()
-      .post("/api/v1/context/store")
-      .set("Host", HOST)
-      .set("Origin", SIBLING)
-      .set("Cookie", cookie)
-      .type("form")
-      .send(`store_id=${STORE_BR1}`);
-    expectOriginRejected(res);
-  });
-
-  it("a sibling-origin POST /auth/signout → 403, and the session stays live", async () => {
-    if (maybeSkip()) return;
-    const cookie = await bobSession();
-    const res = await http()
-      .post("/api/v1/auth/signout")
-      .set("Host", HOST)
-      .set("Origin", SIBLING)
-      .set("Cookie", cookie);
-    expectOriginRejected(res);
-    await http().get("/api/v1/context/me").set("Cookie", cookie).expect(200);
-  });
-
-  it("an http Origin is not the API's https origin outside test/development", async () => {
-    if (maybeSkip()) return;
-    const cookie = await bobSession();
-    process.env["NODE_ENV"] = "production";
-    const res = await http()
-      .patch(`/api/v1/tenants/${ACME_ID}`)
-      .set(SAME_ORIGIN)
-      .set("Cookie", cookie)
-      .send({ name: "Pwned" });
-    expectOriginRejected(res);
-    expect(await tenantName()).toBe("Acme");
+    expect(await write.state(cookie)).toEqual(before);
   });
 });
 
