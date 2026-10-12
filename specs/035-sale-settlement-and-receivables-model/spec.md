@@ -1,5 +1,19 @@
 # Feature Specification: Sale Settlement & Receivables Model
 
+> **SUPERSEDED IN PART — 035 NARROWED TO OPTION B (RT-423, recorded 2026-10-12).** 035-DR-SETTLEMENT OQ-7
+> (7-C) is superseded by **Amendment A1** in
+> [`decisions/settlement-receivables-decision-record.md`](./decisions/settlement-receivables-decision-record.md),
+> following the owner-approved Payment, Tender & Receivables baseline of 2026-10-07 (Confluence RETAIL 23560196).
+> Per [RT-413](https://rahmaqanater.atlassian.net/browse/RT-413), ERPNext owns customer and third-party A/R
+> balances, cash application/allocation, aging, payment terms, credit limits, collections and accounting
+> reconciliation. Backend-Core keeps only the per-sale payer responsibility allocation (captured on the sale at
+> checkout, RT-413 R-1) and the payer identity facade.
+>
+> `receivable.outstanding_balance`, `payment_application` / `consoleApplyPayment`, the claim and remittance
+> balance logic, `payer_account.credit_terms` and the `settlement-intent` route are being retired through
+> separate `[GATED]` follow-ups. Do not build new work on them. The text below is kept unchanged as
+> historical record.
+
 **Feature folder (speckit nominal)**: `035-sale-settlement-and-receivables-model`
 
 > **Numbering note.** Dispatch named this feature `035`. At specify time the highest
