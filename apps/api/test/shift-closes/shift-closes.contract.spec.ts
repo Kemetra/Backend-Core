@@ -2,14 +2,15 @@
  * apps/api/test/shift-closes/shift-closes.contract.spec.ts
  *
  * RT-383 (AD-CASH-001 follow-up 4): the admin-facing shift-close read
- * contract that Admin-Console RT-18 consumes. `[GATED]` contract: the runtime
- * ships only after the owner approves it on RT-383.
+ * contract that Admin-Console RT-18 consumes. `[GATED]` contract, approved by
+ * the owner on RT-383 (PR #737); the runtime is RT-383's implementation
+ * (`shift-closes.http.integration.spec.ts` covers it over HTTP).
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
- * app boot and no HTTP (the operations are contract-only). What this pins:
+ * app boot and no HTTP. What this pins:
  *
- *   1. Two GET operations at their paths, both contract-only with a note; no
- *      write, and no collision with another contract's operationIds.
+ *   1. Two GET operations at their paths, both implemented (no contract-only
+ *      marker); no write, and no collision with another contract's operationIds.
  *   2. Security is the human `cookieAuth` only; 404 (not 403) is the
  *      role / scope refusal; no tenant id is accepted from the request.
  *   3. The list filters, cursor and page bounds.
@@ -89,7 +90,9 @@ beforeAll(() => {
   const found = contracts.find((c) => c.id === CONTRACT_ID);
   if (!found) throw new Error(`${CONTRACT_ID} not found in packages/contracts/openapi/`);
   doc = found.document as OpenApiDocument;
-  posShiftsDoc = contracts.find((c) => c.id === POS_SHIFTS_ID)!.document as OpenApiDocument;
+  const pos = contracts.find((c) => c.id === POS_SHIFTS_ID);
+  if (!pos) throw new Error(`${POS_SHIFTS_ID} not found in packages/contracts/openapi/`);
+  posShiftsDoc = pos.document as OpenApiDocument;
   otherOperationIds = new Set<string>();
   for (const c of contracts) {
     if (c.id === CONTRACT_ID) continue;
@@ -209,10 +212,10 @@ describe("shift-closes — document and operations", () => {
     expect(op(DETAIL_PATH).requestBody).toBeUndefined();
   });
 
-  it("marks both operations contract-only with a runtime note", () => {
+  it("marks neither operation contract-only (the RT-383 runtime ships both)", () => {
     for (const path of [LIST_PATH, DETAIL_PATH]) {
-      expect(op(path)["x-runtime-status"]).toBe("contract-only");
-      expect(op(path)["x-runtime-note"]?.trim().length).toBeGreaterThan(0);
+      expect(op(path)["x-runtime-status"]).toBeUndefined();
+      expect(op(path)["x-runtime-note"]).toBeUndefined();
     }
   });
 

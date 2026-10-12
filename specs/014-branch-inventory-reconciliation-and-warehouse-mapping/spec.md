@@ -158,6 +158,16 @@ Define, at the planning level:
 
 ### 5.1 The signed split
 
+> **Authority wording clarified (RT-288, Inventory Planning Gate 1, recorded 2026-10-12).** In this feature, "Data-Pulse-2 remains the operational stock authority. It owns the append-only `stock_movements` ledger (009)", "DP2's per-store/branch 009 movements stay the operational truth", the authority-table row "DP2 009 ledger (signed SUM, compute-on-read)", the §IX row, and the same wording in this feature's `plan.md` and `data-model.md`, read as follows under the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389):
+>
+> - Backend-Core owns *operational* inventory authority and Available To Sell (721, 722).
+> - ERPNext Stock Ledger/Bin is the *financial/book* quantity authority, and ERPNext also owns valuation, COGS and
+>   GL (719, 720).
+> - 009 evolves into an Inventory Effects Journal plus operational projection (724, 726).
+> - ERP Bin snapshots are evidence/book state, never an overwrite master (729, 782, 783).
+>
+> Shipped code, data and history are unchanged (727). Whether and how sale effects are activated, and how ERP confirmation avoids double counting, is decided by Jira RT-289 (Gates 2+3).
+
 - **Data-Pulse-2 remains the operational stock authority.** It owns the
   append-only `stock_movements` ledger (009) and computes the **operational
   on-hand / available-to-sell** quantities used by POS-Pulse, Retail-Tower-Console,
@@ -275,6 +285,8 @@ one ledger, absent in the other). The **negative-balance interaction** is a
 named case: 009 allows-and-flags negative on-hand; ERPNext may reject negative
 stock — this is an **expected** mismatch class, not an error to silently erase
 (stock-impact §6). The set + tolerance semantics are **OQ-4**.
+
+> **Superseded (RT-288, Inventory Planning Gate 1, recorded 2026-10-12):** the premise that ERPNext rejects negative stock (→ `permanently_rejected` / DLQ / repair queue) was superseded by Jira RT-47 D3. Negative stock is allowed on the V1 ERPNext stock path, and a negative Bin is an observable operational discrepancy, not by itself a posting failure (730, 743). How negative balances are classified in reconciliation belongs to the Inventory reconciliation decisions (923–942) and Jira RT-289, not to this artifact. Source: the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389). Shipped code, data and history are unchanged (727).
 
 ### 7.5 Mapping lifecycle & provenance
 How a store↔warehouse mapping is established and kept current (manual

@@ -24,6 +24,16 @@
 > evidence the connector reports for a specific reconciliation run, never a
 > continuously-synced copy of ERPNext stock.
 >
+> **Authority wording clarified (RT-288, Inventory Planning Gate 1, recorded 2026-10-12).** In this feature, "DP2 is the operational on-hand authority; ERPNext owns valuation" and, in this feature's `plan.md`, "DP2 stays on-hand authority" read as follows under the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389):
+>
+> - Backend-Core owns *operational* inventory authority and Available To Sell (721, 722).
+> - ERPNext Stock Ledger/Bin is the *financial/book* quantity authority, and ERPNext also owns valuation, COGS and
+>   GL (719, 720).
+> - 009 evolves into an Inventory Effects Journal plus operational projection (724, 726).
+> - ERP Bin snapshots are evidence/book state, never an overwrite master (729, 782, 783).
+>
+> The run-scoped Bin view with no standing mirror stays consistent with 729. Shipped code, data and history are unchanged (727). Whether and how sale effects are activated, and how ERP confirmation avoids double counting, is decided by Jira RT-289 (Gates 2+3).
+>
 > **Direction (a repo invariant, not a choice).** DP2 **makes NO outbound HTTP**
 > (012). DP2 **exposes** endpoints; the **connector calls them**. So even though
 > the Bin data semantically originates in ERPNext (the connector *provides* it),

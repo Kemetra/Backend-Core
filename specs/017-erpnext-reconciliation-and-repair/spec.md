@@ -34,6 +34,16 @@
 > ERPNext-calling component; any ERPNext-Bin fetch is the connector's machinery,
 > behind the fixed 012 contract).
 
+> **Authority wording clarified (RT-288, Inventory Planning Gate 1, recorded 2026-10-12).** In this feature, "DP2 is operational on-hand truth, ERPNext is valuation", "the 009 stock ledger", and, in this feature's `plan.md`, "DP2 stays operational on-hand authority" read as follows under the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389):
+>
+> - Backend-Core owns *operational* inventory authority and Available To Sell (721, 722).
+> - ERPNext Stock Ledger/Bin is the *financial/book* quantity authority, and ERPNext also owns valuation, COGS and
+>   GL (719, 720).
+> - 009 evolves into an Inventory Effects Journal plus operational projection (724, 726).
+> - ERP Bin snapshots are evidence/book state, never an overwrite master (729, 782, 783).
+>
+> The rule that reconciliation never mutates the 009 ledger or the sale fact stays consistent with 782 and 783. Shipped code, data and history are unchanged (727). Whether and how sale effects are activated, and how ERP confirmation avoids double counting, is decided by Jira RT-289 (Gates 2+3).
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Operator reviews the posting dead-letter backlog (Priority: P1) 🎯 MVP

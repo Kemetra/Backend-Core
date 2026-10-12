@@ -87,6 +87,12 @@ Anchored to `.specify/memory/constitution.md` v3.0.1. 009 is the **first feature
 
 **Initial gate: PASS** (one PASS-with-new-signal: the negative-balance signal is consciously introduced, §3.3 — not a violation). No principle requires a Complexity-Tracking justification (§10 records only *avoided* complexity).
 
+> **Superseded (RT-288, Inventory Planning Gate 1, recorded 2026-10-12):** "009 establishes **Inventory as a source-of-truth domain**" (§Summary) and the §IX row's
+> "009 **owns** Inventory truth (movement ledger)" now read, as product direction, as follows. Backend-Core owns
+> *operational* inventory authority (721). ERPNext Stock Ledger/Bin is the financial/book quantity authority (719).
+> 009 evolves into an Inventory Effects Journal plus operational projection (724, 726). Source: the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389).
+> Shipped code, data and history are unchanged (727). Whether and how sale effects are activated, and how ERP confirmation avoids double counting, is decided by Jira RT-289 (Gates 2+3).
+
 ### 2.2 Post-design re-check
 
 After Phase 1 artifacts (`research.md`, `data-model.md`, `contracts/README.md`, `quickstart.md`) the 14 principles + supporting sections were re-evaluated: no artifact creates backend code, schema, migration, or OpenAPI; the data model keeps on-hand derived (no materialized mutable balance), quantity exact-decimal single-unit, movement append-only with nullable provenance, the negative-balance signal a flag+counter, and the contract design consumption-only with the YAML deferred to a gated slice. **Post-design gate: PASS.**

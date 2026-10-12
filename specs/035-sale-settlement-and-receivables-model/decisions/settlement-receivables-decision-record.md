@@ -22,6 +22,9 @@ authored OpenAPI contract + owner both-sides approval), and does **not** lift
 
 ## OQ-7 — Payment Entry ownership → **7-C (SIGNED)**
 
+> **SUPERSEDED 2026-10-12** by Amendment A1 (end of this record). The 7-C text below is kept
+> unchanged as historical record.
+
 **Question:** Which system is authoritative for the payment-entry record — DP-2,
 ERPNext (via connector), or split?
 
@@ -93,7 +96,7 @@ surface on DP-026's CHECKPOINT-2 (informational; not a 035 task).
 | Item | State after this record |
 |------|-------------------------|
 | `tasks.md` T001 (OQ-4) | **RESOLVED — CARVE** (non-reversal proceeds; reversal fields stay blocked on DP-026) |
-| `tasks.md` T002 (OQ-7) | **RESOLVED — 7-C** |
+| `tasks.md` T002 (OQ-7) | ~~**RESOLVED — 7-C**~~ **SUPERSEDED 2026-10-12** — see Amendment A1 below (RT-415) |
 | `tasks.md` T003 (OQ-2/G6) | **RESOLVED — tax-deactivated v1** |
 | G2 contract **draft** (design input, markdown) | **AUTHORABLE NOW** (T010a) |
 | G2 contract **OpenAPI YAML** (`packages/contracts/openapi/**`) | **AUTHORED + MERGED** (T010b) — `settlement.yaml` on main (PR #574, `cb4a7e5`) |
@@ -129,3 +132,22 @@ proceed through their own spec chains —
 - Does **not** activate **tax** — tax-pending under G6/ADR-0003 (§OQ-2).
 - Does **not** author **DP-2 implementation** — controller/DTO/service + the **G3**
   schema/migration remain separate gated slices.
+
+---
+
+## Amendment A1 — OQ-7 superseded (2026-10-12)
+Status: SIGNED by the owner (RT-277 comment 11662).
+
+OQ-7 = 7-C is SUPERSEDED by the Retail Tower Payment, Tender & Receivables
+Product Architecture baseline (Confluence RETAIL 23560196, owner-approved
+2026-10-07). ERPNext owns customer and third-party A/R balances, cash
+application/allocation, aging, payment terms, credit limits, collections and
+accounting reconciliation. Backend-Core owns only the per-sale payer
+responsibility allocation and the payer identity facade.
+
+035 is narrowed (Option B) per RT-413. receivable.outstanding_balance,
+payment_application, consoleApplyPayment, claim and remittance balance logic,
+and payer_account.credit_terms are retired through gated forward migrations;
+0027.down is never applied to live data.
+
+OQ-4 (CARVE) and OQ-2 (tax-deactivated) remain in force for whatever survives.
