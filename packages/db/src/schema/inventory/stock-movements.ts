@@ -58,6 +58,34 @@ import { tenantProducts } from "../catalog/tenant-products";
 import { stores } from "../stores";
 import { tenants } from "../tenants";
 
+/** Effect origin (RT-289 G2-2; decision 768). */
+export const INVENTORY_EFFECT_ORIGINS = ["retail", "erp_external"] as const;
+export type InventoryEffectOrigin = (typeof INVENTORY_EFFECT_ORIGINS)[number];
+
+/** Retail-origin Inventory Business Event types (RT-289 G2-1; 905–909). */
+export const RETAIL_INVENTORY_EVENT_TYPES = [
+  "sale",
+  "sale_void",
+  "sale_return",
+  "transfer",
+  "count",
+  "adjustment",
+] as const;
+
+/** ERP-origin Inventory Business Event types (RT-289 G2-1; 894–897, 910–913). */
+export const ERP_INVENTORY_EVENT_TYPES = [
+  "erp_procurement_receipt",
+  "erp_manufacturing",
+  "erp_opening_stock",
+  "erp_correction",
+] as const;
+
+export const INVENTORY_EVENT_TYPES = [
+  ...RETAIL_INVENTORY_EVENT_TYPES,
+  ...ERP_INVENTORY_EVENT_TYPES,
+] as const;
+export type InventoryEventType = (typeof INVENTORY_EVENT_TYPES)[number];
+
 /**
  * `stock_counts` — a recorded physical count for a (tenant, store, product).
  * Provenance for the `count_correction` movement created from its variance
@@ -162,6 +190,20 @@ export const stockMovements = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    // ---- 0042 (RT-425): Inventory Effect columns (RT-289 G2-2) -------------
+    // Explicit effect origin (768). Every writer on main is a Retail path.
+    origin: text("origin").notNull().default("retail"),
+    // The owning Inventory Business Event (761/762, G2-1); both or neither.
+    // NULL on pre-0042 rows (history is not rewritten, 727/970).
+    eventType: text("event_type"),
+    eventRefId: uuid("event_ref_id"),
+    // Set only on a correction effect (775); a same-tenant self-reference.
+    compensatesEffectId: uuid("compensates_effect_id"),
+    // Position PLACEHOLDERS (750): defined by Gate 4 (RT-290) and Gate 7
+    // (RT-50). Nothing writes them yet.
+    stockLocationId: uuid("stock_location_id"),
+    inventoryStatus: text("inventory_status"),
+    trackingIdentity: text("tracking_identity"),
   },
   (t) => [
     check(
@@ -201,6 +243,32 @@ export const stockMovements = pgTable(
     index("idx_stock_movements_transfer_group")
       .on(t.transferGroupId)
       .where(sql`${t.transferGroupId} IS NOT NULL`),
+    // ---- 0042 (RT-425) -------------------------------------------------------
+    check("stock_movements_origin_allowed", sql`${t.origin} IN ('retail', 'erp_external')`),
+    // Values mirror INVENTORY_EVENT_TYPES (asserted by the schema-shape test).
+    check(
+      "stock_movements_event_type_allowed",
+      sql`${t.eventType} IS NULL OR ${t.eventType} IN ('sale', 'sale_void', 'sale_return', 'transfer', 'count', 'adjustment', 'erp_procurement_receipt', 'erp_manufacturing', 'erp_opening_stock', 'erp_correction')`,
+    ),
+    check(
+      "stock_movements_event_pair",
+      sql`(${t.eventType} IS NULL) = (${t.eventRefId} IS NULL)`,
+    ),
+    // An event type belongs to exactly one origin (768, 905–913).
+    check(
+      "stock_movements_event_origin_consistent",
+      sql`${t.eventType} IS NULL OR (${t.origin} = 'retail') = (${t.eventType} IN ('sale', 'sale_void', 'sale_return', 'transfer', 'count', 'adjustment'))`,
+    ),
+    check(
+      "stock_movements_compensates_not_self",
+      sql`${t.compensatesEffectId} IS NULL OR ${t.compensatesEffectId} <> ${t.id}`,
+    ),
+    // Composite target for the same-tenant FKs (compensation; integration row).
+    // The self-FK fk_stock_movements_compensates_tenant is SQL-only in 0042.
+    uniqueIndex("uq_stock_movements_id_tenant").on(t.id, t.tenantId),
+    index("idx_stock_movements_tenant_event")
+      .on(t.tenantId, t.eventType, t.eventRefId)
+      .where(sql`${t.eventType} IS NOT NULL`),
     // NOTE (issue #465, migration 0016): the established-unit guard
     // `stock_movements_one_unit_per_product` — an EXCLUDE USING gist constraint
     // enforcing at most one DISTINCT stocking_unit per (store_id,

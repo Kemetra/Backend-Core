@@ -272,6 +272,15 @@ export interface StockMovementBody {
   readonly transferGroupId: string | null;
   readonly stockCountId: string | null;
   readonly createdBy: string;
+  /** RT-425 (RT-289 G2-2): the effect's origin — `retail` | `erp_external`. */
+  readonly origin: string;
+  /**
+   * RT-425 (RT-289 G2-3): the effect's ERP integration state, or null when the
+   * effect has no integration record.
+   */
+  readonly integrationState: string | null;
+  /** RT-425 (RT-289 G2-4): when ERP confirmed the effect; null until then. */
+  readonly erpConfirmedAt: string | null;
 }
 
 /** Wire projection of the derived on-hand (contract `OnHand`, FR-003/024). */
@@ -305,13 +314,32 @@ interface MovementRow {
   transfer_group_id: string | null;
   stock_count_id: string | null;
   created_by: string;
+  origin: string;
+  /** From inventory_effect_integration; absent on a bare RETURNING row. */
+  integration_state?: string | null;
+  erp_confirmed_at?: Date | null;
 }
 
-const MOVEMENT_COLUMNS = `
-  id, store_id, movement_type, quantity, stocking_unit, tenant_product_ref,
-  reason, occurred_at, received_at, sale_id, sale_line_id, terminal_event_ref,
-  transfer_group_id, stock_count_id, created_by
-`;
+const MOVEMENT_COLUMN_NAMES = [
+  'id', 'store_id', 'movement_type', 'quantity', 'stocking_unit', 'tenant_product_ref',
+  'reason', 'occurred_at', 'received_at', 'sale_id', 'sale_line_id', 'terminal_event_ref',
+  'transfer_group_id', 'stock_count_id', 'created_by', 'origin',
+] as const;
+
+const MOVEMENT_COLUMNS = MOVEMENT_COLUMN_NAMES.join(', ');
+
+/**
+ * RT-425: movement columns qualified by `m`, plus the effect's integration
+ * state, for reads that LEFT JOIN inventory_effect_integration `i`.
+ */
+const MOVEMENT_COLUMNS_WITH_INTEGRATION = [
+  ...MOVEMENT_COLUMN_NAMES.map((c) => `m.${c}`),
+  'i.state AS integration_state',
+  'i.erp_confirmed_at',
+].join(', ');
+
+/** RT-425: the state every Retail effect starts in until an ERP intent exists. */
+const NOT_POSTED = 'not_posted';
 
 function toMovementBody(r: MovementRow): StockMovementBody {
   return {
@@ -330,7 +358,15 @@ function toMovementBody(r: MovementRow): StockMovementBody {
     transferGroupId: r.transfer_group_id,
     stockCountId: r.stock_count_id,
     createdBy: r.created_by,
+    origin: r.origin,
+    integrationState: r.integration_state ?? null,
+    erpConfirmedAt: r.erp_confirmed_at ? r.erp_confirmed_at.toISOString() : null,
   };
+}
+
+/** RT-425: a just-written Retail effect, whose integration record is `not_posted`. */
+function asNotPosted(r: MovementRow): MovementRow {
+  return { ...r, integration_state: NOT_POSTED, erp_confirmed_at: null };
 }
 
 const DEFAULT_LIMIT = 50;
@@ -416,17 +452,20 @@ export class InventoryService {
         const hasProduct =
           input.productId !== null && input.productId !== undefined;
         const productPredicate = hasProduct
-          ? 'tenant_product_ref = $2'
-          : 'tenant_product_ref IS NULL';
+          ? 'm.tenant_product_ref = $2'
+          : 'm.tenant_product_ref IS NULL';
         const params: unknown[] = hasProduct
           ? [input.storeId, input.productId, limit]
           : [input.storeId, limit];
         const limitParam = hasProduct ? '$3' : '$2';
+        // RT-425: each effect carries its integration state (LEFT JOIN: an
+        // effect without an integration record projects null).
         const r = await client.query<MovementRow>(
-          `SELECT ${MOVEMENT_COLUMNS}
-             FROM stock_movements
-            WHERE store_id = $1 AND ${productPredicate}
-            ORDER BY occurred_at ASC, id ASC
+          `SELECT ${MOVEMENT_COLUMNS_WITH_INTEGRATION}
+             FROM stock_movements m
+             LEFT JOIN inventory_effect_integration i ON i.effect_id = m.id
+            WHERE m.store_id = $1 AND ${productPredicate}
+            ORDER BY m.occurred_at ASC, m.id ASC
             LIMIT ${limitParam}`,
           params,
         );
@@ -485,13 +524,15 @@ export class InventoryService {
         // when omitted; received_at defaults in the schema (security clock).
         const inserted = await this.insertMovementRow(
           client,
+          // RT-425: a manual movement is its own governed `adjustment` Business
+          // Event (RT-289 G2-1, decision 838), identified by the movement id.
           `INSERT INTO stock_movements
              (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
               tenant_product_ref, reason, occurred_at, sale_id, sale_line_id,
-              terminal_event_ref, created_by)
+              terminal_event_ref, created_by, event_type, event_ref_id)
            VALUES
              ($1, $2, $3, $4, $5::numeric(19,4), $6, $7, $8,
-              COALESCE($9::timestamptz, now()), $10, $11, $12, $13)
+              COALESCE($9::timestamptz, now()), $10, $11, $12, $13, 'adjustment', $1)
            RETURNING ${MOVEMENT_COLUMNS}`,
           [
             movementId,
@@ -514,6 +555,7 @@ export class InventoryService {
         if (!row) {
           throw new Error('InventoryService.createStockMovement: INSERT returned no row');
         }
+        await this.recordNotPosted(client, input.tenantId, [row.id]);
 
         // ---- Audit event in the SAME transaction (FR-013, SC-007) --------
         // Atomic with the movement INSERT: a failure on either rolls both back.
@@ -547,7 +589,7 @@ export class InventoryService {
           await this.flagIfNegativeOnHand(client, input.storeId, tenantProductRef);
         }
 
-        return toMovementBody(row);
+        return toMovementBody(asNotPosted(row));
       },
     );
   }
@@ -672,9 +714,11 @@ export class InventoryService {
           client,
           `INSERT INTO stock_movements
              (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
-              tenant_product_ref, reason, occurred_at, transfer_group_id, created_by)
+              tenant_product_ref, reason, occurred_at, transfer_group_id, created_by,
+              event_type, event_ref_id)
            VALUES
-             ($1, $2, $3, 'transfer_out', $4::numeric(19,4), $5, $6, $7, now(), $8, $9)
+             ($1, $2, $3, 'transfer_out', $4::numeric(19,4), $5, $6, $7, now(), $8, $9,
+              'transfer', $8)
            RETURNING ${MOVEMENT_COLUMNS}`,
           [
             outId,
@@ -697,9 +741,11 @@ export class InventoryService {
           client,
           `INSERT INTO stock_movements
              (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
-              tenant_product_ref, reason, occurred_at, transfer_group_id, created_by)
+              tenant_product_ref, reason, occurred_at, transfer_group_id, created_by,
+              event_type, event_ref_id)
            VALUES
-             ($1, $2, $3, 'transfer_in', $4::numeric(19,4), $5, $6, $7, now(), $8, $9)
+             ($1, $2, $3, 'transfer_in', $4::numeric(19,4), $5, $6, $7, now(), $8, $9,
+              'transfer', $8)
            RETURNING ${MOVEMENT_COLUMNS}`,
           [
             inId,
@@ -723,6 +769,9 @@ export class InventoryService {
         if (!outRow || !inRow) {
           throw new Error('InventoryService.createStockTransfer: INSERT returned no row');
         }
+        // RT-425: both legs belong to one `transfer` Business Event (the
+        // transfer group) and start `not_posted`, in this transaction.
+        await this.recordNotPosted(client, input.tenantId, [outRow.id, inRow.id]);
 
         // ---- One audit event for the logical transfer (same transaction) --
         await client.query(
@@ -765,8 +814,8 @@ export class InventoryService {
 
         return {
           transferGroupId,
-          outbound: toMovementBody(outRow),
-          inbound: toMovementBody(inRow),
+          outbound: toMovementBody(asNotPosted(outRow)),
+          inbound: toMovementBody(asNotPosted(inRow)),
         };
       },
     );
@@ -856,10 +905,11 @@ export class InventoryService {
             client,
             `INSERT INTO stock_movements
                (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
-                tenant_product_ref, stock_count_id, reason, occurred_at, created_by)
+                tenant_product_ref, stock_count_id, reason, occurred_at, created_by,
+                event_type, event_ref_id)
              VALUES
                ($1, $2, $3, 'count_correction', $4::numeric(19,4), $5, $6, $7,
-                'count variance', now(), $8)
+                'count variance', now(), $8, 'count', $7)
              RETURNING ${MOVEMENT_COLUMNS}`,
             [
               newId(),
@@ -881,7 +931,10 @@ export class InventoryService {
           if (!row) {
             throw new Error('InventoryService.recordStockCount: correction INSERT returned no row');
           }
-          correctionMovement = toMovementBody(row);
+          // RT-425: the correction is the `count` Business Event's effect
+          // (the recorded count) and starts `not_posted`, in this transaction.
+          await this.recordNotPosted(client, input.tenantId, [row.id]);
+          correctionMovement = toMovementBody(asNotPosted(row));
         }
 
         // ---- Audit the count in the SAME transaction ----------------------
@@ -1271,6 +1324,24 @@ export class InventoryService {
     if (established !== undefined && established !== suppliedUnit) {
       throw new CrossUnitError(established, suppliedUnit);
     }
+  }
+
+  /**
+   * RT-425 (RT-289 G2-3, Q2): give each just-written Retail effect its
+   * integration record in state `not_posted`, in the SAME transaction as the
+   * effect INSERT. No ERP posting intent represents a manual movement,
+   * transfer or count, so the divergence stays explicit (decision 730).
+   */
+  private async recordNotPosted(
+    client: PoolClient,
+    tenantId: string,
+    effectIds: readonly string[],
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO inventory_effect_integration (effect_id, tenant_id, state)
+       SELECT effect_id, $1, $3 FROM unnest($2::uuid[]) AS effect_id`,
+      [tenantId, effectIds, NOT_POSTED],
+    );
   }
 
   /**

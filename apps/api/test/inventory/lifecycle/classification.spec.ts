@@ -38,7 +38,11 @@ import * as path from 'node:path';
 
 import { getTableConfig } from 'drizzle-orm/pg-core';
 
-import { stockCounts, stockMovements } from '@data-pulse-2/db/schema';
+import {
+  inventoryEffectIntegration,
+  stockCounts,
+  stockMovements,
+} from '@data-pulse-2/db/schema';
 
 function persistedColumns(table: unknown): string[] {
   const cfg = getTableConfig(table as Parameters<typeof getTableConfig>[0]);
@@ -83,6 +87,35 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       'stock_count_id',
       'created_by',
       'created_at',
+      // RT-425 (0042) §XIV re-review: effect origin / event codes, an opaque
+      // event and compensated-effect id, and the Gate 4/7 position
+      // placeholders (an opaque location id, a status code, a tracking
+      // identity). All business-class; no customer or payment data.
+      'origin',
+      'event_type',
+      'event_ref_id',
+      'compensates_effect_id',
+      'stock_location_id',
+      'inventory_status',
+      'tracking_identity',
+    ],
+  },
+  {
+    // RT-425 (0042): the mutable per-effect ERP integration state. Codes,
+    // opaque ids, an ERPNext document reference, timestamps and a bounded
+    // state reason. Business-class; no customer or payment data.
+    name: 'inventory_effect_integration',
+    table: inventoryEffectIntegration,
+    columns: [
+      'effect_id',
+      'tenant_id',
+      'state',
+      'posting_status_id',
+      'erp_document_ref',
+      'erp_confirmed_at',
+      'state_reason',
+      'created_at',
+      'updated_at',
     ],
   },
   {

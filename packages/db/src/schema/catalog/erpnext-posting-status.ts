@@ -112,6 +112,9 @@ export const erpnextPostingStatus = pgTable(
     // (or a stale-version `posted` ack) reported, as ErpnextDocumentRef JSON.
     // Set only on a `permanently_rejected` row; separate from `document_ref`.
     reconciliationDocumentRef: text("reconciliation_document_ref"),
+    // 0042 (RT-425): server time the `posted` ack was applied — the ERP
+    // confirmation time (RT-289 G2-4). NULL on rows posted before 0042.
+    postedAt: timestamp("posted_at", { withTimezone: true }),
   },
   (t) => [
     check(
@@ -142,6 +145,11 @@ export const erpnextPostingStatus = pgTable(
     check(
       "erpnext_posting_status_reconciliation_ref_when_rejected",
       sql`${t.reconciliationDocumentRef} IS NULL OR ${t.status} = 'permanently_rejected'`,
+    ),
+    // 0042: only a posted row carries posted_at (pre-0042 posted rows keep NULL).
+    check(
+      "erpnext_posting_status_posted_at_when_posted",
+      sql`${t.postedAt} IS NULL OR ${t.status} = 'posted'`,
     ),
     // 0037: composite target for erpnext_posting_resolution (same-tenant intent).
     uniqueIndex("UQ_idx_erpnext_posting_status_id_tenant").on(t.id, t.tenantId),

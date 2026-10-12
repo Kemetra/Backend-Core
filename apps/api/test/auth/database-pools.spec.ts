@@ -46,6 +46,10 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   // RT-330 (0037): the frozen posting resolution (append-only).
   "erpnext_posting_resolution:SELECT",
   "erpnext_posting_resolution:INSERT",
+  // RT-425 (0042): the per-effect inventory integration state (mutable, no DELETE).
+  "inventory_effect_integration:SELECT",
+  "inventory_effect_integration:INSERT",
+  "inventory_effect_integration:UPDATE",
 ]);
 
 const LOOKUP_GRANTS: ReadonlySet<string> = new Set(
@@ -257,6 +261,7 @@ describe("database pool boundary", () => {
       "shift_closes",
       "shift_cash_movements",
       "shift_refund_claims",
+      "inventory_effect_integration",
     ]) {
       const entry = AUTH_LOOKUP_FORBIDDEN_GRANTS.find(([t]) => t === table);
       expect(entry).toBeDefined();

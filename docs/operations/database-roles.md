@@ -256,6 +256,23 @@ table the domain role must use needs a matching grant step at deploy time.
   any intent the previous release's worker or repair wrote during the
   migration.
 
+- **Migration `0042_inventory_effects_journal` (RT-425).** Run
+  [`sql/inventory-effect-integration-domain-grants.sql`](sql/inventory-effect-integration-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT`, `INSERT` and
+  `UPDATE` on `inventory_effect_integration`, the mutable per-effect
+  integration state (it has no `DELETE` policy; never grant `DELETE` or
+  `TRUNCATE`). Every manual movement, transfer and count writes its effect's
+  record with it, and the movement list reads it. Without the grants the API
+  refuses to boot (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold
+  no privilege on it (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). After the new release
+  is up, deploy step 4 runs
+  [`sql/inventory-effect-integration-catchup.sql`](sql/inventory-effect-integration-catchup.sql)
+  as the migration owner: it re-runs the idempotent 0043 backfill to record
+  `not_posted` for any movement the previous release wrote during the
+  migration.
+
 - **Sign-in memberships (RT-343).** Run
   [`sql/signin-memberships-domain-grants.sql`](sql/signin-memberships-domain-grants.sql)
   in the same step 2, with the same `-v domain_role=<role>`. It grants the

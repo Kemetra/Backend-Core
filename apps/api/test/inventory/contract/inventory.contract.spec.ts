@@ -417,3 +417,51 @@ describe("inventory/inventory.yaml — §XIV no PII/payment", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+// ===========================================================================
+// 6. RT-425 — Inventory Effects Journal read fields (additive, 1.1.0-draft)
+// ===========================================================================
+describe("inventory/inventory.yaml — RT-425 effect projection", () => {
+  const props = (): Record<string, { type?: unknown; enum?: unknown[]; format?: string }> =>
+    (inventoryDoc.components?.schemas?.["StockMovement"]?.properties ?? {}) as Record<
+      string,
+      { type?: unknown; enum?: unknown[]; format?: string }
+    >;
+
+  it("projects the effect origin as a required retail | erp_external enum (G2-2)", () => {
+    expect(props()["origin"]?.enum).toEqual(["retail", "erp_external"]);
+    expect(inventoryDoc.components?.schemas?.["StockMovement"]?.required).toContain("origin");
+  });
+
+  it("projects the nullable integration state with exactly the RT-289 G2-3 states", () => {
+    expect(props()["integrationState"]?.type).toEqual(["string", "null"]);
+    expect(props()["integrationState"]?.enum).toEqual([
+      "not_posted",
+      "pending",
+      "confirmed",
+      "rejected",
+      "reconciliation_required",
+      "external",
+      null,
+    ]);
+  });
+
+  it("projects erpConfirmedAt as a nullable date-time (G2-4)", () => {
+    expect(props()["erpConfirmedAt"]?.type).toEqual(["string", "null"]);
+    expect(props()["erpConfirmedAt"]?.format).toBe("date-time");
+  });
+
+  it("keeps the new read fields optional for older consumers (only origin is required)", () => {
+    const required = inventoryDoc.components?.schemas?.["StockMovement"]?.required ?? [];
+    expect(required).not.toContain("integrationState");
+    expect(required).not.toContain("erpConfirmedAt");
+  });
+
+  it("retires the sale-linked backfill: deprecated, still contract-only (RT-289 Q3)", () => {
+    const op = findOp("backfillSaleLinkedMovements") as
+      | (OperationObject & { deprecated?: boolean; "x-runtime-status"?: string })
+      | undefined;
+    expect(op?.deprecated).toBe(true);
+    expect(op?.["x-runtime-status"]).toBe("contract-only");
+  });
+});

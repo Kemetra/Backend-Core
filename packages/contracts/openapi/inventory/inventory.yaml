@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Inventory — Stock Movement Ledger API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     Spec 009 Inventory & Stock Movement Ledger contract surface. Defines the
     Inventory source-of-truth domain the SaaS owns: an append-only
@@ -67,6 +67,18 @@ info:
     `idempotency_key` column are not projected. The failure vocabulary encodes
     a canonical `Error` envelope shared verbatim with `auth.openapi.yaml` /
     `outbox.openapi.yaml`. There is NO PII / payment-class field (§XIV).
+
+    1.1.0-draft — Inventory Effects Journal (Jira RT-425; owner-approved
+    RT-289 Gates 2+3, Confluence RETAIL "Inventory Operations" baseline).
+    Additive only. A movement is an Inventory Effect: it now projects its
+    `origin` (`retail` | `erp_external`), its ERP `integrationState`
+    (`not_posted` | `pending` | `confirmed` | `rejected` |
+    `reconciliation_required` | `external`) and `erpConfirmedAt`. Every
+    manual movement, transfer leg and count correction is a Retail effect
+    that starts `not_posted`: none of them is posted to ERPNext yet. Nothing
+    activates sale-linked effects in this version (RT-427). The sale-linked
+    backfill operation is deprecated and retired (RT-289 Q3: no historical
+    sale backfill); it remains contract-only and is never shipped.
 
 servers:
   - url: https://api.datapulse.example
@@ -282,11 +294,15 @@ paths:
   /api/inventory/v1/admin/sale-linked-backfill:
     post:
       operationId: backfillSaleLinkedMovements
+      deprecated: true
       x-runtime-status: contract-only
       x-runtime-note: >
-        The backfill exists as an off-request service/worker seam. No platform
-        admin HTTP guard or controller route is shipped; do not generate this
-        operation as a live API.
+        RETIRED (RT-425, RT-289 Q3): activating sale-linked effects never
+        backfills historical sales; an Inventory Anchor is taken from
+        ERP-confirmed state instead, and sale effects are written in the same
+        transaction as their ERP posting intent (RT-427). Never implement or
+        generate this operation. The off-request service/worker seam it
+        described is unregistered and is removed by RT-427.
       tags: [inventory-admin]
       summary: "PLATFORM/ADMIN: backfill sale-linked outbound / restock movements."
       description: >
@@ -496,7 +512,7 @@ components:
     # ----- Projections (response bodies) — explicit toBody wire shapes (§IV); NO raw DB entity
     StockMovement:
       type: object
-      required: [id, storeId, movementType, quantity, stockingUnit, occurredAt, receivedAt, createdBy]
+      required: [id, storeId, movementType, quantity, stockingUnit, occurredAt, receivedAt, createdBy, origin]
       description: >
         toBody projection of a stock_movements row. The lineage-only
         `idempotency_key` column and internal fields are NOT projected.
@@ -525,6 +541,29 @@ components:
         terminalEventRef: { type: [string, "null"], format: uuid }
         transferGroupId: { type: [string, "null"], format: uuid }
         stockCountId: { type: [string, "null"], format: uuid }
+        origin:
+          type: string
+          enum: [retail, erp_external]
+          description: >
+            RT-425 (RT-289 G2-2, decision 768): where the effect originated.
+            Every movement written by this API is `retail`.
+        integrationState:
+          type: [string, "null"]
+          enum: [not_posted, pending, confirmed, rejected, reconciliation_required, external, null]
+          description: >
+            RT-425 (RT-289 G2-3): the effect's ERP integration state.
+            `not_posted` = no ERP posting intent represents the effect;
+            `pending` / `confirmed` / `rejected` / `reconciliation_required`
+            follow its ERP posting intent; `external` = an ERP-origin effect.
+            A confirmation never adds quantity (decision 771). Null only for a
+            movement with no integration record.
+        erpConfirmedAt:
+          type: [string, "null"]
+          format: date-time
+          description: >
+            RT-425 (RT-289 G2-4): when ERPNext confirmed the effect (server time
+            of the `posted` acknowledgement); null unless `integrationState` is
+            `confirmed`.
     StockMovementList:
       type: object
       required: [items]
