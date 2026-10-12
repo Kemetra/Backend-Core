@@ -290,6 +290,7 @@ function makeStoreRecord(id: string, code: string): StoreRecord {
     tenantId: TENANT_ID,
     code,
     name: `Store ${code}`,
+    timezone: "UTC",
     isActive: true,
     createdAt: new Date("2024-01-01"),
     updatedAt: new Date("2024-01-01"),

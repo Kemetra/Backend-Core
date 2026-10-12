@@ -7,10 +7,12 @@
 #
 # Example:
 #   RT-123 intentional: POST /api/v1/example added the new required request header 'X-Example'
-# RT-17 slice 2b-2 (PR #714 round 1): closeShift's request declares the
-# limits the runtime already enforces (a database integer saleCount; at most
-# 1000 refund refs, refused with 400). pos-shifts.openapi.yaml is a
-# 1.1.0-draft contract and closeShift had no runtime route and no consumer
-# before this PR. [GATED] approval: Jira RT-17 comments 10760 + 10920.
-RT-17 intentional (closeShift saleCount bounded to the database integer the runtime enforces; draft contract, no consumer yet; [GATED] RT-17 10760/10920): in API POST /api/pos/v1/shifts/{shift_id}/close the `saleCount` request property's max was set to `2147483647.00` [request-property-max-set].
-RT-17 intentional (closeShift cashRefundReturnRefs capped at 1000 as the runtime enforces; draft contract, no consumer yet; [GATED] RT-17 10760/10920): in API POST /api/pos/v1/shifts/{shift_id}/close the `cashRefundReturnRefs` request property's maxItems was set to `1000` [request-property-max-items-set].
+# RT-401 / spec 038 (PR #746): StoreUpdate gains timezone,
+# expected_current_timezone and timezone_impact_reviewed, which must be sent
+# together. oasdiff reports the new dependentRequired rules as breaking, but
+# they only involve properties added in this same PR, so no request that was
+# valid before becomes invalid. The two RT-17 lines inherited from #714 were
+# removed as check.sh asks.
+RT-401 intentional (StoreUpdate's new timezone change fields travel together; the rule binds only properties this PR adds, so no existing request changes; [GATED] owner approval of spec 038 on RT-401): in API PATCH /api/v1/stores/{store_id} the request body dependentRequired was added: when `expected_current_timezone` is present, `timezone` are required [request-body-dependent-required-added].
+RT-401 intentional (StoreUpdate's new timezone change fields travel together; the rule binds only properties this PR adds, so no existing request changes; [GATED] owner approval of spec 038 on RT-401): in API PATCH /api/v1/stores/{store_id} the request body dependentRequired was added: when `timezone` is present, `expected_current_timezone, timezone_impact_reviewed` are required [request-body-dependent-required-added].
+RT-401 intentional (StoreUpdate's new timezone change fields travel together; the rule binds only properties this PR adds, so no existing request changes; [GATED] owner approval of spec 038 on RT-401): in API PATCH /api/v1/stores/{store_id} the request body dependentRequired was added: when `timezone_impact_reviewed` is present, `timezone` are required [request-body-dependent-required-added].

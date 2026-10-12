@@ -62,7 +62,10 @@ import { InvitationsService } from "../src/memberships/invitations.service";
 import type { InviteResult } from "../src/memberships/invitations.service";
 import type { InvitationRow } from "@data-pulse-2/db/schema";
 import { StoresController } from "../src/stores/stores.controller";
-import { StoresService } from "../src/stores/stores.service";
+import {
+  StoresService,
+  type TimezoneChangePreview,
+} from "../src/stores/stores.service";
 import type { StoreRecord } from "../src/stores/stores.repository";
 import { TenantsController } from "../src/tenants/tenants.controller";
 import { TenantsService } from "../src/tenants/tenants.service";
@@ -2174,10 +2177,15 @@ const STORES_DOC_ID = "stores.openapi";
 
 let validateStoreArray: ValidateFunction;
 let validateStore: ValidateFunction;
+let validateTimezonePreview: ValidateFunction;
 
 function buildStoresValidators(): void {
   registerContractSchema(STORES_DOC_ID);
   validateStore = compileComponentValidator(STORES_DOC_ID, "Store");
+  validateTimezonePreview = compileComponentValidator(
+    STORES_DOC_ID,
+    "StoreTimezoneChangePreview",
+  );
   validateStoreArray = ajv.compile({
     type: "array",
     items: { $ref: `${STORES_DOC_ID}#/components/schemas/Store` },
@@ -2198,6 +2206,7 @@ const STORE_RECORD: StoreRecord = {
   tenantId: STORES_TENANT_ID,
   code: "S001",
   name: "Test Store",
+  timezone: "Africa/Cairo",
   isActive: true,
   createdAt: new Date("2024-01-01T00:00:00.000Z"),
   updatedAt: new Date("2024-06-01T00:00:00.000Z"),
@@ -2211,6 +2220,29 @@ class FakeStoresService {
 
   async read(_ctx: unknown, _storeId: string): Promise<StoreRecord> {
     return STORE_RECORD;
+  }
+
+  async previewTimezoneChange(
+    _ctx: unknown,
+    storeId: string,
+    proposedTimezone: string,
+  ): Promise<TimezoneChangePreview> {
+    return {
+      storeId,
+      currentTimezone: "Africa/Cairo",
+      proposedTimezone,
+      noOp: false,
+      now: new Date("2026-10-12T22:30:00.000Z"),
+      utcOffsetMinutesCurrent: 180,
+      utcOffsetMinutesProposed: 540,
+      businessDateCurrent: "2026-10-13",
+      businessDateProposed: "2026-10-13",
+      businessDateChangesNow: false,
+      openShiftCount: 1,
+      blockers: [{ code: "store_has_open_shift", count: 1 }],
+      canApply: false,
+      caveats: ["offline_shifts_not_visible", "uncaptured_sales_use_new_zone"],
+    };
   }
 }
 
@@ -2293,6 +2325,25 @@ describe("Slice 11 — stores (T300)", () => {
       expect(res.body.updated_at).toBe("2024-06-01T00:00:00.000Z");
       expect(res.body.deleted_at).toBeNull();
       assertConformsTo(validateStore, res.body);
+    });
+
+    it("carries the store time zone (spec 038)", async () => {
+      const res = await storesHttp()
+        .get(`/api/v1/stores/${STORES_STORE_ID}`)
+        .expect(200);
+
+      expect(res.body.timezone).toBe("Africa/Cairo");
+    });
+  });
+
+  describe("GET /api/v1/stores/:store_id/timezone-change-preview → 200 StoreTimezoneChangePreview", () => {
+    it("response body conforms to StoreTimezoneChangePreview schema", async () => {
+      const res = await storesHttp()
+        .get(`/api/v1/stores/${STORES_STORE_ID}/timezone-change-preview?timezone=Asia%2FTokyo`)
+        .expect(200);
+
+      expect(res.body.proposed_timezone).toBe("Asia/Tokyo");
+      assertConformsTo(validateTimezonePreview, res.body);
     });
   });
 });

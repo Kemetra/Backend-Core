@@ -184,6 +184,11 @@ const CLOSE_COLUMNS = `
 /**
  * $1 shift, $2 tenant, $3 store, $4 device, $5 opening user, $6 openedAt,
  * $7 currency, $8 opening float, $9 recording actor, $10 payload hash.
+ *
+ * The store zone is read `FOR SHARE` here and in the adoption below (spec
+ * 038 FR-007): a store time zone change holds the store row `FOR UPDATE`
+ * across its open-shift check and write, so an open that races it either
+ * waits and takes the new zone, or commits first and blocks the change.
  */
 const INSERT_SHIFT_SQL = `
   INSERT INTO shifts
@@ -192,7 +197,7 @@ const INSERT_SHIFT_SQL = `
      payload_hash)
   VALUES ($1, $2, $3, $4, $5, $6::timestamptz, 'cash_up', $7, $8::numeric,
           (SELECT ($6::timestamptz AT TIME ZONE s.timezone)::date
-             FROM stores s WHERE s.id = $3 AND s.tenant_id = $2),
+             FROM stores s WHERE s.id = $3 AND s.tenant_id = $2 FOR SHARE),
           now(), $9, $10)
   ON CONFLICT (shift_id) DO NOTHING
   RETURNING ${SHIFT_COLUMNS}`;
@@ -204,7 +209,8 @@ const ADOPT_LEGACY_SHIFT_SQL = `
          currency_code = $7,
          opening_float = $8::numeric,
          business_date = (SELECT (shifts.opened_at AT TIME ZONE s.timezone)::date
-                            FROM stores s WHERE s.id = shifts.store_id AND s.tenant_id = shifts.tenant_id),
+                            FROM stores s WHERE s.id = shifts.store_id AND s.tenant_id = shifts.tenant_id
+                             FOR SHARE),
          received_at = now(),
          recorded_by_user_id = $9,
          payload_hash = $10

@@ -44,8 +44,18 @@
  *     case).
  *   - 409 (duplicate code in tenant)     → maps `23505` on
  *     `stores_tenant_code_uidx` to `ConflictException`.
+ *
+ * Store time zone (spec 038 / RT-401, decisions 212–215)
+ * ------------------------------------------------------
+ *   - create accepts an optional zone; omitted means `UTC` (213).
+ *   - a change runs in one transaction with the store row locked:
+ *     no-op → stale `expected_current_timezone` (409) → unknown zone
+ *     (400) → open shift (409) → write + `store.timezone.changed` audit.
+ *   - `previewTimezoneChange` is the read-only impact review (214).
+ *   - persisted business dates are never rewritten (215).
  */
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -65,7 +75,44 @@ import type { ResolvedContext } from "../context/types";
 import {
   StoresRepository,
   type StoreRecord,
+  type ZoneFacts,
 } from "./stores.repository";
+import {
+  INVALID_TIMEZONE,
+  STORE_HAS_OPEN_SHIFT,
+  STORE_TIMEZONE_CHANGED_ACTION,
+  TIMEZONE_CHANGED_CONCURRENTLY,
+  TIMEZONE_PREVIEW_CAVEATS,
+} from "./timezone";
+
+/** The `StoreTimezoneChangePreview` contract shape. */
+export interface TimezoneChangePreview {
+  readonly storeId: string;
+  readonly currentTimezone: string;
+  readonly proposedTimezone: string;
+  readonly noOp: boolean;
+  readonly now: Date;
+  readonly utcOffsetMinutesCurrent: number;
+  readonly utcOffsetMinutesProposed: number;
+  readonly businessDateCurrent: string;
+  readonly businessDateProposed: string;
+  readonly businessDateChangesNow: boolean;
+  readonly openShiftCount: number;
+  readonly blockers: ReadonlyArray<{ code: typeof STORE_HAS_OPEN_SHIFT; count: number }>;
+  readonly canApply: boolean;
+  readonly caveats: readonly string[];
+}
+
+/** A zone change as the validated PATCH body carries it. */
+export interface TimezoneChange {
+  readonly timezone: string;
+  readonly expectedCurrentTimezone: string;
+}
+
+/** Who asked, for the audit row. */
+export interface StoreWriteMeta {
+  readonly requestId: string | null;
+}
 
 /**
  * Same indirection seam used by `TenantsService`: production passes
@@ -155,7 +202,7 @@ export class StoresService {
    */
   async create(
     ctx: ResolvedContext,
-    input: { code: string; name: string },
+    input: { code: string; name: string; timezone?: string | undefined },
   ): Promise<StoreRecord> {
     if (!ctx.tenantId) {
       // Defensive: TenantContextGuard should have already rejected
@@ -167,11 +214,15 @@ export class StoresService {
     const storeId = newId();
     try {
       return await this.tx(this.pool, txCtx(ctx), async (client) => {
+        if (input.timezone !== undefined) {
+          await this.requireKnownZone(client, input.timezone);
+        }
         return this.stores.create(client, {
           id: storeId,
           tenantId: ctx.tenantId as string,
           code: input.code,
           name: input.name,
+          timezone: input.timezone,
         });
       });
     } catch (err) {
@@ -265,8 +316,13 @@ export class StoresService {
       name?: string | undefined;
       is_active?: boolean | undefined;
     },
+    timezoneChange?: TimezoneChange,
+    meta: StoreWriteMeta = { requestId: null },
   ): Promise<StoreRecord> {
     return this.tx(this.pool, txCtx(ctx), async (client) => {
+      if (timezoneChange) {
+        return this.updateWithTimezone(client, ctx, storeId, next, timezoneChange, meta);
+      }
       const row = await this.stores.update(client, storeId, {
         name: next.name,
         isActive: next.is_active,
@@ -274,6 +330,128 @@ export class StoresService {
       if (!row) throw notFound();
       return row;
     });
+  }
+
+  /**
+   * The zone-change branch of `update`, on the caller's transaction. The
+   * store row stays locked from the first read to commit, so every check
+   * below still holds when the write lands.
+   */
+  private async updateWithTimezone(
+    client: PoolClient,
+    ctx: ResolvedContext,
+    storeId: string,
+    next: { name?: string | undefined; is_active?: boolean | undefined },
+    change: TimezoneChange,
+    meta: StoreWriteMeta,
+  ): Promise<StoreRecord> {
+    const current = await this.stores.findByIdForUpdate(client, storeId);
+    if (!current) throw notFound();
+
+    const changesZone = change.timezone !== current.timezone;
+    if (changesZone) {
+      if (change.expectedCurrentTimezone !== current.timezone) {
+        throw new ConflictException({
+          code: TIMEZONE_CHANGED_CONCURRENTLY,
+          message: "The store's time zone changed since it was previewed.",
+        });
+      }
+      await this.requireKnownZone(client, change.timezone);
+      if ((await this.stores.countOpenShifts(client, storeId)) > 0) {
+        throw new ConflictException({
+          code: STORE_HAS_OPEN_SHIFT,
+          message: "The time zone cannot change while a shift is open at this store.",
+        });
+      }
+    } else if (next.name === undefined && next.is_active === undefined) {
+      // A no-op zone with nothing else to write (FR-010).
+      return current;
+    }
+
+    const row = await this.stores.update(client, storeId, {
+      name: next.name,
+      isActive: next.is_active,
+      timezone: changesZone ? change.timezone : undefined,
+    });
+    if (!row) throw notFound();
+
+    if (changesZone) {
+      await this.stores.insertTimezoneChangedAudit(client, {
+        tenantId: current.tenantId,
+        storeId,
+        actorUserId: ctx.userId,
+        requestId: meta.requestId,
+        action: STORE_TIMEZONE_CHANGED_ACTION,
+        from: current.timezone,
+        to: change.timezone,
+      });
+    }
+    return row;
+  }
+
+  // ===== TIME ZONE PREVIEW ==========================================
+
+  /**
+   * `GET /api/v1/stores/:store_id/timezone-change-preview`. Read-only
+   * impact review (decision 214). RolesGuard already gated the caller as
+   * for PATCH. The blockers are advisory here; `update` re-checks them
+   * under the row lock.
+   */
+  async previewTimezoneChange(
+    ctx: ResolvedContext,
+    storeId: string,
+    proposedTimezone: string,
+  ): Promise<TimezoneChangePreview> {
+    return this.tx(this.pool, txCtx(ctx), async (client) => {
+      const store = await this.stores.findById(client, storeId);
+      if (!store) throw notFound();
+
+      const proposed = await this.requireKnownZone(client, proposedTimezone);
+      const current = await this.stores.describeZone(client, store.timezone);
+      if (!current) {
+        throw new Error(
+          "StoresService.previewTimezoneChange: stored zone is unknown to PostgreSQL",
+        );
+      }
+      const openShiftCount = await this.stores.countOpenShifts(client, storeId);
+
+      const noOp = proposedTimezone === store.timezone;
+      const blockers: TimezoneChangePreview["blockers"] =
+        openShiftCount > 0
+          ? [{ code: STORE_HAS_OPEN_SHIFT, count: openShiftCount }]
+          : [];
+      return {
+        storeId,
+        currentTimezone: store.timezone,
+        proposedTimezone,
+        noOp,
+        now: current.now,
+        utcOffsetMinutesCurrent: current.utcOffsetMinutes,
+        utcOffsetMinutesProposed: proposed.utcOffsetMinutes,
+        businessDateCurrent: current.businessDate,
+        businessDateProposed: proposed.businessDate,
+        businessDateChangesNow: current.businessDate !== proposed.businessDate,
+        openShiftCount,
+        blockers,
+        canApply: !noOp && blockers.length === 0,
+        caveats: [...TIMEZONE_PREVIEW_CAVEATS],
+      };
+    });
+  }
+
+  /** Stage 2 of the zone validation: PostgreSQL must know the name. */
+  private async requireKnownZone(
+    client: PoolClient,
+    timezone: string,
+  ): Promise<ZoneFacts> {
+    const facts = await this.stores.describeZone(client, timezone);
+    if (!facts) {
+      throw new BadRequestException({
+        code: INVALID_TIMEZONE,
+        message: "Unknown time zone.",
+      });
+    }
+    return facts;
   }
 
   // ===== DELETE =====================================================

@@ -175,6 +175,7 @@ function store(overrides: Partial<StoreRecord> = {}): StoreRecord {
     tenantId: TENANT_ID,
     code: "BR-01",
     name: "Branch 01",
+    timezone: "UTC",
     isActive: true,
     createdAt: new Date(),
     updatedAt: new Date(),

@@ -85,6 +85,7 @@ function makeStoreRecord(overrides: Partial<StoreRecord> = {}): StoreRecord {
     tenantId: TENANT_ID,
     code: "MAIN",
     name: "Main Store",
+    timezone: "UTC",
     isActive: true,
     createdAt: NOW,
     updatedAt: NOW,
