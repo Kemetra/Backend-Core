@@ -188,6 +188,7 @@ describe("platform-support-sessions — auth and refusals", () => {
     const refused = doc.components?.responses?.["SupportSessionRefused"]?.description ?? "";
     expect(refused).toContain("support_session_required");
     expect(refused).toContain("support_session_expired");
+    expect(refused).toContain("origin_rejected");
     expect(doc.info?.description).toContain("TenantContextGuard");
   });
 
@@ -204,6 +205,7 @@ describe("platform-support-sessions — auth and refusals", () => {
       "createTenant",
       "softDeleteTenant",
     ]);
+    expect(enforcement["origin-checked-methods"]).toEqual(["POST", "PUT", "PATCH", "DELETE"]);
     for (const key of [
       "path-tenant-operations",
       "active-tenant-operations",
@@ -383,6 +385,24 @@ describe("platform-support-sessions — audit metadata allowlists", () => {
     expect(v({ ...admitted, reason: "support_session_expired" })).toBe(false);
     expect(v({ ...admitted, support_session_id: null, purpose: null })).toBe(false);
     expect(v({ ...admitted, outcome: "rejected" })).toBe(false);
+  });
+
+  it("origin-checks unsafe methods admitted by a support session (decision 5, extended)", () => {
+    const text = doc.info?.description ?? "";
+    expect(text).toMatch(/every unsafe-method request \(`POST`, `PUT`,\s+`PATCH`, `DELETE`\) to a covered route/);
+    expect(text).toMatch(/refuses with 403 `origin_rejected`/);
+    const v = validator("CrossTenantAccessAuditMetadata");
+    const refused = {
+      actor_kind: "platform_admin",
+      outcome: "rejected",
+      reason: "origin_rejected",
+      support_session_id: SESSION_ID,
+      purpose: "incident",
+      method: "POST",
+      route: "/api/v1/stores",
+    };
+    expect(v(refused)).toBe(true);
+    expect(v({ ...refused, support_session_id: null, purpose: null })).toBe(false);
   });
 
   it("names the expired session on a support_session_expired rejection", () => {

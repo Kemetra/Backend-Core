@@ -56,7 +56,10 @@ info:
       - `support_session_required` — no support session, it has ended, or it is
         for another tenant;
       - `support_session_expired`  — the support session exists for this tenant
-        but `expires_at` has passed.
+        but `expires_at` has passed;
+      - `origin_rejected`          — the support session admits the request,
+        but it uses an unsafe method (`POST`, `PUT`, `PATCH`, `DELETE`) and its
+        `Origin` fails the check under **Cross-site requests** below.
 
     These codes describe the caller's OWN session, never whether a tenant
     exists, so they do not weaken FR-ISO-4. The per-route contracts are not
@@ -125,12 +128,23 @@ info:
     is listed in `ALLOWED_ORIGINS` (which is empty in a same-origin deploy);
     otherwise 403 `origin_rejected`. Non-browser clients, including tests, must
     send `Origin` (RT-414 decision 5).
+
+    The same check applies to every unsafe-method request (`POST`, `PUT`,
+    `PATCH`, `DELETE`) to a covered route that is admitted by a support
+    session, because a same-site sibling could otherwise use an open support
+    session for cross-tenant writes. It runs after the support-session check,
+    before the handler, and refuses with 403 `origin_rejected`, written as a
+    `platform.cross_tenant.accessed` row with `outcome: rejected` and
+    `reason: origin_rejected` (RT-414 decision 5, extended by the owner on
+    2026-10-12). Safe methods (`GET`, `HEAD`) and requests by tenant members
+    are unchanged.
 x-support-session-enforcement:
   response: "#/components/responses/SupportSessionRefused"
   guarded-routes: TenantContextGuard
   path-tenant-operations: [listMembers, updateTenant]
   active-tenant-operations: [switchActiveStore]
   unchanged-platform-scope-operations: [listTenants, readTenant, createTenant, softDeleteTenant]
+  origin-checked-methods: [POST, PUT, PATCH, DELETE]
 servers:
   - url: https://api.example.com
 tags:
@@ -506,8 +520,8 @@ components:
         route is the template (for example `/api/v1/sales/:saleId`), never the
         concrete path, query string or body. A `succeeded` row has a support
         session and no `reason`; a `rejected` row always has a `reason`, and
-        a `support_session_expired` rejection also names the expired session
-        and its purpose.
+        a `support_session_expired` or `origin_rejected` rejection also names
+        the support session and its purpose.
       if:
         properties:
           outcome:
@@ -517,7 +531,7 @@ components:
         if:
           properties:
             reason:
-              const: support_session_expired
+              enum: [support_session_expired, origin_rejected]
         then:
           properties:
             support_session_id:
@@ -540,7 +554,7 @@ components:
           enum: [succeeded, rejected]
         reason:
           type: string
-          enum: [support_session_required, support_session_expired]
+          enum: [support_session_required, support_session_expired, origin_rejected]
           description: On `rejected` rows only.
         support_session_id:
           type: [string, "null"]
@@ -617,8 +631,9 @@ components:
     SupportSessionRefused:
       description: >
         Cross-cutting refusal on every `TenantContextGuard` route for a platform
-        admin in a non-member tenant (403): `support_session_required` or
-        `support_session_expired`. Written as one
+        admin in a non-member tenant (403): `support_session_required`,
+        `support_session_expired`, or `origin_rejected` (an unsafe method
+        admitted by a support session with a failing `Origin`). Written as one
         `platform.cross_tenant.accessed` row with `outcome: rejected`.
       content:
         application/json:

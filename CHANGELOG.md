@@ -20,7 +20,9 @@ This project follows [Semantic Versioning](https://semver.org/).
   mandatory purpose, read current, explicit renew and end, a 60-minute
   server-set expiry, the cross-cutting `support_session_required` /
   `support_session_expired` refusal on tenant-scoped routes (including
-  `listMembers`, `updateTenant` and `switchActiveStore`), and the
+  `listMembers`, `updateTenant` and `switchActiveStore`), an `Origin` check
+  (`origin_rejected`) on the surface's POSTs and on unsafe-method requests a
+  support session admits, and the
   `platform.support_session.*` and `platform.cross_tenant.accessed` audit
   metadata allowlists. `context.openapi.yaml` 1.1.0-draft adds a
   platform-admin-only 403 on `switchActiveTenant` and a nullable
