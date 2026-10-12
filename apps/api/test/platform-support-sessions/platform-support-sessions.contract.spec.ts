@@ -269,6 +269,16 @@ describe("platform-support-sessions — request and projection", () => {
     expect(validator("CurrentSupportSession")({ support_session: activeSession })).toBe(true);
   });
 
+  it("never returns an ended session as the current one", () => {
+    const v = validator("CurrentSupportSession");
+    expect(v({ support_session: { ...activeSession, status: "expired" } })).toBe(true);
+    expect(
+      v({
+        support_session: { ...activeSession, status: "ended", ended_at: "2026-10-12T09:30:00Z", end_reason: "operator" },
+      }),
+    ).toBe(false);
+  });
+
   it("ties ended_at and end_reason to the ended status", () => {
     const v = validator("SupportSession");
     expect(v({ ...activeSession, ended_at: "2026-10-12T09:30:00Z", end_reason: "operator" })).toBe(false);
@@ -314,6 +324,7 @@ describe("platform-support-sessions — audit metadata allowlists", () => {
     expect(text).toMatch(/not a UUID or\s+does not name an existing tenant/);
     expect(text).toMatch(/403 `support_session_required`, identical to the\s+existing-tenant case/);
     expect(text).toMatch(/platform-scoped with `tenant_id` null/);
+    expect(text).toMatch(/`listAuditEvents` is tenant-scoped and never returns it/);
   });
 
   it("accepts admitted and refused access rows and rejects an email in metadata", () => {

@@ -104,8 +104,12 @@ info:
     non-member tenant (403 `support_session_required`, identical to the
     existing-tenant case; FR-ISO-4), and its `platform.cross_tenant.accessed`
     row is written platform-scoped with `tenant_id` null, because
-    `audit_events.tenant_id` references `tenants.id`. Such a row is visible only
-    to platform admins. The one-row-per-request rule still holds.
+    `audit_events.tenant_id` references `tenants.id`. The one-row-per-request
+    rule still holds. Like the other platform-scoped audit rows (for example
+    sign-in events), such a row is readable only under the platform-admin
+    database context: `listAuditEvents` is tenant-scoped and never returns it,
+    and no API in this contract reads it. A platform-scope audit read is a
+    separate follow-up, not part of RT-414.
 
     Passive expiry writes no row: it is computed from `expires_at`. Tenant
     `owner` and `tenant_admin` see all of these rows through `listAuditEvents`
@@ -432,8 +436,15 @@ components:
       required: [support_session]
       properties:
         support_session:
+          description: >
+            The current support session, `active` or `expired`; null when there
+            is none or it has ended. An `ended` session is never returned here.
           oneOf:
-            - $ref: "#/components/schemas/SupportSession"
+            - allOf:
+                - $ref: "#/components/schemas/SupportSession"
+                - properties:
+                    status:
+                      enum: [active, expired]
             - type: "null"
 
     SupportSessionAuditMetadata:
