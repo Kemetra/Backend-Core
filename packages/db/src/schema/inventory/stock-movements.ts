@@ -87,6 +87,20 @@ export const INVENTORY_EVENT_TYPES = [
 export type InventoryEventType = (typeof INVENTORY_EVENT_TYPES)[number];
 
 /**
+ * Inventory Status — the closed enum of RT-290 G4-2 (751). Only `sellable`
+ * counts toward Sellable On Hand / ATS (733, 742); all six are physical.
+ */
+export const INVENTORY_STATUSES = [
+  "sellable",
+  "return_inspection",
+  "quality_hold",
+  "damaged",
+  "expired",
+  "recall_hold",
+] as const;
+export type InventoryStatus = (typeof INVENTORY_STATUSES)[number];
+
+/**
  * `stock_counts` — a recorded physical count for a (tenant, store, product).
  * Provenance for the `count_correction` movement created from its variance
  * (FR-021). The count itself does not mutate on-hand — only its correction
@@ -199,8 +213,10 @@ export const stockMovements = pgTable(
     eventRefId: uuid("event_ref_id"),
     // Set only on a correction effect (775); a same-tenant self-reference.
     compensatesEffectId: uuid("compensates_effect_id"),
-    // Position PLACEHOLDERS (750): defined by Gate 4 (RT-290) and Gate 7
-    // (RT-50). Nothing writes them yet.
+    // Position (750). 0044 (RT-432, RT-290 G4-1…G4-5): every new row carries a
+    // stock location of its own store and an inventory status; tracking stays
+    // NULL until Gate 7 (RT-50). Pre-0044 rows keep NULL and are read as (the
+    // store's primary location, sellable, no tracking) — never updated.
     stockLocationId: uuid("stock_location_id"),
     inventoryStatus: text("inventory_status"),
     trackingIdentity: text("tracking_identity"),
@@ -263,6 +279,19 @@ export const stockMovements = pgTable(
       "stock_movements_compensates_not_self",
       sql`${t.compensatesEffectId} IS NULL OR ${t.compensatesEffectId} <> ${t.id}`,
     ),
+    // ---- 0044 (RT-432) -- all NOT VALID in SQL: enforced on new rows only ----
+    check(
+      "stock_movements_position_required",
+      sql`${t.stockLocationId} IS NOT NULL AND ${t.inventoryStatus} IS NOT NULL`,
+    ),
+    // Values mirror INVENTORY_STATUSES (asserted by the schema-shape test).
+    check(
+      "stock_movements_inventory_status_allowed",
+      sql`${t.inventoryStatus} IN ('sellable', 'return_inspection', 'quality_hold', 'damaged', 'expired', 'recall_hold')`,
+    ),
+    check("stock_movements_tracking_none", sql`${t.trackingIdentity} IS NULL`),
+    // fk_stock_movements_location_store_tenant (stock_location_id, store_id,
+    // tenant_id) -> stock_locations (id, store_id, tenant_id) is SQL-only.
     // Composite target for the same-tenant FKs (compensation; integration row).
     // The self-FK fk_stock_movements_compensates_tenant is SQL-only in 0042.
     uniqueIndex("uq_stock_movements_id_tenant").on(t.id, t.tenantId),

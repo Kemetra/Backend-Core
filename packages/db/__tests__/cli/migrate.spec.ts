@@ -215,6 +215,7 @@ describe("data-pulse-migrate CLI", () => {
     "0041_sale_tender_ref",
     "0042_inventory_effects_journal",
     "0043_inventory_effect_integration_backfill",
+    "0044_stock_locations_position_grain",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -265,13 +266,28 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicColumn("erpnext_posting_status", "posted_at")).toBe("1");
   }
 
+  /** 0044_stock_locations_position_grain (RT-432): the locations table + its store trigger. */
+  const STOCK_LOCATION_TABLES = ["stock_locations"];
+  async function countStockLocationTriggers(): Promise<string> {
+    return queryCount(`SELECT COUNT(*)::text AS count FROM pg_trigger
+      WHERE NOT tgisinternal AND tgname IN
+        ('stores_create_primary_location', 'stock_locations_guard_identity')`);
+  }
+
   /**
-   * After one `down` from head: 0043 is the backfill for 0042 and its down is
-   * a no-op (the 0038 precedent), so 0042's integration table and effect
-   * columns survive, as do 0041's tender columns, 0040's device lifecycle
-   * columns, 0039's evidence column and 0037/0038's resolution table.
+   * After one `down` from head: 0044's stock_locations table, its store trigger
+   * and the stock_movements position constraints are gone, while 0042's
+   * integration table and effect columns (with 0043's backfill) survive, as do
+   * 0041's tender columns, 0040's device lifecycle columns, 0039's evidence
+   * column and 0037/0038's resolution table.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
+    expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("0");
+    expect(await countStockLocationTriggers()).toBe("0");
+    expect(
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
+        WHERE conname = 'stock_movements_position_required'`),
+    ).toBe("0");
     await expectInventoryEffectsApplied();
     expect(await countTenderRefColumns()).toEqual(["1", "1"]);
     expect(await countDeviceLifecycleColumns()).toEqual(["1", "1"]);
@@ -380,6 +396,11 @@ describe("data-pulse-migrate CLI", () => {
     // columns (RT-425).
     await expectInventoryEffectsApplied();
     expect(await countPolicies(EFFECT_INTEGRATION_TABLES)).toBe("3");
+    // 0044's stock_locations (SELECT + INSERT policies) and its two triggers
+    // (RT-432).
+    expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("1");
+    expect(await countPolicies(STOCK_LOCATION_TABLES)).toBe("2");
+    expect(await countStockLocationTriggers()).toBe("2");
   });
 
   it("up is idempotent on a second run", async () => {
@@ -417,7 +438,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0043 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0044 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
@@ -522,6 +543,7 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countDeviceLifecycleColumns()).toEqual(["1", "1"]);
     expect(await countTenderRefColumns()).toEqual(["1", "1"]);
     await expectInventoryEffectsApplied();
+    expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("1");
   });
 
   it(

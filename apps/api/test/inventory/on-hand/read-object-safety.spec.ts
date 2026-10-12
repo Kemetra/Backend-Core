@@ -24,6 +24,7 @@ import {
   type ExecutionContext,
   type INestApplication,
 } from "@nestjs/common";
+import { INVENTORY_STATUSES } from "@data-pulse-2/db";
 import { Test } from "@nestjs/testing";
 import request from "supertest";
 
@@ -61,6 +62,11 @@ class FakeInventoryService {
       quantity: "0.0000",
       stockingUnit: null,
       negativeBalance: false,
+      sellableQuantity: "0.0000",
+      statusQuantities: INVENTORY_STATUSES.map((inventoryStatus) => ({
+        inventoryStatus,
+        quantity: "0.0000",
+      })),
     };
   }
   async listStockMovements(): Promise<StockMovementListBody> {

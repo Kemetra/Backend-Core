@@ -76,8 +76,10 @@ async function seedProduct(e: PgTestEnv, id: string, mapped: boolean): Promise<v
 async function seedMovement(e: PgTestEnv, store: string, product: string, qty: string): Promise<void> {
   await e.admin.query(
     `INSERT INTO stock_movements
-       (id, tenant_id, store_id, tenant_product_ref, movement_type, quantity, stocking_unit, occurred_at, created_by)
-     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::numeric, 'ea', now(), $6)`,
+       (id, tenant_id, store_id, tenant_product_ref, movement_type, quantity, stocking_unit, occurred_at, created_by,
+        stock_location_id, inventory_status)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::numeric, 'ea', now(), $6,
+             (SELECT id FROM stock_locations WHERE store_id = $2::uuid AND kind = 'primary'), 'sellable')`,
     [TENANT, store, product, Number(qty) < 0 ? "outbound" : "inbound", qty, ACTOR],
   );
 }

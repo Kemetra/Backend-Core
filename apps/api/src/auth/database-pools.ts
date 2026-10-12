@@ -140,6 +140,8 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     "stock_counts",
     // RT-425 (0042): the mutable per-effect inventory integration state.
     "inventory_effect_integration",
+    // RT-432 (0044): stock locations (the inventory position grain).
+    "stock_locations",
     "audit_events",
     "idempotency_keys",
     "outbox_events",
@@ -200,6 +202,13 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   ["inventory_effect_integration", "SELECT"],
   ["inventory_effect_integration", "INSERT"],
   ["inventory_effect_integration", "UPDATE"],
+  // RT-432 (0044): every inventory write resolves its effect's stock location
+  // and the movement list / on-hand / location list read it. INSERT: creating a
+  // store creates its primary location in the same transaction (the
+  // stores_create_primary_location trigger runs as this role). No UPDATE /
+  // DELETE policy; never UPDATE, DELETE or TRUNCATE.
+  ["stock_locations", "SELECT"],
+  ["stock_locations", "INSERT"],
 ];
 
 interface GrantRow {

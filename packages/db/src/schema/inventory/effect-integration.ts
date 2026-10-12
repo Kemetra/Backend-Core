@@ -7,13 +7,16 @@
  * state moves. One row per effect (PK `effect_id`).
  *
  * States: not_posted | pending | confirmed | rejected |
- * reconciliation_required | external.
+ * reconciliation_required | external | erp_neutral.
  *   - not_posted: a Retail effect with no ERP posting intent yet (RT-289 Q2).
  *   - pending / confirmed / rejected / reconciliation_required: an ERP posting
  *     intent (`erpnext_posting_status`) represents the effect; ERP posting
  *     outcomes move these (RT-426). A transition never inserts, edits or
  *     deletes an effect (771).
  *   - external: an ERP-origin effect (Gate 8 / RT-293).
+ *   - erp_neutral: a Retail effect whose event nets to zero within one ERP
+ *     mapping bucket, so it needs no ERP representation (RT-290 M-5, Q10;
+ *     added by 0044, assigned by RT-435). No intent, no document.
  *
  * RLS: ENABLE + FORCE; SELECT + INSERT + UPDATE policies, NO DELETE policy
  * (0042). The same-tenant composite FKs to `stock_movements (id, tenant_id)`
@@ -33,6 +36,7 @@ export const INVENTORY_INTEGRATION_STATES = [
   "rejected",
   "reconciliation_required",
   "external",
+  "erp_neutral",
 ] as const;
 export type InventoryIntegrationState = (typeof INVENTORY_INTEGRATION_STATES)[number];
 
@@ -57,7 +61,7 @@ export const inventoryEffectIntegration = pgTable(
   (t) => [
     check(
       "inventory_effect_integration_state_allowed",
-      sql`${t.state} IN ('not_posted', 'pending', 'confirmed', 'rejected', 'reconciliation_required', 'external')`,
+      sql`${t.state} IN ('not_posted', 'pending', 'confirmed', 'rejected', 'reconciliation_required', 'external', 'erp_neutral')`,
     ),
     // An ERP intent exists exactly for the intent-bearing states.
     check(
@@ -75,6 +79,10 @@ export const inventoryEffectIntegration = pgTable(
     check(
       "inventory_effect_integration_not_posted_bare",
       sql`${t.state} <> 'not_posted' OR ${t.erpDocumentRef} IS NULL`,
+    ),
+    check(
+      "inventory_effect_integration_erp_neutral_bare",
+      sql`${t.state} <> 'erp_neutral' OR ${t.erpDocumentRef} IS NULL`,
     ),
     check(
       "inventory_effect_integration_reason_length",

@@ -39,6 +39,11 @@
  * exist. For the sale-linked fixture, `seedSalesFixture` must also have run so
  * the referenced captured sale exists (008-owned helper).
  *
+ * Position (RT-432, migration 0044): every new movement must carry a stock
+ * location of its own store and an inventory status; these fixtures land at the
+ * store's `primary` location (created with the store) and `sellable`, as the
+ * write paths do.
+ *
  * Discovery
  * ---------
  * `.ts` (not `.spec.ts`) so Jest's testMatch does not treat it as a test —
@@ -167,12 +172,17 @@ export async function seedInventoryFixture(
   await admin.query(
     `INSERT INTO stock_movements
        (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
-        tenant_product_ref, reason, occurred_at, created_by)
+        tenant_product_ref, reason, occurred_at, created_by,
+        stock_location_id, inventory_status)
      VALUES
-       ($1, $2,  $3, 'inbound',   10.0000, 'ea', $4,  'seed inbound',  now(), $5),
-       ($6, $2,  $7, 'outbound',  -3.0000, 'ea', $4,  'seed outbound', now(), $5),
-       ($8, $9,  $10,'inbound',   10.0000, 'ea', $11, 'seed inbound',  now(), $12),
-       ($13,$9,  $14,'outbound',  -3.0000, 'ea', $11, 'seed outbound', now(), $12)
+       ($1, $2,  $3, 'inbound',   10.0000, 'ea', $4,  'seed inbound',  now(), $5,
+        (SELECT id FROM stock_locations WHERE store_id = $3::uuid AND kind = 'primary'), 'sellable'),
+       ($6, $2,  $7, 'outbound',  -3.0000, 'ea', $4,  'seed outbound', now(), $5,
+        (SELECT id FROM stock_locations WHERE store_id = $7::uuid AND kind = 'primary'), 'sellable'),
+       ($8, $9,  $10,'inbound',   10.0000, 'ea', $11, 'seed inbound',  now(), $12,
+        (SELECT id FROM stock_locations WHERE store_id = $10::uuid AND kind = 'primary'), 'sellable'),
+       ($13,$9,  $14,'outbound',  -3.0000, 'ea', $11, 'seed outbound', now(), $12,
+        (SELECT id FROM stock_locations WHERE store_id = $14::uuid AND kind = 'primary'), 'sellable')
      ON CONFLICT DO NOTHING`,
     [
       MOVE_A_X, TENANT_A, STORE_A_X, PRODUCT_A_ACTIVE, ACTOR_A,
@@ -188,10 +198,11 @@ export async function seedInventoryFixture(
     `INSERT INTO stock_movements
        (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
         tenant_product_ref, source_system, external_id, sale_id, occurred_at,
-        created_by)
+        created_by, stock_location_id, inventory_status)
      VALUES
        ($1, $2, $3, 'outbound', -1.0000, 'ea', $4, $5, 'backfill-A-X-1',
-        '0a000000-0000-7000-8000-00005a1e0a01', now(), $6)
+        '0a000000-0000-7000-8000-00005a1e0a01', now(), $6,
+        (SELECT id FROM stock_locations WHERE store_id = $3::uuid AND kind = 'primary'), 'sellable')
      ON CONFLICT DO NOTHING`,
     [
       MOVE_SALE_LINKED_A_X, TENANT_A, STORE_A_X, PRODUCT_A_ACTIVE,
@@ -203,9 +214,11 @@ export async function seedInventoryFixture(
   await admin.query(
     `INSERT INTO stock_movements
        (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
-        tenant_product_ref, reason, occurred_at, created_by)
+        tenant_product_ref, reason, occurred_at, created_by,
+        stock_location_id, inventory_status)
      VALUES
-       ($1, $2, $3, 'adjustment', 2.0000, 'ea', NULL, 'ad-hoc no product', now(), $4)
+       ($1, $2, $3, 'adjustment', 2.0000, 'ea', NULL, 'ad-hoc no product', now(), $4,
+        (SELECT id FROM stock_locations WHERE store_id = $3::uuid AND kind = 'primary'), 'sellable')
      ON CONFLICT DO NOTHING`,
     [MOVE_ADHOC_A_X, TENANT_A, STORE_A_X, ACTOR_A],
   );
@@ -226,10 +239,11 @@ export async function seedInventoryFixture(
   await admin.query(
     `INSERT INTO stock_movements
        (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
-        tenant_product_ref, stock_count_id, reason, occurred_at, created_by)
+        tenant_product_ref, stock_count_id, reason, occurred_at, created_by,
+        stock_location_id, inventory_status)
      VALUES
        ($1, $2, $3, 'count_correction', -2.0000, 'ea', $4, $5,
-        'count variance', now(), $6)
+        'count variance', now(), $6, (SELECT id FROM stock_locations WHERE store_id = $3::uuid AND kind = 'primary'), 'sellable')
      ON CONFLICT DO NOTHING`,
     [
       MOVE_CORRECTION_A_X, TENANT_A, STORE_A_X, PRODUCT_A_ACTIVE, COUNT_A_X,

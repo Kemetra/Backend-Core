@@ -50,6 +50,10 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "inventory_effect_integration:SELECT",
   "inventory_effect_integration:INSERT",
   "inventory_effect_integration:UPDATE",
+  // RT-432 (0044): stock locations (read by every inventory path; INSERT by the
+  // store trigger). Identity is immutable: no UPDATE / DELETE.
+  "stock_locations:SELECT",
+  "stock_locations:INSERT",
 ]);
 
 const LOOKUP_GRANTS: ReadonlySet<string> = new Set(
@@ -262,6 +266,7 @@ describe("database pool boundary", () => {
       "shift_cash_movements",
       "shift_refund_claims",
       "inventory_effect_integration",
+      "stock_locations",
     ]) {
       const entry = AUTH_LOOKUP_FORBIDDEN_GRANTS.find(([t]) => t === table);
       expect(entry).toBeDefined();

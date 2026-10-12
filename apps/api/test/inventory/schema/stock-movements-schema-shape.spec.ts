@@ -31,9 +31,12 @@ import * as path from "node:path";
 import {
   INVENTORY_EVENT_TYPES,
   INVENTORY_INTEGRATION_STATES,
+  INVENTORY_STATUSES,
   RETAIL_INVENTORY_EVENT_TYPES,
+  STOCK_LOCATION_KINDS,
   inventoryEffectIntegration,
   stockCounts,
+  stockLocations,
   stockMovements,
 } from "@data-pulse-2/db/schema";
 
@@ -271,8 +274,18 @@ describe("inventory schema shape — RT-425 effect columns", () => {
   });
 
   it("the integration state CHECK lists exactly INVENTORY_INTEGRATION_STATES", () => {
-    const start = sql0042.indexOf("CONSTRAINT inventory_effect_integration_state_allowed");
-    const body = sql0042.slice(start, sql0042.indexOf("),", start));
+    // 0044 (RT-432) replaced 0042's CHECK to add `erp_neutral` (RT-290 Q10);
+    // the latest definition is the one in force.
+    const sql0044 = fs.readFileSync(
+      path.resolve(
+        __dirname,
+        "../../../../../packages/db/drizzle/0044_stock_locations_position_grain.sql",
+      ),
+      "utf8",
+    );
+    const start = sql0044.indexOf("ADD CONSTRAINT inventory_effect_integration_state_allowed");
+    expect(start).toBeGreaterThan(-1);
+    const body = sql0044.slice(start, sql0044.indexOf(";", start));
     expect([...body.matchAll(/'([a-z_]+)'/g)].map((m) => m[1])).toEqual([
       ...INVENTORY_INTEGRATION_STATES,
     ]);
@@ -286,5 +299,57 @@ describe("inventory schema shape — RT-425 effect columns", () => {
     for (const forbidden of ["amount", "price", "currency_code", "customer", "payment"]) {
       expect(ic.has(forbidden)).toBe(false);
     }
+  });
+});
+
+// ===========================================================================
+// RT-432 (0044) — stock locations + the position constraints
+// ===========================================================================
+describe("inventory schema shape — RT-432 position grain", () => {
+  const sql0044 = fs.readFileSync(
+    path.resolve(
+      __dirname,
+      "../../../../../packages/db/drizzle/0044_stock_locations_position_grain.sql",
+    ),
+    "utf8",
+  );
+
+  /** The quoted values of one ADD CONSTRAINT in 0044, in order. */
+  function checkValues(constraint: string): string[] {
+    const start = sql0044.indexOf(`ADD CONSTRAINT ${constraint}`);
+    expect(start).toBeGreaterThan(-1);
+    const body = sql0044.slice(start, sql0044.indexOf(";", start));
+    return [...body.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!);
+  }
+
+  it("the inventory-status CHECK in 0044 lists exactly INVENTORY_STATUSES", () => {
+    expect(checkValues("stock_movements_inventory_status_allowed")).toEqual([
+      ...INVENTORY_STATUSES,
+    ]);
+  });
+
+  it("every 0044 stock_movements constraint is NOT VALID (history is never rescanned or rewritten)", () => {
+    for (const name of [
+      "stock_movements_position_required",
+      "stock_movements_inventory_status_allowed",
+      "stock_movements_tracking_none",
+      "fk_stock_movements_location_store_tenant",
+    ]) {
+      const start = sql0044.indexOf(`ADD CONSTRAINT ${name}`);
+      expect(start).toBeGreaterThan(-1);
+      expect(sql0044.slice(start, sql0044.indexOf(";", start))).toMatch(/NOT VALID$/);
+    }
+    expect(sql0044).not.toMatch(/UPDATE\s+stock_movements/i);
+  });
+
+  it("stock_locations carries its identity columns and no money or customer field", () => {
+    const lc = columns(stockLocations);
+    for (const name of ["id", "tenant_id", "store_id", "code", "name", "kind", "is_active"]) {
+      expect(lc.get(name)?.notNull).toBe(true);
+    }
+    for (const forbidden of ["amount", "price", "currency_code", "customer", "payment"]) {
+      expect(lc.has(forbidden)).toBe(false);
+    }
+    expect([...STOCK_LOCATION_KINDS]).toEqual(["primary", "storage"]);
   });
 });
