@@ -1,0 +1,525 @@
+openapi: 3.1.0
+info:
+  title: Data-Pulse-2 — Platform Support Session API
+  version: "1.0.0-draft"
+  description: >
+    Jira RT-414 (RT-391 P0-a, owner decision D2): a platform operator enters a
+    tenant they are not a member of ONLY through a support session. Four
+    operations, all platform-admin only:
+
+      1. `openSupportSession`       — enter a tenant with a mandatory purpose.
+      2. `getCurrentSupportSession` — read the caller's current support session.
+      3. `renewSupportSession`      — explicitly renew it for another 60 minutes.
+      4. `endSupportSession`        — end it and leave the tenant.
+
+    A support session is bound to ONE dashboard auth session (`dp2_session`),
+    ONE platform-admin user and ONE tenant. There is at most one support session
+    per auth session.
+
+
+    **Posture.** `1.0.0-draft`, contract-only: every operation carries
+    `x-runtime-status: contract-only` until the RT-414 implementation ships.
+    `[GATED]` contract: implementation starts only after the owner approves this
+    contract and records decisions 1–5 on RT-414. The persistence it needs is a
+    separate `[GATED]` migration.
+
+
+    **Who needs a support session.** A user whose `users.is_platform_admin` is
+    true (server-authenticated; RT-132 D6) and who has NO active membership in
+    the target tenant. A platform admin who IS an active member of the tenant
+    acts as that member, exactly as today, and never needs (or may open) a
+    support session there. Bearer tokens never carry platform authority and are
+    rejected on this surface (401). Tenant members who are not platform admins
+    are unaffected by this contract.
+
+
+    **Enforcement on tenant-scoped routes (cross-cutting).** Every route gated by
+    `TenantContextGuard` (the tenant-scoped Console surface across the other
+    contracts) admits a platform admin acting in a non-member tenant only when
+    the caller's auth session has an `active` support session for exactly that
+    tenant. Otherwise the request is refused server-side, before the handler
+    runs, with the `SupportSessionRefused` response (403):
+
+      - `support_session_required` — no support session, it has ended, or it is
+        for another tenant;
+      - `support_session_expired`  — the support session exists for this tenant
+        but `expires_at` has passed.
+
+    These codes describe the caller's OWN session, never whether a tenant
+    exists, so they do not weaken FR-ISO-4. The per-route contracts are not
+    edited; this rule applies to all of them. RT-142 RLS pinning is unchanged:
+    inside the tenant, domain services still run with `isPlatformAdmin: false`.
+    Read-only pass-through and break-glass writes (D1) are P0-b, not this
+    contract.
+
+
+    **Expiry and renewal.** `expires_at` is set by the server: `opened_at` + 60
+    minutes. Renewal is explicit (no sliding expiry from activity) and is
+    allowed only while the support session is `active`: a renew sets
+    `expires_at` to the earliest of now + 60 minutes, `renewal_cap_at`, and the
+    auth session's absolute expiry. `renewal_cap_at` is `opened_at` + 8 hours
+    (RT-414 decision 2). An expired support session cannot be renewed: the
+    operator opens a new one and states the purpose again. Until then it keeps
+    the active tenant on the auth session, so the Console can show "expired"
+    and offer "enter again" or "leave", and every tenant-scoped request is
+    refused. A support session ends on `endSupportSession`, on sign-out or
+    revocation of its auth session, when the auth session switches tenant, and
+    when a new support session is opened.
+
+
+    **Audit (RT-135).** Every row is written with `tenant_id` = the target
+    tenant, `actor_user_id` = the platform admin, `actor_label` =
+    `platform_support` (never an email), and the server `request_id`. Metadata
+    is the allowlist in `SupportSessionAuditMetadata` / `CrossTenantAccessAuditMetadata`:
+    no email, token, secret, cookie or request body. Actions:
+
+      - `platform.support_session.opened`, `platform.support_session.renewed`
+        and `platform.support_session.ended` — one row each, written in the
+        same transaction as the state change;
+      - `platform.cross_tenant.accessed` — exactly one row per tenant-scoped
+        request by a platform admin in a non-member tenant, admitted
+        (`outcome: succeeded`) or refused (`outcome: rejected`). A route's own
+        `@Auditable` row, if any, is a separate action and is not counted.
+
+    Passive expiry writes no row: it is computed from `expires_at`. Tenant
+    `owner` and `tenant_admin` see all of these rows through `listAuditEvents`
+    for their tenant (RT-414 decision 3), with no new filter.
+
+
+    **Cross-site requests.** The `dp2_session` cookie is `SameSite=Lax`, so a
+    browser does not send it on a cross-site POST. Same-site sibling origins
+    still send it, and the API parses form-encoded bodies (Nest's default
+    `express.urlencoded` parser is enabled in `main.ts`), so a form POST would
+    reach the handler. Every POST on this surface therefore also requires an
+    `Origin` header that is present and either equals the API's own origin or
+    is listed in `ALLOWED_ORIGINS` (which is empty in a same-origin deploy);
+    otherwise 403 `origin_rejected`. Non-browser clients, including tests, must
+    send `Origin` (RT-414 decision 5).
+servers:
+  - url: https://api.example.com
+tags:
+  - name: platform-support-sessions
+    description: >
+      Platform-admin support access to a non-member tenant (RT-414, RT-391 D2).
+
+security:
+  - cookieAuth: []
+
+paths:
+  /api/v1/platform/support-sessions:
+    post:
+      summary: Open a support session and enter a tenant.
+      operationId: openSupportSession
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-414 contract PR; the controller ships in the RT-414 implementation
+        after the owner approves this contract and its migration.
+      tags: [platform-support-sessions]
+      description: >
+        Opens a support session for `tenant_id` and makes that tenant the
+        auth session's active tenant (the active store is cleared), in one
+        transaction. Any current support session of this auth session is
+        ended first (`end_reason: replaced`). Writes
+        `platform.support_session.opened`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OpenSupportSessionRequest"
+      responses:
+        "201":
+          description: Support session opened; the tenant is now active.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportSession"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PlatformAdminRequired"
+        "404":
+          $ref: "#/components/responses/TenantNotFound"
+        "409":
+          description: >
+            `already_member` (409): the caller is an active member of this
+            tenant; use `switchActiveTenant` instead. Describes the caller's
+            own membership only.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/platform/support-sessions/current:
+    get:
+      summary: Read the caller's current support session.
+      operationId: getCurrentSupportSession
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-414 contract PR; the controller ships in the RT-414 implementation
+        after the owner approves this contract and its migration.
+      tags: [platform-support-sessions]
+      description: >
+        The support session of the caller's auth session, `active` or
+        `expired`; `null` when there is none or it has ended. Not audited as
+        `platform.cross_tenant.accessed` (it is not tenant-scoped).
+      responses:
+        "200":
+          description: The current support session, or null.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentSupportSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PlatformAdminRequired"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/platform/support-sessions/current/renew:
+    post:
+      summary: Renew the caller's current support session.
+      operationId: renewSupportSession
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-414 contract PR; the controller ships in the RT-414 implementation
+        after the owner approves this contract and its migration.
+      tags: [platform-support-sessions]
+      description: >
+        Explicit renewal of an `active` support session (RT-414 decision 2: an
+        expired one is not renewable). Sets `expires_at` to the earliest of now + 60 minutes,
+        `renewal_cap_at` and the auth session's absolute expiry. Purpose and
+        ticket reference are unchanged; to change them, open a new session.
+        Writes `platform.support_session.renewed`.
+      responses:
+        "200":
+          description: Renewed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PlatformAdminRequired"
+        "409":
+          description: >
+            `support_session_absent` (409): the auth session has no support
+            session, or it has ended. `support_session_expired` (409): it has
+            expired; open a new support session with a purpose.
+            `support_session_renewal_cap_reached`
+            (409): `expires_at` already equals `renewal_cap_at`; open a new
+            support session with a purpose.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/platform/support-sessions/current/end:
+    post:
+      summary: End the caller's current support session and leave the tenant.
+      operationId: endSupportSession
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-414 contract PR; the controller ships in the RT-414 implementation
+        after the owner approves this contract and its migration.
+      tags: [platform-support-sessions]
+      description: >
+        Ends the support session (`end_reason: operator`) and clears the auth
+        session's active tenant and store, in one transaction. Allowed on an
+        `active` or `expired` session. Writes `platform.support_session.ended`.
+      responses:
+        "200":
+          description: Ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PlatformAdminRequired"
+        "409":
+          description: >
+            `support_session_absent` (409): the auth session has no support
+            session, or it has already ended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: dp2_session
+      description: >
+        The human dashboard session cookie (httpOnly, `SameSite=Lax`
+        `dp2_session`), verified by `DashboardAuthGuard`. The only accepted
+        credential: a bearer token, POS device token or operator envelope is
+        rejected (401). Platform authority comes only from the session user's
+        `users.is_platform_admin` (RT-132 D6).
+
+  schemas:
+    SupportPurpose:
+      type: string
+      enum: [customer_support, incident, onboarding]
+      description: >
+        Closed set of support purposes (RT-391 D2; RT-414 decision
+        1). A new value is a contract change.
+
+    TicketRef:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._:#/-]{0,63}$"
+      description: >
+        Optional external ticket reference (RT-414 decision 4): 1–64
+        characters, starting with a letter or digit, then letters, digits and
+        `. _ : # / -`. No whitespace and no `@`, so it cannot hold an email
+        address or free-text notes. It is shown to the tenant owner in the audit
+        row; do not put customer data in it.
+
+    OpenSupportSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, purpose]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        purpose:
+          $ref: "#/components/schemas/SupportPurpose"
+        ticket_ref:
+          $ref: "#/components/schemas/TicketRef"
+
+    SupportSessionStatus:
+      type: string
+      enum: [active, expired, ended]
+      description: >
+        `active`: not ended and `expires_at` is in the future. `expired`: not
+        ended and `expires_at` has passed; not renewable, only ended or
+        replaced by a new support session. `ended`: closed for good.
+
+    SupportSessionEndReason:
+      type: string
+      enum: [operator, replaced, tenant_switched, signed_out]
+      description: >
+        `operator`: `endSupportSession`. `replaced`: a new support session was
+        opened. `tenant_switched`: the auth session switched tenant.
+        `signed_out`: the auth session was signed out or revoked.
+
+    SupportSession:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - purpose
+        - ticket_ref
+        - status
+        - opened_at
+        - renewed_at
+        - expires_at
+        - renewal_cap_at
+        - ended_at
+        - end_reason
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Support session id; carried on every audit row it causes.
+        tenant_id:
+          type: string
+          format: uuid
+        purpose:
+          $ref: "#/components/schemas/SupportPurpose"
+        ticket_ref:
+          oneOf:
+            - $ref: "#/components/schemas/TicketRef"
+            - type: "null"
+        status:
+          $ref: "#/components/schemas/SupportSessionStatus"
+        opened_at:
+          type: string
+          format: date-time
+        renewed_at:
+          type: [string, "null"]
+          format: date-time
+          description: Time of the latest renewal; null if never renewed.
+        expires_at:
+          type: string
+          format: date-time
+          description: Server-set; never later than `renewal_cap_at`.
+        renewal_cap_at:
+          type: string
+          format: date-time
+          description: >
+            `opened_at` + 8 hours (RT-414 decision 2). No renewal goes
+            past it.
+        ended_at:
+          type: [string, "null"]
+          format: date-time
+        end_reason:
+          oneOf:
+            - $ref: "#/components/schemas/SupportSessionEndReason"
+            - type: "null"
+
+    CurrentSupportSession:
+      type: object
+      additionalProperties: false
+      required: [support_session]
+      properties:
+        support_session:
+          oneOf:
+            - $ref: "#/components/schemas/SupportSession"
+            - type: "null"
+
+    SupportSessionAuditMetadata:
+      type: object
+      additionalProperties: false
+      required: [actor_kind, outcome, support_session_id, purpose, ticket_ref]
+      description: >
+        Allowlisted `metadata` of `platform.support_session.opened`,
+        `platform.support_session.renewed` and `platform.support_session.ended`
+        rows. Nothing else is stored.
+      properties:
+        actor_kind:
+          const: platform_admin
+        outcome:
+          const: succeeded
+        support_session_id:
+          type: string
+          format: uuid
+        purpose:
+          $ref: "#/components/schemas/SupportPurpose"
+        ticket_ref:
+          oneOf:
+            - $ref: "#/components/schemas/TicketRef"
+            - type: "null"
+        expires_at:
+          type: string
+          format: date-time
+          description: On `opened` and `renewed` rows.
+        end_reason:
+          $ref: "#/components/schemas/SupportSessionEndReason"
+          description: On `ended` rows only.
+
+    CrossTenantAccessAuditMetadata:
+      type: object
+      additionalProperties: false
+      required: [actor_kind, outcome, support_session_id, purpose, method, route]
+      description: >
+        Allowlisted `metadata` of a `platform.cross_tenant.accessed` row. The
+        route is the template (for example `/api/v1/sales/:saleId`), never the
+        concrete path, query string or body.
+      properties:
+        actor_kind:
+          const: platform_admin
+        outcome:
+          type: string
+          enum: [succeeded, rejected]
+        reason:
+          type: string
+          enum: [support_session_required, support_session_expired]
+          description: On `rejected` rows only.
+        support_session_id:
+          type: [string, "null"]
+          format: uuid
+          description: Null only when no support session exists.
+        purpose:
+          oneOf:
+            - $ref: "#/components/schemas/SupportPurpose"
+            - type: "null"
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE]
+        route:
+          type: string
+          minLength: 1
+          maxLength: 256
+
+    Error:
+      type: object
+      required: [error]
+      description: Canonical error envelope.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data.
+            request_id:
+              type: string
+              format: uuid
+
+  responses:
+    ValidationFailure:
+      description: >
+        validation_error (400): a missing or unknown body key, a `tenant_id`
+        that is not a UUID, a `purpose` outside the set, or a `ticket_ref`
+        that breaks its pattern.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        Unauthenticated (401): a missing or invalid session cookie, or a
+        non-cookie credential.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PlatformAdminRequired:
+      description: >
+        forbidden (403): the session user is not a platform admin. Also
+        `origin_rejected` (403) on a POST whose `Origin` is missing, or is
+        neither the API's own origin nor in `ALLOWED_ORIGINS` (RT-414
+        decision 5).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TenantNotFound:
+      description: >
+        not_found (404), non-disclosing: identical for a tenant that does not
+        exist and one that cannot be entered (deleted or otherwise unavailable)
+        (FR-ISO-4).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SupportSessionRefused:
+      description: >
+        Cross-cutting refusal on every `TenantContextGuard` route for a platform
+        admin in a non-member tenant (403): `support_session_required` or
+        `support_session_expired`. Written as one
+        `platform.cross_tenant.accessed` row with `outcome: rejected`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SystemFailure:
+      description: >
+        system_failure (500): unexpected server error; the cause is recorded
+        server-side under `request_id`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

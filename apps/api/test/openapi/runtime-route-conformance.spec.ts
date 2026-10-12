@@ -129,9 +129,14 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "consoleGetShiftClose",
       "consoleListPayerAccounts",
       "consoleListShiftCloses",
+      // RT-414: platform support-session contract; the runtime ships after owner approval.
+      "endSupportSession",
+      "getCurrentSupportSession",
+      "openSupportSession",
       "posRedeemVoucher",
       "posReverseVoucher",
       "posValidateVoucher",
+      "renewSupportSession",
     ]);
     expect(missing).toEqual([]);
   });
