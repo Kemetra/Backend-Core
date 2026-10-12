@@ -286,6 +286,8 @@ named case: 009 allows-and-flags negative on-hand; ERPNext may reject negative
 stock — this is an **expected** mismatch class, not an error to silently erase
 (stock-impact §6). The set + tolerance semantics are **OQ-4**.
 
+> **Superseded (RT-288, Inventory Planning Gate 1, recorded 2026-10-12):** the premise that ERPNext rejects negative stock (→ `permanently_rejected` / DLQ / repair queue) was superseded by Jira RT-47 D3. Negative stock is allowed on the V1 ERPNext stock path, and a negative Bin is an observable operational discrepancy, not by itself a posting failure (730, 743). How negative balances are classified in reconciliation belongs to the Inventory reconciliation decisions (923–942) and Jira RT-289, not to this artifact. Source: the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389). Shipped code, data and history are unchanged (727).
+
 ### 7.5 Mapping lifecycle & provenance
 How a store↔warehouse mapping is established and kept current (manual
 Tenant-Admin action; suggest-then-confirm like 013; admin-set-only), and the

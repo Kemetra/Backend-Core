@@ -270,6 +270,8 @@ defines the **stable vocabulary**; 017 emits/persists/repairs against it:
 > which is a genuine ledger disagreement. Keeping them separate lets 017 route
 > them to the right fix (014 mapping vs 013 mapping vs ERPNext repair).
 
+> **Superseded (RT-288, Inventory Planning Gate 1, recorded 2026-10-12):** the premise that ERPNext rejects negative stock (→ `permanently_rejected` / DLQ / repair queue) was superseded by Jira RT-47 D3. Negative stock is allowed on the V1 ERPNext stock path, and a negative Bin is an observable operational discrepancy, not by itself a posting failure (730, 743). How negative balances are classified in reconciliation belongs to the Inventory reconciliation decisions (923–942) and Jira RT-289, not to this artifact. Source: the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389). Shipped code, data and history are unchanged (727).
+
 ### 6.3 Tolerance semantics
 
 - **Default: exact match** (delta = 0) → `match`. Stock quantities are exact
