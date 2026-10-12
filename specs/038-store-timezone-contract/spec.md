@@ -6,7 +6,7 @@
 | **Work Mode** | Planning, then Implementation. This document is the Planning deliverable. |
 | **Repository** | `Kemetra/Backend-Core` |
 | **Baseline** | `origin/main` @ `2dc4b8e1` (2026-10-12) |
-| **Status** | PLANNING. Waiting on owner confirmation of OD-1 to OD-5 (see `plan.md`). No contract, runtime or migration change is made by this document. |
+| **Status** | IMPLEMENTED (S1 contract + S2 runtime). The owner approved every recommendation (OD-1 to OD-5 = A) on 2026-10-12. Contract of record: `packages/contracts/openapi/stores.openapi.yaml`. |
 
 ## Objective
 

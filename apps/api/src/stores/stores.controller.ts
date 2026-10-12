@@ -9,6 +9,11 @@
  *     GET    /api/v1/stores/{store_id}   readStore         (per access policy)
  *     PATCH  /api/v1/stores/{store_id}   updateStore       [owner|tenant_admin]
  *     DELETE /api/v1/stores/{store_id}   softDeleteStore   [owner|tenant_admin]
+ *     GET    /api/v1/stores/{store_id}/timezone-change-preview
+ *                                         previewStoreTimezoneChange [owner|tenant_admin]
+ *
+ * The time zone fields and the preview route are spec 038 / RT-401 and
+ * live in `packages/contracts/openapi/stores.openapi.yaml`.
  *
  * Why this controller IS guarded by `TenantContextGuard`
  * ------------------------------------------------------
@@ -64,6 +69,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Req,
   UnauthorizedException,
   UseGuards,
@@ -78,11 +84,17 @@ import type { TenantContextRequest } from "../context/types";
 import {
   StoreCreateSchema,
   StoreUpdateSchema,
+  TimezonePreviewQuerySchema,
   type StoreCreateInput,
   type StoreUpdateInput,
+  type TimezonePreviewQuery,
 } from "./dto";
 import type { StoreRecord } from "./stores.repository";
-import { StoresService } from "./stores.service";
+import {
+  StoresService,
+  type TimezoneChange,
+  type TimezoneChangePreview,
+} from "./stores.service";
 
 /** Snake-case wire-shape matching the OpenAPI `Store` schema. */
 interface StoreBody {
@@ -90,6 +102,7 @@ interface StoreBody {
   tenant_id: string;
   code: string;
   name: string;
+  timezone: string;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -102,10 +115,59 @@ function toBody(record: StoreRecord): StoreBody {
     tenant_id: record.tenantId,
     code: record.code,
     name: record.name,
+    timezone: record.timezone,
     is_active: record.isActive,
     created_at: record.createdAt.toISOString(),
     updated_at: record.updatedAt.toISOString(),
     deleted_at: record.deletedAt ? record.deletedAt.toISOString() : null,
+  };
+}
+
+/** Snake-case wire-shape matching the OpenAPI `StoreTimezoneChangePreview`. */
+interface TimezonePreviewBody {
+  store_id: string;
+  current_timezone: string;
+  proposed_timezone: string;
+  no_op: boolean;
+  now: string;
+  utc_offset_minutes_current: number;
+  utc_offset_minutes_proposed: number;
+  business_date_current: string;
+  business_date_proposed: string;
+  business_date_changes_now: boolean;
+  open_shift_count: number;
+  blockers: Array<{ code: string; count: number }>;
+  can_apply: boolean;
+  caveats: string[];
+}
+
+function toPreviewBody(preview: TimezoneChangePreview): TimezonePreviewBody {
+  return {
+    store_id: preview.storeId,
+    current_timezone: preview.currentTimezone,
+    proposed_timezone: preview.proposedTimezone,
+    no_op: preview.noOp,
+    now: preview.now.toISOString(),
+    utc_offset_minutes_current: preview.utcOffsetMinutesCurrent,
+    utc_offset_minutes_proposed: preview.utcOffsetMinutesProposed,
+    business_date_current: preview.businessDateCurrent,
+    business_date_proposed: preview.businessDateProposed,
+    business_date_changes_now: preview.businessDateChangesNow,
+    open_shift_count: preview.openShiftCount,
+    blockers: preview.blockers.map((b) => ({ code: b.code, count: b.count })),
+    can_apply: preview.canApply,
+    caveats: [...preview.caveats],
+  };
+}
+
+/** The zone change a validated PATCH body carries, if any. */
+function timezoneChangeOf(body: StoreUpdateInput): TimezoneChange | undefined {
+  if (body.timezone === undefined || body.expected_current_timezone === undefined) {
+    return undefined;
+  }
+  return {
+    timezone: body.timezone,
+    expectedCurrentTimezone: body.expected_current_timezone,
   };
 }
 
@@ -157,8 +219,33 @@ export class StoresController {
   ): Promise<StoreBody> {
     const ctx = request.context;
     if (!ctx) throw new UnauthorizedException("Unauthorized");
-    const record = await this.storesService.update(ctx, storeId, body);
+    const record = await this.storesService.update(
+      ctx,
+      storeId,
+      { name: body.name, is_active: body.is_active },
+      timezoneChangeOf(body),
+      { requestId: request.requestId ?? null },
+    );
     return toBody(record);
+  }
+
+  @Get(":store_id/timezone-change-preview")
+  @UseGuards(RolesGuard)
+  @Roles("owner", "tenant_admin")
+  async previewTimezoneChange(
+    @Req() request: TenantContextRequest,
+    @Param("store_id", new ParseUUIDPipe()) storeId: string,
+    @Query(new ZodValidationPipe(TimezonePreviewQuerySchema))
+    query: TimezonePreviewQuery,
+  ): Promise<TimezonePreviewBody> {
+    const ctx = request.context;
+    if (!ctx) throw new UnauthorizedException("Unauthorized");
+    const preview = await this.storesService.previewTimezoneChange(
+      ctx,
+      storeId,
+      query.timezone,
+    );
+    return toPreviewBody(preview);
   }
 
   @Delete(":store_id")

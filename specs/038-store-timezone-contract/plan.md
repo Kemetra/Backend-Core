@@ -1,6 +1,6 @@
 # Plan 038 — Store time zone in the Store contract
 
-Jira RT-401. Read `spec.md` first. The proposed contract is in `contracts/stores.openapi.draft.yaml`. That draft is a full copy of `packages/contracts/openapi/stores.openapi.yaml` with the changes applied. The contract of record is not touched until the owner confirms the decisions below.
+Jira RT-401. Read `spec.md` first. The contract of record is `packages/contracts/openapi/stores.openapi.yaml`. It was first drafted under this folder, then copied over the contract of record once the owner approved the decisions below.
 
 ## 1. Design
 
@@ -86,9 +86,9 @@ The fix is to add `FOR SHARE` to the store sub-select in `INSERT_SHIFT_SQL` and 
 | 409 | `timezone_changed_concurrently` | `expected_current_timezone` is stale. |
 | 409 | `store_has_open_shift` | A server-known shift is open at the store. |
 
-## 2. Owner decisions needed before implementation
+## 2. Owner decisions
 
-Each decision has a recommendation. The draft contract is written to the recommendations.
+**Resolved 2026-10-12:** the owner approved every recommendation (A for OD-1 to OD-5). The contract and runtime implement those answers. F1 (time zone history) is not built. It needs its own Jira issue when G1 matters.
 
 **OD-1 Is `timezone` required on create?**
 - A (recommended): optional, defaulting to `UTC`. This is additive and matches decision 213. Admin-Console sends the zone from its form, and readiness flags `UTC` later.
@@ -119,9 +119,9 @@ Each decision has a recommendation. The draft contract is written to the recomme
 
 | Slice | Repository | Scope | Gate |
 |---|---|---|---|
-| **S0** this plan | Backend-Core | `specs/038-store-timezone-contract/**` | Owner confirms OD-1 to OD-5 on RT-401 |
-| **S1** contract | Backend-Core | `packages/contracts/openapi/stores.openapi.yaml` (copy the confirmed draft) | `[GATED]` contract path, authorised by RT-401 deliverable 1 after S0 |
-| **S2** runtime | Backend-Core | `apps/api/src/stores/{dto,stores.controller,stores.service,stores.repository}.ts`, a new `stores/timezone.ts` (validation and preview), `FOR SHARE` in `pos-shifts/shift-cash-up.repository.ts`, unit tests and Testcontainers integration tests | No migration, dependency or CI change |
+| **S0** this plan | Backend-Core | `specs/038-store-timezone-contract/**` | Done: owner approved OD-1 to OD-5 = A |
+| **S1** contract | Backend-Core | `packages/contracts/openapi/stores.openapi.yaml` | Done. `[GATED]` contract path, authorised by RT-401 deliverable 1 and the owner's approval |
+| **S2** runtime | Backend-Core | `apps/api/src/stores/{dto,stores.controller,stores.service,stores.repository}.ts`, a new `stores/timezone.ts` (validation and preview), `FOR SHARE` in `pos-shifts/shift-cash-up.repository.ts`, unit tests and Testcontainers integration tests | Done. No migration, dependency or CI change |
 | **S3** Admin types | Admin-Console | Regenerate the Store types and add the form field | Separate Jira slice (RT-400 or a child) |
 | **F1** (only if OD-4 B or OD-5 B is chosen) | Backend-Core | Time zone history migration and capture-path change | Its own `[GATED]` Jira issue |
 
