@@ -53,6 +53,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { SAME_ORIGIN } from "../_helpers/same-origin";
 
 // ---- Fake Redis (always-allow rate limiter) ----------------------------
 
@@ -195,6 +196,7 @@ async function signInWithTenant(tenantId: string): Promise<string> {
   await http()
     .post("/api/v1/context/tenant")
     .set("Cookie", sessionCookie)
+    .set(SAME_ORIGIN)
     .send({ tenant_id: tenantId })
     .expect(200);
 
@@ -211,12 +213,14 @@ describe("T135-1: duplicate store code in same tenant → 409", () => {
     await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "DUP-01", name: "First" })
       .expect(201);
 
     await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "DUP-01", name: "Duplicate" })
       .expect(409);
   });
@@ -232,6 +236,7 @@ describe("T135-2: case-insensitive store code uniqueness", () => {
     await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "CASE-01", name: "Upper" })
       .expect(201);
 
@@ -239,6 +244,7 @@ describe("T135-2: case-insensitive store code uniqueness", () => {
     await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "case-01", name: "Lower — should conflict" })
       .expect(409);
   });
@@ -250,12 +256,14 @@ describe("T135-2: case-insensitive store code uniqueness", () => {
     await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "MiXeD-01", name: "Original" })
       .expect(201);
 
     await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "mixed-01", name: "Collision" })
       .expect(409);
   });
@@ -271,6 +279,7 @@ describe("T135-3: same store code in different tenant is allowed", () => {
     await http()
       .post("/api/v1/stores")
       .set("Cookie", cookieA)
+      .set(SAME_ORIGIN)
       .send({ code: "SHARED-CODE", name: "Tenant A store" })
       .expect(201);
 
@@ -280,6 +289,7 @@ describe("T135-3: same store code in different tenant is allowed", () => {
     const res = await http()
       .post("/api/v1/stores")
       .set("Cookie", cookieB)
+      .set(SAME_ORIGIN)
       .send({ code: "SHARED-CODE", name: "Tenant B store" })
       .expect(201);
 
@@ -299,18 +309,21 @@ describe("T135-4: store code can be reused after soft-delete", () => {
     const created = await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "RECYCLE-01", name: "Soon deleted" })
       .expect(201);
 
     await http()
       .delete(`/api/v1/stores/${created.body.id}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(204);
 
     // The partial index excludes deleted rows, so the code is now free.
     const reused = await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "RECYCLE-01", name: "Reused" })
       .expect(201);
 

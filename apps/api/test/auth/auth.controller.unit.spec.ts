@@ -319,6 +319,41 @@ describe("POST /api/v1/auth/signin", () => {
     expect(svc.lastSignInArgs!.password).toBe("mypassword");
   });
 
+  // RT-430: login CSRF. A foreign Origin is refused before any rate-limit or
+  // credential work; a missing Origin is admitted (no ambient credential).
+  it("refuses a sign-in from a foreign Origin with 403 origin_rejected", async () => {
+    const res = await http()
+      .post("/api/v1/auth/signin")
+      .set("Host", "api.test")
+      .set("Origin", "http://sibling.api.test")
+      .send({ email: "user@example.com", password: "secret123" });
+
+    expect(res.status).toBe(403);
+    expectErrorEnvelope(res.body, "origin_rejected");
+    expect(res.headers["set-cookie"]).toBeUndefined();
+    expect(svc.lastSignInArgs).toBeNull();
+    expect(rl.calledBuckets).toEqual([]);
+  });
+
+  it("admits a sign-in from the API's own Origin", async () => {
+    const res = await http()
+      .post("/api/v1/auth/signin")
+      .set("Host", "api.test")
+      .set("Origin", "http://api.test")
+      .send({ email: "user@example.com", password: "secret123" });
+
+    expect(res.status).toBe(200);
+  });
+
+  it("admits a sign-in with no Origin", async () => {
+    const res = await http()
+      .post("/api/v1/auth/signin")
+      .send({ email: "user@example.com", password: "secret123" });
+
+    expect(res.status).toBe(200);
+    expect(svc.lastSignInArgs).not.toBeNull();
+  });
+
   it("checks per-account rate limit before per-IP", async () => {
     await http()
       .post("/api/v1/auth/signin")

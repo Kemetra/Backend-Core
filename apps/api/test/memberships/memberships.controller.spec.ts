@@ -69,6 +69,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { SAME_ORIGIN } from "../_helpers/same-origin";
 
 // ---- Fake Redis (always-allow rate limiter) ----------------------------
 
@@ -281,6 +282,7 @@ async function signInWithTenant(email: string, password: string, tenantId: strin
   await http()
     .post("/api/v1/context/tenant")
     .set("Cookie", sessionCookie)
+    .set(SAME_ORIGIN)
     .send({ tenant_id: tenantId })
     .expect(200);
   return sessionCookie;
@@ -306,6 +308,7 @@ describe("DELETE /api/v1/memberships/:membership_id — TenantContextGuard", () 
     await http()
       .delete(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(401);
   });
 });
@@ -319,6 +322,7 @@ describe("DELETE /api/v1/memberships/:membership_id — RolesGuard", () => {
     await http()
       .delete(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(403);
   });
 });
@@ -332,6 +336,7 @@ describe("DELETE /api/v1/memberships/:membership_id — input validation", () =>
     await http()
       .delete("/api/v1/memberships/not-a-uuid")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(400);
   });
 });
@@ -346,6 +351,7 @@ describe("DELETE /api/v1/memberships/:membership_id — 404 scenarios", () => {
     await http()
       .delete(`/api/v1/memberships/${unknownId}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 
@@ -355,6 +361,7 @@ describe("DELETE /api/v1/memberships/:membership_id — 404 scenarios", () => {
     await http()
       .delete(`/api/v1/memberships/${MEM_REVOKED}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 
@@ -365,6 +372,7 @@ describe("DELETE /api/v1/memberships/:membership_id — 404 scenarios", () => {
     await http()
       .delete(`/api/v1/memberships/${MEM_OTHER_BETA}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 });
@@ -378,6 +386,7 @@ describe("DELETE /api/v1/memberships/:membership_id — happy path", () => {
     await http()
       .delete(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(204);
   });
 
@@ -396,6 +405,7 @@ describe("DELETE /api/v1/memberships/:membership_id — happy path", () => {
     await http()
       .delete(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 
@@ -405,6 +415,7 @@ describe("DELETE /api/v1/memberships/:membership_id — happy path", () => {
     await http()
       .delete(`/api/v1/memberships/${MEM_OTHER_BETA}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(204);
   });
 });

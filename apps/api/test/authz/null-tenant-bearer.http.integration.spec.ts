@@ -58,6 +58,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { SAME_ORIGIN } from "../_helpers/same-origin";
 
 class AlwaysAllowRedis implements RedisLike {
   async incr(): Promise<number> { return 1; }
@@ -220,6 +221,7 @@ async function signInWithTenant(tenantId: string): Promise<string> {
   await http()
     .post("/api/v1/context/tenant")
     .set("Cookie", cookie)
+    .set(SAME_ORIGIN)
     .send({ tenant_id: tenantId })
     .expect(200);
   return cookie;
@@ -375,7 +377,7 @@ describe("session platform admin (control — behaviour preserved)", () => {
   it("GET /tenants lists every tenant", async () => {
     if (maybeSkip()) return;
     const cookie = await signInWithTenant(ACME_ID);
-    const res = await http().get("/api/v1/tenants").set("Cookie", cookie).expect(200);
+    const res = await http().get("/api/v1/tenants").set("Cookie", cookie).set(SAME_ORIGIN).expect(200);
     const ids = (res.body as Array<{ id: string }>).map((t) => t.id);
     expect(ids).toEqual(expect.arrayContaining([ACME_ID, GLOBEX_ID]));
   });
@@ -383,7 +385,7 @@ describe("session platform admin (control — behaviour preserved)", () => {
   it("GET /stores in a tenant with no membership → 200 (platform-admin context)", async () => {
     if (maybeSkip()) return;
     const cookie = await signInWithTenant(ACME_ID);
-    const res = await http().get("/api/v1/stores").set("Cookie", cookie).expect(200);
+    const res = await http().get("/api/v1/stores").set("Cookie", cookie).set(SAME_ORIGIN).expect(200);
     expect((res.body as Array<{ id: string }>).map((s) => s.id)).toContain(STORE_ACME_ID);
   });
 
@@ -393,6 +395,7 @@ describe("session platform admin (control — behaviour preserved)", () => {
     await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "BR-S", name: "Session Branch" })
       .expect(201);
   });
@@ -403,6 +406,7 @@ describe("session platform admin (control — behaviour preserved)", () => {
     await http()
       .post("/api/v1/tenants")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ slug: "session-rt149", name: "Session Tenant" })
       .expect(201);
   });

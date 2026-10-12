@@ -137,6 +137,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
           description: >
             An active registration already exists for this
@@ -168,6 +177,15 @@ paths:
                 $ref: "#/components/schemas/ConnectorInstance"
         "401":
           description: Not authenticated / not a human session / wrong role (non-disclosing).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
           content:
             application/json:
               schema:
@@ -214,6 +232,15 @@ paths:
                 $ref: "#/components/schemas/Error"
         "401":
           description: Not authenticated / not a human session / wrong role (non-disclosing).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
           content:
             application/json:
               schema:
@@ -271,6 +298,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: Instance not found OR not in scope OR disabled (non-disclosing, §II/§XII).
           content:
@@ -312,6 +348,15 @@ paths:
                 $ref: "#/components/schemas/CredentialStatus"
         "401":
           description: Not authenticated / not a human session / wrong role (non-disclosing).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
           content:
             application/json:
               schema:

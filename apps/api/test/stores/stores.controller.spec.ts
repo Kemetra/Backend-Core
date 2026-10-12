@@ -61,6 +61,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { SAME_ORIGIN } from "../_helpers/same-origin";
 
 // ---- Fakes ---------------------------------------------------------------
 
@@ -269,6 +270,7 @@ async function signInWithTenant(
   await http()
     .post("/api/v1/context/tenant")
     .set("Cookie", cookie)
+    .set(SAME_ORIGIN)
     .send({ tenant_id: tenantId })
     .expect(200);
   return cookie;
@@ -285,7 +287,7 @@ describe("GET /api/v1/stores", () => {
   it("401 when authenticated but no active tenant", async () => {
     if (maybeSkip()) return;
     const cookie = await signIn(BOB_EMAIL, BOB_PASSWORD);
-    await http().get("/api/v1/stores").set("Cookie", cookie).expect(401);
+    await http().get("/api/v1/stores").set("Cookie", cookie).set(SAME_ORIGIN).expect(401);
   });
 
   it("tenant_admin (kind='all') sees all stores in active tenant", async () => {
@@ -294,6 +296,7 @@ describe("GET /api/v1/stores", () => {
     const res = await http()
       .get("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(200);
     const ids = res.body.map((s: { id: string }) => s.id).sort();
     expect(ids).toContain(STORE_ACME_BR1);
@@ -308,6 +311,7 @@ describe("GET /api/v1/stores", () => {
     const res = await http()
       .get("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(200);
     // List is not store-access-gated; that policy gates GET-by-id.
     const ids = res.body.map((s: { id: string }) => s.id);
@@ -333,6 +337,7 @@ describe("POST /api/v1/stores", () => {
     await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "X", name: "X" })
       .expect(401);
   });
@@ -343,6 +348,7 @@ describe("POST /api/v1/stores", () => {
     await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "BR-NEW", name: "Should Fail" })
       .expect(403);
   });
@@ -353,6 +359,7 @@ describe("POST /api/v1/stores", () => {
     const res = await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "BR-NEW", name: "Bob's New Store" })
       .expect(201);
     expect(res.body).toMatchObject({
@@ -371,6 +378,7 @@ describe("POST /api/v1/stores", () => {
     await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "BR-01", name: "Dup of pre-seeded BR-01" })
       .expect(409);
   });
@@ -390,6 +398,7 @@ describe("POST /api/v1/stores", () => {
     const res = await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "BR-NEW-GLOBEX", name: "Globex new" })
       .expect(201);
     expect(res.body.tenant_id).toBe(GLOBEX_ID);
@@ -401,6 +410,7 @@ describe("POST /api/v1/stores", () => {
     await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ name: "No code" })
       .expect(400);
   });
@@ -411,6 +421,7 @@ describe("POST /api/v1/stores", () => {
     await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "BR-XS", name: "x", tenant_id: GLOBEX_ID })
       .expect(400);
   });
@@ -430,6 +441,7 @@ describe("GET /api/v1/stores/:store_id", () => {
     await http()
       .get(`/api/v1/stores/${STORE_ACME_BR1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(401);
   });
 
@@ -439,6 +451,7 @@ describe("GET /api/v1/stores/:store_id", () => {
     const res = await http()
       .get(`/api/v1/stores/${STORE_ACME_BR1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(200);
     expect(res.body).toMatchObject({
       id: STORE_ACME_BR1,
@@ -453,6 +466,7 @@ describe("GET /api/v1/stores/:store_id", () => {
     const res = await http()
       .get(`/api/v1/stores/${STORE_ACME_BR1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(200);
     expect(res.body.id).toBe(STORE_ACME_BR1);
   });
@@ -463,6 +477,7 @@ describe("GET /api/v1/stores/:store_id", () => {
     await http()
       .get(`/api/v1/stores/${STORE_ACME_BR2}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 
@@ -472,6 +487,7 @@ describe("GET /api/v1/stores/:store_id", () => {
     await http()
       .get(`/api/v1/stores/${STORE_GLOBEX_BR1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 
@@ -481,6 +497,7 @@ describe("GET /api/v1/stores/:store_id", () => {
     await http()
       .get(`/api/v1/stores/${newId()}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 
@@ -490,6 +507,7 @@ describe("GET /api/v1/stores/:store_id", () => {
     await http()
       .get("/api/v1/stores/not-a-uuid")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(400);
   });
 });
@@ -503,6 +521,7 @@ describe("PATCH /api/v1/stores/:store_id", () => {
     const res = await http()
       .patch(`/api/v1/stores/${STORE_ACME_BR2}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ name: "Renamed", is_active: false })
       .expect(200);
     expect(res.body).toMatchObject({
@@ -523,6 +542,7 @@ describe("PATCH /api/v1/stores/:store_id", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_ACME_BR1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ name: "Should Fail" })
       .expect(404);
   });
@@ -533,6 +553,7 @@ describe("PATCH /api/v1/stores/:store_id", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_GLOBEX_BR1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ name: "Hijacked" })
       .expect(404);
   });
@@ -543,6 +564,7 @@ describe("PATCH /api/v1/stores/:store_id", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_ACME_BR1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({})
       .expect(400);
   });
@@ -553,6 +575,7 @@ describe("PATCH /api/v1/stores/:store_id", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_ACME_BR1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ tenant_id: GLOBEX_ID })
       .expect(400);
   });
@@ -563,6 +586,7 @@ describe("PATCH /api/v1/stores/:store_id", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_ACME_BR1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "RENAMED-CODE" })
       .expect(400);
   });
@@ -580,6 +604,7 @@ describe("DELETE /api/v1/stores/:store_id (soft-delete)", () => {
     const created = await http()
       .post("/api/v1/stores")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "DEL-ME", name: "Throwaway" })
       .expect(201);
     throwawayId = created.body.id;
@@ -596,6 +621,7 @@ describe("DELETE /api/v1/stores/:store_id (soft-delete)", () => {
     await http()
       .delete(`/api/v1/stores/${STORE_ACME_BR1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 
@@ -605,6 +631,7 @@ describe("DELETE /api/v1/stores/:store_id (soft-delete)", () => {
     await http()
       .delete(`/api/v1/stores/${STORE_GLOBEX_BR1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 
@@ -615,6 +642,7 @@ describe("DELETE /api/v1/stores/:store_id (soft-delete)", () => {
     await http()
       .delete(`/api/v1/stores/${throwawayId}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(204);
 
     // Verify the row is soft-deleted at the DB layer.
@@ -630,6 +658,7 @@ describe("DELETE /api/v1/stores/:store_id (soft-delete)", () => {
     await http()
       .delete(`/api/v1/stores/${throwawayId}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 });
@@ -648,7 +677,7 @@ describe("RT-142 — platform admin store routes act as the selected tenant", ()
   it("list in acme shows only acme stores (no cross-tenant leak)", async () => {
     if (maybeSkip()) return;
     const cookie = await signInWithTenant(ALICE_EMAIL, ALICE_PASSWORD, ACME_ID);
-    const res = await http().get("/api/v1/stores").set("Cookie", cookie).expect(200);
+    const res = await http().get("/api/v1/stores").set("Cookie", cookie).set(SAME_ORIGIN).expect(200);
     const tenants = new Set(res.body.map((s: { tenant_id: string }) => s.tenant_id));
     expect([...tenants]).toEqual([ACME_ID]);
     const ids = res.body.map((s: { id: string }) => s.id);
@@ -661,13 +690,14 @@ describe("RT-142 — platform admin store routes act as the selected tenant", ()
     const before = await storeRow(STORE_GLOBEX_BR1);
     const cookie = await signInWithTenant(ALICE_EMAIL, ALICE_PASSWORD, ACME_ID);
 
-    await http().get(`/api/v1/stores/${STORE_GLOBEX_BR1}`).set("Cookie", cookie).expect(404);
+    await http().get(`/api/v1/stores/${STORE_GLOBEX_BR1}`).set("Cookie", cookie).set(SAME_ORIGIN).expect(404);
     await http()
       .patch(`/api/v1/stores/${STORE_GLOBEX_BR1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ name: "renamed across tenants" })
       .expect(404);
-    await http().delete(`/api/v1/stores/${STORE_GLOBEX_BR1}`).set("Cookie", cookie).expect(404);
+    await http().delete(`/api/v1/stores/${STORE_GLOBEX_BR1}`).set("Cookie", cookie).set(SAME_ORIGIN).expect(404);
 
     expect(await storeRow(STORE_GLOBEX_BR1)).toEqual(before);
   });
@@ -675,10 +705,10 @@ describe("RT-142 — platform admin store routes act as the selected tenant", ()
   it("the explicit path still works: after switching to globex, the admin manages globex stores", async () => {
     if (maybeSkip()) return;
     const cookie = await signInWithTenant(ALICE_EMAIL, ALICE_PASSWORD, GLOBEX_ID);
-    const res = await http().get("/api/v1/stores").set("Cookie", cookie).expect(200);
+    const res = await http().get("/api/v1/stores").set("Cookie", cookie).set(SAME_ORIGIN).expect(200);
     const ids = res.body.map((s: { id: string }) => s.id);
     expect(ids).toContain(STORE_GLOBEX_BR1);
     expect(ids).not.toContain(STORE_ACME_BR1);
-    await http().get(`/api/v1/stores/${STORE_GLOBEX_BR1}`).set("Cookie", cookie).expect(200);
+    await http().get(`/api/v1/stores/${STORE_GLOBEX_BR1}`).set("Cookie", cookie).set(SAME_ORIGIN).expect(200);
   });
 });

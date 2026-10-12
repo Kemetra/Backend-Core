@@ -458,6 +458,9 @@ components:
       description: >
         Insufficient role (403) — authenticated but the operator lacks the
         required role. 403 semantics owned by 028 (G10).
+        Also `origin_rejected` (RT-430): the request is authenticated by the
+        `dp2_session` cookie and its `Origin` header is missing, or is neither
+        the API's own origin nor listed in `ALLOWED_ORIGINS`.
       content:
         application/json:
           schema:
