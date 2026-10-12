@@ -19,26 +19,39 @@ info:
 
     **Posture.** `1.0.0-draft`, contract-only: every operation carries
     `x-runtime-status: contract-only` until the RT-414 implementation ships.
-    `[GATED]` contract: implementation starts only after the owner approves this
-    contract and records decisions 1–5 on RT-414. The persistence it needs is a
-    separate `[GATED]` migration.
+    `[GATED]` contract, owner-approved 2026-10-12 with decisions 1–5 recorded on
+    RT-414. The persistence it needs is a separate `[GATED]` migration; the
+    runtime ships after that migration is approved.
 
 
     **Who needs a support session.** A user whose `users.is_platform_admin` is
     true (server-authenticated; RT-132 D6) and who has NO active membership in
     the target tenant. A platform admin who IS an active member of the tenant
-    acts as that member, exactly as today, and never needs (or may open) a
-    support session there. Bearer tokens never carry platform authority and are
+    never needs (or may open) a support session there; their requests resolve
+    exactly as they do today, including the existing platform-admin resolution
+    in `TenantContextGuard` and `RolesGuard` (this contract does not narrow
+    them to their membership role). Bearer tokens never carry platform authority and are
     rejected on this surface (401). Tenant members who are not platform admins
     are unaffected by this contract.
 
 
-    **Enforcement on tenant-scoped routes (cross-cutting).** Every route gated by
-    `TenantContextGuard` (the tenant-scoped Console surface across the other
-    contracts) admits a platform admin acting in a non-member tenant only when
-    the caller's auth session has an `active` support session for exactly that
-    tenant. Otherwise the request is refused server-side, before the handler
-    runs, with the `SupportSessionRefused` response (403):
+    **Enforcement on tenant-scoped routes (cross-cutting).** The covered routes
+    are listed in `x-support-session-enforcement`:
+
+      - every route gated by `TenantContextGuard` (the tenant-scoped Console
+        surface across the other contracts), for the session's active tenant;
+      - the path-tenant routes that reach one tenant's data without that guard:
+        `listMembers` (`GET /api/v1/tenants/{tenant_id}/members`) and
+        `updateTenant` (`PATCH /api/v1/tenants/{tenant_id}`), for the
+        `{tenant_id}` tenant
+        (RT-414 owner decision, 2026-10-12);
+      - `switchActiveStore` (`POST /api/v1/context/store`), for the session's
+        active tenant.
+
+    A covered route admits a platform admin acting in a non-member tenant only
+    when the caller's auth session has an `active` support session for exactly
+    that tenant. Otherwise the request is refused server-side, before the
+    handler runs, with the `SupportSessionRefused` response (403):
 
       - `support_session_required` — no support session, it has ended, or it is
         for another tenant;
@@ -47,14 +60,17 @@ info:
 
     These codes describe the caller's OWN session, never whether a tenant
     exists, so they do not weaken FR-ISO-4. The per-route contracts are not
-    edited; this rule applies to all of them. RT-142 RLS pinning is unchanged:
-    inside the tenant, domain services still run with `isPlatformAdmin: false`.
+    edited by this PR; the RT-414 implementation adds the 403 to each covered
+    operation it ships. Platform-scope routes stay unchanged: the tenant
+    directory and lifecycle (`listTenants`, `readTenant`, `createTenant`,
+    `softDeleteTenant`) and liveness. RLS pinning is unchanged: the RT-142 domain
+    services still run with `isPlatformAdmin: false` inside the tenant.
     Read-only pass-through and break-glass writes (D1) are P0-b, not this
     contract.
 
 
-    **Expiry and renewal.** `expires_at` is set by the server: `opened_at` + 60
-    minutes. Renewal is explicit (no sliding expiry from activity) and is
+    **Expiry and renewal.** `expires_at` is set by the server: the earlier of
+    `opened_at` + 60 minutes and the auth session's absolute expiry. Renewal is explicit (no sliding expiry from activity) and is
     allowed only while the support session is `active`: a renew sets
     `expires_at` to the earliest of now + 60 minutes, `renewal_cap_at`, and the
     auth session's absolute expiry. `renewal_cap_at` is `opened_at` + 8 hours
@@ -76,8 +92,8 @@ info:
       - `platform.support_session.opened`, `platform.support_session.renewed`
         and `platform.support_session.ended` — one row each, written in the
         same transaction as the state change;
-      - `platform.cross_tenant.accessed` — exactly one row per tenant-scoped
-        request by a platform admin in a non-member tenant, admitted
+      - `platform.cross_tenant.accessed` — exactly one row per request to a
+        covered route by a platform admin in a non-member tenant, admitted
         (`outcome: succeeded`) or refused (`outcome: rejected`). A route's own
         `@Auditable` row, if any, is a separate action and is not counted.
 
@@ -95,6 +111,12 @@ info:
     is listed in `ALLOWED_ORIGINS` (which is empty in a same-origin deploy);
     otherwise 403 `origin_rejected`. Non-browser clients, including tests, must
     send `Origin` (RT-414 decision 5).
+x-support-session-enforcement:
+  response: "#/components/responses/SupportSessionRefused"
+  guarded-routes: TenantContextGuard
+  path-tenant-operations: [listMembers, updateTenant]
+  active-tenant-operations: [switchActiveStore]
+  unchanged-platform-scope-operations: [listTenants, readTenant, createTenant, softDeleteTenant]
 servers:
   - url: https://api.example.com
 tags:
@@ -212,9 +234,10 @@ paths:
             `support_session_absent` (409): the auth session has no support
             session, or it has ended. `support_session_expired` (409): it has
             expired; open a new support session with a purpose.
-            `support_session_renewal_cap_reached`
-            (409): `expires_at` already equals `renewal_cap_at`; open a new
-            support session with a purpose.
+            `support_session_renewal_cap_reached` (409): the renewal would not
+            move `expires_at` later, because it already equals `renewal_cap_at`
+            or the auth session's absolute expiry; open a new support session
+            after signing in again if needed.
           content:
             application/json:
               schema:
@@ -374,6 +397,24 @@ components:
           oneOf:
             - $ref: "#/components/schemas/SupportSessionEndReason"
             - type: "null"
+      description: >
+        `ended_at` and `end_reason` are set exactly when `status` is `ended`.
+      if:
+        properties:
+          status:
+            const: ended
+      then:
+        properties:
+          ended_at:
+            type: string
+          end_reason:
+            $ref: "#/components/schemas/SupportSessionEndReason"
+      else:
+        properties:
+          ended_at:
+            type: "null"
+          end_reason:
+            type: "null"
 
     CurrentSupportSession:
       type: object
@@ -392,7 +433,8 @@ components:
       description: >
         Allowlisted `metadata` of `platform.support_session.opened`,
         `platform.support_session.renewed` and `platform.support_session.ended`
-        rows. Nothing else is stored.
+        rows. Nothing else is stored. Exactly one of `expires_at` (opened /
+        renewed rows) and `end_reason` (ended rows) is present.
       properties:
         actor_kind:
           const: platform_admin
@@ -414,6 +456,13 @@ components:
         end_reason:
           $ref: "#/components/schemas/SupportSessionEndReason"
           description: On `ended` rows only.
+      oneOf:
+        - required: [expires_at]
+          not:
+            required: [end_reason]
+        - required: [end_reason]
+          not:
+            required: [expires_at]
 
     CrossTenantAccessAuditMetadata:
       type: object
@@ -422,7 +471,22 @@ components:
       description: >
         Allowlisted `metadata` of a `platform.cross_tenant.accessed` row. The
         route is the template (for example `/api/v1/sales/:saleId`), never the
-        concrete path, query string or body.
+        concrete path, query string or body. A `succeeded` row has a support
+        session and no `reason`; a `rejected` row always has a `reason`.
+      if:
+        properties:
+          outcome:
+            const: rejected
+      then:
+        required: [reason]
+      else:
+        not:
+          required: [reason]
+        properties:
+          support_session_id:
+            type: string
+          purpose:
+            $ref: "#/components/schemas/SupportPurpose"
       properties:
         actor_kind:
           const: platform_admin
@@ -443,7 +507,7 @@ components:
             - type: "null"
         method:
           type: string
-          enum: [GET, POST, PUT, PATCH, DELETE]
+          enum: [GET, HEAD, POST, PUT, PATCH, DELETE]
         route:
           type: string
           minLength: 1

@@ -6,7 +6,7 @@ info:
     Server-side resolution and switching of active tenant + active store
     for an authenticated session. Per spec §6.6 and Q3 default A.
 
-    RT-414 (1.1.0-draft, `[GATED]`, pending owner approval): a platform admin
+    RT-414 (1.1.0-draft, `[GATED]`, owner-approved 2026-10-12): a platform admin
     enters a tenant they are not a member of only through a support session
     (`platform-support-sessions.openapi.yaml`). `switchActiveTenant` refuses
     that case with 403 `support_session_required`, and `ContextResponse`
@@ -139,7 +139,11 @@ components:
         purpose:
           type: string
           enum: [customer_support, incident, onboarding]
-        ticket_ref: { type: [string, "null"], maxLength: 64 }
+        ticket_ref:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 64
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._:#/-]{0,63}$"
         status:
           type: string
           enum: [active, expired]

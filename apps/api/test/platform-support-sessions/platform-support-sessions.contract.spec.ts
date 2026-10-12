@@ -2,8 +2,8 @@
  * apps/api/test/platform-support-sessions/platform-support-sessions.contract.spec.ts
  *
  * RT-414 (RT-391 P0-a, owner decision D2): the platform support-session
- * contract. `[GATED]` contract: the runtime ships only after the owner
- * approves it, and its decisions 1–5, on RT-414.
+ * contract. `[GATED]` contract, owner-approved 2026-10-12 with decisions 1–5
+ * recorded on RT-414; the runtime ships after its separate migration gate.
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
  * app boot and no HTTP (the operations are contract-only). What this pins:
@@ -43,6 +43,7 @@ const OPERATIONS: ReadonlyArray<[string, string, string]> = [
 
 interface OperationObject {
   operationId?: string;
+  description?: string;
   security?: Array<Record<string, unknown>>;
   requestBody?: unknown;
   responses?: Record<string, { $ref?: string; description?: string }>;
@@ -58,6 +59,7 @@ type SchemaObject = Record<string, unknown> & {
 };
 
 interface OpenApiDocument {
+  "x-support-session-enforcement"?: Record<string, unknown>;
   openapi?: string;
   info?: { version?: string; description?: string };
   security?: Array<Record<string, unknown>>;
@@ -189,6 +191,28 @@ describe("platform-support-sessions — auth and refusals", () => {
     expect(doc.info?.description).toContain("TenantContextGuard");
   });
 
+  it("names the covered and unchanged operations, and each one exists in another contract", () => {
+    const enforcement = doc["x-support-session-enforcement"] ?? {};
+    expect(enforcement["response"]).toBe("#/components/responses/SupportSessionRefused");
+    expect(doc.components?.responses?.["SupportSessionRefused"]).toBeDefined();
+    expect(enforcement["guarded-routes"]).toBe("TenantContextGuard");
+    expect(enforcement["path-tenant-operations"]).toEqual(["listMembers", "updateTenant"]);
+    expect(enforcement["active-tenant-operations"]).toEqual(["switchActiveStore"]);
+    expect(enforcement["unchanged-platform-scope-operations"]).toEqual([
+      "listTenants",
+      "readTenant",
+      "createTenant",
+      "softDeleteTenant",
+    ]);
+    for (const key of [
+      "path-tenant-operations",
+      "active-tenant-operations",
+      "unchanged-platform-scope-operations",
+    ]) {
+      for (const id of enforcement[key] as string[]) expect(otherOperationIds.has(id)).toBe(true);
+    }
+  });
+
   it("renews only an active session; an expired one must be opened again (decision 2)", () => {
     const renew = op(RENEW, "post");
     expect(renew.description).toMatch(/expired one is not renewable/);
@@ -245,6 +269,13 @@ describe("platform-support-sessions — request and projection", () => {
     expect(validator("CurrentSupportSession")({ support_session: activeSession })).toBe(true);
   });
 
+  it("ties ended_at and end_reason to the ended status", () => {
+    const v = validator("SupportSession");
+    expect(v({ ...activeSession, ended_at: "2026-10-12T09:30:00Z", end_reason: "operator" })).toBe(false);
+    expect(v({ ...activeSession, status: "ended" })).toBe(false);
+    expect(v({ ...activeSession, status: "expired", end_reason: "replaced" })).toBe(false);
+  });
+
   it("rejects a session with an unknown purpose, status or extra key", () => {
     const v = validator("SupportSession");
     expect(v({ ...activeSession, purpose: "curiosity" })).toBe(false);
@@ -274,7 +305,7 @@ describe("platform-support-sessions — audit metadata allowlists", () => {
     ]) {
       expect(text).toContain(action);
     }
-    expect(text).toMatch(/exactly one row per tenant-scoped/);
+    expect(text).toMatch(/exactly one row per request to a\s+covered route/);
   });
 
   it("accepts admitted and refused access rows and rejects an email in metadata", () => {
@@ -291,8 +322,24 @@ describe("platform-support-sessions — audit metadata allowlists", () => {
     expect(
       v({ ...admitted, outcome: "rejected", reason: "support_session_required", support_session_id: null, purpose: null }),
     ).toBe(true);
+    expect(v({ ...admitted, method: "HEAD" })).toBe(true);
     expect(v({ ...admitted, actor_kind: "user" })).toBe(false);
     expect(v({ ...admitted, actor_email: "ops@example.com" })).toBe(false);
+  });
+
+  it("requires a reason exactly on refused rows, and a session on admitted ones", () => {
+    const v = validator("CrossTenantAccessAuditMetadata");
+    const admitted = {
+      actor_kind: "platform_admin",
+      outcome: "succeeded",
+      support_session_id: SESSION_ID,
+      purpose: "incident",
+      method: "GET",
+      route: "/api/v1/sales/:saleId",
+    };
+    expect(v({ ...admitted, reason: "support_session_expired" })).toBe(false);
+    expect(v({ ...admitted, support_session_id: null, purpose: null })).toBe(false);
+    expect(v({ ...admitted, outcome: "rejected" })).toBe(false);
   });
 
   it("accepts lifecycle rows", () => {
@@ -306,7 +353,9 @@ describe("platform-support-sessions — audit metadata allowlists", () => {
     };
     expect(v({ ...base, expires_at: "2026-10-12T10:00:00Z" })).toBe(true);
     expect(v({ ...base, end_reason: "signed_out" })).toBe(true);
-    expect(v({ ...base, tenant_name: "Acme" })).toBe(false);
+    expect(v(base)).toBe(false);
+    expect(v({ ...base, expires_at: "2026-10-12T10:00:00Z", end_reason: "operator" })).toBe(false);
+    expect(v({ ...base, end_reason: "signed_out", tenant_name: "Acme" })).toBe(false);
   });
 });
 
@@ -327,6 +376,24 @@ describe("context contract — additive RT-414 changes", () => {
     const summary = contextDoc.components!.schemas!["SupportSessionSummary"]!;
     expect(summary.additionalProperties).toBe(false);
     expect(Object.keys(summary.properties ?? {})).not.toContain("actor_user_id");
+  });
+
+  it("validates the banner summary with the same ticket_ref rule as the session", () => {
+    const v = ajv.compile(contextDoc.components!.schemas!["SupportSessionSummary"]! as object);
+    const summary = {
+      id: SESSION_ID,
+      tenant_id: TENANT_ID,
+      purpose: "incident",
+      ticket_ref: null,
+      status: "active",
+      expires_at: "2026-10-12T10:00:00Z",
+      renewal_cap_at: "2026-10-12T17:00:00Z",
+    };
+    expect(v(summary)).toBe(true);
+    expect(v({ ...summary, ticket_ref: "SUP-1042", status: "expired" })).toBe(true);
+    expect(v({ ...summary, ticket_ref: "" })).toBe(false);
+    expect(v({ ...summary, ticket_ref: "ops@example.com" })).toBe(false);
+    expect(v({ ...summary, status: "ended" })).toBe(false);
   });
 
   it("keeps the context operations unchanged", () => {

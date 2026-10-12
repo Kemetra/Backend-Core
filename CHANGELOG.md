@@ -19,7 +19,8 @@ This project follows [Semantic Versioning](https://semver.org/).
   defines the platform support session (RT-391 P0-a, D2): open with a
   mandatory purpose, read current, explicit renew and end, a 60-minute
   server-set expiry, the cross-cutting `support_session_required` /
-  `support_session_expired` refusal on tenant-scoped routes, and the
+  `support_session_expired` refusal on tenant-scoped routes (including
+  `listMembers`, `updateTenant` and `switchActiveStore`), and the
   `platform.support_session.*` and `platform.cross_tenant.accessed` audit
   metadata allowlists. `context.openapi.yaml` 1.1.0-draft adds a
   platform-admin-only 403 on `switchActiveTenant` and a nullable
