@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Inventory — Stock Movement Ledger API
-  version: "1.1.0-draft"
+  version: "1.2.0-draft"
   description: >
     Spec 009 Inventory & Stock Movement Ledger contract surface. Defines the
     Inventory source-of-truth domain the SaaS owns: an append-only
@@ -28,7 +28,7 @@ info:
     `store_id`; body-supplied tenant / store / actor / derived-balance fields
     are NEVER accepted (Constitution §III/§XII, FR-052).
 
-    Six operations:
+    Seven operations:
 
       1. `createStockMovement` — append an inbound / outbound / adjustment
          movement (write-off = a reason-coded outbound). Exact-decimal quantity
@@ -55,6 +55,7 @@ info:
          restock) movements referencing captured 008 sale / terminal-event rows
          as provenance; idempotent on the provenance pair; re-run converges
          (FR-031/033). Bounded per request (default 500).
+      7. `listStockLocations` — the stock locations of a store (RT-432).
 
     Quantity: every quantity is an exact-decimal STRING (`numeric(p,s)` at
     rest); no float appears on the wire. There is NO money / tender / payment
@@ -79,6 +80,22 @@ info:
     activates sale-linked effects in this version (RT-427). The sale-linked
     backfill operation is deprecated and retired (RT-289 Q3: no historical
     sale backfill); it remains contract-only and is never shipped.
+
+    1.2.0-draft — Inventory position grain (Jira RT-432; owner-approved
+    RT-290 Gate 4, Confluence RETAIL "Inventory Operations" baseline section
+    "Gate 4"). Additive only. A movement is positioned at a Stock Location of
+    its own store and an Inventory Status (`sellable` | `return_inspection` |
+    `quality_hold` | `damaged` | `expired` | `recall_hold`); tracking is not
+    yet supported (Gate 7). Every store has exactly one `primary` location,
+    created with the store. Writes land at the store's primary location and
+    `sellable` unless a manual movement names another location of the path
+    store or another status. A movement recorded before positions existed is
+    read as (the store's primary location, `sellable`) and flagged
+    `positionInterpreted`; it is never rewritten. `OnHand.quantity` stays the
+    physical total over every location and status; `sellableQuantity` and
+    `statusQuantities` break it down. `listStockLocations` is read-only. The
+    `erp_neutral` integration state exists in the schema but is not returned
+    by this version (nothing assigns it yet, RT-435).
 
 servers:
   - url: https://api.datapulse.example
@@ -176,6 +193,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StockMovementList"
+        "400": { $ref: "#/components/responses/ValidationFailure" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFoundOrCrossTenant" }
+        "5XX": { $ref: "#/components/responses/SystemFailure" }
+
+  /api/inventory/v1/stores/{storeId}/locations:
+    get:
+      operationId: listStockLocations
+      tags: [inventory]
+      summary: List the stock locations of a store.
+      description: >
+        RT-432 (RT-290 G4-1): the path-scoped store's stock locations, the
+        `primary` location first, then by `code`. Read-only: a store's primary
+        location is created with the store and its identity never changes. Store
+        authorization is the same object-level rule as the other store-scoped
+        reads; a store outside the caller's scope is a non-disclosing 404.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/StoreIdPath"
+      responses:
+        "200":
+          description: The store's stock locations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockLocationList"
         "400": { $ref: "#/components/responses/ValidationFailure" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -427,6 +472,18 @@ components:
           type: [string, "null"]
           format: uuid
           description: Provenance only — references an 008 void/refund terminal event (restock, FR-025).
+        stockLocationId:
+          type: string
+          format: uuid
+          description: >
+            RT-432 (RT-290 G4-6): a stock location of the path store. Omitted ⇒
+            the store's primary location. A location that is not one of the path
+            store's locations is a non-disclosing 404; an inactive location is a
+            400.
+        inventoryStatus:
+          allOf:
+            - $ref: "#/components/schemas/InventoryStatus"
+          description: RT-432 (RT-290 G4-6). Omitted ⇒ `sellable`.
     CreateStockTransferCommand:
       type: object
       additionalProperties: false
@@ -512,7 +569,9 @@ components:
     # ----- Projections (response bodies) — explicit toBody wire shapes (§IV); NO raw DB entity
     StockMovement:
       type: object
-      required: [id, storeId, movementType, quantity, stockingUnit, occurredAt, receivedAt, createdBy, origin]
+      required:
+        [id, storeId, movementType, quantity, stockingUnit, occurredAt, receivedAt, createdBy, origin,
+         stockLocationId, inventoryStatus, positionInterpreted]
       description: >
         toBody projection of a stock_movements row. The lineage-only
         `idempotency_key` column and internal fields are NOT projected.
@@ -564,6 +623,20 @@ components:
             RT-425 (RT-289 G2-4): when ERPNext confirmed the effect (server time
             of the `posted` acknowledgement); null unless `integrationState` is
             `confirmed`.
+        stockLocationId:
+          type: string
+          format: uuid
+          description: >
+            RT-432 (RT-290 G4-1, G4-4): the effect's stock location, always one
+            of `storeId`'s locations.
+        inventoryStatus:
+          $ref: "#/components/schemas/InventoryStatus"
+        positionInterpreted:
+          type: boolean
+          description: >
+            RT-432 (RT-290 G4-5): true for a movement recorded before positions
+            existed. Its position is READ as the store's primary location and
+            `sellable`; the movement itself is never rewritten.
     StockMovementList:
       type: object
       required: [items]
@@ -579,11 +652,16 @@ components:
           description: Opaque cursor for the next page; null when exhausted.
     OnHand:
       type: object
-      required: [storeId, productId, quantity, negativeBalance]
+      required: [storeId, productId, quantity, negativeBalance, sellableQuantity, statusQuantities]
       description: >
         Derived on-hand projection. `quantity` is the compute-on-read signed
-        SUM (FR-003). `negativeBalance` is true when `quantity` < 0 (FR-024);
-        on-hand is never a stored mutable value.
+        SUM (FR-003) over every location and inventory status of the store —
+        the physical on-hand (decision 732). `negativeBalance` is true when
+        `quantity` < 0 (FR-024); on-hand is never a stored mutable value.
+        RT-432: `sellableQuantity` and `statusQuantities` split the same
+        movements by inventory status (decision 745); a movement recorded before
+        positions existed counts as `sellable`. Available To Sell is not
+        projected here.
       properties:
         storeId: { type: string, format: uuid }
         productId: { type: string, format: uuid }
@@ -593,6 +671,57 @@ components:
         negativeBalance:
           type: boolean
           description: True when the derived quantity is below zero (allow-and-flag, FR-024).
+        sellableQuantity:
+          allOf:
+            - $ref: "#/components/schemas/DecimalQuantity"
+          description: RT-432 — the `sellable` share of `quantity` (decision 733). May be negative.
+        statusQuantities:
+          type: array
+          minItems: 6
+          maxItems: 6
+          description: >
+            RT-432 — one entry per inventory status, in the order of the
+            `InventoryStatus` enum; a status with no movements reads zero. The
+            entries sum to `quantity`.
+          items:
+            $ref: "#/components/schemas/StatusQuantity"
+    InventoryStatus:
+      type: string
+      enum: [sellable, return_inspection, quality_hold, damaged, expired, recall_hold]
+      description: >
+        RT-432 (RT-290 G4-2, decision 751): the closed set of inventory
+        statuses. All are physical stock; only `sellable` is sellable (733).
+    StatusQuantity:
+      type: object
+      required: [inventoryStatus, quantity]
+      properties:
+        inventoryStatus:
+          $ref: "#/components/schemas/InventoryStatus"
+        quantity:
+          $ref: "#/components/schemas/DecimalQuantity"
+    StockLocation:
+      type: object
+      required: [id, storeId, code, name, kind, isActive]
+      description: >
+        RT-432 (RT-290 G4-1): a stock location inside exactly one store. Every
+        store has exactly one `primary` location, created with the store.
+      properties:
+        id: { type: string, format: uuid }
+        storeId: { type: string, format: uuid }
+        code: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 200 }
+        kind:
+          type: string
+          enum: [primary, storage]
+        isActive: { type: boolean }
+    StockLocationList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StockLocation"
     StockTransfer:
       type: object
       required: [transferGroupId, outbound, inbound]

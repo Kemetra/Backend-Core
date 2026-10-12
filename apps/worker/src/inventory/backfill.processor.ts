@@ -256,13 +256,21 @@ export class InventoryBackfillProcessor {
             let inserted: { rows: Array<{ id: string }> };
             try {
               inserted = await client.query<{ id: string }>(
+                // RT-432 (RT-290 G4-6): the store's primary location, sellable
+                // — the position InventoryService resolves for the same write.
+                // A store with no visible primary inserts a NULL location and
+                // fails the 0044 position CHECK (never a guessed position).
                 `INSERT INTO stock_movements
                    (tenant_id, store_id, movement_type, quantity, stocking_unit,
                     tenant_product_ref, occurred_at, source_system, external_id,
-                    sale_id, sale_line_id, created_by)
+                    sale_id, sale_line_id, created_by, stock_location_id,
+                    inventory_status)
                  VALUES
                    ($1, $2, 'outbound', (-1) * $3::numeric(19,4), $4, $5, now(),
-                    $6, $7, $8, $9, $10)
+                    $6, $7, $8, $9, $10,
+                    (SELECT id FROM stock_locations
+                      WHERE store_id = $2 AND kind = 'primary'),
+                    'sellable')
                  ON CONFLICT (tenant_id, source_system, external_id)
                    WHERE source_system IS NOT NULL AND external_id IS NOT NULL
                    DO NOTHING

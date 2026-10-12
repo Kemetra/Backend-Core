@@ -304,17 +304,23 @@ describe("T063b: tenant context + RLS isolation (§V)", () => {
     // Direct INSERT on the app pool with NO app.current_tenant GUC: the
     // stock_movements_tenant_insert WITH CHECK denies (tenant_id != NULL),
     // proving the processor MUST establish tenant context before DB access.
+    // The row carries a valid position (RT-432, 0044) so RLS — not the
+    // position CHECK — is what refuses it.
+    const primary = await env!.admin.query<{ id: string }>(
+      `SELECT id FROM stock_locations WHERE store_id = $1 AND kind = 'primary'`,
+      [STORE_A],
+    );
     const client = await env!.app.connect();
     try {
       await expect(
         client.query(
           `INSERT INTO stock_movements
              (tenant_id, store_id, movement_type, quantity, stocking_unit,
-              created_by)
-           VALUES ($1, $2, 'outbound', -1::numeric(19,4), 'ea', $3)`,
-          [TENANT_A, STORE_A, ACTOR_A],
+              created_by, stock_location_id, inventory_status)
+           VALUES ($1, $2, 'outbound', -1::numeric(19,4), 'ea', $3, $4, 'sellable')`,
+          [TENANT_A, STORE_A, ACTOR_A, primary.rows[0]!.id],
         ),
-      ).rejects.toThrow();
+      ).rejects.toThrow(/row-level security/);
     } finally {
       client.release();
     }

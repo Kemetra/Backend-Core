@@ -26,6 +26,11 @@
  * the catalog service warns about).
  *
  * Transfer / count operations are authored in 009-US5 / US6 — NOT here.
+ *
+ * RT-432 (RT-290 Gate 4): GET /api/inventory/v1/stores/{storeId}/locations →
+ * listStockLocations (read-only). A manual movement may name an explicit
+ * `stockLocationId` (a location of the path store) and `inventoryStatus`;
+ * both default server-side to the store's primary location and `sellable`.
  */
 import {
   Body,
@@ -41,6 +46,7 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
+import { INVENTORY_STATUSES } from '@data-pulse-2/db';
 import { z } from 'zod';
 
 import { DashboardAuthGuard } from '../auth/dashboard-auth.guard';
@@ -56,6 +62,7 @@ import {
   type StockMovementListBody,
   type StockTransferBody,
   type StockCountResultBody,
+  type StockLocationListBody,
 } from './inventory.service';
 
 const UuidSchema = z.string().uuid();
@@ -92,6 +99,10 @@ const CreateStockMovementSchema = z
     saleId: z.string().uuid().nullable().optional(),
     saleLineId: z.string().uuid().nullable().optional(),
     terminalEventRef: z.string().uuid().nullable().optional(),
+    // RT-432 (RT-290 G4-6): optional position; defaults to the path store's
+    // primary location and `sellable`.
+    stockLocationId: z.string().uuid().optional(),
+    inventoryStatus: z.enum(INVENTORY_STATUSES).optional(),
   })
   .strict();
 type CreateStockMovementDto = z.infer<typeof CreateStockMovementSchema>;
@@ -231,6 +242,28 @@ export class InventoryController {
       saleId: body.saleId ?? null,
       saleLineId: body.saleLineId ?? null,
       terminalEventRef: body.terminalEventRef ?? null,
+      stockLocationId: body.stockLocationId ?? null,
+      inventoryStatus: body.inventoryStatus ?? null,
+    });
+  }
+
+  /**
+   * GET /api/inventory/v1/stores/{storeId}/locations
+   *
+   * RT-432 (RT-290 G4-1): the store's stock locations, primary first. Read-only;
+   * the primary location is created with its store. Store authorization is the
+   * same object-level rule as the other store-scoped reads.
+   */
+  @Get('api/inventory/v1/stores/:storeId/locations')
+  async listStockLocations(
+    @Req() request: TenantContextRequest,
+    @Param('storeId', new ZodValidationPipe(UuidSchema)) storeId: string,
+  ): Promise<StockLocationListBody> {
+    const ctx = this.requireContext(request);
+    this.authorizeStore(ctx, storeId);
+    return this.inventoryService.listStockLocations({
+      tenantId: ctx.tenantId as string,
+      storeId,
     });
   }
 

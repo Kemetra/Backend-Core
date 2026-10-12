@@ -14,7 +14,7 @@
  *     it must be loaded explicitly here. T011 is consequently a no-op: there is
  *     no central YAML registry to extend (same verdict as 005 T504 / 008 T011).
  *
- *   * Asserts presence of the six 009 operationIds and their uniqueness against
+ *   * Asserts presence of the six 009 operationIds (plus RT-432's listStockLocations) and their uniqueness against
  *     the existing top-level contracts (stop condition: "if any operationId
  *     collides with or renames a shipped 005/007/008 operationId").
  *
@@ -40,6 +40,8 @@ import "reflect-metadata";
 
 import { resolve } from "node:path";
 
+import { INVENTORY_STATUSES } from "@data-pulse-2/db";
+
 import { loadOpenApiContracts } from "../../../src/openapi/loader";
 
 // ---------------------------------------------------------------------------
@@ -55,6 +57,7 @@ const OPERATION_IDS = [
   "createStockTransfer",
   "recordStockCount",
   "backfillSaleLinkedMovements",
+  "listStockLocations",
 ] as const;
 
 // Operator-surface ops use cookieAuth; the backfill is platform/admin.
@@ -64,6 +67,7 @@ const OPERATOR_OPERATION_IDS = [
   "listStockMovements",
   "createStockTransfer",
   "recordStockCount",
+  "listStockLocations",
 ];
 const ADMIN_OPERATION_IDS = ["backfillSaleLinkedMovements"];
 
@@ -74,13 +78,14 @@ const WRITE_OPERATION_IDS = [
   "recordStockCount",
   "backfillSaleLinkedMovements",
 ];
-const READ_OPERATION_IDS = ["getOnHand", "listStockMovements"];
+const READ_OPERATION_IDS = ["getOnHand", "listStockMovements", "listStockLocations"];
 
 const MOVEMENTS_PATH = "/api/inventory/v1/stores/{storeId}/movements";
 const ON_HAND_PATH = "/api/inventory/v1/on-hand/{storeId}/{productId}";
 const TRANSFERS_PATH = "/api/inventory/v1/transfers";
 const COUNTS_PATH = "/api/inventory/v1/stores/{storeId}/counts";
 const BACKFILL_PATH = "/api/inventory/v1/admin/sale-linked-backfill";
+const LOCATIONS_PATH = "/api/inventory/v1/stores/{storeId}/locations";
 
 // Field-name substrings forbidden anywhere in the contract (§XIV — no PII /
 // money / payment / tender on the inventory ledger in v1).
@@ -253,7 +258,7 @@ describe("inventory/inventory.yaml — loadability", () => {
 // 2. Operations present, uniquely named, correctly secured
 // ===========================================================================
 describe("inventory/inventory.yaml — operations", () => {
-  it("declares exactly the six 009 operationIds", () => {
+  it("declares exactly the six 009 operationIds and RT-432's listStockLocations", () => {
     const ids = inventoryOperations()
       .map((o) => o.op.operationId)
       .filter((id): id is string => typeof id === "string")
@@ -277,6 +282,9 @@ describe("inventory/inventory.yaml — operations", () => {
     );
     expect(inventoryDoc.paths?.[BACKFILL_PATH]?.["post"]?.operationId).toBe(
       "backfillSaleLinkedMovements",
+    );
+    expect(inventoryDoc.paths?.[LOCATIONS_PATH]?.["get"]?.operationId).toBe(
+      "listStockLocations",
     );
   });
 
@@ -463,5 +471,60 @@ describe("inventory/inventory.yaml — RT-425 effect projection", () => {
       | undefined;
     expect(op?.deprecated).toBe(true);
     expect(op?.["x-runtime-status"]).toBe("contract-only");
+  });
+});
+
+// ===========================================================================
+// 7. RT-432 — inventory position grain (additive, 1.2.0-draft)
+// ===========================================================================
+describe("inventory/inventory.yaml — RT-432 position grain", () => {
+  type Prop = { type?: unknown; enum?: unknown[]; format?: string; $ref?: string; allOf?: Array<{ $ref?: string }> };
+  const schema = (name: string): { properties?: Record<string, Prop>; required?: string[]; enum?: unknown[] } =>
+    (inventoryDoc.components?.schemas?.[name] ?? {}) as {
+      properties?: Record<string, Prop>;
+      required?: string[];
+      enum?: unknown[];
+    };
+  const STATUS_REF = "#/components/schemas/InventoryStatus";
+
+  it("declares the closed InventoryStatus enum of RT-290 G4-2, matching the schema", () => {
+    expect(schema("InventoryStatus").enum).toEqual([...INVENTORY_STATUSES]);
+  });
+
+  it("projects every movement's required stock location, status and positionInterpreted flag", () => {
+    const mv = schema("StockMovement");
+    expect(mv.properties?.["stockLocationId"]?.format).toBe("uuid");
+    expect(mv.properties?.["inventoryStatus"]?.$ref).toBe(STATUS_REF);
+    expect(mv.properties?.["positionInterpreted"]?.type).toBe("boolean");
+    expect(mv.required).toEqual(
+      expect.arrayContaining(["stockLocationId", "inventoryStatus", "positionInterpreted"]),
+    );
+  });
+
+  it("lets a manual movement name an optional location and status, nothing else new", () => {
+    const cmd = schema("CreateStockMovementCommand");
+    expect(cmd.properties?.["stockLocationId"]?.format).toBe("uuid");
+    expect(cmd.properties?.["inventoryStatus"]?.allOf?.[0]?.$ref).toBe(STATUS_REF);
+    expect(cmd.required).toEqual(["movementType", "quantity", "stockingUnit"]);
+  });
+
+  it("keeps OnHand.quantity the physical total and adds the per-status breakdown", () => {
+    const oh = schema("OnHand");
+    expect(oh.required).toEqual(
+      expect.arrayContaining(["quantity", "sellableQuantity", "statusQuantities"]),
+    );
+    expect(oh.properties?.["quantity"]?.$ref).toBe("#/components/schemas/DecimalQuantity");
+  });
+
+  it("lists a store's locations read-only, behind cookieAuth, with no Idempotency-Key", () => {
+    const paths = inventoryDoc.paths?.[LOCATIONS_PATH] ?? {};
+    expect(Object.keys(paths).filter((m) => m !== "parameters")).toEqual(["get"]);
+    expect(schema("StockLocation").properties?.["kind"]?.enum).toEqual(["primary", "storage"]);
+  });
+
+  it("does not return erp_neutral yet: nothing assigns it in 1.2.0-draft (RT-435)", () => {
+    expect(schema("StockMovement").properties?.["integrationState"]?.enum).not.toContain(
+      "erp_neutral",
+    );
   });
 });

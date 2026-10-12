@@ -44,6 +44,14 @@
  * this slice's allowed_files; same pattern as the 008 `sale.captured` deferral).
  *
  * Transfer / count / backfill writes are authored in 009-US5/US6/US4 — NOT here.
+ *
+ * Position (RT-432; RT-290 G4-1…G4-6): every movement a write path appends
+ * lands at an explicit (stock location, inventory status) of its own store —
+ * the store's `primary` location and `sellable` unless a manual movement names
+ * another location / status. Movements recorded before 0044 have no position
+ * and are READ as (the store's primary location, sellable) with
+ * `positionInterpreted: true`; they are never updated (G4-5). On-hand stays the
+ * total over every location and status (973) and adds a per-status breakdown.
  */
 import {
   BadRequestException,
@@ -51,7 +59,13 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { runWithTenantContext, emit, OUTBOX_EVENT_TYPES } from '@data-pulse-2/db';
+import {
+  runWithTenantContext,
+  emit,
+  INVENTORY_STATUSES,
+  OUTBOX_EVENT_TYPES,
+  type InventoryStatus,
+} from '@data-pulse-2/db';
 import { newId } from '@data-pulse-2/shared';
 import type { Pool, PoolClient } from 'pg';
 
@@ -125,6 +139,13 @@ export interface CreateStockMovementInput {
   readonly saleId?: string | null | undefined;
   readonly saleLineId?: string | null | undefined;
   readonly terminalEventRef?: string | null | undefined;
+  /**
+   * RT-432: a location of the path store; defaults to the store's primary
+   * location (RT-290 G4-6).
+   */
+  readonly stockLocationId?: string | null | undefined;
+  /** RT-432: defaults to `sellable` (RT-290 G4-6). */
+  readonly inventoryStatus?: InventoryStatus | null | undefined;
 }
 
 /**
@@ -281,15 +302,49 @@ export interface StockMovementBody {
   readonly integrationState: string | null;
   /** RT-425 (RT-289 G2-4): when ERP confirmed the effect; null until then. */
   readonly erpConfirmedAt: string | null;
+  /** RT-432 (RT-290 G4-1): the effect's stock location. */
+  readonly stockLocationId: string;
+  /** RT-432 (RT-290 G4-2): the effect's inventory status. */
+  readonly inventoryStatus: string;
+  /**
+   * RT-432 (RT-290 G4-5): true for a movement recorded before positions existed,
+   * whose position is read as (the store's primary location, sellable).
+   */
+  readonly positionInterpreted: boolean;
+}
+
+/** RT-432: one inventory status's share of the on-hand (contract `StatusQuantity`). */
+export interface StatusQuantityBody {
+  readonly inventoryStatus: InventoryStatus;
+  readonly quantity: string;
 }
 
 /** Wire projection of the derived on-hand (contract `OnHand`, FR-003/024). */
 export interface OnHandBody {
   readonly storeId: string;
   readonly productId: string;
+  /** Physical on-hand: every location and status of the store (732, 973). */
   readonly quantity: string;
   readonly stockingUnit: string | null;
   readonly negativeBalance: boolean;
+  /** RT-432: the `sellable` share (733); ATS is derived from it later (742). */
+  readonly sellableQuantity: string;
+  /** RT-432: one entry per inventory status, in enum order (745). */
+  readonly statusQuantities: readonly StatusQuantityBody[];
+}
+
+/** RT-432: wire projection of a stock location (contract `StockLocation`). */
+export interface StockLocationBody {
+  readonly id: string;
+  readonly storeId: string;
+  readonly code: string;
+  readonly name: string;
+  readonly kind: string;
+  readonly isActive: boolean;
+}
+
+export interface StockLocationListBody {
+  readonly items: readonly StockLocationBody[];
 }
 
 export interface StockMovementListBody {
@@ -318,12 +373,18 @@ interface MovementRow {
   /** From inventory_effect_integration; absent on a bare RETURNING row. */
   integration_state?: string | null;
   erp_confirmed_at?: Date | null;
+  /** RT-432: NULL only on a movement recorded before 0044. */
+  stock_location_id: string | null;
+  inventory_status: string | null;
+  /** RT-432: the store's primary location, joined on reads (G4-5). */
+  primary_location_id?: string | null;
 }
 
 const MOVEMENT_COLUMN_NAMES = [
   'id', 'store_id', 'movement_type', 'quantity', 'stocking_unit', 'tenant_product_ref',
   'reason', 'occurred_at', 'received_at', 'sale_id', 'sale_line_id', 'terminal_event_ref',
   'transfer_group_id', 'stock_count_id', 'created_by', 'origin',
+  'stock_location_id', 'inventory_status',
 ] as const;
 
 const MOVEMENT_COLUMNS = MOVEMENT_COLUMN_NAMES.join(', ');
@@ -331,12 +392,28 @@ const MOVEMENT_COLUMNS = MOVEMENT_COLUMN_NAMES.join(', ');
 /**
  * RT-425: movement columns qualified by `m`, plus the effect's integration
  * state, for reads that LEFT JOIN inventory_effect_integration `i`.
+ * RT-432: plus the store's primary location, for reads that LEFT JOIN it as
+ * `p` (MOVEMENT_POSITION_JOIN) to resolve a pre-0044 movement's position.
  */
 const MOVEMENT_COLUMNS_WITH_INTEGRATION = [
   ...MOVEMENT_COLUMN_NAMES.map((c) => `m.${c}`),
   'i.state AS integration_state',
   'i.erp_confirmed_at',
+  'p.id AS primary_location_id',
 ].join(', ');
+
+/** RT-432 (G4-5): the store's primary location, for reading legacy positions. */
+const MOVEMENT_POSITION_JOIN =
+  "LEFT JOIN stock_locations p ON p.store_id = m.store_id AND p.kind = 'primary'";
+
+/** RT-432 (RT-290 G4-6): the status a V1 write lands in unless told otherwise. */
+const DEFAULT_INVENTORY_STATUS: InventoryStatus = 'sellable';
+
+/** RT-432: the position a movement is written at. */
+interface EffectPosition {
+  readonly stockLocationId: string;
+  readonly inventoryStatus: InventoryStatus;
+}
 
 /** RT-425: the state every Retail effect starts in until an ERP intent exists. */
 const NOT_POSTED = 'not_posted';
@@ -361,6 +438,33 @@ function toMovementBody(r: MovementRow): StockMovementBody {
     origin: r.origin,
     integrationState: r.integration_state ?? null,
     erpConfirmedAt: r.erp_confirmed_at ? r.erp_confirmed_at.toISOString() : null,
+    ...toPositionBody(r),
+  };
+}
+
+/**
+ * RT-432 (RT-290 G4-5): a movement's position. A movement recorded before 0044
+ * has none and is read as (the store's primary location, sellable).
+ */
+function toPositionBody(
+  r: MovementRow,
+): Pick<StockMovementBody, 'stockLocationId' | 'inventoryStatus' | 'positionInterpreted'> {
+  if (r.stock_location_id !== null && r.inventory_status !== null) {
+    return {
+      stockLocationId: r.stock_location_id,
+      inventoryStatus: r.inventory_status,
+      positionInterpreted: false,
+    };
+  }
+  if (!r.primary_location_id) {
+    // 0044 gives every store a primary location; a missing one is a broken
+    // invariant, never a position to guess.
+    throw new Error(`InventoryService: store ${r.store_id} has no primary stock location`);
+  }
+  return {
+    stockLocationId: r.primary_location_id,
+    inventoryStatus: DEFAULT_INVENTORY_STATUS,
+    positionInterpreted: true,
   };
 }
 
@@ -402,29 +506,45 @@ export class InventoryService {
         // Store scope is the WHERE clause + object-level authz at the
         // controller; 0014 has tenant RLS only (no store policy), so no
         // app.current_store GUC is needed.
-        // SUM in SQL; COALESCE handles the empty-key (zero-row → NULL) case.
-        // stocking_unit is taken from any movement for the key (consistent per
-        // product by FR-022); NULL when there are no movements.
-        const r = await client.query<{
+        // RT-432: ONE statement, so the total and its per-status split come from
+        // the same snapshot (two statements under READ COMMITTED could see
+        // different commits and break "the entries sum to quantity"). SUM in
+        // SQL at the column's numeric(19,4) scale (uniform "7.0000" wire
+        // format); the total is the exact BigInt sum of the group rows. A
+        // movement recorded before 0044 has no status and counts as sellable
+        // (G4-5). stocking_unit is consistent per product (FR-022, 0016); NULL
+        // when there are no movements.
+        const byStatus = await client.query<{
+          inventory_status: string;
           quantity: string;
-          stocking_unit: string | null;
+          stocking_unit: string;
         }>(
-          // ::numeric(19,4)::text gives a uniform wire format ("0.0000" /
-          // "7.0000") — the empty-key COALESCE literal and the SUM both render
-          // at the column's scale, so a client never sees mixed "0" vs "7.0000".
-          `SELECT COALESCE(SUM(quantity), 0)::numeric(19,4)::text AS quantity,
+          `SELECT COALESCE(inventory_status, '${DEFAULT_INVENTORY_STATUS}') AS inventory_status,
+                  SUM(quantity)::numeric(19,4)::text AS quantity,
                   MIN(stocking_unit) AS stocking_unit
              FROM stock_movements
-            WHERE store_id = $1 AND tenant_product_ref = $2`,
+            WHERE store_id = $1 AND tenant_product_ref = $2
+            GROUP BY 1`,
           [input.storeId, input.productId],
         );
-        const quantity = r.rows[0]?.quantity ?? '0.0000';
+        const quantity = formatQuantity(
+          byStatus.rows.reduce((sum, row) => sum + parseQuantity(row.quantity), 0n),
+        );
+        const statusQuantities = INVENTORY_STATUSES.map((status) => ({
+          inventoryStatus: status,
+          quantity:
+            byStatus.rows.find((row) => row.inventory_status === status)?.quantity ?? '0.0000',
+        }));
         return {
           storeId: input.storeId,
           productId: input.productId,
           quantity,
-          stockingUnit: r.rows[0]?.stocking_unit ?? null,
+          stockingUnit: byStatus.rows[0]?.stocking_unit ?? null,
           negativeBalance: parseQuantity(quantity) < 0n,
+          sellableQuantity:
+            statusQuantities.find((q) => q.inventoryStatus === DEFAULT_INVENTORY_STATUS)
+              ?.quantity ?? '0.0000',
+          statusQuantities,
         };
       },
     );
@@ -464,6 +584,7 @@ export class InventoryService {
           `SELECT ${MOVEMENT_COLUMNS_WITH_INTEGRATION}
              FROM stock_movements m
              LEFT JOIN inventory_effect_integration i ON i.effect_id = m.id
+             ${MOVEMENT_POSITION_JOIN}
             WHERE m.store_id = $1 AND ${productPredicate}
             ORDER BY m.occurred_at ASC, m.id ASC
             LIMIT ${limitParam}`,
@@ -472,6 +593,47 @@ export class InventoryService {
         return {
           items: r.rows.map(toMovementBody),
           nextCursor: null,
+        };
+      },
+    );
+  }
+
+  /**
+   * RT-432 (RT-290 G4-1): the stock locations of a (tenant, store), primary
+   * first, then by code. Read-only; locations are created with their store.
+   */
+  async listStockLocations(input: {
+    readonly tenantId: string;
+    readonly storeId: string;
+  }): Promise<StockLocationListBody> {
+    return runWithTenantContext(
+      this.pool,
+      { tenantId: input.tenantId, isPlatformAdmin: false },
+      async (client): Promise<StockLocationListBody> => {
+        await this.assertReferencesInTenant(client, { storeIds: [input.storeId] });
+        const r = await client.query<{
+          id: string;
+          store_id: string;
+          code: string;
+          name: string;
+          kind: string;
+          is_active: boolean;
+        }>(
+          `SELECT id, store_id, code, name, kind, is_active
+             FROM stock_locations
+            WHERE store_id = $1
+            ORDER BY (kind = 'primary') DESC, code ASC, id ASC`,
+          [input.storeId],
+        );
+        return {
+          items: r.rows.map((l) => ({
+            id: l.id,
+            storeId: l.store_id,
+            code: l.code,
+            name: l.name,
+            kind: l.kind,
+            isActive: l.is_active,
+          })),
         };
       },
     );
@@ -518,6 +680,12 @@ export class InventoryService {
           );
         }
 
+        // ---- Position (RT-432, RT-290 G4-6) ------------------------------
+        const position = await this.resolvePosition(client, input.storeId, {
+          stockLocationId: input.stockLocationId ?? null,
+          inventoryStatus: input.inventoryStatus ?? null,
+        });
+
         // ---- Append-only INSERT ------------------------------------------
         // tenant_id / store_id / created_by are the server-resolved values
         // (principal + path), never the body. occurred_at defaults to now()
@@ -529,10 +697,12 @@ export class InventoryService {
           `INSERT INTO stock_movements
              (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
               tenant_product_ref, reason, occurred_at, sale_id, sale_line_id,
-              terminal_event_ref, created_by, event_type, event_ref_id)
+              terminal_event_ref, created_by, event_type, event_ref_id,
+              stock_location_id, inventory_status)
            VALUES
              ($1, $2, $3, $4, $5::numeric(19,4), $6, $7, $8,
-              COALESCE($9::timestamptz, now()), $10, $11, $12, $13, 'adjustment', $1)
+              COALESCE($9::timestamptz, now()), $10, $11, $12, $13, 'adjustment', $1,
+              $14, $15)
            RETURNING ${MOVEMENT_COLUMNS}`,
           [
             movementId,
@@ -548,6 +718,8 @@ export class InventoryService {
             input.saleLineId ?? null,
             input.terminalEventRef ?? null,
             input.userId,
+            position.stockLocationId,
+            position.inventoryStatus,
           ],
           { storeId: input.storeId, tenantProductRef, suppliedUnit: stockingUnit },
         );
@@ -709,16 +881,21 @@ export class InventoryService {
           stockingUnit,
         );
 
+        // ---- Positions (RT-432, RT-290 G4-6): each store's primary, sellable.
+        // The instant transfer is not the target shipment workflow (974, Gate 5).
+        const outPosition = await this.resolvePosition(client, input.sourceStoreId);
+        const inPosition = await this.resolvePosition(client, input.destinationStoreId);
+
         // ---- Two linked INSERTs sharing the transfer group ----------------
         const out = await this.insertMovementRow(
           client,
           `INSERT INTO stock_movements
              (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
               tenant_product_ref, reason, occurred_at, transfer_group_id, created_by,
-              event_type, event_ref_id)
+              event_type, event_ref_id, stock_location_id, inventory_status)
            VALUES
              ($1, $2, $3, 'transfer_out', $4::numeric(19,4), $5, $6, $7, now(), $8, $9,
-              'transfer', $8)
+              'transfer', $8, $10, $11)
            RETURNING ${MOVEMENT_COLUMNS}`,
           [
             outId,
@@ -730,6 +907,8 @@ export class InventoryService {
             reason,
             transferGroupId,
             input.userId,
+            outPosition.stockLocationId,
+            outPosition.inventoryStatus,
           ],
           {
             storeId: input.sourceStoreId,
@@ -742,10 +921,10 @@ export class InventoryService {
           `INSERT INTO stock_movements
              (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
               tenant_product_ref, reason, occurred_at, transfer_group_id, created_by,
-              event_type, event_ref_id)
+              event_type, event_ref_id, stock_location_id, inventory_status)
            VALUES
              ($1, $2, $3, 'transfer_in', $4::numeric(19,4), $5, $6, $7, now(), $8, $9,
-              'transfer', $8)
+              'transfer', $8, $10, $11)
            RETURNING ${MOVEMENT_COLUMNS}`,
           [
             inId,
@@ -757,6 +936,8 @@ export class InventoryService {
             reason,
             transferGroupId,
             input.userId,
+            inPosition.stockLocationId,
+            inPosition.inventoryStatus,
           ],
           {
             storeId: input.destinationStoreId,
@@ -901,15 +1082,18 @@ export class InventoryService {
         // ---- Append the count_correction ONLY for a non-zero variance ----
         let correctionMovement: StockMovementBody | null = null;
         if (variance !== 0n) {
+          // RT-432 (RT-290 G4-6): the immediate count corrects the store's
+          // primary location, sellable; Gate 6 (RT-292) scopes counts by position.
+          const position = await this.resolvePosition(client, input.storeId);
           const corr = await this.insertMovementRow(
             client,
             `INSERT INTO stock_movements
                (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
                 tenant_product_ref, stock_count_id, reason, occurred_at, created_by,
-                event_type, event_ref_id)
+                event_type, event_ref_id, stock_location_id, inventory_status)
              VALUES
                ($1, $2, $3, 'count_correction', $4::numeric(19,4), $5, $6, $7,
-                'count variance', now(), $8, 'count', $7)
+                'count variance', now(), $8, 'count', $7, $9, $10)
              RETURNING ${MOVEMENT_COLUMNS}`,
             [
               newId(),
@@ -920,6 +1104,8 @@ export class InventoryService {
               input.tenantProductRef,
               stockCountId,
               input.userId,
+              position.stockLocationId,
+              position.inventoryStatus,
             ],
             {
               storeId: input.storeId,
@@ -1168,16 +1354,20 @@ export class InventoryService {
           );
         }
 
+        // RT-432 (RT-290 G4-6): the store's primary location, sellable.
+        const position = await this.resolvePosition(client, input.storeId);
+
         // ---- Idempotent append on the provenance pair ----------------------
         const inserted = await this.insertMovementRow(
           client,
           `INSERT INTO stock_movements
              (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
               tenant_product_ref, reason, occurred_at, source_system, external_id,
-              sale_id, sale_line_id, terminal_event_ref, created_by)
+              sale_id, sale_line_id, terminal_event_ref, created_by,
+              stock_location_id, inventory_status)
            VALUES
              ($1, $2, $3, $4, $5::numeric(19,4), $6, $7, $8,
-              COALESCE($9::timestamptz, now()), $10, $11, $12, $13, $14, $15)
+              COALESCE($9::timestamptz, now()), $10, $11, $12, $13, $14, $15, $16, $17)
            ON CONFLICT (tenant_id, source_system, external_id)
              WHERE source_system IS NOT NULL AND external_id IS NOT NULL
              DO NOTHING
@@ -1198,6 +1388,8 @@ export class InventoryService {
             input.saleLineId ?? null,
             input.terminalEventRef ?? null,
             input.userId,
+            position.stockLocationId,
+            position.inventoryStatus,
           ],
           {
             storeId: input.storeId,
@@ -1212,9 +1404,11 @@ export class InventoryService {
           // it WITHOUT a second INSERT and WITHOUT a second audit/side-effect —
           // on-hand stays applied exactly once (FR-031/033).
           const existing = await client.query<MovementRow>(
-            `SELECT ${MOVEMENT_COLUMNS}
-               FROM stock_movements
-              WHERE tenant_id = $1 AND source_system = $2 AND external_id = $3`,
+            `SELECT ${MOVEMENT_COLUMN_NAMES.map((c) => `m.${c}`).join(', ')},
+                    p.id AS primary_location_id
+               FROM stock_movements m
+               ${MOVEMENT_POSITION_JOIN}
+              WHERE m.tenant_id = $1 AND m.source_system = $2 AND m.external_id = $3`,
             [input.tenantId, f.sourceSystem, f.externalId],
           );
           const existingRow = existing.rows[0];
@@ -1305,6 +1499,47 @@ export class InventoryService {
       );
       if (!product.rows[0]) throw new NotFoundException('Not Found');
     }
+  }
+
+  /**
+   * RT-432 (RT-290 G4-6): the position a write lands at. Without an explicit
+   * location the store's `primary` location; without an explicit status
+   * `sellable`. Runs on the tenant-context client, so RLS hides other tenants'
+   * locations: an explicit location that is not one of THIS store's locations
+   * in this tenant is a non-disclosing 404 (FR-051), and an inactive one is a
+   * 400. The composite FK (stock_location_id, store_id, tenant_id) is the
+   * database backstop for both. A store with no visible primary location is
+   * not a store of this tenant (0044 gives every store one): 404.
+   */
+  private async resolvePosition(
+    client: PoolClient,
+    storeId: string,
+    explicit: {
+      readonly stockLocationId?: string | null;
+      readonly inventoryStatus?: InventoryStatus | null;
+    } = {},
+  ): Promise<EffectPosition> {
+    const inventoryStatus = explicit.inventoryStatus ?? DEFAULT_INVENTORY_STATUS;
+    if (!INVENTORY_STATUSES.includes(inventoryStatus)) {
+      throw new BadRequestException(
+        `inventoryStatus must be one of ${INVENTORY_STATUSES.join(', ')}`,
+      );
+    }
+    const location = explicit.stockLocationId
+      ? await client.query<{ id: string; is_active: boolean }>(
+          `SELECT id, is_active FROM stock_locations WHERE id = $1 AND store_id = $2`,
+          [explicit.stockLocationId, storeId],
+        )
+      : await client.query<{ id: string; is_active: boolean }>(
+          `SELECT id, is_active FROM stock_locations WHERE store_id = $1 AND kind = 'primary'`,
+          [storeId],
+        );
+    const row = location.rows[0];
+    if (!row) throw new NotFoundException('Not Found');
+    if (!row.is_active) {
+      throw new BadRequestException('stockLocationId names an inactive stock location');
+    }
+    return { stockLocationId: row.id, inventoryStatus };
   }
 
   private async assertUnitMatchesEstablished(

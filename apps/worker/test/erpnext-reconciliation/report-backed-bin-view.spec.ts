@@ -93,13 +93,13 @@ beforeAll(async () => {
       );
     }
     await a.query(
-      `INSERT INTO stock_movements (id, tenant_id, store_id, tenant_product_ref, movement_type, quantity, stocking_unit, occurred_at, created_by)
-       VALUES (gen_random_uuid(), $1, $2, $3, 'inbound', 10.0000, 'ea', now(), $4)`,
+      `INSERT INTO stock_movements (id, tenant_id, store_id, tenant_product_ref, movement_type, quantity, stocking_unit, occurred_at, created_by, stock_location_id, inventory_status)
+       VALUES (gen_random_uuid(), $1, $2, $3, 'inbound', 10.0000, 'ea', now(), $4, (SELECT id FROM stock_locations WHERE store_id = $2::uuid AND kind = 'primary'), 'sellable')`,
       [TENANT, STORE, PROD_MATCH, ACTOR],
     );
     await a.query(
-      `INSERT INTO stock_movements (id, tenant_id, store_id, tenant_product_ref, movement_type, quantity, stocking_unit, occurred_at, created_by)
-       VALUES (gen_random_uuid(), $1, $2, $3, 'inbound', 10.0000, 'ea', now(), $4)`,
+      `INSERT INTO stock_movements (id, tenant_id, store_id, tenant_product_ref, movement_type, quantity, stocking_unit, occurred_at, created_by, stock_location_id, inventory_status)
+       VALUES (gen_random_uuid(), $1, $2, $3, 'inbound', 10.0000, 'ea', now(), $4, (SELECT id FROM stock_locations WHERE store_id = $2::uuid AND kind = 'primary'), 'sellable')`,
       [TENANT, STORE, PROD_DIVERGE, ACTOR],
     );
   } catch (err) {

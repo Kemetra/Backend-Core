@@ -273,6 +273,24 @@ table the domain role must use needs a matching grant step at deploy time.
   `not_posted` for any movement the previous release wrote during the
   migration.
 
+- **Migration `0044_stock_locations_position_grain` (RT-432).** Run
+  [`sql/stock-locations-domain-grants.sql`](sql/stock-locations-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT` and `INSERT` on
+  `stock_locations`. Every manual movement, transfer and count resolves its
+  effect's stock location with `SELECT`, and the movement list, on-hand and
+  location list read it. `INSERT` is used only by the
+  `stores_create_primary_location` trigger, which creates a store's primary
+  location in the store's own transaction under the inserting role. The table
+  has no `UPDATE` or `DELETE` policy and a location's identity is immutable;
+  never grant `UPDATE`, `DELETE` or `TRUNCATE`. Without the grants the API
+  refuses to boot (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold no
+  privilege on it (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). 0044 makes a location and
+  status mandatory on every new movement, so between step 1 and step 3 an
+  inventory write from the previous release is rejected (nothing is written);
+  there is no catch-up step. Run it in the maintenance window 0042 requires.
+
 - **Sign-in memberships (RT-343).** Run
   [`sql/signin-memberships-domain-grants.sql`](sql/signin-memberships-domain-grants.sql)
   in the same step 2, with the same `-v domain_role=<role>`. It grants the
