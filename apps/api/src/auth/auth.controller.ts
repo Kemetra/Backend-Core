@@ -38,6 +38,7 @@ import type { Response } from "express";
 import { AuthService } from "./auth.service";
 import { DashboardAuthGuard } from "./dashboard-auth.guard";
 import { AuthGuard, type AuthedRequest, readSessionCookie, SESSION_COOKIE_NAME } from "./auth.guard";
+import { assertTrustedOrigin, sessionCookieSecure } from "./origin-check";
 import { Public } from "./route-auth";
 import {
   RATE_LIMIT_BUCKETS,
@@ -108,6 +109,9 @@ export class AuthController {
     @Req() req: AuthedRequest,
     @Res({ passthrough: true }) res: Response,
   ): Promise<SignInResponseBody> {
+    // RT-430: refuse login CSRF from a foreign Origin. A missing Origin is
+    // admitted: sign-in carries no ambient credential.
+    assertTrustedOrigin(req, { allowMissing: true });
     const ip = readClientIp(req);
     // RT-136: the per-account budget counts FAILED sign-ins only
     // (research.md §PQ-4). The hit is reserved atomically up front, so
@@ -326,10 +330,9 @@ function setSessionCookie(
   sessionId: string,
   expires: Date,
 ): void {
-  const env = process.env["NODE_ENV"];
   res.cookie(SESSION_COOKIE_NAME, sessionId, {
     httpOnly: true,
-    secure: env !== "test" && env !== "development",
+    secure: sessionCookieSecure(),
     sameSite: "lax",
     expires,
     path: "/",

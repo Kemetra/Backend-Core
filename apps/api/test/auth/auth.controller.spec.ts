@@ -83,6 +83,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { SAME_ORIGIN } from "../_helpers/same-origin";
 
 // -----------------------------------------------------------------------
 // Fakes — keep parity with rate-limit.spec.ts so behaviour is identical
@@ -463,7 +464,7 @@ describe("POST /api/v1/auth/signout", () => {
       .send({ email: ALICE_EMAIL, password: ALICE_PASSWORD });
     const cookie = extractSessionCookie(signin);
 
-    const out = await http().post("/api/v1/auth/signout").set("Cookie", cookie);
+    const out = await http().post("/api/v1/auth/signout").set("Cookie", cookie).set(SAME_ORIGIN);
     expect(out.status).toBe(204);
 
     const rows = await pool!.query<{ revoked_at: Date | null }>(
@@ -473,7 +474,7 @@ describe("POST /api/v1/auth/signout", () => {
     expect(rows.rows[0]?.revoked_at).not.toBeNull();
 
     // Re-using the same cookie now fails immediately (≤5 min revocation)
-    const replay = await http().post("/api/v1/auth/signout").set("Cookie", cookie);
+    const replay = await http().post("/api/v1/auth/signout").set("Cookie", cookie).set(SAME_ORIGIN);
     expect(replay.status).toBe(401);
     expectErrorEnvelope(replay.body, "unauthorized");
   });
@@ -508,7 +509,8 @@ describe("POST /api/v1/auth/refresh", () => {
 
     const refresh = await http()
       .post("/api/v1/auth/refresh")
-      .set("Cookie", cookie);
+      .set("Cookie", cookie)
+      .set(SAME_ORIGIN);
     expect(refresh.status).toBe(204);
     expect(cookieValue(extractSessionCookie(refresh))).toBe(cookieValue(cookie));
 
@@ -534,11 +536,12 @@ describe("POST /api/v1/auth/refresh", () => {
       .post("/api/v1/auth/signin")
       .send({ email: ALICE_EMAIL, password: ALICE_PASSWORD });
     const cookie = extractSessionCookie(signin);
-    await http().post("/api/v1/auth/signout").set("Cookie", cookie);
+    await http().post("/api/v1/auth/signout").set("Cookie", cookie).set(SAME_ORIGIN);
 
     const refresh = await http()
       .post("/api/v1/auth/refresh")
-      .set("Cookie", cookie);
+      .set("Cookie", cookie)
+      .set(SAME_ORIGIN);
     expect(refresh.status).toBe(401);
   });
 });
@@ -729,7 +732,8 @@ describe("POST /api/v1/auth/password-reset/confirm", () => {
     const cookie = extractSessionCookie(signin);
     await http()
       .post("/api/v1/auth/email/verify/request")
-      .set("Cookie", cookie);
+      .set("Cookie", cookie)
+      .set(SAME_ORIGIN);
     const lastCall = emailSpy.enqueueEmailVerification.mock.calls.at(-1);
     expect(lastCall).toBeDefined();
     const verifyToken = lastCall![0].rawToken;
@@ -822,7 +826,7 @@ describe("POST /api/v1/auth/email/verify/request", () => {
 
     const statuses: number[] = [];
     for (let i = 0; i < 5; i += 1) {
-      const res = await http().post("/api/v1/auth/email/verify/request").set("Cookie", cookie);
+      const res = await http().post("/api/v1/auth/email/verify/request").set("Cookie", cookie).set(SAME_ORIGIN);
       statuses.push(res.status);
     }
     expect(statuses).toEqual([202, 202, 202, 202, 202]);
@@ -853,7 +857,8 @@ describe("POST /api/v1/auth/email/verify/request", () => {
 
     const res = await http()
       .post("/api/v1/auth/email/verify/request")
-      .set("Cookie", cookie);
+      .set("Cookie", cookie)
+      .set(SAME_ORIGIN);
     expect(res.status).toBe(202);
     expect(emailSpy.enqueueEmailVerification).toHaveBeenCalledTimes(1);
 
@@ -889,7 +894,8 @@ describe("POST /api/v1/auth/email/verify/confirm", () => {
 
     await http()
       .post("/api/v1/auth/email/verify/request")
-      .set("Cookie", cookie);
+      .set("Cookie", cookie)
+      .set(SAME_ORIGIN);
     const lastCall = emailSpy.enqueueEmailVerification.mock.calls.at(-1);
     expect(lastCall).toBeDefined();
     const rawToken = lastCall![0].rawToken;
@@ -973,7 +979,8 @@ describe("Bearer token scope hardening", () => {
 
     await http()
       .post("/api/v1/auth/email/verify/request")
-      .set("Cookie", cookie);
+      .set("Cookie", cookie)
+      .set(SAME_ORIGIN);
     const lastCall = emailSpy.enqueueEmailVerification.mock.calls.at(-1);
     expect(lastCall).toBeDefined();
     const rawToken = lastCall![0].rawToken;
@@ -1143,7 +1150,8 @@ describe("T313 / C-5 — multi-tenant sign-in: no active tenant set, subsequent 
     // TenantContextGuard must reject with 401 because active_tenant_id is NULL.
     const storesRes = await c5Http()
       .get("/api/v1/stores")
-      .set("Cookie", cookie);
+      .set("Cookie", cookie)
+      .set(SAME_ORIGIN);
     expect(storesRes.status).toBe(401);
     expect(storesRes.body).toMatchObject({
       error: {

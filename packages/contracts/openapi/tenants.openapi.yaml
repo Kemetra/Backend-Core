@@ -39,7 +39,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Tenant"
         "403":
-          description: Caller is not a platform admin.
+          description: >
+            Caller is not a platform admin. Also `origin_rejected` (RT-430): the
+            request is authenticated by the `dp2_session` cookie and its
+            `Origin` header is missing, or is neither the API's own origin nor
+            listed in `ALLOWED_ORIGINS`.
         "409":
           description: Slug conflict.
   /api/v1/tenants/{tenant_id}:
@@ -76,6 +80,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Tenant"
+        "403":
+          description: >
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
         "404":
           description: Not found / no access.
     delete:
@@ -85,7 +94,11 @@ paths:
         "204":
           description: Soft-deleted; restorable within retention window (default 30 days).
         "403":
-          description: Caller is not a platform admin.
+          description: >
+            Caller is not a platform admin. Also `origin_rejected` (RT-430): the
+            request is authenticated by the `dp2_session` cookie and its
+            `Origin` header is missing, or is neither the API's own origin nor
+            listed in `ALLOWED_ORIGINS`.
   /api/v1/tenants/{tenant_id}/members:
     parameters:
       - in: path

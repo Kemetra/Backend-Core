@@ -41,6 +41,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../../_helpers/postgres-container";
+import { SAME_ORIGIN } from "../../_helpers/same-origin";
 
 delete process.env["REDIS_URL"]; // AuthModule falls back to its in-process Redis stub
 
@@ -160,7 +161,7 @@ async function sessionFor(email: string): Promise<string> {
   const raw = res.headers["set-cookie"];
   const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
   const cookie = list.find((c: string) => c.startsWith("dp2_session="))!.split(";")[0]!;
-  await http().post("/api/v1/context/tenant").set("Cookie", cookie).send({ tenant_id: TENANT }).expect(200);
+  await http().post("/api/v1/context/tenant").set("Cookie", cookie).set(SAME_ORIGIN).send({ tenant_id: TENANT }).expect(200);
   return cookie;
 }
 
@@ -175,17 +176,17 @@ describe("RT-61 inventory authorization for cookie sessions (NOBYPASSRLS role, r
     if (dockerSkipped) return;
     const owner = await sessionFor(OWNER_EMAIL);
     for (const store of [STORE_A, STORE_B]) {
-      await http().get(`/api/inventory/v1/on-hand/${store}/${PRODUCT}`).set("Cookie", owner).expect(200);
-      await http().get(`/api/inventory/v1/stores/${store}/movements`).set("Cookie", owner).expect(200);
+      await http().get(`/api/inventory/v1/on-hand/${store}/${PRODUCT}`).set("Cookie", owner).set(SAME_ORIGIN).expect(200);
+      await http().get(`/api/inventory/v1/stores/${store}/movements`).set("Cookie", owner).set(SAME_ORIGIN).expect(200);
     }
   });
 
   it("a specific-store member reads its granted store, and gets a non-disclosing 404 elsewhere", async () => {
     if (dockerSkipped) return;
     const staff = await sessionFor(STAFF_EMAIL);
-    await http().get(`/api/inventory/v1/on-hand/${STORE_A}/${PRODUCT}`).set("Cookie", staff).expect(200);
-    await http().get(`/api/inventory/v1/on-hand/${STORE_B}/${PRODUCT}`).set("Cookie", staff).expect(404);
-    await http().get(`/api/inventory/v1/stores/${STORE_B}/movements`).set("Cookie", staff).expect(404);
+    await http().get(`/api/inventory/v1/on-hand/${STORE_A}/${PRODUCT}`).set("Cookie", staff).set(SAME_ORIGIN).expect(200);
+    await http().get(`/api/inventory/v1/on-hand/${STORE_B}/${PRODUCT}`).set("Cookie", staff).set(SAME_ORIGIN).expect(404);
+    await http().get(`/api/inventory/v1/stores/${STORE_B}/movements`).set("Cookie", staff).set(SAME_ORIGIN).expect(404);
   });
 
   it("an owner addressing a store that is not in the tenant gets a non-disclosing 404, never 5xx", async () => {
@@ -201,7 +202,7 @@ describe("RT-61 inventory authorization for cookie sessions (NOBYPASSRLS role, r
       ["post", "/api/inventory/v1/transfers", { sourceStoreId: STORE_A, destinationStoreId: unknownStore, tenantProductRef: PRODUCT, quantity: "1", stockingUnit: "each" }],
     ];
     for (const [method, path, body] of probes) {
-      let req = http()[method as "get" | "post"](path).set("Cookie", owner);
+      let req = http()[method as "get" | "post"](path).set("Cookie", owner).set(SAME_ORIGIN);
       if (method === "post") req = req.set("Idempotency-Key", idemKey()).send(body);
       const res = await req;
       expect({ path, body, status: res.status }).toEqual({ path, body, status: 404 });
@@ -220,7 +221,7 @@ describe("RT-61 inventory authorization for cookie sessions (NOBYPASSRLS role, r
       ["/api/inventory/v1/transfers", { sourceStoreId: STORE_A, destinationStoreId: STORE_B, tenantProductRef: unknown, quantity: "1", stockingUnit: "each" }],
     ];
     for (const [path, body] of probes) {
-      const res = await http().post(path).set("Cookie", owner).set("Idempotency-Key", idemKey()).send(body);
+      const res = await http().post(path).set("Cookie", owner).set(SAME_ORIGIN).set("Idempotency-Key", idemKey()).send(body);
       expect({ path, body, status: res.status < 500 }).toEqual({ path, body, status: true });
     }
   });
@@ -247,6 +248,7 @@ describe("RT-61 inventory authorization for cookie sessions (NOBYPASSRLS role, r
     await http()
       .post("/api/inventory/v1/transfers")
       .set("Cookie", staff)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send(body(STORE_A, STORE_B))
       .expect(404);
@@ -257,6 +259,7 @@ describe("RT-61 inventory authorization for cookie sessions (NOBYPASSRLS role, r
     await http()
       .post("/api/inventory/v1/transfers")
       .set("Cookie", owner)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send(body(STORE_A, STORE_B))
       .expect(201);

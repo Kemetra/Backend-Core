@@ -62,6 +62,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { SAME_ORIGIN } from "../_helpers/same-origin";
 
 // ---- Fakes ---------------------------------------------------------------
 
@@ -250,6 +251,7 @@ describe("GET /api/v1/tenants", () => {
     const res = await http()
       .get("/api/v1/tenants")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(200);
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body).toHaveLength(1);
@@ -262,6 +264,7 @@ describe("GET /api/v1/tenants", () => {
     const res = await http()
       .get("/api/v1/tenants")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(200);
     expect(res.body).toEqual([]);
   });
@@ -272,6 +275,7 @@ describe("GET /api/v1/tenants", () => {
     const res = await http()
       .get("/api/v1/tenants")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(200);
     expect(res.body.length).toBeGreaterThanOrEqual(2);
     const ids = res.body.map((r: { id: string }) => r.id).sort();
@@ -297,6 +301,7 @@ describe("POST /api/v1/tenants", () => {
     await http()
       .post("/api/v1/tenants")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ slug: "bobs-tenant", name: "Bob's" })
       .expect(403);
   });
@@ -307,6 +312,7 @@ describe("POST /api/v1/tenants", () => {
     await http()
       .post("/api/v1/tenants")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ slug: "BAD SLUG", name: "Bad" })
       .expect(400);
   });
@@ -317,6 +323,7 @@ describe("POST /api/v1/tenants", () => {
     const res = await http()
       .post("/api/v1/tenants")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ slug: "freshco", name: "Fresh Co" })
       .expect(201);
     expect(res.body).toMatchObject({
@@ -346,6 +353,7 @@ describe("POST /api/v1/tenants", () => {
     await http()
       .post("/api/v1/tenants")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ slug: "acme", name: "Duplicate" })
       .expect(409);
   });
@@ -365,6 +373,7 @@ describe("GET /api/v1/tenants/:id", () => {
     const res = await http()
       .get(`/api/v1/tenants/${ACME_ID}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(200);
     expect(res.body).toMatchObject({ id: ACME_ID, slug: "acme" });
   });
@@ -375,6 +384,7 @@ describe("GET /api/v1/tenants/:id", () => {
     await http()
       .get(`/api/v1/tenants/${GLOBEX_ID}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 
@@ -384,6 +394,7 @@ describe("GET /api/v1/tenants/:id", () => {
     await http()
       .get(`/api/v1/tenants/${ACME_ID}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 
@@ -393,6 +404,7 @@ describe("GET /api/v1/tenants/:id", () => {
     await http()
       .get(`/api/v1/tenants/${GLOBEX_ID}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(200);
   });
 
@@ -402,6 +414,7 @@ describe("GET /api/v1/tenants/:id", () => {
     await http()
       .get(`/api/v1/tenants/${newId()}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 
@@ -411,6 +424,7 @@ describe("GET /api/v1/tenants/:id", () => {
     await http()
       .get("/api/v1/tenants/not-a-uuid")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(400);
   });
 });
@@ -424,6 +438,7 @@ describe("PATCH /api/v1/tenants/:id", () => {
     const res = await http()
       .patch(`/api/v1/tenants/${ACME_ID}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ name: "Acme Renamed" })
       .expect(200);
     expect(res.body.name).toBe("Acme Renamed");
@@ -437,6 +452,7 @@ describe("PATCH /api/v1/tenants/:id", () => {
     await http()
       .patch(`/api/v1/tenants/${ACME_ID}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ name: "Should Fail" })
       .expect(404);
   });
@@ -447,6 +463,7 @@ describe("PATCH /api/v1/tenants/:id", () => {
     await http()
       .patch(`/api/v1/tenants/${GLOBEX_ID}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ name: "Hijacked" })
       .expect(404);
   });
@@ -457,6 +474,7 @@ describe("PATCH /api/v1/tenants/:id", () => {
     const res = await http()
       .patch(`/api/v1/tenants/${GLOBEX_ID}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ status: "suspended" })
       .expect(200);
     expect(res.body.status).toBe("suspended");
@@ -469,6 +487,7 @@ describe("PATCH /api/v1/tenants/:id", () => {
     await http()
       .patch(`/api/v1/tenants/${ACME_ID}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({})
       .expect(400);
   });
@@ -479,6 +498,7 @@ describe("PATCH /api/v1/tenants/:id", () => {
     await http()
       .patch(`/api/v1/tenants/${ACME_ID}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ status: "deleted" })
       .expect(400);
   });
@@ -497,6 +517,7 @@ describe("DELETE /api/v1/tenants/:id (soft-delete)", () => {
     const created = await http()
       .post("/api/v1/tenants")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ slug: "throwaway", name: "Throwaway" })
       .expect(201);
     throwawayId = created.body.id;
@@ -513,6 +534,7 @@ describe("DELETE /api/v1/tenants/:id (soft-delete)", () => {
     await http()
       .delete(`/api/v1/tenants/${ACME_ID}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(403);
   });
 
@@ -523,12 +545,14 @@ describe("DELETE /api/v1/tenants/:id (soft-delete)", () => {
     await http()
       .delete(`/api/v1/tenants/${throwawayId}`)
       .set("Cookie", adminCookie)
+      .set(SAME_ORIGIN)
       .expect(204);
 
     // Platform admin can still read it (soft-delete visibility).
     const adminRead = await http()
       .get(`/api/v1/tenants/${throwawayId}`)
       .set("Cookie", adminCookie)
+      .set(SAME_ORIGIN)
       .expect(200);
     expect(adminRead.body.deleted_at).not.toBeNull();
 
@@ -538,6 +562,7 @@ describe("DELETE /api/v1/tenants/:id (soft-delete)", () => {
     await http()
       .get(`/api/v1/tenants/${throwawayId}`)
       .set("Cookie", bobCookie)
+      .set(SAME_ORIGIN)
       .expect(404);
   });
 
@@ -547,6 +572,7 @@ describe("DELETE /api/v1/tenants/:id (soft-delete)", () => {
     await http()
       .delete(`/api/v1/tenants/${throwawayId}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(204);
   });
 });

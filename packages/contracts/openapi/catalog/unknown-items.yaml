@@ -390,7 +390,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: Caller lacks the role to dismiss in this scope.
+          description: >
+            Caller lacks the role to dismiss in this scope. Also
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
           content:
             application/json:
               schema:
@@ -480,7 +484,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: Caller lacks the tenant-admin / store-operator role.
+          description: >
+            Caller lacks the tenant-admin / store-operator role. Also
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
           content:
             application/json:
               schema:
@@ -570,7 +578,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: Caller lacks the tenant-admin / store-operator role.
+          description: >
+            Caller lacks the tenant-admin / store-operator role. Also
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
           content:
             application/json:
               schema:
@@ -730,6 +742,9 @@ paths:
             — reopen requires tenant-wide authority (FR-042). Distinct from
             404: the item exists in the caller's scope, but the caller may
             not reopen it.
+            Also `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
           content:
             application/json:
               schema:
@@ -832,6 +847,9 @@ paths:
           description: >
             Caller lacks the role to dismiss in this scope.
             `error.code = "forbidden"`.
+            Also `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
           content:
             application/json:
               schema:

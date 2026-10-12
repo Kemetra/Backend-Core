@@ -23,6 +23,11 @@ migrate (one-shot) -> <managed-db>  (runs before api/worker)
 
 The Admin Console calls the API on its own origin with the `dp2_session` cookie,
 so CORS stays off (`ALLOWED_ORIGINS` empty) and no cross-origin auth is needed.
+A cookie-authenticated `POST`, `PUT`, `PATCH` or `DELETE` must carry that origin
+in its `Origin` header, or the API refuses it with 403 `origin_rejected` (RT-430,
+CSRF). Browsers send it; a script that uses the cookie must send
+`Origin: https://<public hostname>`. Caddy must pass the client's `Host` through
+unchanged (its default), because the API compares `Origin` against it.
 
 PostgreSQL is expected to be an external managed service, not a container in this
 compose stack. Redis is containerized by default.

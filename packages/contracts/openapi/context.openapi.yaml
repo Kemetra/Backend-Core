@@ -64,6 +64,9 @@ paths:
             `openSupportSession` instead. Never returned to a user who is not a
             platform admin. A successful switch ends any current support
             session (`end_reason: tenant_switched`).
+            Also `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
         "404":
           description: Tenant does not exist OR user has no membership in it. Same response for both (FR-ISO-4).
   /api/v1/context/store:
@@ -89,6 +92,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ContextResponse"
+        "403":
+          description: >
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
         "404":
           description: Store does not belong to the active tenant OR user lacks access. Same response for both.
         "409":
@@ -103,6 +111,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ContextResponse"
+        "403":
+          description: >
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
 components:
   schemas:
     ContextResponse:

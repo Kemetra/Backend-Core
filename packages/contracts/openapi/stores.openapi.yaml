@@ -53,7 +53,11 @@ paths:
         "401":
           description: No active tenant.
         "403":
-          description: Insufficient role.
+          description: >
+            Insufficient role. Also `origin_rejected` (RT-430): the request is
+            authenticated by the `dp2_session` cookie and its `Origin` header is
+            missing, or is neither the API's own origin nor listed in
+            `ALLOWED_ORIGINS`.
         "409":
           description: Code conflict within tenant.
   /api/v1/stores/{store_id}:
@@ -107,6 +111,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
         "404":
           description: Not found / no access.
         "409":
@@ -124,6 +133,11 @@ paths:
       responses:
         "204":
           description: Soft-deleted.
+        "403":
+          description: >
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
         "404":
           description: Not found / no access.
   /api/v1/stores/{store_id}/timezone-change-preview:

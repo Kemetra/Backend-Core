@@ -136,8 +136,10 @@ info:
     before the handler, and refuses with 403 `origin_rejected`, written as a
     `platform.cross_tenant.accessed` row with `outcome: rejected` and
     `reason: origin_rejected` (RT-414 decision 5, extended by the owner on
-    2026-10-12). Safe methods (`GET`, `HEAD`) and requests by tenant members
-    are unchanged.
+    2026-10-12). Safe methods (`GET`, `HEAD`) are unchanged. RT-430 applies
+    the same `Origin` rule to every cookie-authenticated unsafe request,
+    including those by tenant members, with the same refusal; the
+    support-session rule above adds only the audit row.
 x-support-session-enforcement:
   response: "#/components/responses/SupportSessionRefused"
   guarded-routes: TenantContextGuard

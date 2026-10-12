@@ -58,6 +58,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { SAME_ORIGIN } from "../_helpers/same-origin";
 
 class AlwaysAllowRedis implements RedisLike {
   async incr(): Promise<number> { return 1; }
@@ -258,7 +259,7 @@ async function cookieFor(user: Credentials): Promise<string> {
   if (!cookie) throw new Error(`signIn(${email}): no session cookie`);
   await http()
     .post("/api/v1/context/tenant")
-    .set("Cookie", cookie)
+    .set("Cookie", cookie).set(SAME_ORIGIN)
     .send({ tenant_id: ACME_ID })
     .expect(200);
   cookies.set(email, cookie);
@@ -336,7 +337,7 @@ describe("POST /api/v1/stores with timezone", () => {
     if (maybeSkip()) return;
     const res = await http()
       .post("/api/v1/stores")
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .send({ code: "NEW-TZ", name: "New TZ", timezone: "Africa/Cairo" })
       .expect(201);
     expect(res.body.timezone).toBe("Africa/Cairo");
@@ -347,7 +348,7 @@ describe("POST /api/v1/stores with timezone", () => {
     if (maybeSkip()) return;
     const res = await http()
       .post("/api/v1/stores")
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .send({ code: "NEW-UTC", name: "New UTC" })
       .expect(201);
     expect(res.body.timezone).toBe("UTC");
@@ -357,13 +358,13 @@ describe("POST /api/v1/stores with timezone", () => {
     if (maybeSkip()) return;
     const malformed = await http()
       .post("/api/v1/stores")
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .send({ code: "BAD-1", name: "Bad", timezone: "UTC+2" })
       .expect(400);
     expect(malformed.body.error.code).toBe("validation_error");
     const unknown = await http()
       .post("/api/v1/stores")
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .send({ code: "BAD-2", name: "Bad", timezone: "Europe/Atlantis" })
       .expect(400);
     expect(unknown.body.error.code).toBe("invalid_timezone");
@@ -377,10 +378,10 @@ describe("POST /api/v1/stores with timezone", () => {
 describe("GET /api/v1/stores exposes timezone", () => {
   it("list and read carry the zone", async () => {
     if (maybeSkip()) return;
-    const list = await http().get("/api/v1/stores").set("Cookie", await bob()).expect(200);
+    const list = await http().get("/api/v1/stores").set("Cookie", await bob()).set(SAME_ORIGIN).expect(200);
     const misc = list.body.find((s: { id: string }) => s.id === STORE_MISC);
     expect(misc.timezone).toBe("UTC");
-    const read = await http().get(`/api/v1/stores/${STORE_MISC}`).set("Cookie", await bob()).expect(200);
+    const read = await http().get(`/api/v1/stores/${STORE_MISC}`).set("Cookie", await bob()).set(SAME_ORIGIN).expect(200);
     expect(read.body.timezone).toBe("UTC");
   });
 });
@@ -394,7 +395,7 @@ describe("GET /api/v1/stores/:store_id/timezone-change-preview", () => {
   it("200 reports both zones as PostgreSQL computes them, and writes nothing", async () => {
     if (maybeSkip()) return;
     // Pacific/Kiritimati is UTC+14 with no DST, so its offset is fixed.
-    const res = await http().get(url({ storeId: STORE_MISC, zone: "Pacific/Kiritimati" })).set("Cookie", await bob()).expect(200);
+    const res = await http().get(url({ storeId: STORE_MISC, zone: "Pacific/Kiritimati" })).set("Cookie", await bob()).set(SAME_ORIGIN).expect(200);
     const expected = await admin().query<{ utc: string; kiri: string }>(
       `SELECT ($1::timestamptz AT TIME ZONE 'UTC')::date::text AS utc,
               ($1::timestamptz AT TIME ZONE 'Pacific/Kiritimati')::date::text AS kiri`,
@@ -422,24 +423,24 @@ describe("GET /api/v1/stores/:store_id/timezone-change-preview", () => {
 
   it("the current zone is a no-op", async () => {
     if (maybeSkip()) return;
-    const res = await http().get(url({ storeId: STORE_MISC, zone: "UTC" })).set("Cookie", await bob()).expect(200);
+    const res = await http().get(url({ storeId: STORE_MISC, zone: "UTC" })).set("Cookie", await bob()).set(SAME_ORIGIN).expect(200);
     expect(res.body.no_op).toBe(true);
     expect(res.body.can_apply).toBe(false);
   });
 
   it("400 for a malformed or unknown zone", async () => {
     if (maybeSkip()) return;
-    const malformed = await http().get(url({ storeId: STORE_MISC, zone: "EET" })).set("Cookie", await bob()).expect(400);
+    const malformed = await http().get(url({ storeId: STORE_MISC, zone: "EET" })).set("Cookie", await bob()).set(SAME_ORIGIN).expect(400);
     expect(malformed.body.error.code).toBe("validation_error");
-    const unknown = await http().get(url({ storeId: STORE_MISC, zone: "Europe/Atlantis" })).set("Cookie", await bob()).expect(400);
+    const unknown = await http().get(url({ storeId: STORE_MISC, zone: "Europe/Atlantis" })).set("Cookie", await bob()).set(SAME_ORIGIN).expect(400);
     expect(unknown.body.error.code).toBe("invalid_timezone");
   });
 
   it("404 for store_staff, another tenant's store, or an unknown store", async () => {
     if (maybeSkip()) return;
-    await http().get(url({ storeId: STORE_MISC, zone: "Africa/Cairo" })).set("Cookie", await carol()).expect(404);
-    await http().get(url({ storeId: STORE_GLOBEX, zone: "Africa/Cairo" })).set("Cookie", await bob()).expect(404);
-    await http().get(url({ storeId: randomUUID(), zone: "Africa/Cairo" })).set("Cookie", await bob()).expect(404);
+    await http().get(url({ storeId: STORE_MISC, zone: "Africa/Cairo" })).set("Cookie", await carol()).set(SAME_ORIGIN).expect(404);
+    await http().get(url({ storeId: STORE_GLOBEX, zone: "Africa/Cairo" })).set("Cookie", await bob()).set(SAME_ORIGIN).expect(404);
+    await http().get(url({ storeId: randomUUID(), zone: "Africa/Cairo" })).set("Cookie", await bob()).set(SAME_ORIGIN).expect(404);
   });
 });
 
@@ -451,7 +452,7 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
     const requestId = randomUUID();
     const res = await http()
       .patch(`/api/v1/stores/${STORE_CHANGE}`)
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .set("X-Request-Id", requestId)
       .send(CHANGE_TO_CAIRO)
       .expect(200);
@@ -470,7 +471,7 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
     if (maybeSkip()) return;
     await http()
       .patch(`/api/v1/stores/${STORE_CHANGE}`)
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .send({
         timezone: "Africa/Cairo",
         expected_current_timezone: "Africa/Cairo",
@@ -485,7 +486,7 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
     await admin().query(`UPDATE stores SET timezone = 'Europe/London' WHERE id = $1`, [STORE_STALE]);
     const res = await http()
       .patch(`/api/v1/stores/${STORE_STALE}`)
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .send({ ...CHANGE_TO_CAIRO, name: "Renamed" })
       .expect(409);
     expect(res.body.error.code).toBe("timezone_changed_concurrently");
@@ -499,7 +500,7 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
     if (maybeSkip()) return;
     const res = await http()
       .patch(`/api/v1/stores/${STORE_MISC}`)
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .send(CHANGE_TO_UNKNOWN)
       .expect(400);
     expect(res.body.error.code).toBe("invalid_timezone");
@@ -510,7 +511,7 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
     if (maybeSkip()) return;
     const res = await http()
       .patch(`/api/v1/stores/${STORE_MISC}`)
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .send({ timezone: "Africa/Cairo" })
       .expect(400);
     expect(res.body.error.code).toBe("validation_error");
@@ -522,7 +523,7 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
 
     const preview = await http()
       .get(`/api/v1/stores/${STORE_OPEN_SHIFT}/timezone-change-preview?timezone=Africa%2FCairo`)
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .expect(200);
     expect(preview.body.open_shift_count).toBe(1);
     expect(preview.body.blockers).toEqual([{ code: "store_has_open_shift", count: 1 }]);
@@ -530,7 +531,7 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
 
     const res = await http()
       .patch(`/api/v1/stores/${STORE_OPEN_SHIFT}`)
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .send(CHANGE_TO_CAIRO)
       .expect(409);
     expect(res.body.error.code).toBe("store_has_open_shift");
@@ -542,12 +543,12 @@ describe("PATCH /api/v1/stores/:store_id timezone change", () => {
     if (maybeSkip()) return;
     await http()
       .patch(`/api/v1/stores/${STORE_MISC}`)
-      .set("Cookie", await carol())
+      .set("Cookie", await carol()).set(SAME_ORIGIN)
       .send(CHANGE_TO_CAIRO)
       .expect(404);
     await http()
       .patch(`/api/v1/stores/${STORE_GLOBEX}`)
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .send(CHANGE_TO_CAIRO)
       .expect(404);
     expect(await storeZone(STORE_MISC)).toBe("UTC");
@@ -586,7 +587,7 @@ describe("FR-009 / decision 215", () => {
 
     await http()
       .patch(`/api/v1/stores/${STORE_CLOSED_SHIFT}`)
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .send(CHANGE_TO_TOKYO)
       .expect(200);
 
@@ -614,7 +615,7 @@ describe("FR-007 — the store row lock", () => {
 
     const patch = http()
       .patch(`/api/v1/stores/${STORE_RACE_SHIFT_FIRST}`)
-      .set("Cookie", await bob())
+      .set("Cookie", await bob()).set(SAME_ORIGIN)
       .send(CHANGE_TO_TOKYO)
       .then((res) => res);
     expect(await stillPending(patch)).toBe(true);
