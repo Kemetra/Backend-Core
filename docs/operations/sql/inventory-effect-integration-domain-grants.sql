@@ -1,0 +1,57 @@
+-- Domain-role grants for the inventory effect integration state (RT-425,
+-- migration 0042). See docs/operations/database-roles.md.
+--
+-- Run ONCE per environment, AFTER `migrate up` has applied 0042, as the
+-- migration owner (or any role allowed to grant on this table). This file
+-- holds NO credential. Give psql the connection through libpq environment
+-- variables (PGHOST/PGUSER/PGPASSWORD/...; see deploy/grants.env.example),
+-- never as a URL argument, and pass the environment's DATABASE_URL role name:
+--   psql -X -v domain_role=<role> \
+--        -f docs/operations/sql/inventory-effect-integration-domain-grants.sql
+-- deploy/README.md runs this in step 2 of every release, after
+-- erpnext-posting-resolution-domain-grants.sql.
+--
+-- The script stops on the first error and exits non-zero (ON_ERROR_STOP), and
+-- also exits non-zero if the verification below finds a missing grant, so
+-- deployment automation cannot accept a failed step.
+--
+-- Without these grants the API refuses to boot in production
+-- (DOMAIN_REQUIRED_GRANTS in apps/api/src/auth/database-pools.ts, RT-212);
+-- with the boot check off, every manual movement, transfer and count fails
+-- with 500 (permission denied), because each one writes its effect's
+-- integration record in the same transaction. The table is FORCE ROW LEVEL
+-- SECURITY, so the grants give access only inside runWithTenantContext.
+--
+-- inventory_effect_integration is mutable: SELECT, INSERT and UPDATE (the
+-- integration state moves, RT-426). It has no DELETE policy. Never grant
+-- DELETE or TRUNCATE: TRUNCATE is not subject to row security.
+
+\set ON_ERROR_STOP on
+
+-- The domain role must be named explicitly: guessing a default could grant to
+-- a role that DATABASE_URL does not use and still report success.
+\if :{?domain_role}
+\else
+  \echo 'FAILED: pass -v domain_role=<the DATABASE_URL role name>.'
+  DO $$ BEGIN RAISE EXCEPTION 'domain_role not set'; END $$;
+\endif
+
+GRANT SELECT, INSERT, UPDATE ON inventory_effect_integration TO :"domain_role";
+
+-- Verify the domain role: every row must read `t`.
+SELECT t.tbl, t.priv, has_table_privilege(:'domain_role', t.tbl, t.priv) AS granted
+  FROM (VALUES ('inventory_effect_integration', 'SELECT'),
+               ('inventory_effect_integration', 'INSERT'),
+               ('inventory_effect_integration', 'UPDATE')) AS t(tbl, priv);
+
+SELECT bool_and(has_table_privilege(:'domain_role', t.tbl, t.priv)) AS domain_ok
+  FROM (VALUES ('inventory_effect_integration', 'SELECT'),
+               ('inventory_effect_integration', 'INSERT'),
+               ('inventory_effect_integration', 'UPDATE')) AS t(tbl, priv) \gset
+
+\if :domain_ok
+  \echo 'OK: domain role holds every required inventory effect integration grant.'
+\else
+  \echo 'FAILED: the domain role is missing a required grant (see the table above).'
+  DO $$ BEGIN RAISE EXCEPTION 'inventory effect integration domain grants incomplete'; END $$;
+\endif

@@ -98,6 +98,8 @@ op run --env-file=deploy/grants.env -- sh -c \
    psql -X -v domain_role="$DOMAIN_DB_ROLE" \
         -f docs/operations/sql/erpnext-posting-resolution-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" \
+        -f docs/operations/sql/inventory-effect-integration-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
         -f docs/operations/sql/signin-memberships-domain-grants.sql'
 
 # 3. Start everything (migrate re-runs as a no-op, then api/worker start).
@@ -105,9 +107,11 @@ op run --env-file=deploy/prod.env -- \
   docker compose -f docker-compose.prod.yml up -d --build
 
 # 4. Freeze any posting intent the previous release wrote during step 1
-#    (RT-330). Idempotent; exits non-zero on failure.
-op run --env-file=deploy/grants.env -- \
-  psql -X -f docs/operations/sql/erpnext-posting-resolution-catchup.sql
+#    (RT-330), and record `not_posted` for any inventory movement it wrote
+#    (RT-425). Idempotent; each exits non-zero on failure.
+op run --env-file=deploy/grants.env -- sh -c \
+  'psql -X -f docs/operations/sql/erpnext-posting-resolution-catchup.sql &&
+   psql -X -f docs/operations/sql/inventory-effect-integration-catchup.sql'
 ```
 
 `op run` resolves private references in memory and does not write them back to
@@ -232,9 +236,12 @@ op run --env-file=deploy/grants.env -- sh -c \
   'psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/cashier-admissions-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/shift-cash-up-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/erpnext-posting-resolution-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/inventory-effect-integration-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/signin-memberships-domain-grants.sql'
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d --build
-op run --env-file=deploy/grants.env -- psql -X -f docs/operations/sql/erpnext-posting-resolution-catchup.sql
+op run --env-file=deploy/grants.env -- sh -c \
+  'psql -X -f docs/operations/sql/erpnext-posting-resolution-catchup.sql &&
+   psql -X -f docs/operations/sql/inventory-effect-integration-catchup.sql'
 # stop
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml down   # keeps volumes (redis AOF, caddy certs)
 ```

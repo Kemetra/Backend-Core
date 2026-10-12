@@ -107,7 +107,7 @@ function svc(): ErpnextPostingService {
 async function resetPending(id: string): Promise<void> {
   await env!.admin.query(
     `UPDATE erpnext_posting_status
-        SET status='pending', document_ref=NULL, rejection_category=NULL,
+        SET status='pending', document_ref=NULL, posted_at=NULL, rejection_category=NULL,
             retry_count=0
       WHERE id = $1`,
     [id],

@@ -445,9 +445,13 @@ export class ErpnextPostingService {
         "documentRef is required when outcome is 'posted'",
       );
     }
+    // RT-425 (RT-289 G2-4): posted_at is the ERP confirmation time — the
+    // server clock when this ack is applied. COALESCE keeps the first value: a
+    // duplicate ack echoes before reaching here, and this never overwrites it.
     const r = await client.query<{ updated_at: Date }>(
       `UPDATE erpnext_posting_status
-          SET status='posted', document_ref=$2, updated_at=now()
+          SET status='posted', document_ref=$2, updated_at=now(),
+              posted_at=COALESCE(posted_at, now())
         WHERE id=$1
         RETURNING updated_at`,
       [input.workItemRef, serializeDocRef(input.documentRef)],

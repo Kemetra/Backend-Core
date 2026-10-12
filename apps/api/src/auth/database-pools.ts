@@ -138,6 +138,8 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     "tenants",
     "stock_movements",
     "stock_counts",
+    // RT-425 (0042): the mutable per-effect inventory integration state.
+    "inventory_effect_integration",
     "audit_events",
     "idempotency_keys",
     "outbox_events",
@@ -192,6 +194,12 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   // feed and repair read it. Append-only (no UPDATE / DELETE policy).
   ["erpnext_posting_resolution", "SELECT"],
   ["erpnext_posting_resolution", "INSERT"],
+  // RT-425 (0042): every manual movement, transfer and count writes its
+  // effect's integration record, and the movement list reads it. UPDATE:
+  // the state moves (RT-426). No DELETE policy; never DELETE or TRUNCATE.
+  ["inventory_effect_integration", "SELECT"],
+  ["inventory_effect_integration", "INSERT"],
+  ["inventory_effect_integration", "UPDATE"],
 ];
 
 interface GrantRow {

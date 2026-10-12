@@ -44,4 +44,5 @@ export * from "./settlement/claim-receivables";
 export * from "./settlement/remittance";
 export * from "./settlement/reconciliation-result";
 export * from "./inventory/stock-movements";
+export * from "./inventory/effect-integration";
 export * from "./connector-health";

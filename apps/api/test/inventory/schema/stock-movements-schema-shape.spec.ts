@@ -25,7 +25,17 @@ import "reflect-metadata";
 
 import { getTableConfig } from "drizzle-orm/pg-core";
 
-import { stockCounts, stockMovements } from "@data-pulse-2/db/schema";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+import {
+  INVENTORY_EVENT_TYPES,
+  INVENTORY_INTEGRATION_STATES,
+  RETAIL_INVENTORY_EVENT_TYPES,
+  inventoryEffectIntegration,
+  stockCounts,
+  stockMovements,
+} from "@data-pulse-2/db/schema";
 
 type ColumnInfo = {
   name: string;
@@ -213,5 +223,68 @@ describe("inventory schema shape — stock_counts", () => {
     expect(cols.get("store_id")?.notNull).toBe(true);
     expect(cols.get("counted_quantity")?.notNull).toBe(true);
     expect(cols.get("derived_on_hand_at_count")?.notNull).toBe(true);
+  });
+});
+
+// ===========================================================================
+// RT-425 (0042) — Inventory Effect columns + the integration record
+// ===========================================================================
+describe("inventory schema shape — RT-425 effect columns", () => {
+  const cols = columns(stockMovements);
+  const sql0042 = fs.readFileSync(
+    path.resolve(__dirname, "../../../../../packages/db/drizzle/0042_inventory_effects_journal.sql"),
+    "utf8",
+  );
+
+  /** The quoted values of one CHECK constraint in 0042, in order. */
+  function checkValues(constraint: string): string[] {
+    const start = sql0042.indexOf(`ADD CONSTRAINT ${constraint}`);
+    expect(start).toBeGreaterThan(-1);
+    const body = sql0042.slice(start, sql0042.indexOf(";", start));
+    return [...body.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!);
+  }
+
+  it("origin is NOT NULL with a retail default; every other effect column is nullable", () => {
+    expect(cols.get("origin")?.notNull).toBe(true);
+    for (const name of [
+      "event_type",
+      "event_ref_id",
+      "compensates_effect_id",
+      "stock_location_id",
+      "inventory_status",
+      "tracking_identity",
+    ]) {
+      expect(cols.has(name)).toBe(true);
+      expect(cols.get(name)?.notNull).toBe(false);
+    }
+  });
+
+  it("the event-type CHECK in 0042 lists exactly INVENTORY_EVENT_TYPES", () => {
+    expect(checkValues("stock_movements_event_type_allowed")).toEqual([...INVENTORY_EVENT_TYPES]);
+  });
+
+  it("the origin-consistency CHECK in 0042 lists exactly the Retail event types", () => {
+    expect(checkValues("stock_movements_event_origin_consistent")).toEqual([
+      "retail",
+      ...RETAIL_INVENTORY_EVENT_TYPES,
+    ]);
+  });
+
+  it("the integration state CHECK lists exactly INVENTORY_INTEGRATION_STATES", () => {
+    const start = sql0042.indexOf("CONSTRAINT inventory_effect_integration_state_allowed");
+    const body = sql0042.slice(start, sql0042.indexOf("),", start));
+    expect([...body.matchAll(/'([a-z_]+)'/g)].map((m) => m[1])).toEqual([
+      ...INVENTORY_INTEGRATION_STATES,
+    ]);
+  });
+
+  it("the integration record is keyed by effect and carries no money or customer field", () => {
+    const ic = columns(inventoryEffectIntegration);
+    expect(ic.get("effect_id")?.notNull).toBe(true);
+    expect(ic.get("tenant_id")?.notNull).toBe(true);
+    expect(ic.get("state")?.notNull).toBe(true);
+    for (const forbidden of ["amount", "price", "currency_code", "customer", "payment"]) {
+      expect(ic.has(forbidden)).toBe(false);
+    }
   });
 });

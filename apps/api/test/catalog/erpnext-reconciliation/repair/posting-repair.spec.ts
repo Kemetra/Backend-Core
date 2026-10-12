@@ -240,7 +240,7 @@ describe("017-US2 §4 — repair of an in-flight pending row", () => {
   it("is a no_op_echo with NO second re-head", async () => {
     if (skip) return;
     await env!.admin.query(
-      `UPDATE erpnext_posting_status SET status='pending', document_ref=NULL, retry_count=0
+      `UPDATE erpnext_posting_status SET status='pending', document_ref=NULL, posted_at=NULL, retry_count=0
         WHERE id=$1`,
       [POSTING_DEADLETTER_A],
     );
