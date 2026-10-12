@@ -173,6 +173,7 @@ paths:
                   - $ref: "#/components/schemas/SupportSession"
                   - properties:
                       status: { const: active }
+                      renewed_at: { type: "null" }
         "400":
           $ref: "#/components/responses/ValidationFailure"
         "401":

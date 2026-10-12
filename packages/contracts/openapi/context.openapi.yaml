@@ -46,11 +46,16 @@ paths:
                   format: uuid
       responses:
         "200":
-          description: Active tenant switched. Active store is cleared.
+          description: >
+            Active tenant switched. Active store is cleared. Any current support
+            session has ended, so `support_session` is null.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ContextResponse"
+                allOf:
+                  - $ref: "#/components/schemas/ContextResponse"
+                  - properties:
+                      support_session: { type: "null" }
         "403":
           description: >
             `support_session_required` (RT-414): the caller is a platform admin

@@ -280,6 +280,7 @@ describe("platform-support-sessions — request and projection", () => {
     const opened = response(BASE, "post", "201");
     expect(opened(activeSession)).toBe(true);
     expect(opened({ ...activeSession, status: "expired" })).toBe(false);
+    expect(opened(renewed)).toBe(false);
 
     const renew = response(RENEW, "post", "200");
     expect(renew(renewed)).toBe(true);
@@ -453,6 +454,19 @@ describe("context contract — additive RT-414 changes", () => {
     expect(v({ ...summary, ticket_ref: "" })).toBe(false);
     expect(v({ ...summary, ticket_ref: "ops@example.com" })).toBe(false);
     expect(v({ ...summary, status: "ended" })).toBe(false);
+  });
+
+  it("returns a null support_session from a successful tenant switch", () => {
+    const ok = switchOp().responses?.["200"] as {
+      content?: Record<string, { schema?: { allOf?: Array<Record<string, unknown>> } }>;
+    };
+    const allOf = ok.content?.["application/json"]?.schema?.allOf ?? [];
+    expect(allOf[0]).toEqual({ $ref: "#/components/schemas/ContextResponse" });
+    expect(allOf[1]).toEqual({ properties: { support_session: { type: "null" } } });
+    const v = ajv.compile(allOf[1] as object);
+    expect(v({ support_session: null })).toBe(true);
+    expect(v({})).toBe(true);
+    expect(v({ support_session: { id: SESSION_ID, status: "active" } })).toBe(false);
   });
 
   it("keeps the context operations unchanged", () => {
