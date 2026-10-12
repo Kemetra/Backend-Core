@@ -648,11 +648,14 @@ describe("listDeadLettered (DL-4) — pagination", () => {
     // timestamps from the database itself (avoids the JS-side ms
     // truncation when we INSERT). Both rows are seeded in a single
     // statement that materialises the two µs-offset timestamps from a
-    // single `clock_timestamp()` snapshot.
+    // single `clock_timestamp()` snapshot. The anchor is truncated to
+    // the millisecond: an untruncated snapshot ending in `…999 µs` puts
+    // `anchor + 1 µs` in the next millisecond (about one run in a
+    // thousand), which broke the same-ms precondition below.
     await env!.admin.query(
       `
       WITH anchor AS (
-        SELECT clock_timestamp() AS t
+        SELECT date_trunc('milliseconds', clock_timestamp()) AS t
       )
       INSERT INTO outbox_events
         (event_id, tenant_id, event_type, payload,
