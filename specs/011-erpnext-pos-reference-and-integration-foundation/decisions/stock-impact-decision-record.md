@@ -23,10 +23,10 @@
 >
 > The following points are superseded or clarified:
 >
-> 1. **"On-hand authority = DP2"** is clarified. Backend-Core is the *operational* authority (Physical / Sellable
+> 1. **"on-hand authority = DP2"** is clarified. Backend-Core is the *operational* authority (Physical / Sellable
 >    / Available To Sell; 721, 722, 732, 733). ERPNext Stock Ledger/Bin is the *financial/book* quantity
 >    authority (719). Operator surfaces distinguish Physical, Available and ERP Book quantities (745).
-> 2. **"The Data-Pulse-2 stock ledger (009 …)"** is superseded by 724 and 726. 009 evolves into an Inventory
+> 2. **"the Data-Pulse-2 stock ledger (009: …"** is superseded by 724 and 726. 009 evolves into an Inventory
 >    Effects Journal plus operational projection. A signed SUM is not the universal definition of inventory truth.
 > 3. **Sub-question 3 ("DP2's 009 ledger independently records the operational outbound movement")** is
 >    consistent in direction with 769 (Retail-origin events create the operational effect first in Backend-Core)
@@ -40,7 +40,7 @@
 >    is allowed on the V1 stock path, and a negative Bin is an observable operational discrepancy, not a posting
 >    failure (see also 730, 743).
 >
-> The "014 / 015 / 017 downstream obligations" below are historical. Shipped code, data and history are unchanged (727).
+> The "Downstream obligations this decision imposes" section below is historical. Shipped code, data and history are unchanged (727).
 
 ---
 
