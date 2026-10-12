@@ -39,11 +39,10 @@ So ERPNext POS is a **reference model**: it tells us how a mature ERP turns a ca
 
 **Reading the table**: anything marked *Reference-only* or *Reference* is **studied, not wired**. The "Owner of truth" column is the load-bearing one — it shows that **DP2 keeps ownership of the sale, the catalog, and the stock movement**, while **ERPNext owns the general ledger / accounting valuation** that DP2 deliberately does not model.
 
-> **Superseded (RT-288, 2026-10-07):** the Stock Entry / Bin rows above and the §3 "DP2 owns the stock ledger
-> (009)" row now read as follows. Backend-Core owns operational inventory effects (721, 724). ERPNext Stock
-> Ledger/Bin is the financial/book quantity authority (719). ERPNext stock is posted through the Sales Invoice with
-> `update_stock=1` (Jira RT-47 D1), not mirrored from 009. Effect/confirmation semantics belong to Jira RT-289.
-> Source: Inventory Operations baseline, decisions 719–727 (Confluence RETAIL page 22544389).
+> **Superseded (RT-288, Inventory Planning Gate 1, recorded 2026-10-12):** in the Stock Entry / Stock Ledger Entry and Bin rows above, "DP2 owns the movement" and
+> "DP2 computes on-hand" now read as follows. Backend-Core owns operational inventory effects and Available To Sell
+> (721, 722, 724). ERPNext Stock Ledger/Bin is the financial/book quantity authority (719). Source: the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389).
+> Shipped code, data and history are unchanged (727). Whether and how sale effects are activated, and how ERP confirmation avoids double counting, is decided by Jira RT-289 (Gates 2+3).
 
 ---
 
@@ -56,6 +55,10 @@ So ERPNext POS is a **reference model**: it tells us how a mature ERP turns a ca
 | POS prints/receipts via Frappe print formats | Hardware (printer/drawer) is POS-Pulse's domain. |
 | Direct stock decrement on POS Invoice submit | DP2 owns the stock ledger (009). Whether/how an ERPNext stock entry mirrors it is the **stock-impact decision** (placeholder), not an automatic adoption. |
 | POS user/role model | Identity is DP2's (001/002): operators, devices, RBAC, RLS. |
+
+> **Superseded (RT-288, Inventory Planning Gate 1, recorded 2026-10-12):** "DP2 owns the stock ledger (009)" in the row above is superseded by 719 and 724.
+> ERPNext stock is posted through the Sales Invoice with `update_stock=1` (Jira RT-47 D1), not mirrored from 009,
+> and Backend-Core owns operational inventory effects (721). See the note under §2. Whether and how sale effects are activated, and how ERP confirmation avoids double counting, is decided by Jira RT-289 (Gates 2+3).
 
 ---
 

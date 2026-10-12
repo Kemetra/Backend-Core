@@ -158,17 +158,15 @@ Define, at the planning level:
 
 ### 5.1 The signed split
 
-> **Authority wording clarified — 2026-10-07 (RT-288, Inventory Planning Gate 1).** In this spec, "DP2 operational
-> on-hand authority (009 ledger); ERPNext owns valuation", "the 009 stock ledger" and "ERPNext accounting + stock
-> truth" read as follows under the Inventory Operations baseline (Confluence RETAIL page 22544389):
+> **Authority wording clarified (RT-288, Inventory Planning Gate 1, recorded 2026-10-12).** In this feature, "Data-Pulse-2 remains the operational stock authority. It owns the append-only `stock_movements` ledger (009)", "DP2's per-store/branch 009 movements stay the operational truth", the authority-table row "DP2 009 ledger (signed SUM, compute-on-read)", the §IX row, and the same wording in this feature's `plan.md` and `data-model.md`, read as follows under the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389):
 >
 > - Backend-Core owns *operational* inventory authority and Available To Sell (721, 722).
 > - ERPNext Stock Ledger/Bin is the *financial/book* quantity authority, and ERPNext also owns valuation, COGS and
 >   GL (719, 720).
 > - 009 evolves into an Inventory Effects Journal plus operational projection (724, 726).
-> - ERP Bin snapshots are evidence/book state, never an overwrite master (729, 782).
+> - ERP Bin snapshots are evidence/book state, never an overwrite master (729, 782, 783).
 >
-> Shipped behavior and history are unchanged (727). Effect/confirmation semantics belong to Jira RT-289.
+> Shipped code, data and history are unchanged (727). Whether and how sale effects are activated, and how ERP confirmation avoids double counting, is decided by Jira RT-289 (Gates 2+3).
 
 - **Data-Pulse-2 remains the operational stock authority.** It owns the
   append-only `stock_movements` ledger (009) and computes the **operational

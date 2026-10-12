@@ -40,10 +40,9 @@
 - **Owns** the OpenAPI contracts that POS-Pulse and Retail-Tower-Console consume — including any future ERP-backed endpoints.
 - **Is the only system permitted to talk to ERPNext**, and only via the future connector — never via ad-hoc direct calls scattered through the codebase.
 - **Keeps source-of-truth ownership** of the sale fact (008), catalog (003), and stock ledger (009). ERPNext receives **postings**; it does not become the origin of these facts.
-  - **Superseded (RT-288, 2026-10-07):** for inventory, "source-of-truth ownership of … stock ledger (009)" means
+  - **Superseded (RT-288, Inventory Planning Gate 1, recorded 2026-10-12):** for inventory, "source-of-truth ownership of … stock ledger (009)" means
     operational inventory authority only (721, 722). ERPNext Stock Ledger/Bin remains the financial/book quantity
-    authority (719), and 009 evolves into an Inventory Effects Journal (724). Source: Inventory Operations
-    baseline, decisions 719–727 (Confluence RETAIL page 22544389).
+    authority (719), and 009 evolves into an Inventory Effects Journal (724). Source: the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389).
 - **Does not become a general ledger.** The chart-of-accounts / GL valuation that DP2 deliberately does not model is exactly what ERPNext provides.
 
 ### POS-Pulse (cashier terminal)
@@ -78,6 +77,11 @@
 | ERPNext POS MUST NOT be adopted as the production cashier terminal | spec §1; [erpnext-pos-reference-map.md](./erpnext-pos-reference-map.md) |
 | ERPNext credentials MUST live only in the connector, never in POS-Pulse, Console, or scattered DP2 code | this doc §2; split-criteria security boundary |
 | DP2 MUST NOT surrender source-of-truth ownership of sale/catalog/stock facts to ERPNext | Constitution §IX; spec §1 |
+
+> **Clarified (RT-288, Inventory Planning Gate 1, recorded 2026-10-12):** for stock, the guardrail "DP2 MUST NOT surrender source-of-truth ownership of …
+> stock facts to ERPNext" covers *operational* inventory facts and Available To Sell only (721, 722). ERPNext Stock
+> Ledger/Bin is the financial/book quantity authority (719), and ERP snapshots are evidence, never a blind
+> overwrite of operational state (729, 782, 783). Source: the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389).
 
 ---
 
