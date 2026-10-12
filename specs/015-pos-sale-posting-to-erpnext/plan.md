@@ -181,6 +181,8 @@ ERPNext validation) — is **resolved by design**, not waived: it is the expecte
 `permanently_rejected` → DLQ + reconciliation path (spec §5.3 / §8), with the DP2
 operational reality never overwritten.
 
+> **Superseded (RT-288, Inventory Planning Gate 1, recorded 2026-10-12):** the design tension above no longer holds. ERPNext is configured to allow negative stock on the V1 stock path (Jira RT-47 D3), so a negative Bin is an observable operational discrepancy, not by itself a posting failure, and it is not resolved through `permanently_rejected` → DLQ (730, 743). How negative balances are classified in reconciliation belongs to the Inventory reconciliation decisions (923–942) and Jira RT-289. Source: the owner-approved Inventory Operations baseline of 2026-10-07, decisions 719–727 (Confluence RETAIL page 22544389). Shipped code, data and history are unchanged (727).
+
 ---
 
 ## Architecture Impact Map
