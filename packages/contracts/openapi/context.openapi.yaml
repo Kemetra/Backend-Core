@@ -1,10 +1,17 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Active Context API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     Server-side resolution and switching of active tenant + active store
     for an authenticated session. Per spec §6.6 and Q3 default A.
+
+    RT-414 (1.1.0-draft, `[GATED]`, owner-approved 2026-10-12): a platform admin
+    enters a tenant they are not a member of only through a support session
+    (`platform-support-sessions.openapi.yaml`). `switchActiveTenant` refuses
+    that case with 403 `support_session_required`, and `ContextResponse`
+    gains `support_session`. Behavior for users who are not platform admins
+    is unchanged. Both changes ship with the RT-414 runtime.
 servers:
   - url: https://api.example.com
 paths:
@@ -39,11 +46,24 @@ paths:
                   format: uuid
       responses:
         "200":
-          description: Active tenant switched. Active store is cleared.
+          description: >
+            Active tenant switched. Active store is cleared. Any current support
+            session has ended, so `support_session` is null.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ContextResponse"
+                type: object
+                allOf:
+                  - $ref: "#/components/schemas/ContextResponse"
+                  - properties:
+                      support_session: { type: "null" }
+        "403":
+          description: >
+            `support_session_required` (RT-414): the caller is a platform admin
+            and not an active member of this existing tenant. Enter it with
+            `openSupportSession` instead. Never returned to a user who is not a
+            platform admin. A successful switch ends any current support
+            session (`end_reason: tenant_switched`).
         "404":
           description: Tenant does not exist OR user has no membership in it. Same response for both (FR-ISO-4).
   /api/v1/context/store:
@@ -103,6 +123,38 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/MembershipSummary"
+        support_session:
+          description: >
+            RT-414: the caller's current support session (`active` or
+            `expired`), or null. Always null for a user who is not a platform
+            admin, and when the active tenant was entered through membership.
+          oneOf:
+            - $ref: "#/components/schemas/SupportSessionSummary"
+            - type: "null"
+    SupportSessionSummary:
+      type: object
+      additionalProperties: false
+      required: [id, tenant_id, purpose, ticket_ref, status, expires_at, renewal_cap_at]
+      description: >
+        RT-414: the banner subset of `SupportSession` in
+        `platform-support-sessions.openapi.yaml`; the field meanings and value
+        sets are defined there.
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        purpose:
+          type: string
+          enum: [customer_support, incident, onboarding]
+        ticket_ref:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 64
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._:#/-]{0,63}$"
+        status:
+          type: string
+          enum: [active, expired]
+        expires_at: { type: string, format: date-time }
+        renewal_cap_at: { type: string, format: date-time }
     UserSummary:
       type: object
       properties:
