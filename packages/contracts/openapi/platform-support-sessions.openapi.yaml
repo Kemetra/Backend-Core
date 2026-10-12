@@ -169,7 +169,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SupportSession"
+                allOf:
+                  - $ref: "#/components/schemas/SupportSession"
+                  - properties:
+                      status: { const: active }
         "400":
           $ref: "#/components/responses/ValidationFailure"
         "401":
@@ -238,7 +241,11 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SupportSession"
+                allOf:
+                  - $ref: "#/components/schemas/SupportSession"
+                  - properties:
+                      status: { const: active }
+                      renewed_at: { type: string }
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -278,7 +285,11 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SupportSession"
+                allOf:
+                  - $ref: "#/components/schemas/SupportSession"
+                  - properties:
+                      status: { const: ended }
+                      end_reason: { const: operator }
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -493,13 +504,25 @@ components:
         Allowlisted `metadata` of a `platform.cross_tenant.accessed` row. The
         route is the template (for example `/api/v1/sales/:saleId`), never the
         concrete path, query string or body. A `succeeded` row has a support
-        session and no `reason`; a `rejected` row always has a `reason`.
+        session and no `reason`; a `rejected` row always has a `reason`, and
+        a `support_session_expired` rejection also names the expired session
+        and its purpose.
       if:
         properties:
           outcome:
             const: rejected
       then:
         required: [reason]
+        if:
+          properties:
+            reason:
+              const: support_session_expired
+        then:
+          properties:
+            support_session_id:
+              type: string
+            purpose:
+              $ref: "#/components/schemas/SupportPurpose"
       else:
         not:
           required: [reason]

@@ -269,6 +269,29 @@ describe("platform-support-sessions — request and projection", () => {
     expect(validator("CurrentSupportSession")({ support_session: activeSession })).toBe(true);
   });
 
+  it("pins each operation's response to the state it promises", () => {
+    const response = (path: string, method: string, code: string): ValidateFunction => {
+      const pointer = `/paths/${path.replace(/\//g, "~1")}/${method}/responses/${code}/content/application~1json/schema`;
+      return ajv.getSchema(`${CONTRACT_ID}#${pointer}`)!;
+    };
+    const ended = { ...activeSession, status: "ended", ended_at: "2026-10-12T09:30:00Z", end_reason: "operator" };
+    const renewed = { ...activeSession, renewed_at: "2026-10-12T09:50:00Z", expires_at: "2026-10-12T10:50:00Z" };
+
+    const opened = response(BASE, "post", "201");
+    expect(opened(activeSession)).toBe(true);
+    expect(opened({ ...activeSession, status: "expired" })).toBe(false);
+
+    const renew = response(RENEW, "post", "200");
+    expect(renew(renewed)).toBe(true);
+    expect(renew(activeSession)).toBe(false);
+    expect(renew({ ...renewed, status: "expired" })).toBe(false);
+
+    const end = response(END, "post", "200");
+    expect(end(ended)).toBe(true);
+    expect(end(activeSession)).toBe(false);
+    expect(end({ ...ended, end_reason: "replaced" })).toBe(false);
+  });
+
   it("never returns an ended session as the current one", () => {
     const v = validator("CurrentSupportSession");
     expect(v({ support_session: { ...activeSession, status: "expired" } })).toBe(true);
@@ -359,6 +382,23 @@ describe("platform-support-sessions — audit metadata allowlists", () => {
     expect(v({ ...admitted, reason: "support_session_expired" })).toBe(false);
     expect(v({ ...admitted, support_session_id: null, purpose: null })).toBe(false);
     expect(v({ ...admitted, outcome: "rejected" })).toBe(false);
+  });
+
+  it("names the expired session on a support_session_expired rejection", () => {
+    const v = validator("CrossTenantAccessAuditMetadata");
+    const expired = {
+      actor_kind: "platform_admin",
+      outcome: "rejected",
+      reason: "support_session_expired",
+      support_session_id: SESSION_ID,
+      purpose: "incident",
+      method: "GET",
+      route: "/api/v1/sales/:saleId",
+    };
+    expect(v(expired)).toBe(true);
+    expect(v({ ...expired, support_session_id: null })).toBe(false);
+    expect(v({ ...expired, purpose: null })).toBe(false);
+    expect(v({ ...expired, reason: "support_session_required", support_session_id: null, purpose: null })).toBe(true);
   });
 
   it("accepts lifecycle rows", () => {
