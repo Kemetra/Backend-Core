@@ -19,10 +19,10 @@ info:
     `/{shift_id}/close`) are unchanged.
 
 
-    **Posture.** `1.0.0-draft`, contract-only: both operations carry
-    `x-runtime-status: contract-only` until the RT-383 implementation ships.
-    `[GATED]` contract: implementation starts only after the owner approves
-    this contract on RT-383.
+    **Posture.** `1.0.0-draft`, implemented. `[GATED]` contract approved by
+    the owner on RT-383 (PR #737); the RT-383 implementation ships both
+    operations unchanged on the wire, so neither carries
+    `x-runtime-status: contract-only`.
 
 
     **What is read.** Only closes Backend-Core has recorded: one `shift_closes`
@@ -33,10 +33,10 @@ info:
     row never changes after it is listed.
 
 
-    **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`),
-    gated `DashboardAuthGuard` → `TenantContextGuard` → `RolesGuard`, as on the
-    other Console operator surfaces (`sale-sync-ops.yaml`,
-    `console-sync-ops.yaml`). Roles: `owner`, `tenant_admin`, `store_manager`.
+    **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`)
+    only, gated `SessionOnlyAdminGuard` → `TenantContextGuard` → `RolesGuard`;
+    the session-only guard is what rejects every bearer (a `dashboard_api`
+    token included) with 401. Roles: `owner`, `tenant_admin`, `store_manager`.
     The tenant comes from the session, never from the request (§II, §XII). The
     store scope is the operator-surface rule (`operator-store-scope.ts`,
     RT-51 D6 / RT-131 / RT-193): `owner` and `tenant_admin` see their
@@ -108,10 +108,6 @@ paths:
     get:
       summary: List recorded shift closes (newest first, keyset paginated).
       operationId: consoleListShiftCloses
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-383 contract PR; the controller ships in the RT-383 implementation
-        after the owner approves this contract.
       tags: [shift-closes]
       description: >
         The recorded closes in the caller's tenant and store scope, newest
@@ -148,10 +144,6 @@ paths:
     get:
       summary: Read one recorded shift close with its movements.
       operationId: consoleGetShiftClose
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-383 contract PR; the controller ships in the RT-383 implementation
-        after the owner approves this contract.
       tags: [shift-closes]
       description: >
         One recorded close, plus its shift's opening (time, user), its cash
@@ -185,7 +177,7 @@ components:
       name: dp2_session
       description: >
         The human dashboard session cookie (httpOnly `dp2_session`), verified
-        by `DashboardAuthGuard`. The only accepted credential on this surface:
+        by `SessionOnlyAdminGuard`. The only accepted credential on this surface:
         a machine bearer, a POS `device` token or an `operatorAuthorization`
         envelope is rejected (401). `RolesGuard` + `@Roles("owner",
         "tenant_admin", "store_manager")` gate both routes (default deny →
