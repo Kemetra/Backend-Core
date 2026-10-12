@@ -171,6 +171,8 @@ paths:
           $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -226,6 +228,8 @@ paths:
           $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -271,6 +275,8 @@ paths:
           $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -369,6 +375,8 @@ paths:
           $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -592,6 +600,15 @@ components:
     Unauthorized:
       description: >
         Generic 401 refusal — missing / invalid dashboard session. Non-disclosing.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    OriginRejected:
+      description: >
+        `origin_rejected` (RT-430): the request is authenticated by the
+        `dp2_session` cookie and its `Origin` header is missing, or is neither
+        the API's own origin nor listed in `ALLOWED_ORIGINS`.
       content:
         application/json:
           schema:

@@ -53,6 +53,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { SAME_ORIGIN } from "../_helpers/same-origin";
 
 /**
  * Test stub for the REDIS_CLIENT provider.
@@ -279,6 +280,7 @@ async function signInWithTenant(email: string, password: string, tenantId: strin
   await http()
     .post("/api/v1/context/tenant")
     .set("Cookie", sessionCookie)
+    .set(SAME_ORIGIN)
     .send({ tenant_id: tenantId })
     .expect(200);
   return sessionCookie;
@@ -310,6 +312,7 @@ describe("POST /api/v1/memberships/invite — happy path (all)", () => {
     const res = await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({ email: "invitee@example.com", role_code: "owner", store_access_kind: "all" })
       .expect(201);
@@ -328,6 +331,7 @@ describe("POST /api/v1/memberships/invite — happy path (all)", () => {
     await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({ email: "enqueue@example.com", role_code: "owner", store_access_kind: "all" })
       .expect(201);
@@ -352,6 +356,7 @@ describe("POST /api/v1/memberships/invite — happy path (specific)", () => {
     const res = await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({
         email: "specific@example.com",
@@ -378,6 +383,7 @@ describe("POST /api/v1/memberships/invite — token security", () => {
     const res = await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({ email: "notoken@example.com", role_code: "owner", store_access_kind: "all" })
       .expect(201);
@@ -393,6 +399,7 @@ describe("POST /api/v1/memberships/invite — token security", () => {
     const res = await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({ email: "dbtoken@example.com", role_code: "owner", store_access_kind: "all" })
       .expect(201);
@@ -417,6 +424,7 @@ describe("POST /api/v1/memberships/invite — email normalisation", () => {
     const res = await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({ email: "  Normalized@Example.COM  ", role_code: "owner", store_access_kind: "all" })
       .expect(201);
@@ -453,6 +461,7 @@ describe("POST /api/v1/memberships/invite — stale invite auto-expiry", () => {
     const res = await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({ email: "stale@example.com", role_code: "owner", store_access_kind: "all" })
       .expect(201);
@@ -482,6 +491,7 @@ describe("POST /api/v1/memberships/invite — duplicate pending invite", () => {
     await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({ email: "duplicate@example.com", role_code: "owner", store_access_kind: "all" })
       .expect(201);
@@ -490,6 +500,7 @@ describe("POST /api/v1/memberships/invite — duplicate pending invite", () => {
     await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({ email: "duplicate@example.com", role_code: "owner", store_access_kind: "all" })
       .expect(409);
@@ -505,6 +516,7 @@ describe("POST /api/v1/memberships/invite — role validation", () => {
     await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({ email: "x@example.com", role_code: "no_such_role", store_access_kind: "all" })
       .expect(400);
@@ -516,6 +528,7 @@ describe("POST /api/v1/memberships/invite — role validation", () => {
     await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({ email: "x@example.com", role_code: "platform_admin", store_access_kind: "all" })
       .expect(400);
@@ -531,6 +544,7 @@ describe("POST /api/v1/memberships/invite — Zod validation", () => {
     await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({ email: "x@example.com", role_code: "owner", store_access_kind: "specific" })
       .expect(400);
@@ -542,6 +556,7 @@ describe("POST /api/v1/memberships/invite — Zod validation", () => {
     await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({
         email: "x@example.com",
@@ -558,6 +573,7 @@ describe("POST /api/v1/memberships/invite — Zod validation", () => {
     await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({ email: "not-an-email", role_code: "owner", store_access_kind: "all" })
       .expect(400);
@@ -573,6 +589,7 @@ describe("POST /api/v1/memberships/invite — cross-tenant store_ids", () => {
     await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({
         email: "x@example.com",
@@ -593,6 +610,7 @@ describe("POST /api/v1/memberships/invite — RolesGuard", () => {
     await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ email: "x@example.com", role_code: "owner", store_access_kind: "all" })
       .expect(403);
   });
@@ -619,6 +637,7 @@ describe("POST /api/v1/memberships/invite — TenantContextGuard", () => {
     await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ email: "x@example.com", role_code: "owner", store_access_kind: "all" })
       .expect(401);
   });
@@ -637,6 +656,7 @@ describe("POST /api/v1/memberships/invite — tenant_admin caller", () => {
     const res = await http()
       .post("/api/v1/memberships/invite")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .set("Idempotency-Key", idemKey())
       .send({ email: "invited-by-admin@example.com", role_code: "store_staff", store_access_kind: "all" })
       .expect(201);

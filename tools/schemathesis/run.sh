@@ -74,8 +74,12 @@ for group in owner platform; do
     for id in $ids; do include+=(--include-operation-id "$id"); done
     log="$FUZZ_OUT/$MODE-$group-$(echo "$file" | tr '/.' '__').txt"
     set +e
+    # RT-430: unsafe cookie requests need a trusted Origin, or every write stops
+    # at 403 origin_rejected before its handler. NODE_ENV=production in the
+    # stack, so the API's own origin for Host api:3000 is https://api:3000.
     st "$ST_IMAGE" run "/contracts/$file" --url http://api:3000 "${include[@]}" \
-      --header "Cookie: dp2_session=$cookie" --checks "$check" "${extra[@]}" \
+      --header "Cookie: dp2_session=$cookie" --header "Origin: https://api:3000" \
+      --checks "$check" "${extra[@]}" \
       --seed "$SEED" --max-examples "$MAX_EXAMPLES" --phases examples,coverage,fuzzing \
       --workers 1 --generation-database none --no-color >"$log" 2>&1
     rc=$?

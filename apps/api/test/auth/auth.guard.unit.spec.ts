@@ -19,7 +19,7 @@
 
 import "reflect-metadata";
 
-import { UnauthorizedException } from "@nestjs/common";
+import { ForbiddenException, UnauthorizedException } from "@nestjs/common";
 import type { ExecutionContext } from "@nestjs/common";
 import type { AuthTokenRow, SessionRow } from "@data-pulse-2/db/schema";
 
@@ -404,5 +404,92 @@ describe("AuthGuard — principal shape", () => {
       storeId: null,
       scope: "dashboard_api",
     });
+  });
+});
+
+// ===========================================================================
+// RT-430 — Origin check on cookie-authenticated unsafe requests (CSRF)
+// ===========================================================================
+
+describe("AuthGuard — RT-430 Origin check", () => {
+  const envBackup = { ...process.env };
+  beforeEach(() => {
+    process.env["NODE_ENV"] = "test";
+    delete process.env["ALLOWED_ORIGINS"];
+  });
+  afterEach(() => {
+    process.env = { ...envBackup };
+  });
+
+  function withMethod(
+    req: Record<string, unknown>,
+    method: string,
+    headers: Record<string, string> = {},
+  ): Record<string, unknown> {
+    req.method = method;
+    req.protocol = "http";
+    Object.assign(req.headers as Record<string, string>, { host: "api.test", ...headers });
+    return req;
+  }
+
+  it.each(["POST", "PUT", "PATCH", "DELETE"])(
+    "AG-O1: cookie + %s from a sibling Origin → 403 origin_rejected, no session lookup",
+    async (method) => {
+      const { guard, sessions } = buildGuard();
+      sessions.findActiveByCredential.mockResolvedValue(makeSession());
+      const req = withMethod(makeRequest({ cookie: SESSION_ID }), method, {
+        origin: "http://sibling.api.test",
+      });
+
+      const err = await guard.canActivate(makeCtx(req)).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect((err as ForbiddenException).getResponse()).toMatchObject({ code: "origin_rejected" });
+      expect(sessions.findActiveByCredential).not.toHaveBeenCalled();
+      expect(sessions.recordActivity).not.toHaveBeenCalled();
+    },
+  );
+
+  it("AG-O2: cookie + POST with no Origin → 403 origin_rejected", async () => {
+    const { guard } = buildGuard();
+    const req = withMethod(makeRequest({ cookie: SESSION_ID }), "POST");
+    await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it("AG-O3: cookie + POST from the API's own origin → authenticated", async () => {
+    const { guard, sessions } = buildGuard();
+    sessions.findActiveByCredential.mockResolvedValue(makeSession());
+    const req = withMethod(makeRequest({ cookie: SESSION_ID }), "POST", { origin: "http://api.test" });
+    await expect(guard.canActivate(makeCtx(req))).resolves.toBe(true);
+  });
+
+  it("AG-O4: cookie + POST from an ALLOWED_ORIGINS entry → authenticated", async () => {
+    process.env["ALLOWED_ORIGINS"] = "http://console.test";
+    const { guard, sessions } = buildGuard();
+    sessions.findActiveByCredential.mockResolvedValue(makeSession());
+    const req = withMethod(makeRequest({ cookie: SESSION_ID }), "POST", { origin: "http://console.test" });
+    await expect(guard.canActivate(makeCtx(req))).resolves.toBe(true);
+  });
+
+  it.each(["GET", "HEAD"])("AG-O5: cookie + %s needs no Origin", async (method) => {
+    const { guard, sessions } = buildGuard();
+    sessions.findActiveByCredential.mockResolvedValue(makeSession());
+    const req = withMethod(makeRequest({ cookie: SESSION_ID }), method, { origin: "http://evil.test" });
+    await expect(guard.canActivate(makeCtx(req))).resolves.toBe(true);
+  });
+
+  it("AG-O6: bearer + POST with a foreign Origin is not checked (not an ambient credential)", async () => {
+    const { guard, authTokens } = buildGuard();
+    authTokens.findActiveByRawToken.mockResolvedValue(makeToken({ scope: "pos" } as Partial<AuthTokenRow>));
+    const req = withMethod(makeRequest({ bearer: "Bearer raw-token" }), "POST", {
+      origin: "http://evil.test",
+    });
+    await expect(guard.canActivate(makeCtx(req))).resolves.toBe(true);
+  });
+
+  it("AG-O7: bearer + POST with no Origin is not checked", async () => {
+    const { guard, authTokens } = buildGuard();
+    authTokens.findActiveByRawToken.mockResolvedValue(makeToken());
+    const req = withMethod(makeRequest({ bearer: "Bearer raw-token" }), "POST");
+    await expect(guard.canActivate(makeCtx(req))).resolves.toBe(true);
   });
 });

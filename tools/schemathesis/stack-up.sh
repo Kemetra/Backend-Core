@@ -111,7 +111,10 @@ mint_session() {
   [ -n "$cookie" ] || { echo "sign-in for $email returned no session cookie ($(printf '%s' "$signin" | head -n 1))" >&2; exit 1; }
   mask "$cookie"
   printf '%s' "$cookie" >"$file"
+  # RT-430: a cookie-authenticated POST needs a trusted Origin. The stack runs
+  # with NODE_ENV=production, so the API's own origin is https://<Host>.
   code=$(http_status -X POST "$base/api/v1/context/tenant" -H "Cookie: dp2_session=$cookie" \
+    -H "Origin: https://127.0.0.1:$API_PORT" \
     -H 'content-type: application/json' -d "{\"tenant_id\":\"$tenant\"}")
   [ "$code" = "200" ] || { echo "switching $email to the seeded tenant failed ($code)" >&2; exit 1; }
 }

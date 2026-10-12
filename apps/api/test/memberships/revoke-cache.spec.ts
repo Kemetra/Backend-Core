@@ -92,6 +92,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { SAME_ORIGIN } from "../_helpers/same-origin";
 
 // ---- Documented-bound constant (R-5) ---------------------------------------
 // If a future PR adds a Redis or in-memory authz cache above
@@ -343,6 +344,7 @@ async function signInWithTenant(
   await http()
     .post("/api/v1/context/tenant")
     .set("Cookie", cookie)
+    .set(SAME_ORIGIN)
     .send({ tenant_id: tenantId })
     .expect(200);
   return cookie;
@@ -379,6 +381,7 @@ describe("FR-ACCESS-4 D-6 — full membership revoke invalidates authz on next r
     await http()
       .get(`/api/v1/stores/${STORE_A1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(200);
   });
 
@@ -390,6 +393,7 @@ describe("FR-ACCESS-4 D-6 — full membership revoke invalidates authz on next r
     await http()
       .get(`/api/v1/stores/${STORE_A1}`)
       .set("Cookie", targetCookie)
+      .set(SAME_ORIGIN)
       .expect(200);
 
     // Step 2 — OWNER revokes TARGET's membership.
@@ -397,6 +401,7 @@ describe("FR-ACCESS-4 D-6 — full membership revoke invalidates authz on next r
     await http()
       .delete(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", ownerCookie)
+      .set(SAME_ORIGIN)
       .expect(204);
 
     // Step 3 — TARGET's very next request on the same NestJS app gets 404.
@@ -408,6 +413,7 @@ describe("FR-ACCESS-4 D-6 — full membership revoke invalidates authz on next r
     await http()
       .get(`/api/v1/stores/${STORE_A1}`)
       .set("Cookie", targetCookie)
+      .set(SAME_ORIGIN)
       .expect((res) => {
         if (res.status !== 401 && res.status !== 404) {
           throw new Error(
@@ -442,10 +448,12 @@ describe("FR-ACCESS-4 D-6 — PATCH removing one store_access row invalidates au
     await http()
       .get(`/api/v1/stores/${STORE_A1}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(200);
     await http()
       .get(`/api/v1/stores/${STORE_A2}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .expect(200);
   });
 
@@ -461,6 +469,7 @@ describe("FR-ACCESS-4 D-6 — PATCH removing one store_access row invalidates au
     await http()
       .get(`/api/v1/stores/${STORE_A1}`)
       .set("Cookie", patchUserCookie)
+      .set(SAME_ORIGIN)
       .expect(200);
 
     // Step 2 — OWNER PATCHes the membership: keep kind='specific', drop S1.
@@ -468,6 +477,7 @@ describe("FR-ACCESS-4 D-6 — PATCH removing one store_access row invalidates au
     const patchRes = await http()
       .patch(`/api/v1/memberships/${MEM_PATCH}`)
       .set("Cookie", ownerCookie)
+      .set(SAME_ORIGIN)
       .send({ store_access_kind: "specific", store_ids: [STORE_A2] })
       .expect(200);
     expect(patchRes.body.accessible_store_ids).toEqual([STORE_A2]);
@@ -478,12 +488,14 @@ describe("FR-ACCESS-4 D-6 — PATCH removing one store_access row invalidates au
     await http()
       .get(`/api/v1/stores/${STORE_A1}`)
       .set("Cookie", patchUserCookie)
+      .set(SAME_ORIGIN)
       .expect(404);
 
     // S2 grant survived → still 200.
     await http()
       .get(`/api/v1/stores/${STORE_A2}`)
       .set("Cookie", patchUserCookie)
+      .set(SAME_ORIGIN)
       .expect(200);
 
     // Pin the DB-level effect.
@@ -529,6 +541,7 @@ describe("FR-ACCESS-4 D-6 — revoke scope does not leak across memberships (R-6
     await http()
       .get(`/api/v1/stores/${STORE_A1}`)
       .set("Cookie", bystanderCookie)
+      .set(SAME_ORIGIN)
       .expect(200);
 
     // OWNER revokes the OTHER user's (TARGET's) membership only.
@@ -536,6 +549,7 @@ describe("FR-ACCESS-4 D-6 — revoke scope does not leak across memberships (R-6
     await http()
       .delete(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", ownerCookie)
+      .set(SAME_ORIGIN)
       .expect(204);
 
     // BYSTANDER's next request must still succeed — the revoke must NOT
@@ -543,6 +557,7 @@ describe("FR-ACCESS-4 D-6 — revoke scope does not leak across memberships (R-6
     await http()
       .get(`/api/v1/stores/${STORE_A1}`)
       .set("Cookie", bystanderCookie)
+      .set(SAME_ORIGIN)
       .expect(200);
   });
 });

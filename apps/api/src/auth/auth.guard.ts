@@ -34,6 +34,7 @@ import type { AuthTokenRow, BearerAuthScope, SessionRow } from "@data-pulse-2/db
 import { SessionRepository } from "./session.repository";
 import { AuthTokenRepository } from "./auth-token.repository";
 import { recordAuthFailure } from "../observability/metrics/api.metrics";
+import { assertTrustedOrigin, isUnsafeMethod } from "./origin-check";
 
 export const SESSION_COOKIE_NAME = "dp2_session";
 const BEARER_PREFIX = "bearer ";
@@ -116,6 +117,11 @@ export class AuthGuard implements CanActivate {
 
     const sessionCredential = readSessionCookie(request);
     if (sessionCredential !== null) {
+      // RT-430: an unsafe request riding the ambient cookie must come from a
+      // trusted Origin (CSRF). Checked before the lookup, so a forged request
+      // never slides the idle window and its refusal is the same whether or
+      // not the cookie is live.
+      if (isUnsafeMethod(request.method)) assertTrustedOrigin(request);
       const session = await this.sessions.findActiveByCredential(sessionCredential);
       if (!session) {
         // T470 — observability: emit auth_failure_total{cause="bad_token"}.

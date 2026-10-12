@@ -62,6 +62,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { SAME_ORIGIN } from "../_helpers/same-origin";
 
 // ---- Fake Redis (always-allow rate limiter) ----------------------------
 
@@ -221,6 +222,7 @@ async function signInWithTenant(tenantId: string): Promise<string> {
   await http()
     .post("/api/v1/context/tenant")
     .set("Cookie", sessionCookie)
+    .set(SAME_ORIGIN)
     .send({ tenant_id: tenantId })
     .expect(200);
 
@@ -237,6 +239,7 @@ describe("T137: FR-STORE-4 — PATCH with tenant_id in body → 400", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_A}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ tenant_id: TENANT_B })
       .expect(400);
   });
@@ -250,6 +253,7 @@ describe("T137: FR-STORE-4 — PATCH with tenant_id in body → 400", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_A}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ name: "New Name", tenant_id: TENANT_B })
       .expect(400);
   });
@@ -267,6 +271,7 @@ describe("T137: .strict() rejects other unknown keys on PATCH", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_A}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ code: "NEW-CODE" })
       .expect(400);
   });
@@ -278,6 +283,7 @@ describe("T137: .strict() rejects other unknown keys on PATCH", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_A}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ foo: "bar" })
       .expect(400);
   });
@@ -289,6 +295,7 @@ describe("T137: .strict() rejects other unknown keys on PATCH", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_A}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({})
       .expect(400);
   });
@@ -308,6 +315,7 @@ describe("T137: cross-tenant PATCH → 404 (RLS makes store invisible)", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_B}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ name: "Attempted hijack" })
       .expect(404);
   });
@@ -319,6 +327,7 @@ describe("T137: cross-tenant PATCH → 404 (RLS makes store invisible)", () => {
     await http()
       .patch(`/api/v1/stores/${STORE_B}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ name: "Attempted hijack" })
       .expect(404);
 

@@ -56,6 +56,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { SAME_ORIGIN } from "../_helpers/same-origin";
 
 class AlwaysAllowRedis implements RedisLike {
   async incr(): Promise<number> { return 1; }
@@ -286,6 +287,7 @@ async function signInWithTenant(email: string, password: string, tenantId: strin
   await http()
     .post("/api/v1/context/tenant")
     .set("Cookie", sessionCookie)
+    .set(SAME_ORIGIN)
     .send({ tenant_id: tenantId })
     .expect(200);
   return sessionCookie;
@@ -336,6 +338,7 @@ describe("PATCH /api/v1/memberships/:membership_id — TenantContextGuard", () =
     await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ role_code: "tenant_admin" })
       .expect(401);
   });
@@ -350,6 +353,7 @@ describe("PATCH /api/v1/memberships/:membership_id — RolesGuard", () => {
     await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ role_code: "tenant_admin" })
       .expect(403);
   });
@@ -364,6 +368,7 @@ describe("PATCH /api/v1/memberships/:membership_id — input validation", () => 
     await http()
       .patch("/api/v1/memberships/not-a-uuid")
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ role_code: "tenant_admin" })
       .expect(400);
   });
@@ -374,6 +379,7 @@ describe("PATCH /api/v1/memberships/:membership_id — input validation", () => 
     await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({})
       .expect(400);
   });
@@ -384,6 +390,7 @@ describe("PATCH /api/v1/memberships/:membership_id — input validation", () => 
     await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ store_access_kind: "specific" })
       .expect(400);
   });
@@ -394,6 +401,7 @@ describe("PATCH /api/v1/memberships/:membership_id — input validation", () => 
     await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ store_access_kind: "all", store_ids: [STORE_A1] })
       .expect(400);
   });
@@ -405,6 +413,7 @@ describe("PATCH /api/v1/memberships/:membership_id — input validation", () => 
     await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ role_code: "does_not_exist" })
       .expect(400);
   });
@@ -416,6 +425,7 @@ describe("PATCH /api/v1/memberships/:membership_id — input validation", () => 
     await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ role_code: "platform_admin" })
       .expect(400);
   });
@@ -427,6 +437,7 @@ describe("PATCH /api/v1/memberships/:membership_id — input validation", () => 
     await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ store_access_kind: "specific", store_ids: [STORE_B1] })
       .expect(400);
   });
@@ -438,6 +449,7 @@ describe("PATCH /api/v1/memberships/:membership_id — input validation", () => 
     await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ store_ids: [STORE_A1] })
       .expect(400);
   });
@@ -449,6 +461,7 @@ describe("PATCH /api/v1/memberships/:membership_id — input validation", () => 
     await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ store_ids: [] })
       .expect(400);
 
@@ -466,6 +479,7 @@ describe("PATCH /api/v1/memberships/:membership_id — 404 scenarios", () => {
     await http()
       .patch(`/api/v1/memberships/00000000-0000-4000-8000-000000000000`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ role_code: "tenant_admin" })
       .expect(404);
   });
@@ -476,6 +490,7 @@ describe("PATCH /api/v1/memberships/:membership_id — 404 scenarios", () => {
     await http()
       .patch(`/api/v1/memberships/${MEM_BETA_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ role_code: "tenant_admin" })
       .expect(404);
   });
@@ -489,6 +504,7 @@ describe("PATCH /api/v1/memberships/:membership_id — 404 scenarios", () => {
     await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ role_code: "tenant_admin" })
       .expect(404);
     // Restore for subsequent tests
@@ -507,6 +523,7 @@ describe("PATCH /api/v1/memberships/:membership_id — happy path", () => {
     const res = await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ store_access_kind: "specific", store_ids: [STORE_A1, STORE_A2] })
       .expect(200);
 
@@ -526,6 +543,7 @@ describe("PATCH /api/v1/memberships/:membership_id — happy path", () => {
     const res = await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ store_access_kind: "specific", store_ids: [STORE_A3] })
       .expect(200);
 
@@ -542,6 +560,7 @@ describe("PATCH /api/v1/memberships/:membership_id — happy path", () => {
     const res = await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ store_access_kind: "all" })
       .expect(200);
 
@@ -559,6 +578,7 @@ describe("PATCH /api/v1/memberships/:membership_id — happy path", () => {
     const res = await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ role_code: "store_manager" })
       .expect(200);
 
@@ -579,6 +599,7 @@ describe("PATCH /api/v1/memberships/:membership_id — happy path", () => {
     const res = await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ store_access_kind: "specific", store_ids: [STORE_A1] })
       .expect(200);
 
@@ -595,6 +616,7 @@ describe("PATCH /api/v1/memberships/:membership_id — happy path", () => {
     const res = await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ store_ids: [STORE_A3] })
       .expect(200);
 
@@ -612,6 +634,7 @@ describe("PATCH /api/v1/memberships/:membership_id — happy path", () => {
     const res = await http()
       .patch(`/api/v1/memberships/${MEM_TARGET}`)
       .set("Cookie", cookie)
+      .set(SAME_ORIGIN)
       .send({ role_code: "tenant_admin" })
       .expect(200);
 
