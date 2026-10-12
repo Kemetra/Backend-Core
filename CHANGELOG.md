@@ -20,6 +20,13 @@ This project follows [Semantic Versioning](https://semver.org/).
   `GET /api/v1/shift-closes` (filtered, keyset-paginated list) and
   `GET /api/v1/shift-closes/{shiftId}` (one close with its movements). No
   runtime change; the POS shift operations are unchanged.
+- RT-383: runtime for the admin shift-close reads (`ShiftClosesModule`). Both
+  operations ship unchanged on the wire and lose `x-runtime-status:
+  contract-only`. Dashboard session, roles owner / tenant_admin /
+  store_manager, the operator store scope as a SQL predicate, one
+  non-disclosing 404 body for every refusal, and a tenant-bound keyset cursor
+  that keeps `closedAt` at microsecond precision. No migration; the POS shift
+  operations are unchanged.
 
 ### Changed
 - RT-113 BC1: `pos-operators.openapi.yaml` 1.1.1-draft is a prose-only fix.
