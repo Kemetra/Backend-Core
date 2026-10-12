@@ -52,6 +52,7 @@ paths:
           content:
             application/json:
               schema:
+                type: object
                 allOf:
                   - $ref: "#/components/schemas/ContextResponse"
                   - properties:
