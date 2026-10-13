@@ -169,12 +169,10 @@ export class DrizzleAuditRepository implements AuditRepository {
         );
       predicates.push(
         sql`(${auditEvents.occurredAt}, ${auditEvents.id}) < (COALESCE((${anchorTs}), ${cursorTs}::timestamptz), ${cursorId}::uuid)`,
-      );
-      // Redundant upper bound (the anchor is < cursorTs + 1ms): a plain range
-      // on the bare column that the planner turns into an Index Cond on
-      // (tenant_id, occurred_at DESC); the tuple compare against the
-      // InitPlan anchor alone is only a Filter.
-      predicates.push(
+        // Redundant upper bound (the anchor is < cursorTs + 1ms): a plain range
+        // on the bare column that the planner turns into an Index Cond on
+        // (tenant_id, occurred_at DESC); the tuple compare against the
+        // InitPlan anchor alone is only a Filter.
         sql`${auditEvents.occurredAt} < ${cursorTs}::timestamptz + interval '1 millisecond'`,
       );
     }
