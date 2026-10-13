@@ -580,11 +580,13 @@ components:
         - event_handler
         - external_reference
         - foreign_object
+        - embedded_content
         - entity
         - image_element
         - css_import
       description: >
-        The category of the refused SVG construct. No excerpt of the file is
+        The category of the refused SVG construct (FR-07). `embedded_content`
+        covers `<iframe>`, `<embed>` and `<object>`. No excerpt of the file is
         echoed back.
 
     Error:

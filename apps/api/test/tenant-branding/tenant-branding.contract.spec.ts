@@ -387,6 +387,19 @@ describe("tenant-branding — closed vocabularies", () => {
     expect(op(LOGO_PATH, "put").responses?.["409"]?.$ref).toBe("#/components/responses/Conflict");
   });
 
+  it("names a construct for every FR-07 refusal", () => {
+    expect(schema("SvgUnsafeConstruct").enum).toEqual([
+      "script",
+      "event_handler",
+      "external_reference",
+      "foreign_object",
+      "embedded_content",
+      "entity",
+      "image_element",
+      "css_import",
+    ]);
+  });
+
   it("closes the warnings", () => {
     expect(schema("LogoWarning").enum).toEqual(WARNINGS);
   });

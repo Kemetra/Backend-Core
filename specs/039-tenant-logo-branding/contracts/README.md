@@ -149,7 +149,7 @@ The request body for preview and save is the **raw file bytes**, accepted under 
 | `image_too_small` | The trimmed content is below 512 × 512 (square-ish) or below 256 px tall (horizontal). |
 | `aspect_ratio_out_of_range` | The trimmed content aspect is below 1:1 (taller than wide) or above 4:1. |
 | `image_empty` | Nothing is left after trimming (fully transparent or a single colour). |
-| `svg_unsafe_content` | One of the FR-07 constructs is present. `details.construct` names the category (`script`, `event_handler`, `external_reference`, `foreign_object`, `entity`, `image_element`, `css_import`); no excerpt is echoed back. |
+| `svg_unsafe_content` | One of the FR-07 constructs is present. `details.construct` names the category (`script`, `event_handler`, `external_reference`, `foreign_object`, `embedded_content` for `<iframe>` / `<embed>` / `<object>`, `entity`, `image_element`, `css_import`); no excerpt is echoed back. |
 | `svg_unsupported` | There is no usable `viewBox` or width and height, or the rasterizer limits are exceeded (element count or nesting depth). |
 
 These are **outside** the `422` set:
