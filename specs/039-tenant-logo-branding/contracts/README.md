@@ -60,7 +60,7 @@ The YAML file is self-contained, with its own `securitySchemes` and Error schema
 - **Tenant:** taken **only** from the device row. There are no query or path parameters. Unknown query keys get a `400 validation_error` (strict).
 - **Request header:** optional `If-None-Match: "<etag>"`.
 - **Responses:**
-  - **`200`** `TenantBranding` with `ETag: "<etag>"`. The etag is the lowercase hex SHA-256 over the UTF-8 bytes of `tenant_display_name`, one `0x00` byte, then the ASCII `logo.version` or `none` (spec FR-18), so the POS can recompute it.
+  - **`200`** `TenantBranding` with `ETag: "<etag>"`. The etag is the lowercase hex SHA-256 over the UTF-8 bytes of `tenant_display_name`, one `0x00` byte, then either `none` or the ASCII `logo.version`, one `0x00` byte and the ASCII `logo.updated_at` exactly as served (spec FR-18), so the POS can recompute it.
   - **`304`** No body, when `If-None-Match` matches.
   - **`401`** The generic, non-disclosing device refusal.
   - **`5xx`** `system_failure`.
@@ -107,7 +107,7 @@ The request body for preview and save is the **raw file bytes** with `Content-Ty
 
 ### Surface 5 — Remove
 
-- **Operation:** `DELETE /api/v1/tenants/{tenant_id}/logo?expected_current_version=<64-hex>`, operationId `consoleDeleteTenantLogo`.
+- **Operation:** `DELETE /api/v1/tenants/{tenant_id}/logo?expected_current_version=<64-hex|none>`, operationId `consoleDeleteTenantLogo`.
 - **`expected_current_version`** is **required**. The no-logo replay below is checked **first**; only when a logo is stored does a mismatch return `409 logo_changed_concurrently`, deleting nothing.
 - **Behaviour:** delete the record and its renditions, and write the audit event `tenant.logo.removed`.
 - **Idempotent:** with no logo stored it returns `204` and writes no audit event, whatever `expected_current_version` says.

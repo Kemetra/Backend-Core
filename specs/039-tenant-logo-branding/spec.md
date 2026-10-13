@@ -111,7 +111,7 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
 - **FR-15** A replace or a remove writes one audit event in the same transaction: `tenant.logo.replaced` `{from_version, to_version}` or `tenant.logo.removed` `{from_version}`. Actor and tenant come from the request context (Constitution XIII). Image bytes are never logged.
 - **FR-16** The POS read is device-authenticated. The tenant comes only from the device row. There is no tenant parameter.
 - **FR-17** The POS read carries the tenant display name, so the fallback text exists even without a logo. "No logo" is `200` with `logo: null`, never an error.
-- **FR-18** The POS read supports `ETag` / `If-None-Match`. The ETag is the quoted lowercase hex SHA-256 over the UTF-8 bytes of `tenant_display_name`, one `0x00` byte, then the ASCII logo `version` or `none`. It changes only when the name or the logo version changes, and the POS can recompute it locally (FR-35a). An unchanged poll returns `304` with no body.
+- **FR-18** The POS read supports `ETag` / `If-None-Match`. The ETag is the quoted lowercase hex SHA-256 over the UTF-8 bytes of `tenant_display_name`, one `0x00` byte, then either `none` or the ASCII logo `version`, one `0x00` byte and the ASCII `updated_at` exactly as served. It changes whenever the name, the logo version or `updated_at` changes (so a remove and re-save of identical bytes is not hidden by a `304`), and the POS can recompute it locally (FR-35a). An unchanged poll returns `304` with no body.
 
 ### Admin-Console (RT-474)
 
@@ -127,7 +127,7 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
 - **FR-30** A paired-only branding worker starts on the `pairedWorkersLatch`. It reads the branding at app start and then hourly with the device token, sending `If-None-Match`. It is not gated on an operator session. It stops on quit through `workerRegistry`.
 - **FR-31** The cache is stored locally in two parts, each validated on its own:
   - a **name record** (`tenant_id`, `tenant_display_name`, ETag, and `logo_state` = `present` or `none`);
-  - a **logo record** (`tenant_id`, `version`, presentation, warnings, renditions, and `payload_sha256`), written only when `logo_state` is `present`.
+  - a **logo record** (`tenant_id`, `version`, `updated_at`, presentation, warnings, renditions, and `payload_sha256`), written only when `logo_state` is `present`.
 
   `payload_sha256` is a **local** digest that the POS computes at write time over the exact cached bytes (every rendition in a fixed order, plus the presentation and warnings). The server `version` cannot be recomputed on the POS, because it hashes the master and pipeline inputs, so it stays only a cache key. A `200` with `logo: null` writes `logo_state = none` and no logo record. That is a valid, explicit no-logo state, not a missing record.
 
@@ -140,7 +140,7 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
   2. Otherwise, if the name record is valid: show the tenant display name as text in the same slot.
   3. Otherwise (first boot before any branding read, or both records corrupt): show the neutral product mark, the same one the pre-pair screen uses (OD-9, OD-12). The slot keeps its size.
 - **FR-35a** Cache repair. A cache record fails validation when:
-  - the name record is missing or corrupt, or the ETag recomputed from the cached name and the cached state (`present` → the cached logo `version`; `none` → `none`) differs from the stored ETag (FR-18). This catches a corrupted name, a flipped `logo_state` and a wrong version;
+  - the name record is missing or corrupt, or the ETag recomputed from the cached name and the cached state (`present` → the cached logo `version` and `updated_at`; `none` → `none`) differs from the stored ETag (FR-18). This catches a corrupted name, a flipped `logo_state` and a wrong version;
   - `logo_state` is `present` but the logo record is missing;
   - a rendition does not decode;
   - the recomputed `payload_sha256` differs from the stored one.
