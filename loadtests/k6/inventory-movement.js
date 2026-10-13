@@ -78,7 +78,7 @@ function movementBody(productId) {
   });
 }
 
-export default function () {
+export default function runScenario() {
   const tenantSlug = pickTenantForVu(__VU, SYNTHETIC_TENANTS);
   const session = signIn(tenantSlug);
   if (!session?.cookies) {

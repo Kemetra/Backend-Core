@@ -99,7 +99,7 @@ export function setup() {
 // cursor and pages forward; on an empty/stable page it re-baselines from start
 // (the connector's steady-state poll). Scope (tenant) comes from the token, so
 // no query scope is ever sent (§XII).
-export default function (data) {
+export default function runScenario(data) {
   if (!data?.enabled) {
     // Prerequisite unmet — do not generate synthetic load or fake measurements.
     return;

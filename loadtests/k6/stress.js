@@ -98,7 +98,7 @@ function updateOneMembership(tenantId) {
   );
 }
 
-export default function () {
+export default function runScenario() {
   const tenantSlug = pickTenantForVu(__VU, SYNTHETIC_TENANTS);
   const tenantId = tenantIdFor(tenantSlug);
 

@@ -81,7 +81,7 @@ export function setup() {
   return { enabled: true };
 }
 
-export default function (data) {
+export default function runScenario(data) {
   if (!data?.enabled) {
     return; // Prerequisite unmet — no synthetic load, no faked measurement.
   }
