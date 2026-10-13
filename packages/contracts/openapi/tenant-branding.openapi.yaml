@@ -168,7 +168,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TenantBranding"
+                $ref: "#/components/schemas/TenantBrandingSaved"
         "400":
           $ref: "#/components/responses/ValidationFailure"
         "401":
@@ -209,7 +209,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TenantBranding"
+                $ref: "#/components/schemas/TenantBrandingRemoved"
         "400":
           $ref: "#/components/responses/ValidationFailure"
         "401":
@@ -499,6 +499,19 @@ components:
     LogoPreview:
       type: object
       additionalProperties: false
+      # FR-11: a low_contrast warning forces the white card.
+      if:
+        required: [warnings]
+        properties:
+          warnings:
+            contains:
+              const: low_contrast
+      then:
+        properties:
+          presentation:
+            properties:
+              card:
+                const: true
       required: [version, presentation, warnings, screen, receipt]
       properties:
         version:
@@ -518,6 +531,19 @@ components:
     TenantLogo:
       type: object
       additionalProperties: false
+      # FR-11: a low_contrast warning forces the white card.
+      if:
+        required: [warnings]
+        properties:
+          warnings:
+            contains:
+              const: low_contrast
+      then:
+        properties:
+          presentation:
+            properties:
+              card:
+                const: true
       required: [version, presentation, warnings, screen, receipt, updated_at]
       properties:
         version:
@@ -561,6 +587,22 @@ components:
           oneOf:
             - $ref: "#/components/schemas/TenantLogo"
             - type: "null"
+
+    TenantBrandingSaved:
+      description: The save result. A save always leaves a logo stored.
+      allOf:
+        - $ref: "#/components/schemas/TenantBranding"
+        - properties:
+            logo:
+              $ref: "#/components/schemas/TenantLogo"
+
+    TenantBrandingRemoved:
+      description: The removal result. A removal always leaves no logo.
+      allOf:
+        - $ref: "#/components/schemas/TenantBranding"
+        - properties:
+            logo:
+              type: "null"
 
     LogoRejectionCode:
       type: string

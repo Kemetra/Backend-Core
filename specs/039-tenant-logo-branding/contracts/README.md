@@ -115,7 +115,7 @@ The request body for preview and save is the **raw file bytes**, accepted under 
 - **Behaviour:** upsert the single tenant record, master and renditions together in one transaction, increment `revision`, and write the audit event `tenant.logo.replaced`.
 - **Idempotent replay (step 3):** a valid body whose version equals `preview_version` and the stored version returns `200` and writes **no** audit event, whatever `expected_revision` says. A retried save therefore never fails on its own earlier success.
 - **Responses:**
-  - `200 TenantBranding`;
+  - `200 TenantBranding` with a non-null `logo` (`TenantBrandingSaved` in the YAML);
   - `400 validation_error` (a missing or malformed query parameter, an unknown key, or an empty body);
   - `401`;
   - `403 origin_rejected`;
@@ -132,7 +132,7 @@ The request body for preview and save is the **raw file bytes**, accepted under 
 - **Behaviour:** under the same `tenants` row lock as Surface 4, delete the record and its renditions, increment `revision`, write the audit event `tenant.logo.removed`, and return `200 TenantBranding` (`logo: null`, the new `revision`) so the Console can chain its next write.
 - **Idempotent:** with no logo stored it returns `200 TenantBranding` (`logo: null`, the current `revision`, unchanged) and writes no audit event, whatever `expected_revision` says.
 - **Responses:**
-  - `200 TenantBranding`;
+  - `200 TenantBranding` with `logo: null` (`TenantBrandingRemoved` in the YAML);
   - `400 validation_error` (a missing or malformed `expected_revision`, or an unknown key);
   - `401`;
   - `403 origin_rejected`;

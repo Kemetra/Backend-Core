@@ -441,6 +441,36 @@ describe("tenant-branding — projections", () => {
     expect(valid({ ...logo(), receipt: { ...at600, height_px: 355 } })).toBe(false);
   });
 
+  it("forces the card when the logo is low-contrast (FR-11)", () => {
+    const { updated_at: _updatedAt, ...preview } = logo();
+    for (const [name, base] of [
+      ["TenantLogo", logo()],
+      ["LogoPreview", preview],
+    ] as const) {
+      const valid = validator(name);
+      const lowContrast = { ...base, warnings: ["low_contrast"] };
+      expect(valid({ ...lowContrast, presentation: { card: true } })).toBe(true);
+      expect(valid({ ...lowContrast, presentation: { card: false } })).toBe(false);
+    }
+  });
+
+  it("pins the logo state after a save and after a removal", () => {
+    expect(op(LOGO_PATH, "put").responses?.["200"]).toMatchObject({
+      content: { "application/json": { schema: { $ref: "#/components/schemas/TenantBrandingSaved" } } },
+    });
+    expect(op(LOGO_PATH, "delete").responses?.["200"]).toMatchObject({
+      content: { "application/json": { schema: { $ref: "#/components/schemas/TenantBrandingRemoved" } } },
+    });
+    const saved = validator("TenantBrandingSaved");
+    const removed = validator("TenantBrandingRemoved");
+    const withLogo = { tenant_display_name: "Al Nour", revision: 4, logo: logo() };
+    const without = { tenant_display_name: "Al Nour", revision: 5, logo: null };
+    expect(saved(withLogo)).toBe(true);
+    expect(saved(without)).toBe(false);
+    expect(removed(without)).toBe(true);
+    expect(removed(withLogo)).toBe(false);
+  });
+
   it("rejects an unknown slot, a scale of 3 and a non-hex version", () => {
     const valid = validator("TenantLogo");
     const bad = screen();
