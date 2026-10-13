@@ -1,6 +1,6 @@
 # Contract surface (PROSE) — Spec 039 tenant logo branding
 
-**PLANNING ONLY. No OpenAPI YAML in this folder.** This README fixes the intended contract in prose. RT-473 slice S1 authors the real YAML under `packages/contracts/openapi/branding/` as a GATED contract PR, after the owner approves `spec.md` §5. Writing YAML here would prejudge those decisions; the same rule applies in spec 032.
+**PLANNING ONLY. No OpenAPI YAML in this folder.** This README fixes the intended contract in prose. RT-473 slice S1 authors the real YAML under `packages/contracts/openapi/branding/` as a GATED contract PR. The owner approved the decisions this surface depends on (`spec.md` §5) on 2026-10-13. Writing YAML here would prejudge those decisions; the same rule applies in spec 032.
 
 Every operation, once authored, MUST carry:
 

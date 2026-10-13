@@ -6,7 +6,7 @@
 | **Work Mode** | Planning, contract-first. This document is the Planning deliverable. It contains no production code. |
 | **Repository** | `Kemetra/Backend-Core` (contract owner). Consumer sections cover `Kemetra/Admin-Console` and `Kemetra/POS`. |
 | **Baseline** | Backend-Core `origin/main` @ `1558eee`; POS `origin/main` @ `9689500`; Admin-Console `origin/main` @ `8ddb067` (2026-10-13). |
-| **Status** | PROPOSED. The owner decisions D-1…D-5 and comment 11846 are binding inputs. Every `OD-*` below is a recommendation awaiting owner approval. The OpenAPI YAML is **not** authored here; it is the first, GATED step of RT-473. |
+| **Status** | OWNER-APPROVED (2026-10-13): OD-1…OD-6, OD-9…OD-11 and OD-13…OD-15 are approved as recommended. OD-7 and OD-8 are approved as an approach; their values (slot pixel boxes, printer dpi and printable width) are still pending the references and the bench. **OD-12 is open** (no recommendation was made). The OpenAPI YAML is the GATED first step of RT-473. |
 
 ## 1. Objective
 
@@ -149,7 +149,7 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
 - **FR-36** The boot screen reads only the local cache. It never waits on the network.
 - **FR-37** The receipt places the receipt rendition centred at the top. Its CSS size in millimetres is exactly `width_px / dpi × 25.4`, with `image-rendering: pixelated`. With no logo the receipt is byte-identical to today's output. Receipt rendering stays a pure function of its inputs: the logo bytes are an explicit input to `renderReceipt`.
 
-## 5. Owner decisions required (PROPOSED: recommendation first)
+## 5. Owner decisions (recommendation first; approved 2026-10-13 except as noted in Status)
 
 | # | Question | Recommendation | Alternatives |
 |---|---|---|---|
