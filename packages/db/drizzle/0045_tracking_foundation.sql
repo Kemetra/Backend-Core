@@ -153,6 +153,12 @@ CREATE TABLE IF NOT EXISTS tracking_identities (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tracking_identities_product_kind_code
   ON tracking_identities (tenant_id, tenant_product_ref, kind, code);
 
+-- The identity list's keyset order (kind, expiry NULLS LAST as 'infinity',
+-- code, id), so each page is an index range scan with no sort.
+CREATE INDEX IF NOT EXISTS idx_tracking_identities_product_keyset
+  ON tracking_identities
+     (tenant_product_ref, kind, (COALESCE(expiry_date, 'infinity'::date)), code, id);
+
 -- Composite target for stock_movements: the identity of the effect's product.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tracking_identities_id_product_tenant
   ON tracking_identities (id, tenant_product_ref, tenant_id);

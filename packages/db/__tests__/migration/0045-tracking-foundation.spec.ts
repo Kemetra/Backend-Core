@@ -306,6 +306,29 @@ describe("0045 — tracking_identities (G7-2, G7-3)", () => {
     await insertIdentity({ code: "LOT-001", kind: "serial" });
   });
 
+  it("the identity list's keyset order is served by an index range scan, without a sort", async () => {
+    if (skip()) return;
+    const c = await pg().admin.connect();
+    try {
+      await c.query("SET enable_seqscan = off");
+      const plan = await c.query<{ "QUERY PLAN": string }>(
+        `EXPLAIN SELECT id FROM tracking_identities
+          WHERE tenant_product_ref = $1
+            AND (kind, COALESCE(expiry_date, 'infinity'::date), code, id)
+                > ('batch', '2027-01-01'::date, 'A', '00000000-0000-0000-0000-000000000000'::uuid)
+          ORDER BY kind, COALESCE(expiry_date, 'infinity'::date), code, id
+          LIMIT 51`,
+        [PRODUCT_LOT],
+      );
+      const text = plan.rows.map((r) => r["QUERY PLAN"]).join("\n");
+      expect(text).toContain("idx_tracking_identities_product_keyset");
+      expect(text).not.toMatch(/\bSort\b/);
+    } finally {
+      await c.query("RESET enable_seqscan").catch(() => undefined);
+      c.release();
+    }
+  });
+
   it("refuses an unknown kind, a padded or empty code, a non-ERP origin and inverted dates", async () => {
     if (skip()) return;
     await expect(insertIdentity({ kind: "lot", code: "X1" })).rejects.toThrow(/tracking_identities_kind_allowed/);

@@ -26,6 +26,7 @@ import { sql } from "drizzle-orm";
 import {
   check,
   date,
+  index,
   pgTable,
   text,
   timestamp,
@@ -77,6 +78,14 @@ export const trackingIdentities = pgTable(
       t.tenantProductRef,
       t.kind,
       t.code,
+    ),
+    // The identity list's keyset order: expiry NULLS LAST is COALESCE(…, 'infinity').
+    index("idx_tracking_identities_product_keyset").on(
+      t.tenantProductRef,
+      t.kind,
+      sql`(COALESCE(${t.expiryDate}, 'infinity'::date))`,
+      t.code,
+      t.id,
     ),
     // Composite target for stock_movements: the identity of the effect's product.
     uniqueIndex("uq_tracking_identities_id_product_tenant").on(t.id, t.tenantProductRef, t.tenantId),
