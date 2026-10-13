@@ -206,7 +206,7 @@ export class ConnectorRegistrationService {
           [input.instanceId],
         );
         const row = inst.rows[0];
-        if (!row || row.disabled_at !== null) return { kind: "not_found" };
+        if (row?.disabled_at !== null) return { kind: "not_found" };
 
         let credential: IssuedCredentialBody;
         try {
@@ -252,7 +252,7 @@ export class ConnectorRegistrationService {
           [input.instanceId],
         );
         const row = inst.rows[0];
-        if (!row || row.disabled_at !== null) return { kind: "not_found" };
+        if (row?.disabled_at !== null) return { kind: "not_found" };
 
         // Revoke the current active credential(s) FIRST so the new insert does
         // not collide with the at-most-one-unrevoked partial-unique.

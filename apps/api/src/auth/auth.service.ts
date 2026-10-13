@@ -466,7 +466,7 @@ export class AuthService {
   async confirmEmailVerification(input: { rawToken: string }): Promise<void> {
     const repo = this.requireAuthTokens();
     const tokenRow = await repo.findActiveByRawToken(input.rawToken);
-    if (!tokenRow || tokenRow.scope !== AUTH_TOKEN_SCOPES.emailVerify) {
+    if (tokenRow?.scope !== AUTH_TOKEN_SCOPES.emailVerify) {
       throw new BadRequestException("Invalid or expired token");
     }
     if (tokenRow.userId === null) {

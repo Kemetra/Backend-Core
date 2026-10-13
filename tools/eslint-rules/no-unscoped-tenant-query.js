@@ -197,7 +197,7 @@ module.exports = {
     function rootCallExpression(node) {
       // Walk callee chain to find the root CallExpression.
       let n = node;
-      while (n && n.type === "CallExpression" && n.callee.type === "MemberExpression") {
+      while (n?.type === "CallExpression" && n.callee.type === "MemberExpression") {
         n = n.callee.object;
       }
       return n;
@@ -205,8 +205,7 @@ module.exports = {
 
     function isDrizzlePoolCall(node) {
       return (
-        node &&
-        node.type === "CallExpression" &&
+        node?.type === "CallExpression" &&
         node.callee.type === "Identifier" &&
         node.callee.name === "drizzle" &&
         node.arguments.length > 0 &&

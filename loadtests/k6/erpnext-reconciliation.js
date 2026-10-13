@@ -82,7 +82,7 @@ export function setup() {
 }
 
 export default function (data) {
-  if (!data || !data.enabled) {
+  if (!data?.enabled) {
     return; // Prerequisite unmet — no synthetic load, no faked measurement.
   }
   const tenantSlug = pickTenantForVu(__VU, SYNTHETIC_TENANTS);

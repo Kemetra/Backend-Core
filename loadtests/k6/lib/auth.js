@@ -84,7 +84,7 @@ export function signIn(tenantSlug, opts) {
     body,
     cookies,
     setCookie: res.headers["Set-Cookie"] || null,
-    _raw: opts && opts.includeRaw ? res : null,
+    _raw: opts?.includeRaw ? res : null,
   };
 }
 

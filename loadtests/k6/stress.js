@@ -80,17 +80,17 @@ function createInvitation() {
 function updateOneMembership(tenantId) {
   if (!tenantId) return null;
   const list = listMembers(tenantId);
-  if (!list || list.status !== 200) return null;
+  if (list?.status !== 200) return null;
   let members;
   try {
     members = list.json();
   } catch (_e) {
     return null;
   }
-  const arr = Array.isArray(members) ? members : (members && members.data) || [];
+  const arr = Array.isArray(members) ? members : members?.data || [];
   if (!arr.length) return null;
   const target = arr[Math.floor(Math.random() * arr.length)];
-  if (!target || !target.id) return null;
+  if (!target?.id) return null;
   return http.patch(
     baseUrl() + "/api/v1/memberships/" + target.id,
     JSON.stringify({ role_code: target.role_code || "viewer" }),

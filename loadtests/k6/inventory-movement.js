@@ -81,7 +81,7 @@ function movementBody(productId) {
 export default function () {
   const tenantSlug = pickTenantForVu(__VU, SYNTHETIC_TENANTS);
   const session = signIn(tenantSlug);
-  if (!session || !session.cookies) {
+  if (!session?.cookies) {
     return;
   }
   const { storeId, productId } = targetFor(tenantSlug);

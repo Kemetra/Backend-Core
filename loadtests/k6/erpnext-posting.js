@@ -100,7 +100,7 @@ export function setup() {
 // (the connector's steady-state poll). Scope (tenant) comes from the token, so
 // no query scope is ever sent (§XII).
 export default function (data) {
-  if (!data || !data.enabled) {
+  if (!data?.enabled) {
     // Prerequisite unmet — do not generate synthetic load or fake measurements.
     return;
   }
@@ -129,7 +129,7 @@ export default function (data) {
   // Advance the local cursor when the page carried one; otherwise re-baseline.
   try {
     const body = res.json();
-    __ENV.__K6_CURSOR = body && body.next_page_token ? body.cursor : "";
+    __ENV.__K6_CURSOR = body?.next_page_token ? body.cursor : "";
   } catch (_e) {
     __ENV.__K6_CURSOR = "";
   }

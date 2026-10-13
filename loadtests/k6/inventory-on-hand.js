@@ -69,7 +69,7 @@ function targetFor(tenantSlug) {
 export default function () {
   const tenantSlug = pickTenantForVu(__VU, SYNTHETIC_TENANTS);
   const session = signIn(tenantSlug);
-  if (!session || !session.cookies) {
+  if (!session?.cookies) {
     // No dashboard session → cannot measure; skip without faking a number.
     return;
   }

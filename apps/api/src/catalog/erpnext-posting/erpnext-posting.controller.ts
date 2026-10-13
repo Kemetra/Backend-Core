@@ -82,7 +82,7 @@ export class ErpnextPostingController {
     const principal = req.principal;
     // ConnectorAuthGuard guarantees a connector token principal; a token with no
     // tenant binding cannot scope the feed → non-disclosing 401.
-    if (!principal || principal.kind !== "token" || principal.tenantId === null) {
+    if (principal?.kind !== "token" || principal.tenantId === null) {
       throw new UnauthorizedException("Unauthorized");
     }
 
@@ -132,8 +132,7 @@ export class ErpnextPostingController {
   ): Promise<RecordedOutcome> {
     const principal = req.principal;
     if (
-      !principal ||
-      principal.kind !== "token" ||
+      principal?.kind !== "token" ||
       principal.tenantId === null
     ) {
       throw new UnauthorizedException("Unauthorized");

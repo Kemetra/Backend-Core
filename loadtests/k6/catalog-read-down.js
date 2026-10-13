@@ -88,7 +88,7 @@ export function setup() {
 }
 
 export default function (data) {
-  if (!data || !data.enabled) {
+  if (!data?.enabled) {
     // Prerequisite unmet — do not generate synthetic load or fake measurements.
     return;
   }

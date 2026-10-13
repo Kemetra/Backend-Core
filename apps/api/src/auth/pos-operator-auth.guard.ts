@@ -64,8 +64,7 @@ export class PosOperatorAuthGuard extends AuthGuard {
     const principal = request.principal;
 
     if (
-      !principal ||
-      principal.kind !== "token" ||
+      principal?.kind !== "token" ||
       principal.scope !== "pos_operator" ||
       principal.userId === null ||
       principal.storeId === null

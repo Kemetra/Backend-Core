@@ -135,7 +135,7 @@ export class PgIdempotencyMirror implements PgMirrorWriter, PgMirrorReader {
           [row.tenantId, row.clientId, row.key, row.storeId],
         );
         const stored = existing.rows[0]?.request_hash;
-        if (stored && stored.equals(row.fingerprint)) return;
+        if (stored?.equals(row.fingerprint)) return;
         throw new Error("idempotency completion conflict");
       },
     );

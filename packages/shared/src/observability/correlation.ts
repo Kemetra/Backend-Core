@@ -33,7 +33,7 @@ export function getCorrelationId(fallback: string): string {
     const span = trace.getActiveSpan();
     if (!span) return fallback;
     const ctx = span.spanContext();
-    if (!ctx || !ctx.traceId || ctx.traceId === INVALID_TRACE_ID) {
+    if (!ctx?.traceId || ctx.traceId === INVALID_TRACE_ID) {
       return fallback;
     }
     return ctx.traceId;

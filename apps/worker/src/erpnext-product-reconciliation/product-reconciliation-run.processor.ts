@@ -85,7 +85,7 @@ export class ProductReconciliationRunProcessor {
           [input.runId],
         );
         const r = run.rows[0];
-        if (!r || r.status !== "running") {
+        if (r?.status !== "running") {
           return {
             runId: input.runId,
             status: "skipped",

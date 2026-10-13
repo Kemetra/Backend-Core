@@ -85,7 +85,7 @@ export class PosWriteRateLimitGuard implements CanActivate {
     // The envelope guard runs first and guarantees a pos_operator token
     // principal; defensively, if it is absent we do not invent a key — allow and
     // let the upstream guard's decision stand (this guard only THROTTLES).
-    if (!principal || principal.kind !== "token" || principal.tokenId === null) {
+    if (principal?.kind !== "token" || principal.tokenId === null) {
       return true;
     }
 
