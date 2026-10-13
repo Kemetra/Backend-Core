@@ -29,6 +29,7 @@ import type { Pool, PoolClient } from "pg";
 
 import {
   createStockReconciliationRun,
+  lockPostingFeedSequence,
   runWithTenantContext,
   STOCK_RECONCILIATION_RUN_COLUMNS,
   type StockReconciliationRunRow,
@@ -262,6 +263,9 @@ export class ErpnextReconciliationService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<RepairResult> => {
+        // RT-456: a repair re-offer re-heads the feed sequence; tenant
+        // sequence lock first, before the row lock below.
+        await lockPostingFeedSequence(client, input.tenantId);
         const cur = await client.query<{
           status: string;
           document_ref: string | null;

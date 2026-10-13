@@ -27,6 +27,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../../../../packages/db/__tests__/_helpers/postgres-container";
+import { servedAcrossConcurrentCommit } from "../../../../packages/db/__tests__/_helpers/posting-feed";
 import {
   PostingRequestedConsumer,
   ReversalAwaitingSalePostError,
@@ -656,6 +657,33 @@ describe("PostingRequestedConsumer.handle — RT-330 a pending intent is never l
     ).rejects.toBeInstanceOf(PostingResolutionNotFrozenError);
     expect(await postingRows(e, saleId)).toEqual([]);
   });
+});
+
+/**
+ * RT-456 (RT-447 F01): a posting intent whose LOWER sequence commits after a
+ * HIGHER one was already served must not be skipped by the connector's feed
+ * cursor (scenario in packages/db/__tests__/_helpers/posting-feed.ts).
+ */
+describe("PostingRequestedConsumer.handle — RT-456 feed completeness under concurrent commit", () => {
+  it("an intent that commits after a later sequence was served is still offered", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleA = "01900000-0000-7000-8000-00000050f001";
+    const saleB = "01900000-0000-7000-8000-00000050f002";
+    await seedSale(e, { id: saleA, store: STORE_MAPPED, externalId: "rt456-a", tenantProductRef: TPRODUCT });
+    await seedSale(e, { id: saleB, store: STORE_MAPPED, externalId: "rt456-b", tenantProductRef: TPRODUCT });
+
+    const served = await servedAcrossConcurrentCommit({
+      app: e.app,
+      tenantId: TENANT,
+      pausesAfter: /INSERT INTO erpnext_posting_status/,
+      heldWriter: (pool) =>
+        new PostingRequestedConsumer(pool).handle(salePostEvent(saleA, "01900000-0000-7000-8000-0000000ef001")),
+      otherWriter: (pool) =>
+        new PostingRequestedConsumer(pool).handle(salePostEvent(saleB, "01900000-0000-7000-8000-0000000ef002")),
+    });
+    expect(served.map((row) => row.sourceRefId)).toEqual(expect.arrayContaining([saleA, saleB]));
+  }, 30_000);
 });
 
 // Last in the file: retires TPRODUCT's map with no replacement.

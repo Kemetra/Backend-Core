@@ -37,6 +37,7 @@ import {
   POSTING_DEADLETTER_A,
   seedReconciliationFixture,
 } from "../__support__/seed-reconciliation";
+import { expectWaitsForPostingFeedLock } from "../../../_helpers/posting-feed-lock";
 
 let env: PgTestEnv | null = null;
 let skip = false;
@@ -157,6 +158,22 @@ describe("017-US2 §1 — repair re-offers a resolvable dead-letter", () => {
       [TENANT_A, POSTING_DEADLETTER_A],
     );
     expect(Number(audit.rows[0]?.count)).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("RT-456 — repair takes the tenant posting-feed lock before re-heading", () => {
+  it("waits while another transaction holds the lock, then re-offers", async () => {
+    if (skip) return;
+    await resetDeadletter(5);
+    await expectWaitsForPostingFeedLock(env!.admin, TENANT_A, () =>
+      svc().repairPosting({
+        tenantId: TENANT_A,
+        context: sessionCtx(TENANT_A),
+        actorUserId: ACTOR_A,
+        workItemRef: POSTING_DEADLETTER_A,
+      }),
+    );
+    expect((await statusRow()).status).toBe("pending");
   });
 });
 

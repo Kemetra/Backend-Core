@@ -18,6 +18,9 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../../../_helpers/postgres-container";
+import type { Pool } from "pg";
+import { servedAcrossConcurrentCommit } from "../../../../../../packages/db/__tests__/_helpers/posting-feed";
+import { expectWaitsForPostingFeedLock } from "../../../_helpers/posting-feed-lock";
 import { ErpnextPostingService } from "../../../../src/catalog/erpnext-posting/erpnext-posting.service";
 import {
   POSTING_STATUS_FIXTURE_IDS,
@@ -86,5 +89,55 @@ describe("ErpnextPostingService.pullPostings — RT-325 numeric sequence order",
     if (skip) return;
     const page = await svc().pullPostings({ tenantId: TENANT_A, since: null, limit: 100 });
     expect(page.cursor).toBe("10");
+  });
+});
+
+/*
+ * RT-456 (RT-447 F01) — the feed stays complete when sequence-drawing
+ * transactions commit out of order. A transient ack re-heads its row
+ * (`sequence = DEFAULT`); if that transaction commits after a later sequence
+ * was already served, the row must still be offered from the persisted cursor.
+ */
+async function resetPending(): Promise<void> {
+  await env!.admin.query(
+    `UPDATE erpnext_posting_status
+        SET status = 'pending', retry_count = 0, document_ref = NULL, rejection_category = NULL
+      WHERE id = ANY($1::uuid[])`,
+    [[POST_A_PENDING, POST_A_REVERSAL]],
+  );
+}
+
+describe("RT-456 — posting feed completeness under concurrent commit", () => {
+  it("a transient re-head that commits after a later sequence was served is still offered", async () => {
+    if (skip) return;
+    await resetPending();
+    const transientAck = (workItemRef: string) => (pool: Pool) =>
+      new ErpnextPostingService(pool).ackOutcome({
+        tenantId: TENANT_A,
+        workItemRef,
+        outcome: "failed_transient",
+      });
+    const served = await servedAcrossConcurrentCommit({
+      app: env!.app,
+      tenantId: TENANT_A,
+      pausesAfter: /sequence\s*=\s*DEFAULT/i,
+      heldWriter: transientAck(POST_A_PENDING),
+      otherWriter: transientAck(POST_A_REVERSAL),
+    });
+    expect(served.map((row) => row.id)).toEqual(
+      expect.arrayContaining([POST_A_PENDING, POST_A_REVERSAL]),
+    );
+  }, 30_000);
+
+  it("an ack waits for the tenant posting-feed lock", async () => {
+    if (skip) return;
+    await resetPending();
+    await expectWaitsForPostingFeedLock(env!.admin, TENANT_A, () =>
+      new ErpnextPostingService(env!.app).ackOutcome({
+        tenantId: TENANT_A,
+        workItemRef: POST_A_PENDING,
+        outcome: "failed_transient",
+      }),
+    );
   });
 });

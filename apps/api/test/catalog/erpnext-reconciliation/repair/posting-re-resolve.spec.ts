@@ -39,6 +39,7 @@ import {
   RECONCILIATION_FIXTURE_IDS,
   seedReconciliationFixture,
 } from "../__support__/seed-reconciliation";
+import { expectWaitsForPostingFeedLock } from "../../../_helpers/posting-feed-lock";
 
 let env: PgTestEnv | null = null;
 let skip = false;
@@ -236,5 +237,13 @@ describe("RT-333 — a reversal's lineage is never re-resolved", () => {
     const err = await reResolve(TENANT_A, SALE_POST_VOIDED).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ReResolveConflictError);
     expect((err as Error).message).toMatch(/reversal/);
+  });
+});
+
+describe("RT-456 — re-resolve takes the tenant posting-feed lock before re-heading", () => {
+  it("waits while another transaction holds the lock, then completes", async () => {
+    if (skip) return;
+    await setRow("pending", 1);
+    await expectWaitsForPostingFeedLock(env!.admin, TENANT_A, () => reResolve());
   });
 });
