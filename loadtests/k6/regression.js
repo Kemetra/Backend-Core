@@ -36,7 +36,6 @@ import { sleep } from "k6";
 import { signIn, refreshSession, signOut, SYNTHETIC_TENANTS } from "./lib/auth.js";
 import { establishContext, getActiveContext, pickTenantForVu, tenantIdFor } from "./lib/tenants.js";
 import http from "k6/http";
-import { check } from "k6";
 import { baseUrl, jsonHeaders, jsonPostHeaders, uuidv4 } from "./lib/util.js";
 
 // k6's filesystem reads via open() are scoped to script-init time; we use

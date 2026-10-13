@@ -25,7 +25,7 @@
 //     --summary-export /scripts/last-stress.json
 
 import http from "k6/http";
-import { check, sleep } from "k6";
+import { sleep } from "k6";
 import { signIn, refreshSession, signOut, SYNTHETIC_TENANTS } from "./lib/auth.js";
 import {
   establishContext,
