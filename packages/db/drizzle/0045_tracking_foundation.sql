@@ -147,7 +147,11 @@ CREATE TABLE IF NOT EXISTS tracking_identities (
   CONSTRAINT tracking_identities_origin_allowed
     CHECK (origin IN ('erp_external')),
   CONSTRAINT tracking_identities_dates_ordered
-    CHECK (manufactured_on IS NULL OR expiry_date IS NULL OR manufactured_on <= expiry_date)
+    CHECK (manufactured_on IS NULL OR expiry_date IS NULL OR manufactured_on <= expiry_date),
+  -- DATE accepts 'infinity' / '-infinity'; a printed pack date is always real.
+  CONSTRAINT tracking_identities_dates_finite
+    CHECK ((expiry_date IS NULL OR isfinite(expiry_date))
+           AND (manufactured_on IS NULL OR isfinite(manufactured_on)))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tracking_identities_product_kind_code

@@ -432,6 +432,11 @@ describe("RT-448 §7 — tracking identities", () => {
       "utf8",
     ).toString("base64url");
     await http().get(`${identitiesUrl(PRODUCT_LOTS)}?cursor=${impossibleDate}`).expect(400);
+    const yearZero = Buffer.from(
+      JSON.stringify({ p: PRODUCT_LOTS, k: "batch", e: "0000-01-01", c: "LOT-A", i: LOT_EARLY }),
+      "utf8",
+    ).toString("base64url");
+    await http().get(`${identitiesUrl(PRODUCT_LOTS)}?cursor=${yearZero}`).expect(400);
     await http().get(`${identitiesUrl(PRODUCT_LOTS)}?limit=201`).expect(400);
   });
 

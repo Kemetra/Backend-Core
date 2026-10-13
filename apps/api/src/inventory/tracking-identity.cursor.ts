@@ -31,9 +31,12 @@ const PayloadSchema = z
   })
   .strict();
 
-/** `YYYY-MM-DD` naming a real day (rejects e.g. `2026-02-31`, which the DB cast would 500 on). */
+/**
+ * `YYYY-MM-DD` naming a real day in years 0001–9999 — values the DB `::date`
+ * cast accepts (rejects e.g. `2026-02-31` and `0000-01-01`, which would 500).
+ */
 function isCalendarDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith("0000")) return false;
   const parsed = new Date(`${value}T00:00:00Z`);
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }

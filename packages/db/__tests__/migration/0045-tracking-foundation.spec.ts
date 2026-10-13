@@ -329,7 +329,7 @@ describe("0045 — tracking_identities (G7-2, G7-3)", () => {
     }
   });
 
-  it("refuses an unknown kind, a padded or empty code, a non-ERP origin and inverted dates", async () => {
+  it("refuses an unknown kind, a padded or empty code, a non-ERP origin, inverted and infinite dates", async () => {
     if (skip()) return;
     await expect(insertIdentity({ kind: "lot", code: "X1" })).rejects.toThrow(/tracking_identities_kind_allowed/);
     await expect(insertIdentity({ code: " LOT-2" })).rejects.toThrow(/tracking_identities_code_shape/);
@@ -339,6 +339,15 @@ describe("0045 — tracking_identities (G7-2, G7-3)", () => {
     );
     await expect(insertIdentity({ code: "LOT-4", expiry: "2026-01-01", manufactured: "2026-06-01" })).rejects.toThrow(
       /tracking_identities_dates_ordered/,
+    );
+    await expect(insertIdentity({ code: "LOT-5", expiry: "-infinity" })).rejects.toThrow(
+      /tracking_identities_dates_finite/,
+    );
+    await expect(insertIdentity({ code: "LOT-6", expiry: "infinity" })).rejects.toThrow(
+      /tracking_identities_dates_finite/,
+    );
+    await expect(insertIdentity({ code: "LOT-7", manufactured: "-infinity" })).rejects.toThrow(
+      /tracking_identities_dates_finite/,
     );
   });
 

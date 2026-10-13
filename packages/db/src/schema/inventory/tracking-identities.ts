@@ -73,6 +73,10 @@ export const trackingIdentities = pgTable(
       "tracking_identities_dates_ordered",
       sql`${t.manufacturedOn} IS NULL OR ${t.expiryDate} IS NULL OR ${t.manufacturedOn} <= ${t.expiryDate}`,
     ),
+    check(
+      "tracking_identities_dates_finite",
+      sql`(${t.expiryDate} IS NULL OR isfinite(${t.expiryDate})) AND (${t.manufacturedOn} IS NULL OR isfinite(${t.manufacturedOn}))`,
+    ),
     uniqueIndex("uq_tracking_identities_product_kind_code").on(
       t.tenantId,
       t.tenantProductRef,
