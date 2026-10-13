@@ -72,6 +72,10 @@ import type { Pool, PoolClient } from 'pg';
 import { PG_POOL } from '../auth/auth.module';
 import { recordInventoryNegativeBalance } from '../observability/metrics/api.metrics';
 import { formatQuantity, parseQuantity } from './decimal-quantity';
+import {
+  encodeTrackingIdentityCursor,
+  type TrackingIdentityCursor,
+} from './tracking-identity.cursor';
 
 /** The set of manually-creatable movement types (contract enum, FR-002). */
 export const MANUAL_MOVEMENT_TYPES = ['inbound', 'outbound', 'adjustment'] as const;
@@ -366,6 +370,32 @@ export interface TrackingIdentityBody {
 
 export interface TrackingIdentityListBody {
   readonly items: readonly TrackingIdentityBody[];
+  /** Opaque cursor for the next page; null when exhausted. */
+  readonly nextCursor: string | null;
+}
+
+interface TrackingIdentityRow {
+  id: string;
+  tenant_product_ref: string;
+  kind: string;
+  code: string;
+  expiry_date: string | null;
+  manufactured_on: string | null;
+  origin: string;
+  /** The keyset sort value: the expiry date, or `infinity`. */
+  sort_expiry: string;
+}
+
+function toTrackingIdentityBody(t: TrackingIdentityRow): TrackingIdentityBody {
+  return {
+    id: t.id,
+    productId: t.tenant_product_ref,
+    kind: t.kind,
+    code: t.code,
+    expiryDate: t.expiry_date,
+    manufacturedOn: t.manufactured_on,
+    origin: t.origin,
+  };
 }
 
 export interface StockMovementListBody {
@@ -665,15 +695,19 @@ export class InventoryService {
 
   /**
    * RT-448 (RT-50 G7-2): the tenant's tracking identities of one product,
-   * ordered by kind, then expiry (earliest first, none last), then code.
-   * Read-only; identities are ERP-born (G7-3) and nothing creates one yet
+   * ordered by kind, then expiry (earliest first, none last), then code, in
+   * keyset pages of at most MAX_LIMIT (a serial product has one identity per
+   * unit). Read-only; identities are ERP-born (G7-3) and nothing creates one yet
    * (RT-453). A product outside the tenant is a non-disclosing 404 (FR-051):
    * RLS hides other tenants' products and identities alike.
    */
   async listTrackingIdentities(input: {
     readonly tenantId: string;
     readonly productId: string;
+    readonly limit?: number | undefined;
+    readonly cursor?: TrackingIdentityCursor | undefined;
   }): Promise<TrackingIdentityListBody> {
+    const limit = Math.min(Math.max(input.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
@@ -683,33 +717,43 @@ export class InventoryService {
           [input.productId],
         );
         if (!product.rows[0]) throw new NotFoundException('Not Found');
-        const r = await client.query<{
-          id: string;
-          tenant_product_ref: string;
-          kind: string;
-          code: string;
-          expiry_date: string | null;
-          manufactured_on: string | null;
-          origin: string;
-        }>(
-          // ::text keeps the calendar dates as `YYYY-MM-DD` (no time-zone shift).
+        const after = input.cursor;
+        // Keyset page over (kind, expiry NULLS LAST, code, id); a missing
+        // expiry sorts as 'infinity'. One extra row tells whether more exist.
+        const r = await client.query<TrackingIdentityRow>(
           `SELECT id, tenant_product_ref, kind, code, expiry_date::text AS expiry_date,
-                  manufactured_on::text AS manufactured_on, origin
+                  manufactured_on::text AS manufactured_on, origin,
+                  COALESCE(expiry_date, 'infinity'::date)::text AS sort_expiry
              FROM tracking_identities
             WHERE tenant_product_ref = $1
-            ORDER BY kind ASC, expiry_date ASC NULLS LAST, code ASC, id ASC`,
-          [input.productId],
+              AND ($2::text IS NULL
+                   OR (kind, COALESCE(expiry_date, 'infinity'::date), code, id)
+                      > ($2::text, $3::date, $4::text, $5::uuid))
+            ORDER BY kind ASC, COALESCE(expiry_date, 'infinity'::date) ASC, code ASC, id ASC
+            LIMIT $6`,
+          [
+            input.productId,
+            after?.kind ?? null,
+            after?.expiry ?? null,
+            after?.code ?? null,
+            after?.id ?? null,
+            limit + 1,
+          ],
         );
+        const page = r.rows.slice(0, limit);
+        const last = page[page.length - 1];
         return {
-          items: r.rows.map((t) => ({
-            id: t.id,
-            productId: t.tenant_product_ref,
-            kind: t.kind,
-            code: t.code,
-            expiryDate: t.expiry_date,
-            manufacturedOn: t.manufactured_on,
-            origin: t.origin,
-          })),
+          items: page.map(toTrackingIdentityBody),
+          nextCursor:
+            r.rows.length > limit && last
+              ? encodeTrackingIdentityCursor({
+                  productId: input.productId,
+                  kind: last.kind,
+                  expiry: last.sort_expiry,
+                  code: last.code,
+                  id: last.id,
+                })
+              : null,
         };
       },
     );

@@ -575,6 +575,16 @@ describe("inventory/inventory.yaml — RT-448 tracking foundation", () => {
     expect(Object.keys(paths).filter((m) => m !== "parameters")).toEqual(["get"]);
   });
 
+  it("pages the identity list: bounded limit, opaque cursor, nextCursor", () => {
+    const params = findOp("listTrackingIdentities")?.parameters ?? [];
+    const limit = params.find((p) => p.name === "limit");
+    expect(limit?.schema).toMatchObject({ maximum: 200 });
+    expect(params.some((p) => p.name === "cursor")).toBe(true);
+    const list = schema("TrackingIdentityList") as { required?: string[]; properties?: Record<string, { maxItems?: number }> };
+    expect(list.required).toEqual(["items", "nextCursor"]);
+    expect(list.properties?.["items"]?.maxItems).toBe(200);
+  });
+
   it("projects a strict TrackingIdentity: typed kind, bounded code, ERP-born origin", () => {
     const ti = schema("TrackingIdentity");
     expect(ti.additionalProperties).toBe(false);

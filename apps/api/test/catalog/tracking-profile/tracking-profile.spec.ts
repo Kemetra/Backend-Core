@@ -359,7 +359,7 @@ describe("RT-448 §7 — tracking identities", () => {
   it("a product without identities lists none", async () => {
     if (skip()) return;
     const res = await http().get(identitiesUrl(PRODUCT_FRESH)).expect(200);
-    expect(res.body).toEqual({ items: [] });
+    expect(res.body).toEqual({ items: [], nextCursor: null });
   });
 
   it("lists by kind, then earliest expiry (none last), then code, with the strict projection", async () => {
@@ -380,6 +380,33 @@ describe("RT-448 §7 — tracking identities", () => {
       manufacturedOn: "2026-01-15",
       origin: "erp_external",
     });
+  });
+
+  it("pages with a keyset cursor in the same order, then ends with a null cursor", async () => {
+    if (skip()) return;
+    const ids: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const url: string = `${identitiesUrl(PRODUCT_LOTS)}?limit=1${
+        cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
+      }`;
+      const res = await http().get(url).expect(200);
+      expect(res.body.items.length).toBeLessThanOrEqual(1);
+      ids.push(...res.body.items.map((i: { id: string }) => i.id));
+      cursor = res.body.nextCursor;
+      pages += 1;
+    } while (cursor && pages < 10);
+    expect(ids).toEqual([LOT_EARLY, LOT_LATE, LOT_UNDATED, SERIAL_1]);
+  });
+
+  it("rejects a malformed cursor, one from another product, and an out-of-range limit with 400", async () => {
+    if (skip()) return;
+    const first = await http().get(`${identitiesUrl(PRODUCT_LOTS)}?limit=1`).expect(200);
+    const foreign = encodeURIComponent(first.body.nextCursor as string);
+    await http().get(`${identitiesUrl(PRODUCT_FRESH)}?cursor=${foreign}`).expect(400);
+    await http().get(`${identitiesUrl(PRODUCT_LOTS)}?cursor=not-a-cursor`).expect(400);
+    await http().get(`${identitiesUrl(PRODUCT_LOTS)}?limit=201`).expect(400);
   });
 
   it("a movement projects trackingIdentityId, null for every existing row", async () => {

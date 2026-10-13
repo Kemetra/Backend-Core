@@ -253,11 +253,22 @@ paths:
         Read-only: identities are ERP-born (G7-3) and nothing in this version
         creates one, so the list is empty until identity birth lands (RT-453).
         Owner / tenant-admin only; a product outside the caller's tenant, and a
-        caller without the role, is a non-disclosing 404.
+        caller without the role, is a non-disclosing 404. Keyset-paged: a
+        serial product has one identity per unit. `cursor` is the opaque
+        `nextCursor` of the previous page for the same product; a malformed
+        cursor, or one from another product, is a 400.
       security:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/ProductIdPath"
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string, minLength: 1, maxLength: 1024 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
       responses:
         "200":
           description: The product's tracking identities.
@@ -811,12 +822,17 @@ components:
           description: Identities are ERP-born only (G7-3).
     TrackingIdentityList:
       type: object
-      required: [items]
+      required: [items, nextCursor]
       properties:
         items:
           type: array
+          maxItems: 200
+          description: Bounded by the `limit` query parameter (max 200).
           items:
             $ref: "#/components/schemas/TrackingIdentity"
+        nextCursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page; null when exhausted.
     StockTransfer:
       type: object
       required: [transferGroupId, outbound, inbound]

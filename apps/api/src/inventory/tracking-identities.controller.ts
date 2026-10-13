@@ -14,9 +14,11 @@
  * dependency) off the store-scoped inventory routes.
  */
 import {
+  BadRequestException,
   Controller,
   Get,
   Param,
+  Query,
   Req,
   UnauthorizedException,
   UseGuards,
@@ -30,6 +32,14 @@ import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { TenantContextGuard } from '../context/tenant-context.guard';
 import type { TenantContextRequest } from '../context/types';
 import { InventoryService, type TrackingIdentityListBody } from './inventory.service';
+import {
+  TrackingIdentityCursorError,
+  decodeTrackingIdentityCursor,
+  type TrackingIdentityCursor,
+} from './tracking-identity.cursor';
+
+const LimitSchema = z.coerce.number().int().min(1).max(200).optional();
+const CursorSchema = z.string().min(1).max(1024).optional();
 
 @Controller()
 @UseGuards(DashboardAuthGuard, TenantContextGuard)
@@ -42,9 +52,28 @@ export class TrackingIdentitiesController {
   async listTrackingIdentities(
     @Req() request: TenantContextRequest,
     @Param('productId', new ZodValidationPipe(z.string().uuid())) productId: string,
+    @Query('limit', new ZodValidationPipe(LimitSchema)) limit: number | undefined,
+    @Query('cursor', new ZodValidationPipe(CursorSchema)) cursor: string | undefined,
   ): Promise<TrackingIdentityListBody> {
     const tenantId = request.context?.tenantId;
     if (!tenantId) throw new UnauthorizedException('Unauthorized');
-    return this.inventoryService.listTrackingIdentities({ tenantId, productId });
+    return this.inventoryService.listTrackingIdentities({
+      tenantId,
+      productId,
+      limit,
+      cursor: cursor === undefined ? undefined : decodeCursor(cursor, productId),
+    });
+  }
+}
+
+/** A malformed cursor, or one issued for another product, is a 400. */
+function decodeCursor(token: string, productId: string): TrackingIdentityCursor {
+  try {
+    return decodeTrackingIdentityCursor(token, productId);
+  } catch (err: unknown) {
+    if (err instanceof TrackingIdentityCursorError) {
+      throw new BadRequestException('Invalid cursor');
+    }
+    throw err;
   }
 }
