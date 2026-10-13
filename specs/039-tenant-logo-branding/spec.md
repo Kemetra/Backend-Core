@@ -63,7 +63,7 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
 ### Backend-Core (RT-473)
 
 - **FR-01** One logo record per tenant (D-1). Writing it requires `owner` or `tenant_admin` of that tenant. The tenant comes from the path parameter, checked against the session (Constitution XII). It is never taken from the body. Another tenant, or a wrong role, gets `404`.
-- **FR-02** Any refusal is a `422` whose `error.code` is one value from the closed set in `contracts/README.md` §5.
+- **FR-02** An image or content-validation refusal is a `422` whose `error.code` is one value from the closed set in `contracts/README.md` §5. Transport, request-shape, authorization, concurrency and server failures keep their own statuses (`400`, `401`, `403`, `404`, `409`, `413`, `5xx`), as listed in `contracts/README.md` §5.
 - **FR-03** The file type is decided **only by magic bytes**: PNG (`89 50 4E 47 0D 0A 1A 0A`) or SVG (an XML prolog or `<svg` root after optional BOM and whitespace). The file name, the extension and the declared `Content-Type` are ignored. They neither accept nor refuse.
 - **FR-04** The upload is at most 1 MiB, enforced by the HTTP body limit before any parsing.
 - **FR-05** PNG dimensions are read from the `IHDR` chunk **before any pixel decode**. If either side is above 4000 px, or the pixel count is above 4000 × 4000, the upload is refused before decoding (bomb guard). The decoder also runs with an explicit input-pixel limit as a second guard.
@@ -107,6 +107,7 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
   The warnings `receipt_high_black_coverage` (> 35% black) and `receipt_thin_strokes` (`contracts/README.md` §6.2) never block the upload.
 - **FR-13** The upload is deterministic. With the same upload bytes, pipeline version and rendition configuration, the server produces the same master, the same rendition bytes and the same `version`. `version` is the lowercase hex SHA-256 over `master PNG ‖ pipeline_version ‖ canonical rendition config`.
 - **FR-14** Preview writes nothing. Saving requires the version that was previewed, so what the admin approved is exactly what is stored (OD-3).
+- **FR-14a** Concurrency (OD-15). Save and remove require `expected_current_version`: the stored logo version the admin saw, or `none` when no logo was stored. If it no longer matches, the call is refused with `409 logo_changed_concurrently` and nothing changes. Two admins working from the same state therefore cannot silently overwrite each other, and a remove cannot race a replace.
 - **FR-15** A replace or a remove writes one audit event in the same transaction: `tenant.logo.replaced` `{from_version, to_version}` or `tenant.logo.removed` `{from_version}`. Actor and tenant come from the request context (Constitution XIII). Image bytes are never logged.
 - **FR-16** The POS read is device-authenticated. The tenant comes only from the device row. There is no tenant parameter.
 - **FR-17** The POS read carries the tenant display name, so the fallback text exists even without a logo. "No logo" is `200` with `logo: null`, never an error.
@@ -129,6 +130,7 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
 - **FR-33** The renderer gets the branding only through a typed bridge channel, as image bytes or a `data:` URI. No file path and no network URL is exposed (P8). The new channels need an §A4 record and the cache table needs an §A2 record.
 - **FR-34** Each surface has a fixed slot. The layout never shifts. The image is `object-fit: contain`, centred, never stretched or upscaled. `presentation.card` puts it on a white card. Under `forced-colors` the card border uses a system colour.
 - **FR-35** Fallback: with no logo, an unreadable cache, or an image decode error, the slot shows the tenant display name as text. It never shows a broken image or an empty box.
+- **FR-35a** Cache repair. When the cache fails validation (a missing or corrupt row, a rendition that does not decode, or a stored `version` that does not match the stored bytes), the POS discards the cache **and its ETag** and makes the next read **unconditional** (no `If-None-Match`). Otherwise the server would keep answering `304` for the same version and the terminal could never repair its cache. Conditional polling resumes only after a cache passes validation.
 - **FR-36** The boot screen reads only the local cache. It never waits on the network.
 - **FR-37** The receipt places the receipt rendition centred at the top. Its CSS size in millimetres is exactly `width_px / dpi × 25.4`, with `image-rendering: pixelated`. With no logo the receipt is byte-identical to today's output. Receipt rendering stays a pure function of its inputs: the logo bytes are an explicit input to `renderReceipt`.
 
@@ -150,6 +152,7 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
 | **OD-12** | What does the "powered by" mark say? | D-3 says "Retail Tower", but the shipped wordmark is «POS Pulse» (VNext OD-5). **The owner picks the exact string and where it shows** (footer of the entry surfaces). The VNext references carry it. | — |
 | **OD-13** | What happens to RT-404, RT-405 and RT-406? | They are the same feature, filed on 2026-10-12. **Mark them superseded by RT-472…RT-476.** This spec answers RT-404's questions: where POS reads (OD-5, FR-16), the name (OD-10), the logo (FR-03…FR-13), isolation (FR-16) and audit (FR-15). | Keep them and re-link them as duplicates. |
 | **OD-14** | How are the upload bytes sent? | **A raw `application/octet-stream` body** for preview and save, capped at 1 MiB by the body limit. It needs no multipart parser and adds no attack surface. Admin-Console sends it with an `openapi-fetch` body serializer. | `multipart/form-data` through `FileInterceptor` (multer, already a transitive dependency of `@nestjs/platform-express`). |
+| **OD-15** | How are concurrent admin writes handled? | **Optimistic concurrency** (constitution, Concurrency & Optimistic Locking): `expected_current_version` (a version or `none`) is required on save and remove, with `409 logo_changed_concurrently` on mismatch. This follows the `expected_current_timezone` precedent in `stores.openapi.yaml`. | Last-write-wins (the constitution requires an explicit justification, and none applies). |
 
 ## 6. Security and privacy (RT-472 Q5)
 
@@ -178,7 +181,7 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
 
 | Order | Issue | Starts when |
 |---|---|---|
-| 1 | **RT-473 S1** — author the OpenAPI YAML for `contracts/README.md`, GATED contract PR, owner review | OD-1…OD-6, OD-10 and OD-14 approved |
+| 1 | **RT-473 S1** — author the OpenAPI YAML for `contracts/README.md`, GATED contract PR, owner review | OD-1…OD-6, OD-10, OD-14 and OD-15 approved |
 | 2 | **RT-473 S2** — migration `0046` (GATED), dependencies (GATED), pipeline, endpoints, tests | S1 merged; OD-7 slot boxes and OD-8 bench dpi known (the pipeline can land behind config before both) |
 | 3 | **RT-474** — Admin-Console upload, preview and remove (re-pin the generated types) | RT-473 S1 merged (the UI can build against the contract); end-to-end needs S2 |
 | 4 | **RT-475** — POS worker, cache (`0051`, §A2), bridge (§A4), slots | RT-473 S2 deployed; owner-approved references at 1024/1280 for the four surfaces, plus the post-pair confirmation (OD-9) and the powered-by string (OD-12) |

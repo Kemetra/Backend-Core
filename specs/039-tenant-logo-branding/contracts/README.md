@@ -91,13 +91,15 @@ The request body for preview and save is the **raw file bytes** with `Content-Ty
 
 ### Surface 4 — Save or replace
 
-- **Operation:** `PUT /api/v1/tenants/{tenant_id}/logo?preview_version=<64-hex>`, operationId `consolePutTenantLogo`.
+- **Operation:** `PUT /api/v1/tenants/{tenant_id}/logo?preview_version=<64-hex>&expected_current_version=<64-hex|none>`, operationId `consolePutTenantLogo`.
 - **`preview_version`** is **required**. The server re-runs the pipeline on the body. If the computed version is different, it returns `409 logo_preview_mismatch` and stores nothing.
+- **`expected_current_version`** is **required** (spec OD-15). It is the stored version the admin saw, or `none` when no logo was stored. On mismatch the call returns `409 logo_changed_concurrently` and stores nothing. The check and the write run in one transaction with the tenant's logo row locked (or, for `none`, under the tenant row lock so two first uploads cannot both succeed).
 - **Behaviour:** upsert the single tenant record, master and renditions together in one transaction, and write the audit event `tenant.logo.replaced`.
-- **Idempotent replay:** saving the same bytes over the same stored version returns `200` and writes **no** audit event.
+- **Idempotent replay:** if the stored version already equals `preview_version`, the call returns `200` and writes **no** audit event, whatever `expected_current_version` says. A retried save therefore never fails on its own earlier success.
 - **Responses:**
   - `200 TenantBranding`;
   - `409 logo_preview_mismatch`;
+  - `409 logo_changed_concurrently`;
   - `413`;
   - `422`;
   - `403 origin_rejected`;
@@ -105,11 +107,13 @@ The request body for preview and save is the **raw file bytes** with `Content-Ty
 
 ### Surface 5 — Remove
 
-- **Operation:** `DELETE /api/v1/tenants/{tenant_id}/logo`, operationId `consoleDeleteTenantLogo`.
+- **Operation:** `DELETE /api/v1/tenants/{tenant_id}/logo?expected_current_version=<64-hex>`, operationId `consoleDeleteTenantLogo`.
+- **`expected_current_version`** is **required**. On mismatch with a stored logo the call returns `409 logo_changed_concurrently` and deletes nothing.
 - **Behaviour:** delete the record and its renditions, and write the audit event `tenant.logo.removed`.
-- **Idempotent:** with no logo stored it returns `204` and writes no audit event.
+- **Idempotent:** with no logo stored it returns `204` and writes no audit event, whatever `expected_current_version` says.
 - **Responses:**
   - `204`;
+  - `409 logo_changed_concurrently`;
   - `403 origin_rejected`;
   - `404`.
 
@@ -130,7 +134,7 @@ These are **outside** the `422` set:
 
 - `413 file_too_large` (transport);
 - `400 validation_error` (a missing or extra query key, or an empty body);
-- `409 logo_preview_mismatch`;
+- `409 logo_preview_mismatch` and `409 logo_changed_concurrently`;
 - `403 origin_rejected`;
 - `401`;
 - `404 not_found`;
