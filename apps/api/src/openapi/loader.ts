@@ -64,7 +64,8 @@ export function loadOpenApiContracts(
   if (yamls.length === 0) {
     throw new Error(`loadOpenApiContracts: no YAML files found in ${dir}`);
   }
-  return yamls.sort(compareCodeUnits).map((name) => {
+  yamls.sort(compareCodeUnits);
+  return yamls.map((name) => {
     const path = join(dir, name);
     let raw: string;
     try {
