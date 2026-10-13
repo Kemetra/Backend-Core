@@ -131,6 +131,11 @@ function validator(name: string): ValidateFunction {
   return ajv.getSchema(`${CONTRACT_ID}#/components/schemas/${name}`)!;
 }
 
+/** The JSON body validator of a reusable response component. */
+function responseValidator(name: string): ValidateFunction {
+  return ajv.getSchema(`${CONTRACT_ID}#/components/responses/${name}/content/application~1json/schema`)!;
+}
+
 /** Resolve an operation's parameters (inline or `$ref`), including path-level ones. */
 function params(path: string, method: string): ParameterObject[] {
   const pathLevel = (doc.paths?.[path]?.parameters as ParameterObject[] | undefined) ?? [];
@@ -219,6 +224,9 @@ describe("tenant-branding — POS read", () => {
     expect(Object.keys(op(POS_PATH, "get").responses ?? {}).sort()).toEqual(
       ["200", "304", "400", "401", "500"].sort(),
     );
+    expect(op(POS_PATH, "get").responses?.["200"]).toMatchObject({
+      headers: { ETag: expect.anything() },
+    });
   });
 
   it("represents no logo as logo: null", () => {
@@ -268,6 +276,8 @@ describe("tenant-branding — Console surface", () => {
     const body = doc.components!.requestBodies!.LogoFile!;
     expect(body.required).toBe(true);
     expect(Object.keys(body.content ?? {})).toEqual(["*/*"]);
+    // Raw binary (OAS 3.1): no schema, so the file bytes are sent unchanged.
+    expect(body.content!["*/*"]).toEqual({});
     expect(op(LOGO_PATH, "put").requestBody?.$ref).toBe("#/components/requestBodies/LogoFile");
     expect(op(PREVIEW_PATH, "post").requestBody?.$ref).toBe("#/components/requestBodies/LogoFile");
   });
@@ -344,6 +354,37 @@ describe("tenant-branding — closed vocabularies", () => {
     expect(
       rej({ error: { code: "image_too_small", message: "x", request_id: RID, details: { construct: "script" } } }),
     ).toBe(false);
+  });
+
+  it("narrows each error response to its own code", () => {
+    const cases: Array<[string, string[]]> = [
+      ["ValidationFailure", ["validation_error"]],
+      ["DeviceUnauthorized", ["unauthorized"]],
+      ["Unauthorized", ["unauthorized"]],
+      ["OriginRejected", ["origin_rejected"]],
+      ["NotFound", ["not_found"]],
+      ["Conflict", ["logo_preview_mismatch", "logo_changed_concurrently"]],
+      ["RevisionConflict", ["logo_changed_concurrently"]],
+      ["FileTooLarge", ["file_too_large"]],
+      ["SystemFailure", ["internal_error"]],
+    ];
+    const all = (schema("Error").properties!.error as { properties: { code: { enum: string[] } } }).properties.code
+      .enum;
+    for (const [name, allowed] of cases) {
+      const valid = responseValidator(name);
+      for (const code of all) {
+        expect([name, code, valid({ error: { code, message: "x", request_id: RID } })]).toEqual([
+          name,
+          code,
+          allowed.includes(code),
+        ]);
+      }
+    }
+  });
+
+  it("gives the removal only the revision conflict", () => {
+    expect(op(LOGO_PATH, "delete").responses?.["409"]?.$ref).toBe("#/components/responses/RevisionConflict");
+    expect(op(LOGO_PATH, "put").responses?.["409"]?.$ref).toBe("#/components/responses/Conflict");
   });
 
   it("closes the warnings", () => {

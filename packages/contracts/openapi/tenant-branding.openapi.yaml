@@ -215,7 +215,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          $ref: "#/components/responses/Conflict"
+          $ref: "#/components/responses/RevisionConflict"
         "500":
           $ref: "#/components/responses/SystemFailure"
 
@@ -337,10 +337,9 @@ components:
         bytes). PNG or SVG, decided by magic bytes only; the declared content
         type and any file name are ignored.
       content:
-        "*/*":
-          schema:
-            type: string
-            contentMediaType: application/octet-stream
+        # Raw binary: OAS 3.1 models an unencoded binary body by omitting the
+        # schema, so clients send the file bytes unchanged.
+        "*/*": {}
 
   schemas:
     LogoVersion:
@@ -679,7 +678,13 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/Error"
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: validation_error
     DeviceUnauthorized:
       description: >
         Generic, non-disclosing refusal for a missing / invalid / revoked device
@@ -687,7 +692,13 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/Error"
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: unauthorized
     Unauthorized:
       description: >
         No human dashboard session: a bearer-only request (`dashboard_api`
@@ -696,7 +707,13 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/Error"
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: unauthorized
     OriginRejected:
       description: >
         `origin_rejected` (RT-430): the request is authenticated by the
@@ -705,7 +722,13 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/Error"
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: origin_rejected
     NotFound:
       description: >
         `not_found` — unknown tenant, another tenant, or a role other than
@@ -713,7 +736,13 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/Error"
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: not_found
     Conflict:
       description: >
         `logo_preview_mismatch` — the body no longer produces `preview_version`.
@@ -722,13 +751,39 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/Error"
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        enum: [logo_preview_mismatch, logo_changed_concurrently]
+    RevisionConflict:
+      description: >
+        `logo_changed_concurrently` — the tenant `revision` no longer matches
+        `expected_revision` (OD-15). Nothing is changed. The removal's only 409.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: logo_changed_concurrently
     FileTooLarge:
       description: "`file_too_large` — the body is over 1 MiB; refused before parsing."
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/Error"
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: file_too_large
     LogoRejected:
       description: >
         The upload failed image or content validation. `error.code` is one
@@ -745,4 +800,10 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/Error"
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: internal_error
