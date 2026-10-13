@@ -111,7 +111,11 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
 - **FR-15** A replace or a remove writes one audit event in the same transaction: `tenant.logo.replaced` `{from_version, to_version}` or `tenant.logo.removed` `{from_version}`. Actor and tenant come from the request context (Constitution XIII). Image bytes are never logged.
 - **FR-16** The POS read is device-authenticated. The tenant comes only from the device row. There is no tenant parameter.
 - **FR-17** The POS read carries the tenant display name, so the fallback text exists even without a logo. "No logo" is `200` with `logo: null`, never an error.
-- **FR-18** The POS read supports `ETag` / `If-None-Match`. The ETag is the quoted lowercase hex SHA-256 over the UTF-8 bytes of `tenant_display_name`, one `0x00` byte, then either `none` or the ASCII logo `version`, one `0x00` byte and the ASCII `updated_at` exactly as served. It changes whenever the name, the logo version or `updated_at` changes (so a remove and re-save of identical bytes is not hidden by a `304`), and the POS can recompute it locally (FR-35a). An unchanged poll returns `304` with no body.
+- **FR-18** The POS read supports `ETag` / `If-None-Match`. The ETag is `"` + the lowercase hex SHA-256 of an input + `"`, where the input is exactly:
+  - no logo: `UTF8(tenant_display_name) 0x00 'none'`, with no trailing byte;
+  - logo: `UTF8(tenant_display_name) 0x00 ASCII(version) 0x00 ASCII(updated_at)`, with `updated_at` exactly as served.
+
+  The RT-473 contract test pins one test vector for each case. It changes whenever the name, the logo version or `updated_at` changes (so a remove and re-save of identical bytes is not hidden by a `304`), and the POS can recompute it locally (FR-35a). An unchanged poll returns `304` with no body.
 
 ### Admin-Console (RT-474)
 

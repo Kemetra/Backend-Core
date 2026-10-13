@@ -1,6 +1,6 @@
 # Contract surface (PROSE) — Spec 039 tenant logo branding
 
-**PLANNING ONLY. No OpenAPI YAML in this folder.** This README fixes the intended contract in prose. RT-473 slice S1 authors the real YAML under `packages/contracts/openapi/branding/` as a GATED contract PR. The owner approved the decisions this surface depends on (`spec.md` §5) on 2026-10-13. Writing YAML here would prejudge those decisions; the same rule applies in spec 032.
+**PLANNING ONLY. No OpenAPI YAML in this folder.** This README fixes the intended contract in prose. RT-473 slice S1 authors the real YAML under `packages/contracts/openapi/branding/` as a GATED contract PR. The owner approved the decisions this surface depends on (`spec.md` §5) on 2026-10-13. This README stays the prose record; once S1 lands, the YAML is the contract of record.
 
 Every operation, once authored, MUST carry:
 
@@ -60,7 +60,7 @@ The YAML file is self-contained, with its own `securitySchemes` and Error schema
 - **Tenant:** taken **only** from the device row. There are no query or path parameters. Unknown query keys get a `400 validation_error` (strict).
 - **Request header:** optional `If-None-Match: "<etag>"`.
 - **Responses:**
-  - **`200`** `TenantBranding` with `ETag: "<etag>"`. The etag is the lowercase hex SHA-256 over the UTF-8 bytes of `tenant_display_name`, one `0x00` byte, then either `none` or the ASCII `logo.version`, one `0x00` byte and the ASCII `logo.updated_at` exactly as served (spec FR-18), so the POS can recompute it.
+  - **`200`** `TenantBranding` with `ETag: "<etag>"`. The etag is the quoted lowercase hex SHA-256 of `UTF8(tenant_display_name) 0x00 'none'` (no logo, no trailing byte) or `UTF8(tenant_display_name) 0x00 ASCII(logo.version) 0x00 ASCII(logo.updated_at)` (logo; `updated_at` exactly as served). See spec FR-18; the POS recomputes it.
   - **`304`** No body, when `If-None-Match` matches.
   - **`401`** The generic, non-disclosing device refusal.
   - **`5xx`** `system_failure`.
