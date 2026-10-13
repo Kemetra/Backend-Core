@@ -48,12 +48,12 @@ const instant = ShiftInstantSchema;
 /** `NonNegativeDecimalAmount`: up to 15 integer and 4 fractional digits. */
 const nonNegativeAmount = z
   .string()
-  .regex(/^[0-9]{1,15}(\.[0-9]{1,4})?$/, "must be a non-negative exact-decimal string");
+  .regex(/^\d{1,15}(\.\d{1,4})?$/, "must be a non-negative exact-decimal string");
 
 /** `SignedDecimalAmount`: a non-negative amount, optionally negative (the close's variance). */
 const signedAmount = z
   .string()
-  .regex(/^-?[0-9]{1,15}(\.[0-9]{1,4})?$/, "must be an exact-decimal string");
+  .regex(/^-?\d{1,15}(\.\d{1,4})?$/, "must be an exact-decimal string");
 
 /** `PositiveDecimalAmount`: a non-negative amount with a non-zero digit. */
 const positiveAmount = nonNegativeAmount.regex(/[1-9]/, "must be greater than zero");

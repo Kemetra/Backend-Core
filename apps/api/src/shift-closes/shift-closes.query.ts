@@ -46,7 +46,7 @@ const InstantSchema = z
   }, "must be an RFC 3339 date-time with an offset between -15:59 and +15:59");
 
 /** `NonNegativeDecimalAmount`: at most 15 integer and 4 fractional digits. */
-const NON_NEGATIVE_DECIMAL_RE = /^[0-9]{1,15}(\.[0-9]{1,4})?$/;
+const NON_NEGATIVE_DECIMAL_RE = /^\d{1,15}(\.\d{1,4})?$/;
 
 export const PAGE_SIZE_DEFAULT = 50;
 export const PAGE_SIZE_MAX = 200;

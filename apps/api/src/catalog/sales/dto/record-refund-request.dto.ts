@@ -18,7 +18,7 @@ import { z } from "zod";
 const decimalAmount = z
   .string()
   .regex(
-    /^[0-9]{1,15}(\.[0-9]{1,4})?$/,
+    /^\d{1,15}(\.\d{1,4})?$/,
     "must be a non-negative exact-decimal string",
   );
 
