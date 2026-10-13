@@ -7,3 +7,7 @@ coverage:
       default:
         informational: true
 comment: false
+# The API Jest run executes from apps/api, so its lcov paths are `src/...`.
+# Prefix them so Codecov maps them to the repository paths (`apps/api/src/...`).
+fixes:
+  - "::apps/api/"
