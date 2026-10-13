@@ -8,6 +8,9 @@
  * gate both routes (denyAs 404: a wrong-role caller cannot tell "forbidden"
  * from "absent", §II/§XII).
  *
+ * Until tracked-line enforcement ships, a `batch` / `serial` request is
+ * `409 tracking_activation_pending` (owner decision on PR #749).
+ *
  * Routes:
  *   GET /api/v1/catalog/products/:productId/tracking-profile  tenantAdminGetTrackingProfile
  *   PUT /api/v1/catalog/products/:productId/tracking-profile  tenantAdminSetTrackingProfile
@@ -99,6 +102,12 @@ export class TrackingProfileController {
       actorUserId: userId,
     });
     if (result.kind === "ok") return toTrackingProfile(result.row);
+    if (result.kind === "activation_pending") {
+      throw new ConflictException({
+        code: "tracking_activation_pending",
+        message: "Tracked profiles cannot be selected until tracked selling is enabled.",
+      });
+    }
     if (result.kind === "locked") {
       throw new ConflictException({
         code: "tracking_profile_locked",

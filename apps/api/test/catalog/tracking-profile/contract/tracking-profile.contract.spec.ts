@@ -159,6 +159,12 @@ describe("catalog/tracking-profile.yaml — schemas", () => {
     }
   });
 
+  it("documents both 409 codes: activation pending and the history lock", () => {
+    const text = JSON.stringify(doc.paths?.[PATH]?.["put"]?.responses?.["409"]);
+    expect(text).toContain("tracking_activation_pending");
+    expect(text).toContain("tracking_profile_locked");
+  });
+
   it("Error is the strict canonical envelope", () => {
     expect(schema("Error")?.additionalProperties).toBe(false);
     expect(schema("Error")?.required).toEqual(["error"]);

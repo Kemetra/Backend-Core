@@ -5,6 +5,12 @@
  * none | batch | serial and `expiry_required` (decisions 852, 384, 386). The
  * ERPNext Item never defines it.
  *
+ * Not yet activated: the API accepts only `tracking_mode: none`. Any `batch` or
+ * `serial` request is `activation_pending` (409 `tracking_activation_pending`)
+ * until tracked-line enforcement exists (RT-451): otherwise POS would keep
+ * selling the product untracked and the first sale line would lock a tracked
+ * profile that nothing enforces (owner decision on PR #749).
+ *
  * The guard (387): once the product has an inventory effect or a captured sale
  * line, changing either field is refused. The service locks the product row
  * (`FOR UPDATE`), probes the history and answers `locked` before writing; the
@@ -36,7 +42,8 @@ export type GetTrackingProfileResult =
 export type SetTrackingProfileResult =
   | { kind: "ok"; row: TrackingProfileRow }
   | { kind: "not_found" }
-  | { kind: "locked" };
+  | { kind: "locked" }
+  | { kind: "activation_pending" };
 
 export interface SetTrackingProfileInput {
   readonly tenantId: string;
@@ -115,6 +122,9 @@ export class TrackingProfileService {
     );
     const row = current.rows[0];
     if (!row) return { kind: "not_found" };
+    // Owner decision on PR #749 (RT-448): a tracked profile stays unselectable
+    // until tracked-line enforcement ships, so no untracked sale can lock it.
+    if (input.trackingMode !== "none") return { kind: "activation_pending" };
 
     const unchanged =
       row.tracking_mode === input.trackingMode && row.expiry_required === input.expiryRequired;

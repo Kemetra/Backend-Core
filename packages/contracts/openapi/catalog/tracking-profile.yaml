@@ -23,9 +23,11 @@ info:
     `409 tracking_profile_locked`, and `profile_locked` reads `true`. Setting
     the same values again is not a change and succeeds.
 
-    Nothing in this version sells, posts or counts tracked stock: a tracked
-    product's sales stay fail-closed in the ERPNext Connector until the rest of
-    Gate 7 lands.
+    Not yet activated: nothing in this version sells, posts or counts tracked
+    stock, so the set operation accepts only `tracking_mode: none`. A `batch` or
+    `serial` request is `409 tracking_activation_pending` until tracked-line
+    enforcement ships (a later Gate 7 issue); otherwise an untracked sale would
+    lock a tracked profile that nothing enforces.
 
     Two operations:
 
@@ -89,9 +91,11 @@ paths:
       operationId: tenantAdminSetTrackingProfile
       tags: [catalog-tracking-profile]
       description: >
-        Replaces both fields. Refused with `409 tracking_profile_locked` when
-        the values change and the product already has an inventory effect or a
-        captured sale line (387). `expiry_required: true` is valid only with
+        Replaces both fields. Refused with `409 tracking_activation_pending`
+        for `tracking_mode` `batch` or `serial` while tracked selling is not
+        enabled, and with `409 tracking_profile_locked` when the values change
+        and the product already has an inventory effect or a captured sale
+        line (387). `expiry_required: true` is valid only with
         `tracking_mode: batch` (400 otherwise).
       parameters:
         - $ref: "#/components/parameters/ProductId"
@@ -137,8 +141,9 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            The product has inventory or sale history, so its profile is locked
-            (387). `error.code = "tracking_profile_locked"`.
+            `tracking_activation_pending`: a `batch` / `serial` profile cannot
+            be selected yet. `tracking_profile_locked`: the product has
+            inventory or sale history, so its profile is locked (387).
           content:
             application/json:
               schema:
@@ -234,8 +239,9 @@ components:
               type: string
               description: >
                 Stable machine-readable error code. Closed set on this surface:
-                validation_error | not_found | tracking_profile_locked |
-                origin_rejected | system_failure (plus the generic 401 refusal).
+                validation_error | not_found | tracking_activation_pending |
+                tracking_profile_locked | origin_rejected | system_failure
+                (plus the generic 401 refusal).
             message:
               type: string
               description: Human-readable summary. No sensitive data, no cause enumeration.

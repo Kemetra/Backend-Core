@@ -12,7 +12,9 @@
  *
  * Covered:
  *   §1 read — a new product reads none / false / unlocked.
- *   §2 set — a product without history takes batch + expiry; one audit subject.
+ *   §2 set — not yet activated: batch / serial is 409
+ *      tracking_activation_pending and writes nothing; resetting a profile to
+ *      none succeeds with one audit subject.
  *   §3 lock (387) — a movement or a captured sale line locks the profile: a
  *      change is 409 tracking_profile_locked, the same values still succeed,
  *      and GET reads profile_locked = true.
@@ -65,7 +67,9 @@ const PRODUCT_FRESH = "0a000000-0000-7000-8000-00000d448a01";
 const PRODUCT_MOVED = "0a000000-0000-7000-8000-00000d448a02";
 const PRODUCT_SOLD = "0a000000-0000-7000-8000-00000d448a03";
 const PRODUCT_LOTS = "0a000000-0000-7000-8000-00000d448a04";
+const PRODUCT_PLAIN_MOVED = "0a000000-0000-7000-8000-00000d448a05";
 const MOVE_ID = "0a000000-0000-7000-8000-00000d448b01";
+const MOVE_PLAIN_ID = "0a000000-0000-7000-8000-00000d448b02";
 const SALE_ID = "0a000000-0000-7000-8000-00000d448c01";
 const LOT_LATE = "0a000000-0000-7000-8000-00000d448d01";
 const LOT_EARLY = "0a000000-0000-7000-8000-00000d448d02";
@@ -129,12 +133,14 @@ beforeAll(async () => {
   await seedCatalogIsolationFixture(env);
   const a = env.admin;
   await a.query(
-    `INSERT INTO tenant_products (id, tenant_id, name, tax_category, created_by, updated_by) VALUES
-       ($1, $5, 'Fresh', 'standard', $6, $6),
-       ($2, $5, 'Moved', 'standard', $6, $6),
-       ($3, $5, 'Sold', 'standard', $6, $6),
-       ($4, $5, 'Lots', 'standard', $6, $6)`,
-    [PRODUCT_FRESH, PRODUCT_MOVED, PRODUCT_SOLD, PRODUCT_LOTS, TENANT_A, ACTOR_A],
+    `INSERT INTO tenant_products (id, tenant_id, name, tax_category, created_by, updated_by,
+                                  tracking_mode) VALUES
+       ($1, $5, 'Fresh', 'standard', $6, $6, 'none'),
+       ($2, $5, 'Moved', 'standard', $6, $6, 'batch'),
+       ($3, $5, 'Sold', 'standard', $6, $6, 'batch'),
+       ($4, $5, 'Lots', 'standard', $6, $6, 'none'),
+       ($7, $5, 'Plain moved', 'standard', $6, $6, 'none')`,
+    [PRODUCT_FRESH, PRODUCT_MOVED, PRODUCT_SOLD, PRODUCT_LOTS, TENANT_A, ACTOR_A, PRODUCT_PLAIN_MOVED],
   );
   await a.query(
     `INSERT INTO stock_movements (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
@@ -143,6 +149,14 @@ beforeAll(async () => {
      SELECT $1, $2, $3, 'inbound', 5, 'ea', now(), $4, l.id, 'sellable', $5
        FROM stock_locations l WHERE l.store_id = $3 AND l.kind = 'primary'`,
     [MOVE_ID, TENANT_A, STORE_A_X, ACTOR_A, PRODUCT_MOVED],
+  );
+  await a.query(
+    `INSERT INTO stock_movements (id, tenant_id, store_id, movement_type, quantity, stocking_unit,
+                                  occurred_at, created_by, stock_location_id, inventory_status,
+                                  tenant_product_ref)
+     SELECT $1, $2, $3, 'inbound', 5, 'ea', now(), $4, l.id, 'sellable', $5
+       FROM stock_locations l WHERE l.store_id = $3 AND l.kind = 'primary'`,
+    [MOVE_PLAIN_ID, TENANT_A, STORE_A_X, ACTOR_A, PRODUCT_PLAIN_MOVED],
   );
   await a.query(
     `INSERT INTO sales
@@ -238,7 +252,7 @@ describe("RT-448 §1 — read", () => {
   });
 });
 
-describe("RT-448 §2 — set", () => {
+describe("RT-448 §2 — set (tracked profiles not yet activated)", () => {
   afterEach(async () => {
     if (dockerSkipped) return;
     await pg().admin.query(
@@ -247,30 +261,37 @@ describe("RT-448 §2 — set", () => {
     );
   });
 
-  it("a product without history takes batch + expiry, with one audit subject", async () => {
+  it.each([
+    ["batch with expiry", { tracking_mode: "batch", expiry_required: true }],
+    ["batch", { tracking_mode: "batch", expiry_required: false }],
+    ["serial", { tracking_mode: "serial", expiry_required: false }],
+  ])("%s is 409 tracking_activation_pending and writes nothing", async (_label, body) => {
     if (skip()) return;
+    const res = await http().put(profileUrl(PRODUCT_FRESH)).send(body).expect(409);
+    expect(res.body.error.code).toBe("tracking_activation_pending");
+    expect(await profileRow(PRODUCT_FRESH)).toEqual({ tracking_mode: "none", expiry_required: false });
+    expect(auditSpy.calls).toHaveLength(0);
+  });
+
+  it("a product without history is reset to none, with one audit subject", async () => {
+    if (skip()) return;
+    await pg().admin.query(
+      `UPDATE tenant_products SET tracking_mode = 'batch', expiry_required = true WHERE id = $1`,
+      [PRODUCT_FRESH],
+    );
     const res = await http()
       .put(profileUrl(PRODUCT_FRESH))
-      .send({ tracking_mode: "batch", expiry_required: true })
+      .send({ tracking_mode: "none", expiry_required: false })
       .expect(200);
     expect(res.body).toEqual({
       product_id: PRODUCT_FRESH,
-      tracking_mode: "batch",
-      expiry_required: true,
+      tracking_mode: "none",
+      expiry_required: false,
       profile_locked: false,
     });
-    expect(await profileRow(PRODUCT_FRESH)).toEqual({ tracking_mode: "batch", expiry_required: true });
+    expect(await profileRow(PRODUCT_FRESH)).toEqual({ tracking_mode: "none", expiry_required: false });
     expect(auditSpy.calls).toHaveLength(1);
     expect(JSON.stringify(auditSpy.calls[0])).toContain("catalog.tracking_profile.set");
-  });
-
-  it("serial is accepted without expiry", async () => {
-    if (skip()) return;
-    await http()
-      .put(profileUrl(PRODUCT_FRESH))
-      .send({ tracking_mode: "serial", expiry_required: false })
-      .expect(200);
-    expect(await profileRow(PRODUCT_FRESH)).toEqual({ tracking_mode: "serial", expiry_required: false });
   });
 });
 
@@ -282,17 +303,17 @@ describe("RT-448 §3 — the profile locks after history (387)", () => {
     if (skip()) return;
     const res = await http()
       .put(profileUrl(product))
-      .send({ tracking_mode: "batch", expiry_required: false })
+      .send({ tracking_mode: "none", expiry_required: false })
       .expect(409);
     expect(res.body.error.code).toBe("tracking_profile_locked");
-    expect(await profileRow(product)).toEqual({ tracking_mode: "none", expiry_required: false });
+    expect(await profileRow(product)).toEqual({ tracking_mode: "batch", expiry_required: false });
     expect(auditSpy.calls).toHaveLength(0);
   });
 
   it("writing the same values again is not a change and succeeds", async () => {
     if (skip()) return;
     const res = await http()
-      .put(profileUrl(PRODUCT_MOVED))
+      .put(profileUrl(PRODUCT_PLAIN_MOVED))
       .send({ tracking_mode: "none", expiry_required: false })
       .expect(200);
     expect(res.body.profile_locked).toBe(true);
