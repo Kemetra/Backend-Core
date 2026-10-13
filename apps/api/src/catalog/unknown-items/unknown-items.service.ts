@@ -735,18 +735,18 @@ export class UnknownItemsService {
     // same-group rows are contiguous (FR-004 ordering, not a grouped envelope);
     // `sort` orders within. A stable `id DESC` tie-break is always last.
     const sort = input.sort ?? "age_desc";
-    const sortFragment =
-      sort === "age_asc"
-        ? "encountered_at ASC"
-        : sort === "store"
-          ? "store_id ASC"
-          : "encountered_at DESC";
-    const groupFragment =
-      input.groupBy === "store"
-        ? "store_id ASC, "
-        : input.groupBy === "source_system"
-          ? "source_system ASC NULLS LAST, "
-          : "";
+    let sortFragment = "encountered_at DESC";
+    if (sort === "age_asc") {
+      sortFragment = "encountered_at ASC";
+    } else if (sort === "store") {
+      sortFragment = "store_id ASC";
+    }
+    let groupFragment = "";
+    if (input.groupBy === "store") {
+      groupFragment = "store_id ASC, ";
+    } else if (input.groupBy === "source_system") {
+      groupFragment = "source_system ASC NULLS LAST, ";
+    }
     const orderBy = `${groupFragment}${sortFragment}, id DESC`;
 
     const rows = await runWithTenantContext(
