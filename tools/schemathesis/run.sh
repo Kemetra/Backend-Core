@@ -94,7 +94,7 @@ for group in owner platform; do
     # A run that did not execute: Schemathesis errors, a crash, or no summary.
     if grep -qE '^=+ ERRORS =+$|Traceback \(most recent call last\)' "$log" || ! grep -q '^Test cases:' "$log"; then
       errored=1
-      echo "::error::Schemathesis could not run $file ($group); see the step log"
+      echo "::error::Schemathesis could not run $file ($group); see the step log" >&2
       {
         echo "### \`$file\` ($group): run error"
         echo '```'
