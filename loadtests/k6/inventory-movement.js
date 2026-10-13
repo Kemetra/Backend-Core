@@ -35,7 +35,7 @@ import { pickTenantForVu } from "./lib/tenants.js";
 import { baseUrl, uuidv4, jsonPostHeaders, sleepJitter } from "./lib/util.js";
 
 const DURATION = __ENV.LOAD_DURATION || "10m";
-const VUS = Number.parseInt(__ENV.LOAD_VUS || "20", 10);
+const VUS = parseInt(__ENV.LOAD_VUS || "20", 10);
 
 export const options = {
   scenarios: {
@@ -78,10 +78,10 @@ function movementBody(productId) {
   });
 }
 
-export default function runScenario() {
+export default function () {
   const tenantSlug = pickTenantForVu(__VU, SYNTHETIC_TENANTS);
   const session = signIn(tenantSlug);
-  if (!session?.cookies) {
+  if (!session || !session.cookies) {
     return;
   }
   const { storeId, productId } = targetFor(tenantSlug);

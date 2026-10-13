@@ -49,7 +49,7 @@ export function storeIdFor(tenantSlug) {
 // Switch the active tenant for the current session.
 // If tenantId is null, probes /context/me to find an available membership.
 export function switchTenant(tenantSlug, opts) {
-  let tenantId = opts?.tenantId || tenantIdFor(tenantSlug);
+  let tenantId = (opts && opts.tenantId) || tenantIdFor(tenantSlug);
 
   if (!tenantId) {
     const ctx = getActiveContext();
@@ -82,7 +82,7 @@ export function switchTenant(tenantSlug, opts) {
 // Switch the active store within the active tenant.
 // If storeId is null, probes the current context for accessible_store_ids.
 export function switchStore(tenantSlug, opts) {
-  let storeId = opts?.storeId || storeIdFor(tenantSlug);
+  let storeId = (opts && opts.storeId) || storeIdFor(tenantSlug);
 
   if (!storeId) {
     const ctx = getActiveContext();

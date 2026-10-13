@@ -36,6 +36,7 @@ import { sleep } from "k6";
 import { signIn, refreshSession, signOut, SYNTHETIC_TENANTS } from "./lib/auth.js";
 import { establishContext, getActiveContext, pickTenantForVu, tenantIdFor } from "./lib/tenants.js";
 import http from "k6/http";
+import { check } from "k6";
 import { baseUrl, jsonHeaders, jsonPostHeaders, uuidv4 } from "./lib/util.js";
 
 // k6's filesystem reads via open() are scoped to script-init time; we use
@@ -58,7 +59,7 @@ const priorBaseline = new SharedArray("prior_baseline", function () {
 });
 
 const DURATION = __ENV.LOAD_DURATION || "10m";
-const VUS = Number.parseInt(__ENV.LOAD_VUS || "20", 10);
+const VUS = parseInt(__ENV.LOAD_VUS || "20", 10);
 const SKIP_ACCEPT = __ENV.LOAD_SKIP_ACCEPT !== "0";
 
 // Reuse the baseline workload exactly. Regression delta is computed in
@@ -117,7 +118,7 @@ function createInvitation() {
   );
 }
 
-export default function runScenario() {
+export default function () {
   const tenantSlug = pickTenantForVu(__VU, SYNTHETIC_TENANTS);
   const tenantId = tenantIdFor(tenantSlug);
 
@@ -233,7 +234,7 @@ function ratio(current, prior) {
 // Works against both the live `data` argument and a previously exported
 // summary file (same shape).
 function extractFlowMetrics(summary) {
-  if (!summary?.metrics) return {};
+  if (!summary || !summary.metrics) return {};
   const out = {};
 
   for (const flow of TRACKED_FLOWS) {
@@ -254,7 +255,7 @@ function extractFlowMetrics(summary) {
 }
 
 function extractPercentile(metric, key) {
-  if (!metric?.values) return 0;
+  if (!metric || !metric.values) return 0;
   const v = metric.values[key];
   return typeof v === "number" ? v : 0;
 }

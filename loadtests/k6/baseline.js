@@ -48,7 +48,7 @@ import {
 import { baseUrl, jsonHeaders, jsonPostHeaders, sleepJitter, uuidv4 } from "./lib/util.js";
 
 const DURATION = __ENV.LOAD_DURATION || "10m";
-const VUS = Number.parseInt(__ENV.LOAD_VUS || "20", 10);
+const VUS = parseInt(__ENV.LOAD_VUS || "20", 10);
 const SKIP_ACCEPT = __ENV.LOAD_SKIP_ACCEPT === "1";
 
 export const options = {
@@ -116,7 +116,7 @@ function createInvitation() {
   let token = null;
   try {
     const body = res.json();
-    token = body?.token || body?.invitation?.token || null;
+    token = body && (body.token || (body.invitation && body.invitation.token)) || null;
   } catch (_e) {
     token = null;
   }
@@ -155,7 +155,7 @@ function updateMembershipFromContext() {
   if (!ctx.body.active_tenant) return null;
   const tenantId = ctx.body.active_tenant.id;
   const list = listMembers(tenantId);
-  if (list?.status !== 200) return null;
+  if (!list || list.status !== 200) return null;
   let members = null;
   try {
     members = list.json();
@@ -163,10 +163,10 @@ function updateMembershipFromContext() {
     return null;
   }
   // members might be { data: [...] } or [...] depending on envelope; try both.
-  const arr = Array.isArray(members) ? members : members?.data || [];
+  const arr = Array.isArray(members) ? members : (members && members.data) || [];
   if (!arr.length) return null;
   const target = arr[Math.floor(Math.random() * arr.length)];
-  if (!target?.id) return null;
+  if (!target || !target.id) return null;
 
   const url = baseUrl() + "/api/v1/memberships/" + target.id;
   const res = http.patch(
@@ -181,7 +181,7 @@ function updateMembershipFromContext() {
   return res;
 }
 
-export default function runScenario() {
+export default function () {
   const tenantSlug = pickTenantForVu(__VU, SYNTHETIC_TENANTS);
   const tenantId = tenantIdFor(tenantSlug);
 

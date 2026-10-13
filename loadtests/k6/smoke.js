@@ -38,7 +38,7 @@ export const options = {
   thresholds: {},
 };
 
-export default function runScenario() {
+export default function () {
   const tenantSlug = pickTenantForVu(__VU, SYNTHETIC_TENANTS);
 
   const signin = signIn(tenantSlug);

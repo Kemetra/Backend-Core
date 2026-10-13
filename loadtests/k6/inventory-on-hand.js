@@ -33,7 +33,7 @@ import { pickTenantForVu } from "./lib/tenants.js";
 import { baseUrl, sleepJitter } from "./lib/util.js";
 
 const DURATION = __ENV.LOAD_DURATION || "10m";
-const VUS = Number.parseInt(__ENV.LOAD_VUS || "20", 10);
+const VUS = parseInt(__ENV.LOAD_VUS || "20", 10);
 
 export const options = {
   scenarios: {
@@ -66,10 +66,10 @@ function targetFor(tenantSlug) {
   return { storeId, productId };
 }
 
-export default function runScenario() {
+export default function () {
   const tenantSlug = pickTenantForVu(__VU, SYNTHETIC_TENANTS);
   const session = signIn(tenantSlug);
-  if (!session?.cookies) {
+  if (!session || !session.cookies) {
     // No dashboard session → cannot measure; skip without faking a number.
     return;
   }

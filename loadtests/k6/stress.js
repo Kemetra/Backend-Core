@@ -25,7 +25,7 @@
 //     --summary-export /scripts/last-stress.json
 
 import http from "k6/http";
-import { sleep } from "k6";
+import { check, sleep } from "k6";
 import { signIn, refreshSession, signOut, SYNTHETIC_TENANTS } from "./lib/auth.js";
 import {
   establishContext,
@@ -35,7 +35,7 @@ import {
 } from "./lib/tenants.js";
 import { baseUrl, jsonHeaders, jsonPostHeaders, uuidv4 } from "./lib/util.js";
 
-const MAX_VUS = Number.parseInt(__ENV.LOAD_STRESS_MAX_VUS || "300", 10);
+const MAX_VUS = parseInt(__ENV.LOAD_STRESS_MAX_VUS || "300", 10);
 const RAMP = __ENV.LOAD_STRESS_RAMP || "10m";
 const PLATEAU = __ENV.LOAD_STRESS_PLATEAU || "5m";
 
@@ -80,17 +80,17 @@ function createInvitation() {
 function updateOneMembership(tenantId) {
   if (!tenantId) return null;
   const list = listMembers(tenantId);
-  if (list?.status !== 200) return null;
+  if (!list || list.status !== 200) return null;
   let members;
   try {
     members = list.json();
   } catch (_e) {
     return null;
   }
-  const arr = Array.isArray(members) ? members : members?.data || [];
+  const arr = Array.isArray(members) ? members : (members && members.data) || [];
   if (!arr.length) return null;
   const target = arr[Math.floor(Math.random() * arr.length)];
-  if (!target?.id) return null;
+  if (!target || !target.id) return null;
   return http.patch(
     baseUrl() + "/api/v1/memberships/" + target.id,
     JSON.stringify({ role_code: target.role_code || "viewer" }),
@@ -98,7 +98,7 @@ function updateOneMembership(tenantId) {
   );
 }
 
-export default function runScenario() {
+export default function () {
   const tenantSlug = pickTenantForVu(__VU, SYNTHETIC_TENANTS);
   const tenantId = tenantIdFor(tenantSlug);
 
