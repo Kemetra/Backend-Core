@@ -65,7 +65,7 @@ The YAML file is self-contained, with its own `securitySchemes` and Error schema
   - **`304`** No body, when `If-None-Match` matches.
   - **`400`** `validation_error`: an unknown query key, or a malformed `If-None-Match`.
   - **`401`** The generic, non-disclosing device refusal.
-  - **`5xx`** `system_failure`.
+  - **`5xx`** `internal_error`.
 - **Not used:** `404`. "No logo" is `200` with `logo: null` (spec FR-17).
 - **Cache headers:** `Cache-Control: no-cache, private`. The POS revalidates every time.
 
@@ -78,7 +78,7 @@ The YAML file is self-contained, with its own `securitySchemes` and Error schema
   - `200 TenantBranding` (the same shape as Surface 1, so the preview is the POS truth);
   - `401` (no session; a bearer-only request);
   - `404`;
-  - `5xx system_failure`.
+  - `5xx internal_error`.
 
 ## 4. Surfaces 3–5 — Console: preview, save, remove
 
@@ -96,7 +96,7 @@ The request body for preview and save is the **raw file bytes**, accepted under 
   - `404`;
   - `413 file_too_large`;
   - `422` with a §5 code;
-  - `5xx system_failure`.
+  - `5xx internal_error`.
 
 ### Surface 4 — Save or replace
 
@@ -122,7 +122,7 @@ The request body for preview and save is the **raw file bytes**, accepted under 
   - `409 logo_preview_mismatch` or `409 logo_changed_concurrently`;
   - `413 file_too_large`;
   - `422` with a §5 code;
-  - `5xx system_failure`.
+  - `5xx internal_error`.
 
 ### Surface 5 — Remove
 
@@ -137,7 +137,7 @@ The request body for preview and save is the **raw file bytes**, accepted under 
   - `403 origin_rejected`;
   - `404`;
   - `409 logo_changed_concurrently`;
-  - `5xx system_failure`.
+  - `5xx internal_error`.
 
 ## 5. Refusal codes (`422`, closed set, `error.code` enum)
 
@@ -160,7 +160,7 @@ These are **outside** the `422` set:
 - `403 origin_rejected`;
 - `401`;
 - `404 not_found`;
-- `5xx system_failure`.
+- `5xx internal_error`.
 
 ## 6. Warnings (closed set, never blocking)
 

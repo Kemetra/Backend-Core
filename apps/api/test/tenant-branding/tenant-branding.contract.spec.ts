@@ -316,6 +316,36 @@ describe("tenant-branding — closed vocabularies", () => {
     ).toBe(false);
   });
 
+  it("closes the non-422 error codes, including the filter's generic 401 and 500", () => {
+    const codes = (schema("Error").properties!.error as { properties: { code: { enum: string[] } } }).properties.code
+      .enum;
+    expect(codes).toEqual([
+      "validation_error",
+      "unauthorized",
+      "origin_rejected",
+      "not_found",
+      "logo_preview_mismatch",
+      "logo_changed_concurrently",
+      "file_too_large",
+      "internal_error",
+    ]);
+    expect(validator("Error")({ error: { code: "logo_preview_mismtach", message: "x", request_id: RID } })).toBe(
+      false,
+    );
+  });
+
+  it("ties details to the code that carries them", () => {
+    const err = validator("Error");
+    const issues = [{ code: "invalid_type", path: ["tenantId"], message: "Invalid uuid" }];
+    expect(err({ error: { code: "not_found", message: "x", request_id: RID, details: issues } })).toBe(false);
+    expect(err({ error: { code: "validation_error", message: "x", request_id: RID } })).toBe(true);
+    const rej = validator("LogoRejectedError");
+    expect(rej({ error: { code: "svg_unsafe_content", message: "x", request_id: RID } })).toBe(false);
+    expect(
+      rej({ error: { code: "image_too_small", message: "x", request_id: RID, details: { construct: "script" } } }),
+    ).toBe(false);
+  });
+
   it("closes the warnings", () => {
     expect(schema("LogoWarning").enum).toEqual(WARNINGS);
   });
@@ -347,6 +377,17 @@ describe("tenant-branding — projections", () => {
       // Eight copies of one pair.
       expect(valid({ ...base, screen: Array.from({ length: 8 }, () => screen()[0]!) })).toBe(false);
     }
+  });
+
+  it("caps the receipt rendition at 48 x 15 mm at the 600 dpi ceiling", () => {
+    const valid = validator("TenantLogo");
+    const receipt = (width_px: number, height_px: number) => ({
+      ...logo(),
+      receipt: { width_px, height_px, dpi: 600, png_base64: PNG },
+    });
+    expect(valid(receipt(1133, 354))).toBe(true);
+    expect(valid(receipt(1134, 354))).toBe(false);
+    expect(valid(receipt(1133, 355))).toBe(false);
   });
 
   it("rejects an unknown slot, a scale of 3 and a non-hex version", () => {

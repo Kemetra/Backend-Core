@@ -411,16 +411,20 @@ components:
       description: >
         The 1-bit grayscale receipt PNG (black on white, no alpha), at most
         48 × 15 mm at `dpi`. The POS prints it at `width_px / dpi × 25.4` mm so
-        the driver does not rescale it.
+        the driver does not rescale it. The bounds below are 48 × 15 mm at the
+        600 dpi ceiling; the per-dpi bound, `width_px ≤ floor(48 / 25.4 × dpi)`
+        and `height_px ≤ floor(15 / 25.4 × dpi)`, is cross-field arithmetic JSON
+        Schema cannot express, so it is a server invariant asserted by the
+        RT-473 S2 runtime tests.
       properties:
         width_px:
           type: integer
           minimum: 1
-          maximum: 4096
+          maximum: 1133
         height_px:
           type: integer
           minimum: 1
-          maximum: 4096
+          maximum: 354
         dpi:
           type: integer
           minimum: 100
@@ -594,15 +598,30 @@ components:
           type: object
           additionalProperties: false
           required: [code, message, request_id]
+          if:
+            properties:
+              code:
+                const: validation_error
+          else:
+            not:
+              required: [details]
           properties:
             code:
               type: string
+              enum:
+                - validation_error
+                - unauthorized
+                - origin_rejected
+                - not_found
+                - logo_preview_mismatch
+                - logo_changed_concurrently
+                - file_too_large
+                - internal_error
               description: >
-                Stable machine-readable code. Closed set on this surface:
-                validation_error | origin_rejected | not_found |
-                logo_preview_mismatch | logo_changed_concurrently |
-                file_too_large | system_failure, plus the generic 401 refusal.
-                The `422` codes use `LogoRejectedError`.
+                Stable machine-readable code, closed on this surface. The `422`
+                codes use `LogoRejectedError`. `unauthorized` and
+                `internal_error` are the global exception filter's generic 401
+                and 500 codes.
             message:
               type: string
               description: Human-readable summary. Never echoes file content.
@@ -612,7 +631,7 @@ components:
             details:
               type: array
               description: >
-                Present only on a `400 validation_error`: the validation issues
+                Present only with `validation_error`: the validation issues
                 the global exception filter serialises (one object per issue).
               items:
                 type: object
@@ -626,6 +645,15 @@ components:
           type: object
           additionalProperties: false
           required: [code, message, request_id]
+          if:
+            properties:
+              code:
+                const: svg_unsafe_content
+          then:
+            required: [details]
+          else:
+            not:
+              required: [details]
           properties:
             code:
               $ref: "#/components/schemas/LogoRejectionCode"
@@ -712,7 +740,7 @@ components:
             $ref: "#/components/schemas/LogoRejectedError"
     SystemFailure:
       description: >
-        `system_failure` — an unexpected server error, recorded server-side by
+        `internal_error` — an unexpected server error, recorded server-side by
         `request_id` and never returned.
       content:
         application/json:
