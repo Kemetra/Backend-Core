@@ -79,6 +79,25 @@ function errorName(err: unknown): string {
   return err instanceof Error ? err.name : "UnknownError";
 }
 
+/** Running totals of one sweep pass. */
+class RedriveTally {
+  tenants = 0;
+  salesProcessed = 0;
+  salePostIntents = 0;
+  reversalIntents = 0;
+  failures = 0;
+
+  result(): SaleRedriveResult {
+    return {
+      tenants: this.tenants,
+      salesProcessed: this.salesProcessed,
+      salePostIntents: this.salePostIntents,
+      reversalIntents: this.reversalIntents,
+      failures: this.failures,
+    };
+  }
+}
+
 export class SaleRedriveProcessor {
   constructor(
     private readonly repo: SaleRedriveRepository,
@@ -91,42 +110,44 @@ export class SaleRedriveProcessor {
     if (jobName !== SALE_REDRIVE_JOB_NAME) throw new UnknownSaleRedriveJobError(jobName);
     SaleRedriveJobSchema.parse(data ?? {});
 
-    let tenants = 0;
-    let salesProcessed = 0;
-    let salePostIntents = 0;
-    let reversalIntents = 0;
-    let failures = 0;
-    const fail = (fields: Record<string, string>, err: unknown): void => {
-      failures += 1;
-      this.log({ level: "error", component: COMPONENT, ...fields, error_class: errorName(err) });
-    };
-
+    const tally = new RedriveTally();
     for (const tenantId of await this.repo.listTenantIds()) {
-      tenants += 1;
+      tally.tenants += 1;
       try {
-        const stranded = await this.repo.findUnprocessedSales(tenantId, this.minAgeMs, SALE_REDRIVE_BATCH_LIMIT);
-        for (const sale of stranded) {
-          try {
-            const r = await this.saleProcessing.process({ ...sale, tenantId, correlationId: null });
-            if (r.applied) salesProcessed += 1;
-          } catch (err) {
-            fail({ message: "sale_redrive_failed", tenant_id: tenantId, sale_id: sale.saleId }, err);
-          }
-        }
-        const emitted = await this.repo.reemitMissingIntents(tenantId, this.minAgeMs, SALE_REDRIVE_BATCH_LIMIT);
-        salePostIntents += emitted.salePost;
-        reversalIntents += emitted.reversal;
+        await this.sweepTenant(tenantId, tally);
       } catch (err) {
-        fail({ message: "tenant_redrive_failed", tenant_id: tenantId }, err);
+        this.failed(tally, { message: "tenant_redrive_failed", tenant_id: tenantId }, err);
       }
     }
 
-    recordSaleRedrive("sale_processing", salesProcessed);
-    recordSaleRedrive("sale_post_intent", salePostIntents);
-    recordSaleRedrive("reversal_intent", reversalIntents);
-    const result = { tenants, salesProcessed, salePostIntents, reversalIntents, failures };
+    recordSaleRedrive("sale_processing", tally.salesProcessed);
+    recordSaleRedrive("sale_post_intent", tally.salePostIntents);
+    recordSaleRedrive("reversal_intent", tally.reversalIntents);
+    const result = tally.result();
     this.log({ level: "info", component: COMPONENT, message: "sale_redrive_completed", ...result });
-    if (failures > 0) throw new SaleRedriveIncompleteError(result);
+    if (result.failures > 0) throw new SaleRedriveIncompleteError(result);
     return result;
+  }
+
+  /** (a) process this tenant's stranded sales, then (b/c) re-emit its missing intents. */
+  private async sweepTenant(tenantId: string, tally: RedriveTally): Promise<void> {
+    const stranded = await this.repo.findUnprocessedSales(tenantId, this.minAgeMs, SALE_REDRIVE_BATCH_LIMIT);
+    for (const sale of stranded) {
+      try {
+        const r = await this.saleProcessing.process({ ...sale, tenantId, correlationId: null });
+        if (r.applied) tally.salesProcessed += 1;
+      } catch (err) {
+        this.failed(tally, { message: "sale_redrive_failed", tenant_id: tenantId, sale_id: sale.saleId }, err);
+      }
+    }
+    const emitted = await this.repo.reemitMissingIntents(tenantId, this.minAgeMs, SALE_REDRIVE_BATCH_LIMIT);
+    tally.salePostIntents += emitted.salePost;
+    tally.reversalIntents += emitted.reversal;
+  }
+
+  /** Log ids + the error class only (never the message) and count the failure. */
+  private failed(tally: RedriveTally, fields: Record<string, string>, err: unknown): void {
+    tally.failures += 1;
+    this.log({ level: "error", component: COMPONENT, ...fields, error_class: errorName(err) });
   }
 }
