@@ -291,6 +291,22 @@ table the domain role must use needs a matching grant step at deploy time.
   inventory write from the previous release is rejected (nothing is written);
   there is no catch-up step. Run it in the maintenance window 0042 requires.
 
+- **Migration `0045_tracking_foundation` (RT-448).** Run
+  [`sql/tracking-foundation-domain-grants.sql`](sql/tracking-foundation-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT` on
+  `tracking_identities`, which the tracking-identity list reads. Nothing writes
+  identities or `erpnext_tracking_map` in this release (identity birth is
+  RT-453), so no `INSERT` and no edge-map privilege is granted yet. Neither
+  table has an `UPDATE` or `DELETE` policy; never grant `UPDATE`, `DELETE` or
+  `TRUNCATE`. Without the grant the API refuses to boot
+  (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold no privilege on
+  either table (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). The Tracking Profile columns
+  live on `tenant_products`, which the domain role already reads and writes.
+  0045 needs no maintenance window: its new columns have defaults or are
+  nullable, and the previous release keeps working.
+
 - **Sign-in memberships (RT-343).** Run
   [`sql/signin-memberships-domain-grants.sql`](sql/signin-memberships-domain-grants.sql)
   in the same step 2, with the same `-v domain_role=<role>`. It grants the

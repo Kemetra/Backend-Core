@@ -142,6 +142,9 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     "inventory_effect_integration",
     // RT-432 (0044): stock locations (the inventory position grain).
     "stock_locations",
+    // RT-448 (0045): tracking identities and their ERPNext edge map.
+    "tracking_identities",
+    "erpnext_tracking_map",
     "audit_events",
     "idempotency_keys",
     "outbox_events",
@@ -209,6 +212,11 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   // DELETE policy; never UPDATE, DELETE or TRUNCATE.
   ["stock_locations", "SELECT"],
   ["stock_locations", "INSERT"],
+  // RT-448 (0045): the tracking-identity list reads identities. Read-only in
+  // this release: nothing writes identities or the edge map yet (RT-453), so
+  // neither INSERT nor any erpnext_tracking_map privilege is required. No
+  // UPDATE / DELETE policy; never UPDATE, DELETE or TRUNCATE.
+  ["tracking_identities", "SELECT"],
 ];
 
 interface GrantRow {

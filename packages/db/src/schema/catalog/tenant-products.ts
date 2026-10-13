@@ -17,6 +17,13 @@
  *         table; `ON DELETE SET NULL` so retiring a category does not
  *         retire its products.
  *   - Q11: `tax_category` is `text NOT NULL` opaque label.
+ *   - 0045 (RT-448, RT-50 Gate 7 G7-1): the Tracking Profile. Catalog declares
+ *         `tracking_mode` none | batch | serial (default none) and
+ *         `expiry_required` (batch only) (852, 384, 386). After the product has
+ *         an inventory effect or a captured sale line, a profile change is
+ *         refused (387): the API's guarded setter answers 409 and the
+ *         `tenant_products_guard_tracking_profile` trigger (SQL-only in 0045)
+ *         is the backstop for every other writer.
  *
  * RLS-enabled by `tenant_id`. Policy lives in `0001_catalog.sql`.
  */
@@ -30,10 +37,15 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { tenants } from "../tenants";
 import { tenantProductCategories } from "./tenant-product-categories";
+
+/** Catalog Tracking Profile modes (RT-50 Gate 7 G7-1; decision 384). */
+export const TRACKING_MODES = ["none", "batch", "serial"] as const;
+export type TrackingMode = (typeof TRACKING_MODES)[number];
 
 export const tenantProducts = pgTable(
   "tenant_products",
@@ -64,6 +76,9 @@ export const tenantProducts = pgTable(
     createdBy: uuid("created_by").notNull(),
     updatedBy: uuid("updated_by").notNull(),
     correlationId: uuid("correlation_id"),
+    // ---- 0045 (RT-448): Tracking Profile (G7-1) ------------------------------
+    trackingMode: text("tracking_mode").notNull().default("none"),
+    expiryRequired: boolean("expiry_required").notNull().default(false),
   },
   (t) => [
     check(
@@ -78,6 +93,18 @@ export const tenantProducts = pgTable(
       "tenant_products_tax_category_length",
       sql`length(${t.taxCategory}) BETWEEN 1 AND 50`,
     ),
+    // ---- 0045 (RT-448) ---------------------------------------------------------
+    // Values mirror TRACKING_MODES (asserted by the tracking schema-shape test).
+    check(
+      "tenant_products_tracking_mode_allowed",
+      sql`${t.trackingMode} IN ('none', 'batch', 'serial')`,
+    ),
+    check(
+      "tenant_products_expiry_requires_batch",
+      sql`NOT ${t.expiryRequired} OR ${t.trackingMode} = 'batch'`,
+    ),
+    // Composite target for the same-tenant FK from tracking_identities.
+    uniqueIndex("uq_tenant_products_id_tenant").on(t.id, t.tenantId),
     index("idx_tenant_products_tenant_active")
       .on(t.tenantId, t.id)
       .where(sql`${t.retiredAt} IS NULL`),

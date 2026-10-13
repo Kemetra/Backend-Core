@@ -39,9 +39,11 @@ import * as path from 'node:path';
 import { getTableConfig } from 'drizzle-orm/pg-core';
 
 import {
+  erpnextTrackingMap,
   inventoryEffectIntegration,
   stockCounts,
   stockMovements,
+  trackingIdentities,
 } from '@data-pulse-2/db/schema';
 
 function persistedColumns(table: unknown): string[] {
@@ -98,7 +100,33 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       'stock_location_id',
       'inventory_status',
       'tracking_identity',
+      // RT-448 (0045): the opaque id of the effect's tracking identity.
+      'tracking_identity_id',
     ],
+  },
+  {
+    // RT-448 (0045): an Inventory-owned batch / serial — opaque ids, a kind,
+    // the printed manufacturer code (no PII), dates and an origin code.
+    name: 'tracking_identities',
+    table: trackingIdentities,
+    columns: [
+      'id',
+      'tenant_id',
+      'tenant_product_ref',
+      'kind',
+      'code',
+      'expiry_date',
+      'manufactured_on',
+      'origin',
+      'created_at',
+      'updated_at',
+    ],
+  },
+  {
+    // RT-448 (0045): identity → opaque ERPNext Batch / Serial No name.
+    name: 'erpnext_tracking_map',
+    table: erpnextTrackingMap,
+    columns: ['id', 'tenant_id', 'tracking_identity_id', 'kind', 'erpnext_ref', 'created_at'],
   },
   {
     // RT-425 (0042): the mutable per-effect ERP integration state. Codes,

@@ -32,10 +32,13 @@
  *   - Provenance only (never required, never mutates the source): `sale_id` /
  *     `sale_line_id` / `terminal_event_ref` reference the CAPTURED 008 sale
  *     fact (FR-032/025); the ledger does not depend on the gated 008 live loop.
- *   - Pharmacy seam (FR-040/041): NO batch/expiry/serial column on the base
- *     movement — a future nullable `stock_lot_id` / `stock_serial_id` FK is the
- *     only addition needed later, leaving generic-retail movements valid (no
- *     rewrite). Deliberately absent in v1.
+ *   - Tracking (FR-040/041 seam, realised by 0045 / RT-448, RT-50 Gate 7
+ *     G7-2): NO batch/expiry/serial column on the base movement. An effect of a
+ *     tracked product references its Inventory-owned identity through the
+ *     nullable typed `tracking_identity_id` (composite FK to the identity of
+ *     the effect's own product and tenant, NOT VALID, new rows only); expiry
+ *     lives on the identity. Generic-retail movements stay valid (no rewrite).
+ *     Nothing writes it yet (RT-451).
  *   - RLS: ENABLE + FORCE, fail-closed by `tenant_id` via the empty-GUC CASE
  *     guard. Policies live in `0014_inventory.sql`.
  *   - §XIV: BUSINESS-CLASS — catalog refs, quantities, provenance ids, bounded
@@ -220,6 +223,9 @@ export const stockMovements = pgTable(
     stockLocationId: uuid("stock_location_id"),
     inventoryStatus: text("inventory_status"),
     trackingIdentity: text("tracking_identity"),
+    // 0045 (RT-448, G7-2): the typed tracking reference. The free-text
+    // `tracking_identity` above stays NULL permanently (stock_movements_tracking_none).
+    trackingIdentityId: uuid("tracking_identity_id"),
   },
   (t) => [
     check(
@@ -290,6 +296,17 @@ export const stockMovements = pgTable(
       sql`${t.inventoryStatus} IN ('sellable', 'return_inspection', 'quality_hold', 'damaged', 'expired', 'recall_hold')`,
     ),
     check("stock_movements_tracking_none", sql`${t.trackingIdentity} IS NULL`),
+    // ---- 0045 (RT-448) -- NOT VALID in SQL: enforced on new rows only --------
+    check(
+      "stock_movements_tracking_identity_needs_product",
+      sql`${t.trackingIdentityId} IS NULL OR ${t.tenantProductRef} IS NOT NULL`,
+    ),
+    // fk_stock_movements_tracking_identity (tracking_identity_id,
+    // tenant_product_ref, tenant_id) -> tracking_identities (id,
+    // tenant_product_ref, tenant_id) is SQL-only.
+    index("idx_stock_movements_tracking_identity")
+      .on(t.trackingIdentityId)
+      .where(sql`${t.trackingIdentityId} IS NOT NULL`),
     // fk_stock_movements_location_store_tenant (stock_location_id, store_id,
     // tenant_id) -> stock_locations (id, store_id, tenant_id) is SQL-only.
     // Composite target for the same-tenant FKs (compensation; integration row).

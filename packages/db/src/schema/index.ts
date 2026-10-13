@@ -46,4 +46,5 @@ export * from "./settlement/reconciliation-result";
 export * from "./inventory/stock-movements";
 export * from "./inventory/effect-integration";
 export * from "./inventory/stock-locations";
+export * from "./inventory/tracking-identities";
 export * from "./connector-health";

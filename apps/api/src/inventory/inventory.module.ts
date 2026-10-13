@@ -24,10 +24,12 @@
 import { Module } from "@nestjs/common";
 
 import { AuthModule } from "../auth/auth.module";
+import { RolesGuard } from "../auth/roles.guard";
 import { ContextModule } from "../context/context.module";
 import { IdempotencyModule } from "../idempotency/idempotency.module";
 import { InventoryController } from "./inventory.controller";
 import { InventoryService } from "./inventory.service";
+import { TrackingIdentitiesController } from "./tracking-identities.controller";
 
 /**
  * InventoryModule — populated by 009-US1-ONHAND (T033).
@@ -37,8 +39,10 @@ import { InventoryService } from "./inventory.service";
  *   - ContextModule — provides TenantContextGuard (publishes request.context).
  *
  * No AuditModule yet — the US1 READ routes are not audited; the US2 write
- * routes (createStockMovement etc.) will add it. No RolesGuard — US1 uses
- * inline object-level store authz, not @Roles.
+ * routes (createStockMovement etc.) will add it. Store-scoped routes use
+ * inline object-level store authz, not @Roles. RT-448: the tenant-wide
+ * tracking-identity read (`TrackingIdentitiesController`) uses `RolesGuard`
+ * (a plain class provider; MembershipRepository reachable via ContextModule).
  */
 @Module({
   // IdempotencyModule (009-US3): registers the global IdempotencyInterceptor
@@ -46,8 +50,8 @@ import { InventoryService } from "./inventory.service";
   // manual replay returns the same movement, a divergent body under the same
   // key 409s. Reuses the existing 001/005 primitive; no new machinery.
   imports: [AuthModule, ContextModule, IdempotencyModule],
-  controllers: [InventoryController],
-  providers: [InventoryService],
+  controllers: [InventoryController, TrackingIdentitiesController],
+  providers: [InventoryService, RolesGuard],
   exports: [InventoryService],
 })
 export class InventoryModule {}

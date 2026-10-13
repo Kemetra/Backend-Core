@@ -1,0 +1,251 @@
+openapi: 3.1.0
+info:
+  title: Data-Pulse-2 Catalog — Product Tracking Profile API
+  version: "1.0.0-draft"
+  description: >
+    Jira RT-448 (RT-50 Inventory Gate 7, rule G7-1; Confluence RETAIL
+    "Inventory Operations" baseline section "Gate 7"; decisions 852, 384, 386,
+    387). Catalog declares, per Tenant Catalog product, whether it is tracked
+    and how:
+
+      * `tracking_mode` — `none` (default), `batch` or `serial`;
+      * `expiry_required` — the product's batches must carry an expiry date
+        (allowed only with `batch`).
+
+    The ERPNext Item never defines the profile. Its `has_batch_no` /
+    `has_serial_no` / `has_expiry_date` flags must agree with it; a
+    disagreement is a mapping-health finding and a posting failure (later
+    Gate 7 issues), never a silent override.
+
+    After stock or transaction history exists, a tracking-mode change is a
+    migration / impact operation, not a field edit (387). V1 refuses it: once
+    the product has an inventory effect or a captured sale line, a change is
+    `409 tracking_profile_locked`, and `profile_locked` reads `true`. Setting
+    the same values again is not a change and succeeds.
+
+    Not yet activated: nothing in this version sells, posts or counts tracked
+    stock, so the set operation accepts only `tracking_mode: none`. A `batch` or
+    `serial` request is `409 tracking_activation_pending` until tracked-line
+    enforcement ships (a later Gate 7 issue); otherwise an untracked sale would
+    lock a tracked profile that nothing enforces.
+
+    Two operations:
+
+      1. `tenantAdminGetTrackingProfile` — read a product's profile.
+      2. `tenantAdminSetTrackingProfile` — set it (full replacement of both
+         fields).
+
+    Authentication: dashboard session (`cookieAuth`, the httpOnly `dp2_session`
+    cookie), owner / tenant-admin only — the same human Tenant-Admin scheme as
+    `catalog/erpnext-warehouse-map.yaml`. `tenant_id` and the actor are
+    resolved server-side, never from the body (§XII). A product outside the
+    session tenant, and a caller without the role, is a non-disclosing 404
+    (§II/§XII). Consumed by
+    `apps/api/test/catalog/tracking-profile/contract/tracking-profile.contract.spec.ts`.
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: catalog-tracking-profile
+    description: >
+      Per-product Tracking Profile (none / batch / serial, expiry) —
+      tenant-admin read/set. RT-448.
+
+paths:
+  /api/v1/catalog/products/{productId}/tracking-profile:
+    get:
+      summary: Read a product's Tracking Profile.
+      operationId: tenantAdminGetTrackingProfile
+      tags: [catalog-tracking-profile]
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      responses:
+        "200":
+          description: The product's Tracking Profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackingProfile"
+        "400":
+          description: Bad request (invalid path UUID).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Caller is not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Not found OR not in scope (non-disclosing, §II/§XII).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    put:
+      summary: Set a product's Tracking Profile.
+      operationId: tenantAdminSetTrackingProfile
+      tags: [catalog-tracking-profile]
+      description: >
+        Replaces both fields. Refused with `409 tracking_activation_pending`
+        for `tracking_mode` `batch` or `serial` while tracked selling is not
+        enabled, and with `409 tracking_profile_locked` when the values change
+        and the product already has an inventory effect or a captured sale
+        line (387). `expiry_required: true` is valid only with
+        `tracking_mode: batch` (400 otherwise).
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetTrackingProfileRequest"
+      responses:
+        "200":
+          description: The profile after the update.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackingProfile"
+        "400":
+          description: Bad request (validation failure).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Caller is not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            `origin_rejected` (RT-430): the request is authenticated by the
+            `dp2_session` cookie and its `Origin` header is missing, or is
+            neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Not found OR not in scope (non-disclosing, §II/§XII).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            `tracking_activation_pending`: a `batch` / `serial` profile cannot
+            be selected yet. `tracking_profile_locked`: the product has
+            inventory or sale history, so its profile is locked (387).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+# All operations require a dashboard session (httpOnly cookie) — the human
+# Tenant-Admin scheme. NOT connectorBearer (012 machine), NOT the POS schemes.
+security:
+  - cookieAuth: []
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: dp2_session
+
+  parameters:
+    ProductId:
+      in: path
+      name: productId
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: The Tenant Catalog product (`tenant_products.id`).
+
+  schemas:
+
+    SetTrackingProfileRequest:
+      type: object
+      additionalProperties: false
+      description: >
+        Full replacement. Strict (`additionalProperties: false`, §XII):
+        `tenant_id`, `product_id` and the actor are server-resolved and MUST
+        NOT appear here.
+      required:
+        - tracking_mode
+        - expiry_required
+      properties:
+        tracking_mode:
+          $ref: "#/components/schemas/TrackingMode"
+        expiry_required:
+          type: boolean
+          description: "True only with `tracking_mode: batch` (386)."
+
+    TrackingMode:
+      type: string
+      enum: [none, batch, serial]
+      description: >
+        G7-1 (decision 384): `none` = untracked; `batch` = every unit belongs
+        to a lot; `serial` = every unit has its own serial number.
+
+    TrackingProfile:
+      type: object
+      additionalProperties: false
+      description: The `toBody()` projection of a product's Tracking Profile (no raw DB entity, §IV).
+      required:
+        - product_id
+        - tracking_mode
+        - expiry_required
+        - profile_locked
+      properties:
+        product_id:
+          type: string
+          format: uuid
+        tracking_mode:
+          $ref: "#/components/schemas/TrackingMode"
+        expiry_required:
+          type: boolean
+        profile_locked:
+          type: boolean
+          description: >
+            True once the product has an inventory effect or a captured sale
+            line; the profile can then no longer change (387).
+
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >
+        Canonical error envelope, identical to the shared shape in
+        `auth.openapi.yaml` / `catalog/erpnext-warehouse-map.yaml` (used
+        verbatim). Cross-tenant / out-of-scope refusals are non-disclosing
+        (§II/§XII) — they never enumerate the underlying cause.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: >
+                Stable machine-readable error code. Closed set on this surface:
+                validation_error | not_found | tracking_activation_pending |
+                tracking_profile_locked | origin_rejected | system_failure
+                (plus the generic 401 refusal).
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id; the actual cause is recorded server-side.

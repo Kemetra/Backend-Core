@@ -14,7 +14,8 @@
  *     it must be loaded explicitly here. T011 is consequently a no-op: there is
  *     no central YAML registry to extend (same verdict as 005 T504 / 008 T011).
  *
- *   * Asserts presence of the six 009 operationIds (plus RT-432's listStockLocations) and their uniqueness against
+ *   * Asserts presence of the six 009 operationIds (plus RT-432's listStockLocations
+ *     and RT-448's listTrackingIdentities) and their uniqueness against
  *     the existing top-level contracts (stop condition: "if any operationId
  *     collides with or renames a shipped 005/007/008 operationId").
  *
@@ -58,6 +59,7 @@ const OPERATION_IDS = [
   "recordStockCount",
   "backfillSaleLinkedMovements",
   "listStockLocations",
+  "listTrackingIdentities",
 ] as const;
 
 // Operator-surface ops use cookieAuth; the backfill is platform/admin.
@@ -68,6 +70,7 @@ const OPERATOR_OPERATION_IDS = [
   "createStockTransfer",
   "recordStockCount",
   "listStockLocations",
+  "listTrackingIdentities",
 ];
 const ADMIN_OPERATION_IDS = ["backfillSaleLinkedMovements"];
 
@@ -78,7 +81,12 @@ const WRITE_OPERATION_IDS = [
   "recordStockCount",
   "backfillSaleLinkedMovements",
 ];
-const READ_OPERATION_IDS = ["getOnHand", "listStockMovements", "listStockLocations"];
+const READ_OPERATION_IDS = [
+  "getOnHand",
+  "listStockMovements",
+  "listStockLocations",
+  "listTrackingIdentities",
+];
 
 const MOVEMENTS_PATH = "/api/inventory/v1/stores/{storeId}/movements";
 const ON_HAND_PATH = "/api/inventory/v1/on-hand/{storeId}/{productId}";
@@ -86,6 +94,7 @@ const TRANSFERS_PATH = "/api/inventory/v1/transfers";
 const COUNTS_PATH = "/api/inventory/v1/stores/{storeId}/counts";
 const BACKFILL_PATH = "/api/inventory/v1/admin/sale-linked-backfill";
 const LOCATIONS_PATH = "/api/inventory/v1/stores/{storeId}/locations";
+const TRACKING_IDENTITIES_PATH = "/api/inventory/v1/products/{productId}/tracking-identities";
 
 // Field-name substrings forbidden anywhere in the contract (§XIV — no PII /
 // money / payment / tender on the inventory ledger in v1).
@@ -258,7 +267,7 @@ describe("inventory/inventory.yaml — loadability", () => {
 // 2. Operations present, uniquely named, correctly secured
 // ===========================================================================
 describe("inventory/inventory.yaml — operations", () => {
-  it("declares exactly the six 009 operationIds and RT-432's listStockLocations", () => {
+  it("declares exactly the six 009 operationIds, RT-432's listStockLocations and RT-448's listTrackingIdentities", () => {
     const ids = inventoryOperations()
       .map((o) => o.op.operationId)
       .filter((id): id is string => typeof id === "string")
@@ -285,6 +294,9 @@ describe("inventory/inventory.yaml — operations", () => {
     );
     expect(inventoryDoc.paths?.[LOCATIONS_PATH]?.["get"]?.operationId).toBe(
       "listStockLocations",
+    );
+    expect(inventoryDoc.paths?.[TRACKING_IDENTITIES_PATH]?.["get"]?.operationId).toBe(
+      "listTrackingIdentities",
     );
   });
 
@@ -526,5 +538,69 @@ describe("inventory/inventory.yaml — RT-432 position grain", () => {
     expect(schema("StockMovement").properties?.["integrationState"]?.enum).not.toContain(
       "erp_neutral",
     );
+  });
+});
+
+// ===========================================================================
+// 8. RT-448 — tracking foundation (additive, 1.3.0-draft)
+// ===========================================================================
+describe("inventory/inventory.yaml — RT-448 tracking foundation", () => {
+  type Prop = { type?: unknown; enum?: unknown[]; format?: string; maxLength?: number };
+  const schema = (
+    name: string,
+  ): {
+    properties?: Record<string, Prop>;
+    required?: string[];
+    additionalProperties?: unknown;
+  } =>
+    (inventoryDoc.components?.schemas?.[name] ?? {}) as {
+      properties?: Record<string, Prop>;
+      required?: string[];
+      additionalProperties?: unknown;
+    };
+
+  it("projects every movement's nullable trackingIdentityId", () => {
+    const mv = schema("StockMovement");
+    expect(mv.properties?.["trackingIdentityId"]?.type).toEqual(["string", "null"]);
+    expect(mv.properties?.["trackingIdentityId"]?.format).toBe("uuid");
+    expect(mv.required).toContain("trackingIdentityId");
+  });
+
+  it("adds no tracking field to the movement command (tracked selling is not active)", () => {
+    expect(schema("CreateStockMovementCommand").properties?.["trackingIdentityId"]).toBeUndefined();
+  });
+
+  it("lists a product's identities read-only, with no Idempotency-Key", () => {
+    const paths = inventoryDoc.paths?.[TRACKING_IDENTITIES_PATH] ?? {};
+    expect(Object.keys(paths).filter((m) => m !== "parameters")).toEqual(["get"]);
+  });
+
+  it("pages the identity list: bounded limit, opaque cursor, nextCursor", () => {
+    const params = findOp("listTrackingIdentities")?.parameters ?? [];
+    const limit = params.find((p) => p.name === "limit");
+    expect(limit?.schema).toMatchObject({ maximum: 200 });
+    expect(params.some((p) => p.name === "cursor")).toBe(true);
+    const list = schema("TrackingIdentityList") as { required?: string[]; properties?: Record<string, { maxItems?: number }> };
+    expect(list.required).toEqual(["items", "nextCursor"]);
+    expect(list.properties?.["items"]?.maxItems).toBe(200);
+  });
+
+  it("projects a strict TrackingIdentity: typed kind, bounded code, ERP-born origin", () => {
+    const ti = schema("TrackingIdentity");
+    expect(ti.additionalProperties).toBe(false);
+    expect(ti.required).toEqual(
+      expect.arrayContaining(["id", "productId", "kind", "code", "expiryDate", "origin"]),
+    );
+    expect(ti.properties?.["kind"]?.enum).toEqual(["batch", "serial"]);
+    expect(ti.properties?.["code"]?.maxLength).toBe(128);
+    expect(ti.properties?.["expiryDate"]?.format).toBe("date");
+    expect(ti.properties?.["origin"]?.enum).toEqual(["erp_external"]);
+  });
+
+  it("never projects an ERPNext document name (M-9)", () => {
+    const names = Object.keys(schema("TrackingIdentity").properties ?? {}).map((n) =>
+      n.toLowerCase(),
+    );
+    expect(names.some((n) => n.includes("erp"))).toBe(false);
   });
 });
