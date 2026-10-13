@@ -18,7 +18,9 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../../../_helpers/postgres-container";
-import { expectWaitsForPostingFeedLock, pausingPool } from "../../../_helpers/posting-feed-lock";
+import type { Pool } from "pg";
+import { servedAcrossConcurrentCommit } from "../../../../../../packages/db/__tests__/_helpers/posting-feed";
+import { expectWaitsForPostingFeedLock } from "../../../_helpers/posting-feed-lock";
 import { ErpnextPostingService } from "../../../../src/catalog/erpnext-posting/erpnext-posting.service";
 import {
   POSTING_STATUS_FIXTURE_IDS,
@@ -52,29 +54,6 @@ afterAll(async () => {
   if (env) await stopPgEnv(env);
 }, 60_000);
 
-/** The connector's pull: the exact pullPostings predicate/order, as the app role under RLS. */
-async function pullFeed(since: string | null): Promise<{ refs: string[]; cursor: string | null }> {
-  const client = await env!.app.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query("SELECT set_config('app.current_tenant', $1, true)", [TENANT_A]);
-    const r = await client.query<{ id: string; sequence: string }>(
-      `SELECT id, sequence::text AS sequence
-         FROM erpnext_posting_status
-        WHERE status = 'pending'
-          AND ($1::bigint IS NULL OR sequence > $1::bigint)
-        ORDER BY erpnext_posting_status.sequence`,
-      [since],
-    );
-    await client.query("COMMIT");
-    const last = r.rows[r.rows.length - 1];
-    // An empty page echoes `since` (erpnext-posting.controller.ts).
-    return { refs: r.rows.map((row) => row.id), cursor: last ? last.sequence : since };
-  } finally {
-    client.release();
-  }
-}
-
 async function resetPending(): Promise<void> {
   await env!.admin.query(
     `UPDATE erpnext_posting_status
@@ -88,33 +67,20 @@ describe("RT-456 — posting feed completeness under concurrent commit", () => {
   it("a transient re-head that commits after a later sequence was served is still offered", async () => {
     if (skip) return;
     await resetPending();
-    const start = (await pullFeed(null)).cursor;
-
-    // Ack 1 re-heads its row (draws a new sequence) and is held open.
-    const held = pausingPool(env!.app, /sequence\s*=\s*DEFAULT/i);
-    const ack1 = new ErpnextPostingService(held.pool).ackOutcome({
+    const transientAck = (workItemRef: string) => (pool: Pool) =>
+      new ErpnextPostingService(pool).ackOutcome({
+        tenantId: TENANT_A,
+        workItemRef,
+        outcome: "failed_transient",
+      });
+    const served = await servedAcrossConcurrentCommit({
+      app: env!.app,
       tenantId: TENANT_A,
-      workItemRef: POST_A_PENDING,
-      outcome: "failed_transient",
+      pausesAfter: /sequence\s*=\s*DEFAULT/i,
+      heldWriter: transientAck(POST_A_PENDING),
+      otherWriter: transientAck(POST_A_REVERSAL),
     });
-    await held.paused;
-
-    // Ack 2 re-heads the other row concurrently.
-    const ack2 = new ErpnextPostingService(env!.app).ackOutcome({
-      tenantId: TENANT_A,
-      workItemRef: POST_A_REVERSAL,
-      outcome: "failed_transient",
-    });
-    await Promise.race([ack2, new Promise((resolve) => setTimeout(resolve, 1_000))]);
-
-    // The connector pulls now and persists the returned cursor ...
-    const first = await pullFeed(start);
-    held.release();
-    await Promise.all([ack1, ack2]);
-    // ... then pulls again from it.
-    const second = await pullFeed(first.cursor);
-
-    expect([...first.refs, ...second.refs]).toEqual(
+    expect(served.map((row) => row.id)).toEqual(
       expect.arrayContaining([POST_A_PENDING, POST_A_REVERSAL]),
     );
   }, 30_000);
