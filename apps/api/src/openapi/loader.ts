@@ -15,6 +15,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { load as parseYaml } from "js-yaml";
 
+import { compareCodeUnits } from "../common/compare-code-units";
+
 export interface LoadedContract {
   /** Filename stem, e.g. "auth.openapi". */
   id: string;
@@ -62,7 +64,8 @@ export function loadOpenApiContracts(
   if (yamls.length === 0) {
     throw new Error(`loadOpenApiContracts: no YAML files found in ${dir}`);
   }
-  return yamls.sort().map((name) => {
+  yamls.sort(compareCodeUnits);
+  return yamls.map((name) => {
     const path = join(dir, name);
     let raw: string;
     try {

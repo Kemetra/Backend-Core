@@ -42,6 +42,7 @@ import { deterministicId } from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../../auth/auth.module";
+import { compareCodeUnits } from "../../common/compare-code-units";
 import {
   BIN_VIEW_MAX_WINDOWS,
   BIN_VIEW_WINDOW_MAX_ITEMS,
@@ -273,7 +274,9 @@ function normalizeStored(raw: RawStoredBinViewReport): StoredBinViewReport {
 function entriesKey(
   entries: ReadonlyArray<{ erpnextItemRef: string; quantity: string; stockUom: string }>,
 ): string[] {
-  return entries.map((e) => `${e.erpnextItemRef}|${e.quantity}|${e.stockUom}`).sort();
+  return entries
+    .map((e) => `${e.erpnextItemRef}|${e.quantity}|${e.stockUom}`)
+    .sort(compareCodeUnits);
 }
 
 @Injectable()

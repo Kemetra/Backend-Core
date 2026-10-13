@@ -6,6 +6,8 @@
  */
 import { createHash } from "node:crypto";
 
+import { compareCodeUnits } from "../../common/compare-code-units";
+
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value ?? null);
@@ -13,7 +15,7 @@ function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(canonicalJson).join(",")}]`;
   }
-  const keys = Object.keys(value as Record<string, unknown>).sort();
+  const keys = Object.keys(value as Record<string, unknown>).sort(compareCodeUnits);
   const entries = keys.map(
     (k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`,
   );

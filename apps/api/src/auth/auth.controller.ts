@@ -243,8 +243,7 @@ export class AuthController {
     if (!principal) {
       throw new UnauthorizedException("Unauthorized");
     }
-    const userId =
-      principal.kind === "session" ? principal.userId : principal.userId;
+    const userId = principal.userId;
     if (!userId) {
       // Platform-admin token without a user id can't verify "their" email.
       throw new BadRequestException("No user associated with this credential");

@@ -18,7 +18,7 @@ FUZZ_OUT="${FUZZ_OUT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/api-fuzz}"
 mkdir -p "$FUZZ_OUT"
 
 secret() { openssl rand -hex 16; }
-mask() { if [ "${GITHUB_ACTIONS:-}" = "true" ]; then echo "::add-mask::$1"; fi; }
+mask() { if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then echo "::add-mask::$1"; fi; }
 # HTTP status of a request. The body goes to stdout and is dropped here;
 # avoids `-o /dev/null`, which Git Bash's curl cannot open with MSYS_NO_PATHCONV.
 http_status() { curl -s -o - -w '\n%{http_code}' "$@" | tail -n 1; }
@@ -39,7 +39,7 @@ psql_owner() { compose exec -T postgres psql -v ON_ERROR_STOP=1 -U fuzz_owner -d
 owner_url="postgres://fuzz_owner:$PG_OWNER_PASSWORD@postgres:5432/fuzz"
 net="${FUZZ_PROJECT}_default"
 
-if [ -z "${SKIP_BUILD:-}" ]; then
+if [[ -z "${SKIP_BUILD:-}" ]]; then
   echo "Building images"
   docker build -q --target api -t "$API_IMAGE" "$ROOT" >/dev/null
   docker build -q --target migrate -t "$MIGRATE_IMAGE" "$ROOT" >/dev/null
@@ -69,7 +69,7 @@ echo "Seeding tenant, roles and store"
 tenant=$(docker run --rm --network "$net" -e NODE_ENV=production -e DATABASE_URL="$owner_url" \
   -e CLERK_OPERATOR_SUBJECT=user_fuzz_dummy_subject -e PILOT_TENANT_SLUG=fuzz \
   "$MIGRATE_IMAGE" node dist/cli/bootstrap-pilot.js | sed -n 's/.*"tenant_id": "\([^"]*\)".*/\1/p')
-[ -n "$tenant" ] || { echo "bootstrap-pilot did not return a tenant id" >&2; exit 1; }
+[[ -n "$tenant" ]] || { echo "bootstrap-pilot did not return a tenant id" >&2; exit 1; }
 
 echo "Creating the owner and platform-admin users"
 hash=$(docker run --rm -e PW="$ADMIN_PASSWORD" --entrypoint node "$API_IMAGE" -e \
@@ -97,10 +97,10 @@ base="http://127.0.0.1:$API_PORT"
 code=000
 for _ in $(seq 1 90); do
   code=$(http_status -X POST "$base/api/v1/auth/signin" -H 'content-type: application/json' -d '{}' || true)
-  [ "$code" = "400" ] && break
+  [[ "$code" == "400" ]] && break
   sleep 1
 done
-[ "$code" = "400" ] || { echo "API did not become ready" >&2; compose logs api | tail -50 >&2; exit 1; }
+[[ "$code" == "400" ]] || { echo "API did not become ready" >&2; compose logs api | tail -50 >&2; exit 1; }
 
 # Sign in as <email>, switch to the seeded tenant, write the cookie to <file>.
 mint_session() {
@@ -108,7 +108,7 @@ mint_session() {
   signin=$(curl -s -D - -o - -X POST "$base/api/v1/auth/signin" -H 'content-type: application/json' \
     -d "{\"email\":\"$email\",\"password\":\"$ADMIN_PASSWORD\"}" || true)
   cookie=$(printf '%s\n' "$signin" | sed -n 's/^[Ss]et-[Cc]ookie: dp2_session=\([^;]*\).*/\1/p' | tr -d '\r\n')
-  [ -n "$cookie" ] || { echo "sign-in for $email returned no session cookie ($(printf '%s' "$signin" | head -n 1))" >&2; exit 1; }
+  [[ -n "$cookie" ]] || { echo "sign-in for $email returned no session cookie ($(printf '%s' "$signin" | head -n 1))" >&2; exit 1; }
   mask "$cookie"
   printf '%s' "$cookie" >"$file"
   # RT-430: a cookie-authenticated POST needs a trusted Origin. The stack runs
@@ -116,7 +116,7 @@ mint_session() {
   code=$(http_status -X POST "$base/api/v1/context/tenant" -H "Cookie: dp2_session=$cookie" \
     -H "Origin: https://127.0.0.1:$API_PORT" \
     -H 'content-type: application/json' -d "{\"tenant_id\":\"$tenant\"}")
-  [ "$code" = "200" ] || { echo "switching $email to the seeded tenant failed ($code)" >&2; exit 1; }
+  [[ "$code" == "200" ]] || { echo "switching $email to the seeded tenant failed ($code)" >&2; exit 1; }
 }
 
 echo "Signing in"
