@@ -60,7 +60,7 @@ The YAML file is self-contained, with its own `securitySchemes` and Error schema
 - **Tenant:** taken **only** from the device row. There are no query or path parameters. Unknown query keys get a `400 validation_error` (strict).
 - **Request header:** optional `If-None-Match: "<etag>"`.
 - **Responses:**
-  - **`200`** `TenantBranding` with `ETag: "<etag>"`. The etag is the SHA-256 over `tenant_display_name ‖ (logo.version or "none")`.
+  - **`200`** `TenantBranding` with `ETag: "<etag>"`. The etag is the lowercase hex SHA-256 over the UTF-8 bytes of `tenant_display_name`, one `0x00` byte, then the ASCII `logo.version` or `none` (spec FR-18), so the POS can recompute it.
   - **`304`** No body, when `If-None-Match` matches.
   - **`401`** The generic, non-disclosing device refusal.
   - **`5xx`** `system_failure`.
@@ -70,7 +70,7 @@ The YAML file is self-contained, with its own `securitySchemes` and Error schema
 ## 3. Surface 2 — Console: read the current logo
 
 - **Operation:** `GET /api/v1/tenants/{tenant_id}/logo`, operationId `consoleGetTenantLogo`, tag `branding-console`.
-- **Security:** `cookieAuth` (`dp2_session`); `dashboard_api` tokens are allowed per `DashboardAuthGuard`.
+- **Security:** `cookieAuth` (`dp2_session`) **only**. Any bearer token, `dashboard_api` included, gets `401` (`SessionOnlyAdminGuard`, as in `shift-closes`). The same applies to Surfaces 3–5.
 - **Roles:** `owner` or `tenant_admin` of `{tenant_id}`. A wrong role, an unknown tenant or another tenant gets `404` (safe 404, XII).
 - **Response `200`:** `TenantBranding` (the same shape as Surface 1, so the preview is the POS truth).
 

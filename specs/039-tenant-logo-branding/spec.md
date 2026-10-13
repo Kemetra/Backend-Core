@@ -62,7 +62,7 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
 
 ### Backend-Core (RT-473)
 
-- **FR-01** One logo record per tenant (D-1). Writing it requires `owner` or `tenant_admin` of that tenant. The tenant comes from the path parameter, checked against the session (Constitution XII). It is never taken from the body. Another tenant, or a wrong role, gets `404`.
+- **FR-01** One logo record per tenant (D-1). Every Console logo operation requires a **human session** (`dp2_session` cookie) of `owner` or `tenant_admin` of that tenant. Bearer tokens, `dashboard_api` included, are refused with `401`, following the `shift-closes` precedent (`SessionOnlyAdminGuard`). The tenant comes from the path parameter, checked against the session (Constitution XII). It is never taken from the body. Another tenant, or a wrong role, gets `404`.
 - **FR-02** An image or content-validation refusal is a `422` whose `error.code` is one value from the closed set in `contracts/README.md` §5. Transport, request-shape, authorization, concurrency and server failures keep their own statuses (`400`, `401`, `403`, `404`, `409`, `413`, `5xx`), as listed in `contracts/README.md` §5.
 - **FR-03** The file type is decided **only by magic bytes**: PNG (`89 50 4E 47 0D 0A 1A 0A`) or SVG (an XML prolog or `<svg` root after optional BOM and whitespace). The file name, the extension and the declared `Content-Type` are ignored. They neither accept nor refuse.
 - **FR-04** The upload is at most 1 MiB, enforced by the HTTP body limit before any parsing.
@@ -111,7 +111,7 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
 - **FR-15** A replace or a remove writes one audit event in the same transaction: `tenant.logo.replaced` `{from_version, to_version}` or `tenant.logo.removed` `{from_version}`. Actor and tenant come from the request context (Constitution XIII). Image bytes are never logged.
 - **FR-16** The POS read is device-authenticated. The tenant comes only from the device row. There is no tenant parameter.
 - **FR-17** The POS read carries the tenant display name, so the fallback text exists even without a logo. "No logo" is `200` with `logo: null`, never an error.
-- **FR-18** The POS read supports `ETag` / `If-None-Match`. The ETag changes only when the name or the logo version changes. An unchanged poll returns `304` with no body.
+- **FR-18** The POS read supports `ETag` / `If-None-Match`. The ETag is the quoted lowercase hex SHA-256 over the UTF-8 bytes of `tenant_display_name`, one `0x00` byte, then the ASCII logo `version` or `none`. It changes only when the name or the logo version changes, and the POS can recompute it locally (FR-35a). An unchanged poll returns `304` with no body.
 
 ### Admin-Console (RT-474)
 
@@ -140,7 +140,7 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
   2. Otherwise, if the name record is valid: show the tenant display name as text in the same slot.
   3. Otherwise (first boot before any branding read, or both records corrupt): show the neutral product mark, the same one the pre-pair screen uses (OD-9, OD-12). The slot keeps its size.
 - **FR-35a** Cache repair. A cache record fails validation when:
-  - the name record is missing or corrupt;
+  - the name record is missing or corrupt, or the ETag recomputed from the cached name and the cached state (`present` → the cached logo `version`; `none` → `none`) differs from the stored ETag (FR-18). This catches a corrupted name, a flipped `logo_state` and a wrong version;
   - `logo_state` is `present` but the logo record is missing;
   - a rendition does not decode;
   - the recomputed `payload_sha256` differs from the stored one.
