@@ -16,4 +16,11 @@ describe("compareCodeUnits", () => {
     expect(compareCodeUnits("B", "a")).toBe(-1);
     expect(compareCodeUnits("a", "B")).toBe(1);
   });
+
+  it("orders by UTF-16 code unit, not code point (surrogate pairs)", () => {
+    // U+1F600 is stored as 😀; 0xD83D < 0xFFFF, so it sorts first.
+    const sorted = ["￿", "\u{1F600}"].sort(compareCodeUnits);
+    expect(sorted).toEqual(["\u{1F600}", "￿"]);
+    expect(sorted).toEqual(["￿", "\u{1F600}"].sort());
+  });
 });
