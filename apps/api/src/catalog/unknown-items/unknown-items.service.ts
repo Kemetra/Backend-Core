@@ -609,8 +609,8 @@ export class UnknownItemsService {
           identifier_type: string;
           value: string;
           source_system: string | null;
-          resolution_status: "pending" | "resolved" | "dismissed";
-          resolution_action: "linked" | "created" | "dismissed" | null;
+          resolution_status: UnknownItemResolutionStatus;
+          resolution_action: UnknownItemResolutionAction | null;
           resolved_at: Date | null;
           resolved_by: string | null;
           resolved_product_id: string | null;
@@ -706,7 +706,7 @@ export class UnknownItemsService {
     readonly tenantId: string;
     /** RT-131: the caller's store scope (`resolveStoreScope`). */
     readonly storeScope: StoreScope;
-    readonly status: "pending" | "resolved" | "dismissed";
+    readonly status: UnknownItemResolutionStatus;
     readonly limit: number;
     readonly storeIdFilter?: string | null;
     // 007 US2 (T037): optional source_system filter + sort + grouping.
@@ -773,8 +773,8 @@ export class UnknownItemsService {
           identifier_type: string;
           value: string;
           source_system: string | null;
-          resolution_status: "pending" | "resolved" | "dismissed";
-          resolution_action: "linked" | "created" | "dismissed" | null;
+          resolution_status: UnknownItemResolutionStatus;
+          resolution_action: UnknownItemResolutionAction | null;
           resolved_at: Date | null;
           resolved_by: string | null;
           resolved_product_id: string | null;
@@ -901,8 +901,8 @@ export class UnknownItemsService {
           identifier_type: string;
           value: string;
           source_system: string | null;
-          resolution_status: "pending" | "resolved" | "dismissed";
-          resolution_action: "linked" | "created" | "dismissed" | null;
+          resolution_status: UnknownItemResolutionStatus;
+          resolution_action: UnknownItemResolutionAction | null;
           resolved_at: Date | null;
           resolved_by: string | null;
           resolved_product_id: string | null;
