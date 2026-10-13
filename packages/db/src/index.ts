@@ -16,6 +16,10 @@ export * from "./middleware/tenant-context";
 export { insertAuditEvent, type AuditEventInsertRow } from "./helpers/audit-insert";
 export * from "./outbox";
 export {
+  lockPostingFeedSequence,
+  POSTING_FEED_LOCK_NAMESPACE,
+} from "./helpers/posting-feed-lock";
+export {
   createStockReconciliationRun,
   STOCK_RECONCILIATION_RUN_COLUMNS,
   type CreateStockReconciliationRunInput,

@@ -658,6 +658,113 @@ describe("PostingRequestedConsumer.handle — RT-330 a pending intent is never l
   });
 });
 
+/**
+ * RT-456 (RT-447 F01): a posting intent whose LOWER sequence commits after a
+ * HIGHER one was already served must not be skipped by the connector's feed
+ * cursor. Writer A takes its sequence and is held open; writer B runs; the
+ * feed is pulled (the cursor the connector would persist); A commits; the feed
+ * is pulled again from that cursor. Every pending intent must be served.
+ */
+const FEED_SQL = `SELECT sequence::text AS sequence, source_ref_id
+                    FROM erpnext_posting_status
+                   WHERE status = 'pending'
+                     AND ($1::bigint IS NULL OR sequence > $1::bigint)
+                   ORDER BY erpnext_posting_status.sequence`;
+
+/** The connector's pull: the exact pullPostings predicate/order, as the app role under RLS. */
+async function pullFeed(
+  e: PgTestEnv,
+  since: string | null,
+): Promise<{ refs: string[]; cursor: string | null }> {
+  const client = await e.app.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.current_tenant', $1, true)", [TENANT]);
+    const r = await client.query<{ sequence: string; source_ref_id: string }>(FEED_SQL, [since]);
+    await client.query("COMMIT");
+    const last = r.rows[r.rows.length - 1];
+    // An empty page echoes `since` (erpnext-posting.controller.ts).
+    return { refs: r.rows.map((row) => row.source_ref_id), cursor: last ? last.sequence : since };
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * A pool whose ONE connection pauses right after the posting-status INSERT
+ * (the statement that draws the sequence), until `release()` is called.
+ */
+function pausingAfterInsert(base: PgTestEnv["app"]): {
+  pool: PgTestEnv["app"];
+  paused: Promise<void>;
+  release: () => void;
+} {
+  let markPaused!: () => void;
+  const paused = new Promise<void>((resolve) => (markPaused = resolve));
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const pool = {
+    connect: async () => {
+      const client = await base.connect();
+      const query = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
+      const releaseClient = client.release.bind(client);
+      const patched = client as unknown as { query: unknown; release: unknown };
+      patched.query = async (...args: unknown[]) => {
+        const result = await query(...args);
+        if (typeof args[0] === "string" && args[0].includes("INSERT INTO erpnext_posting_status")) {
+          markPaused();
+          await gate;
+        }
+        return result;
+      };
+      patched.release = (err?: Error | boolean) => {
+        patched.query = query;
+        return releaseClient(err);
+      };
+      return client;
+    },
+  } as unknown as PgTestEnv["app"];
+  return { pool, paused, release };
+}
+
+describe("PostingRequestedConsumer.handle — RT-456 feed completeness under concurrent commit", () => {
+  it("an intent that commits after a later sequence was served is still offered", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleA = "01900000-0000-7000-8000-00000050f001";
+    const saleB = "01900000-0000-7000-8000-00000050f002";
+    await seedSale(e, { id: saleA, store: STORE_MAPPED, externalId: "rt456-a", tenantProductRef: TPRODUCT });
+    await seedSale(e, { id: saleB, store: STORE_MAPPED, externalId: "rt456-b", tenantProductRef: TPRODUCT });
+    // Start from the connector's current position, past every earlier row.
+    const start = (await pullFeed(e, null)).cursor;
+
+    // Writer A draws its sequence, then is held open (uncommitted).
+    const held = pausingAfterInsert(e.app);
+    const writerA = new PostingRequestedConsumer(held.pool).handle(
+      salePostEvent(saleA, "01900000-0000-7000-8000-0000000ef001"),
+    );
+    await held.paused;
+
+    // Writer B runs concurrently. Without commit ordering it commits a HIGHER
+    // sequence while A is still open; with it, B waits for A.
+    const writerB = new PostingRequestedConsumer(e.app).handle(
+      salePostEvent(saleB, "01900000-0000-7000-8000-0000000ef002"),
+    );
+    await Promise.race([writerB, new Promise((resolve) => setTimeout(resolve, 1_000))]);
+
+    // The connector pulls now and persists the returned cursor.
+    const first = await pullFeed(e, start);
+
+    held.release();
+    await Promise.all([writerA, writerB]);
+
+    // ...then pulls again from the persisted cursor.
+    const second = await pullFeed(e, first.cursor);
+    const served = [...first.refs, ...second.refs];
+    expect(served).toEqual(expect.arrayContaining([saleA, saleB]));
+  }, 30_000);
+});
+
 // Last in the file: retires TPRODUCT's map with no replacement.
 describe("PostingRequestedConsumer.handle — RT-330 a reversal follows its sale's frozen resolution", () => {
   it("is created pending with the sale's frozen item even when the live map is retired", async () => {

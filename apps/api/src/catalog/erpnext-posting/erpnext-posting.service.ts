@@ -20,7 +20,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../../auth/auth.module";
-import { runWithTenantContext } from "@data-pulse-2/db";
+import { lockPostingFeedSequence, runWithTenantContext } from "@data-pulse-2/db";
 import { recordErpnextPostingReconciliation } from "../../observability/metrics/api.metrics";
 import {
   buildWorkItem,
@@ -282,6 +282,10 @@ export class ErpnextPostingService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<AckOutcomeResult> => {
+        // RT-456: a transient ack re-heads the row's feed sequence. Take the
+        // tenant's sequence lock FIRST (before the row lock below) so commit
+        // order is sequence order and the feed cursor cannot skip it.
+        await lockPostingFeedSequence(client, input.tenantId);
         // FOR UPDATE: serialize concurrent acks on the same row (the terminal-
         // state check + transition must be atomic). RLS scopes the row to the
         // tenant; a foreign ref reads nothing.

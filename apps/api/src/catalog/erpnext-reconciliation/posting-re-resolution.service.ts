@@ -22,7 +22,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Pool, PoolClient } from "pg";
 
-import { runWithTenantContext } from "@data-pulse-2/db";
+import { lockPostingFeedSequence, runWithTenantContext } from "@data-pulse-2/db";
 
 import { PG_POOL } from "../../auth/auth.module";
 import { MembershipRepository } from "../../context/membership.repository";
@@ -66,6 +66,8 @@ export class ErpnextPostingReResolutionService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<RecordedReResolution> => {
+        // RT-456: re-resolve re-heads the feed sequence; tenant sequence lock first.
+        await lockPostingFeedSequence(client, input.tenantId);
         const row = await this.lockIntent(client, input);
         if (row.status !== "pending") {
           throw new ReResolveConflictError(

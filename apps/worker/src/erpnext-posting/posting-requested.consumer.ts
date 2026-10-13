@@ -53,7 +53,7 @@
  * tenant must not redirect the write).
  */
 import { z } from "zod";
-import { runWithTenantContext } from "@data-pulse-2/db";
+import { lockPostingFeedSequence, runWithTenantContext } from "@data-pulse-2/db";
 import {
   createLogger,
   newId,
@@ -155,6 +155,10 @@ export class PostingRequestedConsumer
       this.pool,
       { tenantId, isPlatformAdmin: false },
       async (client) => {
+        // RT-456: this transaction draws a posting-feed sequence (the INSERT
+        // below). Take the tenant's sequence lock FIRST — before the reversal's
+        // FOR SHARE on its sale_post row — so commit order is sequence order.
+        await lockPostingFeedSequence(client, tenantId);
         if (kind === "reversal") {
           await this.assertSalePostExists(client, event, parsed.data);
         }
