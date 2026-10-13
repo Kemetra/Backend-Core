@@ -54,6 +54,8 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   // store trigger). Identity is immutable: no UPDATE / DELETE.
   "stock_locations:SELECT",
   "stock_locations:INSERT",
+  // RT-448 (0045): tracking identities (read by the identity list). Read-only.
+  "tracking_identities:SELECT",
 ]);
 
 const LOOKUP_GRANTS: ReadonlySet<string> = new Set(
@@ -267,6 +269,8 @@ describe("database pool boundary", () => {
       "shift_refund_claims",
       "inventory_effect_integration",
       "stock_locations",
+      "tracking_identities",
+      "erpnext_tracking_map",
     ]) {
       const entry = AUTH_LOOKUP_FORBIDDEN_GRANTS.find(([t]) => t === table);
       expect(entry).toBeDefined();

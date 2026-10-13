@@ -216,6 +216,7 @@ describe("data-pulse-migrate CLI", () => {
     "0042_inventory_effects_journal",
     "0043_inventory_effect_integration_backfill",
     "0044_stock_locations_position_grain",
+    "0045_tracking_foundation",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -274,20 +275,41 @@ describe("data-pulse-migrate CLI", () => {
         ('stores_create_primary_location', 'stock_locations_guard_identity')`);
   }
 
+  /** 0045_tracking_foundation (RT-448): identities, edge map, profile + guard triggers. */
+  const TRACKING_TABLES = ["tracking_identities", "erpnext_tracking_map"];
+  async function countTrackingTriggers(): Promise<string> {
+    return queryCount(`SELECT COUNT(*)::text AS count FROM pg_trigger
+      WHERE NOT tgisinternal AND tgname IN
+        ('tenant_products_guard_tracking_profile', 'tracking_identities_guard_identity')`);
+  }
+  async function expectTrackingFoundationApplied(): Promise<void> {
+    expect(await countPublicTables(TRACKING_TABLES)).toBe("2");
+    expect(await countTrackingTriggers()).toBe("2");
+    expect(await countPublicColumn("tenant_products", "tracking_mode")).toBe("1");
+    expect(await countPublicColumn("tenant_products", "expiry_required")).toBe("1");
+    expect(await countPublicColumn("stock_movements", "tracking_identity_id")).toBe("1");
+  }
+
   /**
-   * After one `down` from head: 0044's stock_locations table, its store trigger
-   * and the stock_movements position constraints are gone, while 0042's
-   * integration table and effect columns (with 0043's backfill) survive, as do
-   * 0041's tender columns, 0040's device lifecycle columns, 0039's evidence
-   * column and 0037/0038's resolution table.
+   * After one `down` from head: 0045's tracking tables, the tenant_products
+   * Tracking Profile and stock_movements.tracking_identity_id are gone, while
+   * 0044's stock_locations table, its store trigger and the stock_movements
+   * position constraints survive, as do 0042's integration table and effect
+   * columns (with 0043's backfill), 0041's tender columns, 0040's device
+   * lifecycle columns, 0039's evidence column and 0037/0038's resolution table.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("0");
-    expect(await countStockLocationTriggers()).toBe("0");
+    expect(await countPublicTables(TRACKING_TABLES)).toBe("0");
+    expect(await countTrackingTriggers()).toBe("0");
+    expect(await countPublicColumn("tenant_products", "tracking_mode")).toBe("0");
+    expect(await countPublicColumn("tenant_products", "expiry_required")).toBe("0");
+    expect(await countPublicColumn("stock_movements", "tracking_identity_id")).toBe("0");
+    expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("1");
+    expect(await countStockLocationTriggers()).toBe("2");
     expect(
       await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
         WHERE conname = 'stock_movements_position_required'`),
-    ).toBe("0");
+    ).toBe("1");
     await expectInventoryEffectsApplied();
     expect(await countTenderRefColumns()).toEqual(["1", "1"]);
     expect(await countDeviceLifecycleColumns()).toEqual(["1", "1"]);
@@ -401,6 +423,10 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("1");
     expect(await countPolicies(STOCK_LOCATION_TABLES)).toBe("2");
     expect(await countStockLocationTriggers()).toBe("2");
+    // 0045's tracking identities and edge map (SELECT + INSERT policies each),
+    // the Tracking Profile columns and the two guard triggers (RT-448).
+    await expectTrackingFoundationApplied();
+    expect(await countPolicies(TRACKING_TABLES)).toBe("4");
   });
 
   it("up is idempotent on a second run", async () => {
@@ -438,7 +464,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0044 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0045 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
@@ -544,6 +570,7 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countTenderRefColumns()).toEqual(["1", "1"]);
     await expectInventoryEffectsApplied();
     expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("1");
+    await expectTrackingFoundationApplied();
   });
 
   it(

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Inventory — Stock Movement Ledger API
-  version: "1.2.0-draft"
+  version: "1.3.0-draft"
   description: >
     Spec 009 Inventory & Stock Movement Ledger contract surface. Defines the
     Inventory source-of-truth domain the SaaS owns: an append-only
@@ -28,7 +28,7 @@ info:
     `store_id`; body-supplied tenant / store / actor / derived-balance fields
     are NEVER accepted (Constitution §III/§XII, FR-052).
 
-    Seven operations:
+    Eight operations:
 
       1. `createStockMovement` — append an inbound / outbound / adjustment
          movement (write-off = a reason-coded outbound). Exact-decimal quantity
@@ -56,6 +56,8 @@ info:
          as provenance; idempotent on the provenance pair; re-run converges
          (FR-031/033). Bounded per request (default 500).
       7. `listStockLocations` — the stock locations of a store (RT-432).
+      8. `listTrackingIdentities` — the batches / serials of a product
+         (RT-448).
 
     Quantity: every quantity is an exact-decimal STRING (`numeric(p,s)` at
     rest); no float appears on the wire. There is NO money / tender / payment
@@ -96,6 +98,18 @@ info:
     `statusQuantities` break it down. `listStockLocations` is read-only. The
     `erp_neutral` integration state exists in the schema but is not returned
     by this version (nothing assigns it yet, RT-435).
+
+    1.3.0-draft — Tracking foundation (Jira RT-448; owner-approved RT-50
+    Gate 7, Confluence RETAIL "Inventory Operations" baseline section
+    "Gate 7", rules G7-2 and G7-3). Additive only. A Tracking Identity is an
+    Inventory-owned batch or serial of one product: its printed `code`
+    (matched exactly), its `kind`, its `expiryDate` and its origin. Identities
+    are ERP-born only (`origin` is always `erp_external`); Retail Tower never
+    creates one. A movement projects `trackingIdentityId`, the identity of the
+    movement's own product; it is null for an untracked product and for every
+    movement this version writes (tracked selling is not active yet, RT-451).
+    `listTrackingIdentities` is read-only. ERPNext Batch / Serial No names are
+    NOT part of this contract (they stay in the ERP edge map, M-9).
 
 servers:
   - url: https://api.datapulse.example
@@ -221,6 +235,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StockLocationList"
+        "400": { $ref: "#/components/responses/ValidationFailure" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFoundOrCrossTenant" }
+        "5XX": { $ref: "#/components/responses/SystemFailure" }
+
+  /api/inventory/v1/products/{productId}/tracking-identities:
+    get:
+      operationId: listTrackingIdentities
+      tags: [inventory]
+      summary: List the tracking identities (batches / serials) of a product.
+      description: >
+        RT-448 (RT-50 Gate 7 G7-2): the tenant's tracking identities of the
+        path product, ordered by `kind`, then `expiryDate` (earliest first,
+        none last), then `code`. Identities are tenant-wide, not store-scoped.
+        Read-only: identities are ERP-born (G7-3) and nothing in this version
+        creates one, so the list is empty until identity birth lands (RT-453).
+        Owner / tenant-admin only; a product outside the caller's tenant, and a
+        caller without the role, is a non-disclosing 404.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ProductIdPath"
+      responses:
+        "200":
+          description: The product's tracking identities.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackingIdentityList"
         "400": { $ref: "#/components/responses/ValidationFailure" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -422,6 +466,12 @@ components:
       required: true
       description: Store the request is scoped to; access is authorized server-side.
       schema: { type: string, format: uuid }
+    ProductIdPath:
+      name: productId
+      in: path
+      required: true
+      description: Tenant Catalog product; resolved inside the caller's tenant only.
+      schema: { type: string, format: uuid }
 
   schemas:
     # ----- Commands (request bodies) — strict; server-owned fields are NOT accepted (FR-052)
@@ -571,7 +621,7 @@ components:
       type: object
       required:
         [id, storeId, movementType, quantity, stockingUnit, occurredAt, receivedAt, createdBy, origin,
-         stockLocationId, inventoryStatus, positionInterpreted]
+         stockLocationId, inventoryStatus, positionInterpreted, trackingIdentityId]
       description: >
         toBody projection of a stock_movements row. The lineage-only
         `idempotency_key` column and internal fields are NOT projected.
@@ -637,6 +687,13 @@ components:
             RT-432 (RT-290 G4-5): true for a movement recorded before positions
             existed. Its position is READ as the store's primary location and
             `sellable`; the movement itself is never rewritten.
+        trackingIdentityId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            RT-448 (RT-50 G7-2): the tracking identity (batch / serial) of the
+            movement's own product. Null for an untracked product, and for every
+            movement written by this version (tracked selling is not active).
     StockMovementList:
       type: object
       required: [items]
@@ -722,6 +779,44 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/StockLocation"
+    TrackingIdentity:
+      type: object
+      required: [id, productId, kind, code, expiryDate, manufacturedOn, origin]
+      additionalProperties: false
+      description: >
+        RT-448 (RT-50 G7-2, G7-3): an Inventory-owned batch or serial of one
+        product. `kind`, `code` and the product never change. No ERPNext
+        document name is projected (M-9).
+      properties:
+        id: { type: string, format: uuid }
+        productId: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [batch, serial]
+        code:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: The lot or serial number exactly as printed on the pack; matched exactly, never fuzzily (313).
+        expiryDate:
+          type: [string, "null"]
+          format: date
+          description: >
+            The calendar expiry date. A lot is sellable through this date,
+            inclusive, at the selling store's business date (G7-5).
+        manufacturedOn: { type: [string, "null"], format: date }
+        origin:
+          type: string
+          enum: [erp_external]
+          description: Identities are ERP-born only (G7-3).
+    TrackingIdentityList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrackingIdentity"
     StockTransfer:
       type: object
       required: [transferGroupId, outbound, inbound]

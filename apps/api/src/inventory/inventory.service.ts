@@ -311,6 +311,11 @@ export interface StockMovementBody {
    * whose position is read as (the store's primary location, sellable).
    */
   readonly positionInterpreted: boolean;
+  /**
+   * RT-448 (RT-50 G7-2): the tracking identity of the movement's own product;
+   * null for an untracked product and for every movement written today.
+   */
+  readonly trackingIdentityId: string | null;
 }
 
 /** RT-432: one inventory status's share of the on-hand (contract `StatusQuantity`). */
@@ -347,6 +352,22 @@ export interface StockLocationListBody {
   readonly items: readonly StockLocationBody[];
 }
 
+/** RT-448: wire projection of a tracking identity (contract `TrackingIdentity`). */
+export interface TrackingIdentityBody {
+  readonly id: string;
+  readonly productId: string;
+  readonly kind: string;
+  readonly code: string;
+  /** Calendar date `YYYY-MM-DD`, or null. */
+  readonly expiryDate: string | null;
+  readonly manufacturedOn: string | null;
+  readonly origin: string;
+}
+
+export interface TrackingIdentityListBody {
+  readonly items: readonly TrackingIdentityBody[];
+}
+
 export interface StockMovementListBody {
   readonly items: readonly StockMovementBody[];
   readonly nextCursor: string | null;
@@ -378,13 +399,15 @@ interface MovementRow {
   inventory_status: string | null;
   /** RT-432: the store's primary location, joined on reads (G4-5). */
   primary_location_id?: string | null;
+  /** RT-448 (G7-2): the typed tracking reference; NULL when untracked. */
+  tracking_identity_id: string | null;
 }
 
 const MOVEMENT_COLUMN_NAMES = [
   'id', 'store_id', 'movement_type', 'quantity', 'stocking_unit', 'tenant_product_ref',
   'reason', 'occurred_at', 'received_at', 'sale_id', 'sale_line_id', 'terminal_event_ref',
   'transfer_group_id', 'stock_count_id', 'created_by', 'origin',
-  'stock_location_id', 'inventory_status',
+  'stock_location_id', 'inventory_status', 'tracking_identity_id',
 ] as const;
 
 const MOVEMENT_COLUMNS = MOVEMENT_COLUMN_NAMES.join(', ');
@@ -439,6 +462,7 @@ function toMovementBody(r: MovementRow): StockMovementBody {
     integrationState: r.integration_state ?? null,
     erpConfirmedAt: r.erp_confirmed_at ? r.erp_confirmed_at.toISOString() : null,
     ...toPositionBody(r),
+    trackingIdentityId: r.tracking_identity_id,
   };
 }
 
@@ -633,6 +657,58 @@ export class InventoryService {
             name: l.name,
             kind: l.kind,
             isActive: l.is_active,
+          })),
+        };
+      },
+    );
+  }
+
+  /**
+   * RT-448 (RT-50 G7-2): the tenant's tracking identities of one product,
+   * ordered by kind, then expiry (earliest first, none last), then code.
+   * Read-only; identities are ERP-born (G7-3) and nothing creates one yet
+   * (RT-453). A product outside the tenant is a non-disclosing 404 (FR-051):
+   * RLS hides other tenants' products and identities alike.
+   */
+  async listTrackingIdentities(input: {
+    readonly tenantId: string;
+    readonly productId: string;
+  }): Promise<TrackingIdentityListBody> {
+    return runWithTenantContext(
+      this.pool,
+      { tenantId: input.tenantId, isPlatformAdmin: false },
+      async (client): Promise<TrackingIdentityListBody> => {
+        const product = await client.query<{ id: string }>(
+          `SELECT id FROM tenant_products WHERE id = $1`,
+          [input.productId],
+        );
+        if (!product.rows[0]) throw new NotFoundException('Not Found');
+        const r = await client.query<{
+          id: string;
+          tenant_product_ref: string;
+          kind: string;
+          code: string;
+          expiry_date: string | null;
+          manufactured_on: string | null;
+          origin: string;
+        }>(
+          // ::text keeps the calendar dates as `YYYY-MM-DD` (no time-zone shift).
+          `SELECT id, tenant_product_ref, kind, code, expiry_date::text AS expiry_date,
+                  manufactured_on::text AS manufactured_on, origin
+             FROM tracking_identities
+            WHERE tenant_product_ref = $1
+            ORDER BY kind ASC, expiry_date ASC NULLS LAST, code ASC, id ASC`,
+          [input.productId],
+        );
+        return {
+          items: r.rows.map((t) => ({
+            id: t.id,
+            productId: t.tenant_product_ref,
+            kind: t.kind,
+            code: t.code,
+            expiryDate: t.expiry_date,
+            manufacturedOn: t.manufactured_on,
+            origin: t.origin,
           })),
         };
       },

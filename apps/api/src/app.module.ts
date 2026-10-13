@@ -16,6 +16,7 @@ import { ErpnextProductReconciliationModule } from "./catalog/erpnext-product-re
 import { ErpnextReconciliationModule } from "./catalog/erpnext-reconciliation/erpnext-reconciliation.module";
 import { ErpnextSyncOpsModule } from "./catalog/erpnext-sync-ops/erpnext-sync-ops.module";
 import { ErpnextWarehouseMapModule } from "./catalog/erpnext-warehouse-map/erpnext-warehouse-map.module";
+import { TrackingProfileModule } from "./catalog/tracking-profile/tracking-profile.module";
 import { ReadDownModule } from "./catalog/read-down/read-down.module";
 import { ConnectorModule } from "./connector/connector.module";
 import { ConnectorHealthModule } from "./connector-health/connector-health.module";
@@ -226,7 +227,7 @@ class ApiDbMigrationStatusGaugeRegistrar implements OnModuleInit, OnModuleDestro
  * pipe are registered in `main.ts`.
  */
 @Module({
-  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, CashierAdmissionsModule, PosAuditEventsModule, PosShiftsModule, ShiftClosesModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, ConnectorModule, ConnectorHealthModule, PairingModule, HealthModule],
+  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, CashierAdmissionsModule, PosAuditEventsModule, PosShiftsModule, ShiftClosesModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, TrackingProfileModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, ConnectorModule, ConnectorHealthModule, PairingModule, HealthModule],
   controllers: [],
   providers: [
     ApiDbPoolGaugeRegistrar,

@@ -34,10 +34,16 @@ import {
   INVENTORY_STATUSES,
   RETAIL_INVENTORY_EVENT_TYPES,
   STOCK_LOCATION_KINDS,
+  TRACKING_IDENTITY_KINDS,
+  TRACKING_IDENTITY_ORIGINS,
+  TRACKING_MODES,
+  erpnextTrackingMap,
   inventoryEffectIntegration,
   stockCounts,
   stockLocations,
   stockMovements,
+  tenantProducts,
+  trackingIdentities,
 } from "@data-pulse-2/db/schema";
 
 type ColumnInfo = {
@@ -351,5 +357,68 @@ describe("inventory schema shape — RT-432 position grain", () => {
       expect(lc.has(forbidden)).toBe(false);
     }
     expect([...STOCK_LOCATION_KINDS]).toEqual(["primary", "storage"]);
+  });
+});
+
+// ===========================================================================
+// RT-448 (0045) — tracking foundation
+// ===========================================================================
+describe("inventory schema shape — RT-448 tracking foundation", () => {
+  const sql0045 = fs.readFileSync(
+    path.resolve(__dirname, "../../../../../packages/db/drizzle/0045_tracking_foundation.sql"),
+    "utf8",
+  );
+
+  /** The quoted values of one named CHECK in 0045, in order. */
+  function checkValues(constraint: string): string[] {
+    const start = sql0045.indexOf(`CONSTRAINT ${constraint}`);
+    expect(start).toBeGreaterThan(-1);
+    const end = sql0045.indexOf(")", sql0045.indexOf("IN (", start));
+    return [...sql0045.slice(start, end).matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!);
+  }
+
+  it("the tracking-mode CHECK lists exactly TRACKING_MODES", () => {
+    expect(checkValues("tenant_products_tracking_mode_allowed")).toEqual([...TRACKING_MODES]);
+  });
+
+  it("the identity kind and origin CHECKs list exactly the Drizzle constants", () => {
+    expect(checkValues("tracking_identities_kind_allowed")).toEqual([...TRACKING_IDENTITY_KINDS]);
+    expect(checkValues("tracking_identities_origin_allowed")).toEqual([
+      ...TRACKING_IDENTITY_ORIGINS,
+    ]);
+  });
+
+  it("tenant_products carries the NOT NULL profile columns", () => {
+    const tp = columns(tenantProducts);
+    expect(tp.get("tracking_mode")?.notNull).toBe(true);
+    expect(tp.get("expiry_required")?.notNull).toBe(true);
+  });
+
+  it("a movement names an identity through a nullable uuid, never a code or date", () => {
+    const cols = columns(stockMovements);
+    expect(cols.get("tracking_identity_id")?.notNull).toBe(false);
+    expect(cols.get("tracking_identity_id")?.columnType).toBe("PgUUID");
+  });
+
+  it("every 0045 stock_movements constraint is NOT VALID and no movement is rewritten", () => {
+    for (const name of [
+      "fk_stock_movements_tracking_identity",
+      "stock_movements_tracking_identity_needs_product",
+    ]) {
+      const start = sql0045.indexOf(`ADD CONSTRAINT ${name}`);
+      expect(start).toBeGreaterThan(-1);
+      expect(sql0045.slice(start, sql0045.indexOf(";", start))).toMatch(/NOT VALID$/);
+    }
+    expect(sql0045).not.toMatch(/UPDATE\s+stock_movements/i);
+  });
+
+  it("identities and the edge map carry no money or customer field", () => {
+    for (const table of [trackingIdentities, erpnextTrackingMap]) {
+      const c = columns(table);
+      expect(c.get("tenant_id")?.notNull).toBe(true);
+      for (const forbidden of ["amount", "price", "currency_code", "customer", "payment"]) {
+        expect(c.has(forbidden)).toBe(false);
+      }
+    }
   });
 });
