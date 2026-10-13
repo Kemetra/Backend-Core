@@ -430,7 +430,7 @@ export class ErpnextProductReconciliationService {
    * run `running → completed`. Stub-tolerant (FR-007): an absent view is reported,
    * never a failure. DP2 makes NO outbound ERPNext HTTP.
    */
-  async triggerRun(input: {
+  triggerRun(input: {
     tenantId: string;
     actorUserId: string;
   }): Promise<ProductReconciliationRunBody> {

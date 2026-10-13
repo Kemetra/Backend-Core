@@ -121,7 +121,7 @@ export class ErpnextWarehouseMapService {
    * partial-unique (OQ-2, on (tenant, store, purpose)) surfaces a 2nd active
    * set as conflict.
    */
-  async set(input: {
+  set(input: {
     readonly tenantId: string;
     readonly storeId: string;
     readonly erpnextWarehouseRef: string;
@@ -192,7 +192,7 @@ export class ErpnextWarehouseMapService {
    * 0-row result is a conflict (stale version / already retired) or
    * not_found (RLS-filtered / fabricated id).
    */
-  async retire(input: {
+  retire(input: {
     readonly tenantId: string;
     readonly id: string;
     readonly version: number;
@@ -236,7 +236,7 @@ export class ErpnextWarehouseMapService {
   }
 
   /** List the tenant's ACTIVE mappings. */
-  async list(input: {
+  list(input: {
     readonly tenantId: string;
   }): Promise<ErpnextWarehouseMapRow[]> {
     return runWithTenantContext(

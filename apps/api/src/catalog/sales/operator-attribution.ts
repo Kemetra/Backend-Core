@@ -181,7 +181,7 @@ export class PgOperatorAttributionVerifier implements OperatorAttributionVerifie
     private readonly eligibility: CashierEligibilityReader = new CashierEligibilityRepository(),
   ) {}
 
-  async verify(input: OperatorAttributionInput): Promise<AttributionVerdict> {
+  verify(input: OperatorAttributionInput): Promise<AttributionVerdict> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },

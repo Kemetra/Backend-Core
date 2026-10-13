@@ -740,7 +740,7 @@ export class PosOperatorsService {
     return r.rows[0] ?? null;
   }
 
-  private async findActiveMembership(
+  private findActiveMembership(
     tenantId: string,
     userId: string,
   ): Promise<MembershipLookupRow | null> {
@@ -766,7 +766,7 @@ export class PosOperatorsService {
     );
   }
 
-  private async storeIsInAccessSet(
+  private storeIsInAccessSet(
     tenantId: string,
     membershipId: string,
     storeId: string,
@@ -907,7 +907,7 @@ export class PosOperatorsService {
    * Returns all cashiers (store_staff role) for a branch.
    * `store_staff` maps to the POS `cashier` role (FR-015 role-visibility matrix).
    */
-  private async findCashiersByStore(
+  private findCashiersByStore(
     storeId: string,
     tenantId: string,
   ): Promise<
@@ -1100,7 +1100,7 @@ export class PosOperatorsService {
    * Checks whether a user has an active pos_operator session in the given store.
    * Used by active-session endpoint after branch authorization is confirmed.
    */
-  private async anyActiveOperatorSessionInStore(
+  private anyActiveOperatorSessionInStore(
     tenantId: string,
     userId: string,
     storeId: string,

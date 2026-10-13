@@ -429,7 +429,7 @@ export class ReceivableService {
   }
 
   /** Read one receivable's projection — RLS-filtered (cross-tenant → not_found). */
-  async getOne(input: { tenantId: string; receivableRef: string }): Promise<GetResult> {
+  getOne(input: { tenantId: string; receivableRef: string }): Promise<GetResult> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },

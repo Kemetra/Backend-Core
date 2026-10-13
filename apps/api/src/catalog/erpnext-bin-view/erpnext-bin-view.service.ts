@@ -381,7 +381,7 @@ export class ErpnextBinViewService {
    *     `erpnext.reconciliation.requested` in the same transaction — exactly once,
    *     because a complete attempt accepts no further window.
    */
-  async reportSnapshot(input: ReportSnapshotInput): Promise<ReportSnapshotResult> {
+  reportSnapshot(input: ReportSnapshotInput): Promise<ReportSnapshotResult> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },

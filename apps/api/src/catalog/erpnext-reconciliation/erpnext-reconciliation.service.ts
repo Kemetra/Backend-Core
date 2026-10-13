@@ -258,7 +258,7 @@ export class ErpnextReconciliationService {
    *   - posted                                → no_op_echo (echo stored document_ref)
    *   - pending (a concurrent repair already re-offered) → no_op_echo, NO re-head
    */
-  async repairPosting(input: RepairPostingInput): Promise<RepairResult> {
+  repairPosting(input: RepairPostingInput): Promise<RepairResult> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
@@ -495,7 +495,7 @@ export class ErpnextReconciliationService {
    * StoreNotFoundError. The scheduled sweep (RT-179) is a system actor and
    * calls `createStockReconciliationRun` directly, without this check.
    */
-  async triggerRun(input: TriggerRunInput): Promise<ReconciliationRunBody> {
+  triggerRun(input: TriggerRunInput): Promise<ReconciliationRunBody> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
@@ -525,7 +525,7 @@ export class ErpnextReconciliationService {
   }
 
   /** Get a run by id (US3). Cross-tenant / out-of-scope / absent → RunNotFoundError (404). */
-  async getRun(input: RunReadInput): Promise<ReconciliationRunBody> {
+  getRun(input: RunReadInput): Promise<ReconciliationRunBody> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
@@ -573,7 +573,7 @@ export class ErpnextReconciliationService {
    * re-map; re_sync via the connector when it ships), NOT that ERPNext now agrees.
    * The 009 ledger is NEVER mutated (FR-013/016). Foreign run/result → 404.
    */
-  async repairStock(input: RepairStockInput): Promise<RepairResult> {
+  repairStock(input: RepairStockInput): Promise<RepairResult> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },

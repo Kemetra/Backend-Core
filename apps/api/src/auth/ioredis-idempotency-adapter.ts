@@ -32,7 +32,7 @@ export class IoredisIdempotencyAdapter {
   // Idempotency store + in-progress marker surface
   // ---------------------------------------------------------------------------
 
-  async get(key: string): Promise<string | null> {
+  get(key: string): Promise<string | null> {
     return this.client.get(key);
   }
 
@@ -57,7 +57,7 @@ export class IoredisIdempotencyAdapter {
     return result;
   }
 
-  async del(key: string): Promise<number> {
+  del(key: string): Promise<number> {
     return this.client.del(key);
   }
 
@@ -65,11 +65,11 @@ export class IoredisIdempotencyAdapter {
   // Rate-limit surface
   // ---------------------------------------------------------------------------
 
-  async incr(key: string): Promise<number> {
+  incr(key: string): Promise<number> {
     return this.client.incr(key);
   }
 
-  async decr(key: string): Promise<number> {
+  decr(key: string): Promise<number> {
     return this.client.decr(key);
   }
 
@@ -78,11 +78,11 @@ export class IoredisIdempotencyAdapter {
    * The `"NX"` flag sets the TTL only if the key currently has no TTL — this
    * is the standard fixed-window rate-limit seeding semantics.
    */
-  async pexpireNx(key: string, ttlMs: number): Promise<number> {
+  pexpireNx(key: string, ttlMs: number): Promise<number> {
     return this.client.pexpire(key, ttlMs, "NX");
   }
 
-  async pttl(key: string): Promise<number> {
+  pttl(key: string): Promise<number> {
     return this.client.pttl(key);
   }
 }

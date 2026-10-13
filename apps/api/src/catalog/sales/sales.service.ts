@@ -424,7 +424,7 @@ export class SalesService {
    * store boundary is enforced here with an explicit `store_id` predicate. A
    * sale outside the caller's store reads as absent (non-disclosing 404).
    */
-  async readSaleProjection(
+  readSaleProjection(
     tenantId: string,
     storeId: string,
     saleId: string,
