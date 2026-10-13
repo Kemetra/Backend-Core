@@ -1,6 +1,6 @@
 # Contract surface (PROSE) — Spec 039 tenant logo branding
 
-**PLANNING ONLY. No OpenAPI YAML in this folder.** This README fixes the intended contract in prose. RT-473 slice S1 authors the real YAML under `packages/contracts/openapi/branding/` as a GATED contract PR. The owner approved the decisions this surface depends on (`spec.md` §5) on 2026-10-13. This README stays the prose record; once S1 lands, the YAML is the contract of record.
+**PLANNING ONLY. No OpenAPI YAML in this folder.** This README fixes the intended contract in prose. RT-473 slice S1 authors the real YAML as `packages/contracts/openapi/tenant-branding.openapi.yaml` (top level, so the production loader and the operationId-uniqueness checks include it), as a GATED contract PR, with every operation `x-runtime-status: contract-only` until S2 ships the routes. The owner approved the decisions this surface depends on (`spec.md` §5) on 2026-10-13. This README stays the prose record; the YAML is the contract of record.
 
 Every operation, once authored, MUST carry:
 
@@ -10,7 +10,7 @@ Every operation, once authored, MUST carry:
 - the canonical status mapping;
 - no raw DB entities (Constitution IV and the API Conventions).
 
-The YAML file is self-contained, with its own `securitySchemes` and Error schema, like `catalog/read-down.yaml`. `apps/api/src/openapi/loader.ts` reads only the top level of `packages/contracts/openapi/`. Sub-folder contracts such as `catalog/read-down.yaml` are pinned by their own ajv contract test instead (`apps/api/test/catalog/read-down/contract/`). S1 follows that convention: it adds a contract test for the new file and keeps it inside the oasdiff breaking-change check.
+The YAML file is self-contained, with its own `securitySchemes` and Error schema, like `catalog/read-down.yaml`. The contract test is `apps/api/test/tenant-branding/tenant-branding.contract.spec.ts`. The file stays inside the oasdiff breaking-change check and the Schemathesis cookieAuth surface (contract-only operations are skipped until they ship).
 
 ## 1. Shared shapes
 
