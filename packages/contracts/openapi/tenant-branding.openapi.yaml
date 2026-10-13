@@ -100,6 +100,8 @@ paths:
           headers:
             ETag:
               $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
         "400":
           $ref: "#/components/responses/ValidationFailure"
         "401":

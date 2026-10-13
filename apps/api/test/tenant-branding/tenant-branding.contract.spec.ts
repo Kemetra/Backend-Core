@@ -219,9 +219,12 @@ describe("tenant-branding — POS read", () => {
     expect(Object.keys(op(POS_PATH, "get").responses ?? {}).sort()).toEqual(
       ["200", "304", "400", "401", "500"].sort(),
     );
-    expect(op(POS_PATH, "get").responses?.["200"]).toMatchObject({
-      headers: { ETag: expect.anything() },
-    });
+    // A 304 repeats the 200's caching headers (RFC 9110 §15.4.5).
+    for (const status of ["200", "304"]) {
+      expect(op(POS_PATH, "get").responses?.[status]).toMatchObject({
+        headers: { ETag: expect.anything(), "Cache-Control": expect.anything() },
+      });
+    }
   });
 
   it("represents no logo as logo: null", () => {
