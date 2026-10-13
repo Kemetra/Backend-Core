@@ -166,3 +166,35 @@ jobs:
         # tracked as a separate pre-existing follow-up (NOT a 009 regression);
         # --forceExit masks it so CI is usable now. No test semantics changed.
         run: pnpm --filter @data-pulse-2/api test -- --coverage --forceExit
+
+      - name: Check API lcov report exists (informational)
+        id: api_lcov
+        # RT-470 — never fails the job. Emits a warning and skips the upload
+        # when Jest produced no lcov report (the upload step is gated on this).
+        if: ${{ success() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        run: |
+          if [ -s apps/api/coverage/lcov.info ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::apps/api/coverage/lcov.info is missing or empty; skipping Codecov upload (RT-470)."
+          fi
+
+      - name: Upload API coverage to Codecov (non-blocking)
+        # RT-470 — restores the Codecov v5 upload removed in #257, strictly
+        # non-blocking: it runs only after the API tests pass, so it can never
+        # mask or cause a test/threshold failure. continue-on-error is on THIS
+        # step only (Codecov quota exhaustion / network errors such as a TCP
+        # AggregateError must not turn CI red). Fork PRs are skipped because
+        # repository secrets are unavailable to them. Coverage gating stays in
+        # apps/api/jest.config.cjs; Codecov remains informational (codecov.yml).
+        if: ${{ success() && steps.api_lcov.outputs.present == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
+        with:
+          files: apps/api/coverage/lcov.info
+          flags: api
+          disable_search: true
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
