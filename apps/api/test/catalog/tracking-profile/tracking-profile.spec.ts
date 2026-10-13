@@ -421,12 +421,17 @@ describe("RT-448 §7 — tracking identities", () => {
     expect(ids).toEqual([LOT_EARLY, LOT_LATE, LOT_UNDATED, SERIAL_1]);
   });
 
-  it("rejects a malformed cursor, one from another product, and an out-of-range limit with 400", async () => {
+  it("rejects a malformed cursor, one from another product, an impossible date and an out-of-range limit with 400", async () => {
     if (skip()) return;
     const first = await http().get(`${identitiesUrl(PRODUCT_LOTS)}?limit=1`).expect(200);
     const foreign = encodeURIComponent(first.body.nextCursor as string);
     await http().get(`${identitiesUrl(PRODUCT_FRESH)}?cursor=${foreign}`).expect(400);
     await http().get(`${identitiesUrl(PRODUCT_LOTS)}?cursor=not-a-cursor`).expect(400);
+    const impossibleDate = Buffer.from(
+      JSON.stringify({ p: PRODUCT_LOTS, k: "batch", e: "2026-02-31", c: "LOT-A", i: LOT_EARLY }),
+      "utf8",
+    ).toString("base64url");
+    await http().get(`${identitiesUrl(PRODUCT_LOTS)}?cursor=${impossibleDate}`).expect(400);
     await http().get(`${identitiesUrl(PRODUCT_LOTS)}?limit=201`).expect(400);
   });
 
