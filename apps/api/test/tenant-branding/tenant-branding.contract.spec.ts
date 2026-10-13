@@ -131,11 +131,6 @@ function validator(name: string): ValidateFunction {
   return ajv.getSchema(`${CONTRACT_ID}#/components/schemas/${name}`)!;
 }
 
-/** The JSON body validator of a reusable response component. */
-function responseValidator(name: string): ValidateFunction {
-  return ajv.getSchema(`${CONTRACT_ID}#/components/responses/${name}/content/application~1json/schema`)!;
-}
-
 /** Resolve an operation's parameters (inline or `$ref`), including path-level ones. */
 function params(path: string, method: string): ParameterObject[] {
   const pathLevel = (doc.paths?.[path]?.parameters as ParameterObject[] | undefined) ?? [];
@@ -371,7 +366,9 @@ describe("tenant-branding — closed vocabularies", () => {
     const all = (schema("Error").properties!.error as { properties: { code: { enum: string[] } } }).properties.code
       .enum;
     for (const [name, allowed] of cases) {
-      const valid = responseValidator(name);
+      const valid = ajv.getSchema(
+        `${CONTRACT_ID}#/components/responses/${name}/content/application~1json/schema`,
+      )!;
       for (const code of all) {
         expect([name, code, valid({ error: { code, message: "x", request_id: RID } })]).toEqual([
           name,
@@ -422,13 +419,10 @@ describe("tenant-branding — projections", () => {
 
   it("caps the receipt rendition at 48 x 15 mm at the 600 dpi ceiling", () => {
     const valid = validator("TenantLogo");
-    const receipt = (width_px: number, height_px: number) => ({
-      ...logo(),
-      receipt: { width_px, height_px, dpi: 600, png_base64: PNG },
-    });
-    expect(valid(receipt(1133, 354))).toBe(true);
-    expect(valid(receipt(1134, 354))).toBe(false);
-    expect(valid(receipt(1133, 355))).toBe(false);
+    const at600 = { width_px: 1133, height_px: 354, dpi: 600, png_base64: PNG };
+    expect(valid({ ...logo(), receipt: at600 })).toBe(true);
+    expect(valid({ ...logo(), receipt: { ...at600, width_px: 1134 } })).toBe(false);
+    expect(valid({ ...logo(), receipt: { ...at600, height_px: 355 } })).toBe(false);
   });
 
   it("rejects an unknown slot, a scale of 3 and a non-hex version", () => {
