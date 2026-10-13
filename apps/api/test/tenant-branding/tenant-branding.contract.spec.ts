@@ -287,7 +287,7 @@ describe("tenant-branding — Console surface", () => {
     );
     expect(keys(PREVIEW_PATH, "post")).toEqual(["200", "400", "401", "403", "404", "413", "422", "500"].sort());
     expect(keys(LOGO_PATH, "delete")).toEqual(["200", "400", "401", "403", "404", "409", "500"].sort());
-    expect(keys(LOGO_PATH, "get")).toEqual(["200", "401", "404", "500"].sort());
+    expect(keys(LOGO_PATH, "get")).toEqual(["200", "400", "401", "404", "500"].sort());
   });
 });
 

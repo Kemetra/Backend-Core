@@ -130,6 +130,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TenantBranding"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -677,8 +679,8 @@ components:
   responses:
     ValidationFailure:
       description: >
-        `validation_error` — a missing, malformed or unknown query parameter, a
-        bad `If-None-Match`, or an empty body.
+        `validation_error` — a malformed `tenant_id`, a missing, malformed or
+        unknown query parameter, a bad `If-None-Match`, or an empty body.
       content:
         application/json:
           schema:

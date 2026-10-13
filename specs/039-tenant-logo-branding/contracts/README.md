@@ -76,6 +76,7 @@ The YAML file is self-contained, with its own `securitySchemes` and Error schema
 - **Roles:** `owner` or `tenant_admin` of `{tenant_id}`. A wrong role, an unknown tenant or another tenant gets `404` (safe 404, XII).
 - **Responses:**
   - `200 TenantBranding` (the same shape as Surface 1, so the preview is the POS truth);
+  - `400 validation_error` (a malformed `tenant_id`);
   - `401` (no session; a bearer-only request);
   - `404`;
   - `5xx internal_error`.
