@@ -57,11 +57,11 @@ export class TrackingProfileController {
     tenantId: string;
     userId: string;
   } {
-    const ctx = request.context;
-    if (!ctx || ctx.tenantId === null || ctx.userId === null) {
-      throw new UnauthorizedException("Unauthorized");
-    }
-    return { tenantId: ctx.tenantId, userId: ctx.userId };
+    const tenantId = request.context?.tenantId;
+    if (!tenantId) throw new UnauthorizedException("Unauthorized");
+    const userId = request.context?.userId;
+    if (!userId) throw new UnauthorizedException("Unauthorized");
+    return { tenantId, userId };
   }
 
   /** GET — read a product's Tracking Profile. */

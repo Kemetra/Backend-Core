@@ -38,6 +38,14 @@ export type SetTrackingProfileResult =
   | { kind: "not_found" }
   | { kind: "locked" };
 
+export interface SetTrackingProfileInput {
+  readonly tenantId: string;
+  readonly productId: string;
+  readonly trackingMode: TrackingMode;
+  readonly expiryRequired: boolean;
+  readonly actorUserId: string;
+}
+
 const LOCK_CONSTRAINT = "tenant_products_tracking_profile_locked";
 
 function isProfileLockedError(err: unknown): boolean {
@@ -81,57 +89,12 @@ export class TrackingProfileService {
     );
   }
 
-  async set(input: {
-    readonly tenantId: string;
-    readonly productId: string;
-    readonly trackingMode: TrackingMode;
-    readonly expiryRequired: boolean;
-    readonly actorUserId: string;
-  }): Promise<SetTrackingProfileResult> {
+  async set(input: SetTrackingProfileInput): Promise<SetTrackingProfileResult> {
     try {
       return await runWithTenantContext(
         this.pool,
         { tenantId: input.tenantId, isPlatformAdmin: false },
-        async (client): Promise<SetTrackingProfileResult> => {
-          const current = await client.query<ProfileDbRow>(
-            `SELECT id, tracking_mode, expiry_required FROM tenant_products
-              WHERE id = $1 FOR UPDATE`,
-            [input.productId],
-          );
-          const row = current.rows[0];
-          if (!row) return { kind: "not_found" };
-
-          const unchanged =
-            row.tracking_mode === input.trackingMode && row.expiry_required === input.expiryRequired;
-          if (unchanged) {
-            return { kind: "ok", row: await this.toRow(client, row) };
-          }
-          if (await this.hasHistory(client, input.productId)) {
-            return { kind: "locked" };
-          }
-
-          const updated = await client.query<ProfileDbRow>(
-            `UPDATE tenant_products
-                SET tracking_mode = $2, expiry_required = $3, updated_by = $4
-              WHERE id = $1
-              RETURNING id, tracking_mode, expiry_required`,
-            [input.productId, input.trackingMode, input.expiryRequired, input.actorUserId],
-          );
-          this.logger?.info(
-            {
-              tenant_id: input.tenantId,
-              product_id: input.productId,
-              tracking_mode: input.trackingMode,
-              expiry_required: input.expiryRequired,
-              action: "catalog.tracking_profile.set",
-            },
-            "tracking-profile: set",
-          );
-          return {
-            kind: "ok",
-            row: { ...this.base(updated.rows[0]!), profileLocked: false },
-          };
-        },
+        (client) => this.setInTransaction(client, input),
       );
     } catch (err: unknown) {
       // A history row committed between the probe and the UPDATE: the 0045
@@ -139,6 +102,43 @@ export class TrackingProfileService {
       if (isProfileLockedError(err)) return { kind: "locked" };
       throw err;
     }
+  }
+
+  private async setInTransaction(
+    client: PoolClient,
+    input: SetTrackingProfileInput,
+  ): Promise<SetTrackingProfileResult> {
+    const current = await client.query<ProfileDbRow>(
+      `SELECT id, tracking_mode, expiry_required FROM tenant_products
+        WHERE id = $1 FOR UPDATE`,
+      [input.productId],
+    );
+    const row = current.rows[0];
+    if (!row) return { kind: "not_found" };
+
+    const unchanged =
+      row.tracking_mode === input.trackingMode && row.expiry_required === input.expiryRequired;
+    if (unchanged) return { kind: "ok", row: await this.toRow(client, row) };
+    if (await this.hasHistory(client, input.productId)) return { kind: "locked" };
+
+    const updated = await client.query<ProfileDbRow>(
+      `UPDATE tenant_products
+          SET tracking_mode = $2, expiry_required = $3, updated_by = $4
+        WHERE id = $1
+        RETURNING id, tracking_mode, expiry_required`,
+      [input.productId, input.trackingMode, input.expiryRequired, input.actorUserId],
+    );
+    this.logger?.info(
+      {
+        tenant_id: input.tenantId,
+        product_id: input.productId,
+        tracking_mode: input.trackingMode,
+        expiry_required: input.expiryRequired,
+        action: "catalog.tracking_profile.set",
+      },
+      "tracking-profile: set",
+    );
+    return { kind: "ok", row: { ...this.base(updated.rows[0]!), profileLocked: false } };
   }
 
   /** 387: an inventory effect or a captured sale line locks the profile. */

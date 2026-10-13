@@ -58,12 +58,11 @@ let doc: OpenApiDocument;
 let shippedOperationIds: Set<string>;
 
 function collectOperationIds(docs: OpenApiDocument[], into: Set<string>): void {
-  for (const d of docs) {
-    for (const path of Object.values(d.paths ?? {})) {
-      for (const op of Object.values(path)) {
-        if (op && typeof op.operationId === "string") into.add(op.operationId);
-      }
-    }
+  const ops = docs
+    .flatMap((d) => Object.values(d.paths ?? {}))
+    .flatMap((path) => Object.values(path));
+  for (const op of ops) {
+    if (typeof op?.operationId === "string") into.add(op.operationId);
   }
 }
 
