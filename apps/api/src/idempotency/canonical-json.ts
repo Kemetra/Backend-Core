@@ -25,5 +25,8 @@ function stringify(value: unknown): string {
   const keys = Object.keys(record)
     .filter((key) => record[key] !== undefined)
     .sort(compareCodeUnits);
-  return `{${keys.map((key) => `${JSON.stringify(key)}:${stringify(record[key])}`).join(",")}}`;
+  const members = keys.map(
+    (key) => `${JSON.stringify(key)}:${stringify(record[key])}`,
+  );
+  return `{${members.join(",")}}`;
 }

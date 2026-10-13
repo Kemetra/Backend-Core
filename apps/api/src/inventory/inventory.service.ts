@@ -1523,8 +1523,11 @@ export class InventoryService {
           // Conflict: a movement for this provenance pair already exists. Return
           // it WITHOUT a second INSERT and WITHOUT a second audit/side-effect —
           // on-hand stays applied exactly once (FR-031/033).
+          const movementColumns = MOVEMENT_COLUMN_NAMES.map(
+            (c) => `m.${c}`,
+          ).join(', ');
           const existing = await client.query<MovementRow>(
-            `SELECT ${MOVEMENT_COLUMN_NAMES.map((c) => `m.${c}`).join(', ')},
+            `SELECT ${movementColumns},
                     p.id AS primary_location_id
                FROM stock_movements m
                ${MOVEMENT_POSITION_JOIN}
