@@ -125,6 +125,12 @@ export interface CapturedUnknownItemRow {
   readonly saleContext: Record<string, unknown> | null;
 }
 
+/** Lifecycle states an unknown item can be in. */
+export type UnknownItemResolutionStatus = "pending" | "resolved" | "dismissed";
+
+/** Resolution actions recorded when an unknown item leaves `pending`. */
+export type UnknownItemResolutionAction = "linked" | "created" | "dismissed";
+
 /**
  * Lifecycle-tolerant row shape for read paths (`findByIdForTenant`).
  * A GET-by-id may surface any of the three lifecycle states; the
@@ -140,8 +146,8 @@ export interface UnknownItemRow {
   readonly identifierType: string;
   readonly identifierValue: string;
   readonly sourceSystem: string | null;
-  readonly resolutionStatus: "pending" | "resolved" | "dismissed";
-  readonly resolutionAction: "linked" | "created" | "dismissed" | null;
+  readonly resolutionStatus: UnknownItemResolutionStatus;
+  readonly resolutionAction: UnknownItemResolutionAction | null;
   readonly resolvedAt: Date | null;
   readonly resolvedBy: string | null;
   readonly resolvedProductId: string | null;
