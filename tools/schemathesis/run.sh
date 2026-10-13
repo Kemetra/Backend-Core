@@ -31,7 +31,10 @@ MAX_EXAMPLES="${MAX_EXAMPLES:-200}"
 CFG_MODE=ro
 if [[ -n "${BASELINE_UPDATE:-}" ]]; then CFG_MODE=rw; fi
 
-host_path() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+host_path() {
+  local path="$1"
+  if command -v cygpath >/dev/null 2>&1; then cygpath -m "$path"; else printf '%s' "$path"; fi
+}
 
 st() {
   docker run --rm --network "${FUZZ_PROJECT}_default" \
@@ -41,7 +44,8 @@ st() {
 }
 
 session_alive() {
-  st --entrypoint python "$ST_IMAGE" -c "import urllib.request as u; r=u.Request('http://api:3000/api/v1/context/me', headers={'Cookie': 'dp2_session=$1'}); print(u.urlopen(r).status)" 2>/dev/null || echo dead
+  local session_cookie="$1"
+  st --entrypoint python "$ST_IMAGE" -c "import urllib.request as u; r=u.Request('http://api:3000/api/v1/context/me', headers={'Cookie': 'dp2_session=$session_cookie'}); print(u.urlopen(r).status)" 2>/dev/null || echo dead
 }
 
 case "$MODE" in

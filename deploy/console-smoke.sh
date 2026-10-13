@@ -21,13 +21,17 @@ failures=0
 
 # get <path> <name>: body -> $work/<name>.body, headers -> $work/<name>.hdr, status -> stdout
 get() {
+  local path="$1"
+  local name="$2"
   curl -sS --connect-timeout "$connect_timeout" --max-time "$max_time" \
-    -o "$work/$2.body" -D "$work/$2.hdr" -w '%{http_code}' "$base$1" || echo "000"
+    -o "$work/$name.body" -D "$work/$name.hdr" -w '%{http_code}' "$base$path" || echo "000"
 }
 
 # header <name> <header>: value of the first matching response header
 header() {
-  grep -i "^$2:" "$work/$1.hdr" | head -n 1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'
+  local name="$1"
+  local header_name="$2"
+  grep -i "^$header_name:" "$work/$name.hdr" | head -n 1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'
 }
 
 check() {
@@ -41,9 +45,20 @@ check() {
   fi
 }
 
-is() { [[ "$1" == "$2" ]]; }
-has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
-not_html() { ! has "$1" "text/html"; }
+is() {
+  local actual="$1"
+  local expected="$2"
+  [[ "$actual" == "$expected" ]]
+}
+has() {
+  local haystack="$1"
+  local needle="$2"
+  case "$haystack" in *"$needle"*) return 0 ;; *) return 1 ;; esac
+}
+not_html() {
+  local content_type="$1"
+  ! has "$content_type" "text/html"
+}
 
 # Console shell
 status="$(get / root)"

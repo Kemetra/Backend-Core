@@ -68,12 +68,13 @@ if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
 fi
 
 run() {
+  local out_format="$1"
   "$OASDIFF" breaking --composed \
     --fail-on WARN \
     --severity-levels "$CFG/severity-levels.txt" \
     --err-ignore "$WORK/ignore.txt" \
     --warn-ignore "$WORK/ignore.txt" \
-    --format "$1" \
+    --format "$out_format" \
     "$WORK/base/$CONTRACTS/**/*.yaml" \
     "$ROOT/$CONTRACTS/**/*.yaml"
 }
