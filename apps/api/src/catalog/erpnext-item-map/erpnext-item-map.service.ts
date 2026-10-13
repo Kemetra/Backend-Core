@@ -160,67 +160,65 @@ export class ErpnextItemMapService {
       readonly actorUserId: string;
     },
   ): Promise<SuggestResult> {
-    {
-        // Scope-check the product (RLS-filtered → cross-tenant returns 0 rows).
-        const product = await client.query<{ id: string }>(
-          `SELECT id FROM tenant_products WHERE id = $1 LIMIT 1`,
-          [input.tenantProductId],
-        );
-        if (!product.rows[0]) {
-          return { kind: "not_found" };
-        }
+    // Scope-check the product (RLS-filtered → cross-tenant returns 0 rows).
+    const product = await client.query<{ id: string }>(
+      `SELECT id FROM tenant_products WHERE id = $1 LIMIT 1`,
+      [input.tenantProductId],
+    );
+    if (!product.rows[0]) {
+      return { kind: "not_found" };
+    }
 
-        // SAVEPOINT scopes the INSERT so a constraint violation (23505/23503)
-        // does NOT abort the caller's transaction. This method runs on a
-        // caller-supplied client that may be mid-transaction (e.g. 021's
-        // runRepair, which issues further SQL on the same client after a
-        // `conflict` result). Without the savepoint a swallowed 23505 leaves
-        // the PG transaction aborted → every subsequent query throws 25P02.
-        await client.query("SAVEPOINT sp_suggest");
-        try {
-          const inserted = await client.query<DbRow>(
-            `INSERT INTO erpnext_item_map
+    // SAVEPOINT scopes the INSERT so a constraint violation (23505/23503)
+    // does NOT abort the caller's transaction. This method runs on a
+    // caller-supplied client that may be mid-transaction (e.g. 021's
+    // runRepair, which issues further SQL on the same client after a
+    // `conflict` result). Without the savepoint a swallowed 23505 leaves
+    // the PG transaction aborted → every subsequent query throws 25P02.
+    await client.query("SAVEPOINT sp_suggest");
+    try {
+      const inserted = await client.query<DbRow>(
+        `INSERT INTO erpnext_item_map
                (id, tenant_id, tenant_product_id, erpnext_item_ref, state,
                 suggestion_source, suggested_by, version)
              VALUES ($1, $2, $3, $4, 'suggested', 'manual', $5, 1)
              RETURNING ${SELECT_COLS}`,
-            [
-              newId(),
-              input.tenantId,
-              input.tenantProductId,
-              input.erpnextItemRef,
-              input.actorUserId,
-            ],
-          );
-          await client.query("RELEASE SAVEPOINT sp_suggest");
-          const row = toRow(inserted.rows[0]!);
-          this.logger?.info(
-            {
-              tenant_id: input.tenantId,
-              mapping_id: row.id,
-              tenant_product_id: row.tenantProductId,
-              action: "erpnext_item_map.suggested",
-            },
-            "erpnext-item-map: suggested",
-          );
-          return { kind: "ok", row };
-        } catch (err: unknown) {
-          // Roll the failed INSERT back to the savepoint so the caller's
-          // transaction stays usable, THEN classify the error.
-          await client.query("ROLLBACK TO SAVEPOINT sp_suggest");
-          // 23505 = active partial-unique (a 2nd active mapping for the product).
-          if (isPgCode(err, "23505")) {
-            return { kind: "conflict" };
-          }
-          // 23503 = FK violation: the tenant product was deleted between the
-          // scope-check SELECT and this INSERT (a narrow TOCTOU window under
-          // READ COMMITTED). A vanished parent is correctly a non-disclosing
-          // not_found, not a 500 — mirrors the 23505 handling.
-          if (isPgCode(err, "23503")) {
-            return { kind: "not_found" };
-          }
-          throw err;
-        }
+        [
+          newId(),
+          input.tenantId,
+          input.tenantProductId,
+          input.erpnextItemRef,
+          input.actorUserId,
+        ],
+      );
+      await client.query("RELEASE SAVEPOINT sp_suggest");
+      const row = toRow(inserted.rows[0]!);
+      this.logger?.info(
+        {
+          tenant_id: input.tenantId,
+          mapping_id: row.id,
+          tenant_product_id: row.tenantProductId,
+          action: "erpnext_item_map.suggested",
+        },
+        "erpnext-item-map: suggested",
+      );
+      return { kind: "ok", row };
+    } catch (err: unknown) {
+      // Roll the failed INSERT back to the savepoint so the caller's
+      // transaction stays usable, THEN classify the error.
+      await client.query("ROLLBACK TO SAVEPOINT sp_suggest");
+      // 23505 = active partial-unique (a 2nd active mapping for the product).
+      if (isPgCode(err, "23505")) {
+        return { kind: "conflict" };
+      }
+      // 23503 = FK violation: the tenant product was deleted between the
+      // scope-check SELECT and this INSERT (a narrow TOCTOU window under
+      // READ COMMITTED). A vanished parent is correctly a non-disclosing
+      // not_found, not a 500 — mirrors the 23505 handling.
+      if (isPgCode(err, "23503")) {
+        return { kind: "not_found" };
+      }
+      throw err;
     }
   }
 
@@ -258,9 +256,8 @@ export class ErpnextItemMapService {
       readonly actorUserId: string;
     },
   ): Promise<ConfirmResult> {
-    {
-        const updated = await client.query<DbRow>(
-          `UPDATE erpnext_item_map
+    const updated = await client.query<DbRow>(
+      `UPDATE erpnext_item_map
               SET state        = 'confirmed',
                   confirmed_by = $3,
                   confirmed_at = now(),
@@ -271,28 +268,27 @@ export class ErpnextItemMapService {
               AND state       = 'suggested'
               AND retired_at IS NULL
            RETURNING ${SELECT_COLS}`,
-          [input.id, input.version, input.actorUserId],
-        );
-        if (updated.rows[0]) {
-          const row = toRow(updated.rows[0]);
-          this.logger?.info(
-            {
-              tenant_id: input.tenantId,
-              mapping_id: row.id,
-              action: "erpnext_item_map.confirmed",
-            },
-            "erpnext-item-map: confirmed",
-          );
-          return { kind: "ok", row };
-        }
-        // Disambiguate conflict (row exists but wrong version/state) from
-        // not_found (no such row in this tenant — RLS-filtered / fabricated id).
-        const exists = await client.query<{ id: string }>(
-          `SELECT id FROM erpnext_item_map WHERE id = $1 LIMIT 1`,
-          [input.id],
-        );
-        return exists.rows[0] ? { kind: "conflict" } : { kind: "not_found" };
+      [input.id, input.version, input.actorUserId],
+    );
+    if (updated.rows[0]) {
+      const row = toRow(updated.rows[0]);
+      this.logger?.info(
+        {
+          tenant_id: input.tenantId,
+          mapping_id: row.id,
+          action: "erpnext_item_map.confirmed",
+        },
+        "erpnext-item-map: confirmed",
+      );
+      return { kind: "ok", row };
     }
+    // Disambiguate conflict (row exists but wrong version/state) from
+    // not_found (no such row in this tenant — RLS-filtered / fabricated id).
+    const exists = await client.query<{ id: string }>(
+      `SELECT id FROM erpnext_item_map WHERE id = $1 LIMIT 1`,
+      [input.id],
+    );
+    return exists.rows[0] ? { kind: "conflict" } : { kind: "not_found" };
   }
 
   /**
@@ -327,9 +323,8 @@ export class ErpnextItemMapService {
       readonly version: number;
     },
   ): Promise<RetireResult> {
-    {
-        const updated = await client.query<DbRow>(
-          `UPDATE erpnext_item_map
+    const updated = await client.query<DbRow>(
+      `UPDATE erpnext_item_map
               SET retired_at = now(),
                   version    = version + 1,
                   updated_at = now()
@@ -337,26 +332,25 @@ export class ErpnextItemMapService {
               AND version     = $2
               AND retired_at IS NULL
            RETURNING ${SELECT_COLS}`,
-          [input.id, input.version],
-        );
-        if (updated.rows[0]) {
-          const row = toRow(updated.rows[0]);
-          this.logger?.info(
-            {
-              tenant_id: input.tenantId,
-              mapping_id: row.id,
-              action: "erpnext_item_map.retired",
-            },
-            "erpnext-item-map: retired",
-          );
-          return { kind: "ok", row };
-        }
-        const exists = await client.query<{ id: string }>(
-          `SELECT id FROM erpnext_item_map WHERE id = $1 LIMIT 1`,
-          [input.id],
-        );
-        return exists.rows[0] ? { kind: "conflict" } : { kind: "not_found" };
+      [input.id, input.version],
+    );
+    if (updated.rows[0]) {
+      const row = toRow(updated.rows[0]);
+      this.logger?.info(
+        {
+          tenant_id: input.tenantId,
+          mapping_id: row.id,
+          action: "erpnext_item_map.retired",
+        },
+        "erpnext-item-map: retired",
+      );
+      return { kind: "ok", row };
     }
+    const exists = await client.query<{ id: string }>(
+      `SELECT id FROM erpnext_item_map WHERE id = $1 LIMIT 1`,
+      [input.id],
+    );
+    return exists.rows[0] ? { kind: "conflict" } : { kind: "not_found" };
   }
 
   /** List the tenant's ACTIVE mappings, optionally filtered by lifecycle state. */
