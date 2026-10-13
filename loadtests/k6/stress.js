@@ -35,7 +35,7 @@ import {
 } from "./lib/tenants.js";
 import { baseUrl, jsonHeaders, jsonPostHeaders, uuidv4 } from "./lib/util.js";
 
-const MAX_VUS = parseInt(__ENV.LOAD_STRESS_MAX_VUS || "300", 10);
+const MAX_VUS = Number.parseInt(__ENV.LOAD_STRESS_MAX_VUS || "300", 10);
 const RAMP = __ENV.LOAD_STRESS_RAMP || "10m";
 const PLATEAU = __ENV.LOAD_STRESS_PLATEAU || "5m";
 

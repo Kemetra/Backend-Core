@@ -48,7 +48,7 @@ import {
 import { baseUrl, jsonHeaders, jsonPostHeaders, sleepJitter, uuidv4 } from "./lib/util.js";
 
 const DURATION = __ENV.LOAD_DURATION || "10m";
-const VUS = parseInt(__ENV.LOAD_VUS || "20", 10);
+const VUS = Number.parseInt(__ENV.LOAD_VUS || "20", 10);
 const SKIP_ACCEPT = __ENV.LOAD_SKIP_ACCEPT === "1";
 
 export const options = {

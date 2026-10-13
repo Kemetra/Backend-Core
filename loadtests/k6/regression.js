@@ -58,7 +58,7 @@ const priorBaseline = new SharedArray("prior_baseline", function () {
 });
 
 const DURATION = __ENV.LOAD_DURATION || "10m";
-const VUS = parseInt(__ENV.LOAD_VUS || "20", 10);
+const VUS = Number.parseInt(__ENV.LOAD_VUS || "20", 10);
 const SKIP_ACCEPT = __ENV.LOAD_SKIP_ACCEPT !== "0";
 
 // Reuse the baseline workload exactly. Regression delta is computed in

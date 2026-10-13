@@ -39,7 +39,7 @@ import { pickTenantForVu } from "./lib/tenants.js";
 import { baseUrl, sleepJitter } from "./lib/util.js";
 
 const DURATION = __ENV.LOAD_DURATION || "10m";
-const VUS = parseInt(__ENV.LOAD_VUS || "20", 10);
+const VUS = Number.parseInt(__ENV.LOAD_VUS || "20", 10);
 const PAGE_LIMIT = __ENV.LOAD_PAGE_LIMIT || "100";
 
 export const options = {
