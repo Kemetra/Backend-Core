@@ -25,6 +25,7 @@ get() {
   local name="$2"
   curl -sS --connect-timeout "$connect_timeout" --max-time "$max_time" \
     -o "$work/$name.body" -D "$work/$name.hdr" -w '%{http_code}' "$base$path" || echo "000"
+  return 0
 }
 
 # header <name> <header>: value of the first matching response header
@@ -32,6 +33,7 @@ header() {
   local name="$1"
   local header_name="$2"
   grep -i "^$header_name:" "$work/$name.hdr" | head -n 1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'
+  return
 }
 
 check() {
@@ -43,12 +45,16 @@ check() {
     echo "FAIL  $label"
     failures=$((failures + 1))
   fi
+  return 0
 }
 
 is() {
   local actual="$1"
   local expected="$2"
-  [[ "$actual" == "$expected" ]]
+  if [[ "$actual" == "$expected" ]]; then
+    return 0
+  fi
+  return 1
 }
 has() {
   local haystack="$1"
@@ -57,7 +63,10 @@ has() {
 }
 not_html() {
   local content_type="$1"
-  ! has "$content_type" "text/html"
+  if has "$content_type" "text/html"; then
+    return 1
+  fi
+  return 0
 }
 
 # Console shell
