@@ -144,6 +144,7 @@ function params(path: string, method: string): ParameterObject[] {
 
 const VERSION = "a".repeat(64);
 const PNG = "iVBORw0KGgo=";
+const RID = "0192f1e8-7b4c-7a3e-9c1d-2b3f4a5c6d7e";
 
 function screen() {
   return (["boot", "pairing", "sign_in", "lock"] as const).flatMap((slot) =>
@@ -286,13 +287,32 @@ describe("tenant-branding — closed vocabularies", () => {
   it("closes the 422 rejection codes", () => {
     expect(schema("LogoRejectionCode").enum).toEqual(REJECTION_CODES);
     const valid = validator("LogoRejectedError");
-    expect(valid({ error: { code: "image_too_small", message: "x" } })).toBe(true);
-    expect(valid({ error: { code: "file_too_large", message: "x" } })).toBe(false);
+    expect(valid({ error: { code: "image_too_small", message: "x", request_id: RID } })).toBe(true);
+    expect(valid({ error: { code: "file_too_large", message: "x", request_id: RID } })).toBe(false);
     expect(
-      valid({ error: { code: "svg_unsafe_content", message: "x", details: { construct: "script" } } }),
+      valid({
+        error: { code: "svg_unsafe_content", message: "x", request_id: RID, details: { construct: "script" } },
+      }),
     ).toBe(true);
     expect(
-      valid({ error: { code: "svg_unsafe_content", message: "x", details: { excerpt: "<script>" } } }),
+      valid({
+        error: { code: "svg_unsafe_content", message: "x", request_id: RID, details: { excerpt: "<script>" } },
+      }),
+    ).toBe(false);
+  });
+
+  it("requires request_id on both error envelopes", () => {
+    expect(validator("LogoRejectedError")({ error: { code: "image_too_small", message: "x" } })).toBe(false);
+    expect(validator("Error")({ error: { code: "not_found", message: "x" } })).toBe(false);
+  });
+
+  it("accepts the validation-issue array as Error.details, and no object", () => {
+    const valid = validator("Error");
+    const issues = [{ code: "invalid_type", path: ["tenantId"], message: "Invalid uuid" }];
+    expect(valid({ error: { code: "validation_error", message: "x", request_id: RID, details: issues } })).toBe(true);
+    expect(valid({ error: { code: "not_found", message: "x", request_id: RID } })).toBe(true);
+    expect(
+      valid({ error: { code: "validation_error", message: "x", request_id: RID, details: { construct: "script" } } }),
     ).toBe(false);
   });
 
@@ -310,6 +330,23 @@ describe("tenant-branding — projections", () => {
   it("requires exactly 8 screen renditions", () => {
     const valid = validator("TenantLogo");
     expect(valid({ ...logo(), screen: screen().slice(0, 7) })).toBe(false);
+  });
+
+  it("requires exactly one rendition per (slot, scale) pair", () => {
+    const { updated_at: _updatedAt, ...preview } = logo();
+    for (const [name, base] of [
+      ["TenantLogo", logo()],
+      ["LogoPreview", preview],
+    ] as const) {
+      const valid = validator(name);
+      expect(valid(base)).toBe(true);
+      // Eight items, one pair duplicated and another missing.
+      const dup = screen();
+      dup[1] = { ...dup[0]! };
+      expect(valid({ ...base, screen: dup })).toBe(false);
+      // Eight copies of one pair.
+      expect(valid({ ...base, screen: Array.from({ length: 8 }, () => screen()[0]!) })).toBe(false);
+    }
   });
 
   it("rejects an unknown slot, a scale of 3 and a non-hex version", () => {

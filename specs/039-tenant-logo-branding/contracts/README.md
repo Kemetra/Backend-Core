@@ -6,7 +6,7 @@ Every operation, once authored, MUST carry:
 
 - a stable `operationId`;
 - an explicit `security` section;
-- the canonical error envelope `{ error: { code, message, request_id, details? } }`, with `additionalProperties: false`;
+- the canonical error envelope `{ error: { code, message, request_id, details? } }`, with `additionalProperties: false` and `request_id` required. `details` is the validation-issue array on a `400 validation_error` and `{ construct }` on `422 svg_unsafe_content`; it is absent otherwise;
 - the canonical status mapping;
 - no raw DB entities (Constitution IV and the API Conventions).
 

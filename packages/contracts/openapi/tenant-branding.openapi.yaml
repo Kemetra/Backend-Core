@@ -429,6 +429,66 @@ components:
         png_base64:
           $ref: "#/components/schemas/PngBase64"
 
+    ScreenRenditionSet:
+      type: array
+      minItems: 8
+      maxItems: 8
+      description: >
+        Exactly one rendition per (`slot`, `scale`) pair. Each of the 8 pairs
+        must be present (`contains`), and with at most 8 items no pair can
+        repeat.
+      items:
+        $ref: "#/components/schemas/ScreenRendition"
+      allOf:
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: boot }
+              scale: { const: 1 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: boot }
+              scale: { const: 2 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: pairing }
+              scale: { const: 1 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: pairing }
+              scale: { const: 2 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: sign_in }
+              scale: { const: 1 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: sign_in }
+              scale: { const: 2 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: lock }
+              scale: { const: 1 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: lock }
+              scale: { const: 2 }
+
     LogoPreview:
       type: object
       additionalProperties: false
@@ -444,12 +504,7 @@ components:
           items:
             $ref: "#/components/schemas/LogoWarning"
         screen:
-          type: array
-          minItems: 8
-          maxItems: 8
-          description: Exactly one rendition per (`slot`, `scale`) pair.
-          items:
-            $ref: "#/components/schemas/ScreenRendition"
+          $ref: "#/components/schemas/ScreenRenditionSet"
         receipt:
           $ref: "#/components/schemas/ReceiptRendition"
 
@@ -468,12 +523,7 @@ components:
           items:
             $ref: "#/components/schemas/LogoWarning"
         screen:
-          type: array
-          minItems: 8
-          maxItems: 8
-          description: Exactly one rendition per (`slot`, `scale`) pair.
-          items:
-            $ref: "#/components/schemas/ScreenRendition"
+          $ref: "#/components/schemas/ScreenRenditionSet"
         receipt:
           $ref: "#/components/schemas/ReceiptRendition"
         updated_at:
@@ -543,7 +593,7 @@ components:
         error:
           type: object
           additionalProperties: false
-          required: [code, message]
+          required: [code, message, request_id]
           properties:
             code:
               type: string
@@ -551,8 +601,8 @@ components:
                 Stable machine-readable code. Closed set on this surface:
                 validation_error | origin_rejected | not_found |
                 logo_preview_mismatch | logo_changed_concurrently |
-                file_too_large | system_failure, the `LogoRejectionCode` values
-                (`422`), plus the generic 401 refusal.
+                file_too_large | system_failure, plus the generic 401 refusal.
+                The `422` codes use `LogoRejectedError`.
             message:
               type: string
               description: Human-readable summary. Never echoes file content.
@@ -560,12 +610,12 @@ components:
               type: string
               format: uuid
             details:
-              type: object
-              additionalProperties: false
-              description: Present only for `svg_unsafe_content`.
-              properties:
-                construct:
-                  $ref: "#/components/schemas/SvgUnsafeConstruct"
+              type: array
+              description: >
+                Present only on a `400 validation_error`: the validation issues
+                the global exception filter serialises (one object per issue).
+              items:
+                type: object
 
     LogoRejectedError:
       type: object
@@ -575,7 +625,7 @@ components:
         error:
           type: object
           additionalProperties: false
-          required: [code, message]
+          required: [code, message, request_id]
           properties:
             code:
               $ref: "#/components/schemas/LogoRejectionCode"
@@ -587,6 +637,8 @@ components:
             details:
               type: object
               additionalProperties: false
+              required: [construct]
+              description: Present only for `svg_unsafe_content`.
               properties:
                 construct:
                   $ref: "#/components/schemas/SvgUnsafeConstruct"
