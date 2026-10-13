@@ -128,7 +128,7 @@ export class PosWriteRateLimitGuard implements CanActivate {
     if (!decision.allowed) {
       const retryAfter = Math.min(
         300,
-        Math.max(1, Math.ceil((decision.resetMs < 0 ? 0 : decision.resetMs) / 1000)),
+        Math.max(1, Math.ceil(Math.max(0, decision.resetMs) / 1000)),
       );
       http.getResponse<{ setHeader: (k: string, v: string) => void }>().setHeader(
         "Retry-After",
