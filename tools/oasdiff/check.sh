@@ -47,40 +47,41 @@ git -C "$ROOT" show "$BASE_REF:tools/oasdiff/breaking-ignore.txt" 2>/dev/null \
   | entries >"$WORK/base-ignore.txt" || true
 entries <"$CFG/breaking-ignore.txt" >"$WORK/head-ignore.txt"
 
-if [ -s "$WORK/base-ignore.txt" ]; then
+if [[ -s "$WORK/base-ignore.txt" ]]; then
   grep -vxF -f "$WORK/base-ignore.txt" "$WORK/head-ignore.txt" >"$WORK/ignore.txt" || true
 else
   cp "$WORK/head-ignore.txt" "$WORK/ignore.txt"
 fi
 
-if [ -s "$WORK/ignore.txt" ]; then
+if [[ -s "$WORK/ignore.txt" ]]; then
   echo "Acknowledged breaks added by this change:"
   sed 's/^/  /' "$WORK/ignore.txt"
 fi
 stale=$(grep -cxF -f "$WORK/base-ignore.txt" "$WORK/head-ignore.txt" 2>/dev/null || true)
-if [ "${stale:-0}" -gt 0 ]; then
+if [[ "${stale:-0}" -gt 0 ]]; then
   echo "Note: $stale inherited entr(y/ies) in breaking-ignore.txt are no longer applied; remove them."
 fi
 
 format=text
-if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   format=githubactions
 fi
 
 run() {
+  local out_format="$1"
   "$OASDIFF" breaking --composed \
     --fail-on WARN \
     --severity-levels "$CFG/severity-levels.txt" \
     --err-ignore "$WORK/ignore.txt" \
     --warn-ignore "$WORK/ignore.txt" \
-    --format "$1" \
+    --format "$out_format" \
     "$WORK/base/$CONTRACTS/**/*.yaml" \
     "$ROOT/$CONTRACTS/**/*.yaml"
 }
 
 # Human-readable report first (never fails), then the gating run.
 run text || true
-if [ "$format" != text ]; then
+if [[ "$format" != text ]]; then
   run "$format"
 else
   run text >/dev/null

@@ -21,13 +21,19 @@ failures=0
 
 # get <path> <name>: body -> $work/<name>.body, headers -> $work/<name>.hdr, status -> stdout
 get() {
+  local path="$1"
+  local name="$2"
   curl -sS --connect-timeout "$connect_timeout" --max-time "$max_time" \
-    -o "$work/$2.body" -D "$work/$2.hdr" -w '%{http_code}' "$base$1" || echo "000"
+    -o "$work/$name.body" -D "$work/$name.hdr" -w '%{http_code}' "$base$path" || echo "000"
+  return 0
 }
 
 # header <name> <header>: value of the first matching response header
 header() {
-  grep -i "^$2:" "$work/$1.hdr" | head -n 1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'
+  local name="$1"
+  local header_name="$2"
+  grep -i "^$header_name:" "$work/$name.hdr" | head -n 1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'
+  return
 }
 
 check() {
@@ -39,11 +45,29 @@ check() {
     echo "FAIL  $label"
     failures=$((failures + 1))
   fi
+  return 0
 }
 
-is() { [ "$1" = "$2" ]; }
-has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
-not_html() { ! has "$1" "text/html"; }
+is() {
+  local actual="$1"
+  local expected="$2"
+  if [[ "$actual" == "$expected" ]]; then
+    return 0
+  fi
+  return 1
+}
+has() {
+  local haystack="$1"
+  local needle="$2"
+  case "$haystack" in *"$needle"*) return 0 ;; *) return 1 ;; esac
+}
+not_html() {
+  local content_type="$1"
+  if has "$content_type" "text/html"; then
+    return 1
+  fi
+  return 0
+}
 
 # Console shell
 status="$(get / root)"
@@ -63,7 +87,7 @@ check "deep link serves the same index.html as /" cmp -s "$work/root.body" "$wor
 # Hashed asset referenced by index.html
 asset="$(grep -o '/assets/[^"]*\.js' "$work/root.body" | head -n 1)"
 check "index.html references a /assets/*.js bundle" has "$asset" "/assets/"
-if [ -n "$asset" ]; then
+if [[ -n "$asset" ]]; then
   status="$(get "$asset" asset)"
   check "$asset returns 200" is "$status" 200
   check "$asset is immutable" has "$(header asset cache-control)" "immutable"
@@ -91,7 +115,7 @@ check "unknown /api path is not index.html" not_html "$(header unknown content-t
 status="$(get /api bare)"
 check "/api is answered by the API, not the SPA" not_html "$(header bare content-type)"
 
-if [ "$failures" -gt 0 ]; then
+if [[ "$failures" -gt 0 ]]; then
   echo "console-smoke: $failures check(s) failed against $base"
   exit 1
 fi
