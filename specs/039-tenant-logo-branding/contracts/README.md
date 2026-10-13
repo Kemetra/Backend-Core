@@ -187,6 +187,7 @@ These are **outside** the `422` set:
 |---|---|---|
 | `tenant.logo.replaced` | `{from_version: string \| null, to_version}` | From the request context |
 | `tenant.logo.removed` | `{from_version}` | From the request context |
+| `tenant.logo.rerendered` | `{from_version, to_version}` | System actor (OD-8 re-render job), tenant from the job |
 
 Image bytes, base64 and file names are never logged or audited (XIV).
 
