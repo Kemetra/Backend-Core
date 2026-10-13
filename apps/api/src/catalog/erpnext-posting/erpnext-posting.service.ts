@@ -21,6 +21,7 @@ import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../../auth/auth.module";
 import { lockPostingFeedSequence, runWithTenantContext } from "@data-pulse-2/db";
+import { applyPostingSignalToEffects } from "../../inventory/effect-integration/effect-integration.transitions";
 import { recordErpnextPostingReconciliation } from "../../observability/metrics/api.metrics";
 import {
   buildWorkItem,
@@ -270,6 +271,13 @@ export class ErpnextPostingService {
    *                          (category `retry_budget_exhausted`) — bounded re-offer;
    *   - permanently_rejected → rejection_category stored, dead-lettered (dlqueued).
    *
+   * RT-426 (RT-289 G2-3): each transition also moves the Inventory Effects the
+   * intent represents, in this same transaction — posted → confirmed,
+   * permanently_rejected / retry budget exhausted → rejected,
+   * reconciliation_required → reconciliation_required, failed_transient → stays
+   * pending. Effects themselves are never written. An O-3 echo transitions
+   * nothing, so it moves no effect either.
+   *
    * Service-level O-3 idempotency (a FRESH idempotency key re-acking an
    * already-TERMINAL row, which the HTTP interceptor cannot dedupe):
    *   - same logical outcome (e.g. posted + same documentRef) → echo the stored
@@ -452,14 +460,22 @@ export class ErpnextPostingService {
     // RT-425 (RT-289 G2-4): posted_at is the ERP confirmation time — the
     // server clock when this ack is applied. COALESCE keeps the first value: a
     // duplicate ack echoes before reaching here, and this never overwrites it.
-    const r = await client.query<{ updated_at: Date }>(
+    const documentRef = serializeDocRef(input.documentRef);
+    const r = await client.query<{ updated_at: Date; posted_at: Date }>(
       `UPDATE erpnext_posting_status
           SET status='posted', document_ref=$2, updated_at=now(),
               posted_at=COALESCE(posted_at, now())
         WHERE id=$1
-        RETURNING updated_at`,
-      [input.workItemRef, serializeDocRef(input.documentRef)],
+        RETURNING updated_at, posted_at`,
+      [input.workItemRef, documentRef],
     );
+    // RT-426: the linked effects are confirmed by this document, at posted_at.
+    await applyPostingSignalToEffects(client, {
+      postingStatusId: input.workItemRef,
+      signal: "posted",
+      erpDocumentRef: documentRef,
+      erpConfirmedAt: r.rows[0]!.posted_at,
+    });
     return {
       workItemRef: input.workItemRef,
       outcome: "posted",
@@ -499,6 +515,16 @@ export class ErpnextPostingService {
         RETURNING updated_at`,
       [workItemRef, category, reconciliationDocumentRef],
     );
+    // RT-426: the linked effects stand (DC-5) and record why ERP refused them.
+    await applyPostingSignalToEffects(client, {
+      postingStatusId: workItemRef,
+      signal:
+        category === RECONCILIATION_REQUIRED_CATEGORY
+          ? "reconciliation_required"
+          : "permanently_rejected",
+      erpDocumentRef: reconciliationDocumentRef,
+      stateReason: category,
+    });
     // §VII reconciliation / DLQ signal — a posting row just dead-lettered. A
     // SIGNAL: it never alters the ack outcome (the row is already updated above).
     recordErpnextPostingReconciliation();
@@ -534,6 +560,11 @@ export class ErpnextPostingService {
         RETURNING updated_at`,
       [workItemRef],
     );
+    // RT-426: the linked effects stay pending (the signal only checks them).
+    await applyPostingSignalToEffects(client, {
+      postingStatusId: workItemRef,
+      signal: "failed_transient",
+    });
     return {
       workItemRef,
       outcome: "failed_transient",
