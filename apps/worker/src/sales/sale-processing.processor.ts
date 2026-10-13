@@ -42,6 +42,11 @@
 import type { Pool } from "pg";
 import { runWithTenantContext, emit, OUTBOX_EVENT_TYPES } from "@data-pulse-2/db";
 
+import {
+  recordWorkerProcessingFailure,
+  sanitizeErrorClass,
+} from "../observability/metrics/worker.metrics";
+
 // ---------------------------------------------------------------------------
 // Envelope — the off-request job carries the tenant scope + correlation id
 // (FR-081): tenantId / storeId / correlationId. Shaped as a subset of the
@@ -234,6 +239,12 @@ export class SaleProcessingProcessor {
         },
       );
     } catch (err: unknown) {
+      // RT-457: every failed attempt is counted, so a sale that keeps failing
+      // (and would otherwise strand silently) is visible on the metrics.
+      recordWorkerProcessingFailure({
+        job_name: "sale-processing",
+        error_class: sanitizeErrorClass(err instanceof Error ? err.constructor.name : undefined),
+      });
       // FR-042/092: log ONLY identifiers + the error class — never the sale
       // row, line amounts, or any raw payload.
       this.logger?.error(

@@ -22,6 +22,7 @@ import { AuditRetentionWorker } from "../src/audit/audit-retention.worker";
 import { OutboxRetentionWorker } from "../src/outbox/retention.worker";
 import { StockRunSweepWorker } from "../src/erpnext-reconciliation/stock-run-sweep.worker";
 import { ReplayPurgeWorker } from "../src/cashier-admissions/replay-purge.worker";
+import { SaleRedriveWorker } from "../src/sales/sale-redrive.worker";
 
 class FakeEmailWorker {
   starts = 0;
@@ -81,6 +82,7 @@ class FakeAppContext implements Partial<INestApplicationContext> {
   readonly outboxRetentionWorker = new FakeRetentionWorker();
   readonly stockRunSweepWorker = new FakeRetentionWorker();
   readonly replayPurgeWorker = new FakeRetentionWorker();
+  readonly saleRedriveWorker = new FakeRetentionWorker();
   constructor(
     private readonly emailWorker: FakeEmailWorker,
     private readonly auditWorker: FakeAuditWorker,
@@ -112,6 +114,9 @@ class FakeAppContext implements Partial<INestApplicationContext> {
     }
     if ((token as unknown) === ReplayPurgeWorker) {
       return this.replayPurgeWorker as unknown as TResult;
+    }
+    if ((token as unknown) === SaleRedriveWorker) {
+      return this.saleRedriveWorker as unknown as TResult;
     }
     throw new Error(
       `FakeAppContext.get: unknown token ${String(token)} — extend the fake.`,
@@ -226,6 +231,11 @@ describe("bootstrap — happy path", () => {
     expect(ctx.replayPurgeWorker.starts).toBe(1);
   });
 
+  it("RT-457: starts the sale re-drive worker exactly once", async () => {
+    const { ctx } = await setup();
+    expect(ctx.saleRedriveWorker.starts).toBe(1);
+  });
+
   it("registers SIGTERM and SIGINT handlers exactly once", async () => {
     const { proc } = await setup();
     expect(proc.handlers["SIGTERM"]).toHaveLength(1);
@@ -274,6 +284,9 @@ describe("bootstrap — happy path", () => {
     );
     expect(result.replayPurgeWorker).toBe(
       ctx.replayPurgeWorker as unknown as ReplayPurgeWorker,
+    );
+    expect(result.saleRedriveWorker).toBe(
+      ctx.saleRedriveWorker as unknown as SaleRedriveWorker,
     );
   });
 });

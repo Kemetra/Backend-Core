@@ -187,6 +187,7 @@ describe("QUEUE_NAMES (RT-125)", () => {
       outboxRetention: "outbox-retention",
       erpnextStockReconciliationSweep: "erpnext-stock-reconciliation-sweep",
       cashierAdmissionReplayPurge: "cashier-admission-replay-purge",
+      saleRedrive: "sale-redrive",
     });
   });
 

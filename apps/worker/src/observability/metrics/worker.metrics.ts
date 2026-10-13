@@ -80,6 +80,8 @@ export const WORKER_QUEUE_NAMES = [
   QUEUE_NAMES.erpnextStockReconciliationSweep,
   // RT-209: periodic purge of expired cashier-admission replay rows.
   QUEUE_NAMES.cashierAdmissionReplayPurge,
+  // RT-457: scheduled re-drive of sales stranded before their posting intent.
+  QUEUE_NAMES.saleRedrive,
 ] as const satisfies readonly string[];
 export type WorkerQueueName = (typeof WORKER_QUEUE_NAMES)[number];
 
@@ -107,6 +109,8 @@ export const WORKER_JOB_NAMES = [
   "audit-retention",
   "session-revoke",
   "soft-delete-sweep",
+  // RT-457: sale-processing failures are counted (worker_processing_failure_total).
+  "sale-processing",
 ] as const satisfies readonly string[];
 export type WorkerJobName = (typeof WORKER_JOB_NAMES)[number];
 
@@ -211,6 +215,9 @@ assertMetricLabels("erpnext_stock_reconciliation_sweep_total", ["outcome"]);
 // ERPNext posting reversal dead-letter — RT-207. UNLABELED: the tenant, sale and
 // outbox event are fields of the structured error log, never labels.
 assertMetricLabels("erpnext_posting_reversal_deferred_dead_letter_total", []);
+
+// Sale re-drive sweep — RT-457. `reason` is a closed three-value set.
+assertMetricLabels("sale_redrive_total", ["reason"]);
 
 // ---------------------------------------------------------------------------
 // Instruments
@@ -354,6 +361,16 @@ const _erpnextStockReconciliationSweep: Counter = meter.createCounter(
       "and the sweep log, never a label.",
   },
 );
+
+// Sale re-drive sweep — RT-457. Emitted by SaleRedriveProcessor once per tick
+// per reason with the number of items it re-drove.
+const _saleRedrive: Counter = meter.createCounter("sale_redrive_total", {
+  description:
+    "Items the scheduled sale re-drive sweep recovered, by reason: " +
+    "sale_processing (a stranded unprocessed sale was processed), " +
+    "sale_post_intent / reversal_intent (a missing erpnext.posting.requested " +
+    "event was re-emitted). The tenant and sale are in the sweep log, never a label.",
+});
 
 // ERPNext posting reversal dead-letter — RT-207. Emitted by
 // PostingRequestedConsumer on the final outbox attempt of a reversal that is
@@ -577,6 +594,22 @@ export function recordErpnextPostingReconciliation(): void {
  */
 export function recordErpnextPostingReversalDeferredDeadLetter(): void {
   _erpnextPostingReversalDeferredDeadLetter.add(1);
+}
+
+/** Closed `reason` label set for sale_redrive_total. */
+export const SALE_REDRIVE_REASONS = [
+  "sale_processing",
+  "sale_post_intent",
+  "reversal_intent",
+] as const satisfies readonly string[];
+export type SaleRedriveReason = (typeof SALE_REDRIVE_REASONS)[number];
+
+/**
+ * Add `count` to sale_redrive_total{reason} (RT-457). Emission site:
+ * SaleRedriveProcessor, once per tick per reason. A SIGNAL: never alters the sweep.
+ */
+export function recordSaleRedrive(reason: SaleRedriveReason, count: number): void {
+  if (count > 0) _saleRedrive.add(count, { reason });
 }
 
 /** Closed `outcome` label set for erpnext_stock_reconciliation_sweep_total. */
@@ -1000,6 +1033,8 @@ export const WORKER_METRIC_NAMES = [
   // RT-207: reversal dead-lettered while awaiting its sale_post, emitted by
   // PostingRequestedConsumer on the final outbox attempt.
   "erpnext_posting_reversal_deferred_dead_letter_total",
+  // RT-457: sale re-drive sweep, emitted by SaleRedriveProcessor.
+  "sale_redrive_total",
 ] as const satisfies readonly string[];
 
 export type WorkerMetricName = (typeof WORKER_METRIC_NAMES)[number];

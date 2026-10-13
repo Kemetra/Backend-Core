@@ -150,6 +150,8 @@ export const QUEUE_NAMES = deepFreeze({
   erpnextStockReconciliationSweep: "erpnext-stock-reconciliation-sweep",
   // RT-209: the periodic purge of expired cashier-admission replay rows.
   cashierAdmissionReplayPurge: "cashier-admission-replay-purge",
+  // RT-457: the scheduled re-drive of sales stranded before their posting intent.
+  saleRedrive: "sale-redrive",
 } as const);
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
