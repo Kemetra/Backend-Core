@@ -107,7 +107,7 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
   The warnings `receipt_high_black_coverage` (> 35% black) and `receipt_thin_strokes` (`contracts/README.md` §6.2) never block the upload.
 - **FR-13** The upload is deterministic. With the same upload bytes, pipeline version and rendition configuration, the server produces the same master, the same rendition bytes and the same `version`. `version` is the lowercase hex SHA-256 over `master PNG ‖ pipeline_version ‖ canonical rendition config`.
 - **FR-14** Preview writes nothing. Saving requires the version that was previewed, so what the admin approved is exactly what is stored (OD-3).
-- **FR-14a** Concurrency (OD-15). Save and remove require `expected_current_version`: the stored logo version the admin saw, or `none` when no logo was stored. If it no longer matches, the call is refused with `409 logo_changed_concurrently` and nothing changes. Two admins working from the same state therefore cannot silently overwrite each other, and a remove cannot race a replace.
+- **FR-14a** Concurrency (OD-15). Save and remove require `expected_current_version`: the stored logo version the admin saw, or `none` when no logo was stored. If it no longer matches, the call is refused with `409 logo_changed_concurrently` and nothing changes. Two admins working from the same state therefore cannot silently overwrite each other, and a remove cannot race a replace. **Order of checks:** the idempotent replay is tested first and wins over the precondition. A save whose `preview_version` already equals the stored version returns `200`, and a remove with no logo stored returns `204`, whatever `expected_current_version` says, so a retry after a success never gets a `409`. Only after that is a mismatch refused.
 - **FR-15** A replace or a remove writes one audit event in the same transaction: `tenant.logo.replaced` `{from_version, to_version}` or `tenant.logo.removed` `{from_version}`. Actor and tenant come from the request context (Constitution XIII). Image bytes are never logged.
 - **FR-16** The POS read is device-authenticated. The tenant comes only from the device row. There is no tenant parameter.
 - **FR-17** The POS read carries the tenant display name, so the fallback text exists even without a logo. "No logo" is `200` with `logo: null`, never an error.
@@ -125,12 +125,19 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
 ### POS (RT-475, RT-476)
 
 - **FR-30** A paired-only branding worker starts on the `pairedWorkersLatch`. It reads the branding at app start and then hourly with the device token, sending `If-None-Match`. It is not gated on an operator session. It stops on quit through `workerRegistry`.
-- **FR-31** The cache is stored locally, keyed by `tenant_id` and `version`. It is replaced in one transaction, so the old renditions are deleted in the same write. A cache whose `tenant_id` differs from the current pairing is ignored and purged.
+- **FR-31** The cache is stored locally in two parts, each validated on its own:
+  - a **name record** (`tenant_id`, `tenant_display_name`, ETag);
+  - a **logo record** (`tenant_id`, `version`, presentation, warnings, renditions).
+
+  A read replaces both in one transaction, so the old renditions are deleted in the same write. A record whose `tenant_id` differs from the current pairing is ignored and purged.
 - **FR-32** The cache is cleared on re-pair to a different tenant and on any future unpair path (`PairingStore.clear()`). Revocation does not clear it, because the terminal still belongs to the tenant.
 - **FR-33** The renderer gets the branding only through a typed bridge channel, as image bytes or a `data:` URI. No file path and no network URL is exposed (P8). The new channels need an §A4 record and the cache table needs an §A2 record.
 - **FR-34** Each surface has a fixed slot. The layout never shifts. The image is `object-fit: contain`, centred, never stretched or upscaled. `presentation.card` puts it on a white card. Under `forced-colors` the card border uses a system colour.
-- **FR-35** Fallback: with no logo, an unreadable cache, or an image decode error, the slot shows the tenant display name as text. It never shows a broken image or an empty box.
-- **FR-35a** Cache repair. When the cache fails validation (a missing or corrupt row, a rendition that does not decode, or a stored `version` that does not match the stored bytes), the POS discards the cache **and its ETag** and makes the next read **unconditional** (no `If-None-Match`). Otherwise the server would keep answering `304` for the same version and the terminal could never repair its cache. Conditional polling resumes only after a cache passes validation.
+- **FR-35** Fallback, in this order. It never shows a broken image or an empty box.
+  1. The logo record is valid: show the logo.
+  2. Otherwise, if the name record is valid: show the tenant display name as text in the same slot.
+  3. Otherwise (first boot before any branding read, or both records corrupt): show the neutral product mark, the same one the pre-pair screen uses (OD-9, OD-12). The slot keeps its size.
+- **FR-35a** Cache repair. When either cache record fails validation (a missing or corrupt row, a rendition that does not decode, or a stored `version` that does not match the stored bytes), the POS discards **that record and the ETag**, keeping the other record if it is valid, and makes the next read **unconditional** (no `If-None-Match`). Otherwise the server would keep answering `304` for the same version and the terminal could never repair its cache. Conditional polling resumes only after a cache passes validation.
 - **FR-36** The boot screen reads only the local cache. It never waits on the network.
 - **FR-37** The receipt places the receipt rendition centred at the top. Its CSS size in millimetres is exactly `width_px / dpi × 25.4`, with `image-rendering: pixelated`. With no logo the receipt is byte-identical to today's output. Receipt rendering stays a pure function of its inputs: the logo bytes are an explicit input to `renderReceipt`.
 
