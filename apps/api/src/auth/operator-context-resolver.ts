@@ -239,7 +239,7 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
     return r.rows[0] ?? null;
   }
 
-  private findActiveMembership(
+  private async findActiveMembership(
     tenantId: string,
     userId: string,
   ): Promise<MembershipLookupRow | null> {
@@ -271,7 +271,7 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
     );
   }
 
-  private storeIsInAccessSet(
+  private async storeIsInAccessSet(
     tenantId: string,
     membershipId: string,
     storeId: string,

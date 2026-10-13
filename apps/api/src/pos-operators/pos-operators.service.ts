@@ -740,7 +740,7 @@ export class PosOperatorsService {
     return r.rows[0] ?? null;
   }
 
-  private findActiveMembership(
+  private async findActiveMembership(
     tenantId: string,
     userId: string,
   ): Promise<MembershipLookupRow | null> {
@@ -766,7 +766,7 @@ export class PosOperatorsService {
     );
   }
 
-  private storeIsInAccessSet(
+  private async storeIsInAccessSet(
     tenantId: string,
     membershipId: string,
     storeId: string,
