@@ -148,10 +148,13 @@ CREATE TABLE IF NOT EXISTS tracking_identities (
     CHECK (origin IN ('erp_external')),
   CONSTRAINT tracking_identities_dates_ordered
     CHECK (manufactured_on IS NULL OR expiry_date IS NULL OR manufactured_on <= expiry_date),
-  -- DATE accepts 'infinity' / '-infinity'; a printed pack date is always real.
-  CONSTRAINT tracking_identities_dates_finite
-    CHECK ((expiry_date IS NULL OR isfinite(expiry_date))
-           AND (manufactured_on IS NULL OR isfinite(manufactured_on)))
+  -- A printed pack date is a real day in years 0001-9999: the wire format
+  -- (`YYYY-MM-DD`) and the list cursor carry nothing else. Rejects
+  -- '+/-infinity', BC dates and years above 9999.
+  CONSTRAINT tracking_identities_dates_in_range
+    CHECK ((expiry_date IS NULL OR expiry_date BETWEEN DATE '0001-01-01' AND DATE '9999-12-31')
+           AND (manufactured_on IS NULL
+                OR manufactured_on BETWEEN DATE '0001-01-01' AND DATE '9999-12-31'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_tracking_identities_product_kind_code
