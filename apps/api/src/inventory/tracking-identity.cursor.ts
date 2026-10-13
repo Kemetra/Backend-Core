@@ -43,7 +43,7 @@ function isCalendarDate(value: string): boolean {
 
 export function encodeTrackingIdentityCursor(c: TrackingIdentityCursor): string {
   return Buffer.from(
-    JSON.stringify({ p: c.productId, k: c.kind, e: c.expiry, c: c.code, i: c.id }),
+    JSON.stringify({ p: c.productId.toLowerCase(), k: c.kind, e: c.expiry, c: c.code, i: c.id }),
     "utf8",
   ).toString("base64url");
 }
@@ -59,7 +59,8 @@ export function decodeTrackingIdentityCursor(
     throw new TrackingIdentityCursorError("malformed cursor");
   }
   const parsed = PayloadSchema.safeParse(raw);
-  if (!parsed.success || parsed.data.p !== productId) {
+  // UUIDs compare case-insensitively: the same product may arrive in either case.
+  if (!parsed.success || parsed.data.p !== productId.toLowerCase()) {
     throw new TrackingIdentityCursorError("malformed cursor");
   }
   const d = parsed.data;

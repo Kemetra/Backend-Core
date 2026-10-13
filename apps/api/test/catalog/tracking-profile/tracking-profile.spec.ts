@@ -421,6 +421,16 @@ describe("RT-448 §7 — tracking identities", () => {
     expect(ids).toEqual([LOT_EARLY, LOT_LATE, LOT_UNDATED, SERIAL_1]);
   });
 
+  it("a cursor stays valid when the same product id arrives in another letter case", async () => {
+    if (skip()) return;
+    const first = await http()
+      .get(`${identitiesUrl(PRODUCT_LOTS.toUpperCase())}?limit=1`)
+      .expect(200);
+    const next = encodeURIComponent(first.body.nextCursor as string);
+    const res = await http().get(`${identitiesUrl(PRODUCT_LOTS)}?limit=1&cursor=${next}`).expect(200);
+    expect(res.body.items.map((i: { id: string }) => i.id)).toEqual([LOT_LATE]);
+  });
+
   it("rejects a malformed cursor, one from another product, an impossible date and an out-of-range limit with 400", async () => {
     if (skip()) return;
     const first = await http().get(`${identitiesUrl(PRODUCT_LOTS)}?limit=1`).expect(200);
