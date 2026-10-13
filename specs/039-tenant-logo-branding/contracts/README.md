@@ -1,16 +1,16 @@
 # Contract surface (PROSE) — Spec 039 tenant logo branding
 
-**PLANNING ONLY. No OpenAPI YAML in this folder.** This README fixes the intended contract in prose. RT-473 slice S1 authors the real YAML under `packages/contracts/openapi/branding/` as a GATED contract PR. The owner approved the decisions this surface depends on (`spec.md` §5) on 2026-10-13. This README stays the prose record; once S1 lands, the YAML is the contract of record.
+**PLANNING ONLY. No OpenAPI YAML in this folder.** This README fixes the intended contract in prose. RT-473 slice S1 authors the real YAML as `packages/contracts/openapi/tenant-branding.openapi.yaml` (top level, so the production loader and the operationId-uniqueness checks include it), as a GATED contract PR, with every operation `x-runtime-status: contract-only` until S2 ships the routes. The owner approved the decisions this surface depends on (`spec.md` §5) on 2026-10-13. This README stays the prose record; the YAML is the contract of record.
 
 Every operation, once authored, MUST carry:
 
 - a stable `operationId`;
 - an explicit `security` section;
-- the canonical error envelope `{ error: { code, message, request_id, details? } }`, with `additionalProperties: false`;
+- the canonical error envelope `{ error: { code, message, request_id, details? } }`, with `additionalProperties: false` and `request_id` required. `details` is the validation-issue array on a `400 validation_error` and `{ construct }` on `422 svg_unsafe_content`; it is absent otherwise;
 - the canonical status mapping;
 - no raw DB entities (Constitution IV and the API Conventions).
 
-The YAML file is self-contained, with its own `securitySchemes` and Error schema, like `catalog/read-down.yaml`. `apps/api/src/openapi/loader.ts` reads only the top level of `packages/contracts/openapi/`. Sub-folder contracts such as `catalog/read-down.yaml` are pinned by their own ajv contract test instead (`apps/api/test/catalog/read-down/contract/`). S1 follows that convention: it adds a contract test for the new file and keeps it inside the oasdiff breaking-change check.
+The YAML file is self-contained, with its own `securitySchemes` and Error schema, like `catalog/read-down.yaml`. The contract test is `apps/api/test/tenant-branding/tenant-branding.contract.spec.ts`. The file stays inside the oasdiff breaking-change check and the Schemathesis cookieAuth surface (contract-only operations are skipped until they ship).
 
 ## 1. Shared shapes
 
@@ -65,7 +65,7 @@ The YAML file is self-contained, with its own `securitySchemes` and Error schema
   - **`304`** No body, when `If-None-Match` matches.
   - **`400`** `validation_error`: an unknown query key, or a malformed `If-None-Match`.
   - **`401`** The generic, non-disclosing device refusal.
-  - **`5xx`** `system_failure`.
+  - **`5xx`** `internal_error`.
 - **Not used:** `404`. "No logo" is `200` with `logo: null` (spec FR-17).
 - **Cache headers:** `Cache-Control: no-cache, private`. The POS revalidates every time.
 
@@ -76,9 +76,10 @@ The YAML file is self-contained, with its own `securitySchemes` and Error schema
 - **Roles:** `owner` or `tenant_admin` of `{tenant_id}`. A wrong role, an unknown tenant or another tenant gets `404` (safe 404, XII).
 - **Responses:**
   - `200 TenantBranding` (the same shape as Surface 1, so the preview is the POS truth);
+  - `400 validation_error` (a malformed `tenant_id`);
   - `401` (no session; a bearer-only request);
   - `404`;
-  - `5xx system_failure`.
+  - `5xx internal_error`.
 
 ## 4. Surfaces 3–5 — Console: preview, save, remove
 
@@ -96,7 +97,7 @@ The request body for preview and save is the **raw file bytes**, accepted under 
   - `404`;
   - `413 file_too_large`;
   - `422` with a §5 code;
-  - `5xx system_failure`.
+  - `5xx internal_error`.
 
 ### Surface 4 — Save or replace
 
@@ -114,7 +115,7 @@ The request body for preview and save is the **raw file bytes**, accepted under 
 - **Behaviour:** upsert the single tenant record, master and renditions together in one transaction, increment `revision`, and write the audit event `tenant.logo.replaced`.
 - **Idempotent replay (step 3):** a valid body whose version equals `preview_version` and the stored version returns `200` and writes **no** audit event, whatever `expected_revision` says. A retried save therefore never fails on its own earlier success.
 - **Responses:**
-  - `200 TenantBranding`;
+  - `200 TenantBranding` with a non-null `logo` (`TenantBrandingSaved` in the YAML);
   - `400 validation_error` (a missing or malformed query parameter, an unknown key, or an empty body);
   - `401`;
   - `403 origin_rejected`;
@@ -122,7 +123,7 @@ The request body for preview and save is the **raw file bytes**, accepted under 
   - `409 logo_preview_mismatch` or `409 logo_changed_concurrently`;
   - `413 file_too_large`;
   - `422` with a §5 code;
-  - `5xx system_failure`.
+  - `5xx internal_error`.
 
 ### Surface 5 — Remove
 
@@ -131,13 +132,13 @@ The request body for preview and save is the **raw file bytes**, accepted under 
 - **Behaviour:** under the same `tenants` row lock as Surface 4, delete the record and its renditions, increment `revision`, write the audit event `tenant.logo.removed`, and return `200 TenantBranding` (`logo: null`, the new `revision`) so the Console can chain its next write.
 - **Idempotent:** with no logo stored it returns `200 TenantBranding` (`logo: null`, the current `revision`, unchanged) and writes no audit event, whatever `expected_revision` says.
 - **Responses:**
-  - `200 TenantBranding`;
+  - `200 TenantBranding` with `logo: null` (`TenantBrandingRemoved` in the YAML);
   - `400 validation_error` (a missing or malformed `expected_revision`, or an unknown key);
   - `401`;
   - `403 origin_rejected`;
   - `404`;
   - `409 logo_changed_concurrently`;
-  - `5xx system_failure`.
+  - `5xx internal_error`.
 
 ## 5. Refusal codes (`422`, closed set, `error.code` enum)
 
@@ -149,7 +150,7 @@ The request body for preview and save is the **raw file bytes**, accepted under 
 | `image_too_small` | The trimmed content is below 512 × 512 (square-ish) or below 256 px tall (horizontal). |
 | `aspect_ratio_out_of_range` | The trimmed content aspect is below 1:1 (taller than wide) or above 4:1. |
 | `image_empty` | Nothing is left after trimming (fully transparent or a single colour). |
-| `svg_unsafe_content` | One of the FR-07 constructs is present. `details.construct` names the category (`script`, `event_handler`, `external_reference`, `foreign_object`, `entity`, `image_element`, `css_import`); no excerpt is echoed back. |
+| `svg_unsafe_content` | One of the FR-07 constructs is present. `details.construct` names the category (`script`, `event_handler`, `external_reference`, `foreign_object`, `embedded_content` for `<iframe>` / `<embed>` / `<object>`, `entity`, `image_element`, `css_import`); no excerpt is echoed back. |
 | `svg_unsupported` | There is no usable `viewBox` or width and height, or the rasterizer limits are exceeded (element count or nesting depth). |
 
 These are **outside** the `422` set:
@@ -160,7 +161,7 @@ These are **outside** the `422` set:
 - `403 origin_rejected`;
 - `401`;
 - `404 not_found`;
-- `5xx system_failure`.
+- `5xx internal_error`.
 
 ## 6. Warnings (closed set, never blocking)
 

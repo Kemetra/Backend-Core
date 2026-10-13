@@ -1,0 +1,866 @@
+openapi: 3.1.0
+info:
+  title: Backend-Core — Tenant Branding (logo) API
+  version: "1.0.0-draft"
+  description: >
+    RT-473 S1 contract for tenant branding (spec 039, planning RT-472). One logo
+    per tenant (D-1). The tenant uploads a screen logo; the server validates it,
+    normalizes it and produces fixed screen renditions plus a 1-bit receipt
+    rendition (D-4, D-5, RT-472 comment 11846: the receipt logo is automatic
+    only, and there is no light variant).
+
+
+    **Posture.** `1.0.0-draft`, contract-only: every operation carries
+    `x-runtime-status: contract-only` until the RT-473 S2 runtime ships. `[GATED]`
+    contract; the owner approved the spec 039 decisions OD-1…OD-6, OD-9…OD-11 and
+    OD-13…OD-15 on 2026-10-13. The persistence it needs (migration `0046`) and the
+    image libraries (OD-2) are separate `[GATED]` changes in S2.
+
+
+    **Surfaces.**
+
+      1. `posGetTenantBranding` — POS terminals, `device` bearer. The tenant
+         comes only from the device row; there is no tenant parameter. Returns
+         the tenant display name and the logo renditions, or `logo: null`.
+         Conditional with `ETag` / `If-None-Match` → `304`.
+      2. `consoleGetTenantLogo`, `consolePreviewTenantLogo`,
+         `consolePutTenantLogo`, `consoleDeleteTenantLogo` — Admin-Console,
+         `cookieAuth` only (a human `dp2_session`), roles `owner` /
+         `tenant_admin` of `{tenant_id}`. A bearer-only request
+         (`dashboard_api` included, no session cookie) gets `401`
+         (`SessionOnlyAdminGuard`, as in `shift-closes`).
+         A wrong role or another tenant gets the same non-disclosing `404`
+         (§XII).
+
+
+    **Upload body.** Preview and save take the raw file bytes under any
+    `Content-Type` (declared `*/*`, read as bytes; OD-14), at most 1 MiB
+    (`413 file_too_large` before parsing). The file type is decided only by
+    magic bytes (PNG or SVG); the declared content type and any file name
+    neither accept nor refuse, so there is no `415`. Admin-Console sends
+    `application/octet-stream`. An SVG is
+    rasterized on the server with resource loading disabled and is never stored
+    or served.
+
+
+    **Concurrency (OD-15).** Each tenant has a monotonic integer `revision`
+    (spec 039 FR-14a): `0` = never written, incremented on every save that
+    writes, every remove that deletes and every server re-render (OD-8),
+    kept across removal so it never
+    repeats. Save and remove require `expected_revision`. The content
+    `version` is not the precondition, because removing and re-saving identical
+    bytes reproduces it.
+    Save validates and re-renders the body and checks it against
+    `preview_version` first; then the idempotent replay (save: the stored
+    version already equals it → `200`; remove: no logo stored → `200`); only
+    then does a mismatch return `409 logo_changed_concurrently`.
+
+
+    **Versioning.** `version` is the lowercase hex SHA-256 over the normalized
+    master PNG, the pipeline version and the canonical rendition configuration
+    (spec 039 FR-13). It is deterministic per pinned pipeline and is the client
+    cache key. Response bodies are explicit projections, never DB rows (§IV).
+    Image bytes are never logged or audited (§XIV).
+
+paths:
+  /api/pos/v1/tenant/branding:
+    get:
+      summary: Read the paired terminal's tenant branding.
+      operationId: posGetTenantBranding
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-473 S1 contract PR; the controller ships in RT-473 S2 after the
+        `[GATED]` migration and dependency changes.
+      tags: [branding-pos]
+      security:
+        - device: []
+      description: >
+        Returns the tenant display name and, when a logo is stored, its
+        version, presentation, warnings, 8 screen renditions and the receipt
+        rendition. "No logo" is `200` with `logo: null`, never `404`. Send
+        `If-None-Match` with the last `ETag`; an unchanged branding returns
+        `304` with no body. A POS whose cache failed validation MUST omit
+        `If-None-Match` (spec 039 FR-35a). No query parameters are accepted.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The tenant branding.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantBranding"
+        "304":
+          description: Unchanged since the `If-None-Match` ETag. No body.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/DeviceUnauthorized"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/tenants/{tenant_id}/logo:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+    get:
+      summary: Read the tenant's current logo.
+      operationId: consoleGetTenantLogo
+      x-runtime-status: contract-only
+      x-runtime-note: RT-473 S1 contract PR; the controller ships in RT-473 S2.
+      tags: [branding-console]
+      security:
+        - cookieAuth: []
+      description: >
+        Same shape as the POS read, so the Console preview is the POS truth.
+        Roles `owner` / `tenant_admin`.
+      responses:
+        "200":
+          description: The tenant branding.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantBranding"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+    put:
+      summary: Save or replace the tenant logo.
+      operationId: consolePutTenantLogo
+      x-runtime-status: contract-only
+      x-runtime-note: RT-473 S1 contract PR; the controller ships in RT-473 S2.
+      tags: [branding-console]
+      security:
+        - cookieAuth: []
+      description: >
+        Runs under `SELECT … FOR UPDATE` on the tenant's `tenants` row, which
+        always exists, so two first uploads at revision `0` cannot both pass.
+        Order of checks, each stopping the call: (1) re-run the full pipeline
+        on the body (`422` on failure); (2) the computed version must equal
+        `preview_version` (`409 logo_preview_mismatch`); (3) idempotent replay
+        — the stored version already equals the computed version → `200`, no
+        audit; (4) `expected_revision` mismatch → `409
+        logo_changed_concurrently`; (5) upsert master and renditions, increment
+        `revision` and write `tenant.logo.replaced`, in one transaction. A
+        replay never skips body validation.
+      parameters:
+        - $ref: "#/components/parameters/PreviewVersion"
+        - $ref: "#/components/parameters/ExpectedRevision"
+      requestBody:
+        $ref: "#/components/requestBodies/LogoFile"
+      responses:
+        "200":
+          description: Saved (or an idempotent replay of the stored version).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantBrandingSaved"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/FileTooLarge"
+        "422":
+          $ref: "#/components/responses/LogoRejected"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+    delete:
+      summary: Remove the tenant logo.
+      operationId: consoleDeleteTenantLogo
+      x-runtime-status: contract-only
+      x-runtime-note: RT-473 S1 contract PR; the controller ships in RT-473 S2.
+      tags: [branding-console]
+      security:
+        - cookieAuth: []
+      description: >
+        Runs under `SELECT … FOR UPDATE` on the tenant's `tenants` row. Order of
+        checks: (1) no logo stored → `200` with the current branding, no audit;
+        (2) `expected_revision` mismatch → `409 logo_changed_concurrently`; (3)
+        delete the record and its renditions, increment `revision`, write
+        `tenant.logo.removed` and return the branding with `logo: null` and the
+        new `revision`, so the Console can chain its next write. The POS then
+        falls back to the tenant name.
+      parameters:
+        - $ref: "#/components/parameters/ExpectedRevision"
+      responses:
+        "200":
+          description: Removed (or no logo was stored); the updated branding.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantBrandingRemoved"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/RevisionConflict"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/tenants/{tenant_id}/logo/preview:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+    post:
+      summary: Validate and render a logo without storing it.
+      operationId: consolePreviewTenantLogo
+      x-runtime-status: contract-only
+      x-runtime-note: RT-473 S1 contract PR; the controller ships in RT-473 S2.
+      tags: [branding-console]
+      security:
+        - cookieAuth: []
+      description: >
+        Validates, normalizes and renders the upload. Stores nothing and writes
+        no audit event. The returned `version` is what `consolePutTenantLogo`
+        must echo as `preview_version`.
+      requestBody:
+        $ref: "#/components/requestBodies/LogoFile"
+      responses:
+        "200":
+          description: The rendered preview.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogoPreview"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/FileTooLarge"
+        "422":
+          $ref: "#/components/responses/LogoRejected"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+components:
+  securitySchemes:
+    device:
+      type: http
+      scheme: bearer
+      description: >
+        Opaque, device-scoped bearer token (spec 030 / 028 §6 CM-2), the same
+        scheme as `posGetCatalogSnapshot`. The POS presents its `devices` pairing
+        token as `Authorization: Bearer <device_token>` — opaque, NOT a JWT. The
+        device row supplies the authoritative tenant; nothing in the request is
+        trusted as scope. Any missing / malformed / unknown / revoked token gets a
+        generic, non-disclosing 401.
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: dp2_session
+
+  headers:
+    ETag:
+      description: >
+        Strong ETag: the quoted lowercase hex SHA-256 of
+        `UTF8(tenant_display_name) 0x00 ASCII(decimal revision)` (spec 039
+        FR-18). The revision changes on every write and re-render, so this
+        covers the whole representation. The POS recomputes it to validate its
+        cached name record (FR-35a).
+      schema:
+        type: string
+        pattern: '^"[0-9a-f]{64}"$'
+    CacheControl:
+      description: Always `no-cache, private`; the POS revalidates every read.
+      schema:
+        type: string
+        const: "no-cache, private"
+
+  parameters:
+    TenantId:
+      name: tenant_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        The tenant whose logo is addressed. Checked against the session's
+        membership and role; a wrong role or another tenant gets `404`.
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      schema:
+        type: string
+        pattern: '^"[0-9a-f]{64}"$'
+      description: The last `ETag` received. Omitted after a cache-validation failure.
+    PreviewVersion:
+      name: preview_version
+      in: query
+      required: true
+      schema:
+        $ref: "#/components/schemas/LogoVersion"
+      description: The `version` returned by `consolePreviewTenantLogo` for these bytes.
+    ExpectedRevision:
+      name: expected_revision
+      in: query
+      required: true
+      schema:
+        type: integer
+        minimum: 0
+      description: >
+        The tenant branding `revision` the admin saw (OD-15, FR-14a). Checked
+        after the idempotent replay.
+
+  requestBodies:
+    LogoFile:
+      required: true
+      description: >
+        The raw file bytes, at most 1 MiB, under any `Content-Type` (read as
+        bytes). PNG or SVG, decided by magic bytes only; the declared content
+        type and any file name are ignored.
+      content:
+        # Raw binary: OAS 3.1 models an unencoded binary body by omitting the
+        # schema, so clients send the file bytes unchanged.
+        "*/*": {}
+
+  schemas:
+    LogoVersion:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+      description: >
+        Lowercase hex SHA-256 over the master PNG, the pipeline version and the
+        canonical rendition configuration (spec 039 FR-13). The client cache key.
+
+    LogoWarning:
+      type: string
+      enum: [low_contrast, receipt_high_black_coverage, receipt_thin_strokes]
+      description: >
+        Closed set; never blocks saving (spec 039 contracts §6).
+        `low_contrast`: fewer than 50% of ink pixels reach 3:1 against `#ffffff`
+        (also forces `presentation.card`). `receipt_high_black_coverage`: more
+        than 35% black on the receipt rendition. `receipt_thin_strokes`: more than
+        10% of black pixels belong to no fully black 2 × 2 block.
+
+    Presentation:
+      type: object
+      additionalProperties: false
+      required: [card]
+      properties:
+        card:
+          type: boolean
+          description: >
+            `true` → show the logo on a white rounded card (opaque background or
+            `low_contrast`).
+
+    PngBase64:
+      type: string
+      minLength: 1
+      contentEncoding: base64
+      contentMediaType: image/png
+      description: Base64 of a server re-encoded PNG with no metadata chunks.
+
+    ScreenRendition:
+      type: object
+      additionalProperties: false
+      required: [slot, scale, width_px, height_px, png_base64]
+      description: >
+        One screen rendition: 8-bit RGBA, sRGB, `contain`-fitted inside the slot
+        box × scale (the boxes are server configuration from the approved
+        references, OD-7) and never upscaled beyond the master.
+      properties:
+        slot:
+          type: string
+          enum: [boot, pairing, sign_in, lock]
+        scale:
+          type: integer
+          enum: [1, 2]
+        width_px:
+          type: integer
+          minimum: 1
+          maximum: 4096
+        height_px:
+          type: integer
+          minimum: 1
+          maximum: 4096
+        png_base64:
+          $ref: "#/components/schemas/PngBase64"
+
+    ReceiptRendition:
+      type: object
+      additionalProperties: false
+      required: [width_px, height_px, dpi, png_base64]
+      description: >
+        The 1-bit grayscale receipt PNG (black on white, no alpha), at most
+        48 × 15 mm at `dpi`. The POS prints it at `width_px / dpi × 25.4` mm so
+        the driver does not rescale it. The bounds below are 48 × 15 mm at the
+        600 dpi ceiling; the per-dpi bound, `width_px ≤ floor(48 / 25.4 × dpi)`
+        and `height_px ≤ floor(15 / 25.4 × dpi)`, is cross-field arithmetic JSON
+        Schema cannot express, so it is a server invariant asserted by the
+        RT-473 S2 runtime tests.
+      properties:
+        width_px:
+          type: integer
+          minimum: 1
+          maximum: 1133
+        height_px:
+          type: integer
+          minimum: 1
+          maximum: 354
+        dpi:
+          type: integer
+          minimum: 100
+          maximum: 600
+          description: The bench-measured printer dpi (OD-8), server configuration.
+        png_base64:
+          $ref: "#/components/schemas/PngBase64"
+
+    ScreenRenditionSet:
+      type: array
+      minItems: 8
+      maxItems: 8
+      description: >
+        Exactly one rendition per (`slot`, `scale`) pair. Each of the 8 pairs
+        must be present (`contains`), and with at most 8 items no pair can
+        repeat.
+      items:
+        $ref: "#/components/schemas/ScreenRendition"
+      allOf:
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: boot }
+              scale: { const: 1 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: boot }
+              scale: { const: 2 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: pairing }
+              scale: { const: 1 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: pairing }
+              scale: { const: 2 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: sign_in }
+              scale: { const: 1 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: sign_in }
+              scale: { const: 2 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: lock }
+              scale: { const: 1 }
+        - contains:
+            type: object
+            required: [slot, scale]
+            properties:
+              slot: { const: lock }
+              scale: { const: 2 }
+
+    LogoPreview:
+      type: object
+      additionalProperties: false
+      # FR-11: a low_contrast warning forces the white card.
+      if:
+        required: [warnings]
+        properties:
+          warnings:
+            contains:
+              const: low_contrast
+      then:
+        properties:
+          presentation:
+            properties:
+              card:
+                const: true
+      required: [version, presentation, warnings, screen, receipt]
+      properties:
+        version:
+          $ref: "#/components/schemas/LogoVersion"
+        presentation:
+          $ref: "#/components/schemas/Presentation"
+        warnings:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/LogoWarning"
+        screen:
+          $ref: "#/components/schemas/ScreenRenditionSet"
+        receipt:
+          $ref: "#/components/schemas/ReceiptRendition"
+
+    TenantLogo:
+      type: object
+      additionalProperties: false
+      # FR-11: a low_contrast warning forces the white card.
+      if:
+        required: [warnings]
+        properties:
+          warnings:
+            contains:
+              const: low_contrast
+      then:
+        properties:
+          presentation:
+            properties:
+              card:
+                const: true
+      required: [version, presentation, warnings, screen, receipt, updated_at]
+      properties:
+        version:
+          $ref: "#/components/schemas/LogoVersion"
+        presentation:
+          $ref: "#/components/schemas/Presentation"
+        warnings:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/LogoWarning"
+        screen:
+          $ref: "#/components/schemas/ScreenRenditionSet"
+        receipt:
+          $ref: "#/components/schemas/ReceiptRendition"
+        updated_at:
+          type: string
+          format: date-time
+          description: When this version was saved.
+
+    TenantBranding:
+      type: object
+      additionalProperties: false
+      required: [tenant_display_name, revision, logo]
+      # A stored logo means at least one write happened, so revision >= 1.
+      if:
+        properties:
+          logo:
+            type: object
+      then:
+        properties:
+          revision:
+            minimum: 1
+      properties:
+        revision:
+          type: integer
+          minimum: 0
+          description: >
+            Per-tenant monotonic write counter (spec 039 FR-14a). `0` = never
+            written. Never repeats, including across removal. The Console
+            echoes it as `expected_revision`.
+        tenant_display_name:
+          type: string
+          minLength: 1
+          description: >
+            `tenants.name` (OD-10). Always present, so the POS fallback text
+            always exists.
+        logo:
+          description: "`null` = no logo stored; a normal state, not an error."
+          oneOf:
+            - $ref: "#/components/schemas/TenantLogo"
+            - type: "null"
+
+    TenantBrandingSaved:
+      description: The save result. A save always leaves a logo stored.
+      allOf:
+        - $ref: "#/components/schemas/TenantBranding"
+        - properties:
+            logo:
+              $ref: "#/components/schemas/TenantLogo"
+
+    TenantBrandingRemoved:
+      description: The removal result. A removal always leaves no logo.
+      allOf:
+        - $ref: "#/components/schemas/TenantBranding"
+        - properties:
+            logo:
+              type: "null"
+
+    LogoRejectionCode:
+      type: string
+      enum:
+        - file_type_not_allowed
+        - image_malformed
+        - image_dimensions_too_large
+        - image_too_small
+        - aspect_ratio_out_of_range
+        - image_empty
+        - svg_unsafe_content
+        - svg_unsupported
+      description: The closed `422` set (spec 039 contracts §5).
+
+    SvgUnsafeConstruct:
+      type: string
+      enum:
+        - script
+        - event_handler
+        - external_reference
+        - foreign_object
+        - embedded_content
+        - entity
+        - image_element
+        - css_import
+      description: >
+        The category of the refused SVG construct (FR-07). `embedded_content`
+        covers `<iframe>`, `<embed>` and `<object>`. No excerpt of the file is
+        echoed back.
+
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >
+        Canonical error envelope. Refusals are non-disclosing across tenants
+        (§II/§XII).
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, request_id]
+          if:
+            properties:
+              code:
+                const: validation_error
+          else:
+            not:
+              required: [details]
+          properties:
+            code:
+              type: string
+              enum:
+                - validation_error
+                - unauthorized
+                - origin_rejected
+                - not_found
+                - logo_preview_mismatch
+                - logo_changed_concurrently
+                - file_too_large
+                - internal_error
+              description: >
+                Stable machine-readable code, closed on this surface. The `422`
+                codes use `LogoRejectedError`. `unauthorized` and
+                `internal_error` are the global exception filter's generic 401
+                and 500 codes.
+            message:
+              type: string
+              description: Human-readable summary. Never echoes file content.
+            request_id:
+              type: string
+              format: uuid
+            details:
+              type: array
+              description: >
+                Present only with `validation_error`: the validation issues
+                the global exception filter serialises (one object per issue).
+              items:
+                type: object
+
+    LogoRejectedError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, request_id]
+          if:
+            properties:
+              code:
+                const: svg_unsafe_content
+          then:
+            required: [details]
+          else:
+            not:
+              required: [details]
+          properties:
+            code:
+              $ref: "#/components/schemas/LogoRejectionCode"
+            message:
+              type: string
+            request_id:
+              type: string
+              format: uuid
+            details:
+              type: object
+              additionalProperties: false
+              required: [construct]
+              description: Present only for `svg_unsafe_content`.
+              properties:
+                construct:
+                  $ref: "#/components/schemas/SvgUnsafeConstruct"
+
+  responses:
+    ValidationFailure:
+      description: >
+        `validation_error` — a malformed `tenant_id`, a missing, malformed or
+        unknown query parameter, a bad `If-None-Match`, or an empty body.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: validation_error
+    DeviceUnauthorized:
+      description: >
+        Generic, non-disclosing refusal for a missing / invalid / revoked device
+        token or a non-device credential.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: unauthorized
+    Unauthorized:
+      description: >
+        No human dashboard session: a bearer-only request (`dashboard_api`
+        included) is refused here (`SessionOnlyAdminGuard`). With a valid
+        session cookie, an extra `Authorization` header changes nothing.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: unauthorized
+    OriginRejected:
+      description: >
+        `origin_rejected` (RT-430): the request is authenticated by the
+        `dp2_session` cookie and its `Origin` header is missing, or is neither
+        the API's own origin nor listed in `ALLOWED_ORIGINS`.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: origin_rejected
+    NotFound:
+      description: >
+        `not_found` — unknown tenant, another tenant, or a role other than
+        `owner` / `tenant_admin`. Identical in all cases (§II/§XII).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: not_found
+    Conflict:
+      description: >
+        `logo_preview_mismatch` — the body no longer produces `preview_version`.
+        `logo_changed_concurrently` — the tenant `revision` no longer matches
+        `expected_revision` (OD-15). Nothing is changed.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        enum: [logo_preview_mismatch, logo_changed_concurrently]
+    RevisionConflict:
+      description: >
+        `logo_changed_concurrently` — the tenant `revision` no longer matches
+        `expected_revision` (OD-15). Nothing is changed. The removal's only 409.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: logo_changed_concurrently
+    FileTooLarge:
+      description: "`file_too_large` — the body is over 1 MiB; refused before parsing."
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: file_too_large
+    LogoRejected:
+      description: >
+        The upload failed image or content validation. `error.code` is one
+        `LogoRejectionCode`; `details.construct` is present only for
+        `svg_unsafe_content`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/LogoRejectedError"
+    SystemFailure:
+      description: >
+        `internal_error` — an unexpected server error, recorded server-side by
+        `request_id` and never returned.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - properties:
+                  error:
+                    properties:
+                      code:
+                        const: internal_error
