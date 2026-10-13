@@ -34,14 +34,15 @@
  * `traceContext` (unknown key). Extract first, parse second.
  */
 
-import { context, propagation, trace, ROOT_CONTEXT } from "@opentelemetry/api";
+import { context, propagation, ROOT_CONTEXT } from "@opentelemetry/api";
 import type { Context } from "@opentelemetry/api";
 export type { Context as OtelContext };
 
 // Re-export OTel API singletons so consumers that cannot resolve
 // `@opentelemetry/api` directly (e.g. apps/worker tests) can import
 // them through the shared observability surface.
-export { context, propagation, trace, ROOT_CONTEXT };
+export { context, propagation, ROOT_CONTEXT };
+export { trace } from "@opentelemetry/api";
 
 /** Minimal string-keyed record that satisfies the OTel TextMapGetter/Setter interface. */
 export type TraceCarrier = Record<string, string>;

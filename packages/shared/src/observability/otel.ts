@@ -30,7 +30,6 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
 import { PgInstrumentation } from "@opentelemetry/instrumentation-pg";
 import { RedisInstrumentation } from "@opentelemetry/instrumentation-redis";
-import { MeterProvider } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 
 /**
@@ -39,8 +38,8 @@ import { NodeSDK } from "@opentelemetry/sdk-node";
  * integration tests. Importing from `@data-pulse-2/shared` avoids apps
  * needing `@opentelemetry/*` as direct devDependencies (T483).
  */
+export { MeterProvider as __internal_MeterProvider } from "@opentelemetry/sdk-metrics";
 export {
-  MeterProvider as __internal_MeterProvider,
   PrometheusExporter as __internal_PrometheusExporter,
   metrics as __internal_otelMetricsApi,
 };
