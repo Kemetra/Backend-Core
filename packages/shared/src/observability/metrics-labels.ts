@@ -213,6 +213,14 @@ export const ALLOWED_METRIC_LABELS: Readonly<Record<string, readonly string[]>> 
   // structured `posting.reversal.dead_lettered` error log, NOT metric labels.
   erpnext_posting_reversal_deferred_dead_letter_total: [],
 
+  // ---- Sale re-drive sweep — RT-457 ----
+  // Adds the number of items the scheduled sweep recovered per tick: `reason`
+  // is the closed set {sale_processing, sale_post_intent, reversal_intent}
+  // (a stranded unprocessed sale was processed; a missing sale_post /
+  // reversal erpnext.posting.requested event was re-emitted). The (tenant,
+  // sale) lives in the sweep's structured log, NOT a metric label.
+  sale_redrive_total: ["reason"],
+
   // ---- Connector boundary lifecycle — 018-POLISH (spec §FR-022a) ----
   // Increments on every connector credential/registration lifecycle action
   // (register / issue / rotate / revoke / disable) — operational visibility for

@@ -105,7 +105,13 @@ import {
 } from "./email/email.worker";
 import { AuditFanoutProcessor, AUDIT_DB, type AuditDbLike } from "./audit/audit-fanout.processor";
 import { AuditWorker } from "./audit/audit.worker";
+import { createLogger } from "@data-pulse-2/shared";
 import { SaleProcessingProcessor } from "./sales/sale-processing.processor";
+import { resolveSaleRedriveMinAgeMs } from "./sales/sale-redrive.config";
+import { SaleRedriveProcessor } from "./sales/sale-redrive.processor";
+import { NoOpSaleRedriveRepository, PgSaleRedriveRepository } from "./sales/sale-redrive.repository";
+import { SaleRedriveScheduler } from "./sales/sale-redrive.scheduler";
+import { SaleRedriveWorker } from "./sales/sale-redrive.worker";
 import { SaleWorker } from "./sales/sale.worker";
 import {
   DrizzleAuditDbAdapter,
@@ -394,7 +400,12 @@ export function auditDbProviderFactory(wrapper: AuditDbPool): AuditDbLike {
 export function saleProcessingProcessorProviderFactory(
   wrapper: AuditDbPool,
 ): SaleProcessingProcessor {
-  return new SaleProcessingProcessor(wrapper.pool as Pool);
+  // RT-457: the processor's failure log (ids + error class only) needs a real
+  // logger; before RT-457 it was built without one, so failures left no trace.
+  return new SaleProcessingProcessor(
+    wrapper.pool as Pool,
+    createLogger({ service: "worker", bindings: { component: "sales.sale-processing" } }),
+  );
 }
 
 /**
@@ -451,6 +462,24 @@ export function outboxRetentionRepoProviderFactory(
     return new NoOpOutboxRetentionRepository();
   }
   return new DrizzleOutboxRetentionRepository(wrapper.pool);
+}
+
+/**
+ * Factory for the `SaleRedriveProcessor` provider (RT-457).
+ *
+ * Reuses the shared `AuditDbPool` wrapper and the module's
+ * `SaleProcessingProcessor`, so a stranded sale is processed by exactly the
+ * code the BullMQ job runs. On the no-DB path the NoOp repository lists no
+ * tenants. The minimum age is resolved here (and the interval in the
+ * scheduler), so an invalid value refuses boot.
+ */
+export function saleRedriveProcessorProviderFactory(
+  wrapper: AuditDbPool,
+  saleProcessing: SaleProcessingProcessor,
+): SaleRedriveProcessor {
+  const repo =
+    wrapper.pool === null ? new NoOpSaleRedriveRepository() : new PgSaleRedriveRepository(wrapper.pool);
+  return new SaleRedriveProcessor(repo, saleProcessing, resolveSaleRedriveMinAgeMs());
 }
 
 /**
@@ -881,6 +910,19 @@ export class AuditRetentionRoleVerifier implements OnModuleInit {
     StockRunSweepWorker,
     StockRunSweepScheduler,
 
+    // ── Sale re-drive sweep (RT-457) ──────────────────────────────────
+    //
+    // A repeatable job (default every 5 minutes) that processes sales still
+    // unprocessed past the minimum age and re-emits missing posting intents.
+    // Same quartet shape as the sweeps above.
+    {
+      provide: SaleRedriveProcessor,
+      useFactory: saleRedriveProcessorProviderFactory,
+      inject: [AuditDbPool, SaleProcessingProcessor],
+    },
+    SaleRedriveWorker,
+    SaleRedriveScheduler,
+
     // ── Cashier-admission replay purge (RT-209) ───────────────────────
     //
     // A repeatable job (default hourly) that deletes every tenant's expired
@@ -948,6 +990,8 @@ export class AuditRetentionRoleVerifier implements OnModuleInit {
     OutboxRetentionProcessor,
     StockRunSweepWorker,
     StockRunSweepProcessor,
+    SaleRedriveWorker,
+    SaleRedriveProcessor,
     ReplayPurgeWorker,
     ReplayPurgeProcessor,
     OUTBOX_DRAINER,

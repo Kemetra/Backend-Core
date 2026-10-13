@@ -209,6 +209,8 @@ describe("Drift contract: every signal in the catalogue is represented", () => {
     "erpnext_stock_reconciliation_sweep_total",
     // ERPNext posting reversal dead-lettered awaiting its sale_post — RT-207. Unlabeled.
     "erpnext_posting_reversal_deferred_dead_letter_total",
+    // Sale re-drive sweep — RT-457. `reason` (closed set).
+    "sale_redrive_total",
     // Connector boundary lifecycle — 018-POLISH (spec §FR-022a). Unlabeled.
     "connector_lifecycle_total",
     // Connector health — 020-POLISH (spec FR-018). Unlabeled.

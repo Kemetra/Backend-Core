@@ -34,7 +34,9 @@ const dockerOutboxSuites = includeDbBackedTests
      // 015-US1-FEED posting-requested consumer (resolve eligibility + insert).
      "/erpnext-posting/posting-requested-consumer\\.spec\\.ts$",
      // 017-US3 reconciliation-run processor (009 on-hand vs ERPNext-Bin compare).
-     "/erpnext-reconciliation/reconciliation-run\\.spec\\.ts$"];
+     "/erpnext-reconciliation/reconciliation-run\\.spec\\.ts$",
+     // RT-457 sale re-drive sweep against real Postgres.
+     "/sales/sale-redrive\\.integration\\.spec\\.ts$"];
 
 /** @type {import('jest').Config} */
 module.exports = {

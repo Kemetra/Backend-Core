@@ -57,6 +57,7 @@ import { AUDIT_QUEUE_NAME } from "../../src/audit/audit.worker";
 import { AUDIT_RETENTION_QUEUE_NAME } from "../../src/audit/audit-retention.worker";
 import { SALE_PROCESSING_QUEUE_NAME } from "../../src/sales/sale.worker";
 import { STOCK_RUN_SWEEP_QUEUE_NAME } from "../../src/erpnext-reconciliation/stock-run-sweep.worker";
+import { SALE_REDRIVE_QUEUE_NAME } from "../../src/sales/sale-redrive.worker";
 import { OUTBOX_RETENTION_QUEUE_NAME } from "../../src/outbox/retention.worker";
 import { OUTBOX_AUDIT_QUEUE_NAME } from "../../src/outbox/consumers/audit-event-created.consumer";
 import { OUTBOX_SALE_PROCESSING_QUEUE_NAME } from "../../src/outbox/consumers/sale-captured.consumer";
@@ -99,6 +100,8 @@ describe("T465 — signal presence: every worker metric is in ALLOWED_METRIC_LAB
       "erpnext_stock_reconciliation_sweep_total",
       // RT-207: a reversal dead-lettered while still awaiting its sale_post.
       "erpnext_posting_reversal_deferred_dead_letter_total",
+      // RT-457: sale re-drive sweep, by reason.
+      "sale_redrive_total",
     ];
     expect([...WORKER_METRIC_NAMES].sort()).toEqual([...expected].sort());
   });
@@ -190,7 +193,7 @@ describe("T465 — label policy: every worker metric's labels pass validateMetri
 // ---------------------------------------------------------------------------
 
 describe("T465 — bounded enums: queue, job_name, and error_class are documented", () => {
-  it("RT-125/RT-179/RT-209: WORKER_QUEUE_NAMES is exactly the seven queues the worker consumes", () => {
+  it("RT-125/RT-179/RT-209/RT-457: WORKER_QUEUE_NAMES is exactly the eight queues the worker consumes", () => {
     const expected = [
       "email",
       "audit",
@@ -199,6 +202,7 @@ describe("T465 — bounded enums: queue, job_name, and error_class are documente
       "outbox-retention",
       "erpnext-stock-reconciliation-sweep",
       "cashier-admission-replay-purge",
+      "sale-redrive",
     ];
     expect([...WORKER_QUEUE_NAMES].sort()).toEqual([...expected].sort());
   });
@@ -215,6 +219,7 @@ describe("T465 — bounded enums: queue, job_name, and error_class are documente
       SALE_PROCESSING_QUEUE_NAME,
       OUTBOX_RETENTION_QUEUE_NAME,
       STOCK_RUN_SWEEP_QUEUE_NAME,
+      SALE_REDRIVE_QUEUE_NAME,
       OUTBOX_AUDIT_QUEUE_NAME,
       OUTBOX_SALE_PROCESSING_QUEUE_NAME,
     ]) {
@@ -228,9 +233,9 @@ describe("T465 — bounded enums: queue, job_name, and error_class are documente
     );
   });
 
-  it("WORKER_JOB_NAMES is unchanged by RT-125 (no job-label churn)", () => {
+  it("WORKER_JOB_NAMES is the documented closed set (RT-457 adds sale-processing failures)", () => {
     expect([...WORKER_JOB_NAMES].sort()).toEqual(
-      ["audit-fanout", "audit-retention", "email", "session-revoke", "soft-delete-sweep"],
+      ["audit-fanout", "audit-retention", "email", "sale-processing", "session-revoke", "soft-delete-sweep"],
     );
   });
 
