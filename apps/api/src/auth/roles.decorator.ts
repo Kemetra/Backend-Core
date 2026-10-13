@@ -135,7 +135,7 @@ export function Roles(
 export function Roles(
   ...args: Array<RoleCode | RolesOptions>
 ): CustomDecorator {
-  const last = args[args.length - 1];
+  const last = args.at(-1);
   const opts: RolesOptions = isOptions(last) ? last : {};
   const codes = (
     isOptions(last) ? args.slice(0, -1) : args

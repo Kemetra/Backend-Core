@@ -97,7 +97,7 @@ interface SeedSummary {
   aliases_inserted: number;
 }
 
-const DECIMAL_AMOUNT = /^-?[0-9]{1,15}(\.[0-9]{1,4})?$/;
+const DECIMAL_AMOUNT = /^-?\d{1,15}(\.\d{1,4})?$/;
 
 function fail(code: number, message: string): never {
   console.error(`seed-catalog: ${message}`);
@@ -170,7 +170,7 @@ function validateProduct(value: unknown, index: number): PilotProduct {
   const skus = asStringArray(p['skus'], index, 'skus');
   const barcodes = asStringArray(p['barcodes'], index, 'barcodes');
   for (const b of barcodes) {
-    if (!BARCODE_LENGTHS.has(b.length) || !/^[0-9]+$/.test(b)) {
+    if (!BARCODE_LENGTHS.has(b.length) || !/^\d+$/.test(b)) {
       fail(5, `products[${index}].barcodes entry "${b}" must be a 12/13/14-digit numeric string.`);
     }
   }

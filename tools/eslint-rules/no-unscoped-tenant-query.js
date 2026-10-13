@@ -137,6 +137,25 @@ function analyseChain(node) {
   return { isDrizzlePool: false, tenantTable: null };
 }
 
+function rootCallExpression(node) {
+  // Walk callee chain to find the root CallExpression.
+  let n = node;
+  while (n?.type === "CallExpression" && n.callee.type === "MemberExpression") {
+    n = n.callee.object;
+  }
+  return n;
+}
+
+function isDrizzlePoolCall(node) {
+  return (
+    node?.type === "CallExpression" &&
+    node.callee.type === "Identifier" &&
+    node.callee.name === "drizzle" &&
+    node.arguments.length > 0 &&
+    looksLikePool(node.arguments[0])
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Rule definition
 // ---------------------------------------------------------------------------
@@ -193,26 +212,6 @@ module.exports = {
     // ESLint visits the outer CallExpression first, so a set filled by a
     // nested drizzle() visit would still be empty when .from() is checked.
     // -----------------------------------------------------------------------
-
-    function rootCallExpression(node) {
-      // Walk callee chain to find the root CallExpression.
-      let n = node;
-      while (n && n.type === "CallExpression" && n.callee.type === "MemberExpression") {
-        n = n.callee.object;
-      }
-      return n;
-    }
-
-    function isDrizzlePoolCall(node) {
-      return (
-        node &&
-        node.type === "CallExpression" &&
-        node.callee.type === "Identifier" &&
-        node.callee.name === "drizzle" &&
-        node.arguments.length > 0 &&
-        looksLikePool(node.arguments[0])
-      );
-    }
 
     return {
       CallExpression(node) {

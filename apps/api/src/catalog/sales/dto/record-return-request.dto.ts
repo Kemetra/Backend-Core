@@ -9,12 +9,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 const quantity = z
   .string()
-  .regex(/^[0-9]{1,13}(\.[0-9]{1,6})?$/, "must be a non-negative decimal string")
+  .regex(/^\d{1,13}(\.\d{1,6})?$/, "must be a non-negative decimal string")
   .refine((v) => /[1-9]/.test(v), "quantity must be greater than zero");
 
 const amount = z
   .string()
-  .regex(/^[0-9]{1,15}(\.[0-9]{1,4})?$/, "must be a non-negative exact-decimal string");
+  .regex(/^\d{1,15}(\.\d{1,4})?$/, "must be a non-negative exact-decimal string");
 
 export const ReturnLineRequestSchema = z
   .object({

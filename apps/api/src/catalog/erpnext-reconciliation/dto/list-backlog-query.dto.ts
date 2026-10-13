@@ -24,7 +24,7 @@ export const ListBacklogQuerySchema = z
       // the `> $cursor::bigint` comparison safely in range (a too-long cursor is
       // a clean 400, never an unhandled 22003 → 500). Mirrors the 015 feed DTO.
       .max(18, "cursor exceeds the maximum length")
-      .regex(/^[0-9]+$/, "cursor must be an opaque numeric token")
+      .regex(/^\d+$/, "cursor must be an opaque numeric token")
       .optional(),
     limit: z.coerce.number().int().min(1).max(500).optional(),
     storeId: z.string().uuid().optional(),

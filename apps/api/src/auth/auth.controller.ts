@@ -154,7 +154,7 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
     const principal = req.principal;
-    if (!principal || principal.kind !== "session") {
+    if (principal?.kind !== "session") {
       // Bearer-token callers can't "sign out" a session — guard already
       // accepted them, but the contract is cookie-only. Treat as 401.
       throw new UnauthorizedException("Unauthorized");
@@ -175,7 +175,7 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
     const principal = req.principal;
-    if (!principal || principal.kind !== "session") {
+    if (principal?.kind !== "session") {
       throw new UnauthorizedException("Unauthorized");
     }
     const result = await this.authService.refresh(principal.sessionId);

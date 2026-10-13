@@ -9,14 +9,14 @@
  * A claim row uses response_status 0 and a sentinel body. find() returns
  * it so the caller can answer 425 instead of replaying a placeholder.
  */
-import { newId } from "@data-pulse-2/shared";
-import type {
-  IdempotencyEntry,
-  PgMirrorReader,
-  PgMirrorWriter,
-  StoredResult,
+import {
+  IdempotencyMirrorConflict,
+  newId,
+  type IdempotencyEntry,
+  type PgMirrorReader,
+  type PgMirrorWriter,
+  type StoredResult,
 } from "@data-pulse-2/shared";
-import { IdempotencyMirrorConflict } from "@data-pulse-2/shared";
 import { runWithTenantContext } from "@data-pulse-2/db/middleware/tenant-context";
 import type { Pool, PoolClient } from "pg";
 
@@ -135,7 +135,7 @@ export class PgIdempotencyMirror implements PgMirrorWriter, PgMirrorReader {
           [row.tenantId, row.clientId, row.key, row.storeId],
         );
         const stored = existing.rows[0]?.request_hash;
-        if (stored && stored.equals(row.fingerprint)) return;
+        if (stored?.equals(row.fingerprint)) return;
         throw new Error("idempotency completion conflict");
       },
     );

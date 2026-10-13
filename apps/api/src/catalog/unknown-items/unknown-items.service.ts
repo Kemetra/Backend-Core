@@ -125,6 +125,12 @@ export interface CapturedUnknownItemRow {
   readonly saleContext: Record<string, unknown> | null;
 }
 
+/** Lifecycle states an unknown item can be in. */
+export type UnknownItemResolutionStatus = "pending" | "resolved" | "dismissed";
+
+/** Resolution actions recorded when an unknown item leaves `pending`. */
+export type UnknownItemResolutionAction = "linked" | "created" | "dismissed";
+
 /**
  * Lifecycle-tolerant row shape for read paths (`findByIdForTenant`).
  * A GET-by-id may surface any of the three lifecycle states; the
@@ -140,8 +146,8 @@ export interface UnknownItemRow {
   readonly identifierType: string;
   readonly identifierValue: string;
   readonly sourceSystem: string | null;
-  readonly resolutionStatus: "pending" | "resolved" | "dismissed";
-  readonly resolutionAction: "linked" | "created" | "dismissed" | null;
+  readonly resolutionStatus: UnknownItemResolutionStatus;
+  readonly resolutionAction: UnknownItemResolutionAction | null;
   readonly resolvedAt: Date | null;
   readonly resolvedBy: string | null;
   readonly resolvedProductId: string | null;
@@ -603,8 +609,8 @@ export class UnknownItemsService {
           identifier_type: string;
           value: string;
           source_system: string | null;
-          resolution_status: "pending" | "resolved" | "dismissed";
-          resolution_action: "linked" | "created" | "dismissed" | null;
+          resolution_status: UnknownItemResolutionStatus;
+          resolution_action: UnknownItemResolutionAction | null;
           resolved_at: Date | null;
           resolved_by: string | null;
           resolved_product_id: string | null;
@@ -700,7 +706,7 @@ export class UnknownItemsService {
     readonly tenantId: string;
     /** RT-131: the caller's store scope (`resolveStoreScope`). */
     readonly storeScope: StoreScope;
-    readonly status: "pending" | "resolved" | "dismissed";
+    readonly status: UnknownItemResolutionStatus;
     readonly limit: number;
     readonly storeIdFilter?: string | null;
     // 007 US2 (T037): optional source_system filter + sort + grouping.
@@ -729,18 +735,18 @@ export class UnknownItemsService {
     // same-group rows are contiguous (FR-004 ordering, not a grouped envelope);
     // `sort` orders within. A stable `id DESC` tie-break is always last.
     const sort = input.sort ?? "age_desc";
-    const sortFragment =
-      sort === "age_asc"
-        ? "encountered_at ASC"
-        : sort === "store"
-          ? "store_id ASC"
-          : "encountered_at DESC";
-    const groupFragment =
-      input.groupBy === "store"
-        ? "store_id ASC, "
-        : input.groupBy === "source_system"
-          ? "source_system ASC NULLS LAST, "
-          : "";
+    let sortFragment = "encountered_at DESC";
+    if (sort === "age_asc") {
+      sortFragment = "encountered_at ASC";
+    } else if (sort === "store") {
+      sortFragment = "store_id ASC";
+    }
+    let groupFragment = "";
+    if (input.groupBy === "store") {
+      groupFragment = "store_id ASC, ";
+    } else if (input.groupBy === "source_system") {
+      groupFragment = "source_system ASC NULLS LAST, ";
+    }
     const orderBy = `${groupFragment}${sortFragment}, id DESC`;
 
     const rows = await runWithTenantContext(
@@ -767,8 +773,8 @@ export class UnknownItemsService {
           identifier_type: string;
           value: string;
           source_system: string | null;
-          resolution_status: "pending" | "resolved" | "dismissed";
-          resolution_action: "linked" | "created" | "dismissed" | null;
+          resolution_status: UnknownItemResolutionStatus;
+          resolution_action: UnknownItemResolutionAction | null;
           resolved_at: Date | null;
           resolved_by: string | null;
           resolved_product_id: string | null;
@@ -895,8 +901,8 @@ export class UnknownItemsService {
           identifier_type: string;
           value: string;
           source_system: string | null;
-          resolution_status: "pending" | "resolved" | "dismissed";
-          resolution_action: "linked" | "created" | "dismissed" | null;
+          resolution_status: UnknownItemResolutionStatus;
+          resolution_action: UnknownItemResolutionAction | null;
           resolved_at: Date | null;
           resolved_by: string | null;
           resolved_product_id: string | null;

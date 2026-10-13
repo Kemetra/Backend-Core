@@ -557,7 +557,7 @@ export class PosOperatorsService {
     const { userRow, deviceRow, posRole } = authz;
 
     const session = await this.findOperatorSessionById(sessionId, client);
-    if (!session || session.revoked_at !== null || session.expires_at.getTime() <= Date.now()) {
+    if (session?.revoked_at !== null || session.expires_at.getTime() <= Date.now()) {
       // Session was revoked or expired after idempotency key was stored.
       return { kind: "refused", reason: "no_active_session_to_supersede" };
     }
@@ -707,7 +707,7 @@ export class PosOperatorsService {
 
     // Resolve the target operator AFTER branch authorization succeeds (minimum disclosure).
     const targetRow = await this.findUserByClerkSubject(query.operator_id);
-    if (!targetRow || targetRow.deleted_at !== null) {
+    if (targetRow?.deleted_at !== null) {
       // Non-existent or disabled target → "none" (minimum disclosure, not 401).
       return { kind: "none" };
     }

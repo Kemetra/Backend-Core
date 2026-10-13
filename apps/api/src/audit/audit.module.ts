@@ -41,8 +41,7 @@
  * use `NoOpAuditJobEnqueuer` until the worker is ready.
  */
 import { Module, type Provider } from "@nestjs/common";
-import { APP_INTERCEPTOR } from "@nestjs/core";
-import { Reflector } from "@nestjs/core";
+import { APP_INTERCEPTOR, Reflector } from "@nestjs/core";
 
 import { AuthModule } from "../auth/auth.module";
 import { ContextModule } from "../context/context.module";

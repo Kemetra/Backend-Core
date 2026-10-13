@@ -41,7 +41,7 @@ export const BIN_VIEW_WINDOW_MAX_ITEMS = 500;
 export const BIN_VIEW_MAX_WINDOWS = 20;
 
 /** The contract's exact-decimal quantity pattern (no float). */
-const QUANTITY_PATTERN = /^-?[0-9]{1,15}(\.[0-9]{1,6})?$/;
+const QUANTITY_PATTERN = /^-?\d{1,15}(\.\d{1,6})?$/;
 
 const ErpnextItemRefSchema = z
   .object({

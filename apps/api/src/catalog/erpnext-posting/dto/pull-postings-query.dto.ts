@@ -23,7 +23,7 @@ export const PullPostingsQuerySchema = z
       // `$1::bigint` cast in the feed query cannot overflow → a too-long cursor is
       // a clean 400, never an unhandled 22003 → 500.
       .max(18, "since exceeds the maximum cursor length")
-      .regex(/^[0-9]+$/, "since must be an opaque numeric cursor")
+      .regex(/^\d+$/, "since must be an opaque numeric cursor")
       .optional(),
     limit: z.coerce.number().int().min(1).max(500).optional(),
   })

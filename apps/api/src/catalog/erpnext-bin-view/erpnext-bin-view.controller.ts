@@ -83,7 +83,7 @@ export class ErpnextBinViewController {
     query: PullRequestsQuery,
   ): Promise<BinViewPageResponse> {
     const principal = req.principal;
-    if (!principal || principal.kind !== "token" || principal.tenantId === null) {
+    if (principal?.kind !== "token" || principal.tenantId === null) {
       throw new UnauthorizedException("Unauthorized");
     }
 
@@ -117,7 +117,7 @@ export class ErpnextBinViewController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<RecordedBinView> {
     const principal = req.principal;
-    if (!principal || principal.kind !== "token" || principal.tenantId === null) {
+    if (principal?.kind !== "token" || principal.tenantId === null) {
       throw new UnauthorizedException("Unauthorized");
     }
 

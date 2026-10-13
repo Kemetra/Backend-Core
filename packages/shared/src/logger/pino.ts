@@ -280,7 +280,7 @@ export function createLogger(opts: CreateLoggerOptions): Logger {
   const baseBindings: Record<string, unknown> = {
     service: opts.service,
     log_schema_version: LOG_SCHEMA_VERSION,
-    ...(opts.bindings ?? {}),
+    ...opts.bindings,
   };
 
   const options: LoggerOptions = {
@@ -358,10 +358,7 @@ export function withRequestContext(
     user_id: userId,
     store_id: ctx.store_id ?? null,
     actor_id: ctx.actor_id !== undefined ? ctx.actor_id : userId,
-    correlation_id:
-      ctx.correlation_id !== undefined && ctx.correlation_id !== null
-        ? ctx.correlation_id
-        : ctx.request_id,
+    correlation_id: ctx.correlation_id ?? ctx.request_id,
   });
 }
 

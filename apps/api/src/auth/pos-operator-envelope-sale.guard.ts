@@ -65,8 +65,7 @@ export class PosOperatorEnvelopeSaleGuard extends AuthGuard {
 
     // Only an internal pos_operator token principal may enter the sale path.
     if (
-      !principal ||
-      principal.kind !== "token" ||
+      principal?.kind !== "token" ||
       principal.scope !== "pos_operator" ||
       principal.userId === null ||
       principal.storeId === null

@@ -132,12 +132,12 @@ export class StoreOverrideService {
     // `{ name: null }` or `{ categoryId: undefined }` are still rejected.
     // The Q8 contract is "DTO contains the key", not "DTO contains a
     // truthy value for the key".
-    if (Object.prototype.hasOwnProperty.call(dto, "name")) {
+    if (Object.hasOwn(dto, "name")) {
       throw new BadRequestException(
         "'name' is not overrideable at the store level (Q8).",
       );
     }
-    if (Object.prototype.hasOwnProperty.call(dto, "categoryId")) {
+    if (Object.hasOwn(dto, "categoryId")) {
       throw new BadRequestException(
         "'categoryId' is not overrideable at the store level (Q8).",
       );

@@ -584,7 +584,7 @@ export interface ListDeadLetteredInput {
  * Length cap (80 chars) prevents pathological inputs from leaking
  * size-side-channel info; class names in this repo are well under 60.
  */
-const SAFE_ERROR_CLASS_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+const SAFE_ERROR_CLASS_RE = /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$/;
 const SAFE_ERROR_CLASS_MAX_LEN = 80;
 
 /**

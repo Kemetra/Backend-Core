@@ -34,8 +34,7 @@ import {
 } from "@data-pulse-2/auth";
 import { sessions, users } from "@data-pulse-2/db/schema";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
-import { and, eq, isNull } from "drizzle-orm";
-import { sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Pool } from "pg";
 import type { SignInInput, SignInResult } from "./dto";
 import type { SignInMembershipsReader } from "./signin-memberships";
@@ -467,7 +466,7 @@ export class AuthService {
   async confirmEmailVerification(input: { rawToken: string }): Promise<void> {
     const repo = this.requireAuthTokens();
     const tokenRow = await repo.findActiveByRawToken(input.rawToken);
-    if (!tokenRow || tokenRow.scope !== AUTH_TOKEN_SCOPES.emailVerify) {
+    if (tokenRow?.scope !== AUTH_TOKEN_SCOPES.emailVerify) {
       throw new BadRequestException("Invalid or expired token");
     }
     if (tokenRow.userId === null) {

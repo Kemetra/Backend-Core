@@ -35,8 +35,12 @@
 import { Module, type Provider } from "@nestjs/common";
 import { APP_INTERCEPTOR, Reflector } from "@nestjs/core";
 
-import { createLogger, IdempotencyKeyStore, type Logger } from "@data-pulse-2/shared";
-import type { RedisLike as StoreRedisLike } from "@data-pulse-2/shared";
+import {
+  createLogger,
+  IdempotencyKeyStore,
+  type Logger,
+  type RedisLike as StoreRedisLike,
+} from "@data-pulse-2/shared";
 
 import type { Pool } from "pg";
 

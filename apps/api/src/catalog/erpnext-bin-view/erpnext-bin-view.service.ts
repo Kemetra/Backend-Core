@@ -598,7 +598,7 @@ function incomingWindow(body: SnapshotReportBody): IncomingWindow {
 function existingReport(run: LockedRun, requestRef: string): StoredBinViewReport | null {
   const raw = (run.summary as { bin_view_report?: RawStoredBinViewReport } | null)
     ?.bin_view_report;
-  return raw && raw.requestRef === requestRef ? normalizeStored(raw) : null;
+  return raw?.requestRef === requestRef ? normalizeStored(raw) : null;
 }
 
 /**
@@ -665,8 +665,7 @@ function extendsAttempt(
   incoming: IncomingWindow,
 ): existing is StoredBinViewReport {
   if (
-    !existing ||
-    existing.attemptRef !== incoming.attemptRef ||
+    existing?.attemptRef !== incoming.attemptRef ||
     incoming.windowSeq !== existing.windowsRecorded ||
     existing.readAt !== incoming.readAt
   ) {

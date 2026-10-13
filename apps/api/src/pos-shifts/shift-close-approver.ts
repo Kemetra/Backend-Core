@@ -43,7 +43,7 @@ const APPROVER_ROLE_CODES: ReadonlySet<string> = new Set(["owner", "tenant_admin
  * before store access.
  */
 export function standingFinding(standing: ApproverStanding | null): ShiftCloseApproverUnverifiedReason | null {
-  if (standing === null || !standing.active) return "inactive_membership";
+  if (!standing?.active) return "inactive_membership";
   if (!APPROVER_ROLE_CODES.has(standing.roleCode)) return "not_manager";
   if (!standing.storeAccess) return "no_store_access";
   return null;

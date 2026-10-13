@@ -42,7 +42,6 @@
  * `app.current_tenant`), so a plain INSERT satisfies the INSERT policy — no
  * SECURITY DEFINER (which would bypass §II tenant isolation) is used.
  */
-import { sql } from "drizzle-orm";
 import {
   bigint,
   index,

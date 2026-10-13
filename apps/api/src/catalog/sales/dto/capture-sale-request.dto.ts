@@ -32,7 +32,7 @@ import { z } from "zod";
  */
 const decimalAmount = z
   .string()
-  .regex(/^[0-9]{1,15}(\.[0-9]{1,4})?$/, "must be a non-negative exact-decimal string");
+  .regex(/^\d{1,15}(\.\d{1,4})?$/, "must be a non-negative exact-decimal string");
 
 /**
  * Line quantity: `numeric(19,6)` allows 13 integer digits (precision − scale)
@@ -41,7 +41,7 @@ const decimalAmount = z
  */
 const quantityAmount = z
   .string()
-  .regex(/^[0-9]{1,13}(\.[0-9]{1,6})?$/, "must be a non-negative decimal string");
+  .regex(/^\d{1,13}(\.\d{1,6})?$/, "must be a non-negative decimal string");
 
 /** ISO-4217 alphabetic currency code. */
 const currencyCode = z.string().regex(/^[A-Z]{3}$/, "must be an ISO-4217 code");

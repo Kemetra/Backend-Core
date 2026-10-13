@@ -61,7 +61,10 @@ export type ReconcileResult =
   | { kind: "not_found" }
   | { kind: "conflict" };
 
-const CLAIMABLE_STATES = ["open", "partially_applied"];
+const CLAIMABLE_STATES: ReadonlySet<string> = new Set([
+  "open",
+  "partially_applied",
+]);
 
 // Exact-decimal money (§III, no floats): integer ten-thousandths (scale 4),
 // matching apply-payment-decision / reconcile-decision.
@@ -117,7 +120,7 @@ export class ClaimService {
           [refs],
         );
         if (found.rows.length !== refs.length) return { kind: "conflict" };
-        if (found.rows.some((r) => !CLAIMABLE_STATES.includes(r.state))) {
+        if (found.rows.some((r) => !CLAIMABLE_STATES.has(r.state))) {
           return { kind: "conflict" };
         }
         // Every claimed receivable MUST be owed by the claim's payer — else the

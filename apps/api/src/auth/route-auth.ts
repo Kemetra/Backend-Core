@@ -6,8 +6,7 @@
  * and device-attested audit ingestion declare their own credential instead
  * of becoming public.
  */
-import { SetMetadata } from "@nestjs/common";
-import { UnauthorizedException } from "@nestjs/common";
+import { SetMetadata, UnauthorizedException } from "@nestjs/common";
 import type { Request } from "express";
 
 export const IS_PUBLIC_KEY = "dp2:public";

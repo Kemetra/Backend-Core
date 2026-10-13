@@ -27,7 +27,7 @@ export const STALE_AFTER_SECONDS = 86_400;
 export const NEGATIVE_ON_HAND_KIND = "erpnext_negative_on_hand" as const;
 
 /** Exact-decimal quantity as the Connector reports it (the 019 contract pattern). */
-const QUANTITY_RE = /^(-?)([0-9]{1,15})(?:\.([0-9]{1,6}))?$/;
+const QUANTITY_RE = /^(-?)(\d{1,15})(?:\.(\d{1,6}))?$/;
 const SCALE_DIGITS = 6;
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -256,7 +256,7 @@ export function pageEntries(p: {
   const after = cursor ? p.ordered.filter((e) => compareEntries(e, cursor) > 0) : p.ordered;
   const page = after.slice(0, p.limit);
   const nextCursor =
-    after.length > p.limit ? encodeItemCursor({ ...p.scope, entry: page[page.length - 1]! }) : null;
+    after.length > p.limit ? encodeItemCursor({ ...p.scope, entry: page.at(-1)! }) : null;
   return { page, nextCursor };
 }
 

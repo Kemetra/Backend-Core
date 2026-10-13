@@ -76,7 +76,7 @@ export class AuditService {
 
     let nextCursor: string | null = null;
     if (hasMore && kept.length > 0) {
-      const last = kept[kept.length - 1]!;
+      const last = kept.at(-1)!;
       nextCursor = encodeCursor(last.occurredAt, last.id);
     }
 

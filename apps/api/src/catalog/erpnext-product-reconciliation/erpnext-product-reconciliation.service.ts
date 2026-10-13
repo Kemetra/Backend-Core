@@ -279,7 +279,7 @@ export class ErpnextProductReconciliationService {
           [input.mappingId!],
         );
         const row = existing.rows[0];
-        if (row && row.state === "confirmed" && row.retired_at === null) {
+        if (row?.state === "confirmed" && row.retired_at === null) {
           outcome = "no_op_echo";
           resolvedItemMapId = row.id;
         } else {
@@ -308,7 +308,7 @@ export class ErpnextProductReconciliationService {
           [input.tenantProductId],
         );
         const row = active.rows[0];
-        if (row && row.state === "confirmed") {
+        if (row?.state === "confirmed") {
           outcome = "no_op_echo";
           resolvedItemMapId = row.id;
         } else {

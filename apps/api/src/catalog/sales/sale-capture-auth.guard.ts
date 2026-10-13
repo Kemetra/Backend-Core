@@ -76,7 +76,7 @@ export function selectsDevicePath(body: unknown): boolean {
     typeof body === "object" &&
     body !== null &&
     !Array.isArray(body) &&
-    Object.prototype.hasOwnProperty.call(body, OPERATOR_USER_ID_FIELD)
+    Object.hasOwn(body, OPERATOR_USER_ID_FIELD)
   );
 }
 

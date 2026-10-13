@@ -35,7 +35,7 @@ export const SyncOpsListQuerySchema = z
       // `> $cursor::bigint` comparison in range (a too-long cursor is a clean 400,
       // never an unhandled 22003 → 500). Mirrors the 017 backlog DTO.
       .max(18, "cursor exceeds the maximum length")
-      .regex(/^[0-9]+$/, "cursor must be an opaque numeric token")
+      .regex(/^\d+$/, "cursor must be an opaque numeric token")
       .optional(),
     page_size: z.coerce.number().int().min(1).max(200).optional(),
   })
@@ -48,7 +48,7 @@ export type SyncOpsListQuery = z.infer<typeof SyncOpsListQuerySchema>;
  * `Date#toISOString()` (millisecond precision, `Z`) + `|` + the run UUID.
  */
 const RUN_CURSOR_SHAPE =
-  /^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z)\|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)\|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 /**
  * True when the cursor's timestamp is a real calendar instant (RT-180). The

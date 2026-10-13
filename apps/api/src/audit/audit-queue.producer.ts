@@ -27,11 +27,10 @@
  */
 import { Injectable, type OnModuleDestroy } from "@nestjs/common";
 import type { Queue } from "bullmq";
-import { newId } from "@data-pulse-2/shared";
+import { newId, QUEUE_NAMES } from "@data-pulse-2/shared";
 import { injectTraceContext } from "@data-pulse-2/shared/observability/otel";
 import type { AuditJobEnqueuer } from "./audit-job.enqueuer";
 import type { AuditJobPayload } from "./audit-job.types";
-import { QUEUE_NAMES } from "@data-pulse-2/shared";
 
 /** BullMQ queue name for audit jobs. */
 export const AUDIT_QUEUE_NAME = QUEUE_NAMES.audit;

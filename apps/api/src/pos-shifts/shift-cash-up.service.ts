@@ -133,7 +133,7 @@ export class ShiftCashUpService {
       // An exact replay is answered before the envelope path's live check of
       // the stated opener (RT-17 comment 10931 #4); see replaysBeforeLiveCheck.
       const existing = await this.repo.findShift(client, ctx.scope, fact.shiftId);
-      if (existing !== null && existing.payloadHash.equals(hash)) return this.replayShift(client, existing, hash);
+      if (existing?.payloadHash.equals(hash)) return this.replayShift(client, existing, hash);
       await this.requireStatedUser(client, { ctx, userId: fact.openingUserId });
       if (existing !== null) throw new ShiftCashUpError("shift_payload_conflict");
 
@@ -307,7 +307,7 @@ export class ShiftCashUpService {
   private async replayClose(client: PoolClient, candidate: CloseCandidate): Promise<ShiftWriteResult<ShiftProjection> | null> {
     if (candidate.shift.lifecycleState === "open") return null;
     const close = await this.repo.findClose(client, candidate.shift);
-    if (close === null || !close.payloadHash.equals(candidate.hash)) return null;
+    if (!close?.payloadHash.equals(candidate.hash)) return null;
     return { created: false, projection: toShiftProjection(candidate.shift, close) };
   }
 
@@ -367,7 +367,7 @@ export class ShiftCashUpService {
     kind: Exclude<InsertShiftOutcome["kind"], "inserted">,
   ): Promise<ShiftWriteResult<ShiftProjection>> {
     const raced = await this.repo.findShift(client, open.scope, open.shiftId);
-    if (raced !== null && raced.payloadHash.equals(open.hash)) return this.replayShift(client, raced, open.hash);
+    if (raced?.payloadHash.equals(open.hash)) return this.replayShift(client, raced, open.hash);
     throw new ShiftCashUpError(kind === "device_has_open_shift" ? "shift_already_open" : "shift_payload_conflict");
   }
 

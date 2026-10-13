@@ -142,7 +142,7 @@ export class ReconciliationRunProcessor {
           [input.runId],
         );
         const r = run.rows[0];
-        if (!r || r.status !== "running") {
+        if (r?.status !== "running") {
           // Already finished by another invocation (idempotent no-op) or absent.
           return { runId: input.runId, status: "skipped", counts: {} };
         }
