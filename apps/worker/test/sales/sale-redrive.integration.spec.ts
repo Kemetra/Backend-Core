@@ -9,10 +9,14 @@
  *       `erpnext.posting.requested` intent emitted in the same transaction;
  *   (b) a processed sale whose posting event dead-lettered (no `sale_post`
  *       row) → the event is re-emitted, and the consumer then creates the row;
- *   (c) a void with no `reversal` row → its reversal event is re-emitted.
- * Plus the guards: young items are left to the live pipeline, an event still
- * live in the outbox is not duplicated, a repeat run is a no-op, and each
- * tenant only ever sees its own rows.
+ *   (c) a void / refund / return whose reversal event dead-lettered (no
+ *       `reversal` row) → its reversal event is re-emitted.
+ * Plus the guards: only items inside the age window are touched (young ones
+ * are the live pipeline's, old ones are history), a quarantined sale is left
+ * to the operator, an event still live in the outbox is not duplicated, an
+ * intent that never had an event is not invented, re-emission stops after
+ * SALE_REDRIVE_MAX_DEAD_LETTERS dead letters, overlapping or repeated runs
+ * are no-ops, and each tenant only ever sees its own rows.
  *
  * Docker policy mirrors the other worker DB specs: HARD failure unless
  * MIGRATION_TEST_ALLOW_SKIP=1.
@@ -27,6 +31,7 @@ import {
 } from "../../../../packages/db/__tests__/_helpers/postgres-container";
 import { PostingRequestedConsumer } from "../../src/erpnext-posting/posting-requested.consumer";
 import { SaleProcessingProcessor } from "../../src/sales/sale-processing.processor";
+import { SALE_REDRIVE_MAX_DEAD_LETTERS } from "../../src/sales/sale-redrive.config";
 import { SALE_REDRIVE_JOB_NAME, SaleRedriveProcessor } from "../../src/sales/sale-redrive.processor";
 import { PgSaleRedriveRepository } from "../../src/sales/sale-redrive.repository";
 import { seedUnprocessedSale } from "./__support__/seed";
@@ -38,7 +43,8 @@ const TENANT_B = "4e570000-0000-7000-8000-0000000000a2";
 const STORE_B = "4e570000-0000-7000-8000-0000000000b2";
 const ACTOR_B = "4e570000-0000-7000-8000-0000000000c2";
 
-const MIN_AGE_MS = 15 * 60 * 1000;
+const WINDOW = { minAgeMs: 15 * 60 * 1000, maxAgeMs: 7 * 24 * 60 * 60 * 1000 };
+const BATCH = 100;
 const POSTING_EVENT = "erpnext.posting.requested";
 const quiet = (): void => undefined;
 
@@ -74,7 +80,7 @@ function sweep(): SaleRedriveProcessor {
   return new SaleRedriveProcessor(
     new PgSaleRedriveRepository(e().app),
     new SaleProcessingProcessor(e().app),
-    MIN_AGE_MS,
+    WINDOW,
     quiet,
   );
 }
@@ -86,7 +92,7 @@ function newSaleId(): string {
 
 /** A captured sale, `ageMinutes` old; processed `ageMinutes` ago when `processed`. */
 async function seedSale(
-  opts: { tenant?: "A" | "B"; ageMinutes: number; processed?: boolean },
+  opts: { tenant?: "A" | "B"; ageMinutes: number; processed?: boolean; syncStatus?: string },
 ): Promise<string> {
   const b = opts.tenant === "B";
   const saleId = newSaleId();
@@ -106,9 +112,9 @@ async function seedSale(
     `UPDATE sales
         SET created_at = now() - ($2::int * interval '1 minute'),
             processed_at = CASE WHEN $3 THEN now() - ($2::int * interval '1 minute') END,
-            sync_status = CASE WHEN $3 THEN 'synced' ELSE sync_status END
+            sync_status = COALESCE($4, CASE WHEN $3 THEN 'synced' ELSE sync_status END)
       WHERE id = $1`,
-    [saleId, opts.ageMinutes, opts.processed === true],
+    [saleId, opts.ageMinutes, opts.processed === true, opts.syncStatus ?? null],
   );
   return saleId;
 }
@@ -144,6 +150,30 @@ async function deadLetter(eventId: string): Promise<void> {
   await e().admin.query(
     `UPDATE outbox_events SET delivery_state = 'dead_lettered', attempts = 8 WHERE event_id = $1`,
     [eventId],
+  );
+}
+
+/** An `erpnext.posting.requested` event the live path wrote, in `state`. */
+async function seedPostingEvent(
+  source: { tenantId: string; storeId: string; saleId: string; sourceRefId: string; kind: string },
+  state: "failed" | "dead_lettered",
+): Promise<void> {
+  await e().admin.query(
+    `INSERT INTO outbox_events (event_id, tenant_id, store_id, event_type, payload, delivery_state, attempts)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb, $5, $6)`,
+    [
+      source.tenantId,
+      source.storeId,
+      POSTING_EVENT,
+      JSON.stringify({
+        sale_id: source.saleId,
+        store_id: source.storeId,
+        kind: source.kind,
+        source_ref_id: source.sourceRefId,
+      }),
+      state,
+      state === "failed" ? 3 : 8,
+    ],
   );
 }
 
@@ -208,21 +238,36 @@ describe("RT-457 (a) — a sale stranded before processing is re-driven", () => 
     expect((await saleState(saleId)).processed).toBe(false);
     expect(await postingEvents(saleId)).toHaveLength(0);
   });
+
+  it("never re-drives a sale older than the maximum age", async () => {
+    if (skip) return;
+    const saleId = await seedSale({ ageMinutes: 8 * 24 * 60 });
+
+    await runSweep();
+
+    expect((await saleState(saleId)).processed).toBe(false);
+    expect(await postingEvents(saleId)).toHaveLength(0);
+  });
+
+  it("leaves a sale quarantined for operator repair alone", async () => {
+    if (skip) return;
+    const saleId = await seedSale({ ageMinutes: 60, syncStatus: "failed-needs-repair" });
+
+    await runSweep();
+
+    expect(await saleState(saleId)).toEqual({ processed: false, syncStatus: "failed-needs-repair" });
+    expect(await postingEvents(saleId)).toHaveLength(0);
+  });
 });
 
 describe("RT-457 (b) — a processed sale with no sale_post row is re-driven", () => {
   it("re-emits the posting intent once its event dead-lettered, then is a no-op", async () => {
     if (skip) return;
     const saleId = await seedSale({ ageMinutes: 60, processed: true });
+    const source = { tenantId: TENANT_A, storeId: STORE_A, saleId, sourceRefId: saleId, kind: "sale_post" };
 
     // Its original event is still live: the drainer owns it, nothing is re-emitted.
-    await e().admin.query(
-      `INSERT INTO outbox_events (event_id, tenant_id, store_id, event_type, payload, delivery_state, attempts)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb, 'failed', 3)`,
-      [TENANT_A, STORE_A, POSTING_EVENT, JSON.stringify({
-        sale_id: saleId, store_id: STORE_A, kind: "sale_post", source_ref_id: saleId,
-      })],
-    );
+    await seedPostingEvent(source, "failed");
     await runSweep();
     expect(await postingEvents(saleId)).toHaveLength(1);
 
@@ -243,46 +288,138 @@ describe("RT-457 (b) — a processed sale with no sale_post row is re-driven", (
     expect(await postingEvents(saleId)).toHaveLength(2);
     expect(await postingRows(saleId)).toEqual([{ kind: "sale_post" }]);
   });
+
+  it("does not invent an intent for a sale that never had a posting event", async () => {
+    if (skip) return;
+    const saleId = await seedSale({ ageMinutes: 60, processed: true });
+
+    await runSweep();
+
+    expect(await postingEvents(saleId)).toHaveLength(0);
+  });
+
+  it(`stops re-emitting after ${SALE_REDRIVE_MAX_DEAD_LETTERS} dead letters`, async () => {
+    if (skip) return;
+    const saleId = await seedSale({ ageMinutes: 60, processed: true });
+    const source = { tenantId: TENANT_A, storeId: STORE_A, saleId, sourceRefId: saleId, kind: "sale_post" };
+    await seedPostingEvent(source, "dead_lettered");
+
+    // Each re-emitted event dead-letters too (the consumer can never accept it).
+    for (let i = 1; i < SALE_REDRIVE_MAX_DEAD_LETTERS; i += 1) {
+      await runSweep();
+      const events = await postingEvents(saleId);
+      expect(events).toHaveLength(i + 1);
+      await deadLetter(events[i]!.event_id);
+    }
+
+    await runSweep();
+    await runSweep();
+    const events = await postingEvents(saleId);
+    expect(events).toHaveLength(SALE_REDRIVE_MAX_DEAD_LETTERS);
+    expect(events.every((row) => row.delivery_state === "dead_lettered")).toBe(true);
+  });
+
+  it("emits once when two sweeps of the same tenant overlap", async () => {
+    if (skip) return;
+    const saleId = await seedSale({ ageMinutes: 60, processed: true });
+    await seedPostingEvent(
+      { tenantId: TENANT_A, storeId: STORE_A, saleId, sourceRefId: saleId, kind: "sale_post" },
+      "dead_lettered",
+    );
+    const repo = new PgSaleRedriveRepository(e().app);
+
+    await Promise.all([
+      repo.reemitMissingIntents(TENANT_A, WINDOW, BATCH),
+      repo.reemitMissingIntents(TENANT_A, WINDOW, BATCH),
+    ]);
+
+    expect((await postingEvents(saleId)).map((row) => row.delivery_state)).toEqual(["dead_lettered", "pending"]);
+  });
 });
 
-describe("RT-457 (c) — a void with no reversal row is re-driven", () => {
-  it("re-emits the reversal intent for the void", async () => {
-    if (skip) return;
-    const saleId = await seedSale({ ageMinutes: 90, processed: true });
-    await e().admin.query(
-      `INSERT INTO erpnext_posting_status
-         (tenant_id, store_id, sale_id, kind, source_ref_id, source_system, external_id, payload_hash, status, rejection_category)
-       VALUES ($1, $2, $3, 'sale_post', $3, 'pos-rt457', $4, $5, 'permanently_rejected', 'unmapped_item')`,
-      [TENANT_A, STORE_A, saleId, `rt457-${saleId}`, "0".repeat(64)],
-    );
-    const voidId = newSaleId();
+/** Insert one void / refund / return for `saleId`, 30 minutes ago. */
+async function seedReversalSource(kind: "void" | "refund" | "return", saleId: string): Promise<string> {
+  const id = newSaleId();
+  const common = [id, saleId, TENANT_A, STORE_A, `${kind}-${id}`, "0".repeat(64), ACTOR_A];
+  if (kind === "void") {
     await e().admin.query(
       `INSERT INTO sale_voids
          (id, sale_id, tenant_id, store_id, business_date, source_system, external_id, payload_hash, created_by, created_at)
        VALUES ($1, $2, $3, $4, current_date, 'pos-rt457', $5, $6, $7, now() - interval '30 minutes')`,
-      [voidId, saleId, TENANT_A, STORE_A, `void-${voidId}`, "0".repeat(64), ACTOR_A],
+      common,
     );
+  } else if (kind === "refund") {
+    await e().admin.query(
+      `INSERT INTO sale_refunds
+         (id, sale_id, tenant_id, store_id, pos_refund_amount, currency_code, source_system, external_id, payload_hash, created_by, created_at)
+       VALUES ($1, $2, $3, $4, 5.00, 'EGP', 'pos-rt457', $5, $6, $7, now() - interval '30 minutes')`,
+      common,
+    );
+  } else {
+    await e().admin.query(
+      `INSERT INTO sale_returns
+         (id, sale_id, tenant_id, store_id, return_seq, business_date, currency_code, return_total, source_system, external_id, payload_hash, created_by, created_at)
+       VALUES ($1, $2, $3, $4, 1, current_date, 'EGP', 5.00, 'pos-rt457', $5, $6, $7, now() - interval '30 minutes')`,
+      common,
+    );
+  }
+  return id;
+}
 
-    await runSweep();
+describe("RT-457 (c) — a void / refund / return with no reversal row is re-driven", () => {
+  it.each(["void", "refund", "return"] as const)(
+    "re-emits the reversal intent for a %s whose event dead-lettered",
+    async (kind) => {
+      if (skip) return;
+      const saleId = await seedSale({ ageMinutes: 90, processed: true });
+      await e().admin.query(
+        `INSERT INTO erpnext_posting_status
+           (tenant_id, store_id, sale_id, kind, source_ref_id, source_system, external_id, payload_hash, status, rejection_category)
+         VALUES ($1, $2, $3, 'sale_post', $3, 'pos-rt457', $4, $5, 'permanently_rejected', 'unmapped_item')`,
+        [TENANT_A, STORE_A, saleId, `rt457-${saleId}`, "0".repeat(64)],
+      );
+      const sourceId = await seedReversalSource(kind, saleId);
+      await seedPostingEvent(
+        { tenantId: TENANT_A, storeId: STORE_A, saleId, sourceRefId: sourceId, kind: "reversal" },
+        "dead_lettered",
+      );
 
-    const events = await postingEvents(voidId);
-    expect(events).toHaveLength(1);
-    expect(events[0]!.payload).toEqual({
-      sale_id: saleId,
-      store_id: STORE_A,
-      kind: "reversal",
-      source_ref_id: voidId,
-    });
-    await consume(events[0]!);
-    expect(await postingRows(voidId)).toEqual([{ kind: "reversal" }]);
-  });
+      await runSweep();
+
+      const events = await postingEvents(sourceId);
+      expect(events.map((row) => row.delivery_state)).toEqual(["dead_lettered", "pending"]);
+      expect(events[1]!.payload).toEqual({
+        sale_id: saleId,
+        store_id: STORE_A,
+        kind: "reversal",
+        source_ref_id: sourceId,
+      });
+      await consume(events[1]!);
+      expect(await postingRows(sourceId)).toEqual([{ kind: "reversal" }]);
+    },
+  );
 });
 
 describe("RT-457 — tenant scope and repeat runs", () => {
-  it("re-drives each tenant's own stranded sale under that tenant only", async () => {
+  it("re-drives each tenant's own stranded items under that tenant only", async () => {
     if (skip) return;
+    const saleA = await seedSale({ ageMinutes: 60 });
     const saleB = await seedSale({ tenant: "B", ageMinutes: 60 });
+    const postedB = await seedSale({ tenant: "B", ageMinutes: 60, processed: true });
+    await seedPostingEvent(
+      { tenantId: TENANT_B, storeId: STORE_B, saleId: postedB, sourceRefId: postedB, kind: "sale_post" },
+      "dead_lettered",
+    );
+    const repo = new PgSaleRedriveRepository(e().app);
 
+    // Tenant A's sweep never sees, nor re-emits for, tenant B's rows.
+    const strandedA = (await repo.findUnprocessedSales(TENANT_A, WINDOW, BATCH)).map((s) => s.saleId);
+    expect(strandedA).toContain(saleA);
+    expect(strandedA).not.toContain(saleB);
+    await repo.reemitMissingIntents(TENANT_A, WINDOW, BATCH);
+    expect(await postingEvents(postedB)).toHaveLength(1);
+
+    // The full sweep, twice: each tenant's items are driven once, under that tenant.
     await runSweep();
     await runSweep();
 
@@ -291,5 +428,10 @@ describe("RT-457 — tenant scope and repeat runs", () => {
     expect(events).toHaveLength(1);
     expect(events[0]!.tenant_id).toBe(TENANT_B);
     expect(events[0]!.store_id).toBe(STORE_B);
+    const reemitted = await postingEvents(postedB);
+    expect(reemitted.map((row) => [row.tenant_id, row.delivery_state])).toEqual([
+      [TENANT_B, "dead_lettered"],
+      [TENANT_B, "pending"],
+    ]);
   });
 });

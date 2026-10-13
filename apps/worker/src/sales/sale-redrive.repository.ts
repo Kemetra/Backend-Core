@@ -7,21 +7,29 @@
  * (`isPlatformAdmin: false`); the explicit `tenant_id = $1` predicates are
  * belt-and-braces.
  *
- * What counts as stranded (all older than the minimum age, so the live
- * pipeline always gets the first chance):
- *   - a sale with `processed_at IS NULL` — its sale-processing job ran out of
- *     retries, its BullMQ job was lost with Redis, or its `sale.captured`
- *     outbox row dead-lettered;
- *   - a processed sale with no `sale_post` posting row, or a void / refund /
- *     return with no `reversal` posting row — its `erpnext.posting.requested`
- *     event dead-lettered (or the consumer insert saw nothing).
- * An intent whose `erpnext.posting.requested` event is still live in the
- * outbox (pending, claimed or failed-awaiting-retry) is NOT re-emitted: the
- * drainer still owns it. Re-emitting is idempotent downstream anyway (the
- * consumer's O-3 unique on (tenant_id, source_ref_id)).
+ * Only items inside the age window are touched: older than the minimum age
+ * (the live pipeline always gets the first chance) and younger than the
+ * maximum age (history is never posted to ERPNext by surprise).
+ *
+ * What counts as stranded:
+ *   - (a) a sale with `processed_at IS NULL` — its sale-processing job ran out
+ *     of retries or was lost with Redis. A sale quarantined for operator
+ *     repair (`failed-needs-repair`) is left to the operator.
+ *   - (b/c) a processed sale with no `sale_post` posting row, or a void /
+ *     refund / return with no `reversal` row, whose `erpnext.posting.requested`
+ *     event DEAD-LETTERED: the live path tried and gave up. An intent with an
+ *     event still live in the outbox is the drainer's; one that never had an
+ *     event is not evidence of a failure and is left alone; and one whose
+ *     events have dead-lettered `SALE_REDRIVE_MAX_DEAD_LETTERS` times is not
+ *     re-emitted again (the consumer will not accept it; repair is manual).
+ * Re-emitting is idempotent downstream (the consumer's O-3 unique on
+ * (tenant_id, source_ref_id)); a per-tenant try-lock keeps two overlapping
+ * ticks from both emitting.
  */
 import { emit, OUTBOX_EVENT_TYPES, runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool, PoolClient } from "pg";
+
+import { SALE_REDRIVE_MAX_DEAD_LETTERS, type SaleRedriveWindow } from "./sale-redrive.config";
 
 /** A sale the sweep re-processes. */
 export interface StrandedSale {
@@ -37,24 +45,34 @@ export interface ReemittedIntents {
 
 export interface SaleRedriveRepository {
   listTenantIds(): Promise<string[]>;
-  findUnprocessedSales(tenantId: string, minAgeMs: number, limit: number): Promise<StrandedSale[]>;
-  reemitMissingIntents(tenantId: string, minAgeMs: number, limit: number): Promise<ReemittedIntents>;
+  findUnprocessedSales(tenantId: string, window: SaleRedriveWindow, limit: number): Promise<StrandedSale[]>;
+  reemitMissingIntents(tenantId: string, window: SaleRedriveWindow, limit: number): Promise<ReemittedIntents>;
 }
 
-/** The posting event is still live in the outbox (the drainer owns it). */
-const NO_LIVE_POSTING_EVENT = `NOT EXISTS (
+/** `col` falls in the age window ($2 = min age ms, $3 = max age ms). */
+function inWindow(col: string): string {
+  return `${col} < now() - ($2::bigint * interval '1 millisecond')
+          AND ${col} >= now() - ($3::bigint * interval '1 millisecond')`;
+}
+
+/**
+ * The source's posting events: none live (the drainer would own it), at least
+ * one dead-lettered (the live path gave up), fewer than the cap ($5).
+ */
+const DEAD_LETTERED_ONLY = `NOT EXISTS (
          SELECT 1 FROM outbox_events o
-          WHERE o.tenant_id = $1
-            AND o.event_type = $4
+          WHERE o.tenant_id = $1 AND o.event_type = $4
             AND o.delivery_state IN ('pending', 'claimed', 'failed')
-            AND o.payload->>'source_ref_id' = src.id::text)`;
+            AND o.payload->>'source_ref_id' = src.id::text)
+     AND (SELECT count(*) FROM outbox_events o
+          WHERE o.tenant_id = $1 AND o.event_type = $4
+            AND o.delivery_state = 'dead_lettered'
+            AND o.payload->>'source_ref_id' = src.id::text) BETWEEN 1 AND $5::int - 1`;
 
 /** No posting row exists for the source yet. */
 const NO_POSTING_ROW = `NOT EXISTS (
          SELECT 1 FROM erpnext_posting_status p
           WHERE p.tenant_id = $1 AND p.source_ref_id = src.id)`;
-
-const OLDER_THAN = `< now() - ($2::bigint * interval '1 millisecond')`;
 
 /** Terminal-event tables that emit a `reversal` posting intent. */
 const REVERSAL_SOURCES = ["sale_voids", "sale_refunds", "sale_returns"] as const;
@@ -77,26 +95,37 @@ export class PgSaleRedriveRepository implements SaleRedriveRepository {
     });
   }
 
-  async findUnprocessedSales(tenantId: string, minAgeMs: number, limit: number): Promise<StrandedSale[]> {
+  async findUnprocessedSales(tenantId: string, window: SaleRedriveWindow, limit: number): Promise<StrandedSale[]> {
     return runWithTenantContext(this.pool, { tenantId, isPlatformAdmin: false }, async (client) => {
       const r = await client.query<{ id: string; store_id: string }>(
         `SELECT id, store_id FROM sales
-          WHERE tenant_id = $1 AND processed_at IS NULL AND created_at ${OLDER_THAN}
+          WHERE tenant_id = $1 AND processed_at IS NULL
+            AND sync_status <> 'failed-needs-repair'
+            AND ${inWindow("created_at")}
           ORDER BY created_at
-          LIMIT $3`,
-        [tenantId, minAgeMs, limit],
+          LIMIT $4`,
+        [tenantId, window.minAgeMs, window.maxAgeMs, limit],
       );
       return r.rows.map((row) => ({ saleId: row.id, storeId: row.store_id }));
     });
   }
 
-  async reemitMissingIntents(tenantId: string, minAgeMs: number, limit: number): Promise<ReemittedIntents> {
+  async reemitMissingIntents(tenantId: string, window: SaleRedriveWindow, limit: number): Promise<ReemittedIntents> {
     return runWithTenantContext(this.pool, { tenantId, isPlatformAdmin: false }, async (client) => {
+      // Two overlapping ticks (a retry, or a tick slower than the interval)
+      // would otherwise both pass the checks below and both emit.
+      const locked = await client.query<{ locked: boolean }>(
+        `SELECT pg_try_advisory_xact_lock(hashtextextended('sale-redrive:' || $1::text, 0)) AS locked`,
+        [tenantId],
+      );
+      if (!locked.rows[0]?.locked) return { salePost: 0, reversal: 0 };
+
+      const params = [tenantId, window.minAgeMs, window.maxAgeMs, limit];
       const salePosts = await this.missing(
         client,
-        `SELECT src.id, src.id AS sale_id, src.store_id FROM sales src
-          WHERE src.tenant_id = $1 AND src.processed_at ${OLDER_THAN}`,
-        [tenantId, minAgeMs, limit],
+        `SELECT src.id, src.id AS sale_id, src.store_id, src.created_at FROM sales src
+          WHERE src.tenant_id = $1 AND ${inWindow("src.processed_at")}`,
+        params,
       );
       for (const row of salePosts) await this.emitIntent(client, tenantId, row, "sale_post");
 
@@ -104,9 +133,9 @@ export class PgSaleRedriveRepository implements SaleRedriveRepository {
       for (const table of REVERSAL_SOURCES) {
         const rows = await this.missing(
           client,
-          `SELECT src.id, src.sale_id, src.store_id FROM ${table} src
-            WHERE src.tenant_id = $1 AND src.created_at ${OLDER_THAN}`,
-          [tenantId, minAgeMs, limit],
+          `SELECT src.id, src.sale_id, src.store_id, src.created_at FROM ${table} src
+            WHERE src.tenant_id = $1 AND ${inWindow("src.created_at")}`,
+          params,
         );
         for (const row of rows) await this.emitIntent(client, tenantId, row, "reversal");
         reversal += rows.length;
@@ -115,15 +144,15 @@ export class PgSaleRedriveRepository implements SaleRedriveRepository {
     });
   }
 
-  /** Sources selected by `base` that have no posting row and no live event. */
+  /** Sources selected by `base` with no posting row whose events only dead-lettered. */
   private async missing(client: PoolClient, base: string, params: unknown[]): Promise<SourceRow[]> {
     const r = await client.query<SourceRow>(
-      `${base}
-          AND ${NO_POSTING_ROW}
-          AND ${NO_LIVE_POSTING_EVENT}
+      `SELECT id, sale_id, store_id FROM (${base}) src
+        WHERE ${NO_POSTING_ROW}
+          AND ${DEAD_LETTERED_ONLY}
         ORDER BY src.created_at
-        LIMIT $3`,
-      [...params, OUTBOX_EVENT_TYPES.ERPNEXT_POSTING_REQUESTED],
+        LIMIT $6`,
+      [params[0], params[1], params[2], OUTBOX_EVENT_TYPES.ERPNEXT_POSTING_REQUESTED, SALE_REDRIVE_MAX_DEAD_LETTERS, params[3]],
     );
     return r.rows;
   }

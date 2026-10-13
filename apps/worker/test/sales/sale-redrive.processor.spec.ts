@@ -57,11 +57,12 @@ class FakeProcessing {
   }
 }
 
+const WINDOW = { minAgeMs: 900_000, maxAgeMs: 604_800_000 };
 const S1 = { saleId: "s1", storeId: "st1" };
 const S2 = { saleId: "s2", storeId: "st2" };
 
 function run(repo: FakeRepo, processing: FakeProcessing, lines: SaleRedriveLogLine[] = []) {
-  return new SaleRedriveProcessor(repo, processing, 900_000, (l) => lines.push(l)).process(
+  return new SaleRedriveProcessor(repo, processing, WINDOW, (l) => lines.push(l)).process(
     SALE_REDRIVE_JOB_NAME,
     {},
   );
@@ -106,7 +107,7 @@ describe("SaleRedriveProcessor (RT-457)", () => {
 
   it("refuses an unknown job name", async () => {
     await expect(
-      new SaleRedriveProcessor(new FakeRepo({}, {}), new FakeProcessing(), 900_000, () => undefined).process(
+      new SaleRedriveProcessor(new FakeRepo({}, {}), new FakeProcessing(), WINDOW, () => undefined).process(
         "other",
         {},
       ),

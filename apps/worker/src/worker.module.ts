@@ -107,7 +107,7 @@ import { AuditFanoutProcessor, AUDIT_DB, type AuditDbLike } from "./audit/audit-
 import { AuditWorker } from "./audit/audit.worker";
 import { createLogger } from "@data-pulse-2/shared";
 import { SaleProcessingProcessor } from "./sales/sale-processing.processor";
-import { resolveSaleRedriveMinAgeMs } from "./sales/sale-redrive.config";
+import { resolveSaleRedriveWindow } from "./sales/sale-redrive.config";
 import { SaleRedriveProcessor } from "./sales/sale-redrive.processor";
 import { NoOpSaleRedriveRepository, PgSaleRedriveRepository } from "./sales/sale-redrive.repository";
 import { SaleRedriveScheduler } from "./sales/sale-redrive.scheduler";
@@ -479,7 +479,7 @@ export function saleRedriveProcessorProviderFactory(
 ): SaleRedriveProcessor {
   const repo =
     wrapper.pool === null ? new NoOpSaleRedriveRepository() : new PgSaleRedriveRepository(wrapper.pool);
-  return new SaleRedriveProcessor(repo, saleProcessing, resolveSaleRedriveMinAgeMs());
+  return new SaleRedriveProcessor(repo, saleProcessing, resolveSaleRedriveWindow());
 }
 
 /**

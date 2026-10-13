@@ -13,13 +13,14 @@
  *     posting row was ever created (invisible to the ERP sync-ops screens).
  *
  * Every tick (`SaleRedriveScheduler`), for every tenant:
- *   (a) sales still unprocessed past the minimum age are processed through the
+ *   (a) sales still unprocessed inside the age window are processed through the
  *       same idempotent `SaleProcessingProcessor` the BullMQ job uses (its
  *       `processed_at IS NULL` guard makes a concurrent or repeated run a
  *       no-op), which emits their posting intent in the same transaction;
  *   (b/c) processed sales without a `sale_post` row, and voids / refunds /
  *       returns without a `reversal` row, get their `erpnext.posting.requested`
- *       event re-emitted (see the repository for the "still live" rule).
+ *       event re-emitted once the live attempt dead-lettered (see the
+ *       repository for the evidence rule and the cap).
  * Re-driving is idempotent end to end, and the scheduler hands each tick to
  * one worker, so replicas never double-drive.
  *
@@ -30,7 +31,7 @@ import { z } from "zod";
 
 import { recordSaleRedrive } from "../observability/metrics/worker.metrics";
 import type { SaleRedriveRepository } from "./sale-redrive.repository";
-import { SALE_REDRIVE_BATCH_LIMIT } from "./sale-redrive.config";
+import { SALE_REDRIVE_BATCH_LIMIT, type SaleRedriveWindow } from "./sale-redrive.config";
 import type { SaleProcessingJob, SaleProcessingResult } from "./sale-processing.processor";
 
 /** BullMQ job (and job-scheduler) name. */
@@ -102,7 +103,7 @@ export class SaleRedriveProcessor {
   constructor(
     private readonly repo: SaleRedriveRepository,
     private readonly saleProcessing: SaleProcessing,
-    private readonly minAgeMs: number,
+    private readonly window: SaleRedriveWindow,
     private readonly log: SaleRedriveLog = writeStderr,
   ) {}
 
@@ -131,7 +132,7 @@ export class SaleRedriveProcessor {
 
   /** (a) process this tenant's stranded sales, then (b/c) re-emit its missing intents. */
   private async sweepTenant(tenantId: string, tally: RedriveTally): Promise<void> {
-    const stranded = await this.repo.findUnprocessedSales(tenantId, this.minAgeMs, SALE_REDRIVE_BATCH_LIMIT);
+    const stranded = await this.repo.findUnprocessedSales(tenantId, this.window, SALE_REDRIVE_BATCH_LIMIT);
     for (const sale of stranded) {
       try {
         const r = await this.saleProcessing.process({ ...sale, tenantId, correlationId: null });
@@ -140,7 +141,7 @@ export class SaleRedriveProcessor {
         this.failed(tally, { message: "sale_redrive_failed", tenant_id: tenantId, sale_id: sale.saleId }, err);
       }
     }
-    const emitted = await this.repo.reemitMissingIntents(tenantId, this.minAgeMs, SALE_REDRIVE_BATCH_LIMIT);
+    const emitted = await this.repo.reemitMissingIntents(tenantId, this.window, SALE_REDRIVE_BATCH_LIMIT);
     tally.salePostIntents += emitted.salePost;
     tally.reversalIntents += emitted.reversal;
   }
