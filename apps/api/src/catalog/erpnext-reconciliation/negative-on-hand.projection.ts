@@ -256,7 +256,7 @@ export function pageEntries(p: {
   const after = cursor ? p.ordered.filter((e) => compareEntries(e, cursor) > 0) : p.ordered;
   const page = after.slice(0, p.limit);
   const nextCursor =
-    after.length > p.limit ? encodeItemCursor({ ...p.scope, entry: page[page.length - 1]! }) : null;
+    after.length > p.limit ? encodeItemCursor({ ...p.scope, entry: page.at(-1)! }) : null;
   return { page, nextCursor };
 }
 

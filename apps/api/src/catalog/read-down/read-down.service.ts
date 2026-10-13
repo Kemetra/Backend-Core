@@ -183,7 +183,7 @@ export class ReadDownService {
         }
 
         // A next page exists iff the over-fetch returned a row beyond the scan.
-        const lastScanned = scanned[scanned.length - 1];
+        const lastScanned = scanned.at(-1);
         const next_page_token =
           resolved.length > limit && lastScanned
             ? encodePageToken({ tenantId, storeId, afterProductId: lastScanned.product_id })

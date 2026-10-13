@@ -136,7 +136,7 @@ export const BULLMQ_SAFE_REDIS_DEFAULTS: Readonly<
  * defaults-only options object instead.
  */
 function withBullMqSafeDefaults(args: unknown[]): unknown[] {
-  const last = args.length > 0 ? args[args.length - 1] : undefined;
+  const last = args.at(-1);
   const lastIsOptions =
     last !== null &&
     last !== undefined &&
