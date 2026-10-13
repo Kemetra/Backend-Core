@@ -1,3 +1,5 @@
+import { compareCodeUnits } from "../common/compare-code-units";
+
 /**
  * Key-sorted JSON for idempotency fingerprints.
  *
@@ -22,6 +24,6 @@ function stringify(value: unknown): string {
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record)
     .filter((key) => record[key] !== undefined)
-    .sort();
+    .sort(compareCodeUnits);
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stringify(record[key])}`).join(",")}}`;
 }

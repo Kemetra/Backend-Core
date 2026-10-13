@@ -26,6 +26,7 @@ import { runWithTenantContext } from "@data-pulse-2/db";
 import { newId } from "@data-pulse-2/shared";
 
 import { PG_POOL } from "../auth/auth.module";
+import { compareCodeUnits } from "../common/compare-code-units";
 import { recordSettlementReceivable } from "../observability/metrics/api.metrics";
 import { decideApplication } from "./apply-payment-decision";
 import type { ReceivableRow } from "./dto/receivable.dto";
@@ -118,7 +119,7 @@ function canonicalJson(value: unknown): string {
   if (value !== null && typeof value === "object") {
     const record = value as Record<string, unknown>;
     return `{${Object.keys(record)
-      .sort()
+      .sort(compareCodeUnits)
       .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
       .join(",")}}`;
   }
