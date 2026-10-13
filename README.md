@@ -10,7 +10,7 @@
   <a href=".specify/memory/constitution.md"><img alt="Tenant isolation: RLS enforced" src="https://img.shields.io/badge/tenant%20isolation-RLS-14b8a6?labelColor=0a0f24&style=flat-square"></a>
   <a href="packages/contracts"><img alt="API: contract-first" src="https://img.shields.io/badge/API-contract--first-60a5fa?labelColor=0a0f24&style=flat-square"></a>
   <a href="SECURITY.md"><img alt="Security: default deny" src="https://img.shields.io/badge/security-default--deny-f87171?labelColor=0a0f24&style=flat-square"></a>
-  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-34d399?labelColor=0a0f24&style=flat-square"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-34d399?labelColor=0a0f24&style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -373,4 +373,4 @@ This platform follows the active [Constitution](.specify/memory/constitution.md)
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
