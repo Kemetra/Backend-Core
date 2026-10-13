@@ -88,7 +88,7 @@ DELETE FROM outbox_events
 export class DrizzleOutboxRetentionRepository implements OutboxRetentionRepository {
   constructor(private readonly pool: Pool) {}
 
-  async purgeBatch(
+  purgeBatch(
     cutoffs: RetentionCutoffs,
     batchSize: number,
   ): Promise<number> {

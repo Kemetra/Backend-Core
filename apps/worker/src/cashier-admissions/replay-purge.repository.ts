@@ -54,7 +54,7 @@ DELETE FROM cashier_admission_requests
 export class PgReplayPurgeRepository implements ReplayPurgeRepository {
   constructor(private readonly pool: Pool) {}
 
-  async listTenantIds(): Promise<string[]> {
+  listTenantIds(): Promise<string[]> {
     return runWithTenantContext(
       this.pool,
       { tenantId: null, isPlatformAdmin: true },
@@ -65,7 +65,7 @@ export class PgReplayPurgeRepository implements ReplayPurgeRepository {
     );
   }
 
-  async purgeExpiredBatch(tenantId: string, batchSize: number): Promise<number> {
+  purgeExpiredBatch(tenantId: string, batchSize: number): Promise<number> {
     return runWithTenantContext(
       this.pool,
       { tenantId, isPlatformAdmin: false },

@@ -64,7 +64,7 @@ export interface StockRunSweepRepository {
 export class PgStockRunSweepRepository implements StockRunSweepRepository {
   constructor(private readonly pool: Pool) {}
 
-  async listActiveTenantIds(): Promise<string[]> {
+  listActiveTenantIds(): Promise<string[]> {
     return runWithTenantContext(
       this.pool,
       { tenantId: null, isPlatformAdmin: true },
@@ -79,7 +79,7 @@ export class PgStockRunSweepRepository implements StockRunSweepRepository {
     );
   }
 
-  async listMappedStoreIds(tenantId: string): Promise<string[]> {
+  listMappedStoreIds(tenantId: string): Promise<string[]> {
     return runWithTenantContext(
       this.pool,
       { tenantId, isPlatformAdmin: false },
