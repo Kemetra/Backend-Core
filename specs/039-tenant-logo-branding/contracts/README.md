@@ -61,8 +61,9 @@ The YAML file is self-contained, with its own `securitySchemes` and Error schema
 - **Tenant:** taken **only** from the device row. There are no query or path parameters. Unknown query keys get a `400 validation_error` (strict).
 - **Request header:** optional `If-None-Match: "<etag>"`.
 - **Responses:**
-  - **`200`** `TenantBranding` with `ETag: "<etag>"`. The etag is the quoted lowercase hex SHA-256 of `UTF8(tenant_display_name) 0x00 'none'` (no logo, no trailing byte) or `UTF8(tenant_display_name) 0x00 ASCII(logo.version) 0x00 ASCII(logo.updated_at)` (logo; `updated_at` exactly as served). See spec FR-18; the POS recomputes it.
+  - **`200`** `TenantBranding` with `ETag: "<etag>"`. The etag is the quoted lowercase hex SHA-256 of `UTF8(tenant_display_name) 0x00 ASCII(decimal revision)` (spec FR-18). The revision changes on every write and re-render, so this covers the whole representation; the POS recomputes it.
   - **`304`** No body, when `If-None-Match` matches.
+  - **`400`** `validation_error`: an unknown query key, or a malformed `If-None-Match`.
   - **`401`** The generic, non-disclosing device refusal.
   - **`5xx`** `system_failure`.
 - **Not used:** `404`. "No logo" is `200` with `logo: null` (spec FR-17).
