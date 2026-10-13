@@ -59,7 +59,7 @@ export class ReportBackedBinView implements ErpnextBinView {
     return (await this.fetchBinReport(input)).mapped;
   }
 
-  async fetchBinReport(input: {
+  fetchBinReport(input: {
     tenantId: string;
     storeId: string;
     runId: string;

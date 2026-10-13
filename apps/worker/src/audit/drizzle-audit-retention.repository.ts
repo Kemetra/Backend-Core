@@ -28,7 +28,7 @@ RETURNING id
 export class DrizzleAuditRetentionRepository implements AuditRetentionRepository {
   constructor(private readonly pool: Pool) {}
 
-  async markBatch(cutoff: Date, markedAt: Date, batchSize: number): Promise<number> {
+  markBatch(cutoff: Date, markedAt: Date, batchSize: number): Promise<number> {
     // audit_events is FORCE RLS: without a GUC the sweep sees no rows and
     // marks nothing (RT-120 C-7). Run in the platform-admin context so the
     // policy's is_platform_admin branch covers every tenant in one sweep —

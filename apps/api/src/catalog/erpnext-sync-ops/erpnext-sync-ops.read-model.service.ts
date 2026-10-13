@@ -142,7 +142,7 @@ export class ErpnextSyncOpsReadModelService {
    * mismatch count); 020/021 are `not_available`. Tenant-scoped via RLS; optional
    * store filter. Compute-on-read — no mirror.
    */
-  async getSummary(input: SummaryInput): Promise<SyncOpsSummaryBody> {
+  getSummary(input: SummaryInput): Promise<SyncOpsSummaryBody> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },

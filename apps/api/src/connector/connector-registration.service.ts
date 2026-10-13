@@ -78,7 +78,7 @@ export class ConnectorRegistrationService {
    * Register a connector instance. Duplicate (environment, erpnext_site_ref)
    * for the tenant → conflict (FR-005a, the DB unique). Writes an in-tx audit.
    */
-  async register(input: RegisterInstanceInput): Promise<RegisterResult> {
+  register(input: RegisterInstanceInput): Promise<RegisterResult> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
@@ -127,7 +127,7 @@ export class ConnectorRegistrationService {
    * row is deleted (FR-014). Idempotent: re-disabling is a success no-op.
    * Cross-tenant / absent id → not_found (non-disclosing).
    */
-  async disable(input: {
+  disable(input: {
     tenantId: string;
     actorUserId: string;
     instanceId: string;
@@ -169,7 +169,7 @@ export class ConnectorRegistrationService {
   }
 
   /** List the tenant's connector instances with active-credential status. */
-  async list(input: { tenantId: string }): Promise<ConnectorInstanceBody[]> {
+  list(input: { tenantId: string }): Promise<ConnectorInstanceBody[]> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
@@ -195,7 +195,7 @@ export class ConnectorRegistrationService {
    * the partial unique index rejects the insert, the transaction rolls back
    * (no audit row), and the caller is pointed at rotate.
    */
-  async issue(input: IssueCredentialInput): Promise<IssueResult> {
+  issue(input: IssueCredentialInput): Promise<IssueResult> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
@@ -242,7 +242,7 @@ export class ConnectorRegistrationService {
    * old credential stays active (FR-009). At most one active per registration
    * (the revoke-first ordering keeps the partial-unique satisfied; FR-010).
    */
-  async rotate(input: IssueCredentialInput): Promise<IssueResult> {
+  rotate(input: IssueCredentialInput): Promise<IssueResult> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
@@ -288,7 +288,7 @@ export class ConnectorRegistrationService {
    * already-revoked credential is a success no-op. The registration stays
    * active. Audited in-tx.
    */
-  async revoke(input: {
+  revoke(input: {
     tenantId: string;
     actorUserId: string;
     credentialId: string;

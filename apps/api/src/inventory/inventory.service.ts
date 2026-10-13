@@ -547,7 +547,7 @@ export class InventoryService {
    * Derived on-hand for a (tenant, store, product): COALESCE(SUM(quantity), 0).
    * Empty key ⇒ "0" (FR-005). Negative ⇒ negativeBalance=true (FR-024).
    */
-  async getOnHand(input: {
+  getOnHand(input: {
     readonly tenantId: string;
     readonly storeId: string;
     readonly productId: string;
@@ -656,7 +656,7 @@ export class InventoryService {
    * RT-432 (RT-290 G4-1): the stock locations of a (tenant, store), primary
    * first, then by code. Read-only; locations are created with their store.
    */
-  async listStockLocations(input: {
+  listStockLocations(input: {
     readonly tenantId: string;
     readonly storeId: string;
   }): Promise<StockLocationListBody> {

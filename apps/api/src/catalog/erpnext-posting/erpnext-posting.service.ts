@@ -285,7 +285,7 @@ export class ErpnextPostingService {
    *   - a different/contradicting outcome → `AckConflictError` (the stored
    *     document wins; never an overwrite).
    */
-  async ackOutcome(input: AckOutcomeInput): Promise<AckOutcomeResult> {
+  ackOutcome(input: AckOutcomeInput): Promise<AckOutcomeResult> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },

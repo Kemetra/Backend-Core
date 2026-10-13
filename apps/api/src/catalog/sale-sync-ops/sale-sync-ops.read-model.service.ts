@@ -199,7 +199,7 @@ export class SaleSyncOpsReadModelService {
    * absent sale throws `SaleSyncNotFoundError` (→ non-disclosing 404). The
    * sale's own store is returned in the projection.
    */
-  async getSaleSyncStatus(
+  getSaleSyncStatus(
     input: ScopedReadInput,
     saleId: string,
   ): Promise<SaleSyncStatusBody> {
@@ -288,7 +288,7 @@ export class SaleSyncOpsReadModelService {
    * follow-up; this surfaces the sync-lifecycle entries the Console needs
    * without leaking.
    */
-  async getSaleAuditTimeline(
+  getSaleAuditTimeline(
     input: ScopedReadInput,
     saleId: string,
   ): Promise<SaleAuditTimelineBody> {
@@ -365,7 +365,7 @@ export class SaleSyncOpsReadModelService {
    * transaction (BEGIN/COMMIT), so the deadletter resolution + the `sales`
    * status mutation commit or roll back together.
    */
-  async repairSaleSync(
+  repairSaleSync(
     input: ScopedReadInput,
     saleId: string,
   ): Promise<SaleSyncStatusBody> {

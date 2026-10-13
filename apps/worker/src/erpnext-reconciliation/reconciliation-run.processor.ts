@@ -131,7 +131,7 @@ export class ReconciliationRunProcessor {
    * 014 mapping, DP2 on-hand (009), and the connector Bin view; persists one
    * classified result per item; flips the run running→completed (guarded).
    */
-  async process(input: { runId: string; tenantId: string }): Promise<ReconciliationRunResult> {
+  process(input: { runId: string; tenantId: string }): Promise<ReconciliationRunResult> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },

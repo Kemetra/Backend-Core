@@ -74,7 +74,7 @@ export class PairingRepository {
    * Runs under the code's tenant GUC so RLS permits the UPDATE. Returns the new
    * attempt_count.
    */
-  async recordAttempt(codeId: string, tenantId: string): Promise<number> {
+  recordAttempt(codeId: string, tenantId: string): Promise<number> {
     return runWithTenantContext(
       this.pool,
       { tenantId, isPlatformAdmin: false },
@@ -98,7 +98,7 @@ export class PairingRepository {
    * prior pairing is detectable by a live devices row at that id. Returns the
    * device's store_id (the branch it is bound to) or null if unpaired.
    */
-  async findPairedBranch(
+  findPairedBranch(
     terminalId: string,
     tenantId: string,
   ): Promise<string | null> {

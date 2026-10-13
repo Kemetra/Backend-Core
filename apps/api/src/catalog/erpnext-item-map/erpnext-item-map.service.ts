@@ -129,7 +129,7 @@ export class ErpnextItemMapService {
    * tenant product first (non-disclosing 404 if absent/cross-tenant). The 1:1
    * active partial-unique (OQ-2) surfaces a 2nd active suggest as conflict.
    */
-  async suggest(input: {
+  suggest(input: {
     readonly tenantId: string;
     readonly tenantProductId: string;
     readonly erpnextItemRef: string;
@@ -230,7 +230,7 @@ export class ErpnextItemMapService {
    * retired_at IS NULL`, version++. A 0-row result is a conflict (stale version
    * / already confirmed / retired); a row absent under RLS is not_found.
    */
-  async confirm(input: {
+  confirm(input: {
     readonly tenantId: string;
     readonly id: string;
     readonly version: number;
@@ -303,7 +303,7 @@ export class ErpnextItemMapService {
    * 0-row result is a conflict (stale version / already retired) or
    * not_found (RLS-filtered / fabricated id).
    */
-  async retire(input: {
+  retire(input: {
     readonly tenantId: string;
     readonly id: string;
     readonly version: number;
@@ -360,7 +360,7 @@ export class ErpnextItemMapService {
   }
 
   /** List the tenant's ACTIVE mappings, optionally filtered by lifecycle state. */
-  async list(input: {
+  list(input: {
     readonly tenantId: string;
     readonly state?: "suggested" | "confirmed";
   }): Promise<ErpnextItemMapRow[]> {

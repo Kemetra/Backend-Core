@@ -61,7 +61,7 @@ export class ErpnextPostingReResolutionService {
   ) {}
 
   /** Re-resolve one pending posting intent from the current maps. */
-  async reResolvePosting(input: RepairPostingInput): Promise<RecordedReResolution> {
+  reResolvePosting(input: RepairPostingInput): Promise<RecordedReResolution> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },

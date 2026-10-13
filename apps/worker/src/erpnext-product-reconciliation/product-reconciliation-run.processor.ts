@@ -74,7 +74,7 @@ export class ProductReconciliationRunProcessor {
    * connector item-view seam; persists one classified result per line; flips the
    * run running→completed (guarded) and records `erpnext_view_status`.
    */
-  async process(input: { runId: string; tenantId: string }): Promise<ProductRunResult> {
+  process(input: { runId: string; tenantId: string }): Promise<ProductRunResult> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },

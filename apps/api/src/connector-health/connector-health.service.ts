@@ -92,7 +92,7 @@ export class ConnectorHealthService {
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
 
   /** US1: list the tenant's connector instances with read-derived verdicts. */
-  async listHealth(input: { tenantId: string }): Promise<ConnectorHealthViewBody[]> {
+  listHealth(input: { tenantId: string }): Promise<ConnectorHealthViewBody[]> {
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
@@ -111,7 +111,7 @@ export class ConnectorHealthService {
    * scopes the registration to the caller's tenant) → the controller maps to a
    * non-disclosing 404.
    */
-  async getHealth(input: {
+  getHealth(input: {
     tenantId: string;
     registrationId: string;
   }): Promise<ConnectorHealthViewBody | null> {
@@ -142,7 +142,7 @@ export class ConnectorHealthService {
    * INSERT branch derives `tenant_id` from the guard context — which already
    * matches the registration's tenant per the 018 usability predicate.
    */
-  async recordHeartbeat(
+  recordHeartbeat(
     identity: ConnectorIdentity,
     fields: HeartbeatFields,
   ): Promise<{ acknowledgedAt: string }> {
