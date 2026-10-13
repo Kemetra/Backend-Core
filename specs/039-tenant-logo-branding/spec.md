@@ -126,8 +126,10 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
 
 - **FR-30** A paired-only branding worker starts on the `pairedWorkersLatch`. It reads the branding at app start and then hourly with the device token, sending `If-None-Match`. It is not gated on an operator session. It stops on quit through `workerRegistry`.
 - **FR-31** The cache is stored locally in two parts, each validated on its own:
-  - a **name record** (`tenant_id`, `tenant_display_name`, ETag);
-  - a **logo record** (`tenant_id`, `version`, presentation, warnings, renditions).
+  - a **name record** (`tenant_id`, `tenant_display_name`, ETag, and `logo_state` = `present` or `none`);
+  - a **logo record** (`tenant_id`, `version`, presentation, warnings, renditions, and `payload_sha256`), written only when `logo_state` is `present`.
+
+  `payload_sha256` is a **local** digest that the POS computes at write time over the exact cached bytes (every rendition in a fixed order, plus the presentation and warnings). The server `version` cannot be recomputed on the POS, because it hashes the master and pipeline inputs, so it stays only a cache key. A `200` with `logo: null` writes `logo_state = none` and no logo record. That is a valid, explicit no-logo state, not a missing record.
 
   A read replaces both in one transaction, so the old renditions are deleted in the same write. A record whose `tenant_id` differs from the current pairing is ignored and purged.
 - **FR-32** The cache is cleared on re-pair to a different tenant and on any future unpair path (`PairingStore.clear()`). Revocation does not clear it, because the terminal still belongs to the tenant.
@@ -137,7 +139,13 @@ Show the tenant's identity on the POS boot, pairing, sign-in and lock screens an
   1. The logo record is valid: show the logo.
   2. Otherwise, if the name record is valid: show the tenant display name as text in the same slot.
   3. Otherwise (first boot before any branding read, or both records corrupt): show the neutral product mark, the same one the pre-pair screen uses (OD-9, OD-12). The slot keeps its size.
-- **FR-35a** Cache repair. When either cache record fails validation (a missing or corrupt row, a rendition that does not decode, or a stored `version` that does not match the stored bytes), the POS discards **that record and the ETag**, keeping the other record if it is valid, and makes the next read **unconditional** (no `If-None-Match`). Otherwise the server would keep answering `304` for the same version and the terminal could never repair its cache. Conditional polling resumes only after a cache passes validation.
+- **FR-35a** Cache repair. A cache record fails validation when:
+  - the name record is missing or corrupt;
+  - `logo_state` is `present` but the logo record is missing;
+  - a rendition does not decode;
+  - the recomputed `payload_sha256` differs from the stored one.
+
+  The POS then discards **that record and the ETag**, keeps the other record if it is valid, and makes the next read **unconditional** (no `If-None-Match`). Otherwise the server would keep answering `304` for the same version and the terminal could never repair its cache. Conditional polling resumes only after a cache passes validation.
 - **FR-36** The boot screen reads only the local cache. It never waits on the network.
 - **FR-37** The receipt places the receipt rendition centred at the top. Its CSS size in millimetres is exactly `width_px / dpi × 25.4`, with `image-rendering: pixelated`. With no logo the receipt is byte-identical to today's output. Receipt rendering stays a pure function of its inputs: the logo bytes are an explicit input to `renderReceipt`.
 
