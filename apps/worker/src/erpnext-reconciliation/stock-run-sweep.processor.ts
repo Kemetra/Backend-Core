@@ -279,7 +279,7 @@ function assertSweepJob(job: SweepJob): void {
   }
 }
 
-const SCHEDULED_JOB_ID = new RegExp(`^repeat:${STOCK_RUN_SWEEP_JOB_NAME}:(\\d{1,15})$`);
+const SCHEDULED_JOB_ID = new RegExp(String.raw`^repeat:${STOCK_RUN_SWEEP_JOB_NAME}:(\d{1,15})$`);
 
 /**
  * The scheduled time of a job-scheduler job, from its id
