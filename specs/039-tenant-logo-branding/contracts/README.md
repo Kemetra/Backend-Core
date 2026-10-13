@@ -109,7 +109,7 @@ The request body for preview and save is the **raw file bytes** with `Content-Ty
   5. Write.
 
   The replay therefore never skips body validation.
-- **`expected_revision`** is **required** (spec OD-15, FR-14a). It is the `revision` the admin saw. It is checked after the idempotent replay (step 4 above). The check, the write and the revision increment run in one transaction with the tenant's revision row locked, so two concurrent writes cannot both succeed.
+- **`expected_revision`** is **required** (spec OD-15, FR-14a). It is the `revision` the admin saw. It is checked after the idempotent replay (step 4 above). The check, the write and the revision increment run in one transaction under `SELECT … FOR UPDATE` on the tenant's `tenants` row, which always exists. Two concurrent writes, including two first uploads at revision `0`, therefore cannot both succeed, and a separately stored revision row can be created lazily under that lock.
 - **Behaviour:** upsert the single tenant record, master and renditions together in one transaction, increment `revision`, and write the audit event `tenant.logo.replaced`.
 - **Idempotent replay (step 3):** a valid body whose version equals `preview_version` and the stored version returns `200` and writes **no** audit event, whatever `expected_revision` says. A retried save therefore never fails on its own earlier success.
 - **Responses:**
@@ -127,10 +127,10 @@ The request body for preview and save is the **raw file bytes** with `Content-Ty
 
 - **Operation:** `DELETE /api/v1/tenants/{tenant_id}/logo?expected_revision=<integer ≥ 0>`, operationId `consoleDeleteTenantLogo`.
 - **`expected_revision`** is **required**. The no-logo replay below is checked **first**; only when a logo is stored does a mismatch return `409 logo_changed_concurrently`, deleting nothing.
-- **Behaviour:** delete the record and its renditions, increment `revision`, and write the audit event `tenant.logo.removed`.
-- **Idempotent:** with no logo stored it returns `204` and writes no audit event, whatever `expected_revision` says.
+- **Behaviour:** under the same `tenants` row lock as Surface 4, delete the record and its renditions, increment `revision`, write the audit event `tenant.logo.removed`, and return `200 TenantBranding` (`logo: null`, the new `revision`) so the Console can chain its next write.
+- **Idempotent:** with no logo stored it returns `200 TenantBranding` (`logo: null`, the current `revision`, unchanged) and writes no audit event, whatever `expected_revision` says.
 - **Responses:**
-  - `204`;
+  - `200 TenantBranding`;
   - `400 validation_error` (a missing or malformed `expected_revision`, or an unknown key);
   - `401`;
   - `403 origin_rejected`;
