@@ -38,6 +38,7 @@ import { newId } from "@data-pulse-2/shared";
 import { PG_POOL } from "../../auth/auth.module";
 import { MembershipRepository } from "../../context/membership.repository";
 import type { ResolvedContext } from "../../context/types";
+import { applyPostingSignalToEffects } from "../../inventory/effect-integration/effect-integration.transitions";
 import { recordErpnextReconciliationRepair } from "../../observability/metrics/api.metrics";
 import {
   toBacklogItem,
@@ -309,7 +310,8 @@ export class ErpnextReconciliationService {
    * FIRST; if nothing could be frozen (a map changed since the eligibility
    * read), do not re-offer, since a pending row without a version would fall
    * back to the live join. Otherwise flip to pending, re-head the sequence,
-   * RESET retry_count and point at the frozen version. Do NOT touch
+   * RESET retry_count, point at the frozen version and move the intent's
+   * rejected Inventory Effects back to pending (RT-426). Do NOT touch
    * document_ref (NULL on a non-posted row; the
    * (status='posted')=(document_ref IS NOT NULL) CHECK would otherwise bite).
    */
@@ -336,6 +338,12 @@ export class ErpnextReconciliationService {
         WHERE id = $1`,
       [input.workItemRef, REPAIR_RESET_RETRY_COUNT, version],
     );
+    // RT-426: the intent's rejected effects are pending again (same transaction).
+    await applyPostingSignalToEffects(client, {
+      postingStatusId: input.workItemRef,
+      signal: "repair_re_post",
+      stateReason: "repair_re_post",
+    });
     return this.recordRepair(client, input, "eligible_again", null, false);
   }
 
