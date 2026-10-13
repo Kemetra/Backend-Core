@@ -72,17 +72,17 @@ The YAML file is self-contained, with its own `securitySchemes` and Error schema
 ## 3. Surface 2 — Console: read the current logo
 
 - **Operation:** `GET /api/v1/tenants/{tenant_id}/logo`, operationId `consoleGetTenantLogo`, tag `branding-console`.
-- **Security:** `cookieAuth` (`dp2_session`) **only**. Any bearer token, `dashboard_api` included, gets `401` (`SessionOnlyAdminGuard`, as in `shift-closes`). The same applies to Surfaces 3–5.
+- **Security:** `cookieAuth` (`dp2_session`) **only**. A request authenticated only by a bearer token (`dashboard_api` included, no session cookie) gets `401` (`SessionOnlyAdminGuard` admits only a session principal, as in `shift-closes`). The same applies to Surfaces 3–5.
 - **Roles:** `owner` or `tenant_admin` of `{tenant_id}`. A wrong role, an unknown tenant or another tenant gets `404` (safe 404, XII).
 - **Responses:**
   - `200 TenantBranding` (the same shape as Surface 1, so the preview is the POS truth);
-  - `401` (no session, or any bearer token);
+  - `401` (no session; a bearer-only request);
   - `404`;
   - `5xx system_failure`.
 
 ## 4. Surfaces 3–5 — Console: preview, save, remove
 
-The request body for preview and save is the **raw file bytes** with `Content-Type: application/octet-stream` (spec OD-14: no multipart parser). The body limit is 1 MiB. Anything larger gets `413 file_too_large` before parsing. The declared content type and any file name are ignored for type detection (FR-03).
+The request body for preview and save is the **raw file bytes**, accepted under any `Content-Type` (declared as `*/*` in the YAML) and read as bytes (spec OD-14: no multipart parser). Admin-Console sends `application/octet-stream`; a client sending `image/png` or `image/svg+xml` is treated the same, so there is no `415`. The body limit is 1 MiB. Anything larger gets `413 file_too_large` before parsing. The declared content type and any file name are ignored for type detection (FR-03).
 
 ### Surface 3 — Preview
 
