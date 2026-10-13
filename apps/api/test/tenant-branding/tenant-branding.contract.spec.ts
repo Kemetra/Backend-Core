@@ -471,6 +471,15 @@ describe("tenant-branding — projections", () => {
     expect(removed(withLogo)).toBe(false);
   });
 
+  it("never pairs a stored logo with revision 0 (0 = never written)", () => {
+    for (const name of ["TenantBranding", "TenantBrandingSaved"]) {
+      const valid = validator(name);
+      expect(valid({ tenant_display_name: "Al Nour", revision: 0, logo: logo() })).toBe(false);
+      expect(valid({ tenant_display_name: "Al Nour", revision: 1, logo: logo() })).toBe(true);
+    }
+    expect(validator("TenantBranding")({ tenant_display_name: "Al Nour", revision: 0, logo: null })).toBe(true);
+  });
+
   it("rejects an unknown slot, a scale of 3 and a non-hex version", () => {
     const valid = validator("TenantLogo");
     const bad = screen();

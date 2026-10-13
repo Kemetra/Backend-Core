@@ -568,6 +568,15 @@ components:
       type: object
       additionalProperties: false
       required: [tenant_display_name, revision, logo]
+      # A stored logo means at least one write happened, so revision >= 1.
+      if:
+        properties:
+          logo:
+            type: object
+      then:
+        properties:
+          revision:
+            minimum: 1
       properties:
         revision:
           type: integer
