@@ -280,7 +280,7 @@ export function createLogger(opts: CreateLoggerOptions): Logger {
   const baseBindings: Record<string, unknown> = {
     service: opts.service,
     log_schema_version: LOG_SCHEMA_VERSION,
-    ...(opts.bindings ?? {}),
+    ...opts.bindings,
   };
 
   const options: LoggerOptions = {

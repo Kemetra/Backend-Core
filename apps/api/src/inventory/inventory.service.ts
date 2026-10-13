@@ -1805,7 +1805,7 @@ export class InventoryService {
         movementIds: input.movementIds,
         movementType: input.movementType,
         tenantProductRef: input.tenantProductRef ?? null,
-        ...(input.provenance ?? {}),
+        ...input.provenance,
       },
       // outbox_events.correlation_id is UUID — only forward a well-formed UUID;
       // a non-UUID upstream tag (or the audit-style text correlation) must NOT
