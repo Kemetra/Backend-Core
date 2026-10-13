@@ -41,7 +41,7 @@ check() {
   fi
 }
 
-is() { [ "$1" = "$2" ]; }
+is() { [[ "$1" == "$2" ]]; }
 has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 not_html() { ! has "$1" "text/html"; }
 
@@ -63,7 +63,7 @@ check "deep link serves the same index.html as /" cmp -s "$work/root.body" "$wor
 # Hashed asset referenced by index.html
 asset="$(grep -o '/assets/[^"]*\.js' "$work/root.body" | head -n 1)"
 check "index.html references a /assets/*.js bundle" has "$asset" "/assets/"
-if [ -n "$asset" ]; then
+if [[ -n "$asset" ]]; then
   status="$(get "$asset" asset)"
   check "$asset returns 200" is "$status" 200
   check "$asset is immutable" has "$(header asset cache-control)" "immutable"
@@ -91,7 +91,7 @@ check "unknown /api path is not index.html" not_html "$(header unknown content-t
 status="$(get /api bare)"
 check "/api is answered by the API, not the SPA" not_html "$(header bare content-type)"
 
-if [ "$failures" -gt 0 ]; then
+if [[ "$failures" -gt 0 ]]; then
   echo "console-smoke: $failures check(s) failed against $base"
   exit 1
 fi
