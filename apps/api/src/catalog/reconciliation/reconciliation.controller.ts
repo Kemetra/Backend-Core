@@ -107,7 +107,7 @@ import { ReconciliationService } from "./reconciliation.service";
  * omitted body, not only for an explicit `{}`).
  */
 const ReopenUnknownItemRequestSchema = z.preprocess(
-  (val) => (val === null || val === undefined ? {} : val),
+  (val) => val ?? {},
   z.object({}).strict(),
 );
 

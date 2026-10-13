@@ -43,11 +43,9 @@ export class HealthService {
   ) {}
 
   readiness(): Promise<ReadinessReport> {
-    if (this.inFlight === null) {
-      this.inFlight = this.runChecks().finally(() => {
-        this.inFlight = null;
-      });
-    }
+    this.inFlight ??= this.runChecks().finally(() => {
+      this.inFlight = null;
+    });
     return this.inFlight;
   }
 
