@@ -31,6 +31,19 @@ function job(name: string): Job {
 const jobs = Object.entries(workflow.jobs);
 const allSteps = jobs.flatMap(([jobName, job]) => job.steps.map((step) => ({ jobName, job, step })));
 
+const usesAction = (s: Step, action: string): boolean => (s.uses ?? "").startsWith(`${action}@`);
+const isPush = (s: Step): boolean => usesAction(s, "docker/build-push-action") && s.with?.push === true;
+const isPublication = (s: Step): boolean =>
+  usesAction(s, "actions/attest-build-provenance") || isPush(s) || /gh release create/.test(s.run ?? "");
+const labelsOf = (s: Step): string => String(s.with?.labels);
+
+/** A dry-run step must never push, log in for a push, attest or write a release. */
+function expectNoPublication(step: Step): void {
+  expect(step.uses ?? "").not.toMatch(/attest-build-provenance|docker\/login-action/);
+  expect(step.with?.push).not.toBe(true);
+  expect(step.run ?? "").not.toMatch(/gh release|docker push/);
+}
+
 describe("release-images workflow", () => {
   it("is manual only, with a full-SHA input and a publish switch that defaults to a dry run", () => {
     expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
@@ -112,14 +125,14 @@ describe("release-images workflow", () => {
 
   it("uses only sha-<40hex> image tags, never a floating tag", () => {
     expect(workflowText).not.toMatch(/latest/i);
-    const pushes = allSteps.filter(({ step }) => step.uses?.startsWith("docker/build-push-action@") && step.with?.push === true);
-    expect(pushes.map(({ step }) => step.with?.target).sort()).toEqual(["api", "migrate", "worker"]);
-    for (const { step } of pushes) {
+    const pushes = allSteps.map(({ step }) => step).filter(isPush);
+    expect(pushes.map((step) => step.with?.target).sort()).toEqual(["api", "migrate", "worker"]);
+    for (const step of pushes) {
       expect(step.with?.tags).toMatch(
         /^ghcr\.io\/kemetra\/backend-core-(api|worker|migrate):sha-\$\{\{ needs\.guard\.outputs\.sha \}\}$/,
       );
-      expect(String(step.with?.labels)).toContain("org.opencontainers.image.revision=${{ needs.guard.outputs.sha }}");
-      expect(String(step.with?.labels)).toContain("org.opencontainers.image.source=");
+      expect(labelsOf(step)).toContain("org.opencontainers.image.revision=${{ needs.guard.outputs.sha }}");
+      expect(labelsOf(step)).toContain("org.opencontainers.image.source=");
     }
   });
 
@@ -135,10 +148,6 @@ describe("release-images workflow", () => {
   });
 
   it("keeps every publication step (push, login for push, attest, release) behind publish=true", () => {
-    const isPublication = (s: Step) =>
-      s.uses?.startsWith("actions/attest-build-provenance@") ||
-      (s.uses?.startsWith("docker/build-push-action@") && s.with?.push === true) ||
-      /gh release create/.test(s.run ?? "");
     const publication = allSteps.filter(({ step }) => isPublication(step));
     expect(publication.length).toBe(3 + 3 + 1);
     for (const { jobName, job } of publication) {
@@ -149,11 +158,7 @@ describe("release-images workflow", () => {
     const dry = job("dry-run");
     expect(dry.if).toBe("inputs.publish == false");
     expect(dry.permissions).toEqual({ contents: "read" });
-    for (const step of dry.steps) {
-      expect(step.uses ?? "").not.toMatch(/attest-build-provenance|docker\/login-action/);
-      expect(step.with?.push).not.toBe(true);
-      expect(step.run ?? "").not.toMatch(/gh release|docker push/);
-    }
+    dry.steps.forEach(expectNoPublication);
   });
 
   it("verifies pushed digests and revision labels before attesting or releasing", () => {
@@ -165,7 +170,9 @@ describe("release-images workflow", () => {
     expect(verify).toBeLessThan(firstAttest);
     expect(firstAttest).toBeLessThan(release);
     expect(steps[verify]?.run).toContain("org.opencontainers.image.revision");
-    expect(steps[verify]?.run).toContain("{{.Manifest.Digest}}");
+    // registry digest read through the JSON formatter, then shape-checked
+    expect(steps[verify]?.run).toContain("--format '{{json .Manifest}}' | jq -r .digest");
+    expect(steps[verify]?.run).not.toContain("{{.Manifest.Digest}}");
   });
 
   it("deploys nothing: no AWS, SSH or remote-execution tooling", () => {

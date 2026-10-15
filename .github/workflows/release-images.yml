@@ -318,7 +318,10 @@ jobs:
             REPO_IMG="ghcr.io/kemetra/backend-core-$TARGET"
             DIGEST="${DIGESTS[$TARGET]}"
             [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad build digest for $TARGET"; exit 1; }
-            TAG_DIGEST="$(docker buildx imagetools inspect "$REPO_IMG:sha-$SHA" --format '{{.Manifest.Digest}}')"
+            # JSON formatter: a bare .Manifest.Digest Go template is not reliably
+            # honoured by imagetools (docker/buildx#1175) and can print raw text.
+            TAG_DIGEST="$(docker buildx imagetools inspect "$REPO_IMG:sha-$SHA" --format '{{json .Manifest}}' | jq -r .digest)"
+            [[ "$TAG_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::could not read the registry digest for $TARGET"; exit 1; }
             [ "$TAG_DIGEST" = "$DIGEST" ] || { echo "::error::$TARGET tag digest $TAG_DIGEST != build digest $DIGEST"; exit 1; }
             docker pull --quiet "$REPO_IMG@$DIGEST" >/dev/null
             REVISION="$(docker image inspect "$REPO_IMG@$DIGEST" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
