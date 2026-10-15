@@ -559,6 +559,7 @@ components:
         - tenders
         - changeGiven
         - settledAt
+        - receiptNumber
         - receiptHeader
         - void
         - returns
@@ -603,6 +604,13 @@ components:
           type: [string, "null"]
           format: date-time
           description: The time printed on the original receipt; null when not recorded.
+        receiptNumber:
+          type: [string, "null"]
+          description: >
+            The receipt number printed on the original receipt. Equals
+            `summary.saleNumber` when the snapshot omitted `receiptNumber`
+            (omitted means equal, per `CaptureSaleReceipt`); null ONLY when
+            the sale has no receipt snapshot.
         receiptHeader:
           description: The receipt header captured with the sale; null when not recorded (Q-3).
           anyOf:
@@ -799,6 +807,21 @@ components:
       type: object
       additionalProperties: false
       required: [mode, kind, printedAt]
+      description: >
+        `localCopyNumber` is REQUIRED with `mode: record` (the originating
+        terminal always numbered the copy it printed) and MUST be absent with
+        `mode: authorize` (the server assigns the number); either violation is
+        400 `validation_error`.
+      if:
+        properties:
+          mode:
+            const: record
+        required: [mode]
+      then:
+        required: [localCopyNumber]
+      else:
+        not:
+          required: [localCopyNumber]
       properties:
         mode:
           type: string
@@ -817,7 +840,7 @@ components:
         localCopyNumber:
           type: integer
           minimum: 1
-          description: "`record` only: the copy number the originating terminal printed (Q-5)."
+          description: "Required with `record`, forbidden with `authorize`: the copy number the originating terminal printed (Q-5)."
 
     SaleReprint:
       type: object

@@ -355,6 +355,15 @@ describe("pos-sales/sale-history.yaml — readSaleHistoryDetail", () => {
     );
   });
 
+  it("exposes the receipt number: equal to saleNumber when omitted, null only without a snapshot", () => {
+    const detail = schema("SaleHistoryDetail");
+    expect(detail.required).toContain("receiptNumber");
+    expect(detail.properties?.["receiptNumber"]).toMatchObject({ type: ["string", "null"] });
+    const text = String(detail.properties?.["receiptNumber"]?.["description"]).replace(/\s+/g, " ");
+    expect(text).toContain("Equals `summary.saleNumber` when the snapshot omitted `receiptNumber`");
+    expect(text).toContain("null ONLY when the sale has no receipt snapshot");
+  });
+
   it("names the source of every displayed name and never falls back to email (OD-534-6)", () => {
     expect(schema("NameSource").enum).toEqual(["snapshot", "current", "unavailable"]);
     expect(schema("OperatorView").properties?.["displayName"]?.["description"]).toContain(
@@ -425,6 +434,18 @@ describe("pos-sales/sale-history.yaml — recordSaleReprint (OD-534-2/3/7/8, Q-5
     expect(request.properties?.["mode"]).toMatchObject({ enum: ["authorize", "record"] });
     expect(request.properties?.["kind"]).toMatchObject({ enum: ["duplicate", "sale_record"] });
     expect(request.properties?.["printedAt"]).toMatchObject({ type: "string", format: "date-time" });
+  });
+
+  it("requires localCopyNumber with record and forbids it with authorize", () => {
+    const request = schema("SaleReprintRequest") as SchemaObject & {
+      if?: unknown;
+      then?: unknown;
+      else?: unknown;
+    };
+    expect(request.if).toEqual({ properties: { mode: { const: "record" } }, required: ["mode"] });
+    expect(request.then).toEqual({ required: ["localCopyNumber"] });
+    expect(request.else).toEqual({ not: { required: ["localCopyNumber"] } });
+    expect(request.description ?? "").toContain("400 `validation_error`");
   });
 
   it("a record is capturing-device only, never refused for eligibility, checked at printedAt", () => {
