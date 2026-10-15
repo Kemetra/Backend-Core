@@ -5,7 +5,7 @@
 | **Jira** | RT-231 (Planning, parent RT-7). Post-pilot productization planning. This is **not** implementation authorization. |
 | **Baseline** | `Kemetra/Backend-Core` `origin/main` @ `ddae78a7` (2026-10-15). |
 | **Durable home** | This package updates Confluence RETAIL page 21233665, "Retail Tower Mobile — Product & Architecture Plan". It does not replace it. |
-| **Status** | PROPOSED, awaiting owner rulings on D1–D9 (§16). The PD-1..PD-3 decisions and all recommendations are proposals, not ratified decisions. Confluence 21233665 is updated only after the rulings. |
+| **Status** | **D1–D9 RATIFIED by the owner on 2026-10-15**, with every recommendation accepted as written (§16). PD-1..PD-3 are accepted. This is still **Planning authority only**, not implementation authorization. The §14 decomposition still needs separate owner approval before any issue is opened. |
 | **Delegates to** | RT-230 (continuity semantics), RT-18 (Admin shift/cash review), RT-232 (authority matrix), RT-138 (device trust), RT-135 (audit). |
 
 ---
@@ -145,12 +145,12 @@ Retail Tower Mobile (one app, capabilities gated by role + store scope)
 | MVP item | Existing route(s) | Guard / credential today | Roles | Store scope | Verdict |
 |---|---|---|---|---|---|
 | Snapshot | — (no aggregate) | — | — | — | **Gap G6** |
-| Active shifts | `GET /api/pos/v1/shifts/stuck` only (stale open shifts). `/api/pos/v1/shifts` is `POST` (open shift), not a read. | `@ClerkBearer` / POS operator identity | POS operator | operator's store | POS-only, and there is no general open-shift read at all → **Gap G4** (a new read, not an auth adaptation) |
+| Active shifts | `GET /api/pos/v1/shifts/stuck` only (stale open shifts). `/api/pos/v1/shifts` is `POST` (open shift), not a read. | `@ClerkBearer`: a **human** Clerk JWT, resolved to a user and membership (`PosShiftsService.getStuck`) | owner, tenant_admin, store_manager | branch access checked (`specific` stores) | The **stale-shift slice is a reusable manager read**; only credential admission needs adapting under D1. A general all-open-shifts read is still missing → **G4** (partial). |
 | Variance / exceptions | `GET /api/v1/shift-closes`, `/{shiftId}` | `SessionOnlyAdminGuard`: **cookie only, any bearer → 401** | owner, tenant_admin, store_manager | service-enforced, 404 | Facts reusable; **blocked by G1/G2**. Covers **closed** shifts only (open → 404). |
 | Device health | `POST /api/pos/v1/terminals/pair` only | device ceremony | — | — | RT-138 is Done as a plan. Migration `0040_device_lifecycle.sql` (RT-364, Done) already adds `last_seen_at`, `expires_at`, revoke attribution and `retired_at`, but `devices.ts` does not declare them yet and nothing writes `last_seen_at`. List/detail/revoke routes are not on main → **G3**, tracked by RT-365 + RT-370. **No new migration.** |
 | Alerts | — (no Attention aggregate, no push registration) | — | — | — | **Gap G7** (deferred by design until triggered) |
 | Sale lookup | `GET /api/pos/v1/sales/{saleRef}`; `GET /api/v1/catalog/sale-sync-ops/sales/{saleRef}/status`, `/audit-timeline` | `PosOperatorAuthGuard`; `DashboardAuthGuard` + `@Roles(owner, tenant_admin)` | POS operator; owner/TA | — | **store_manager excluded; no search → Gap G5** |
-| Staff/sessions | `/api/pos/v1/operators/active-session`, `/roster`; `/api/pos/v1/cashier-admissions/roster` | POS device / operator | POS | device's store | POS-only; **Gap G8** |
+| Staff/sessions | `/api/pos/v1/operators/roster`, `/active-session`; `/api/pos/v1/cashier-admissions/roster` | operators: `@ClerkBearer` human JWT; cashier-admissions: `@DeviceBearer` (device-bound) | operators: owner, tenant_admin, store_manager; admissions: POS device | operators: requested branch, authorized; admissions: device's store | The operator reads are **reusable manager-authorized reads** (credential admission per D1). A per-store "who is signed in on which terminal" aggregate is still missing → **G8** (partial). |
 | Inventory glance | `GET /api/inventory/v1/on-hand/{storeId}/{productId}`, `/stores/{storeId}/movements`, `/locations` | `DashboardAuthGuard` (cookie **or** `dashboard_api` bearer) + `TenantContextGuard` | per service | object-level, 404 | **Reusable once G1 exists**, but it needs a `productId`. There is **no dashboard-surface product list/search route on main** (catalog product reads exist only as POS `snapshot`/`deltas`) → **G9**. |
 
 ---
@@ -255,13 +255,13 @@ No SQLite or outbox exists in Manager/Owner surfaces (comment 10953). Continuity
 | ID | Gap | Why Mobile needs it | Notes / existing anchor |
 |---|---|---|---|
 | **G1** | Mobile human credential: sign-in from enrolled device → access + rotating refresh bearer; refresh/sign-out; route opt-in | Nothing in the MVP works without it | §6. Likely a new scope + migration. **Shared with RT-230.** |
-| **G2** | Mobile device enrollment as a Device Registry managed client (`kind = mobile`): enrollment-code issue/cancel + enroll | Revoke-on-loss, push binding | RT-138 pairing-code patterns; Device page F10. Trusted or revoked only, with no confirmation tier (unless the owner picks the §6.3 alternative under D2). |
+| **G2** | Mobile device enrollment as a Device Registry managed client (`kind = mobile`): enrollment-code issue/cancel + enroll, **plus a store-binding change** | Revoke-on-loss, push binding | RT-138 pairing-code patterns; Device page F10. Trusted or revoked only (D2 ratified, no confirmation tier). **`devices.store_id` is `NOT NULL`**, but one mobile install serves a user across all of their granted stores, so it is tenant-bound, not store-bound. The G1/G2 contract-planning item must choose a schema shape: either a nullable `store_id` constrained by device kind, or a separate managed-client table. It must not use an arbitrary store or one identity per store, because either would break single-identity revoke and push binding. `[GATED]` migration. |
 | **G3** | Device Registry read (list + trust state + `last_seen_at`) and revoke routes, plus the throttled `last_seen_at` writer | Device health MVP; Phase-2 revoke | Schema has already landed: migration `0040_device_lifecycle.sql` (RT-364, Done) adds the columns, but `devices.ts` does not declare them yet. **Remaining work is already tracked: RT-365** (list/detail + revoke, contract-first) **and RT-370** (`last_seen_at` writer). No new migration and no new decision. |
-| **G4** | Dashboard read of open/active shifts per store (and stuck/stale) | Active-shift MVP | `shift-closes` is closed-only; `/pos/v1/shifts` is POS-scoped. Must reuse RT-17 facts, with no second shift model. |
+| **G4** | General read of all open/active shifts per store (beyond the existing stale-shift slice) + mobile-credential admission on `/shifts/stuck` | Active-shift MVP | `shift-closes` is closed-only. `/pos/v1/shifts/stuck` is already a manager-authorized read (human Clerk JWT, owner/TA/SM, branch-checked), and its query is reusable. Must reuse RT-17 facts, with no second shift model. |
 | **G5** | Store-scoped sale lookup/search admissible to `store_manager` | Sale lookup MVP | `sale-sync-ops` is owner/TA-only; POS sale read is operator-only. PII and read-audit per D4. |
 | **G6** | Store operational snapshot projection (shared Admin + Mobile) | Snapshot MVP and Phase 4 | READ/PROJECT, not mirror (Support §A). D6 decides projection vs N calls. |
 | **G7** | Operational Attention persistence + ack + notification capability + push-token registration | Phase 1b | Support §G trigger met by Mobile; deferred until 1b approved |
-| **G8** | Dashboard read of active POS operator sessions per store | Staff/session MVP | Today POS-device-scoped only |
+| **G8** | Per-store aggregate of active POS operator sessions by terminal + mobile-credential admission on the operator reads | Staff/session MVP | `/pos/v1/operators/roster` and `/active-session` are already manager-authorized reads (human Clerk JWT, owner/TA/SM, branch-checked). Only `cashier-admissions/roster` is device-bound. |
 | **G9** | Dashboard-surface product lookup/search (name / barcode / SKU) for the inventory glance | Inventory glance MVP | Confirmed absent on `main`: no dashboard `@Get` for products. Product reads exist only as POS `catalog/snapshot` and `deltas`. Likely shared with Admin catalog UI needs. |
 | **G10** | `shift-closes` admissibility for a non-cookie client | Variance MVP | Guard decision under D1 (admit mobile scope vs separate read) |
 
@@ -342,47 +342,56 @@ Candidate Jira items, each one issue / one primary repo / bounded:
 
 ---
 
-## 15. Proposed decisions (ADR draft, to be recorded in Orchestrator after approval)
+## 15. Accepted decisions (ADR draft, to be recorded in Orchestrator)
 
 ### PD-1 — Mobile human credential is a device-bound opaque bearer, not the dashboard cookie
 - **Context:** cookie-only human sign-in; RT-430 Origin rule refuses non-browser cookie writes; no route mints a human bearer; mobile needs per-device revoke.
-- **Decision (proposed):** Option B (§6.2). A new mobile scope bound to user + enrolled device, with short access + rotating refresh, explicit route opt-in, and credential-minting surfaces staying cookie-only.
+- **Decision (accepted 2026-10-15, via D1/D6/§7 rulings):** Option B (§6.2). A new mobile scope bound to user + enrolled device, with short access + rotating refresh, explicit route opt-in, and credential-minting surfaces staying cookie-only.
 - **Alternatives:** A (cookie + spoofed Origin) rejected; C (external OIDC) deferred as a future login factor.
 - **Consequences:** GATED contract plus migration. Every MVP route needs an explicit admission decision. RT-230 inherits it.
 
 ### PD-2 — No mobile BFF; shared projections in Backend-Core
-- **Decision (proposed):** Mobile consumes domain contracts. Aggregated reads (store snapshot) are shared Admin+Mobile projections. A BFF needs measured evidence.
+- **Decision (accepted 2026-10-15, via D1/D6/§7 rulings):** Mobile consumes domain contracts. Aggregated reads (store snapshot) are shared Admin+Mobile projections. A BFF needs measured evidence.
 - **Consequences:** Admin benefits from the same projections. Mobile latency is managed by projection design, not a new service.
 
 ### PD-3 — Manager/Owner Mobile is connected-first with no durable business cache
-- **Decision (proposed):** in-memory data plus "as of" staleness only. No offline writes. Privileged actions are online-only. Offline semantics exist only in the RT-230 continuity module.
+- **Decision (accepted 2026-10-15, via D1/D6/§7 rulings):** in-memory data plus "as of" staleness only. No offline writes. Privileged actions are online-only. Offline semantics exist only in the RT-230 continuity module.
 - **Consequences:** no SQLite/outbox in the manager app. A simpler security posture for lost devices.
 
 ---
 
-## 16. Open owner decisions
+## 16. Owner decisions — ratified 2026-10-15
 
-| # | Decision | Recommendation |
+The owner ratified every recommendation below as written, in this session on 2026-10-15 (owner's words: "do all recomndations"). This follows the earlier relayed approval to "do recommended actions".
+
+- **D2** was ratified as the **enrollment-ceremony option**. The self-enrollment alternative in §6.3 is *not* adopted, so no Device Registry amendment is needed.
+- **D8** was ratified at the default values: 15 min access token, RT-139 idle 12 h and absolute 24 h.
+
+| # | Decision | Ruling (= recommendation, ratified 2026-10-15) |
 |---|---|---|
 | **D1** | Mobile human credential model and route opt-in policy (incl. `shift-closes` admissibility, G10) | PD-1 / Option B |
-| **D2** | Device enrollment ceremony; BYOD vs managed; MDM | Issued one-shot enrollment code, per RT-138 rules and the Device Registry baseline (§6.3). BYOD allowed. No MDM. *Self-enrollment at first sign-in is a deviation from the ratified Device Registry baseline and needs an explicit amendment if the owner prefers it.* |
+| **D2** | Device enrollment ceremony; BYOD vs managed; MDM | Issued one-shot enrollment code, per RT-138 rules and the Device Registry baseline (§6.3). BYOD allowed. No MDM. Self-enrollment is **not** adopted. |
 | **D3** | Android-first; when iOS is required | Android-first MVP; iOS when a paying customer requires it (keep the build compilable) |
 | **D4** | Sale lookup PII on phone, read-audit, and cache lifetime | Show minimal customer data (masked); emit read-audit for lookups; no disk cache |
 | **D5** | Push in MVP or Phase 1b (triggers Attention persistence) | Phase 1b; MVP uses an in-app pull list |
 | **D6** | Store snapshot as one shared projection vs client-side composition | Shared projection (PD-2) |
 | **D7** | Rooted/jailbroken device policy | Warn for reads; block Phase-2 writes |
-| **D8** | Mobile session TTLs (access/refresh/idle/absolute) | 15 min access; RT-139 idle 12 h / absolute 24 h unless the owner prefers longer for convenience with re-open lock |
+| **D8** | Mobile session TTLs (access/refresh/idle/absolute) | 15 min access token; RT-139 idle 12 h / absolute 24 h |
 | **D9** | First Phase-2 action | Device revoke on lost/stolen device |
 
 ---
 
 ## 17. Next safe action
 
-**Owner reviews this package and rules on D1–D9.** After approval: update Confluence RETAIL page 21233665 with §§1–16 and post the drafted RT-231 comment (Appendix A). Open no implementation issues until the owner approves §14.
+D1–D9 are ratified, Confluence 21233665 carries the ratified summary, and RT-231 records the ratification. **Next safe action: the owner reviews and approves the §14 implementation decomposition.** No implementation issue is opened before that approval.
+
+Follow-ups, not done here:
+- record PD-1..PD-3 as an ADR in Orchestrator (§14 item 10, cross-repo);
+- reconcile the Authority & Capability Matrix rows that still read "Needs decision — RT-231".
 
 ---
 
-## Appendix A — Draft RT-231 Jira comment (not posted)
+## Appendix A — RT-231 Jira comment (posted as comment 11879 on 2026-10-15, before the rulings; the ratification is a separate later comment)
 
 > **RT-231 Planning package — draft for owner review (2026-10-15)**
 >
