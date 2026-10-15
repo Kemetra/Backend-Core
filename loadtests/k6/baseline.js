@@ -119,6 +119,7 @@ function createInvitation() {
   } catch (_e) {
     // Non-JSON body (e.g. an error page): no token, so acceptInvitation skips.
   }
+  // No optional chaining: the pinned k6 0.50 runtime cannot parse `?.`.
   const token = (body && (body.token || (body.invitation && body.invitation.token))) || null;
   return { res, token };
 }

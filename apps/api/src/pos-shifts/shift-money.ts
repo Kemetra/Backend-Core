@@ -84,6 +84,6 @@ export function canonicalInstant(value: string): string {
 /** Drop trailing `0`s with a linear scan (a `/0+$/` regex backtracks quadratically, S8786). */
 function stripTrailingZeros(digits: string): string {
   let end = digits.length;
-  while (end > 0 && digits.charCodeAt(end - 1) === 48 /* "0" */) end--;
+  while (end > 0 && digits[end - 1] === "0") end--;
   return digits.slice(0, end);
 }

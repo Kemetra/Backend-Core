@@ -239,7 +239,7 @@ export async function seedReadStoreScope(env: PgTestEnv): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /** Default audit enqueuer: accepts every job and drops it. */
-const NOOP_AUDIT_ENQUEUER: AuditJobEnqueuer = { enqueue: async () => undefined };
+const NOOP_AUDIT_ENQUEUER: AuditJobEnqueuer = { enqueue: () => Promise.resolve() };
 
 /**
  * Boot `module` over the app pool with only cookie authentication faked.
