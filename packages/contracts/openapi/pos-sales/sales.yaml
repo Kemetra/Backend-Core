@@ -1053,6 +1053,12 @@ components:
         cutoff (the RT-79 pattern). First write wins: a provenance replay
         never rewrites a stored snapshot.
 
+        The values are asserted by the producer and are used for PRESENTATION
+        ONLY (the history detail and a duplicate receipt). They are never used
+        for authorization, attribution, scope or any money rule: the
+        authenticated actor (`created_by`), the resolved tenant / store /
+        device and the sale facts stay authoritative (FR-061 is unchanged).
+
         A sale captured without it has no snapshot. Its history detail shows
         those facts as not recorded, and it can be reprinted on another
         terminal only as a labelled sale record, never as a duplicate of the
