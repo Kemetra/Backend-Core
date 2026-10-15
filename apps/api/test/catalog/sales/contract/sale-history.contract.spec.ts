@@ -140,16 +140,14 @@ function responseRef(operationId: string, status: string): string | undefined {
 }
 
 /** Collect every `$ref` string in a value. */
-function refsIn(value: unknown, out: string[] = []): string[] {
-  if (Array.isArray(value)) {
-    for (const item of value) refsIn(item, out);
-  } else if (value && typeof value === "object") {
-    for (const [key, inner] of Object.entries(value)) {
-      if (key === "$ref" && typeof inner === "string") out.push(inner);
-      else refsIn(inner, out);
-    }
-  }
-  return out;
+function refsIn(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(refsIn);
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value).flatMap(([key, inner]) => refOrNested(key, inner));
+}
+
+function refOrNested(key: string, inner: unknown): string[] {
+  return key === "$ref" && typeof inner === "string" ? [inner] : refsIn(inner);
 }
 
 describe("pos-sales/sale-history.yaml — loadability and document conventions", () => {
