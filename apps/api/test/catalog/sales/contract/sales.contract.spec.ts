@@ -85,6 +85,13 @@ const APPROVED_TENDER_FIELDS = [
   "SaleTender.tenderRef",
 ];
 
+/**
+ * RT-537: capture fields the contract declares before the server accepts them.
+ * The strict capture DTO rejects these until RT-539 adds them; RT-539 empties
+ * this list.
+ */
+const CONTRACT_AHEAD_OF_CAPTURE_DTO = ["receipt"];
+
 /** RT-10 D2: the pilot tender methods. `voucher` is deliberately excluded. */
 const PILOT_TENDER_METHODS = ["card_external", "cash"];
 
@@ -387,6 +394,7 @@ describe("pos-sales/sales.yaml — object safety + gate A.5 (no tender)", () => 
     const schemas = salesDoc.components?.schemas ?? {};
     for (const name of [
       "CaptureSaleRequest",
+      "CaptureSaleReceipt",
       "CaptureSaleLine",
       "RecordVoidRequest",
       "VoidApproval",
@@ -971,7 +979,13 @@ describe("pos-sales/sales.yaml — RT-225 admissionCheckAt", () => {
   });
 
   it("DTO/contract parity: the capture DTO accepts exactly the contract's properties and requires the same ones", () => {
-    const contractKeys = Object.keys(captureRequest()?.properties ?? {}).sort();
+    // RT-537: `receipt` is in the contract ahead of the DTO. The server
+    // accepts it from RT-539 (see the 1.9.0-draft rollout order); until then
+    // the strict DTO rejects it. RT-539 removes it from this list when it adds
+    // the field to the DTO, and the RT-537 block below pins the rejection.
+    const contractKeys = Object.keys(captureRequest()?.properties ?? {})
+      .filter((key) => !CONTRACT_AHEAD_OF_CAPTURE_DTO.includes(key))
+      .sort();
     const contractRequired = [...(captureRequest()?.required ?? [])].sort();
     const dto = dtoShape(CaptureSaleRequestWithTendersSchema);
     expect(dto.keys).toEqual(contractKeys);
@@ -1054,8 +1068,7 @@ describe("pos-sales/sales.yaml — RT-530 manager-approved void", () => {
     return responses[status]?.$ref;
   }
 
-  it("bumps the version to 1.8.0-draft with an RT-530 note citing the [GATED] approval", () => {
-    expect(salesDoc.info?.version).toBe("1.8.0-draft");
+  it("the version note records RT-530 at 1.8.0-draft, citing the [GATED] approval (version moved on in RT-537)", () => {
     const info = salesDoc.info?.description ?? "";
     expect(info).toContain("RT-530 (1.8.0-draft");
     expect(info).toContain("[GATED] approval Jira RT-530 comment 11988");
@@ -1132,5 +1145,112 @@ describe("pos-sales/sales.yaml — RT-530 manager-approved void", () => {
 
   it("the void stays envelope-only: no new security requirement", () => {
     expect(findOp("recordVoid")?.security).toEqual([{ operatorAuthorization: [] }]);
+  });
+});
+
+// ===========================================================================
+// RT-537 — receipt snapshot on capture (1.9.0-draft; [GATED] approval Jira
+// RT-537 comment 12057; design comments 12054-12056)
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
+  type FieldNode = { type?: string; format?: string; $ref?: string; description?: string };
+  const schema = (name: string): SchemaObject | undefined => salesDoc.components?.schemas?.[name];
+  function field(schemaName: string, name: string): FieldNode | undefined {
+    return (schema(schemaName)?.properties ?? {})[name] as FieldNode | undefined;
+  }
+  const receiptText = (): string => (schema("CaptureSaleReceipt") as { description?: string })?.description ?? "";
+
+  /** Unwrap refinements down to the strict capture DTO object. */
+  function captureDtoObject(): z.AnyZodObject {
+    let inner: z.ZodTypeAny = CaptureSaleRequestWithTendersSchema;
+    while (inner instanceof z.ZodEffects) inner = inner.innerType() as z.ZodTypeAny;
+    if (!(inner instanceof z.ZodObject)) throw new Error("capture DTO is not a Zod object");
+    return inner;
+  }
+
+  it("bumps the version to 1.9.0-draft with an RT-537 note citing the [GATED] approval", () => {
+    expect(salesDoc.info?.version).toBe("1.9.0-draft");
+    const info = salesDoc.info?.description ?? "";
+    expect(info).toContain("RT-537 (1.9.0-draft");
+    expect(info).toContain("[GATED] approval Jira RT-537 comment 12057");
+    expect(info).toContain("A client that does");
+    expect(info).toContain("not send `receipt` sees no difference");
+  });
+
+  it("adds an OPTIONAL receipt to the strict capture body, and nothing else", () => {
+    const request = schema("CaptureSaleRequest");
+    expect(request?.additionalProperties).toBe(false);
+    expect(request?.required).not.toContain("receipt");
+    expect(field("CaptureSaleRequest", "receipt")?.$ref).toBe("#/components/schemas/CaptureSaleReceipt");
+    expect(Object.keys(request?.properties ?? {}).sort()).toEqual(
+      [
+        "admissionCheckAt",
+        "currencyCode",
+        "externalId",
+        "lines",
+        "occurredAt",
+        "operatorUserId",
+        "posTotal",
+        "receipt",
+        "sourceClockAt",
+        "sourceSystem",
+        "tenders",
+      ].sort(),
+    );
+  });
+
+  it("models every field the POS receipt prints that is not already a sale fact", () => {
+    const receipt = schema("CaptureSaleReceipt");
+    expect(receipt?.additionalProperties).toBe(false);
+    expect(receipt?.required?.slice().sort()).toEqual(
+      [
+        "branchAddress",
+        "branchName",
+        "operatorDisplayName",
+        "saleNumber",
+        "settledAt",
+        "taxRegistrationId",
+        "terminalLabel",
+      ].sort(),
+    );
+    expect(field("CaptureSaleReceipt", "settledAt")).toMatchObject({ type: "string", format: "date-time" });
+    expect(field("CaptureSaleReceipt", "changeGiven")?.$ref).toBe(
+      "#/components/schemas/NonNegativeDecimalAmount",
+    );
+    expect(field("CaptureSaleReceipt", "receiptNumber")).toMatchObject({ type: "string" });
+    expect(field("CaptureSaleReceipt", "operatorDisplayName")?.description ?? "").toContain(
+      "Never an email address",
+    );
+  });
+
+  it("keeps the snapshot out of the payload_hash but in the idempotency fingerprint", () => {
+    expect(receiptText()).toContain("NOT part of the sale `payload_hash`");
+    expect(receiptText()).toContain("IS part of the idempotency");
+    expect(receiptText()).toContain("First write wins");
+    expect(salesDoc.info?.description ?? "").toContain("posting feed and the provenance-divergence rule");
+  });
+
+  it("orders the rollout: accepted from RT-539, sent only after a POS cutoff (RT-79 pattern)", () => {
+    const info = salesDoc.info?.description ?? "";
+    expect(info).toContain("the server accepts `receipt` from RT-539");
+    expect(info).toContain("the strict capture DTO rejects the unknown field (400)");
+    expect(info).toContain("configured cutoff");
+    expect(receiptText()).toContain("Accepted from RT-539; do not");
+  });
+
+  it("states the line-order behaviour without adding a line field", () => {
+    expect(salesDoc.info?.description ?? "").toContain("1-based position in `lines[]`");
+    expect(Object.keys(schema("CaptureSaleLine")?.properties ?? {})).not.toContain("sequence");
+  });
+
+  it("leaves the Sale projection untouched (no receipt on reads)", () => {
+    expect(Object.keys(schema("Sale")?.properties ?? {})).not.toContain("receipt");
+  });
+
+  it("the capture DTO still rejects receipt until RT-539 (contract ahead of the server)", () => {
+    const dto = captureDtoObject();
+    expect(Object.keys(dto.shape)).not.toContain("receipt");
+    expect(dto._def.unknownKeys).toBe("strict");
+    expect(CONTRACT_AHEAD_OF_CAPTURE_DTO).toEqual(["receipt"]);
   });
 });

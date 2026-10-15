@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.8.0-draft"
+  version: "1.9.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -188,6 +188,27 @@ info:
     envelope when one is held. ROLLOUT ORDER: a POS that sends no approval gets
     403, so the POS change ships after this one.
 
+    RT-537 (1.9.0-draft; [GATED] approval Jira RT-537 comment 12057, owner,
+    2026-10-16; RT-534 S1): RECEIPT SNAPSHOT. `CaptureSaleRequest` gains an
+    OPTIONAL `receipt` (`CaptureSaleReceipt`): the facts the original receipt
+    printed that are not otherwise sale facts (sale number, terminal label,
+    operator display name, settled time, branch header, change given). They
+    feed the store-wide history and the cross-terminal duplicate receipt in
+    `pos-sales/sale-history.yaml`. The change is additive: one optional
+    request field. No response, security requirement, operation or existing
+    field changes, and the `Sale` projection is untouched. A client that does
+    not send `receipt` sees no difference. The snapshot is NOT part of the
+    sale `payload_hash`, so the posting feed and the provenance-divergence rule
+    are unchanged. Line order (behaviour, no new field): from the RT-539
+    deploy the server persists each line's 1-based position in `lines[]` as
+    its receipt sequence, so a producer sends `lines` in receipt order (the POS
+    already does). ROLLOUT ORDER: the server accepts `receipt` from RT-539;
+    until then the strict capture DTO rejects the unknown field (400). Because
+    the POS Idempotency-Key is the sale's `externalId`, adding the field to a
+    sale already sent without it would be a 409, so the POS sends `receipt`
+    only for sales finalized at or after a configured cutoff that is later than
+    both the RT-539 deploy and the POS upgrade (the RT-79 pattern).
+
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
     appears on the wire. Timestamps are RFC 3339 / `date-time` in UTC (FR-021).
@@ -291,6 +312,11 @@ paths:
         `admissionCheckAt`, which then replaces `occurredAt` in the
         admission-window comparison only (see the field). Sent without
         `operatorUserId`, it is a 400.
+
+        Receipt snapshot (RT-537): the body may carry the optional `receipt`
+        (see `CaptureSaleReceipt`). The server stores it first-write-wins and
+        keeps it out of the `payload_hash`. From RT-539 the order of `lines`
+        is stored as the receipt line order.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -998,6 +1024,82 @@ components:
             does not diverge. Like any body field it is part of the idempotency fingerprint:
             re-sending under the same `Idempotency-Key` with the field added or
             changed is a 409 `idempotency_key_conflict`.
+        receipt:
+          $ref: "#/components/schemas/CaptureSaleReceipt"
+    CaptureSaleReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - saleNumber
+        - terminalLabel
+        - operatorDisplayName
+        - settledAt
+        - branchName
+        - branchAddress
+        - taxRegistrationId
+      description: >
+        OPTIONAL (RT-537; [GATED] approval Jira RT-537 comment 12057). The facts
+        the original receipt printed that are not otherwise sale facts, so a
+        duplicate printed on another terminal of the store can match the
+        original (RT-534 OD-534-3, RT-537 Q-3). Accepted from RT-539; do not
+        send before then (see the versioning note).
+
+        It is NOT part of the sale `payload_hash`: it is presentation, not a
+        posting fact, so the posting feed and the provenance-divergence rule
+        are unchanged. Like any body field it IS part of the idempotency
+        fingerprint, so re-sending under the same `Idempotency-Key` with the
+        field added or changed is a 409 `idempotency_key_conflict`; the POS
+        therefore sends it only for sales finalized at or after a configured
+        cutoff (the RT-79 pattern). First write wins: a provenance replay
+        never rewrites a stored snapshot.
+
+        A sale captured without it has no snapshot. Its history detail shows
+        those facts as not recorded, and it can be reprinted on another
+        terminal only as a labelled sale record, never as a duplicate of the
+        original receipt.
+      properties:
+        saleNumber:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: The sale number printed on the receipt (`Sale #`).
+        receiptNumber:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: The receipt number printed on the receipt, when it differs from `saleNumber`; omit it otherwise.
+        terminalLabel:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: The terminal label printed on the receipt.
+        operatorDisplayName:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: The selling operator's display name as printed. Never an email address.
+        settledAt:
+          type: string
+          format: date-time
+          description: The settled time printed on the receipt. Not a sale fact; `occurredAt` stays the sale time.
+        branchName:
+          type: string
+          minLength: 1
+          maxLength: 200
+        branchAddress:
+          type: string
+          minLength: 1
+          maxLength: 500
+        taxRegistrationId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: The tax registration id printed in the header and footer.
+        changeGiven:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+          description: >
+            Cash change given, in the sale currency. Absent means none. The
+            cash handed over is the cash tender's net `amount` plus this.
     CaptureSaleLine:
       type: object
       additionalProperties: false

@@ -1,0 +1,948 @@
+openapi: 3.1.0
+info:
+  title: Backend-Core POS Sale History — store-scoped history, detail and reprint
+  version: "1.0.0-draft"
+  description: >
+    RT-537 (RT-534 S1; [GATED] approval Jira RT-537 comment 12057, owner,
+    2026-10-16; design comments 12054-12056; owner decisions OD-534-1..8 in
+    RT-534 comment 12048 and Confluence 40468506). Contract only: no route,
+    guard, service, DTO or migration implements it yet. The runtime is RT-539
+    (S3) and the storage is RT-538 (S2). Until RT-539 deploys, these paths are
+    not served.
+
+    Three POS-facing operations over the sales the server has RECEIVED for the
+    caller's store: a business-date list, the full recorded detail of one sale,
+    and a reprint authorization / record. The store always comes from the
+    credential; there is no store parameter.
+
+    VISIBILITY comes from the credential (OD-534-1):
+      * `operatorAuthorization` (the owner / tenant_admin / store_manager
+        envelope, live re-verified per request, 031 D1+D2): every sale of the
+        envelope's store.
+      * `device` + the `X-Cashier-Admission` header: only sales whose
+        `created_by` is the admitted cashier, in the device's store, from any
+        terminal of that store. The POS sends every cashier sale on the RT-224
+        device path with `operatorUserId`, so `created_by` is the cashier.
+    On the POS the scope is the paired store (the envelope and the device are
+    each bound to one store); viewing several stores is a console/mobile
+    concern. A sale outside the caller's visibility is the non-disclosing 404
+    and never appears in a list. The visibility filter is applied on every
+    request and is never carried by the cursor.
+
+    COMPLETENESS: a list reflects sales the server has RECEIVED up to `asOf`.
+    Sales still queued on any terminal are not included and cannot be known
+    here, so a client must never present a page as the complete store
+    history.
+
+    `readSale` (`sales.yaml`) and its `Sale` projection are unchanged (RT-537
+    D-1): this is a separate read surface with its own auth, audit and shape.
+
+    Money: exact-decimal strings paired with an ISO-4217 code; no float ever
+    appears on the wire. Timestamps are RFC 3339 / `date-time` in UTC.
+    Business dates are `YYYY-MM-DD` in the store timezone, as persisted at
+    capture and never recomputed.
+
+    Errors use the canonical `Error` envelope shared with `sales.yaml`,
+    `auth.openapi.yaml` and `outbox.openapi.yaml`.
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: pos-sale-history
+    description: >
+      Store-scoped POS sales history, sale detail and receipt reprint (RT-534).
+
+paths:
+  /api/pos/v1/sale-history:
+    get:
+      summary: List received sales of the caller's store by business-date range.
+      operationId: listSaleHistory
+      tags: [pos-sale-history]
+      x-audit-action: sale_history.listed
+      security:
+        - operatorAuthorization: []
+        - device: []
+      description: >
+        Ordered `businessDate DESC, occurredAt DESC, saleRef DESC` (keyset).
+        `from` and `to` are both REQUIRED and both inclusive, `to >= from`,
+        and the range is at most 31 business days (`to - from <= 30`), per
+        OD-534-4. A wider range is 400 `validation_error`; it is never
+        truncated. Any stored period stays reachable through another range.
+        An empty page (`items: []`, `nextCursor: null`) is a 200.
+
+        Audit (OD-534-7): one `sale_history.listed` event per request, with
+        the filters and the item count and no row ids. Rows are not audited
+        individually.
+      parameters:
+        - $ref: "#/components/parameters/CashierAdmission"
+        - $ref: "#/components/parameters/BusinessDateFrom"
+        - $ref: "#/components/parameters/BusinessDateTo"
+        - $ref: "#/components/parameters/DeviceRefQuery"
+        - $ref: "#/components/parameters/OperatorUserIdQuery"
+        - $ref: "#/components/parameters/SaleNumberQuery"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: One page of the caller's visible sales.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SaleHistoryPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Refused"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/pos/v1/sale-history/{saleRef}:
+    get:
+      summary: Full recorded detail of one visible sale, with reprint eligibility.
+      operationId: readSaleHistoryDetail
+      tags: [pos-sale-history]
+      x-audit-action: sale_history.detail_read
+      security:
+        - operatorAuthorization: []
+        - device: []
+      description: >
+        Every recorded fact of the sale: lines in receipt order when recorded,
+        tenders, change, the receipt header snapshot, void and returns
+        summaries, ERP posting state and the reprint eligibility the server
+        will enforce. A fact that was never recorded is null or `unavailable`,
+        never guessed or filled from current values (OD-534-3/6).
+
+        Audit (OD-534-7): one `sale_history.detail_read` event per authorized
+        open, with the saleRef.
+      parameters:
+        - $ref: "#/components/parameters/CashierAdmission"
+        - $ref: "#/components/parameters/SaleRef"
+      responses:
+        "200":
+          description: The detail projection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SaleHistoryDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Refused"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/pos/v1/sale-history/{saleRef}/reprints:
+    post:
+      summary: Authorize, or record, one receipt reprint of a visible sale.
+      operationId: recordSaleReprint
+      x-idempotency: required
+      x-audit-action: sale.receipt.reprinted
+      tags: [pos-sale-history]
+      security:
+        - operatorAuthorization: []
+        - device: []
+      description: >
+        Two modes (`SaleReprintRequest.mode`, RT-537 D-7 / Q-8).
+
+        `authorize` (any terminal of the store, BEFORE printing): the server
+        decides whether the reprint is allowed and of which kind
+        (OD-534-2/3/8); the POS prints only what this returns. A `duplicate`
+        is allowed only when the detail's `reprint.duplicate` is `allowed`
+        (complete receipt facts and not voided); otherwise 422
+        `reprint_duplicate_unavailable`. A `sale_record` is always allowed for
+        a visible sale and carries the marks (`voided`, `returned`). On the
+        device path the cashier admission must be live NOW.
+
+        `record` (ONLY the sale's own capturing device, AFTER it printed
+        locally under its own rules, online or offline): reports a reprint
+        that already happened so the server audit trail is complete. It is
+        never refused for eligibility (incomplete facts, voided), only for
+        authentication or visibility; the server still computes and stores
+        its marks. On the device path the admission window is checked against
+        `printedAt` with the captureSale rules (RT-224/225: 120 s clock-skew
+        tolerance, 7-day back-dating cap, future-dating cap), not against now.
+        The POS queues a `record` until the sale has a `saleRef`, then replays
+        it with the same `Idempotency-Key` (the local print event id) under
+        the credential that was current at `printedAt`: the device path with
+        that admission for a cashier, the envelope when one is held for a
+        manager or admin. A `record` from any other device is the 403
+        `refused`.
+
+        Copy numbers (Q-5): a `record` keeps the originating terminal's local
+        number (`localCopyNumber`); an `authorize` gets the server's next
+        number for that sale. A number can repeat across terminals; the
+        server audit trail is the authority. The "original printed
+        successfully" precondition (OD-534-2) is enforced by the originating
+        terminal from its own print history and is waived for cross-terminal
+        reprints (Q-6), which are still audited and marked.
+
+        Audit (OD-534-7): every call, including a 403 or 422 refusal, writes
+        one `sale.receipt.reprinted` event with the saleRef, mode, kind,
+        marks, copy number and `outcome` (`recorded` / `refused`). Recording
+        a reprint changes no sale, return, void or payment fact and
+        authorizes no payout.
+      parameters:
+        - $ref: "#/components/parameters/CashierAdmission"
+        - $ref: "#/components/parameters/SaleRef"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaleReprintRequest"
+      responses:
+        "200":
+          description: >
+            Idempotent replay of a reprint already recorded under this
+            `Idempotency-Key`. Returns the stored projection with
+            `Idempotent-Replayed: true`; nothing is recorded twice.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SaleReprint"
+        "201":
+          description: Reprint authorized or recorded.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SaleReprint"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Refused"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ReprintNotAllowed"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+components:
+  securitySchemes:
+    operatorAuthorization:
+      type: http
+      scheme: bearer
+      description: >
+        The operator-authorization ENVELOPE (031 D1+D2), the same scheme as
+        `pos-sales/sales.yaml`: an opaque, revocable `pos_operator` bearer.
+        Only owner, tenant_admin and store_manager can hold one; the backend
+        re-evaluates membership, device, store access, role and expiry live on
+        every request. Every refusal is the same generic 401.
+    device:
+      type: http
+      scheme: bearer
+      description: >
+        The paired terminal's opaque `devices` pairing token (the RT-224
+        scheme of `pos-sales/sales.yaml`). On these operations it is accepted
+        ONLY together with the `X-Cashier-Admission` header: the device token
+        never proves a cashier alone. A missing, invalid or revoked device
+        token is the generic 401; a refused admission from a valid device is
+        the generic 403 `refused`.
+
+  parameters:
+    CashierAdmission:
+      name: X-Cashier-Admission
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: >
+        REQUIRED with the `device` scheme and MUST be absent with
+        `operatorAuthorization` (an envelope request that carries it is the
+        generic 401). The `admission_id` of the cashier admission the terminal
+        holds (`pos-cashier-admissions.openapi.yaml`). It is a selector, not a
+        credential: the device token is the credential, the same trust posture
+        as `operatorUserId` on `captureSale`. The server requires the admission
+        to be of this device, store and tenant; live NOW (not ended, not
+        expired), or for a `record`-mode reprint covering `printedAt` under the
+        captureSale window rules instead; and the cashier still eligible (the
+        RT-113 rules, re-checked live). Every refusal from a valid device is
+        the generic 403 `refused`. On this path the idempotency `clientId` is
+        the admission's user.
+    BusinessDateFrom:
+      name: from
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date
+      description: First business day of the range, inclusive, in the store timezone.
+    BusinessDateTo:
+      name: to
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date
+      description: >
+        Last business day of the range, inclusive. `to >= from` and
+        `to - from <= 30` (31 business days, OD-534-4), else 400
+        `validation_error`.
+    DeviceRefQuery:
+      name: device_ref
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: >
+        Only sales captured from this device of the caller's store. An unknown
+        device, or a device of another store, yields an empty page.
+    OperatorUserIdQuery:
+      name: operator_user_id
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: >
+        `operatorAuthorization` only (400 `validation_error` on the device
+        path). Only sales whose `created_by` is this user.
+    SaleNumberQuery:
+      name: sale_number
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+      description: >
+        Exact match on the captured receipt `saleNumber`
+        (`CaptureSaleReceipt.saleNumber` in `sales.yaml`). A sale captured
+        without a receipt snapshot has none and never matches. The RT-249
+        short number is not defined here; it will be added additively once
+        RT-249 defines it (Q-7).
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 512
+        pattern: "^[A-Za-z0-9_-]+$"
+      description: >
+        Opaque keyset cursor from a prior page's `nextCursor`, bound to the
+        tenant, the operation and the filters. Do not decode or construct it;
+        omit it for the first page. A value the server did not issue, cannot
+        decode, or that is reused with other filters is 400
+        `validation_error`.
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+      description: Maximum items per page (OD-534-4). The server MAY return fewer.
+    SaleRef:
+      name: saleRef
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        Stable server-issued sale reference. Resolves only within the caller's
+        visibility; any other ref is the non-disclosing 404.
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
+      description: >
+        REQUIRED. 16 to 128 printable ASCII characters with no whitespace (the
+        `IdempotencyInterceptor` rule, RT-181). Keyed per route and resolved
+        path parameters on the authenticated principal (the envelope user, or
+        the admission's cashier on the device path). An identical retry
+        replays the stored response with `Idempotent-Replayed: true`; reuse
+        with a different payload is 409 `idempotency_key_conflict`. A
+        `record` uses the local print event id, so an offline replay is
+        recorded once.
+
+  headers:
+    IdempotentReplayed:
+      description: >
+        Present and `true` on every idempotent-replay response. Clients detect
+        a replay by this header, not by the status code.
+      schema:
+        type: boolean
+    RetryAfter:
+      description: Seconds the caller should wait before retrying, on a 429 (ADR 0009).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 300
+
+  schemas:
+    DecimalAmount:
+      type: string
+      pattern: '^-?[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: Exact-decimal monetary amount as a string (never a float); `numeric(19,4)` at rest.
+    CurrencyCode:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      description: ISO-4217 alphabetic currency code.
+    ErpPostingState:
+      type: string
+      enum: [posted, pending, failed, unknown]
+      description: >
+        Read-only operational ERP posting state (OD-534-5), NOT a tax or
+        fiscal compliance claim. Mapped from `erpnext_posting_status` (Q-4):
+        `posted` -> posted; `pending` and `failed_transient` -> pending;
+        `permanently_rejected` -> failed; no posting row (including a tenant
+        without ERP, or a sale stranded before its posting intent) -> unknown.
+    NameSource:
+      type: string
+      enum: [snapshot, current, unavailable]
+      description: >
+        Where a displayed name or label comes from (OD-534-6). `snapshot`: the
+        value recorded when the sale was made. `current`: today's value, shown
+        for a sale captured without a snapshot. `unavailable`: no value. A
+        current value is never presented as the historical one.
+
+    SaleHistoryPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor, asOf, storeTimezone, visibility, from, to]
+      description: One page of `listSaleHistory`.
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/SaleHistoryItem"
+        nextCursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page; `null` on the last page.
+        asOf:
+          type: string
+          format: date-time
+          description: >
+            Server time of this read. The page covers the sales the server had
+            received by then; sales still queued on any terminal are not
+            included.
+        storeTimezone:
+          type: string
+          description: IANA time zone of the store's business dates (for example `Africa/Cairo`).
+        visibility:
+          type: string
+          enum: [store, own_sales]
+          description: "`store` on the envelope path; `own_sales` on the cashier device path."
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+
+    SaleHistoryItem:
+      type: object
+      additionalProperties: false
+      required:
+        - saleRef
+        - saleNumber
+        - businessDate
+        - occurredAt
+        - receivedAt
+        - device
+        - operator
+        - currencyCode
+        - posTotal
+        - syncStatus
+        - voided
+        - returnState
+        - erpPostingState
+      description: One sale in a history list.
+      properties:
+        saleRef:
+          type: string
+          format: uuid
+        saleNumber:
+          type: [string, "null"]
+          description: The receipt sale number; null when the sale was captured without a receipt snapshot.
+        businessDate:
+          type: string
+          format: date
+        occurredAt:
+          type: string
+          format: date-time
+        receivedAt:
+          type: string
+          format: date-time
+          description: Server clock at receipt.
+        device:
+          $ref: "#/components/schemas/DeviceView"
+        operator:
+          $ref: "#/components/schemas/OperatorView"
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+        posTotal:
+          $ref: "#/components/schemas/DecimalAmount"
+        syncStatus:
+          type: string
+          enum: [captured, synced, failed-retryable, failed-needs-repair]
+          description: The server-authoritative sale status (spec 032), as on `Sale.syncStatus`.
+        voided:
+          type: boolean
+        returnState:
+          type: string
+          enum: [none, partial, full]
+        erpPostingState:
+          $ref: "#/components/schemas/ErpPostingState"
+
+    DeviceView:
+      type: object
+      additionalProperties: false
+      required: [deviceRef, label, labelSource]
+      properties:
+        deviceRef:
+          type: [string, "null"]
+          format: uuid
+          description: Null for a sale captured before RT-77 device attribution.
+        label:
+          type: [string, "null"]
+        labelSource:
+          $ref: "#/components/schemas/NameSource"
+
+    OperatorView:
+      type: object
+      additionalProperties: false
+      required: [userRef, displayName, nameSource]
+      properties:
+        userRef:
+          type: [string, "null"]
+          format: uuid
+        displayName:
+          type: [string, "null"]
+          description: Never an email address, not even as a fallback (OD-534-6).
+        nameSource:
+          $ref: "#/components/schemas/NameSource"
+
+    SaleHistoryDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - summary
+        - lines
+        - lineOrder
+        - tenderState
+        - tenders
+        - changeGiven
+        - settledAt
+        - receiptHeader
+        - void
+        - returns
+        - erpPosting
+        - receiptFacts
+        - reprint
+      description: >
+        The full recorded detail of one sale. `receiptFacts` is `complete` only
+        when every field the original receipt printed is recorded (RT-537
+        D-6): a receipt snapshot with its header, a `sequence` on every line,
+        `tenderState: recorded`, and the change known.
+      properties:
+        summary:
+          $ref: "#/components/schemas/SaleHistoryItem"
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/SaleHistoryLine"
+        lineOrder:
+          type: string
+          enum: [recorded, not_recorded]
+          description: "`not_recorded`: the lines are in a stable order that is not the original receipt order."
+        tenderState:
+          type: string
+          enum: [recorded, unknown]
+          description: "`unknown`: a tender-unknown sale (RT-10 D8); `tenders` is empty."
+        tenders:
+          type: array
+          items:
+            $ref: "#/components/schemas/SaleTenderView"
+        changeGiven:
+          description: Cash change given, from the receipt snapshot; null when not recorded.
+          anyOf:
+            - $ref: "#/components/schemas/DecimalAmount"
+            - type: "null"
+        settledAt:
+          type: [string, "null"]
+          format: date-time
+          description: The time printed on the original receipt; null when not recorded.
+        receiptHeader:
+          description: The receipt header captured with the sale; null when not recorded (Q-3).
+          anyOf:
+            - $ref: "#/components/schemas/ReceiptHeader"
+            - type: "null"
+        void:
+          description: Present when the sale is voided.
+          anyOf:
+            - $ref: "#/components/schemas/VoidSummary"
+            - type: "null"
+        returns:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReturnSummary"
+        erpPosting:
+          $ref: "#/components/schemas/ErpPostingView"
+        receiptFacts:
+          type: string
+          enum: [complete, partial]
+        reprint:
+          $ref: "#/components/schemas/ReprintEligibility"
+
+    SaleHistoryLine:
+      type: object
+      additionalProperties: false
+      required:
+        - lineRef
+        - sequence
+        - lineName
+        - unitPrice
+        - currencyCode
+        - quantity
+        - lineAmount
+        - taxAmount
+        - unit
+        - returnedQuantity
+      properties:
+        lineRef:
+          type: string
+          format: uuid
+        sequence:
+          type: [integer, "null"]
+          minimum: 1
+          description: 1-based position on the original receipt; null when not recorded.
+        lineName:
+          type: string
+        unitPrice:
+          $ref: "#/components/schemas/DecimalAmount"
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+        quantity:
+          type: string
+        lineAmount:
+          $ref: "#/components/schemas/DecimalAmount"
+        taxAmount:
+          anyOf:
+            - $ref: "#/components/schemas/DecimalAmount"
+            - type: "null"
+        unit:
+          type: string
+        returnedQuantity:
+          type: string
+          description: Cumulative quantity returned on this line ("0" when none).
+
+    SaleTenderView:
+      type: object
+      additionalProperties: false
+      required: [method, amount, reference, sequence]
+      description: A captured tender line (RT-10 D1); the amount is NET of change, as captured.
+      properties:
+        method:
+          type: string
+          enum: [cash, card_external]
+        amount:
+          $ref: "#/components/schemas/DecimalAmount"
+        reference:
+          type: [string, "null"]
+          description: The short card-terminal reference for `card_external`; never card data.
+        sequence:
+          type: [integer, "null"]
+          minimum: 1
+
+    ReceiptHeader:
+      type: object
+      additionalProperties: false
+      required: [branchName, branchAddress, taxRegistrationId]
+      description: >
+        The receipt header captured with the sale (Q-3). Never today's store
+        values: a sale without a snapshot has no header and stays `partial`.
+      properties:
+        branchName:
+          type: string
+        branchAddress:
+          type: string
+        taxRegistrationId:
+          type: string
+
+    VoidSummary:
+      type: object
+      additionalProperties: false
+      required: [voidedAt, voidBusinessDate, approved, approverRole]
+      properties:
+        voidedAt:
+          type: string
+          format: date-time
+        voidBusinessDate:
+          type: [string, "null"]
+          format: date
+        approved:
+          type: boolean
+          description: True for an RT-530 manager-approved void; false for a legacy void.
+        approverRole:
+          type: [string, "null"]
+          enum: [owner, tenant_admin, store_manager, null]
+          description: The approver's role only; no approver name or id is exposed.
+
+    ReturnSummary:
+      type: object
+      additionalProperties: false
+      required: [returnRef, recordedAt, businessDate, returnTotal, lines]
+      properties:
+        returnRef:
+          type: string
+          format: uuid
+        recordedAt:
+          type: string
+          format: date-time
+        businessDate:
+          type: string
+          format: date
+        returnTotal:
+          $ref: "#/components/schemas/DecimalAmount"
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReturnSummaryLine"
+
+    ReturnSummaryLine:
+      type: object
+      additionalProperties: false
+      required: [lineRef, quantity, lineAmount]
+      properties:
+        lineRef:
+          type: string
+          format: uuid
+        quantity:
+          type: string
+        lineAmount:
+          $ref: "#/components/schemas/DecimalAmount"
+
+    ErpPostingView:
+      type: object
+      additionalProperties: false
+      required: [sale, saleDocumentRef, reversal, reversalDocumentRef]
+      properties:
+        sale:
+          $ref: "#/components/schemas/ErpPostingState"
+        saleDocumentRef:
+          type: [string, "null"]
+          description: The ERPNext document id; present only when `sale` is `posted`.
+        reversal:
+          description: The void's reversal posting state; null unless the sale is voided.
+          anyOf:
+            - $ref: "#/components/schemas/ErpPostingState"
+            - type: "null"
+        reversalDocumentRef:
+          type: [string, "null"]
+
+    ReprintEligibility:
+      type: object
+      additionalProperties: false
+      required: [duplicate, saleRecord, marks]
+      description: >
+        What `recordSaleReprint` will allow in `authorize` mode (OD-534-3/8).
+        A voided sale never gets a duplicate, only a sale record marked
+        `voided`; a returned sale's slip is marked `returned`.
+      properties:
+        duplicate:
+          type: string
+          enum: [allowed, unavailable_incomplete, unavailable_voided]
+        saleRecord:
+          type: string
+          enum: [allowed]
+        marks:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReprintMark"
+
+    ReprintMark:
+      type: string
+      enum: [voided, returned]
+
+    SaleReprintRequest:
+      type: object
+      additionalProperties: false
+      required: [mode, kind, printedAt]
+      properties:
+        mode:
+          type: string
+          enum: [authorize, record]
+          description: "`authorize`: ask before printing (any terminal). `record`: report a print already made (capturing device only)."
+        kind:
+          type: string
+          enum: [duplicate, sale_record]
+        printedAt:
+          type: string
+          format: date-time
+          description: >
+            The terminal's print time; provenance, and the admission-window
+            instant of a `record`. An offline reprint replays with its
+            original time.
+        localCopyNumber:
+          type: integer
+          minimum: 1
+          description: "`record` only: the copy number the originating terminal printed (Q-5)."
+
+    SaleReprint:
+      type: object
+      additionalProperties: false
+      required: [reprintRef, saleRef, mode, kind, marks, copyNumber, recordedAt]
+      properties:
+        reprintRef:
+          type: string
+          format: uuid
+        saleRef:
+          type: string
+          format: uuid
+        mode:
+          type: string
+          enum: [authorize, record]
+        kind:
+          type: string
+          enum: [duplicate, sale_record]
+        marks:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReprintMark"
+        copyNumber:
+          type: integer
+          minimum: 1
+          description: The copy number to print (`authorize`) or the one printed (`record`).
+        recordedAt:
+          type: string
+          format: date-time
+          description: Server clock.
+
+    Error:
+      type: object
+      required: [error]
+      description: >
+        Canonical error envelope, identical to `sales.yaml` /
+        `auth.openapi.yaml` / `outbox.openapi.yaml`. Refusals are
+        non-disclosing.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code (FR-101 taxonomy).
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id; the actual cause is recorded server-side.
+
+  responses:
+    ValidationFailure:
+      description: >
+        400 `validation_error`: a malformed or unknown query key, header or
+        body field, a bad date or range (including a range wider than 31
+        business days), or a cursor the server did not issue.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        Generic 401: a missing, invalid, revoked or expired envelope or device
+        credential, or an envelope request that carries `X-Cashier-Admission`.
+        The body never distinguishes the cause.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Refused:
+      description: >
+        Generic 403 `refused` on the device path: the device credential is
+        valid, but the cashier admission is not accepted (missing header, an
+        admission of another device, store or tenant, ended or expired, or an
+        ineligible cashier), or a `record` came from a device other than the
+        sale's capturing device. One body for every cause; never a sign that
+        the device was revoked.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >
+        Non-disclosing 404: the sale does not resolve within the caller's
+        visibility. Identical for another tenant, another store, another
+        cashier's sale and a genuinely absent ref.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: >
+        409 `idempotency_key_conflict`: the same `Idempotency-Key` reused with
+        a different payload.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ReprintNotAllowed:
+      description: >
+        422, `authorize` mode only. `reprint_duplicate_unavailable`: a
+        `duplicate` was requested for a sale whose `reprint.duplicate` is not
+        `allowed` (incomplete receipt facts, or voided). No reprint is
+        recorded; the refusal is audited with outcome `refused`. The client
+        may request a `sale_record` instead.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: >
+        Per-device rate limit exceeded (ADR 0009). Non-disclosing body; the
+        `Retry-After` header carries the back-off. A client treats it as
+        transient.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SystemFailure:
+      description: >
+        500: an unexpected server error. The cause is recorded server-side
+        keyed by `request_id` and is never returned.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
