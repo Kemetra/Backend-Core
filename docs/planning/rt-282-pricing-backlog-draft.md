@@ -67,7 +67,7 @@ Recommendation first.
 | **OD-2** | Sell Unit in the price key (475–476) | v1 uses an implicit single Sell Unit ("each"), with a `sell_unit` column/seam defaulted. Multi-UOM pricing waits for RT-281 Sell Unit modelling. | Changes the primary key of price events |
 | **OD-3** | Revision granularity for coherent POS application (628) | A tenant publish creates an immutable **Pricing Revision**. Each Store exposes a monotonic **applied-revision number** derived from it. POS applies whole store revisions. | Shapes the PR-06 contract and the PR-G4 design |
 | **OD-4** | Change Set framework shared with Catalog (RT-281) | Use one shared Change Set / Revision primitive with domain-specific validators (Catalog, Pricing). Do not build two parallel lifecycles. | PR-02 vs RT-281 overlap |
-| **OD-5** | Legacy `store_product_overrides` split (716) | price → Pricing (Store-scope price event); `is_active` → Assortment (RT-281); `tax_category` → Fiscal (RT-294). Legacy columns become read-only compatibility projections during the transition. | PR-03 and PR-16 |
+| **OD-5** | Legacy `store_product_overrides` split (716) | price → Pricing (Store-scope price event); `is_active` → Assortment (RT-281); `tax_category` → Fiscal (RT-294). Legacy columns become read-only compatibility projections during the transition. | PR-03, PR-16a and PR-16b |
 | **OD-6** | POS strict vs lenient response validation for additive read-down / sales fields | Ask POS to confirm, as was done for 033. If strict, each contract bump ships with a POS contract-pin update. | PR-06 and PR-07 rollout order |
 
 ## 4. Proposed backlog
@@ -193,11 +193,12 @@ Conventions:
 
 #### PR-06 — BC — [GATED OpenAPI] POS read-down pricing projection v-next (additive)
 - **Work Mode:** Implementation (contract-only)
-- **Decisions:** 618–629, 632–633, 715
+- **Decisions:** 501, 604, 618–630, 632–633, 715
 - **Gate:** **G4** (PR-G4 ratified)
-- **Depends on:** PR-G4, OD-3, OD-6
+- **Depends on:** PR-G4, PR-07 (the provenance field shapes must match), OD-3, OD-6
 - **AC:** Additive fields:
   - store pricing revision id/cursor;
+  - **item-level provenance on every priced row and on each future entry:** source scope (book/zone/store), price event id and price kind. This is POS's only authoritative source for the PR-07 sale-line fields when it sells offline;
   - pre-delivered future scheduled entries with activation instant;
   - freshness/max-staleness metadata;
   - a device revision-applied acknowledgement endpoint (feeds 632–633).
@@ -218,11 +219,12 @@ Conventions:
 | **PR-08** | Resolution engine + inquiry / "why this price" endpoints | Impl | 489–506, 510 | none | PR-04, PR-05 | The pure resolver is property-tested for determinism and precedence. Store timezone is used for the effective instant. Current, future and historical inquiry and explain endpoints work. Missing price means not sellable (480, 506). |
 | **PR-09** | Price event authoring + validation | Impl | 507–521, 478–482, 563–567 | none | PR-08 | Fixed, amount and percent helpers resolve to a concrete price before approval. Prices must be representable at minor-unit precision. Overlaps and past-dated changes are rejected per policy. Corrections are new events and history is never rewritten. |
 | **PR-10** | Change Set lifecycle + publish/schedule/rollback | Impl | 522–535, 705–707 | none | PR-09, PR-04, RT-284 impl, shared primitive per OD-4 | Implements the PR-02 state machine: immutable revision on publish, rollback creates a new revision, optimistic concurrency (409 on stale version), emergency path audited, Store Manager scope enforced server-side, audit records before/after, actor, reason, effective time and version. |
-| **PR-11** | Read-down sourced from the Pricing revision, with dual-read | Impl | 618–620, 713–715, 717 | G4 | PR-06, PR-08 | Read-down serves the PR-06 projection from the resolver. A dual-read shadow compares it with the legacy `COALESCE` and emits a mismatch metric. Legacy stays authoritative until PR-16 cutover. |
+| **PR-11** | Read-down sourced from the Pricing revision, with dual-read | Impl | 618–620, 713–715, 717 | G4 | PR-06, PR-08 | Read-down serves the PR-06 projection, including item-level provenance, from the resolver. A dual-read shadow compares it with the legacy `COALESCE` and emits a mismatch metric. Legacy stays authoritative until the PR-16b cutover. |
 | **PR-12** | Distribution readiness + Pricing Health | Impl | 631–640, 704 | G4 | PR-06, PR-11 | Per-store and per-device revision receipt/apply state, a missed-activation health finding and stale POS revision findings, computed in Backend-Core. The shelf-label worklist is an optional flag, not a blocker (635–636). |
 | **PR-13** | Clearance lifecycle | Impl | 538–542 | **G2** | PR-10, PR-G2V/G2I | Clearance markdown is a price event type with an explicit reset to regular. A multi-step plan seam exists. Promotion eligibility on clearance is an explicit flag exposed to the Offer Engine (RT-286). Not enabled for tenants until G2 is closed. |
 | **PR-15P** | Open Price capability plan | Planning | 548–556 | none | PR-01, RT-284, RT-114 | Defines the explicit product capability (off by default), min/max, sensitivity-based reason capture, offline bound under cached policy, audit, and sale-capture validation of an entered price. |
-| **PR-16** | Legacy import + authority cutover | Impl | 709–718 | none | PR-03, PR-08, PR-11, PR-V1 | Imports price events with provenance and makes legacy price columns read-only projections (one writable authority). Cutover is gated on PR-V1 evidence. Rollback keeps all data and never rewrites sale facts. |
+| **PR-16a** | Legacy price import (legacy stays authoritative) | Impl | 709–711, 713 | none | PR-03, PR-05, PR-09 | Imports price events from `default_price` and the store override prices, with `source = legacy_import` provenance. It is idempotent and re-runnable, so the new side tracks legacy until cutover. Legacy columns stay the only writable authority (712). This item exists so PR-V1 has populated data to compare. |
+| **PR-16b** | Authority cutover | Impl | 712, 714, 716–718 | none | PR-16a, PR-V1, PR-10 | Gated on the PR-V1 evidence. It flips the writable authority to Pricing and makes the legacy price columns read-only compatibility projections. Rollback keeps all data and never rewrites sale facts. |
 | **PR-17** | Reference / compare-at price facts | Impl | 557–562 | none (display policy may later depend on Fiscal) | PR-05 | Stored separately from the selling price and never used as a fallback. Exposed for display only. An Offer basis only when a campaign declares it (RT-286). |
 | **PR-18P** | Price recommendations (cost-based) | Planning | 688–694 | none | PR-14P, PR-10 | A recommendation becomes Change Set, then preview, approval and publish. It is never authoritative and keeps its provenance. Competitor and AI recommendations are explicitly deferred. |
 
@@ -230,8 +232,8 @@ Conventions:
 
 | ID | Repo | Title | Mode | Decisions | Gate | Depends on | Acceptance criteria (summary) |
 |---|---|---|---|---|---|---|---|
-| **PR-P1** | POS | Consume the pricing projection v-next | Impl | 618–629 | **G4** | PR-06, PR-11 | Applies whole store revisions atomically. Pre-delivered future prices activate by the PR-G4 trusted-time rule. A failed apply leaves the previous revision active and identifiable. Stale state is visible. Sends the revision-applied ack. |
-| **PR-P2** | POS | Cart price lock + provenance on the sale | Impl | 602–604, 611, 630 | none | PR-07 | The regular price is frozen on the CartLine at scan and sent with PR-07 provenance. A live cart is never silently repriced. Held-cart TTL/revalidation stays in **RT-445** (605–609). |
+| **PR-P1** | POS | Consume the pricing projection v-next | Impl | 618–630 | **G4** | PR-06, PR-11 | Stores the item-level provenance (source scope, price event id, price kind) with each cached price, so it is available offline for PR-P2. Applies whole store revisions atomically. Pre-delivered future prices activate by the PR-G4 trusted-time rule. A failed apply leaves the previous revision active and identifiable. Stale state is visible. Sends the revision-applied ack. |
+| **PR-P2** | POS | Cart price lock + provenance on the sale | Impl | 602–604, 611, 630 | none | PR-07, PR-P1 | The regular price is frozen on the CartLine at scan, together with the provenance the device cached in PR-P1, and is sent as the PR-07 fields. A live cart is never silently repriced. Held-cart TTL/revalidation stays in **RT-445** (605–609). |
 | **PR-C1** | CON | Simple price surface: Product → Price → Change Price, "why this price", future timeline | Impl | 695–700, 708 | none | PR-04, PR-08, PR-10 | Control surface only. Every write goes through Backend-Core Change Set endpoints and never touches ERPNext. Advanced controls use progressive disclosure. |
 | **PR-C2** | CON | Bulk change sets, Impact Preview, approval view, distribution status, Pricing Health | Impl | 701–704 | none (distribution views need G4 items) | PR-10, PR-12 | Renders Backend-computed preview, approval, distribution and health. No pricing logic lives in the Console. |
 | **PR-X1** | CNR | Verify tax/total representation after the Fiscal contract | Impl | 601, 681 | **G3** | RT-294 | Extends RT-378 representation verification to tax rows and totals per the Fiscal contract. Until then RT-283 D4 (fail closed) stands. |
@@ -240,7 +242,7 @@ Conventions:
 
 | ID | Repo | Title | Mode | Gate | Depends on | Acceptance criteria (summary) |
 |---|---|---|---|---|---|---|
-| **PR-V1** | BC | Dual-read equivalence evidence for cutover | Verification | none | PR-11 | On rt9 and pilot data, resolver output equals the legacy `COALESCE` for every sellable (store, product) pair over an agreed window, or each difference is explained. The report is attached before PR-16. |
+| **PR-V1** | BC | Dual-read equivalence evidence for cutover | Verification | none | PR-11, PR-16a | Runs on rt9 and pilot data after the PR-16a import. Resolver output must equal the legacy `COALESCE` for every sellable (store, product) pair over an agreed window, or each difference is explained. The report is attached before PR-16b. |
 | **PR-V2** | BC + POS + CNR | End-to-end on rt9: scheduled price change → POS offline activation → sale with provenance → exact ERP posting | Verification | G1 ✔, **G4** | PR-P1, PR-P2, PR-11, PR-12 | Scheduled change published ahead of time, device offline across activation, activation by trusted time, sale frozen with revision, Connector posts the exact rate with `ignore_pricing_rule=1`, and the health view shows the store as applied. Also run the stale-revision and critical-correction scenarios. **This is the runtime proof that closes G4.** |
 
 ## 5. Dependency order (critical path)
@@ -249,10 +251,11 @@ Conventions:
 OD-1..6 ─┬─> PR-01 ─┬─> PR-02 ─> PR-04 ─┬─> PR-08 ─> PR-09 ─> PR-10 ─┬─> PR-C1
          │          │                   │                            ├─> PR-13 (G2)
          │          ├─> PR-03 ─> PR-05 ─┘                            └─> PR-18P
-         │          ├─> PR-G4 ─> PR-06 ─> PR-11 ─┬─> PR-12 ─> PR-C2
-         │          │                            ├─> PR-P1 ─┐
-         │          │                            └─> PR-V1 ─> PR-16
-         │          ├─> PR-07 ─> PR-P2 ───────────────────── ┴─> PR-V2 (closes G4)
+         │          ├─> PR-07 ─┐
+         │          ├─> PR-G4 ─┴─> PR-06 ─> PR-11 ─┬─> PR-12 ─> PR-C2
+         │          │                              ├─> PR-P1 ─> PR-P2 ─┐
+         │          │                              │                   └─> PR-V2 (closes G4)
+         │          │      PR-09 ─> PR-16a ────────┴─> PR-V1 ─> PR-16b (cutover)
          │          ├─> PR-G5        (G5; nothing executable until ratified)
          │          ├─> PR-14P       (cost feed)
          │          └─> PR-15P       (open price)
@@ -280,7 +283,7 @@ RT-486 (PR-G2V) and RT-483 (PR-01) can start immediately and in parallel.
 | L Tax / Fiscal | 590–601 | **G3 / RT-294.** Pricing only declares the basis (PR-01/PR-04). 601 → PR-X1 |
 | M Cart price lock | 602–611 | PR-P2, PR-07. 605–609 → RT-445. 610 → RT-286 |
 | N Returns | 612–617 | Already the rule under RT-14 / RT-87 / RT-271 (original sale facts). PR-G5 covers measured-line returns. No new item |
-| O POS / offline | 618–630 | **G4:** PR-G4, PR-06, PR-11, PR-P1, PR-V2. 630 → PR-07 |
+| O POS / offline | 618–630 | **G4:** PR-G4, PR-06 (including item-level provenance), PR-11, PR-P1, PR-V2. 630 → PR-07 + PR-P2 |
 | P Distribution / shelf labels | 631–640 | PR-06, PR-12, PR-C2. 635–636 optional |
 | Q Measured / weighted | 641–648 | **G5:** PR-G5. 645 → RT-286. 646 → OD-2 |
 | R ERPNext boundary | 649–664 | 650–659 → RT-283 / RT-377 / RT-378 (G1 done). 660 → PR-G2V/G2I. 661 → G3. 662–664 → RT-379 / RT-201 |
@@ -288,7 +291,7 @@ RT-486 (PR-G2V) and RT-483 (PR-01) can start immediately and in parallel.
 | T Post-posting verification | 675–687 | RT-378 (verified in RT-380). 681 → PR-X1 (G3). Residual return/void and replay gaps are already logged on RT-380 |
 | U Recommendations | 688–694 | PR-18P. 689–690 deferred |
 | V Admin Console | 695–708 | PR-C1, PR-C2. 696 and 704 are Backend-side (PR-08/10/12). 705–706 enforced in PR-10 |
-| W Migration | 709–718 | PR-03, PR-16, PR-V1. 716 → OD-5 + RT-281 + RT-294 |
+| W Migration | 709–718 | PR-03, PR-16a (import), PR-V1, PR-16b (cutover). 716 → OD-5 + RT-281 + RT-294 |
 
 **Coverage check for RT-294 (G3):** the Fiscal Core contract should explicitly cover 592–601 (inclusive/exclusive derivation, promotion allocation input, tax-mode change effective-dating, frozen gross/net/tax, Fiscal-owned rounding). If its scope doesn't, add an AC to RT-294 rather than a Pricing item.
 
