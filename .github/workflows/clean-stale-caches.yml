@@ -126,11 +126,12 @@ jobs:
       - name: Cache usage (after)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEFORE_BYTES: ${{ steps.before.outputs.before_bytes }}
         run: |
           usage=$(gh api "repos/$GITHUB_REPOSITORY/actions/cache/usage")
           after=$(jq '.active_caches_size_in_bytes' <<< "$usage")
           count=$(jq '.active_caches_count'         <<< "$usage")
-          before=${{ steps.before.outputs.before_bytes }}
+          before="$BEFORE_BYTES"
           freed=$((before - after))
           echo "After : count=$count  size=$after B ($(awk "BEGIN{printf \"%.2f\", $after/1073741824}") GB)"
           echo "Net freed: $freed B ($(awk "BEGIN{printf \"%.3f\", $freed/1073741824}") GB)"

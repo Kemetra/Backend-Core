@@ -38,7 +38,7 @@ jobs:
       - name: Install oasdiff (pinned, checksum-verified)
         run: |
           archive="oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
-          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/$archive" \
             "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/$archive"
           echo "${OASDIFF_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/oasdiff"

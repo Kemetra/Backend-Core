@@ -88,3 +88,12 @@ describe("toSellableRow — normalizeAmount emits at the currency natural minor 
     );
   });
 });
+
+describe("isRepresentable — trailing-zero strip runs in linear time (RT-509, S8786)", () => {
+  it("rejects a long zero run before a significant digit without backtracking", () => {
+    const started = performance.now();
+    const representable = isRepresentable(`1.${"0".repeat(100_000)}1`, "EGP");
+    expect(performance.now() - started).toBeLessThan(200);
+    expect(representable).toBe(false);
+  }, 30_000);
+});

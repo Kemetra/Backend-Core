@@ -62,3 +62,21 @@ describe("canonicalInstant — one form per instant, any RFC 3339 offset, full p
     expect(canonicalInstant(a)).not.toBe(canonicalInstant(b));
   });
 });
+
+describe("canonicalInstant — trailing fraction zeros strip in linear time (RT-509, S8786)", () => {
+  it.each([
+    ["2026-10-05T08:00:00.120Z", "1791187200.12"],
+    ["2026-10-05T08:00:00.000Z", "1791187200"],
+    ["2026-10-05T08:00:00.1010Z", "1791187200.101"],
+  ])("%s → %s", (value, canonical) => {
+    expect(canonicalInstant(value)).toBe(canonical);
+  });
+
+  it("keeps a long zero run before a significant digit without backtracking", () => {
+    const fraction = `1${"0".repeat(100_000)}1`;
+    const started = performance.now();
+    const canonical = canonicalInstant(`2026-10-05T08:00:00.${fraction}Z`);
+    expect(performance.now() - started).toBeLessThan(200);
+    expect(canonical).toBe(`1791187200.${fraction}`);
+  }, 30_000);
+});

@@ -83,6 +83,17 @@ export const TENANT_SCOPED_TABLES = [
 
 export type TenantScopedTable = (typeof TENANT_SCOPED_TABLES)[number];
 
+/** Render a rejected tenant_id for an error message; never throws. */
+function describeTenantId(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value) ?? typeof value;
+  } catch {
+    // BigInt or a circular object: the type is enough to explain the refusal.
+    return typeof value;
+  }
+}
+
 export function withTenant(db: NodePgDatabase, tenantId: string) {
   assertUuid("tenantId", tenantId);
 
@@ -99,7 +110,7 @@ export function withTenant(db: NodePgDatabase, tenantId: string) {
     }
     if (rowTenantId !== tenantId) {
       throw new Error(
-        `withTenant: refusing write on ${table} — tenant_id mismatch (expected ${tenantId}, got ${String(rowTenantId)})`,
+        `withTenant: refusing write on ${table} — tenant_id mismatch (expected ${tenantId}, got ${describeTenantId(rowTenantId)})`,
       );
     }
   };

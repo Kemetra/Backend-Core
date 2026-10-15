@@ -127,12 +127,13 @@ export default function (data) {
   );
 
   // Advance the local cursor when the page carried one; otherwise re-baseline.
+  let body = null;
   try {
-    const body = res.json();
-    __ENV.__K6_CURSOR = body && body.next_page_token ? body.cursor : "";
+    body = res.json();
   } catch (_e) {
-    __ENV.__K6_CURSOR = "";
+    // Non-JSON body: no cursor to follow, so re-baseline below.
   }
+  __ENV.__K6_CURSOR = body && body.next_page_token ? body.cursor : "";
 
   sleepJitter();
 }
