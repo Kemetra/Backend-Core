@@ -11,6 +11,7 @@ import {
   resetHarness,
   captureBody,
   idempKey,
+  approvedVoid,
   type HarnessHandle,
 } from "../capture/__capture-harness";
 
@@ -60,7 +61,7 @@ describe("T050 — recordVoid happy path (separate terminal event, sale unchange
       .http()
       .post(`/api/pos/v1/sales/${saleRef}/void`)
       .set("Idempotency-Key", idempKey("vk1"))
-      .send({ sourceSystem: "pos-1", externalId: "void-evt-001" });
+      .send(await approvedVoid(h, saleRef, { body: { externalId: "void-evt-001" } }));
 
     expect(res.status).toBe(201);
     expect(res.body.kind).toBe("void");

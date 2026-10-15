@@ -45,7 +45,7 @@ import { Reflector } from "@nestjs/core";
 import { of, throwError, firstValueFrom } from "rxjs";
 
 import { AuditEmitterInterceptor } from "../../src/audit/audit-emitter.interceptor";
-import { AUDITABLE_KEY } from "../../src/audit/auditable.decorator";
+import { annotateAudit, AUDITABLE_KEY } from "../../src/audit/auditable.decorator";
 import { AUDIT_JOB_ENQUEUER, type AuditJobEnqueuer } from "../../src/audit/audit-job.enqueuer";
 import type { AuditJobPayload } from "../../src/audit/audit-job.types";
 
@@ -544,5 +544,37 @@ describe("AEI16 — target_type, target_id, metadata always null in base interce
     expect(payload.target_type).toBeNull();
     expect(payload.target_id).toBeNull();
     expect(payload.metadata).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AEI17 — RT-530: a handler may annotate the request with audit metadata
+// ---------------------------------------------------------------------------
+
+describe("AEI17 — metadata is the handler's annotation when set, else null", () => {
+  it("copies request.auditMetadata into the event, and nothing else changes", async () => {
+    const { interceptor, enqueuer, handlerRef } = makeInterceptor({ reflectorValue: ACTION });
+    const metadata = { approver_user_id: USER_ID, policy_version: "rt114-2026-10-07" };
+    const req = {
+      principal: { kind: "session", userId: USER_ID },
+      context: { tenantId: TENANT_ID, storeId: STORE_ID },
+      auditMetadata: metadata,
+    };
+    const execCtx = makeExecCtx(req, handlerRef);
+
+    await firstValueFrom(interceptor.intercept(execCtx, makeNext({ result: "ok" })));
+    await flushAsync();
+
+    const payload = (enqueuer.enqueue as jest.Mock).mock.calls[0]![0] as AuditJobPayload;
+    expect(payload.metadata).toEqual(metadata);
+    expect(payload.target_type).toBeNull();
+    expect(payload.target_id).toBeNull();
+    expect(payload.actor_user_id).toBe(USER_ID);
+  });
+
+  it("annotateAudit sets the key the interceptor reads", () => {
+    const req: Record<string, unknown> = {};
+    annotateAudit(req, { approval_id: "p" });
+    expect(req["auditMetadata"]).toEqual({ approval_id: "p" });
   });
 });

@@ -27,3 +27,19 @@ export const AUDITABLE_KEY = "dp2:auditable";
  */
 export const Auditable = (action: string): CustomDecorator =>
   SetMetadata(AUDITABLE_KEY, action);
+
+/**
+ * A request a handler may annotate with audit metadata (RT-530). The handler
+ * sets it AFTER it has the data (for example the approver of a sale void), and
+ * `AuditEmitterInterceptor` copies it into the emitted event's `metadata`.
+ * Absent -> `metadata: null`, as before. MUST NOT carry PII, credentials,
+ * tokens or payloads (FR-AUDIT-3, Constitution XIV): ids and labels only.
+ */
+export interface AuditAnnotatedRequest {
+  auditMetadata?: Record<string, unknown>;
+}
+
+/** Attach audit metadata to the request for the interceptor to emit. */
+export function annotateAudit(request: object, metadata: Record<string, unknown>): void {
+  (request as AuditAnnotatedRequest).auditMetadata = metadata;
+}

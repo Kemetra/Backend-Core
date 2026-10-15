@@ -217,6 +217,7 @@ describe("data-pulse-migrate CLI", () => {
     "0043_inventory_effect_integration_backfill",
     "0044_stock_locations_position_grain",
     "0045_tracking_foundation",
+    "0046_sale_void_approval",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -290,20 +291,43 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicColumn("stock_movements", "tracking_identity_id")).toBe("1");
   }
 
+  /** 0046_sale_void_approval (RT-530): the six approval columns, their CHECK and the single-use index. */
+  const SALE_VOID_APPROVAL_COLUMNS = [
+    "approval_id",
+    "approved_by_user_id",
+    "requested_by_user_id",
+    "approval_policy_version",
+    "approved_at",
+    "void_business_date",
+  ] as const;
+  async function countSaleVoidApprovalObjects(): Promise<[string, string, string]> {
+    let columns = 0;
+    for (const column of SALE_VOID_APPROVAL_COLUMNS) {
+      columns += Number(await countPublicColumn("sale_voids", column));
+    }
+    return [
+      String(columns),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
+        WHERE conname = 'sale_voids_approval_all_or_none'`),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_indexes
+        WHERE schemaname = 'public' AND indexname = 'uq_sale_voids_tenant_approval'`),
+    ];
+  }
+
   /**
-   * After one `down` from head: 0045's tracking tables, the tenant_products
-   * Tracking Profile and stock_movements.tracking_identity_id are gone, while
-   * 0044's stock_locations table, its store trigger and the stock_movements
+   * After one `down` from head: 0046's approval columns on sale_voids, their
+   * CHECK and the single-use index are gone, while 0045's tracking tables, the
+   * tenant_products Tracking Profile and stock_movements.tracking_identity_id
+   * survive, as do 0044's stock_locations table, its store trigger and the stock_movements
    * position constraints survive, as do 0042's integration table and effect
    * columns (with 0043's backfill), 0041's tender columns, 0040's device
    * lifecycle columns, 0039's evidence column and 0037/0038's resolution table.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countPublicTables(TRACKING_TABLES)).toBe("0");
-    expect(await countTrackingTriggers()).toBe("0");
-    expect(await countPublicColumn("tenant_products", "tracking_mode")).toBe("0");
-    expect(await countPublicColumn("tenant_products", "expiry_required")).toBe("0");
-    expect(await countPublicColumn("stock_movements", "tracking_identity_id")).toBe("0");
+    expect(await countSaleVoidApprovalObjects()).toEqual(["0", "0", "0"]);
+    // 0032's void columns survive the 0046 rollback.
+    expect(await countPublicColumn("sale_voids", "business_date")).toBe("1");
+    await expectTrackingFoundationApplied();
     expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("1");
     expect(await countStockLocationTriggers()).toBe("2");
     expect(
@@ -427,6 +451,8 @@ describe("data-pulse-migrate CLI", () => {
     // the Tracking Profile columns and the two guard triggers (RT-448).
     await expectTrackingFoundationApplied();
     expect(await countPolicies(TRACKING_TABLES)).toBe("4");
+    // 0046's approval columns, CHECK and single-use index on sale_voids (RT-530).
+    expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
   });
 
   it("up is idempotent on a second run", async () => {
@@ -464,7 +490,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0045 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0046 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
@@ -571,6 +597,7 @@ describe("data-pulse-migrate CLI", () => {
     await expectInventoryEffectsApplied();
     expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("1");
     await expectTrackingFoundationApplied();
+    expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
   });
 
   it(

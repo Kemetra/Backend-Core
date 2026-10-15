@@ -15,7 +15,7 @@ import {
   resetHarness,
   idempKey,
   refundBody,
-  voidBody,
+  approvedVoid,
   type HarnessHandle,
 } from "../capture/__capture-harness";
 import {
@@ -61,13 +61,14 @@ async function rowsFor(kind: Kind, saleRef: string): Promise<number> {
 
 const CASES: ReadonlyArray<{
   kind: Kind;
-  body: (lineRef: string) => Record<string, unknown>;
+  body: (lineRef: string, saleRef: string) => Promise<Record<string, unknown>>;
 }> = [
-  { kind: "void", body: () => voidBody({ externalId: "rt155-void" }) },
-  { kind: "refund", body: () => refundBody({ externalId: "rt155-refund" }) },
+  // RT-530: a void's approval is bound to its sale, so the body is built from the sale it targets.
+  { kind: "void", body: (_lineRef, saleRef) => approvedVoid(h, saleRef, { body: { externalId: "rt155-void" } }) },
+  { kind: "refund", body: async () => refundBody({ externalId: "rt155-refund" }) },
   {
     kind: "returns",
-    body: (lineRef) => returnBody("rt155-ret", [{ lineRef, quantity: "1" }], "5.0000"),
+    body: async (lineRef) => returnBody("rt155-ret", [{ lineRef, quantity: "1" }], "5.0000"),
   },
 ];
 
@@ -77,7 +78,7 @@ describe.each(CASES)("RT-155 — $kind keyed per saleRef", ({ kind, body }) => {
     const a = await captureOneLine(h, { externalId: `rt155-${kind}-a`, quantity: "1", lineAmount: "5.0000" });
     const b = await captureOneLine(h, { externalId: `rt155-${kind}-b`, quantity: "1", lineAmount: "5.0000" });
     const key = idempKey(`rt155x${kind}`);
-    const payload = body(a.lineRef);
+    const payload = await body(a.lineRef, a.saleRef);
 
     const first = await post(kind, a.saleRef, key, payload);
     expect(first.status).toBe(201);
@@ -95,7 +96,7 @@ describe.each(CASES)("RT-155 — $kind keyed per saleRef", ({ kind, body }) => {
     if (skip()) return;
     const a = await captureOneLine(h, { externalId: `rt155-${kind}-r`, quantity: "1", lineAmount: "5.0000" });
     const key = idempKey(`rt155r${kind}`);
-    const payload = body(a.lineRef);
+    const payload = await body(a.lineRef, a.saleRef);
 
     const first = await post(kind, a.saleRef, key, payload);
     expect(first.status).toBe(201);

@@ -16,6 +16,7 @@ import {
   idempKey,
   seedPreInvariantSale,
   STORE_A_X,
+  approvedVoid,
   type HarnessHandle,
 } from "../capture/__capture-harness";
 import {
@@ -194,7 +195,7 @@ describe("RT-73 — recording a return", () => {
       .harness!.http()
       .post(`/api/pos/v1/sales/${sale.saleRef}/void`)
       .set("Idempotency-Key", idempKey("rvoidread"))
-      .send({ sourceSystem: "pos-1", externalId: "void-voidread" });
+      .send(await approvedVoid(h, sale.saleRef, { body: { externalId: "void-voidread" } }));
     expect(v.status).toBe(201);
     const read = await h.harness!.http().get(`/api/pos/v1/sales/${sale.saleRef}`);
     expect(read.body.voided).toBe(true);
@@ -364,7 +365,7 @@ describe("RT-73 — invariants", () => {
   it("return after void → 409 already_reversed", async () => {
     if (skip()) return;
     const s = await captureOneLine(h, { externalId: "ret-aftervoid", quantity: "1", lineAmount: "5.0000" });
-    const v = await h.harness!.http().post(`/api/pos/v1/sales/${s.saleRef}/void`).set("Idempotency-Key", idempKey("rav")).send({ sourceSystem: "pos-1", externalId: "void-av" });
+    const v = await h.harness!.http().post(`/api/pos/v1/sales/${s.saleRef}/void`).set("Idempotency-Key", idempKey("rav")).send(await approvedVoid(h, s.saleRef, { body: { externalId: "void-av" } }));
     expect(v.status).toBe(201);
     const r = await postReturn(h, s.saleRef, returnBody("ret-av-1", [{ lineRef: s.lineRef, quantity: "1" }], "5.0000"), "rav1");
     expect(r.status).toBe(409);
@@ -376,7 +377,7 @@ describe("RT-73 — invariants", () => {
     const s = await captureOneLine(h, { externalId: "ret-voidafter", quantity: "2", lineAmount: "4.0000" });
     const r = await postReturn(h, s.saleRef, returnBody("ret-va-1", [{ lineRef: s.lineRef, quantity: "1" }], "2.0000"), "rva1");
     expect(r.status).toBe(201);
-    const v = await h.harness!.http().post(`/api/pos/v1/sales/${s.saleRef}/void`).set("Idempotency-Key", idempKey("rva")).send({ sourceSystem: "pos-1", externalId: "void-va" });
+    const v = await h.harness!.http().post(`/api/pos/v1/sales/${s.saleRef}/void`).set("Idempotency-Key", idempKey("rva")).send(await approvedVoid(h, s.saleRef, { body: { externalId: "void-va" } }));
     expect(v.status).toBe(409);
     expect(v.body.error.code).toBe("already_reversed");
   });
@@ -384,8 +385,8 @@ describe("RT-73 — invariants", () => {
   it("a second, different void → 409 already_reversed; re-delivering the first void still replays 200", async () => {
     if (skip()) return;
     const s = await captureOneLine(h, { externalId: "ret-2void", quantity: "1", lineAmount: "5.0000" });
-    const post = (v: { externalId: string; key: string }) =>
-      h.harness!.http().post(`/api/pos/v1/sales/${s.saleRef}/void`).set("Idempotency-Key", idempKey(v.key)).send({ sourceSystem: "pos-1", externalId: v.externalId });
+    const post = async (v: { externalId: string; key: string }) =>
+      h.harness!.http().post(`/api/pos/v1/sales/${s.saleRef}/void`).set("Idempotency-Key", idempKey(v.key)).send(await approvedVoid(h, s.saleRef, { body: { externalId: v.externalId } }));
     expect((await post({ externalId: "void-2v-a", key: "r2va" })).status).toBe(201);
     const second = await post({ externalId: "void-2v-b", key: "r2vb" });
     expect(second.status).toBe(409);
@@ -540,7 +541,7 @@ describe("RT-63 P2 — reversal business date", () => {
     if (skip()) return;
     const admin = h.harness!.env.admin;
     const s1 = await captureOneLine(h, { externalId: "ret-bd-v", quantity: "1", lineAmount: "5.0000" });
-    const v = await h.harness!.http().post(`/api/pos/v1/sales/${s1.saleRef}/void`).set("Idempotency-Key", idempKey("rbdv")).send({ sourceSystem: "pos-1", externalId: "void-bd" });
+    const v = await h.harness!.http().post(`/api/pos/v1/sales/${s1.saleRef}/void`).set("Idempotency-Key", idempKey("rbdv")).send(await approvedVoid(h, s1.saleRef, { body: { externalId: "void-bd" } }));
     expect(v.status).toBe(201);
     const s2 = await captureOneLine(h, { externalId: "ret-bd-r", quantity: "1", lineAmount: "5.0000" });
     const r = await postReturn(h, s2.saleRef, returnBody("ret-bd-1", [{ lineRef: s2.lineRef, quantity: "1" }], "5.0000"), "rbdr");

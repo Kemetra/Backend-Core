@@ -27,6 +27,7 @@ import {
   Body,
   ConflictException,
   Controller,
+  ForbiddenException,
   Get,
   HttpStatus,
   NotFoundException,
@@ -40,7 +41,7 @@ import {
 } from "@nestjs/common";
 import type { Response } from "express";
 
-import { Auditable } from "../../audit/auditable.decorator";
+import { annotateAudit, Auditable } from "../../audit/auditable.decorator";
 import { PosOperatorAuthGuard } from "../../auth/pos-operator-auth.guard";
 import { PosOperatorEnvelopeSaleGuard } from "../../auth/pos-operator-envelope-sale.guard";
 import { PosWriteRateLimitGuard } from "../../auth/pos-write-rate-limit.guard";
@@ -65,6 +66,13 @@ import {
   type RecordReturnRequestDto,
 } from "./dto/record-return-request.dto";
 import { isPosReturnsEnabled } from "./returns-gate";
+import {
+  VoidApprovalInvalidError,
+  VoidApprovalRequiredError,
+  VoidApproverNotEligibleError,
+  VoidOutsideBusinessDayError,
+  VoidSelfApprovalError,
+} from "./void-approval";
 import { SaleCaptureAuthGuard } from "./sale-capture-auth.guard";
 import {
   SaleReturnsService,
@@ -135,6 +143,21 @@ function toReversalHttpError(err: unknown): unknown {
   }
   if (err instanceof SaleAlreadyReversedError) {
     return new ConflictException({ code: "already_reversed", message: "sale already reversed" });
+  }
+  if (err instanceof VoidApprovalRequiredError) {
+    return new ForbiddenException({ code: "void_approval_required", message: err.message });
+  }
+  if (err instanceof VoidApprovalInvalidError) {
+    return new UnprocessableEntityException({ code: "void_approval_invalid", message: err.message });
+  }
+  if (err instanceof VoidOutsideBusinessDayError) {
+    return new UnprocessableEntityException({ code: "void_outside_business_day", message: err.message });
+  }
+  if (err instanceof VoidSelfApprovalError) {
+    return new ForbiddenException({ code: "void_self_approval", message: err.message });
+  }
+  if (err instanceof VoidApproverNotEligibleError) {
+    return new ForbiddenException({ code: "void_approver_not_eligible", message: err.message });
   }
   if (err instanceof ReturnOverReturnError) {
     return new ConflictException({ code: "over_return", message: "return exceeds the returnable quantity" });
@@ -310,6 +333,8 @@ export class SalesController {
         res.status(HttpStatus.OK);
         res.setHeader("Idempotent-Replayed", "true");
       }
+      // RT-530: the `sale.voided` audit event names the approver and approval.
+      if (result.audit !== undefined) annotateAudit(request, { ...result.audit });
       return result.projection;
     } catch (err) {
       throw toReversalHttpError(err);

@@ -21,8 +21,10 @@ import {
   DEVICE_USER_ID,
   TENANT_A,
   STORE_A_X,
+  approvedVoid,
   type HarnessHandle,
 } from "../capture/__capture-harness";
+import { APPROVAL_ID, APPROVER_MANAGER } from "../__support__/void-approval-fixture";
 import type { AuditJobEnqueuer } from "../../../../src/audit/audit-job.enqueuer";
 import type { AuditJobPayload } from "../../../../src/audit/audit-job.types";
 
@@ -84,10 +86,7 @@ describe("T072 — audit linkage across capture / void / refund", () => {
       .http()
       .post(`/api/pos/v1/sales/${saleRef}/void`)
       .set("Idempotency-Key", idempKey("aud-void"))
-      .send({
-        sourceSystem: "pos-1",
-        externalId: "audit-void",
-      });
+      .send(await approvedVoid(h, saleRef, { body: { externalId: "audit-void" } }));
     expect(voided.status).toBe(201);
 
     const refunded = await h.harness
@@ -119,6 +118,18 @@ describe("T072 — audit linkage across capture / void / refund", () => {
       expect(evt.request_id).toBe(reqIds[i]);
     });
 
+    // RT-530: ONLY the void event names its approval (ids and a policy label).
+    const voidEvt = spy.calls.find((c) => c.action === "sale.voided");
+    expect(voidEvt?.metadata).toEqual({
+      approver_user_id: APPROVER_MANAGER,
+      requester_user_id: DEVICE_USER_ID,
+      approval_id: APPROVAL_ID,
+      policy_version: "rt114-2026-10-07",
+    });
+    for (const evt of spy.calls.filter((c) => c.action !== "sale.voided")) {
+      expect(evt.metadata).toBeNull();
+    }
+
     for (const evt of spy.calls) {
       // Actor + scope are resolved from the principal/context, never the body.
       expect(evt.actor_user_id).toBe(DEVICE_USER_ID);
@@ -129,7 +140,6 @@ describe("T072 — audit linkage across capture / void / refund", () => {
       // No raw payload / secret travels in the audit record (FR-042/090/092,
       // §XIV): metadata is null AND no body-derived value appears anywhere in
       // the serialized event.
-      expect(evt.metadata).toBeNull();
       const json = JSON.stringify(evt);
       expect(json).not.toContain("ext-audit"); // externalId
       expect(json).not.toContain("12.5000"); // posTotal

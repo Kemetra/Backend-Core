@@ -89,6 +89,8 @@ const MANAGER_ROLE_ID = "0e000000-0000-4000-8000-00000000bb01";
 const OPERATOR_USER_ID = "0e000000-0000-4000-8000-00000000cc01";
 const OPERATOR_CLERK_SUB = "user_clerk_envelope_http_560";
 const OPERATOR_MEMBERSHIP_ID = "0e000000-0000-4000-8000-00000000dd01";
+const APPROVER_USER_ID = "0e000000-0000-4000-8000-00000000cc02";
+const APPROVER_MEMBERSHIP_ID = "0e000000-0000-4000-8000-00000000dd02";
 const DEVICE_ID = "0e000000-0000-4000-8000-00000000ee01";
 const DEVICE_ATTESTATION = "device-attestation-envelope-http-560";
 const OPERATOR_JWT = "jwt-envelope-operator";
@@ -149,6 +151,29 @@ interface SaleEvent {
 }
 
 const VOID_EVENT: SaleEvent = { path: "void", body: {} };
+/**
+ * RT-530: a void that carries a bound manager approval (a second manager of the
+ * same tenant and store). The sale was captured by the operator at 12.5000 on
+ * 2026-05-01 (`captureBody`), so the approval is bound to exactly that.
+ */
+function approvedVoidEvent(saleRef: string): SaleEvent {
+  return {
+    path: "void",
+    body: {
+      businessDate: "2026-05-01",
+      approval: {
+        approvalId: randomUUID(),
+        action: "sale.void",
+        saleRef,
+        amount: "12.5000",
+        requesterUserId: OPERATOR_USER_ID,
+        approverUserId: APPROVER_USER_ID,
+        policyVersion: "rt114-2026-10-07",
+        approvedAt: new Date().toISOString(),
+      },
+    },
+  };
+}
 const REFUND_EVENT: SaleEvent = {
   path: "refund",
   body: { posRefundAmount: "5.0000", currencyCode: "USD" },
@@ -288,6 +313,20 @@ beforeAll(async () => {
     `INSERT INTO store_access (membership_id, store_id, tenant_id) VALUES ($1, $2, $3)`,
     [OPERATOR_MEMBERSHIP_ID, STORE_ID, TENANT_ID],
   );
+  // RT-530: a second manager of the same store, who approves voids.
+  await admin.query(`INSERT INTO users (id, email, display_name) VALUES ($1, 'approver@env560.example', 'Env Approver')`, [
+    APPROVER_USER_ID,
+  ]);
+  await admin.query(
+    `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind)
+       VALUES ($1, $2, $3, $4, 'specific')`,
+    [APPROVER_MEMBERSHIP_ID, TENANT_ID, APPROVER_USER_ID, MANAGER_ROLE_ID],
+  );
+  await admin.query(`INSERT INTO store_access (membership_id, store_id, tenant_id) VALUES ($1, $2, $3)`, [
+    APPROVER_MEMBERSHIP_ID,
+    STORE_ID,
+    TENANT_ID,
+  ]);
   await admin.query(
     `INSERT INTO devices (id, tenant_id, store_id, label, token_hash)
        VALUES ($1, $2, $3, 'till-env560', $4)`,
@@ -365,7 +404,12 @@ describe("#560 envelope auth — happy path through the real guard chain", () =>
     }
 
     // --- recordVoid ----------------------------------------------------
-    const v = await postSaleEvent(VOID_EVENT, { envelope, saleRef: saleA });
+    // RT-530: a void with no approval is refused through the real guard chain too.
+    const noApproval = await postSaleEvent(VOID_EVENT, { envelope, saleRef: saleA });
+    expect(noApproval.status).toBe(403);
+    expect(noApproval.body.error.code).toBe("void_approval_required");
+
+    const v = await postSaleEvent(approvedVoidEvent(saleA), { envelope, saleRef: saleA });
     expect(v.status).toBe(201);
     expect(v.body.kind).toBe("void");
     expect(v.body.saleRef).toBe(saleA);
@@ -387,6 +431,16 @@ describe("#560 envelope auth — happy path through the real guard chain", () =>
     // --- provenance (G-5): audit actor is the real operator ------------
     const actions = audit.payloads.map((p) => p.action).sort();
     expect(actions).toEqual(["sale.captured", "sale.captured", "sale.refunded", "sale.voided"]);
+    // RT-530: the sale.voided audit event names the approver; the others carry none.
+    const voidedAudit = audit.payloads.find((p) => p.action === "sale.voided");
+    expect(voidedAudit?.metadata).toMatchObject({
+      approver_user_id: APPROVER_USER_ID,
+      requester_user_id: OPERATOR_USER_ID,
+      policy_version: "rt114-2026-10-07",
+    });
+    for (const p of audit.payloads.filter((x) => x.action !== "sale.voided")) {
+      expect(p.metadata).toBeNull();
+    }
     for (const p of audit.payloads) {
       expect(p.actor_user_id).toBe(OPERATOR_USER_ID);
       expect(p.tenant_id).toBe(TENANT_ID);

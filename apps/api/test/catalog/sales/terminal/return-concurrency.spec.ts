@@ -12,6 +12,7 @@ import {
   stopCaptureHarness,
   resetHarness,
   idempKey,
+  approvedVoid,
   type HarnessHandle,
 } from "../capture/__capture-harness";
 import {
@@ -76,7 +77,7 @@ describe("RT-73 — row lock serializes reversals on one sale", () => {
         .harness!.http()
         .post(`/api/pos/v1/sales/${s.saleRef}/void`)
         .set("Idempotency-Key", idempKey("rcvr-void"))
-        .send({ sourceSystem: "pos-1", externalId: "void-conc-vr" }),
+        .send(await approvedVoid(h, s.saleRef, { body: { externalId: "void-conc-vr" } })),
       postReturn(
         h,
         s.saleRef,
