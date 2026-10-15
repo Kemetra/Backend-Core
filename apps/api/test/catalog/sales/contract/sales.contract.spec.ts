@@ -1227,6 +1227,13 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
     expect(receiptText()).toContain("NOT part of the sale `payload_hash`");
     expect(receiptText()).toContain("IS part of the idempotency");
     expect(receiptText()).toContain("First write wins");
+  });
+
+  it("is presentation only: never authorization, attribution or scope (FR-061 unchanged)", () => {
+    const text = receiptText().replace(/\s+/g, " ");
+    expect(text).toContain("used for PRESENTATION ONLY");
+    expect(text).toContain("never used for authorization, attribution, scope or any money rule");
+    expect(text).toContain("the authenticated actor (`created_by`)");
     expect(salesDoc.info?.description ?? "").toContain("posting feed and the provenance-divergence rule");
   });
 
