@@ -346,6 +346,15 @@ describe("pos-sales/sale-history.yaml — readSaleHistoryDetail", () => {
     expect(schema("SaleHistoryLine").properties?.["sequence"]).toMatchObject({ type: ["integer", "null"] });
   });
 
+  it("a snapshot without changeGiven projects as \"0\"; null means no snapshot only", () => {
+    const text = String(schema("SaleHistoryDetail").properties?.["changeGiven"]?.["description"]).replace(/\s+/g, " ");
+    expect(text).toContain('"0" when a snapshot was captured without `changeGiven`');
+    expect(text).toContain("null ONLY when the sale has no receipt snapshot");
+    expect((schema("SaleHistoryDetail").description ?? "").replace(/\s+/g, " ")).toContain(
+      "so the change is known",
+    );
+  });
+
   it("names the source of every displayed name and never falls back to email (OD-534-6)", () => {
     expect(schema("NameSource").enum).toEqual(["snapshot", "current", "unavailable"]);
     expect(schema("OperatorView").properties?.["displayName"]?.["description"]).toContain(
