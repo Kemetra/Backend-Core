@@ -43,6 +43,13 @@ import { SALE_SYNC_STATUS, type SaleSyncStatus } from "./sale-sync-status";
 import { sha256CanonicalHex } from "./payload-hash";
 import { findLinePricingViolation } from "./sale-line-pricing";
 import {
+  assertApproverEligible,
+  assertRequesterIsStoreUser,
+  checkVoidApprovalClaims,
+  readVoidSaleFacts,
+  VoidApprovalInvalidError,
+} from "./void-approval";
+import {
   SaleLinePricingInvalidError,
   SaleNotFoundError,
   SaleTenderMismatchError,
@@ -169,6 +176,20 @@ export interface TerminalEventResult {
   readonly projection: TerminalEventProjection;
   /** false when a re-delivery resolved to an existing terminal event. */
   readonly created: boolean;
+  /**
+   * RT-530: the approval a void was recorded under, for its `sale.voided` audit
+   * (ids and a policy label only; never a PIN or a payload). Absent for a
+   * refund and for a pre-RT-530 void.
+   */
+  readonly audit?: VoidAuditMetadata;
+}
+
+/** The approver and approval of a void, as the audit event carries them. */
+export interface VoidAuditMetadata {
+  readonly approver_user_id: string;
+  readonly requester_user_id: string;
+  readonly approval_id: string;
+  readonly policy_version: string;
 }
 
 interface SaleRow {
@@ -522,19 +543,31 @@ export class SalesService {
       async (client): Promise<TerminalEventResult> => {
         const sale = await lockSaleForReversal(client, saleRef, storeId);
 
+        // A re-delivery replays BEFORE any check: the answer is the stored one,
+        // even if the approver has left since (RT-530).
         const existing = await findVoidByProvenance(client, tenantId, body);
         if (existing) return replayVoid(existing, saleRef);
 
         const state = await readReversalState(client, saleRef);
         if (state.voided || state.returned) throw new SaleAlreadyReversedError();
 
+        // RT-530: a void needs a bound manager approval (void-approval.ts). The
+        // claims are checked first, then the approver's CURRENT standing.
+        const facts = await readVoidSaleFacts(client, saleRef, body.approval?.amount);
+        const approval = checkVoidApprovalClaims({ body, actorUserId, sale: facts, now: new Date() });
+        await assertRequesterIsStoreUser(client, { tenantId, storeId }, approval.requesterUserId);
+        await assertApproverEligible(client, { tenantId, storeId }, approval.approverUserId);
+
         let inserted;
         try {
           inserted = await client.query<{ id: string; voided_at: Date }>(
             `INSERT INTO sale_voids
                (id, sale_id, tenant_id, store_id, business_date, source_system,
-                external_id, payload_hash, created_by)
-             VALUES ($1, $2, $3, $4, (now() AT TIME ZONE $9)::date, $5, $6, $7, $8)
+                external_id, payload_hash, created_by,
+                approval_id, approved_by_user_id, requested_by_user_id,
+                approval_policy_version, approved_at, void_business_date)
+             VALUES ($1, $2, $3, $4, (now() AT TIME ZONE $9)::date, $5, $6, $7, $8,
+                     $10, $11, $12, $13, $14, $15)
              ON CONFLICT (tenant_id, source_system, external_id) DO NOTHING
              RETURNING id, voided_at`,
             [
@@ -547,10 +580,16 @@ export class SalesService {
               payloadHash,
               actorUserId,
               sale.timezone,
+              approval.approvalId,
+              approval.approverUserId,
+              approval.requesterUserId,
+              approval.policyVersion,
+              approval.approvedAt,
+              body.businessDate,
             ],
           );
         } catch (err) {
-          throw mapOneVoidViolation(err);
+          throw mapApprovalReuseViolation(mapOneVoidViolation(err));
         }
 
         if (inserted.rows.length === 0) {
@@ -590,6 +629,12 @@ export class SalesService {
         return {
           projection: toTerminalEvent("void", row.id, saleRef, row.voided_at, null, null),
           created: true,
+          audit: {
+            approver_user_id: approval.approverUserId,
+            requester_user_id: approval.requesterUserId,
+            approval_id: approval.approvalId,
+            policy_version: approval.policyVersion,
+          },
         };
       },
     );
@@ -723,6 +768,19 @@ interface VoidProvenanceRow {
   id: string;
   sale_id: string;
   voided_at: Date;
+  approval_id: string | null;
+  approved_by_user_id: string | null;
+  requested_by_user_id: string | null;
+  approval_policy_version: string | null;
+}
+
+/** RT-530: an approval id reused for another void (the single-use index) -> 422. */
+function mapApprovalReuseViolation(err: unknown): unknown {
+  const pg = err as { code?: string; constraint?: string };
+  if (pg.code === "23505" && pg.constraint === "uq_sale_voids_tenant_approval") {
+    return new VoidApprovalInvalidError();
+  }
+  return err;
 }
 
 async function findVoidByProvenance(
@@ -731,7 +789,11 @@ async function findVoidByProvenance(
   body: RecordVoidRequestDto,
 ): Promise<VoidProvenanceRow | null> {
   const r = await client.query<VoidProvenanceRow>(
-    `SELECT id, sale_id, voided_at FROM sale_voids
+    `SELECT id, sale_id, voided_at, approval_id::text AS approval_id,
+            approved_by_user_id::text AS approved_by_user_id,
+            requested_by_user_id::text AS requested_by_user_id,
+            approval_policy_version
+       FROM sale_voids
       WHERE tenant_id = $1 AND source_system = $2 AND external_id = $3
       LIMIT 1`,
     [tenantId, body.sourceSystem, body.externalId],
@@ -749,9 +811,29 @@ function replayVoid(row: VoidProvenanceRow, saleRef: string): TerminalEventResul
   if (row.sale_id !== saleRef) {
     throw new TerminalEventProvenanceConflictError();
   }
+  const audit = voidAuditOf(row);
   return {
     projection: toTerminalEvent("void", row.id, row.sale_id, row.voided_at, null, null),
     created: false,
+    ...(audit === undefined ? {} : { audit }),
+  };
+}
+
+/** The approval a stored void carries, or undefined for a pre-RT-530 void. */
+function voidAuditOf(row: VoidProvenanceRow): VoidAuditMetadata | undefined {
+  if (
+    row.approval_id === null ||
+    row.approved_by_user_id === null ||
+    row.requested_by_user_id === null ||
+    row.approval_policy_version === null
+  ) {
+    return undefined;
+  }
+  return {
+    approver_user_id: row.approved_by_user_id,
+    requester_user_id: row.requested_by_user_id,
+    approval_id: row.approval_id,
+    policy_version: row.approval_policy_version,
   };
 }
 

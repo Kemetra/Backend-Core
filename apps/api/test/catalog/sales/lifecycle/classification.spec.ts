@@ -125,6 +125,14 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       "payload_hash",
       "created_by",
       "created_at",
+      // RT-530 (0046): the manager approval the server accepted. Opaque ids, a
+      // policy label and times: business-class audit facts, no PIN or PII.
+      "approval_id",
+      "approved_by_user_id",
+      "requested_by_user_id",
+      "approval_policy_version",
+      "approved_at",
+      "void_business_date",
     ],
   },
   {

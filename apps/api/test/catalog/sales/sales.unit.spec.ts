@@ -11,6 +11,7 @@
  */
 import {
   ConflictException,
+  ForbiddenException,
   NotFoundException,
   UnauthorizedException,
   UnprocessableEntityException,
@@ -55,6 +56,15 @@ import {
   TerminalEventProvenanceConflictError,
 } from "../../../src/catalog/sales/sales.service";
 import { SalesController } from "../../../src/catalog/sales/sales.controller";
+import {
+  VoidApprovalInvalidError,
+  VoidApprovalRequiredError,
+  VoidApproverNotEligibleError,
+  VoidOutsideBusinessDayError,
+  VoidRequesterMismatchError,
+  VoidRequesterNotEligibleError,
+  VoidSelfApprovalError,
+} from "../../../src/catalog/sales/void-approval";
 
 const VALID_REF = "0d000000-0000-7000-8000-0000000000a1";
 
@@ -657,6 +667,53 @@ describe("SalesController — guard + status branches (unit)", () => {
     await expect(
       boom.recordVoid({ context: ctx } as never, VALID_REF, voidBody as never, makeRes() as never),
     ).rejects.toThrow(/kaboom/);
+  });
+
+  it("recordVoid (RT-530): each approval refusal maps to its own status and code", async () => {
+    const cases: ReadonlyArray<[Error, new (...a: never[]) => Error, number, string]> = [
+      [new VoidApprovalRequiredError(), ForbiddenException, 403, "void_approval_required"],
+      [new VoidSelfApprovalError(), ForbiddenException, 403, "void_self_approval"],
+      [new VoidRequesterMismatchError(), ForbiddenException, 403, "void_requester_mismatch"],
+      [new VoidRequesterNotEligibleError(), ForbiddenException, 403, "void_requester_not_eligible"],
+      [new VoidApproverNotEligibleError(), ForbiddenException, 403, "void_approver_not_eligible"],
+      [new VoidApprovalInvalidError(), UnprocessableEntityException, 422, "void_approval_invalid"],
+      [new VoidOutsideBusinessDayError(), UnprocessableEntityException, 422, "void_outside_business_day"],
+    ];
+    for (const [error, type, status, code] of cases) {
+      const c = new SalesController({ recordVoid: jest.fn().mockRejectedValue(error) } as never, undefined as never);
+      const thrown: unknown = await c
+        .recordVoid({ context: ctx } as never, VALID_REF, voidBody as never, makeRes() as never)
+        .catch((e: unknown) => e);
+      expect(thrown).toBeInstanceOf(type);
+      const http = thrown as { getStatus(): number; getResponse(): { code: string } };
+      expect(http.getStatus()).toBe(status);
+      expect(http.getResponse().code).toBe(code);
+    }
+  });
+
+  it("recordVoid (RT-530): annotates the audit event with the approval, and only when there is one", async () => {
+    const projection = { eventRef: "e", saleRef: VALID_REF, kind: "void" };
+    const audit = {
+      approver_user_id: "a",
+      requester_user_id: "r",
+      approval_id: "p",
+      policy_version: "v",
+    };
+    const withApproval = new SalesController(
+      { recordVoid: jest.fn().mockResolvedValue({ created: true, projection, audit }) } as never,
+      undefined as never,
+    );
+    const request: Record<string, unknown> = { context: ctx };
+    await withApproval.recordVoid(request as never, VALID_REF, voidBody as never, makeRes() as never);
+    expect(request["auditMetadata"]).toEqual(audit);
+
+    const legacy = new SalesController(
+      { recordVoid: jest.fn().mockResolvedValue({ created: false, projection }) } as never,
+      undefined as never,
+    );
+    const legacyRequest: Record<string, unknown> = { context: ctx };
+    await legacy.recordVoid(legacyRequest as never, VALID_REF, voidBody as never, makeRes() as never);
+    expect(legacyRequest).not.toHaveProperty("auditMetadata");
   });
 
   const refundBody = {

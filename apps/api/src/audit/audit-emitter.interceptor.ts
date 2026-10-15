@@ -65,7 +65,7 @@ import { tap } from "rxjs";
 import { ROOT_LOGGER } from "../common/logging.interceptor";
 import type { AuthedRequest } from "../auth/auth.guard";
 import type { ContextResponseBody } from "../context/context.service";
-import { AUDITABLE_KEY } from "./auditable.decorator";
+import { AUDITABLE_KEY, type AuditAnnotatedRequest } from "./auditable.decorator";
 import { AUDIT_JOB_ENQUEUER, type AuditJobEnqueuer } from "./audit-job.enqueuer";
 import type { AuditJobPayload } from "./audit-job.types";
 
@@ -119,7 +119,8 @@ export class AuditEmitterInterceptor implements NestInterceptor {
 
   private async emitAsync(
     action: string,
-    request: AuthedRequest & { context?: { tenantId: string | null; storeId: string | null } },
+    request: AuthedRequest &
+      AuditAnnotatedRequest & { context?: { tenantId: string | null; storeId: string | null } },
     responseBody: unknown,
   ): Promise<void> {
     const principal = request.principal;
@@ -145,7 +146,8 @@ export class AuditEmitterInterceptor implements NestInterceptor {
       target_type: null,
       target_id: null,
       request_id: request.requestId ?? null,
-      metadata: null,
+      // RT-530: a handler may annotate the request (annotateAudit); otherwise null.
+      metadata: request.auditMetadata ?? null,
     };
 
     await this.enqueuer.enqueue(payload);

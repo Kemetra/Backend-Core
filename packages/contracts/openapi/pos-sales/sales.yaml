@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.7.0-draft"
+  version: "1.8.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -164,6 +164,29 @@ info:
     as well, but `Sale` is `additionalProperties: false`, so a client that
     validates responses strictly must re-pin this version before RT-360
     deploys. A producer that sends neither field sees no difference.
+
+    RT-530 (1.8.0-draft; [GATED] approval Jira RT-530 comment 11988, owner,
+    2026-10-15): MANAGER-APPROVED VOID. `RecordVoidRequest` gains an OPTIONAL
+    `approval` (`VoidApproval`: the bound RT-114 manager-approval evidence) and
+    an OPTIONAL `businessDate` (the device-side business day of the void), and
+    `recordVoid` gains the 403 `VoidForbidden` and 422 `VoidUnprocessable`
+    responses. The change is additive in SHAPE: both fields are optional, no
+    existing field moves, and a client that does not send them sees the same
+    request schema. It is NOT additive in BEHAVIOUR: a void with no valid
+    approval is now refused (403 `void_approval_required`), because the
+    operator envelope alone, a cashier's included, could void before. The
+    approval must come from an `owner`, `tenant_admin` or `store_manager` of
+    the tenant with an active membership and access to the sale's store, who is
+    neither the requester nor the sale's selling operator, on the sale's own
+    business day. The server cannot prove that the approver's PIN was typed:
+    that check runs on the terminal and the PIN never leaves it, so the server
+    re-validates every CLAIM of the evidence (binding, roles, store access,
+    four-eyes, day) and a forged approval naming a real manager is not
+    detectable server-side (the same posture as the RT-17 shift-variance
+    approver). The `operatorAuthorization` envelope stays the only credential
+    of this route; a void queued by a cashier is sent under a manager or admin
+    envelope when one is held. ROLLOUT ORDER: a POS that sends no approval gets
+    403, so the POS change ships after this one.
 
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
@@ -374,6 +397,37 @@ paths:
         void excludes returns. A second, different void of an already-voided
         sale, or a void of a sale that has any return, is 409
         `already_reversed` (see `ReversalConflict`); nothing is recorded.
+
+        Manager approval (RT-530): a void is recorded only with a bound
+        manager approval (`approval`) and the void's `businessDate`. Checks run
+        in this order, after the sale resolves (404), a provenance replay
+        (200) and reversal exclusivity (409):
+        1. `approval` present, else 403 `void_approval_required`;
+        2. `approval.action` is `sale.void`, `approval.saleRef` is the path's
+           sale, `approval.amount` equals the sale's `posTotal` as an exact
+           decimal, and `approval.approvedAt` is not in the future beyond
+           120 s, else 422 `void_approval_invalid`;
+        3. `businessDate` equals the sale's `businessDate`, else 422
+           `void_outside_business_day` (after that day a return is used);
+        4. `approval.requesterUserId` is the authenticated operator of the
+           envelope (the `users.id` the server resolved; a body id is never
+           trusted), else 403 `void_requester_mismatch`. A queued void is
+           therefore sent under the original requester envelope;
+        5. the approver is neither `approval.requesterUserId` nor the user
+           who captured the sale, else 403 `void_self_approval`;
+        6. the requester is a user of the tenant with an active membership
+           and access to the sale's store, else 403
+           `void_requester_not_eligible`;
+        7. the approver holds `owner`, `tenant_admin` or `store_manager` in the
+           tenant, with an active membership and access to the sale's store,
+           else 403 `void_approver_not_eligible`.
+        A replay (the same `(sourceSystem, externalId)`) answers before these
+        checks and never re-runs them. An offline-queued void is checked on
+        arrival with the same rules and may be refused; the approval age is
+        not compared with the server clock. The approval `approvalId` is
+        single-use within a tenant. `sale_voids` records the approver and the
+        evidence, and the `sale.voided` audit event carries the approver,
+        requester, approval id and policy version.
       parameters:
         - $ref: "#/components/parameters/SaleRef"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -416,12 +470,14 @@ paths:
           $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/VoidForbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/ReversalConflict"
         "422":
-          $ref: "#/components/responses/AlreadyApplied"
+          $ref: "#/components/responses/VoidUnprocessable"
         "500":
           $ref: "#/components/responses/SystemFailure"
   /api/pos/v1/sales/{saleRef}/refund:
@@ -1014,6 +1070,82 @@ components:
           type: string
           minLength: 1
           maxLength: 200
+        businessDate:
+          type: string
+          format: date
+          description: >
+            RT-530. The device-side business day of the void (store-timezone
+            calendar date). It must equal the sale businessDate; a queued
+            void carries the day it was captured, not the day it is sent. The
+            server recording day stays `sale_voids.business_date`.
+            Optional in shape; a void without it is refused 422
+            `void_outside_business_day`.
+        approval:
+          $ref: "#/components/schemas/VoidApproval"
+    VoidApproval:
+      type: object
+      additionalProperties: false
+      required:
+        - approvalId
+        - action
+        - saleRef
+        - amount
+        - requesterUserId
+        - approverUserId
+        - policyVersion
+        - approvedAt
+      description: >
+        RT-530. The bound manager-approval evidence of a void, modelled on the
+        RT-114 C7 approval record. The PIN is checked on the terminal and never
+        sent; this is the evidence of that check, and the server re-validates
+        its claims (see `recordVoid`). `requesterUserId` and `approverUserId`
+        are provider-neutral `users.id` values, as on the POS operator
+        response (RT-33).
+      properties:
+        approvalId:
+          type: string
+          format: uuid
+          description: The terminal approval id; single-use within a tenant.
+        action:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >
+            The approved action. Only `sale.void` binds a void; any other value
+            is 422 `void_approval_invalid`.
+        saleRef:
+          type: string
+          format: uuid
+          description: The sale the approval was bound to; must be the path sale.
+        amount:
+          # The sale total the approval was bound to. Compared with `posTotal`
+          # as an exact decimal (12.5 equals 12.5000), never as a float.
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        requesterUserId:
+          type: string
+          format: uuid
+          description: >
+            The operator who asked for the void. Must be the authenticated
+            operator of the envelope (`void_requester_mismatch` otherwise) and
+            a user of the tenant with access to the sale's store.
+        approverUserId:
+          type: string
+          format: uuid
+          description: >
+            The manager whose PIN approved it. Must differ from
+            `requesterUserId` and from the user who captured the sale.
+        policyVersion:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: The RT-114 policy version the approval was checked against.
+        approvedAt:
+          type: string
+          format: date-time
+          description: >
+            When the terminal recorded the approval (device clock). Recorded;
+            not compared with the server clock beyond a 120 s future cap,
+            because a queued void is sent later.
     RecordRefundRequest:
       type: object
       additionalProperties: false
@@ -1537,6 +1669,35 @@ components:
         FR-101 `already-applied` — a re-delivered terminal event whose effect is
         already recorded (e.g. a sale already voided). Deterministic, no
         duplicate record (FR-013).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    VoidForbidden:
+      description: >
+        403 on `recordVoid` (RT-530). `error.code` is one of:
+        `void_approval_required` - no `approval` accompanied the void;
+        `void_requester_mismatch` - the stated requester is not the
+        authenticated operator of the envelope;
+        `void_self_approval` - the approver is the requester or the user who
+        captured the sale; `void_requester_not_eligible` - the requester is
+        not a user of the tenant with access to the sale's store; `void_approver_not_eligible` - the approver is not
+        an `owner`, `tenant_admin` or `store_manager` of the tenant with an
+        active membership and access to the sale store (a user of another
+        tenant, an unknown user and a revoked membership are all this).
+        Deterministic; nothing is recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    VoidUnprocessable:
+      description: >
+        422 on `recordVoid` (RT-530). `error.code` is one of:
+        `void_approval_invalid` - the approval is not bound to action
+        `sale.void`, to this sale or to the exact sale total, is future-dated,
+        or its `approvalId` was already used; `void_outside_business_day` - the
+        void `businessDate` is missing or is not the sale business day (use
+        a return). Deterministic; nothing is recorded.
       content:
         application/json:
           schema:

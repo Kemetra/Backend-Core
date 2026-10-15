@@ -11,6 +11,7 @@ import {
   resetHarness,
   captureBody,
   idempKey,
+  approvedVoid,
   type HarnessHandle,
 } from "../capture/__capture-harness";
 
@@ -47,7 +48,7 @@ describe("T051 — recordVoid is idempotent on provenance", () => {
       .send(captureBody({ externalId: "ext-void-idem" }));
     expect(cap.status).toBe(201);
     const saleRef = cap.body.saleRef;
-    const voidBody = { sourceSystem: "pos-1", externalId: "void-evt-idem" };
+    const voidBody = await approvedVoid(h, saleRef, { body: { externalId: "void-evt-idem" } });
 
     const first = await h.harness
       .http()
@@ -89,13 +90,13 @@ describe("T051 — recordVoid is idempotent on provenance", () => {
     expect(capB.status).toBe(201);
     const saleA = capA.body.saleRef;
     const saleB = capB.body.saleRef;
-    const prov = { sourceSystem: "pos-1", externalId: "void-evt-coll" };
+    const provFor = (saleRef: string) => approvedVoid(h, saleRef, { body: { externalId: "void-evt-coll" } });
 
     const v1 = await h.harness
       .http()
       .post(`/api/pos/v1/sales/${saleA}/void`)
       .set("Idempotency-Key", idempKey("vc1"))
-      .send(prov);
+      .send(await provFor(saleA));
     expect(v1.status).toBe(201);
 
     // Reusing the void's provenance against a DIFFERENT sale is a conflict, not
@@ -104,7 +105,7 @@ describe("T051 — recordVoid is idempotent on provenance", () => {
       .http()
       .post(`/api/pos/v1/sales/${saleB}/void`)
       .set("Idempotency-Key", idempKey("vc2"))
-      .send(prov);
+      .send(await provFor(saleB));
     expect(v2.status).toBe(409);
 
     const rows = await h.harness.env.admin.query<{ sale_id: string }>(

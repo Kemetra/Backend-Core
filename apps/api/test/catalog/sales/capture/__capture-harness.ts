@@ -75,6 +75,11 @@ import { SalesController } from "../../../../src/catalog/sales/sales.controller"
 import { SaleCaptureAuthGuard } from "../../../../src/catalog/sales/sale-capture-auth.guard";
 import { SalesService } from "../../../../src/catalog/sales/sales.service";
 import { SaleReturnsService } from "../../../../src/catalog/sales/sale-returns.service";
+import {
+  approvedVoidBody,
+  seedVoidApprovers,
+  type ApprovedVoidOverrides,
+} from "../__support__/void-approval-fixture";
 
 export {
   TENANT_A,
@@ -207,6 +212,8 @@ export async function startCaptureHarness(
        VALUES ($1, $2, $3, decode(repeat('d7', 32), 'hex'))`,
       [HARNESS_DEVICE_ID, TENANT_A, STORE_A_X],
     );
+    // RT-530: the approver population a manager-approved void is checked against.
+    await seedVoidApprovers(env.admin);
 
     const fakeRedis = new FakeRedis();
     await assertIdempotencyRedisRetains(fakeRedis, "capture-harness");
@@ -372,6 +379,18 @@ export function captureBody(overrides: Record<string, unknown> = {}): Record<str
     ],
     ...overrides,
   };
+}
+
+/**
+ * RT-530: a recordVoid body for `saleRef` carrying a VALID bound manager
+ * approval (see `void-approval-fixture.ts`). A void is refused without one.
+ */
+export async function approvedVoid(
+  h: HarnessHandle,
+  saleRef: string,
+  overrides: ApprovedVoidOverrides = {},
+): Promise<Record<string, unknown>> {
+  return approvedVoidBody(h.harness!.env.admin, saleRef, overrides);
 }
 
 /** A valid recordVoid body (008 Option Y — attestation is a header, not body). */

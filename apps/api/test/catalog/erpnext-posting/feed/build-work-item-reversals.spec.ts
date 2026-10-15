@@ -22,6 +22,7 @@ import {
   idempKey,
   TENANT_A,
   PRODUCT_A_ACTIVE,
+  approvedVoid,
   type HarnessHandle,
 } from "../../sales/capture/__capture-harness";
 import {
@@ -151,7 +152,7 @@ describe("RT-73 — reversal work-items from real rows", () => {
       .harness!.http()
       .post(`/api/pos/v1/sales/${sale.saleRef}/void`)
       .set("Idempotency-Key", idempKey("bwvoid"))
-      .send({ sourceSystem: "pos-1", externalId: "bw-void-evt" });
+      .send(await approvedVoid(h, sale.saleRef, { body: { externalId: "bw-void-evt" } }));
     expect(v.status).toBe(201);
     const stored = await h.harness!.env.admin.query<{ business_date: string }>(
       "SELECT business_date::text AS business_date FROM sale_voids WHERE id = $1",

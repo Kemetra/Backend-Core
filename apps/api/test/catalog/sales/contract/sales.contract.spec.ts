@@ -389,6 +389,7 @@ describe("pos-sales/sales.yaml — object safety + gate A.5 (no tender)", () => 
       "CaptureSaleRequest",
       "CaptureSaleLine",
       "RecordVoidRequest",
+      "VoidApproval",
       "RecordRefundRequest",
       "RecordReturnRequest",
       "ReturnLineRequest",
@@ -868,7 +869,7 @@ describe("pos-sales/sales.yaml — RT-224 device-bearer cashier capture", () => 
     expect(describedBy(operatorUserId())).toContain("403 `refused`");
   });
 
-  it("captureSale declares the 403 Refused response; no other sale operation does", () => {
+  it("captureSale declares the 403 Refused response; no other sale operation does except recordVoid (RT-530 VoidForbidden)", () => {
     const responses = (op: unknown): Record<string, unknown> =>
       ((op as { responses?: Record<string, unknown> }).responses ?? {});
     expect(responses(findOp("captureSale"))["403"]).toEqual({
@@ -879,6 +880,11 @@ describe("pos-sales/sales.yaml — RT-224 device-bearer cashier capture", () => 
     });
     for (const { op } of salesOperations()) {
       if (op.operationId === "captureSale") continue;
+      if (op.operationId === "recordVoid") {
+        // RT-530: the void's 403 is its own approval refusal, not the device-path `Refused`.
+        expect(responses(op)["403"]).toEqual({ $ref: "#/components/responses/VoidForbidden" });
+        continue;
+      }
       expect(responses(op)["403"]).toBeUndefined();
     }
   });
@@ -990,8 +996,7 @@ describe("pos-sales/sales.yaml — RT-359 tender-line identity", () => {
     return (props["tenders"] as { description?: string } | undefined)?.description ?? "";
   }
 
-  it("bumps the version to 1.7.0-draft with an RT-359 note citing the [GATED] approval", () => {
-    expect(salesDoc.info?.version).toBe("1.7.0-draft");
+  it("the version note records RT-359 at 1.7.0-draft, citing the [GATED] approval (version moved on in RT-530)", () => {
     const info = salesDoc.info?.description ?? "";
     expect(info).toContain("RT-359 (1.7.0-draft");
     expect(info).toContain("[GATED] approval Jira RT-359");
@@ -1030,5 +1035,102 @@ describe("pos-sales/sales.yaml — RT-359 tender-line identity", () => {
     expect(info).toContain("MUST NOT send `tenderRef` or `sequence` before RT-360 is deployed");
     expect(info).toContain("at most one entry per `method` until");
     expect(tendersText()).toContain("Accepted from RT-360");
+  });
+});
+
+// ===========================================================================
+// RT-530 — manager-approved void (1.8.0-draft; [GATED] approval Jira RT-530
+// comment 11988)
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-530 manager-approved void", () => {
+  type FieldNode = { type?: string; format?: string; $ref?: string; description?: string };
+  type DescribedNode = { description?: string };
+  const text = (node: unknown): string => (node as DescribedNode | undefined)?.description ?? "";
+  function field(schemaName: string, name: string): FieldNode | undefined {
+    return (salesDoc.components?.schemas?.[schemaName]?.properties ?? {})[name] as FieldNode | undefined;
+  }
+  function responseRef(operationId: string, status: string): string | undefined {
+    const responses = (findOp(operationId)?.responses ?? {}) as Record<string, { $ref?: string }>;
+    return responses[status]?.$ref;
+  }
+
+  it("bumps the version to 1.8.0-draft with an RT-530 note citing the [GATED] approval", () => {
+    expect(salesDoc.info?.version).toBe("1.8.0-draft");
+    const info = salesDoc.info?.description ?? "";
+    expect(info).toContain("RT-530 (1.8.0-draft");
+    expect(info).toContain("[GATED] approval Jira RT-530 comment 11988");
+  });
+
+  it("adds OPTIONAL approval and businessDate to the strict void request (additive in shape)", () => {
+    const request = salesDoc.components?.schemas?.["RecordVoidRequest"];
+    expect(request?.additionalProperties).toBe(false);
+    expect(request?.required?.slice().sort()).toEqual(["externalId", "sourceSystem"]);
+    expect(field("RecordVoidRequest", "approval")?.$ref).toBe("#/components/schemas/VoidApproval");
+    expect(field("RecordVoidRequest", "businessDate")).toMatchObject({ type: "string", format: "date" });
+  });
+
+  it("models the approval on the RT-114 C7 evidence: id, approver, policy version, time, binding", () => {
+    const approval = salesDoc.components?.schemas?.["VoidApproval"];
+    expect(approval?.additionalProperties).toBe(false);
+    expect(approval?.required?.slice().sort()).toEqual(
+      [
+        "action",
+        "amount",
+        "approvalId",
+        "approvedAt",
+        "approverUserId",
+        "policyVersion",
+        "requesterUserId",
+        "saleRef",
+      ].sort(),
+    );
+    for (const uuid of ["approvalId", "saleRef", "requesterUserId", "approverUserId"]) {
+      expect(field("VoidApproval", uuid)).toMatchObject({ type: "string", format: "uuid" });
+    }
+    expect(field("VoidApproval", "approvedAt")).toMatchObject({ type: "string", format: "date-time" });
+    expect(field("VoidApproval", "amount")?.$ref).toBe("#/components/schemas/NonNegativeDecimalAmount");
+  });
+
+  it("recordVoid adds 403 and 422 with void-specific codes, and keeps 200/201/404/409", () => {
+    expect(responseRef("recordVoid", "403")).toBe("#/components/responses/VoidForbidden");
+    expect(responseRef("recordVoid", "422")).toBe("#/components/responses/VoidUnprocessable");
+    expect(responseRef("recordVoid", "409")).toBe("#/components/responses/ReversalConflict");
+    const forbidden = text(salesDoc.components?.responses?.["VoidForbidden"]);
+    for (const code of [
+      "void_approval_required",
+      "void_requester_mismatch",
+      "void_self_approval",
+      "void_requester_not_eligible",
+      "void_approver_not_eligible",
+    ]) {
+      expect(forbidden).toContain(code);
+    }
+    const unprocessable = text(salesDoc.components?.responses?.["VoidUnprocessable"]);
+    for (const code of ["void_approval_invalid", "void_outside_business_day"]) {
+      expect(unprocessable).toContain(code);
+    }
+  });
+
+  it("states the check order, the eligible roles and that a replay never re-checks", () => {
+    const op = text(findOp("recordVoid"));
+    expect(op).toContain("`owner`, `tenant_admin` or `store_manager`");
+    expect(op).toContain("never re-runs them");
+    expect(op).toContain("`approval.requesterUserId` is the authenticated operator of the");
+    expect(op).toContain("An offline-queued void is checked on");
+    expect(op.indexOf("void_approval_required")).toBeLessThan(op.indexOf("void_approval_invalid"));
+    expect(op.indexOf("void_approval_invalid")).toBeLessThan(op.indexOf("void_outside_business_day"));
+    expect(op.indexOf("void_outside_business_day")).toBeLessThan(op.indexOf("void_requester_mismatch"));
+    expect(op.indexOf("void_requester_mismatch")).toBeLessThan(op.indexOf("void_self_approval"));
+    expect(op.indexOf("void_self_approval")).toBeLessThan(op.indexOf("void_approver_not_eligible"));
+  });
+
+  it("states the residual risk: the PIN is not provable server-side", () => {
+    const info = salesDoc.info?.description ?? "";
+    expect(info).toContain("cannot prove that the approver's PIN was typed");
+    expect(info).toContain("ROLLOUT ORDER: a POS that sends no approval gets");
+  });
+
+  it("the void stays envelope-only: no new security requirement", () => {
+    expect(findOp("recordVoid")?.security).toEqual([{ operatorAuthorization: [] }]);
   });
 });

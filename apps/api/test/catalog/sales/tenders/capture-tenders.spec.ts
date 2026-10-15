@@ -33,6 +33,7 @@ import {
   PRODUCT_A_ACTIVE,
   TENANT_A,
   TENANT_B,
+  approvedVoid,
   type HarnessHandle,
 } from "../capture/__capture-harness";
 
@@ -433,7 +434,7 @@ describe("RT-77 — posting-feed projection from real rows", () => {
       .harness!.http()
       .post(`/api/pos/v1/sales/${saleRef}/void`)
       .set("Idempotency-Key", idempKey("rt77feedvoid"))
-      .send({ sourceSystem: "pos-1", externalId: "rt77-feed-void" });
+      .send(await approvedVoid(h, saleRef, { body: { externalId: "rt77-feed-void" } }));
     expect(v.status).toBe(201);
     const voided = await project(saleRef, "reversal", v.body.eventRef);
     expect(voided!.reversalOf!.reversalKind).toBe("void");

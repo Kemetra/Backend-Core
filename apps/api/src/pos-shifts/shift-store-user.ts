@@ -80,7 +80,8 @@ export interface ApproverStanding {
 
 /** A stated user and the credential's scope it must belong to. */
 export interface StoreUser {
-  readonly scope: DeviceScope;
+  /** Only the tenant and store are read (RT-530: a sale void has no device scope here). */
+  readonly scope: Pick<DeviceScope, "tenantId" | "storeId">;
   readonly userId: string;
 }
 

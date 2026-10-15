@@ -66,6 +66,16 @@ export const saleVoids = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    // RT-530 (0046): the manager approval the server accepted. All NULL for a
+    // pre-0046 void, all set for an approved one (sale_voids_approval_all_or_none).
+    approvalId: uuid("approval_id"),
+    approvedByUserId: uuid("approved_by_user_id"),
+    requestedByUserId: uuid("requested_by_user_id"),
+    approvalPolicyVersion: text("approval_policy_version"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    // The DEVICE-claimed business day, checked equal to sales.business_date
+    // (businessDate above stays the day the server recorded the void).
+    voidBusinessDate: date("void_business_date"),
   },
   (t) => [
     uniqueIndex("uq_sale_voids_tenant_source_external").on(
@@ -74,6 +84,10 @@ export const saleVoids = pgTable(
       t.externalId,
     ),
     index("idx_sale_voids_sale").on(t.saleId),
+    // RT-530 (0046): an approval id is single-use within a tenant.
+    uniqueIndex("uq_sale_voids_tenant_approval")
+      .on(t.tenantId, t.approvalId)
+      .where(sql`${t.approvalId} IS NOT NULL`),
     // RT-14 D2 (0032): at most one void per sale.
     uniqueIndex("uq_sale_voids_one_per_sale").on(t.saleId),
     index("idx_sale_voids_tenant_store").on(t.tenantId, t.storeId),
