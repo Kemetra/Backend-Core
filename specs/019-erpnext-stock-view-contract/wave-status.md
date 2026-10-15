@@ -49,7 +49,7 @@
 - **~~T040 / T041 pending approval~~** — **MERGED** via PR #528 (`9a3f475`). CLOSED.
 - **~~Issue #530 — idempotency-tenant-partition collapse~~** — **FIXED** by PR #532 (`b08591c`). CLOSED.
 - **Open — issue #529**: OTel SDK construction hangs api boot at module-load; needs an env-guard. Not a 019 issue — pre-existing.
-- **Open — issue #531**: multi-window bin-view for >500-item warehouses (v1 loud-guard prevents silent corruption; the fix requires windowed pagination on the connector side).
+- **~~Issue #531 — multi-window bin-view for >500-item warehouses~~** — **SHIPPED** as connector-driven paging (design: Jira RT-21): contract v1.2 `4afbe25`/`0e9a157` (RT-174), runtime `95abc3e` / PR #691 (RT-175), connector paged Bin read `3e23aa3` / connector PR #56 (RT-176). Remaining: resumable attempts (RT-187).
 
 ### Next recommended action
-019 is **FULLY CLOSED and LIVE-VALIDATED**. The loop (DP2 feed/report ↔ connector ↔ ERPNext Bin) ran end-to-end on 2026-06-08. Open follow-ups (#529 OTel boot hang, #531 multi-window) are lower-priority and not 019-owned. The next ERPNext-arc work is gated: **020** (connector health) is self-contained; **021** (product-master recon) and the cross-system live legs remain blocked on #524 (connector repo + staging ERPNext).
+019 is **FULLY CLOSED and LIVE-VALIDATED**. The loop (DP2 feed/report ↔ connector ↔ ERPNext Bin) ran end-to-end on 2026-06-08. Open follow-up (#529 OTel boot hang) is lower-priority (#531 multi-window has since shipped, see above) and not 019-owned. The next ERPNext-arc work is gated: **020** (connector health) is self-contained; **021** (product-master recon) and the cross-system live legs remain blocked on #524 (connector repo + staging ERPNext).
