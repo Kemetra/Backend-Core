@@ -51,14 +51,14 @@ Legend: **M-RO** = Mobile read-only · **M-ACT** = Mobile action allowed · **AD
 | Cash variance / shift exception view | — | ✓ | ✓ | M-RO | **MVP** | Same facts as RT-18 (`shift-closes`). No second model. |
 | Variance acceptance | — | (POS) | (POS/ADM) | POS / ADM | later | RT-114 offline POS path stays primary. A Mobile action waits on RT-236 and the owning domain. |
 | Terminal/device health | — | ✓ | ✓ | M-RO | **MVP** | RT-138 `last_seen_at` only; Unknown is never shown as Healthy (G3). |
-| Device revoke (lost/compromised) | — | ✓ granted stores | ✓ | M-ACT | Phase 2 (first) | RT-138 authority. A security action that is valuable on mobile. |
+| Device revoke (lost/compromised) | — | ✓ POS terminals in granted stores; mobile devices per §6.3 rule | ✓ | M-ACT | Phase 2 (first) | POS terminals: RT-138 authority (store-bound). Tenant-bound mobile devices: §6.3 authority rule. A security action that is valuable on mobile. |
 | Pairing-code issue / re-pair / retire | — | — | — | ADM | — | Ceremony belongs on Admin and POS. |
 | High-signal alerts (view) | — | ✓ | ✓ | M-RO | **MVP** (in-app list) | Push delivery is Phase 1b (D5). |
 | Attention acknowledge ("seen") | — | ✓ | ✓ | M-ACT | Phase 1b | Authority decided (F6). Needs Attention persistence (G7). |
 | Sale lookup | — | ✓ | ✓ | M-RO | **MVP** | No store_manager-usable read exists today (G5). |
 | Return/refund review & approve | — | ✓ | ✓ | M-ACT | Phase 2 | F4: never executes. |
 | Refund execution | — | — | — | POS | — | RT-14/RT-15. |
-| Staff / active-session visibility | — | ✓ | ✓ | M-RO | **MVP** | Today only POS-device-scoped reads exist (G8). |
+| Staff / active-session visibility | — | ✓ | ✓ | M-RO | **MVP** | Reuse the manager-authorized `/pos/v1/operators/roster` and `/active-session` reads (human Clerk JWT, branch-checked). The per-terminal aggregate and mobile-credential admission are missing (G8). |
 | End a cashier admission remotely | — | — | — | ADM | later | Classify under the cashier-admissions domain first. |
 | Inventory glance (on-hand, movements) | — | ✓ | ✓ | M-RO | **MVP** | Existing route is reusable once a credential exists. Product search is a gap (G9). |
 | Inventory / catalog mutation | — | — | — | ADM | — | RT-132 / ratified catalog authority. |
@@ -165,7 +165,7 @@ Retail Tower Mobile (one app, capabilities gated by role + store scope)
 - `SessionOnlyAdminGuard` (on `shift-closes`) rejects **all** bearers by design.
 - Clerk JWTs (`ClerkBearerGuard`) are used today for POS operator sign-in and shift routes. Spec 029 established a provider-neutral identity link.
 
-**Conclusion:** a native app cannot use the dashboard cookie path as designed, and there is no bearer for humans. Every MVP read is blocked on this. It is gap **G1** and the first decision (D1).
+**Conclusion:** a native app cannot use the dashboard cookie path as designed, and there is no bearer for humans. Every MVP read is blocked on this. It is gap **G1**. D1 (ratified) chose Option B below.
 
 ### 6.2 Options for the mobile human credential (D1)
 
@@ -175,19 +175,24 @@ Retail Tower Mobile (one app, capabilities gated by role + store scope)
 | **B. Device-bound mobile bearer (recommended)** | Sign-in (same human credential as Admin) from an **enrolled mobile device** returns a short-lived opaque access token plus a rotating refresh token, scoped e.g. `mobile`, bound to `user_id` + `device_id`. Stored hashed (same pattern as RT-138). Routes opt in explicitly. | Reuses existing opaque-token, hash-at-rest and revocation patterns. Revoke-device kills all sessions on it. No new IdP dependency. Needs a GATED contract plus likely a migration (new scope value, device kind). |
 | C. External IdP (OIDC + PKCE via Clerk), Backend-Core verifies JWT | Phone signs in with the IdP; Backend-Core maps identity through the 029 link | Viable later for SSO/MFA customers. Today it adds an IdP dependency for managers and still needs device binding for revoke. Keep as a future login factor feeding B, not a replacement. |
 
-**Route opt-in policy (part of D1):** the mobile scope is admitted only on routes that explicitly allow it. It is not silently accepted wherever `dashboard_api` is. Credential-minting surfaces (connector credentials, pairing-code issue, membership/role changes) stay **human-cookie-session only**. For `shift-closes`, the owner must decide whether to admit the mobile scope, which changes that route's guard (GATED contract change), or to expose a separate mobile-admissible read over the same facts.
+**Route opt-in policy (part of D1):** the mobile scope is admitted only on routes that explicitly allow it. It is not silently accepted wherever `dashboard_api` is. Credential-minting surfaces (connector credentials, pairing-code issue, membership/role changes) stay **human-cookie-session only**. For `shift-closes` (G10), the ratified D1 opt-in policy applies. The G1 contract-planning item chooses the mechanism: admit the mobile scope on that route (a guard change) or add a separate mobile-admissible read over the same facts. Either is a GATED contract change, and neither weakens the cookie-only rule for credential-minting surfaces.
 
 ### 6.3 Device trust and enrollment (D2)
 
 - Each app install is enrolled as a **Device Registry managed client** (`kind = mobile`; F10), separate from POS terminals. There is no reuse of terminal credentials (RT-230 security rule).
-- **Recommended enrollment (consistent with the ratified Device Registry baseline):** enrollment is a **ceremony, not human sign-in**. An owner, a tenant_admin, or a store_manager within its granted stores issues a one-shot, cancellable **mobile enrollment code** for a named user. The code reuses RT-138 pairing-code rules: default TTL 60 min, max 24 h, attempt controls. The user then signs in on the new install and presents the code. The result is one trusted mobile device identity bound to that user and tenant and audited (`mobile.device.enrolled`). There are **no extra lifecycle tiers**: the states are trusted or revoked, as in RT-138. Self-enrollment by an issuer is allowed (an owner enrolling their own phone still issues a code to themselves, audited).
+- **Recommended enrollment (consistent with the ratified Device Registry baseline):** enrollment is a **ceremony, not human sign-in**. An owner, a tenant_admin, or a store_manager within its granted stores issues a one-shot, cancellable **mobile enrollment code** for a named user. The code reuses RT-138 pairing-code rules: default TTL 60 min, max 24 h, attempt controls. The user then signs in on the new install and presents the code. The result is one trusted mobile device identity bound to that user and tenant and audited (`mobile.device.enrolled`). There is **no pending/confirmed trust tier**. The device keeps the full RT-138 / migration-0040 lifecycle: credential **expiry and rotation** (90-day expiry, rotation window, post-expiry grace), immediate **revoke**, and **retirement**. Self-enrollment by an issuer is allowed (an owner enrolling their own phone still issues a code to themselves, audited).
+- **Authority over tenant-bound mobile devices.** This rule is derived from the RT-132 rule that tenant-wide operations need all-store authority. It is part of D2's issuance scope, and the owner confirms it in the G1/G2 contract-planning item:
+  - **Any user** may list and revoke **their own** mobile devices (self-revoke on loss).
+  - **owner, or tenant_admin with all-store scope**, may list and revoke any mobile device in the tenant.
+  - **store_manager** may issue an enrollment code for, list, or revoke another user's mobile device **only when that user's entire store scope lies within the manager's granted stores** and the user is not an owner or tenant_admin. Otherwise the request is refused with a non-disclosing 404. This prevents scope escalation through a tenant-bound device.
+  - POS terminal revoke stays store-bound under RT-138.
 - **Alternative (a proposed deviation from a ratified baseline; listed so the owner can rule on it knowingly):** self-enrollment at first sign-in with a "pending → confirmed" trust tier, reads allowed while pending and writes only after confirmation. Adoption friction is lower, but it **conflicts with** the Device Registry rules "pairing is an enrollment ceremony… not human sign-in" and "Suspend/Resume and extra lifecycle states DEFERRED". Adopting it requires an explicit amendment of that page.
 - Revocation is immediate and cascades to that device's mobile sessions and push registration. Re-enrollment creates a new device identity (RT-138 semantics). There is no generic Deactivate (F10).
-- BYOD vs company-managed phones and whether MDM is required are open (D2). Recommendation: support BYOD for MVP reads, with no MDM dependency. The Device Registry is not an MDM (Device page "OUT OF SCOPE").
+- **BYOD is allowed and there is no MDM dependency** (D2 ratified). The Device Registry is not an MDM (Device page "OUT OF SCOPE").
 
 ### 6.4 Session lifecycle
 
-- Access token about 15 minutes. Refresh token rotates on each use with reuse detection (a reused refresh token revokes the device session). Idle and absolute caps align with RT-139 dashboard values (12 h idle / 24 h absolute) unless D8 sets mobile-specific values.
+- Access token 15 minutes (D8 ratified). Refresh token rotates on each use with reuse detection (a reused refresh token revokes the device session). Idle and absolute caps are the RT-139 dashboard values: 12 h idle / 24 h absolute (D8 ratified).
 - **App-level biometric/PIN re-open lock** is local UX convenience on top of the server session, not a server auth factor.
 - Membership, role or store-scope changes take effect on the next request (server-resolved), never cached in the token.
 - Sign-out revokes the refresh token server-side. Remote "sign out this phone" equals device revoke.
@@ -202,7 +207,7 @@ Spec 031 mints an opaque `pos_operator` bearer at POS operator sign-in. The iden
 ### 6.6 Secure local storage
 
 - Tokens are kept only in OS secure storage (Android Keystore / iOS Keychain, via the PoC-chosen library).
-- **No durable business cache** for Manager/Owner. Screen data lives in memory with an "as of" timestamp. Optional encrypted short-lived cache lifetime is open (D4).
+- **No durable business cache** for Manager/Owner. Screen data lives in memory with an "as of" timestamp. **No disk cache** of business data or PII (D4 ratified).
 - Customer PII (sale lookup) is never written to disk, logs or crash reports. Sentry or other crash scrubbing is mandatory.
 - Card data is never stored or processed (no change from current policy).
 
@@ -237,10 +242,10 @@ No SQLite or outbox exists in Manager/Owner surfaces (comment 10953). Continuity
 
 - RT-135 envelope for every mobile-originated privileged action: actor, **client kind = mobile**, device ref, tenant/store, target, request id, server time. No tokens, PINs or PII in audit rows.
 - New event names to be added to the RT-135 catalogue (proposed): `mobile.device.enrollment_code.issued`, `mobile.device.enrolled`, `mobile.device.revoked`, `mobile.session.signed_in`, `mobile.session.refresh_reuse_detected`, `attention.acknowledged`. Domain actions (device revoke, return approval) audit under **their own** domain events (Support §R).
-- **Read-audit:** whether sale lookup (customer-facing data) on mobile emits read-audit rows is open (D4), per RT-135 read-audit rules.
+- **Read-audit:** sale lookups on mobile **emit read-audit rows** under RT-135 read-audit rules, and customer data is shown masked/minimal (D4 ratified).
 - Rate limiting on mobile sign-in and refresh (same posture as dashboard sign-in). Generic 401s with no account-existence leaks.
 - Minimum-supported app version: the server can refuse below-minimum clients with an explicit compliance error, mirroring Device page fleet rules. OTA updates must not bypass store-reviewed native changes or the minimum version.
-- Threats to cover in the PoC: lost/stolen phone, device-to-device token theft, screenshot/notification-preview leakage, rooted/jailbroken devices (warn vs block is an owner policy, recommended warn for reads and block for Phase-2 writes) and deep-link spoofing.
+- Threats to cover in the PoC: lost/stolen phone, device-to-device token theft, screenshot/notification-preview leakage, rooted/jailbroken devices (D7 ratified: **warn** for reads, **block** Phase-2 writes) and deep-link spoofing.
 
 ### 9.1 Observability and support evidence
 
@@ -255,11 +260,11 @@ No SQLite or outbox exists in Manager/Owner surfaces (comment 10953). Continuity
 | ID | Gap | Why Mobile needs it | Notes / existing anchor |
 |---|---|---|---|
 | **G1** | Mobile human credential: sign-in from enrolled device → access + rotating refresh bearer; refresh/sign-out; route opt-in | Nothing in the MVP works without it | §6. Likely a new scope + migration. **Shared with RT-230.** |
-| **G2** | Mobile device enrollment as a Device Registry managed client (`kind = mobile`): enrollment-code issue/cancel + enroll, **plus a store-binding change** | Revoke-on-loss, push binding | RT-138 pairing-code patterns; Device page F10. Trusted or revoked only (D2 ratified, no confirmation tier). **`devices.store_id` is `NOT NULL`**, but one mobile install serves a user across all of their granted stores, so it is tenant-bound, not store-bound. The G1/G2 contract-planning item must choose a schema shape: either a nullable `store_id` constrained by device kind, or a separate managed-client table. It must not use an arbitrary store or one identity per store, because either would break single-identity revoke and push binding. `[GATED]` migration. |
+| **G2** | Mobile device enrollment as a Device Registry managed client (`kind = mobile`): enrollment-code issue/cancel + enroll, **plus a store-binding change** | Revoke-on-loss, push binding | RT-138 pairing-code patterns; Device page F10. No pending/confirmed tier (D2 ratified). RT-138 expiry/rotation, revoke and retirement are retained. Mobile-device list/revoke authority follows the §6.3 rule. **`devices.store_id` is `NOT NULL`**, but one mobile install serves a user across all of their granted stores, so it is tenant-bound, not store-bound. The G1/G2 contract-planning item must choose a schema shape: either a nullable `store_id` constrained by device kind, or a separate managed-client table. It must not use an arbitrary store or one identity per store, because either would break single-identity revoke and push binding. `[GATED]` migration. |
 | **G3** | Device Registry read (list + trust state + `last_seen_at`) and revoke routes, plus the throttled `last_seen_at` writer | Device health MVP; Phase-2 revoke | Schema has already landed: migration `0040_device_lifecycle.sql` (RT-364, Done) adds the columns, but `devices.ts` does not declare them yet. **Remaining work is already tracked: RT-365** (list/detail + revoke, contract-first) **and RT-370** (`last_seen_at` writer). No new migration and no new decision. |
 | **G4** | General read of all open/active shifts per store (beyond the existing stale-shift slice) + mobile-credential admission on `/shifts/stuck` | Active-shift MVP | `shift-closes` is closed-only. `/pos/v1/shifts/stuck` is already a manager-authorized read (human Clerk JWT, owner/TA/SM, branch-checked), and its query is reusable. Must reuse RT-17 facts, with no second shift model. |
 | **G5** | Store-scoped sale lookup/search admissible to `store_manager` | Sale lookup MVP | `sale-sync-ops` is owner/TA-only; POS sale read is operator-only. PII and read-audit per D4. |
-| **G6** | Store operational snapshot projection (shared Admin + Mobile) | Snapshot MVP and Phase 4 | READ/PROJECT, not mirror (Support §A). D6 decides projection vs N calls. |
+| **G6** | Store operational snapshot projection (shared Admin + Mobile) | Snapshot MVP and Phase 4 | READ/PROJECT, not mirror (Support §A). **D6 ratified: a shared projection**, with no client-side composition of N calls. |
 | **G7** | Operational Attention persistence + ack + notification capability + push-token registration | Phase 1b | Support §G trigger met by Mobile; deferred until 1b approved |
 | **G8** | Per-store aggregate of active POS operator sessions by terminal + mobile-credential admission on the operator reads | Staff/session MVP | `/pos/v1/operators/roster` and `/active-session` are already manager-authorized reads (human Clerk JWT, owner/TA/SM, branch-checked). Only `cashier-admissions/roster` is device-bound. |
 | **G9** | Dashboard-surface product lookup/search (name / barcode / SKU) for the inventory glance | Inventory glance MVP | Confirmed absent on `main`: no dashboard `@Get` for products. Product reads exist only as POS `catalog/snapshot` and `deltas`. Likely shared with Admin catalog UI needs. |
@@ -290,7 +295,7 @@ The hypothesis is fixed (F8). This section defines **what the PoC must prove**. 
 4. **Arabic RTL** plus the Retail Tower design tokens on two real screens (variance list, sale lookup), at the quality bar of the UX Constitution.
 5. **Update model:** store release plus OTA policy that cannot bypass the minimum-supported version or native changes.
 6. **E2E:** an automated mobile E2E run (tool chosen in the PoC) in CI-capable form, without changing CI in the PoC.
-7. **Android-first device matrix** (low-end Android in pilot stores). iOS build proven compilable if D3 requires iOS.
+7. **Android-first device matrix** (low-end Android in pilot stores). iOS build kept compilable (D3 ratified: Android-first, iOS when a paying customer requires it).
 8. **No peripherals** in Manager scope. Continuity peripheral needs (scanner via camera, receipt sharing) are an RT-230 input, re-checked before Phase 3.
 
 **Gate out:** pass all → confirm the stack → owner approves implementation decomposition. A failure on 1–4 → re-evaluate Flutter as the documented alternative.
@@ -315,7 +320,7 @@ No candidate may bypass Backend-Core, call ERPNext, or become a second authority
 |---|---|---|
 | **0 — Decide & contract-plan** | Owner rules on D1–D9; Confluence 21233665 updated; G1/G2 contract planning; RT-138 G3 scheduled; Marketplace Scan | This package approved |
 | **0.5 — PoC** | §12.1 | Phase-0 decisions + scan |
-| **1 — Manager Companion MVP** | §3 reads, single + switchable store | G1, G2, G3, G4, G5, G8 (+ G6/G9 or fallbacks) runtime on `main` |
+| **1 — Manager Companion MVP** | §3 reads, single + switchable store | G1, G2, G3, G4, G5, G6, G8, G9 runtime on `main` (D6 ratified a shared projection, so there is no snapshot fallback) |
 | **1b — Alerts** | Push + shared ack | G7 approved and built |
 | **2 — Bounded actions** | Device revoke first, then return review/approve, audit summaries | Each action's domain row Decided + server authority + audit |
 | **3 — Cashier Continuity** | RT-230 design inside the shared Mobile Core | RT-230 approved go/no-go |
@@ -383,7 +388,7 @@ The owner ratified every recommendation below as written, in this session on 202
 
 ## 17. Next safe action
 
-D1–D9 are ratified, Confluence 21233665 carries the ratified summary, and RT-231 records the ratification. **Next safe action: the owner reviews and approves the §14 implementation decomposition.** No implementation issue is opened before that approval.
+D1–D9 are ratified. The ratified summary is on Confluence child page 37945345 (linked from 21233665 by footer comment), and RT-231 records the ratification in comment 11889. **Next safe action: the owner reviews and approves the §14 implementation decomposition.** No implementation issue is opened before that approval.
 
 Follow-ups, not done here:
 - record PD-1..PD-3 as an ADR in Orchestrator (§14 item 10, cross-repo);
