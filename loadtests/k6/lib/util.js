@@ -14,29 +14,23 @@ import { sleep } from "k6";
 import crypto from "k6/crypto";
 
 export function baseUrl() {
-  return (__ENV.BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
+  return stripTrailingSlashes(__ENV.BASE_URL || "http://localhost:3000");
 }
 
-// k6's k6/crypto.randomBytes is not always available across versions, so we
-// fall back to Math.random where needed. The resulting UUID is fine for
-// idempotency keys in a synthetic load environment (it does NOT need to be
-// cryptographically unique across tenants — collisions just produce replays).
+// A linear scan, not /\/+$/ — that regex backtracks quadratically (S8786).
+function stripTrailingSlashes(url) {
+  let end = url.length;
+  while (end > 0 && url[end - 1] === "/") end--;
+  return url.slice(0, end);
+}
+
+// k6/crypto.randomBytes is a CSPRNG available in every supported k6 release
+// (the pinned runtime is grafana/k6:0.50.0), so there is no Math.random fallback.
 export function uuidv4() {
-  try {
-    // Preferred path — uses k6/crypto if randomBytes is exposed.
-    const bytes = new Uint8Array(crypto.randomBytes(16));
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    return formatUuidBytes(bytes);
-  } catch (_e) {
-    // Fallback: Math.random()-based generator. Not cryptographically secure,
-    // acceptable for load-test idempotency keys.
-    const bytes = new Uint8Array(16);
-    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    return formatUuidBytes(bytes);
-  }
+  const bytes = new Uint8Array(crypto.randomBytes(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  return formatUuidBytes(bytes);
 }
 
 function formatUuidBytes(bytes) {

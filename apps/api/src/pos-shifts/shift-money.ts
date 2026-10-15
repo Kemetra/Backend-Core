@@ -77,6 +77,13 @@ export function formatMoney(money: Money): string {
 export function canonicalInstant(value: string): string {
   const match = /^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
   const seconds = Date.parse(match === null ? value : `${match[1]}${match[3]}`) / 1000;
-  const fraction = (match?.[2] ?? "").replace(/0+$/, "");
+  const fraction = stripTrailingZeros(match?.[2] ?? "");
   return fraction === "" ? `${seconds}` : `${seconds}.${fraction}`;
+}
+
+/** Drop trailing `0`s with a linear scan (a `/0+$/` regex backtracks quadratically, S8786). */
+function stripTrailingZeros(digits: string): string {
+  let end = digits.length;
+  while (end > 0 && digits.charCodeAt(end - 1) === 48 /* "0" */) end--;
+  return digits.slice(0, end);
 }

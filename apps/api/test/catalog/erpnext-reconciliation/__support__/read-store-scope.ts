@@ -238,6 +238,9 @@ export async function seedReadStoreScope(env: PgTestEnv): Promise<void> {
 // App
 // ---------------------------------------------------------------------------
 
+/** Default audit enqueuer: accepts every job and drops it. */
+const NOOP_AUDIT_ENQUEUER: AuditJobEnqueuer = { enqueue: async () => undefined };
+
 /**
  * Boot `module` over the app pool with only cookie authentication faked.
  * `auditEnqueuer` replaces the default no-op so a spec can observe audit emission.
@@ -250,7 +253,7 @@ export async function seedReadStoreScope(env: PgTestEnv): Promise<void> {
 export async function bootScopedApp(
   env: PgTestEnv,
   module: Type<unknown> | DynamicModule,
-  auditEnqueuer: AuditJobEnqueuer = { enqueue: async () => undefined },
+  auditEnqueuer: AuditJobEnqueuer = NOOP_AUDIT_ENQUEUER,
   options: { readonly authLookupPool?: Pool } = {},
 ): Promise<INestApplication> {
   const appPool = env.app;

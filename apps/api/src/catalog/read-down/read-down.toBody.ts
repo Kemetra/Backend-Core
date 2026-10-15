@@ -62,13 +62,20 @@ const MINOR_UNIT_EXPONENT: Readonly<Record<string, number>> = Object.freeze({
 /** Default minor-unit exponent when a currency is not in the map. */
 const DEFAULT_MINOR_UNIT = 2;
 
+/** Drop trailing `0`s with a linear scan (a `/0+$/` regex backtracks quadratically, S8786). */
+function stripTrailingZeros(digits: string): string {
+  let end = digits.length;
+  while (end > 0 && digits.charCodeAt(end - 1) === 48 /* "0" */) end--;
+  return digits.slice(0, end);
+}
+
 /** Count of SIGNIFICANT fractional digits (trailing zeros stripped). */
 function significantFractionDigits(amount: string): number {
   const dot = amount.indexOf(".");
   if (dot === -1) return 0;
   // Strip trailing zeros from the fractional part — `numeric(19,4)::text`
   // renders `8.50` as `8.5000`, which is 2 SIGNIFICANT fractional digits, not 4.
-  const frac = amount.slice(dot + 1).replace(/0+$/, "");
+  const frac = stripTrailingZeros(amount.slice(dot + 1));
   return frac.length;
 }
 

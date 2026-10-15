@@ -99,6 +99,18 @@ describe("withTenant — stores write refusal (unit)", () => {
       /tenant_id/i,
     );
   });
+
+  it("WT-U10d: insert refusal names the offending tenant_id, string or not", () => {
+    const insertWith = (tenantId: unknown) => () =>
+      wt.stores.insert({
+        id: "0a000000-0000-7000-8000-0000000000ff",
+        tenantId: tenantId as string,
+        code: "X1",
+        name: "Cross-tenant store",
+      });
+    expect(insertWith(TENANT_B)).toThrow(`got ${TENANT_B})`);
+    expect(insertWith({ id: TENANT_B })).toThrow(`got {"id":"${TENANT_B}"})`);
+  });
 });
 
 // ---------------------------------------------------------------------------

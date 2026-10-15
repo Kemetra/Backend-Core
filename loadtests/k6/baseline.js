@@ -113,13 +113,13 @@ function createInvitation() {
 
   // Some load-environment configurations return the invite token in the
   // response body to enable load-test acceptance. Otherwise, we skip accept.
-  let token = null;
+  let body = null;
   try {
-    const body = res.json();
-    token = body && (body.token || (body.invitation && body.invitation.token)) || null;
+    body = res.json();
   } catch (_e) {
-    token = null;
+    // Non-JSON body (e.g. an error page): no token, so acceptInvitation skips.
   }
+  const token = (body && (body.token || (body.invitation && body.invitation.token))) || null;
   return { res, token };
 }
 

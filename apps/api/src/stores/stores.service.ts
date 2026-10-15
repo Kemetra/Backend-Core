@@ -114,6 +114,9 @@ export interface StoreWriteMeta {
   readonly requestId: string | null;
 }
 
+/** Default `StoreWriteMeta` when the caller has no request id. */
+const NO_REQUEST_META: StoreWriteMeta = Object.freeze({ requestId: null });
+
 /**
  * Same indirection seam used by `TenantsService`: production passes
  * the real `runWithTenantContext`; tests inject a passthrough that
@@ -317,7 +320,7 @@ export class StoresService {
       is_active?: boolean | undefined;
     },
     timezoneChange?: TimezoneChange,
-    meta: StoreWriteMeta = { requestId: null },
+    meta: StoreWriteMeta = NO_REQUEST_META,
   ): Promise<StoreRecord> {
     return this.tx(this.pool, txCtx(ctx), async (client) => {
       if (timezoneChange) {

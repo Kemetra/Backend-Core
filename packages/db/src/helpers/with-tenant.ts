@@ -99,7 +99,7 @@ export function withTenant(db: NodePgDatabase, tenantId: string) {
     }
     if (rowTenantId !== tenantId) {
       throw new Error(
-        `withTenant: refusing write on ${table} — tenant_id mismatch (expected ${tenantId}, got ${String(rowTenantId)})`,
+        `withTenant: refusing write on ${table} — tenant_id mismatch (expected ${tenantId}, got ${typeof rowTenantId === "string" ? rowTenantId : JSON.stringify(rowTenantId)})`,
       );
     }
   };

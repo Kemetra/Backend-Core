@@ -31,7 +31,7 @@ COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
 COPY apps ./apps
 COPY packages ./packages
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile
+    pnpm install --frozen-lockfile --ignore-scripts
 # compile every workspace package (tsc -> dist/)
 RUN pnpm -r run build
 # produce self-contained, prod-only bundles for each runtime target
