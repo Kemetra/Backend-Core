@@ -53,7 +53,7 @@ The Connector was read with `git show origin/main:<path>` only. Its local checko
 ### 1.2 RT-456: the per-tenant feed-sequence lock serializes intent writes and **all** acks
 
 * **Code:** Backend-Core `6bdfae76` (#750) takes `lockPostingFeedSequence(client, tenantId)`, a transaction-scoped advisory lock, before any sequence draw:
-  * worker intent insert (`posting-requested.consumer.ts:56`);
+  * worker intent insert (`posting-requested.consumer.ts:161`);
   * repair (`erpnext-reconciliation.service.ts:268`);
   * re-resolve (`posting-re-resolution.service.ts:70`);
   * **every** `ackOutcome`, taken first, before the row lock (`erpnext-posting.service.ts:296`).
@@ -75,11 +75,13 @@ The Connector was read with `git show origin/main:<path>` only. Its local checko
 * **Matters for C:** it strengthens the NO-GO.
   * Every member's effects would stay `pending` until group close.
   * A partial-group failure would need per-member `rejected` / `reconciliation_required` transitions against **one** shared ERP document.
-  * The effect → `erp_document_ref` link stops being 1:1.
+  * Today one intent can already confirm many effects onto one document (`effect-integration.transitions.ts:64,86-88`). The constraint is that each intent, and so each document outcome, belongs to **one** sale's effects. Under C, several sales' intents would share one document. A member that is rejected or needs reconciliation would then have to diverge from members confirmed on that same document.
 
 ### 1.4 RT-457: re-drive sweep and new failure signals (observability for A)
 
-* **Code:** Backend-Core `cb0c3bfe` (#751). A scheduled sweep re-processes sales stranded before their posting intent and re-emits `erpnext.posting.requested` for dead-lettered sources, with a cap of 3. Each kind runs in batches of 100 per tick under a per-tenant try-lock.
+* **Code:** Backend-Core `cb0c3bfe` (#751). A scheduled sweep re-processes sales stranded before their posting intent and re-emits `erpnext.posting.requested` for dead-lettered sources, with a cap of 3 dead letters per source. The two steps are bounded and locked differently:
+  * Stranded-sale re-processing reads up to 100 sales per tenant per tick, **outside** the try-lock (`sale-redrive.processor.ts:135`).
+  * Re-emission is the **only** step under the per-tenant try-lock (`sale-redrive.repository.ts:118`). It takes up to 100 `sale_post` sources, plus up to 100 **each** from `sale_voids`, `sale_refunds` and `sale_returns`. That is up to 300 reversals per tick (`:78, :133-142`).
 * **New counters:** `worker_processing_failure_total` and `sale_redrive_total{reason}`.
 * **Matters for RT-334:**
   * Under A, the gap "sale captured but never got a posting row" now has a recovery path and a metric. These are inputs to the pilot watch-list in §4.
@@ -152,7 +154,7 @@ Thresholds (i) and (ii) are unchanged. The **owner sets all numbers**.
 * **Model:** A only. B0 constants unchanged (P2).
 * **Watch-list:**
   * pending depth and oldest-pending age (sync-ops read model);
-  * dead-letter count (`permanently_rejected` + `reconciliation_required`);
+  * dead-letter count: the `permanently_rejected` total. It already includes `reconciliation_required`, which is stored as `permanently_rejected` with that `rejection_category` (`erpnext-posting.service.ts:69-71`), so show that category only as a breakdown, never as an addend;
   * `sale_redrive_total{reason}` and `worker_processing_failure_total` (RT-457);
   * Inventory Effects stuck in `pending` (RT-426).
 * **Reopen B** on a threshold: B2 first, then B1 (contract-first, per-element transactions, §1.2–1.3), then B3 (fencing; limited by the per-tenant ack lock).
@@ -178,7 +180,7 @@ Thresholds (i) and (ii) are unchanged. The **owner sets all numbers**.
 > **Decision:** keep A. B (batch transport, one document per sale) is deferred to measured thresholds under RT-317. C (accounting consolidation) is rejected for pilot/V1.
 > **Alternatives:**
 > * **B:** cuts HTTP/SQL overhead only. It is bounded by the per-tenant feed lock and needs a contract change (B1).
-> * **C:** breaks 1:1 provenance, return lineage, Inventory Effect transitions and per-receipt fiscal identity. Native ERPNext POS consolidation would make shift close a posting trigger and does not transfer.
+> * **C:** breaks one-sale-per-document provenance, return lineage, per-sale Inventory Effect outcomes and per-receipt fiscal identity. Native ERPNext POS consolidation would make shift close a posting trigger and does not transfer.
 >
 > **Consequences:**
 > * One SI, GL and SLE set per sale (more ERP rows).
