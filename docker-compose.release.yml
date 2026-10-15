@@ -1,0 +1,27 @@
+# Backend-Core release override (RT-533). Use ONLY on top of the prod template:
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.release.yml ...
+#
+# It swaps the three locally-built services (migrate, api, worker) for the
+# digest-pinned images published by .github/workflows/release-images.yml, so a
+# host pulls exactly what CI built from one main SHA instead of building on the
+# host. The refs come from the release bundle's release.env (non-secret):
+#   DP2_MIGRATE_IMAGE, DP2_API_IMAGE, DP2_WORKER_IMAGE
+# each of the form ghcr.io/kemetra/backend-core-<target>@sha256:<64 hex>.
+#
+# Requires Docker Compose >= 2.24.4 (the `!reset` tag; older versions merge
+# `build:` back in or reject the file). Nothing here deploys anything; running
+# it against a host is a separate, explicitly approved step (deploy/README.md).
+
+services:
+  migrate:
+    build: !reset null
+    image: ${DP2_MIGRATE_IMAGE:?DP2_MIGRATE_IMAGE required (digest ref from the release bundle release.env)}
+
+  api:
+    build: !reset null
+    image: ${DP2_API_IMAGE:?DP2_API_IMAGE required (digest ref from the release bundle release.env)}
+
+  worker:
+    build: !reset null
+    image: ${DP2_WORKER_IMAGE:?DP2_WORKER_IMAGE required (digest ref from the release bundle release.env)}
