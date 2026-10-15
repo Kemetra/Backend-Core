@@ -1,0 +1,380 @@
+# RT-533: manual, main-only image release for Backend-Core.
+#
+# Builds the three Dockerfile targets (api, worker, migrate) from ONE exact
+# protected-main SHA and emits a digest manifest plus a checksummed release
+# bundle. It never deploys: no AWS, no SSH, no host access.
+#
+#   publish=false            dry run: build only, nothing leaves the runner except
+#                            a workflow artifact. Digests are LOCAL image IDs, not
+#                            registry digests, and the manifest says so.
+#   publish=true             push to GHCR, verify, attest provenance (public
+#                            Sigstore log) and create the GitHub release. All of
+#                            that is publication; it happens only in this mode.
+#
+# Fails closed: any guard that cannot be evaluated is a failure.
+name: Release images
+
+"on":
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full 40-hex commit SHA; must be the current tip of main
+        required: true
+        type: string
+      publish:
+        description: Push images, attest and create the GitHub release (false = dry run)
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: release-images
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: guard (main tip + required checks + no existing release)
+    # No job-level `if` on purpose: a dispatch from any other ref must FAIL in
+    # the first step below, not be silently skipped as a green run.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: read
+      packages: read
+    outputs:
+      sha: ${{ steps.verify.outputs.sha }}
+      sha12: ${{ steps.verify.outputs.sha12 }}
+      release_tag: ${{ steps.verify.outputs.release_tag }}
+    steps:
+      - name: Log in to GHCR (read-only, for the tag-exists check)
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify SHA, main tip, required checks, and that nothing is released yet
+        id: verify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_REF: ${{ github.ref }}
+          RUN_SHA: ${{ github.sha }}
+          INPUT_SHA: ${{ inputs.sha }}
+          # The ci.yml jobs that run on a push to main. The ruleset also requires
+          # the PR-only oasdiff and schemathesis checks; they do not exist on a
+          # main commit, so they are enforced at merge time, not here.
+          REQUIRED_CHECKS: '["fast (build + Docker-free tests)","db-integration (Testcontainers + RLS + migrations)"]'
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+
+          [ "$RUN_REF" = "refs/heads/main" ] || fail "must be dispatched from refs/heads/main"
+          [[ "$INPUT_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "sha input must be 40 lowercase hex characters"
+          [ "$INPUT_SHA" = "$RUN_SHA" ] || fail "sha input $INPUT_SHA is not the dispatched commit $RUN_SHA"
+
+          MAIN_TIP="$(gh api "repos/$REPO/commits/main" --jq .sha)"
+          [[ "$MAIN_TIP" =~ ^[0-9a-f]{40}$ ]] || fail "could not resolve the tip of main"
+          [ "$INPUT_SHA" = "$MAIN_TIP" ] || fail "sha $INPUT_SHA is not the current tip of main ($MAIN_TIP)"
+
+          # The most recent github-actions check run per required name must be success.
+          RUNS="$(gh api --paginate "repos/$REPO/commits/$INPUT_SHA/check-runs?per_page=100" \
+            --jq '.check_runs[] | {name, conclusion, slug: .app.slug, started_at}' | jq -s .)"
+          mapfile -t NAMES < <(jq -r '.[]' <<<"$REQUIRED_CHECKS")
+          [ "${#NAMES[@]}" -gt 0 ] || fail "no required checks configured"
+          for NAME in "${NAMES[@]}"; do
+            RESULT="$(jq -r --arg n "$NAME" \
+              '[.[] | select(.name == $n and .slug == "github-actions")] | sort_by(.started_at) | last | .conclusion // "missing"' \
+              <<<"$RUNS")"
+            echo "check '$NAME': $RESULT"
+            [ "$RESULT" = "success" ] || fail "required check '$NAME' is '$RESULT' on $INPUT_SHA"
+          done
+
+          SHA12="${INPUT_SHA:0:12}"
+          RELEASE_TAG="backend-core-$SHA12"
+
+          # Refuse if the GitHub release or the git tag already exists. A lookup
+          # failure that is not a plain not-found is also a refusal.
+          if OUT="$(gh release view "$RELEASE_TAG" --repo "$REPO" 2>&1)"; then
+            fail "release $RELEASE_TAG already exists; refusing to overwrite"
+          fi
+          grep -qi "release not found" <<<"$OUT" || fail "could not determine whether release $RELEASE_TAG exists: $OUT"
+          if OUT="$(gh api "repos/$REPO/git/ref/tags/$RELEASE_TAG" 2>&1)"; then
+            fail "git tag $RELEASE_TAG already exists; refusing to overwrite"
+          fi
+          grep -qi "not found" <<<"$OUT" || fail "could not determine whether tag $RELEASE_TAG exists: $OUT"
+
+          # Refuse if any GHCR image tag for this SHA already exists.
+          for TARGET in api worker migrate; do
+            IMAGE="ghcr.io/kemetra/backend-core-$TARGET:sha-$INPUT_SHA"
+            if OUT="$(docker buildx imagetools inspect "$IMAGE" 2>&1)"; then
+              fail "image $IMAGE already exists; refusing to overwrite"
+            fi
+            grep -Eqi "not found|manifest unknown|name unknown" <<<"$OUT" \
+              || fail "could not determine whether $IMAGE exists: $OUT"
+          done
+
+          {
+            echo "sha=$INPUT_SHA"
+            echo "sha12=$SHA12"
+            echo "release_tag=$RELEASE_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+  dry-run:
+    name: dry run (build only, no push)
+    needs: guard
+    if: inputs.publish == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      # No `ref:` on purpose: checkout uses github.sha, the dispatched commit the
+      # guard proved equal to the input SHA and the main tip. Passing a job
+      # output as the ref is flagged by CodeQL as untrusted-code checkout.
+      # release-bundle.sh re-checks HEAD against the SHA.
+      - name: Checkout the verified SHA
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Build api (local only)
+        id: build_api
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          target: api
+          push: false
+          load: true
+          no-cache: true
+          provenance: false
+          sbom: false
+          tags: backend-core-api:dry-run
+          labels: |
+            org.opencontainers.image.revision=${{ needs.guard.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/Kemetra/Backend-Core
+
+      - name: Build worker (local only)
+        id: build_worker
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          target: worker
+          push: false
+          load: true
+          no-cache: true
+          provenance: false
+          sbom: false
+          tags: backend-core-worker:dry-run
+          labels: |
+            org.opencontainers.image.revision=${{ needs.guard.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/Kemetra/Backend-Core
+
+      - name: Build migrate (local only)
+        id: build_migrate
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          target: migrate
+          push: false
+          load: true
+          no-cache: true
+          provenance: false
+          sbom: false
+          tags: backend-core-migrate:dry-run
+          labels: |
+            org.opencontainers.image.revision=${{ needs.guard.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/Kemetra/Backend-Core
+
+      - name: Assemble manifest and bundle (local image IDs, not registry digests)
+        env:
+          SHA: ${{ needs.guard.outputs.sha }}
+          API_ID: ${{ steps.build_api.outputs.imageid }}
+          WORKER_ID: ${{ steps.build_worker.outputs.imageid }}
+          MIGRATE_ID: ${{ steps.build_migrate.outputs.imageid }}
+        run: |
+          set -euo pipefail
+          bash deploy/release-bundle.sh \
+            --sha "$SHA" --published false --digest-kind local-image-id \
+            --api-digest "$API_ID" --worker-digest "$WORKER_ID" --migrate-digest "$MIGRATE_ID" \
+            --out "$RUNNER_TEMP/release-out"
+
+      - name: Upload dry-run bundle as a workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-dry-run-${{ needs.guard.outputs.sha12 }}
+          path: ${{ runner.temp }}/release-out/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish (GHCR + attestation + GitHub release)
+    needs: guard
+    if: inputs.publish == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      SHA: ${{ needs.guard.outputs.sha }}
+      RELEASE_TAG: ${{ needs.guard.outputs.release_tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+    steps:
+      # No `ref:` on purpose: checkout uses github.sha, the dispatched commit the
+      # guard proved equal to the input SHA and the main tip. Passing a job
+      # output as the ref is flagged by CodeQL as untrusted-code checkout.
+      # release-bundle.sh re-checks HEAD against the SHA.
+      - name: Checkout the verified SHA
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Re-check that nothing was published since the guard ran
+        run: |
+          set -euo pipefail
+          for TARGET in api worker migrate; do
+            IMAGE="ghcr.io/kemetra/backend-core-$TARGET:sha-$SHA"
+            if OUT="$(docker buildx imagetools inspect "$IMAGE" 2>&1)"; then
+              echo "::error::image $IMAGE already exists; refusing to overwrite"; exit 1
+            fi
+            grep -Eqi "not found|manifest unknown|name unknown" <<<"$OUT" \
+              || { echo "::error::could not determine whether $IMAGE exists: $OUT"; exit 1; }
+          done
+
+      - name: Build and push api
+        id: push_api
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          target: api
+          push: true
+          no-cache: true
+          provenance: mode=max
+          sbom: true
+          tags: ghcr.io/kemetra/backend-core-api:sha-${{ needs.guard.outputs.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.guard.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/Kemetra/Backend-Core
+
+      - name: Build and push worker
+        id: push_worker
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          target: worker
+          push: true
+          no-cache: true
+          provenance: mode=max
+          sbom: true
+          tags: ghcr.io/kemetra/backend-core-worker:sha-${{ needs.guard.outputs.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.guard.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/Kemetra/Backend-Core
+
+      - name: Build and push migrate
+        id: push_migrate
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          target: migrate
+          push: true
+          no-cache: true
+          provenance: mode=max
+          sbom: true
+          tags: ghcr.io/kemetra/backend-core-migrate:sha-${{ needs.guard.outputs.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.guard.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/Kemetra/Backend-Core
+
+      - name: Verify pushed digests and revision labels
+        env:
+          API_DIGEST: ${{ steps.push_api.outputs.digest }}
+          WORKER_DIGEST: ${{ steps.push_worker.outputs.digest }}
+          MIGRATE_DIGEST: ${{ steps.push_migrate.outputs.digest }}
+        run: |
+          set -euo pipefail
+          declare -A DIGESTS=([api]="$API_DIGEST" [worker]="$WORKER_DIGEST" [migrate]="$MIGRATE_DIGEST")
+          for TARGET in api worker migrate; do
+            REPO_IMG="ghcr.io/kemetra/backend-core-$TARGET"
+            DIGEST="${DIGESTS[$TARGET]}"
+            [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad build digest for $TARGET"; exit 1; }
+            # JSON formatter: a bare .Manifest.Digest Go template is not reliably
+            # honoured by imagetools (docker/buildx#1175) and can print raw text.
+            TAG_DIGEST="$(docker buildx imagetools inspect "$REPO_IMG:sha-$SHA" --format '{{json .Manifest}}' | jq -r .digest)"
+            [[ "$TAG_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::could not read the registry digest for $TARGET"; exit 1; }
+            [ "$TAG_DIGEST" = "$DIGEST" ] || { echo "::error::$TARGET tag digest $TAG_DIGEST != build digest $DIGEST"; exit 1; }
+            docker pull --quiet "$REPO_IMG@$DIGEST" >/dev/null
+            REVISION="$(docker image inspect "$REPO_IMG@$DIGEST" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+            [ "$REVISION" = "$SHA" ] || { echo "::error::$TARGET revision label '$REVISION' != $SHA"; exit 1; }
+            echo "$TARGET OK $DIGEST"
+          done
+
+      - name: Attest build provenance (api)
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ghcr.io/kemetra/backend-core-api
+          subject-digest: ${{ steps.push_api.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest build provenance (worker)
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ghcr.io/kemetra/backend-core-worker
+          subject-digest: ${{ steps.push_worker.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest build provenance (migrate)
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ghcr.io/kemetra/backend-core-migrate
+          subject-digest: ${{ steps.push_migrate.outputs.digest }}
+          push-to-registry: true
+
+      - name: Assemble manifest and bundle (registry digests)
+        env:
+          API_DIGEST: ${{ steps.push_api.outputs.digest }}
+          WORKER_DIGEST: ${{ steps.push_worker.outputs.digest }}
+          MIGRATE_DIGEST: ${{ steps.push_migrate.outputs.digest }}
+        run: |
+          set -euo pipefail
+          bash deploy/release-bundle.sh \
+            --sha "$SHA" --published true --digest-kind registry-manifest-digest \
+            --api-digest "$API_DIGEST" --worker-digest "$WORKER_DIGEST" --migrate-digest "$MIGRATE_DIGEST" \
+            --out "$RUNNER_TEMP/release-out"
+
+      - name: Create the GitHub release (never overwrites)
+        run: |
+          set -euo pipefail
+          if OUT="$(gh release view "$RELEASE_TAG" --repo "$REPO" 2>&1)"; then
+            echo "::error::release $RELEASE_TAG already exists; refusing to overwrite"; exit 1
+          fi
+          grep -qi "release not found" <<<"$OUT" \
+            || { echo "::error::could not determine whether release $RELEASE_TAG exists: $OUT"; exit 1; }
+          gh release create "$RELEASE_TAG" \
+            --repo "$REPO" \
+            --target "$SHA" \
+            --title "Backend-Core images $RELEASE_TAG" \
+            --notes "Digest-pinned api, worker and migrate images built from $SHA. Verify with SHA256SUMS and gh attestation verify before use; see deploy/README.md." \
+            "$RUNNER_TEMP/release-out/backend-core-release-${SHA:0:12}.tar.gz" \
+            "$RUNNER_TEMP/release-out/release-manifest.json" \
+            "$RUNNER_TEMP/release-out/SHA256SUMS"

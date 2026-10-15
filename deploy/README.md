@@ -232,6 +232,45 @@ op run --env-file=deploy/prod.env -- \
   docker compose -f docker-compose.prod.yml run --rm migrate node dist/cli/migrate.js status
 ```
 
+## Image release (RT-533)
+
+The manual `Release images` workflow (`.github/workflows/release-images.yml`)
+builds the `api`, `worker` and `migrate` images from one exact tip-of-`main`
+SHA. With `publish: true` it pushes them to GHCR as
+`ghcr.io/kemetra/backend-core-<target>:sha-<40-hex sha>`, attests their build
+provenance and creates the GitHub release `backend-core-<sha12>` (it refuses to
+overwrite an existing release, tag or image). With `publish: false` (the
+default) it only builds and uploads a dry-run artifact whose digests are local
+image IDs, not registry digests. The release assets are
+`backend-core-release-<sha12>.tar.gz` (compose files, `Caddyfile`,
+`deploy/console-smoke.sh`, the seven grant scripts and two catch-up scripts, a
+`release.env` with the three image refs, and the manifest), `release-manifest.json`
+and `SHA256SUMS`. It holds no secrets and the workflow deploys nothing.
+
+Verify a release before using it:
+
+```bash
+TAG=backend-core-<sha12>
+gh release download "$TAG" --repo Kemetra/Backend-Core --dir release
+(cd release && sha256sum -c SHA256SUMS && tar -xzf "backend-core-release-<sha12>.tar.gz")
+(cd "release/backend-core-release-<sha12>" && sha256sum -c SHA256SUMS && cat release.env)
+# OCI attestation checks need registry credentials first (a token with read:packages):
+docker login ghcr.io
+# Per image, using the digest from release.env / release-manifest.json:
+gh attestation verify "oci://ghcr.io/kemetra/backend-core-api@sha256:<digest>" --repo Kemetra/Backend-Core   --signer-workflow Kemetra/Backend-Core/.github/workflows/release-images.yml
+```
+
+Pulling these images instead of building on the host uses the override
+`docker-compose.release.yml` (Compose 2.24.4 or newer):
+`docker compose -f docker-compose.prod.yml -f docker-compose.release.yml ...`
+with the `DP2_MIGRATE_IMAGE`, `DP2_API_IMAGE` and `DP2_WORKER_IMAGE` values from
+`release.env` exported. **Doing so on a host is a later, separately approved
+deployment, not part of this release.** The order does not change: roles first
+(prerequisite 7), the Console release and TLS/DNS in place, then `migrate`,
+the seven domain-grant scripts, `api`/`worker` up, and the catch-up scripts, as
+in [Deploy](#deploy). Drop `--build`
+from those commands, since the images are pulled, not built.
+
 ## Operations
 
 ```bash
