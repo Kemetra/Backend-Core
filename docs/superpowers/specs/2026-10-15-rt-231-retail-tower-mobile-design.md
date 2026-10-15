@@ -105,7 +105,7 @@ Rule: **same Backend-Core facts and contracts → Admin deep workflow plus Mobil
 
 **Explicitly out of MVP:** every write (ack, revoke, approvals, return review), push notifications, multi-store aggregate, audit summaries, cashier access, offline mode and any peripheral use.
 
-**MVP success criteria (proposed):** a pilot manager uses it daily, no MVP read becomes a POS dependency, every read is store-scope-correct (tested), and no business data persists on the device beyond the session (§7).
+**MVP success criteria (proposed):** a pilot manager uses it daily, no MVP read becomes a POS dependency, every read is store-scope-correct (tested), and no business data persists on the device beyond the session (§6.6, §7).
 
 **Priority if the MVP must shrink:** 3 → 2 → 4 → 1 → 6 → 7 → 5 → 8. Shift/cash visibility is the strongest manager pain point and reuses the most existing facts.
 
@@ -145,9 +145,9 @@ Retail Tower Mobile (one app, capabilities gated by role + store scope)
 | MVP item | Existing route(s) | Guard / credential today | Roles | Store scope | Verdict |
 |---|---|---|---|---|---|
 | Snapshot | — (no aggregate) | — | — | — | **Gap G6** |
-| Active shifts | `GET /api/pos/v1/shifts`, `/shifts/stuck` | `@ClerkBearer` / POS operator identity | POS operator | operator's store | POS-only; **Gap G4** |
+| Active shifts | `GET /api/pos/v1/shifts/stuck` only (stale open shifts). `/api/pos/v1/shifts` is `POST` (open shift), not a read. | `@ClerkBearer` / POS operator identity | POS operator | operator's store | POS-only, and there is no general open-shift read at all → **Gap G4** (a new read, not an auth adaptation) |
 | Variance / exceptions | `GET /api/v1/shift-closes`, `/{shiftId}` | `SessionOnlyAdminGuard`: **cookie only, any bearer → 401** | owner, tenant_admin, store_manager | service-enforced, 404 | Facts reusable; **blocked by G1/G2**. Covers **closed** shifts only (open → 404). |
-| Device health | `POST /api/pos/v1/terminals/pair` only | device ceremony | — | — | RT-138 is Done as a plan, but **list/revoke routes are not on main, and the `devices` table has no `last_seen_at` column** (only `label`, `revoked_at`, timestamps) → **G3** (needs a migration as well as routes) |
+| Device health | `POST /api/pos/v1/terminals/pair` only | device ceremony | — | — | RT-138 is Done as a plan. Migration `0040_device_lifecycle.sql` (RT-364, Done) already adds `last_seen_at`, `expires_at`, revoke attribution and `retired_at`, but `devices.ts` does not declare them yet and nothing writes `last_seen_at`. List/detail/revoke routes are not on main → **G3**, tracked by RT-365 + RT-370. **No new migration.** |
 | Alerts | — (no Attention aggregate, no push registration) | — | — | — | **Gap G7** (deferred by design until triggered) |
 | Sale lookup | `GET /api/pos/v1/sales/{saleRef}`; `GET /api/v1/catalog/sale-sync-ops/sales/{saleRef}/status`, `/audit-timeline` | `PosOperatorAuthGuard`; `DashboardAuthGuard` + `@Roles(owner, tenant_admin)` | POS operator; owner/TA | — | **store_manager excluded; no search → Gap G5** |
 | Staff/sessions | `/api/pos/v1/operators/active-session`, `/roster`; `/api/pos/v1/cashier-admissions/roster` | POS device / operator | POS | device's store | POS-only; **Gap G8** |
@@ -236,7 +236,7 @@ No SQLite or outbox exists in Manager/Owner surfaces (comment 10953). Continuity
 ## 9. Audit and security requirements
 
 - RT-135 envelope for every mobile-originated privileged action: actor, **client kind = mobile**, device ref, tenant/store, target, request id, server time. No tokens, PINs or PII in audit rows.
-- New event names to be added to the RT-135 catalogue (proposed): `mobile.device.enrolled`, `mobile.device.confirmed`, `mobile.device.revoked`, `mobile.session.signed_in`, `mobile.session.refresh_reuse_detected`, `attention.acknowledged`. Domain actions (device revoke, return approval) audit under **their own** domain events (Support §R).
+- New event names to be added to the RT-135 catalogue (proposed): `mobile.device.enrollment_code.issued`, `mobile.device.enrolled`, `mobile.device.revoked`, `mobile.session.signed_in`, `mobile.session.refresh_reuse_detected`, `attention.acknowledged`. Domain actions (device revoke, return approval) audit under **their own** domain events (Support §R).
 - **Read-audit:** whether sale lookup (customer-facing data) on mobile emits read-audit rows is open (D4), per RT-135 read-audit rules.
 - Rate limiting on mobile sign-in and refresh (same posture as dashboard sign-in). Generic 401s with no account-existence leaks.
 - Minimum-supported app version: the server can refuse below-minimum clients with an explicit compliance error, mirroring Device page fleet rules. OTA updates must not bypass store-reviewed native changes or the minimum version.
@@ -255,8 +255,8 @@ No SQLite or outbox exists in Manager/Owner surfaces (comment 10953). Continuity
 | ID | Gap | Why Mobile needs it | Notes / existing anchor |
 |---|---|---|---|
 | **G1** | Mobile human credential: sign-in from enrolled device → access + rotating refresh bearer; refresh/sign-out; route opt-in | Nothing in the MVP works without it | §6. Likely a new scope + migration. **Shared with RT-230.** |
-| **G2** | Mobile device enrollment/confirmation as a Device Registry managed client (`kind = mobile`) | Revoke-on-loss, trust tiers, push binding | RT-138 patterns; Device page F10 |
-| **G3** | Device Registry read (list + trust state + `last_seen_at`) and revoke routes, plus the RT-138 throttled `last_seen_at` signal itself | Device health MVP; Phase-2 revoke | **RT-138 approved (Done as Planning), not on `main`.** The `devices` table has no `last_seen_at` column today, so this includes a migration. Implementation backlog, not a new decision. |
+| **G2** | Mobile device enrollment as a Device Registry managed client (`kind = mobile`): enrollment-code issue/cancel + enroll | Revoke-on-loss, push binding | RT-138 pairing-code patterns; Device page F10. Trusted or revoked only, with no confirmation tier (unless the owner picks the §6.3 alternative under D2). |
+| **G3** | Device Registry read (list + trust state + `last_seen_at`) and revoke routes, plus the throttled `last_seen_at` writer | Device health MVP; Phase-2 revoke | Schema has already landed: migration `0040_device_lifecycle.sql` (RT-364, Done) adds the columns, but `devices.ts` does not declare them yet. **Remaining work is already tracked: RT-365** (list/detail + revoke, contract-first) **and RT-370** (`last_seen_at` writer). No new migration and no new decision. |
 | **G4** | Dashboard read of open/active shifts per store (and stuck/stale) | Active-shift MVP | `shift-closes` is closed-only; `/pos/v1/shifts` is POS-scoped. Must reuse RT-17 facts, with no second shift model. |
 | **G5** | Store-scoped sale lookup/search admissible to `store_manager` | Sale lookup MVP | `sale-sync-ops` is owner/TA-only; POS sale read is operator-only. PII and read-audit per D4. |
 | **G6** | Store operational snapshot projection (shared Admin + Mobile) | Snapshot MVP and Phase 4 | READ/PROJECT, not mirror (Support §A). D6 decides projection vs N calls. |
@@ -330,7 +330,7 @@ Not a pilot (RT-20) blocker at any phase.
 Candidate Jira items, each one issue / one primary repo / bounded:
 
 1. **Backend-Core Planning:** mobile credential + device-enrollment contract (G1, G2, G10). `[GATED]` contract and migration.
-2. **Backend-Core Implementation:** RT-138 device registry list/health/revoke routes (G3), as already-approved plan.
+2. **Backend-Core Implementation (already ticketed):** RT-365 device list/detail/revoke and RT-370 `last_seen_at` writer (G3). Schema already landed via RT-364 / migration 0040.
 3. **Backend-Core Planning→Impl:** open-shift dashboard read (G4), coordinated with RT-18/RT-236.
 4. **Backend-Core Planning→Impl:** store-scoped manager sale lookup (G5) incl. PII/read-audit decision.
 5. **Backend-Core Planning→Impl:** active operator-session read (G8).
@@ -392,8 +392,8 @@ Candidate Jira items, each one issue / one primary repo / bounded:
 >
 > **Key finding:** Backend-Core has **no human credential a native app can use**. Sign-in is cookie-only, nothing mints a human bearer, RT-430 refuses non-browser cookie writes, and `shift-closes` (RT-18's read) rejects all bearers. Every MVP read is blocked on gap **G1**. The recommendation is a device-bound mobile bearer (PD-1). RT-230 shares this dependency.
 >
-> **Other gaps:** RT-138 device list/revoke is approved but not on main, and `devices` has no `last_seen_at` yet (G3). There is no dashboard product search (G9). Manager Mobile does not use the 031 `pos_operator` envelope; whether continuity does is RT-230's call. There is no dashboard read for open shifts (G4), manager sale lookup (G5; sale-sync-ops is owner/tenant_admin only), store snapshot (G6), Attention/push (G7, Phase 1b) or active operator sessions (G8). Inventory on-hand is reusable once G1 exists.
+> **Other gaps:** RT-138 device list/revoke is not on main. The columns already landed via migration 0040 (RT-364); the remaining work is tracked as RT-365 + RT-370 (G3). There is no dashboard product search (G9). Manager Mobile does not use the 031 `pos_operator` envelope; whether continuity does is RT-230's call. There is no dashboard read for open shifts (G4), manager sale lookup (G5; sale-sync-ops is owner/tenant_admin only), store snapshot (G6), Attention/push (G7, Phase 1b) or active operator sessions (G8). Inventory on-hand is reusable once G1 exists.
 >
-> **Owner decisions needed:** D1 credential model · D2 enrollment tiers / BYOD · D3 Android-first · D4 sale-lookup PII / read-audit · D5 push in 1b · D6 snapshot projection · D7 rooted-device policy · D8 session TTLs · D9 first Phase-2 action.
+> **Owner decisions needed:** D1 credential model · D2 enrollment ceremony / BYOD (self-enrollment would deviate from the Device Registry baseline) · D3 Android-first · D4 sale-lookup PII / read-audit · D5 push in 1b · D6 snapshot projection · D7 rooted-device policy · D8 session TTLs · D9 first Phase-2 action.
 >
 > No implementation, repo, contract or Jira issue was created. **Next safe action:** owner rules on D1–D9. Then Confluence 21233665 is updated and decomposition is reviewed.
