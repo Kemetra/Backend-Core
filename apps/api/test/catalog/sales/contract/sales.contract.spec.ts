@@ -1096,7 +1096,13 @@ describe("pos-sales/sales.yaml — RT-530 manager-approved void", () => {
     expect(responseRef("recordVoid", "422")).toBe("#/components/responses/VoidUnprocessable");
     expect(responseRef("recordVoid", "409")).toBe("#/components/responses/ReversalConflict");
     const forbidden = text(salesDoc.components?.responses?.["VoidForbidden"]);
-    for (const code of ["void_approval_required", "void_self_approval", "void_approver_not_eligible"]) {
+    for (const code of [
+      "void_approval_required",
+      "void_requester_mismatch",
+      "void_self_approval",
+      "void_requester_not_eligible",
+      "void_approver_not_eligible",
+    ]) {
       expect(forbidden).toContain(code);
     }
     const unprocessable = text(salesDoc.components?.responses?.["VoidUnprocessable"]);
@@ -1109,10 +1115,12 @@ describe("pos-sales/sales.yaml — RT-530 manager-approved void", () => {
     const op = text(findOp("recordVoid"));
     expect(op).toContain("`owner`, `tenant_admin` or `store_manager`");
     expect(op).toContain("never re-runs them");
+    expect(op).toContain("`approval.requesterUserId` is the authenticated operator of the");
     expect(op).toContain("An offline-queued void is checked on");
     expect(op.indexOf("void_approval_required")).toBeLessThan(op.indexOf("void_approval_invalid"));
     expect(op.indexOf("void_approval_invalid")).toBeLessThan(op.indexOf("void_outside_business_day"));
-    expect(op.indexOf("void_outside_business_day")).toBeLessThan(op.indexOf("void_self_approval"));
+    expect(op.indexOf("void_outside_business_day")).toBeLessThan(op.indexOf("void_requester_mismatch"));
+    expect(op.indexOf("void_requester_mismatch")).toBeLessThan(op.indexOf("void_self_approval"));
     expect(op.indexOf("void_self_approval")).toBeLessThan(op.indexOf("void_approver_not_eligible"));
   });
 

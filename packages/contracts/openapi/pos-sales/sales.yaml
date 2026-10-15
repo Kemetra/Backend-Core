@@ -409,9 +409,16 @@ paths:
            120 s, else 422 `void_approval_invalid`;
         3. `businessDate` equals the sale's `businessDate`, else 422
            `void_outside_business_day` (after that day a return is used);
-        4. the approver is neither `approval.requesterUserId` nor the user
+        4. `approval.requesterUserId` is the authenticated operator of the
+           envelope (the `users.id` the server resolved; a body id is never
+           trusted), else 403 `void_requester_mismatch`. A queued void is
+           therefore sent under the original requester envelope;
+        5. the approver is neither `approval.requesterUserId` nor the user
            who captured the sale, else 403 `void_self_approval`;
-        5. the approver holds `owner`, `tenant_admin` or `store_manager` in the
+        6. the requester is a user of the tenant with an active membership
+           and access to the sale's store, else 403
+           `void_requester_not_eligible`;
+        7. the approver holds `owner`, `tenant_admin` or `store_manager` in the
            tenant, with an active membership and access to the sale's store,
            else 403 `void_approver_not_eligible`.
         A replay (the same `(sourceSystem, externalId)`) answers before these
@@ -1117,7 +1124,10 @@ components:
         requesterUserId:
           type: string
           format: uuid
-          description: The operator who asked for the void.
+          description: >
+            The operator who asked for the void. Must be the authenticated
+            operator of the envelope (`void_requester_mismatch` otherwise) and
+            a user of the tenant with access to the sale's store.
         approverUserId:
           type: string
           format: uuid
@@ -1667,8 +1677,11 @@ components:
       description: >
         403 on `recordVoid` (RT-530). `error.code` is one of:
         `void_approval_required` - no `approval` accompanied the void;
+        `void_requester_mismatch` - the stated requester is not the
+        authenticated operator of the envelope;
         `void_self_approval` - the approver is the requester or the user who
-        captured the sale; `void_approver_not_eligible` - the approver is not
+        captured the sale; `void_requester_not_eligible` - the requester is
+        not a user of the tenant with access to the sale's store; `void_approver_not_eligible` - the approver is not
         an `owner`, `tenant_admin` or `store_manager` of the tenant with an
         active membership and access to the sale store (a user of another
         tenant, an unknown user and a revoked membership are all this).

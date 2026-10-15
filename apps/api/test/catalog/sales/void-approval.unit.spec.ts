@@ -10,6 +10,7 @@ import {
   VoidApprovalInvalidError,
   VoidApprovalRequiredError,
   VoidOutsideBusinessDayError,
+  VoidRequesterMismatchError,
   VoidSelfApprovalError,
   type VoidSaleFacts,
 } from "../../../src/catalog/sales/void-approval";
@@ -55,8 +56,9 @@ function body(
   } as RecordVoidRequestDto;
 }
 
-const check = (b: RecordVoidRequestDto, f: VoidSaleFacts = facts()) =>
-  checkVoidApprovalClaims({ body: b, sale: f, now: NOW });
+/** The envelope actor defaults to the requester, as it is in a valid void. */
+const check = (b: RecordVoidRequestDto, f: VoidSaleFacts = facts(), actorUserId: string = REQUESTER) =>
+  checkVoidApprovalClaims({ body: b, actorUserId, sale: f, now: NOW });
 
 describe("checkVoidApprovalClaims", () => {
   it("accepts a bound approval from a different approver on the sale's day and returns it", () => {
@@ -97,9 +99,22 @@ describe("checkVoidApprovalClaims", () => {
     expect(() => check(body({}, over))).toThrow(VoidOutsideBusinessDayError);
   });
 
+  it("refuses a requester who is not the authenticated actor, in any case", () => {
+    expect(() => check(body(), facts(), APPROVER)).toThrow(VoidRequesterMismatchError);
+    expect(() => check(body(), facts(), "0a000000-0000-7000-8000-0000000530e9")).toThrow(VoidRequesterMismatchError);
+    expect(() => check(body({ requesterUserId: REQUESTER.toUpperCase() }))).not.toThrow();
+  });
+
+  it("refuses a fabricated requester even when the actor is the approver", () => {
+    const fabricated = "0a000000-0000-7000-8000-0000000530ee";
+    expect(() => check(body({ requesterUserId: fabricated }), facts(), APPROVER)).toThrow(VoidRequesterMismatchError);
+  });
+
   it("refuses the approver being the requester, in any case", () => {
-    expect(() => check(body({ requesterUserId: APPROVER }))).toThrow(VoidSelfApprovalError);
-    expect(() => check(body({ requesterUserId: APPROVER.toUpperCase() }))).toThrow(VoidSelfApprovalError);
+    expect(() => check(body({ requesterUserId: APPROVER }), facts(), APPROVER)).toThrow(VoidSelfApprovalError);
+    expect(() => check(body({ requesterUserId: APPROVER.toUpperCase() }), facts(), APPROVER)).toThrow(
+      VoidSelfApprovalError,
+    );
   });
 
   it("refuses the approver being the sale's selling operator", () => {
@@ -107,10 +122,10 @@ describe("checkVoidApprovalClaims", () => {
   });
 
   it("lets a requester who is the selling operator ask a different approver", () => {
-    expect(() => check(body({ requesterUserId: SELLER }))).not.toThrow();
+    expect(() => check(body({ requesterUserId: SELLER }), facts(), SELLER)).not.toThrow();
   });
 
-  it("reports the earlier failure first: missing approval, binding, day, then four-eyes", () => {
+  it("reports the earlier failure first: missing approval, binding, day, requester, then four-eyes", () => {
     expect(() => check(body(null, { businessDate: "1999-01-01" }))).toThrow(VoidApprovalRequiredError);
     expect(() => check(body({ action: "x", approverUserId: SELLER }, { businessDate: "1999-01-01" }))).toThrow(
       VoidApprovalInvalidError,
@@ -118,6 +133,7 @@ describe("checkVoidApprovalClaims", () => {
     expect(() => check(body({ approverUserId: SELLER }, { businessDate: "1999-01-01" }))).toThrow(
       VoidOutsideBusinessDayError,
     );
+    expect(() => check(body({ approverUserId: SELLER }), facts(), APPROVER)).toThrow(VoidRequesterMismatchError);
     expect(() => check(body({ approverUserId: SELLER }))).toThrow(VoidSelfApprovalError);
   });
 });

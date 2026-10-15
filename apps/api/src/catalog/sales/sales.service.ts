@@ -44,6 +44,7 @@ import { sha256CanonicalHex } from "./payload-hash";
 import { findLinePricingViolation } from "./sale-line-pricing";
 import {
   assertApproverEligible,
+  assertRequesterIsStoreUser,
   checkVoidApprovalClaims,
   readVoidSaleFacts,
   VoidApprovalInvalidError,
@@ -553,7 +554,8 @@ export class SalesService {
         // RT-530: a void needs a bound manager approval (void-approval.ts). The
         // claims are checked first, then the approver's CURRENT standing.
         const facts = await readVoidSaleFacts(client, saleRef, body.approval?.amount);
-        const approval = checkVoidApprovalClaims({ body, sale: facts, now: new Date() });
+        const approval = checkVoidApprovalClaims({ body, actorUserId, sale: facts, now: new Date() });
+        await assertRequesterIsStoreUser(client, { tenantId, storeId }, approval.requesterUserId);
         await assertApproverEligible(client, { tenantId, storeId }, approval.approverUserId);
 
         let inserted;

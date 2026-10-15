@@ -71,6 +71,8 @@ import {
   VoidApprovalRequiredError,
   VoidApproverNotEligibleError,
   VoidOutsideBusinessDayError,
+  VoidRequesterMismatchError,
+  VoidRequesterNotEligibleError,
   VoidSelfApprovalError,
 } from "./void-approval";
 import { SaleCaptureAuthGuard } from "./sale-capture-auth.guard";
@@ -152,6 +154,12 @@ function toReversalHttpError(err: unknown): unknown {
   }
   if (err instanceof VoidOutsideBusinessDayError) {
     return new UnprocessableEntityException({ code: "void_outside_business_day", message: err.message });
+  }
+  if (err instanceof VoidRequesterMismatchError) {
+    return new ForbiddenException({ code: "void_requester_mismatch", message: err.message });
+  }
+  if (err instanceof VoidRequesterNotEligibleError) {
+    return new ForbiddenException({ code: "void_requester_not_eligible", message: err.message });
   }
   if (err instanceof VoidSelfApprovalError) {
     return new ForbiddenException({ code: "void_self_approval", message: err.message });

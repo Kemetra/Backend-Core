@@ -60,7 +60,15 @@ async function applyBefore0046(pgEnv: PgTestEnv): Promise<void> {
   await ensureAppRole(pgEnv);
 }
 
-async function insertSale(id: string, tenantId: string, storeId: string, externalId: string): Promise<void> {
+/** A sale row to seed: its identity and the tenant/store it belongs to. */
+interface SaleSeed {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly storeId: string;
+  readonly externalId: string;
+}
+
+async function insertSale({ id, tenantId, storeId, externalId }: SaleSeed): Promise<void> {
   await pg().admin.query(
     `INSERT INTO sales
        (id, tenant_id, store_id, currency_code, pos_total, occurred_at,
@@ -89,15 +97,16 @@ const FULL: Approval = {
   voidBusinessDate: "2026-10-01",
 };
 
-async function insertVoid(
-  id: string,
-  saleId: string,
-  tenantId: string,
-  storeId: string,
-  externalId: string,
-  approval?: Approval,
-): Promise<void> {
-  const base = [id, saleId, tenantId, storeId, externalId, "d".repeat(64), ACTOR];
+/** A void row to seed against one of the seeded sales; no `approval` = a legacy void. */
+interface VoidSeed {
+  readonly id: string;
+  readonly sale: SaleSeed;
+  readonly externalId: string;
+  readonly approval?: Approval;
+}
+
+async function insertVoid({ id, sale, externalId, approval }: VoidSeed): Promise<void> {
+  const base = [id, sale.id, sale.tenantId, sale.storeId, externalId, "d".repeat(64), ACTOR];
   if (approval === undefined) {
     await pg().admin.query(
       `INSERT INTO sale_voids
@@ -124,6 +133,25 @@ async function insertVoid(
   );
 }
 
+/** The seeded sales. */
+const SALE = {
+  legacy: { id: SALE_LEGACY, tenantId: TENANT, storeId: STORE, externalId: "rt530-legacy-sale" },
+  legacy2: { id: "0a000000-0000-7000-8000-000000046015", tenantId: TENANT, storeId: STORE, externalId: "rt530-legacy-2-sale" },
+  approved: { id: SALE_APPROVED, tenantId: TENANT, storeId: STORE, externalId: "rt530-approved-sale" },
+  other: { id: SALE_OTHER, tenantId: TENANT, storeId: STORE, externalId: "rt530-other-sale" },
+  tenant2: { id: SALE_T2, tenantId: TENANT_2, storeId: STORE_2, externalId: "rt530-t2-sale" },
+} as const satisfies Record<string, SaleSeed>;
+
+/** The void ids, by what each test inserts. */
+const VOID_ID = {
+  legacy: "0a000000-0000-7000-8000-000000046021",
+  legacy2: "0a000000-0000-7000-8000-000000046022",
+  approved: "0a000000-0000-7000-8000-000000046023",
+  partial: "0a000000-0000-7000-8000-000000046031",
+  reuse: "0a000000-0000-7000-8000-000000046032",
+  tenant2: "0a000000-0000-7000-8000-000000046033",
+} as const;
+
 beforeAll(async () => {
   try {
     env = await startPgEnv();
@@ -145,12 +173,12 @@ beforeAll(async () => {
     [STORE, TENANT, STORE_2, TENANT_2],
   );
   // A pre-0046 void, written by the pre-RT-530 writer.
-  await insertSale(SALE_LEGACY, TENANT, STORE, "rt530-legacy-sale");
-  await insertVoid("0a000000-0000-7000-8000-000000046021", SALE_LEGACY, TENANT, STORE, "rt530-legacy-void");
+  await insertSale(SALE.legacy);
+  await insertVoid({ id: VOID_ID.legacy, sale: SALE.legacy, externalId: "rt530-legacy-void" });
   await env.admin.query(readFileSync(UP_PATH, "utf8"));
-  await insertSale(SALE_APPROVED, TENANT, STORE, "rt530-approved-sale");
-  await insertSale(SALE_OTHER, TENANT, STORE, "rt530-other-sale");
-  await insertSale(SALE_T2, TENANT_2, STORE_2, "rt530-t2-sale");
+  await insertSale(SALE.approved);
+  await insertSale(SALE.other);
+  await insertSale(SALE.tenant2);
 }, 240_000);
 
 afterAll(async () => {
@@ -183,9 +211,9 @@ describe("0046_sale_void_approval - upgrade over an existing void", () => {
 
   it("still accepts a legacy void with no approval columns", async () => {
     if (skip()) return;
-    await insertSale("0a000000-0000-7000-8000-000000046015", TENANT, STORE, "rt530-legacy-2-sale");
+    await insertSale(SALE.legacy2);
     await expect(
-      insertVoid("0a000000-0000-7000-8000-000000046022", "0a000000-0000-7000-8000-000000046015", TENANT, STORE, "rt530-legacy-void-2"),
+      insertVoid({ id: VOID_ID.legacy2, sale: SALE.legacy2, externalId: "rt530-legacy-void-2" }),
     ).resolves.toBeUndefined();
   });
 });
@@ -193,7 +221,7 @@ describe("0046_sale_void_approval - upgrade over an existing void", () => {
 describe("0046_sale_void_approval - approval evidence", () => {
   it("stores a complete approval", async () => {
     if (skip()) return;
-    await insertVoid("0a000000-0000-7000-8000-000000046023", SALE_APPROVED, TENANT, STORE, "rt530-approved-void", FULL);
+    await insertVoid({ id: VOID_ID.approved, sale: SALE.approved, externalId: "rt530-approved-void", approval: FULL });
     const r = await pg().admin.query(
       `SELECT approval_id::text, approved_by_user_id::text, requested_by_user_id::text,
               approval_policy_version, void_business_date::text
@@ -218,24 +246,24 @@ describe("0046_sale_void_approval - approval evidence", () => {
     ["approval_policy_version", { ...FULL, policyVersion: null }],
     ["approved_at", { ...FULL, approvedAt: null }],
     ["void_business_date", { ...FULL, voidBusinessDate: null }],
-  ])("rejects an approval missing %s (all-or-none)", async (_column, partial) => {
+  ])("rejects an approval missing %s (all-or-none)", async (column, approval) => {
     if (skip()) return;
     await expect(
-      insertVoid("0a000000-0000-7000-8000-000000046031", SALE_OTHER, TENANT, STORE, `rt530-partial-${_column}`, partial),
+      insertVoid({ id: VOID_ID.partial, sale: SALE.other, externalId: `rt530-partial-${column}`, approval }),
     ).rejects.toThrow(/sale_voids_approval_all_or_none/);
   });
 
   it("makes an approval id single-use within a tenant", async () => {
     if (skip()) return;
     await expect(
-      insertVoid("0a000000-0000-7000-8000-000000046032", SALE_OTHER, TENANT, STORE, "rt530-reuse-void", FULL),
+      insertVoid({ id: VOID_ID.reuse, sale: SALE.other, externalId: "rt530-reuse-void", approval: FULL }),
     ).rejects.toThrow(/uq_sale_voids_tenant_approval/);
   });
 
   it("allows the same approval id in another tenant", async () => {
     if (skip()) return;
     await expect(
-      insertVoid("0a000000-0000-7000-8000-000000046033", SALE_T2, TENANT_2, STORE_2, "rt530-t2-void", FULL),
+      insertVoid({ id: VOID_ID.tenant2, sale: SALE.tenant2, externalId: "rt530-t2-void", approval: FULL }),
     ).resolves.toBeUndefined();
   });
 

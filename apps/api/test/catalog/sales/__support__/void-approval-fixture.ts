@@ -13,6 +13,9 @@
  *   - APPROVER_NO_STORE       store_manager, access to STORE_A_Y only -> no store access
  *   - APPROVER_REVOKED        store_manager, membership revoked      -> inactive
  *   - APPROVER_OTHER_TENANT   store_manager of TENANT_B              -> not a tenant A user
+ *   - HARNESS_REQUESTER       store_staff, access to STORE_A_X       -> the harness actor
+ *                             (`DEVICE_USER_ID`), who captures the sales and so is the
+ *                             default requester of a void; a requester must be a store user
  */
 import type { Pool } from "pg";
 
@@ -31,6 +34,9 @@ export const APPROVER_CASHIER = "0a000000-0000-7000-8000-0000000530a4";
 export const APPROVER_NO_STORE = "0a000000-0000-7000-8000-0000000530a5";
 export const APPROVER_REVOKED = "0a000000-0000-7000-8000-0000000530a6";
 export const APPROVER_OTHER_TENANT = "0b000000-0000-7000-8000-0000000530b1";
+
+/** The capture harness's actor (`DEVICE_USER_ID`); the same literal, to avoid an import cycle. */
+export const HARNESS_REQUESTER = "0d000000-0000-7000-8000-0000000005d1";
 
 export const APPROVAL_ID = "0a000000-0000-7000-8000-0000000530c1";
 
@@ -52,6 +58,7 @@ const POPULATION: readonly Seeded[] = [
   { userId: APPROVER_NO_STORE, email: "rt530-nostore@example.test", tenantId: TENANT_A, roleCode: "store_manager", access: "specific", stores: [STORE_A_Y] },
   { userId: APPROVER_REVOKED, email: "rt530-revoked@example.test", tenantId: TENANT_A, roleCode: "store_manager", access: "specific", stores: [STORE_A_X], revoked: true },
   { userId: APPROVER_OTHER_TENANT, email: "rt530-other@example.test", tenantId: TENANT_B, roleCode: "store_manager", access: "specific", stores: [STORE_B_X] },
+  { userId: HARNESS_REQUESTER, email: "rt530-requester@example.test", tenantId: TENANT_A, roleCode: "store_staff", access: "specific", stores: [STORE_A_X] },
 ];
 
 async function roleId(admin: Pool, tenantId: string, code: string): Promise<string> {
@@ -68,24 +75,39 @@ async function roleId(admin: Pool, tenantId: string, code: string): Promise<stri
   return r.rows[0]!.id;
 }
 
-/** Seed the approver population. Call once after the isolation fixture. */
+async function seedOne(admin: Pool, p: Seeded): Promise<void> {
+  await admin.query(`INSERT INTO users (id, email) VALUES ($1, $2)`, [p.userId, p.email]);
+  const rid = await roleId(admin, p.tenantId, p.roleCode);
+  const membership = await admin.query<{ id: string }>(
+    `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind, revoked_at)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)
+     RETURNING id::text AS id`,
+    [p.tenantId, p.userId, rid, p.access, p.revoked === true ? new Date().toISOString() : null],
+  );
+  await Promise.all(
+    p.stores.map((storeId) =>
+      admin.query(`INSERT INTO store_access (membership_id, store_id, tenant_id) VALUES ($1, $2, $3)`, [
+        membership.rows[0]!.id,
+        storeId,
+        p.tenantId,
+      ]),
+    ),
+  );
+}
+
+/**
+ * Seed the approver population. Call once after the isolation fixture. Roles
+ * are created first (one per tenant and code), then each user in parallel.
+ */
 export async function seedVoidApprovers(admin: Pool): Promise<void> {
-  for (const p of POPULATION) {
-    await admin.query(`INSERT INTO users (id, email) VALUES ($1, $2)`, [p.userId, p.email]);
-    const rid = await roleId(admin, p.tenantId, p.roleCode);
-    const membership = await admin.query<{ id: string }>(
-      `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind, revoked_at)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)
-       RETURNING id::text AS id`,
-      [p.tenantId, p.userId, rid, p.access, p.revoked === true ? new Date().toISOString() : null],
-    );
-    for (const storeId of p.stores) {
-      await admin.query(
-        `INSERT INTO store_access (membership_id, store_id, tenant_id) VALUES ($1, $2, $3)`,
-        [membership.rows[0]!.id, storeId, p.tenantId],
-      );
-    }
-  }
+  const roleKeys = new Set(POPULATION.map((p) => `${p.tenantId}|${p.roleCode}`));
+  await Promise.all(
+    [...roleKeys].map((key) => {
+      const [tenantId, roleCode] = key.split("|") as [string, string];
+      return roleId(admin, tenantId, roleCode);
+    }),
+  );
+  await Promise.all(POPULATION.map((p) => seedOne(admin, p)));
 }
 
 export interface ApprovedVoidOverrides {
@@ -124,7 +146,7 @@ export async function approvedVoidBody(
     approverUserId: APPROVER_MANAGER,
     policyVersion: "rt114-2026-10-07",
     approvedAt: new Date().toISOString(),
-    ...(overrides.approval ?? {}),
+    ...overrides.approval,
   };
   for (const [k, v] of Object.entries(approval)) {
     if (v === null) delete approval[k];
@@ -134,7 +156,7 @@ export async function approvedVoidBody(
     externalId: "void-evt-001",
     businessDate: row?.business_date ?? "2026-05-01",
     ...(overrides.omitApproval === true ? {} : { approval }),
-    ...(overrides.body ?? {}),
+    ...overrides.body,
   };
   return body;
 }

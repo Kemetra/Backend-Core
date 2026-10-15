@@ -61,6 +61,8 @@ import {
   VoidApprovalRequiredError,
   VoidApproverNotEligibleError,
   VoidOutsideBusinessDayError,
+  VoidRequesterMismatchError,
+  VoidRequesterNotEligibleError,
   VoidSelfApprovalError,
 } from "../../../src/catalog/sales/void-approval";
 
@@ -671,6 +673,8 @@ describe("SalesController — guard + status branches (unit)", () => {
     const cases: ReadonlyArray<[Error, new (...a: never[]) => Error, number, string]> = [
       [new VoidApprovalRequiredError(), ForbiddenException, 403, "void_approval_required"],
       [new VoidSelfApprovalError(), ForbiddenException, 403, "void_self_approval"],
+      [new VoidRequesterMismatchError(), ForbiddenException, 403, "void_requester_mismatch"],
+      [new VoidRequesterNotEligibleError(), ForbiddenException, 403, "void_requester_not_eligible"],
       [new VoidApproverNotEligibleError(), ForbiddenException, 403, "void_approver_not_eligible"],
       [new VoidApprovalInvalidError(), UnprocessableEntityException, 422, "void_approval_invalid"],
       [new VoidOutsideBusinessDayError(), UnprocessableEntityException, 422, "void_outside_business_day"],
