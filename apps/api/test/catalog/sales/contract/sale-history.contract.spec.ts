@@ -326,9 +326,9 @@ describe("pos-sales/sale-history.yaml — listSaleHistory (OD-534-4)", () => {
 });
 
 describe("pos-sales/sale-history.yaml — readSaleHistoryDetail", () => {
-  it("maps 200/401/403/404/429/500 with the non-disclosing 404", () => {
+  it("maps 200/400/401/403/404/429/500 with the non-disclosing 404", () => {
     expect(Object.keys(op("readSaleHistoryDetail").responses ?? {}).sort()).toEqual(
-      ["200", "401", "403", "404", "429", "500"].sort(),
+      ["200", "400", "401", "403", "404", "429", "500"].sort(),
     );
     const notFound = doc.components?.responses?.["NotFound"]?.description ?? "";
     expect(notFound).toContain("another cashier's sale");
@@ -471,13 +471,17 @@ describe("pos-sales/sale-history.yaml — recordSaleReprint (OD-534-2/3/7/8, Q-5
     expect(text).toContain("authorizes no payout");
   });
 
-  it("maps 200(replay)/201/400/401/403/404/409/422/429/500 with Idempotent-Replayed", () => {
+  it("maps 201/400/401/403/404/409/422/429/500; a same-key retry replays the stored 201 (RT-82 K4)", () => {
     expect(Object.keys(op("recordSaleReprint").responses ?? {}).sort()).toEqual(
-      ["200", "201", "400", "401", "403", "404", "409", "422", "429", "500"].sort(),
+      ["201", "400", "401", "403", "404", "409", "422", "429", "500"].sort(),
     );
-    for (const status of ["200", "201"]) {
-      expect(op("recordSaleReprint").responses?.[status]?.headers).toHaveProperty("Idempotent-Replayed");
-    }
+    const created = op("recordSaleReprint").responses?.["201"] as
+      | { headers?: Record<string, unknown>; description?: string }
+      | undefined;
+    expect(created?.headers).toHaveProperty("Idempotent-Replayed");
+    expect((created?.description ?? "").replace(/\s+/g, " ")).toContain(
+      "this stored `201` and `Idempotent-Replayed: true` (RT-82 K4)",
+    );
     expect(responseRef("recordSaleReprint", "422")).toBe("#/components/responses/ReprintNotAllowed");
     expect(doc.components?.responses?.["ReprintNotAllowed"]?.description ?? "").toContain(
       "reprint_duplicate_unavailable",

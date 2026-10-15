@@ -129,6 +129,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SaleHistoryDetail"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -201,20 +203,13 @@ paths:
             schema:
               $ref: "#/components/schemas/SaleReprintRequest"
       responses:
-        "200":
-          description: >
-            Idempotent replay of a reprint already recorded under this
-            `Idempotency-Key`. Returns the stored projection with
-            `Idempotent-Replayed: true`; nothing is recorded twice.
-          headers:
-            Idempotent-Replayed:
-              $ref: "#/components/headers/IdempotentReplayed"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SaleReprint"
         "201":
-          description: Reprint authorized or recorded.
+          description: >
+            Reprint authorized or recorded. An identical retry under the same
+            `Idempotency-Key` (including an offline `record` replay) is
+            answered by the idempotency layer with this stored `201` and
+            `Idempotent-Replayed: true` (RT-82 K4); nothing is recorded twice.
+            There is no provenance-replay `200` on this operation.
           headers:
             Idempotent-Replayed:
               $ref: "#/components/headers/IdempotentReplayed"
