@@ -184,9 +184,9 @@ Conventions:
 
 #### PR-05 — BC — [GATED migration] Pricing schema (additive)
 - **Work Mode:** Implementation
-- **Decisions:** 471–477, 483–487, 507–513, 522, 530, 534
-- **Gate:** none
-- **Depends on:** PR-01, PR-03
+- **Decisions:** 471–477, 483–487, 507–513, 522, 530, 534, 632–633
+- **Gate:** none for the core tables; **G4a** for the revision-state migration
+- **Depends on:** PR-01, PR-03. The revision-state migration also depends on PR-G4.
 - **AC:**
   - **Additive tables:** Price Book, Zone, effective-dated Zone membership, price events, Pricing Revision, Change Set and change-set items, all with RLS per §II.
   - **Per-store and per-device pricing revision receipt/apply state** (last received, last applied, failed apply, timestamps), so the PR-06 acknowledgement endpoint can persist state and PR-12 can compute Pricing Health from it. Its column shape follows the PR-G4 decision record, so this table may ship as a second, G4a-gated migration in this item.
@@ -221,7 +221,7 @@ Conventions:
   - `origin: "pricing"` carries the pricing revision, source scope (book/zone/store), price event id and price kind (regular/clearance/open/manual-override);
   - `origin: "legacy"` carries the legacy source scope and catalog cursor only.
 
-  Capture stores whichever variant arrives, frozen, and never recomputes it and never recomputes them. Sales already captured are unaffected. Contract, migration and idempotency-replay tests pass.
+  Capture stores whichever variant arrives, frozen, and never recomputes it. Sales already captured are unaffected. Contract, migration and idempotency-replay tests pass.
 
 ### Phase 2 — Backend-Core implementation
 
