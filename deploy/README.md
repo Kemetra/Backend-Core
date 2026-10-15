@@ -254,6 +254,8 @@ TAG=backend-core-<sha12>
 gh release download "$TAG" --repo Kemetra/Backend-Core --dir release
 (cd release && sha256sum -c SHA256SUMS && tar -xzf "backend-core-release-<sha12>.tar.gz")
 (cd "release/backend-core-release-<sha12>" && sha256sum -c SHA256SUMS && cat release.env)
+# OCI attestation checks need registry credentials first (a token with read:packages):
+docker login ghcr.io
 # Per image, using the digest from release.env / release-manifest.json:
 gh attestation verify "oci://ghcr.io/kemetra/backend-core-api@sha256:<digest>" --repo Kemetra/Backend-Core   --signer-workflow Kemetra/Backend-Core/.github/workflows/release-images.yml
 ```
