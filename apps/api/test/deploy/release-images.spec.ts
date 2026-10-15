@@ -95,10 +95,11 @@ describe("release-images workflow", () => {
     expect(uses.length).toBeGreaterThan(0);
     for (const u of uses) expect(u).toMatch(/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/);
     expect(workflowText).toMatch(/uses: \S+@[0-9a-f]{40} # v\d/);
-    // checkout never keeps the token and always uses the verified SHA
+    // checkout never keeps the token and never takes a ref from inputs or job
+    // outputs: it checks out github.sha, which the guard proved is the verified SHA
     for (const { step } of allSteps.filter(({ step }) => step.uses?.startsWith("actions/checkout@"))) {
       expect(step.with?.["persist-credentials"]).toBe(false);
-      expect(step.with?.ref).toBe("${{ needs.guard.outputs.sha }}");
+      expect(step.with).not.toHaveProperty("ref");
     }
   });
 

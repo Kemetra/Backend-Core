@@ -132,10 +132,13 @@ jobs:
     permissions:
       contents: read
     steps:
+      # No `ref:` on purpose: checkout uses github.sha, the dispatched commit the
+      # guard proved equal to the input SHA and the main tip. Passing a job
+      # output as the ref is flagged by CodeQL as untrusted-code checkout.
+      # release-bundle.sh re-checks HEAD against the SHA.
       - name: Checkout the verified SHA
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ needs.guard.outputs.sha }}
           persist-credentials: false
 
       - name: Set up Buildx
@@ -227,10 +230,13 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
     steps:
+      # No `ref:` on purpose: checkout uses github.sha, the dispatched commit the
+      # guard proved equal to the input SHA and the main tip. Passing a job
+      # output as the ref is flagged by CodeQL as untrusted-code checkout.
+      # release-bundle.sh re-checks HEAD against the SHA.
       - name: Checkout the verified SHA
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ needs.guard.outputs.sha }}
           persist-credentials: false
 
       - name: Set up Buildx
