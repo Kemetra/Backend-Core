@@ -7,7 +7,7 @@
 > SHIPPED and LIVE-VALIDATED** — the `EMPTY_BIN_VIEW` stub that 017 shipped with
 > has been replaced.
 
-**Last updated:** 2026-06-08 — **CONTRACT + T040 + T041 ALL MERGED to `main` via PR #528 (`9a3f475`). Connector client merged (connector PR #25, `ce44129`). Full loop LIVE-VALIDATED against WSL ERPNext staging.**
+**Last updated:** 2026-10-15 — #531 multi-window marked SHIPPED (RT-174/175/176). Previously (2026-06-08): **CONTRACT + T040 + T041 ALL MERGED to `main` via PR #528 (`9a3f475`). Connector client merged (connector PR #25, `ce44129`). Full loop LIVE-VALIDATED against WSL ERPNext staging.**
 **Spec:** `019-erpnext-stock-view-contract` (`specs/019-erpnext-stock-view-contract/`)
 **Base:** `main` (planning chain MERGED via PR #525 `75d9967`; contract slice merged via PR #526 `88562af`; runtime + 017-rewire merged via PR #528 `9a3f475`).
 **Status:** **019 CLOSED — CONTRACT + T040 + T041 all MERGED, connector client merged, loop LIVE-VALIDATED.** The CONTRACT slice (29 conformance tests) merged via PR #526 (`88562af`). The runtime + 017-rewire merged via PR #528 (`9a3f475`, 2026-06-08):
