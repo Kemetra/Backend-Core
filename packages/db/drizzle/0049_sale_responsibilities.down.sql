@@ -4,11 +4,20 @@
 -- responsibilities, sales.responsibility_count, the frozen
 -- payer_external_ref and the payer composite FK target, and restores
 -- payer_account.credit_terms (empty: its values are not recoverable).
--- Responsibility facts are LOST on rollback, and a credit sale then reads as
--- a cash or tender-unknown sale: take a backup first, and never roll back
--- while responsibility-bearing sales exist in a live environment.
+-- Responsibility facts would be LOST, and a credit sale would then read as a
+-- cash or tender-unknown sale, so the rollback REFUSES while any
+-- responsibility row exists (the 0041 precedent): back up, decide, and delete
+-- them explicitly first.
 
 BEGIN;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM sale_responsibilities) THEN
+    RAISE EXCEPTION '0049 down refused: sale_responsibilities has rows; back up and delete them explicitly first';
+  END IF;
+END
+$$;
 
 ALTER TABLE erpnext_posting_resolution DROP COLUMN IF EXISTS payer_external_ref;
 

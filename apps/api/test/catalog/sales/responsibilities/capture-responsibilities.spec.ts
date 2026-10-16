@@ -202,6 +202,33 @@ describe("RT-418 — a covered credit sale is captured", () => {
   });
 });
 
+describe("RT-418 — the count and the rows commit together (coordinator condition)", () => {
+  it("a failure after both are written (the in-transaction outbox emit) leaves neither the sale nor its responsibility", async () => {
+    if (skip()) return;
+    const admin = h.harness!.env.admin;
+    // Fail the capture's LAST write, after sales.responsibility_count and the
+    // sale_responsibilities row are both inserted in the same transaction.
+    await admin.query(`CREATE FUNCTION rt418_fail_outbox() RETURNS trigger LANGUAGE plpgsql AS
+      $$ BEGIN RAISE EXCEPTION 'rt418 injected outbox failure'; END $$`);
+    await admin.query(`CREATE TRIGGER rt418_fail_outbox BEFORE INSERT ON outbox_events
+      FOR EACH ROW EXECUTE FUNCTION rt418_fail_outbox()`);
+    try {
+      const res = await post(captureBody({ externalId: "rt418-atomic", responsibilities: [credit(P_STORE, "12.5")] }));
+      expect(res.status).toBe(500);
+    } finally {
+      await admin.query(`DROP TRIGGER rt418_fail_outbox ON outbox_events`);
+      await admin.query(`DROP FUNCTION rt418_fail_outbox()`);
+    }
+    expect(await written("rt418-atomic")).toEqual(NOTHING);
+    // And the same body then captures normally, with the count and the row together.
+    const ok = await post(captureBody({ externalId: "rt418-atomic", responsibilities: [credit(P_STORE, "12.5")] }));
+    expect(ok.status).toBe(201);
+    const row = await admin.query(`SELECT responsibility_count FROM sales WHERE external_id = 'rt418-atomic'`);
+    expect(row.rows).toEqual([{ responsibility_count: 1 }]);
+    expect(await written("rt418-atomic")).toEqual({ sales: 1, responsibilities: 1 });
+  });
+});
+
 // ===========================================================================
 // Refused (nothing written)
 // ===========================================================================

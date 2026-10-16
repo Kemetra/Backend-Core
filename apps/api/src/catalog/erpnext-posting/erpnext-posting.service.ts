@@ -218,10 +218,12 @@ export class ErpnextPostingService {
         //   - it is a `sale_post` and a void / refund / return of the sale
         //     exists: a credit sale reversed before posting never posts alone
         //     while its reversal is held.
-        // The key is `sales.responsibility_count`, written with the rows at
-        // capture, so an RLS or grant fault on sale_responsibilities holds the
-        // sale (or fails the pull in the projection) instead of offering it as
-        // cash. Held rows are filtered here, not dropped in the projection, so
+        //   - its visible responsibility rows differ from
+        //     `sales.responsibility_count` (an RLS fault or a missing row):
+        //     FAIL CLOSED, held, never offered as a cash sale.
+        // The key is `sales.responsibility_count`, written with the rows in the
+        // capture transaction (the projection keeps a second guard that throws).
+        // A missing grant on sale_responsibilities fails the whole pull. Held rows are filtered here, not dropped in the projection, so
         // a page is never short; lifting a hold must re-head their sequence.
         const rows = await client.query<{
           id: string;
@@ -246,6 +248,8 @@ export class ErpnextPostingService {
                    AND s.responsibility_count > 0
                    AND (erpnext_posting_status.kind = 'reversal'
                         OR NOT $3::boolean
+                        OR (SELECT count(*) FROM sale_responsibilities sr
+                             WHERE sr.sale_id = s.id) <> s.responsibility_count
                         OR EXISTS (SELECT 1 FROM sale_voids v WHERE v.sale_id = s.id)
                         OR EXISTS (SELECT 1 FROM sale_refunds f WHERE f.sale_id = s.id)
                         OR EXISTS (SELECT 1 FROM sale_returns r WHERE r.sale_id = s.id)))

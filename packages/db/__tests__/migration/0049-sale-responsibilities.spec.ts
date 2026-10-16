@@ -252,6 +252,14 @@ describe("0049 sale_responsibilities constraints", () => {
     }
   });
 
+  it("validates the responsibility_count CHECK in the same migration (not left NOT VALID)", async () => {
+    if (skip()) return;
+    const r = await pg().admin.query(
+      `SELECT convalidated FROM pg_constraint WHERE conname = 'sales_responsibility_count_range'`,
+    );
+    expect(r.rows).toEqual([{ convalidated: true }]);
+  });
+
   it("caps sales.responsibility_count at 0..1 (23514)", async () => {
     if (skip()) return;
     const set = (n: number) => () => pg().admin.query(`UPDATE sales SET responsibility_count = $2 WHERE id = $1`, [SALE, n]);
@@ -319,6 +327,19 @@ describe("0049 sale_responsibilities RLS", () => {
 });
 
 describe("0049 down", () => {
+  it("refuses loudly while responsibility rows exist, and changes nothing", async () => {
+    if (skip()) return;
+    await pg().admin.query(insertSql, params({}));
+    try {
+      expect(await errorCode(() => pg().admin.query(readFileSync(DOWN_PATH, "utf8")))).toBe("P0001");
+      expect(await tableExists("sale_responsibilities")).toBe(true);
+      expect(await columnExists("payer_account", "credit_terms")).toBe(false);
+    } finally {
+      await pg().admin.query("ROLLBACK").catch(() => undefined);
+      await pg().admin.query(`DELETE FROM sale_responsibilities WHERE sale_id = $1`, [SALE]);
+    }
+  });
+
   it("round-trips: down removes every 0049 object, up restores them", async () => {
     if (skip()) return;
     await pg().admin.query(readFileSync(DOWN_PATH, "utf8"));

@@ -48,9 +48,10 @@
 -- long-horizon insert-only posture of the sale fact; erasure tombstones,
 -- never deletes.
 --
--- Lock duration: sales takes ACCESS EXCLUSIVE for one metadata-only ADD
--- COLUMN (a constant default) and a NOT VALID CHECK (existing rows are all 0
--- by construction; new and updated rows are checked). payer_account takes
+-- Lock duration: `lock_timeout` is 5s (fail fast, re-run). sales takes
+-- ACCESS EXCLUSIVE for one metadata-only ADD COLUMN (a constant default) and
+-- a NOT VALID CHECK, then SHARE UPDATE EXCLUSIVE to VALIDATE it (a scan that
+-- blocks no reads or writes; every existing row is 0). payer_account takes
 -- ACCESS EXCLUSIVE for the DROP COLUMN (metadata-only) and SHARE for the
 -- unique index build over a small table. erpnext_posting_resolution takes
 -- ACCESS EXCLUSIVE for one metadata-only nullable ADD COLUMN. The new table
@@ -61,6 +62,11 @@
 -- Reversible via 0049_sale_responsibilities.down.sql.
 
 BEGIN;
+
+-- Fail fast instead of queueing behind a long transaction on `sales` (every
+-- later sale read and write would queue behind this ACCESS EXCLUSIVE request).
+-- A timeout aborts the whole migration; re-run it.
+SET LOCAL lock_timeout = '5s';
 
 -- =============================================================================
 -- 1. payer_account: drop credit_terms, add the composite FK target
@@ -81,6 +87,11 @@ ALTER TABLE sales
 ALTER TABLE sales
   ADD CONSTRAINT sales_responsibility_count_range
     CHECK (responsibility_count BETWEEN 0 AND 1) NOT VALID;
+
+-- Every existing row is 0 by construction (the column was just added with a
+-- constant default), so validate now: the scan holds only SHARE UPDATE
+-- EXCLUSIVE, which does not block reads or writes of sales.
+ALTER TABLE sales VALIDATE CONSTRAINT sales_responsibility_count_range;
 
 -- =============================================================================
 -- 3. sale_responsibilities — who owes how much of the sale (R-1)

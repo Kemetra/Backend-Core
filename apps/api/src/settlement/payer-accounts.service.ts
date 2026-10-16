@@ -60,7 +60,7 @@ export class PayerAccountsService {
     const { tenantId, body } = input;
     const storeId = body.storeId ?? null;
     return runWithTenantContext(this.pool, { tenantId, isPlatformAdmin: false }, async (client) => {
-      if (storeId !== null) await assertStoreInScope(client, resolveStoreScope(input.context), storeId);
+      if (storeId !== null) await assertStoreInScope(client, resolveStoreScope(input.context), { tenantId, storeId });
       const r = await client.query<PayerAccountRow>(
         `INSERT INTO payer_account
            (id, tenant_id, store_id, category, display_name, external_ref, status, version)
@@ -98,9 +98,17 @@ export class PayerAccountsService {
   }
 }
 
-/** A live store of the tenant (RLS) inside the caller's store scope, else 404. */
-async function assertStoreInScope(client: PoolClient, scope: StoreScope, storeId: string): Promise<void> {
+/** A live store of the tenant (RLS, and matched explicitly) inside the caller's store scope, else 404. */
+async function assertStoreInScope(
+  client: PoolClient,
+  scope: StoreScope,
+  store: { readonly tenantId: string; readonly storeId: string },
+): Promise<void> {
+  const { tenantId, storeId } = store;
   if (scope.kind === "stores" && !scope.storeIds.includes(storeId)) throw new PayerStoreNotInScopeError();
-  const r = await client.query(`SELECT 1 FROM stores WHERE id = $1 AND deleted_at IS NULL`, [storeId]);
+  const r = await client.query(`SELECT 1 FROM stores WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`, [
+    storeId,
+    tenantId,
+  ]);
   if (r.rows.length === 0) throw new PayerStoreNotInScopeError();
 }

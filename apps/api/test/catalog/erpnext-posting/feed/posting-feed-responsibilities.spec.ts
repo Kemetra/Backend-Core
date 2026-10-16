@@ -16,8 +16,12 @@
  *   - an unlinked payer is offered with `payerExternalRef: null` (the Connector
  *     fails closed): never omitted, never the store Customer;
  *   - a sale without responsibilities is unchanged (no `responsibilities` key);
- *   - visibility: a recorded responsibility the feed cannot see fails the pull
- *     (the cursor does not advance) rather than post the sale as cash.
+ *   - fail closed (coordinator condition): a sale whose
+ *     `responsibility_count` says it has responsibilities the feed cannot see
+ *     (RLS, grant or a missing row) stays HELD, never offered as cash; the
+ *     projection keeps a second guard that throws;
+ *   - regression: a sale without responsibilities produces the same work item
+ *     with the gate on or off, with exactly the pre-RT-418 keys.
  *
  * Docker policy mirrors posting-feed.spec: HARD failure unless MIGRATION_TEST_ALLOW_SKIP=1.
  */
@@ -28,9 +32,10 @@ import Ajv2020, { type ValidateFunction } from "ajv/dist/2020";
 import addFormats from "ajv-formats";
 
 import { ErpnextPostingService } from "../../../../src/catalog/erpnext-posting/erpnext-posting.service";
-import type { PostingWorkItem } from "../../../../src/catalog/erpnext-posting/posting-work-item.projection";
+import { buildWorkItem, type PostingWorkItem } from "../../../../src/catalog/erpnext-posting/posting-work-item.projection";
 import { SaleResponsibilitiesNotVisibleError } from "../../../../src/catalog/sales/sale-responsibilities";
 import { loadOpenApiContracts } from "../../../../src/openapi/loader";
+import { runWithTenantContext } from "@data-pulse-2/db";
 import { applyAllUpAndCreateAppRole, startPgEnv, stopPgEnv, type PgTestEnv } from "../../../_helpers/postgres-container";
 import { ACTOR_A, seedCatalogIsolationFixture, STORE_A_X, TENANT_A } from "../../__support__/isolation-harness";
 
@@ -264,17 +269,55 @@ describe("RT-418 — the posting feed with the Connector gate on", () => {
     expect(second).toEqual(first);
   });
 
-  it("a recorded responsibility the feed cannot see fails the pull instead of posting the sale as cash", async () => {
-    if (skip) return;
-    const line = await seedSale(S_HIDDEN, "rt418-hidden", { responsibilities: 1 });
-    await seedPosting(W_HIDDEN, S_HIDDEN, "rt418-hidden", { lineId: line, frozenPayerRef: "CUST-FROZEN" });
-    try {
-      await expect(pull()).rejects.toBeInstanceOf(SaleResponsibilitiesNotVisibleError);
-    } finally {
+  describe("a responsibility the feed cannot see (count 1, no visible row)", () => {
+    let hiddenLine = "";
+    beforeAll(async () => {
+      if (skip) return;
+      hiddenLine = await seedSale(S_HIDDEN, "rt418-hidden", { responsibilities: 1 });
+      await seedPosting(W_HIDDEN, S_HIDDEN, "rt418-hidden", { lineId: hiddenLine, frozenPayerRef: "CUST-FROZEN" });
+    });
+    afterAll(async () => {
+      if (skip) return;
       await env!.admin.query(`DELETE FROM erpnext_posting_resolution WHERE intent_id = $1`, [W_HIDDEN]);
       await env!.admin.query(`DELETE FROM erpnext_posting_status WHERE id = $1`, [W_HIDDEN]);
       await env!.admin.query(`DELETE FROM sale_lines WHERE sale_id = $1`, [S_HIDDEN]);
       await env!.admin.query(`DELETE FROM sales WHERE id = $1`, [S_HIDDEN]);
-    }
+    });
+
+    it("stays HELD: the pull excludes it, never offers it as cash, and still offers the rest", async () => {
+      if (skip) return;
+      const { items } = await pull();
+      expect(refs(items)).toEqual([W_CREDIT, W_UNLINKED, W_CASH]);
+      expect(byRef(items, W_HIDDEN)).toBeUndefined();
+    });
+
+    it("the projection's second guard throws rather than build it without its responsibilities", async () => {
+      if (skip) return;
+      const build = runWithTenantContext(env!.app, { tenantId: TENANT_A, isPlatformAdmin: false }, (client) =>
+        buildWorkItem(client, {
+          id: W_HIDDEN,
+          kind: "sale_post",
+          saleId: S_HIDDEN,
+          sourceRefId: S_HIDDEN,
+          sourceSystem: "pos-418",
+          externalId: "rt418-hidden",
+          payloadHash: hashOf("rt418-hidden"),
+          sequence: "1",
+          currentResolutionVersion: 1,
+        }),
+      );
+      await expect(build).rejects.toBeInstanceOf(SaleResponsibilitiesNotVisibleError);
+    });
+  });
+
+  it("regression: a sale without responsibilities is the same work item with the gate on or off", async () => {
+    if (skip) return;
+    const on = byRef((await pull()).items, W_CASH);
+    delete process.env[FLAG];
+    const off = byRef((await pull()).items, W_CASH);
+    expect(on).toEqual(off);
+    expect(Object.keys(on!.sale).sort()).toEqual(
+      ["saleRef", "storeId", "currencyCode", "posTotal", "occurredAt", "businessDate", "sourceSystem", "externalId", "lines", "warehouseRef"].sort(),
+    );
   });
 });
