@@ -69,6 +69,16 @@ export const shifts = pgTable(
       onDelete: "restrict",
     }),
     payloadHash: bytea("payload_hash"),
+    // 0050 (RT-385): the shift variance policy the POS froze at a cash-up open
+    // (pos-shifts `frozenPolicy` + `policyFlags`, AD-CASH-001 D-6). All NULL
+    // (no frozen policy) or source, mode and flags set; cash_up rows only; set
+    // at insert or adoption, never after. Accept-and-flag: no revision FK.
+    frozenPolicySource: text("frozen_policy_source"),
+    frozenPolicyRevisionId: uuid("frozen_policy_revision_id"),
+    frozenPolicyMode: text("frozen_policy_mode"),
+    frozenPolicyLimitAmount: numeric("frozen_policy_limit_amount", { precision: 19, scale: 4 }),
+    frozenPolicyCurrencyCode: char("frozen_policy_currency_code", { length: 3 }),
+    frozenPolicyFlags: text("frozen_policy_flags").array(),
   },
   (t) => [
     check("shifts_lifecycle_state_check", sql`${t.lifecycleState} IN ('open', 'closed', 'closed_forced')`),
@@ -100,6 +110,50 @@ export const shifts = pgTable(
     check(
       "shifts_payload_hash_len",
       sql`${t.payloadHash} IS NULL OR octet_length(${t.payloadHash}) = 32`,
+    ),
+    // 0050 (RT-385), NOT VALID in SQL. The flags rule (known values, each
+    // once, no NULL element) and the shifts guard live in the migration.
+    check(
+      "shifts_frozen_policy_all_or_none",
+      sql`(${t.frozenPolicySource} IS NULL AND ${t.frozenPolicyRevisionId} IS NULL
+        AND ${t.frozenPolicyMode} IS NULL AND ${t.frozenPolicyLimitAmount} IS NULL
+        AND ${t.frozenPolicyCurrencyCode} IS NULL AND ${t.frozenPolicyFlags} IS NULL)
+        OR (${t.frozenPolicySource} IS NOT NULL AND ${t.frozenPolicyMode} IS NOT NULL
+        AND ${t.frozenPolicyFlags} IS NOT NULL)`,
+    ),
+    check(
+      "shifts_frozen_policy_cash_up_only",
+      sql`${t.source} = 'cash_up' OR ${t.frozenPolicySource} IS NULL`,
+    ),
+    check(
+      "shifts_frozen_policy_source_valid",
+      sql`${t.frozenPolicySource} IS NULL
+        OR ${t.frozenPolicySource} IN ('system', 'tenant', 'store', 'fallback')`,
+    ),
+    check(
+      "shifts_frozen_policy_revision_iff_source",
+      sql`${t.frozenPolicySource} IS NULL OR (${t.frozenPolicyRevisionId} IS NULL)
+        = (${t.frozenPolicySource} IN ('system', 'fallback'))`,
+    ),
+    check(
+      "shifts_frozen_policy_value_shape",
+      sql`${t.frozenPolicyMode} IS NULL
+        OR (${t.frozenPolicyMode} = 'none' AND ${t.frozenPolicyLimitAmount} IS NULL
+          AND ${t.frozenPolicyCurrencyCode} IS NULL)
+        OR (${t.frozenPolicyMode} = 'limit' AND ${t.frozenPolicyLimitAmount} IS NOT NULL
+          AND ${t.frozenPolicyCurrencyCode} IS NOT NULL)`,
+    ),
+    check(
+      "shifts_frozen_policy_limit_non_negative",
+      sql`${t.frozenPolicyLimitAmount} IS NULL OR ${t.frozenPolicyLimitAmount} >= 0`,
+    ),
+    check(
+      "shifts_frozen_policy_limit_not_nan",
+      sql`${t.frozenPolicyLimitAmount} IS NULL OR ${t.frozenPolicyLimitAmount} <> 'NaN'::numeric`,
+    ),
+    check(
+      "shifts_frozen_policy_currency_code_format",
+      sql`${t.frozenPolicyCurrencyCode} IS NULL OR ${t.frozenPolicyCurrencyCode} ~ '^[A-Z]{3}$'`,
     ),
     // Composite FK targets for the 0036 fact tables.
     unique("uq_shifts_cash_up_movement_target").on(
