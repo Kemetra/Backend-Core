@@ -443,6 +443,14 @@ describe("cash-variance-policy — writes", () => {
     expect(text).toMatch(/only an `owner`/i);
   });
 
+  it("states the L3 points for owner ratification: elapsed-time horizon, chaining, clearing a permanent override", () => {
+    const text = flat(op(STORE_PUBLISH).description);
+    expect(text).toContain("Pending owner ratification");
+    expect(text).toContain("90 × 24 h");
+    expect(text).toMatch(/chained/);
+    expect(text).toMatch(/may `clear` an override, including an owner-approved permanent one/);
+  });
+
   it("the store publish documents stricter-only (RT-284 Q5) and the order of checks", () => {
     const text = flat(op(STORE_PUBLISH).description);
     expect(text).toContain("stricter");

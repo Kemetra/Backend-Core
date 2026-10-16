@@ -399,6 +399,18 @@ paths:
         the owner as `approvedByUserId`. There is no pending state.
 
 
+        **Pending owner ratification (RT-384 review L3).** (a) The 90-day
+        horizon is elapsed time: `effectiveUntil` more than 90 × 24 h after
+        the server's publish instant (no calendar or DST arithmetic). (b) A
+        `tenant_admin` may publish a new override within the horizon whenever
+        the previous one expires or is replaced, so overrides can be chained;
+        each one needs its own `reason` and audit row. (c) A `tenant_admin`
+        may `clear` an override, including an owner-approved permanent one.
+        The coordinator recommends the owner consider requiring owner approval
+        to clear a permanent override, and auditing override chains; the
+        owner decides at the `[GATED]` review.
+
+
         **Stricter only (RT-284 comment 11887, Q5).** A `set` must not be
         looser than the tenant level at publish: `none` under a tenant
         `limit`, or a higher `limitAmount`, is `422

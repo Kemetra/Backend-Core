@@ -585,6 +585,14 @@ describe("shift-closes — AJV fixtures", () => {
     ["a frozen policy without its source", frozen({ ...without(FROZEN, "policySource") })],
     ["a limit without an amount", frozen({ ...FROZEN, policyValue: { mode: "limit", currencyCode: "EGP" } })],
     ["a stray top-level policy field", { ...POLICY_FIELDS, policySource: "tenant" }],
+    // M1: a close whose open carried no frozen policy never reads as "no exception".
+    ["no frozen policy but approval not required", { ...LEGACY_POLICY_FIELDS, approvalRequiredByPolicy: "no", approvalMissing: "no" }],
+    ["no frozen policy but approval required", { ...LEGACY_POLICY_FIELDS, approvalRequiredByPolicy: "yes", approvalMissing: "no" }],
+    ["a frozen policy but an unknown requirement", { ...POLICY_FIELDS, approvalRequiredByPolicy: "unknown", approvalMissing: "unknown" }],
+    // L2: the four RT-384 fields are all-or-none.
+    ["only the frozen policy", { frozenPolicy: FROZEN }],
+    ["only the approver check", { approverCheck: { status: "verified", reason: null } }],
+    ["three of the four fields", without(POLICY_FIELDS, "approverCheck")],
   ])("RT-384: rejects a summary with %s", (_label, fields) => {
     expect(validator("ShiftCloseSummary")({ ...SUMMARY, ...fields })).toBe(false);
   });
@@ -619,8 +627,10 @@ describe("shift-closes — AJV fixtures", () => {
     const body = {
       ...SUMMARY,
       varianceApprovedByUserId: hasApprover ? APPROVER_ID : null,
+      frozenPolicy: required === "unknown" ? null : FROZEN,
       approvalRequiredByPolicy: required,
       approvalMissing: missing,
+      approverCheck: hasApprover ? { status: "verified", reason: null } : { status: "not_applicable", reason: null },
     };
     expect(validator("ShiftCloseSummary")(body)).toBe(ok);
     expect(validator("ShiftCloseDetail")({ ...DETAIL, ...body })).toBe(ok);

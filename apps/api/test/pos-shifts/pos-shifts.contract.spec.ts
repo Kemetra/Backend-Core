@@ -1094,6 +1094,18 @@ describe("pos-shifts — RT-384 shift variance policy", () => {
   const SYSTEM_POLICY = { policySource: "system", policyRevisionId: null, policyValue: { mode: "none" } };
   const open = (frozenPolicy: unknown): Record<string, unknown> => ({ ...VALID_OPEN, frozenPolicy });
 
+  it("keeps the RT-17 OpenShiftRequest required list exactly (frozenPolicy stays optional)", () => {
+    expect(sorted(schema("OpenShiftRequest").required ?? [])).toEqual(
+      sorted(["shiftId", "openedAt", "openingUserId", "currencyCode", "openingFloat"]),
+    );
+  });
+
+  it("documents the canonical hash form of policyValue.limitAmount", () => {
+    const text = (op(OPEN).description ?? "").replace(/\s+/g, " ");
+    expect(text).toContain("`policyValue.limitAmount` is hashed in the canonical money form");
+    expect(text).toContain("hashed verbatim");
+  });
+
   it("adds one optional frozenPolicy object to the open; its three members are all required", () => {
     expect(schema("OpenShiftRequest").required ?? []).not.toContain("frozenPolicy");
     expect(prop("OpenShiftRequest", "frozenPolicy")).toEqual({ $ref: "#/components/schemas/FrozenPolicy" });

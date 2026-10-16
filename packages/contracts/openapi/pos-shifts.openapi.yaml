@@ -262,7 +262,12 @@ paths:
         (so a pre-upgrade open re-delivered later hashes byte-identically and
         is never a 409 `shift_payload_conflict`), and inside it a present
         `null` `policyRevisionId` is hashed as `null`. Absent and `null` are
-        never conflated.
+        never conflated. `policyValue.limitAmount` is hashed in the canonical
+        money form the hash uses for `openingFloat` (exactly the frozen
+        `currencyCode`'s ISO-4217 minor-unit digits, no leading zeros); when
+        that currency has no ISO-4217 minor unit, or the amount has more
+        significant digits than it, the amount is hashed verbatim, so a frozen
+        value is never rejected for its precision.
 
 
         **Rollout.** `frozenPolicy` is accepted from RT-387. Until then the

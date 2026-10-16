@@ -750,8 +750,38 @@ components:
         when `approvalRequiredByPolicy` is `unknown`; `no` when approval was
         not required, or was required and an approver was recorded; `yes`
         when approval was required and no approver was recorded
-        (`varianceApprovedByUserId` `null`).
+        (`varianceApprovedByUserId` `null`). `approvalRequiredByPolicy` is
+        `unknown` exactly when `frozenPolicy` is `null`: a close whose open
+        carried no frozen policy never reads as "no exception". The four RT-384
+        fields (`frozenPolicy`, `approvalRequiredByPolicy`, `approvalMissing`,
+        `approverCheck`) are all present or all absent.
       allOf:
+        - if:
+            anyOf:
+              - required: [frozenPolicy]
+              - required: [approvalRequiredByPolicy]
+              - required: [approvalMissing]
+              - required: [approverCheck]
+          then:
+            required: [frozenPolicy, approvalRequiredByPolicy, approvalMissing, approverCheck]
+        - if:
+            properties:
+              frozenPolicy:
+                type: "null"
+            required: [frozenPolicy, approvalRequiredByPolicy]
+          then:
+            properties:
+              approvalRequiredByPolicy:
+                const: unknown
+        - if:
+            properties:
+              frozenPolicy:
+                type: object
+            required: [frozenPolicy, approvalRequiredByPolicy]
+          then:
+            properties:
+              approvalRequiredByPolicy:
+                enum: ["yes", "no"]
         - if:
             properties:
               approvalRequiredByPolicy:
