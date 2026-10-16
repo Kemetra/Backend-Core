@@ -295,7 +295,7 @@ describe("syncBatch — shift.open side-effect", () => {
             .mockResolvedValueOnce({ rows: [{ id: "user-1" }] })
             .mockResolvedValueOnce({ rows: [{ id: "aaaaaaaa-0000-4000-8000-000000000001" }] })
             .mockResolvedValueOnce({ rows: [] })
-            .mockResolvedValueOnce({ rows: [] }),
+            .mockResolvedValueOnce({ rows: [], rowCount: 1 }),
         };
         return fn(capturedClient);
       },
@@ -310,6 +310,36 @@ describe("syncBatch — shift.open side-effect", () => {
     expect(statements[2]).toContain("pg_advisory_xact_lock");
     expect(statements[3]).toBe(LEGACY_SHIFT_OPEN_SQL);
     expect(LEGACY_SHIFT_OPEN_SQL).toContain("d.revoked_at IS NULL");
+  });
+
+  it("SH1b: shift.open of a device revoked meanwhile → no shift row, one ids-only warning (RT-365)", async () => {
+    mockPool.query.mockResolvedValue({ rows: [{ id: "user-1" }] });
+
+    let capturedClient: { query: jest.Mock } | null = null;
+
+    (runWithTenantContext as jest.Mock).mockImplementation(
+      async (_pool: unknown, _ctx: unknown, fn: (client: { query: jest.Mock }) => Promise<unknown>) => {
+        capturedClient = {
+          query: jest.fn()
+            .mockResolvedValueOnce({ rows: [{ id: "user-1" }] })
+            .mockResolvedValueOnce({ rows: [{ id: "aaaaaaaa-0000-4000-8000-000000000001" }] })
+            .mockResolvedValueOnce({ rows: [] })
+            .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+            .mockResolvedValueOnce({ rows: [{ revoked: true }] }),
+        };
+        return fn(capturedClient);
+      },
+    );
+
+    const result = await service.syncBatch(makeBody([makeEvent({ action_category: "shift.open" })]), "req-id");
+
+    // The audit event itself is still accepted; only the legacy shift row is withheld.
+    expect(result).toMatchObject({ accepted: [makeEvent().event_id] });
+    expect(capturedClient!.query).toHaveBeenCalledTimes(5);
+    expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+    const [fields, message] = mockLogger.warn.mock.calls[0] as unknown as [Record<string, unknown>, string];
+    expect(Object.keys(fields).sort()).toEqual(["device_id", "event_id", "request_id", "shift_id"]);
+    expect(message).toMatch(/revoked device/);
   });
 
   it("SH2: shift.close accepted → actor validation + audit insert only", async () => {

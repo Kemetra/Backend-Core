@@ -50,6 +50,15 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * lifecycle lock), so a shift never opens on a revoked device; the audit
  * event itself is still recorded.
  */
+/** One accepted `shift.open`, as `recordLegacyShiftOpen` needs it. */
+interface LegacyShiftOpen {
+  readonly event: AuditEventItemInput;
+  readonly eventId: string;
+  readonly actorUserId: string;
+  readonly deviceId: string;
+  readonly requestId: string | null;
+}
+
 export const LEGACY_SHIFT_OPEN_SQL = `
   INSERT INTO shifts
     (shift_id, tenant_id, store_id, opening_cashier_user_id, opening_device_id, opened_at)
@@ -194,19 +203,7 @@ export class PosAuditEventsService {
         const accepted = r.rows.length > 0;
 
         if (accepted && event.action_category === "shift.open") {
-          const shiftId = (event.payload as Record<string, unknown>)["shift_id"] as string;
-          await lockDeviceLifecycle(client, { tenantId: event.tenant_id, deviceId });
-          await client.query(
-            LEGACY_SHIFT_OPEN_SQL,
-            [
-              shiftId,
-              event.tenant_id,
-              event.branch_id,
-              actorUserId,
-              deviceId,
-              event.created_at,
-            ],
-          );
+          await this.recordLegacyShiftOpen(client, { event, eventId, actorUserId, deviceId, requestId });
         }
 
         return accepted ? "accepted" : "duplicate";
@@ -220,6 +217,37 @@ export class PosAuditEventsService {
     } else {
       duplicates.push(eventId);
     }
+  }
+
+  /**
+   * The legacy `shifts` row of an accepted `shift.open`, under the device
+   * lifecycle lock (RT-365). The guarded insert writes nothing for a device
+   * revoked since the batch authenticated; that case is logged (ids only) so
+   * the withheld row is visible. A zero-row insert for a shift id that already
+   * exists is the normal replay and is not logged.
+   */
+  private async recordLegacyShiftOpen(client: PoolClient, open: LegacyShiftOpen): Promise<void> {
+    const { event, deviceId } = open;
+    const shiftId = (event.payload as Record<string, unknown>)["shift_id"] as string;
+    await lockDeviceLifecycle(client, { tenantId: event.tenant_id, deviceId });
+    const inserted = await client.query(LEGACY_SHIFT_OPEN_SQL, [
+      shiftId,
+      event.tenant_id,
+      event.branch_id,
+      open.actorUserId,
+      deviceId,
+      event.created_at,
+    ]);
+    if ((inserted.rowCount ?? 0) > 0) return;
+    const device = await client.query<{ revoked: boolean }>(
+      `SELECT revoked_at IS NOT NULL AS revoked FROM devices WHERE id = $1::uuid AND tenant_id = $2::uuid`,
+      [deviceId, event.tenant_id],
+    );
+    if (device.rows[0]?.revoked !== true) return;
+    this.logger.warn(
+      { request_id: open.requestId, event_id: open.eventId, device_id: deviceId, shift_id: shiftId },
+      "pos-audit-events: shift.open from a revoked device; no shift row recorded",
+    );
   }
 
   private async resolveActorUserId(
