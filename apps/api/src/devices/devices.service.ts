@@ -249,32 +249,43 @@ export class DevicesService {
   async revoke(input: RevokeDeviceInput): Promise<DeviceRevokeResult> {
     return this.inTenant(input, async (client) => {
       const caller = await this.callerOf(client, input);
-      const locked = await client.query<{ store_id: string; revoked_at: Date | null }>(
-        `SELECT store_id, revoked_at FROM devices
-          WHERE id = $1::uuid AND tenant_id = $2::uuid
-          FOR UPDATE`,
-        [input.deviceId, input.tenantId],
-      );
-      const device = locked.rows[0];
-      if (device === undefined || !inStoreScope(caller.scope, device.store_id)) throw new DeviceNotFoundError();
-
+      const device = await this.lockInScope(client, input, caller.scope);
       const decision = decideRevoke({
-        alreadyRevoked: device.revoked_at !== null,
-        openShiftId: device.revoked_at !== null ? null : await this.openShiftOf(client, input.tenantId, input.deviceId),
+        alreadyRevoked: device.revokedAt !== null,
+        openShiftId: await this.openShiftOf(client, input.tenantId, input.deviceId),
         reason: input.reason,
         callerRole: caller.roleCode,
         note: input.note,
         acknowledgeCustodyException: input.acknowledgeCustodyException,
       });
       if (decision.kind === "refuse") throw new DeviceRevokeRefusedError(decision.status, decision.code);
-      if (decision.kind === "revoke") {
-        await this.applyRevoke(client, input, device.store_id, decision.custodyExceptionShiftId);
-      }
+      const revoked = decision.kind === "revoke";
+      if (revoked) await this.applyRevoke(client, input, device.storeId, decision.custodyExceptionShiftId);
       return {
-        outcome: decision.kind === "revoke" ? "revoked" : "already_revoked",
+        outcome: revoked ? "revoked" : "already_revoked",
         device: await this.readDetail(client, input.tenantId, input.deviceId, scopeStoreIds(caller.scope)),
       };
     });
+  }
+
+  /**
+   * Lock the device row `FOR UPDATE` (see the class header) and check it is in
+   * the caller's scope; absent, foreign or out of scope → `DeviceNotFoundError`.
+   */
+  private async lockInScope(
+    client: PoolClient,
+    input: RevokeDeviceInput,
+    scope: StoreScope,
+  ): Promise<{ readonly storeId: string; readonly revokedAt: Date | null }> {
+    const locked = await client.query<{ store_id: string; revoked_at: Date | null }>(
+      `SELECT store_id, revoked_at FROM devices
+        WHERE id = $1::uuid AND tenant_id = $2::uuid
+        FOR UPDATE`,
+      [input.deviceId, input.tenantId],
+    );
+    const row = locked.rows[0];
+    if (row === undefined || !inStoreScope(scope, row.store_id)) throw new DeviceNotFoundError();
+    return { storeId: row.store_id, revokedAt: row.revoked_at };
   }
 
   /** The revoke fields, the cascade and the audit row, inside the caller's transaction. */

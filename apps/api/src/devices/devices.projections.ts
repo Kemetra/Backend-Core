@@ -83,20 +83,24 @@ export type RevokeDecision =
  */
 export function decideRevoke(input: RevokeDecisionInput): RevokeDecision {
   if (input.alreadyRevoked) return { kind: "already_revoked" };
-  const shiftId = input.openShiftId;
-  if (shiftId === null) return { kind: "revoke", custodyExceptionShiftId: null };
-  if (SECURITY_REASONS.has(input.reason)) return { kind: "revoke", custodyExceptionShiftId: shiftId };
-  if (input.reason !== RECOVERY_REASON) {
-    return { kind: "refuse", status: 409, code: "unresolved_cash_session" };
-  }
+  const revoke: RevokeDecision = { kind: "revoke", custodyExceptionShiftId: input.openShiftId };
+  if (input.openShiftId === null || SECURITY_REASONS.has(input.reason)) return revoke;
+  if (input.reason !== RECOVERY_REASON) return refuse(409, "unresolved_cash_session");
+  return recoveryRefusal(input) ?? revoke;
+}
+
+/** The first unmet recovery-revoke requirement, in order: role, note, acknowledgement. */
+function recoveryRefusal(input: RevokeDecisionInput): RevokeDecision | null {
   if (input.callerRole === null || !RECOVERY_ROLES.has(input.callerRole)) {
-    return { kind: "refuse", status: 403, code: "recovery_revoke_forbidden" };
+    return refuse(403, "recovery_revoke_forbidden");
   }
-  if (input.note === undefined) return { kind: "refuse", status: 422, code: "recovery_note_required" };
-  if (input.acknowledgeCustodyException !== true) {
-    return { kind: "refuse", status: 422, code: "custody_exception_not_acknowledged" };
-  }
-  return { kind: "revoke", custodyExceptionShiftId: shiftId };
+  if (input.note === undefined) return refuse(422, "recovery_note_required");
+  if (input.acknowledgeCustodyException !== true) return refuse(422, "custody_exception_not_acknowledged");
+  return null;
+}
+
+function refuse(status: 403 | 409 | 422, code: RevokeRefusalCode): RevokeDecision {
+  return { kind: "refuse", status, code };
 }
 
 // ---------------------------------------------------------------------------
