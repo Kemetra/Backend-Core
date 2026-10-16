@@ -72,6 +72,7 @@ import {
   SES_MANAGER_ACTIVE,
   SES_PLATFORM,
   SES_PLATFORM_ACTIVE,
+  SES_PLATFORM_OWNER_ACTIVE,
   SES_STAFF,
   USER_MANAGER,
   X_FULL,
@@ -265,6 +266,14 @@ describe("RT-562 console sales — role and store scope", () => {
   ])("%s lists store Y", async (_label, session) => {
     if (skip()) return;
     expect(await refs(session, { store_id: STORE_A_Y, ...OCTOBER })).toEqual([Y_OCT02]);
+  });
+
+  it("a platform admin who is also an owner gets the owner rule: not narrowed by the active store (shift-closes precedent)", async () => {
+    if (skip()) return;
+    expect(await refs(SES_PLATFORM_OWNER_ACTIVE, { store_id: STORE_A_Y, ...OCTOBER })).toEqual([Y_OCT02]);
+    expect((await get(detailPath(Y_OCT02), SES_PLATFORM_OWNER_ACTIVE)).status).toBe(200);
+    await expectNotFound(await get(LIST, SES_PLATFORM_OWNER_ACTIVE, { store_id: STORE_B_X, ...OCTOBER }));
+    await expectNotFound(await get(detailPath(B_OCT02), SES_PLATFORM_OWNER_ACTIVE));
   });
 
   it("an owner with an `all` grant reads a soft-deleted store; a specific grant of it does not", async () => {
