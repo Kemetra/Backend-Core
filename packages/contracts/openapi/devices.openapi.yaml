@@ -1188,6 +1188,43 @@ components:
             properties:
               revokeReason:
                 enum: [lost, stolen, suspected_compromise, hardware_failure]
+        # The mirror: a blocked revoke is one whose reason cannot make the
+        # custody exception.
+        - if:
+            properties:
+              verdict:
+                const: blocked
+              action:
+                const: revoke
+            required: [verdict, action]
+          then:
+            properties:
+              revokeReason:
+                enum: [replaced, moved, retired, admin_error, other]
+        # On a revoked or retired device the open shift IS the custody
+        # exception: one is present exactly when the other is.
+        - if:
+            properties:
+              trustState:
+                enum: [revoked, retired]
+              custodyExceptionShiftId:
+                type: string
+            required: [trustState, custodyExceptionShiftId]
+          then:
+            properties:
+              openShift:
+                type: object
+        - if:
+            properties:
+              trustState:
+                enum: [revoked, retired]
+              openShift:
+                type: object
+            required: [trustState, openShift]
+          then:
+            properties:
+              custodyExceptionShiftId:
+                type: string
         # An open shift blocks an active device's action, and a revoked
         # device's retire: `allowed` there means no open shift.
         - if:
