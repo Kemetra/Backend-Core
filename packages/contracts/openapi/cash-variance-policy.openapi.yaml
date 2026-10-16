@@ -647,13 +647,18 @@ components:
         properties:
           policyRevisionId:
             type: "null"
+          policyValue:
+            properties:
+              mode:
+                const: none
       else:
         properties:
           policyRevisionId:
             type: string
       description: >
         A policy as resolved by Backend-Core. `policyRevisionId` is `null`
-        exactly when `policySource` is `system`.
+        exactly when `policySource` is `system`, and a `system` value is always
+        `none` (the System default, DR-2).
       properties:
         policySource:
           $ref: "#/components/schemas/PolicySource"
@@ -675,6 +680,10 @@ components:
         properties:
           policyRevisionId:
             type: "null"
+          policyValue:
+            properties:
+              mode:
+                const: none
       else:
         properties:
           policyRevisionId:
@@ -705,6 +714,10 @@ components:
         properties:
           policyRevisionId:
             type: "null"
+          policyValue:
+            properties:
+              mode:
+                const: none
       else:
         properties:
           policyRevisionId:

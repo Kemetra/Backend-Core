@@ -129,9 +129,10 @@ info:
     RT-384 (1.2.0-draft; `[GATED]`, needs owner approval; AD-CASH-001 D-6 /
     D-7, Kemetra/Orchestrator `e73362b`): strictly additive. The shift
     variance policy (`cash-variance-policy.openapi.yaml`) is frozen per Cash
-    Session at open (K-2). `openShift` accepts three OPTIONAL, all-or-none
-    fields that carry the frozen policy (`policySource`, `policyRevisionId`,
-    `policyValue`); `Shift` echoes them with the open's policy flags, and
+    Session at open (K-2). `openShift` accepts one OPTIONAL object,
+    `frozenPolicy` (`policySource`, `policyRevisionId`, `policyValue`, all
+    three required inside it); `Shift` echoes it with the open's policy flags,
+    and
     `ShiftClose` gains the derived `approvalRequiredByPolicy`,
     `approvalMissing` and the persisted `approverCheck`. These are accepted
     and emitted from RT-387 (on the RT-385 migration); until then the runtime
@@ -239,35 +240,35 @@ paths:
 
 
         **Shift variance policy (RT-384, AD-CASH-001 D-6).** The POS freezes
-        the policy it applies to this Cash Session and sends it as
-        `policySource`, `policyRevisionId` and `policyValue`: all three or
-        none. A POS that predates the policy, and an open recorded before the
-        upgrade, sends none; such a shift's derived close values are
-        `unknown`. Backend-Core records the frozen fields verbatim and never
+        the policy it applies to this Cash Session and sends it as one
+        optional object, `frozenPolicy`, with `policySource`,
+        `policyRevisionId` and `policyValue` (all three or none, by
+        construction). A POS that predates the policy, and an open recorded
+        before the upgrade, sends no `frozenPolicy`; such a shift's derived
+        close values are `unknown`. Backend-Core records it verbatim and never
         refuses an open or a close on policy grounds: an unknown revision, a
         superseded revision and a value that differs from the revision (or,
         for a `limit`, from the shift's currency) are accepted, recorded and
         flagged `policy_revision_unknown`, `policy_revision_superseded` or
         `policy_value_mismatch` (an offline open on an older cached revision
-        is normal, DR-8). Only a malformed set is a 400 `validation_error`: a
-        partial set, a `null` `policyRevisionId` with source `tenant` or
-        `store`, a non-null one with `system` or `fallback`, or a `limit`
-        without its amount or currency.
+        is normal, DR-8). Only a malformed `frozenPolicy` is a 400
+        `validation_error`: a missing member, a `null` `policyRevisionId`
+        with source `tenant` or `store`, a non-null one with `system` or
+        `fallback`, or a `limit` without its amount or currency.
 
 
-        **Payload hash.** The three fields are part of the open's payload
-        hash under one rule: an absent field is omitted from the payload hash
+        **Payload hash.** `frozenPolicy` is part of the open's payload hash
+        under one rule: when it is absent it is omitted from the payload hash
         (so a pre-upgrade open re-delivered later hashes byte-identically and
-        is never a 409 `shift_payload_conflict`), and a present `null`
-        `policyRevisionId` is hashed as `null`. Absent and `null` are never
-        conflated.
+        is never a 409 `shift_payload_conflict`), and inside it a present
+        `null` `policyRevisionId` is hashed as `null`. Absent and `null` are
+        never conflated.
 
 
-        **Rollout.** The fields are accepted from RT-387. Until then the
-        strict body refuses them with 400 (a dead-letter on the POS), so a POS
-        must not send them before the RT-387 runtime is live and past its
-        rollback window, or must send them behind a flag it can turn off
-        first.
+        **Rollout.** `frozenPolicy` is accepted from RT-387. Until then the
+        strict body refuses it with 400 (a dead-letter on the POS), so a POS
+        must not send it before the RT-387 runtime is live and past its
+        rollback window, or must send it behind a flag it can turn off first.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -759,54 +760,13 @@ components:
       type: object
       additionalProperties: false
       required: [shiftId, openedAt, openingUserId, currencyCode, openingFloat]
-      # RT-384: the all-or-none and revision-id rules of FrozenPolicyAllOrNone
-      # and FrozenPolicyRevisionRule, inlined as `if` / `then` (as on
-      # CloseShiftRequest) so the request body gains no `allOf` branch.
-      if:
-        anyOf:
-          - required: [policySource]
-          - required: [policyRevisionId]
-          - required: [policyValue]
-      then:
-        required: [policySource, policyRevisionId, policyValue]
-        if:
-          properties:
-            policySource:
-              enum: [tenant, store]
-        then:
-          properties:
-            policyRevisionId:
-              type: string
-        else:
-          properties:
-            policyRevisionId:
-              type: "null"
       description: >
         The `ShiftOpened` fact. Tenant, store and device come from the
-        credential and are rejected if present (strict body). The three
-        RT-384 policy fields are optional and all-or-none (accepted from
-        RT-387; see `openShift`): when any is present, all three are, and
-        `policyRevisionId` is a uuid for source `tenant` or `store` and `null`
-        for `system` or `fallback`.
+        credential and are rejected if present (strict body). RT-384: the
+        optional `frozenPolicy` is accepted from RT-387 (see `openShift`).
       properties:
-        policySource:
-          type: string
-          enum: [system, tenant, store, fallback]
-          description: >
-            RT-384: where the frozen policy came from: the `policySource` of
-            the POS policy read, or `fallback` for a terminal that never
-            fetched it (the fail-closed `limit 0`, DR-6). Part of the payload
-            hash only when present (see `openShift`).
-        policyRevisionId:
-          type: [string, "null"]
-          format: uuid
-          description: >
-            RT-384: the frozen revision id from the policy read; `null` for
-            source `system` or `fallback`, a uuid for `tenant` or `store`. An
-            id Backend-Core does not know is accepted and flagged
-            `policy_revision_unknown`, never a 400.
-        policyValue:
-          $ref: "#/components/schemas/CashVariancePolicyValue"
+        frozenPolicy:
+          $ref: "#/components/schemas/FrozenPolicy"
         shiftId:
           type: string
           format: uuid
@@ -1046,35 +1006,16 @@ components:
       else:
         not:
           required: [close]
-      allOf:
-        - $ref: "#/components/schemas/FrozenPolicyAllOrNone"
-        - $ref: "#/components/schemas/FrozenPolicyRevisionRule"
       description: >
         A cash-up shift as recorded. `close` is required when `status` is
         `closed` and absent when it is `open` (enforced by the schema).
         Internal ids (tenant, store, device) are never returned. RT-384: from
-        RT-387, a shift whose open carried the frozen policy echoes
-        `policySource`, `policyRevisionId` and `policyValue` with its
-        `policyFlags`; a shift whose open carried none has none of the four.
+        RT-387, a shift whose open carried a `frozenPolicy` echoes it, with
+        its `policyFlags`, as `frozenPolicy`; a shift whose open carried none
+        has no `frozenPolicy`.
       properties:
-        policySource:
-          type: string
-          enum: [system, tenant, store, fallback]
-          description: RT-384, from RT-387. The frozen source recorded with the open.
-        policyRevisionId:
-          type: [string, "null"]
-          format: uuid
-          description: RT-384, from RT-387. The frozen revision id recorded with the open.
-        policyValue:
-          $ref: "#/components/schemas/CashVariancePolicyValue"
-        policyFlags:
-          type: array
-          uniqueItems: true
-          items:
-            $ref: "#/components/schemas/PolicyFlag"
-          description: >
-            RT-384, from RT-387. The accept-and-flag findings on the frozen
-            policy (AD-CASH-001 D-6); empty when none. Never a refusal.
+        frozenPolicy:
+          $ref: "#/components/schemas/RecordedFrozenPolicy"
         shiftId:
           type: string
           format: uuid
@@ -1226,41 +1167,81 @@ components:
           $ref: "#/components/schemas/NonNegativeDecimalAmount"
         currencyCode:
           $ref: "#/components/schemas/CurrencyCode"
-    FrozenPolicyAllOrNone:
+    FrozenPolicy:
+      type: object
+      additionalProperties: false
+      required: [policySource, policyRevisionId, policyValue]
+      if:
+        properties:
+          policySource:
+            enum: [tenant, store]
+        required: [policySource]
+      then:
+        properties:
+          policyRevisionId:
+            type: string
+      else:
+        properties:
+          policyRevisionId:
+            type: "null"
       description: >
-        RT-384: `policySource`, `policyRevisionId` and `policyValue` are all
-        present or all absent; a partial set is 400 `validation_error`.
-      anyOf:
-        - not:
-            anyOf:
-              - required: [policySource]
-              - required: [policyRevisionId]
-              - required: [policyValue]
-        - required: [policySource, policyRevisionId, policyValue]
-    FrozenPolicyRevisionRule:
+        RT-384: the shift variance policy the POS froze at this open
+        (AD-CASH-001 D-6). All three members are required, so the policy is
+        all-or-none by construction. `policyRevisionId` is a uuid for source
+        `tenant` or `store` and `null` for `system` or `fallback`; anything
+        else is 400 `validation_error`. Every policy-ground mismatch is
+        accepted and flagged, never refused (see `openShift`).
+      properties:
+        policySource:
+          type: string
+          enum: [system, tenant, store, fallback]
+          description: >
+            The `policySource` of the POS policy read, or `fallback` for a
+            terminal that never fetched it (the fail-closed `limit 0`, DR-6).
+        policyRevisionId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            The frozen revision id from the policy read. An id Backend-Core
+            does not know is accepted and flagged `policy_revision_unknown`,
+            never a 400.
+        policyValue:
+          $ref: "#/components/schemas/CashVariancePolicyValue"
+    RecordedFrozenPolicy:
+      type: object
+      additionalProperties: false
+      required: [policySource, policyRevisionId, policyValue, policyFlags]
+      if:
+        properties:
+          policySource:
+            enum: [tenant, store]
+        required: [policySource]
+      then:
+        properties:
+          policyRevisionId:
+            type: string
+      else:
+        properties:
+          policyRevisionId:
+            type: "null"
       description: >
-        RT-384: `policyRevisionId` is a uuid for source `tenant` or `store`
-        and `null` for `system` or `fallback`; otherwise 400
-        `validation_error`.
-      allOf:
-        - if:
-            properties:
-              policySource:
-                enum: [tenant, store]
-            required: [policySource]
-          then:
-            properties:
-              policyRevisionId:
-                type: string
-        - if:
-            properties:
-              policySource:
-                enum: [system, fallback]
-            required: [policySource]
-          then:
-            properties:
-              policyRevisionId:
-                type: "null"
+        RT-384, from RT-387: the `FrozenPolicy` recorded with the open, plus
+        its accept-and-flag findings (AD-CASH-001 D-6; empty when none, never
+        a refusal). All four members are always present together.
+      properties:
+        policySource:
+          type: string
+          enum: [system, tenant, store, fallback]
+        policyRevisionId:
+          type: [string, "null"]
+          format: uuid
+        policyValue:
+          $ref: "#/components/schemas/CashVariancePolicyValue"
+        policyFlags:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/PolicyFlag"
     PolicyFlag:
       type: string
       enum: [policy_revision_unknown, policy_revision_superseded, policy_value_mismatch]

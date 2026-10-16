@@ -47,8 +47,8 @@ This project follows [Semantic Versioning](https://semver.org/).
   cookie-session Console reads, revision lists and publishes for the tenant
   default and the store override (owner / tenant_admin; a permanent override
   is owner-only; stricter-only; 90-day horizon). `pos-shifts.openapi.yaml`
-  1.2.0-draft adds the optional, all-or-none frozen policy fields on
-  `openShift` and optional derived values on `Shift` / `ShiftClose`, and
+  1.2.0-draft adds an optional `frozenPolicy` object on `openShift` and
+  optional recorded / derived values on `Shift` / `ShiftClose`, and
   replaces the stale "default 0" text. `shift-closes.openapi.yaml`
   1.1.0-draft adds the same optional values and three optional filters.
   Strictly additive; no runtime or migration change (RT-385 / RT-387).

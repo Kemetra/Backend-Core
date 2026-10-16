@@ -69,15 +69,15 @@ info:
 
 
     **RT-384 (1.1.0-draft; `[GATED]`, needs owner approval; AD-CASH-001
-    D-7).** The change is strictly additive: both projections gain the frozen shift variance
-    policy (`policySource`, `policyRevisionId`, `policyValue`), its
-    `policyFlags`, the derived `approvalRequiredByPolicy` and
-    `approvalMissing`, and the persisted `approverCheck`, as OPTIONAL
-    properties; the list gains the optional `approval_required`,
-    `approval_missing` and `approver_check` filters. The RT-383 runtime emits
-    and accepts none of them until RT-387 (on the RT-385 migration); from
-    RT-387 every close carries all seven, with `unknown` / `null` for a
-    shift whose open carried no frozen policy. No existing field, filter,
+    D-7).** The change is strictly additive: both projections gain four
+    OPTIONAL properties, `frozenPolicy` (the shift variance policy frozen with
+    the open, with its `policyFlags`), the derived `approvalRequiredByPolicy`
+    and `approvalMissing`, and the persisted `approverCheck`; the list gains
+    the optional `approval_required`, `approval_missing` and `approver_check`
+    filters. The RT-383 runtime emits and accepts none of them until RT-387
+    (on the RT-385 migration); from RT-387 every close carries all four, with
+    `frozenPolicy: null` and `unknown` for a shift whose open carried no
+    frozen policy. No existing field, filter,
     required list or meaning changes, so Admin-Console RT-18 (typed
     `openapi-fetch`, no runtime response validation) is unaffected. These
     values let a Console "exception" go beyond a non-zero variance (for
@@ -378,8 +378,6 @@ components:
     ShiftCloseSummary:
       type: object
       additionalProperties: false
-      allOf:
-        - $ref: "#/components/schemas/ShiftClosePolicyConsistency"
       required:
         - shiftId
         - storeId
@@ -477,29 +475,14 @@ components:
           type: string
           format: date-time
           description: When the server recorded the close (server clock).
-        policySource:
-          type: [string, "null"]
-          enum: [system, tenant, store, fallback, null]
-          description: >
-            RT-384, from RT-387. The policy source frozen with the shift's
-            open; `null` when the open carried no frozen policy.
-        policyRevisionId:
-          type: [string, "null"]
-          format: uuid
-          description: >
-            RT-384, from RT-387. The frozen revision id (K-2); `null` for
-            `system`, `fallback` or no frozen policy.
-        policyValue:
+        frozenPolicy:
           oneOf:
-            - $ref: "#/components/schemas/CashVariancePolicyValue"
+            - $ref: "#/components/schemas/RecordedFrozenPolicy"
             - type: "null"
-          description: RT-384, from RT-387. The frozen value; `null` when the open carried none.
-        policyFlags:
-          type: array
-          uniqueItems: true
-          items:
-            $ref: "#/components/schemas/PolicyFlag"
-          description: RT-384, from RT-387. The open's accept-and-flag findings; empty when none.
+          description: >
+            RT-384, from RT-387. The shift variance policy frozen with the
+            shift's open (K-2) and its accept-and-flag findings; `null` when
+            the open carried none.
         approvalRequiredByPolicy:
           $ref: "#/components/schemas/PolicyTriState"
         approvalMissing:
@@ -526,8 +509,6 @@ components:
     ShiftCloseDetail:
       type: object
       additionalProperties: false
-      allOf:
-        - $ref: "#/components/schemas/ShiftClosePolicyConsistency"
       required:
         - shiftId
         - storeId
@@ -654,29 +635,14 @@ components:
           description: >
             Every pay-in and pay-out recorded on the shift, oldest first by
             `occurredAt`, ties broken by `movementId`; may be empty.
-        policySource:
-          type: [string, "null"]
-          enum: [system, tenant, store, fallback, null]
-          description: >
-            RT-384, from RT-387. The policy source frozen with the shift's
-            open; `null` when the open carried no frozen policy.
-        policyRevisionId:
-          type: [string, "null"]
-          format: uuid
-          description: >
-            RT-384, from RT-387. The frozen revision id (K-2); `null` for
-            `system`, `fallback` or no frozen policy.
-        policyValue:
+        frozenPolicy:
           oneOf:
-            - $ref: "#/components/schemas/CashVariancePolicyValue"
+            - $ref: "#/components/schemas/RecordedFrozenPolicy"
             - type: "null"
-          description: RT-384, from RT-387. The frozen value; `null` when the open carried none.
-        policyFlags:
-          type: array
-          uniqueItems: true
-          items:
-            $ref: "#/components/schemas/PolicyFlag"
-          description: RT-384, from RT-387. The open's accept-and-flag findings; empty when none.
+          description: >
+            RT-384, from RT-387. The shift variance policy frozen with the
+            shift's open (K-2) and its accept-and-flag findings; `null` when
+            the open carried none.
         approvalRequiredByPolicy:
           $ref: "#/components/schemas/PolicyTriState"
         approvalMissing:
@@ -771,47 +737,43 @@ components:
             - no_store_access
             - check_unavailable
             - null
-    ShiftClosePolicyConsistency:
+    RecordedFrozenPolicy:
+      type: object
+      additionalProperties: false
+      required: [policySource, policyRevisionId, policyValue, policyFlags]
+      if:
+        properties:
+          policySource:
+            enum: [tenant, store]
+        required: [policySource]
+      then:
+        properties:
+          policyRevisionId:
+            type: string
+      else:
+        properties:
+          policyRevisionId:
+            type: "null"
       description: >
-        RT-384: the frozen policy fields agree with each other. With no
-        `policySource`, `policyRevisionId` and `policyValue` are `null`; with
-        `tenant` or `store`, the revision id is a uuid and the value is set;
-        with `system` or `fallback`, the revision id is `null` and the value
-        is set. Applies only when `policySource` is present.
-      allOf:
-        - if:
-            properties:
-              policySource:
-                type: "null"
-            required: [policySource]
-          then:
-            properties:
-              policyRevisionId:
-                type: "null"
-              policyValue:
-                type: "null"
-        - if:
-            properties:
-              policySource:
-                enum: [tenant, store]
-            required: [policySource]
-          then:
-            properties:
-              policyRevisionId:
-                type: string
-              policyValue:
-                type: object
-        - if:
-            properties:
-              policySource:
-                enum: [system, fallback]
-            required: [policySource]
-          then:
-            properties:
-              policyRevisionId:
-                type: "null"
-              policyValue:
-                type: object
+        The shift variance policy frozen with the open (AD-CASH-001 D-6), as
+        in `pos-shifts.openapi.yaml`: the source, the revision id (a uuid for
+        `tenant` / `store`, `null` for `system` / `fallback`), the value and
+        the accept-and-flag findings (empty when none). All four members are
+        always present together.
+      properties:
+        policySource:
+          type: string
+          enum: [system, tenant, store, fallback]
+        policyRevisionId:
+          type: [string, "null"]
+          format: uuid
+        policyValue:
+          $ref: "#/components/schemas/CashVariancePolicyValue"
+        policyFlags:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/PolicyFlag"
 
     ShiftCashMovement:
       type: object

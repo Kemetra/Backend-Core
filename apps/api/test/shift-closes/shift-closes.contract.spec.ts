@@ -45,15 +45,7 @@ const DETAIL_PATH = "/api/v1/shift-closes/{shiftId}";
 const OPERATION_IDS = ["consoleGetShiftClose", "consoleListShiftCloses"] as const;
 
 /** RT-384: optional on the wire until the RT-387 runtime emits them on every close. */
-const CONTRACT_AHEAD_OF_RUNTIME = [
-  "policySource",
-  "policyRevisionId",
-  "policyValue",
-  "policyFlags",
-  "approvalRequiredByPolicy",
-  "approvalMissing",
-  "approverCheck",
-] as const;
+const CONTRACT_AHEAD_OF_RUNTIME = ["frozenPolicy", "approvalRequiredByPolicy", "approvalMissing", "approverCheck"] as const;
 
 /** The RT-383 required lists, pinned so the RT-384 bump stays strictly additive. */
 const RT383_SUMMARY_REQUIRED = [
@@ -421,7 +413,9 @@ describe("shift-closes — projections", () => {
     for (const name of ["ShiftCloseSummary", "ShiftCloseDetail"] as const) {
       const props = schema(name).properties!;
       for (const key of CONTRACT_AHEAD_OF_RUNTIME) expect(props[key]).toBeDefined();
-      expect(props["policySource"]).toMatchObject({ enum: ["system", "tenant", "store", "fallback", null] });
+      expect(props["frozenPolicy"]).toMatchObject({
+        oneOf: [{ $ref: "#/components/schemas/RecordedFrozenPolicy" }, { type: "null" }],
+      });
       expect(props["approvalRequiredByPolicy"]).toEqual({ $ref: "#/components/schemas/PolicyTriState" });
       expect(props["approvalMissing"]).toEqual({ $ref: "#/components/schemas/PolicyTriState" });
       expect(props["approverCheck"]).toEqual({ $ref: "#/components/schemas/ApproverCheck" });
@@ -538,21 +532,22 @@ describe("shift-closes — AJV fixtures", () => {
     expect(validator("ShiftClosePage")({ items: [] })).toBe(false);
   });
 
-  const POLICY_FIELDS = {
+  const FROZEN = {
     policySource: "tenant",
     policyRevisionId: "0190f5a2-3b4c-7d8e-9f01-0000000000a1",
     policyValue: { mode: "limit", limitAmount: "5.00", currencyCode: "EGP" },
     policyFlags: [],
+  } as const;
+
+  const POLICY_FIELDS = {
+    frozenPolicy: FROZEN,
     approvalRequiredByPolicy: "yes",
     approvalMissing: "no",
     approverCheck: { status: "verified", reason: null },
   } as const;
 
   const LEGACY_POLICY_FIELDS = {
-    policySource: null,
-    policyRevisionId: null,
-    policyValue: null,
-    policyFlags: [],
+    frozenPolicy: null,
     approvalRequiredByPolicy: "unknown",
     approvalMissing: "unknown",
     approverCheck: { status: "unverified", reason: "check_unavailable" },
@@ -567,22 +562,29 @@ describe("shift-closes — AJV fixtures", () => {
       validator("ShiftCloseSummary")({
         ...SUMMARY,
         ...POLICY_FIELDS,
-        policySource: "fallback",
-        policyRevisionId: null,
-        policyValue: { mode: "limit", limitAmount: "0", currencyCode: "EGP" },
-        policyFlags: ["policy_value_mismatch"],
+        frozenPolicy: {
+          policySource: "fallback",
+          policyRevisionId: null,
+          policyValue: { mode: "limit", limitAmount: "0", currencyCode: "EGP" },
+          policyFlags: ["policy_value_mismatch"],
+        },
       }),
     ).toBe(true);
   });
 
+  const frozen = (patch: Record<string, unknown>): Record<string, unknown> => ({ ...POLICY_FIELDS, frozenPolicy: patch });
+
   it.each([
     ["a boolean tri-state", { ...POLICY_FIELDS, approvalMissing: true }],
-    ["an unknown policy flag", { ...POLICY_FIELDS, policyFlags: ["stale"] }],
-    ["a tenant source without a revision id", { ...POLICY_FIELDS, policyRevisionId: null }],
-    ["a system source with a revision id", { ...POLICY_FIELDS, policySource: "system" }],
-    ["no source with a revision id", { ...LEGACY_POLICY_FIELDS, policyRevisionId: "0190f5a2-3b4c-7d8e-9f01-0000000000a1" }],
-    ["no source with a value", { ...LEGACY_POLICY_FIELDS, policyValue: { mode: "none" } }],
-    ["a limit without an amount", { ...POLICY_FIELDS, policyValue: { mode: "limit", currencyCode: "EGP" } }],
+    ["an unknown policy flag", frozen({ ...FROZEN, policyFlags: ["stale"] })],
+    ["a tenant source without a revision id", frozen({ ...FROZEN, policyRevisionId: null })],
+    ["a system source with a revision id", frozen({ ...FROZEN, policySource: "system" })],
+    ["a frozen policy without its flags", frozen({ ...without(FROZEN, "policyFlags") })],
+    ["a frozen policy without its revision id", frozen({ ...without(FROZEN, "policyRevisionId") })],
+    ["a frozen policy without its value", frozen({ ...without(FROZEN, "policyValue") })],
+    ["a frozen policy without its source", frozen({ ...without(FROZEN, "policySource") })],
+    ["a limit without an amount", frozen({ ...FROZEN, policyValue: { mode: "limit", currencyCode: "EGP" } })],
+    ["a stray top-level policy field", { ...POLICY_FIELDS, policySource: "tenant" }],
   ])("RT-384: rejects a summary with %s", (_label, fields) => {
     expect(validator("ShiftCloseSummary")({ ...SUMMARY, ...fields })).toBe(false);
   });
