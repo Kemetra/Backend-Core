@@ -379,7 +379,8 @@ components:
       type: string
       minLength: 1
       maxLength: 500
-      pattern: "\\S"
+      # Not blank, and no NUL anywhere (Postgres `text` refuses U+0000).
+      pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
       description: >
         Operator free text (0040 CHECK `devices_revoke_note_shape`: 1..500
         characters, not blank, no NUL character — a NUL is 400
@@ -514,9 +515,28 @@ components:
         - retireReason
       allOf:
         - $ref: "#/components/schemas/TrustStateConsistency"
+        # 0040 `devices_retire_fields_when_retired`: a retired device carries
+        # its retire reason; any other device has no retire attribution.
+        - if:
+            properties:
+              trustState:
+                const: retired
+            required: [trustState]
+          then:
+            properties:
+              retireReason:
+                type: string
+          else:
+            properties:
+              retireReason:
+                type: "null"
+              retiredByUserId:
+                type: "null"
       description: >
         One device with its revoke note and retire attribution. The summary
-        fields are the `DeviceSummary` fields, with the same rules.
+        fields are the `DeviceSummary` fields, with the same rules. A retired
+        device always carries `retireReason`; any other device has
+        `retireReason` and `retiredByUserId` null.
       properties:
         deviceId:
           type: string

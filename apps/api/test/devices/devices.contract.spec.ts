@@ -302,6 +302,7 @@ describe("devices contract — projections", () => {
     ["a page", "DevicePage", { items: [REVOKED, ACTIVE], nextCursor: "eyJyIjowfQ" }],
     ["an empty last page", "DevicePage", { items: [], nextCursor: null }],
     ["a detail with a note", "DeviceDetail", { ...REVOKED, ...DETAIL_EXTRA, revokeNote: "Drawer cash in the safe" }],
+    ["a retired detail", "DeviceDetail", { ...RETIRED, revokeNote: null, retiredByUserId: USER_ID, retireReason: "Decommissioned" }],
     ["a revoke result", "DeviceRevokeResult", { outcome: "already_revoked", device: { ...ACTIVE, ...DETAIL_EXTRA } }],
     ["the error envelope", "Error", { error: { code: "unresolved_cash_session", message: "Conflict", request_id: DEVICE_ID } }],
   ])("accepts %s", (_label, name, payload) => {
@@ -324,6 +325,7 @@ describe("devices contract — projections", () => {
     ["an unknown outcome", "DeviceRevokeResult", { outcome: "noop", device: { ...ACTIVE, ...DETAIL_EXTRA } }],
     ["a result without the device", "DeviceRevokeResult", { outcome: "revoked" }],
     ["a bare error code", "Error", { code: "not_found" }],
+    ["a retired detail without a retire reason", "DeviceDetail", { ...RETIRED, ...DETAIL_EXTRA, retiredByUserId: USER_ID }],
   ])("rejects %s", (_label, name, payload) => {
     expect(contract.accepts(name, payload)).toBe(false);
   });
@@ -341,7 +343,12 @@ describe("devices contract — revoke body", () => {
       note: { $ref: "#/components/schemas/RevokeNote" },
       acknowledgeCustodyException: expect.objectContaining({ type: "boolean" }),
     });
-    expect(contract.schema("RevokeNote")).toMatchObject({ type: "string", minLength: 1, maxLength: 500, pattern: "\\S" });
+    expect(contract.schema("RevokeNote")).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 500,
+      pattern: "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+    });
   });
 
   it.each(REVOKE_REASONS.filter((r) => r !== "other").map((reason) => [reason]))("accepts %s alone", (reason) => {
@@ -357,6 +364,8 @@ describe("devices contract — revoke body", () => {
     [{ reason: "lost", note: "" }, false],
     [{ reason: "lost", note: "   " }, false],
     [{ reason: "lost", note: "x".repeat(501) }, false],
+    [{ reason: "lost", note: "cash\u0000safe" }, false],
+    [{ reason: "lost", note: "\u0000" }, false],
     [{ reason: "hardware_failure", acknowledgeCustodyException: "true" }, false],
     [{ reason: "lost", storeId: STORE_ID }, false],
     [{ reason: "lost", acknowledge_custody_exception: true }, false],
