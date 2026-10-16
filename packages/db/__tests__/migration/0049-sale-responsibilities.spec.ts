@@ -271,12 +271,12 @@ describe("0049 sale_responsibilities constraints", () => {
     }
   });
 
-  it("validates the responsibility_count CHECK in the same migration (not left NOT VALID)", async () => {
+  it("keeps the responsibility_count CHECK NOT VALID: no sales scan under ACCESS EXCLUSIVE (rows enforced below)", async () => {
     if (skip()) return;
     const r = await pg().admin.query(
       `SELECT convalidated FROM pg_constraint WHERE conname = 'sales_responsibility_count_range'`,
     );
-    expect(r.rows).toEqual([{ convalidated: true }]);
+    expect(r.rows).toEqual([{ convalidated: false }]);
   });
 
   it("caps sales.responsibility_count at 0..1 (23514)", async () => {
@@ -346,15 +346,59 @@ describe("0049 sale_responsibilities RLS", () => {
 });
 
 describe("0049 down", () => {
+  /** Run the down file on one client (optionally as `role`), then roll back whatever it left open. */
+  async function runDown(role: string | null): Promise<string | null> {
+    const client = await pg().admin.connect();
+    try {
+      if (role !== null) await client.query(`SET ROLE ${role}`);
+      return await errorCode(() => client.query(readFileSync(DOWN_PATH, "utf8")));
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      await client.query("RESET ROLE").catch(() => undefined);
+      client.release();
+    }
+  }
+
+  async function responsibilityRows(): Promise<number> {
+    const r = await pg().admin.query<{ n: number }>(`SELECT count(*)::int AS n FROM sale_responsibilities`);
+    return r.rows[0]!.n;
+  }
+
   it("refuses loudly while responsibility rows exist, and changes nothing", async () => {
     if (skip()) return;
     await pg().admin.query(insertSql, params({}));
     try {
-      expect(await errorCode(() => pg().admin.query(readFileSync(DOWN_PATH, "utf8")))).toBe("P0001");
+      expect(await runDown(null)).toBe("P0001");
       expect(await schemaState()).toEqual(UP_STATE);
     } finally {
-      await pg().admin.query("ROLLBACK").catch(() => undefined);
       await pg().admin.query(`DELETE FROM sale_responsibilities WHERE sale_id = $1`, [SALE]);
+    }
+  });
+
+  // The production migration owner is NOT a superuser (database-roles.md), so
+  // FORCE ROW LEVEL SECURITY applies to it: a guard that reads the table
+  // without a tenant GUC sees no rows and would drop every credit fact.
+  it("refuses as a NON-superuser owner under FORCE RLS (the production migration owner), and drops nothing", async () => {
+    if (skip()) return;
+    const admin = pg().admin;
+    const owner = "rt418_migration_owner";
+    const superuser = (await admin.query<{ u: string }>(`SELECT current_user AS u`)).rows[0]!.u;
+    const owned = ["sales", "payer_account", "sale_responsibilities", "erpnext_posting_resolution"];
+    await admin.query(`CREATE ROLE ${owner} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
+    await admin.query(`GRANT USAGE ON SCHEMA public TO ${owner}`);
+    await admin.query(`GRANT SELECT ON tenants TO ${owner}`);
+    for (const table of owned) await admin.query(`ALTER TABLE ${table} OWNER TO ${owner}`);
+    await admin.query(insertSql, params({}));
+    try {
+      expect(await runDown(owner)).toBe("P0001");
+      expect(await schemaState()).toEqual(UP_STATE);
+      expect(await responsibilityRows()).toBe(1);
+    } finally {
+      for (const table of owned) await admin.query(`ALTER TABLE ${table} OWNER TO ${superuser}`).catch(() => undefined);
+      await admin.query(`DELETE FROM sale_responsibilities WHERE sale_id = $1`, [SALE]).catch(() => undefined);
+      await admin.query(`REVOKE ALL ON tenants FROM ${owner}`).catch(() => undefined);
+      await admin.query(`REVOKE ALL ON SCHEMA public FROM ${owner}`).catch(() => undefined);
+      await admin.query(`DROP ROLE ${owner}`).catch(() => undefined);
     }
   });
 

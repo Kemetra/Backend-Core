@@ -34,6 +34,10 @@ DECLARE
   t uuid;
 BEGIN
   PERFORM set_config('app.is_platform_admin', 'true', true);
+  -- A session that set app.current_tenant before holds '' (not NULL) after
+  -- that transaction, and the tenants policy casts it to uuid: start from a
+  -- valid nil uuid so the policy evaluates (is_platform_admin admits all).
+  PERFORM set_config('app.current_tenant', '00000000-0000-0000-0000-000000000000', true);
   FOR t IN SELECT id FROM tenants ORDER BY id LOOP
     PERFORM set_config('app.current_tenant', t::text, true);
     PERFORM pg_advisory_xact_lock(hashtextextended('erpnext-posting-feed' || ':' || t::text, 0));

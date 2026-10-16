@@ -164,10 +164,14 @@ but the posting feed holds their `sale_post` until the Connector can post them
 to the payer's ERPNext Customer (RT-419). Do this ONCE, only after the RT-419
 Connector is deployed:
 
-1. Set `ERPNEXT_FEED_RESPONSIBILITIES_ENABLED=true` in `deploy/prod.env`
-   (Compose passes it to the `api` service; it is read per process, so every
-   API replica must run with the same value) and recreate the API:
+1. Map `ERPNEXT_FEED_RESPONSIBILITIES_ENABLED` into the `api` service's
+   `environment` in `docker-compose.prod.yml`. This release deliberately does
+   NOT map it: an unmapped flag is unset inside the container, so credit
+   sales stay held (fail safe). The mapping is part of the RT-419 hold-lift
+   change, as a reviewed production-config edit. Then set it to `true` in
+   `deploy/prod.env` and recreate the API:
    `op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d api`.
+   It is read per process, so every API replica must run with the same value.
 2. Re-head the held rows, so a Connector whose cursor has already moved past
    them is offered them again (without this step they are never posted):
 

@@ -13,8 +13,11 @@
  *     `payerExternalRef` from the FROZEN resolution (not the live payer row),
  *     `payloadHash` unchanged, every re-pull identical, the work item valid
  *     against `PostingWorkItem`;
- *   - an unlinked payer is offered with `payerExternalRef: null` (the Connector
- *     fails closed): never omitted, never the store Customer;
+ *   - fail closed in Backend-Core (coordinator M3): a credit sale whose
+ *     effective payer link is NULL or blank (the frozen one, or the live one
+ *     for a row without a frozen resolution) is HELD, never offered, never
+ *     posted to the store Customer. Capture refuses an unlinked payer, so such
+ *     a row is a detectable defect;
  *   - a sale without responsibilities is unchanged (no `responsibilities` key);
  *   - fail closed (coordinator condition): a sale whose
  *     `responsibility_count` says it has responsibilities the feed cannot see
@@ -66,6 +69,10 @@ const W_RETURNED_POST = "0a000000-0000-7000-8000-000000418ba4";
 const W_UNLINKED = "0a000000-0000-7000-8000-000000418ba5";
 const W_CASH = "0a000000-0000-7000-8000-000000418ba6";
 const W_HIDDEN = "0a000000-0000-7000-8000-000000418ba7";
+const S_FROZEN_NULL = "0a000000-0000-7000-8000-0000004189a7";
+const S_FROZEN_BLANK = "0a000000-0000-7000-8000-0000004189a8";
+const W_FROZEN_NULL = "0a000000-0000-7000-8000-000000418ba8";
+const W_FROZEN_BLANK = "0a000000-0000-7000-8000-000000418ba9";
 
 let env: PgTestEnv | null = null;
 let skip = false;
@@ -247,20 +254,49 @@ describe("RT-418 — the posting feed with the Connector gate on", () => {
     expect(ok).toBe(true);
   });
 
-  it("offers an unlinked payer's sale with payerExternalRef null: never omitted, never the store Customer", async () => {
+  it("holds a credit sale whose payer has no link (live, no frozen resolution): never offered, never the store Customer", async () => {
     if (skip) return;
     const { items } = await pull();
-    const unlinked = byRef(items, W_UNLINKED);
-    expect(unlinked).toBeDefined();
-    expect(unlinked!.sale.responsibilities).toEqual([{ payerExternalRef: null, amount: "10.0000", sequence: 1 }]);
-    validateWorkItem(unlinked);
-    expect(validateWorkItem.errors ?? []).toEqual([]);
+    expect(byRef(items, W_UNLINKED)).toBeUndefined();
+  });
+
+  describe("a frozen resolution with a NULL or blank payer link (the live payer is linked)", () => {
+    const cases = [
+      { sale: S_FROZEN_NULL, work: W_FROZEN_NULL, ext: "rt418-frozen-null", ref: null },
+      { sale: S_FROZEN_BLANK, work: W_FROZEN_BLANK, ext: "rt418-frozen-blank", ref: " \t " },
+    ];
+    beforeAll(async () => {
+      if (skip) return;
+      for (const c of cases) {
+        const line = await seedSale(c.sale, c.ext, { responsibilities: 1 });
+        await seedResponsibility(c.sale, P_LINKED);
+        await seedPosting(c.work, c.sale, c.ext, { lineId: line, frozenPayerRef: c.ref });
+      }
+    });
+    afterAll(async () => {
+      if (skip) return;
+      for (const c of cases) {
+        await env!.admin.query(`DELETE FROM erpnext_posting_resolution WHERE intent_id = $1`, [c.work]);
+        await env!.admin.query(`DELETE FROM erpnext_posting_status WHERE id = $1`, [c.work]);
+        await env!.admin.query(`DELETE FROM sale_responsibilities WHERE sale_id = $1`, [c.sale]);
+        await env!.admin.query(`DELETE FROM sale_lines WHERE sale_id = $1`, [c.sale]);
+        await env!.admin.query(`DELETE FROM sales WHERE id = $1`, [c.sale]);
+      }
+    });
+
+    it("is HELD: the frozen value decides, the live link never fills it in", async () => {
+      if (skip) return;
+      const { items } = await pull();
+      expect(byRef(items, W_FROZEN_NULL)).toBeUndefined();
+      expect(byRef(items, W_FROZEN_BLANK)).toBeUndefined();
+      expect(refs(items)).toEqual([W_CREDIT, W_CASH]);
+    });
   });
 
   it("still holds a reversal of a credit sale, and the sale_post of a voided or returned credit sale", async () => {
     if (skip) return;
     const { items } = await pull();
-    expect(refs(items)).toEqual([W_CREDIT, W_UNLINKED, W_CASH]);
+    expect(refs(items)).toEqual([W_CREDIT, W_CASH]);
   });
 
   it("every re-pull is identical", async () => {
@@ -288,7 +324,7 @@ describe("RT-418 — the posting feed with the Connector gate on", () => {
     it("stays HELD: the pull excludes it, never offers it as cash, and still offers the rest", async () => {
       if (skip) return;
       const { items } = await pull();
-      expect(refs(items)).toEqual([W_CREDIT, W_UNLINKED, W_CASH]);
+      expect(refs(items)).toEqual([W_CREDIT, W_CASH]);
       expect(byRef(items, W_HIDDEN)).toBeUndefined();
     });
 
@@ -326,13 +362,18 @@ describe("RT-418 — the posting feed with the Connector gate on", () => {
 describe("RT-418 — the hold-lift re-head (docs/operations/sql/sale-responsibilities-feed-rehead.sql)", () => {
   const REHEAD = resolve(__dirname, "..", "..", "..", "..", "..", "..", "docs", "operations", "sql", "sale-responsibilities-feed-rehead.sql");
 
-  /** The script without its psql meta-commands (\set, \echo), run as the superuser like the migration owner. */
+  /**
+   * The script without its psql meta-commands (\set, \echo), run as the
+   * NON-superuser, NOBYPASSRLS app role: like the production migration owner,
+   * FORCE RLS applies to it, so a script that skipped the per-tenant GUC
+   * would re-head nothing.
+   */
   async function runRehead(): Promise<void> {
     const sql = readFileSync(REHEAD, "utf8")
       .split("\n")
       .filter((line) => !line.trimStart().startsWith("\\"))
       .join("\n");
-    await env!.admin.query(sql);
+    await env!.app.query(sql);
   }
 
   async function sequenceOf(id: string): Promise<bigint> {
@@ -353,14 +394,14 @@ describe("RT-418 — the hold-lift re-head (docs/operations/sql/sale-responsibil
     await runRehead();
 
     const after = (await new ErpnextPostingService(env!.app).pullPostings({ tenantId: TENANT_A, since: cursor, limit: 500 })).items;
-    expect(refs(after)).toEqual([W_CREDIT, W_UNLINKED]);
+    expect(refs(after)).toEqual([W_CREDIT]);
     // Rows still held for another reason (a reversal, a reversed sale) keep their place.
     expect(await sequenceOf(W_VOIDED_REVERSAL)).toBe(reversalBefore);
     expect(await sequenceOf(W_VOIDED_POST)).toBe(voidedPostBefore);
     // Idempotent in effect: a second run re-offers the same set, nothing else.
-    const cursor2 = await sequenceOf(W_UNLINKED);
+    const cursor2 = await sequenceOf(W_CREDIT);
     await runRehead();
     const again = (await new ErpnextPostingService(env!.app).pullPostings({ tenantId: TENANT_A, since: cursor2, limit: 500 })).items;
-    expect(refs(again)).toEqual([W_CREDIT, W_UNLINKED]);
+    expect(refs(again)).toEqual([W_CREDIT]);
   });
 });

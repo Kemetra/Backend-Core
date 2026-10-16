@@ -48,14 +48,26 @@
 -- long-horizon insert-only posture of the sale fact; erasure tombstones,
 -- never deletes.
 --
--- Lock duration: `lock_timeout` is 5s (fail fast, re-run). sales takes
--- ACCESS EXCLUSIVE for one metadata-only ADD COLUMN (a constant default) and
--- a NOT VALID CHECK, then SHARE UPDATE EXCLUSIVE to VALIDATE it (a scan that
--- blocks no reads or writes; every existing row is 0). payer_account takes
--- ACCESS EXCLUSIVE for the DROP COLUMN (metadata-only) and SHARE for the
--- unique index build over a small table. erpnext_posting_resolution takes
--- ACCESS EXCLUSIVE for one metadata-only nullable ADD COLUMN. The new table
--- takes only catalog locks.
+-- Lock duration: `lock_timeout` is 5s (fail fast, re-run: the file is one
+-- transaction). Every lock is taken up front, in the runtime's order (a
+-- capture writes `sales` before it locks its payer FOR SHARE), so nothing
+-- upgrades a lock mid-file:
+--   - tenants, stores: SHARE ROW EXCLUSIVE (the new table's FKs);
+--   - sales, payer_account: ACCESS EXCLUSIVE, held to COMMIT. On sales it
+--     covers one metadata-only ADD COLUMN (a constant default: no rewrite) and
+--     a NOT VALID CHECK (no scan); on payer_account a metadata-only DROP
+--     COLUMN and a unique index build over a small table. POS captures and
+--     sale reads queue for that time only;
+--   - erpnext_posting_resolution: ACCESS EXCLUSIVE for one metadata-only
+--     nullable ADD COLUMN; the posting feed and worker queue for that time.
+-- The CHECK stays NOT VALID on purpose: VALIDATE would scan all of `sales`
+-- while the ACCESS EXCLUSIVE lock is held, blocking every capture. Every
+-- existing row is 0 by construction (the column was added with that constant
+-- default in this transaction), and the CHECK is enforced on every new or
+-- updated row. Splitting VALIDATE into a second transaction is not safe with
+-- this runner: it applies the file as one query and records the ledger row
+-- only after it, so a failed second transaction would leave 0049 applied but
+-- unrecorded, and a re-run would fail on the existing column.
 -- Grants: none here — production grants the domain role SELECT + INSERT on
 -- sale_responsibilities outside migrations
 -- (docs/operations/sql/sale-responsibilities-domain-grants.sql).
@@ -67,6 +79,10 @@ BEGIN;
 -- later sale read and write would queue behind this ACCESS EXCLUSIVE request).
 -- A timeout aborts the whole migration; re-run it.
 SET LOCAL lock_timeout = '5s';
+
+LOCK TABLE tenants, stores IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE sales, payer_account IN ACCESS EXCLUSIVE MODE;
+LOCK TABLE erpnext_posting_resolution IN ACCESS EXCLUSIVE MODE;
 
 -- =============================================================================
 -- 1. payer_account: drop credit_terms, add the composite FK target
@@ -87,11 +103,6 @@ ALTER TABLE sales
 ALTER TABLE sales
   ADD CONSTRAINT sales_responsibility_count_range
     CHECK (responsibility_count BETWEEN 0 AND 1) NOT VALID;
-
--- Every existing row is 0 by construction (the column was just added with a
--- constant default), so validate now: the scan holds only SHARE UPDATE
--- EXCLUSIVE, which does not block reads or writes of sales.
-ALTER TABLE sales VALIDATE CONSTRAINT sales_responsibility_count_range;
 
 -- =============================================================================
 -- 3. sale_responsibilities — who owes how much of the sale (R-1)

@@ -157,12 +157,15 @@ This project follows [Semantic Versioning](https://semver.org/).
   responsibilities is a 409. `Sale.responsibilities` on capture and read.
   Posting feed (`posting-feed.yaml` 1.8.0-draft): `sale.responsibilities
   [{payerExternalRef, amount, sequence}]` from the frozen resolution
-  (`payloadHash` unchanged; an unlinked payer is offered with `null`, never
-  the store Customer); a responsibility-bearing `sale_post` is held until
-  `ERPNEXT_FEED_RESPONSIBILITIES_ENABLED` is on (after RT-419), its
-  reversals are always held, and its `sale_post` is held while a void,
-  refund or return exists. Lifting a hold must re-head the held rows'
-  feed `sequence`. Payer routes (`settlement/settlement.yaml` 2.0.0)
+  (`payloadHash` unchanged); a responsibility-bearing `sale_post` is held
+  until `ERPNEXT_FEED_RESPONSIBILITIES_ENABLED` is on (after RT-419), its
+  reversals are always held, its `sale_post` is held while a void, refund or
+  return exists, and the feed fails closed: a sale whose responsibility rows
+  are not all visible, or whose (frozen) payer link is NULL or blank, is
+  held, never offered as cash or to the store Customer. Lifting the gate
+  hold needs `docs/operations/sql/sale-responsibilities-feed-rehead.sql`
+  (deploy/README.md "Enabling credit posting"); the flag is not yet mapped
+  into the api container (unmapped = held). Payer routes (`settlement/settlement.yaml` 2.0.0)
   `consoleCreatePayerAccount` / `consoleListPayerAccounts` ship
   (`PayerAccountsModule`) and lose `x-runtime-status: contract-only`.
   Deploy: run `docs/operations/sql/sale-responsibilities-domain-grants.sql`

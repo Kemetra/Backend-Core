@@ -6,15 +6,30 @@
 -- payer_account.credit_terms (empty: its values are not recoverable).
 -- Responsibility facts would be LOST, and a credit sale would then read as a
 -- cash or tender-unknown sale, so the rollback REFUSES while any
--- responsibility row exists (the 0041 precedent): back up, decide, and delete
--- them explicitly first.
+-- responsibility row exists: back up, decide, and delete them explicitly
+-- first. The table is FORCE ROW LEVEL SECURITY and the production migration
+-- owner is not a superuser (docs/operations/database-roles.md), so the guard
+-- reads under app.is_platform_admin and each tenant's app.current_tenant
+-- (the 0042 / 0045 pattern); a bare SELECT would see no rows and drop them.
 
 BEGIN;
 
 DO $$
+DECLARE
+  t uuid;
+  rows_found bigint := 0;
 BEGIN
-  IF EXISTS (SELECT 1 FROM sale_responsibilities) THEN
-    RAISE EXCEPTION '0049 down refused: sale_responsibilities has rows; back up and delete them explicitly first';
+  PERFORM set_config('app.is_platform_admin', 'true', true);
+  -- A session that set app.current_tenant before holds '' (not NULL) after
+  -- that transaction, and the tenants policy casts it to uuid: start from a
+  -- valid nil uuid so the policy evaluates (is_platform_admin admits all).
+  PERFORM set_config('app.current_tenant', '00000000-0000-0000-0000-000000000000', true);
+  FOR t IN SELECT id FROM tenants LOOP
+    PERFORM set_config('app.current_tenant', t::text, true);
+    rows_found := rows_found + (SELECT count(*) FROM sale_responsibilities WHERE tenant_id = t);
+  END LOOP;
+  IF rows_found > 0 THEN
+    RAISE EXCEPTION '0049 down refused: sale_responsibilities has % row(s); back up and delete them explicitly first', rows_found;
   END IF;
 END
 $$;
