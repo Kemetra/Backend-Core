@@ -84,6 +84,11 @@ export const shiftCloses = pgTable(
       .references(() => users.id, { onDelete: "restrict" }),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
     payloadHash: bytea("payload_hash").notNull(),
+    // 0050 (RT-385, AD-CASH-001 D-7): the derived tri-states. The default
+    // 'unknown' is every pre-RT-387 close (its shift froze no policy); the
+    // close guard ties them to the shift's frozen policy.
+    approvalRequiredByPolicy: text("approval_required_by_policy").notNull().default("unknown"),
+    approvalMissing: text("approval_missing").notNull().default("unknown"),
   },
   (t) => [
     foreignKey({
@@ -134,6 +139,71 @@ export const shiftCloses = pgTable(
     ),
     check("shift_closes_payload_hash_len", sql`octet_length(${t.payloadHash}) = 32`),
     index("idx_shift_closes_tenant_store").on(t.tenantId, t.storeId),
+    // 0050 (RT-385), the CHECKs NOT VALID in SQL.
+    check(
+      "shift_closes_approval_required_valid",
+      sql`${t.approvalRequiredByPolicy} IN ('yes', 'no', 'unknown')`,
+    ),
+    check("shift_closes_approval_missing_valid", sql`${t.approvalMissing} IN ('yes', 'no', 'unknown')`),
+    check(
+      "shift_closes_approval_missing_derived",
+      sql`(${t.approvalRequiredByPolicy} = 'unknown' AND ${t.approvalMissing} = 'unknown')
+        OR (${t.approvalRequiredByPolicy} = 'no' AND ${t.approvalMissing} = 'no')
+        OR (${t.approvalRequiredByPolicy} = 'yes' AND ${t.approvalMissing} = CASE
+          WHEN ${t.varianceApprovedByUserId} IS NULL THEN 'yes' ELSE 'no' END)`,
+    ),
+    // Target of the approver verdict's composite FK.
+    unique("uq_shift_closes_approver_target").on(
+      t.shiftId,
+      t.tenantId,
+      t.storeId,
+      t.varianceApprovedByUserId,
+    ),
+  ],
+);
+
+/**
+ * `shift_close_approver_checks` (0050, RT-385): the persisted approverCheck
+ * verdict (AD-CASH-001 D-7, K-4), one per close, pinned to the close's
+ * recorded approver. A close with no row reads `not_applicable` (no approver)
+ * or `unverified` / `check_unavailable` (an approver): the legacy value, the
+ * pre-RT-387 value and the close-time placeholder. Append-only, tenant RLS.
+ */
+export const shiftCloseApproverChecks = pgTable(
+  "shift_close_approver_checks",
+  {
+    shiftId: uuid("shift_id").primaryKey().notNull(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "restrict" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => stores.id, { onDelete: "restrict" }),
+    approverUserId: uuid("approver_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    status: text("status").notNull(),
+    reason: text("reason"),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({
+      name: "fk_shift_close_approver_checks_close",
+      columns: [t.shiftId, t.tenantId, t.storeId, t.approverUserId],
+      foreignColumns: [
+        shiftCloses.shiftId,
+        shiftCloses.tenantId,
+        shiftCloses.storeId,
+        shiftCloses.varianceApprovedByUserId,
+      ],
+    }).onDelete("restrict"),
+    check("shift_close_approver_checks_status_valid", sql`${t.status} IN ('verified', 'unverified')`),
+    check(
+      "shift_close_approver_checks_reason_iff_unverified",
+      sql`(${t.status} = 'verified' AND ${t.reason} IS NULL)
+        OR (${t.status} = 'unverified' AND ${t.reason} IS NOT NULL AND ${t.reason} IN
+          ('approver_is_closer', 'inactive_membership', 'not_manager', 'no_store_access'))`,
+    ),
   ],
 );
 
@@ -227,3 +297,5 @@ export type ShiftCashMovementDbRow = typeof shiftCashMovements.$inferSelect;
 export type NewShiftCashMovementDbRow = typeof shiftCashMovements.$inferInsert;
 export type ShiftRefundClaimDbRow = typeof shiftRefundClaims.$inferSelect;
 export type NewShiftRefundClaimDbRow = typeof shiftRefundClaims.$inferInsert;
+export type ShiftCloseApproverCheckDbRow = typeof shiftCloseApproverChecks.$inferSelect;
+export type NewShiftCloseApproverCheckDbRow = typeof shiftCloseApproverChecks.$inferInsert;
