@@ -168,13 +168,18 @@ const DEVICES: readonly SeedDevice[] = [
 ];
 
 async function seedDevices(admin: Pool): Promise<void> {
-  for (const [i, d] of DEVICES.entries()) {
-    await admin.query(
-      `INSERT INTO devices (id, tenant_id, store_id, label, token_hash, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [d.id, d.tenantId, d.storeId, `Till ${i + 1}`, d.tokenHash ?? digest(`device:${d.id}`), d.expiresAt],
-    );
-  }
+  await admin.query(
+    `INSERT INTO devices (id, tenant_id, store_id, label, token_hash, expires_at)
+     SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::bytea[], $6::timestamptz[])`,
+    [
+      DEVICES.map((d) => d.id),
+      DEVICES.map((d) => d.tenantId),
+      DEVICES.map((d) => d.storeId),
+      DEVICES.map((_d, i) => `Till ${i + 1}`),
+      DEVICES.map((d) => d.tokenHash ?? digest(`device:${d.id}`)),
+      DEVICES.map((d) => d.expiresAt),
+    ],
+  );
 }
 
 async function seedMembers(admin: Pool): Promise<void> {

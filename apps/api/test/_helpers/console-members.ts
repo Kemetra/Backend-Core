@@ -45,19 +45,18 @@ export async function seedConsoleMember(admin: Pool, seed: ConsoleMemberSeed): P
     `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES ($1, $2, $3, $4, $5)`,
     [seed.membershipId, seed.tenantId, seed.userId, roleId, seed.stores === "all" ? "all" : "specific"],
   );
-  for (const storeId of seed.stores === "all" ? [] : seed.stores) {
-    await admin.query(`INSERT INTO store_access (membership_id, store_id, tenant_id) VALUES ($1, $2, $3)`, [
-      seed.membershipId,
-      storeId,
-      seed.tenantId,
-    ]);
-  }
-  for (const [sessionId, activeStoreId] of Object.entries(seed.sessions)) {
-    await admin.query(
-      `INSERT INTO sessions (id, user_id, active_tenant_id, active_store_id, absolute_expires_at, credential_hash)
-       VALUES ($1, $2, $3, $4, now() + interval '1 hour', decode(md5(random()::text), 'hex'))`,
-      [sessionId, seed.userId, seed.tenantId, activeStoreId],
-    );
-    registerTestSession(sessionId, seed.userId);
-  }
+  const grants = seed.stores === "all" ? [] : seed.stores;
+  await admin.query(
+    `INSERT INTO store_access (membership_id, store_id, tenant_id)
+     SELECT $1, store_id, $3 FROM unnest($2::uuid[]) AS store_id`,
+    [seed.membershipId, grants, seed.tenantId],
+  );
+  const sessions = Object.entries(seed.sessions);
+  await admin.query(
+    `INSERT INTO sessions (id, user_id, active_tenant_id, active_store_id, absolute_expires_at, credential_hash)
+     SELECT s.id, $3, $4, s.active_store_id, now() + interval '1 hour', decode(md5(random()::text), 'hex')
+       FROM unnest($1::uuid[], $2::uuid[]) AS s(id, active_store_id)`,
+    [sessions.map(([id]) => id), sessions.map(([, store]) => store), seed.userId, seed.tenantId],
+  );
+  for (const [sessionId] of sessions) registerTestSession(sessionId, seed.userId);
 }
