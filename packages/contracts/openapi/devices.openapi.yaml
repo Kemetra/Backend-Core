@@ -1269,24 +1269,107 @@ components:
 
     ImpactStateConsistency:
       description: >
+        The device state pins what the verdict table leaves no choice about.
         An active device is the one a lifecycle action would revoke, so it
-        has a cascade and no custody exception. A revoked or retired device
-        has no cascade.
-      if:
-        properties:
-          trustState:
-            const: active
-        required: [trustState]
-      then:
-        properties:
-          cascade:
-            type: object
-          custodyExceptionShiftId:
-            type: "null"
-      else:
-        properties:
-          cascade:
-            type: "null"
+        has a cascade and no custody exception; a revoked or retired device
+        has no cascade. A revoke of a revoked or retired device, and a retire
+        of a retired one, is `no_change`. A replace or move is `blocked`
+        `device_retired` on a retired device and `allowed` on a revoked one.
+        Each block code belongs to one state: `unresolved_cash_session` to
+        an active device, `unresolved_custody_exception` to a revoked one and
+        `device_retired` to a retired one.
+      allOf:
+        - if:
+            properties:
+              trustState:
+                const: active
+            required: [trustState]
+          then:
+            properties:
+              cascade:
+                type: object
+              custodyExceptionShiftId:
+                type: "null"
+              verdict:
+                not:
+                  const: no_change
+          else:
+            properties:
+              cascade:
+                type: "null"
+        - if:
+            properties:
+              trustState:
+                enum: [revoked, retired]
+              action:
+                const: revoke
+            required: [trustState, action]
+          then:
+            properties:
+              verdict:
+                const: no_change
+        - if:
+            properties:
+              trustState:
+                const: retired
+              action:
+                const: retire
+            required: [trustState, action]
+          then:
+            properties:
+              verdict:
+                const: no_change
+        - if:
+            properties:
+              trustState:
+                const: retired
+              action:
+                enum: [replace, move]
+            required: [trustState, action]
+          then:
+            properties:
+              verdict:
+                const: blocked
+              blockCode:
+                const: device_retired
+        - if:
+            properties:
+              trustState:
+                const: revoked
+              action:
+                enum: [replace, move]
+            required: [trustState, action]
+          then:
+            properties:
+              verdict:
+                const: allowed
+        - if:
+            properties:
+              blockCode:
+                const: unresolved_cash_session
+            required: [blockCode]
+          then:
+            properties:
+              trustState:
+                const: active
+        - if:
+            properties:
+              blockCode:
+                const: unresolved_custody_exception
+            required: [blockCode]
+          then:
+            properties:
+              trustState:
+                const: revoked
+        - if:
+            properties:
+              blockCode:
+                const: device_retired
+            required: [blockCode]
+          then:
+            properties:
+              trustState:
+                const: retired
 
     DeviceImpactConflict:
       type: object
