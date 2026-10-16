@@ -78,9 +78,11 @@ info:
     RT-18 exception view reads it from this surface.
 
 
-    **Revoke (one transaction).** The device row is locked (`FOR UPDATE`, which
-    also serializes against a concurrent shift open on the device), then, in
-    this order:
+    **Revoke (one transaction).** The device row is locked (`FOR UPDATE`). A
+    shift open locks the same device row and rechecks `revoked_at` inside its
+    own transaction, so a shift can never open on a device after its revoke
+    commits, and a revoke always sees a shift whose open committed first.
+    Then, in this order:
 
       1. Already revoked (or retired) → 200 `already_revoked` with the current
          state. Nothing is overwritten, nothing cascades again, no second audit
@@ -126,7 +128,8 @@ info:
 
     **Ordering and paging (exception-first, for RT-371).** The list is ordered
     by a rank, then `expiresAt`, then `deviceId`, all ascending — a total
-    order:
+    order (`expiresAt` is never null: `devices.expires_at` is NOT NULL in
+    migration 0040, so the cursor tuple never holds a null):
 
       - rank 0: a device with a custody exception;
       - rank 1: `active` (soonest-expiring first);
@@ -393,9 +396,9 @@ components:
       # Not blank, and no NUL anywhere (Postgres `text` refuses U+0000).
       pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
       description: >
-        Operator free text (0040 CHECK `devices_revoke_note_shape`: 1..500
-        characters, not blank, no NUL character — a NUL is 400
-        `validation_error`). For a recovery revoke: what happened and where
+        Operator free text: 1..500 characters and not blank (0040 CHECK
+        `devices_revoke_note_shape`), and no NUL character, because Postgres
+        `text` cannot store U+0000 (a NUL is 400 `validation_error`). For a recovery revoke: what happened and where
         the drawer cash physically is. No PII, no token, PIN or secret; never
         logged or audited.
 
@@ -413,6 +416,7 @@ components:
         - createdAt
         - expiresAt
         - lastSeenAt
+        - lastSeenSource
         - revokedAt
         - revokedByUserId
         - revokeReason
@@ -422,6 +426,7 @@ components:
         - custodyExceptionShiftId
       allOf:
         - $ref: "#/components/schemas/TrustStateConsistency"
+        - $ref: "#/components/schemas/LastSeenConsistency"
       description: >
         One device, as listed. Every key is always present; a value that is
         not recorded is `null`. No tenant id, token hash, previous token or
@@ -455,10 +460,20 @@ components:
           type: [string, "null"]
           format: date-time
           description: >
-            The device's last authenticated activity (RT-138 L7, the activity
-            source). `null` until RT-370 writes it. Activity alone never means
-            healthy (RT-287 D-Q6); a heartbeat source (AD-DEVICE-001 D-5) is
-            added additively later.
+            The device's last authenticated activity (RT-138 L7). `null`
+            until RT-370 writes it. Label it with `lastSeenSource`; activity
+            alone never means healthy (RT-287 D-Q6).
+        lastSeenSource:
+          description: >
+            Where `lastSeenAt` comes from, so the console can label it.
+            `activity`: the last authenticated request (RT-138 L7). `null`
+            exactly when `lastSeenAt` is null. A `heartbeat` value
+            (AD-DEVICE-001 D-5) is added later; clients must show an unknown
+            source as unknown, never as healthy.
+          oneOf:
+            - type: string
+              enum: [activity]
+            - type: "null"
         revokedAt:
           type: [string, "null"]
           format: date-time
@@ -514,6 +529,7 @@ components:
         - createdAt
         - expiresAt
         - lastSeenAt
+        - lastSeenSource
         - revokedAt
         - revokedByUserId
         - revokeReason
@@ -526,6 +542,7 @@ components:
         - retireReason
       allOf:
         - $ref: "#/components/schemas/TrustStateConsistency"
+        - $ref: "#/components/schemas/LastSeenConsistency"
         # 0040 `devices_retire_fields_when_retired`: a retired device carries
         # its retire reason; any other device has no retire attribution.
         - if:
@@ -568,6 +585,11 @@ components:
         lastSeenAt:
           type: [string, "null"]
           format: date-time
+        lastSeenSource:
+          oneOf:
+            - type: string
+              enum: [activity]
+            - type: "null"
         revokedAt:
           type: [string, "null"]
           format: date-time
@@ -652,6 +674,22 @@ components:
               retiredAt:
                 type: string
 
+    LastSeenConsistency:
+      description: "`lastSeenSource` is null exactly when `lastSeenAt` is null."
+      if:
+        properties:
+          lastSeenAt:
+            type: "null"
+        required: [lastSeenAt]
+      then:
+        properties:
+          lastSeenSource:
+            type: "null"
+      else:
+        properties:
+          lastSeenSource:
+            type: string
+
     DevicePage:
       type: object
       additionalProperties: false
@@ -709,7 +747,14 @@ components:
             `revoked`: this request revoked the device. `already_revoked`: it
             was already revoked (or retired); nothing changed.
         device:
-          $ref: "#/components/schemas/DeviceDetail"
+          description: >
+            The device after the request. Always revoked or retired: a revoke
+            that succeeds or repeats never leaves the device active.
+          allOf:
+            - $ref: "#/components/schemas/DeviceDetail"
+            - properties:
+                trustState:
+                  enum: [revoked, retired]
 
     # -----------------------------------------------------------------------
     # Canonical error envelope (auth / pos-sales / shift-closes)
