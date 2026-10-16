@@ -1,0 +1,64 @@
+-- 0048_sales_store_business_date_idx.sql
+--
+-- Store-wide sale history storage, part 2 of 2 (Jira RT-538, RT-534 S2).
+-- [GATED] migration — owner-authorized on RT-538 (comment 12079, 2026-10-16).
+-- Deploying or running it in any environment is NOT authorized by that comment.
+--
+-- The index behind listSaleHistory (pos-sales/sale-history.yaml, RT-537 D-3):
+-- one store's sales over a business-date range, ordered
+-- business_date DESC, occurred_at DESC, id DESC with a keyset cursor. The
+-- column list is the one in RT-537 comments 12056/12069 and RT-538 comment
+-- 12079; it supersedes the shorter list in RT-538's description so the index
+-- matches the list order and no sort is needed. idx_sales_tenant_store and
+-- idx_sales_business_date stay (additive only).
+--
+-- ---------------------------------------------------------------------------
+-- WHY THIS FILE IS ONE STATEMENT — DO NOT ADD ANYTHING TO IT
+-- ---------------------------------------------------------------------------
+-- The runner (src/cli/migrate.ts) sends each file as ONE simple-protocol query.
+-- PostgreSQL runs a multi-statement query as one implicit transaction block,
+-- and CREATE INDEX CONCURRENTLY refuses to run inside a transaction block. A
+-- file holding exactly one statement is not wrapped, so the build runs
+-- concurrently with no runner change. Adding any other statement here (BEGIN,
+-- SET, COMMENT ON, a second index) makes this migration fail. The migration
+-- spec checks this.
+--
+-- Lock impact: SHARE UPDATE EXCLUSIVE on sales for the build. Sale capture,
+-- reads and updates continue throughout; only other DDL on sales and VACUUM
+-- wait. The build makes two passes over sales and waits for transactions that
+-- were open when it started, so it takes longer than a plain build but never
+-- blocks sale traffic. No lock_timeout is needed (there is nothing to queue
+-- behind that blocks traffic) and none can be set without a second statement.
+--
+-- No timeout. The build waits for every transaction older than it, in any
+-- table of the database, so one session left idle in transaction holds it (and
+-- deploy step 1) indefinitely. Before deploying, check pg_stat_activity for
+-- long-open transactions (state = 'idle in transaction', old xact_start).
+--
+-- Run ONE `migrate up` at a time while 0048 is pending. A second runner waiting
+-- for the migration advisory lock holds a snapshot the build must wait for,
+-- while the build's session holds that lock: PostgreSQL breaks the deadlock by
+-- cancelling one side, which can leave an INVALID index (see recovery). The
+-- deploy runs migrate once (deploy/README.md); do not start a second by hand.
+--
+-- No IF NOT EXISTS, on purpose. If the build fails part-way (a cancelled
+-- session, a deadlock, a server restart), PostgreSQL leaves an INVALID index
+-- with this name and the runner records nothing. With IF NOT EXISTS, a re-run
+-- would skip the invalid index and record success; without it, the re-run fails
+-- loudly. An invalid leftover is not used by queries but still costs every
+-- sales write until it is dropped. To recover:
+--   1. SELECT indisvalid FROM pg_index
+--        WHERE indexrelid = 'idx_sales_tenant_store_business_date'::regclass;
+--   2. false (an invalid leftover): DROP INDEX CONCURRENTLY IF EXISTS
+--      idx_sales_tenant_store_business_date; then re-run `migrate up`.
+--   3. true (the build finished but the runner died before recording it):
+--      either drop it as in step 2 and re-run, or record it by hand:
+--        INSERT INTO _drizzle_migrations (id)
+--          VALUES ('0048_sales_store_business_date_idx');
+-- While 0048 is unrecorded, `migrate down` rolls back 0047, not 0048: drop a
+-- leftover index by hand first, as above.
+--
+-- No data changes. Reversible via 0048_sales_store_business_date_idx.down.sql.
+
+CREATE INDEX CONCURRENTLY idx_sales_tenant_store_business_date
+  ON sales (tenant_id, store_id, business_date DESC, occurred_at DESC, id DESC);

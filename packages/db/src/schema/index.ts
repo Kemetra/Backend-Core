@@ -35,6 +35,7 @@ export * from "./sales/sale-lines";
 export * from "./sales/sale-terminal-events";
 export * from "./sales/sale-returns";
 export * from "./sales/sale-tenders";
+export * from "./sales/sale-reprints";
 export * from "./sales/sale-sync-deadletters";
 export * from "./settlement/payer-account";
 export * from "./settlement/receivable";

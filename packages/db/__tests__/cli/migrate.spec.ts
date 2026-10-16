@@ -218,6 +218,8 @@ describe("data-pulse-migrate CLI", () => {
     "0044_stock_locations_position_grain",
     "0045_tracking_foundation",
     "0046_sale_void_approval",
+    "0047_sale_history_capture",
+    "0048_sales_store_business_date_idx",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -314,18 +316,63 @@ describe("data-pulse-migrate CLI", () => {
     ];
   }
 
+  /** 0047_sale_history_capture (RT-538): the receipt snapshot, line_seq and sale_reprints. */
+  const RECEIPT_COLUMNS = [
+    "receipt_sale_number",
+    "receipt_number",
+    "receipt_terminal_label",
+    "receipt_operator_display_name",
+    "receipt_settled_at",
+    "receipt_branch_name",
+    "receipt_branch_address",
+    "receipt_tax_registration_id",
+    "receipt_change_given",
+  ] as const;
+  const REPRINT_TABLES = ["sale_reprints"];
+  async function countSaleHistoryCaptureObjects(): Promise<[string, string, string, string]> {
+    let columns = 0;
+    for (const column of RECEIPT_COLUMNS) {
+      columns += Number(await countPublicColumn("sales", column));
+    }
+    return [
+      String(columns),
+      await countPublicColumn("sale_lines", "line_seq"),
+      await countPublicTables(REPRINT_TABLES),
+      await countPolicies(REPRINT_TABLES),
+    ];
+  }
+
   /**
-   * After one `down` from head: 0046's approval columns on sale_voids, their
-   * CHECK and the single-use index are gone, while 0045's tracking tables, the
-   * tenant_products Tracking Profile and stock_movements.tracking_identity_id
-   * survive, as do 0044's stock_locations table, its store trigger and the stock_movements
-   * position constraints survive, as do 0042's integration table and effect
-   * columns (with 0043's backfill), 0041's tender columns, 0040's device
-   * lifecycle columns, 0039's evidence column and 0037/0038's resolution table.
+   * 0048_sales_store_business_date_idx (RT-538): "1" when the store/business-date
+   * index exists AND is valid. It is built CONCURRENTLY by the runner, so this
+   * also proves the single-statement file ran outside a transaction block.
+   */
+  function countValidSaleHistoryIndex(): Promise<string> {
+    return queryCount(`SELECT COUNT(*)::text AS count FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      WHERE c.relname = 'idx_sales_tenant_store_business_date' AND i.indisvalid`);
+  }
+
+  /**
+   * After one `down` from head: 0048's store/business-date index is gone, while
+   * 0047's receipt columns, line_seq and sale_reprints survive, as do 0046's
+   * approval columns on sale_voids, their CHECK and the single-use index,
+   * 0045's tracking tables, the tenant_products Tracking Profile and
+   * stock_movements.tracking_identity_id, 0044's stock_locations table, its
+   * store trigger and the stock_movements position constraints, 0042's
+   * integration table and effect columns (with 0043's backfill), 0041's tender
+   * columns, 0040's device lifecycle columns, 0039's evidence column and
+   * 0037/0038's resolution table.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countSaleVoidApprovalObjects()).toEqual(["0", "0", "0"]);
-    // 0032's void columns survive the 0046 rollback.
+    expect(await countValidSaleHistoryIndex()).toBe("0");
+    expect(
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_indexes
+        WHERE schemaname = 'public' AND indexname = 'idx_sales_tenant_store_business_date'`),
+    ).toBe("0");
+    expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
+    expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
+    // 0032's void columns survive.
     expect(await countPublicColumn("sale_voids", "business_date")).toBe("1");
     await expectTrackingFoundationApplied();
     expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("1");
@@ -453,6 +500,11 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPolicies(TRACKING_TABLES)).toBe("4");
     // 0046's approval columns, CHECK and single-use index on sale_voids (RT-530).
     expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
+    // 0047's nine receipt columns, line_seq, sale_reprints and its SELECT +
+    // INSERT policies (RT-538).
+    expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
+    // 0048's store/business-date index, valid after the runner's CONCURRENTLY build (RT-538).
+    expect(await countValidSaleHistoryIndex()).toBe("1");
   });
 
   it("up is idempotent on a second run", async () => {
@@ -490,7 +542,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0046 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0048 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
@@ -598,6 +650,8 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("1");
     await expectTrackingFoundationApplied();
     expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
+    expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
+    expect(await countValidSaleHistoryIndex()).toBe("1");
   });
 
   it(

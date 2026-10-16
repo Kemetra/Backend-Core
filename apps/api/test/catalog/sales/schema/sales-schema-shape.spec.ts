@@ -26,6 +26,7 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import {
   saleLines,
   saleRefunds,
+  saleReprints,
   saleReturnLines,
   saleReturns,
   saleReturnTenders,
@@ -81,6 +82,7 @@ const ALL_TABLES: ReadonlyArray<{ name: string; table: unknown }> = [
   { name: "sale_return_lines", table: saleReturnLines },
   { name: "sale_return_tenders", table: saleReturnTenders },
   { name: "sale_tenders", table: saleTenders },
+  { name: "sale_reprints", table: saleReprints },
 ];
 
 describe("sales schema shape — sales (header)", () => {
@@ -281,6 +283,72 @@ describe("sales schema shape — sale tenders + device attribution (RT-77, 0033)
     expect(cols.get("tender_ref")?.notNull).toBe(false);
     expect(cols.get("sequence")?.columnType).toBe("PgSmallInt");
     expect(cols.get("sequence")?.notNull).toBe(false);
+  });
+});
+
+/** The named columns' metadata, keyed by name, for one `toMatchObject` check. */
+function pick(table: unknown, names: readonly string[]): Record<string, ColumnInfo | undefined> {
+  const cols = columns(table);
+  return Object.fromEntries(names.map((n) => [n, cols.get(n)]));
+}
+
+const NULLABLE_TEXT = { columnType: "PgText", notNull: false };
+
+describe("sales schema shape — sale history storage (RT-538, 0047)", () => {
+  it("sales carries the nullable receipt snapshot, typed per CaptureSaleReceipt", () => {
+    const names = [
+      "receipt_sale_number",
+      "receipt_number",
+      "receipt_terminal_label",
+      "receipt_operator_display_name",
+      "receipt_branch_name",
+      "receipt_branch_address",
+      "receipt_tax_registration_id",
+      "receipt_settled_at",
+      "receipt_change_given",
+    ];
+    expect(pick(sales, names)).toMatchObject({
+      receipt_sale_number: NULLABLE_TEXT,
+      receipt_number: NULLABLE_TEXT,
+      receipt_terminal_label: NULLABLE_TEXT,
+      receipt_operator_display_name: NULLABLE_TEXT,
+      receipt_branch_name: NULLABLE_TEXT,
+      receipt_branch_address: NULLABLE_TEXT,
+      receipt_tax_registration_id: NULLABLE_TEXT,
+      receipt_settled_at: { columnType: "PgTimestamp", notNull: false },
+      receipt_change_given: { columnType: "PgNumeric", precision: 19, scale: 4, notNull: false },
+    });
+  });
+
+  it("sale_lines.line_seq is a nullable integer (legacy lines carry none)", () => {
+    expect(pick(saleLines, ["line_seq"])).toMatchObject({
+      line_seq: { columnType: "PgInteger", notNull: false },
+    });
+  });
+
+  it("sale_reprints: NOT NULL facts, nullable device, server-stamped recorded_at", () => {
+    const required = [
+      "sale_id",
+      "tenant_id",
+      "store_id",
+      "mode",
+      "kind",
+      "marked_voided",
+      "marked_returned",
+      "copy_number",
+      "printed_at",
+      "recorded_at",
+      "created_by",
+      "idempotency_key",
+    ];
+    expect(pick(saleReprints, required)).toMatchObject(
+      Object.fromEntries(required.map((n) => [n, { notNull: true }])),
+    );
+    expect(pick(saleReprints, ["device_id", "copy_number", "marked_voided"])).toMatchObject({
+      device_id: { notNull: false },
+      copy_number: { columnType: "PgInteger" },
+      marked_voided: { columnType: "PgBoolean" },
+    });
   });
 });
 

@@ -24,6 +24,7 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   numeric,
   pgTable,
   text,
@@ -57,6 +58,9 @@ export const saleLines = pgTable(
     unit: text("unit").notNull(),
     // Optional lineage only (FR-003); NULL for ad-hoc lines (FR-004).
     tenantProductRef: uuid("tenant_product_ref"),
+    // RT-538 (0047): the line's original receipt position (1-based); NULL for
+    // lines captured before RT-539 stores it.
+    lineSeq: integer("line_seq"),
   },
   (t) => [
     check(
@@ -70,6 +74,7 @@ export const saleLines = pgTable(
       "sale_lines_tax_amount_non_negative",
       sql`${t.taxAmount} IS NULL OR ${t.taxAmount} >= 0`,
     ),
+    check("sale_lines_line_seq_positive", sql`${t.lineSeq} IS NULL OR ${t.lineSeq} >= 1`),
     index("idx_sale_lines_sale").on(t.saleId),
     index("idx_sale_lines_tenant_store").on(t.tenantId, t.storeId),
     // Composite FK → sales(id, tenant_id, store_id): a line can only attach to
