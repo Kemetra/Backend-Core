@@ -61,7 +61,8 @@ when inherited lines remain; delete them in any later PR.
 
 - A credential change behind an unchanged security scheme name (13d7bd2, #488) is
   not detected. It exists only in description text and needs human/ADR review.
-- `oasdiff validate` rejects the `(?!` lookahead in `settlement.yaml` (Go RE2).
+- `oasdiff validate` rejects the `(?!` lookahead in `PositiveDecimalAmount`
+  (`pos-sales/sales.yaml`, `erpnext-connector/posting-feed.yaml`; Go RE2).
   Diffing still works; pattern checks there compare text only.
 - `nullable: true` (OAS 3.0 keyword) inside the 3.1 contracts is treated as nullable
   by oasdiff. See RT-53.

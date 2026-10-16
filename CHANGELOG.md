@@ -89,6 +89,28 @@ This project follows [Semantic Versioning](https://semver.org/).
   roster `branch_id` query parameter `required: true`, matching the runtime's
   `branch_id_required` refusal (still the generic 401). Acknowledged oasdiff
   ERR `request-parameter-became-required`. No runtime change.
+- RT-417 `[GATED]`, owner-authorized 2026-10-12 (RT-417 comment 11671; owner
+  decision R-1, RT-413 comment 11669): the contracts for payer
+  responsibilities captured on the sale (035 narrowed to Option B).
+  `settlement/settlement.yaml` 2.0.0 is BREAKING, replacing the stale
+  1.0.0-draft: only `consoleCreatePayerAccount` and `consoleListPayerAccounts`
+  remain (still contract-only until RT-418); `consoleApplyPayment`,
+  `consoleSubmitClaim`, `consoleReconcileRemittance`,
+  `posRecordSettlementIntent`, `consoleGetReceivable` and
+  `consoleListReceivables` are removed (listed in `x-retired-operations`; the
+  runtime keeps serving them until RT-422); `PayerAccountCreate.creditTerms` is
+  removed and `externalRef` is the ERPNext Customer link.
+  `pos-sales/sales.yaml` 1.10.0-draft (additive): optional
+  `CaptureSaleRequest.responsibilities[{payerRef, amount, sequence}]`, the
+  coverage rule `sum(tenders) + sum(responsibilities) = posTotal` (422
+  `sale_responsibility_mismatch`), 422 `sale_responsibility_payer_invalid`,
+  hashed into the payload, and an optional `Sale.responsibilities`.
+  `erpnext-connector/posting-feed.yaml` 1.8.0-draft (additive):
+  `Sale.responsibilities[{payerExternalRef, amount, sequence}]`, failing closed
+  for an unmapped payer; such sales and their reversals are held off the feed
+  until the Connector supports them (RT-419). Acknowledged oasdiff findings for
+  the settlement removals. Recorded as Amendment A2 in the 035 decision record.
+  No runtime or migration change.
 
 ### Security
 - RT-430 `[GATED]`, owner-approved 2026-10-12 (decisions recorded on RT-430):
