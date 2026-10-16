@@ -261,6 +261,7 @@ describe("device request schemas", () => {
     ["other without a note", { reason: "other" }],
     ["a blank note", { reason: "lost", note: "   " }],
     ["a note over 500 characters", { reason: "lost", note: "x".repeat(501) }],
+    ["a NUL character in the note (Postgres text refuses it)", { reason: "lost", note: "cash\u0000safe" }],
     ["an unknown key", { reason: "lost", storeId: STORE }],
     ["a string acknowledgement", { reason: "lost", acknowledgeCustodyException: "true" }],
   ])("refuses a revoke body with %s", (_label, body) => {

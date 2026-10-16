@@ -39,8 +39,17 @@ export type DeviceListQuery = z.infer<typeof DeviceListQuerySchema>;
 
 export const DeviceIdParamSchema = UuidSchema;
 
-/** `RevokeNote`: 1..500 characters, not blank (0040 CHECK `devices_revoke_note_shape`). */
-const RevokeNoteSchema = z.string().min(1).max(500).regex(/\S/, "note must not be blank");
+/**
+ * `RevokeNote`: 1..500 characters, not blank (0040 CHECK
+ * `devices_revoke_note_shape`), and no NUL (Postgres `text` refuses it, which
+ * would otherwise surface as a 500).
+ */
+const RevokeNoteSchema = z
+  .string()
+  .min(1)
+  .max(500)
+  .regex(/\S/, "note must not be blank")
+  .refine((note) => !note.includes("\u0000"), "note must not contain a NUL character");
 
 export const DeviceRevokeBodySchema = z
   .object({

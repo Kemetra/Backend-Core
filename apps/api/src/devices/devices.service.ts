@@ -18,9 +18,15 @@
  *     `StoresRepository.countOpenShifts` uses for a store. The custody
  *     exception is derived from it on a revoked device; nothing is stored.
  *   - Revoke is ONE transaction: the device row is locked `FOR UPDATE` first
- *     (a concurrent shift open takes `FOR KEY SHARE` on it through the
- *     `opening_device_id` FK, so the open-shift check and the revoke are
- *     serialized against it, and two revokes serialize too), then the D-Q4
+ *     (a shift insert takes `FOR KEY SHARE` on it through the
+ *     `opening_device_id` FK: a shift committed first is seen by the
+ *     open-shift check; two revokes serialize, the second answers
+ *     `already_revoked`). One direction is NOT covered: a shift open whose
+ *     device check passed before the revoke, and whose insert waits on the
+ *     lock, still lands after the revoke commits. That shift then shows as a
+ *     custody exception on read, while the audit row recorded
+ *     `custody_exception: false` (the shift-open path is outside RT-365). Then
+ *     the D-Q4
  *     decision (`decideRevoke`), the revoke fields, the operator-session and
  *     pending-code cascade and the `pos.device.revoked` audit row. A refusal
  *     changes nothing. No shift or cash fact is ever written here.
@@ -104,22 +110,29 @@ export interface RevokeDeviceInput extends ScopedInput {
 }
 
 /**
- * The derived columns, computed once per statement over the tenant ($1):
- * the most recently opened open shift per device, and the used pairing codes
- * that link a replacement to the device it replaced (RT-367).
+ * The used pairing codes that link a replacement to the device it replaced
+ * (RT-367), over the tenant ($1), kept only when BOTH devices are in the
+ * caller's store scope (`scopeParam`, null = tenant-wide): the other side of
+ * a cross-store move reads as absent, like every out-of-scope device.
  */
-const DERIVED_CTES = `
+const linksCte = (scopeParam: string): string => `
+  links AS (
+    SELECT pc.device_id, pc.replaces_device_id, pc.used_at, pc.id
+      FROM pairing_codes pc
+      JOIN devices nd ON nd.id = pc.device_id AND nd.tenant_id = pc.tenant_id
+      JOIN devices od ON od.id = pc.replaces_device_id AND od.tenant_id = pc.tenant_id
+     WHERE pc.tenant_id = $1::uuid AND pc.status = 'used'
+       AND (${scopeParam}::uuid[] IS NULL
+            OR (nd.store_id = ANY(${scopeParam}::uuid[]) AND od.store_id = ANY(${scopeParam}::uuid[])))
+  )`;
+
+/** The most recently opened open shift per device of the tenant ($1), computed once for a list. */
+const OPEN_SHIFTS_CTE = `
   open_shifts AS (
     SELECT DISTINCT ON (s.opening_device_id) s.opening_device_id, s.shift_id
       FROM shifts s
      WHERE s.tenant_id = $1::uuid AND s.lifecycle_state = 'open'
      ORDER BY s.opening_device_id, s.opened_at DESC, s.shift_id DESC
-  ),
-  links AS (
-    SELECT pc.device_id, pc.replaces_device_id, pc.used_at, pc.id
-      FROM pairing_codes pc
-     WHERE pc.tenant_id = $1::uuid AND pc.status = 'used'
-       AND pc.device_id IS NOT NULL AND pc.replaces_device_id IS NOT NULL
   )`;
 
 const DEVICE_COLUMNS = `
@@ -142,7 +155,7 @@ const DEVICE_COLUMNS = `
  * $4 trust state, $5 / $6 / $7 keyset (rank, expires_at, id), $8 limit.
  */
 const LIST_SQL = `
-  WITH ${DERIVED_CTES},
+  WITH ${OPEN_SHIFTS_CTE}, ${linksCte("$2")},
   ranked AS (
     SELECT ${DEVICE_COLUMNS}
       FROM devices d
@@ -160,12 +173,20 @@ const LIST_SQL = `
    ORDER BY rank, expires_at, id
    LIMIT $8`;
 
-/** $1 tenant, $2 device, $3 scoped store ids (null = tenant-wide). */
+/**
+ * $1 tenant, $2 device, $3 scoped store ids (null = tenant-wide). One device,
+ * so its open shift is looked up for that device only (no tenant-wide CTE).
+ */
 const DETAIL_SQL = `
-  WITH ${DERIVED_CTES}
+  WITH ${linksCte("$3")}
   SELECT ${DEVICE_COLUMNS}
     FROM devices d
-    LEFT JOIN open_shifts os ON os.opening_device_id = d.id
+    LEFT JOIN LATERAL (
+      SELECT s.shift_id FROM shifts s
+       WHERE s.tenant_id = d.tenant_id AND s.opening_device_id = d.id AND s.lifecycle_state = 'open'
+       ORDER BY s.opened_at DESC, s.shift_id DESC
+       LIMIT 1
+    ) os ON true
    WHERE d.tenant_id = $1::uuid
      AND d.id = $2::uuid
      AND ($3::uuid[] IS NULL OR d.store_id = ANY($3::uuid[]))`;
@@ -251,7 +272,7 @@ export class DevicesService {
       }
       return {
         outcome: decision.kind === "revoke" ? "revoked" : "already_revoked",
-        device: await this.readDetail(client, input.tenantId, input.deviceId, null),
+        device: await this.readDetail(client, input.tenantId, input.deviceId, scopeStoreIds(caller.scope)),
       };
     });
   }

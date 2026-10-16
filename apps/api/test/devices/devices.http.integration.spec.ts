@@ -279,6 +279,27 @@ describe("consoleListDevices", () => {
   });
 });
 
+describe("replace links and the store scope", () => {
+  const linksOf = async (session: string, deviceId: string) => {
+    const item = (await page(session, { page_size: 200 })).items.find((i) => i.deviceId === deviceId);
+    return item === undefined ? undefined : { replaces: item["replacesDeviceId"], replacedBy: item["replacedByDeviceId"] };
+  };
+
+  it("shows a cross-store move to a caller that sees both stores", async () => {
+    if (skip()) return;
+    expect(await linksOf(SES_OWNER_ALL, D_SOON)).toEqual({ replaces: D_RETIRED, replacedBy: null });
+    expect(await linksOf(SES_OWNER_ALL, D_RETIRED)).toEqual({ replaces: null, replacedBy: D_SOON });
+  });
+
+  it("hides the other side of a move from a caller scoped to one store", async () => {
+    if (skip()) return;
+    expect(await linksOf(SES_ADMIN_SPEC, D_SOON)).toEqual({ replaces: null, replacedBy: null });
+    expect(await linksOf(SES_MANAGER_ACTIVE, D_RETIRED)).toEqual({ replaces: null, replacedBy: null });
+    const res = await get(detail(D_SOON), SES_ADMIN_SPEC).expect(200);
+    expect(res.body).toMatchObject({ replacesDeviceId: null });
+  });
+});
+
 describe("consoleGetDevice", () => {
   it("reads one device with its revoke note", async () => {
     if (skip()) return;

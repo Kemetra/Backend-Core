@@ -25,6 +25,10 @@
  *     rank 3  D_RETIRED  Y  revoked and retired                          exp 2026-10-20
  *     tenant B: D_B on STORE_B_X.
  *
+ *   Replace links (used pairing codes): D_NEW replaced D_OLD (both X); D_SOON
+ *   (X) replaced D_RETIRED (Y) — a move across stores, hidden from a caller
+ *   that can see only one side.
+ *
  * `.ts` (not `.spec.ts`) so Jest does not collect it. IDs use the `0365`
  * mnemonic (hex only).
  */
@@ -88,6 +92,7 @@ export const CODE_PLAIN_TERMINAL = id("08a1");
 export const CODE_PLAIN_REPLACEMENT = id("08a2");
 export const CODE_OTHER_PENDING = id("08a3");
 const CODE_USED_REPLACE = id("08a4");
+const CODE_USED_MOVE = id("08a5");
 
 /** Operator tokens: the live and the expired one of R_PLAIN, a live one of R_SEC and of D_SOON. */
 export const OP_TOKEN_PLAIN_LIVE = generateRawToken();
@@ -271,6 +276,7 @@ async function seedCredentials(admin: Pool): Promise<void> {
   await insertCode(admin, { id: CODE_PLAIN_REPLACEMENT, terminalId: id("09a1"), status: "pending", replaces: R_PLAIN });
   await insertCode(admin, { id: CODE_OTHER_PENDING, terminalId: id("09a2"), status: "pending", replaces: D_SOON });
   await insertCode(admin, { id: CODE_USED_REPLACE, terminalId: D_NEW, status: "used", replaces: D_OLD, deviceId: D_NEW });
+  await insertCode(admin, { id: CODE_USED_MOVE, terminalId: D_SOON, status: "used", replaces: D_RETIRED, deviceId: D_SOON });
 }
 
 /** Revoked / retired states, set after the shifts so D_EXC's shift could open. */
