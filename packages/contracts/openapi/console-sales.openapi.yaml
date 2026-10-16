@@ -269,7 +269,11 @@ components:
         The human dashboard session cookie (httpOnly `dp2_session`), verified
         by `SessionOnlyAdminGuard`. The only accepted credential on this
         surface: a machine bearer, a POS `device` token or an
-        `operatorAuthorization` envelope is rejected (401). `RolesGuard` +
+        `operatorAuthorization` envelope is rejected (401). When a request
+        carries both a valid session cookie and an `Authorization` header,
+        the cookie authenticates it and the header is ignored (the repo-wide
+        `AuthGuard` rule, cookie preferred); the principal is still the human
+        session. `RolesGuard` +
         `@Roles("owner", "tenant_admin", "store_manager")` gate both routes
         (default deny → 404). 401 semantics are owned by 028 (G10).
 
