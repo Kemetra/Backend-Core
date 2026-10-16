@@ -90,50 +90,26 @@ function request(opts: { admission?: string; body?: unknown; saleRef?: string } 
 
 type Gate = { canActivate: jest.Mock };
 
-/** The device guard publishes exactly what PosDeviceAuthGuard publishes. */
-function deviceAccepting(): Gate {
+/** A gate that accepts and publishes what its real guard publishes. */
+function accepting(published: { tokenId: string; userId: string | null; scope: "pos" | "pos_operator" }): Gate {
   return {
     canActivate: jest.fn(async (ctx: ExecutionContext) => {
       const req = ctx.switchToHttp().getRequest<FakeRequest>();
-      req.principal = {
-        kind: "token",
-        tokenId: DEVICE_ID,
-        tenantId: TENANT_ID,
-        userId: null,
-        storeId: STORE_ID,
-        scope: "pos",
-      };
-      req.context = { userId: null, tenantId: TENANT_ID, storeId: STORE_ID, isPlatformAdmin: false, source: "token" };
+      const { tokenId, userId, scope } = published;
+      req.principal = { kind: "token", tokenId, tenantId: TENANT_ID, userId, storeId: STORE_ID, scope };
+      req.context = { userId, tenantId: TENANT_ID, storeId: STORE_ID, isPlatformAdmin: false, source: "token" };
       req.posDeviceId = DEVICE_ID;
       return true;
     }),
   };
 }
 
-function envelopeAccepting(): Gate {
-  return {
-    canActivate: jest.fn(async (ctx: ExecutionContext) => {
-      const req = ctx.switchToHttp().getRequest<FakeRequest>();
-      req.principal = {
-        kind: "token",
-        tokenId: "envelope-token-id",
-        tenantId: TENANT_ID,
-        userId: MANAGER_ID,
-        storeId: STORE_ID,
-        scope: "pos_operator",
-      };
-      req.context = {
-        userId: MANAGER_ID,
-        tenantId: TENANT_ID,
-        storeId: STORE_ID,
-        isPlatformAdmin: false,
-        source: "token",
-      };
-      req.posDeviceId = DEVICE_ID;
-      return true;
-    }),
-  };
-}
+/** PosDeviceAuthGuard: a device principal with no user. */
+const deviceAccepting = (): Gate => accepting({ tokenId: DEVICE_ID, userId: null, scope: "pos" });
+
+/** PosOperatorEnvelopeSaleGuard: the manager's envelope bound to the device. */
+const envelopeAccepting = (): Gate =>
+  accepting({ tokenId: "envelope-token-id", userId: MANAGER_ID, scope: "pos_operator" });
 
 function refusing(err: Error = new UnauthorizedException("Unauthorized")): Gate {
   return {
@@ -346,28 +322,15 @@ describe("device path (X-Cashier-Admission present)", () => {
     expect(req.context?.userId).toBeNull();
   });
 
-  it("a reprint authorize checks the admission live now (checkAt null)", async () => {
+  it.each([
+    ["an authorize checks the admission live now", { mode: "authorize", kind: "sale_record" }, null],
+    ["a record checks the admission window at printedAt", { mode: "record", kind: "duplicate", localCopyNumber: 3 }, PRINTED_AT],
+  ])("on the reprint route, %s", async (_label, body, checkAt) => {
     const admissions = selector({ ok: true, userId: CASHIER_ID });
     const { guard } = makeGuard({ admissions });
-    const req = request({
-      admission: ADMISSION_ID,
-      saleRef: SALE_REF,
-      body: { mode: "authorize", kind: "sale_record", printedAt: PRINTED_AT },
-    });
+    const req = request({ admission: ADMISSION_ID, saleRef: SALE_REF, body: { ...body, printedAt: PRINTED_AT } });
     await expect(guard.canActivate(ctxFor(req, reprintHandler))).resolves.toBe(true);
-    expect(admissions.resolve.mock.calls[0]?.[0]).toMatchObject({ checkAt: null });
-  });
-
-  it("a reprint record checks the admission window at printedAt", async () => {
-    const admissions = selector({ ok: true, userId: CASHIER_ID });
-    const { guard } = makeGuard({ admissions });
-    const req = request({
-      admission: ADMISSION_ID,
-      saleRef: SALE_REF,
-      body: { mode: "record", kind: "duplicate", printedAt: PRINTED_AT, localCopyNumber: 3 },
-    });
-    await expect(guard.canActivate(ctxFor(req, reprintHandler))).resolves.toBe(true);
-    expect(admissions.resolve.mock.calls[0]?.[0]).toMatchObject({ checkAt: PRINTED_AT });
+    expect(admissions.resolve.mock.calls[0]?.[0]).toMatchObject({ checkAt });
   });
 
   it("a malformed reprint body from an authenticated device is a 400, before the lookup", async () => {

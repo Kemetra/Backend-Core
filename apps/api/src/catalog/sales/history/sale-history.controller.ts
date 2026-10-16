@@ -81,18 +81,25 @@ function pathOf(request: TenantContextRequest): "store" | "own_sales" {
   throw new UnauthorizedException("Unauthorized");
 }
 
+/** A credential value the guard must have published; anything missing is the generic 401. */
+function published<T>(value: T | null | undefined): T {
+  if (value === null || value === undefined) throw new UnauthorizedException("Unauthorized");
+  return value;
+}
+
 /** The caller's tenant, store, device and visibility, from the guard-published credential. */
 export function callerScope(request: TenantContextRequest): CallerScope {
   const path = pathOf(request);
-  const tenantId = request.context?.tenantId ?? null;
-  const storeId = request.context?.storeId ?? null;
-  const userId = request.context?.userId ?? null;
-  const deviceId = request.posDeviceId ?? null;
-  if (tenantId === null || storeId === null || userId === null || deviceId === null) {
-    throw new UnauthorizedException("Unauthorized");
-  }
+  const ctx = published(request.context);
+  const userId = published(ctx.userId);
   const visibility = path === "own_sales" ? { kind: "own_sales" as const, userId } : { kind: "store" as const };
-  return { tenantId, storeId, actorUserId: userId, deviceId, visibility };
+  return {
+    tenantId: published(ctx.tenantId),
+    storeId: published(ctx.storeId),
+    actorUserId: userId,
+    deviceId: published(request.posDeviceId),
+    visibility,
+  };
 }
 
 function validationError(message: string): BadRequestException {

@@ -119,9 +119,11 @@ export function scopedQuery(scope: SaleHistoryScope): SaleQuery {
   return q;
 }
 
+/** Append a predicate, numbering each `$?` placeholder after the parameters already bound. */
 function addPredicate(q: SaleQuery, sql: string, ...values: unknown[]): void {
-  let next = q.params.length;
-  q.where.push(sql.replace(/\$\?/g, () => `$${(next += 1)}`));
+  const base = q.params.length;
+  const numbered = sql.split("$?").map((part, i) => (i === 0 ? part : `$${base + i}${part}`));
+  q.where.push(numbered.join(""));
   q.params.push(...values);
 }
 

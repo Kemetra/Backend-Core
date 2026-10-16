@@ -73,15 +73,13 @@ interface Script {
 
 /** A client answering each statement by its SQL; records every statement. */
 function scriptedClient(script: Script): PoolClient & { query: jest.Mock } {
-  const query = jest.fn(async (sql: string) => {
-    if (/FROM sales s/.test(sql)) return { rows: script.sale === null ? [] : [script.sale ?? saleRow()] };
-    if (/FROM sale_lines sl/.test(sql)) return { rows: [] };
-    if (/FROM sale_tenders/.test(sql)) return { rows: script.tenders ?? [] };
-    if (/pg_advisory_xact_lock/.test(sql)) return { rows: [] };
-    if (/AS same/.test(sql)) return { rows: script.stored ? [script.stored] : [] };
-    if (/INSERT INTO sale_reprints/.test(sql)) return { rows: [{ ...STORED, mode: "record", copy_number: 4 }] };
-    return { rows: [] };
-  });
+  const routes: ReadonlyArray<readonly [RegExp, () => unknown[]]> = [
+    [/FROM sales s/, () => (script.sale === null ? [] : [script.sale ?? saleRow()])],
+    [/FROM sale_tenders/, () => script.tenders ?? []],
+    [/AS same/, () => (script.stored ? [script.stored] : [])],
+    [/INSERT INTO sale_reprints/, () => [{ ...STORED, mode: "record", copy_number: 4 }]],
+  ];
+  const query = jest.fn(async (sql: string) => ({ rows: routes.find(([re]) => re.test(sql))?.[1]() ?? [] }));
   return { query } as unknown as PoolClient & { query: jest.Mock };
 }
 

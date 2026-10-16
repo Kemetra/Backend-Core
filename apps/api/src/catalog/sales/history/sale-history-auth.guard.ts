@@ -130,7 +130,7 @@ export class SaleHistoryAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<TenantContextRequest>();
-    const reprint = Reflect.getMetadata(SALE_REPRINT_ROUTE_KEY, context.getHandler()) === true;
+    const reprint = isReprintRoute(context);
     if (!Object.hasOwn(request.headers, CASHIER_ADMISSION_HEADER)) {
       return this.envelopeOrRefuse(context, request, reprint);
     }
@@ -144,11 +144,7 @@ export class SaleHistoryAuthGuard implements CanActivate {
     const body = reprint ? SaleReprintRequestSchema.parse(request.body) : null;
 
     // c. The admission and its cashier.
-    const verdict = await this.admissions.resolve({
-      ...scope,
-      admissionId,
-      checkAt: body?.mode === "record" ? body.printedAt : null,
-    });
+    const verdict = await this.admissions.resolve({ ...scope, admissionId, checkAt: checkAtOf(body) });
     if (!verdict.ok) {
       return this.refuse(request, scope, { reprint, reason: verdict.cause, actorUserId: verdict.userId, body });
     }
@@ -167,16 +163,20 @@ export class SaleHistoryAuthGuard implements CanActivate {
     try {
       return (await this.envelope.canActivate(context)) as boolean;
     } catch (err) {
-      if (!(err instanceof UnauthorizedException) || !(await this.deviceAccepts(context))) throw err;
+      if (!(await this.isValidDeviceAfter(err, context))) throw err;
     }
     const scope = deviceScopeOf(request);
-    const parsed = reprint ? SaleReprintRequestSchema.safeParse(request.body) : null;
-    const body = parsed?.success === true ? parsed.data : null;
+    const body = reprint ? lenientReprintBody(request) : null;
     return this.refuse(request, scope, { reprint, reason: "admission_missing", actorUserId: null, body });
   }
 
-  /** True when the bearer is a valid device token; any non-401 failure propagates. */
-  private async deviceAccepts(context: ExecutionContext): Promise<boolean> {
+  /**
+   * After the envelope refused: true when that refusal was the generic 401
+   * AND the bearer is a valid device token. Any other envelope error, or a
+   * non-401 device failure, propagates.
+   */
+  private async isValidDeviceAfter(envelopeError: unknown, context: ExecutionContext): Promise<boolean> {
+    if (!(envelopeError instanceof UnauthorizedException)) return false;
     try {
       await this.device.canActivate(context);
       return true;
@@ -198,6 +198,7 @@ export class SaleHistoryAuthGuard implements CanActivate {
     },
   ): Promise<never> {
     const requestId = request.requestId ?? null;
+    const { mode, kind } = refusal.body ?? NO_BODY;
     this.logger?.warn(
       {
         event: `sale_history.cashier_refused.${refusal.reason}`,
@@ -214,14 +215,31 @@ export class SaleHistoryAuthGuard implements CanActivate {
         scope,
         actorUserId: refusal.actorUserId,
         saleRef: saleRefParam(request),
-        mode: refusal.body?.mode ?? null,
-        kind: refusal.body?.kind ?? null,
+        mode,
+        kind,
         reason: refusal.reason,
         requestId,
       });
     }
     throw new ForbiddenException({ code: "refused", message: "Forbidden" });
   }
+}
+
+const NO_BODY = { mode: null, kind: null } as const;
+
+function isReprintRoute(context: ExecutionContext): boolean {
+  return Reflect.getMetadata(SALE_REPRINT_ROUTE_KEY, context.getHandler()) === true;
+}
+
+/** The admission instant: a `record` reprint's printedAt; otherwise null (live now). */
+function checkAtOf(body: SaleReprintRequestDto | null): string | null {
+  return body !== null && body.mode === "record" ? body.printedAt : null;
+}
+
+/** The reprint body for a refusal's audit when it parses; null otherwise. */
+function lenientReprintBody(request: TenantContextRequest): SaleReprintRequestDto | null {
+  const parsed = SaleReprintRequestSchema.safeParse(request.body);
+  return parsed.success ? parsed.data : null;
 }
 
 /** The route's saleRef when it is a UUID (for the refusal audit), else null. */

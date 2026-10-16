@@ -51,7 +51,14 @@ export async function recordReprintInTransaction(
   input: RecordReprintInput,
 ): Promise<ReprintOutcome> {
   const outcome = await decideReprint(client, input);
-  if (outcome.ok && outcome.replayed) return outcome;
+  // A replay was audited when it was first recorded: never counted twice.
+  const replayed = outcome.ok && outcome.replayed;
+  if (!replayed) await auditOutcome(client, input, outcome);
+  return outcome;
+}
+
+/** The one `sale.receipt.reprinted` audit row of a decision (recorded or refused). */
+async function auditOutcome(client: PoolClient, input: RecordReprintInput, outcome: ReprintOutcome): Promise<void> {
   const common = {
     sale_ref: input.saleRef,
     device_id: input.deviceId,
@@ -73,7 +80,6 @@ export async function recordReprintInTransaction(
         }
       : { ...common, outcome: "refused", reason: outcome.reason, mode: input.body.mode, kind: input.body.kind },
   });
-  return outcome;
 }
 
 async function decideReprint(client: PoolClient, input: RecordReprintInput): Promise<ReprintOutcome> {

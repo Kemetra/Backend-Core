@@ -165,13 +165,31 @@ interface SeededSale {
 
 let seq = 0;
 
+/** The seven receipt-snapshot values of a seeded sale (all null without one). */
+function snapshotValues(s: SeedSale): Array<string | null> {
+  if (s.snapshot !== true) return Array.from({ length: 7 }, () => null);
+  return [
+    s.saleNumber ?? `till-1-${s.businessDate}-${String(seq).padStart(6, "0")}`,
+    "till-1 (printed)",
+    "Cashier One (printed)",
+    s.occurredAt,
+    "Nile Branch",
+    "1 Nile St, Cairo",
+    "123-456-789",
+  ];
+}
+
+/** The line_seq of the two seeded lines. */
+function lineSeqs(s: SeedSale): [number | null, number | null] {
+  return s.lineSeq === true ? [1, 2] : [null, null];
+}
+
 async function seedSale(s: SeedSale): Promise<SeededSale> {
   seq += 1;
   const id = randomUUID();
   const tenant = s.tenant ?? TENANT;
   const store = s.store ?? STORE;
   const tenders = s.tenders ?? [{ method: "cash", amount: "12.50" }];
-  const snap = s.snapshot === true;
   await E().admin.query(
     `INSERT INTO sales
        (id, tenant_id, store_id, currency_code, pos_total, occurred_at, business_date,
@@ -193,13 +211,7 @@ async function seedSale(s: SeedSale): Promise<SeededSale> {
       s.syncStatus ?? "synced",
       s.device === undefined ? DEVICE : s.device,
       tenders.length,
-      snap ? (s.saleNumber ?? `till-1-${s.businessDate}-${String(seq).padStart(6, "0")}`) : null,
-      snap ? "till-1 (printed)" : null,
-      snap ? "Cashier One (printed)" : null,
-      snap ? s.occurredAt : null,
-      snap ? "Nile Branch" : null,
-      snap ? "1 Nile St, Cairo" : null,
-      snap ? "123-456-789" : null,
+      ...snapshotValues(s),
     ],
   );
   const lines: [string, string] = [randomUUID(), randomUUID()];
@@ -209,7 +221,7 @@ async function seedSale(s: SeedSale): Promise<SeededSale> {
         line_amount, unit, line_seq)
      VALUES ($1, $3, $4, $5, 'Widget', 5.00, 'EGP', 1, 5.00, 'unit', $6),
             ($2, $3, $4, $5, 'Gadget', 7.50, 'EGP', 1, 7.50, 'unit', $7)`,
-    [lines[0], lines[1], id, tenant, store, s.lineSeq === true ? 1 : null, s.lineSeq === true ? 2 : null],
+    [lines[0], lines[1], id, tenant, store, ...lineSeqs(s)],
   );
   for (const t of tenders) {
     await E().admin.query(
