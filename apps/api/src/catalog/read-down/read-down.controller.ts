@@ -18,7 +18,9 @@
  * background read-down has no way to present.)
  *
  * Audit: `@Auditable("catalog.snapshot.read")` is passive metadata read by the
- * global AuditEmitterInterceptor (FR-080 read-access audit).
+ * global AuditEmitterInterceptor (FR-080 read-access audit). The row carries
+ * the reading device as `device_id` (RT-138 L8, RT-365): the device principal
+ * has no user, so the device is the only actor the row can name.
  *
  * READ-ONLY — GET only, no write surface.
  */
@@ -33,7 +35,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 
-import { Auditable } from "../../audit/auditable.decorator";
+import { annotateAudit, Auditable } from "../../audit/auditable.decorator";
 import { PosDeviceAuthGuard } from "../../auth/pos-device-auth.guard";
 import { DeviceBearer } from "../../auth/route-auth";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe";
@@ -79,6 +81,7 @@ export class ReadDownController {
     if (!ctx || ctx.tenantId === null) {
       throw new UnauthorizedException("Unauthorized");
     }
+    annotateReadingDevice(request);
     if (ctx.storeId === null) {
       // The read is store-scoped: a POS principal with no resolved store
       // cannot snapshot a catalogue (FR-005). Reuse the existing POS code.
@@ -121,6 +124,7 @@ export class ReadDownController {
     if (!ctx || ctx.tenantId === null) {
       throw new UnauthorizedException("Unauthorized");
     }
+    annotateReadingDevice(request);
     if (ctx.storeId === null) {
       throw new UnauthorizedException("store_context_required");
     }
@@ -148,4 +152,9 @@ export class ReadDownController {
       throw err;
     }
   }
+}
+
+/** RT-138 L8: name the reading device on the read-down audit row (ids only). */
+function annotateReadingDevice(request: TenantContextRequest): void {
+  if (request.posDeviceId !== undefined) annotateAudit(request, { device_id: request.posDeviceId });
 }
