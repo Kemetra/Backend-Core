@@ -78,14 +78,17 @@ info:
     RT-18 exception view reads it from this surface.
 
 
-    **Revoke (one transaction).** The revoke and every shift open (the
-    cash-up open and the audit-ingest `shift.open`) take the same per-device
-    lifecycle lock (a transaction-scoped advisory lock on tenant + device);
-    the shift open then rechecks `revoked_at` before it inserts. So a shift
-    can never open on a device after its revoke commits (that open is
-    refused as a revoked device), and a revoke always sees a shift whose open
-    committed first. The revoke then locks the device row (`FOR UPDATE`) and
-    decides, in this order:
+    **Revoke (one transaction).** Runtime requirement (implemented by the
+    RT-365 runtime, PR #781; not on `main` until it merges): the revoke and
+    every shift open (the cash-up open and the audit-ingest `shift.open`)
+    MUST take the same per-device lifecycle lock (a transaction-scoped
+    advisory lock on tenant + device), and a shift open MUST recheck
+    `revoked_at` under that lock before it inserts. A device revoked
+    meanwhile MUST NOT get an open shift (the cash-up open is refused as a
+    revoked device); a retired device is always revoked (0040 CHECK), so the
+    same check covers it. A revoke MUST see a shift whose open committed
+    first. The revoke then locks the device row (`FOR UPDATE`) and decides,
+    in this order:
 
       1. Already revoked (or retired) → 200 `already_revoked` with the current
          state. Nothing is overwritten, nothing cascades again, no second audit
