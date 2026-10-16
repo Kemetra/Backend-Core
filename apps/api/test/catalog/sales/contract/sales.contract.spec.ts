@@ -1233,6 +1233,8 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
       pairingMax("tenant_tax_registration_id"),
     );
     // `<terminal_label>-<YYYY-MM-DD>-<NNNNNN>`: label + 1 + 10 + 1 + 6.
+    // The display name has no upstream bound (users.display_name is text), so none here.
+    expect(Number.isNaN(receiptMax("operatorDisplayName"))).toBe(true);
     const longestSaleNumber = pairingMax("terminal_label") + 18;
     expect(receiptMax("saleNumber")).toBeGreaterThanOrEqual(longestSaleNumber);
     expect(receiptMax("receiptNumber")).toBeGreaterThanOrEqual(longestSaleNumber);

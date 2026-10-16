@@ -1086,8 +1086,12 @@ components:
         operatorDisplayName:
           type: string
           minLength: 1
-          maxLength: 256
-          description: The selling operator's display name as printed. Never an email address.
+          description: >
+            The selling operator's display name as printed. Never an email
+            address. No length bound of its own: the source,
+            `users.display_name` (`text`, unbounded in the cashier-admission
+            and operator contracts), has none, so any valid name is accepted
+            (only the request body limit applies).
         settledAt:
           type: string
           format: date-time
