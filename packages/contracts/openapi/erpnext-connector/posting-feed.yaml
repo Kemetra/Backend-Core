@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Connector Posting-Feed API
-  version: "1.7.0-draft"
+  version: "1.8.0-draft"
   description: >
     Spec 012 ERPNext Connector Contracts surface — the DP2 ↔ connector boundary
     that realises the signed 011 posting + version-pin decisions over a
@@ -112,7 +112,10 @@ info:
     mirrors 008's `Sale` minus request-only / advisory fields the connector does
     NOT post — `receivedAt`, `processedAt`, `mismatchFlag`, `sourceClockAt`. This
     is intentional (the connector posts the immutable fact, not DP2's advisory
-    bookkeeping), not an accidental divergence from the 008 wire shape.
+    bookkeeping), not an accidental divergence from the 008 wire shape. Likewise
+    each responsibility line carries `payerExternalRef` in place of 008's
+    `payerRef` (RT-417): the Connector needs the ERPNext Customer link, never
+    the Backend-Core payer id.
 
     Version-independence (O-6): this contract speaks in Retail-Tower terms (sale,
     line, businessDate, outcome, documentRef) — NEVER ERPNext doctype field names.
@@ -193,6 +196,39 @@ info:
     the same `method` until the Connector has shown that it settles such a
     sale exactly in ERPNext (RT-361); until then such work items are held, not
     offered, exactly as the RT-76 INVARIANT holds tender-bearing sales.
+
+    RT-417 (1.8.0-draft; [GATED] approval Jira RT-417 comment 11671, owner,
+    2026-10-12; owner decision R-1, RT-413 comment 11669): PAYER
+    RESPONSIBILITY LINES. `Sale` gains an OPTIONAL
+    `responsibilities[{payerExternalRef, amount, sequence}]`
+    (`SaleResponsibility`), mirroring `pos-sales/sales.yaml`
+    `Sale.responsibilities`: who owes how much of the sale. Backend-Core
+    guarantees `sum(tenders) + sum(responsibilities) = posTotal` exactly
+    (checked at capture). On a `sale_post`, the Connector posts each payer's
+    share outstanding against that payer's ERPNext Customer and settles the
+    tenders as payments (RT-78); whether a multi-payer sale is one SI per payer
+    or a split is decided in RT-419 with bench evidence, behind this contract.
+    The tender-total check of RT-76 becomes a coverage check: if
+    `sum(tenders) + sum(responsibilities)` differs from the document total the
+    Connector would build, it acks `permanently_rejected` / `validation`, and
+    it never adjusts a line or moves an amount between payers to force a
+    match. An unmapped or unknown payer fails closed (see
+    `SaleResponsibility.payerExternalRef`). The line carries no `tenant_id`, no
+    credential and no Backend-Core payer id; the work item stays
+    tenant-implicit.
+    ROLLOUT ORDER (Connector first): a Connector that predates RT-419 would
+    post a full-credit sale (no tenders) unpaid against the STORE's Customer
+    and ack `posted`, which is terminal and the wrong debtor. So Backend-Core
+    MUST NOT offer a `sale_post` work item for a sale with `responsibilities`
+    until the Connector supports them (RT-419); until then such items are
+    held, not offered, exactly as the RT-76 INVARIANT holds tender-bearing
+    sales. Reversal of a responsibility-bearing sale is undefined in this
+    version (`pos-sales/sales.yaml`, 035 OQ-4 carve), so Backend-Core MUST NOT
+    offer any `reversal` work item of such a sale until a later issue defines
+    it, whatever the Connector supports. `Sale.responsibilities` is optional
+    and additive, but `Sale` is `additionalProperties: false`, so a Connector
+    that validates the feed strictly must re-pin first; RT-417 adds no ack
+    change and no new work-item kind.
 
 servers:
   - url: https://api.example.com
@@ -414,6 +450,12 @@ components:
         Exact-decimal amount as a string, constrained NON-NEGATIVE (no leading
         `-`), verbatim from `pos-sales/sales.yaml`. Used for return-line
         magnitudes. Up to 4 fractional digits, `numeric(19,4)` at rest.
+    PositiveDecimalAmount:
+      type: string
+      pattern: '^(?!0+(?:\.0+)?$)[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: >
+        Strictly positive exact-decimal amount (`numeric(19,4)`), verbatim from
+        `pos-sales/sales.yaml` (RT-417). Never a float.
     CurrencyCode:
       type: string
       pattern: '^[A-Z]{3}$'
@@ -707,6 +749,20 @@ components:
             with one payment per tender. Absent or empty: a tender-unknown sale,
             posted unpaid as before (RT-10 D8). Optional; emitted only once the
             Connector supports settlement (see ROLLOUT ORDER).
+        responsibilities:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/SaleResponsibility"
+          description: >
+            RT-417 — the sale's payer responsibility lines, mirroring
+            `pos-sales/sales.yaml` `Sale.responsibilities` with each
+            `payerRef` replaced by its `payerExternalRef`. Absent for a sale
+            captured without them. Each `payerExternalRef` is frozen with the
+            work item's resolution (RT-332), so every re-pull is identical; it
+            is not part of `payloadHash`, which covers the captured `payerRef`
+            values. Optional; offered only once the Connector supports them
+            (see the RT-417 ROLLOUT ORDER).
         warehouseRef:
           $ref: "#/components/schemas/ErpnextWarehouseRef"
     SaleTender:
@@ -754,6 +810,33 @@ components:
             OPTIONAL (RT-359) — the tender's 1-based position, unique within
             the sale. The Connector builds one payment row per tender in
             `sequence` order (tenders without it keep the order given).
+    SaleResponsibility:
+      type: object
+      additionalProperties: false
+      required: [payerExternalRef, amount, sequence]
+      description: >
+        One payer's share of the sale (RT-417), in the sale's currency. Not a
+        receivable: no balance, no state.
+      properties:
+        payerExternalRef:
+          type: [string, "null"]
+          description: >
+            The payer's ERPNext Customer link (`settlement/settlement.yaml`
+            `PayerAccount.externalRef`), resolved by the Connector to the
+            Customer the share is posted against. Null, or a link that resolves
+            to no Customer, is an unmapped payer: the Connector acks
+            `permanently_rejected` / `validation` and never falls back to the
+            store's Customer or any default Customer. (Capture already refuses
+            a payer without a link, so null is a fail-closed guard, not an
+            expected value.)
+        amount:
+          $ref: "#/components/schemas/PositiveDecimalAmount"
+        sequence:
+          type: integer
+          minimum: 1
+          description: >
+            The line's 1-based position, unique within the sale (mirrors
+            `pos-sales/sales.yaml`).
     RefundTender:
       type: object
       additionalProperties: false

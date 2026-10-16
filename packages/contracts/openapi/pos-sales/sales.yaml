@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.9.0-draft"
+  version: "1.10.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -209,6 +209,39 @@ info:
     only for sales finalized at or after a configured cutoff that is later than
     both the RT-539 deploy and the POS upgrade (the RT-79 pattern).
 
+    RT-417 (1.10.0-draft; [GATED] approval Jira RT-417 comment 11671, owner,
+    2026-10-12; owner decision R-1, RT-413 comment 11669; 035 narrowed to
+    Option B): PAYER RESPONSIBILITIES. `CaptureSaleRequest` gains an OPTIONAL
+    `responsibilities[{payerRef, amount, sequence}]` (`SaleResponsibility`):
+    who owes how much of the sale, captured on the sale at checkout. It is
+    part of the immutable sale fact and of its payload hash (the RT-76 tenders
+    precedent). It is NOT a receivable: it carries no balance and no lifecycle
+    state; ERPNext owns the A/R balance, aging and collection (Payment &
+    Receivables baseline). It replaces the retired
+    `POST /api/v1/settlement/settlement-intent` (`settlement/settlement.yaml`
+    2.0.0). `captureSale` gains the coverage rule `sum(tenders) +
+    sum(responsibilities) = posTotal` and two 422 codes,
+    `sale_responsibility_mismatch` and `sale_responsibility_payer_invalid`
+    (see `CaptureUnprocessable`). `Sale` gains an OPTIONAL `responsibilities`
+    on `readSale` and `captureSale`. Additive in shape: a producer that sends
+    no `responsibilities` sees no difference, and its sales hash as before.
+    ROLLOUT ORDER: the server accepts `responsibilities` from RT-418; until
+    then the strict capture DTO rejects the unknown field (400), so the POS
+    MUST NOT send it before RT-418 is deployed. `Sale.responsibilities` is
+    OPTIONAL until RT-418 emits it, but `Sale` is `additionalProperties:
+    false`, so a client that validates responses strictly must re-pin this
+    version BEFORE RT-418 deploys (the RT-76 order). The posting feed holds a
+    responsibility-bearing sale until the Connector supports it (RT-419; see
+    `erpnext-connector/posting-feed.yaml`).
+    Capture is deferred on the POS (outbox drain), so a 422 on a
+    responsibility-bearing sale arrives after finalize: the POS dead-letters it
+    for repair and surfaces it; it is never silently retried, and the sale is
+    never re-sent without its responsibilities or with them turned into a
+    tender.
+    Reversal (void / return) of a responsibility-bearing sale is UNDEFINED in
+    this version (the 035 OQ-4 carve): the posting feed holds such reversal
+    work items until a later issue defines them.
+
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
     appears on the wire. Timestamps are RFC 3339 / `date-time` in UTC (FR-021).
@@ -312,6 +345,18 @@ paths:
         `admissionCheckAt`, which then replaces `occurredAt` in the
         admission-window comparison only (see the field). Sent without
         `operatorUserId`, it is a 400.
+
+        Payer responsibilities (RT-417, from RT-418): the optional
+        `responsibilities` list records who owes the part of the sale not paid
+        by `tenders`. When it is present, `sum(tenders) +
+        sum(responsibilities) = posTotal` must hold exactly (else 422
+        `sale_responsibility_mismatch`), and every payer must be eligible (else
+        422 `sale_responsibility_payer_invalid`); see the field and
+        `CaptureUnprocessable`. Order: the coverage rule is checked first, then
+        the line price invariant, then the payers. A replay of an
+        already-captured sale answers before these checks, so a payer suspended
+        after capture never turns a stored result into a 422. Nothing is
+        recorded on any failure.
 
         Receipt snapshot (RT-537): the body may carry the optional `receipt`
         (see `CaptureSaleReceipt`). The server stores it first-write-wins and
@@ -939,6 +984,29 @@ components:
             same-method flag is on (until then at most one entry per method).
             `tenderRef` / `sequence`: Accepted from RT-360; do not send before
             then.
+        responsibilities:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            $ref: "#/components/schemas/SaleResponsibility"
+          description: >
+            OPTIONAL (RT-417, owner decision R-1) — who owes the part of the
+            sale not paid at the till: one entry per payer, each an amount in
+            the sale's currency. Accepted from RT-418; do not send before then
+            (see the versioning note). When present, the coverage rule
+            `sum(tenders) + sum(responsibilities) = posTotal` must hold in
+            exact decimal arithmetic, no rounding (else 422
+            `sale_responsibility_mismatch`). It replaces the RT-76 tender-only
+            rule for this body: an absent `tenders` counts as zero, so a sale
+            whose payers cover the whole `posTotal` is a full-credit sale and
+            is NOT a tender-unknown sale (RT-10 D8 applies only when both lists
+            are absent). Per-sale rules, each a 400 `validation_error`:
+            `payerRef` is unique within the sale; `sequence` is unique within
+            the sale. The list is part of the sale `payload_hash`, so a replay
+            that adds, drops or changes a responsibility is a different payload
+            (409). An absent list leaves the `payload_hash` of the sale
+            unchanged, so sales captured without it replay as before.
         operatorUserId:
           type: string
           format: uuid
@@ -1420,6 +1488,39 @@ components:
             tender lines, in the order they were applied. Unique within the
             sale. Gives a deterministic order to tenders that share a `method`.
 
+    PositiveDecimalAmount:
+      type: string
+      pattern: '^(?!0+(?:\.0+)?$)[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: >
+        Strictly positive exact-decimal amount as a string (`numeric(19,4)`):
+        at most 15 integer and 4 fractional digits, no sign, zero rejected
+        (RT-417). Paired with the sale's `currency_code`.
+    SaleResponsibility:
+      type: object
+      additionalProperties: false
+      required: [payerRef, amount, sequence]
+      description: >
+        One payer's share of the sale (RT-417, owner decision R-1), in the
+        sale's currency. Part of the immutable sale fact. NOT a receivable: no
+        balance, no state; ERPNext owns what is later collected.
+      properties:
+        payerRef:
+          type: string
+          format: uuid
+          description: >
+            The payer account (`settlement/settlement.yaml`
+            `PayerAccount.payerRef`) responsible for `amount`. Resolved within
+            the authenticated tenant and store; an ineligible payer is 422
+            `sale_responsibility_payer_invalid`.
+        amount:
+          $ref: "#/components/schemas/PositiveDecimalAmount"
+        sequence:
+          type: integer
+          minimum: 1
+          description: >
+            The entry's 1-based position among the sale's responsibilities.
+            Unique within the sale; gives the posting a deterministic order.
+
     # -----------------------------------------------------------------------
     # Response projections (toBody) — NOT the DB row shape (§IV)
     # -----------------------------------------------------------------------
@@ -1507,6 +1608,14 @@ components:
           description: >
             The sale's tender facts as captured (RT-10 D1). Empty for a
             tender-unknown sale (RT-10 D8). Emitted from RT-77; optional until
+            then.
+        responsibilities:
+          type: array
+          items:
+            $ref: "#/components/schemas/SaleResponsibility"
+          description: >
+            The sale's payer responsibilities as captured (RT-417). Empty for
+            a sale captured without them. Emitted from RT-418; optional until
             then.
         lines:
           type: array
@@ -1850,8 +1959,17 @@ components:
         422 on `captureSale`. `error.code` is one of: `sale_tender_mismatch`
         (RT-10 D1) — the capture's `tenders` amounts do not sum to `posTotal`
         exactly; `sale_line_pricing_invalid` (RT-105) — a line breaks the
-        `CaptureSaleLine` price invariant. The tender rule is checked first.
-        Deterministic; nothing is recorded.
+        `CaptureSaleLine` price invariant;
+        `sale_responsibility_mismatch` (RT-417) — `responsibilities` is
+        present and `sum(tenders) + sum(responsibilities)` does not equal
+        `posTotal` exactly; `sale_responsibility_payer_invalid` (RT-417) — a
+        `payerRef` that does not exist, belongs to another tenant, is scoped to
+        another store, is `suspended`, or has no `externalRef` (no ERPNext
+        Customer link), with one body for every cause, never naming which.
+        `sale_tender_mismatch` is returned only when `responsibilities` is
+        absent; with it, the combined rule replaces the tender-only rule.
+        Order: the coverage rule (tender or combined) first, then the line
+        price invariant, then the payers. Deterministic; nothing is recorded.
       content:
         application/json:
           schema:

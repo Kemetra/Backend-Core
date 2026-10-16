@@ -89,10 +89,11 @@ const APPROVED_TENDER_FIELDS = [
 ];
 
 /**
- * RT-537: capture fields the contract declares before the server accepts them.
- * RT-539 added `receipt` to the capture DTO, so the list is empty.
+ * Capture fields the contract declares before the server accepts them.
+ * RT-539 added the RT-537 `receipt` to the capture DTO. RT-417 declares
+ * `responsibilities`; the RT-418 runtime adds it to the DTO.
  */
-const CONTRACT_AHEAD_OF_CAPTURE_DTO: readonly string[] = [];
+const CONTRACT_AHEAD_OF_CAPTURE_DTO: readonly string[] = ["responsibilities"];
 
 /** A property's `maxLength` in a schema; NaN when the schema does not bound it. */
 function maxLengthOf(schemaObject: { properties?: Record<string, unknown> } | undefined, prop: string): number {
@@ -1191,8 +1192,7 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
     return inner;
   }
 
-  it("bumps the version to 1.9.0-draft with an RT-537 note citing the [GATED] approval", () => {
-    expect(salesDoc.info?.version).toBe("1.9.0-draft");
+  it("the version note records RT-537 at 1.9.0-draft, citing the [GATED] approval (version moved on in RT-417)", () => {
     const info = salesDoc.info?.description ?? "";
     expect(info).toContain("RT-537 (1.9.0-draft");
     expect(info).toContain("[GATED] approval Jira RT-537 comment 12057");
@@ -1200,7 +1200,7 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
     expect(info).toContain("not send `receipt` sees no difference");
   });
 
-  it("adds an OPTIONAL receipt to the strict capture body, and nothing else", () => {
+  it("adds an OPTIONAL receipt to the strict capture body (key set pinned, RT-417 adds responsibilities)", () => {
     const request = schema("CaptureSaleRequest");
     expect(request?.additionalProperties).toBe(false);
     expect(request?.required).not.toContain("receipt");
@@ -1215,6 +1215,7 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
         "operatorUserId",
         "posTotal",
         "receipt",
+        "responsibilities",
         "sourceClockAt",
         "sourceSystem",
         "tenders",
@@ -1299,7 +1300,7 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
     const dto = captureDtoObject();
     expect(Object.keys(dto.shape)).toContain("receipt");
     expect(dto._def.unknownKeys).toBe("strict");
-    expect(CONTRACT_AHEAD_OF_CAPTURE_DTO).toEqual([]);
+    expect(CONTRACT_AHEAD_OF_CAPTURE_DTO).not.toContain("receipt");
 
     const receiptDto = CaptureSaleReceiptSchema;
     expect(receiptDto._def.unknownKeys).toBe("strict");
@@ -1332,4 +1333,140 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
       taxRegistrationId: "123-456-789",
     };
   }
+});
+
+// ===========================================================================
+// RT-417 — sale payer responsibilities + coverage rule (1.10.0-draft; [GATED]
+// approval Jira RT-417 comment 11671; owner decision R-1, RT-413 comment 11669)
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
+  type FieldNode = {
+    type?: string;
+    format?: string;
+    minimum?: number;
+    minItems?: number;
+    maxItems?: number;
+    pattern?: string;
+    $ref?: string;
+    items?: { $ref?: string };
+    description?: string;
+  };
+  const schema = (name: string): SchemaObject | undefined => salesDoc.components?.schemas?.[name];
+  const field = (schemaName: string, name: string): FieldNode | undefined =>
+    (schema(schemaName)?.properties ?? {})[name] as FieldNode | undefined;
+  const flat = (text: string | undefined): string => (text ?? "").replace(/\s+/g, " ");
+  const info = (): string => flat(salesDoc.info?.description);
+  const captureText = (): string => flat((findOp("captureSale") as { description?: string } | undefined)?.description);
+  const fieldText = (): string => flat(field("CaptureSaleRequest", "responsibilities")?.description);
+  const unprocessable = (): string =>
+    flat((salesDoc.components?.responses?.["CaptureUnprocessable"] as { description?: string } | undefined)?.description);
+
+  it("bumps the version to 1.10.0-draft with an RT-417 note citing the [GATED] approval and R-1", () => {
+    expect(salesDoc.info?.version).toBe("1.10.0-draft");
+    expect(info()).toContain("RT-417 (1.10.0-draft; [GATED] approval Jira RT-417 comment 11671");
+    expect(info()).toContain("R-1");
+  });
+
+  it("capture accepts an OPTIONAL responsibilities list of 1..16 strict entries", () => {
+    expect(schema("CaptureSaleRequest")?.required).not.toContain("responsibilities");
+    const list = field("CaptureSaleRequest", "responsibilities");
+    expect(list).toMatchObject({ type: "array", minItems: 1, maxItems: 16 });
+    expect(list?.items?.$ref).toBe("#/components/schemas/SaleResponsibility");
+  });
+
+  it("a responsibility is strict {payerRef uuid, amount > 0, sequence >= 1}, all required", () => {
+    const entry = schema("SaleResponsibility");
+    expect(entry?.additionalProperties).toBe(false);
+    expect(entry?.required?.slice().sort()).toEqual(["amount", "payerRef", "sequence"]);
+    expect(Object.keys(entry?.properties ?? {}).sort()).toEqual(["amount", "payerRef", "sequence"]);
+    expect(field("SaleResponsibility", "payerRef")).toMatchObject({ type: "string", format: "uuid" });
+    expect(field("SaleResponsibility", "amount")?.$ref).toBe("#/components/schemas/PositiveDecimalAmount");
+    expect(field("SaleResponsibility", "sequence")).toMatchObject({ type: "integer", minimum: 1 });
+  });
+
+  it("PositiveDecimalAmount is exact-decimal, numeric(19,4)-bounded, and rejects zero and negatives", () => {
+    const pattern = (schema("PositiveDecimalAmount") as { pattern?: string } | undefined)?.pattern;
+    expect(pattern).toBeDefined();
+    const positive = new RegExp(pattern ?? "$^");
+    for (const ok of ["0.0001", "1", "120.00", "999999999999999.9999"]) expect({ ok, m: positive.test(ok) }).toEqual({ ok, m: true });
+    for (const bad of ["0", "0.0000", "-1.00", "1.00001", "1e3", "1000000000000000"]) {
+      expect({ bad, m: positive.test(bad) }).toEqual({ bad, m: false });
+    }
+  });
+
+  it("states the coverage rule: sum(tenders) + sum(responsibilities) = posTotal, exactly", () => {
+    expect(fieldText()).toContain("sum(tenders) + sum(responsibilities) = posTotal");
+    expect(fieldText()).toContain("exact decimal arithmetic, no rounding");
+    expect(captureText()).toContain("sum(tenders) + sum(responsibilities) = posTotal");
+  });
+
+  it("a sale with responsibilities and no tenders is NOT a tender-unknown sale (absent tenders = 0)", () => {
+    expect(fieldText()).toContain("an absent `tenders` counts as zero");
+    expect(fieldText()).toContain("is NOT a tender-unknown sale");
+  });
+
+  it("names 422 sale_responsibility_mismatch and orders it against sale_tender_mismatch", () => {
+    expect(unprocessable()).toContain("`sale_responsibility_mismatch`");
+    expect(unprocessable()).toContain("`sale_tender_mismatch` is returned only when `responsibilities` is absent");
+    expect(captureText()).toContain("the coverage rule is checked first, then the line price invariant, then the payers");
+  });
+
+  it("names one non-disclosing 422 sale_responsibility_payer_invalid for every payer refusal", () => {
+    const text = unprocessable();
+    expect(text).toContain("`sale_responsibility_payer_invalid`");
+    for (const cause of [
+      "does not exist",
+      "belongs to another tenant",
+      "scoped to another store",
+      "is `suspended`",
+      "has no `externalRef`",
+    ]) {
+      expect({ cause, found: text.includes(cause) }).toEqual({ cause, found: true });
+    }
+    expect(text).toContain("one body for every cause");
+  });
+
+  it("states the per-sale uniqueness rules OpenAPI cannot express, each a 400", () => {
+    expect(fieldText()).toContain("`payerRef` is unique within the sale");
+    expect(fieldText()).toContain("`sequence` is unique within the sale");
+    expect(fieldText()).toContain("400 `validation_error`");
+  });
+
+  it("hashes responsibilities into the payload; an absent list leaves the hash unchanged", () => {
+    expect(fieldText()).toContain("part of the sale `payload_hash`");
+    expect(fieldText()).toContain("a replay that adds, drops or changes a responsibility is a different payload (409)");
+    expect(fieldText()).toContain("An absent list leaves the `payload_hash` of the sale unchanged");
+  });
+
+  it("a replay answers before the coverage, pricing and payer checks", () => {
+    expect(captureText()).toContain("A replay of an already-captured sale answers before these checks");
+  });
+
+  it("a refusal of a responsibility-bearing sale is repair evidence, never silently retried", () => {
+    expect(info()).toContain("never silently retried");
+  });
+
+  it("states reversal semantics of a responsibility-bearing sale are undefined (OQ-4 carve)", () => {
+    expect(info()).toContain("Reversal (void / return) of a responsibility-bearing sale is UNDEFINED");
+  });
+
+  it("the sale read exposes responsibilities, OPTIONAL until RT-418 emits them", () => {
+    const list = field("Sale", "responsibilities");
+    expect(list?.type).toBe("array");
+    expect(list?.items?.$ref).toBe("#/components/schemas/SaleResponsibility");
+    expect(schema("Sale")?.required).not.toContain("responsibilities");
+  });
+
+  it("orders the rollout: accepted from RT-418; strict clients re-pin first (RT-76 precedent)", () => {
+    expect(info()).toContain("the server accepts `responsibilities` from RT-418");
+    expect(info()).toContain("must re-pin this version BEFORE RT-418 deploys");
+    expect(fieldText()).toContain("Accepted from RT-418");
+  });
+
+  it("is not a payment ledger and carries no balance or lifecycle state", () => {
+    expect(info()).toContain("NOT a receivable");
+    for (const banned of ["balance", "outstanding", "state", "status"]) {
+      expect(Object.keys(schema("SaleResponsibility")?.properties ?? {})).not.toContain(banned);
+    }
+  });
 });
