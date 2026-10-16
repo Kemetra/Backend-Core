@@ -54,6 +54,7 @@ const SUMMARY_KEYS = [
   "expiresAt",
   "label",
   "lastSeenAt",
+  "lastSeenSource",
   "replacedByDeviceId",
   "replacesDeviceId",
   "retiredAt",
@@ -94,6 +95,7 @@ const ACTIVE = {
   createdAt: "2026-10-01T09:00:00.000Z",
   expiresAt: "2026-12-30T09:00:00.000Z",
   lastSeenAt: null,
+  lastSeenSource: null,
   revokedAt: null,
   revokedByUserId: null,
   revokeReason: null,
@@ -287,15 +289,41 @@ describe("devices contract — projections", () => {
     expect(mismatched).toEqual([]);
   });
 
+  it("labels last seen with a source: activity now, null exactly when lastSeenAt is null", () => {
+    expect(props("DeviceSummary")["lastSeenSource"]).toMatchObject({
+      oneOf: [{ type: "string", enum: ["activity"] }, { type: "null" }],
+    });
+    expect(props("DeviceDetail")["lastSeenSource"]).toMatchObject({
+      oneOf: [{ type: "string", enum: ["activity"] }, { type: "null" }],
+    });
+  });
+
+  it("keeps expiresAt non-null, so the (rank, expiresAt, deviceId) order is total", () => {
+    for (const name of ["DeviceSummary", "DeviceDetail"]) {
+      expect(props(name)["expiresAt"]).toMatchObject({ type: "string", format: "date-time" });
+    }
+    const ordering = String((contract.document["info"] as JsonObject)["description"]);
+    expect(ordering).toMatch(/`expiresAt` is never null/);
+  });
+
   it("uses the D-Q3 reason enum and the revoked / already_revoked outcome", () => {
     expect(contract.schema("RevokeReason")["enum"]).toEqual(REVOKE_REASONS);
     expect(props("DeviceRevokeResult")["outcome"]).toMatchObject({ enum: ["revoked", "already_revoked"] });
-    expect(props("DeviceRevokeResult")["device"]).toEqual({ $ref: "#/components/schemas/DeviceDetail" });
+    expect(props("DeviceRevokeResult")["device"]).toMatchObject({
+      allOf: [
+        { $ref: "#/components/schemas/DeviceDetail" },
+        { properties: { trustState: { enum: ["revoked", "retired"] } } },
+      ],
+    });
   });
 
   it.each([
     ["an active device", "DeviceSummary", ACTIVE],
-    ["an active device seen recently, no label", "DeviceSummary", { ...ACTIVE, label: null, lastSeenAt: "2026-10-16T09:00:00Z" }],
+    [
+      "an active device seen recently, no label",
+      "DeviceSummary",
+      { ...ACTIVE, label: null, lastSeenAt: "2026-10-16T09:00:00Z", lastSeenSource: "activity" },
+    ],
     ["a revoked device with a custody exception", "DeviceSummary", REVOKED],
     ["a revoke recorded before RT-365", "DeviceSummary", { ...REVOKED, revokeReason: null, revokedByUserId: null }],
     ["a retired device", "DeviceSummary", RETIRED],
@@ -303,7 +331,11 @@ describe("devices contract — projections", () => {
     ["an empty last page", "DevicePage", { items: [], nextCursor: null }],
     ["a detail with a note", "DeviceDetail", { ...REVOKED, ...DETAIL_EXTRA, revokeNote: "Drawer cash in the safe" }],
     ["a retired detail", "DeviceDetail", { ...RETIRED, revokeNote: null, retiredByUserId: USER_ID, retireReason: "Decommissioned" }],
-    ["a revoke result", "DeviceRevokeResult", { outcome: "already_revoked", device: { ...ACTIVE, ...DETAIL_EXTRA } }],
+    ["a revoke result", "DeviceRevokeResult", { outcome: "already_revoked", device: { ...REVOKED, ...DETAIL_EXTRA } }],
+    ["a revoke result for a retired device", "DeviceRevokeResult", {
+      outcome: "already_revoked",
+      device: { ...RETIRED, revokeNote: null, retiredByUserId: USER_ID, retireReason: "Decommissioned" },
+    }],
     ["the error envelope", "Error", { error: { code: "unresolved_cash_session", message: "Conflict", request_id: DEVICE_ID } }],
   ])("accepts %s", (_label, name, payload) => {
     expect(contract.accepts(name, payload)).toBe(true);
@@ -318,11 +350,21 @@ describe("devices contract — projections", () => {
     ["an expired trust state", "DeviceSummary", { ...ACTIVE, trustState: "expired" }],
     ["an unknown reason", "DeviceSummary", { ...REVOKED, revokeReason: "broken" }],
     ["a missing nullable key", "DeviceSummary", omit(ACTIVE, "lastSeenAt")],
+    ["a missing last-seen source key", "DeviceSummary", omit(ACTIVE, "lastSeenSource")],
+    ["a last-seen time without its source", "DeviceSummary", { ...ACTIVE, lastSeenAt: "2026-10-16T09:00:00Z" }],
+    ["a last-seen source without a time", "DeviceSummary", { ...ACTIVE, lastSeenSource: "activity" }],
+    ["an unknown last-seen source", "DeviceSummary", {
+      ...ACTIVE,
+      lastSeenAt: "2026-10-16T09:00:00Z",
+      lastSeenSource: "heartbeat",
+    }],
+    ["a null expiry", "DeviceSummary", { ...ACTIVE, expiresAt: null }],
     ["a token hash", "DeviceSummary", { ...ACTIVE, tokenHash: "abc" }],
     ["a revoke note on the list item", "DeviceSummary", { ...REVOKED, revokeNote: "x" }],
     ["a page over 200 items", "DevicePage", { items: new Array(201).fill(ACTIVE), nextCursor: null }],
     ["a page without nextCursor", "DevicePage", { items: [] }],
-    ["an unknown outcome", "DeviceRevokeResult", { outcome: "noop", device: { ...ACTIVE, ...DETAIL_EXTRA } }],
+    ["an unknown outcome", "DeviceRevokeResult", { outcome: "noop", device: { ...REVOKED, ...DETAIL_EXTRA } }],
+    ["a revoke result with an active device", "DeviceRevokeResult", { outcome: "revoked", device: { ...ACTIVE, ...DETAIL_EXTRA } }],
     ["a result without the device", "DeviceRevokeResult", { outcome: "revoked" }],
     ["a bare error code", "Error", { code: "not_found" }],
     ["a retired detail without a retire reason", "DeviceDetail", { ...RETIRED, ...DETAIL_EXTRA, retiredByUserId: USER_ID }],
