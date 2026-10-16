@@ -374,6 +374,25 @@ describe("console-sales — auth and read scope", () => {
     });
   });
 
+  it("marks both 200 responses Cache-Control: no-store (staff names, tax id)", () => {
+    for (const { path } of OPERATIONS) {
+      const ok = (op(path).responses as Record<string, { headers?: Record<string, { $ref?: string }> }>)["200"]!;
+      expect(ok.headers?.["Cache-Control"]).toEqual({ $ref: "#/components/headers/CacheControlNoStore" });
+    }
+    const header = (doc.components as Record<string, Record<string, { schema?: unknown }>>)["headers"]![
+      "CacheControlNoStore"
+    ]!;
+    expect(header.schema).toEqual({ type: "string", const: "no-store" });
+  });
+
+  it("runs the guards before validation, so a refused role gets 404 for any input", () => {
+    expect(doc.info?.description).toMatch(/guards run before request validation/i);
+  });
+
+  it("resolves the detail in one scoped query, never fetch-then-check", () => {
+    expect(doc.paths![DETAIL_PATH]!["get"]!["description" as never]).toMatch(/never fetched first and checked after/);
+  });
+
   it("names every scope refusal in the one non-disclosing 404", () => {
     const description = String(
       (doc.components as Record<string, Record<string, { description?: string }>>)["responses"]!["NotFound"]!
@@ -441,6 +460,26 @@ describe("console-sales — list filters and paging", () => {
     const cursor = param(LIST_PATH, "cursor");
     expect(cursor.schema).toEqual({ type: "string", minLength: 1, maxLength: 512, pattern: "^[A-Za-z0-9_-]+$" });
     for (const name of ["tenant", "store", "from", "to", ...FILTERS]) expect(cursor.description).toContain(name);
+  });
+
+  it("refuses a repeated query key and a non-calendar date as 400", () => {
+    const description = String(
+      (doc.components as Record<string, Record<string, { description?: string }>>)["responses"]!["ValidationFailure"]!
+        .description,
+    );
+    expect(description).toContain("a query key given more than once");
+    expect(description).toContain("2026-02-30");
+  });
+
+  it("ANDs the cursor position with the scope and range, never replacing them", () => {
+    expect(param(LIST_PATH, "cursor").description).toMatch(/never replaces them/);
+  });
+
+  it("lets a bounded page be short or empty while nextCursor is non-null", () => {
+    expect(validator("ConsoleSalePage")({ ...PAGE, items: [], nextCursor: "eyJrIjoxfQ" })).toBe(true);
+    expect(String(schema("ConsoleSalePage").properties!["nextCursor"]!["description"])).toMatch(
+      /only `null` ends the walk/,
+    );
   });
 
   it("bounds page_size to 1..100, default 50, and caps a page at the maximum", () => {

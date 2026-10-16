@@ -51,7 +51,10 @@ info:
     (`store_staff`), a `store_id` outside the caller's scope or of another
     tenant, a sale of a store outside the scope, a sale of another tenant and
     an absent sale are the same non-disclosing 404 (`RolesGuard` default
-    `denyAs: 404`, FR-ISO-4). There is no 403 on this surface.
+    `denyAs: 404`, FR-ISO-4). There is no 403 on this surface. The guards
+    run before request validation: an unauthenticated request is 401 and a
+    role outside the list is 404 for any input, a malformed one included, so
+    validation never tells a refused role anything.
 
 
     **One store per list (OD-556-2).** `store_id` is REQUIRED on the list in
@@ -99,7 +102,11 @@ info:
     walk only if it sorts after the walk's current position. The status
     values are read when each page is read, so a sale whose status changes
     during a walk (a sync completes, a return or void is recorded, a posting
-    resolves) is matched by the status it has when its page is read.
+    resolves) is matched by the status it has when its page is read. A page
+    MAY hold fewer than `page_size` items, or none, while `nextCursor` is
+    non-null: the server may bound the rows one request examines (a
+    selective status filter over a busy store), and only `nextCursor: null`
+    ends the walk.
 
 
     **Money.** Exact-decimal strings paired with an ISO-4217 `currencyCode`;
@@ -128,7 +135,10 @@ info:
     `console_sales.detail_read` event per authorized open, with the
     `saleRef` as its target. Both name the session user and the store. No
     receipt content, no names, no secrets. Rows are never audited
-    individually. Events are written for a 200 only.
+    individually. Events are emitted by the request audit interceptor after a
+    200 only, as for `sale_history.*` and `shift_closes.*`: refusals (400 /
+    401 / 404) are not audited, and the HTTP outcome never depends on the
+    audit write.
 
 
     **Error envelope.** The canonical `{ error: { code, message, request_id } }`
@@ -188,6 +198,9 @@ paths:
       responses:
         "200":
           description: One page of the store's received sales, newest first.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
           content:
             application/json:
               schema:
@@ -217,8 +230,11 @@ paths:
         (OD-534-3/6). No reprint eligibility and no receipt-fact completeness:
         those are POS concerns. The sale resolves anywhere in the caller's
         store scope; a sale of another tenant, of a store outside the scope,
-        or an absent ref is the same non-disclosing 404. The operation takes
-        no query parameter; any query key is 400 `validation_error`.
+        or an absent ref is the same non-disclosing 404. The sale is read by
+        one query predicated on the tenant, the `saleRef` and the caller's
+        store scope; it is never fetched first and checked after, and the
+        store's timezone is read only for a sale that matched. The operation
+        takes no query parameter; any query key is 400 `validation_error`.
 
         Audit: one `console_sales.detail_read` event per authorized open, with
         the `saleRef` and the sale's store.
@@ -227,6 +243,9 @@ paths:
       responses:
         "200":
           description: The detail projection.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
           content:
             application/json:
               schema:
@@ -254,6 +273,16 @@ components:
         `@Roles("owner", "tenant_admin", "store_manager")` gate both routes
         (default deny → 404). 401 semantics are owned by 028 (G10).
 
+  headers:
+    CacheControlNoStore:
+      description: >
+        `no-store` on every 200: the bodies carry staff display names and the
+        receipt header (tax registration id), so no shared or browser cache
+        keeps them.
+      schema:
+        type: string
+        const: no-store
+
   parameters:
     StoreIdQuery:
       name: store_id
@@ -265,8 +294,9 @@ components:
       description: >
         REQUIRED in v1 (OD-556-2). The one store whose sales are listed.
         Validated against the caller's store scope: a store outside it, or of
-        another tenant, is the non-disclosing 404. Case insensitive. A missing
-        or malformed value is 400 `validation_error`.
+        another tenant, is the non-disclosing 404. Case insensitive: the one
+        lower-cased value is the one scope-checked, cursor-bound and queried.
+        A missing, malformed or repeated value is 400 `validation_error`.
     BusinessDateFrom:
       name: from
       in: query
@@ -351,7 +381,11 @@ components:
         first page. A value the server did not issue, cannot decode, or that is
         reused with another store or other filters is 400 `validation_error`.
         The caller's store scope is checked on every request and is never
-        carried by the cursor.
+        carried by the cursor. The cursor carries only a keyset position and
+        a digest of the filters; its position is ANDed with the tenant, the
+        store scope and the `from` / `to` range and never replaces them, so a
+        hand-built cursor can only reposition the walk inside rows the caller
+        may already read. It is never used to look a sale up.
     PageSize:
       name: page_size
       in: query
@@ -590,6 +624,7 @@ components:
             - type: "null"
         reversalDocumentRef:
           type: [string, "null"]
+          description: The ERPNext reversal document id; present only when `reversal` is `posted`.
 
     # -----------------------------------------------------------------------
     # Console projections (explicit wire shapes, never DB rows)
@@ -608,7 +643,10 @@ components:
             $ref: "#/components/schemas/ConsoleSaleItem"
         nextCursor:
           type: [string, "null"]
-          description: Opaque cursor for the next page; `null` on the last page.
+          description: >
+            Opaque cursor for the next page; `null` on the last page. A
+            non-null cursor may come with fewer than `page_size` items, or
+            none; only `null` ends the walk.
         asOf:
           type: string
           format: date-time
@@ -802,10 +840,12 @@ components:
     ValidationFailure:
       description: >
         validation_error (400): a malformed path or query value, an unknown
-        query key, a missing `store_id`, `from` or `to`, `to` before `from`, a
-        range wider than 31 business days, a `voided` value other than `true`
-        or `false`, or a cursor the server did not issue for this operation,
-        tenant, store and filters. Checked before any database read.
+        query key, a query key given more than once, a missing `store_id`,
+        `from` or `to`, a date that is not a calendar date (`2026-02-30`), `to`
+        before `from`, a range wider than 31 business days, a `voided` value
+        other than `true` or `false`, or a cursor the server did not issue for
+        this operation, tenant, store and filters. Checked after the guards and
+        before any database read.
       content:
         application/json:
           schema:
