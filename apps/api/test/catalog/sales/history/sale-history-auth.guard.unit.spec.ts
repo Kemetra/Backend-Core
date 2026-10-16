@@ -230,6 +230,19 @@ describe("envelope path (no X-Cashier-Admission)", () => {
     expect(audit.calls[0]).toMatchObject({ saleRef: null, mode: null, kind: null });
   });
 
+  it("a failed refusal audit write still answers the generic 403, logged", async () => {
+    const logger = { warn: jest.fn() };
+    const audit = auditSpy();
+    audit.recordRefusal.mockRejectedValueOnce(new Error("permission denied"));
+    const { guard } = makeGuard({ audit, logger });
+    const req = request({ saleRef: SALE_REF, body: { mode: "authorize", kind: "duplicate", printedAt: PRINTED_AT } });
+    expect(await refusalOf(guard.canActivate(ctxFor(req, reprintHandler)))).toBeInstanceOf(ForbiddenException);
+    expect(logger.warn.mock.calls.map((c) => (c[0] as { event: string }).event)).toEqual([
+      "sale_history.cashier_refused.admission_missing",
+      "sale_history.refusal_audit_failed",
+    ]);
+  });
+
   it("the list route never audits a refusal", async () => {
     const audit = auditSpy();
     const { guard } = makeGuard({ audit });

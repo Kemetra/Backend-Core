@@ -211,17 +211,33 @@ export class SaleHistoryAuthGuard implements CanActivate {
       "sale history: cashier admission refused",
     );
     if (refusal.reprint) {
-      await this.audit.recordRefusal({
-        scope,
-        actorUserId: refusal.actorUserId,
-        saleRef: saleRefParam(request),
-        mode,
-        kind,
-        reason: refusal.reason,
-        requestId,
-      });
+      const audit = { scope, actorUserId: refusal.actorUserId, saleRef: saleRefParam(request), mode, kind };
+      await this.recordRefusal({ ...audit, reason: refusal.reason, requestId });
     }
     throw new ForbiddenException({ code: "refused", message: "Forbidden" });
+  }
+
+  /**
+   * Audit a refusal without changing its answer: the refused request is the
+   * same generic 403 whether or not the audit row could be written (nothing
+   * else was recorded), and a failed write is logged with allowlisted fields.
+   */
+  private async recordRefusal(refusal: SaleHistoryRefusal): Promise<void> {
+    try {
+      await this.audit.recordRefusal(refusal);
+    } catch (err) {
+      this.logger?.warn(
+        {
+          event: "sale_history.refusal_audit_failed",
+          request_id: refusal.requestId,
+          tenant_id: refusal.scope.tenantId,
+          store_id: refusal.scope.storeId,
+          err_class: err instanceof Error ? err.name : typeof err,
+          outcome: "failure",
+        },
+        "sale history: refusal audit write failed",
+      );
+    }
   }
 }
 

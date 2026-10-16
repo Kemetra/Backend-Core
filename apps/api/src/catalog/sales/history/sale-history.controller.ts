@@ -51,6 +51,7 @@ import {
   SaleHistoryListQuerySchema,
   SaleReprintRequestSchema,
   UUID_RE,
+  type SaleHistoryFilters,
   type SaleHistoryListQuery,
   type SaleReprintRequestDto,
 } from "./sale-history.query";
@@ -117,6 +118,41 @@ function saleRefOf(raw: string): string {
   return raw.toLowerCase();
 }
 
+/** The validated query as the filters the service and the cursor are bound to. */
+export function listFiltersOf(query: SaleHistoryListQuery): SaleHistoryFilters {
+  return {
+    from: query.from,
+    to: query.to,
+    deviceRef: query.device_ref ?? null,
+    operatorUserId: query.operator_user_id ?? null,
+    saleNumber: query.sale_number ?? null,
+  };
+}
+
+/**
+ * The `sale_history.listed` metadata (OD-534-7): the filters and the count,
+ * never a row id; the sale number filter only as a flag.
+ */
+export function listAuditOf(
+  scope: CallerScope,
+  query: SaleHistoryListQuery,
+  itemCount: number,
+): Record<string, unknown> {
+  const filters = listFiltersOf(query);
+  return {
+    visibility: scope.visibility.kind,
+    device_id: scope.deviceId,
+    from: filters.from,
+    to: filters.to,
+    device_ref: filters.deviceRef,
+    operator_user_id: filters.operatorUserId,
+    sale_number_filtered: filters.saleNumber !== null,
+    page_size: query.page_size,
+    continued: query.cursor !== undefined,
+    item_count: itemCount,
+  };
+}
+
 export const REPRINT_REFUSALS: Readonly<Record<ReprintRefusalReason, () => Error>> = {
   not_visible: () => new NotFoundException("not_found"),
   not_capturing_device: () => new ForbiddenException({ code: "refused", message: "Forbidden" }),
@@ -153,13 +189,7 @@ export class SaleHistoryController {
     try {
       page = await this.history.listSales({
         ...scope,
-        filters: {
-          from: query.from,
-          to: query.to,
-          deviceRef: query.device_ref ?? null,
-          operatorUserId: query.operator_user_id ?? null,
-          saleNumber: query.sale_number ?? null,
-        },
+        filters: listFiltersOf(query),
         cursor: query.cursor ?? null,
         pageSize: query.page_size,
       });
@@ -167,18 +197,7 @@ export class SaleHistoryController {
       if (err instanceof InvalidSaleHistoryCursorError) throw validationError(err.message);
       throw err;
     }
-    annotateAudit(request, {
-      visibility: scope.visibility.kind,
-      device_id: scope.deviceId,
-      from: query.from,
-      to: query.to,
-      device_ref: query.device_ref ?? null,
-      operator_user_id: query.operator_user_id ?? null,
-      sale_number_filtered: query.sale_number !== undefined,
-      page_size: query.page_size,
-      continued: query.cursor !== undefined,
-      item_count: page.items.length,
-    });
+    annotateAudit(request, listAuditOf(scope, query, page.items.length));
     return page;
   }
 
