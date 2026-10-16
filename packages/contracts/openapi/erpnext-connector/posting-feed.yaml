@@ -206,8 +206,11 @@ info:
     guarantees `sum(tenders) + sum(responsibilities) = posTotal` exactly
     (checked at capture). On a `sale_post`, the Connector posts each payer's
     share outstanding against that payer's ERPNext Customer and settles the
-    tenders as payments (RT-78); whether a multi-payer sale is one SI per payer
-    or a split is decided in RT-419 with bench evidence, behind this contract.
+    tenders as payments (RT-78). The ack carries one `documentRef`, i.e. one
+    Sales Invoice per work item, so one payer per sale in this version
+    (`maxItems: 1`, Codex review of #779); whether a multi-payer sale is one SI
+    per payer or a split is decided in RT-419 with bench evidence, and a later
+    version adds it together with any multi-document outcome it needs.
     The tender-total check of RT-76 becomes a coverage check: if
     `sum(tenders) + sum(responsibilities)` differs from the document total the
     Connector would build, it acks `permanently_rejected` / `validation`, and
@@ -752,6 +755,7 @@ components:
         responsibilities:
           type: array
           minItems: 1
+          maxItems: 1
           items:
             $ref: "#/components/schemas/SaleResponsibility"
           description: >

@@ -179,8 +179,11 @@ on the RT-224 device path. So any capture refusal arrives after the goods left.
   Order: coverage, then line pricing, then payers; a replay answers first
   (*in remit*). One non-disclosing 422 `sale_responsibility_payer_invalid` for an
   unknown, cross-tenant, other-store, suspended or unlinked (`externalRef` null)
-  payer (*coordinator*). `payerRef` and `sequence` unique per sale; at most 16
-  entries (*in remit*). Reversal of such a sale is undefined (OQ-4 carve)
+  payer (*coordinator*). `payerRef` and `sequence` unique per sale; at most ONE
+  entry in this version, because the feed acknowledges one Sales Invoice per
+  work item and an ERPNext Sales Invoice bills one Customer; multi-payer waits
+  for RT-419's ERPNext shape and a later contract (*in remit*, Codex review of
+  #779). Reversal of such a sale is undefined (OQ-4 carve)
   (*coordinator*).
 - `posting-feed.yaml` 1.8.0-draft (additive):
   `Sale.responsibilities[{payerExternalRef, amount, sequence}]`;

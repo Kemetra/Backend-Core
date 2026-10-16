@@ -1011,13 +1011,17 @@ components:
         responsibilities:
           type: array
           minItems: 1
-          maxItems: 16
+          maxItems: 1
           items:
             $ref: "#/components/schemas/SaleResponsibility"
           description: >
             OPTIONAL (RT-417, owner decision R-1) — who owes the part of the
             sale not paid at the till: one entry per payer, each an amount in
-            the sale's currency. Accepted from RT-418; do not send before then
+            the sale's currency. At most one payer per sale in this version: the
+            posting feed acknowledges one Sales Invoice per work item, and an
+            ERPNext Sales Invoice bills one Customer, so a multi-payer sale
+            needs a later version once RT-419 decides its ERPNext shape (Codex
+            review of #779). Accepted from RT-418; do not send before then
             (see the versioning note). Only on the `operatorAuthorization`
             path, for an envelope operator whose role is `owner`,
             `tenant_admin` or `store_manager` (else 403
@@ -1876,8 +1880,8 @@ components:
         exhaustion. Combined `forbidden` semantics for in-scope-but-not-permitted
         principals also surface here as a non-disclosing refusal (FR-101
         `forbidden`), with one exception: on `captureSale`'s device path a
-        refused cashier claim from a valid device is the 403 `Refused`
-        response, so that a 401 there always means a bad device credential
+        refused cashier claim from a valid device is the 403 `CaptureForbidden`
+        response (`error.code` `refused`), so that a 401 there always means a bad device credential
         (RT-224).
       content:
         application/json:

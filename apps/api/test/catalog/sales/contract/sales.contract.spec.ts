@@ -1367,10 +1367,11 @@ describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
     expect(info()).toContain("R-1");
   });
 
-  it("capture accepts an OPTIONAL responsibilities list of 1..16 strict entries", () => {
+  it("capture accepts an OPTIONAL responsibilities list of exactly one payer in this version (Codex #779 P1)", () => {
     expect(schema("CaptureSaleRequest")?.required).not.toContain("responsibilities");
     const list = field("CaptureSaleRequest", "responsibilities");
-    expect(list).toMatchObject({ type: "array", minItems: 1, maxItems: 16 });
+    expect(list).toMatchObject({ type: "array", minItems: 1, maxItems: 1 });
+    expect(fieldText()).toContain("At most one payer per sale in this version");
     expect(list?.items?.$ref).toBe("#/components/schemas/SaleResponsibility");
   });
 

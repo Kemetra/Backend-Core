@@ -846,6 +846,8 @@ describe("erpnext-connector/posting-feed.yaml — RT-417 responsibility lines (1
     const list = field("Sale", "responsibilities");
     expect(list?.type).toBe("array");
     expect(list?.minItems).toBe(1);
+    expect((list as { maxItems?: number } | undefined)?.maxItems).toBe(1);
+    expect(info()).toContain("one Sales Invoice per work item, so one payer per sale in this version");
     expect(list?.items?.$ref).toBe("#/components/schemas/SaleResponsibility");
   });
 
