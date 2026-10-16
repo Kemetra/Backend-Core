@@ -1186,8 +1186,24 @@ components:
             properties:
               revokeReason:
                 const: hardware_failure
+        # The recovery revoke (hardware_failure over an open shift) carries all
+        # three requirements in the revoke's check order, whatever the role; a
+        # security revoke's custody exception carries none.
+        - if:
+            properties:
+              verdict:
+                enum: [allowed_with_custody_exception, forbidden_recovery]
+              revokeReason:
+                const: hardware_failure
+            required: [verdict, revokeReason]
+          then:
+            properties:
               requires:
-                minItems: 3
+                const: [owner_or_tenant_admin, note, acknowledge_custody_exception]
+          else:
+            properties:
+              requires:
+                maxItems: 0
         - if:
             properties:
               verdict:
