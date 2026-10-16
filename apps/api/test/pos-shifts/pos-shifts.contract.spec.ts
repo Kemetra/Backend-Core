@@ -1119,7 +1119,10 @@ describe("pos-shifts — RT-384 shift variance policy", () => {
   });
 
   it("ShiftClose ties approverCheck to the recorded approver; Shift gains no combinator", () => {
-    expect(schema("ShiftClose").allOf).toEqual([{ $ref: "#/components/schemas/ApproverCheckMatchesApprover" }]);
+    expect(schema("ShiftClose").allOf).toEqual([
+      { $ref: "#/components/schemas/ApproverCheckMatchesApprover" },
+      { $ref: "#/components/schemas/ApprovalMissingMatches" },
+    ]);
     expect(schema("Shift").allOf).toBeUndefined();
   });
 
@@ -1268,6 +1271,23 @@ describe("pos-shifts — RT-384 shift variance policy", () => {
     expect(v({ ...withApprover, ...check("not_applicable") })).toBe(false);
     expect(v({ ...noApprover, ...check("verified") })).toBe(false);
     expect(v({ ...noApprover, ...check("unverified", "check_unavailable") })).toBe(false);
+  });
+
+  it.each([
+    ["yes", true, "no", true],
+    ["yes", false, "yes", true],
+    ["no", false, "no", true],
+    ["unknown", true, "unknown", true],
+    ["no", true, "yes", false],
+    ["yes", true, "yes", false],
+    ["yes", false, "no", false],
+    ["unknown", false, "no", false],
+    ["no", false, "unknown", false],
+  ])("ShiftClose: approvalRequired %s, approver recorded %s, approvalMissing %s -> %s", (required, hasApprover, missing, ok) => {
+    const closed = exampleValue({ $ref: "#/components/examples/ShiftClosed" }) as { close: Record<string, unknown> };
+    const { varianceApprovedByUserId: _approver, ...noApprover } = closed.close;
+    const base = hasApprover ? closed.close : noApprover;
+    expect(validator("ShiftClose")({ ...base, approvalRequiredByPolicy: required, approvalMissing: missing })).toBe(ok);
   });
 
   it("the shared policy shapes match the shift-closes contract", () => {

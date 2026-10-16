@@ -949,9 +949,31 @@ components:
       type: object
       additionalProperties: false
       required: [tenantDefault, latestRevision, latestRevisionId]
+      if:
+        properties:
+          tenantDefault:
+            properties:
+              policySource:
+                const: system
+            required: [policySource]
+        required: [tenantDefault]
+      then:
+        properties:
+          latestRevision:
+            type: "null"
+          latestRevisionId:
+            type: "null"
+      else:
+        properties:
+          latestRevision:
+            type: object
+          latestRevisionId:
+            type: string
       description: >
         The tenant default. `latestRevisionId` is the `expectedRevisionId` of
-        the next tenant publish (`null` before the first).
+        the next tenant publish and the id of `latestRevision`. With a
+        `system` default (the tenant never set one) both are `null`; with a
+        `tenant` default both are set.
       properties:
         tenantDefault:
           $ref: "#/components/schemas/TenantResolvedCashVariancePolicy"

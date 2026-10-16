@@ -380,6 +380,7 @@ components:
       additionalProperties: false
       allOf:
         - $ref: "#/components/schemas/ApproverCheckMatchesApprover"
+        - $ref: "#/components/schemas/ApprovalMissingMatches"
       required:
         - shiftId
         - storeId
@@ -513,6 +514,7 @@ components:
       additionalProperties: false
       allOf:
         - $ref: "#/components/schemas/ApproverCheckMatchesApprover"
+        - $ref: "#/components/schemas/ApprovalMissingMatches"
       required:
         - shiftId
         - storeId
@@ -741,6 +743,55 @@ components:
             - no_store_access
             - check_unavailable
             - null
+    ApprovalMissingMatches:
+      description: >
+        RT-384: when present, `approvalMissing` follows from
+        `approvalRequiredByPolicy` and the recorded approver: `unknown` exactly
+        when `approvalRequiredByPolicy` is `unknown`; `no` when approval was
+        not required, or was required and an approver was recorded; `yes`
+        when approval was required and no approver was recorded
+        (`varianceApprovedByUserId` `null`).
+      allOf:
+        - if:
+            properties:
+              approvalRequiredByPolicy:
+                const: unknown
+            required: [approvalRequiredByPolicy, approvalMissing]
+          then:
+            properties:
+              approvalMissing:
+                const: unknown
+        - if:
+            properties:
+              approvalRequiredByPolicy:
+                const: "no"
+            required: [approvalRequiredByPolicy, approvalMissing]
+          then:
+            properties:
+              approvalMissing:
+                const: "no"
+        - if:
+            properties:
+              approvalRequiredByPolicy:
+                const: "yes"
+              varianceApprovedByUserId:
+                type: string
+            required: [approvalRequiredByPolicy, approvalMissing, varianceApprovedByUserId]
+          then:
+            properties:
+              approvalMissing:
+                const: "no"
+        - if:
+            properties:
+              approvalRequiredByPolicy:
+                const: "yes"
+              varianceApprovedByUserId:
+                type: "null"
+            required: [approvalRequiredByPolicy, approvalMissing, varianceApprovedByUserId]
+          then:
+            properties:
+              approvalMissing:
+                const: "yes"
     ApproverCheckMatchesApprover:
       description: >
         RT-384: when `approverCheck` is present it agrees with the recorded

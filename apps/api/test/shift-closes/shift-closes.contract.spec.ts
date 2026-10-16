@@ -592,13 +592,38 @@ describe("shift-closes — AJV fixtures", () => {
   it("RT-384: approverCheck is not_applicable exactly when no approver was recorded", () => {
     const v = validator("ShiftCloseSummary");
     const check = (status: string, reason: string | null = null) => ({ ...POLICY_FIELDS, approverCheck: { status, reason } });
-    const noApprover = { ...SUMMARY, varianceApprovedByUserId: null };
-    expect(v({ ...noApprover, ...check("not_applicable") })).toBe(true);
+    // Approval was required (POLICY_FIELDS) and none was recorded, so approvalMissing is "yes".
+    const noApprover = { ...SUMMARY, varianceApprovedByUserId: null, approvalMissing: "yes" };
+    expect(v({ ...check("not_applicable"), ...noApprover })).toBe(true);
     expect(v({ ...SUMMARY, ...check("unverified", "not_manager") })).toBe(true);
-    expect(v({ ...noApprover, ...check("verified") })).toBe(false);
-    expect(v({ ...noApprover, ...check("unverified", "check_unavailable") })).toBe(false);
+    expect(v({ ...check("verified"), ...noApprover })).toBe(false);
+    expect(v({ ...check("unverified", "check_unavailable"), ...noApprover })).toBe(false);
     expect(v({ ...SUMMARY, ...check("not_applicable") })).toBe(false);
-    expect(validator("ShiftCloseDetail")({ ...DETAIL, varianceApprovedByUserId: null, ...check("verified") })).toBe(false);
+    expect(validator("ShiftCloseDetail")({ ...DETAIL, ...check("verified"), varianceApprovedByUserId: null, approvalMissing: "yes" })).toBe(false);
+  });
+
+  it.each([
+    ["yes", true, "no", true],
+    ["yes", false, "yes", true],
+    ["no", true, "no", true],
+    ["no", false, "no", true],
+    ["unknown", true, "unknown", true],
+    ["unknown", false, "unknown", true],
+    ["no", true, "yes", false],
+    ["yes", true, "yes", false],
+    ["yes", false, "no", false],
+    ["unknown", false, "no", false],
+    ["no", false, "unknown", false],
+    ["yes", true, "unknown", false],
+  ])("RT-384: approvalRequired %s, approver recorded %s, approvalMissing %s -> %s", (required, hasApprover, missing, ok) => {
+    const body = {
+      ...SUMMARY,
+      varianceApprovedByUserId: hasApprover ? APPROVER_ID : null,
+      approvalRequiredByPolicy: required,
+      approvalMissing: missing,
+    };
+    expect(validator("ShiftCloseSummary")(body)).toBe(ok);
+    expect(validator("ShiftCloseDetail")({ ...DETAIL, ...body })).toBe(ok);
   });
 
   it.each([
