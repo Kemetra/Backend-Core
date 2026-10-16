@@ -5,10 +5,10 @@ info:
   description: >
     RT-537 (RT-534 S1; [GATED] approval Jira RT-537 comment 12057, owner,
     2026-10-16; design comments 12054-12056; owner decisions OD-534-1..8 in
-    RT-534 comment 12048 and Confluence 40468506). Contract only: no route,
-    guard, service, DTO or migration implements it yet. The runtime is RT-539
-    (S3) and the storage is RT-538 (S2). Until RT-539 deploys, these paths are
-    not served.
+    RT-534 comment 12048 and Confluence 40468506). Implemented: the runtime
+    is RT-539 (S3, merged) on the RT-538 (S2) storage, so no operation carries
+    `x-runtime-status: contract-only` (lifted for POS RT-542, owner-approved
+    on RT-542 comment 12124). The operations are unchanged on the wire.
 
     Three POS-facing operations over the sales the server has RECEIVED for the
     caller's store: a business-date list, the full recorded detail of one sale,
@@ -58,8 +58,6 @@ paths:
     get:
       summary: List received sales of the caller's store by business-date range.
       operationId: listSaleHistory
-      x-runtime-status: contract-only
-      x-runtime-note: RT-537 contract PR; the controller ships in RT-539 (S3).
       tags: [pos-sale-history]
       x-audit-action: sale_history.listed
       security:
@@ -107,8 +105,6 @@ paths:
     get:
       summary: Full recorded detail of one visible sale, with reprint eligibility.
       operationId: readSaleHistoryDetail
-      x-runtime-status: contract-only
-      x-runtime-note: RT-537 contract PR; the controller ships in RT-539 (S3).
       tags: [pos-sale-history]
       x-audit-action: sale_history.detail_read
       security:
@@ -150,8 +146,6 @@ paths:
     post:
       summary: Authorize, or record, one receipt reprint of a visible sale.
       operationId: recordSaleReprint
-      x-runtime-status: contract-only
-      x-runtime-note: RT-537 contract PR; the controller ships in RT-539 (S3).
       x-idempotency: required
       x-audit-action: sale.receipt.reprinted
       tags: [pos-sale-history]
