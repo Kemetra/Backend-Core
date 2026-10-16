@@ -1453,8 +1453,14 @@ describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
       "MUST capture a responsibility-bearing sale synchronously, online, before finalizing it, and MUST NOT queue it",
     );
     expect(info()).toContain("credit is manager/admin-only");
-    expect(info()).not.toContain("OWNER-PENDING");
+    expect(info()).not.toContain("OFFLINE CREDIT (OWNER-PENDING");
     expect(fieldText()).toContain("422 `sale_responsibility_offline_refused`");
+  });
+
+  it("flags the envelope-role question as OWNER-PENDING instead of deciding it", () => {
+    expect(info()).toContain("ROLE ON THE ENVELOPE PATH (OWNER-PENDING)");
+    expect(info()).toContain("`owner`, `tenant_admin` or `store_manager`");
+    expect(info()).not.toContain("does not add a role check");
   });
 
   it("names 422 sale_responsibility_offline_refused for responsibilities on the device path, ordered first", () => {

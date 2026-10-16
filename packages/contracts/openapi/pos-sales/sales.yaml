@@ -237,10 +237,14 @@ info:
     credit stays disabled until a cached credit decision exists):
     `responsibilities` are accepted only on the `operatorAuthorization` path
     (the manager/admin envelope). On the RT-224 `device` path a body that
-    carries them is refused 422 `sale_responsibility_offline_refused`. The
-    server does not add a role check on the envelope path; on the POS today
-    only manager/admin sessions hold an envelope, so credit is
-    manager/admin-only. The POS MUST capture a responsibility-bearing
+    carries them is refused 422 `sale_responsibility_offline_refused`. On the
+    POS today only manager/admin sessions hold an envelope, so credit is
+    manager/admin-only. ROLE ON THE ENVELOPE PATH (OWNER-PENDING): the server
+    can also issue an envelope to a cashier (see RT-530). Whether the server
+    limits `responsibilities` to an envelope operator who is an `owner`,
+    `tenant_admin` or `store_manager` (the RT-530 eligible set), and with
+    which refusal code, is not yet decided; RT-418 implements whatever the
+    owner ratifies on this PR. The POS MUST capture a responsibility-bearing
     sale synchronously, online, before finalizing it, and MUST NOT queue it
     for the background outbox drain. This is a new POS capture mode (a
     departure from POS spec 020 FR-5, by the same owner decision). Because the
