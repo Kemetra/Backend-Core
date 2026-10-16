@@ -271,6 +271,20 @@ describe("devices impact contract — projection", () => {
       revokeReason: "retired",
       blockCode: "unresolved_custody_exception",
     }],
+    ["a custody exception for a non-security reason", { ...SECURITY, revokeReason: "admin_error" }],
+    ["an allowed revoke of an active device over an open shift", { ...ALLOWED, openShift: CASH_UP_SHIFT }],
+    ["an allowed replace of an active device over an open shift", {
+      ...ALLOWED,
+      action: "replace",
+      revokeReason: "replaced",
+      openShift: CASH_UP_SHIFT,
+    }],
+    ["an allowed retire of a revoked device over its custody exception", {
+      ...REPLACE_AFTER_EXCEPTION,
+      action: "retire",
+      revokeReason: "retired",
+    }],
+    ["an open-shift block without the open shift", { ...BLOCKED, openShift: null }],
     ["an active device without a cascade", { ...ALLOWED, cascade: null }],
     ["an active device with a custody exception", { ...BLOCKED, custodyExceptionShiftId: SHIFT_ID }],
     ["a revoked device with a cascade", { ...REPLACE_AFTER_EXCEPTION, cascade: CASCADE }],
@@ -301,9 +315,9 @@ describe("devices impact contract — projection", () => {
 // 4. The revoke's 409 carries the preview (additively)
 // ===========================================================================
 describe("devices impact contract — revoke 409", () => {
-  const conflict = (details?: unknown): unknown => ({
+  const conflict = (details?: unknown, code = "unresolved_cash_session"): unknown => ({
     error: {
-      code: "unresolved_cash_session",
+      code,
       message: "Conflict",
       request_id: DEVICE_ID,
       ...(details !== undefined ? { details } : {}),
@@ -324,6 +338,10 @@ describe("devices impact contract — revoke 409", () => {
     ["the envelope with the blocked preview as details", conflict(BLOCKED), true],
     ["details that are not blocked", conflict(ALLOWED), false],
     ["details that are not a preview", conflict({ verdict: "blocked" }), false],
+    ["details whose envelope code differs from the block code", conflict(BLOCKED, "conflict"), false],
+    ["details of a blocked retire", conflict(RETIRE_BLOCKED_BY_EXCEPTION), false],
+    ["details of a blocked replace", conflict({ ...BLOCKED, action: "replace", revokeReason: "replaced" }), false],
+    ["another conflict code without details", conflict(undefined, "conflict"), true],
   ])("judges %s", (_label, payload, expected) => {
     expect(contract.accepts("DeviceImpactConflict", payload)).toBe(expected);
   });

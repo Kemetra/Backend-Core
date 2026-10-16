@@ -1176,6 +1176,50 @@ components:
                 type: object
               trustState:
                 const: active
+        # Over an open shift only a security reason or the recovery reason
+        # makes the custody exception; any other reason is blocked.
+        - if:
+            properties:
+              verdict:
+                const: allowed_with_custody_exception
+            required: [verdict]
+          then:
+            properties:
+              revokeReason:
+                enum: [lost, stolen, suspected_compromise, hardware_failure]
+        # An open shift blocks an active device's action, and a revoked
+        # device's retire: `allowed` there means no open shift.
+        - if:
+            properties:
+              verdict:
+                const: allowed
+              trustState:
+                const: active
+            required: [verdict, trustState]
+          then:
+            properties:
+              openShift:
+                type: "null"
+        - if:
+            properties:
+              verdict:
+                const: allowed
+              action:
+                const: retire
+            required: [verdict, action]
+          then:
+            properties:
+              openShift:
+                type: "null"
+        - if:
+            properties:
+              blockCode:
+                enum: [unresolved_cash_session, unresolved_custody_exception]
+            required: [blockCode]
+          then:
+            properties:
+              openShift:
+                type: object
         - if:
             properties:
               verdict:
@@ -1396,11 +1440,30 @@ components:
               format: uuid
               description: Server-side correlation id; the cause is recorded server-side.
             details:
+              # The refused revoke's own preview: its only 409 is
+              # unresolved_cash_session, so the envelope code equals it.
               allOf:
                 - $ref: "#/components/schemas/DeviceImpactPreview"
                 - properties:
+                    action:
+                      const: revoke
                     verdict:
                       const: blocked
+                    blockCode:
+                      const: unresolved_cash_session
+      allOf:
+        # error.code equals details.blockCode whenever the preview is present.
+        - if:
+            properties:
+              error:
+                required: [details]
+            required: [error]
+          then:
+            properties:
+              error:
+                properties:
+                  code:
+                    const: unresolved_cash_session
 
     # -----------------------------------------------------------------------
     # Canonical error envelope (auth / pos-sales / shift-closes)
