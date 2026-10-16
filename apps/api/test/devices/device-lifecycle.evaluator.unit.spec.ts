@@ -167,6 +167,6 @@ describe("preview / revoke parity", () => {
       return outcome !== JSON.stringify(expected) || wrongException;
     });
     expect(mismatches).toEqual([]);
-    expect(cases.length).toBe(REVOKE_REASONS.length * 4 * ROLES.length * 2 * 3);
+    expect(cases).toHaveLength(REVOKE_REASONS.length * 4 * ROLES.length * 2 * 3);
   });
 });
