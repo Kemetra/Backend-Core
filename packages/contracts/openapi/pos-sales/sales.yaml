@@ -239,12 +239,11 @@ info:
     (the manager/admin envelope). On the RT-224 `device` path a body that
     carries them is refused 422 `sale_responsibility_offline_refused`. On the
     POS today only manager/admin sessions hold an envelope, so credit is
-    manager/admin-only. ROLE ON THE ENVELOPE PATH (OWNER-PENDING): the server
-    can also issue an envelope to a cashier (see RT-530). Whether the server
-    limits `responsibilities` to an envelope operator who is an `owner`,
-    `tenant_admin` or `store_manager` (the RT-530 eligible set), and with
-    which refusal code, is not yet decided; RT-418 implements whatever the
-    owner ratifies on this PR. The POS MUST capture a responsibility-bearing
+    manager/admin-only. The server enforces the same rule: because it can also
+    issue an envelope to a cashier (see RT-530), it accepts `responsibilities`
+    only for an envelope operator whose role is `owner`, `tenant_admin` or
+    `store_manager` (the RT-530 eligible set) and refuses anyone else with 403
+    `sale_responsibility_role_refused` (see `CaptureForbidden`). The POS MUST capture a responsibility-bearing
     sale synchronously, online, before finalizing it, and MUST NOT queue it
     for the background outbox drain. This is a new POS capture mode (a
     departure from POS spec 020 FR-5, by the same owner decision). Because the
@@ -375,7 +374,9 @@ paths:
         the `device` path a body with `responsibilities` is 422
         `sale_responsibility_offline_refused`, decided before the coverage rule
         and after authentication and the RT-224 cashier-claim check (403
-        `refused`). Order: the coverage rule is checked first, then the line
+        `refused`). On the envelope path the role check (403
+        `sale_responsibility_role_refused`) is decided after authentication and
+        before every 422. Order: the coverage rule is checked first, then the line
         price invariant, then the payers. A replay of an
         already-captured sale answers before these checks, so a payer suspended
         after capture never turns a stored result into a 422. Nothing is
@@ -429,7 +430,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Refused"
+          $ref: "#/components/responses/CaptureForbidden"
         "409":
           $ref: "#/components/responses/Conflict"
         "422":
@@ -1018,8 +1019,11 @@ components:
             sale not paid at the till: one entry per payer, each an amount in
             the sale's currency. Accepted from RT-418; do not send before then
             (see the versioning note). Only on the `operatorAuthorization`
-            path, captured synchronously before finalize; on the `device` path
-            the body is 422 `sale_responsibility_offline_refused`. When present, the coverage rule
+            path, for an envelope operator whose role is `owner`,
+            `tenant_admin` or `store_manager` (else 403
+            `sale_responsibility_role_refused`), captured synchronously before
+            finalize; on the `device` path the body is 422
+            `sale_responsibility_offline_refused`. When present, the coverage rule
             `sum(tenders) + sum(responsibilities) = posTotal` must hold in
             exact decimal arithmetic, no rounding (else 422
             `sale_responsibility_mismatch`). It replaces the RT-76 tender-only
@@ -1879,8 +1883,17 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
-    Refused:
+    CaptureForbidden:
       description: >
+        403 on `captureSale`. `error.code` is one of two, each with one body
+        for every cause.
+
+        `sale_responsibility_role_refused` (RT-417, envelope path only): the
+        body carries `responsibilities` and the envelope operator's role is not
+        `owner`, `tenant_admin` or `store_manager` (the RT-530 eligible set).
+        Credit is accepted only from those roles (owner decision 2026-10-16,
+        option A: the manager/admin envelope path). Nothing is recorded.
+
         Generic 403 `refused` (RT-224, `captureSale` device path only): the
         device credential is valid, but the cashier claim (`operatorUserId`)
         is not accepted for this sale. The body is the same for every cause:

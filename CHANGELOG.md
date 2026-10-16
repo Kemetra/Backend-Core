@@ -107,7 +107,10 @@ This project follows [Semantic Versioning](https://semver.org/).
   hashed into the payload, and an optional `Sale.responsibilities`.
   Responsibilities are accepted only on the `operatorAuthorization` path,
   captured synchronously before finalize; on the device path they are 422
-  `sale_responsibility_offline_refused` (owner decision 2026-10-16, option A).
+  `sale_responsibility_offline_refused` (owner decision 2026-10-16, option A),
+  and an envelope operator outside owner / tenant_admin / store_manager gets 403
+  `sale_responsibility_role_refused` (the capture 403 is now `CaptureForbidden`,
+  carrying it and the RT-224 `refused`).
   `erpnext-connector/posting-feed.yaml` 1.8.0-draft (additive):
   `Sale.responsibilities[{payerExternalRef, amount, sequence}]`, failing closed
   for an unmapped payer; such sales and their reversals are held off the feed

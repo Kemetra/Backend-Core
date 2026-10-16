@@ -903,11 +903,11 @@ describe("pos-sales/sales.yaml — RT-224 device-bearer cashier capture", () => 
     expect(describedBy(operatorUserId())).toContain("403 `refused`");
   });
 
-  it("captureSale declares the 403 Refused response; no other sale operation does except recordVoid (RT-530 VoidForbidden)", () => {
+  it("captureSale declares the 403 CaptureForbidden response (RT-224 refused + RT-417 role refusal); no other sale operation does except recordVoid (RT-530 VoidForbidden)", () => {
     const responses = (op: unknown): Record<string, unknown> =>
       ((op as { responses?: Record<string, unknown> }).responses ?? {});
     expect(responses(findOp("captureSale"))["403"]).toEqual({
-      $ref: "#/components/responses/Refused",
+      $ref: "#/components/responses/CaptureForbidden",
     });
     expect(responses(findOp("captureSale"))["401"]).toEqual({
       $ref: "#/components/responses/Unauthorized",
@@ -923,8 +923,8 @@ describe("pos-sales/sales.yaml — RT-224 device-bearer cashier capture", () => 
     }
   });
 
-  it("the Refused response is the generic Error envelope and says the device itself is valid", () => {
-    const refused = salesDoc.components?.responses?.["Refused"] as
+  it("the capture 403 (CaptureForbidden) is the generic Error envelope and says the device itself is valid", () => {
+    const refused = salesDoc.components?.responses?.["CaptureForbidden"] as
       | { description?: string; content?: Record<string, { schema?: unknown }> }
       | undefined;
     expect(refused?.content?.["application/json"]?.schema).toEqual({
@@ -1457,10 +1457,23 @@ describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
     expect(fieldText()).toContain("422 `sale_responsibility_offline_refused`");
   });
 
-  it("flags the envelope-role question as OWNER-PENDING instead of deciding it", () => {
-    expect(info()).toContain("ROLE ON THE ENVELOPE PATH (OWNER-PENDING)");
-    expect(info()).toContain("`owner`, `tenant_admin` or `store_manager`");
-    expect(info()).not.toContain("does not add a role check");
+  it("limits responsibilities to an owner / tenant_admin / store_manager envelope operator, else 403 sale_responsibility_role_refused", () => {
+    expect(info()).not.toContain("OWNER-PENDING");
+    expect(info()).toContain("only for an envelope operator whose role is `owner`, `tenant_admin` or `store_manager`");
+    const forbidden = flat(
+      (salesDoc.components?.responses?.["CaptureForbidden"] as { description?: string } | undefined)?.description,
+    );
+    expect(forbidden).toContain("`refused`");
+    expect(forbidden).toContain("`sale_responsibility_role_refused`");
+    expect(forbidden).toContain("the RT-530 eligible set");
+    expect(
+      (salesDoc.components?.responses?.["CaptureForbidden"] as { content?: Record<string, { schema?: unknown }> } | undefined)
+        ?.content?.["application/json"]?.schema,
+    ).toEqual({ $ref: "#/components/schemas/Error" });
+    expect(captureText()).toContain(
+      "the role check (403 `sale_responsibility_role_refused`) is decided after authentication and before every 422",
+    );
+    expect(fieldText()).toContain("403 `sale_responsibility_role_refused`");
   });
 
   it("names 422 sale_responsibility_offline_refused for responsibilities on the device path, ordered first", () => {

@@ -198,8 +198,11 @@ on the RT-224 device path. So any capture refusal arrives after the goods left.
   path they are 422 `sale_responsibility_offline_refused`. The POS captures a
   responsibility-bearing sale synchronously, online, before finalize, and never
   queues it for the background drain, so every refusal reaches the till before
-  finalize. On the POS only manager/admin sessions hold an envelope, so credit
-  is manager/admin-only. This departs from POS spec 020 FR-5.
+  finalize. Credit is manager/admin-only: the server accepts responsibilities
+  only from an envelope operator who is owner, tenant_admin or store_manager
+  (the RT-530 set), else 403 `sale_responsibility_role_refused` (*coordinator*,
+  derived from the owner's option A wording). This departs from POS spec 020
+  FR-5.
 
 ### Alternatives considered
 - **R-2, keep `settlement-intent` with posting held** — rejected by the owner
