@@ -69,6 +69,7 @@ import {
   R_PLAIN,
   R_RACE,
   R_REC,
+  R_REVERSE,
   R_REC_ADMIN,
   R_SEC,
   R_Y,
@@ -545,3 +546,58 @@ describe("shift open serializes with the revoke", () => {
     await h.env().admin.query(`DELETE FROM shifts WHERE shift_id = $1`, [live]);
   });
 });
+
+describe("revoke waits for a shift open that holds the lifecycle lock (reverse race)", () => {
+  it("a non-security revoke that waited on a committed shift open is 409 unresolved_cash_session", async () => {
+    if (skip()) return;
+    const scope = { tenantId: TENANT_A, storeId: STORE_A_X, deviceId: R_REVERSE };
+    const repo = new ShiftCashUpRepository();
+    const opener = await h.env().admin.connect();
+    let response: request.Response | null = null;
+    try {
+      // The cash-up open's order: the lifecycle lock and the revoked_at
+      // recheck, then the insert. The revoke starts in between: before the
+      // insert there is no FK lock on the device row yet, so only the shared
+      // lifecycle lock can make the revoke wait (without it the revoke would
+      // see no shift, succeed, and the insert would then land on a revoked
+      // device).
+      await opener.query("BEGIN");
+      expect(await repo.lockOpenableDevice(opener, scope)).toBe(true);
+
+      const revoking = post(revoke(R_REVERSE), SES_OWNER_ALL, { reason: "admin_error" }).then((res) => {
+        response = res;
+        return res;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(response).toBeNull(); // the revoke waits on the open's lifecycle lock
+
+      const opened = await repo.insertShift(opener, scope, {
+        shiftId: "0a000000-0000-7000-8000-0000036503e1",
+        openedAt: "2026-10-16T13:00:00Z",
+        openingUserId: CASHIER_A,
+        currencyCode: "EGP",
+        openingFloat: "100.00",
+        recordedByUserId: CASHIER_A,
+        payloadHash: Buffer.alloc(32, 7),
+      });
+      expect(opened.kind).toBe("inserted");
+      await opener.query("COMMIT");
+      await expectError(await revoking, 409, "unresolved_cash_session");
+    } finally {
+      opener.release();
+    }
+    expect((await deviceRow(R_REVERSE)).revoked_at).toBeNull();
+    expect(await revokeAudits(R_REVERSE)).toEqual([]);
+  });
+});
+
+describe("revoke CSRF (RT-430)", () => {
+  it("refuses a cookie-authenticated revoke without an Origin with 403 origin_rejected", async () => {
+    if (skip()) return;
+    // No test-session header: the real SessionOnlyAdminGuard runs, sees the
+    // session cookie on an unsafe method, and checks Origin before any lookup.
+    const res = await post(revoke(R_PLAIN), null, { reason: "lost" }).set("Cookie", "dp2_session=rt365-no-origin");
+    await expectError(res, 403, "origin_rejected");
+  });
+});
+

@@ -24,6 +24,7 @@
  *     rank 1  R_REC_ADMIN X active, open cash-up shift SHIFT_REC_ADMIN   exp 2027-02-06
  *     rank 1  R_RACE     X  active, no shift (shift-open race)          exp 2027-02-07
  *     rank 1  R_LEGACY_LATE X active, no shift (late legacy open)       exp 2027-02-08
+ *     rank 1  R_REVERSE  X  active, no shift (reverse race)              exp 2027-02-09
  *     rank 2  D_OLD      X  revoked before RT-365 (no reason, no actor)  exp 2026-12-01
  *     rank 3  D_RETIRED  Y  revoked and retired                          exp 2026-10-20
  *     tenant B: D_B on STORE_B_X.
@@ -70,6 +71,8 @@ export const R_REC_ADMIN = id("02a6");
 export const R_RACE = id("02a7");
 /** Revoked before an audit-ingest `shift.open` arrives. */
 export const R_LEGACY_LATE = id("02a8");
+/** A shift opens on it while a revoke waits (the reverse race direction). */
+export const R_REVERSE = id("02a9");
 export const D_B = "0b000000-0000-7000-8000-0000036501b1";
 export const NO_DEVICE = id("01ff");
 
@@ -124,6 +127,7 @@ export const TENANT_A_ORDER = [
   R_REC_ADMIN,
   R_RACE,
   R_LEGACY_LATE,
+  R_REVERSE,
   D_OLD,
   D_RETIRED,
 ];
@@ -162,6 +166,7 @@ const DEVICES: readonly SeedDevice[] = [
   { id: R_REC_ADMIN, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2027-02-06T00:00:00Z" },
   { id: R_RACE, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2027-02-07T00:00:00Z" },
   { id: R_LEGACY_LATE, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2027-02-08T00:00:00Z" },
+  { id: R_REVERSE, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2027-02-09T00:00:00Z" },
   { id: D_OLD, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2026-12-01T00:00:00Z" },
   { id: D_RETIRED, tenantId: TENANT_A, storeId: STORE_A_Y, expiresAt: "2026-10-20T00:00:00Z" },
   { id: D_B, tenantId: TENANT_B, storeId: STORE_B_X, expiresAt: "2027-01-01T00:00:00Z" },

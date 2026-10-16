@@ -26,7 +26,7 @@ info:
 
 
     **Posture.** `1.0.0-draft`, implemented. `[GATED]` contract-first (PR
-    #777, owner approval pending); the RT-365 runtime ships all three
+    #777, owner-approved and merged); the RT-365 runtime ships all three
     operations unchanged on the wire, so none carries
     `x-runtime-status: contract-only`.
 
@@ -80,7 +80,7 @@ info:
 
 
     **Revoke (one transaction).** Runtime requirement (implemented by the
-    RT-365 runtime, PR #781; not on `main` until it merges): the revoke and
+    RT-365 runtime, PR #781): the revoke and
     every shift open (the cash-up open and the audit-ingest `shift.open`)
     MUST take the same per-device lifecycle lock (a transaction-scoped
     advisory lock on tenant + device), and a shift open MUST recheck
