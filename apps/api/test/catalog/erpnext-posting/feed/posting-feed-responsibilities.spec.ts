@@ -26,6 +26,7 @@
  * Docker policy mirrors posting-feed.spec: HARD failure unless MIGRATION_TEST_ALLOW_SKIP=1.
  */
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import Ajv2020, { type ValidateFunction } from "ajv/dist/2020";
@@ -319,5 +320,47 @@ describe("RT-418 — the posting feed with the Connector gate on", () => {
     expect(Object.keys(on!.sale).sort()).toEqual(
       ["saleRef", "storeId", "currencyCode", "posTotal", "occurredAt", "businessDate", "sourceSystem", "externalId", "lines", "warehouseRef"].sort(),
     );
+  });
+});
+
+describe("RT-418 — the hold-lift re-head (docs/operations/sql/sale-responsibilities-feed-rehead.sql)", () => {
+  const REHEAD = resolve(__dirname, "..", "..", "..", "..", "..", "..", "docs", "operations", "sql", "sale-responsibilities-feed-rehead.sql");
+
+  /** The script without its psql meta-commands (\set, \echo), run as the superuser like the migration owner. */
+  async function runRehead(): Promise<void> {
+    const sql = readFileSync(REHEAD, "utf8")
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("\\"))
+      .join("\n");
+    await env!.admin.query(sql);
+  }
+
+  async function sequenceOf(id: string): Promise<bigint> {
+    const r = await env!.admin.query<{ s: string }>(`SELECT sequence::text AS s FROM erpnext_posting_status WHERE id = $1`, [id]);
+    return BigInt(r.rows[0]!.s);
+  }
+
+  it("re-heads only the gate-held credit sale_post rows, so a Connector past them sees them again", async () => {
+    if (skip) return;
+    process.env[FLAG] = "true";
+    // A Connector whose cursor already moved past every seeded row (the cash sale is last).
+    const cursor = await sequenceOf(W_CASH);
+    const before = (await new ErpnextPostingService(env!.app).pullPostings({ tenantId: TENANT_A, since: cursor, limit: 500 })).items;
+    expect(refs(before)).toEqual([]);
+    const reversalBefore = await sequenceOf(W_VOIDED_REVERSAL);
+    const voidedPostBefore = await sequenceOf(W_VOIDED_POST);
+
+    await runRehead();
+
+    const after = (await new ErpnextPostingService(env!.app).pullPostings({ tenantId: TENANT_A, since: cursor, limit: 500 })).items;
+    expect(refs(after)).toEqual([W_CREDIT, W_UNLINKED]);
+    // Rows still held for another reason (a reversal, a reversed sale) keep their place.
+    expect(await sequenceOf(W_VOIDED_REVERSAL)).toBe(reversalBefore);
+    expect(await sequenceOf(W_VOIDED_POST)).toBe(voidedPostBefore);
+    // Idempotent in effect: a second run re-offers the same set, nothing else.
+    const cursor2 = await sequenceOf(W_UNLINKED);
+    await runRehead();
+    const again = (await new ErpnextPostingService(env!.app).pullPostings({ tenantId: TENANT_A, since: cursor2, limit: 500 })).items;
+    expect(refs(again)).toEqual([W_CREDIT, W_UNLINKED]);
   });
 });

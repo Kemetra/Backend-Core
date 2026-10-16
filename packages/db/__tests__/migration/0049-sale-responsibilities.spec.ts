@@ -62,7 +62,14 @@ async function applyBefore0049(pgEnv: PgTestEnv): Promise<void> {
   await ensureAppRole(pgEnv);
 }
 
-async function insertSale(id: string, tenantId: string, storeId: string, externalId: string): Promise<void> {
+interface SaleSeed {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly storeId: string;
+  readonly externalId: string;
+}
+
+async function insertSale({ id, tenantId, storeId, externalId }: SaleSeed): Promise<void> {
   await pg().admin.query(
     `INSERT INTO sales
        (id, tenant_id, store_id, currency_code, pos_total, occurred_at,
@@ -134,22 +141,34 @@ async function errorCode(fn: () => Promise<unknown>): Promise<string | null> {
   }
 }
 
-async function columnExists(table: string, column: string): Promise<boolean> {
-  const r = await pg().admin.query(
-    `SELECT 1 FROM information_schema.columns
-      WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2`,
-    [table, column],
-  );
-  return r.rows.length === 1;
+/** Which 0049 objects exist (and whether the dropped credit_terms column is back). */
+interface SchemaState {
+  readonly table: boolean;
+  readonly responsibilityCount: boolean;
+  readonly payerExternalRef: boolean;
+  readonly creditTerms: boolean;
 }
 
-async function tableExists(table: string): Promise<boolean> {
-  const r = await pg().admin.query(
-    `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1`,
-    [table],
+async function schemaState(): Promise<SchemaState> {
+  const r = await pg().admin.query<SchemaState>(
+    `SELECT
+       EXISTS (SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'sale_responsibilities') AS "table",
+       EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'sales'
+                  AND column_name = 'responsibility_count') AS "responsibilityCount",
+       EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'erpnext_posting_resolution'
+                  AND column_name = 'payer_external_ref') AS "payerExternalRef",
+       EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'payer_account'
+                  AND column_name = 'credit_terms') AS "creditTerms"`,
   );
-  return r.rows.length === 1;
+  return r.rows[0]!;
 }
+
+const UP_STATE: SchemaState = { table: true, responsibilityCount: true, payerExternalRef: true, creditTerms: false };
+const DOWN_STATE: SchemaState = { table: false, responsibilityCount: false, payerExternalRef: false, creditTerms: true };
 
 beforeAll(async () => {
   try {
@@ -172,7 +191,7 @@ beforeAll(async () => {
        ($1, $4, 'rt418-x', 'X'), ($2, $4, 'rt418-y', 'Y'), ($3, $5, 'rt418-b', 'B')`,
     [STORE, STORE_2, STORE_B, TENANT, TENANT_B],
   );
-  await insertSale(LEGACY_SALE, TENANT, STORE, "rt418-legacy");
+  await insertSale({ id: LEGACY_SALE, tenantId: TENANT, storeId: STORE, externalId: "rt418-legacy" });
   await env.admin.query(
     `INSERT INTO payer_account (id, tenant_id, store_id, category, display_name, external_ref, credit_terms)
      VALUES ($1, $4, NULL, 'credit_customer', 'House', 'CUST-1', '{"days":30}'::jsonb),
@@ -183,8 +202,8 @@ beforeAll(async () => {
   await env.admin.query(readFileSync(UP_PATH, "utf8"));
   // The app role's grants cover the tables that existed when they ran.
   await ensureAppRole(env);
-  await insertSale(SALE, TENANT, STORE, "rt418-sale");
-  await insertSale(SALE_B, TENANT_B, STORE_B, "rt418-sale-b");
+  await insertSale({ id: SALE, tenantId: TENANT, storeId: STORE, externalId: "rt418-sale" });
+  await insertSale({ id: SALE_B, tenantId: TENANT_B, storeId: STORE_B, externalId: "rt418-sale-b" });
 }, 240_000);
 
 afterAll(async () => {
@@ -202,7 +221,7 @@ describe("0049 up — upgrade path", () => {
 
   it("drops payer_account.credit_terms and keeps every payer", async () => {
     if (skip()) return;
-    expect(await columnExists("payer_account", "credit_terms")).toBe(false);
+    expect((await schemaState()).creditTerms).toBe(false);
     const r = await pg().admin.query(`SELECT count(*)::int AS n FROM payer_account`);
     expect(r.rows[0]).toEqual({ n: 3 });
   });
@@ -332,8 +351,7 @@ describe("0049 down", () => {
     await pg().admin.query(insertSql, params({}));
     try {
       expect(await errorCode(() => pg().admin.query(readFileSync(DOWN_PATH, "utf8")))).toBe("P0001");
-      expect(await tableExists("sale_responsibilities")).toBe(true);
-      expect(await columnExists("payer_account", "credit_terms")).toBe(false);
+      expect(await schemaState()).toEqual(UP_STATE);
     } finally {
       await pg().admin.query("ROLLBACK").catch(() => undefined);
       await pg().admin.query(`DELETE FROM sale_responsibilities WHERE sale_id = $1`, [SALE]);
@@ -343,13 +361,8 @@ describe("0049 down", () => {
   it("round-trips: down removes every 0049 object, up restores them", async () => {
     if (skip()) return;
     await pg().admin.query(readFileSync(DOWN_PATH, "utf8"));
-    expect(await tableExists("sale_responsibilities")).toBe(false);
-    expect(await columnExists("sales", "responsibility_count")).toBe(false);
-    expect(await columnExists("erpnext_posting_resolution", "payer_external_ref")).toBe(false);
-    expect(await columnExists("payer_account", "credit_terms")).toBe(true);
+    expect(await schemaState()).toEqual(DOWN_STATE);
     await pg().admin.query(readFileSync(UP_PATH, "utf8"));
-    expect(await tableExists("sale_responsibilities")).toBe(true);
-    expect(await columnExists("sales", "responsibility_count")).toBe(true);
-    expect(await columnExists("payer_account", "credit_terms")).toBe(false);
+    expect(await schemaState()).toEqual(UP_STATE);
   });
 });

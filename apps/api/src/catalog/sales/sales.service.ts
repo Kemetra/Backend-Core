@@ -39,6 +39,7 @@ import { PG_POOL } from "../../auth/auth.module";
 import type {
   CaptureSaleReceiptDto,
   CaptureSaleRequestDto,
+  SaleResponsibilityDto,
   SaleTenderDto,
 } from "./dto/capture-sale-request.dto";
 import type { RecordVoidRequestDto } from "./dto/record-void-request.dto";
@@ -401,36 +402,15 @@ export class SalesService {
 
         // A FIRST capture from here: every refusal throws and rolls the
         // transaction back, so the sales row is not kept and nothing is
-        // recorded. Order (sales.yaml 1.10.0 CaptureForbidden /
-        // CaptureUnprocessable): the RT-418 role 403, the device-path offline
-        // 422, the coverage rule, the line price invariant, the payers.
-        const scope = { tenantId, storeId };
-        if (responsibilities.length > 0) {
-          if (input.authPath === "device") throw new SaleResponsibilityOfflineRefusedError();
-          await assertCreditOperatorEligible(client, scope, actorUserId);
-        }
-
-        // Coverage, in Postgres numeric (never JS float). RT-77 (RT-10 D1):
-        // without responsibilities, tenders sum to posTotal exactly. RT-418:
-        // with them, sum(tenders) (absent = 0) + sum(responsibilities) = posTotal.
-        // Checked after the replay branch, so a replay that differs is a 409.
-        if (responsibilities.length > 0) {
-          await assertResponsibilityCoverage(client, { tenders, responsibilities, posTotal: body.posTotal });
-        } else if (tenders.length > 0) {
-          await assertTendersMatchTotal(client, tenders, body.posTotal);
-        }
-
-        // RT-105 (RT-87 decision D): a FIRST capture must satisfy the line
-        // price invariant, or the line could never be returned exactly. It is
-        // checked here, after the provenance insert and never before it, so a
-        // replay of a sale captured before RT-105 still resolves above (200).
-        if (findLinePricingViolation(body.lines) !== null) {
-          throw new SaleLinePricingInvalidError();
-        }
-
-        if (responsibilities.length > 0) {
-          await assertResponsibilityPayersEligible(client, scope, responsibilities);
-        }
+        // recorded.
+        await assertFirstCaptureAccepted(client, {
+          scope: { tenantId, storeId },
+          actorUserId,
+          authPath: input.authPath,
+          body,
+          tenders,
+          responsibilities,
+        });
 
         await insertSaleLines(client, { saleId, tenantId, storeId, lines: body.lines });
         if (tenders.length > 0) {
@@ -956,6 +936,44 @@ function receiptColumns(receipt: CaptureSaleReceiptDto | undefined): ReadonlyArr
 /** A tender's reference, or null — only card_external carries one. */
 function tenderReference(t: SaleTenderDto): string | null {
   return t.method === "card_external" ? (t.reference ?? null) : null;
+}
+
+/**
+ * The refusals of a FIRST capture, in the contract's order (sales.yaml
+ * 1.10.0 CaptureForbidden / CaptureUnprocessable), all after the replay
+ * branch so a replay never answers with one of them:
+ *   1. RT-418 credit: on the device path the offline 422; on the envelope
+ *      path the role 403 (the operator's current standing);
+ *   2. coverage, in Postgres numeric (never JS float): RT-77 (RT-10 D1)
+ *      without responsibilities, tenders sum to posTotal exactly; RT-418 with
+ *      them, sum(tenders) (absent = 0) + sum(responsibilities) = posTotal;
+ *   3. RT-105 (RT-87 decision D): the line price invariant, or the line could
+ *      never be returned exactly (a replay of a sale captured before RT-105
+ *      still resolves, 200);
+ *   4. RT-418: every payer is billable for this sale.
+ */
+async function assertFirstCaptureAccepted(
+  client: PoolClient,
+  capture: {
+    readonly scope: { readonly tenantId: string; readonly storeId: string };
+    readonly actorUserId: string;
+    readonly authPath: "envelope" | "device";
+    readonly body: CaptureSaleRequestDto;
+    readonly tenders: ReadonlyArray<SaleTenderDto>;
+    readonly responsibilities: ReadonlyArray<SaleResponsibilityDto>;
+  },
+): Promise<void> {
+  const { scope, body, tenders, responsibilities } = capture;
+  const credit = responsibilities.length > 0;
+  if (credit && capture.authPath === "device") throw new SaleResponsibilityOfflineRefusedError();
+  if (credit) await assertCreditOperatorEligible(client, scope, capture.actorUserId);
+
+  if (credit) await assertResponsibilityCoverage(client, { tenders, responsibilities, posTotal: body.posTotal });
+  else if (tenders.length > 0) await assertTendersMatchTotal(client, tenders, body.posTotal);
+
+  if (findLinePricingViolation(body.lines) !== null) throw new SaleLinePricingInvalidError();
+
+  if (credit) await assertResponsibilityPayersEligible(client, scope, responsibilities);
 }
 
 /** RT-77: Σ tender amounts = posTotal exactly, in Postgres numeric; else 422. */
