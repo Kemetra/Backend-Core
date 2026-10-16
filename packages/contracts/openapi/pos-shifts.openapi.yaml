@@ -1011,6 +1011,8 @@ components:
       else:
         not:
           required: [close]
+      allOf:
+        - $ref: "#/components/schemas/ShiftPolicyMatchesClose"
       description: >
         A cash-up shift as recorded. `close` is required when `status` is
         `closed` and absent when it is `open` (enforced by the schema).
@@ -1182,8 +1184,19 @@ components:
         when `approvalRequiredByPolicy` is `unknown`; `no` when approval was
         not required, or was required and an approver was recorded; `yes`
         when approval was required and no approver was recorded
-        (no `varianceApprovedByUserId` key on this projection).
+        (no `varianceApprovedByUserId` key on this projection). The three
+        RT-384 close fields (`approvalRequiredByPolicy`, `approvalMissing`,
+        `approverCheck`) are all present or all absent; whether
+        `approvalRequiredByPolicy` is `unknown` follows from the shift's
+        `frozenPolicy` (`ShiftPolicyMatchesClose` on `Shift`).
       allOf:
+        - if:
+            anyOf:
+              - required: [approvalRequiredByPolicy]
+              - required: [approvalMissing]
+              - required: [approverCheck]
+          then:
+            required: [approvalRequiredByPolicy, approvalMissing, approverCheck]
         - if:
             properties:
               approvalRequiredByPolicy:
@@ -1224,6 +1237,37 @@ components:
             properties:
               approvalMissing:
                 const: "yes"
+    ShiftPolicyMatchesClose:
+      description: >
+        RT-384: a close's `approvalRequiredByPolicy` is `unknown` exactly when
+        its shift carries no `frozenPolicy` (the open carried none), so a
+        legacy close never reads as "no exception"; with a `frozenPolicy` it
+        is `yes` or `no`.
+      allOf:
+        - if:
+            required: [close]
+            not:
+              required: [frozenPolicy]
+            properties:
+              close:
+                required: [approvalRequiredByPolicy]
+          then:
+            properties:
+              close:
+                properties:
+                  approvalRequiredByPolicy:
+                    const: unknown
+        - if:
+            required: [close, frozenPolicy]
+            properties:
+              close:
+                required: [approvalRequiredByPolicy]
+          then:
+            properties:
+              close:
+                properties:
+                  approvalRequiredByPolicy:
+                    enum: ["yes", "no"]
     ApproverCheckMatchesApprover:
       description: >
         RT-384: when `approverCheck` is present it agrees with the recorded
