@@ -33,60 +33,69 @@ export interface ContractReader {
   sibling(id: string): JsonObject;
 }
 
-function child(value: unknown, key: string): unknown {
-  return value !== null && typeof value === "object" ? (value as JsonObject)[key] : undefined;
+interface LoadedContract {
+  readonly id: string;
+  readonly document: unknown;
 }
 
-function operationIdsOf(document: JsonObject): string[] {
-  const paths = (child(document, "paths") ?? {}) as Record<string, JsonObject>;
-  return Object.values(paths).flatMap((item) =>
-    Object.values(item)
-      .map((o) => child(o, "operationId"))
-      .filter((v): v is string => typeof v === "string"),
+/** `value[k1][k2]…`, or undefined as soon as a step is not an object. */
+function dig(value: unknown, ...keys: string[]): unknown {
+  return keys.reduce<unknown>(
+    (current, key) => (current !== null && typeof current === "object" ? (current as JsonObject)[key] : undefined),
+    value,
   );
 }
 
-export function readContract(id: string): ContractReader {
-  const all = loadOpenApiContracts();
-  const own = all.find((c) => c.id === id);
-  if (!own) throw new Error(`${id} not found in packages/contracts/openapi/`);
-  const document = own.document as JsonObject;
+function required<T>(value: T | undefined, what: string): T {
+  if (value === undefined) throw new Error(`${what} not declared`);
+  return value;
+}
+
+function documentOf(all: readonly LoadedContract[], id: string): JsonObject {
+  const found = all.find((c) => c.id === id);
+  if (!found) throw new Error(`${id} not found in packages/contracts/openapi/`);
+  return found.document as JsonObject;
+}
+
+function operationIdsOf(document: unknown): unknown[] {
+  const paths = Object.values((dig(document, "paths") ?? {}) as Record<string, JsonObject>);
+  return paths.flatMap((item) => Object.values(item).map((o) => dig(o, "operationId")));
+}
+
+function foreignIds(all: readonly LoadedContract[], id: string): ReadonlySet<string> {
+  const ids = all.filter((c) => c.id !== id).flatMap((c) => operationIdsOf(c.document));
+  return new Set(ids.filter((v): v is string => typeof v === "string"));
+}
+
+function compile(document: JsonObject, id: string): (name: string, value: unknown) => boolean {
   const ajv = new Ajv({ strict: false, allErrors: true });
   addFormats(ajv);
   ajv.addSchema(document, id);
-
-  const operation = (method: HttpMethod, path: string): JsonObject => {
-    const found = child(child(child(document, "paths"), path), method);
-    if (found === undefined) throw new Error(`${method.toUpperCase()} ${path} not declared in ${id}`);
-    return found as JsonObject;
+  return (name, value) => {
+    const validate = required(ajv.getSchema(`${id}#/components/schemas/${name}`), `ajv schema ${name} in ${id}`);
+    return validate(value) === true;
   };
-  const named = (section: string, name: string): JsonObject => {
-    const found = child(child(child(document, "components"), section), name);
-    if (found === undefined) throw new Error(`components.${section}.${name} not declared in ${id}`);
-    return found as JsonObject;
+}
+
+export function readContract(id: string): ContractReader {
+  const all = loadOpenApiContracts() as readonly LoadedContract[];
+  const document = documentOf(all, id);
+  const component = (section: string, name: string): JsonObject =>
+    required(dig(document, "components", section, name), `components.${section}.${name} in ${id}`) as JsonObject;
+  const operation = (method: HttpMethod, path: string): JsonObject =>
+    required(dig(document, "paths", path, method), `${method.toUpperCase()} ${path} in ${id}`) as JsonObject;
+  const resolve = (p: JsonObject): JsonObject => {
+    const ref = p["$ref"];
+    return typeof ref === "string" ? component("parameters", ref.replace(PARAMETER_REF, "")) : p;
   };
 
   return {
     document,
     operation,
-    parameters: (method, path) =>
-      ((operation(method, path)["parameters"] ?? []) as JsonObject[]).map((p) => {
-        const ref = p["$ref"];
-        return typeof ref === "string" && ref.startsWith(PARAMETER_REF)
-          ? named("parameters", ref.slice(PARAMETER_REF.length))
-          : p;
-      }),
-    schema: (name) => named("schemas", name),
-    accepts: (name, value) => {
-      const validate = ajv.getSchema(`${id}#/components/schemas/${name}`);
-      if (!validate) throw new Error(`ajv cannot resolve ${name} in ${id}`);
-      return validate(value) === true;
-    },
-    foreignOperationIds: new Set(all.filter((c) => c.id !== id).flatMap((c) => operationIdsOf(c.document as JsonObject))),
-    sibling: (siblingId) => {
-      const found = all.find((c) => c.id === siblingId);
-      if (!found) throw new Error(`${siblingId} not found in packages/contracts/openapi/`);
-      return found.document as JsonObject;
-    },
+    parameters: (method, path) => ((operation(method, path)["parameters"] ?? []) as JsonObject[]).map(resolve),
+    schema: (name) => component("schemas", name),
+    accepts: compile(document, id),
+    foreignOperationIds: foreignIds(all, id),
+    sibling: (siblingId) => documentOf(all, siblingId),
   };
 }
