@@ -54,6 +54,17 @@ import {
   type OperatorAttributionVerifier,
 } from "./operator-attribution";
 import { SaleCaptureAuthGuard } from "./sale-capture-auth.guard";
+import { PgCashierAdmissionSelector } from "./history/sale-history-admission";
+import { PgSaleHistoryRefusalAudit } from "./history/sale-history.audit";
+import {
+  CASHIER_ADMISSION_SELECTOR,
+  SALE_HISTORY_REFUSAL_AUDIT,
+  SaleHistoryAuthGuard,
+  type CashierAdmissionSelector,
+  type SaleHistoryRefusalAudit,
+} from "./history/sale-history-auth.guard";
+import { SaleHistoryController } from "./history/sale-history.controller";
+import { SaleHistoryService } from "./history/sale-history.service";
 
 /**
  * 008 Option Y wiring (its PosOperatorSaleAuthGuard is retired; 031 replaced
@@ -66,10 +77,13 @@ import { SaleCaptureAuthGuard } from "./sale-capture-auth.guard";
  */
 @Module({
   imports: [AuthModule, IdempotencyModule, AuditModule, ContextModule],
-  controllers: [SalesController],
+  // RT-539: the POS sale history is its own controller (no new SalesController
+  // dependency), reusing this module's envelope and device guard providers.
+  controllers: [SalesController, SaleHistoryController],
   providers: [
     SalesService,
     SaleReturnsService,
+    SaleHistoryService,
     {
       provide: IDENTITY_PROVIDER_PORT,
       useFactory: (pool: Pool): IdentityProviderPort =>
@@ -124,6 +138,22 @@ import { SaleCaptureAuthGuard } from "./sale-capture-auth.guard";
     // Class-referenced on captureSale, so reflection-instantiated from the
     // tokens above (no factory), like PosWriteRateLimitGuard below.
     SaleCaptureAuthGuard,
+    // RT-539: the sale-history credential gate, the same envelope / device
+    // composite as captureSale with the cashier chosen by X-Cashier-Admission.
+    // The admission lookup and the refusal audit run on PG_POOL under the
+    // device's tenant (RLS). Class-referenced on the routes, so
+    // reflection-instantiated from these tokens.
+    {
+      provide: CASHIER_ADMISSION_SELECTOR,
+      useFactory: (pool: Pool): CashierAdmissionSelector => new PgCashierAdmissionSelector(pool),
+      inject: [PG_POOL],
+    },
+    {
+      provide: SALE_HISTORY_REFUSAL_AUDIT,
+      useFactory: (pool: Pool): SaleHistoryRefusalAudit => new PgSaleHistoryRefusalAudit(pool),
+      inject: [PG_POOL],
+    },
+    SaleHistoryAuthGuard,
     // ADR 0009 (audit M-2): per-device write rate limit, layered AFTER the
     // envelope guard. A class-referenced @UseGuards enhancer is reflection-
     // instantiated, so it must use plain reflectable DI (no factory): RateLimiter

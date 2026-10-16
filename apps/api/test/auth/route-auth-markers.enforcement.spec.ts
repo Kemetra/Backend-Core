@@ -18,6 +18,7 @@ import request from "supertest";
 import { AppModule } from "../../src/app.module";
 import { PosDeviceAuthGuard } from "../../src/auth/pos-device-auth.guard";
 import { SaleCaptureAuthGuard } from "../../src/catalog/sales/sale-capture-auth.guard";
+import { SaleHistoryAuthGuard } from "../../src/catalog/sales/history/sale-history-auth.guard";
 import { ShiftCashUpAuthGuard } from "../../src/pos-shifts/shift-cash-up-auth.guard";
 import { DEVICE_ATTESTED_KEY, DEVICE_BEARER_KEY, DeviceBearer } from "../../src/auth/route-auth";
 
@@ -44,8 +45,17 @@ const REVIEWED_DEVICE_ATTESTED = ["PosAuditEventsController.syncBatch"];
  * the same composite for the shift cash-up writes (the same two guards plus
  * the same attribution verifier); covered by
  * shift-cash-up-auth.guard.unit.spec.ts and the shift cash-up HTTP suites.
+ * RT-539 (RT-534 S3): SaleHistoryAuthGuard (listSaleHistory,
+ * readSaleHistoryDetail, recordSaleReprint) is the same envelope / device
+ * composite, the cashier selected by X-Cashier-Admission (RT-537 Q-2;
+ * security-reviewed in the RT-539 PR); covered by
+ * sale-history-auth.guard.unit.spec.ts and sale-history.http.integration.spec.ts.
  */
-const REVIEWED_DEVICE_GUARD_COMPOSITES: readonly unknown[] = [SaleCaptureAuthGuard, ShiftCashUpAuthGuard];
+const REVIEWED_DEVICE_GUARD_COMPOSITES: readonly unknown[] = [
+  SaleCaptureAuthGuard,
+  ShiftCashUpAuthGuard,
+  SaleHistoryAuthGuard,
+];
 
 interface MarkedRoute {
   id: string;
@@ -146,6 +156,10 @@ describe("route auth markers are enforced at the route (RT-129 / A9)", () => {
       "CashierAdmissionsController.roster",
       "ReadDownController.getDeltas",
       "ReadDownController.getSnapshot",
+      // RT-539: the POS sale history (envelope, or device + X-Cashier-Admission).
+      "SaleHistoryController.listSaleHistory",
+      "SaleHistoryController.readSaleHistoryDetail",
+      "SaleHistoryController.recordSaleReprint",
       // RT-224 (Option B): captureSale accepts the device bearer as an
       // alternative to the operator envelope; SaleCaptureAuthGuard runs both.
       "SalesController.captureSale",

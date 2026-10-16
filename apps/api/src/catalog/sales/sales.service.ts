@@ -36,7 +36,11 @@ import { newId } from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../../auth/auth.module";
-import type { CaptureSaleRequestDto, SaleTenderDto } from "./dto/capture-sale-request.dto";
+import type {
+  CaptureSaleReceiptDto,
+  CaptureSaleRequestDto,
+  SaleTenderDto,
+} from "./dto/capture-sale-request.dto";
 import type { RecordVoidRequestDto } from "./dto/record-void-request.dto";
 import type { RecordRefundRequestDto } from "./dto/record-refund-request.dto";
 import { SALE_SYNC_STATUS, type SaleSyncStatus } from "./sale-sync-status";
@@ -83,7 +87,13 @@ export interface CaptureSaleInput {
    * (`request.posDeviceId`), stored on `sales.device_id`. Never a body field.
    */
   readonly deviceId: string;
+  /** The hashed sale facts: the controller has dropped the claim, the window instant and `receipt`. */
   readonly body: CaptureSaleRequestDto;
+  /**
+   * RT-539 (sales.yaml 1.9.0-draft): the receipt snapshot, stored with a FIRST
+   * capture only (a provenance replay never rewrites it) and never hashed.
+   */
+  readonly receipt?: CaptureSaleReceiptDto;
 }
 
 /** The `toBody` wire projection of a captured sale (snake-free, no secrets). */
@@ -240,6 +250,7 @@ export class SalesService {
     const { tenantId, storeId, actorUserId, deviceId, body } = input;
     const payloadHash = sha256CanonicalHex(body);
     const tenders = body.tenders ?? [];
+    const receipt = receiptColumns(input.receipt);
 
     const result = await runWithTenantContext(
       this.pool,
@@ -299,14 +310,20 @@ export class SalesService {
           // explicitly here so the capture write is self-documenting and does
           // not silently depend on the default. The off-request drain advances
           // it to 'synced' (see SaleProcessingProcessor).
+          // RT-539: the receipt snapshot columns ($17-$25) are written with the
+          // row; ON CONFLICT DO NOTHING keeps a replay from rewriting them.
           `INSERT INTO sales
              (id, tenant_id, store_id, currency_code, pos_total, occurred_at,
               business_date, source_clock_at, source_system, external_id,
               payload_hash, mismatch_flag, created_by, sync_status,
-              device_id, tender_count)
+              device_id, tender_count,
+              receipt_sale_number, receipt_number, receipt_terminal_label,
+              receipt_operator_display_name, receipt_settled_at, receipt_branch_name,
+              receipt_branch_address, receipt_tax_registration_id, receipt_change_given)
            VALUES ($1, $2, $3, $4, $5::numeric, $6::timestamptz,
                    ($6::timestamptz AT TIME ZONE $13)::date, $7::timestamptz,
-                   $8, $9, $10, $11, $12, $14, $15, $16)
+                   $8, $9, $10, $11, $12, $14, $15, $16,
+                   $17, $18, $19, $20, $21::timestamptz, $22, $23, $24, $25::numeric)
            ON CONFLICT (tenant_id, source_system, external_id) DO NOTHING
            RETURNING id`,
           [
@@ -326,6 +343,7 @@ export class SalesService {
             SALE_SYNC_STATUS.CAPTURED,
             deviceId,
             tenders.length,
+            ...receipt,
           ],
         );
 
@@ -367,30 +385,7 @@ export class SalesService {
           throw new SaleLinePricingInvalidError();
         }
 
-        for (const line of body.lines) {
-          await client.query(
-            `INSERT INTO sale_lines
-               (id, sale_id, tenant_id, store_id, line_name, unit_price,
-                currency_code, quantity, line_amount, tax_amount, unit,
-                tenant_product_ref)
-             VALUES ($1, $2, $3, $4, $5, $6::numeric, $7, $8::numeric,
-                     $9::numeric, $10, $11, $12)`,
-            [
-              newId(),
-              saleId,
-              tenantId,
-              storeId,
-              line.lineName,
-              line.unitPrice,
-              line.currencyCode,
-              line.quantity,
-              line.lineAmount,
-              line.taxAmount ?? null,
-              line.unit,
-              line.tenantProductRef ?? null,
-            ],
-          );
-        }
+        await insertSaleLines(client, { saleId, tenantId, storeId, lines: body.lines });
         if (tenders.length > 0) {
           await insertTenders(client, {
             saleId,
@@ -883,6 +878,26 @@ function toBody(
   };
 }
 
+/**
+ * RT-539: the nine `sales.receipt_*` values in INSERT order ($17-$25), all
+ * null without a snapshot. `receiptNumber` and `changeGiven` stay null when
+ * omitted (omitted means equal to the sale number / no change).
+ */
+function receiptColumns(receipt: CaptureSaleReceiptDto | undefined): ReadonlyArray<string | null> {
+  if (receipt === undefined) return Array.from({ length: 9 }, () => null);
+  return [
+    receipt.saleNumber,
+    receipt.receiptNumber ?? null,
+    receipt.terminalLabel,
+    receipt.operatorDisplayName,
+    receipt.settledAt,
+    receipt.branchName,
+    receipt.branchAddress,
+    receipt.taxRegistrationId,
+    receipt.changeGiven ?? null,
+  ];
+}
+
 /** A tender's reference, or null — only card_external carries one. */
 function tenderReference(t: SaleTenderDto): string | null {
   return t.method === "card_external" ? (t.reference ?? null) : null;
@@ -899,6 +914,47 @@ async function assertTendersMatchTotal(
     [tenders.map((t) => t.amount), posTotal],
   );
   if (r.rows[0]?.matches !== true) throw new SaleTenderMismatchError();
+}
+
+/**
+ * Write the frozen line snapshot in the capture transaction. RT-539
+ * (sales.yaml 1.9.0): each line's 1-based position in lines[] is stored as its
+ * receipt sequence (line_seq).
+ */
+async function insertSaleLines(
+  client: PoolClient,
+  sale: {
+    readonly saleId: string;
+    readonly tenantId: string;
+    readonly storeId: string;
+    readonly lines: CaptureSaleRequestDto["lines"];
+  },
+): Promise<void> {
+  for (const [index, line] of sale.lines.entries()) {
+    await client.query(
+      `INSERT INTO sale_lines
+         (id, sale_id, tenant_id, store_id, line_name, unit_price,
+          currency_code, quantity, line_amount, tax_amount, unit,
+          tenant_product_ref, line_seq)
+       VALUES ($1, $2, $3, $4, $5, $6::numeric, $7, $8::numeric,
+               $9::numeric, $10, $11, $12, $13)`,
+      [
+        newId(),
+        sale.saleId,
+        sale.tenantId,
+        sale.storeId,
+        line.lineName,
+        line.unitPrice,
+        line.currencyCode,
+        line.quantity,
+        line.lineAmount,
+        line.taxAmount ?? null,
+        line.unit,
+        line.tenantProductRef ?? null,
+        index + 1,
+      ],
+    );
+  }
 }
 
 /** RT-77: write the sale's tenders in its capture transaction (one row per tender line). */

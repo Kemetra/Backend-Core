@@ -243,9 +243,40 @@ describe("SalesService — capture branches (unit)", () => {
     await svc.captureSale({ ...CAPTURE, body: body() });
     const sql = String(clientQuery.mock.calls.find((c) => /INSERT INTO sales/.test(String(c[0])))![0]);
     expect(sql).toMatch(/device_id, tender_count/);
-    expect(salesInsertParams(clientQuery).slice(-2)).toEqual([CAPTURE.deviceId, 0]);
+    // $15 device_id, $16 tender_count; RT-539: $17-$25 are the receipt snapshot (none here).
+    expect(salesInsertParams(clientQuery).slice(14, 16)).toEqual([CAPTURE.deviceId, 0]);
+    expect(salesInsertParams(clientQuery).slice(16)).toEqual(Array.from({ length: 9 }, () => null));
     // No tender statement at all for a tender-unknown sale.
     expect(clientQuery.mock.calls.some((c) => /INSERT INTO sale_tenders|AS matches/.test(String(c[0])))).toBe(false);
+  });
+
+  it("RT-539: stores the receipt snapshot ($17-$25) and each line's 1-based position as line_seq", async () => {
+    clientQuery = scriptClient({});
+    const svc = new SalesService({} as never);
+    const receipt = {
+      saleNumber: "till-1-2026-10-16-000001",
+      terminalLabel: "till-1",
+      operatorDisplayName: "Cashier One",
+      settledAt: "2026-10-16T09:00:00.000Z",
+      branchName: "Branch",
+      branchAddress: "1 Nile St",
+      taxRegistrationId: "123-456-789",
+    };
+    await svc.captureSale({ ...CAPTURE, body: body(), receipt });
+    expect(salesInsertParams(clientQuery).slice(16)).toEqual([
+      receipt.saleNumber,
+      null, // receiptNumber omitted: equal to the sale number
+      receipt.terminalLabel,
+      receipt.operatorDisplayName,
+      receipt.settledAt,
+      receipt.branchName,
+      receipt.branchAddress,
+      receipt.taxRegistrationId,
+      null, // changeGiven omitted: no change
+    ]);
+    const lines = clientQuery.mock.calls.filter((c) => /INSERT INTO sale_lines/.test(String(c[0])));
+    expect(lines.map((c) => (c[1] as unknown[])[12])).toEqual(lines.map((_c, i) => i + 1));
+    expect(lines.length).toBeGreaterThan(0);
   });
 
   it("RT-77: a tendered capture checks Σ, records tender_count and writes one row per tender", async () => {
@@ -258,7 +289,7 @@ describe("SalesService — capture branches (unit)", () => {
     await svc.captureSale({ ...CAPTURE, body: body({ tenders }) });
     const sigma = clientQuery.mock.calls.find((c) => /AS matches/.test(String(c[0])))!;
     expect(sigma[1]).toEqual([["2.5", "10"], "12.5000"]);
-    expect(salesInsertParams(clientQuery).slice(-1)).toEqual([2]);
+    expect(salesInsertParams(clientQuery).slice(15, 16)).toEqual([2]);
     const ins = clientQuery.mock.calls.find((c) => /INSERT INTO sale_tenders/.test(String(c[0])))!;
     const params = ins[1] as unknown[];
     // (saleId, tenant, store, currency from the SALE, ids, methods, amounts, references)

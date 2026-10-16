@@ -109,7 +109,9 @@ op run --env-file=deploy/grants.env -- sh -c \
    psql -X -v domain_role="$DOMAIN_DB_ROLE" \
         -f docs/operations/sql/tracking-foundation-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/signin-memberships-domain-grants.sql'
+        -f docs/operations/sql/signin-memberships-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
+        -f docs/operations/sql/sale-reprints-domain-grants.sql'
 
 # 3. Start everything (migrate re-runs as a no-op, then api/worker start).
 op run --env-file=deploy/prod.env -- \
@@ -287,7 +289,8 @@ op run --env-file=deploy/grants.env -- sh -c \
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/inventory-effect-integration-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/stock-locations-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/tracking-foundation-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/signin-memberships-domain-grants.sql'
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/signin-memberships-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/sale-reprints-domain-grants.sql'
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d --build
 op run --env-file=deploy/grants.env -- sh -c \
   'psql -X -f docs/operations/sql/erpnext-posting-resolution-catchup.sql &&
