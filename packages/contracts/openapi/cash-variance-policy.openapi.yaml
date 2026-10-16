@@ -234,7 +234,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CashVariancePolicyRevisionPage"
+                $ref: "#/components/schemas/TenantCashVariancePolicyRevisionPage"
         "400":
           $ref: "#/components/responses/ReadValidationFailure"
         "401":
@@ -366,7 +366,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CashVariancePolicyRevisionPage"
+                $ref: "#/components/schemas/StoreCashVariancePolicyRevisionPage"
         "400":
           $ref: "#/components/responses/ReadValidationFailure"
         "401":
@@ -810,6 +810,20 @@ components:
             properties:
               approvedByUserId:
                 type: "null"
+        # Only an expiring store `set` can be `expired`.
+        - if:
+            properties:
+              state:
+                const: expired
+            required: [state]
+          then:
+            properties:
+              scope:
+                const: store
+              kind:
+                const: set
+              effectiveUntil:
+                type: string
         # A store `set` with no expiry is always permanent (DR-4).
         - if:
             properties:
@@ -886,17 +900,47 @@ components:
           type: string
           format: date-time
 
-    CashVariancePolicyRevisionPage:
+    TenantCashVariancePolicyRevision:
+      description: A `CashVariancePolicyRevision` of the tenant scope.
+      allOf:
+        - $ref: "#/components/schemas/CashVariancePolicyRevision"
+        - properties:
+            scope:
+              const: tenant
+    StoreCashVariancePolicyRevision:
+      description: A `CashVariancePolicyRevision` of the store scope.
+      allOf:
+        - $ref: "#/components/schemas/CashVariancePolicyRevision"
+        - properties:
+            scope:
+              const: store
+    TenantCashVariancePolicyRevisionPage:
       type: object
       additionalProperties: false
       required: [items, nextCursor]
-      description: A keyset page of revisions, newest first.
+      description: A keyset page of tenant-scope revisions only, newest first.
       properties:
         items:
           type: array
           maxItems: 100
           items:
-            $ref: "#/components/schemas/CashVariancePolicyRevision"
+            $ref: "#/components/schemas/TenantCashVariancePolicyRevision"
+        nextCursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page; `null` on the last page.
+    StoreCashVariancePolicyRevisionPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      description: >
+        A keyset page of this store's revisions only, newest first (the path
+        store; the runtime never mixes in another scope or store).
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/StoreCashVariancePolicyRevision"
         nextCursor:
           type: [string, "null"]
           description: Opaque cursor for the next page; `null` on the last page.
@@ -913,7 +957,7 @@ components:
           $ref: "#/components/schemas/TenantResolvedCashVariancePolicy"
         latestRevision:
           oneOf:
-            - $ref: "#/components/schemas/CashVariancePolicyRevision"
+            - $ref: "#/components/schemas/TenantCashVariancePolicyRevision"
             - type: "null"
         latestRevisionId:
           type: [string, "null"]

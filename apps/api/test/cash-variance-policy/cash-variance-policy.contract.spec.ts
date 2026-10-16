@@ -501,7 +501,8 @@ describe("cash-variance-policy — value and projections", () => {
     "TenantResolvedCashVariancePolicy",
     "DeviceCashVariancePolicy",
     "CashVariancePolicyRevision",
-    "CashVariancePolicyRevisionPage",
+    "TenantCashVariancePolicyRevisionPage",
+    "StoreCashVariancePolicyRevisionPage",
     "ActiveStoreOverride",
     "TenantCashVariancePolicy",
     "StoreCashVariancePolicy",
@@ -536,7 +537,9 @@ describe("cash-variance-policy — value and projections", () => {
   });
 
   it("revision pages are bounded and newest first", () => {
-    expect(schema("CashVariancePolicyRevisionPage").properties!["items"]).toMatchObject({ maxItems: 100 });
+    for (const page of ["TenantCashVariancePolicyRevisionPage", "StoreCashVariancePolicyRevisionPage"]) {
+      expect(schema(page).properties!["items"]).toMatchObject({ maxItems: 100 });
+    }
     expect(params(TENANT_REVISIONS).find((p) => p.name === "page_size")?.schema).toMatchObject({
       minimum: 1,
       maximum: 100,
@@ -571,8 +574,10 @@ describe("cash-variance-policy — AJV fixtures", () => {
       ],
       ["ActiveStoreOverride", { ...ACTIVE_OVERRIDE, effectiveUntil: null, permanent: true, approvedByUserId: OWNER_ID }],
       ["ActiveStoreOverride", { ...ACTIVE_OVERRIDE, permanent: true, approvedByUserId: OWNER_ID }],
-      ["CashVariancePolicyRevisionPage", { items: [STORE_REVISION, TENANT_REVISION], nextCursor: "eyJjIjoxfQ" }],
-      ["CashVariancePolicyRevisionPage", { items: [], nextCursor: null }],
+      ["TenantCashVariancePolicyRevisionPage", { items: [TENANT_REVISION], nextCursor: "eyJjIjoxfQ" }],
+      ["StoreCashVariancePolicyRevisionPage", { items: [STORE_REVISION], nextCursor: null }],
+      ["StoreCashVariancePolicyRevisionPage", { items: [], nextCursor: null }],
+      ["CashVariancePolicyRevision", { ...STORE_REVISION, state: "expired" }],
       ["TenantCashVariancePolicy", TENANT_POLICY],
       ["TenantCashVariancePolicy", { tenantDefault: SYSTEM_DEFAULT, latestRevision: null, latestRevisionId: null }],
       ["StoreCashVariancePolicy", STORE_POLICY],
@@ -619,6 +624,13 @@ describe("cash-variance-policy — AJV fixtures", () => {
     ["ActiveStoreOverride", "a no-expiry override not marked permanent", { ...ACTIVE_OVERRIDE, effectiveUntil: null }],
     ["ActiveStoreOverride", "a permanent override without an approver", { ...ACTIVE_OVERRIDE, effectiveUntil: null, permanent: true }],
     ["CashVariancePolicyRevision", "an unknown state", { ...TENANT_REVISION, state: "pending" }],
+    ["CashVariancePolicyRevision", "an expired tenant revision", { ...TENANT_REVISION, state: "expired" }],
+    ["CashVariancePolicyRevision", "an expired store clear", { ...STORE_REVISION, kind: "clear", policyValue: null, effectiveUntil: null, state: "expired" }],
+    ["CashVariancePolicyRevision", "an expired store set with no expiry", { ...STORE_REVISION, effectiveUntil: null, permanent: true, approvedByUserId: OWNER_ID, state: "expired" }],
+    ["TenantCashVariancePolicyRevisionPage", "a store revision on the tenant list", { items: [STORE_REVISION], nextCursor: null }],
+    ["StoreCashVariancePolicyRevisionPage", "a tenant revision on the store list", { items: [TENANT_REVISION], nextCursor: null }],
+    ["StoreCashVariancePolicyRevisionPage", "a mixed page", { items: [STORE_REVISION, TENANT_REVISION], nextCursor: null }],
+    ["TenantCashVariancePolicy", "a store revision as the tenant's latest", { ...TENANT_POLICY, latestRevision: STORE_REVISION }],
     ["CashVariancePolicyRevision", "a missing reason", without(TENANT_REVISION, "reason")],
     ["StoreCashVariancePolicy", "another horizon", { ...STORE_POLICY, permanentOverrideHorizonDays: 30 }],
     ["StoreCashVariancePolicy", "a tenant default from a store", { ...STORE_POLICY, tenantDefault: STORE_POLICY.effective }],
