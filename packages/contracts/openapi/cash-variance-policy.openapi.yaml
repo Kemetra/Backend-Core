@@ -810,12 +810,27 @@ components:
             properties:
               approvedByUserId:
                 type: "null"
+        # A store `set` with no expiry is always permanent (DR-4).
+        - if:
+            properties:
+              scope:
+                const: store
+              kind:
+                const: set
+              effectiveUntil:
+                type: "null"
+            required: [scope, kind, effectiveUntil]
+          then:
+            properties:
+              permanent:
+                const: true
       description: >
         One immutable revision. Every key is always present; a value that does
         not apply is `null`. A tenant revision is always a `set`, has no store
         and no expiry. A `clear` has no value. `permanent` is `true` only for a
         store `set` with no `effectiveUntil` or one beyond the 90-day horizon,
-        and then `approvedByUserId` is the publishing owner.
+        and then `approvedByUserId` is the publishing owner; a store `set` with
+        no `effectiveUntil` is always `permanent`.
       properties:
         revisionId:
           type: string
@@ -916,20 +931,34 @@ components:
         - approvedByUserId
         - createdByUserId
         - createdAt
-      if:
-        properties:
-          permanent:
-            const: true
-        required: [permanent]
-      then:
-        properties:
-          approvedByUserId:
-            type: string
-      else:
-        properties:
-          approvedByUserId:
-            type: "null"
-      description: The store's active override (a `set` revision not yet expired).
+      allOf:
+        - if:
+            properties:
+              permanent:
+                const: true
+            required: [permanent]
+          then:
+            properties:
+              approvedByUserId:
+                type: string
+          else:
+            properties:
+              approvedByUserId:
+                type: "null"
+        # No expiry is always permanent (DR-4).
+        - if:
+            properties:
+              effectiveUntil:
+                type: "null"
+            required: [effectiveUntil]
+          then:
+            properties:
+              permanent:
+                const: true
+      description: >
+        The store's active override (a `set` revision not yet expired). An
+        override with no `effectiveUntil` is always `permanent`, and a
+        permanent one names its approving owner.
       properties:
         revisionId:
           type: string

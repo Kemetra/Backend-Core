@@ -1110,13 +1110,17 @@ describe("pos-shifts — RT-384 shift variance policy", () => {
   });
 
   // oasdiff grades an `allOf` (WARN) or an `if` / `then` (ERR) added to an
-  // existing request body as a break; the rules live in the new FrozenPolicy.
-  it("adds no allOf / anyOf / oneOf / if / then to the existing request and response bodies", () => {
-    for (const name of ["OpenShiftRequest", "Shift", "ShiftClose"]) {
-      const s = schema(name);
-      expect({ name, allOf: s.allOf, anyOf: s["anyOf"], oneOf: s["oneOf"] }).toEqual({ name });
-    }
-    expect(schema("OpenShiftRequest")["if"]).toBeUndefined();
+  // existing REQUEST body as a break; the rules live in the new FrozenPolicy.
+  // A response-side `allOf` is not a break (the first gate run on this PR
+  // reported only the request body).
+  it("adds no allOf / anyOf / oneOf / if / then to the existing request body", () => {
+    const s = schema("OpenShiftRequest");
+    expect({ allOf: s.allOf, anyOf: s["anyOf"], oneOf: s["oneOf"], if: s["if"], then: s["then"] }).toEqual({});
+  });
+
+  it("ShiftClose ties approverCheck to the recorded approver; Shift gains no combinator", () => {
+    expect(schema("ShiftClose").allOf).toEqual([{ $ref: "#/components/schemas/ApproverCheckMatchesApprover" }]);
+    expect(schema("Shift").allOf).toBeUndefined();
   });
 
   it("accepts a legacy open (no frozenPolicy), a tenant, store, system and fallback open", () => {
@@ -1250,6 +1254,20 @@ describe("pos-shifts — RT-384 shift variance policy", () => {
     expect(v({ ...withPolicy, close: { ...withPolicy.close, approverCheck: { status: "unverified", reason: null } } })).toBe(
       false,
     );
+  });
+
+  it("ShiftClose: approverCheck is not_applicable exactly when no approver was recorded", () => {
+    const v = validator("ShiftClose");
+    const closed = exampleValue({ $ref: "#/components/examples/ShiftClosed" }) as { close: Record<string, unknown> };
+    const withApprover = closed.close;
+    const { varianceApprovedByUserId: _approver, ...noApprover } = withApprover;
+    const check = (status: string, reason: string | null = null) => ({ approverCheck: { status, reason } });
+    expect(v({ ...withApprover, ...check("verified") })).toBe(true);
+    expect(v({ ...withApprover, ...check("unverified", "approver_is_closer") })).toBe(true);
+    expect(v({ ...noApprover, ...check("not_applicable") })).toBe(true);
+    expect(v({ ...withApprover, ...check("not_applicable") })).toBe(false);
+    expect(v({ ...noApprover, ...check("verified") })).toBe(false);
+    expect(v({ ...noApprover, ...check("unverified", "check_unavailable") })).toBe(false);
   });
 
   it("the shared policy shapes match the shift-closes contract", () => {

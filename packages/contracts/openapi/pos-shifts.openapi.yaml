@@ -1041,6 +1041,8 @@ components:
     ShiftClose:
       type: object
       additionalProperties: false
+      allOf:
+        - $ref: "#/components/schemas/ApproverCheckMatchesApprover"
       required:
         - closedAt
         - closingUserId
@@ -1167,6 +1169,31 @@ components:
           $ref: "#/components/schemas/NonNegativeDecimalAmount"
         currencyCode:
           $ref: "#/components/schemas/CurrencyCode"
+    ApproverCheckMatchesApprover:
+      description: >
+        RT-384: when `approverCheck` is present it agrees with the recorded
+        approver: `not_applicable` exactly when no `varianceApprovedByUserId`
+        was recorded (the key is absent on this projection), and `verified` or
+        `unverified` when one was.
+      allOf:
+        - if:
+            not:
+              required: [varianceApprovedByUserId]
+            required: [approverCheck]
+          then:
+            properties:
+              approverCheck:
+                properties:
+                  status:
+                    const: not_applicable
+        - if:
+            required: [varianceApprovedByUserId, approverCheck]
+          then:
+            properties:
+              approverCheck:
+                properties:
+                  status:
+                    enum: [verified, unverified]
     FrozenPolicy:
       type: object
       additionalProperties: false

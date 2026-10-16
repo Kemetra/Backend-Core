@@ -378,6 +378,8 @@ components:
     ShiftCloseSummary:
       type: object
       additionalProperties: false
+      allOf:
+        - $ref: "#/components/schemas/ApproverCheckMatchesApprover"
       required:
         - shiftId
         - storeId
@@ -509,6 +511,8 @@ components:
     ShiftCloseDetail:
       type: object
       additionalProperties: false
+      allOf:
+        - $ref: "#/components/schemas/ApproverCheckMatchesApprover"
       required:
         - shiftId
         - storeId
@@ -737,6 +741,34 @@ components:
             - no_store_access
             - check_unavailable
             - null
+    ApproverCheckMatchesApprover:
+      description: >
+        RT-384: when `approverCheck` is present it agrees with the recorded
+        approver: `not_applicable` exactly when `varianceApprovedByUserId` is
+        `null`, and `verified` or `unverified` when an approver was recorded.
+      allOf:
+        - if:
+            properties:
+              varianceApprovedByUserId:
+                type: "null"
+            required: [varianceApprovedByUserId, approverCheck]
+          then:
+            properties:
+              approverCheck:
+                properties:
+                  status:
+                    const: not_applicable
+        - if:
+            properties:
+              varianceApprovedByUserId:
+                type: string
+            required: [varianceApprovedByUserId, approverCheck]
+          then:
+            properties:
+              approverCheck:
+                properties:
+                  status:
+                    enum: [verified, unverified]
     RecordedFrozenPolicy:
       type: object
       additionalProperties: false

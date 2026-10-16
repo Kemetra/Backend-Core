@@ -589,6 +589,18 @@ describe("shift-closes — AJV fixtures", () => {
     expect(validator("ShiftCloseSummary")({ ...SUMMARY, ...fields })).toBe(false);
   });
 
+  it("RT-384: approverCheck is not_applicable exactly when no approver was recorded", () => {
+    const v = validator("ShiftCloseSummary");
+    const check = (status: string, reason: string | null = null) => ({ ...POLICY_FIELDS, approverCheck: { status, reason } });
+    const noApprover = { ...SUMMARY, varianceApprovedByUserId: null };
+    expect(v({ ...noApprover, ...check("not_applicable") })).toBe(true);
+    expect(v({ ...SUMMARY, ...check("unverified", "not_manager") })).toBe(true);
+    expect(v({ ...noApprover, ...check("verified") })).toBe(false);
+    expect(v({ ...noApprover, ...check("unverified", "check_unavailable") })).toBe(false);
+    expect(v({ ...SUMMARY, ...check("not_applicable") })).toBe(false);
+    expect(validator("ShiftCloseDetail")({ ...DETAIL, varianceApprovedByUserId: null, ...check("verified") })).toBe(false);
+  });
+
   it.each([
     [{ status: "not_applicable", reason: null }, true],
     [{ status: "verified", reason: null }, true],
