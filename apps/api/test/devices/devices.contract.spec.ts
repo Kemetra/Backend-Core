@@ -21,14 +21,21 @@
  *   5. The revoke body: D-Q3 reasons, `other` needs a note, the 0040 note shape.
  *   6. No POS path; the POS pairing contract keeps its operations.
  */
-import { readContract, type ContractReader, type HttpMethod, type JsonObject } from "../_helpers/openapi-contract-reader";
+import {
+  readContract,
+  type ApiPath,
+  type ContractReader,
+  type HttpMethod,
+  type JsonObject,
+  type SchemaName,
+} from "../_helpers/openapi-contract-reader";
 
 const LIST_PATH = "/api/v1/devices";
 const DETAIL_PATH = "/api/v1/devices/{deviceId}";
 const REVOKE_PATH = "/api/v1/devices/{deviceId}/revoke";
 
 /** [method, path, operationId] of every operation the contract declares. */
-const OPERATIONS: ReadonlyArray<readonly [HttpMethod, string, string]> = [
+const OPERATIONS: ReadonlyArray<readonly [HttpMethod, ApiPath, string]> = [
   ["get", LIST_PATH, "consoleListDevices"],
   ["get", DETAIL_PATH, "consoleGetDevice"],
   ["post", REVOKE_PATH, "consoleRevokeDevice"],
@@ -70,10 +77,10 @@ beforeAll(() => {
   contract = readContract("devices.openapi");
 });
 
-const props = (name: string): Record<string, JsonObject> =>
+const props = (name: SchemaName): Record<string, JsonObject> =>
   (contract.schema(name)["properties"] ?? {}) as Record<string, JsonObject>;
-const keysOf = (name: string): string[] => Object.keys(props(name)).sort();
-const paramNamed = (method: HttpMethod, path: string, name: string): JsonObject | undefined =>
+const keysOf = (name: SchemaName): string[] => Object.keys(props(name)).sort();
+const paramNamed = (method: HttpMethod, path: ApiPath, name: string): JsonObject | undefined =>
   contract.parameters(method, path).find((p) => p["name"] === name);
 
 // ---------------------------------------------------------------------------
@@ -255,7 +262,7 @@ describe("devices contract — filters and paging", () => {
 // 4. Projections
 // ===========================================================================
 describe("devices contract — projections", () => {
-  it.each(["DeviceSummary", "DevicePage", "DeviceDetail", "DeviceRevokeResult"])(
+  it.each<SchemaName>(["DeviceSummary", "DevicePage", "DeviceDetail", "DeviceRevokeResult"])(
     "%s is closed and requires every key it declares",
     (name) => {
       const s = contract.schema(name);
@@ -265,7 +272,7 @@ describe("devices contract — projections", () => {
   );
 
   it("never exposes a tenant id, credential, previous token or contact field", () => {
-    const leaked = ["DeviceSummary", "DeviceDetail", "DeviceRevokeResult", "DevicePage"].flatMap((name) =>
+    const leaked = (["DeviceSummary", "DeviceDetail", "DeviceRevokeResult", "DevicePage"] as const).flatMap((name) =>
       keysOf(name).filter((k) => /tenant|hash|token|secret|^pin|previous|validUntil|email|phone/i.test(k)),
     );
     expect(leaked).toEqual([]);
@@ -298,7 +305,7 @@ describe("devices contract — projections", () => {
   });
 
   it("keeps expiresAt non-null, so the (rank, expiresAt, deviceId) order is total", () => {
-    for (const name of ["DeviceSummary", "DeviceDetail"]) {
+    for (const name of ["DeviceSummary", "DeviceDetail"] as const) {
       expect(props(name)["expiresAt"]).toMatchObject({ type: "string", format: "date-time" });
     }
     const ordering = String((contract.document["info"] as JsonObject)["description"]);
@@ -336,7 +343,7 @@ describe("devices contract — projections", () => {
       device: { ...RETIRED, revokeNote: null, retiredByUserId: USER_ID, retireReason: "Decommissioned" },
     }],
     ["the error envelope", "Error", { error: { code: "unresolved_cash_session", message: "Conflict", request_id: DEVICE_ID } }],
-  ])("accepts %s", (_label, name, payload) => {
+  ] satisfies ReadonlyArray<readonly [string, SchemaName, unknown]>)("accepts %s", (_label, name, payload) => {
     expect(contract.accepts(name, payload)).toBe(true);
   });
 
@@ -367,7 +374,7 @@ describe("devices contract — projections", () => {
     ["a result without the device", "DeviceRevokeResult", { outcome: "revoked" }],
     ["a bare error code", "Error", { code: "not_found" }],
     ["a retired detail without a retire reason", "DeviceDetail", { ...RETIRED, ...DETAIL_EXTRA, retiredByUserId: USER_ID }],
-  ])("rejects %s", (_label, name, payload) => {
+  ] satisfies ReadonlyArray<readonly [string, SchemaName, unknown]>)("rejects %s", (_label, name, payload) => {
     expect(contract.accepts(name, payload)).toBe(false);
   });
 });

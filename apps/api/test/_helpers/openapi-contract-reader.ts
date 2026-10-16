@@ -18,11 +18,11 @@ export type HttpMethod = "get" | "post" | "put" | "patch" | "delete";
 const PARAMETER_REF = "#/components/parameters/";
 
 /** A contract's loader id, e.g. `devices.openapi`. */
-export type ContractId = string;
+export type ContractId = `${string}.openapi`;
 /** An OpenAPI path template, e.g. `/api/v1/devices/{deviceId}`. */
-export type ApiPath = string;
-/** A `components.schemas` key. */
-export type SchemaName = string;
+export type ApiPath = `/${string}`;
+/** A `components.schemas` key (PascalCase by repo convention), e.g. `DeviceSummary`. */
+export type SchemaName = Capitalize<string>;
 
 interface LoadedContract {
   readonly id: string;
