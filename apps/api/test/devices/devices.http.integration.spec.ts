@@ -31,27 +31,14 @@
  */
 import "reflect-metadata";
 
-import type { INestApplication } from "@nestjs/common";
-import Ajv, { type ValidateFunction } from "ajv";
-import addFormats from "ajv-formats";
-import request from "supertest";
+import type request from "supertest";
 
 import { AuthTokenRepository } from "../../src/auth/auth-token.repository";
 import { DevicesModule } from "../../src/devices/devices.module";
-import { loadOpenApiContracts } from "../../src/openapi/loader";
 import { DeviceRepository } from "../../src/pos-operators/device.repository";
-import {
-  applyAllUpAndCreateAppRole,
-  startPgEnv,
-  stopPgEnv,
-  type PgTestEnv,
-} from "../_helpers/postgres-container";
+import { scopedHttpHarness } from "../_helpers/scoped-http-harness";
 import { STORE_A_X, STORE_A_Y, STORE_B_X } from "../catalog/__support__/isolation-harness";
-import {
-  bootScopedApp,
-  SES_ADMIN_SPEC,
-  SES_OWNER_ALL,
-} from "../catalog/erpnext-reconciliation/__support__/read-store-scope";
+import { SES_ADMIN_SPEC, SES_OWNER_ALL } from "../catalog/erpnext-reconciliation/__support__/read-store-scope";
 import {
   cashFactsDigest,
   CODE_OTHER_PENDING,
@@ -73,6 +60,7 @@ import {
   R_BLOCK,
   R_PLAIN,
   R_REC,
+  R_REC_ADMIN,
   R_SEC,
   R_Y,
   SES_MANAGER,
@@ -81,6 +69,7 @@ import {
   seedDeviceFixture,
   SHIFT_EXC,
   SHIFT_REC,
+  SHIFT_REC_ADMIN,
   SHIFT_SEC,
   TENANT_A_ORDER,
   USER_MANAGER,
@@ -89,88 +78,30 @@ import {
 const LIST = "/api/v1/devices";
 const detail = (deviceId: string): string => `${LIST}/${deviceId}`;
 const revoke = (deviceId: string): string => `${LIST}/${deviceId}/revoke`;
-const CONTRACT_ID = "devices.openapi";
 const X_DEVICES = TENANT_A_ORDER.filter((d) => ![D_LATE_Y, R_Y, D_RETIRED].includes(d));
 const Y_DEVICES = [D_LATE_Y, R_Y, D_RETIRED];
 
-let env: PgTestEnv | null = null;
-let dockerSkipped = false;
-let app: INestApplication | null = null;
 let ownerUserId = "";
 let cashBaseline = "";
 
-const ajv = new Ajv({ strict: false, allErrors: true });
-addFormats(ajv);
-let pageSchema: ValidateFunction;
-let detailSchema: ValidateFunction;
-let resultSchema: ValidateFunction;
-let errorSchema: ValidateFunction;
-
-beforeAll(async () => {
-  const found = loadOpenApiContracts().find((c) => c.id === CONTRACT_ID);
-  if (!found) throw new Error(`${CONTRACT_ID} not found in packages/contracts/openapi/`);
-  ajv.addSchema(found.document as object, CONTRACT_ID);
-  const compiled = (name: string): ValidateFunction => {
-    const v = ajv.getSchema(`${CONTRACT_ID}#/components/schemas/${name}`);
-    if (!v) throw new Error(`ajv cannot resolve ${name}`);
-    return v;
-  };
-  pageSchema = compiled("DevicePage");
-  detailSchema = compiled("DeviceDetail");
-  resultSchema = compiled("DeviceRevokeResult");
-  errorSchema = compiled("Error");
-
-  try {
-    env = await startPgEnv();
-    await applyAllUpAndCreateAppRole(env);
+const h = scopedHttpHarness({
+  label: "RT-365 devices",
+  contractId: "devices.openapi",
+  module: DevicesModule,
+  seed: async (env) => {
     ownerUserId = await seedDeviceFixture(env);
     cashBaseline = await cashFactsDigest(env.admin);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
-      dockerSkipped = true;
-      // eslint-disable-next-line no-console
-      console.warn(`\n[RT-365 devices] Docker NOT AVAILABLE: ${msg}\n`);
-      return;
-    }
-    throw new Error(`Container start failed: ${msg}`);
-  }
-  app = await bootScopedApp(env, DevicesModule, undefined, { authLookupPool: env.admin });
-}, 240_000);
-
-afterAll(async () => {
-  if (app) await app.close();
-  if (env) await stopPgEnv(env);
-}, 60_000);
-
-function skip(): boolean {
-  if (dockerSkipped) {
-    // eslint-disable-next-line no-console
-    console.warn("[RT-365 devices] skipping — Docker unavailable");
-    return true;
-  }
-  return false;
-}
-
-function get(path: string, session: string | null, query: Record<string, string | number> = {}) {
-  const req = request(app!.getHttpServer()).get(path).query(query);
-  return session === null ? req : req.set("x-test-session", session);
-}
-
-function post(path: string, session: string | null, body: unknown) {
-  const req = request(app!.getHttpServer()).post(path).send(body as object);
-  return session === null ? req : req.set("x-test-session", session);
-}
-
-function expectValid(validate: ValidateFunction, body: unknown): void {
-  if (!validate(body)) throw new Error(`contract violation: ${JSON.stringify(validate.errors)}`);
-}
+  },
+});
+const skip = (): boolean => h.skipped();
+const get = h.get;
+const post = (path: string, session: string | null, body: unknown): request.Test => h.post(path, session, body as object);
 
 type Item = Record<string, unknown> & { deviceId: string };
 
 async function page(session: string, query: Record<string, string | number> = {}) {
   const res = await get(LIST, session, query).expect(200);
-  expectValid(pageSchema, res.body);
+  h.conforms("DevicePage", res.body);
   return res.body as { items: Item[]; nextCursor: string | null };
 }
 
@@ -194,11 +125,11 @@ async function walk(session: string, pageSize: number): Promise<string[]> {
 
 async function expectError(res: request.Response, status: number, code: string): Promise<void> {
   expect({ status: res.status, code: (res.body as { error?: { code?: string } }).error?.code }).toEqual({ status, code });
-  expectValid(errorSchema, res.body);
+  h.conforms("Error", res.body);
 }
 
 async function deviceRow(deviceId: string) {
-  const r = await env!.admin.query(
+  const r = await h.env().admin.query(
     `SELECT revoked_at, revoked_by, revoke_reason, revoke_note FROM devices WHERE id = $1`,
     [deviceId],
   );
@@ -206,7 +137,7 @@ async function deviceRow(deviceId: string) {
 }
 
 async function revokeAudits(deviceId: string) {
-  const r = await env!.admin.query<{ actor_user_id: string; store_id: string; target_type: string; metadata: Record<string, unknown> }>(
+  const r = await h.env().admin.query<{ actor_user_id: string; store_id: string; target_type: string; metadata: Record<string, unknown> }>(
     `SELECT actor_user_id, store_id, target_type, metadata FROM audit_events
       WHERE action = 'pos.device.revoked' AND target_id = $1`,
     [deviceId],
@@ -214,8 +145,8 @@ async function revokeAudits(deviceId: string) {
   return r.rows;
 }
 
-const tokenLookup = (): AuthTokenRepository => new AuthTokenRepository(env!.admin);
-const deviceLookup = (): DeviceRepository => new DeviceRepository(env!.admin, env!.admin);
+const tokenLookup = (): AuthTokenRepository => new AuthTokenRepository(h.env().admin);
+const deviceLookup = (): DeviceRepository => new DeviceRepository(h.env().admin, h.env().admin);
 
 // ===========================================================================
 // Reads
@@ -304,7 +235,7 @@ describe("consoleGetDevice", () => {
   it("reads one device with its revoke note", async () => {
     if (skip()) return;
     const res = await get(detail(D_EXC.toUpperCase()), SES_ADMIN_SPEC).expect(200);
-    expectValid(detailSchema, res.body);
+    h.conforms("DeviceDetail", res.body);
     expect(res.body).toMatchObject({
       deviceId: D_EXC,
       revokeNote: "Till taken; drawer cash in the safe",
@@ -316,7 +247,7 @@ describe("consoleGetDevice", () => {
   it("reads the retire attribution", async () => {
     if (skip()) return;
     const res = await get(detail(D_RETIRED), SES_OWNER_ALL).expect(200);
-    expectValid(detailSchema, res.body);
+    h.conforms("DeviceDetail", res.body);
     expect(res.body).toMatchObject({ retiredByUserId: ownerUserId, retireReason: "Decommissioned" });
   });
 
@@ -409,7 +340,7 @@ describe("consoleRevokeDevice — revokes", () => {
 
     const res = await post(revoke(R_PLAIN), SES_MANAGER, { reason: "admin_error", note: "Paired to the wrong store" });
     expect(res.status).toBe(200);
-    expectValid(resultSchema, res.body);
+    h.conforms("DeviceRevokeResult", res.body);
     expect(res.body).toMatchObject({
       outcome: "revoked",
       device: {
@@ -425,14 +356,14 @@ describe("consoleRevokeDevice — revokes", () => {
     // Cascade: the live operator token is rejected; the expired one and another device's are untouched.
     expect(await tokenLookup().findActiveByRawToken(OP_TOKEN_PLAIN_LIVE)).toBeNull();
     expect(await tokenLookup().findActiveByRawToken(OP_TOKEN_SOON_LIVE)).not.toBeNull();
-    const expired = await env!.admin.query(`SELECT revoked_at FROM auth_tokens WHERE token_hash = $1`, [
+    const expired = await h.env().admin.query(`SELECT revoked_at FROM auth_tokens WHERE token_hash = $1`, [
       OP_TOKEN_PLAIN_EXPIRED_HASH,
     ]);
     expect(expired.rows[0].revoked_at).toBeNull();
     // POS RT-215: the till's own bearer stops authenticating at once.
     expect(await deviceLookup().findActiveByAttestation(DEVICE_TOKEN_PLAIN)).toBeNull();
     // Pending codes for the device are cancelled; another device's stays pending.
-    const codes = await env!.admin.query<{ id: string; status: string }>(
+    const codes = await h.env().admin.query<{ id: string; status: string }>(
       `SELECT id, status FROM pairing_codes WHERE id = ANY($1::uuid[]) ORDER BY id`,
       [[CODE_PLAIN_TERMINAL, CODE_PLAIN_REPLACEMENT, CODE_OTHER_PENDING]],
     );
@@ -459,7 +390,7 @@ describe("consoleRevokeDevice — revokes", () => {
     const before = await deviceRow(R_PLAIN);
     const res = await post(revoke(R_PLAIN), SES_OWNER_ALL, { reason: "stolen" });
     expect(res.status).toBe(200);
-    expectValid(resultSchema, res.body);
+    h.conforms("DeviceRevokeResult", res.body);
     expect(res.body).toMatchObject({ outcome: "already_revoked", device: { revokeReason: "admin_error" } });
     expect(await deviceRow(R_PLAIN)).toEqual(before);
     expect(await revokeAudits(R_PLAIN)).toHaveLength(1);
@@ -469,7 +400,7 @@ describe("consoleRevokeDevice — revokes", () => {
     if (skip()) return;
     const res = await post(revoke(R_SEC), SES_MANAGER, { reason: "stolen" });
     expect(res.status).toBe(200);
-    expectValid(resultSchema, res.body);
+    h.conforms("DeviceRevokeResult", res.body);
     expect(res.body).toMatchObject({ outcome: "revoked", device: { custodyExceptionShiftId: SHIFT_SEC } });
     expect(await tokenLookup().findActiveByRawToken(OP_TOKEN_SEC_LIVE)).toBeNull();
     const audits = await revokeAudits(R_SEC);
@@ -482,7 +413,7 @@ describe("consoleRevokeDevice — revokes", () => {
         shift_id: SHIFT_SEC,
       },
     ]);
-    const shift = await env!.admin.query(`SELECT lifecycle_state FROM shifts WHERE shift_id = $1`, [SHIFT_SEC]);
+    const shift = await h.env().admin.query(`SELECT lifecycle_state FROM shifts WHERE shift_id = $1`, [SHIFT_SEC]);
     expect(shift.rows[0].lifecycle_state).toBe("open");
     // Now rank 0, after D_EXC by expiry.
     expect((await ids(SES_OWNER_ALL, { trust_state: "revoked" })).slice(0, 2)).toEqual([D_EXC, R_SEC]);
@@ -496,7 +427,7 @@ describe("consoleRevokeDevice — revokes", () => {
       acknowledgeCustodyException: true,
     });
     expect(res.status).toBe(200);
-    expectValid(resultSchema, res.body);
+    h.conforms("DeviceRevokeResult", res.body);
     expect(res.body).toMatchObject({
       outcome: "revoked",
       device: { revokeReason: "hardware_failure", revokedByUserId: ownerUserId, custodyExceptionShiftId: SHIFT_REC },
@@ -512,6 +443,24 @@ describe("consoleRevokeDevice — revokes", () => {
     ]);
   });
 
+  it("a recovery revoke by a tenant_admin with note and acknowledgement succeeds", async () => {
+    if (skip()) return;
+    const res = await post(revoke(R_REC_ADMIN), SES_ADMIN_SPEC, {
+      reason: "hardware_failure",
+      note: "Screen dead; drawer emptied into the safe by the manager",
+      acknowledgeCustodyException: true,
+    });
+    expect(res.status).toBe(200);
+    h.conforms("DeviceRevokeResult", res.body);
+    expect(res.body).toMatchObject({
+      outcome: "revoked",
+      device: { revokeReason: "hardware_failure", custodyExceptionShiftId: SHIFT_REC_ADMIN },
+    });
+    expect((await revokeAudits(R_REC_ADMIN)).map((a) => a.metadata)).toEqual([
+      expect.objectContaining({ custody_exception: true, shift_id: SHIFT_REC_ADMIN }),
+    ]);
+  });
+
   it("lets a narrowed store_manager revoke a device of its active store", async () => {
     if (skip()) return;
     const res = await post(revoke(R_Y), SES_MANAGER_ACTIVE, { reason: "lost" });
@@ -521,6 +470,6 @@ describe("consoleRevokeDevice — revokes", () => {
 
   it("changed no cash fact on any path", async () => {
     if (skip()) return;
-    expect(await cashFactsDigest(env!.admin)).toBe(cashBaseline);
+    expect(await cashFactsDigest(h.env().admin)).toBe(cashBaseline);
   });
 });

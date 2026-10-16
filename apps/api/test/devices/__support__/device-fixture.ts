@@ -21,6 +21,7 @@
  *     rank 1  R_REC      X  active, open cash-up shift SHIFT_REC         exp 2027-02-03
  *     rank 1  R_BLOCK    X  active, open LEGACY shift SHIFT_BLOCK        exp 2027-02-04
  *     rank 1  R_Y        Y  active, no shift                             exp 2027-02-05
+ *     rank 1  R_REC_ADMIN X active, open cash-up shift SHIFT_REC_ADMIN   exp 2027-02-06
  *     rank 2  D_OLD      X  revoked before RT-365 (no reason, no actor)  exp 2026-12-01
  *     rank 3  D_RETIRED  Y  revoked and retired                          exp 2026-10-20
  *     tenant B: D_B on STORE_B_X.
@@ -42,11 +43,8 @@ import type { DeviceScope } from "../../../src/pos-cashier-admissions/device-sco
 import { ShiftCashUpRepository } from "../../../src/pos-shifts/shift-cash-up.repository";
 import type { PgTestEnv } from "../../_helpers/postgres-container";
 import { STORE_A_X, STORE_A_Y, STORE_B_X, TENANT_A, TENANT_B } from "../../catalog/__support__/isolation-harness";
-import {
-  registerTestSession,
-  SES_OWNER_ALL,
-  seedReadStoreScope,
-} from "../../catalog/erpnext-reconciliation/__support__/read-store-scope";
+import { SES_OWNER_ALL, seedReadStoreScope } from "../../catalog/erpnext-reconciliation/__support__/read-store-scope";
+import { seedConsoleMember } from "../../_helpers/console-members";
 
 // ---------------------------------------------------------------------------
 // IDs
@@ -65,6 +63,7 @@ export const R_SEC = id("02a2");
 export const R_REC = id("02a3");
 export const R_BLOCK = id("02a4");
 export const R_Y = id("02a5");
+export const R_REC_ADMIN = id("02a6");
 export const D_B = "0b000000-0000-7000-8000-0000036501b1";
 export const NO_DEVICE = id("01ff");
 
@@ -72,6 +71,7 @@ export const SHIFT_EXC = id("03a1");
 export const SHIFT_SEC = id("03a2");
 export const SHIFT_REC = id("03a3");
 export const SHIFT_BLOCK = id("03a4");
+export const SHIFT_REC_ADMIN = id("03a5");
 const MOVEMENT_SEC = id("03b2");
 
 export const CASHIER_A = id("04c1");
@@ -115,6 +115,7 @@ export const TENANT_A_ORDER = [
   R_REC,
   R_BLOCK,
   R_Y,
+  R_REC_ADMIN,
   D_OLD,
   D_RETIRED,
 ];
@@ -150,6 +151,7 @@ const DEVICES: readonly SeedDevice[] = [
   { id: R_REC, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2027-02-03T00:00:00Z" },
   { id: R_BLOCK, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2027-02-04T00:00:00Z" },
   { id: R_Y, tenantId: TENANT_A, storeId: STORE_A_Y, expiresAt: "2027-02-05T00:00:00Z" },
+  { id: R_REC_ADMIN, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2027-02-06T00:00:00Z" },
   { id: D_OLD, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2026-12-01T00:00:00Z" },
   { id: D_RETIRED, tenantId: TENANT_A, storeId: STORE_A_Y, expiresAt: "2026-10-20T00:00:00Z" },
   { id: D_B, tenantId: TENANT_B, storeId: STORE_B_X, expiresAt: "2027-01-01T00:00:00Z" },
@@ -166,36 +168,27 @@ async function seedDevices(admin: Pool): Promise<void> {
 }
 
 async function seedMembers(admin: Pool): Promise<void> {
-  await admin.query(
-    `INSERT INTO users (id, email) VALUES
-       ($1, 'rt365-manager@example.test'), ($2, 'rt365-staff@example.test'), ($3, 'rt365-cashier@example.test')`,
-    [USER_MANAGER, USER_STAFF, CASHIER_A],
-  );
-  await admin.query(
-    `INSERT INTO roles (id, tenant_id, code, name) VALUES
-       ($1, $3, 'store_manager', 'Store Manager'), ($2, $3, 'store_staff', 'Store Staff')`,
-    [ROLE_MANAGER, ROLE_STAFF, TENANT_A],
-  );
-  await admin.query(
-    `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES
-       ($1, $3, $4, $5, 'specific'), ($2, $3, $6, $7, 'all')`,
-    [MEM_MANAGER, MEM_STAFF, TENANT_A, USER_MANAGER, ROLE_MANAGER, USER_STAFF, ROLE_STAFF],
-  );
-  await admin.query(
-    `INSERT INTO store_access (membership_id, store_id, tenant_id) VALUES ($1, $2, $4), ($1, $3, $4)`,
-    [MEM_MANAGER, STORE_A_X, STORE_A_Y, TENANT_A],
-  );
-  await admin.query(
-    `INSERT INTO sessions (id, user_id, active_tenant_id, active_store_id, absolute_expires_at, credential_hash)
-     VALUES
-       ($1, $2, $6, NULL, now() + interval '1 hour', decode(md5(random()::text), 'hex')),
-       ($3, $2, $6, $7,   now() + interval '1 hour', decode(md5(random()::text), 'hex')),
-       ($4, $5, $6, NULL, now() + interval '1 hour', decode(md5(random()::text), 'hex'))`,
-    [SES_MANAGER, USER_MANAGER, SES_MANAGER_ACTIVE, SES_STAFF, USER_STAFF, TENANT_A, STORE_A_Y],
-  );
-  registerTestSession(SES_MANAGER, USER_MANAGER);
-  registerTestSession(SES_MANAGER_ACTIVE, USER_MANAGER);
-  registerTestSession(SES_STAFF, USER_STAFF);
+  await seedConsoleMember(admin, {
+    tenantId: TENANT_A,
+    userId: USER_MANAGER,
+    email: "rt365-manager@example.test",
+    membershipId: MEM_MANAGER,
+    roleId: ROLE_MANAGER,
+    roleCode: "store_manager",
+    stores: [STORE_A_X, STORE_A_Y],
+    sessions: { [SES_MANAGER]: null, [SES_MANAGER_ACTIVE]: STORE_A_Y },
+  });
+  await seedConsoleMember(admin, {
+    tenantId: TENANT_A,
+    userId: USER_STAFF,
+    email: "rt365-staff@example.test",
+    membershipId: MEM_STAFF,
+    roleId: ROLE_STAFF,
+    roleCode: "store_staff",
+    stores: "all",
+    sessions: { [SES_STAFF]: null },
+  });
+  await admin.query(`INSERT INTO users (id, email) VALUES ($1, 'rt365-cashier@example.test')`, [CASHIER_A]);
 }
 
 async function openCashUpShift(app: Pool, shiftId: string, scope: DeviceScope): Promise<void> {
@@ -232,6 +225,7 @@ async function seedShifts(env: PgTestEnv): Promise<void> {
   await openCashUpShift(env.app, SHIFT_EXC, scope(D_EXC));
   await openCashUpShift(env.app, SHIFT_SEC, scope(R_SEC));
   await openCashUpShift(env.app, SHIFT_REC, scope(R_REC));
+  await openCashUpShift(env.app, SHIFT_REC_ADMIN, scope(R_REC_ADMIN));
   await env.admin.query(
     `INSERT INTO shifts (shift_id, tenant_id, store_id, opening_cashier_user_id, opening_device_id, opened_at)
      VALUES ($1, $2, $3, $4, $5, '2026-10-15T08:00:00Z')`,
