@@ -140,15 +140,11 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       // RT-414: platform support-session contract; the runtime ships after owner approval.
       "endSupportSession",
       "getCurrentSupportSession",
-      // RT-537 (RT-534 S1): POS sale-history contract; the runtime ships in RT-539 (S3).
-      "listSaleHistory",
       "openSupportSession",
       "posGetTenantBranding",
       "posRedeemVoucher",
       "posReverseVoucher",
       "posValidateVoucher",
-      "readSaleHistoryDetail",
-      "recordSaleReprint",
       "renewSupportSession",
     ]);
     expect(missing).toEqual([]);

@@ -91,6 +91,11 @@ This project follows [Semantic Versioning](https://semver.org/).
   409 `unresolved_cash_session` while the device has an open shift). The
   custody exception is derived (a revoked device with an open shift), not
   stored. No runtime or migration change.
+- RT-542 `[GATED]`, owner-approved 2026-10-16 (RT-542 comment 12124): the three
+  sale-history operations (`listSaleHistory`, `readSaleHistoryDetail`,
+  `recordSaleReprint`) lose `x-runtime-status: contract-only` now that the RT-539
+  runtime serves them. `sale-history.yaml` stays `1.0.0-draft`; no new field, no
+  other operation, no runtime or migration change.
 
 ### Changed
 - RT-113 BC1: `pos-operators.openapi.yaml` 1.1.1-draft is a prose-only fix.
