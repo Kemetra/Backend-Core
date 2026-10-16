@@ -359,12 +359,16 @@ describe("preview / revoke parity", () => {
     );
   });
 
-  it("a no_change preview revokes as already_revoked with no second audit row", async () => {
+  it.each([
+    ["revoked", R_PLAIN, 1],
+    ["revoked with a custody exception", D_EXC, 0],
+    ["retired", D_RETIRED, 0],
+  ] as const)("a no_change preview of a %s device revokes as already_revoked, writing nothing", async (state, deviceId, audits) => {
     if (skip()) return;
-    const p = await preview(SES_OWNER_ALL, R_PLAIN, "revoke", "lost");
-    expect(p).toMatchObject({ verdict: "no_change", trustState: "revoked", cascade: null });
-    expect(outcomeOf(await post(R_PLAIN, SES_OWNER_ALL, { reason: "lost" }))).toEqual(expectedRevoke(p, {}));
-    expect(await revokeAuditCounts(R_PLAIN)).toHaveLength(1);
+    const p = await preview(SES_OWNER_ALL, deviceId, "revoke", "lost");
+    expect(p).toMatchObject({ verdict: "no_change", trustState: state === "retired" ? "retired" : "revoked", cascade: null });
+    expect(outcomeOf(await post(deviceId, SES_OWNER_ALL, { reason: "lost" }))).toEqual(expectedRevoke(p, {}));
+    expect(await revokeAuditCounts(deviceId)).toHaveLength(audits);
   });
 
   it("the revokes changed no cash fact", async () => {
