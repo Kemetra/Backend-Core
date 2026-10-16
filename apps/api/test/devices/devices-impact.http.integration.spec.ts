@@ -272,7 +272,10 @@ describe("consoleGetDeviceImpact — scope and validation", () => {
 
   it.each([
     ["a revoke without a reason", R_PLAIN, { action: "revoke" }],
-    ["a reason with another action", R_PLAIN, { action: "replace", reason: "replaced" }],
+    ["a reason with a replace", R_PLAIN, { action: "replace", reason: "replaced" }],
+    ["a reason with a move", R_PLAIN, { action: "move", reason: "moved" }],
+    ["a reason with a retire", R_PLAIN, { action: "retire", reason: "retired" }],
+    ["a revoke reason with a retire", R_PLAIN, { action: "retire", reason: "lost" }],
     ["an unknown action", R_PLAIN, { action: "suspend" }],
     ["an unknown reason", R_PLAIN, { action: "revoke", reason: "broken" }],
     ["no action", R_PLAIN, {}],
@@ -295,11 +298,19 @@ interface RefusalCase {
   readonly body: { readonly reason: string } & RevokeBodyView;
 }
 
-/** The bodies tried for a reason: a recovery revoke missing each requirement, else the reason alone. */
-const refusalBodies = (reason: string): RefusalCase["body"][] =>
-  reason === "hardware_failure"
-    ? [{ reason }, { reason, note: NOTE }, { reason, acknowledgeCustodyException: true }]
-    : [{ reason, ...(reason === "other" ? { note: "x" } : {}) }];
+/**
+ * The bodies tried for a reason: a recovery revoke missing each requirement;
+ * an `other` revoke with and without its required note (400); else the reason alone.
+ */
+const REFUSAL_BODIES: Readonly<Record<string, RefusalCase["body"][]>> = {
+  hardware_failure: [
+    { reason: "hardware_failure" },
+    { reason: "hardware_failure", note: NOTE },
+    { reason: "hardware_failure", acknowledgeCustodyException: true },
+  ],
+  other: [{ reason: "other" }, { reason: "other", note: "x" }],
+};
+const refusalBodies = (reason: string): RefusalCase["body"][] => REFUSAL_BODIES[reason] ?? [{ reason }];
 
 /** Every refusing reason × role × body on a legacy-shift and a cash-up-shift device: none revokes. */
 const REFUSAL_CASES: readonly RefusalCase[] = [R_BLOCK, R_REC_ADMIN].flatMap((deviceId) =>

@@ -12,7 +12,8 @@
  * The rules (RT-287 D-Q1 / D-Q2 / D-Q4 as amended, RT-367 / RT-368 comments):
  *   - revoke: already revoked → no_change; no open shift → allowed; a security
  *     reason → custody exception; `hardware_failure` → the recovery revoke
- *     (owner / tenant_admin, note, acknowledgement); else 409.
+ *     (owner / tenant_admin, note, acknowledgement); else 409. A revoke with
+ *     `other` requires a note whatever the verdict.
  *   - replace / move: retired → blocked; revoked (with or without a custody
  *     exception) → allowed, the pair-time auto-revoke is a no-op; an open
  *     shift on an active device → 409; else allowed.
@@ -46,6 +47,9 @@ const SECURITY_REASONS: ReadonlySet<RevokeReason> = new Set(["lost", "stolen", "
 
 /** The reason that, with an open shift, is a recovery revoke (D-Q4 amended). */
 const RECOVERY_REASON: RevokeReason = "hardware_failure";
+
+/** The reason whose revoke always needs a note (RT-287 D-Q3; the body schema's rule). */
+const NOTE_REQUIRED_REASON: RevokeReason = "other";
 
 /** Roles allowed a recovery revoke (stronger authority than the base revoke). */
 const RECOVERY_ROLES: ReadonlySet<string> = new Set(["owner", "tenant_admin"]);
@@ -101,13 +105,21 @@ export function revokeReasonOf(action: LifecycleAction, reason?: RevokeReason): 
 export function evaluateLifecycle(input: LifecycleInput): LifecycleEvaluation {
   switch (input.action) {
     case "revoke":
-      return evaluateRevoke(input);
+      return withReasonRequirements(input.reason, evaluateRevoke(input));
     case "replace":
     case "move":
       return evaluateReplace(input.state);
     case "retire":
       return evaluateRetire(input.state);
   }
+}
+
+/**
+ * A revoke with `other` needs a note whatever the verdict: the body schema
+ * refuses one without it (400, before any read), so the preview says so too.
+ */
+function withReasonRequirements(reason: RevokeReason, evaluation: LifecycleEvaluation): LifecycleEvaluation {
+  return reason === NOTE_REQUIRED_REASON ? { ...evaluation, requires: ["note"] } : evaluation;
 }
 
 function evaluateRevoke(input: LifecycleInput): LifecycleEvaluation {

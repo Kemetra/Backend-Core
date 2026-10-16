@@ -37,7 +37,17 @@ const REQUIREMENT_REFUSALS: ReadonlyArray<readonly [string, (body: RevokeBodyVie
 ];
 
 /** The outcome the contract maps `preview` to, for a revoke with `body`. */
+/** The verdicts whose `note` requirement is the recovery revoke's 422, not the body schema's 400. */
+const RECOVERY_VERDICTS: ReadonlySet<string> = new Set(["allowed_with_custody_exception", "forbidden_recovery"]);
+
+/** An `other` revoke's `note` is the body schema's rule: missing, it is 400 before any read, whatever the verdict. */
+function bodySchemaRefuses(preview: ImpactVerdictView, body: RevokeBodyView): boolean {
+  if (RECOVERY_VERDICTS.has(preview.verdict)) return false;
+  return preview.requires.includes("note") && body.note === undefined;
+}
+
 export function contractRevokeOutcome(preview: ImpactVerdictView, body: RevokeBodyView): RevokeOutcome {
+  if (bodySchemaRefuses(preview, body)) return [400, "validation_error"];
   if (preview.verdict === "blocked") return [409, String(preview.blockCode)];
   const fixed = FIXED_OUTCOMES[preview.verdict];
   if (fixed !== undefined) return fixed;

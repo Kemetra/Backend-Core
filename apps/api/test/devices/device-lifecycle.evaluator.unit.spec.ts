@@ -16,6 +16,7 @@ import {
   type LifecycleEvaluation,
 } from "../../src/devices/device-lifecycle.evaluator";
 import { decideRevoke, REVOKE_REASONS, type RevokeDecision, type RevokeReason } from "../../src/devices/devices.projections";
+import { DeviceRevokeBodySchema } from "../../src/devices/devices.query";
 import { contractRevokeOutcome, type RevokeOutcome } from "./__support__/impact-outcome";
 
 const SHIFT = "0190f5a2-3b4c-7d8e-9f01-000000000004";
@@ -35,6 +36,10 @@ const ALLOWED: LifecycleEvaluation = { verdict: "allowed", blockCode: null, requ
 const NO_CHANGE: LifecycleEvaluation = { verdict: "no_change", blockCode: null, requires: [] };
 const blocked = (blockCode: string): LifecycleEvaluation => ({ verdict: "blocked", blockCode, requires: [] } as LifecycleEvaluation);
 
+/** A revoke with `other` carries `requires: [note]` whatever the verdict (the body schema's rule). */
+const forReason = (reason: RevokeReason, evaluation: LifecycleEvaluation): LifecycleEvaluation =>
+  reason === "other" ? ({ ...evaluation, requires: ["note"] } as LifecycleEvaluation) : evaluation;
+
 const revokeVerdict = (reason: RevokeReason, state: DeviceLifecycleState, callerRole: string | null = "owner") =>
   evaluateLifecycle({ action: "revoke", reason, state, callerRole });
 
@@ -43,11 +48,11 @@ const revokeVerdict = (reason: RevokeReason, state: DeviceLifecycleState, caller
 // ===========================================================================
 describe("evaluateLifecycle — revoke", () => {
   it.each(REVOKE_REASONS.map((r) => [r]))("answers no_change for %s on a revoked, excepted or retired device", (reason) => {
-    for (const state of [REVOKED, EXCEPTION, RETIRED]) expect(revokeVerdict(reason, state)).toEqual(NO_CHANGE);
+    for (const state of [REVOKED, EXCEPTION, RETIRED]) expect(revokeVerdict(reason, state)).toEqual(forReason(reason, NO_CHANGE));
   });
 
   it.each(REVOKE_REASONS.map((r) => [r]))("allows %s with no open shift, whatever the role", (reason) => {
-    for (const role of ROLES) expect(revokeVerdict(reason, ACTIVE, role)).toEqual(ALLOWED);
+    for (const role of ROLES) expect(revokeVerdict(reason, ACTIVE, role)).toEqual(forReason(reason, ALLOWED));
   });
 
   it.each(SECURITY.map((r) => [r]))("a security revoke (%s) over an open shift makes the custody exception for any role", (reason) => {
@@ -78,7 +83,14 @@ describe("evaluateLifecycle — revoke", () => {
   });
 
   it.each(OTHER.map((r) => [r]))("blocks %s over an open shift with unresolved_cash_session", (reason) => {
-    for (const role of ROLES) expect(revokeVerdict(reason, ACTIVE_SHIFT, role)).toEqual(blocked("unresolved_cash_session"));
+    for (const role of ROLES) expect(revokeVerdict(reason, ACTIVE_SHIFT, role)).toEqual(forReason(reason, blocked("unresolved_cash_session")));
+  });
+
+  it("an other revoke requires the note in every state, and no other reason requires it alone", () => {
+    for (const state of STATES) {
+      expect(revokeVerdict("other", state).requires).toEqual(["note"]);
+      expect(revokeVerdict("admin_error", state).requires).toEqual([]);
+    }
   });
 });
 
@@ -161,7 +173,10 @@ describe("preview / revoke parity", () => {
         acknowledgeCustodyException: ack,
       });
       const evaluation = revokeVerdict(reason, state, role);
-      const outcome = JSON.stringify(outcomeOfDecision(decision));
+      // The controller: a body the schema refuses is 400 before any decision.
+      const body = { reason, ...(note !== undefined ? { note } : {}), ...(ack !== undefined ? { acknowledgeCustodyException: ack } : {}) };
+      const valid = DeviceRevokeBodySchema.safeParse(body).success;
+      const outcome = JSON.stringify(valid ? outcomeOfDecision(decision) : [400, "validation_error"]);
       const expected = contractRevokeOutcome(evaluation, { note, acknowledgeCustodyException: ack });
       const wrongException = decision.kind === "revoke" && decision.custodyExceptionShiftId !== expectedException(evaluation, state);
       return outcome !== JSON.stringify(expected) || wrongException;
