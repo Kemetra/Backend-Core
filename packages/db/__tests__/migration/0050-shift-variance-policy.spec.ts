@@ -423,15 +423,26 @@ describe("0050 — the frozen policy on shifts (accept and flag)", () => {
     if (skip()) return;
     // An unknown revision id (no FK), a `system` limit and a currency other than
     // the shift's are each a flag, never a refusal (pos-shifts openShift).
-    await openShift({
+    const unknownRevision = randomUUID();
+    const a = await openShift({
       frozen: {
-        source: "tenant", revisionId: randomUUID(), mode: "limit", limitAmount: "7.5", currency: "USD",
+        source: "tenant", revisionId: unknownRevision, mode: "limit", limitAmount: "7.5", currency: "USD",
         flags: ["policy_revision_unknown", "policy_value_mismatch"],
       },
     });
-    await openShift({
+    const b = await openShift({
       frozen: { source: "system", mode: "limit", limitAmount: "1", currency: "EGP", flags: ["policy_value_mismatch"] },
     });
+    const r = await pg().admin.query(
+      `SELECT frozen_policy_revision_id AS rev, frozen_policy_limit_amount::text AS amount,
+              frozen_policy_currency_code AS currency, frozen_policy_flags AS flags
+         FROM shifts WHERE shift_id = ANY($1) ORDER BY frozen_policy_source DESC`,
+      [[a.shiftId, b.shiftId]],
+    );
+    expect(r.rows).toEqual([
+      { rev: unknownRevision, amount: "7.5000", currency: "USD", flags: ["policy_revision_unknown", "policy_value_mismatch"] },
+      { rev: null, amount: "1.0000", currency: "EGP", flags: ["policy_value_mismatch"] },
+    ]);
   });
 
   it.each<[string, Frozen]>([
@@ -553,6 +564,11 @@ describe("0050 — the frozen policy on shifts (accept and flag)", () => {
        WHERE shift_id = $1`,
       [id, digest(`adopt:${id}`)],
     );
+    const r = await pg().admin.query(
+      `SELECT source, frozen_policy_source, frozen_policy_flags FROM shifts WHERE shift_id = $1`,
+      [id],
+    );
+    expect(r.rows[0]).toEqual({ source: "cash_up", frozen_policy_source: null, frozen_policy_flags: null });
   });
 });
 
@@ -610,7 +626,10 @@ describe("0050 — the close tri-states", () => {
     ["limit 0, no approver", limit("0"), {}, { required: "yes", missing: "yes" }],
     ["limit 0, an approver", limit("0"), { approver: OWNER_A }, { required: "yes", missing: "no" }],
     ["limit 10", limit("10"), {}, { required: "no", missing: "no" }],
-    ["a limit in another currency (D-1 has no currency condition)", limit("0", "USD"), {}, { required: "yes", missing: "yes" }],
+    ["|variance| == limit (5)", limit("5"), {}, { required: "no", missing: "no" }],
+    ["|variance| just above limit (4.99)", limit("4.99"), {}, { required: "yes", missing: "yes" }],
+    ["a limit in another currency fails safe, no approver", limit("10", "USD"), {}, { required: "yes", missing: "yes" }],
+    ["a limit in another currency fails safe, an approver", limit("10", "USD"), { approver: OWNER_A }, { required: "yes", missing: "no" }],
   ])(
     "derives the values a pre-RT-387 close leaves at the default (rollback-safe): %s",
     async (_label, frozen, input, expected) => {
@@ -649,11 +668,38 @@ describe("0050 — the close tri-states", () => {
     await closeShift(await openShift({ frozen: limit("0") }), { required: "no", missing: "no", variance: "0.00" });
   });
 
-  it("applies a frozen limit in another currency as frozen (flagged, never exempt)", async () => {
+  it("fails a frozen limit in another currency safe to `yes` (never compared, never refused)", async () => {
     if (skip()) return;
-    await closeShift(await openShift({ frozen: limit("1", "USD") }), { required: "yes", missing: "yes" });
-    await expectCode(closeShift(await openShift({ frozen: limit("1", "USD") }), { required: "no", missing: "no" }), "23514");
-    await closeShift(await openShift({ frozen: limit("10", "USD") }), { required: "no", missing: "no" });
+    // |−5| is below 10, but a USD limit cannot clear an EGP variance.
+    await closeShift(await openShift({ frozen: limit("10", "USD") }), { required: "yes", missing: "yes" });
+    await closeShift(await openShift({ frozen: limit("10", "USD") }), { required: "yes", missing: "no", approver: OWNER_A });
+    await expectCode(closeShift(await openShift({ frozen: limit("10", "USD") }), { required: "no", missing: "no" }), "23514");
+  });
+
+  it("keeps `unknown` on a close whose shift froze no policy (old and new writers)", async () => {
+    if (skip()) return;
+    const old = await openShift();
+    await closeShift(old);
+    expect(await closeValues(old)).toEqual({ required: "unknown", missing: "unknown" });
+    const explicit = await openShift();
+    await closeShift(explicit, { required: "unknown", missing: "unknown", approver: OWNER_A });
+    expect(await closeValues(explicit)).toEqual({ required: "unknown", missing: "unknown" });
+  });
+
+  it("derives in BEFORE INSERT only: shift_closes keeps no UPDATE path", async () => {
+    if (skip()) return;
+    const r = await pg().admin.query<{ tgname: string; tgtype: number }>(
+      `SELECT t.tgname, t.tgtype FROM pg_trigger t
+         JOIN pg_proc p ON p.oid = t.tgfoid
+        WHERE t.tgrelid = 'shift_closes'::regclass AND p.proname = 'shift_closes_require_open_shift'`,
+    );
+    // tgtype bits: 1 = ROW, 2 = BEFORE, 4 = INSERT, 16 = UPDATE.
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0]!.tgtype & (1 | 2 | 4 | 16)).toBe(1 | 2 | 4);
+    await expectCode(
+      pg().admin.query(`UPDATE shift_closes SET approval_missing = 'no' WHERE shift_id = $1`, [PRE_CLOSED_ALONE]),
+      "42501",
+    );
   });
 
   it("never keeps `unknown` on a close whose shift froze a policy", async () => {
@@ -693,11 +739,21 @@ describe("0050 — cash_variance_policy_revisions", () => {
     if (skip()) return;
     const t = await insertRevision({ tenant: TENANT_B, createdBy: USER_B });
     const s = await insertRevision(storeSet({ tenant: TENANT_B, store: STORE_B1, createdBy: USER_B }));
-    await insertRevision({
+    const c = await insertRevision({
       tenant: TENANT_B, scope: "store", store: STORE_B1, kind: "clear", mode: null, limitAmount: null,
       currency: null, supersedes: s, createdBy: USER_B,
     });
-    await insertRevision({ tenant: TENANT_B, mode: "none", limitAmount: null, currency: null, supersedes: t, createdBy: USER_B });
+    const t2 = await insertRevision({ tenant: TENANT_B, mode: "none", limitAmount: null, currency: null, supersedes: t, createdBy: USER_B });
+    const r = await pg().admin.query(
+      `SELECT id, scope, kind, mode, limit_amount::text AS amount, permanent, supersedes_revision_id AS prev
+         FROM ${REVISIONS} WHERE id = ANY($1)`,
+      [[t, s, c, t2]],
+    );
+    const byId = new Map(r.rows.map((row: { id: string }) => [row.id, row]));
+    expect(byId.get(t)).toMatchObject({ scope: "tenant", kind: "set", mode: "limit", amount: "50.0000", prev: null });
+    expect(byId.get(s)).toMatchObject({ scope: "store", kind: "set", mode: "limit", amount: "20.0000", permanent: false });
+    expect(byId.get(c)).toMatchObject({ scope: "store", kind: "clear", mode: null, amount: null, prev: s });
+    expect(byId.get(t2)).toMatchObject({ scope: "tenant", kind: "set", mode: "none", prev: t });
   });
 
   it.each<[string, RevisionInput]>([
@@ -909,9 +965,18 @@ describe("0050 — shift_close_approver_checks", () => {
 
   it("stores each unverified reason", async () => {
     if (skip()) return;
-    for (const reason of ["approver_is_closer", "inactive_membership", "not_manager", "no_store_access"]) {
-      await insertVerdict(await closedWithApprover(OWNER_A), { status: "unverified", reason });
+    const reasons = ["approver_is_closer", "inactive_membership", "not_manager", "no_store_access"];
+    const shiftIds: string[] = [];
+    for (const reason of reasons) {
+      const s = await closedWithApprover(OWNER_A);
+      await insertVerdict(s, { status: "unverified", reason });
+      shiftIds.push(s.shiftId);
     }
+    const r = await pg().admin.query<{ reason: string }>(
+      `SELECT reason FROM ${VERDICTS} WHERE shift_id = ANY($1) AND status = 'unverified' ORDER BY reason`,
+      [shiftIds],
+    );
+    expect(r.rows.map((x) => x.reason)).toEqual([...reasons].sort());
   });
 
   it.each<[string, { status?: string; reason?: string | null }]>([
