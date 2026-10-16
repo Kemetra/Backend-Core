@@ -224,6 +224,12 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   // policy); never UPDATE, DELETE or TRUNCATE.
   ["sale_reprints", "SELECT"],
   ["sale_reprints", "INSERT"],
+  // RT-365: the Console device revoke locks the device row FOR UPDATE (which
+  // needs UPDATE) and sets the revoke fields. No earlier domain path wrote
+  // `devices` (pairing only INSERTs), so a deploy that skips the grant must
+  // fail here at boot, not answer 500 on every revoke. Apply:
+  //   GRANT UPDATE ON devices TO <DATABASE_URL role>;
+  ["devices", "UPDATE"],
 ];
 
 interface GrantRow {
