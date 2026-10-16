@@ -40,6 +40,7 @@ import {
   saleLines,
   saleRefunds,
   saleReprints,
+  saleResponsibilities,
   saleReturnLines,
   saleReturns,
   saleReturnTenders,
@@ -90,6 +91,8 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       // recorded tenders (a count, no payment data) — re-reviewed under SI-012.
       "device_id",
       "tender_count",
+      // RT-418 (0049): how many sale_responsibilities rows capture wrote.
+      "responsibility_count",
       "created_at",
       // RT-538 (0047): the receipt snapshot — re-reviewed under SI-012. A sale /
       // receipt number, the terminal label, a printed time, the STORE's branch
@@ -264,6 +267,14 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       "device_id",
       "idempotency_key",
     ],
+  },
+  // RT-418 (0049) — reviewed under SI-012: who owes how much of the sale. An
+  // opaque payer UUID (the payer's display name stays on payer_account), a
+  // positive amount and an ordinal. No customer, card or account data.
+  {
+    name: "sale_responsibilities",
+    table: saleResponsibilities,
+    columns: ["id", "tenant_id", "store_id", "sale_id", "payer_id", "amount", "sequence", "created_at"],
   },
 ];
 

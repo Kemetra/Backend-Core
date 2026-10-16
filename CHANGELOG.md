@@ -136,6 +136,39 @@ This project follows [Semantic Versioning](https://semver.org/).
   operator store scope and one non-disclosing 404; audit actions
   `console_sales.listed` / `console_sales.detail_read`. No runtime or
   migration change; `pos-sales/sale-history.yaml` is unchanged.
+- RT-418 `[GATED]` migration `0049_sale_responsibilities`, pending owner
+  approval: the runtime for the RT-417 contracts (owner decisions R-1 and
+  option A). Migration: append-only, RLS-forced `sale_responsibilities`
+  (composite FKs to `sales` and to `payer_account (id, tenant_id)`, amount
+  > 0, one row per payer and per sequence), `sales.responsibility_count`
+  (0..1, the feed's visibility guard), `erpnext_posting_resolution
+  .payer_external_ref` (the payer's ERPNext Customer link frozen with each
+  resolution version), and `payer_account.credit_terms` dropped. Capture
+  (`pos-sales/sales.yaml` 1.10.0-draft) accepts `responsibilities` (one
+  payer), hashes them into the payload, and decides, after a replay
+  resolves: 403 `sale_responsibility_role_refused` (envelope operator not an
+  active owner / tenant_admin / store_manager of the store), 422
+  `sale_responsibility_offline_refused` (the RT-224 device path), the combined
+  coverage rule (422 `sale_responsibility_mismatch`; it replaces the RT-76
+  tender rule, and the tender rule now also runs after the replay check, so a
+  replay with different tenders is a 409, never a 422), the line price
+  invariant, then one non-disclosing 422
+  `sale_responsibility_payer_invalid`; a replay with different
+  responsibilities is a 409. `Sale.responsibilities` on capture and read.
+  Posting feed (`posting-feed.yaml` 1.8.0-draft): `sale.responsibilities
+  [{payerExternalRef, amount, sequence}]` from the frozen resolution
+  (`payloadHash` unchanged; an unlinked payer is offered with `null`, never
+  the store Customer); a responsibility-bearing `sale_post` is held until
+  `ERPNEXT_FEED_RESPONSIBILITIES_ENABLED` is on (after RT-419), its
+  reversals are always held, and its `sale_post` is held while a void,
+  refund or return exists. Lifting a hold must re-head the held rows'
+  feed `sequence`. Payer routes (`settlement/settlement.yaml` 2.0.0)
+  `consoleCreatePayerAccount` / `consoleListPayerAccounts` ship
+  (`PayerAccountsModule`) and lose `x-runtime-status: contract-only`.
+  Deploy: run `docs/operations/sql/sale-responsibilities-domain-grants.sql`
+  after `migrate up` (`DOMAIN_REQUIRED_GRANTS` now lists
+  `sale_responsibilities` SELECT / INSERT and `payer_account` SELECT /
+  INSERT / UPDATE).
 
 ### Changed
 - RT-113 BC1: `pos-operators.openapi.yaml` 1.1.1-draft is a prose-only fix.

@@ -337,7 +337,10 @@ export class PostingRequestedConsumer
    * lineage, ERP Integration baseline); when that sale_post has none it
    * resolves from the current maps like a sale_post. Each INSERT is all-or-
    * nothing: it writes every line or none, so the feed never sees a partial
-   * version. If nothing could be frozen it throws
+   * version. RT-418: each line also freezes the sale's payer ERPNext Customer
+   * link (`payer_external_ref`, one payer per sale; NULL without
+   * responsibilities), copied with the lineage on a reversal, so a later edit
+   * of the payer cannot retarget the work item. If nothing could be frozen it throws
    * {@link PostingResolutionNotFrozenError}, rolling the intent back.
    */
   private async freezeResolution(
@@ -355,9 +358,11 @@ export class PostingRequestedConsumer
       const copied = await client.query(
         `INSERT INTO erpnext_posting_resolution
            (tenant_id, intent_id, resolution_version, sale_line_id,
-            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by)
+            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by,
+            payer_external_ref)
          SELECT $1, $2, 1, r.sale_line_id,
-                r.erpnext_item_ref, r.item_map_id, r.warehouse_ref, r.warehouse_map_id, 'system'
+                r.erpnext_item_ref, r.item_map_id, r.warehouse_ref, r.warehouse_map_id, 'system',
+                r.payer_external_ref
            FROM erpnext_posting_status sp
            JOIN erpnext_posting_resolution r
              ON r.intent_id = sp.id AND r.resolution_version = sp.current_resolution_version
@@ -371,9 +376,15 @@ export class PostingRequestedConsumer
       const resolved = await client.query(
         `INSERT INTO erpnext_posting_resolution
            (tenant_id, intent_id, resolution_version, sale_line_id,
-            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by)
+            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by,
+            payer_external_ref)
          SELECT $1, $2, 1, sl.id, m.erpnext_item_ref, m.id,
-                w.erpnext_warehouse_ref, w.id, 'system'
+                w.erpnext_warehouse_ref, w.id, 'system',
+                (SELECT p.external_ref
+                   FROM sale_responsibilities sr
+                   JOIN payer_account p ON p.id = sr.payer_id
+                  WHERE sr.sale_id = $3
+                  ORDER BY sr.sequence LIMIT 1)
            FROM sale_lines sl
            JOIN erpnext_warehouse_map w
              ON w.store_id = $4 AND w.purpose = 'stock' AND w.retired_at IS NULL

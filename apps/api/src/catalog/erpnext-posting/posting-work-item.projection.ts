@@ -26,6 +26,7 @@
 import type { PoolClient } from "pg";
 
 import { SaleTendersNotVisibleError } from "../sales/sale-errors";
+import { SaleResponsibilitiesNotVisibleError } from "../sales/sale-responsibilities";
 
 // RT-77: shared with the sale read path; re-exported for existing importers.
 export { SaleTendersNotVisibleError } from "../sales/sale-errors";
@@ -103,6 +104,18 @@ export interface SaleWorkTender {
   readonly sequence?: number;
 }
 
+/**
+ * RT-418 (posting-feed.yaml 1.8.0 `SaleResponsibility`): one payer's share,
+ * keyed by the payer's ERPNext Customer link instead of the Backend-Core
+ * payer id. `payerExternalRef` null (or blank) is an unmapped payer: the
+ * Connector fails closed, never the store Customer.
+ */
+export interface SaleWorkResponsibility {
+  readonly payerExternalRef: string | null;
+  readonly amount: string;
+  readonly sequence: number;
+}
+
 /** RT-86: one recorded payout of a return (RT-14 D3, cash only), a non-negative magnitude. */
 export interface RefundWorkTender {
   readonly method: "cash";
@@ -156,6 +169,13 @@ export interface PostingWorkItem {
      */
     readonly tenders?: readonly SaleWorkTender[];
     /**
+     * RT-418: the sale's payer responsibility lines. OMITTED for a sale
+     * without them (every pre-RT-418 work item is byte-identical). Each
+     * `payerExternalRef` is frozen with the resolution version; it is not part
+     * of `payloadHash`, which covers the captured `payerRef` values.
+     */
+    readonly responsibilities?: readonly SaleWorkResponsibility[];
+    /**
      * RT-332: the ERP warehouse frozen with the intent's resolution. OMITTED for
      * a row without a frozen resolution (pre-0037); the connector then keeps its
      * local warehouse configuration.
@@ -202,10 +222,11 @@ export async function buildWorkItem(
     source_system: string;
     external_id: string;
     tender_count: number;
+    responsibility_count: number;
   }>(
     `SELECT id, store_id, currency_code, pos_total::text AS pos_total,
             occurred_at, business_date::text AS business_date,
-            source_system, external_id, tender_count
+            source_system, external_id, tender_count, responsibility_count
        FROM sales WHERE id = $1`,
     [row.saleId],
   );
@@ -297,6 +318,12 @@ export async function buildWorkItem(
   }
 
   const tenders = await loadSaleTenders(client, s.id, s.tender_count);
+  const responsibilities = await loadSaleResponsibilities(client, {
+    saleId: s.id,
+    expected: s.responsibility_count,
+    intentId: row.id,
+    frozenVersion,
+  });
 
   return {
     workItemRef: row.id,
@@ -317,6 +344,7 @@ export async function buildWorkItem(
       externalId: s.external_id,
       lines: wireLines,
       ...(tenders.length === 0 ? {} : { tenders }),
+      ...(responsibilities.length === 0 ? {} : { responsibilities }),
       ...frozenWarehouse(frozenVersion, lines.rows),
     },
     itemCursor: row.sequence,
@@ -438,6 +466,46 @@ async function loadSaleTenders(
     ...(t.tender_ref === null ? {} : { tenderRef: t.tender_ref }),
     ...(t.sequence === null ? {} : { sequence: t.sequence }),
   }));
+}
+
+/**
+ * RT-418: the sale's responsibility lines in `sequence` order (byte-identical
+ * re-pulls). `payerExternalRef` comes from the frozen resolution version when
+ * the row has one (RT-332: a later edit of the payer cannot retarget the work
+ * item), else from the live payer row (a row without a frozen resolution). The
+ * visible count must equal `sales.responsibility_count`, else
+ * {@link SaleResponsibilitiesNotVisibleError}: a credit sale offered without
+ * its responsibilities would post the payer's share to the store Customer.
+ */
+async function loadSaleResponsibilities(
+  client: PoolClient,
+  input: {
+    readonly saleId: string;
+    readonly expected: number | undefined;
+    readonly intentId: string;
+    readonly frozenVersion: number | null;
+  },
+): Promise<SaleWorkResponsibility[]> {
+  // A sale without responsibilities never touches the table (every legacy sale).
+  const expected = input.expected ?? 0;
+  if (expected === 0) return [];
+  const r = await client.query<{ payer_external_ref: string | null; amount: string; sequence: number }>(
+    `SELECT CASE WHEN $2::int IS NULL THEN p.external_ref
+                 ELSE (SELECT fr.payer_external_ref FROM erpnext_posting_resolution fr
+                        WHERE fr.intent_id = $3::uuid AND fr.resolution_version = $2::int
+                        LIMIT 1)
+            END AS payer_external_ref,
+            sr.amount::text AS amount, sr.sequence
+       FROM sale_responsibilities sr
+       JOIN payer_account p ON p.id = sr.payer_id
+      WHERE sr.sale_id = $1
+      ORDER BY sr.sequence`,
+    [input.saleId, input.frozenVersion, input.intentId],
+  );
+  if (r.rows.length !== expected) {
+    throw new SaleResponsibilitiesNotVisibleError(input.saleId, expected, r.rows.length);
+  }
+  return r.rows.map((x) => ({ payerExternalRef: x.payer_external_ref, amount: x.amount, sequence: x.sequence }));
 }
 
 /**

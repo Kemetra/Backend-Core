@@ -62,6 +62,18 @@ import {
   TerminalEventProvenanceConflictError,
 } from "./sale-errors";
 import {
+  assertCreditOperatorEligible,
+  assertResponsibilityCoverage,
+  assertResponsibilityPayersEligible,
+  assertSameResponsibilities,
+  insertResponsibilities,
+  loadSaleResponsibilities,
+  responsibilitiesField,
+  SaleResponsibilityOfflineRefusedError,
+  type SaleResponsibilityProjection,
+  type SaleResponsibilityRow,
+} from "./sale-responsibilities";
+import {
   lockSaleForReversal,
   mapOneVoidViolation,
   readReversalState,
@@ -87,6 +99,12 @@ export interface CaptureSaleInput {
    * (`request.posDeviceId`), stored on `sales.device_id`. Never a body field.
    */
   readonly deviceId: string;
+  /**
+   * RT-418: which captureSale credential the request used (sales.yaml 1.5.0:
+   * `operatorUserId` in the body selects the RT-224 device path). Credit
+   * (`responsibilities`) is accepted on the envelope path only.
+   */
+  readonly authPath: "envelope" | "device";
   /** The hashed sale facts: the controller has dropped the claim, the window instant and `receipt`. */
   readonly body: CaptureSaleRequestDto;
   /**
@@ -117,6 +135,8 @@ export interface SaleProjection {
   readonly lines: ReadonlyArray<SaleLineProjection>;
   /** RT-77: how the sale was paid; empty for a tender-unknown sale (RT-10 D8). */
   readonly tenders: ReadonlyArray<SaleTenderProjection>;
+  /** RT-418: who owes the part not paid at the till; omitted when there is none. */
+  readonly responsibilities?: ReadonlyArray<SaleResponsibilityProjection>;
 }
 
 /**
@@ -218,6 +238,7 @@ interface SaleRow {
   sync_status: SaleSyncStatus;
   voided: boolean;
   tender_count: number;
+  responsibility_count: number;
 }
 
 interface SaleTenderRow {
@@ -250,6 +271,7 @@ export class SalesService {
     const { tenantId, storeId, actorUserId, deviceId, body } = input;
     const payloadHash = sha256CanonicalHex(body);
     const tenders = body.tenders ?? [];
+    const responsibilities = body.responsibilities ?? [];
     const receipt = receiptColumns(input.receipt);
 
     const result = await runWithTenantContext(
@@ -272,11 +294,6 @@ export class SalesService {
           [body.posTotal, body.lines.map((l) => l.lineAmount)],
         );
         const mismatchFlag = compare.rows[0]?.mismatch ?? false;
-
-        // RT-77 (RT-10 D1): tenders sum to posTotal EXACTLY, in Postgres
-        // numeric (never JS float). Checked before any write, so a mismatch
-        // (→ 422) records nothing — replay or not.
-        if (tenders.length > 0) await assertTendersMatchTotal(client, tenders, body.posTotal);
 
         // UUIDv7 (time-ordered) via the shared id policy — fact tables are
         // high-write, so v7 B-tree locality matters; matches reconciliation.
@@ -316,13 +333,13 @@ export class SalesService {
              (id, tenant_id, store_id, currency_code, pos_total, occurred_at,
               business_date, source_clock_at, source_system, external_id,
               payload_hash, mismatch_flag, created_by, sync_status,
-              device_id, tender_count,
+              device_id, tender_count, responsibility_count,
               receipt_sale_number, receipt_number, receipt_terminal_label,
               receipt_operator_display_name, receipt_settled_at, receipt_branch_name,
               receipt_branch_address, receipt_tax_registration_id, receipt_change_given)
            VALUES ($1, $2, $3, $4, $5::numeric, $6::timestamptz,
                    ($6::timestamptz AT TIME ZONE $13)::date, $7::timestamptz,
-                   $8, $9, $10, $11, $12, $14, $15, $16,
+                   $8, $9, $10, $11, $12, $14, $15, $16, $26,
                    $17, $18, $19, $20, $21::timestamptz, $22, $23, $24, $25::numeric)
            ON CONFLICT (tenant_id, source_system, external_id) DO NOTHING
            RETURNING id`,
@@ -344,6 +361,7 @@ export class SalesService {
             deviceId,
             tenders.length,
             ...receipt,
+            responsibilities.length,
           ],
         );
 
@@ -355,8 +373,9 @@ export class SalesService {
             id: string;
             store_id: string;
             tender_count: number;
+            responsibility_count: number;
           }>(
-            `SELECT id, store_id, tender_count FROM sales
+            `SELECT id, store_id, tender_count, responsibility_count FROM sales
               WHERE tenant_id = $1 AND source_system = $2 AND external_id = $3
               LIMIT 1`,
             [tenantId, body.sourceSystem, body.externalId],
@@ -373,16 +392,44 @@ export class SalesService {
           // RT-77: a replay that adds, drops or changes tenders is a different
           // payload (409). Only the tender set is compared (RT-77 10509).
           await assertSameTenders(client, winnerRow, tenders);
+          // RT-418: and the responsibilities (payer, amount, sequence). Every
+          // RT-418 refusal below comes after this, so a stored credit sale
+          // replays even if its payer, its operator's role or the path changed.
+          await assertSameResponsibilities(client, winnerRow, responsibilities);
           return { saleId: winnerRow.id, created: false };
+        }
+
+        // A FIRST capture from here: every refusal throws and rolls the
+        // transaction back, so the sales row is not kept and nothing is
+        // recorded. Order (sales.yaml 1.10.0 CaptureForbidden /
+        // CaptureUnprocessable): the RT-418 role 403, the device-path offline
+        // 422, the coverage rule, the line price invariant, the payers.
+        const scope = { tenantId, storeId };
+        if (responsibilities.length > 0) {
+          if (input.authPath === "device") throw new SaleResponsibilityOfflineRefusedError();
+          await assertCreditOperatorEligible(client, scope, actorUserId);
+        }
+
+        // Coverage, in Postgres numeric (never JS float). RT-77 (RT-10 D1):
+        // without responsibilities, tenders sum to posTotal exactly. RT-418:
+        // with them, sum(tenders) (absent = 0) + sum(responsibilities) = posTotal.
+        // Checked after the replay branch, so a replay that differs is a 409.
+        if (responsibilities.length > 0) {
+          await assertResponsibilityCoverage(client, { tenders, responsibilities, posTotal: body.posTotal });
+        } else if (tenders.length > 0) {
+          await assertTendersMatchTotal(client, tenders, body.posTotal);
         }
 
         // RT-105 (RT-87 decision D): a FIRST capture must satisfy the line
         // price invariant, or the line could never be returned exactly. It is
         // checked here, after the provenance insert and never before it, so a
         // replay of a sale captured before RT-105 still resolves above (200).
-        // Throwing rolls the transaction back: the sales row is not kept.
         if (findLinePricingViolation(body.lines) !== null) {
           throw new SaleLinePricingInvalidError();
+        }
+
+        if (responsibilities.length > 0) {
+          await assertResponsibilityPayersEligible(client, scope, responsibilities);
         }
 
         await insertSaleLines(client, { saleId, tenantId, storeId, lines: body.lines });
@@ -394,6 +441,9 @@ export class SalesService {
             currencyCode: body.currencyCode,
             tenders,
           });
+        }
+        if (responsibilities.length > 0) {
+          await insertResponsibilities(client, { saleId, tenantId, storeId, responsibilities });
         }
 
         // Emit the `sale.captured` outbox event IN-TRANSACTION, atomic with the
@@ -458,6 +508,7 @@ export class SalesService {
                   received_at, business_date::text AS business_date,
                   processed_at, source_clock_at,
                   source_system, external_id, mismatch_flag, sync_status, tender_count,
+                  responsibility_count,
                   EXISTS (SELECT 1 FROM sale_voids v WHERE v.sale_id = sales.id) AS voided
              FROM sales WHERE id = $1 AND store_id = $2`,
           [saleId, storeId],
@@ -504,7 +555,9 @@ export class SalesService {
         if (tenders.length !== row.tender_count) {
           throw new SaleTendersNotVisibleError(saleId, row.tender_count, tenders.length);
         }
-        return toBody(row, lines.rows, tenders);
+        // RT-418: the same invariant for responsibilities (empty = none).
+        const responsibilities = await loadSaleResponsibilities(client, saleId, row.responsibility_count);
+        return toBody(row, lines.rows, tenders, responsibilities);
       },
     );
   }
@@ -836,6 +889,7 @@ function toBody(
   row: SaleRow,
   lines: ReadonlyArray<SaleLineRow>,
   tenders: ReadonlyArray<SaleTenderRow>,
+  responsibilities: ReadonlyArray<SaleResponsibilityRow>,
 ): SaleProjection {
   return {
     saleRef: row.id,
@@ -875,6 +929,7 @@ function toBody(
       ...(t.tender_ref === null ? {} : { tenderRef: t.tender_ref }),
       ...(t.sequence === null ? {} : { sequence: t.sequence }),
     })),
+    ...responsibilitiesField(responsibilities),
   };
 }
 

@@ -47,6 +47,10 @@ export const erpnextPostingResolution = pgTable(
     itemMapId: uuid("item_map_id").notNull(),
     warehouseRef: text("warehouse_ref").notNull(),
     warehouseMapId: uuid("warehouse_map_id").notNull(),
+    // RT-418 (0049): the payer's ERPNext Customer link frozen with this
+    // version (one payer per sale, so the same on every line, as
+    // warehouse_ref is). NULL for a sale without responsibilities.
+    payerExternalRef: text("payer_external_ref"),
     resolvedBy: text("resolved_by").notNull(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true })
       .notNull()

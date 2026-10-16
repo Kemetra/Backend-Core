@@ -512,6 +512,64 @@ async function resolutionOf(
   return { version: s.rows[0]?.v ?? null, rows: r.rows };
 }
 
+// RT-418 (posting-feed.yaml 1.8.0): the payer's ERPNext Customer link is
+// frozen with each resolution version, so a later edit of the payer can never
+// retarget a work item; a reversal copies it with its sale's lineage.
+const PAYER_418 = "01900000-0000-7000-8000-0000000af418";
+
+async function payerRefsOf(e: PgTestEnv, sourceRefId: string): Promise<Array<string | null>> {
+  const r = await e.admin.query<{ ref: string | null }>(
+    `SELECT r.payer_external_ref AS ref
+       FROM erpnext_posting_status s
+       JOIN erpnext_posting_resolution r ON r.intent_id = s.id
+      WHERE s.tenant_id = $1 AND s.source_ref_id = $2
+      ORDER BY r.resolution_version, r.sale_line_id`,
+    [TENANT, sourceRefId],
+  );
+  return r.rows.map((x) => x.ref);
+}
+
+describe("PostingRequestedConsumer.handle — RT-418 the payer link is frozen with the resolution", () => {
+  beforeAll(async () => {
+    if (skip) return;
+    await guard().admin.query(
+      `INSERT INTO payer_account (id, tenant_id, store_id, category, display_name, external_ref)
+       VALUES ($1, $2, NULL, 'credit_customer', 'RT-418 House', 'CUST-418')`,
+      [PAYER_418, TENANT],
+    );
+  });
+
+  it("a credit sale's sale_post freezes the payer's external_ref; its reversal copies it after a live edit", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleId = "01900000-0000-7000-8000-00000050e418";
+    await seedSale(e, { id: saleId, store: STORE_MAPPED, externalId: "rt418-1", tenantProductRef: TPRODUCT });
+    await e.admin.query(`UPDATE sales SET responsibility_count = 1 WHERE id = $1`, [saleId]);
+    await e.admin.query(
+      `INSERT INTO sale_responsibilities (tenant_id, store_id, sale_id, payer_id, amount, sequence)
+       VALUES ($1, $2, $3, $4, 5, 1)`,
+      [TENANT, STORE_MAPPED, saleId, PAYER_418],
+    );
+    const c = new PostingRequestedConsumer(e.app);
+    await c.handle(salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev418"));
+    expect(await payerRefsOf(e, saleId)).toEqual(["CUST-418"]);
+
+    await e.admin.query(`UPDATE payer_account SET external_ref = 'CUST-EDITED' WHERE id = $1`, [PAYER_418]);
+    const voidId = await seedVoid(e, saleId, "01900000-0000-7000-8000-0000005e418d");
+    await c.handle(reversalEvent(saleId, voidId, { eventId: "01900000-0000-7000-8000-0000000ev419" }));
+    expect(await payerRefsOf(e, voidId)).toEqual(["CUST-418"]);
+  });
+
+  it("a sale without responsibilities freezes no payer link (NULL)", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleId = "01900000-0000-7000-8000-00000050e41a";
+    await seedSale(e, { id: saleId, store: STORE_MAPPED, externalId: "rt418-2", tenantProductRef: TPRODUCT });
+    await new PostingRequestedConsumer(e.app).handle(salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev41a"));
+    expect(await payerRefsOf(e, saleId)).toEqual([null]);
+  });
+});
+
 // RT-333: an operator re-resolution of the sale (api) holds the sale_post row
 // FOR UPDATE while it writes v(n+1). A reversal created meanwhile must not copy
 // the superseded version: its freeze waits on that lock, then copies the

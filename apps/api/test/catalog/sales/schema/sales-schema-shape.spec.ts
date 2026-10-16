@@ -27,6 +27,7 @@ import {
   saleLines,
   saleRefunds,
   saleReprints,
+  saleResponsibilities,
   saleReturnLines,
   saleReturns,
   saleReturnTenders,
@@ -83,6 +84,7 @@ const ALL_TABLES: ReadonlyArray<{ name: string; table: unknown }> = [
   { name: "sale_return_tenders", table: saleReturnTenders },
   { name: "sale_tenders", table: saleTenders },
   { name: "sale_reprints", table: saleReprints },
+  { name: "sale_responsibilities", table: saleResponsibilities },
 ];
 
 describe("sales schema shape — sales (header)", () => {

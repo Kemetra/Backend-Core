@@ -27,6 +27,7 @@ import {
   buildWorkItem,
   type PostingWorkItem,
 } from "./posting-work-item.projection";
+import { isFeedResponsibilitiesEnabled } from "./responsibilities-feed-gate";
 
 /**
  * Hard ceiling on a single pull page — the 012 contract `Limit.maximum` (500),
@@ -207,6 +208,21 @@ export class ErpnextPostingService {
         // idx_erpnext_posting_status_pending backs this scan. ORDER BY names the
         // table column: a bare `sequence` would resolve to the ::text alias and
         // sort "10" before "9", advancing the cursor past unsent rows (RT-325).
+        //
+        // RT-418 HOLDS (posting-feed.yaml 1.8.0, RT-417): a work item of a sale
+        // with payer responsibilities is not offered when
+        //   - it is a `reversal`: reversal of such a sale is undefined in this
+        //     version (035 OQ-4 carve), whatever the Connector supports;
+        //   - it is a `sale_post` and the Connector gate is off (ROLLOUT ORDER,
+        //     see responsibilities-feed-gate.ts);
+        //   - it is a `sale_post` and a void / refund / return of the sale
+        //     exists: a credit sale reversed before posting never posts alone
+        //     while its reversal is held.
+        // The key is `sales.responsibility_count`, written with the rows at
+        // capture, so an RLS or grant fault on sale_responsibilities holds the
+        // sale (or fails the pull in the projection) instead of offering it as
+        // cash. Held rows are filtered here, not dropped in the projection, so
+        // a page is never short; lifting a hold must re-head their sequence.
         const rows = await client.query<{
           id: string;
           kind: "sale_post" | "reversal";
@@ -224,9 +240,18 @@ export class ErpnextPostingService {
              FROM erpnext_posting_status
             WHERE status = 'pending'
               AND ($1::bigint IS NULL OR sequence > $1::bigint)
+              AND NOT EXISTS (
+                SELECT 1 FROM sales s
+                 WHERE s.id = erpnext_posting_status.sale_id
+                   AND s.responsibility_count > 0
+                   AND (erpnext_posting_status.kind = 'reversal'
+                        OR NOT $3::boolean
+                        OR EXISTS (SELECT 1 FROM sale_voids v WHERE v.sale_id = s.id)
+                        OR EXISTS (SELECT 1 FROM sale_refunds f WHERE f.sale_id = s.id)
+                        OR EXISTS (SELECT 1 FROM sale_returns r WHERE r.sale_id = s.id)))
             ORDER BY erpnext_posting_status.sequence
             LIMIT $2`,
-          [input.since !== null ? input.since.toString() : null, limit],
+          [input.since !== null ? input.since.toString() : null, limit, isFeedResponsibilitiesEnabled()],
         );
 
         const items: PostingWorkItem[] = [];

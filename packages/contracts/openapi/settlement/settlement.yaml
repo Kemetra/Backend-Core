@@ -21,8 +21,8 @@ info:
         1. `consoleCreatePayerAccount` — create a payer account.
         2. `consoleListPayerAccounts`  — tenant-scoped, newest-first, keyset
            pagination.
-      Both stay `x-runtime-status: contract-only` until the RT-418 runtime
-      ships them; RT-418 removes the marker.
+      Both are implemented by the RT-418 runtime, unchanged on the wire, so
+      neither carries `x-runtime-status: contract-only`.
 
       Removed (listed in `x-retired-operations`):
         `consoleApplyPayment`, `consoleSubmitClaim`,
@@ -103,10 +103,6 @@ paths:
     post:
       summary: Create a payer account (credit customer / corporate / insurer).
       operationId: consoleCreatePayerAccount
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        The table exists; the route ships in RT-418, which removes this
-        marker.
       x-idempotency: required
       tags: [settlement-console]
       security:
@@ -144,10 +140,6 @@ paths:
     get:
       summary: List payer accounts (tenant-scoped, newest-first, keyset paginated).
       operationId: consoleListPayerAccounts
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        The table exists; the route ships in RT-418, which removes this
-        marker.
       tags: [settlement-console]
       description: >
         The caller's tenant's payers: tenant-wide payers (`storeId` null) and

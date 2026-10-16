@@ -124,7 +124,6 @@ describe("OpenAPI operations map to registered Nest routes", () => {
     expect(explicitContractOnly.sort()).toEqual([
       "acceptInvitation",
       "backfillSaleLinkedMovements",
-      "consoleCreatePayerAccount",
       // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
       "consoleDeleteTenantLogo",
       // RT-561 (RT-556 F1): console sales read contract; the runtime ships in RT-562.
@@ -133,7 +132,6 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "consoleGetStoreCashVariancePolicy",
       "consoleGetTenantCashVariancePolicy",
       "consoleGetTenantLogo",
-      "consoleListPayerAccounts",
       "consoleListSales",
       "consoleListStoreCashVariancePolicyRevisions",
       "consoleListTenantCashVariancePolicyRevisions",

@@ -97,6 +97,7 @@ function saleRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     currency_code: "USD",
     pos_total: "12.5000",
     tender_count: 0,
+    responsibility_count: 0,
     occurred_at: new Date("2026-05-01T10:00:00.000Z"),
     received_at: new Date("2026-05-01T10:00:01.000Z"),
     business_date: "2026-05-01",
@@ -115,6 +116,8 @@ const CAPTURE = {
   actorUserId: "0d000000-0000-7000-8000-0000000000d1",
   // RT-77: the envelope guard's bound device (request.posDeviceId).
   deviceId: "0d000000-0000-7000-8000-0000000000e1",
+  // RT-418: the envelope path (no operatorUserId claim).
+  authPath: "envelope" as const,
 };
 
 /**
@@ -150,7 +153,10 @@ function scriptClient(opts: {
       return { rows: [] };
     }
     if (/INSERT INTO sales/.test(sql)) return { rows: opts.insertedRows ?? [{ id: VALID_REF }] };
-    if (/SELECT id(, store_id, tender_count)? FROM sales/.test(sql)) return { rows: opts.winnerRows ?? [] };
+    if (/SELECT id(, store_id, tender_count(, responsibility_count)?)? FROM sales/.test(sql)) {
+      // RT-418: a winner without responsibilities unless the test says otherwise.
+      return { rows: (opts.winnerRows ?? []).map((w) => ({ responsibility_count: 0, ...w })) };
+    }
     if (/INSERT INTO sale_lines/.test(sql)) return { rows: [] };
     if (/FROM sales WHERE id/.test(sql)) return { rows: opts.saleRows ?? [saleRow()] };
     // RT-73: the line read joins the cumulative returned quantity per line.
@@ -245,7 +251,9 @@ describe("SalesService — capture branches (unit)", () => {
     expect(sql).toMatch(/device_id, tender_count/);
     // $15 device_id, $16 tender_count; RT-539: $17-$25 are the receipt snapshot (none here).
     expect(salesInsertParams(clientQuery).slice(14, 16)).toEqual([CAPTURE.deviceId, 0]);
-    expect(salesInsertParams(clientQuery).slice(16)).toEqual(Array.from({ length: 9 }, () => null));
+    expect(salesInsertParams(clientQuery).slice(16, 25)).toEqual(Array.from({ length: 9 }, () => null));
+    // RT-418: $26 responsibility_count, 0 without responsibilities.
+    expect(salesInsertParams(clientQuery)[25]).toBe(0);
     // No tender statement at all for a tender-unknown sale.
     expect(clientQuery.mock.calls.some((c) => /INSERT INTO sale_tenders|AS matches/.test(String(c[0])))).toBe(false);
   });
@@ -263,7 +271,7 @@ describe("SalesService — capture branches (unit)", () => {
       taxRegistrationId: "123-456-789",
     };
     await svc.captureSale({ ...CAPTURE, body: body(), receipt });
-    expect(salesInsertParams(clientQuery).slice(16)).toEqual([
+    expect(salesInsertParams(clientQuery).slice(16, 25)).toEqual([
       receipt.saleNumber,
       null, // receiptNumber omitted: equal to the sale number
       receipt.terminalLabel,
@@ -304,13 +312,18 @@ describe("SalesService — capture branches (unit)", () => {
     ]);
   });
 
-  it("RT-77: Σ tenders ≠ posTotal → SaleTenderMismatchError before any write", async () => {
+  it("RT-77: Σ tenders ≠ posTotal → SaleTenderMismatchError, no line, tender or outbox write", async () => {
+    // RT-418 (sales.yaml 1.10.0 replay precedence): the coverage rule is
+    // checked after the provenance insert, so a replay answers first; the
+    // throw rolls the transaction (and the sales row) back.
     clientQuery = scriptClient({ tendersMatch: false });
     const svc = new SalesService({} as never);
     await expect(
       svc.captureSale({ ...CAPTURE, body: body({ tenders: [{ method: "cash", amount: "1" }] }) }),
     ).rejects.toBeInstanceOf(SaleTenderMismatchError);
-    expect(clientQuery.mock.calls.some((c) => /INSERT INTO/.test(String(c[0])))).toBe(false);
+    const wrote = (table: string) =>
+      clientQuery.mock.calls.some((c) => new RegExp(`INSERT INTO ${table}\b`).test(String(c[0])));
+    expect(["sale_lines", "sale_tenders", "outbox_events"].filter(wrote)).toEqual([]);
   });
 
   it("RT-77: a provenance owned by another store is non-disclosing and never compares tenders", async () => {

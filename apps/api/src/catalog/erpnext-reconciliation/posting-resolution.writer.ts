@@ -36,7 +36,9 @@ export interface AuditEventInput {
  * Integration baseline). A reversal copies its sale's `sale_post` current
  * resolution (original lineage); otherwise the current maps are read. Each
  * INSERT is all-or-nothing over the sale lines (the worker's
- * `freezeResolution` copy — SQL is duplicated per package). Returns the new
+ * `freezeResolution` copy — SQL is duplicated per package). RT-418: each line
+ * also freezes the payer's ERPNext Customer link as it is NOW
+ * (`payer_external_ref`; a reversal copies its sale's). Returns the new
  * version, or null when nothing could be frozen. The caller points the row at it.
  */
 export async function freezeOperatorResolution(
@@ -54,9 +56,11 @@ export async function freezeOperatorResolution(
       const copied = await client.query(
         `INSERT INTO erpnext_posting_resolution
            (tenant_id, intent_id, resolution_version, sale_line_id,
-            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by)
+            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by,
+            payer_external_ref)
          SELECT $1, $2, $3, r.sale_line_id,
-                r.erpnext_item_ref, r.item_map_id, r.warehouse_ref, r.warehouse_map_id, 'operator'
+                r.erpnext_item_ref, r.item_map_id, r.warehouse_ref, r.warehouse_map_id, 'operator',
+                r.payer_external_ref
            FROM erpnext_posting_status sp
            JOIN erpnext_posting_resolution r
              ON r.intent_id = sp.id AND r.resolution_version = sp.current_resolution_version
@@ -70,9 +74,15 @@ export async function freezeOperatorResolution(
       const resolved = await client.query(
         `INSERT INTO erpnext_posting_resolution
            (tenant_id, intent_id, resolution_version, sale_line_id,
-            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by)
+            erpnext_item_ref, item_map_id, warehouse_ref, warehouse_map_id, resolved_by,
+            payer_external_ref)
          SELECT $1, $2, $3, sl.id, m.erpnext_item_ref, m.id,
-                w.erpnext_warehouse_ref, w.id, 'operator'
+                w.erpnext_warehouse_ref, w.id, 'operator',
+                (SELECT p.external_ref
+                   FROM sale_responsibilities sr
+                   JOIN payer_account p ON p.id = sr.payer_id
+                  WHERE sr.sale_id = $4
+                  ORDER BY sr.sequence LIMIT 1)
            FROM sale_lines sl
            JOIN erpnext_warehouse_map w
              ON w.store_id = $5 AND w.purpose = 'stock' AND w.retired_at IS NULL
