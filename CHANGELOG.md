@@ -40,6 +40,18 @@ This project follows [Semantic Versioning](https://semver.org/).
   non-disclosing 404 body for every refusal, and a tenant-bound keyset cursor
   that keeps `closedAt` at microsecond precision. No migration; the POS shift
   operations are unchanged.
+- RT-384 `[GATED]`, pending owner approval (AD-CASH-001 follow-up 1): OpenAPI
+  contract `cash-variance-policy.openapi.yaml` (1.0.0-draft, contract-only).
+  It defines the shift variance policy: the device read of the resolved policy
+  (`GET /api/pos/v1/store/cash-variance-policy`, ETag/304), and the
+  cookie-session Console reads, revision lists and publishes for the tenant
+  default and the store override (owner / tenant_admin; a permanent override
+  is owner-only; stricter-only; 90-day horizon). `pos-shifts.openapi.yaml`
+  1.2.0-draft adds an optional `frozenPolicy` object on `openShift` and
+  optional recorded / derived values on `Shift` / `ShiftClose`, and
+  replaces the stale "default 0" text. `shift-closes.openapi.yaml`
+  1.1.0-draft adds the same optional values and three optional filters.
+  Strictly additive; no runtime or migration change (RT-385 / RT-387).
 - RT-530 `[GATED]`, owner-approved 2026-10-15 (RT-530 comment 11988):
   manager-approved sale void. `POST /api/pos/v1/sales/{saleRef}/void` now
   needs a bound RT-114 manager approval (`approval`) and the void's
@@ -102,7 +114,12 @@ This project follows [Semantic Versioning](https://semver.org/).
   never writes a shift or cash fact. `packages/db` now declares the 0040
   device lifecycle columns (0040 must be applied before this deploys), and the
   read-down audits (`catalog.snapshot.read`, `catalog.deltas.read`) carry the
-  reading `device_id` (RT-138 L8). No migration.
+  reading `device_id` (RT-138 L8). The revoke, the cash-up shift open and the
+  audit-ingest `shift.open` share a per-device advisory lock
+  (`device-lifecycle-lock.ts`), and a shift open rechecks `revoked_at` under
+  it, so a shift never opens on a device after its revoke commits (the
+  cash-up open is refused with the revoked-device 401). Projections carry
+  `lastSeenSource` (`activity` when `lastSeenAt` is set). No migration.
 - RT-542 `[GATED]`, owner-approved 2026-10-16 (RT-542 comment 12124): the three
   sale-history operations (`listSaleHistory`, `readSaleHistoryDetail`,
   `recordSaleReprint`) lose `x-runtime-status: contract-only` now that the RT-539
