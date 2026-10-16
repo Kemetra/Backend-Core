@@ -220,7 +220,8 @@ describe("data-pulse-migrate CLI", () => {
     "0046_sale_void_approval",
     "0047_sale_history_capture",
     "0048_sales_store_business_date_idx",
-    "0049_sale_responsibilities",
+    "0050_shift_variance_policy",
+    "0051_sale_responsibilities",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -354,8 +355,23 @@ describe("data-pulse-migrate CLI", () => {
       WHERE c.relname = 'idx_sales_tenant_store_business_date' AND i.indisvalid`);
   }
 
+  /** 0050_shift_variance_policy (RT-385): its two tables, their policies and the new columns. */
+  const SHIFT_VARIANCE_POLICY_TABLES = ["cash_variance_policy_revisions", "shift_close_approver_checks"];
+  async function countShiftVariancePolicyObjects(): Promise<[string, string, string, string]> {
+    return [
+      await countPublicTables(SHIFT_VARIANCE_POLICY_TABLES),
+      await countPolicies(SHIFT_VARIANCE_POLICY_TABLES),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'shifts'
+          AND column_name LIKE 'frozen_policy%'`),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'shift_closes'
+          AND column_name IN ('approval_required_by_policy', 'approval_missing')`),
+    ];
+  }
+
   /**
-   * 0049_sale_responsibilities (RT-418): [table, its policies, sales.responsibility_count,
+   * 0051_sale_responsibilities (RT-418): [table, its policies, sales.responsibility_count,
    * erpnext_posting_resolution.payer_external_ref, payer_account.credit_terms].
    */
   async function countSaleResponsibilityObjects(): Promise<[string, string, string, string, string]> {
@@ -369,12 +385,14 @@ describe("data-pulse-migrate CLI", () => {
   }
 
   /**
-   * After one `down` from head: 0049's sale_responsibilities, its two sales /
+   * After one `down` from head: 0051's sale_responsibilities and its two sales /
    * resolution columns are gone and payer_account.credit_terms is back, while
-   * 0048's store/business-date index and everything older survive.
+   * 0050's policy tables and columns, 0048's store/business-date index and
+   * everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
     expect(await countSaleResponsibilityObjects()).toEqual(["0", "0", "0", "0", "1"]);
+    expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
     expect(await countValidSaleHistoryIndex()).toBe("1");
     await expectBelow0048Applied();
   }
@@ -525,7 +543,11 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
     // 0048's store/business-date index, valid after the runner's CONCURRENTLY build (RT-538).
     expect(await countValidSaleHistoryIndex()).toBe("1");
-    // 0049's sale_responsibilities (SELECT + INSERT policies), the two new
+    // 0050's policy revisions and approver verdicts (SELECT + INSERT policies
+    // each), six frozen-policy columns on shifts and two tri-states on
+    // shift_closes (RT-385).
+    expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
+    // 0051's sale_responsibilities (SELECT + INSERT policies), the two new
     // columns, and payer_account.credit_terms dropped (RT-418).
     expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
   });
@@ -565,7 +587,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0049 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0051 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
@@ -675,6 +697,7 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
     expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
     expect(await countValidSaleHistoryIndex()).toBe("1");
+    expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
     expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
   });
 

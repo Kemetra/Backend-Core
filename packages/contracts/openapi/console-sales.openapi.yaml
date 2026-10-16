@@ -16,10 +16,10 @@ info:
     OD-534-2) and sync repair stays on `sale-sync-ops`.
 
 
-    **Posture.** `1.0.0-draft`, contract only. `[GATED]` contract, pending
-    owner approval on RT-561. No route, guard, service or DTO implements it
-    yet: the runtime is RT-562, and until it ships both operations carry
-    `x-runtime-status: contract-only` and are not served.
+    **Posture.** `1.0.0-draft`, implemented. `[GATED]` contract approved by
+    the owner on RT-561 (PR #780); the RT-562 runtime serves both operations
+    unchanged on the wire, so neither carries `x-runtime-status:
+    contract-only`.
 
 
     **Why a separate surface (OD-556-1).** The POS sale history
@@ -58,8 +58,12 @@ info:
     session passes `RolesGuard` (the platform-admin bypass, RT-132 D6 /
     RT-149), as on `shift-closes`. This contract neither widens nor narrows
     that platform rule. Cross-tenant platform reads are out of scope (spec
-    012), and how a platform admin's store scope resolves on these reads is
-    RT-562's to implement and test, following the `shift-closes` runtime.
+    012). A platform admin's store scope on these reads follows the
+    `shift-closes` runtime (RT-562): tenant-wide in the session's tenant,
+    whatever store grants a membership carries, and narrowed to the
+    session's active store when one is set, unless the platform admin holds
+    an `owner` or `tenant_admin` membership in that tenant (then the active
+    store does not narrow it). Never another tenant.
 
 
     **One store per list (OD-556-2).** `store_id` is REQUIRED on the list in
@@ -175,8 +179,6 @@ paths:
     get:
       summary: List one store's received sales by business-date range (newest first, keyset paginated).
       operationId: consoleListSales
-      x-runtime-status: contract-only
-      x-runtime-note: RT-561 contract PR; the controller ships in RT-562.
       x-audit-action: console_sales.listed
       tags: [console-sales]
       description: >
@@ -230,8 +232,6 @@ paths:
     get:
       summary: Read the full recorded detail of one sale in the caller's store scope.
       operationId: consoleGetSale
-      x-runtime-status: contract-only
-      x-runtime-note: RT-561 contract PR; the controller ships in RT-562.
       x-audit-action: console_sales.detail_read
       tags: [console-sales]
       description: >

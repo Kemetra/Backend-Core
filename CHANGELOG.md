@@ -120,6 +120,19 @@ This project follows [Semantic Versioning](https://semver.org/).
   it, so a shift never opens on a device after its revoke commits (the
   cash-up open is refused with the revoked-device 401). Projections carry
   `lastSeenSource` (`activity` when `lastSeenAt` is set). No migration.
+- RT-366 `[GATED]`, pending owner approval (RT-287 F3; D-Q1, D-Q2 and D-Q4
+  as amended): `devices.openapi.yaml` 1.1.0-draft adds
+  `GET /api/v1/devices/{deviceId}/impact?action=revoke|replace|move|retire`
+  (`consoleGetDeviceImpact`, contract-only). It is the read-only lifecycle
+  impact preview for Admin-Console RT-372. It returns the verdict
+  (`allowed`, `allowed_with_custody_exception`, `blocked` with a
+  `blockCode`, `forbidden_recovery` or `no_change`), the recovery-revoke
+  `requires` list, the open shift with its server-received cash-up facts,
+  the operator-session and pending-pairing-code cascade counts, and the
+  replace links. The verdict maps one-to-one onto the revoke's outcome. The
+  revoke and the RT-367 / RT-368 mutations must decide with the same
+  evaluator. The revoke's 409 gains an optional `error.details` holding the
+  preview. Additive only. No runtime or migration change.
 - RT-542 `[GATED]`, owner-approved 2026-10-16 (RT-542 comment 12124): the three
   sale-history operations (`listSaleHistory`, `readSaleHistoryDetail`,
   `recordSaleReprint`) lose `x-runtime-status: contract-only` now that the RT-539
@@ -136,6 +149,17 @@ This project follows [Semantic Versioning](https://semver.org/).
   operator store scope and one non-disclosing 404; audit actions
   `console_sales.listed` / `console_sales.detail_read`. No runtime or
   migration change; `pos-sales/sale-history.yaml` is unchanged.
+- RT-562 (RT-556 F2): runtime for the console sales read
+  (`ConsoleSalesModule`). Both operations ship unchanged on the wire and lose
+  `x-runtime-status: contract-only`. Dashboard session only, roles owner /
+  tenant_admin / store_manager, the operator store scope with an explicit
+  `store_id` predicate (sales RLS is tenant-only), one non-disclosing 404 body,
+  an inclusive 31-day range, and a cursor bound to the operation, tenant,
+  store and every filter. A filtered request (`sale_number`, `sync_status`,
+  `voided`, `return_state`, `erp_posting_state`) reads at most 500 sales, so
+  a page may be short or empty with a non-null cursor. Reuses the RT-539
+  sale-history query and projections; the list reads migration 0048's index.
+  No migration; `sale-history.yaml` and `sales.yaml` are unchanged.
 - RT-418 `[GATED]` migration `0049_sale_responsibilities`, pending owner
   approval: the runtime for the RT-417 contracts (owner decisions R-1 and
   option A). Migration: append-only, RLS-forced `sale_responsibilities`

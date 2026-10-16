@@ -36,6 +36,7 @@ import { PosShiftsModule } from "./pos-shifts/pos-shifts.module";
 import { SettlementModule } from "./settlement/settlement.module";
 import { PayerAccountsModule } from "./settlement/payer-accounts.module";
 import { ShiftClosesModule } from "./shift-closes/shift-closes.module";
+import { ConsoleSalesModule } from "./console-sales/console-sales.module";
 import { DevicesModule } from "./devices/devices.module";
 import { StoresModule } from "./stores/stores.module";
 import { TenantsModule } from "./tenants/tenants.module";
@@ -229,7 +230,7 @@ class ApiDbMigrationStatusGaugeRegistrar implements OnModuleInit, OnModuleDestro
  * pipe are registered in `main.ts`.
  */
 @Module({
-  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, CashierAdmissionsModule, PosAuditEventsModule, PosShiftsModule, ShiftClosesModule, DevicesModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, TrackingProfileModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, PayerAccountsModule, ConnectorModule, ConnectorHealthModule, PairingModule, HealthModule],
+  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, CashierAdmissionsModule, PosAuditEventsModule, PosShiftsModule, ShiftClosesModule, ConsoleSalesModule, DevicesModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, TrackingProfileModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, PayerAccountsModule, ConnectorModule, ConnectorHealthModule, PairingModule, HealthModule],
   controllers: [],
   providers: [
     ApiDbPoolGaugeRegistrar,
