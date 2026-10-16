@@ -16,6 +16,8 @@ set -euo pipefail
 # `psql -f` scripts in the Deploy section of deploy/README.md (a test checks).
 # auth-lookup-role.sql is NOT listed: README prerequisite 7 runs it once after
 # the first `migrate up`, it is not part of the per-deploy sequence.
+# The packages/db/drizzle entries are the migrations the catch-up scripts pull
+# in with `\ir`; they keep their repo paths so `\ir` resolves in the bundle.
 ALLOWLIST=(
   docker-compose.prod.yml
   docker-compose.release.yml
@@ -31,6 +33,8 @@ ALLOWLIST=(
   docs/operations/sql/sale-reprints-domain-grants.sql
   docs/operations/sql/erpnext-posting-resolution-catchup.sql
   docs/operations/sql/inventory-effect-integration-catchup.sql
+  packages/db/drizzle/0038_erpnext_posting_resolution_backfill.sql
+  packages/db/drizzle/0043_inventory_effect_integration_backfill.sql
 )
 
 fail() { echo "release-bundle: $*" >&2; exit 1; }
