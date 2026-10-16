@@ -24,14 +24,13 @@ import { z } from "zod";
 import {
   isCalendarDate,
   MAX_SPAN_DAYS,
-  PAGE_SIZE_DEFAULT,
   PAGE_SIZE_MAX,
   type SaleHistoryKeyset,
 } from "../catalog/sales/history/sale-history.query";
 import type { ErpPostingState, ReturnState } from "../catalog/sales/history/sale-history.projections";
 import { SALE_SYNC_STATUS_VALUES, type SaleSyncStatus } from "../catalog/sales/sale-sync-status";
 
-export { PAGE_SIZE_DEFAULT, PAGE_SIZE_MAX };
+export { PAGE_SIZE_DEFAULT, PAGE_SIZE_MAX } from "../catalog/sales/history/sale-history.query";
 
 /**
  * The most sales one filtered list request reads (any of `sale_number`,

@@ -661,7 +661,7 @@ describe("RT-562 console sales — detail", () => {
     if (skip()) return;
     const d = await detail(X_FULL);
     expect(d).toMatchObject({ summary: { returnState: "full" }, erpPosting: { sale: "failed", saleDocumentRef: null } });
-    expect((d["returns"] as unknown[]).length).toBe(1);
+    expect(d["returns"] as unknown[]).toHaveLength(1);
   });
 
   it("names the sale's own store and its timezone, not the session's active store", async () => {

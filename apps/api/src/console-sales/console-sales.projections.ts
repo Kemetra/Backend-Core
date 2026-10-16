@@ -97,8 +97,8 @@ export function assemblePage(input: {
     .filter(({ item }) => matchesFilters(item, input.filters));
   if (matched.length > input.pageSize) {
     const page = matched.slice(0, input.pageSize);
-    return { items: page.map(({ item }) => item), resumeAfter: keysetOf(page[page.length - 1]!.row) };
+    return { items: page.map(({ item }) => item), resumeAfter: keysetOf(page.at(-1)!.row) };
   }
-  const lastRead = input.rows.length >= input.readLimit ? input.rows[input.rows.length - 1] : undefined;
+  const lastRead = input.rows.length >= input.readLimit ? input.rows.at(-1) : undefined;
   return { items: matched.map(({ item }) => item), resumeAfter: lastRead === undefined ? null : keysetOf(lastRead) };
 }
