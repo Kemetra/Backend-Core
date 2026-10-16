@@ -1453,8 +1453,10 @@ describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
     expect(fieldText()).toContain("An absent list leaves the `payload_hash` of the sale unchanged");
   });
 
-  it("a replay answers before the coverage, pricing and payer checks", () => {
-    expect(captureText()).toContain("A replay of an already-captured sale answers before these checks");
+  it("a replay answers after authentication and the RT-224 claim check, before the role check and every 422 (review #779)", () => {
+    expect(captureText()).toContain(
+      "A replay of an already-captured sale answers after authentication and the RT-224 cashier-claim check (403 `refused`), and before the role check (403 `sale_responsibility_role_refused`) and every 422",
+    );
   });
 
   it("a refusal of a responsibility-bearing sale is repair evidence, never silently retried", () => {
@@ -1521,6 +1523,22 @@ describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
     expect(info()).toContain("the server accepts `responsibilities` from RT-418");
     expect(info()).toContain("must re-pin this version BEFORE RT-418 deploys");
     expect(fieldText()).toContain("Accepted from RT-418");
+  });
+
+  it("a share is gross: tax is not split per payer (035 OQ-2, review #779)", () => {
+    expect(flat(schema("SaleResponsibility")?.description)).toContain("a gross share of `posTotal`; tax is not split per payer (035 OQ-2");
+  });
+
+  it("a payer resolves to this store or a tenant-wide payer (review #779)", () => {
+    expect(flat(field("SaleResponsibility", "payerRef")?.description)).toContain(
+      "a payer of this store or a tenant-wide payer (`storeId` null)",
+    );
+  });
+
+  it("the read says absent, not empty, for a sale without responsibilities (review #779)", () => {
+    const list = flat(field("Sale", "responsibilities")?.description);
+    expect(list).toContain("Absent for a sale captured without them");
+    expect(list).not.toContain("Empty for");
   });
 
   it("is not a payment ledger and carries no balance or lifecycle state", () => {

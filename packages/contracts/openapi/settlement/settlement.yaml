@@ -149,6 +149,10 @@ paths:
         The table exists; the route ships in RT-418, which removes this
         marker.
       tags: [settlement-console]
+      description: >
+        The caller's tenant's payers: tenant-wide payers (`storeId` null) and
+        payers of the stores the caller can access; store-scoped payers outside the caller's store access are excluded (the
+        same scope create enforces with its non-disclosing 404).
       security:
         - cookieAuth: []
       parameters:

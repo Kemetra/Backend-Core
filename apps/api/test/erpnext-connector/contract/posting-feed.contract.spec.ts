@@ -894,6 +894,33 @@ describe("erpnext-connector/posting-feed.yaml — RT-417 responsibility lines (1
     expect(info()).toContain("RT-419");
   });
 
+  it("leaves the ERPNext document shape to RT-419 (review #779)", () => {
+    expect(info()).toContain(
+      "posted against the payer's ERPNext Customer; the document shape (including how till tenders are recorded) is decided in RT-419",
+    );
+    expect(info()).not.toContain("settles the tenders as payments");
+  });
+
+  it("holds a sale_post while a reversal of the sale exists (review #779)", () => {
+    expect(info()).toContain(
+      "a `sale_post` of a responsibility-bearing sale is also held while a reversal of that sale exists",
+    );
+  });
+
+  it("a feed line is a gross share; tax is not split per payer (035 OQ-2)", () => {
+    expect(flat(schema("SaleResponsibility")?.description)).toContain("a gross share of `posTotal`; tax is not split per payer (035 OQ-2");
+  });
+
+  it("the feed PositiveDecimalAmount is verbatim the sales.yaml pattern", () => {
+    const sales = loadOpenApiContracts({ dir: openapiSubDir("pos-sales") }).find((c) => c.id === "sales");
+    const salesPattern = (sales?.document as OpenApiDocument | undefined)?.components?.schemas?.["PositiveDecimalAmount"] as
+      | { pattern?: string }
+      | undefined;
+    const feedPattern = schema("PositiveDecimalAmount") as { pattern?: string } | undefined;
+    expect(feedPattern?.pattern).toBeDefined();
+    expect(feedPattern?.pattern).toBe(salesPattern?.pattern);
+  });
+
   it("tells strict feed validators to re-pin first", () => {
     expect(info()).toContain("`Sale` is `additionalProperties: false`, so a Connector that validates the feed strictly must re-pin first; RT-417");
   });

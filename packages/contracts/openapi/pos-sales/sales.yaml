@@ -383,8 +383,10 @@ paths:
         before every 422. Order of the 422s: the device-path offline refusal,
         then the coverage rule, then the line price invariant, then the payers
         (as in `CaptureUnprocessable`). A replay of an
-        already-captured sale answers before these checks, so a payer suspended
-        after capture never turns a stored result into a 422. Nothing is
+        already-captured sale answers after authentication and the RT-224
+        cashier-claim check (403 `refused`), and before the role check (403
+        `sale_responsibility_role_refused`) and every 422, so a payer suspended
+        after capture never turns a stored result into a 403 or a 422. Nothing is
         recorded on any failure.
 
         Receipt snapshot (RT-537): the body may carry the optional `receipt`
@@ -1541,15 +1543,18 @@ components:
       description: >
         One payer's share of the sale (RT-417, owner decision R-1), in the
         sale's currency. Part of the immutable sale fact. NOT a receivable: no
-        balance, no state; ERPNext owns what is later collected.
+        balance, no state; ERPNext owns what is later collected. The amount is
+        a gross share of `posTotal`; tax is not split per payer (035 OQ-2,
+        tax deactivated in v1).
       properties:
         payerRef:
           type: string
           format: uuid
           description: >
             The payer account (`settlement/settlement.yaml`
-            `PayerAccount.payerRef`) responsible for `amount`. Resolved within
-            the authenticated tenant and store; an ineligible payer is 422
+            `PayerAccount.payerRef`) responsible for `amount`. It must be a
+            payer of the authenticated tenant: a payer of this store or a
+            tenant-wide payer (`storeId` null); an ineligible payer is 422
             `sale_responsibility_payer_invalid`.
         amount:
           $ref: "#/components/schemas/PositiveDecimalAmount"
@@ -1654,7 +1659,7 @@ components:
           items:
             $ref: "#/components/schemas/SaleResponsibility"
           description: >
-            The sale's payer responsibilities as captured (RT-417). Empty for
+            The sale's payer responsibilities as captured (RT-417). Absent for
             a sale captured without them; at most one in this version, matching
             the capture request and the posting feed. Emitted from RT-418; optional until
             then.

@@ -176,10 +176,11 @@ on the RT-224 device path. So any capture refusal arrives after the goods left.
   `sum(tenders) + sum(responsibilities) = posTotal` exactly, else 422
   `sale_responsibility_mismatch`; with responsibilities present it replaces the
   RT-76 tender-only rule and an absent `tenders` counts as zero (*in remit*).
-  Order: coverage, then line pricing, then payers; a replay answers first
-  (*in remit*). One non-disclosing 422 `sale_responsibility_payer_invalid` for an
-  unknown, cross-tenant, other-store, suspended or unlinked (`externalRef` null)
-  payer (*coordinator*). `payerRef` and `sequence` unique per sale; at most ONE
+  Order: authentication and the RT-224 cashier-claim check (403 `refused`),
+  then a replay answers, then the 403 role check, then the 422s (offline
+  refusal, coverage, line pricing, payers) (*in remit*). One non-disclosing 422 `sale_responsibility_payer_invalid` for an
+  unknown, cross-tenant, other-store, suspended or unlinked (`externalRef` null
+  or blank) payer (*coordinator*). `payerRef` and `sequence` unique per sale; at most ONE
   entry in this version, because the feed acknowledges one Sales Invoice per
   work item and an ERPNext Sales Invoice bills one Customer; multi-payer waits
   for RT-419's ERPNext shape and a later contract (*in remit*, Codex review of
@@ -235,6 +236,7 @@ on the RT-224 device path. So any capture refusal arrives after the goods left.
 | `CaptureSaleRequest.responsibilities` (strict DTO rejects until RT-418) | POS capture | RT-420, after RT-418 deploys |
 | `Sale.responsibilities` on reads (`additionalProperties: false`) | POS strict response validation | re-pin before RT-418 deploys |
 | `Sale.responsibilities` on the feed | Connector (strict feed parsers re-pin) | RT-419 posts to the payer's Customer |
+| Capture 403 component renamed `Refused` → `CaptureForbidden` (same `refused` body, plus `sale_responsibility_role_refused`) | POS generated client (breaks on regeneration) | the POS client re-pin for RT-420 |
 | Credit only on the envelope path, synchronous before finalize | POS capture (new capture mode, departs from spec 020 FR-5) | RT-420 (scope comment 12134): synchronous pre-finalize capture, no outbox queuing |
 
 Gaps left open, each with its own issue: a POS-facing payer lookup /

@@ -206,9 +206,8 @@ info:
     (`SaleResponsibility`), mirroring `pos-sales/sales.yaml`
     `Sale.responsibilities`: who owes how much of the sale. Backend-Core
     guarantees `sum(tenders) + sum(responsibilities) = posTotal` exactly
-    (checked at capture). On a `sale_post`, the Connector posts each payer's
-    share outstanding against that payer's ERPNext Customer and settles the
-    tenders as payments (RT-78). The ack carries one `documentRef`, i.e. one
+    (checked at capture). On a `sale_post`, each payer's share is posted
+    against the payer's ERPNext Customer; the document shape (including how till tenders are recorded) is decided in RT-419. The ack carries one `documentRef`, i.e. one
     Sales Invoice per work item, so one payer per sale in this version
     (`maxItems: 1`, Codex review of #779); whether a multi-payer sale is one SI
     per payer or a split is decided in RT-419 with bench evidence, and a later
@@ -230,7 +229,9 @@ info:
     sales. Reversal of a responsibility-bearing sale is undefined in this
     version (`pos-sales/sales.yaml`, 035 OQ-4 carve), so Backend-Core MUST NOT
     offer any `reversal` work item of such a sale until a later issue defines
-    it, whatever the Connector supports. `Sale.responsibilities` is optional
+    it, whatever the Connector supports; and a `sale_post` of a responsibility-bearing sale is also held while a reversal of that sale exists, so a
+    credit sale voided before posting never posts on its own while its void
+    stays held. `Sale.responsibilities` is optional
     and additive, but `Sale` is `additionalProperties: false`, so a Connector
     that validates the feed strictly must re-pin first; RT-417 adds no ack
     change and no new work-item kind.
@@ -822,7 +823,8 @@ components:
       required: [payerExternalRef, amount, sequence]
       description: >
         One payer's share of the sale (RT-417), in the sale's currency. Not a
-        receivable: no balance, no state.
+        receivable: no balance, no state. The amount is a gross share of `posTotal`; tax is not split per payer (035 OQ-2, tax
+        deactivated in v1).
       properties:
         payerExternalRef:
           type: [string, "null"]

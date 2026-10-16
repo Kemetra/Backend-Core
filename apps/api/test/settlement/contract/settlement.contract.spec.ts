@@ -191,6 +191,13 @@ describe("settlement.yaml — operations (RT-417)", () => {
     expect((doc.info?.description ?? "").replace(/\s+/g, " ")).toContain("404 not-found (non-disclosing)");
   });
 
+  it("the list excludes store-scoped payers outside the caller's store access (review #779)", () => {
+    const list = findOp("consoleListPayerAccounts") as { description?: string } | undefined;
+    expect((list?.description ?? "").replace(/\s+/g, " ")).toContain(
+      "store-scoped payers outside the caller's store access are excluded",
+    );
+  });
+
   it("requires an Idempotency-Key on create", () => {
     expect(findOp("consoleCreatePayerAccount")?.["x-idempotency"]).toBe("required");
   });
