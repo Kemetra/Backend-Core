@@ -143,6 +143,7 @@ describe("device projections", () => {
       createdAt: "2026-10-01T09:00:00.000Z",
       expiresAt: "2026-12-30T09:00:00.000Z",
       lastSeenAt: null,
+      lastSeenSource: null,
       revokedAt: null,
       revokedByUserId: null,
       revokeReason: null,
@@ -151,6 +152,11 @@ describe("device projections", () => {
       replacedByDeviceId: null,
       custodyExceptionShiftId: null,
     });
+  });
+
+  it("labels a recorded last-seen time with its activity source", () => {
+    const seen = toDeviceSummary({ ...ACTIVE_ROW, last_seen_at: new Date("2026-10-16T09:00:00.000Z") });
+    expect([seen.lastSeenAt, seen.lastSeenSource]).toEqual(["2026-10-16T09:00:00.000Z", "activity"]);
   });
 
   it("never reports a custody exception on an active device, even with an open shift", () => {

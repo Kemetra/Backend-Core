@@ -17,18 +17,14 @@
  *     `lifecycle_state = 'open'` (legacy or cash_up), the predicate
  *     `StoresRepository.countOpenShifts` uses for a store. The custody
  *     exception is derived from it on a revoked device; nothing is stored.
- *   - Revoke is ONE transaction: the device row is locked `FOR UPDATE` first
- *     (a shift insert takes `FOR KEY SHARE` on it through the
- *     `opening_device_id` FK: a shift committed first is seen by the
- *     open-shift check; two revokes serialize, the second answers
- *     `already_revoked`). One direction is NOT covered: a shift open whose
- *     device check passed before the revoke, and whose insert waits on the
- *     lock, still lands after the revoke commits. That shift then shows as a
- *     custody exception on read, while the audit row recorded
- *     `custody_exception: false` (the shift-open path is outside RT-365). Then
- *     the D-Q4
- *     decision (`decideRevoke`), the revoke fields, the operator-session and
- *     pending-code cascade and the `pos.device.revoked` audit row. A refusal
+ *   - Revoke is ONE transaction: it takes the device lifecycle lock
+ *     (`device-lifecycle-lock.ts`), which every shift open also takes before
+ *     re-reading `revoked_at`, so a shift never opens on a device after its
+ *     revoke commits and a shift that opened first is seen; then it locks
+ *     the device row `FOR UPDATE` (two revokes serialize, the second answers
+ *     `already_revoked`). Then the D-Q4 decision (`decideRevoke`), the
+ *     revoke fields, the operator-session and pending-code cascade and the
+ *     `pos.device.revoked` audit row. A refusal
  *     changes nothing. No shift or cash fact is ever written here.
  *   - Audit metadata is the RT-135 allowlist: reason, counts, custody flag and
  *     shift id. Never the note, a token, a hash or a code.
@@ -39,6 +35,7 @@ import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../auth/auth.module";
+import { lockDeviceLifecycle } from "./device-lifecycle-lock";
 import { MembershipRepository } from "../context/membership.repository";
 import { inStoreScope, readScope, scopeStoreIds } from "../context/operator-store-scope";
 import type { StoreScope } from "../context/store-scope";
@@ -249,6 +246,7 @@ export class DevicesService {
   async revoke(input: RevokeDeviceInput): Promise<DeviceRevokeResult> {
     return this.inTenant(input, async (client) => {
       const caller = await this.callerOf(client, input);
+      await lockDeviceLifecycle(client, input);
       const device = await this.lockInScope(client, input, caller.scope);
       const decision = decideRevoke({
         alreadyRevoked: device.revokedAt !== null,

@@ -22,6 +22,8 @@
  *     rank 1  R_BLOCK    X  active, open LEGACY shift SHIFT_BLOCK        exp 2027-02-04
  *     rank 1  R_Y        Y  active, no shift                             exp 2027-02-05
  *     rank 1  R_REC_ADMIN X active, open cash-up shift SHIFT_REC_ADMIN   exp 2027-02-06
+ *     rank 1  R_RACE     X  active, no shift (shift-open race)          exp 2027-02-07
+ *     rank 1  R_LEGACY_LATE X active, no shift (late legacy open)       exp 2027-02-08
  *     rank 2  D_OLD      X  revoked before RT-365 (no reason, no actor)  exp 2026-12-01
  *     rank 3  D_RETIRED  Y  revoked and retired                          exp 2026-10-20
  *     tenant B: D_B on STORE_B_X.
@@ -64,6 +66,10 @@ export const R_REC = id("02a3");
 export const R_BLOCK = id("02a4");
 export const R_Y = id("02a5");
 export const R_REC_ADMIN = id("02a6");
+/** Revoked while a shift open waits on its lock (RT-365 shift-open race). */
+export const R_RACE = id("02a7");
+/** Revoked before an audit-ingest `shift.open` arrives. */
+export const R_LEGACY_LATE = id("02a8");
 export const D_B = "0b000000-0000-7000-8000-0000036501b1";
 export const NO_DEVICE = id("01ff");
 
@@ -116,6 +122,8 @@ export const TENANT_A_ORDER = [
   R_BLOCK,
   R_Y,
   R_REC_ADMIN,
+  R_RACE,
+  R_LEGACY_LATE,
   D_OLD,
   D_RETIRED,
 ];
@@ -152,6 +160,8 @@ const DEVICES: readonly SeedDevice[] = [
   { id: R_BLOCK, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2027-02-04T00:00:00Z" },
   { id: R_Y, tenantId: TENANT_A, storeId: STORE_A_Y, expiresAt: "2027-02-05T00:00:00Z" },
   { id: R_REC_ADMIN, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2027-02-06T00:00:00Z" },
+  { id: R_RACE, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2027-02-07T00:00:00Z" },
+  { id: R_LEGACY_LATE, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2027-02-08T00:00:00Z" },
   { id: D_OLD, tenantId: TENANT_A, storeId: STORE_A_X, expiresAt: "2026-12-01T00:00:00Z" },
   { id: D_RETIRED, tenantId: TENANT_A, storeId: STORE_A_Y, expiresAt: "2026-10-20T00:00:00Z" },
   { id: D_B, tenantId: TENANT_B, storeId: STORE_B_X, expiresAt: "2027-01-01T00:00:00Z" },

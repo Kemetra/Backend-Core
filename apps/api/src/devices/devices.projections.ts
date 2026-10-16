@@ -45,6 +45,9 @@ const RECOVERY_REASON: RevokeReason = "hardware_failure";
 const RECOVERY_ROLES: ReadonlySet<string> = new Set(["owner", "tenant_admin"]);
 
 export const TRUST_STATES = ["active", "revoked", "retired"] as const;
+
+/** The signal behind `lastSeenAt`: the last authenticated request (RT-138 L7). */
+export type LastSeenSource = "activity";
 export type TrustState = (typeof TRUST_STATES)[number];
 
 // ---------------------------------------------------------------------------
@@ -201,6 +204,8 @@ export interface DeviceSummary {
   readonly createdAt: string;
   readonly expiresAt: string;
   readonly lastSeenAt: string | null;
+  /** Where `lastSeenAt` comes from; null exactly when it is null (RT-287 D-Q6). */
+  readonly lastSeenSource: LastSeenSource | null;
   readonly revokedAt: string | null;
   readonly revokedByUserId: string | null;
   readonly revokeReason: RevokeReason | null;
@@ -244,6 +249,8 @@ export function toDeviceSummary(row: DeviceReadRow): DeviceSummary {
     createdAt: row.created_at.toISOString(),
     expiresAt: row.expires_at.toISOString(),
     lastSeenAt: iso(row.last_seen_at),
+    // Only the activity signal exists (RT-138 L7); a heartbeat source comes with AD-DEVICE-001.
+    lastSeenSource: row.last_seen_at === null ? null : "activity",
     revokedAt: iso(row.revoked_at),
     revokedByUserId: row.revoked_by,
     revokeReason: row.revoke_reason,

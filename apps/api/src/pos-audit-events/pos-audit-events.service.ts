@@ -28,6 +28,7 @@ import type { Logger } from "@data-pulse-2/shared";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool, PoolClient } from "pg";
 
+import { lockDeviceLifecycle } from "../devices/device-lifecycle-lock";
 import { DeviceRepository } from "../pos-operators/device.repository";
 import {
   hasForbiddenField,
@@ -41,6 +42,21 @@ import {
 const ACTION_CATEGORY_SET = new Set<string>(POS_AUDIT_ACTION_CATEGORIES);
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The audit-ingest `shift.open` → legacy `shifts` row. $1 shift, $2 tenant,
+ * $3 store, $4 opening cashier, $5 device, $6 opened at. RT-365: the row is
+ * written only while the device is unrevoked (the caller holds the device
+ * lifecycle lock), so a shift never opens on a revoked device; the audit
+ * event itself is still recorded.
+ */
+export const LEGACY_SHIFT_OPEN_SQL = `
+  INSERT INTO shifts
+    (shift_id, tenant_id, store_id, opening_cashier_user_id, opening_device_id, opened_at)
+  SELECT $1::uuid, $2::uuid, $3::uuid, $4::uuid, d.id, $6::timestamptz
+    FROM devices d
+   WHERE d.id = $5::uuid AND d.tenant_id = $2::uuid AND d.revoked_at IS NULL
+  ON CONFLICT (shift_id) DO NOTHING`;
 
 @Injectable()
 export class PosAuditEventsService {
@@ -179,11 +195,9 @@ export class PosAuditEventsService {
 
         if (accepted && event.action_category === "shift.open") {
           const shiftId = (event.payload as Record<string, unknown>)["shift_id"] as string;
+          await lockDeviceLifecycle(client, { tenantId: event.tenant_id, deviceId });
           await client.query(
-            `INSERT INTO shifts
-               (shift_id, tenant_id, store_id, opening_cashier_user_id, opening_device_id, opened_at)
-             VALUES ($1, $2, $3, $4, $5, $6::timestamptz)
-             ON CONFLICT (shift_id) DO NOTHING`,
+            LEGACY_SHIFT_OPEN_SQL,
             [
               shiftId,
               event.tenant_id,

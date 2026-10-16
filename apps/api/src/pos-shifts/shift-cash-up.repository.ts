@@ -23,6 +23,7 @@
  */
 import type { PoolClient } from "pg";
 
+import { lockDeviceLifecycle } from "../devices/device-lifecycle-lock";
 import type { DeviceScope } from "../pos-cashier-admissions/device-scope";
 
 export type ShiftLifecycleState = "open" | "closed" | "closed_forced";
@@ -341,6 +342,22 @@ export function isOpenDeviceConflict(err: unknown): boolean {
 }
 
 export class ShiftCashUpRepository {
+  /**
+   * RT-365: take the device lifecycle lock, then re-read the device. False
+   * when it was revoked since the request authenticated (a revoke that held
+   * the lock commits before this re-read runs): the caller must not open a
+   * shift on it. Call inside the open's transaction, before `insertShift`.
+   */
+  async lockOpenableDevice(client: PoolClient, scope: DeviceScope): Promise<boolean> {
+    await lockDeviceLifecycle(client, scope);
+    const r = await client.query(
+      `SELECT 1 FROM devices
+        WHERE id = $1::uuid AND tenant_id = $2::uuid AND store_id = $3::uuid AND revoked_at IS NULL`,
+      [scope.deviceId, scope.tenantId, scope.storeId],
+    );
+    return r.rows.length > 0;
+  }
+
   /**
    * The cash-up shift `shiftId` of THIS tenant, store and device, or null.
    * `forUpdate` takes the row lock that serialises a movement against a close.

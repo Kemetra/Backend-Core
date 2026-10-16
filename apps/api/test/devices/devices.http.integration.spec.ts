@@ -31,13 +31,19 @@
  */
 import "reflect-metadata";
 
+import type { PoolClient } from "pg";
 import type request from "supertest";
 
 import { AuthTokenRepository } from "../../src/auth/auth-token.repository";
+import { lockDeviceLifecycle } from "../../src/devices/device-lifecycle-lock";
 import { DevicesModule } from "../../src/devices/devices.module";
+import { runWithTenantContext } from "@data-pulse-2/db";
+
+import { LEGACY_SHIFT_OPEN_SQL } from "../../src/pos-audit-events/pos-audit-events.service";
 import { DeviceRepository } from "../../src/pos-operators/device.repository";
+import { ShiftCashUpRepository } from "../../src/pos-shifts/shift-cash-up.repository";
 import { scopedHttpHarness } from "../_helpers/scoped-http-harness";
-import { STORE_A_X, STORE_A_Y, STORE_B_X } from "../catalog/__support__/isolation-harness";
+import { STORE_A_X, STORE_A_Y, STORE_B_X, TENANT_A } from "../catalog/__support__/isolation-harness";
 import { SES_ADMIN_SPEC, SES_OWNER_ALL } from "../catalog/erpnext-reconciliation/__support__/read-store-scope";
 import {
   cashFactsDigest,
@@ -58,7 +64,10 @@ import {
   OP_TOKEN_SEC_LIVE,
   OP_TOKEN_SOON_LIVE,
   R_BLOCK,
+  CASHIER_A,
+  R_LEGACY_LATE,
   R_PLAIN,
+  R_RACE,
   R_REC,
   R_REC_ADMIN,
   R_SEC,
@@ -471,5 +480,68 @@ describe("consoleRevokeDevice — revokes", () => {
   it("changed no cash fact on any path", async () => {
     if (skip()) return;
     expect(await cashFactsDigest(h.env().admin)).toBe(cashBaseline);
+  });
+});
+
+// ===========================================================================
+// Shift open vs revoke (RT-365, Codex P1): a shift can never open on a device
+// after its revoke commits.
+// ===========================================================================
+describe("shift open serializes with the revoke", () => {
+  const inTenantA = <T>(work: (c: PoolClient) => Promise<T>): Promise<T> =>
+    runWithTenantContext(h.env().app, { tenantId: TENANT_A, isPlatformAdmin: false }, work);
+  const scopeOf = (deviceId: string) => ({ tenantId: TENANT_A, storeId: STORE_A_X, deviceId });
+  const shiftCount = async (deviceId: string): Promise<number> => {
+    const r = await h.env().admin.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM shifts WHERE opening_device_id = $1`,
+      [deviceId],
+    );
+    return r.rows[0]!.n;
+  };
+
+  it("a cash-up open waiting on the revoke's row lock is refused once the revoke commits", async () => {
+    if (skip()) return;
+    const revoker = await h.env().admin.connect();
+    try {
+      // The revoke's order: the lifecycle lock, then the row lock, then the update.
+      await revoker.query("BEGIN");
+      await lockDeviceLifecycle(revoker, { tenantId: TENANT_A, deviceId: R_RACE });
+      await revoker.query(`SELECT 1 FROM devices WHERE id = $1 FOR UPDATE`, [R_RACE]);
+      await revoker.query(
+        `UPDATE devices SET revoked_at = now(), revoked_by = $2, revoke_reason = 'admin_error' WHERE id = $1`,
+        [R_RACE, ownerUserId],
+      );
+      let settled = false;
+      const open = inTenantA((c) => new ShiftCashUpRepository().lockOpenableDevice(c, scopeOf(R_RACE))).finally(() => {
+        settled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(settled).toBe(false); // the open waits on the revoke's lock
+      await revoker.query("COMMIT");
+      expect(await open).toBe(false);
+    } finally {
+      revoker.release();
+    }
+    expect(await shiftCount(R_RACE)).toBe(0);
+  });
+
+  it("an unrevoked device stays openable", async () => {
+    if (skip()) return;
+    expect(await inTenantA((c) => new ShiftCashUpRepository().lockOpenableDevice(c, scopeOf(D_SOON)))).toBe(true);
+  });
+
+  it("an audit-ingest shift.open of a revoked device records no shift row", async () => {
+    if (skip()) return;
+    await h.env().admin.query(`UPDATE devices SET revoked_at = now() WHERE id = $1`, [R_LEGACY_LATE]);
+    const late = "0a000000-0000-7000-8000-0000036503f1";
+    const live = "0a000000-0000-7000-8000-0000036503f2";
+    const at = "2026-10-16T12:00:00Z";
+    const counts = await inTenantA(async (c) => {
+      const a = await c.query(LEGACY_SHIFT_OPEN_SQL, [late, TENANT_A, STORE_A_X, CASHIER_A, R_LEGACY_LATE, at]);
+      const b = await c.query(LEGACY_SHIFT_OPEN_SQL, [live, TENANT_A, STORE_A_X, CASHIER_A, D_SOON, at]);
+      return [a.rowCount, b.rowCount];
+    });
+    expect(counts).toEqual([0, 1]);
+    await h.env().admin.query(`DELETE FROM shifts WHERE shift_id = $1`, [live]);
   });
 });
