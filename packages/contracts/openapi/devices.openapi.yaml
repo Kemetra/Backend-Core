@@ -382,9 +382,10 @@ components:
       pattern: "\\S"
       description: >
         Operator free text (0040 CHECK `devices_revoke_note_shape`: 1..500
-        characters, not blank). For a recovery revoke: what happened and
-        where the drawer cash physically is. No PII, no token, PIN or secret;
-        never logged or audited.
+        characters, not blank, no NUL character — a NUL is 400
+        `validation_error`). For a recovery revoke: what happened and where
+        the drawer cash physically is. No PII, no token, PIN or secret; never
+        logged or audited.
 
     # -----------------------------------------------------------------------
     # Projections (explicit wire shapes, never DB rows)
@@ -472,13 +473,16 @@ components:
           format: uuid
           description: >
             The device this one replaced: the `replaces_device_id` of the
-            pairing code that paired it (RT-367). `null` otherwise.
+            pairing code that paired it (RT-367). `null` otherwise, and `null`
+            when that device is in a store outside the caller's scope
+            (out-of-scope reads as absent).
         replacedByDeviceId:
           type: [string, "null"]
           format: uuid
           description: >
             The device paired by a code whose `replaces_device_id` is this
-            device (RT-367). `null` otherwise.
+            device (RT-367). `null` otherwise, and `null` when that device is
+            in a store outside the caller's scope.
         custodyExceptionShiftId:
           type: [string, "null"]
           format: uuid
