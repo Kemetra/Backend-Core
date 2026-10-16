@@ -1,0 +1,856 @@
+openapi: 3.1.0
+info:
+  title: Data-Pulse-2 — Console Device Registry API
+  version: "1.0.0-draft"
+  description: >
+    Jira RT-365 (RT-287 F2; RT-138 L3 / DL-2): the Console device registry
+    that Admin-Console RT-371 (Devices destination, fleet table, device
+    detail) and RT-372 (lifecycle flows) consume. Three operations over the
+    `devices` table (migrations `0001_pos_operator_identity`, `0040_device_lifecycle`):
+
+      1. `consoleListDevices`  — a filtered, cursor-paginated fleet list,
+         exception-first.
+      2. `consoleGetDevice`    — one device, with its revoke note and retire
+         attribution.
+      3. `consoleRevokeDevice` — revoke a device with a structured reason
+         (RT-287 D-Q3), cascading to its live operator sessions and its pending
+         pairing codes, under the Cash Session rule (RT-287 D-Q4 as amended,
+         RT-287 comment 11493).
+
+    Not on this surface (other RT-287 follow-ups): the pairing-code issue /
+    cancel API and the replace / move auto-revoke (RT-367), the impact preview
+    (RT-366), retire (RT-368), rotate (RT-369), the throttled `last_seen_at`
+    writer and the expiry enforcement flag (RT-370), and resolving a custody
+    exception (force-seal / custody reconciliation, DEFERRED). A revoked
+    device is never reactivated (RT-287 D-Q5): there is no un-revoke.
+
+
+    **Posture.** `1.0.0-draft`, `[GATED]` contract-first. Every operation is
+    `x-runtime-status: contract-only` until the RT-365 runtime ships it; the
+    runtime PR removes the markers without changing the wire.
+
+
+    **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`)
+    only, gated `SessionOnlyAdminGuard` → `TenantContextGuard` → `RolesGuard`;
+    the session-only guard rejects every bearer (a `dashboard_api` token, a
+    POS device token, an operator envelope) with 401. Roles: `owner`,
+    `tenant_admin`, `store_manager` (the base authority of RT-365). The tenant
+    comes from the session, never from the request (§II, §XII). The store
+    scope is the operator-surface rule (`operator-store-scope.ts`, RT-51 D6 /
+    RT-131 / RT-132): `owner` and `tenant_admin` see their membership's store
+    authority (tenant-wide for an `all` grant, never narrowed by the active
+    store); `store_manager` sees the standard resolved store scope, including
+    active-store narrowing. A role outside the list (`store_staff`), a device
+    of another tenant, a device of a store outside the caller's scope and an
+    absent device are the same non-disclosing 404 (`RolesGuard` default
+    `denyAs: 404`, FR-ISO-4); so is a `store_id` filter naming a store outside
+    the scope. The revoke is a cookie-authenticated unsafe request, so it must
+    carry a trusted `Origin` (RT-430), else 403 `origin_rejected`.
+
+
+    **Trust state.** Derived from the row, mutually exclusive: `retired` when
+    `retiredAt` is set (retire implies revoke, 0040 CHECK), else `revoked` when
+    `revokedAt` is set, else `active`. There is no `expired` state: `expiresAt`
+    is reported, but expiry is not enforced until RT-370 turns the
+    enforcement flag on, so a device past `expiresAt` is still `active`.
+
+
+    **Open shift (the Cash Session rule's input).** A device "has an open
+    shift" when a `shifts` row opened on it (`opening_device_id`) has
+    `lifecycle_state = 'open'`, whatever its `source` (`cash_up` or
+    `legacy`) — the predicate `StoresRepository.countOpenShifts` uses for a
+    store. A shift, or a cash fact, that the till has not synced is not
+    visible to the server and is not counted: a till that is offline with
+    unsynced facts looks like a till with no open shift (same caveat as
+    `offline_shifts_not_visible`). Closing a shift is the POS's (RT-17); this
+    surface never closes, counts or edits a shift or a cash fact.
+
+
+    **Custody exception (RT-287 D-Q4 amended).** Derived, never stored: a
+    device that is revoked (or retired) AND still has an open shift carries
+    `custodyExceptionShiftId` = that shift's id (the most recently opened one
+    if a legacy device has several). A security or recovery revoke never
+    closes the shift, so the open shift on the revoked device IS the
+    unresolved exception; it stays attached to the old device and shift, it is
+    never transferred to a replacement device, and it disappears only when the
+    shift is closed (a later force-seal / custody-reconciliation slice). It is
+    `null` on an active device (an open shift on a live till is normal). The
+    RT-18 exception view reads it from this surface.
+
+
+    **Revoke (one transaction).** Runtime requirement (implemented by the
+    RT-365 runtime, PR #781; not on `main` until it merges): the revoke and
+    every shift open (the cash-up open and the audit-ingest `shift.open`)
+    MUST take the same per-device lifecycle lock (a transaction-scoped
+    advisory lock on tenant + device), and a shift open MUST recheck
+    `revoked_at` under that lock before it inserts. A device revoked
+    meanwhile MUST NOT get an open shift (the cash-up open is refused as a
+    revoked device); a retired device is always revoked (0040 CHECK), so the
+    same check covers it. A revoke MUST see a shift whose open committed
+    first. The revoke then locks the device row (`FOR UPDATE`) and decides,
+    in this order:
+
+      1. Already revoked (or retired) → 200 `already_revoked` with the current
+         state. Nothing is overwritten, nothing cascades again, no second audit
+         row (idempotent; the body's reason is not compared).
+      2. No open shift → revoke with any reason.
+      3. Open shift, security reason (`lost`, `stolen`,
+         `suspected_compromise`) → revoke; the shift becomes the custody
+         exception. Base authority — a security revoke never waits.
+      4. Open shift, `hardware_failure` → a RECOVERY revoke: `owner` /
+         `tenant_admin` only (a `store_manager` gets 403
+         `recovery_revoke_forbidden`), a `note` saying what happened and where
+         the drawer cash is (else 422 `recovery_note_required`) and
+         `acknowledgeCustodyException: true` (else 422
+         `custody_exception_not_acknowledged`), checked in that order. Then
+         revoke; the shift becomes the custody exception.
+      5. Open shift, any other reason (`replaced`, `moved`, `retired`,
+         `admin_error`, `other`) → 409 `unresolved_cash_session`. No override
+         until a force-seal slice exists.
+
+    A revoke sets `revoked_at` (server clock), `revoked_by` (the session
+    user), `revoke_reason` and `revoke_note`; revokes every live
+    `pos_operator` `auth_tokens` row of the device (`revoked_at IS NULL AND
+    expires_at > now()`); and cancels the device's pending pairing codes
+    (`status = 'pending'` with `terminal_id` = the device id, or
+    `replaces_device_id` = the device id → `cancelled`). A code issued AFTER
+    the revoke is not touched (RT-367 replace / move after a security or
+    recovery revoke). The device token itself stops authenticating at once
+    (`PosDeviceAuthGuard` reads `revoked_at`), so the till enters its revoked
+    state (POS RT-215). No shift, cash movement, close, sale or other cash
+    fact is changed on any path.
+
+
+    **Audit.** The revoke writes `pos.device.revoked` in the same transaction
+    (target `device` / the device id; actor the session user) with metadata
+    limited to the RT-135 allowlist: `reason`, `revoked_session_count`,
+    `cancelled_pairing_code_count`, `custody_exception` (boolean) and, when it
+    is true, `shift_id`. The note, any token, hash or code never enters audit
+    metadata. Repeated security / recovery revokes are an audit signal, never
+    an automatic verdict. A refused revoke (403 / 409 / 422) writes no
+    `pos.device.revoked` row. The reads are audited `devices.listed` /
+    `devices.read`.
+
+
+    **Ordering and paging (exception-first, for RT-371).** The list is ordered
+    by a rank, then `expiresAt`, then `deviceId`, all ascending — a total
+    order (`expiresAt` is never null: `devices.expires_at` is NOT NULL in
+    migration 0040, so the cursor tuple never holds a null):
+
+      - rank 0: a device with a custody exception;
+      - rank 1: `active` (soonest-expiring first);
+      - rank 2: `revoked`, no custody exception;
+      - rank 3: `retired`, no custody exception.
+
+    "Stale" cannot be ordered yet (`lastSeenAt` is null until RT-370). Keyset
+    pagination with an opaque cursor that encodes the position (rank,
+    `expiresAt`, `deviceId`). Reuse a cursor only with the same filters. The
+    walk is not a snapshot: a device whose rank changes during a walk (a
+    revoke, a shift opening or closing) may be returned twice or not at all by
+    that walk; a fresh first page reflects it.
+
+
+    **PII.** User references are `users.id` values only; no name, e-mail,
+    phone, PIN or credential. The only free text is the revoke note and the
+    retire reason (operator text, "no PII, no secret"); they are returned to
+    the authorised operator on the detail and never logged or audited. No
+    token hash, previous token, rotation window or tenant id is ever returned.
+
+
+    **Error envelope.** The canonical `{ error: { code, message, request_id } }`
+    shape (`auth` / `pos-sales` / `shift-closes`). It may gain fields
+    additively: RT-366 adds the impact-preview payload to the 409. Status
+    mapping: 400 `validation_error`, 401 unauthenticated, 403
+    `origin_rejected` / `recovery_revoke_forbidden`, 404 non-disclosing
+    not-found, 409 `unresolved_cash_session`, 422 `recovery_note_required` /
+    `custody_exception_not_acknowledged`, 500 internal.
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: devices
+    description: >
+      Console device registry (RT-365): the fleet list, a device's detail and
+      the revoke.
+
+security:
+  - cookieAuth: []
+
+paths:
+  /api/v1/devices:
+    get:
+      summary: List devices (exception-first, keyset paginated).
+      operationId: consoleListDevices
+      tags: [devices]
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-365 contract-first; the runtime ships in the RT-365 implementation
+        PR, which removes this marker.
+      description: >
+        The devices in the caller's tenant and store scope, exception-first
+        (see the ordering rule above). Every filter is optional and they
+        combine with AND. With no `store_id`, every store in the caller's
+        scope is listed. An empty page (`items: []`, `nextCursor: null`) is a
+        200.
+      parameters:
+        - $ref: "#/components/parameters/StoreIdQuery"
+        - $ref: "#/components/parameters/TrustStateQuery"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of devices, exception-first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevicePage"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/devices/{deviceId}:
+    get:
+      summary: Read one device.
+      operationId: consoleGetDevice
+      tags: [devices]
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-365 contract-first; the runtime ships in the RT-365 implementation
+        PR, which removes this marker.
+      description: >
+        One device with its revoke note and retire attribution (the History
+        tab's revoke / retire / replace chain). A device of another tenant, of
+        a store outside the caller's scope, or absent is the same
+        non-disclosing 404.
+      parameters:
+        - $ref: "#/components/parameters/DeviceIdPath"
+      responses:
+        "200":
+          description: The device.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceDetail"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/devices/{deviceId}/revoke:
+    post:
+      summary: Revoke a device (structured reason, cascade, Cash Session rule).
+      operationId: consoleRevokeDevice
+      tags: [devices]
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-365 contract-first; the runtime ships in the RT-365 implementation
+        PR, which removes this marker.
+      description: >
+        Revokes the device in one transaction, cascading to its live operator
+        sessions and its pending pairing codes, under the Cash Session rule
+        (see "Revoke" above for the decision order). Idempotent: a device that
+        is already revoked answers 200 `already_revoked` with its current
+        state and changes nothing. A malformed path or body is 400 before any
+        read.
+      parameters:
+        - $ref: "#/components/parameters/DeviceIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceRevokeRequest"
+      responses:
+        "200":
+          description: >
+            The device is revoked: by this request (`revoked`) or already
+            (`already_revoked`). The body is the device's state after the
+            request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceRevokeResult"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RevokeForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/UnresolvedCashSession"
+        "422":
+          $ref: "#/components/responses/RecoveryRequirementsUnmet"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: dp2_session
+      description: >
+        The human dashboard session cookie (httpOnly `dp2_session`), verified
+        by `SessionOnlyAdminGuard`. The only accepted credential on this
+        surface: a machine bearer, a POS `device` token or an
+        `operatorAuthorization` envelope is rejected (401). `RolesGuard` +
+        `@Roles("owner", "tenant_admin", "store_manager")` gate every route
+        (default deny → 404). 401 semantics are owned by 028 (G10).
+
+  parameters:
+    DeviceIdPath:
+      name: deviceId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        The device id (`devices.id`, which is the paired `terminal_id`). Case
+        insensitive: normalised to lower case before the lookup. A value that
+        is not a UUID is 400 `validation_error` and never reaches the
+        database.
+    StoreIdQuery:
+      name: store_id
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: >
+        Only devices of this store (the Store Detail deep link). Validated
+        against the caller's store scope: a store outside it, or of another
+        tenant, is the non-disclosing 404.
+    TrustStateQuery:
+      name: trust_state
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/TrustState"
+      description: >
+        Only devices in this trust state. The states are mutually exclusive:
+        `revoked` excludes retired devices.
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 512
+        pattern: "^[A-Za-z0-9_-]+$"
+      description: >
+        Opaque keyset cursor from a prior page's `nextCursor`. Do not decode
+        or construct it; omit it for the first page. Reuse it only with the
+        same filters. A value the server did not issue, or cannot decode, is
+        400 `validation_error`.
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+      description: Maximum items per page (bounded). The server MAY return fewer.
+
+  schemas:
+    # -----------------------------------------------------------------------
+    # Vocabularies
+    # -----------------------------------------------------------------------
+    TrustState:
+      type: string
+      enum: [active, revoked, retired]
+      description: >
+        `active`: the device token authenticates. `revoked`: it never will
+        again (no un-revoke, RT-287 D-Q5). `retired`: revoked and closed out
+        (RT-368). Derived; see "Trust state" above.
+    RevokeReason:
+      type: string
+      enum:
+        - lost
+        - stolen
+        - suspected_compromise
+        - hardware_failure
+        - replaced
+        - moved
+        - retired
+        - admin_error
+        - other
+      description: >
+        The closed RT-287 D-Q3 set (0040 CHECK `devices_revoke_reason_valid`).
+        Security class: `lost`, `stolen`, `suspected_compromise`.
+        `hardware_failure` with an open shift is a recovery revoke. `other`
+        requires a note.
+    RevokeNote:
+      type: string
+      minLength: 1
+      maxLength: 500
+      # Not blank, and no NUL anywhere (Postgres `text` refuses U+0000).
+      pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
+      description: >
+        Operator free text: 1..500 characters and not blank (0040 CHECK
+        `devices_revoke_note_shape`), and no NUL character, because Postgres
+        `text` cannot store U+0000 (a NUL is 400 `validation_error`). For a recovery revoke: what happened and where
+        the drawer cash physically is. No PII, no token, PIN or secret; never
+        logged or audited.
+
+    # -----------------------------------------------------------------------
+    # Projections (explicit wire shapes, never DB rows)
+    # -----------------------------------------------------------------------
+    DeviceSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - deviceId
+        - storeId
+        - label
+        - trustState
+        - createdAt
+        - expiresAt
+        - lastSeenAt
+        - lastSeenSource
+        - revokedAt
+        - revokedByUserId
+        - revokeReason
+        - retiredAt
+        - replacesDeviceId
+        - replacedByDeviceId
+        - custodyExceptionShiftId
+      allOf:
+        - $ref: "#/components/schemas/TrustStateConsistency"
+        - $ref: "#/components/schemas/LastSeenConsistency"
+      description: >
+        One device, as listed. Every key is always present; a value that is
+        not recorded is `null`. No tenant id, token hash, previous token or
+        rotation window.
+      properties:
+        deviceId:
+          type: string
+          format: uuid
+        storeId:
+          type: string
+          format: uuid
+          description: >
+            The store the device is paired to. Never changes: a move is a
+            re-pair into the target store (RT-287 D-Q1).
+        label:
+          type: [string, "null"]
+          description: The terminal label given at pairing; `null` when none.
+        trustState:
+          $ref: "#/components/schemas/TrustState"
+        createdAt:
+          type: string
+          format: date-time
+          description: When the device was paired (server clock).
+        expiresAt:
+          type: string
+          format: date-time
+          description: >
+            When the device credential expires (RT-138 L2, 90 days). Reported,
+            not yet enforced (RT-370).
+        lastSeenAt:
+          type: [string, "null"]
+          format: date-time
+          description: >
+            The device's last authenticated activity (RT-138 L7). `null`
+            until RT-370 writes it. Label it with `lastSeenSource`; activity
+            alone never means healthy (RT-287 D-Q6).
+        lastSeenSource:
+          description: >
+            Where `lastSeenAt` comes from, so the console can label it.
+            `activity`: the last authenticated request (RT-138 L7). `null`
+            exactly when `lastSeenAt` is null. A `heartbeat` value
+            (AD-DEVICE-001 D-5) is added later; clients must show an unknown
+            source as unknown, never as healthy.
+          oneOf:
+            - type: string
+              enum: [activity]
+            - type: "null"
+        revokedAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the device was revoked (server clock); `null` while active.
+        revokedByUserId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            The `users.id` who revoked it. `null` while active, and on a revoke
+            recorded before RT-365 (actor unknown).
+        revokeReason:
+          description: >
+            The structured reason. `null` while active, and on a revoke
+            recorded before RT-365 (no reason recorded, never guessed).
+          oneOf:
+            - $ref: "#/components/schemas/RevokeReason"
+            - type: "null"
+        retiredAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the device was retired (RT-368); `null` otherwise.
+        replacesDeviceId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            The device this one replaced: the `replaces_device_id` of the
+            pairing code that paired it (RT-367). `null` otherwise, and `null`
+            when that device is in a store outside the caller's scope
+            (out-of-scope reads as absent).
+        replacedByDeviceId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            The device paired by a code whose `replaces_device_id` is this
+            device (RT-367). `null` otherwise, and `null` when that device is
+            in a store outside the caller's scope.
+        custodyExceptionShiftId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            The open custody exception: the id of the open shift still on this
+            revoked device (see "Custody exception" above). `null` when there
+            is none, and always `null` on an active device.
+
+    DeviceDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - deviceId
+        - storeId
+        - label
+        - trustState
+        - createdAt
+        - expiresAt
+        - lastSeenAt
+        - lastSeenSource
+        - revokedAt
+        - revokedByUserId
+        - revokeReason
+        - retiredAt
+        - replacesDeviceId
+        - replacedByDeviceId
+        - custodyExceptionShiftId
+        - revokeNote
+        - retiredByUserId
+        - retireReason
+      allOf:
+        - $ref: "#/components/schemas/TrustStateConsistency"
+        - $ref: "#/components/schemas/LastSeenConsistency"
+        # 0040 `devices_retire_fields_when_retired`: a retired device carries
+        # its retire reason; any other device has no retire attribution.
+        - if:
+            properties:
+              trustState:
+                const: retired
+            required: [trustState]
+          then:
+            properties:
+              retireReason:
+                type: string
+          else:
+            properties:
+              retireReason:
+                type: "null"
+              retiredByUserId:
+                type: "null"
+      description: >
+        One device with its revoke note and retire attribution. The summary
+        fields are the `DeviceSummary` fields, with the same rules. A retired
+        device always carries `retireReason`; any other device has
+        `retireReason` and `retiredByUserId` null.
+      properties:
+        deviceId:
+          type: string
+          format: uuid
+        storeId:
+          type: string
+          format: uuid
+        label:
+          type: [string, "null"]
+        trustState:
+          $ref: "#/components/schemas/TrustState"
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        lastSeenAt:
+          type: [string, "null"]
+          format: date-time
+        lastSeenSource:
+          oneOf:
+            - type: string
+              enum: [activity]
+            - type: "null"
+        revokedAt:
+          type: [string, "null"]
+          format: date-time
+        revokedByUserId:
+          type: [string, "null"]
+          format: uuid
+        revokeReason:
+          oneOf:
+            - $ref: "#/components/schemas/RevokeReason"
+            - type: "null"
+        retiredAt:
+          type: [string, "null"]
+          format: date-time
+        replacesDeviceId:
+          type: [string, "null"]
+          format: uuid
+        replacedByDeviceId:
+          type: [string, "null"]
+          format: uuid
+        custodyExceptionShiftId:
+          type: [string, "null"]
+          format: uuid
+        revokeNote:
+          description: >
+            The note recorded with the revoke; `null` when none. Returned to
+            the authorised operator only; never in the list, logs or audit.
+          oneOf:
+            - $ref: "#/components/schemas/RevokeNote"
+            - type: "null"
+        retiredByUserId:
+          type: [string, "null"]
+          format: uuid
+          description: The `users.id` who retired the device (RT-368); `null` otherwise.
+        retireReason:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 500
+          description: The retire reason (RT-368); `null` otherwise. Operator text, no PII.
+
+    TrustStateConsistency:
+      description: >
+        The trust state agrees with the revoke / retire timestamps, and a
+        custody exception exists only on a revoked or retired device.
+      allOf:
+        - if:
+            properties:
+              trustState:
+                const: active
+            required: [trustState]
+          then:
+            properties:
+              revokedAt:
+                type: "null"
+              revokedByUserId:
+                type: "null"
+              revokeReason:
+                type: "null"
+              retiredAt:
+                type: "null"
+              custodyExceptionShiftId:
+                type: "null"
+        - if:
+            properties:
+              trustState:
+                const: revoked
+            required: [trustState]
+          then:
+            properties:
+              revokedAt:
+                type: string
+              retiredAt:
+                type: "null"
+        - if:
+            properties:
+              trustState:
+                const: retired
+            required: [trustState]
+          then:
+            properties:
+              revokedAt:
+                type: string
+              retiredAt:
+                type: string
+
+    LastSeenConsistency:
+      description: "`lastSeenSource` is null exactly when `lastSeenAt` is null."
+      if:
+        properties:
+          lastSeenAt:
+            type: "null"
+        required: [lastSeenAt]
+      then:
+        properties:
+          lastSeenSource:
+            type: "null"
+      else:
+        properties:
+          lastSeenSource:
+            type: string
+
+    DevicePage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      description: A keyset page of devices, exception-first.
+      properties:
+        items:
+          type: array
+          # Mirrors the page_size maximum (200).
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/DeviceSummary"
+        nextCursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page; `null` on the last page.
+
+    DeviceRevokeRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      if:
+        properties:
+          reason:
+            const: other
+        required: [reason]
+      then:
+        required: [note]
+      description: >
+        The revoke. `other` requires a `note` (400 otherwise). For a recovery
+        revoke (`hardware_failure` while the device has an open shift) the
+        `note` and `acknowledgeCustodyException: true` are required too (422
+        otherwise); elsewhere `acknowledgeCustodyException` is accepted and
+        ignored.
+      properties:
+        reason:
+          $ref: "#/components/schemas/RevokeReason"
+        note:
+          $ref: "#/components/schemas/RevokeNote"
+        acknowledgeCustodyException:
+          type: boolean
+          description: >
+            The client showed the custody-exception impact and the operator
+            confirmed it. Required `true` for a recovery revoke.
+
+    DeviceRevokeResult:
+      type: object
+      additionalProperties: false
+      required: [outcome, device]
+      description: The revoke outcome and the device's state after the request.
+      properties:
+        outcome:
+          type: string
+          enum: [revoked, already_revoked]
+          description: >
+            `revoked`: this request revoked the device. `already_revoked`: it
+            was already revoked (or retired); nothing changed.
+        device:
+          description: >
+            The device after the request. Always revoked or retired: a revoke
+            that succeeds or repeats never leaves the device active.
+          allOf:
+            - $ref: "#/components/schemas/DeviceDetail"
+            - properties:
+                trustState:
+                  enum: [revoked, retired]
+
+    # -----------------------------------------------------------------------
+    # Canonical error envelope (auth / pos-sales / shift-closes)
+    # -----------------------------------------------------------------------
+    Error:
+      type: object
+      required: [error]
+      description: >
+        Canonical error envelope. Out-of-scope and cross-tenant refusals are
+        non-disclosing (§II, §XII): they never name the cause. Open to
+        additive fields (RT-366 adds the impact preview to the 409).
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id; the cause is recorded server-side.
+
+  responses:
+    ValidationFailure:
+      description: >
+        validation_error (400): a malformed path, query or body value, an
+        unknown query or body key, a cursor the server cannot decode, or
+        `other` without a `note`. Checked before any database read.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        Unauthenticated (401): a missing or invalid session cookie, or a
+        non-cookie credential. Non-disclosing. Owned by 028 (G10).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RevokeForbidden:
+      description: >
+        Forbidden (403), with a stable code: `origin_rejected` — a
+        cookie-authenticated revoke without a trusted `Origin` (RT-430);
+        `recovery_revoke_forbidden` — a `store_manager` attempting a recovery
+        revoke (`hardware_failure` while the device has an open shift), which
+        is `owner` / `tenant_admin` only (RT-287 D-Q4 amended).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >
+        not_found (404), non-disclosing: identical for a role outside
+        `owner` / `tenant_admin` / `store_manager`, another tenant's device or
+        store, a store outside the caller's scope and an absent id.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UnresolvedCashSession:
+      description: >
+        unresolved_cash_session (409): the device has an open shift and the
+        reason is neither a security reason nor a recovery revoke (`replaced`,
+        `moved`, `retired`, `admin_error`, `other`). Close the shift on the
+        till and let it sync, then revoke. Nothing was changed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RecoveryRequirementsUnmet:
+      description: >
+        Unprocessable (422), with a stable code, for a recovery revoke by
+        `owner` / `tenant_admin`: `recovery_note_required` — no `note`;
+        `custody_exception_not_acknowledged` — `acknowledgeCustodyException`
+        is not `true`. Nothing was changed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SystemFailure:
+      description: >
+        system_failure (500): unexpected server error; the cause is recorded
+        server-side under `request_id`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
