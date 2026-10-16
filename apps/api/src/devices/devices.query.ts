@@ -1,7 +1,7 @@
 /**
  * Zod schemas for the RT-365 Console device registry
  * (`devices.openapi.yaml`: `consoleListDevices`, `consoleGetDevice`,
- * `consoleRevokeDevice`).
+ * `consoleRevokeDevice`) and the RT-366 impact preview (`consoleGetDeviceImpact`).
  *
  * Mirrors the contract. Tenant, store and actor are NEVER read here: they
  * come from the dashboard session (§XII). `.strict()` rejects an unknown key
@@ -11,6 +11,7 @@
  */
 import { z } from "zod";
 
+import { LIFECYCLE_ACTIONS } from "./device-lifecycle.evaluator";
 import { REVOKE_REASONS, TRUST_STATES } from "./devices.projections";
 
 const UuidSchema = z
@@ -64,3 +65,20 @@ export const DeviceRevokeBodySchema = z
   });
 
 export type DeviceRevokeBody = z.infer<typeof DeviceRevokeBodySchema>;
+
+/**
+ * `consoleGetDeviceImpact` (RT-366): the action, and the revoke reason exactly
+ * when the action is `revoke` (replace / move / retire record their own).
+ */
+export const DeviceImpactQuerySchema = z
+  .object({
+    action: z.enum(LIFECYCLE_ACTIONS),
+    reason: z.enum(REVOKE_REASONS).optional(),
+  })
+  .strict()
+  .refine((query) => (query.action === "revoke") === (query.reason !== undefined), {
+    message: "reason is required for a revoke and not accepted for any other action",
+    path: ["reason"],
+  });
+
+export type DeviceImpactQuery = z.infer<typeof DeviceImpactQuerySchema>;

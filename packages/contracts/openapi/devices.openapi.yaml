@@ -34,10 +34,11 @@ info:
     **Posture.** `1.1.0-draft`. `consoleListDevices`, `consoleGetDevice` and
     `consoleRevokeDevice` are implemented (RT-365: contract PR #777, runtime
     PR #781). `consoleGetDeviceImpact` and the impact payload on the revoke
-    409 are `[GATED]` contract-first (RT-366). The preview operation carries
-    `x-runtime-status: contract-only` until the RT-366 runtime ships. Every
-    change from 1.0.0-draft is additive: a new operation, new schemas, and an
-    optional `error.details` (the impact preview) on the existing 409.
+    409 are `[GATED]` contract-first (RT-366), and the RT-366 runtime ships
+    them unchanged on the wire, so no operation carries
+    `x-runtime-status: contract-only`. Every change from 1.0.0-draft is
+    additive: a new operation, new schemas, and an optional `error.details`
+    (the impact preview) on the existing 409.
 
 
     **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`)
@@ -380,8 +381,6 @@ paths:
     get:
       summary: Preview a lifecycle action's impact (read-only).
       operationId: consoleGetDeviceImpact
-      x-runtime-status: contract-only
-      x-runtime-note: RT-366 contract PR; the controller ships in the stacked RT-366 runtime PR.
       tags: [devices]
       description: >
         What a `revoke`, `replace`, `move` or `retire` of the device would do

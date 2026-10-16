@@ -28,6 +28,13 @@
  *     changes nothing. No shift or cash fact is ever written here.
  *   - Audit metadata is the RT-135 allowlist: reason, counts, custody flag and
  *     shift id. Never the note, a token, a hash or a code.
+ *   - Impact preview (RT-366): ONE statement (`IMPACT_SQL`, one snapshot) reads
+ *     the device, its open shift with its server-received cash-up facts, and
+ *     the cascade counts over the same predicates the revoke applies
+ *     (`LIVE_OPERATOR_SESSIONS`, `PENDING_PAIRING_CODES`); the lifecycle
+ *     evaluator decides. It takes no lock and writes nothing. The revoke
+ *     decides from the same read, taken under its locks, so its verdict and
+ *     its 409 `error.details` are the preview of the state it refused.
  */
 import { Inject, Injectable } from "@nestjs/common";
 import { newId } from "@data-pulse-2/shared";
@@ -36,6 +43,13 @@ import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../auth/auth.module";
 import { lockDeviceLifecycle } from "./device-lifecycle-lock";
+import { evaluateLifecycle, revokeReasonOf, type LifecycleAction } from "./device-lifecycle.evaluator";
+import {
+  lifecycleStateOf,
+  toDeviceImpactPreview,
+  type DeviceImpactPreview,
+  type DeviceImpactRow,
+} from "./device-impact.projections";
 import { MembershipRepository } from "../context/membership.repository";
 import { inStoreScope, readScope, scopeStoreIds } from "../context/operator-store-scope";
 import type { StoreScope } from "../context/store-scope";
@@ -44,6 +58,7 @@ import {
   decideRevoke,
   decodeDeviceCursor,
   encodeDeviceCursor,
+  evaluateRevokeInput,
   EXPIRES_AT_KEY_SQL,
   toDeviceDetail,
   toDeviceSummary,
@@ -72,11 +87,15 @@ export class DeviceStoreNotInScopeError extends Error {
   }
 }
 
-/** A revoke refused by the Cash Session rule (403 / 409 / 422); nothing changed. */
+/**
+ * A revoke refused by the Cash Session rule (403 / 409 / 422); nothing changed.
+ * A 409 carries the refused revoke's impact preview (RT-366).
+ */
 export class DeviceRevokeRefusedError extends Error {
   constructor(
     readonly status: 403 | 409 | 422,
     readonly code: RevokeRefusalCode,
+    readonly impact?: DeviceImpactPreview,
   ) {
     super(code);
     this.name = "DeviceRevokeRefusedError";
@@ -105,6 +124,26 @@ export interface RevokeDeviceInput extends ScopedInput {
   readonly note?: string;
   readonly acknowledgeCustodyException?: boolean;
 }
+
+export interface DeviceImpactInput extends ScopedInput {
+  readonly deviceId: string;
+  readonly action: LifecycleAction;
+  /** The revoke reason; given exactly when `action` is `revoke` (the query schema). */
+  readonly reason?: RevokeReason;
+}
+
+/**
+ * The revoke cascade's targets over the tenant ($1) and the device ($2): its
+ * live operator sessions, and its pending pairing codes plus the pending
+ * replacement codes for it. The revoke updates exactly these rows and the
+ * impact preview counts them, so the two cannot drift.
+ */
+const LIVE_OPERATOR_SESSIONS = `
+  tenant_id = $1::uuid AND device_id = $2::uuid AND scope = 'pos_operator'
+  AND revoked_at IS NULL AND expires_at > now()`;
+const PENDING_PAIRING_CODES = `
+  tenant_id = $1::uuid AND status = 'pending'
+  AND (terminal_id = $2::uuid OR replaces_device_id = $2::uuid)`;
 
 /**
  * The used pairing codes that link a replacement to the device it replaced
@@ -171,22 +210,54 @@ const LIST_SQL = `
    LIMIT $8`;
 
 /**
- * $1 tenant, $2 device, $3 scoped store ids (null = tenant-wide). One device,
- * so its open shift is looked up for that device only (no tenant-wide CTE).
+ * One device's most recently opened open shift (the Cash Session rule's
+ * input), looked up for that device only (no tenant-wide CTE).
  */
+const OPEN_SHIFT_LATERAL = `
+  LEFT JOIN LATERAL (
+    SELECT s.shift_id, s.source, s.opened_at, s.opening_cashier_user_id, s.received_at FROM shifts s
+     WHERE s.tenant_id = d.tenant_id AND s.opening_device_id = d.id AND s.lifecycle_state = 'open'
+     ORDER BY s.opened_at DESC, s.shift_id DESC
+     LIMIT 1
+  ) os ON true`;
+
+/** $1 tenant, $2 device, $3 scoped store ids (null = tenant-wide). */
+const ONE_DEVICE_WHERE = `
+   WHERE d.tenant_id = $1::uuid
+     AND d.id = $2::uuid
+     AND ($3::uuid[] IS NULL OR d.store_id = ANY($3::uuid[]))`;
+
 const DETAIL_SQL = `
   WITH ${linksCte("$3")}
   SELECT ${DEVICE_COLUMNS}
     FROM devices d
+    ${OPEN_SHIFT_LATERAL}
+  ${ONE_DEVICE_WHERE}`;
+
+/**
+ * The impact read: the detail columns plus the open shift's facts, its
+ * server-received cash-up facts (the open and its movements; none for a legacy
+ * shift) and the cascade counts. One statement, so one snapshot. Parameters as
+ * `DETAIL_SQL`.
+ */
+const IMPACT_SQL = `
+  WITH ${linksCte("$3")}
+  SELECT ${DEVICE_COLUMNS},
+    os.source AS open_shift_source,
+    os.opened_at AS open_shift_opened_at,
+    os.opening_cashier_user_id AS open_shift_cashier_user_id,
+    CASE WHEN os.source = 'cash_up' THEN 1 + mv.n END AS cash_fact_count,
+    CASE WHEN os.source = 'cash_up' THEN GREATEST(os.received_at, mv.last_received_at) END AS cash_last_received_at,
+    (SELECT count(*)::int FROM auth_tokens WHERE ${LIVE_OPERATOR_SESSIONS}) AS operator_session_count,
+    (SELECT count(*)::int FROM pairing_codes WHERE ${PENDING_PAIRING_CODES}) AS pending_pairing_code_count,
+    now() AS evaluated_at
+    FROM devices d
+    ${OPEN_SHIFT_LATERAL}
     LEFT JOIN LATERAL (
-      SELECT s.shift_id FROM shifts s
-       WHERE s.tenant_id = d.tenant_id AND s.opening_device_id = d.id AND s.lifecycle_state = 'open'
-       ORDER BY s.opened_at DESC, s.shift_id DESC
-       LIMIT 1
-    ) os ON true
-   WHERE d.tenant_id = $1::uuid
-     AND d.id = $2::uuid
-     AND ($3::uuid[] IS NULL OR d.store_id = ANY($3::uuid[]))`;
+      SELECT count(*)::int AS n, max(m.received_at) AS last_received_at FROM shift_cash_movements m
+       WHERE m.tenant_id = d.tenant_id AND m.shift_id = os.shift_id
+    ) mv ON true
+  ${ONE_DEVICE_WHERE}`;
 
 @Injectable()
 export class DevicesService {
@@ -248,21 +319,54 @@ export class DevicesService {
       const caller = await this.callerOf(client, input);
       await lockDeviceLifecycle(client, input);
       const device = await this.lockInScope(client, input, caller.scope);
-      const decision = decideRevoke({
+      // The impact read, under the locks: the decision and a 409's impact see one state.
+      const facts = await this.readImpact(client, input.tenantId, input.deviceId, scopeStoreIds(caller.scope));
+      const decisionInput = {
         alreadyRevoked: device.revokedAt !== null,
-        openShiftId: await this.openShiftOf(client, input.tenantId, input.deviceId),
+        openShiftId: facts.open_shift_id,
         reason: input.reason,
         callerRole: caller.roleCode,
         note: input.note,
         acknowledgeCustodyException: input.acknowledgeCustodyException,
-      });
-      if (decision.kind === "refuse") throw new DeviceRevokeRefusedError(decision.status, decision.code);
+      };
+      const decision = decideRevoke(decisionInput);
+      if (decision.kind === "refuse") {
+        const impact =
+          decision.status === 409
+            ? toDeviceImpactPreview({
+                row: facts,
+                action: "revoke",
+                reason: input.reason,
+                evaluation: evaluateRevokeInput(decisionInput),
+              })
+            : undefined;
+        throw new DeviceRevokeRefusedError(decision.status, decision.code, impact);
+      }
       const revoked = decision.kind === "revoke";
       if (revoked) await this.applyRevoke(client, input, device.storeId, decision.custodyExceptionShiftId);
       return {
         outcome: revoked ? "revoked" : "already_revoked",
         device: await this.readDetail(client, input.tenantId, input.deviceId, scopeStoreIds(caller.scope)),
       };
+    });
+  }
+
+  /**
+   * The impact preview of one lifecycle action (RT-366): read-only, no lock.
+   * Absent, foreign or out of scope → `DeviceNotFoundError`.
+   */
+  async impact(input: DeviceImpactInput): Promise<DeviceImpactPreview> {
+    return this.inTenant(input, async (client) => {
+      const caller = await this.callerOf(client, input);
+      const row = await this.readImpact(client, input.tenantId, input.deviceId, scopeStoreIds(caller.scope));
+      const reason = revokeReasonOf(input.action, input.reason);
+      const evaluation = evaluateLifecycle({
+        action: input.action,
+        reason,
+        state: lifecycleStateOf(row),
+        callerRole: caller.roleCode,
+      });
+      return toDeviceImpactPreview({ row, action: input.action, reason, evaluation });
     });
   }
 
@@ -300,21 +404,13 @@ export class DevicesService {
       [input.deviceId, input.tenantId, input.actorUserId, input.reason, input.note ?? null],
     );
     const sessions = await client.query(
-      `UPDATE auth_tokens
-          SET revoked_at = now()
-        WHERE tenant_id = $1::uuid AND device_id = $2::uuid AND scope = 'pos_operator'
-          AND revoked_at IS NULL AND expires_at > now()
-        RETURNING id`,
+      `UPDATE auth_tokens SET revoked_at = now() WHERE ${LIVE_OPERATOR_SESSIONS} RETURNING id`,
       [input.tenantId, input.deviceId],
     );
     // The device's own pending codes and the pending replacement codes for it.
     // A code issued after this revoke is untouched (RT-367 replace / move).
     const codes = await client.query(
-      `UPDATE pairing_codes
-          SET status = 'cancelled'
-        WHERE tenant_id = $1::uuid AND status = 'pending'
-          AND (terminal_id = $2::uuid OR replaces_device_id = $2::uuid)
-        RETURNING id`,
+      `UPDATE pairing_codes SET status = 'cancelled' WHERE ${PENDING_PAIRING_CODES} RETURNING id`,
       [input.tenantId, input.deviceId],
     );
     const metadata: Record<string, unknown> = {
@@ -331,16 +427,17 @@ export class DevicesService {
     );
   }
 
-  /** The most recently opened open shift on the device, or null. */
-  private async openShiftOf(client: PoolClient, tenantId: string, deviceId: string): Promise<string | null> {
-    const r = await client.query<{ shift_id: string }>(
-      `SELECT shift_id FROM shifts
-        WHERE tenant_id = $1::uuid AND opening_device_id = $2::uuid AND lifecycle_state = 'open'
-        ORDER BY opened_at DESC, shift_id DESC
-        LIMIT 1`,
-      [tenantId, deviceId],
-    );
-    return r.rows[0]?.shift_id ?? null;
+  /** The impact read (`IMPACT_SQL`). Absent, foreign or out of scope → `DeviceNotFoundError`. */
+  private async readImpact(
+    client: PoolClient,
+    tenantId: string,
+    deviceId: string,
+    scopedStoreIds: readonly string[] | null,
+  ): Promise<DeviceImpactRow> {
+    const r = await client.query<DeviceImpactRow>(IMPACT_SQL, [tenantId, deviceId, scopedStoreIds]);
+    const row = r.rows[0];
+    if (row === undefined) throw new DeviceNotFoundError();
+    return row;
   }
 
   private async readDetail(

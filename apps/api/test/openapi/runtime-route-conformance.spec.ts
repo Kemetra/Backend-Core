@@ -127,8 +127,6 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "consoleCreatePayerAccount",
       // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
       "consoleDeleteTenantLogo",
-      // RT-366: device impact preview contract; the runtime ships in the stacked RT-366 runtime PR.
-      "consoleGetDeviceImpact",
       // RT-561 (RT-556 F1): console sales read contract; the runtime ships in RT-562.
       "consoleGetSale",
       // RT-384: shift variance policy contract; the runtime ships in RT-387.

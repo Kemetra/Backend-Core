@@ -1,7 +1,8 @@
 /**
  * RT-365 — pure helpers of the Console device registry
- * (`devices.openapi.yaml`): the revoke decision (RT-287 D-Q4 as amended), the
- * keyset cursor and the wire projections. No DB, no clock.
+ * (`devices.openapi.yaml`): the revoke decision (RT-287 D-Q4 as amended, on
+ * the RT-366 lifecycle evaluator), the keyset cursor and the wire
+ * projections. No DB, no clock.
  *
  * Cursor. Repo convention (`shift-closes.projections.ts`): unsigned base64url
  * JSON, bound to the operation and the tenant it was issued under; any other
@@ -17,32 +18,13 @@
  */
 import { z } from "zod";
 
+import { evaluateLifecycle, type LifecycleEvaluation, type RevokeReason } from "./device-lifecycle.evaluator";
+
+export { REVOKE_REASONS, type RevokeReason } from "./device-lifecycle.evaluator";
+
 // ---------------------------------------------------------------------------
 // Vocabularies
 // ---------------------------------------------------------------------------
-
-/** The closed RT-287 D-Q3 set (0040 CHECK `devices_revoke_reason_valid`). */
-export const REVOKE_REASONS = [
-  "lost",
-  "stolen",
-  "suspected_compromise",
-  "hardware_failure",
-  "replaced",
-  "moved",
-  "retired",
-  "admin_error",
-  "other",
-] as const;
-export type RevokeReason = (typeof REVOKE_REASONS)[number];
-
-/** The security class: always succeeds, never waits (RT-287 D-Q3 / D-Q4). */
-const SECURITY_REASONS: ReadonlySet<RevokeReason> = new Set(["lost", "stolen", "suspected_compromise"]);
-
-/** The reason that, with an open shift, is a recovery revoke (D-Q4 amended). */
-const RECOVERY_REASON: RevokeReason = "hardware_failure";
-
-/** Roles allowed a recovery revoke (stronger authority than the base revoke). */
-const RECOVERY_ROLES: ReadonlySet<string> = new Set(["owner", "tenant_admin"]);
 
 export const TRUST_STATES = ["active", "revoked", "retired"] as const;
 
@@ -78,27 +60,54 @@ export type RevokeDecision =
   | { readonly kind: "refuse"; readonly status: 403 | 409 | 422; readonly code: RevokeRefusalCode };
 
 /**
- * The revoke decision, in the contract's order: an already-revoked device
+ * The revoke decision: the lifecycle evaluator's verdict for this revoke
+ * (`evaluateRevokeInput`, the same one the impact preview reports), then the
+ * body's requirements in the contract's order: an already-revoked device
  * answers its current state; without an open shift any reason revokes; with
  * one, a security reason revokes (the shift becomes the custody exception), a
  * `hardware_failure` is a recovery revoke (owner / tenant_admin, a note, the
  * acknowledgement — checked in that order), and every other reason is 409.
  */
 export function decideRevoke(input: RevokeDecisionInput): RevokeDecision {
-  if (input.alreadyRevoked) return { kind: "already_revoked" };
-  const revoke: RevokeDecision = { kind: "revoke", custodyExceptionShiftId: input.openShiftId };
-  if (input.openShiftId === null || SECURITY_REASONS.has(input.reason)) return revoke;
-  if (input.reason !== RECOVERY_REASON) return refuse(409, "unresolved_cash_session");
-  return recoveryRefusal(input) ?? revoke;
+  return decisionOf(evaluateRevokeInput(input), input);
 }
 
-/** The first unmet recovery-revoke requirement, in order: role, note, acknowledgement. */
-function recoveryRefusal(input: RevokeDecisionInput): RevokeDecision | null {
-  if (input.callerRole === null || !RECOVERY_ROLES.has(input.callerRole)) {
-    return refuse(403, "recovery_revoke_forbidden");
+/** The evaluator's verdict for a revoke: state and authority only, never the body. */
+export function evaluateRevokeInput(
+  input: Pick<RevokeDecisionInput, "alreadyRevoked" | "openShiftId" | "reason" | "callerRole">,
+): LifecycleEvaluation {
+  return evaluateLifecycle({
+    action: "revoke",
+    reason: input.reason,
+    // Retired implies revoked (0040 CHECK), so the revoke needs only the one flag.
+    state: { revoked: input.alreadyRevoked, retired: false, openShiftId: input.openShiftId },
+    callerRole: input.callerRole,
+  });
+}
+
+/** The verdict → revoke outcome table of the contract ("Impact preview"). */
+function decisionOf(evaluation: LifecycleEvaluation, input: RevokeDecisionInput): RevokeDecision {
+  switch (evaluation.verdict) {
+    case "no_change":
+      return { kind: "already_revoked" };
+    case "allowed":
+      return { kind: "revoke", custodyExceptionShiftId: input.openShiftId };
+    case "forbidden_recovery":
+      return refuse(403, "recovery_revoke_forbidden");
+    case "blocked":
+      // A revoke is only ever blocked by its open shift (evaluateRevoke).
+      return refuse(409, "unresolved_cash_session");
+    case "allowed_with_custody_exception":
+      return requirementRefusal(evaluation, input) ?? { kind: "revoke", custodyExceptionShiftId: input.openShiftId };
   }
-  if (input.note === undefined) return refuse(422, "recovery_note_required");
-  if (input.acknowledgeCustodyException !== true) return refuse(422, "custody_exception_not_acknowledged");
+}
+
+/** The first unmet body requirement, in order: note, then acknowledgement (the role is the verdict's). */
+function requirementRefusal(evaluation: LifecycleEvaluation, input: RevokeDecisionInput): RevokeDecision | null {
+  if (evaluation.requires.includes("note") && input.note === undefined) return refuse(422, "recovery_note_required");
+  if (evaluation.requires.includes("acknowledge_custody_exception") && input.acknowledgeCustodyException !== true) {
+    return refuse(422, "custody_exception_not_acknowledged");
+  }
   return null;
 }
 
