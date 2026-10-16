@@ -1,83 +1,99 @@
 openapi: 3.1.0
 info:
-  title: Data-Pulse-2 — Sale Settlement & Receivables API
-  version: "1.0.0-draft"
+  title: Data-Pulse-2 — Payer Accounts (settlement) API
+  version: "2.0.0"
   description: >
-    Spec 035 (sale-settlement-and-receivables-model) — the G2 contract of record
-    for the Retail Tower settlement work package. Produced from the signed owner
-    decision 035-DR-SETTLEMENT and the carve-respecting design draft
-    (`specs/035-.../g2-contract-draft.md`). It is the generated-client surface the
-    downstream children consume (POS 020 / Console 017 / 018 / 019 / Connector 009).
+    Spec 035 (sale-settlement-and-receivables-model), narrowed to Option B
+    (RT-413; RT-277 comment 11662; decision-record amendment A1). Backend-Core
+    keeps only the payer identity facade. The per-sale payer responsibility
+    allocation is captured on the sale itself (owner decision R-1, RT-413
+    comment 11669): `CaptureSaleRequest.responsibilities[]` in
+    `pos-sales/sales.yaml`, carried to the Connector on the posting feed
+    (`erpnext-connector/posting-feed.yaml`). ERPNext owns customer and
+    third-party A/R balances, cash application, aging, payment terms, credit
+    limits, collections and accounting reconciliation (Payment & Receivables
+    baseline, Confluence RETAIL 23560196).
 
-    POSTURE: this is a `1.0.0-draft`. It does NOT flip gate G2 — G2 needs the
-    owner's both-sides approval. No controller/DTO/service/migration exists yet;
-    this file is the contract-of-record over the eventual implementation.
+    RT-417 (2.0.0; [GATED] approval Jira RT-417 comment 11671, owner,
+    2026-10-12): BREAKING, replacing the stale `1.0.0-draft`.
 
-      Console-managed lifecycle (cookieAuth):
-        1. `consoleCreatePayerAccount`     — create a payer account (credit /
-           corporate / insurer). `version`-optimistic.
-        2. `consoleListPayerAccounts`      — tenant-scoped, newest-first, opaque
-           keyset pagination.
-        3. `consoleGetReceivable`          — read one receivable's projection
-           (balance + lifecycle state). Object-level authz → non-disclosing 404.
-        4. `consoleListReceivables`        — tenant+store scoped receivable queue,
-           keyset paginated, optional state/payer filter.
-        5. `consoleApplyPayment`           — DP-2-owned cash application
-           (full/partial) against a receivable. Idempotent. This is the
-           operational truth (7-C); the ERPNext Payment Entry is a downstream
-           valuation projection, NOT authored here.
-        6. `consoleSubmitClaim`            — submit receivable(s) to a third-party
-           payer for collection. Idempotent.
-        7. `consoleReconcileRemittance`    — match a remittance against a claim,
-           recording variance. Idempotent.
+      Kept (Console, cookieAuth):
+        1. `consoleCreatePayerAccount` — create a payer account.
+        2. `consoleListPayerAccounts`  — tenant-scoped, newest-first, keyset
+           pagination.
+      Both stay `x-runtime-status: contract-only` until the RT-418 runtime
+      ships them; RT-418 removes the marker.
 
-      POS-facing capture (operatorAuthorization):
-        8. `posRecordSettlementIntent`     — capture settlement intent + payer
-           metadata at the till; opens the receivable(s). POS captures INTENT
-           ONLY — never applies cash, authorizes a receivable, or posts money
-           (FR-016). A new route; it does NOT duplicate or re-shape `captureSale`
-           in `pos-sales/sales.yaml` (the sale fact is captured there; this
-           records the settlement intent layered over it).
+      Removed (listed in `x-retired-operations`):
+        `consoleApplyPayment`, `consoleSubmitClaim`,
+        `consoleReconcileRemittance`, `posRecordSettlementIntent`,
+        `consoleGetReceivable`, `consoleListReceivables`. Cash application,
+        claims, remittance and receivable balances leave Backend-Core.
 
-    CARVE (035-DR-SETTLEMENT §OQ-4): this contract covers the NON-REVERSAL happy
-    path only — open / apply / settle / claim / remittance / reconciliation.
-    Reversal-compatibility fields and any `reversal_consumed` state are EXCLUDED
-    and land in a later additive bump after DP-026 closes. Void / refund /
-    insurance-rejection REUSE DP-026 + Connector Arc A + POS-014 — there is NO
-    reversal / void / refund / rejection operation here (NG-1). This contract
-    also adds NO "post to ERPNext" route — that is Connector 009 (separate repo),
-    gated behind 011-DR-POSTING-R1.
+      Changed: `PayerAccountCreate.creditTerms` is removed (ERPNext owns terms
+      and credit limits). `PayerAccountCreate` stays `additionalProperties:
+      false`, so a client that still sends `creditTerms` gets a 400.
+      `externalRef` is now the payer's ERPNext Customer link (see the field).
+      The `operatorAuthorization` scheme, the POS 429 response and every
+      receivable / claim / remittance schema leave this document with the
+      operations that used them.
 
-    TAX-PENDING (035-DR-SETTLEMENT §OQ-2): tax/VAT carriers are placeholders only;
-    NO VAT allocation across payers / co-pays. G6 reopens later (ADR-0003).
+    RUNTIME DURING THE TRANSITION: the six removed routes are still served by
+    the 035 runtime until RT-422 deletes them (RT-418 leaves them in place).
+    They are retired from the contract now so that no new consumer is built on
+    them. Admin-Console RT-421 removes their callers; POS RT-420 never adopts
+    `settlement-intent`. A route served but absent from every contract is not
+    a conformance failure (the runtime-route conformance check maps contract
+    operations to routes, not the reverse).
 
-    AUTH: split by surface (035 §8). Console management routes use the HUMAN
-    `cookieAuth` (httpOnly `dp2_session`, `DashboardAuthGuard` + `RolesGuard`).
-    The single POS capture route uses `operatorAuthorization` — the 031 opaque,
-    revocable `pos_operator` envelope (`Authorization: Bearer <envelope>`);
-    device-token-only is insufficient (028 boundary; NG-7). 401/403 semantics are
-    owned by 028 (G10) and are NOT re-decided here.
+    CONSUMERS: Admin-Console 017 payer screens (RT-421: regenerate from this
+    version, drop `creditTerms` from the create form, label `externalRef` as
+    the ERPNext Customer link) and Admin-Console 018/019 (RT-421: removed).
+    POS 020 (RT-420) uses `pos-sales/sales.yaml`, not this contract.
+
+    AUTH: Console routes use the human `cookieAuth` (httpOnly `dp2_session`,
+    `DashboardAuthGuard` + `RolesGuard`). 401/403 semantics are owned by 028
+    (G10) and are not re-decided here.
 
     PROJECTIONS (§IV): every response is an explicit wire shape with
-    `additionalProperties: false` — no raw DB entity, no `tenant_id` (implicit in
-    scope), no `payload_hash`, no `created_by`. Money is exact-decimal as a string
-    (no floats, §III).
+    `additionalProperties: false`: no raw DB entity, no `tenant_id` (implicit
+    in scope), no `created_by`.
 
     Error envelope: the canonical `{ error: { code, message, request_id } }`,
-    identical to the shared shape (`auth` / `pos-sales` / `sale-sync-ops`). Status
-    mapping: 400 validation, 401 unauthenticated, 403 insufficient-role, 404
-    not-found / cross-tenant (non-disclosing, safe-404), 409 conflict (stale
-    `version` / unknown-payer / over-application / not-in-reconcilable-state), 500
-    internal.
+    identical to the shared shape (`auth` / `pos-sales` / `sale-sync-ops`).
+    Status mapping: 400 validation, 401 unauthenticated, 403 insufficient-role
+    or `origin_rejected`, 404 not-found (non-disclosing), 409 conflict, 500
+    internal. Tenant isolation is RLS; an out-of-scope id is a non-disclosing
+    404 wherever an id is accepted (on create: an out-of-scope `storeId`).
 
 servers:
   - url: https://api.example.com
 
 tags:
   - name: settlement-console
-    description: Console-managed payer accounts, receivables, cash application, claims, reconciliation (035).
-  - name: settlement-pos
-    description: POS-facing settlement-intent capture (035 §8; intent only, FR-016).
+    description: Console-managed payer accounts (035 narrowed to Option B, RT-413).
+
+x-retired-operations:
+  # RT-417 (2.0.0): removed from the contract. The runtime keeps serving them
+  # until RT-422 deletes the routes; no new consumer may call them.
+  - operationId: consoleApplyPayment
+    route: POST /api/v1/settlement/receivables/{receivableRef}/apply-payment
+    removedRuntimeIn: RT-422
+  - operationId: consoleSubmitClaim
+    route: POST /api/v1/settlement/claims
+    removedRuntimeIn: RT-422
+  - operationId: consoleReconcileRemittance
+    route: POST /api/v1/settlement/claims/{claimRef}/reconcile-remittance
+    removedRuntimeIn: RT-422
+  - operationId: posRecordSettlementIntent
+    route: POST /api/v1/settlement/settlement-intent
+    removedRuntimeIn: RT-422
+  - operationId: consoleGetReceivable
+    route: GET /api/v1/settlement/receivables/{receivableRef}
+    removedRuntimeIn: RT-422
+  - operationId: consoleListReceivables
+    route: GET /api/v1/settlement/receivables
+    removedRuntimeIn: RT-422
 
 paths:
   # ----------------------------------------------------------------------------
@@ -85,19 +101,19 @@ paths:
   # ----------------------------------------------------------------------------
   /api/v1/settlement/payer-accounts:
     post:
-      summary: Create a payer account (credit / corporate / insurer).
+      summary: Create a payer account (credit customer / corporate / insurer).
       operationId: consoleCreatePayerAccount
       x-runtime-status: contract-only
       x-runtime-note: >
-        Payer-account management belongs to the separately gated Console 017
-        work package. The table is present, but no Backend-Core route is shipped.
+        The table exists; the route ships in RT-418, which removes this
+        marker.
       x-idempotency: required
       tags: [settlement-console]
       security:
         - cookieAuth: []
       description: >
         Create a payer account. `tenant_id` + actor are server-resolved (§XII).
-        Idempotent on `Idempotency-Key`. FR-001/002/004.
+        Idempotent on `Idempotency-Key`. FR-001/002.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -119,6 +135,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/ForbiddenOrOriginRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "500":
@@ -128,9 +146,13 @@ paths:
       operationId: consoleListPayerAccounts
       x-runtime-status: contract-only
       x-runtime-note: >
-        Payer-account management belongs to the separately gated Console 017
-        work package. The table is present, but no Backend-Core route is shipped.
+        The table exists; the route ships in RT-418, which removes this
+        marker.
       tags: [settlement-console]
+      description: >
+        The caller's tenant's payers: tenant-wide payers (`storeId` null) and
+        payers of the stores the caller can access; store-scoped payers outside the caller's store access are excluded (the
+        same scope create enforces with its non-disclosing 404).
       security:
         - cookieAuth: []
       parameters:
@@ -153,265 +175,6 @@ paths:
         "500":
           $ref: "#/components/responses/SystemFailure"
 
-  # ----------------------------------------------------------------------------
-  # Console — receivables
-  # ----------------------------------------------------------------------------
-  /api/v1/settlement/receivables:
-    get:
-      summary: List receivables (tenant+store scoped, keyset paginated).
-      operationId: consoleListReceivables
-      tags: [settlement-console]
-      security:
-        - cookieAuth: []
-      parameters:
-        - $ref: "#/components/parameters/StoreIdQuery"
-        - $ref: "#/components/parameters/ReceivableStateQuery"
-        - $ref: "#/components/parameters/PayerRefQuery"
-        - $ref: "#/components/parameters/ReceivableCursor"
-        - $ref: "#/components/parameters/PageSize"
-      responses:
-        "200":
-          description: A page of receivables, newest-first.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ReceivablePage"
-        "400":
-          $ref: "#/components/responses/ValidationFailure"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/SystemFailure"
-
-  /api/v1/settlement/receivables/{receivableRef}:
-    get:
-      summary: Read one receivable's projection (balance + lifecycle state).
-      operationId: consoleGetReceivable
-      tags: [settlement-console]
-      security:
-        - cookieAuth: []
-      description: >
-        Object-level authz: a receivable outside the operator's (tenant, store)
-        scope returns a non-disclosing 404 (§II/§XII, FR-022).
-      parameters:
-        - $ref: "#/components/parameters/ReceivableRef"
-      responses:
-        "200":
-          description: The receivable projection.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Receivable"
-        "400":
-          $ref: "#/components/responses/ValidationFailure"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/SystemFailure"
-
-  # ----------------------------------------------------------------------------
-  # Console — cash application (7-C: DP-2-owned operational truth)
-  # ----------------------------------------------------------------------------
-  /api/v1/settlement/receivables/{receivableRef}/apply-payment:
-    post:
-      summary: Apply a payment / cash against a receivable (full or partial).
-      operationId: consoleApplyPayment
-      x-idempotency: required
-      tags: [settlement-console]
-      security:
-        - cookieAuth: []
-      description: >
-        DP-2-owned cash application (7-C). Reduces the receivable's outstanding
-        balance; a clearing application transitions it to `settled`, a partial one
-        to `partially_applied`. Idempotent — identical retry replays the stored
-        response; replay never double-reduces the balance (FR-012/020, G5). The
-        ERPNext Payment Entry is a downstream valuation projection referenced by
-        external ref (see `Receivable.erpnextPaymentEntryRef`) and is NOT posted
-        by this op (connector-owned, gated behind 011-DR-POSTING-R1).
-
-        Outcomes: over-application (amount > outstanding balance) is a
-        deterministic `409 conflict` (`error.code = "conflict"`), never silent
-        truncation (§4 edge case). A stale `version` is `409 conflict`.
-      parameters:
-        - $ref: "#/components/parameters/ReceivableRef"
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/PaymentApplicationCreate"
-      responses:
-        "200":
-          description: Payment applied; returns the updated receivable projection.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Receivable"
-        "400":
-          $ref: "#/components/responses/ValidationFailure"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/ForbiddenOrOriginRejected"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "500":
-          $ref: "#/components/responses/SystemFailure"
-
-  # ----------------------------------------------------------------------------
-  # Console — claims & remittance reconciliation
-  # ----------------------------------------------------------------------------
-  /api/v1/settlement/claims:
-    post:
-      summary: Submit receivable(s) to a third-party payer as a claim.
-      operationId: consoleSubmitClaim
-      x-idempotency: required
-      tags: [settlement-console]
-      security:
-        - cookieAuth: []
-      description: >
-        Submit one or more open receivables to a third-party payer for collection
-        (FR-014). Transitions the targeted receivables to `claimed`. Idempotent.
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ClaimCreate"
-      responses:
-        "201":
-          description: Claim submitted.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Claim"
-        "400":
-          $ref: "#/components/responses/ValidationFailure"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/ForbiddenOrOriginRejected"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "500":
-          $ref: "#/components/responses/SystemFailure"
-
-  /api/v1/settlement/claims/{claimRef}/reconcile-remittance:
-    post:
-      summary: Reconcile a remittance against a claim (records variance).
-      operationId: consoleReconcileRemittance
-      x-idempotency: required
-      tags: [settlement-console]
-      security:
-        - cookieAuth: []
-      description: >
-        Match a third-party payer's remittance against a claim, recording variance
-        (claimed − remitted). A clearing remittance settles the underlying
-        receivable(s); a partial one leaves a recorded outstanding balance +
-        variance; a net-zero-or-below outcome reaches `flagged`, never an
-        indeterminate state (§4 edge cases, FR-014). Idempotent (G5).
-
-        A claim not in a reconcilable state (e.g. not `claimed`, or a remittance
-        arriving before the claim is acknowledged) returns `409 conflict`,
-        deterministic, no side effect. Rejection of a claim line does NOT define a
-        new workflow here — it routes to DP-026 + Connector Arc A + POS-014
-        (FR-015, NG-1).
-      parameters:
-        - $ref: "#/components/parameters/ClaimRef"
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/RemittanceReconcile"
-      responses:
-        "200":
-          description: Remittance reconciled; returns the reconciliation result.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ReconciliationResult"
-        "400":
-          $ref: "#/components/responses/ValidationFailure"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/ForbiddenOrOriginRejected"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "500":
-          $ref: "#/components/responses/SystemFailure"
-
-  # ----------------------------------------------------------------------------
-  # POS — settlement-intent capture (intent only)
-  # ----------------------------------------------------------------------------
-  /api/v1/settlement/settlement-intent:
-    post:
-      summary: Capture settlement intent + payer metadata at the till (intent only).
-      operationId: posRecordSettlementIntent
-      x-idempotency: required
-      tags: [settlement-pos]
-      security:
-        - operatorAuthorization: []
-      description: >
-        Record the settlement intent for a captured sale — tender split, payer
-        reference, co-pay vs covered amounts, claim metadata — opening the
-        receivable(s) for the unpaid balance against the named payer account
-        (FR-003/005/016). POS captures INTENT ONLY: it never applies cash,
-        authorizes a receivable, or posts money. The sale fact itself is captured
-        by `captureSale` (`pos-sales/sales.yaml`) and is NOT mutated here
-        (FR-006, §1 core principle).
-
-        Authorized by the 031 operator-authorization envelope; the backend
-        re-evaluates the full operator predicate live (G-4). Idempotent on
-        `Idempotency-Key` — replay yields the same single receivable outcome, no
-        duplicate (FR-020, G5). An unknown / cross-tenant payer reference is a
-        deterministic safe outcome (`409 conflict` unknown-payer), never a silent
-        post to the wrong account (§4 edge cases, §II/§XII).
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/SettlementIntentCreate"
-      responses:
-        "201":
-          description: Settlement intent recorded; receivable(s) opened.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SettlementIntentResult"
-        "400":
-          $ref: "#/components/responses/ValidationFailure"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "429":
-          $ref: "#/components/responses/TooManyRequests"
-        "500":
-          $ref: "#/components/responses/SystemFailure"
-
 components:
   securitySchemes:
     cookieAuth:
@@ -421,22 +184,8 @@ components:
       description: >
         The human dashboard session cookie (httpOnly `dp2_session`), verified by
         `DashboardAuthGuard` + `RolesGuard` (default deny). The ONLY accepted
-        credential on the Console management surface — a machine bearer or POS
-        envelope is rejected. 401/403 semantics owned by 028 (G10).
-    operatorAuthorization:
-      type: http
-      scheme: bearer
-      description: >
-        The operator-authorization ENVELOPE (031 D1+D2): an opaque, revocable,
-        DP-2-issued `pos_operator` bearer presented as
-        `Authorization: Bearer <envelope>`. The durable POS credential the
-        backend resolves via the canonical operator-authorization path; it carries
-        NO provider-specific claim. An *authorization* credential, NOT an identity
-        proof — it deliberately does NOT reuse 030's `operator-identity` scheme.
-        The backend re-evaluates the full operator predicate (membership-active,
-        device-active, store-access, role-eligibility, non-expiry) LIVE on every
-        request; any refusal collapses to a generic 401 (no factor disclosure).
-        `bearerFormat` is intentionally omitted — the envelope is opaque, not JWT.
+        credential on this surface — a machine bearer or POS envelope is
+        rejected. 401/403 semantics owned by 028 (G10).
 
   parameters:
     PayerCategoryQuery:
@@ -446,29 +195,6 @@ components:
       schema:
         $ref: "#/components/schemas/PayerCategory"
       description: Optional payer-category filter.
-    ReceivableStateQuery:
-      name: state
-      in: query
-      required: false
-      schema:
-        $ref: "#/components/schemas/ReceivableState"
-      description: Optional receivable lifecycle-state filter.
-    PayerRefQuery:
-      name: payer_ref
-      in: query
-      required: false
-      schema:
-        type: string
-        format: uuid
-      description: Optional in-scope payer-account filter; out-of-scope id → non-disclosing 404.
-    StoreIdQuery:
-      name: store_id
-      in: query
-      required: false
-      schema:
-        type: string
-        format: uuid
-      description: Optional in-scope store filter; out-of-scope id → non-disclosing 404.
     Cursor:
       name: cursor
       in: query
@@ -477,17 +203,6 @@ components:
         type: string
         minLength: 1
       description: Opaque keyset cursor from a prior page's `nextCursor`. Omit for the first page.
-    ReceivableCursor:
-      name: cursor
-      in: query
-      required: false
-      schema:
-        type: string
-        format: uuid
-      description: >
-        Opaque keyset cursor from a prior page's `nextCursor`. Omit for the first
-        page. The value is a receivable reference (a UUID); anything else is a
-        400 `validation_error`.
     PageSize:
       name: page_size
       in: query
@@ -498,25 +213,6 @@ components:
         maximum: 200
         default: 50
       description: Maximum items per page (bounded). The server MAY return fewer.
-    ReceivableRef:
-      name: receivableRef
-      in: path
-      required: true
-      schema:
-        type: string
-        format: uuid
-      description: >
-        Stable server-issued receivable reference. Resolves only within the
-        operator's (tenant, store) scope — out-of-scope refs are non-disclosing
-        404s (§II/§XII).
-    ClaimRef:
-      name: claimRef
-      in: path
-      required: true
-      schema:
-        type: string
-        format: uuid
-      description: Stable server-issued claim reference; out-of-scope refs are non-disclosing 404s.
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -539,42 +235,6 @@ components:
       description: >
         Third-party payer category (FR-002). Extensible without hard-coding a
         single vertical; this is the v1 set.
-    ReceivableState:
-      type: string
-      enum: [open, partially_applied, settled, claimed, flagged]
-      description: >
-        The non-reversal receivable lifecycle (035-DR-SETTLEMENT §OQ-4 CARVE).
-        `reversal_consumed` is intentionally EXCLUDED — it lands in a later
-        additive bump after DP-026 closes (FR-024). Transitions are deterministic
-        (FR-005): open → partially_applied → settled; open → claimed →
-        (settled | partially_applied + variance); variance/net-zero-or-below →
-        flagged.
-    # Signed money stays for variance (claimed − remitted; negative on
-    # over-remittance). Request fields use NonNegativeMoney / PositiveMoney
-    # so one pattern is not applied to every money field.
-    Money:
-      type: string
-      pattern: '^-?[0-9]{1,15}(\.[0-9]{1,4})?$'
-      description: >
-        Signed exact-decimal money as a string (no floats, §III), stored as
-        `numeric(19,4)` — at most 15 integer digits and 4 fractional digits.
-        A leading `-` is allowed: `variance` is legitimately negative. Tax is
-        NOT apportioned into this value in v1 (tax-pending, §OQ-2).
-    NonNegativeMoney:
-      type: string
-      pattern: '^[0-9]{1,15}(\.[0-9]{1,4})?$'
-      description: >
-        Non-negative exact-decimal money (`numeric(19,4)`). Zero is valid: a
-        0 `remittedAmount` is a full rejection, and `cashTendered`,
-        `outstandingBalance`, and `claimedAmount` may be zero. No leading `-`.
-    PositiveMoney:
-      type: string
-      pattern: '^(?!0+(?:\.0+)?$)[0-9]{1,15}(\.[0-9]{1,4})?$'
-      description: >
-        Strictly positive exact-decimal money (`numeric(19,4)`). Zero and
-        negatives are rejected, matching apply-payment `amount` and
-        settlement-intent `owedAmount` (`> 0`). A zero apply would trip
-        `payment_application_amount_positive`.
 
     # ----- payer account -----
     PayerAccountCreate:
@@ -583,7 +243,8 @@ components:
       required: [category, displayName]
       description: >
         Create-a-payer-account request. `tenant_id` + actor are server-resolved
-        (§XII) and MUST NOT appear here.
+        (§XII) and MUST NOT appear here. RT-417 (2.0.0): `creditTerms` is
+        removed; ERPNext owns payment terms and credit limits.
       properties:
         category:
           $ref: "#/components/schemas/PayerCategory"
@@ -593,15 +254,19 @@ components:
           maxLength: 200
         externalRef:
           type: [string, "null"]
+          minLength: 1
+          pattern: '\S'
           description: >
-            Optional provider-neutral external identity reference for the payer
-            (e.g. insurer code). Opaque; no FK semantics.
-        creditTerms:
-          description: >
-            Tax-/terms placeholder (FR-004). Shape intentionally deferred to a
-            later slice; carried as an opaque object or null in v1.
-          type: [object, "null"]
-          additionalProperties: true
+            The payer's ERPNext Customer link (RT-413 §2): the identifier the
+            Connector resolves to the ERPNext Customer that a sale's
+            responsibility is posted against (RT-419). Opaque to Backend-Core
+            (no FK, never looked up here). Null = not yet linked; the
+            Connector fails closed for an unlinked or unknown payer and never
+            falls back to the store's Customer (see
+            `erpnext-connector/posting-feed.yaml`). When present it must contain
+            a non-whitespace character: a blank or whitespace-only value is a
+            400 `validation_error`, because it could never resolve to a
+            Customer (Codex review of #779).
         storeId:
           type: [string, "null"]
           format: uuid
@@ -610,17 +275,21 @@ components:
       type: object
       additionalProperties: false
       required: [payerRef, category, displayName, status, version]
-      description: Wire projection of a payer account. No `tenant_id` (implicit in scope).
+      description: Wire projection of a payer account. No `tenant_id` (implicit in scope), no credit terms.
       properties:
         payerRef:
           type: string
           format: uuid
+          description: >
+            Stable server-issued payer reference. A sale names its payers by
+            this value (`pos-sales/sales.yaml` `SaleResponsibility.payerRef`).
         category:
           $ref: "#/components/schemas/PayerCategory"
         displayName:
           type: string
         externalRef:
           type: [string, "null"]
+          description: The payer's ERPNext Customer link (see `PayerAccountCreate.externalRef`).
         status:
           type: string
           enum: [active, suspended]
@@ -630,7 +299,7 @@ components:
         version:
           type: integer
           minimum: 0
-          description: Optimistic-concurrency version (§III). A stale version on update → 409.
+          description: Optimistic-concurrency version (§III).
     PayerAccountPage:
       type: object
       additionalProperties: false
@@ -644,216 +313,6 @@ components:
         nextCursor:
           type: [string, "null"]
           description: Opaque cursor for the next page; null on the last page.
-
-    # ----- receivable -----
-    Receivable:
-      type: object
-      additionalProperties: false
-      required:
-        - receivableRef
-        - saleRef
-        - payerRef
-        - outstandingBalance
-        - state
-        - version
-      description: >
-        Wire projection of a receivable: money owed against a sale by a payer.
-        Carries no `tenant_id`, no raw sale lines, no `payload_hash`.
-      properties:
-        receivableRef:
-          type: string
-          format: uuid
-        saleRef:
-          type: string
-          format: uuid
-          description: The originating immutable sale (008/032). Never mutated by settlement (FR-006).
-        payerRef:
-          type: string
-          format: uuid
-        outstandingBalance:
-          $ref: "#/components/schemas/NonNegativeMoney"
-        state:
-          $ref: "#/components/schemas/ReceivableState"
-        erpnextPaymentEntryRef:
-          type: [string, "null"]
-          description: >
-            7-C external reference to the ERPNext accounting Payment Entry (the
-            VALUATION projection ERPNext owns). DP-2 owns the operational record;
-            this is a non-authoritative pointer, populated only once the connector
-            posting gate (011-DR-POSTING-R1) clears — null until then.
-        taxPlaceholder:
-          type: [object, "null"]
-          additionalProperties: true
-          description: Tax-pending placeholder; no VAT allocation in v1 (§OQ-2, FR-023).
-        version:
-          type: integer
-          minimum: 0
-          description: Optimistic-concurrency version (§III). A stale version on a write → 409.
-    ReceivablePage:
-      type: object
-      additionalProperties: false
-      required: [items, nextCursor]
-      properties:
-        items:
-          type: array
-          maxItems: 200
-          items:
-            $ref: "#/components/schemas/Receivable"
-        nextCursor:
-          type: [string, "null"]
-
-    # ----- cash application -----
-    PaymentApplicationCreate:
-      type: object
-      additionalProperties: false
-      required: [amount, version]
-      description: Apply a payment/cash against the path receivable (7-C operational truth).
-      properties:
-        amount:
-          $ref: "#/components/schemas/PositiveMoney"
-        version:
-          type: integer
-          minimum: 0
-          description: >
-            The version the caller last observed on the receivable. The update is
-            guarded `WHERE ... AND version = :version`; a mismatch is 409.
-        note:
-          type: [string, "null"]
-          maxLength: 500
-          description: Optional human note; redacted in audit per §XIII/§XIV.
-
-    # ----- settlement intent (POS) -----
-    SettlementIntentCreate:
-      type: object
-      additionalProperties: false
-      required: [saleRef, payers]
-      description: >
-        POS-captured settlement intent over an already-captured sale. Intent only
-        (FR-016): it opens receivables; it does not apply cash or post money.
-      properties:
-        saleRef:
-          type: string
-          format: uuid
-          description: The already-captured sale (pos-sales/sales.yaml captureSale). Not mutated.
-        cashTendered:
-          description: >
-            The cash portion settled at the till (part of the immutable sale);
-            the owed remainder opens the receivable(s). Non-negative
-            exact-decimal string; zero is valid. Null when no cash was tendered.
-          anyOf:
-            - $ref: "#/components/schemas/NonNegativeMoney"
-            - type: "null"
-        payers:
-          type: array
-          minItems: 1
-          maxItems: 16
-          description: >
-            Split settlement responsibility — one entry per payer (e.g. patient
-            co-pay + insurer-covered). Each opens/contributes to a receivable.
-          items:
-            $ref: "#/components/schemas/SettlementIntentPayer"
-    SettlementIntentPayer:
-      type: object
-      additionalProperties: false
-      required: [payerRef, owedAmount]
-      properties:
-        payerRef:
-          type: string
-          format: uuid
-          description: In-scope payer account; unknown/cross-tenant → 409 unknown-payer (safe).
-        owedAmount:
-          $ref: "#/components/schemas/PositiveMoney"
-        claimMetadata:
-          type: [object, "null"]
-          additionalProperties: true
-          description: Optional payer claim metadata (e.g. policy ref); opaque in v1.
-    SettlementIntentResult:
-      type: object
-      additionalProperties: false
-      required: [saleRef, receivables]
-      description: The receivable(s) opened from the captured settlement intent.
-      properties:
-        saleRef:
-          type: string
-          format: uuid
-        receivables:
-          type: array
-          maxItems: 16
-          items:
-            $ref: "#/components/schemas/Receivable"
-
-    # ----- claims & remittance -----
-    ClaimCreate:
-      type: object
-      additionalProperties: false
-      required: [payerRef, receivableRefs]
-      description: Submit one or more open/partially-applied receivables as a claim.
-      properties:
-        payerRef:
-          type: string
-          format: uuid
-        receivableRefs:
-          type: array
-          minItems: 1
-          maxItems: 500
-          items:
-            type: string
-            format: uuid
-    Claim:
-      type: object
-      additionalProperties: false
-      required: [claimRef, payerRef, status, receivableRefs]
-      properties:
-        claimRef:
-          type: string
-          format: uuid
-        payerRef:
-          type: string
-          format: uuid
-        status:
-          type: string
-          enum: [submitted, acknowledged, reconciled]
-        receivableRefs:
-          type: array
-          maxItems: 500
-          items:
-            type: string
-            format: uuid
-    RemittanceReconcile:
-      type: object
-      additionalProperties: false
-      required: [remittedAmount]
-      description: Reconcile a remittance against the path claim; records variance.
-      properties:
-        remittedAmount:
-          $ref: "#/components/schemas/NonNegativeMoney"
-        remittanceRef:
-          type: [string, "null"]
-          description: Optional payer-side remittance advice reference; opaque.
-    ReconciliationResult:
-      type: object
-      additionalProperties: false
-      required: [claimRef, claimedAmount, remittedAmount, variance, outcome]
-      description: >
-        Matched/variance outcome of a remittance vs claim (FR-014). Rejection of a
-        line routes to DP-026 reuse (FR-015, NG-1) — not represented as a new
-        state here.
-      properties:
-        claimRef:
-          type: string
-          format: uuid
-        claimedAmount:
-          $ref: "#/components/schemas/NonNegativeMoney"
-        remittedAmount:
-          $ref: "#/components/schemas/NonNegativeMoney"
-        variance:
-          $ref: "#/components/schemas/Money"
-        outcome:
-          type: string
-          enum: [settled, partial, flagged]
-          description: >
-            settled (variance zero) | partial (remaining balance + recorded
-            variance) | flagged (net-zero-or-below / anomaly, §4 edge cases).
 
     # -------------------------------------------------------------------------
     # Canonical Error envelope (mirrors auth / pos-sales / sale-sync-ops)
@@ -882,7 +341,7 @@ components:
 
   responses:
     ValidationFailure:
-      description: validation_error (400) — malformed body/query/path, unknown key (strict), bad cursor.
+      description: validation_error (400) — malformed body/query, unknown key (strict, including a removed `creditTerms`), bad cursor.
       content:
         application/json:
           schema:
@@ -890,8 +349,8 @@ components:
     Unauthorized:
       description: >
         Unauthenticated (401) — missing/invalid credential, or a wrong-surface
-        credential rejected (cookie on the POS route, or envelope on a Console
-        route). Non-disclosing. 401 semantics owned by 028 (G10).
+        credential (a POS envelope or machine bearer) rejected. Non-disclosing.
+        401 semantics owned by 028 (G10).
       content:
         application/json:
           schema:
@@ -912,44 +371,19 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
-    TooManyRequests:
-      description: >
-        too_many_requests (429) — per-device write rate limit exceeded on the POS
-        settlement-intent route (ADR 0009 / audit M-2). Keyed PER DEVICE, not per
-        IP or operator token. Non-disclosing `Error` body; `Retry-After` carries
-        the back-off (seconds, [1, 300]). A POS client MUST treat this as
-        TRANSIENT/retryable, never a permanent dead-letter. The limiter FAILS OPEN
-        on a rate-limiter datastore outage (ADR 0009 D3), so a 429 is always a real
-        budget breach.
-      headers:
-        Retry-After:
-          description: Seconds to wait before retry; clamped [1, 300].
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 300
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/Error"
     NotFound:
       description: >
-        not_found (404) — the ref does not resolve within the operator's (tenant,
-        store) scope. Non-disclosing: identical for cross-tenant, out-of-scope,
-        and genuinely-absent ids (§II/§XII, FR-022).
+        not_found (404) — an out-of-scope `storeId` on create: a store that
+        does not exist, belongs to another tenant, or is outside the caller's
+        store scope. Non-disclosing: one body for every cause (§II/§XII).
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     Conflict:
       description: >
-        conflict (409) — a deterministic, side-effect-free refusal. Covers: stale
-        optimistic-concurrency `version`; unknown / cross-tenant payer at intent
-        (`unknown-payer`); over-application (amount > outstanding balance);
-        claim/remittance not in a reconcilable state; `idempotency_key_conflict`.
-        `error.code = "conflict"` (or the specific sub-code). DISTINCT from any
-        reversal/void conflict on the POS terminal surface, which is NOT touched
-        by this contract (NG-1).
+        conflict (409) — a deterministic, side-effect-free refusal:
+        `idempotency_key_conflict` (the key reused with a different payload).
       content:
         application/json:
           schema:
