@@ -1,0 +1,1198 @@
+openapi: 3.1.0
+info:
+  title: Backend-Core — Shift Variance Policy (cash variance approval) API
+  version: "1.0.0-draft"
+  description: >
+    Jira RT-384 (AD-CASH-001 follow-up 1): the per-tenant, per-store shift
+    variance policy that decides when closing a cash session needs a verified
+    manager approval. The decision of record is AD-CASH-001 (Kemetra/
+    Orchestrator, Accepted, `e73362b`): decisions DR-1 to DR-13, ratified in
+    RT-236 comment 11539 with the owner rulings of comment 11543.
+
+
+    **Posture.** `1.0.0-draft`, contract-only: every operation carries
+    `x-runtime-status: contract-only` until the RT-387 runtime ships on the
+    RT-385 `[GATED]` migration. `[GATED]` contract; it needs the owner's
+    approval before merge. `pos-shifts.openapi.yaml` 1.2.0-draft (the policy
+    fields frozen on a shift open and the derived close values) and
+    `shift-closes.openapi.yaml` 1.1.0-draft (the same values on the admin
+    close read) are the other two halves of this contract.
+
+
+    **Surfaces.**
+
+      1. `posGetCashVariancePolicy` — POS terminals, `device` bearer. The
+         resolved effective policy of the device's own tenant and store;
+         scope comes only from the device row. Conditional with `ETag` /
+         `If-None-Match` → `304` (AD-CASH-001 D-5, DR-5).
+      2. `consoleGetTenantCashVariancePolicy`,
+         `consoleListTenantCashVariancePolicyRevisions`,
+         `consolePublishTenantCashVariancePolicy` — the tenant default.
+      3. `consoleGetStoreCashVariancePolicy`,
+         `consoleListStoreCashVariancePolicyRevisions`,
+         `consolePublishStoreCashVariancePolicyOverride` — the store override
+         and the store's effective policy.
+
+    The Console operations are the human `cookieAuth` session only
+    (`SessionOnlyAdminGuard` → `TenantContextGuard` → `RolesGuard`, as in
+    `shift-closes` and `tenant-branding`): a bearer-only request,
+    `dashboard_api` included, is `401`. The tenant comes from the session; a
+    `{tenant_id}` that is not the session's tenant, a `{store_id}` of another
+    tenant or outside the caller's store scope, and a role outside an
+    operation's list are the same non-disclosing `404` (§II, §XII). Every
+    unsafe Console request is subject to the RT-430 `Origin` check (`403
+    origin_rejected`).
+
+
+    **Who.** Configuring the policy (tenant default and store override) is
+    `owner` / `tenant_admin` only (DR-10), for a store within the caller's
+    membership store scope. Reading a store's effective policy is also open to
+    `store_manager` for its own stores. The separation-of-duties gap is
+    accepted until RT-284 (RT-236 comment 11543): both configuring roles can
+    also approve a variance (`shift-close-approver.ts`); the mitigation is the
+    attributed, immutable revision and its audit row. Configuring the policy
+    and approving a variance stay separate capabilities in RT-284.
+
+
+    **The value (D-1).** An explicit `mode`: `none` (the cashier always
+    closes alone) or `limit` (`limitAmount`, an exact-decimal string, plus
+    `currencyCode`). Approval is required exactly when `mode = limit` and
+    `|variance| > limitAmount`. The never-set System default is `none`
+    (DR-2), a constant of Backend-Core, not a revision: `policySource =
+    system`, `policyRevisionId = null`. V1 accepts only `EGP` for a limit (K-5,
+    coordinator decision 5); another currency is `422
+    policy_currency_unsupported`. A store `limit` therefore always uses the
+    tenant limit's currency.
+
+
+    **Resolution (D-2), owned by Backend-Core.** The tenant level is the
+    tenant's latest revision, else the System default. A store's effective
+    policy is its active store override (a `set` revision whose
+    `effectiveUntil` is absent or still in the future) or the tenant level.
+    When both apply, **the stricter of the two wins** and the tie goes to the
+    store (coordinator decision 3): `none` is the loosest; any `limit` is
+    stricter than `none`; a lower `limitAmount` is stricter than a higher one.
+    `policySource` and `policyRevisionId` name the winner. This keeps the
+    RT-284 guardrail (RT-284 comment 11887, Q5: a store override may not be
+    looser than the tenant default) even when the tenant tightens its default
+    after an override was published. Admin-Console and the POS never compute
+    inheritance (K-9).
+
+
+    **Store overrides (DR-4).** A `reason` is always required, and
+    `effectiveUntil` is optional. An override with no `effectiveUntil`, or with
+    one more than 90 days after publish (the DR-4 maximum horizon, coordinator
+    decision 1), is **permanent** and only an `owner` may publish it, in a
+    single call (coordinator decision 2): a `tenant_admin` gets `403
+    owner_approval_required`, and there is no pending state. A permanent
+    revision records the owner as `approvedByUserId`. An override may not be
+    looser than the tenant default at publish (`422
+    override_looser_than_tenant`).
+
+
+    **Revisions (D-3).** Every change is an immutable revision; a revision is
+    never edited or deleted, and rollback is a new revision. Only Apply Now
+    (DR-12): `effectiveFrom` is the server time at publish. A change applies
+    from each terminal's next cash-session open, because the value is frozen
+    per Cash Session at open (K-2); a session already open keeps the value it
+    froze. Writes take `expectedRevisionId`, the latest revision of the scope
+    the caller saw (`null` when the scope has none): a stale one is `409
+    cash_variance_policy_changed_concurrently` and nothing is written.
+
+
+    **Audit (D-9).** Each revision writes one `audit_events` row,
+    `cash_variance_policy.changed`, with the actor, the tenant, the store for
+    an override, the old and new value, `reason`, the revision id,
+    `effectiveFrom` / `effectiveUntil` and `approvedByUserId`. When an active
+    store override reaches its `effectiveUntil`, Backend-Core writes
+    `cash_variance_policy.override_expired` exactly once, with the store, the
+    expired revision and the policy now effective (source and revision); the
+    mechanism is RT-387's. No PII beyond actor ids; `reason` is short free
+    text documented "no PII".
+
+
+    **Delivery and the rollout gate (D-5, D-6, DR-6).** The POS reads the
+    resolved policy after pairing, at each online sign-in (including the
+    first one after the upgrade that adds the policy) and before an online
+    open, and caches it with no maximum age (DR-7). A terminal that never
+    fetched it freezes the fail-closed fallback (`limit 0`, `policySource =
+    fallback`) — a POS-side value; this read never returns `fallback`. No
+    POS release that applies the policy ships before this read is live.
+
+
+    **Error envelope.** The canonical `{ error: { code, message, request_id }
+    }` shape. The `425` is the shared `IdempotencyInterceptor`'s own body.
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: cash-variance-policy-pos
+    description: POS read of the resolved shift variance policy (RT-384).
+  - name: cash-variance-policy-console
+    description: Admin-Console tenant default and store override (RT-384).
+
+paths:
+  /api/pos/v1/store/cash-variance-policy:
+    get:
+      summary: Read the paired terminal's resolved shift variance policy.
+      operationId: posGetCashVariancePolicy
+      x-runtime-status: contract-only
+      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
+      tags: [cash-variance-policy-pos]
+      security:
+        - device: []
+      description: >
+        Returns the effective policy of the device's own tenant and store, as
+        resolved by Backend-Core (see the info description): `policySource`
+        (`system` | `tenant` | `store`), `policyRevisionId` (`null` for
+        `system`), the value and `serverTime`. Tenant and store come only from
+        the device row; no query parameter is accepted. Send `If-None-Match`
+        with the last `ETag`; an unchanged resolved policy is `304` with no
+        body. The POS freezes the answer on its local open record at each
+        cash-session open and sends it on `openShift` (pos-shifts 1.2.0-draft).
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The resolved policy.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceCashVariancePolicy"
+        "304":
+          description: Unchanged since the `If-None-Match` ETag. No body.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "400":
+          $ref: "#/components/responses/ReadValidationFailure"
+        "401":
+          $ref: "#/components/responses/DeviceUnauthorized"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/tenants/{tenant_id}/cash-variance-policy:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+    get:
+      summary: Read the tenant default shift variance policy.
+      operationId: consoleGetTenantCashVariancePolicy
+      x-runtime-status: contract-only
+      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
+      tags: [cash-variance-policy-console]
+      security:
+        - cookieAuth: []
+      description: >
+        The tenant level of the policy: the tenant's latest revision, or the
+        System default (`none`) when the tenant never set one, with the latest
+        revision (actor, time, reason) and the concurrency token for the next
+        publish. Roles `owner` / `tenant_admin`.
+      responses:
+        "200":
+          description: The tenant default.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantCashVariancePolicy"
+        "400":
+          $ref: "#/components/responses/ReadValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/tenants/{tenant_id}/cash-variance-policy/revisions:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+    get:
+      summary: List the tenant default's revisions (newest first).
+      operationId: consoleListTenantCashVariancePolicyRevisions
+      x-runtime-status: contract-only
+      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
+      tags: [cash-variance-policy-console]
+      security:
+        - cookieAuth: []
+      description: >
+        Every tenant-scope revision, newest first by (`createdAt`,
+        `revisionId`), keyset paginated. Roles `owner` / `tenant_admin`.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of revisions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CashVariancePolicyRevisionPage"
+        "400":
+          $ref: "#/components/responses/ReadValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+    post:
+      summary: Publish a new tenant default (Apply Now).
+      operationId: consolePublishTenantCashVariancePolicy
+      x-runtime-status: contract-only
+      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
+      x-idempotency: required
+      tags: [cash-variance-policy-console]
+      security:
+        - cookieAuth: []
+      description: >
+        Appends a tenant-scope revision with the given value and `reason`.
+        Roles `owner` / `tenant_admin`. A tenant may choose `none` (DR-3). The
+        new default applies from each terminal's next cash-session open;
+        where it is stricter than an active store override, it wins that
+        store's resolution (the info description).
+
+
+        Order of checks, each stopping the call: (1) session, `Origin`,
+        tenant and role (`401` / `403 origin_rejected` / `404`); (2) the
+        `Idempotency-Key` (a same-key retry replays the stored response with
+        `Idempotent-Replayed: true`); (3) the body (`400 validation_error`);
+        (4) under a lock on the tenant's policy scope, the currency (`422
+        policy_currency_unsupported`); (5) `expectedRevisionId` (`409
+        cash_variance_policy_changed_concurrently`); (6) write the revision and
+        its `cash_variance_policy.changed` audit row in one transaction and
+        answer `201` with the updated tenant read.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublishTenantCashVariancePolicyRequest"
+      responses:
+        "201":
+          description: >
+            Published. A same-key retry replays this `201` with
+            `Idempotent-Replayed: true`.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantCashVariancePolicy"
+        "400":
+          $ref: "#/components/responses/WriteValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/TenantPolicyUnprocessable"
+        "425":
+          $ref: "#/components/responses/IdempotencyInProgress"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/stores/{store_id}/cash-variance-policy:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    get:
+      summary: Read a store's effective shift variance policy and its override.
+      operationId: consoleGetStoreCashVariancePolicy
+      x-runtime-status: contract-only
+      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
+      tags: [cash-variance-policy-console]
+      security:
+        - cookieAuth: []
+      description: >
+        The store's effective policy (source, revision, value) as resolved by
+        Backend-Core, the tenant level it inherits, the active store override
+        if any (reason, `effectiveUntil`, `permanent`), the concurrency token
+        for the next override publish, and the DR-4 horizon. Roles `owner` /
+        `tenant_admin` (any store in their membership store scope) and
+        `store_manager` (its own stores; read only). The store scope is the
+        operator-surface rule of `shift-closes`.
+      responses:
+        "200":
+          description: The store's policy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreCashVariancePolicy"
+        "400":
+          $ref: "#/components/responses/ReadValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/stores/{store_id}/cash-variance-policy/revisions:
+    parameters:
+      - $ref: "#/components/parameters/StoreId"
+    get:
+      summary: List a store's override revisions (newest first).
+      operationId: consoleListStoreCashVariancePolicyRevisions
+      x-runtime-status: contract-only
+      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
+      tags: [cash-variance-policy-console]
+      security:
+        - cookieAuth: []
+      description: >
+        Every store-scope revision of this store (`set` and `clear`), newest
+        first by (`createdAt`, `revisionId`), keyset paginated. A permanent
+        override is labelled `permanent: true`, never hidden. Roles `owner` /
+        `tenant_admin`, within their membership store scope.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of revisions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CashVariancePolicyRevisionPage"
+        "400":
+          $ref: "#/components/responses/ReadValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+    post:
+      summary: Set or clear the store override (Apply Now).
+      operationId: consolePublishStoreCashVariancePolicyOverride
+      x-runtime-status: contract-only
+      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
+      x-idempotency: required
+      tags: [cash-variance-policy-console]
+      security:
+        - cookieAuth: []
+      description: >
+        Appends a store-scope revision: `kind: set` publishes an override
+        (value, `reason`, optional `effectiveUntil`); `kind: clear` removes
+        the active one (`reason` only), so the store inherits the tenant level
+        again. Roles `owner` / `tenant_admin`, within their membership store
+        scope.
+
+
+        **Permanent override (DR-4).** A `set` with no `effectiveUntil`, or
+        with one more than 90 days after the server's publish time, is
+        permanent: only an `owner` may publish it, in this single call, and a
+        `tenant_admin` gets `403 owner_approval_required`. The revision records
+        the owner as `approvedByUserId`. There is no pending state.
+
+
+        **Stricter only (RT-284 comment 11887, Q5).** A `set` must not be
+        looser than the tenant level at publish: `none` under a tenant
+        `limit`, or a higher `limitAmount`, is `422
+        override_looser_than_tenant`. An equal value is accepted.
+
+
+        Order of checks, each stopping the call: (1) session, `Origin`, store
+        scope and role (`401` / `403 origin_rejected` / `404`); (2) the
+        `Idempotency-Key` (a same-key retry replays the stored response with
+        `Idempotent-Replayed: true`); (3) the body (`400 validation_error`);
+        (4) under a lock on the store's policy scope: the currency (`422
+        policy_currency_unsupported`), an `effectiveUntil` not after the
+        server time (`422 override_expiry_invalid`), a `clear` with no active
+        override (`422 override_not_active`), the stricter-only rule (`422
+        override_looser_than_tenant`), then the owner rule (`403
+        owner_approval_required`); (5) `expectedRevisionId` (`409
+        cash_variance_policy_changed_concurrently`); (6) write the revision and
+        its `cash_variance_policy.changed` audit row in one transaction and
+        answer `201` with the updated store read.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublishStoreCashVariancePolicyOverrideRequest"
+      responses:
+        "201":
+          description: >
+            Published. A same-key retry replays this `201` with
+            `Idempotent-Replayed: true`.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreCashVariancePolicy"
+        "400":
+          $ref: "#/components/responses/WriteValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/StoreWriteForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/StoreOverrideUnprocessable"
+        "425":
+          $ref: "#/components/responses/IdempotencyInProgress"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+components:
+  securitySchemes:
+    device:
+      type: http
+      scheme: bearer
+      description: >
+        The paired terminal's opaque `devices` pairing token, presented as
+        `Authorization: Bearer <device_token>` (the scheme of
+        `posGetTenantBranding` and `posGetCatalogSnapshot`; NOT a JWT). The
+        device row supplies the authoritative tenant and store; nothing in the
+        request is trusted as scope. A missing, malformed, unknown or revoked
+        token is the generic, non-disclosing 401.
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: dp2_session
+      description: >
+        The human dashboard session cookie (httpOnly `dp2_session`), verified
+        by `SessionOnlyAdminGuard`. The only credential accepted on the
+        Console operations: a machine bearer (`dashboard_api` included), a POS
+        `device` token or an `operatorAuthorization` envelope is 401.
+
+  headers:
+    ETag:
+      description: >
+        Strong ETag: the quoted lowercase hex SHA-256 of the canonical JSON
+        (keys sorted, no whitespace) of the resolved `policySource`,
+        `policyRevisionId` and `policyValue`. `serverTime` is not part of it.
+        Because it is computed over the resolved policy, it changes when a
+        store override expires, with no write.
+      schema:
+        type: string
+        pattern: '^"[0-9a-f]{64}"$'
+    CacheControl:
+      description: Always `no-cache, private`; the POS revalidates every read.
+      schema:
+        type: string
+        const: "no-cache, private"
+    IdempotentReplayed:
+      description: >
+        Present and `true` on a same-`Idempotency-Key` replay, which carries
+        the stored status (`201`). Absent on a first-time publish.
+      schema:
+        type: boolean
+    RetryAfterInProgress:
+      description: Seconds to wait before retrying a 425 with the same `Idempotency-Key` and body.
+      schema:
+        type: integer
+        minimum: 1
+
+  parameters:
+    TenantId:
+      name: tenant_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        Must be the session's tenant; another tenant, or a role outside the
+        operation's list, is the non-disclosing 404.
+    StoreId:
+      name: store_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        A store of the session's tenant within the caller's store scope;
+        anything else is the non-disclosing 404.
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      schema:
+        type: string
+        pattern: '^"[0-9a-f]{64}"$'
+      description: The last `ETag` received; omit it when the cached policy was lost.
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 512
+        pattern: "^[A-Za-z0-9_-]+$"
+      description: >
+        Opaque keyset cursor from a prior page's `nextCursor`; omit it for the
+        first page. A value the server did not issue is 400 `validation_error`.
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+      description: Maximum revisions per page. The server MAY return fewer.
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
+      description: >
+        REQUIRED on every publish (G5): 16 to 128 printable ASCII characters
+        with no whitespace, as the shared `IdempotencyInterceptor` enforces.
+        Keyed on the verified actor. An identical retry replays the stored
+        response with `Idempotent-Replayed: true`; key reuse with a different
+        body is 409 `idempotency_key_conflict`; a key still being processed is
+        425 `idempotency_in_progress`. A missing key is 400
+        `idempotency_key_required`, a malformed one 400
+        `idempotency_key_malformed`.
+
+  schemas:
+    # -----------------------------------------------------------------------
+    # The value (D-1) and money (the pos-shifts / shift-closes shapes)
+    # -----------------------------------------------------------------------
+    CurrencyCode:
+      type: string
+      pattern: "^[A-Z]{3}$"
+      description: ISO-4217 alphabetic currency code. V1 accepts only `EGP` on a publish (422 otherwise).
+    NonNegativeDecimalAmount:
+      type: string
+      pattern: '^[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: >
+        Exact-decimal amount as a string, never negative; at most 15 integer
+        and 4 fractional digits, and at most the currency's ISO-4217 minor
+        unit of fractional digits on a publish (400 `validation_error`).
+    CashVariancePolicyValue:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      if:
+        properties:
+          mode:
+            const: limit
+        required: [mode]
+      then:
+        required: [limitAmount, currencyCode]
+      else:
+        not:
+          anyOf:
+            - required: [limitAmount]
+            - required: [currencyCode]
+      description: >
+        The policy value (AD-CASH-001 D-1). `none`: the cashier always closes
+        alone. `limit`: approval is required exactly when `|variance| >
+        limitAmount` (a variance equal to the limit closes with the cashier
+        alone; `limitAmount` `0` asks on every non-zero variance).
+        `limitAmount` and `currencyCode` are required for `limit` and absent
+        for `none`.
+      properties:
+        mode:
+          type: string
+          enum: [none, limit]
+        limitAmount:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+
+    PolicySource:
+      type: string
+      enum: [system, tenant, store]
+      description: >
+        Where a resolved policy comes from. `system` is the Backend-Core
+        constant `none` (no revision). Never `fallback`: that is the POS's
+        own never-fetched value (pos-shifts `openShift`).
+    TenantPolicySource:
+      type: string
+      enum: [system, tenant]
+      description: The source of the tenant level.
+
+    ResolvedCashVariancePolicy:
+      type: object
+      additionalProperties: false
+      required: [policySource, policyRevisionId, policyValue]
+      if:
+        properties:
+          policySource:
+            const: system
+        required: [policySource]
+      then:
+        properties:
+          policyRevisionId:
+            type: "null"
+      else:
+        properties:
+          policyRevisionId:
+            type: string
+      description: >
+        A policy as resolved by Backend-Core. `policyRevisionId` is `null`
+        exactly when `policySource` is `system`.
+      properties:
+        policySource:
+          $ref: "#/components/schemas/PolicySource"
+        policyRevisionId:
+          type: [string, "null"]
+          format: uuid
+        policyValue:
+          $ref: "#/components/schemas/CashVariancePolicyValue"
+    TenantResolvedCashVariancePolicy:
+      type: object
+      additionalProperties: false
+      required: [policySource, policyRevisionId, policyValue]
+      if:
+        properties:
+          policySource:
+            const: system
+        required: [policySource]
+      then:
+        properties:
+          policyRevisionId:
+            type: "null"
+      else:
+        properties:
+          policyRevisionId:
+            type: string
+      description: >
+        The tenant level of the policy: the tenant's latest revision, or the
+        System default. Never `store`. `policyRevisionId` is `null` exactly
+        when `policySource` is `system`.
+      properties:
+        policySource:
+          $ref: "#/components/schemas/TenantPolicySource"
+        policyRevisionId:
+          type: [string, "null"]
+          format: uuid
+        policyValue:
+          $ref: "#/components/schemas/CashVariancePolicyValue"
+
+    DeviceCashVariancePolicy:
+      type: object
+      additionalProperties: false
+      required: [policySource, policyRevisionId, policyValue, serverTime]
+      if:
+        properties:
+          policySource:
+            const: system
+        required: [policySource]
+      then:
+        properties:
+          policyRevisionId:
+            type: "null"
+      else:
+        properties:
+          policyRevisionId:
+            type: string
+      description: >
+        The POS read: the resolved effective policy of the device's store and
+        the server time. The POS freezes `policySource`, `policyRevisionId` and
+        `policyValue` at each cash-session open.
+      properties:
+        policySource:
+          $ref: "#/components/schemas/PolicySource"
+        policyRevisionId:
+          type: [string, "null"]
+          format: uuid
+        policyValue:
+          $ref: "#/components/schemas/CashVariancePolicyValue"
+        serverTime:
+          type: string
+          format: date-time
+          description: The server clock when the policy was resolved.
+
+    # -----------------------------------------------------------------------
+    # Revisions (D-3) and the Console reads
+    # -----------------------------------------------------------------------
+    CashVariancePolicyRevision:
+      type: object
+      additionalProperties: false
+      required:
+        - revisionId
+        - scope
+        - storeId
+        - kind
+        - policyValue
+        - reason
+        - effectiveFrom
+        - effectiveUntil
+        - permanent
+        - approvedByUserId
+        - supersedesRevisionId
+        - state
+        - createdByUserId
+        - createdAt
+      allOf:
+        - if:
+            properties:
+              scope:
+                const: tenant
+            required: [scope]
+          then:
+            properties:
+              storeId:
+                type: "null"
+              kind:
+                const: set
+              effectiveUntil:
+                type: "null"
+              permanent:
+                const: false
+          else:
+            properties:
+              storeId:
+                type: string
+        - if:
+            properties:
+              kind:
+                const: clear
+            required: [kind]
+          then:
+            properties:
+              policyValue:
+                type: "null"
+              effectiveUntil:
+                type: "null"
+              permanent:
+                const: false
+          else:
+            properties:
+              policyValue:
+                type: object
+        - if:
+            properties:
+              permanent:
+                const: true
+            required: [permanent]
+          then:
+            properties:
+              approvedByUserId:
+                type: string
+          else:
+            properties:
+              approvedByUserId:
+                type: "null"
+      description: >
+        One immutable revision. Every key is always present; a value that does
+        not apply is `null`. A tenant revision is always a `set`, has no store
+        and no expiry. A `clear` has no value. `permanent` is `true` only for a
+        store `set` with no `effectiveUntil` or one beyond the 90-day horizon,
+        and then `approvedByUserId` is the publishing owner.
+      properties:
+        revisionId:
+          type: string
+          format: uuid
+          description: The id a cash session freezes as `policyRevisionId` (K-2).
+        scope:
+          type: string
+          enum: [tenant, store]
+        storeId:
+          type: [string, "null"]
+          format: uuid
+          description: The store of a store-scope revision; `null` for a tenant revision.
+        kind:
+          type: string
+          enum: [set, clear]
+        policyValue:
+          description: The value; `null` for a `clear`.
+          oneOf:
+            - $ref: "#/components/schemas/CashVariancePolicyValue"
+            - type: "null"
+        reason:
+          $ref: "#/components/schemas/Reason"
+        effectiveFrom:
+          type: string
+          format: date-time
+          description: Server time at publish (Apply Now).
+        effectiveUntil:
+          type: [string, "null"]
+          format: date-time
+          description: A store override's expiry; `null` when none or not applicable.
+        permanent:
+          type: boolean
+        approvedByUserId:
+          type: [string, "null"]
+          format: uuid
+          description: The approving `owner` of a permanent override; otherwise `null`.
+        supersedesRevisionId:
+          type: [string, "null"]
+          format: uuid
+          description: The scope's previous latest revision (the publish's `expectedRevisionId`); `null` for the first.
+        state:
+          type: string
+          enum: [current, superseded, expired]
+          description: >
+            `current`: the scope's latest revision. `superseded`: a later
+            revision of the same scope exists. `expired`: the scope's latest
+            revision is a store `set` whose `effectiveUntil` has passed.
+        createdByUserId:
+          type: string
+          format: uuid
+          description: The `users.id` who published the revision.
+        createdAt:
+          type: string
+          format: date-time
+
+    CashVariancePolicyRevisionPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      description: A keyset page of revisions, newest first.
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/CashVariancePolicyRevision"
+        nextCursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page; `null` on the last page.
+
+    TenantCashVariancePolicy:
+      type: object
+      additionalProperties: false
+      required: [tenantDefault, latestRevision, latestRevisionId]
+      description: >
+        The tenant default. `latestRevisionId` is the `expectedRevisionId` of
+        the next tenant publish (`null` before the first).
+      properties:
+        tenantDefault:
+          $ref: "#/components/schemas/TenantResolvedCashVariancePolicy"
+        latestRevision:
+          oneOf:
+            - $ref: "#/components/schemas/CashVariancePolicyRevision"
+            - type: "null"
+        latestRevisionId:
+          type: [string, "null"]
+          format: uuid
+
+    ActiveStoreOverride:
+      type: object
+      additionalProperties: false
+      required:
+        - revisionId
+        - policyValue
+        - reason
+        - effectiveUntil
+        - permanent
+        - approvedByUserId
+        - createdByUserId
+        - createdAt
+      if:
+        properties:
+          permanent:
+            const: true
+        required: [permanent]
+      then:
+        properties:
+          approvedByUserId:
+            type: string
+      else:
+        properties:
+          approvedByUserId:
+            type: "null"
+      description: The store's active override (a `set` revision not yet expired).
+      properties:
+        revisionId:
+          type: string
+          format: uuid
+        policyValue:
+          $ref: "#/components/schemas/CashVariancePolicyValue"
+        reason:
+          $ref: "#/components/schemas/Reason"
+        effectiveUntil:
+          type: [string, "null"]
+          format: date-time
+        permanent:
+          type: boolean
+          description: No expiry, or one beyond the 90-day horizon; the Console labels it "permanent".
+        approvedByUserId:
+          type: [string, "null"]
+          format: uuid
+        createdByUserId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    StoreCashVariancePolicy:
+      type: object
+      additionalProperties: false
+      required:
+        - storeId
+        - effective
+        - tenantDefault
+        - activeOverride
+        - latestRevisionId
+        - permanentOverrideHorizonDays
+      description: >
+        A store's policy. `effective` is what the store's terminals receive
+        (the stricter of `activeOverride` and `tenantDefault`, a tie to the
+        store). `latestRevisionId` is the `expectedRevisionId` of the next
+        override publish: the store's latest revision of any kind or state
+        (`null` before the first).
+      properties:
+        storeId:
+          type: string
+          format: uuid
+        effective:
+          $ref: "#/components/schemas/ResolvedCashVariancePolicy"
+        tenantDefault:
+          $ref: "#/components/schemas/TenantResolvedCashVariancePolicy"
+        activeOverride:
+          oneOf:
+            - $ref: "#/components/schemas/ActiveStoreOverride"
+            - type: "null"
+        latestRevisionId:
+          type: [string, "null"]
+          format: uuid
+        permanentOverrideHorizonDays:
+          type: integer
+          const: 90
+          description: >
+            The DR-4 maximum horizon (coordinator decision 1). An override
+            whose `effectiveUntil` is more than this many days after publish,
+            or absent, is permanent and owner-only.
+
+    # -----------------------------------------------------------------------
+    # Requests (strict; no tenant / store field)
+    # -----------------------------------------------------------------------
+    Reason:
+      type: string
+      minLength: 1
+      maxLength: 200
+      description: Why the policy changed, 1 to 200 characters. No PII. Required on every publish (D-3).
+    PublishTenantCashVariancePolicyRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRevisionId, policyValue, reason]
+      description: A new tenant default. The tenant comes from the path and the session, never the body.
+      properties:
+        expectedRevisionId:
+          type: [string, "null"]
+          format: uuid
+          description: The tenant read's `latestRevisionId` (`null` when the tenant has no revision yet).
+        policyValue:
+          $ref: "#/components/schemas/CashVariancePolicyValue"
+        reason:
+          $ref: "#/components/schemas/Reason"
+    PublishStoreCashVariancePolicyOverrideRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRevisionId, kind, reason]
+      if:
+        properties:
+          kind:
+            const: set
+        required: [kind]
+      then:
+        required: [policyValue]
+      else:
+        not:
+          anyOf:
+            - required: [policyValue]
+            - required: [effectiveUntil]
+      description: >
+        Set (`policyValue`, optional `effectiveUntil`) or clear (neither) the
+        store override. The store comes from the path, never the body.
+      properties:
+        expectedRevisionId:
+          type: [string, "null"]
+          format: uuid
+          description: The store read's `latestRevisionId` (`null` when the store has no revision yet).
+        kind:
+          type: string
+          enum: [set, clear]
+        policyValue:
+          $ref: "#/components/schemas/CashVariancePolicyValue"
+        reason:
+          $ref: "#/components/schemas/Reason"
+        effectiveUntil:
+          type: string
+          format: date-time
+          description: >
+            Optional expiry of a `set`, RFC 3339 with an offset; must be after
+            the server time (422 `override_expiry_invalid`). Absent, or more
+            than 90 days after publish: the override is permanent and
+            owner-only.
+
+    # -----------------------------------------------------------------------
+    # Errors
+    # -----------------------------------------------------------------------
+    Error:
+      type: object
+      required: [error]
+      description: >
+        Canonical error envelope. Out-of-scope and cross-tenant refusals are
+        non-disclosing (§II, §XII).
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id.
+    IdempotencyInProgressBody:
+      type: object
+      additionalProperties: false
+      required: [error, retryAfterSec]
+      description: The shared `IdempotencyInterceptor`'s 425 body (not the `Error` envelope).
+      properties:
+        error:
+          type: string
+          const: idempotency_in_progress
+        retryAfterSec:
+          type: integer
+          minimum: 1
+
+  responses:
+    ReadValidationFailure:
+      description: >
+        400 `validation_error`: a malformed path id, an unknown or malformed
+        query parameter, a cursor the server cannot decode, or a bad
+        `If-None-Match`. Checked before any database read.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    WriteValidationFailure:
+      description: >
+        400: `validation_error` (a malformed path id or body, an unknown key,
+        a `limit` without an amount or currency, a `clear` with a value or an
+        expiry, more fractional digits than the currency's minor unit), or the
+        `IdempotencyInterceptor`'s `idempotency_key_required` /
+        `idempotency_key_malformed`. Nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        401 `unauthorized`: no human dashboard session. A bearer-only request
+        (`dashboard_api` included) is refused (`SessionOnlyAdminGuard`).
+        Non-disclosing.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    DeviceUnauthorized:
+      description: >
+        401 `unauthorized`: a missing, invalid or revoked device token, or a
+        non-device credential. Non-disclosing.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    OriginRejected:
+      description: >
+        403 `origin_rejected` (RT-430): a cookie-authenticated publish whose
+        `Origin` is missing or not allowed. Nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    StoreWriteForbidden:
+      description: >
+        403, `error.code` one of: `origin_rejected` (RT-430, as on the tenant
+        publish); `owner_approval_required` (a permanent override — no
+        `effectiveUntil`, or one more than 90 days ahead — published by a
+        `tenant_admin`; only an `owner` may publish it, DR-4). Nothing is
+        written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >
+        404 `not_found`, non-disclosing: identical for another tenant, a store
+        of another tenant or outside the caller's store scope, an absent id
+        and a role outside the operation's list.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: >
+        409, `error.code` one of: `cash_variance_policy_changed_concurrently`
+        (`expectedRevisionId` is not the scope's latest revision; reload and
+        retry); `idempotency_key_conflict` (the same `Idempotency-Key` with a
+        different body). Nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TenantPolicyUnprocessable:
+      description: >
+        422 `policy_currency_unsupported`: a `limit` in a currency other than
+        `EGP` (V1, K-5). Nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    StoreOverrideUnprocessable:
+      description: >
+        422, `error.code` one of: `policy_currency_unsupported` (a `limit` not
+        in `EGP`, V1); `override_looser_than_tenant` (the value is looser than
+        the tenant level, RT-284 Q5); `override_expiry_invalid`
+        (`effectiveUntil` is not after the server time); `override_not_active`
+        (a `clear` while the store has no active override). Nothing is
+        written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    IdempotencyInProgress:
+      description: >
+        425 `idempotency_in_progress`: the first request with this
+        `Idempotency-Key` is still being processed. Retry after `Retry-After`
+        seconds with the same key and body. Nothing is written by this
+        request.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfterInProgress"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/IdempotencyInProgressBody"
+    SystemFailure:
+      description: >
+        500 `internal_error`: an unexpected server error, recorded
+        server-side under `request_id` and never returned.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

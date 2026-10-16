@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Shifts API
-  version: "1.1.0-draft"
+  version: "1.2.0-draft"
   description: >
     POS-Pulse 004 Backend shift-lifecycle surface. Wave 4.1b (stuck-shift
     discovery).
@@ -124,6 +124,20 @@ info:
     field. The only free text is the optional movement `note` and the forced
     close's `forcedReason`, both short and documented "no PII"; the server
     never logs either.
+
+
+    RT-384 (1.2.0-draft; `[GATED]`, needs owner approval; AD-CASH-001 D-6 /
+    D-7, Kemetra/Orchestrator `e73362b`): strictly additive. The shift
+    variance policy (`cash-variance-policy.openapi.yaml`) is frozen per Cash
+    Session at open (K-2). `openShift` accepts three OPTIONAL, all-or-none
+    fields that carry the frozen policy (`policySource`, `policyRevisionId`,
+    `policyValue`); `Shift` echoes them with the open's policy flags, and
+    `ShiftClose` gains the derived `approvalRequiredByPolicy`,
+    `approvalMissing` and the persisted `approverCheck`. These are accepted
+    and emitted from RT-387 (on the RT-385 migration); until then the runtime
+    is unchanged. No operation, status, required list or existing field
+    changes, so a POS that never sends the new fields is unaffected (the POS
+    shift sync client reads only the status and `error.code` of an answer).
 servers:
   - url: https://api.example.com
 tags:
@@ -222,6 +236,38 @@ paths:
         envelope operator is the actor (a repair of a dead-lettered open), and
         `openingUserId` is recorded as stated; it must be a user of the
         caller's tenant with access to the store, else 403 `refused`.
+
+
+        **Shift variance policy (RT-384, AD-CASH-001 D-6).** The POS freezes
+        the policy it applies to this Cash Session and sends it as
+        `policySource`, `policyRevisionId` and `policyValue`: all three or
+        none. A POS that predates the policy, and an open recorded before the
+        upgrade, sends none; such a shift's derived close values are
+        `unknown`. Backend-Core records the frozen fields verbatim and never
+        refuses an open or a close on policy grounds: an unknown revision, a
+        superseded revision and a value that differs from the revision (or,
+        for a `limit`, from the shift's currency) are accepted, recorded and
+        flagged `policy_revision_unknown`, `policy_revision_superseded` or
+        `policy_value_mismatch` (an offline open on an older cached revision
+        is normal, DR-8). Only a malformed set is a 400 `validation_error`: a
+        partial set, a `null` `policyRevisionId` with source `tenant` or
+        `store`, a non-null one with `system` or `fallback`, or a `limit`
+        without its amount or currency.
+
+
+        **Payload hash.** The three fields are part of the open's payload
+        hash under one rule: an absent field is omitted from the payload hash
+        (so a pre-upgrade open re-delivered later hashes byte-identically and
+        is never a 409 `shift_payload_conflict`), and a present `null`
+        `policyRevisionId` is hashed as `null`. Absent and `null` are never
+        conflated.
+
+
+        **Rollout.** The fields are accepted from RT-387. Until then the
+        strict body refuses them with 400 (a dead-letter on the POS), so a POS
+        must not send them before the RT-387 runtime is live and past its
+        rollback window, or must send them behind a flag it can turn off
+        first.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -429,12 +475,21 @@ paths:
 
 
         **Variance approval.** `varianceApprovedByUserId` is the manager who
-        approved a non-zero variance on the terminal (the POS asks for a
-        manager PIN above its threshold, default 0; 10919 decision 1). The
-        server records it and re-checks that user's manager role for the
-        read-side flag, but never refuses the close because of that role.
-        It must name a user of the caller's tenant, else 400
+        approved the variance on the terminal. The POS asks for a manager PIN
+        according to the shift variance policy frozen on the shift's open
+        (RT-384, AD-CASH-001 K-2): under a frozen `limit`, when `|variance| >
+        limitAmount`; under `none`, the System default, never. A shift opened
+        before the upgrade applies no limit. The server records the approver
+        and re-checks that user's manager role for the persisted
+        `approverCheck`, but never refuses the close because of that role or
+        of the policy. It must name a user of the caller's tenant, else 400
         `validation_error`.
+
+
+        From RT-387 the close response's `close` carries
+        `approvalRequiredByPolicy` and `approvalMissing`, derived from the
+        frozen open value (`unknown` for an open with no policy fields), and
+        the persisted `approverCheck`.
 
 
         Attribution: on the device path `closingUserId` MUST equal the
@@ -704,10 +759,33 @@ components:
       type: object
       additionalProperties: false
       required: [shiftId, openedAt, openingUserId, currencyCode, openingFloat]
+      allOf:
+        - $ref: "#/components/schemas/FrozenPolicyAllOrNone"
+        - $ref: "#/components/schemas/FrozenPolicyRevisionRule"
       description: >
         The `ShiftOpened` fact. Tenant, store and device come from the
-        credential and are rejected if present (strict body).
+        credential and are rejected if present (strict body). The three
+        RT-384 policy fields are optional and all-or-none (accepted from
+        RT-387; see `openShift`).
       properties:
+        policySource:
+          type: string
+          enum: [system, tenant, store, fallback]
+          description: >
+            RT-384: where the frozen policy came from: the `policySource` of
+            the POS policy read, or `fallback` for a terminal that never
+            fetched it (the fail-closed `limit 0`, DR-6). Part of the payload
+            hash only when present (see `openShift`).
+        policyRevisionId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            RT-384: the frozen revision id from the policy read; `null` for
+            source `system` or `fallback`, a uuid for `tenant` or `store`. An
+            id Backend-Core does not know is accepted and flagged
+            `policy_revision_unknown`, never a 400.
+        policyValue:
+          $ref: "#/components/schemas/CashVariancePolicyValue"
         shiftId:
           type: string
           format: uuid
@@ -947,11 +1025,35 @@ components:
       else:
         not:
           required: [close]
+      allOf:
+        - $ref: "#/components/schemas/FrozenPolicyAllOrNone"
+        - $ref: "#/components/schemas/FrozenPolicyRevisionRule"
       description: >
         A cash-up shift as recorded. `close` is required when `status` is
         `closed` and absent when it is `open` (enforced by the schema).
-        Internal ids (tenant, store, device) are never returned.
+        Internal ids (tenant, store, device) are never returned. RT-384: from
+        RT-387, a shift whose open carried the frozen policy echoes
+        `policySource`, `policyRevisionId` and `policyValue` with its
+        `policyFlags`; a shift whose open carried none has none of the four.
       properties:
+        policySource:
+          type: string
+          enum: [system, tenant, store, fallback]
+          description: RT-384, from RT-387. The frozen source recorded with the open.
+        policyRevisionId:
+          type: [string, "null"]
+          format: uuid
+          description: RT-384, from RT-387. The frozen revision id recorded with the open.
+        policyValue:
+          $ref: "#/components/schemas/CashVariancePolicyValue"
+        policyFlags:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/PolicyFlag"
+          description: >
+            RT-384, from RT-387. The accept-and-flag findings on the frozen
+            policy (AD-CASH-001 D-6); empty when none. Never a refusal.
         shiftId:
           type: string
           format: uuid
@@ -1007,7 +1109,10 @@ components:
         time. As on `CloseShiftRequest`, `forcedReason` is required when
         `closeKind` is `forced` and absent when it is `normal` (enforced by
         the schema). `varianceApprovedByUserId` is present only when it was
-        sent.
+        sent. RT-384: from RT-387 every close also carries
+        `approvalRequiredByPolicy`, `approvalMissing` (both `unknown` for a
+        shift whose open carried no frozen policy) and the persisted
+        `approverCheck`; until then they are absent.
       properties:
         closedAt:
           type: string
@@ -1056,6 +1161,147 @@ components:
           type: string
           format: date-time
           description: When the server recorded the close (server clock).
+        approvalRequiredByPolicy:
+          $ref: "#/components/schemas/PolicyTriState"
+        approvalMissing:
+          $ref: "#/components/schemas/PolicyTriState"
+        approverCheck:
+          $ref: "#/components/schemas/ApproverCheck"
+
+    # -----------------------------------------------------------------------
+    # RT-384: the shift variance policy on the open and the close
+    # (AD-CASH-001 D-1 / D-6 / D-7). Shared shapes with
+    # `cash-variance-policy.openapi.yaml` and `shift-closes.openapi.yaml`;
+    # the contract tests pin that the copies stay identical.
+    # -----------------------------------------------------------------------
+    CashVariancePolicyValue:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      if:
+        properties:
+          mode:
+            const: limit
+        required: [mode]
+      then:
+        required: [limitAmount, currencyCode]
+      else:
+        not:
+          anyOf:
+            - required: [limitAmount]
+            - required: [currencyCode]
+      description: >
+        The policy value (AD-CASH-001 D-1), as in
+        `cash-variance-policy.openapi.yaml`. `none`: the cashier always closes
+        alone. `limit`: approval is required exactly when `|variance| >
+        limitAmount`. On an open it is the frozen value; its currency is not
+        checked here (a `limit` currency other than the shift's is accepted
+        and flagged `policy_value_mismatch`).
+      properties:
+        mode:
+          type: string
+          enum: [none, limit]
+        limitAmount:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+    FrozenPolicyAllOrNone:
+      description: >
+        RT-384: `policySource`, `policyRevisionId` and `policyValue` are all
+        present or all absent; a partial set is 400 `validation_error`.
+      anyOf:
+        - not:
+            anyOf:
+              - required: [policySource]
+              - required: [policyRevisionId]
+              - required: [policyValue]
+        - required: [policySource, policyRevisionId, policyValue]
+    FrozenPolicyRevisionRule:
+      description: >
+        RT-384: `policyRevisionId` is a uuid for source `tenant` or `store`
+        and `null` for `system` or `fallback`; otherwise 400
+        `validation_error`.
+      allOf:
+        - if:
+            properties:
+              policySource:
+                enum: [tenant, store]
+            required: [policySource]
+          then:
+            properties:
+              policyRevisionId:
+                type: string
+        - if:
+            properties:
+              policySource:
+                enum: [system, fallback]
+            required: [policySource]
+          then:
+            properties:
+              policyRevisionId:
+                type: "null"
+    PolicyFlag:
+      type: string
+      enum: [policy_revision_unknown, policy_revision_superseded, policy_value_mismatch]
+      description: >
+        AD-CASH-001 D-6 accept-and-flag findings. `policy_revision_unknown`:
+        the frozen revision is not a revision of this tenant, or is a store
+        revision of another store. `policy_revision_superseded`: it was not
+        the revision effective for this store at `openedAt`, beyond the RT-224
+        120 s clock-skew tolerance (an offline open on an older cached
+        revision, DR-8). `policy_value_mismatch`: the frozen value differs
+        from that revision's stored value (for `system`, from Backend-Core's
+        System default), or a `limit` currency differs from the shift's.
+    PolicyTriState:
+      type: string
+      enum: ["yes", "no", "unknown"]
+      description: >
+        A derived yes / no, or `unknown` when the shift's open carried no
+        frozen policy (a pre-upgrade or pre-RT-384 shift). `unknown` is never
+        "no exception".
+    ApproverCheck:
+      type: object
+      additionalProperties: false
+      required: [status, reason]
+      if:
+        properties:
+          status:
+            const: unverified
+        required: [status]
+      then:
+        properties:
+          reason:
+            type: string
+      else:
+        properties:
+          reason:
+            type: "null"
+      description: >
+        The persisted server finding on the close's recorded approver
+        (AD-CASH-001 D-7, K-4). `not_applicable`: no approver was recorded.
+        `verified`: the approver held a manager role with store access and was
+        not the closer when checked. `unverified` with a `reason` otherwise.
+        It never refuses the close. The close transaction writes
+        `not_applicable` (no approver) or the placeholder `unverified` /
+        `check_unavailable`; the awaited post-commit check overwrites the
+        placeholder, and a failed lookup or write keeps it. A replay reads the
+        stored value and never re-runs the check; there is no `pending`.
+        Closes recorded before RT-385 (coordinator decision 4): no approver →
+        `not_applicable`; an approver recorded but never checked →
+        `unverified` / `check_unavailable`.
+      properties:
+        status:
+          type: string
+          enum: [not_applicable, verified, unverified]
+        reason:
+          type: [string, "null"]
+          enum:
+            - approver_is_closer
+            - inactive_membership
+            - not_manager
+            - no_store_access
+            - check_unavailable
+            - null
     CashMovement:
       type: object
       additionalProperties: false

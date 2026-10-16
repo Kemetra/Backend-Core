@@ -127,9 +127,16 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "consoleCreatePayerAccount",
       // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
       "consoleDeleteTenantLogo",
+      // RT-384: shift variance policy contract; the runtime ships in RT-387.
+      "consoleGetStoreCashVariancePolicy",
+      "consoleGetTenantCashVariancePolicy",
       "consoleGetTenantLogo",
       "consoleListPayerAccounts",
+      "consoleListStoreCashVariancePolicyRevisions",
+      "consoleListTenantCashVariancePolicyRevisions",
       "consolePreviewTenantLogo",
+      "consolePublishStoreCashVariancePolicyOverride",
+      "consolePublishTenantCashVariancePolicy",
       "consolePutTenantLogo",
       // RT-414: platform support-session contract; the runtime ships after owner approval.
       "endSupportSession",
@@ -137,6 +144,7 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       // RT-537 (RT-534 S1): POS sale-history contract; the runtime ships in RT-539 (S3).
       "listSaleHistory",
       "openSupportSession",
+      "posGetCashVariancePolicy",
       "posGetTenantBranding",
       "posRedeemVoucher",
       "posReverseVoucher",

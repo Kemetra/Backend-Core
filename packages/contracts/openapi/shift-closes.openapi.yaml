@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — Admin Shift-Close Read API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     Jira RT-383 (AD-CASH-001 follow-up 4): the admin-facing read of recorded
     shift closes that Admin-Console RT-18 (shift / cash variance exception
@@ -68,15 +68,27 @@ info:
     page includes it.
 
 
-    **Not on this surface (do not fabricate).** The AD-CASH-001 D-7 policy
-    values (`policySource`, `policyRevisionId`, the frozen value,
-    `approvalRequiredByPolicy`, `approvalMissing`) and the persisted
-    `approverCheck` do not exist yet; they are added to these projections
-    additively by the policy contract and RT-384 / RT-385, together with their
-    filters. Also absent by design: more than one count per close (RT-17
-    records one counted amount), any review / acknowledgement workflow state,
-    a recompute-against-recorded-sales flag, user display names and the
-    terminal (device) id.
+    **RT-384 (1.1.0-draft; `[GATED]`, needs owner approval; AD-CASH-001
+    D-7).** The change is strictly additive: both projections gain the frozen shift variance
+    policy (`policySource`, `policyRevisionId`, `policyValue`), its
+    `policyFlags`, the derived `approvalRequiredByPolicy` and
+    `approvalMissing`, and the persisted `approverCheck`, as OPTIONAL
+    properties; the list gains the optional `approval_required`,
+    `approval_missing` and `approver_check` filters. The RT-383 runtime emits
+    and accepts none of them until RT-387 (on the RT-385 migration); from
+    RT-387 every close carries all seven, with `unknown` / `null` for a
+    shift whose open carried no frozen policy. No existing field, filter,
+    required list or meaning changes, so Admin-Console RT-18 (typed
+    `openapi-fetch`, no runtime response validation) is unaffected. These
+    values let a Console "exception" go beyond a non-zero variance (for
+    example `approvalMissing = yes` or `approverCheck.status = unverified`),
+    always as server-derived values.
+
+
+    **Not on this surface (do not fabricate).** More than one count per close
+    (RT-17 records one counted amount), any review / acknowledgement workflow
+    state, a recompute-against-recorded-sales flag, user display names and
+    the terminal (device) id.
 
 
     **PII.** User references are `users.id` values only; no name, e-mail,
@@ -122,6 +134,9 @@ paths:
         - $ref: "#/components/parameters/MinAbsVariance"
         - $ref: "#/components/parameters/CurrencyCodeQuery"
         - $ref: "#/components/parameters/ApprovalQuery"
+        - $ref: "#/components/parameters/ApprovalRequiredQuery"
+        - $ref: "#/components/parameters/ApprovalMissingQuery"
+        - $ref: "#/components/parameters/ApproverCheckQuery"
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/PageSize"
       responses:
@@ -263,8 +278,42 @@ components:
         `approved`: closes that recorded a `varianceApprovedByUserId`.
         `not_approved`: closes that did not (including zero-variance closes;
         combine with `min_abs_variance` to find unapproved variances). Whether
-        the recorded approver was verified is not filterable until the
-        persisted `approverCheck` exists (RT-384 / RT-385).
+        the recorded approver was verified is the separate `approver_check`
+        filter (RT-384, accepted from RT-387).
+    ApprovalRequiredQuery:
+      name: approval_required
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: ["yes", "no", "unknown"]
+      description: >
+        RT-384, accepted from RT-387 (until then an unknown query key is 400
+        `validation_error`). Only closes whose `approvalRequiredByPolicy` is
+        this value.
+    ApprovalMissingQuery:
+      name: approval_missing
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: ["yes", "no", "unknown"]
+      description: >
+        RT-384, accepted from RT-387 (until then an unknown query key is 400
+        `validation_error`). Only closes whose `approvalMissing` is this
+        value; `yes` lists the closes the frozen policy required a manager
+        for and that recorded none.
+    ApproverCheckQuery:
+      name: approver_check
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [not_applicable, verified, unverified]
+      description: >
+        RT-384, accepted from RT-387 (until then an unknown query key is 400
+        `validation_error`). Only closes whose persisted `approverCheck.status`
+        is this value.
     Cursor:
       name: cursor
       in: query
@@ -329,6 +378,8 @@ components:
     ShiftCloseSummary:
       type: object
       additionalProperties: false
+      allOf:
+        - $ref: "#/components/schemas/ShiftClosePolicyConsistency"
       required:
         - shiftId
         - storeId
@@ -398,9 +449,9 @@ components:
           format: uuid
           description: >
             The `users.id` the terminal recorded as the variance approver, or
-            `null` when none was recorded. Recorded as sent: this read does not
-            say whether the approver was verified (the persisted
-            `approverCheck`, RT-384 / RT-385, is added later).
+            `null` when none was recorded. Recorded as sent: whether the
+            approver was verified is the persisted `approverCheck` (RT-384,
+            emitted from RT-387).
         openingFloat:
           $ref: "#/components/schemas/NonNegativeDecimalAmount"
         cashSalesTotal:
@@ -426,6 +477,35 @@ components:
           type: string
           format: date-time
           description: When the server recorded the close (server clock).
+        policySource:
+          type: [string, "null"]
+          enum: [system, tenant, store, fallback, null]
+          description: >
+            RT-384, from RT-387. The policy source frozen with the shift's
+            open; `null` when the open carried no frozen policy.
+        policyRevisionId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            RT-384, from RT-387. The frozen revision id (K-2); `null` for
+            `system`, `fallback` or no frozen policy.
+        policyValue:
+          oneOf:
+            - $ref: "#/components/schemas/CashVariancePolicyValue"
+            - type: "null"
+          description: RT-384, from RT-387. The frozen value; `null` when the open carried none.
+        policyFlags:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/PolicyFlag"
+          description: RT-384, from RT-387. The open's accept-and-flag findings; empty when none.
+        approvalRequiredByPolicy:
+          $ref: "#/components/schemas/PolicyTriState"
+        approvalMissing:
+          $ref: "#/components/schemas/PolicyTriState"
+        approverCheck:
+          $ref: "#/components/schemas/ApproverCheck"
 
     ShiftClosePage:
       type: object
@@ -446,6 +526,8 @@ components:
     ShiftCloseDetail:
       type: object
       additionalProperties: false
+      allOf:
+        - $ref: "#/components/schemas/ShiftClosePolicyConsistency"
       required:
         - shiftId
         - storeId
@@ -530,7 +612,7 @@ components:
           format: uuid
           description: >
             The `users.id` the terminal recorded as the variance approver, or
-            `null`. Recorded as sent; verification is not reported yet.
+            `null`. Recorded as sent; verification is `approverCheck` (RT-384, emitted from RT-387).
         openingFloat:
           $ref: "#/components/schemas/NonNegativeDecimalAmount"
         cashSalesTotal:
@@ -572,6 +654,164 @@ components:
           description: >
             Every pay-in and pay-out recorded on the shift, oldest first by
             `occurredAt`, ties broken by `movementId`; may be empty.
+        policySource:
+          type: [string, "null"]
+          enum: [system, tenant, store, fallback, null]
+          description: >
+            RT-384, from RT-387. The policy source frozen with the shift's
+            open; `null` when the open carried no frozen policy.
+        policyRevisionId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            RT-384, from RT-387. The frozen revision id (K-2); `null` for
+            `system`, `fallback` or no frozen policy.
+        policyValue:
+          oneOf:
+            - $ref: "#/components/schemas/CashVariancePolicyValue"
+            - type: "null"
+          description: RT-384, from RT-387. The frozen value; `null` when the open carried none.
+        policyFlags:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/PolicyFlag"
+          description: RT-384, from RT-387. The open's accept-and-flag findings; empty when none.
+        approvalRequiredByPolicy:
+          $ref: "#/components/schemas/PolicyTriState"
+        approvalMissing:
+          $ref: "#/components/schemas/PolicyTriState"
+        approverCheck:
+          $ref: "#/components/schemas/ApproverCheck"
+
+    # -----------------------------------------------------------------------
+    # RT-384: the shift variance policy on the close (AD-CASH-001 D-1 / D-7).
+    # The same shapes as `pos-shifts.openapi.yaml` and
+    # `cash-variance-policy.openapi.yaml`; the contract tests pin the copies.
+    # -----------------------------------------------------------------------
+    CashVariancePolicyValue:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      if:
+        properties:
+          mode:
+            const: limit
+        required: [mode]
+      then:
+        required: [limitAmount, currencyCode]
+      else:
+        not:
+          anyOf:
+            - required: [limitAmount]
+            - required: [currencyCode]
+      description: >
+        The frozen policy value (AD-CASH-001 D-1). `none`: the cashier always
+        closes alone. `limit`: approval is required exactly when `|variance| >
+        limitAmount`.
+      properties:
+        mode:
+          type: string
+          enum: [none, limit]
+        limitAmount:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+    PolicyFlag:
+      type: string
+      enum: [policy_revision_unknown, policy_revision_superseded, policy_value_mismatch]
+      description: >
+        AD-CASH-001 D-6 accept-and-flag findings on the open's frozen policy
+        (see `pos-shifts.openapi.yaml` `PolicyFlag`). Never a refusal.
+    PolicyTriState:
+      type: string
+      enum: ["yes", "no", "unknown"]
+      description: >
+        A derived yes / no, or `unknown` when the shift's open carried no
+        frozen policy (a pre-upgrade or pre-RT-384 shift). `unknown` is never
+        "no exception". `approvalRequiredByPolicy` is `yes` when the frozen
+        value is `limit` and `|variance| > limitAmount`; `approvalMissing` is
+        `yes` when approval was required and no `varianceApprovedByUserId` was
+        recorded.
+    ApproverCheck:
+      type: object
+      additionalProperties: false
+      required: [status, reason]
+      if:
+        properties:
+          status:
+            const: unverified
+        required: [status]
+      then:
+        properties:
+          reason:
+            type: string
+      else:
+        properties:
+          reason:
+            type: "null"
+      description: >
+        The persisted server finding on the recorded approver (AD-CASH-001
+        D-7, K-4); it never refused the close. `not_applicable`: no approver
+        was recorded. `verified`: the approver held a manager role with store
+        access and was not the closer when checked. `unverified` with a
+        `reason` otherwise. Closes recorded before RT-385 (coordinator
+        decision 4): no approver → `not_applicable`; an approver recorded but
+        never checked → `unverified` / `check_unavailable`.
+      properties:
+        status:
+          type: string
+          enum: [not_applicable, verified, unverified]
+        reason:
+          type: [string, "null"]
+          enum:
+            - approver_is_closer
+            - inactive_membership
+            - not_manager
+            - no_store_access
+            - check_unavailable
+            - null
+    ShiftClosePolicyConsistency:
+      description: >
+        RT-384: the frozen policy fields agree with each other. With no
+        `policySource`, `policyRevisionId` and `policyValue` are `null`; with
+        `tenant` or `store`, the revision id is a uuid and the value is set;
+        with `system` or `fallback`, the revision id is `null` and the value
+        is set. Applies only when `policySource` is present.
+      allOf:
+        - if:
+            properties:
+              policySource:
+                type: "null"
+            required: [policySource]
+          then:
+            properties:
+              policyRevisionId:
+                type: "null"
+              policyValue:
+                type: "null"
+        - if:
+            properties:
+              policySource:
+                enum: [tenant, store]
+            required: [policySource]
+          then:
+            properties:
+              policyRevisionId:
+                type: string
+              policyValue:
+                type: object
+        - if:
+            properties:
+              policySource:
+                enum: [system, fallback]
+            required: [policySource]
+          then:
+            properties:
+              policyRevisionId:
+                type: "null"
+              policyValue:
+                type: object
 
     ShiftCashMovement:
       type: object

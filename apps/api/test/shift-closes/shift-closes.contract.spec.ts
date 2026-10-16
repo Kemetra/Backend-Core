@@ -20,6 +20,14 @@
  *   5. AJV fixtures: valid payloads pass, each invalid one fails.
  *   6. The POS-facing shift contract keeps its operations (no change to its
  *      paths).
+ *
+ * RT-384 (1.1.0-draft, `[GATED]`, AD-CASH-001 D-7): strictly additive. Both
+ * projections gain the policy fields, the derived approval values and the
+ * persisted `approverCheck` as OPTIONAL properties (the RT-383 runtime does
+ * not emit them until RT-387, and its HTTP harness AJV-checks every response),
+ * and the list gains three optional filters accepted from RT-387. Every RT-383
+ * field, filter and required list is unchanged, so Admin-Console RT-18 is
+ * unaffected.
  */
 import "reflect-metadata";
 
@@ -36,7 +44,42 @@ const DETAIL_PATH = "/api/v1/shift-closes/{shiftId}";
 
 const OPERATION_IDS = ["consoleGetShiftClose", "consoleListShiftCloses"] as const;
 
+/** RT-384: optional on the wire until the RT-387 runtime emits them on every close. */
+const CONTRACT_AHEAD_OF_RUNTIME = [
+  "policySource",
+  "policyRevisionId",
+  "policyValue",
+  "policyFlags",
+  "approvalRequiredByPolicy",
+  "approvalMissing",
+  "approverCheck",
+] as const;
+
+/** The RT-383 required lists, pinned so the RT-384 bump stays strictly additive. */
+const RT383_SUMMARY_REQUIRED = [
+  "shiftId",
+  "storeId",
+  "currencyCode",
+  "closedAt",
+  "closeKind",
+  "forcedReason",
+  "closingUserId",
+  "varianceApprovedByUserId",
+  "openingFloat",
+  "cashSalesTotal",
+  "cashRefundsTotal",
+  "payInTotal",
+  "payOutTotal",
+  "expectedCash",
+  "countedCash",
+  "variance",
+  "saleCount",
+  "receivedAt",
+];
+const RT383_DETAIL_EXTRA_REQUIRED = ["openedAt", "openingUserId", "recordedByUserId", "cashRefundReturnRefs", "cashMovements"];
+
 type SchemaName =
+  | "ApproverCheck"
   | "ShiftCloseSummary"
   | "ShiftClosePage"
   | "ShiftCloseDetail"
@@ -49,6 +92,7 @@ interface ParameterObject {
   name?: string;
   required?: boolean;
   schema?: Record<string, unknown>;
+  description?: string;
 }
 
 interface OperationObject {
@@ -69,7 +113,7 @@ type SchemaObject = Record<string, unknown> & {
 
 interface OpenApiDocument {
   openapi?: string;
-  info?: { version?: string };
+  info?: { version?: string; description?: string };
   security?: Array<Record<string, unknown>>;
   paths?: Record<string, Record<string, OperationObject>>;
   components?: {
@@ -194,9 +238,17 @@ function without<T extends object>(value: T, key: keyof T): Omit<T, typeof key> 
 // 1. Document + operations
 // ===========================================================================
 describe("shift-closes — document and operations", () => {
-  it("is an OpenAPI 3.1 document at version 1.0.0-draft", () => {
+  it("is an OpenAPI 3.1 document at version 1.1.0-draft (RT-384)", () => {
     expect(doc.openapi).toBe("3.1.0");
-    expect(doc.info?.version).toBe("1.0.0-draft");
+    expect(doc.info?.version).toBe("1.1.0-draft");
+  });
+
+  it("carries an RT-384 note: additive, [GATED], non-breaking for Admin-Console RT-18", () => {
+    const info = (doc.info?.description ?? "").replace(/\s+/g, " ");
+    expect(info).toContain("RT-384 (1.1.0-draft");
+    expect(info).toContain("[GATED]");
+    expect(info).toContain("strictly additive");
+    expect(info).toContain("RT-18");
   });
 
   it("declares exactly the list and detail reads, and nothing else", () => {
@@ -258,11 +310,14 @@ describe("shift-closes — auth and scope", () => {
 // 3. List filters and paging
 // ===========================================================================
 describe("shift-closes — list filters and paging", () => {
-  it("declares the RT-383 filters, all optional query parameters", () => {
+  it("declares the RT-383 filters plus the RT-384 ones, all optional query parameters", () => {
     const names = params(LIST_PATH).map((p) => p.name);
     expect(names.sort()).toEqual(
       [
         "approval",
+        "approval_missing",
+        "approval_required",
+        "approver_check",
         "close_kind",
         "closed_from",
         "closed_to",
@@ -305,6 +360,20 @@ describe("shift-closes — list filters and paging", () => {
     expect(param(LIST_PATH, "approval").schema).toMatchObject({ enum: ["approved", "not_approved"] });
   });
 
+  it.each([
+    ["approval_required", ["yes", "no", "unknown"]],
+    ["approval_missing", ["yes", "no", "unknown"]],
+    ["approver_check", ["not_applicable", "verified", "unverified"]],
+  ])("RT-384 filter %s is the enum %j, accepted from RT-387", (name, values) => {
+    const p = param(LIST_PATH, name);
+    expect(p.schema).toMatchObject({ type: "string", enum: values });
+    expect(p.description ?? "").toContain("RT-387");
+  });
+
+  it("keeps the RT-383 approval filter enum unchanged", () => {
+    expect(param(LIST_PATH, "approval").schema).toEqual({ type: "string", enum: ["approved", "not_approved"] });
+  });
+
   it("takes the variance threshold as a non-negative exact-decimal string", () => {
     expect(param(LIST_PATH, "min_abs_variance").schema).toEqual({
       $ref: "#/components/schemas/NonNegativeDecimalAmount",
@@ -331,12 +400,33 @@ describe("shift-closes — list filters and paging", () => {
 describe("shift-closes — projections", () => {
   const PROJECTIONS: SchemaName[] = ["ShiftCloseSummary", "ShiftClosePage", "ShiftCloseDetail", "ShiftCashMovement"];
 
-  it("is strict, and every key is required", () => {
+  it("is strict, and every key is required except the RT-384 fields ahead of the runtime", () => {
+    const ahead: readonly string[] = CONTRACT_AHEAD_OF_RUNTIME;
     for (const name of PROJECTIONS) {
       const s = schema(name);
       expect(s.additionalProperties).toBe(false);
-      expect([...(s.required ?? [])].sort()).toEqual(Object.keys(s.properties ?? {}).sort());
+      const expected = Object.keys(s.properties ?? {}).filter((k) => !ahead.includes(k));
+      expect([...(s.required ?? [])].sort()).toEqual(expected.sort());
     }
+  });
+
+  it("keeps the RT-383 required lists exactly (strictly additive for RT-18)", () => {
+    expect([...(schema("ShiftCloseSummary").required ?? [])].sort()).toEqual([...RT383_SUMMARY_REQUIRED].sort());
+    expect([...(schema("ShiftCloseDetail").required ?? [])].sort()).toEqual(
+      [...RT383_SUMMARY_REQUIRED, ...RT383_DETAIL_EXTRA_REQUIRED].sort(),
+    );
+  });
+
+  it("adds the RT-384 fields to both projections, optional, with the documented shapes", () => {
+    for (const name of ["ShiftCloseSummary", "ShiftCloseDetail"] as const) {
+      const props = schema(name).properties!;
+      for (const key of CONTRACT_AHEAD_OF_RUNTIME) expect(props[key]).toBeDefined();
+      expect(props["policySource"]).toMatchObject({ enum: ["system", "tenant", "store", "fallback", null] });
+      expect(props["approvalRequiredByPolicy"]).toEqual({ $ref: "#/components/schemas/PolicyTriState" });
+      expect(props["approvalMissing"]).toEqual({ $ref: "#/components/schemas/PolicyTriState" });
+      expect(props["approverCheck"]).toEqual({ $ref: "#/components/schemas/ApproverCheck" });
+    }
+    expect(doc.components!.schemas!["PolicyTriState"]!["enum"]).toEqual(["yes", "no", "unknown"]);
   });
 
   it("carries no tenant id, device id, payload hash or credential", () => {
@@ -346,8 +436,8 @@ describe("shift-closes — projections", () => {
     }
   });
 
-  it("does not fabricate policy, approver-check, review or recompute fields", () => {
-    const fabricated = /policy|approvalRequired|approvalMissing|approverCheck|review|acknowledg|recompute|attempt/i;
+  it("does not fabricate review, acknowledgement, recompute or attempt fields", () => {
+    const fabricated = /review|acknowledg|recompute|attempt/i;
     for (const name of PROJECTIONS) {
       expect(Object.keys(schema(name).properties ?? {}).filter((k) => fabricated.test(k))).toEqual([]);
     }
@@ -446,6 +536,77 @@ describe("shift-closes — AJV fixtures", () => {
   it("rejects a page over 200 items or without nextCursor", () => {
     expect(validator("ShiftClosePage")({ items: Array(201).fill(SUMMARY), nextCursor: null })).toBe(false);
     expect(validator("ShiftClosePage")({ items: [] })).toBe(false);
+  });
+
+  const POLICY_FIELDS = {
+    policySource: "tenant",
+    policyRevisionId: "0190f5a2-3b4c-7d8e-9f01-0000000000a1",
+    policyValue: { mode: "limit", limitAmount: "5.00", currencyCode: "EGP" },
+    policyFlags: [],
+    approvalRequiredByPolicy: "yes",
+    approvalMissing: "no",
+    approverCheck: { status: "verified", reason: null },
+  } as const;
+
+  const LEGACY_POLICY_FIELDS = {
+    policySource: null,
+    policyRevisionId: null,
+    policyValue: null,
+    policyFlags: [],
+    approvalRequiredByPolicy: "unknown",
+    approvalMissing: "unknown",
+    approverCheck: { status: "unverified", reason: "check_unavailable" },
+  } as const;
+
+  it("RT-384: accepts a close with the policy fields, a legacy close and an RT-383 close without them", () => {
+    expect(validator("ShiftCloseSummary")({ ...SUMMARY, ...POLICY_FIELDS })).toBe(true);
+    expect(validator("ShiftCloseSummary")({ ...SUMMARY, ...LEGACY_POLICY_FIELDS })).toBe(true);
+    expect(validator("ShiftCloseSummary")(SUMMARY)).toBe(true);
+    expect(validator("ShiftCloseDetail")({ ...DETAIL, ...POLICY_FIELDS })).toBe(true);
+    expect(
+      validator("ShiftCloseSummary")({
+        ...SUMMARY,
+        ...POLICY_FIELDS,
+        policySource: "fallback",
+        policyRevisionId: null,
+        policyValue: { mode: "limit", limitAmount: "0", currencyCode: "EGP" },
+        policyFlags: ["policy_value_mismatch"],
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["a boolean tri-state", { ...POLICY_FIELDS, approvalMissing: true }],
+    ["an unknown policy flag", { ...POLICY_FIELDS, policyFlags: ["stale"] }],
+    ["a tenant source without a revision id", { ...POLICY_FIELDS, policyRevisionId: null }],
+    ["a system source with a revision id", { ...POLICY_FIELDS, policySource: "system" }],
+    ["no source with a revision id", { ...LEGACY_POLICY_FIELDS, policyRevisionId: "0190f5a2-3b4c-7d8e-9f01-0000000000a1" }],
+    ["no source with a value", { ...LEGACY_POLICY_FIELDS, policyValue: { mode: "none" } }],
+    ["a limit without an amount", { ...POLICY_FIELDS, policyValue: { mode: "limit", currencyCode: "EGP" } }],
+  ])("RT-384: rejects a summary with %s", (_label, fields) => {
+    expect(validator("ShiftCloseSummary")({ ...SUMMARY, ...fields })).toBe(false);
+  });
+
+  it.each([
+    [{ status: "not_applicable", reason: null }, true],
+    [{ status: "verified", reason: null }, true],
+    ...["approver_is_closer", "inactive_membership", "not_manager", "no_store_access", "check_unavailable"].map(
+      (reason) => [{ status: "unverified", reason }, true] as const,
+    ),
+    [{ status: "unverified", reason: null }, false],
+    [{ status: "verified", reason: "not_manager" }, false],
+    [{ status: "pending", reason: null }, false],
+    [{ status: "unverified", reason: "revoked" }, false],
+    [{ status: "verified" }, false],
+  ] as const)("ApproverCheck %j -> %s", (value, ok) => {
+    expect(validator("ApproverCheck")(value)).toBe(ok);
+  });
+
+  it("documents the legacy approverCheck rule (coordinator decision 4)", () => {
+    const text = (doc.components!.schemas!["ApproverCheck"]!["description"] as string).replace(/\s+/g, " ");
+    expect(text).toContain("`not_applicable`");
+    expect(text).toContain("`check_unavailable`");
+    expect(text).toContain("RT-385");
   });
 
   it("accepts the canonical error envelope", () => {

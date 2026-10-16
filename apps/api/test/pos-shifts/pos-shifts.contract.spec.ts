@@ -41,6 +41,14 @@
  * be a user of the caller's tenant while its role never refuses the close.
  * PR #714 round 1: `saleCount` declares the database integer maximum and
  * `cashRefundReturnRefs` at most 1000 items, as the runtime enforces.
+ *
+ * RT-384 (1.2.0-draft, `[GATED]`, AD-CASH-001 D-6 / D-7): strictly additive.
+ * `OpenShiftRequest` gains three OPTIONAL, all-or-none policy fields (accepted
+ * from RT-387); `Shift` and `ShiftClose` gain OPTIONAL policy and derived
+ * approval fields (emitted from RT-387; the RT-17 HTTP harness AJV-checks
+ * every response, so they cannot be required yet); the stale "threshold,
+ * default 0" prose is replaced. No operation, status, required list or
+ * existing field changes.
  */
 import "reflect-metadata";
 
@@ -136,6 +144,7 @@ interface OpenApiDocument {
 
 let doc: OpenApiDocument;
 let salesDoc: OpenApiDocument;
+let policyDoc: OpenApiDocument;
 let otherOperationIds: Set<string>;
 const ajv = new Ajv({ strict: false, allErrors: true });
 addFormats(ajv);
@@ -170,6 +179,7 @@ beforeAll(() => {
   if (!found) throw new Error(`${CONTRACT_ID} not found in packages/contracts/openapi/`);
   doc = found.document;
   salesDoc = contracts.find((c) => c.dir === "pos-sales" && c.id === "sales")!.document;
+  policyDoc = contracts.find((c) => c.dir === "" && c.id === "cash-variance-policy.openapi")!.document;
 
   otherOperationIds = new Set(
     contracts
@@ -380,9 +390,17 @@ const VALID_CLOSE = {
 // 1. Document, version, and the unchanged stuck-shift surface
 // ===========================================================================
 describe("pos-shifts — document and version", () => {
-  it("is an OpenAPI 3.1 document at version 1.1.0-draft", () => {
+  it("is an OpenAPI 3.1 document at version 1.2.0-draft (RT-384)", () => {
     expect(doc.openapi).toBe("3.1.0");
-    expect(doc.info?.version).toBe("1.1.0-draft");
+    expect(doc.info?.version).toBe("1.2.0-draft");
+  });
+
+  it("carries an RT-384 version note: additive, [GATED], AD-CASH-001", () => {
+    const info = (doc.info?.description ?? "").replace(/\s+/g, " ");
+    expect(info).toContain("RT-384 (1.2.0-draft");
+    expect(info).toContain("[GATED]");
+    expect(info).toContain("AD-CASH-001");
+    expect(info).toContain("strictly additive");
   });
 
   it("carries an RT-17 version note citing the [GATED] approval and the design record", () => {
@@ -690,7 +708,17 @@ describe("pos-shifts — request bodies", () => {
   it.each([
     [
       "OpenShiftRequest",
-      ["currencyCode", "openedAt", "openingFloat", "openingUserId", "operatorUserId", "shiftId"],
+      [
+        "currencyCode",
+        "openedAt",
+        "openingFloat",
+        "openingUserId",
+        "operatorUserId",
+        "shiftId",
+        "policySource",
+        "policyRevisionId",
+        "policyValue",
+      ],
       ["currencyCode", "openedAt", "openingFloat", "openingUserId", "shiftId"],
     ],
     [
@@ -1052,5 +1080,153 @@ describe("pos-shifts — projections and fixtures", () => {
   it.each(INVALID)("%s rejects: %s", (name, _label, body) => {
     const clean = JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
     expect(validator(name)(clean)).toBe(false);
+  });
+});
+
+// ===========================================================================
+// 9. RT-384: the shift variance policy on open and close (AD-CASH-001 D-6 / D-7)
+// ===========================================================================
+describe("pos-shifts — RT-384 shift variance policy", () => {
+  const REVISION_ID = "0190f5a2-3b4c-7d8e-9f01-0000000000a1";
+  const LIMIT = { mode: "limit", limitAmount: "50.00", currencyCode: "EGP" };
+  const FALLBACK = { mode: "limit", limitAmount: "0", currencyCode: "EGP" };
+  const TENANT_OPEN = { ...VALID_OPEN, policySource: "tenant", policyRevisionId: REVISION_ID, policyValue: LIMIT };
+  const FALLBACK_OPEN = { ...VALID_OPEN, policySource: "fallback", policyRevisionId: null, policyValue: FALLBACK };
+  const SYSTEM_OPEN = { ...VALID_OPEN, policySource: "system", policyRevisionId: null, policyValue: { mode: "none" } };
+  const POLICY_FIELDS = ["policySource", "policyRevisionId", "policyValue"] as const;
+
+  it("the three open fields are optional, typed, and the value is the cash-variance-policy shape", () => {
+    expect(schema("OpenShiftRequest").required ?? []).not.toEqual(expect.arrayContaining([...POLICY_FIELDS]));
+    expect(prop("OpenShiftRequest", "policySource")).toMatchObject({ enum: ["system", "tenant", "store", "fallback"] });
+    expect(prop("OpenShiftRequest", "policyRevisionId")).toMatchObject({ type: ["string", "null"], format: "uuid" });
+    expect(prop("OpenShiftRequest", "policyValue")).toEqual({ $ref: "#/components/schemas/CashVariancePolicyValue" });
+    expect(shape(schema("CashVariancePolicyValue"))).toEqual(
+      shape(policyDoc.components?.schemas?.["CashVariancePolicyValue"]),
+    );
+  });
+
+  it("accepts a legacy open (no policy fields), a tenant open, a system open and a fallback open", () => {
+    const v = validator("OpenShiftRequest");
+    expect([VALID_OPEN, TENANT_OPEN, SYSTEM_OPEN, FALLBACK_OPEN].map((body) => v(body))).toEqual([true, true, true, true]);
+    expect(v({ ...TENANT_OPEN, policySource: "store", operatorUserId: USER_ID })).toBe(true);
+  });
+
+  it.each([
+    ["only the source", { ...VALID_OPEN, policySource: "tenant" }],
+    ["only the revision id", { ...VALID_OPEN, policyRevisionId: REVISION_ID }],
+    ["only the value", { ...VALID_OPEN, policyValue: LIMIT }],
+    ["source and id without a value", { ...VALID_OPEN, policySource: "tenant", policyRevisionId: REVISION_ID }],
+    ["a tenant source with a null id", { ...TENANT_OPEN, policyRevisionId: null }],
+    ["a store source with a null id", { ...TENANT_OPEN, policySource: "store", policyRevisionId: null }],
+    ["a system source with an id", { ...SYSTEM_OPEN, policyRevisionId: REVISION_ID }],
+    ["a fallback source with an id", { ...FALLBACK_OPEN, policyRevisionId: REVISION_ID }],
+    ["a limit without an amount", { ...TENANT_OPEN, policyValue: { mode: "limit", currencyCode: "EGP" } }],
+    ["none with an amount", { ...SYSTEM_OPEN, policyValue: { mode: "none", limitAmount: "0" } }],
+    ["an unknown source", { ...TENANT_OPEN, policySource: "cached" }],
+    ["a non-uuid revision id", { ...TENANT_OPEN, policyRevisionId: "rev-1" }],
+  ])("rejects an open with %s (a structural 400 only)", (_label, body) => {
+    expect(validator("OpenShiftRequest")(body)).toBe(false);
+  });
+
+  it("documents the payload-hash rule: absent is omitted, a present null is hashed as null", () => {
+    const text = [op(OPEN).description ?? "", prop("OpenShiftRequest", "policySource").description ?? ""]
+      .join(" ")
+      .replace(/\s+/g, " ");
+    expect(text).toContain("omitted from the payload hash");
+    expect(text).toContain("hashed as `null`");
+    expect(text).toContain("`shift_payload_conflict`");
+  });
+
+  it("documents the rollout rule and that policy grounds never refuse an open", () => {
+    const text = (op(OPEN).description ?? "").replace(/\s+/g, " ");
+    expect(text).toContain("RT-387");
+    expect(text).toMatch(/must not send/i);
+    expect(text).toMatch(/never refuses an open or a close on policy grounds/i);
+    for (const flag of ["policy_revision_unknown", "policy_revision_superseded", "policy_value_mismatch"]) {
+      expect(text).toContain(`\`${flag}\``);
+    }
+  });
+
+  it("replaces the stale 'threshold, default 0' prose with the frozen session policy", () => {
+    const text = (op(CLOSE).description ?? "").replace(/\s+/g, " ");
+    expect(text).not.toContain("default 0");
+    expect(text).toContain("frozen");
+    expect(text).toContain("`none`");
+    expect(text).toContain("never refuses the close");
+  });
+
+  it("Shift echoes the frozen fields and the open flags, all optional", () => {
+    const s = schema("Shift");
+    for (const key of [...POLICY_FIELDS, "policyFlags"]) {
+      expect(s.properties?.[key]).toBeDefined();
+      expect(s.required ?? []).not.toContain(key);
+    }
+    expect(prop("Shift", "policyFlags")).toMatchObject({ type: "array", uniqueItems: true });
+  });
+
+  it("ShiftClose gains the derived approval values and the approver check, all optional", () => {
+    const s = schema("ShiftClose");
+    for (const key of ["approvalRequiredByPolicy", "approvalMissing", "approverCheck"]) {
+      expect(s.properties?.[key]).toBeDefined();
+      expect(s.required ?? []).not.toContain(key);
+    }
+    expect(schema("PolicyTriState").enum).toEqual(["yes", "no", "unknown"]);
+    expect(prop("ShiftClose", "approverCheck")).toEqual({ $ref: "#/components/schemas/ApproverCheck" });
+  });
+
+  it("keeps the RT-17 Shift and ShiftClose required lists exactly", () => {
+    expect(sorted(schema("Shift").required ?? [])).toEqual(
+      sorted(["shiftId", "status", "currencyCode", "openingFloat", "openedAt", "openingUserId", "receivedAt"]),
+    );
+    expect(sorted(schema("ShiftClose").required ?? [])).toEqual(
+      sorted([
+        "closedAt",
+        "closingUserId",
+        "closeKind",
+        "openingFloat",
+        "cashSalesTotal",
+        "cashRefundsTotal",
+        "payInTotal",
+        "payOutTotal",
+        "expectedCash",
+        "countedCash",
+        "variance",
+        "saleCount",
+        "cashRefundReturnRefs",
+        "receivedAt",
+      ]),
+    );
+  });
+
+  it("validates a closed shift carrying every RT-384 field, and rejects malformed ones", () => {
+    const v = validator("Shift");
+    const closed = exampleValue({ $ref: "#/components/examples/ShiftClosed" }) as Record<string, unknown>;
+    const close = closed["close"] as Record<string, unknown>;
+    const withPolicy = {
+      ...closed,
+      policySource: "tenant",
+      policyRevisionId: REVISION_ID,
+      policyValue: LIMIT,
+      policyFlags: ["policy_revision_superseded"],
+      close: {
+        ...close,
+        approvalRequiredByPolicy: "no",
+        approvalMissing: "no",
+        approverCheck: { status: "verified", reason: null },
+      },
+    };
+    expect(v(withPolicy)).toBe(true);
+    expect(v({ ...withPolicy, policyFlags: ["stale"] })).toBe(false);
+    expect(v({ ...withPolicy, close: { ...withPolicy.close, approvalMissing: false } })).toBe(false);
+    expect(v({ ...withPolicy, close: { ...withPolicy.close, approverCheck: { status: "unverified", reason: null } } })).toBe(
+      false,
+    );
+  });
+
+  it("ApproverCheck and PolicyTriState match the shift-closes contract", () => {
+    const shiftCloses = loadOpenApiContracts().find((c) => c.id === "shift-closes.openapi")!.document as OpenApiDocument;
+    for (const name of ["ApproverCheck", "PolicyTriState", "CashVariancePolicyValue"]) {
+      expect({ name, shape: shape(schema(name)) }).toEqual({ name, shape: shape(shiftCloses.components?.schemas?.[name]) });
+    }
   });
 });
