@@ -40,15 +40,14 @@
 --      - row CHECK: approval_missing follows approval_required_by_policy and
 --        the recorded approver (ApprovalMissingMatches);
 --      - shift_closes_require_open_shift (replaced) also checks the close
---        against the shift's frozen policy: 'unknown' when none was frozen;
---        'no' under a frozen 'none'; under a frozen 'limit' in the shift's
---        currency, 'yes' exactly when |variance| > limit (D-1). A close left
---        at the 'unknown' default on a shift that froze a policy (the
---        pre-RT-387 writer after an RT-387 rollback, or a mixed-version
+--        against the shift's frozen policy: 'unknown' exactly when none was
+--        frozen; 'no' under a frozen 'none'; under a frozen 'limit', 'yes'
+--        exactly when |variance| > limit (D-1, whatever the frozen currency).
+--        A close left at the 'unknown' default on a shift that froze a policy
+--        (the pre-RT-387 writer after an RT-387 rollback, or a mixed-version
 --        deploy) gets the two values DERIVED there instead of being refused,
---        so no POS close is ever stuck. A limit in another currency (flagged
---        policy_value_mismatch) has no ratified rule: the value is kept as
---        written.
+--        so no POS close is ever stuck and 'unknown' never survives on a
+--        frozen-policy close.
 --      The close's policy revision id is the shift's frozen one, read through
 --      the 1:1 shift_id join; it is not duplicated on shift_closes.
 --   4. shift_close_approver_checks — the persisted approverCheck verdict
@@ -458,15 +457,12 @@ CREATE OR REPLACE FUNCTION shift_closes_require_open_shift() RETURNS trigger
 AS $$
 DECLARE
   v_state    text;
-  v_currency text;
   v_mode     text;
   v_limit    numeric;
-  v_policy_currency text;
   v_required text;
 BEGIN
-  SELECT s.lifecycle_state, s.currency_code, s.frozen_policy_mode,
-         s.frozen_policy_limit_amount, s.frozen_policy_currency_code
-    INTO v_state, v_currency, v_mode, v_limit, v_policy_currency
+  SELECT s.lifecycle_state, s.frozen_policy_mode, s.frozen_policy_limit_amount
+    INTO v_state, v_mode, v_limit
     FROM public.shifts s
    WHERE s.shift_id = NEW.shift_id
      AND s.tenant_id = NEW.tenant_id
@@ -486,25 +482,25 @@ BEGIN
     END IF;
     RETURN NEW;
   END IF;
-  -- A frozen 'none', or a 'limit' in the shift's currency, decides the close
-  -- (D-1): approval is required exactly under a limit with |variance| > limit.
-  -- A writer that leaves both values at the 'unknown' default (the pre-RT-387
-  -- writer, e.g. after an RT-387 rollback or during a mixed-version deploy)
-  -- gets them derived here instead of a refused close; any other value must
-  -- match. A limit in another currency (flagged policy_value_mismatch) has no
-  -- ratified rule: the writer's value is kept as written.
-  IF v_mode = 'none' OR v_policy_currency = v_currency THEN
-    v_required := CASE WHEN v_mode = 'limit' AND abs(NEW.variance) > v_limit
-                       THEN 'yes' ELSE 'no' END;
-    IF NEW.approval_required_by_policy = 'unknown' AND NEW.approval_missing = 'unknown' THEN
-      NEW.approval_required_by_policy := v_required;
-      NEW.approval_missing := CASE WHEN v_required = 'yes'
-                                        AND NEW.variance_approved_by_user_id IS NULL
-                                   THEN 'yes' ELSE 'no' END;
-    ELSIF NEW.approval_required_by_policy <> v_required THEN
-      RAISE EXCEPTION 'close %: approval_required_by_policy does not follow the frozen policy', NEW.shift_id
-        USING ERRCODE = 'check_violation';
-    END IF;
+  -- The frozen value decides the close (D-1): approval is required exactly
+  -- under a 'limit' with |variance| > limitAmount, never under 'none'. D-1
+  -- has no currency condition: a frozen limit in another currency is flagged
+  -- policy_value_mismatch at open, and the rule still applies as frozen. With
+  -- a frozen policy, the value is never 'unknown' (ShiftPolicyMatchesClose):
+  -- a writer that leaves BOTH values at the 'unknown' default (the
+  -- pre-RT-387 writer after an RT-387 rollback, or during a mixed-version
+  -- deploy) gets them derived here instead of a refused close; any other
+  -- value must match (a half-'unknown' pair is refused).
+  v_required := CASE WHEN v_mode = 'limit' AND abs(NEW.variance) > v_limit
+                     THEN 'yes' ELSE 'no' END;
+  IF NEW.approval_required_by_policy = 'unknown' AND NEW.approval_missing = 'unknown' THEN
+    NEW.approval_required_by_policy := v_required;
+    NEW.approval_missing := CASE WHEN v_required = 'yes'
+                                      AND NEW.variance_approved_by_user_id IS NULL
+                                 THEN 'yes' ELSE 'no' END;
+  ELSIF NEW.approval_required_by_policy <> v_required THEN
+    RAISE EXCEPTION 'close %: approval_required_by_policy does not follow the frozen policy', NEW.shift_id
+      USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;
 END

@@ -610,7 +610,7 @@ describe("0050 — the close tri-states", () => {
     ["limit 0, no approver", limit("0"), {}, { required: "yes", missing: "yes" }],
     ["limit 0, an approver", limit("0"), { approver: OWNER_A }, { required: "yes", missing: "no" }],
     ["limit 10", limit("10"), {}, { required: "no", missing: "no" }],
-    ["a limit in another currency (kept unknown)", limit("0", "USD"), {}, { required: "unknown", missing: "unknown" }],
+    ["a limit in another currency (D-1 has no currency condition)", limit("0", "USD"), {}, { required: "yes", missing: "yes" }],
   ])(
     "derives the values a pre-RT-387 close leaves at the default (rollback-safe): %s",
     async (_label, frozen, input, expected) => {
@@ -649,10 +649,31 @@ describe("0050 — the close tri-states", () => {
     await closeShift(await openShift({ frozen: limit("0") }), { required: "no", missing: "no", variance: "0.00" });
   });
 
-  it("leaves yes / no to the runtime when the frozen limit's currency differs", async () => {
+  it("applies a frozen limit in another currency as frozen (flagged, never exempt)", async () => {
     if (skip()) return;
     await closeShift(await openShift({ frozen: limit("1", "USD") }), { required: "yes", missing: "yes" });
-    await closeShift(await openShift({ frozen: limit("1", "USD") }), { required: "no", missing: "no" });
+    await expectCode(closeShift(await openShift({ frozen: limit("1", "USD") }), { required: "no", missing: "no" }), "23514");
+    await closeShift(await openShift({ frozen: limit("10", "USD") }), { required: "no", missing: "no" });
+  });
+
+  it("never keeps `unknown` on a close whose shift froze a policy", async () => {
+    if (skip()) return;
+    const frozenShapes: Frozen[] = [
+      { source: "system", mode: "none" },
+      { source: "fallback", mode: "limit", limitAmount: "0", currency: "EGP" },
+      limit("3", "USD"),
+    ];
+    for (const frozen of frozenShapes) {
+      const s = await openShift({ frozen });
+      await closeShift(s);
+      const v = (await closeValues(s)) as { required: string; missing: string };
+      expect(v.required).not.toBe("unknown");
+      expect(v.missing).not.toBe("unknown");
+    }
+    expect(
+      await count(`SELECT COUNT(*) AS n FROM shift_closes c JOIN shifts s ON s.shift_id = c.shift_id
+        WHERE s.frozen_policy_source IS NOT NULL AND c.approval_required_by_policy = 'unknown'`),
+    ).toBe(0);
   });
 
   it("keeps shift_closes append-only (the tri-states are never updated)", async () => {
