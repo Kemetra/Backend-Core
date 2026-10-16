@@ -16,7 +16,8 @@
  *     cascade counts equal the revoke's audit counts; a 409 carries the
  *     preview of the refused state;
  *   - snapshot, not reservation: a shift that opens after an `allowed` preview
- *     makes the revoke 409, and the 409's details show that shift;
+ *     makes the revoke 409, and the 409's details show that shift, including
+ *     when the revoke waited on that open's lifecycle lock;
  *   - same scope and 404 as the reads; 400 for a malformed action / reason;
  *   - read-only and secret-free: no write, no cascade, no note or token.
  *
@@ -53,6 +54,7 @@ import {
   R_RACE,
   R_REC,
   R_REC_ADMIN,
+  R_REVERSE,
   R_SEC,
   SES_MANAGER,
   SES_MANAGER_ACTIVE,
@@ -407,5 +409,46 @@ describe("a shift that opens after the preview", () => {
       openShift: { shiftId, source: "cash_up", cashFacts: { receivedCount: 1 } },
     });
     expect(stateOf(await preview(SES_OWNER_ALL, R_RACE, "revoke", "admin_error"))).toEqual(stateOf(details));
+  });
+
+  it("a revoke that waited on a shift open's lifecycle lock answers 409 with that shift in its details", async () => {
+    if (skip()) return;
+    expect(await preview(SES_OWNER_ALL, R_REVERSE, "revoke", "admin_error")).toMatchObject({ verdict: "allowed" });
+    const shiftId = "0a000000-0000-7000-8000-0000036603e2";
+    const scope = { tenantId: TENANT_A, storeId: STORE_A_X, deviceId: R_REVERSE };
+    const repo = new ShiftCashUpRepository();
+    const opener = await h.env().admin.connect();
+    let response: request.Response | null = null;
+    try {
+      // The open holds the lifecycle lock; the revoke starts and must wait for it.
+      await opener.query("BEGIN");
+      expect(await repo.lockOpenableDevice(opener, scope)).toBe(true);
+      const revoking = post(R_REVERSE, SES_OWNER_ALL, { reason: "admin_error" }).then((res) => {
+        response = res;
+        return res;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(response).toBeNull();
+      const opened = await repo.insertShift(opener, scope, {
+        shiftId,
+        openedAt: "2026-10-16T15:00:00Z",
+        openingUserId: CASHIER_A,
+        currencyCode: "EGP",
+        openingFloat: "100.00",
+        recordedByUserId: CASHIER_A,
+        payloadHash: Buffer.alloc(32, 5),
+      });
+      expect(opened.kind).toBe("inserted");
+      await opener.query("COMMIT");
+      const res = await revoking;
+      expect(outcomeOf(res)).toEqual([409, "unresolved_cash_session"]);
+      h.conforms("DeviceImpactConflict", res.body);
+      expect((res.body as { error: { details: Preview } }).error.details).toMatchObject({
+        verdict: "blocked",
+        openShift: { shiftId },
+      });
+    } finally {
+      opener.release();
+    }
   });
 });
