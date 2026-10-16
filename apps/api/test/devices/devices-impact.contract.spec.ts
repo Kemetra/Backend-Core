@@ -339,6 +339,92 @@ describe("devices impact contract — projection", () => {
 });
 
 // ===========================================================================
+// 3b. Each verdict / state rule, with a positive and a negative case
+// ===========================================================================
+describe("devices impact contract — verdict and state rules", () => {
+  const OTHER_ALLOWED = { ...ALLOWED, revokeReason: "other", requires: ["note"] };
+  const REVOKED_NO_SHIFT = { trustState: "revoked", openShift: null, custodyExceptionShiftId: null, cascade: null };
+  const ACTIVE_RETIRE = { ...ALLOWED, action: "retire", revokeReason: "retired" };
+  const ACTIVE_REPLACE = { ...ALLOWED, action: "replace", revokeReason: "replaced" };
+
+  it.each([
+    [
+      "custody exception only for a security or recovery reason",
+      SECURITY,
+      { ...SECURITY, revokeReason: "moved" },
+    ],
+    [
+      "an open-shift block carries the open shift",
+      BLOCKED,
+      { ...BLOCKED, openShift: null },
+    ],
+    [
+      "an active replace with an open shift is blocked",
+      { ...ACTIVE_REPLACE, verdict: "blocked", blockCode: "unresolved_cash_session", openShift: CASH_UP_SHIFT },
+      { ...ACTIVE_REPLACE, openShift: CASH_UP_SHIFT },
+    ],
+    [
+      "an active retire without an open shift is not blocked",
+      ACTIVE_RETIRE,
+      { ...ACTIVE_RETIRE, verdict: "blocked", blockCode: "unresolved_cash_session" },
+    ],
+    [
+      "a revoked device's retire without a shift is allowed, never no_change",
+      { ...ACTIVE_RETIRE, ...REVOKED_NO_SHIFT },
+      { ...ACTIVE_RETIRE, ...REVOKED_NO_SHIFT, verdict: "no_change" },
+    ],
+    [
+      "a revoked device's retire with the custody shift is blocked, never no_change",
+      RETIRE_BLOCKED_BY_EXCEPTION,
+      { ...RETIRE_BLOCKED_BY_EXCEPTION, verdict: "no_change", blockCode: null },
+    ],
+    [
+      "a revoked device's custody exception and open shift are present together",
+      REPLACE_AFTER_EXCEPTION,
+      { ...REPLACE_AFTER_EXCEPTION, custodyExceptionShiftId: null },
+    ],
+    [
+      "a revoked device without a shift has no custody exception",
+      { ...REPLACE_AFTER_EXCEPTION, openShift: null, custodyExceptionShiftId: null },
+      { ...REPLACE_AFTER_EXCEPTION, openShift: null },
+    ],
+    [
+      "an other revoke requires the note, allowed",
+      OTHER_ALLOWED,
+      { ...OTHER_ALLOWED, requires: [] },
+    ],
+    [
+      "an other revoke requires the note, blocked",
+      { ...BLOCKED, revokeReason: "other", requires: ["note"] },
+      { ...BLOCKED, revokeReason: "other", requires: [] },
+    ],
+    [
+      "an other revoke requires the note, no_change",
+      { ...NO_CHANGE, revokeReason: "other", requires: ["note"] },
+      { ...NO_CHANGE, revokeReason: "other", requires: RECOVERY_REQUIRES },
+    ],
+    [
+      "only an other revoke requires the note alone",
+      ALLOWED,
+      { ...ALLOWED, requires: ["note"] },
+    ],
+  ])("%s", (_rule, accepted, rejected) => {
+    expect(contract.accepts("DeviceImpactPreview", accepted)).toBe(true);
+    expect(contract.accepts("DeviceImpactPreview", rejected)).toBe(false);
+  });
+
+  it.each([
+    ["ImpactVerdict", /unknown verdict as `blocked` \(fail-safe\)/],
+    ["ImpactBlockCode", /unknown block code as a refusal/],
+    ["ImpactRequirement", /unknown requirement as unmet/],
+  ] as const)("%s states its extension policy (minor bump, fail-safe)", (name, pattern) => {
+    const text = String(contract.schema(name)["description"]).replace(/\s+/g, " ");
+    expect(text).toMatch(/minor contract version bump/);
+    expect(text).toMatch(pattern);
+  });
+});
+
+// ===========================================================================
 // 4. The revoke's 409 carries the preview (additively)
 // ===========================================================================
 describe("devices impact contract — revoke 409", () => {
