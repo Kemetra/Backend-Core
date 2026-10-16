@@ -1,7 +1,7 @@
 /**
  * `sale_responsibilities` — who owes how much of a sale (Jira RT-418; owner
  * decision R-1, RT-413 comment 11669; contract RT-417 `SaleResponsibility`).
- * Policies and CHECKs in `0049_sale_responsibilities.sql`.
+ * Policies and CHECKs in `0051_sale_responsibilities.sql`.
  *
  * A child of the immutable sale fact, written in the capture transaction and
  * never mutated (§X). NOT a receivable: no balance and no state; ERPNext owns

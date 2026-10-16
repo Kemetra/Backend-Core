@@ -140,7 +140,7 @@ Legitimate deployments never set a role option.
   - `sale_reprints`: `SELECT`, `INSERT` (RT-539, migration 0047)
   - `devices`: `UPDATE` (RT-365: the Console device revoke)
   - `sale_responsibilities`: `SELECT`, `INSERT`; `payer_account`: `SELECT`,
-    `INSERT`, `UPDATE` (RT-418, migration 0049)
+    `INSERT`, `UPDATE` (RT-418, migration 0051)
 
   A deploy that skips that grant step now fails to boot, and the error names
   each missing privilege and table, instead of starting healthy with those
@@ -333,7 +333,7 @@ table the domain role must use needs a matching grant step at deploy time.
   `sale_lines.line_seq` columns live on tables the domain role already reads
   and writes.
 
-- **Migration `0049_sale_responsibilities` (RT-418).** Run
+- **Migration `0051_sale_responsibilities` (RT-418).** Run
   [`sql/sale-responsibilities-domain-grants.sql`](sql/sale-responsibilities-domain-grants.sql)
   after `migrate up` and before the API and worker start, in the same step 2
   of [`deploy/README.md`](../../deploy/README.md#deploy), with the same

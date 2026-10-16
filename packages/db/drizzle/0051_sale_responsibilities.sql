@@ -1,4 +1,4 @@
--- 0049_sale_responsibilities.sql
+-- 0051_sale_responsibilities.sql
 --
 -- Sale payer responsibilities (Jira RT-418, migration A of the 035 Option B
 -- narrowing). [GATED] migration: authored under the coordinator's delegation
@@ -33,7 +33,7 @@
 --      ERPNext Customer link frozen with each resolution version (RT-332), so
 --      every re-pull of a work item is identical. One payer per sale, so the
 --      value repeats on every line of a version, as warehouse_ref does. NULL
---      for a sale without responsibilities and for every pre-0049 row.
+--      for a sale without responsibilities and for every pre-0051 row.
 --
 -- No existing row is modified except by the credit_terms drop (always NULL
 -- in practice: no route wrote it).
@@ -66,12 +66,12 @@
 -- default in this transaction), and the CHECK is enforced on every new or
 -- updated row. Splitting VALIDATE into a second transaction is not safe with
 -- this runner: it applies the file as one query and records the ledger row
--- only after it, so a failed second transaction would leave 0049 applied but
+-- only after it, so a failed second transaction would leave 0051 applied but
 -- unrecorded, and a re-run would fail on the existing column.
 -- Grants: none here — production grants the domain role SELECT + INSERT on
 -- sale_responsibilities outside migrations
 -- (docs/operations/sql/sale-responsibilities-domain-grants.sql).
--- Reversible via 0049_sale_responsibilities.down.sql.
+-- Reversible via 0051_sale_responsibilities.down.sql.
 
 BEGIN;
 

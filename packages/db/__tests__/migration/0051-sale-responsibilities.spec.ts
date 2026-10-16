@@ -1,9 +1,9 @@
 /**
- * 0049 — sale payer responsibilities (RT-418; contract RT-417; owner decision
+ * 0051 — sale payer responsibilities (RT-418; contract RT-417; owner decision
  * R-1, RT-413 comment 11669).
  *
- * Applies every migration before 0049 against a real Postgres, seeds a
- * pre-0049 sale and payer (the UPGRADE path), applies 0049, then proves:
+ * Applies every migration before 0051 against a real Postgres, seeds a
+ * pre-0051 sale and payer (the UPGRADE path), applies 0051, then proves:
  *   - existing sales read `responsibility_count = 0` (no backfill);
  *   - `payer_account.credit_terms` is gone (ERPNext owns terms);
  *   - `sale_responsibilities`: amount > 0, sequence >= 1, one row per payer and
@@ -27,9 +27,9 @@ import type { PoolClient } from "pg";
 import { ensureAppRole, startPgEnv, stopPgEnv, type PgTestEnv } from "../_helpers/postgres-container";
 
 const DRIZZLE_DIR = resolve(__dirname, "..", "..", "drizzle");
-const UP_NAME = "0049_sale_responsibilities.sql";
+const UP_NAME = "0051_sale_responsibilities.sql";
 const UP_PATH = resolve(DRIZZLE_DIR, UP_NAME);
-const DOWN_PATH = resolve(DRIZZLE_DIR, "0049_sale_responsibilities.down.sql");
+const DOWN_PATH = resolve(DRIZZLE_DIR, "0051_sale_responsibilities.down.sql");
 
 const TENANT = "0a000000-0000-7000-8000-000000049001";
 const TENANT_B = "0b000000-0000-7000-8000-000000049001";
@@ -51,7 +51,7 @@ function pg(): PgTestEnv {
   return env;
 }
 
-async function applyBefore0049(pgEnv: PgTestEnv): Promise<void> {
+async function applyBefore0051(pgEnv: PgTestEnv): Promise<void> {
   const files = readdirSync(DRIZZLE_DIR)
     .filter((n) => /^\d{4}_.+\.sql$/.test(n) && !n.endsWith(".down.sql"))
     .filter((n) => n.localeCompare(UP_NAME) < 0)
@@ -141,7 +141,7 @@ async function errorCode(fn: () => Promise<unknown>): Promise<string | null> {
   }
 }
 
-/** Which 0049 objects exist (and whether the dropped credit_terms column is back). */
+/** Which 0051 objects exist (and whether the dropped credit_terms column is back). */
 interface SchemaState {
   readonly table: boolean;
   readonly responsibilityCount: boolean;
@@ -176,12 +176,12 @@ beforeAll(async () => {
   } catch (err: unknown) {
     if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
       // eslint-disable-next-line no-console
-      console.warn(`\n[0049-sale-responsibilities.spec] Docker NOT AVAILABLE — skipping: ${String(err)}\n`);
+      console.warn(`\n[0051-sale-responsibilities.spec] Docker NOT AVAILABLE — skipping: ${String(err)}\n`);
       return;
     }
     throw err;
   }
-  await applyBefore0049(env);
+  await applyBefore0051(env);
   await env.admin.query(
     `INSERT INTO tenants (id, name, slug) VALUES ($1, 'RT-418 tenant', 'rt418-a'), ($2, 'RT-418 tenant B', 'rt418-b')`,
     [TENANT, TENANT_B],
@@ -212,7 +212,7 @@ afterAll(async () => {
 
 const skip = (): boolean => env === null;
 
-describe("0049 up — upgrade path", () => {
+describe("0051 up — upgrade path", () => {
   it("existing sales read responsibility_count 0 (no backfill)", async () => {
     if (skip()) return;
     const r = await pg().admin.query(`SELECT responsibility_count FROM sales WHERE id = $1`, [LEGACY_SALE]);
@@ -236,7 +236,7 @@ describe("0049 up — upgrade path", () => {
   });
 });
 
-describe("0049 sale_responsibilities constraints", () => {
+describe("0051 sale_responsibilities constraints", () => {
   it("accepts a valid row: tenant-wide payer, positive amount, sequence 1", async () => {
     if (skip()) return;
     expect(await tryInsert({})).toBeNull();
@@ -290,7 +290,7 @@ describe("0049 sale_responsibilities constraints", () => {
   });
 });
 
-describe("0049 sale_responsibilities RLS", () => {
+describe("0051 sale_responsibilities RLS", () => {
   beforeAll(async () => {
     if (skip()) return;
     await pg().admin.query(insertSql, params({}));
@@ -345,7 +345,7 @@ describe("0049 sale_responsibilities RLS", () => {
   });
 });
 
-describe("0049 down", () => {
+describe("0051 down", () => {
   /** Run the down file on one client (optionally as `role`), then roll back whatever it left open. */
   async function runDown(role: string | null): Promise<string | null> {
     const client = await pg().admin.connect();
@@ -402,7 +402,7 @@ describe("0049 down", () => {
     }
   });
 
-  it("round-trips: down removes every 0049 object, up restores them", async () => {
+  it("round-trips: down removes every 0051 object, up restores them", async () => {
     if (skip()) return;
     await pg().admin.query(readFileSync(DOWN_PATH, "utf8"));
     expect(await schemaState()).toEqual(DOWN_STATE);

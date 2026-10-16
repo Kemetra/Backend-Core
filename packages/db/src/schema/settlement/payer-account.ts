@@ -2,7 +2,7 @@
  * `payer_account` — 035 §5 (FR-001/2/4). Who is responsible for settling a sale
  * balance (distinct from the buyer at the till).
  *
- * Category = credit_customer | corporate | insurer (FR-002). RT-418 (0049):
+ * Category = credit_customer | corporate | insurer (FR-002). RT-418 (0051):
  * `credit_terms` is dropped (ERPNext owns terms and credit limits);
  * `external_ref` is the payer's ERPNext Customer link (settlement.yaml 2.0.0).
  * `(id, tenant_id)` is unique: the composite FK target of

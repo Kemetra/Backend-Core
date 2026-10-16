@@ -59,7 +59,7 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   // RT-539 (0047): the receipt reprint record (append-only).
   "sale_reprints:SELECT",
   "sale_reprints:INSERT",
-  // RT-418 (0049): payer responsibilities (append-only), and the payer rows the
+  // RT-418 (0051): payer responsibilities (append-only), and the payer rows the
   // Console routes create and a credit capture locks FOR SHARE (needs UPDATE).
   "sale_responsibilities:SELECT",
   "sale_responsibilities:INSERT",

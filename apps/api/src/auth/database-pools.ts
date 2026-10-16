@@ -121,7 +121,7 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     "sale_sync_deadletters",
     // RT-539 (0047): the receipt reprint record.
     "sale_reprints",
-    // RT-418 (0049): payer responsibilities on the sale fact.
+    // RT-418 (0051): payer responsibilities on the sale fact.
     "sale_responsibilities",
     "receivable",
     "claim",
@@ -226,7 +226,7 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   // policy); never UPDATE, DELETE or TRUNCATE.
   ["sale_reprints", "SELECT"],
   ["sale_reprints", "INSERT"],
-  // RT-418 (0049): a credit capture writes the sale's responsibilities, and
+  // RT-418 (0051): a credit capture writes the sale's responsibilities, and
   // the sale read and the posting feed (API and worker share this role) read
   // them. Append-only (no UPDATE / DELETE policy); never UPDATE, DELETE or
   // TRUNCATE.

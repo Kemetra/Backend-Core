@@ -160,7 +160,7 @@ This project follows [Semantic Versioning](https://semver.org/).
   a page may be short or empty with a non-null cursor. Reuses the RT-539
   sale-history query and projections; the list reads migration 0048's index.
   No migration; `sale-history.yaml` and `sales.yaml` are unchanged.
-- RT-418 `[GATED]` migration `0049_sale_responsibilities`, pending owner
+- RT-418 `[GATED]` migration `0051_sale_responsibilities`, pending owner
   approval: the runtime for the RT-417 contracts (owner decisions R-1 and
   option A). Migration: append-only, RLS-forced `sale_responsibilities`
   (composite FKs to `sales` and to `payer_account (id, tenant_id)`, amount

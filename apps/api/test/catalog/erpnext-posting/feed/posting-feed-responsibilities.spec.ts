@@ -183,7 +183,7 @@ beforeAll(async () => {
       frozenPayerRef: "CUST-FROZEN",
     });
     await seedPosting(W_RETURNED_POST, S_RETURNED, "rt418-returned", { lineId: lReturned, frozenPayerRef: "CUST-FROZEN" });
-    // A pre-0049-style row with no frozen resolution: the live (null) link is read.
+    // A pre-0051-style row with no frozen resolution: the live (null) link is read.
     await seedPosting(W_UNLINKED, S_UNLINKED, "rt418-unlinked", { lineId: lUnlinked, frozen: false });
     await a.query(
       `INSERT INTO erpnext_item_map (id, tenant_id, tenant_product_id, erpnext_item_ref, state, suggestion_source, confirmed_by, confirmed_at)

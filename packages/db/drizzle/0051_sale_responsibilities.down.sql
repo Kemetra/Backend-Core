@@ -1,6 +1,6 @@
--- 0049_sale_responsibilities.down.sql
+-- 0051_sale_responsibilities.down.sql
 --
--- Rollback for 0049_sale_responsibilities.sql (RT-418). Drops the payer
+-- Rollback for 0051_sale_responsibilities.sql (RT-418). Drops the payer
 -- responsibilities, sales.responsibility_count, the frozen
 -- payer_external_ref and the payer composite FK target, and restores
 -- payer_account.credit_terms (empty: its values are not recoverable).
@@ -29,7 +29,7 @@ BEGIN
     rows_found := rows_found + (SELECT count(*) FROM sale_responsibilities WHERE tenant_id = t);
   END LOOP;
   IF rows_found > 0 THEN
-    RAISE EXCEPTION '0049 down refused: sale_responsibilities has % row(s); back up and delete them explicitly first', rows_found;
+    RAISE EXCEPTION '0051 down refused: sale_responsibilities has % row(s); back up and delete them explicitly first', rows_found;
   END IF;
 END
 $$;

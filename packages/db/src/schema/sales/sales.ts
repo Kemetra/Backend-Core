@@ -86,7 +86,7 @@ export const sales = pgTable(
     deviceId: uuid("device_id").references(() => devices.id, { onDelete: "restrict" }),
     // RT-77 (0033): number of sale_tenders rows; the feed's visibility guard.
     tenderCount: smallint("tender_count").notNull().default(0),
-    // RT-418 (0049): number of sale_responsibilities rows (0..1); the feed's
+    // RT-418 (0051): number of sale_responsibilities rows (0..1); the feed's
     // visibility guard and hold key.
     responsibilityCount: smallint("responsibility_count").notNull().default(0),
     // RT-538 (0047): the receipt snapshot (CaptureSaleReceipt, RT-537), presentation
@@ -116,7 +116,7 @@ export const sales = pgTable(
     check("sales_pos_total_non_negative", sql`${t.posTotal} >= 0`),
     // RT-360 (0041): no longer capped at one tender per method.
     check("sales_tender_count_range", sql`${t.tenderCount} >= 0`),
-    // RT-418 (0049): one payer per sale in this version.
+    // RT-418 (0051): one payer per sale in this version.
     check("sales_responsibility_count_range", sql`${t.responsibilityCount} BETWEEN 0 AND 1`),
     // RT-538 (0047).
     check(

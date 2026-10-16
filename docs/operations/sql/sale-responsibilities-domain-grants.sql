@@ -1,7 +1,7 @@
 -- Domain-role grants for sale payer responsibilities and the payer-account
--- routes (RT-418, migration 0049). See docs/operations/database-roles.md.
+-- routes (RT-418, migration 0051). See docs/operations/database-roles.md.
 --
--- Run ONCE per environment, AFTER `migrate up` has applied 0049, as the
+-- Run ONCE per environment, AFTER `migrate up` has applied 0051, as the
 -- migration owner (or any role allowed to grant on these tables). This file
 -- holds NO credential. Give psql the connection through libpq environment
 -- variables (PGHOST/PGUSER/PGPASSWORD/...; see deploy/grants.env.example),
@@ -24,7 +24,7 @@
 -- runWithTenantContext.
 --
 -- sale_responsibilities: SELECT and INSERT only. It is part of the immutable
--- sale fact (0049 has SELECT and INSERT tenant policies and no UPDATE or
+-- sale fact (0051 has SELECT and INSERT tenant policies and no UPDATE or
 -- DELETE policy). Never grant UPDATE, DELETE or TRUNCATE: TRUNCATE is not
 -- subject to row security. The auth lookup role must hold no privilege on it
 -- (AUTH_LOOKUP_FORBIDDEN_GRANTS).
