@@ -9,38 +9,30 @@
  * `x-runtime-status: contract-only` until the RT-365 runtime ships.
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
- * app boot and no HTTP. What this pins:
+ * app boot and no HTTP. Pinned here:
  *
- *   1. Two GETs and one POST at their paths, contract-only, with no collision
- *      with another contract's operationIds.
- *   2. Security is the human `cookieAuth` only; 404 (not 403) is the role /
- *      scope refusal; no tenant id is accepted from the request; the revoke
- *      declares the recovery 403, the 409 Cash Session refusal and the 422
- *      recovery-requirement refusals.
+ *   1. Two GETs and one POST, contract-only, no operationId collision.
+ *   2. cookieAuth only; role / scope refusal is 404; the revoke declares its
+ *      403 / 409 / 422 refusals and their stable codes; no tenant from the
+ *      request.
  *   3. The list filters, cursor and page bounds.
- *   4. Projections are strict, never carry a credential, a previous token or a
- *      tenant id, and keep trust state consistent with the revoke / retire
- *      timestamps.
- *   5. The revoke body: the D-Q3 reason enum, `other` requires a note, the note
- *      matches the 0040 CHECK (1..500, not blank), unknown keys refused.
- *   6. AJV fixtures: valid payloads pass, each invalid one fails.
- *   7. No POS path, and the POS pairing contract keeps its operations.
+ *   4. Strict projections without credentials, with trust state consistent
+ *      with the revoke / retire timestamps.
+ *   5. The revoke body: D-Q3 reasons, `other` needs a note, the 0040 note shape.
+ *   6. No POS path; the POS pairing contract keeps its operations.
  */
-import "reflect-metadata";
-
-import Ajv, { type ValidateFunction } from "ajv";
-import addFormats from "ajv-formats";
-
-import { loadOpenApiContracts } from "../../src/openapi/loader";
-
-const CONTRACT_ID = "devices.openapi";
-const PAIRING_ID = "pos-terminal-pairing.openapi";
+import { readContract, type ContractReader, type HttpMethod, type JsonObject } from "../_helpers/openapi-contract";
 
 const LIST_PATH = "/api/v1/devices";
 const DETAIL_PATH = "/api/v1/devices/{deviceId}";
 const REVOKE_PATH = "/api/v1/devices/{deviceId}/revoke";
 
-const OPERATION_IDS = ["consoleGetDevice", "consoleListDevices", "consoleRevokeDevice"] as const;
+/** [method, path, operationId] of every operation the contract declares. */
+const OPERATIONS: ReadonlyArray<readonly [HttpMethod, string, string]> = [
+  ["get", LIST_PATH, "consoleListDevices"],
+  ["get", DETAIL_PATH, "consoleGetDevice"],
+  ["post", REVOKE_PATH, "consoleRevokeDevice"],
+];
 
 const REVOKE_REASONS = [
   "lost",
@@ -54,112 +46,38 @@ const REVOKE_REASONS = [
   "other",
 ];
 
-type SchemaName =
-  | "DeviceSummary"
-  | "DevicePage"
-  | "DeviceDetail"
-  | "DeviceRevokeRequest"
-  | "DeviceRevokeResult"
-  | "Error";
-
-interface ParameterObject {
-  $ref?: string;
-  in?: string;
-  name?: string;
-  required?: boolean;
-  schema?: Record<string, unknown>;
-}
-
-interface OperationObject {
-  operationId?: string;
-  security?: Array<Record<string, unknown>>;
-  parameters?: ParameterObject[];
-  requestBody?: { required?: boolean; content?: Record<string, { schema?: unknown }> };
-  responses?: Record<string, { $ref?: string }>;
-  "x-runtime-status"?: string;
-  "x-runtime-note"?: string;
-}
-
-type SchemaObject = Record<string, unknown> & {
-  required?: string[];
-  properties?: Record<string, Record<string, unknown>>;
-  additionalProperties?: unknown;
-};
-
-interface OpenApiDocument {
-  openapi?: string;
-  info?: { version?: string };
-  security?: Array<Record<string, unknown>>;
-  paths?: Record<string, Record<string, OperationObject>>;
-  components?: {
-    schemas?: Record<string, SchemaObject>;
-    parameters?: Record<string, ParameterObject>;
-    securitySchemes?: Record<string, Record<string, unknown>>;
-  };
-}
-
-let doc: OpenApiDocument;
-let pairingDoc: OpenApiDocument;
-let otherOperationIds: Set<string>;
-const ajv = new Ajv({ strict: false, allErrors: true });
-addFormats(ajv);
-
-beforeAll(() => {
-  const contracts = loadOpenApiContracts();
-  const found = contracts.find((c) => c.id === CONTRACT_ID);
-  if (!found) throw new Error(`${CONTRACT_ID} not found in packages/contracts/openapi/`);
-  doc = found.document as OpenApiDocument;
-  const pairing = contracts.find((c) => c.id === PAIRING_ID);
-  if (!pairing) throw new Error(`${PAIRING_ID} not found in packages/contracts/openapi/`);
-  pairingDoc = pairing.document as OpenApiDocument;
-  otherOperationIds = new Set<string>();
-  for (const c of contracts) {
-    if (c.id === CONTRACT_ID) continue;
-    for (const item of Object.values((c.document as OpenApiDocument).paths ?? {})) {
-      for (const o of Object.values(item)) {
-        if (typeof o?.operationId === "string") otherOperationIds.add(o.operationId);
-      }
-    }
-  }
-  ajv.addSchema(doc as object, CONTRACT_ID);
-});
-
-function op(path: string, method: "get" | "post" = "get"): OperationObject {
-  const found = doc.paths?.[path]?.[method];
-  if (!found) throw new Error(`${method.toUpperCase()} ${path} not declared`);
-  return found;
-}
-
-const OPS: ReadonlyArray<[string, "get" | "post"]> = [
-  [LIST_PATH, "get"],
-  [DETAIL_PATH, "get"],
-  [REVOKE_PATH, "post"],
+const SUMMARY_KEYS = [
+  "createdAt",
+  "custodyExceptionShiftId",
+  "deviceId",
+  "expiresAt",
+  "label",
+  "lastSeenAt",
+  "replacedByDeviceId",
+  "replacesDeviceId",
+  "retiredAt",
+  "revokeReason",
+  "revokedAt",
+  "revokedByUserId",
+  "storeId",
+  "trustState",
 ];
 
-function schema(name: SchemaName): SchemaObject {
-  const s = doc.components?.schemas?.[name];
-  if (!s) throw new Error(`schema ${name} not declared`);
-  return s;
-}
+let contract: ContractReader;
 
-function validator(name: SchemaName): ValidateFunction {
-  const v = ajv.getSchema(`${CONTRACT_ID}#/components/schemas/${name}`);
-  if (!v) throw new Error(`ajv cannot resolve ${name}`);
-  return v;
-}
+beforeAll(() => {
+  contract = readContract("devices.openapi");
+});
 
-/** Resolves `#/components/parameters/<Name>` references. */
-function params(path: string, method: "get" | "post" = "get"): ParameterObject[] {
-  return (op(path, method).parameters ?? []).map((p) =>
-    p.$ref ? doc.components!.parameters![p.$ref.replace("#/components/parameters/", "")]! : p,
-  );
-}
+const props = (name: string): Record<string, JsonObject> =>
+  (contract.schema(name)["properties"] ?? {}) as Record<string, JsonObject>;
+const keysOf = (name: string): string[] => Object.keys(props(name)).sort();
+const paramNamed = (method: HttpMethod, path: string, name: string): JsonObject | undefined =>
+  contract.parameters(method, path).find((p) => p["name"] === name);
 
-function param(path: string, name: string, method: "get" | "post" = "get"): ParameterObject {
-  const found = params(path, method).find((p) => p.name === name);
-  if (!found) throw new Error(`parameter ${name} not declared on ${path}`);
-  return found;
-}
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
 
 const DEVICE_ID = "0190f5a2-3b4c-7d8e-9f01-23456789abcd";
 const STORE_ID = "0190f5a2-3b4c-7d8e-9f01-000000000002";
@@ -182,396 +100,278 @@ const ACTIVE = {
   replacesDeviceId: null,
   replacedByDeviceId: null,
   custodyExceptionShiftId: null,
-} as const;
+};
 
-const REVOKED_WITH_EXCEPTION = {
+const REVOKED = {
   ...ACTIVE,
   trustState: "revoked",
   revokedAt: "2026-10-16T10:00:00.000Z",
   revokedByUserId: USER_ID,
   revokeReason: "stolen",
   custodyExceptionShiftId: SHIFT_ID,
-} as const;
+};
 
-const DETAIL = {
-  ...REVOKED_WITH_EXCEPTION,
-  revokeNote: "Till taken from counter 2; drawer cash in the back-office safe",
-  retiredByUserId: null,
-  retireReason: null,
-} as const;
+const RETIRED = {
+  ...REVOKED,
+  trustState: "retired",
+  revokeReason: "retired",
+  retiredAt: "2026-10-16T11:00:00.000Z",
+  custodyExceptionShiftId: null,
+  replacedByDeviceId: OTHER_DEVICE_ID,
+};
 
-function without<T extends object>(value: T, key: keyof T): Omit<T, typeof key> {
-  const copy = { ...value };
-  delete copy[key];
-  return copy;
-}
+const DETAIL_EXTRA = { revokeNote: null, retiredByUserId: null, retireReason: null };
+
+const omit = (value: Record<string, unknown>, key: string): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(value).filter(([k]) => k !== key));
 
 // ===========================================================================
-// 1. Document + operations
+// 1. Operations
 // ===========================================================================
-describe("devices — document and operations", () => {
-  it("is an OpenAPI 3.1 document at version 1.0.0-draft", () => {
-    expect(doc.openapi).toBe("3.1.0");
-    expect(doc.info?.version).toBe("1.0.0-draft");
+describe("devices contract — operations", () => {
+  it("is OpenAPI 3.1.0 at 1.0.0-draft with exactly the three operations", () => {
+    expect(contract.document["openapi"]).toBe("3.1.0");
+    expect((contract.document["info"] as JsonObject)["version"]).toBe("1.0.0-draft");
+    const declared = Object.entries(contract.document["paths"] as Record<string, JsonObject>).flatMap(([path, item]) =>
+      Object.keys(item).map((method) => `${method} ${path}`),
+    );
+    expect(declared.sort()).toEqual(OPERATIONS.map(([m, p]) => `${m} ${p}`).sort());
   });
 
-  it("declares exactly the list, detail and revoke, and nothing else", () => {
-    expect(Object.keys(doc.paths ?? {}).sort()).toEqual([LIST_PATH, DETAIL_PATH, REVOKE_PATH].sort());
-    expect(Object.keys(doc.paths![LIST_PATH]!)).toEqual(["get"]);
-    expect(Object.keys(doc.paths![DETAIL_PATH]!)).toEqual(["get"]);
-    expect(Object.keys(doc.paths![REVOKE_PATH]!)).toEqual(["post"]);
-    expect(op(LIST_PATH).operationId).toBe("consoleListDevices");
-    expect(op(DETAIL_PATH).operationId).toBe("consoleGetDevice");
-    expect(op(REVOKE_PATH, "post").operationId).toBe("consoleRevokeDevice");
+  it.each(OPERATIONS)("%s %s is %s, contract-only with an RT-365 note", (method, path, operationId) => {
+    const operation = contract.operation(method, path);
+    expect(operation["operationId"]).toBe(operationId);
+    expect(operation["x-runtime-status"]).toBe("contract-only");
+    expect(String(operation["x-runtime-note"])).toContain("RT-365");
+    expect(contract.foreignOperationIds.has(operationId)).toBe(false);
   });
 
-  it("has a request body on the revoke only", () => {
-    expect(op(LIST_PATH).requestBody).toBeUndefined();
-    expect(op(DETAIL_PATH).requestBody).toBeUndefined();
-    const body = op(REVOKE_PATH, "post").requestBody;
-    expect(body?.required).toBe(true);
-    expect(body?.content?.["application/json"]?.schema).toEqual({
-      $ref: "#/components/schemas/DeviceRevokeRequest",
+  it("takes a required JSON body on the revoke only", () => {
+    expect(contract.operation("get", LIST_PATH)["requestBody"]).toBeUndefined();
+    expect(contract.operation("get", DETAIL_PATH)["requestBody"]).toBeUndefined();
+    expect(contract.operation("post", REVOKE_PATH)["requestBody"]).toEqual({
+      required: true,
+      content: { "application/json": { schema: { $ref: "#/components/schemas/DeviceRevokeRequest" } } },
     });
-  });
-
-  it("marks every operation contract-only with a runtime note until the RT-365 runtime ships", () => {
-    for (const [path, method] of OPS) {
-      expect(op(path, method)["x-runtime-status"]).toBe("contract-only");
-      expect(op(path, method)["x-runtime-note"]).toMatch(/RT-365/);
-    }
-  });
-
-  it("collides with no operationId in any other contract", () => {
-    expect(OPERATION_IDS.filter((id) => otherOperationIds.has(id))).toEqual([]);
   });
 });
 
 // ===========================================================================
-// 2. Auth, non-disclosure and the revoke refusals
+// 2. Auth and refusals
 // ===========================================================================
-describe("devices — auth and refusals", () => {
-  it("accepts only the human cookieAuth session", () => {
-    expect(doc.security).toEqual([{ cookieAuth: [] }]);
-    for (const [path, method] of OPS) expect(op(path, method).security).toBeUndefined();
-    expect(Object.keys(doc.components?.securitySchemes ?? {})).toEqual(["cookieAuth"]);
-    expect(doc.components!.securitySchemes!["cookieAuth"]).toMatchObject({
+describe("devices contract — auth and refusals", () => {
+  it("declares the dp2_session cookie as the only scheme, document-wide", () => {
+    const components = contract.document["components"] as JsonObject;
+    expect(contract.document["security"]).toEqual([{ cookieAuth: [] }]);
+    expect(Object.keys(components["securitySchemes"] as JsonObject)).toEqual(["cookieAuth"]);
+    expect((components["securitySchemes"] as Record<string, JsonObject>)["cookieAuth"]).toMatchObject({
       type: "apiKey",
       in: "cookie",
       name: "dp2_session",
     });
+    for (const [method, path] of OPERATIONS) expect(contract.operation(method, path)["security"]).toBeUndefined();
   });
 
-  it("answers the reads with 200 / 400 / 401 / 404 / 500, refusing role or scope as 404", () => {
-    for (const path of [LIST_PATH, DETAIL_PATH]) {
-      expect(Object.keys(op(path).responses ?? {}).sort()).toEqual(["200", "400", "401", "404", "500"]);
+  it.each([
+    ["get", LIST_PATH, ["200", "400", "401", "404", "500"]],
+    ["get", DETAIL_PATH, ["200", "400", "401", "404", "500"]],
+    ["post", REVOKE_PATH, ["200", "400", "401", "403", "404", "409", "422", "500"]],
+  ] as const)("%s %s answers exactly %j (scope refusals are 404)", (method, path, statuses) => {
+    expect(Object.keys(contract.operation(method, path)["responses"] as JsonObject).sort()).toEqual([...statuses].sort());
+  });
+
+  it("maps the revoke refusals to named responses carrying their stable codes", () => {
+    const responses = contract.operation("post", REVOKE_PATH)["responses"] as Record<string, JsonObject>;
+    const named = (status: string): string => String(responses[status]?.["$ref"]).replace("#/components/responses/", "");
+    const shared = (contract.document["components"] as JsonObject)["responses"] as Record<string, JsonObject>;
+    const codes: Record<string, string[]> = {
+      "403": ["origin_rejected", "recovery_revoke_forbidden"],
+      "409": ["unresolved_cash_session"],
+      "422": ["recovery_note_required", "custody_exception_not_acknowledged"],
+    };
+    expect([named("403"), named("409"), named("422")]).toEqual([
+      "RevokeForbidden",
+      "UnresolvedCashSession",
+      "RecoveryRequirementsUnmet",
+    ]);
+    for (const [status, expected] of Object.entries(codes)) {
+      for (const code of expected) expect(String(shared[named(status)]?.["description"])).toContain(code);
     }
   });
 
-  it("answers the revoke with 200 / 400 / 401 / 403 / 404 / 409 / 422 / 500", () => {
-    expect(Object.keys(op(REVOKE_PATH, "post").responses ?? {}).sort()).toEqual(
-      ["200", "400", "401", "403", "404", "409", "422", "500"].sort(),
-    );
-    const responses = op(REVOKE_PATH, "post").responses!;
-    expect(responses["403"]).toEqual({ $ref: "#/components/responses/RevokeForbidden" });
-    expect(responses["409"]).toEqual({ $ref: "#/components/responses/UnresolvedCashSession" });
-    expect(responses["422"]).toEqual({ $ref: "#/components/responses/RecoveryRequirementsUnmet" });
-  });
-
-  it("names the stable error codes of the revoke refusals", () => {
-    const text = JSON.stringify(doc);
-    for (const code of [
-      "origin_rejected",
-      "recovery_revoke_forbidden",
-      "unresolved_cash_session",
-      "recovery_note_required",
-      "custody_exception_not_acknowledged",
-    ]) {
-      expect(text).toContain(code);
-    }
-  });
-
-  it("takes no tenant id from the request", () => {
-    for (const [path, method] of OPS) {
-      expect(params(path, method).map((p) => p.name)).not.toEqual(
-        expect.arrayContaining([expect.stringMatching(/tenant/i)]),
-      );
-    }
-    expect(Object.keys(schema("DeviceRevokeRequest").properties ?? {})).not.toEqual(
-      expect.arrayContaining([expect.stringMatching(/tenant|store|user|actor/i)]),
-    );
+  it("reads no tenant, store or actor from the request", () => {
+    const fromRequest = [
+      ...OPERATIONS.flatMap(([m, p]) => contract.parameters(m, p).map((x) => String(x["name"]))),
+      ...keysOf("DeviceRevokeRequest"),
+    ];
+    expect(fromRequest.filter((n) => /tenant|actor|user/i.test(n))).toEqual([]);
+    expect(keysOf("DeviceRevokeRequest").filter((n) => /store/i.test(n))).toEqual([]);
   });
 });
 
 // ===========================================================================
 // 3. List filters and paging
 // ===========================================================================
-describe("devices — list filters and paging", () => {
-  it("declares the store and trust-state filters plus paging, all optional query parameters", () => {
-    expect(params(LIST_PATH).map((p) => p.name).sort()).toEqual(
-      ["cursor", "page_size", "store_id", "trust_state"].sort(),
+describe("devices contract — filters and paging", () => {
+  it("lists only optional query parameters: store, trust state, cursor, page size", () => {
+    const list = contract.parameters("get", LIST_PATH);
+    expect(list.map((p) => [p["name"], p["in"], p["required"]]).sort()).toEqual(
+      [
+        ["cursor", "query", false],
+        ["page_size", "query", false],
+        ["store_id", "query", false],
+        ["trust_state", "query", false],
+      ].sort(),
     );
-    for (const p of params(LIST_PATH)) {
-      expect(p.in).toBe("query");
-      expect(p.required).toBe(false);
-    }
   });
 
-  it("filters by a UUID store and the three trust states", () => {
-    expect(param(LIST_PATH, "store_id").schema).toMatchObject({ type: "string", format: "uuid" });
-    expect(param(LIST_PATH, "trust_state").schema).toEqual({ $ref: "#/components/schemas/TrustState" });
-    expect(doc.components!.schemas!["TrustState"]!["enum"]).toEqual(["active", "revoked", "retired"]);
+  it.each([
+    ["store_id", { type: "string", format: "uuid" }],
+    ["trust_state", { $ref: "#/components/schemas/TrustState" }],
+    ["page_size", { type: "integer", minimum: 1, maximum: 200, default: 50 }],
+    ["cursor", { type: "string", minLength: 1, maxLength: 512, pattern: "^[A-Za-z0-9_-]+$" }],
+  ])("bounds %s as %j", (name, expected) => {
+    expect(paramNamed("get", LIST_PATH, name)?.["schema"]).toEqual(expected);
   });
 
-  it("bounds page_size to 1..200, default 50", () => {
-    expect(param(LIST_PATH, "page_size").schema).toMatchObject({
-      type: "integer",
-      minimum: 1,
-      maximum: 200,
-      default: 50,
-    });
+  it("has three mutually exclusive trust states and a 200-item page cap", () => {
+    expect(contract.schema("TrustState")["enum"]).toEqual(["active", "revoked", "retired"]);
+    expect(props("DevicePage")["items"]).toMatchObject({ maxItems: 200 });
   });
 
-  it("keeps the cursor opaque and bounded", () => {
-    expect(param(LIST_PATH, "cursor").schema).toMatchObject({
-      type: "string",
-      minLength: 1,
-      maxLength: 512,
-      pattern: "^[A-Za-z0-9_-]+$",
-    });
-  });
-
-  it("takes the device id as a UUID path parameter on the detail and the revoke", () => {
-    for (const [path, method] of [
-      [DETAIL_PATH, "get"],
-      [REVOKE_PATH, "post"],
-    ] as const) {
-      expect(params(path, method)).toHaveLength(1);
-      expect(param(path, "deviceId", method)).toMatchObject({
-        in: "path",
-        required: true,
-        schema: { type: "string", format: "uuid" },
-      });
-    }
-  });
-
-  it("caps a page at the page_size maximum", () => {
-    expect(schema("DevicePage").properties?.["items"]).toMatchObject({ maxItems: 200 });
+  it.each([
+    ["get", DETAIL_PATH],
+    ["post", REVOKE_PATH],
+  ] as const)("%s %s takes only the deviceId UUID path parameter", (method, path) => {
+    expect(contract.parameters(method, path)).toEqual([
+      expect.objectContaining({ name: "deviceId", in: "path", required: true, schema: { type: "string", format: "uuid" } }),
+    ]);
   });
 });
 
 // ===========================================================================
 // 4. Projections
 // ===========================================================================
-describe("devices — projections", () => {
-  const PROJECTIONS: SchemaName[] = ["DeviceSummary", "DevicePage", "DeviceDetail", "DeviceRevokeResult"];
+describe("devices contract — projections", () => {
+  it.each(["DeviceSummary", "DevicePage", "DeviceDetail", "DeviceRevokeResult"])(
+    "%s is closed and requires every key it declares",
+    (name) => {
+      const s = contract.schema(name);
+      expect(s["additionalProperties"]).toBe(false);
+      expect([...((s["required"] ?? []) as string[])].sort()).toEqual(keysOf(name));
+    },
+  );
 
-  it("is strict, and every key is required", () => {
-    for (const name of PROJECTIONS) {
-      const s = schema(name);
-      expect(s.additionalProperties).toBe(false);
-      expect([...(s.required ?? [])].sort()).toEqual(Object.keys(s.properties ?? {}).sort());
-    }
-  });
-
-  it("carries no tenant id, credential, previous token or contact data", () => {
-    const forbidden = /tenant|hash|token|secret|^pin|previous|validUntil|email|phone/i;
-    for (const name of PROJECTIONS) {
-      expect(Object.keys(schema(name).properties ?? {}).filter((k) => forbidden.test(k))).toEqual([]);
-    }
-  });
-
-  it("lists the RT-365 fields, with the custody exception as a shift link", () => {
-    expect(Object.keys(schema("DeviceSummary").properties ?? {}).sort()).toEqual(
-      [
-        "createdAt",
-        "custodyExceptionShiftId",
-        "deviceId",
-        "expiresAt",
-        "label",
-        "lastSeenAt",
-        "replacedByDeviceId",
-        "replacesDeviceId",
-        "retiredAt",
-        "revokeReason",
-        "revokedAt",
-        "revokedByUserId",
-        "storeId",
-        "trustState",
-      ].sort(),
+  it("never exposes a tenant id, credential, previous token or contact field", () => {
+    const leaked = ["DeviceSummary", "DeviceDetail", "DeviceRevokeResult", "DevicePage"].flatMap((name) =>
+      keysOf(name).filter((k) => /tenant|hash|token|secret|^pin|previous|validUntil|email|phone/i.test(k)),
     );
+    expect(leaked).toEqual([]);
   });
 
-  it("adds only the revoke note and the retire attribution on the detail", () => {
-    const summary = Object.keys(schema("DeviceSummary").properties ?? {});
-    const detail = Object.keys(schema("DeviceDetail").properties ?? {});
-    expect(detail.filter((k) => !summary.includes(k)).sort()).toEqual(
-      ["retireReason", "retiredByUserId", "revokeNote"].sort(),
-    );
-    expect(Object.keys(schema("DeviceSummary").properties ?? {})).not.toContain("revokeNote");
+  it("lists the RT-365 fields; the detail adds only the revoke note and retire attribution", () => {
+    expect(keysOf("DeviceSummary")).toEqual(SUMMARY_KEYS);
+    expect(keysOf("DeviceDetail").filter((k) => !SUMMARY_KEYS.includes(k))).toEqual([
+      "retireReason",
+      "retiredByUserId",
+      "revokeNote",
+    ]);
   });
 
-  it("matches the summary fields on the detail", () => {
-    const summary = schema("DeviceSummary").properties!;
-    const detail = schema("DeviceDetail").properties!;
-    const shape = (s: Record<string, unknown> | undefined): Record<string, unknown> | undefined => {
-      if (!s) return s;
-      const { description: _description, ...rest } = s;
-      return rest;
-    };
-    for (const [key, value] of Object.entries(summary)) {
-      expect({ key, schema: shape(detail[key]) }).toEqual({ key, schema: shape(value) });
-    }
+  it("gives every summary field the same shape on the detail", () => {
+    const bare = (s: JsonObject | undefined): JsonObject => omit(s ?? {}, "description");
+    const summary = props("DeviceSummary");
+    const detail = props("DeviceDetail");
+    const mismatched = SUMMARY_KEYS.filter((k) => JSON.stringify(bare(summary[k])) !== JSON.stringify(bare(detail[k])));
+    expect(mismatched).toEqual([]);
   });
 
-  it("uses the D-Q3 revoke reasons, nullable on a projection (a pre-0040 revoke has none)", () => {
-    expect(doc.components!.schemas!["RevokeReason"]!["enum"]).toEqual(REVOKE_REASONS);
-    expect(validator("DeviceSummary")({ ...REVOKED_WITH_EXCEPTION, revokeReason: null, revokedByUserId: null })).toBe(
-      true,
-    );
+  it("uses the D-Q3 reason enum and the revoked / already_revoked outcome", () => {
+    expect(contract.schema("RevokeReason")["enum"]).toEqual(REVOKE_REASONS);
+    expect(props("DeviceRevokeResult")["outcome"]).toMatchObject({ enum: ["revoked", "already_revoked"] });
+    expect(props("DeviceRevokeResult")["device"]).toEqual({ $ref: "#/components/schemas/DeviceDetail" });
   });
 
-  it("reports the revoke outcome with the current device state", () => {
-    expect(schema("DeviceRevokeResult").properties?.["outcome"]).toMatchObject({
-      enum: ["revoked", "already_revoked"],
-    });
-    expect(schema("DeviceRevokeResult").properties?.["device"]).toEqual({
-      $ref: "#/components/schemas/DeviceDetail",
-    });
+  it.each([
+    ["an active device", "DeviceSummary", ACTIVE],
+    ["an active device seen recently, no label", "DeviceSummary", { ...ACTIVE, label: null, lastSeenAt: "2026-10-16T09:00:00Z" }],
+    ["a revoked device with a custody exception", "DeviceSummary", REVOKED],
+    ["a revoke recorded before RT-365", "DeviceSummary", { ...REVOKED, revokeReason: null, revokedByUserId: null }],
+    ["a retired device", "DeviceSummary", RETIRED],
+    ["a page", "DevicePage", { items: [REVOKED, ACTIVE], nextCursor: "eyJyIjowfQ" }],
+    ["an empty last page", "DevicePage", { items: [], nextCursor: null }],
+    ["a detail with a note", "DeviceDetail", { ...REVOKED, ...DETAIL_EXTRA, revokeNote: "Drawer cash in the safe" }],
+    ["a revoke result", "DeviceRevokeResult", { outcome: "already_revoked", device: { ...ACTIVE, ...DETAIL_EXTRA } }],
+    ["the error envelope", "Error", { error: { code: "unresolved_cash_session", message: "Conflict", request_id: DEVICE_ID } }],
+  ])("accepts %s", (_label, name, payload) => {
+    expect(contract.accepts(name, payload)).toBe(true);
+  });
+
+  it.each([
+    ["an active device with a revoke time", "DeviceSummary", { ...ACTIVE, revokedAt: "2026-10-16T10:00:00Z" }],
+    ["an active device with a custody exception", "DeviceSummary", { ...ACTIVE, custodyExceptionShiftId: SHIFT_ID }],
+    ["a revoked device without a revoke time", "DeviceSummary", { ...REVOKED, revokedAt: null }],
+    ["a revoked device with a retire time", "DeviceSummary", { ...REVOKED, retiredAt: "2026-10-16T11:00:00Z" }],
+    ["a retired device without a retire time", "DeviceSummary", { ...RETIRED, retiredAt: null }],
+    ["an expired trust state", "DeviceSummary", { ...ACTIVE, trustState: "expired" }],
+    ["an unknown reason", "DeviceSummary", { ...REVOKED, revokeReason: "broken" }],
+    ["a missing nullable key", "DeviceSummary", omit(ACTIVE, "lastSeenAt")],
+    ["a token hash", "DeviceSummary", { ...ACTIVE, tokenHash: "abc" }],
+    ["a revoke note on the list item", "DeviceSummary", { ...REVOKED, revokeNote: "x" }],
+    ["a page over 200 items", "DevicePage", { items: new Array(201).fill(ACTIVE), nextCursor: null }],
+    ["a page without nextCursor", "DevicePage", { items: [] }],
+    ["an unknown outcome", "DeviceRevokeResult", { outcome: "noop", device: { ...ACTIVE, ...DETAIL_EXTRA } }],
+    ["a result without the device", "DeviceRevokeResult", { outcome: "revoked" }],
+    ["a bare error code", "Error", { code: "not_found" }],
+  ])("rejects %s", (_label, name, payload) => {
+    expect(contract.accepts(name, payload)).toBe(false);
   });
 });
 
 // ===========================================================================
 // 5. Revoke body
 // ===========================================================================
-describe("devices — revoke body", () => {
-  it("requires a D-Q3 reason; the note and the acknowledgement are optional keys", () => {
-    const body = schema("DeviceRevokeRequest");
-    expect(body.additionalProperties).toBe(false);
-    expect(body.required).toEqual(["reason"]);
-    expect(Object.keys(body.properties ?? {}).sort()).toEqual(
-      ["acknowledgeCustodyException", "note", "reason"].sort(),
-    );
-    expect(body.properties?.["reason"]).toEqual({ $ref: "#/components/schemas/RevokeReason" });
-    expect(body.properties?.["acknowledgeCustodyException"]).toMatchObject({ type: "boolean" });
-  });
-
-  it("bounds the note like the 0040 CHECK (1..500, not blank)", () => {
-    expect(schema("DeviceRevokeRequest").properties?.["note"]).toEqual({
-      $ref: "#/components/schemas/RevokeNote",
+describe("devices contract — revoke body", () => {
+  it("requires only the reason, closes the body and shapes the note like the 0040 CHECK", () => {
+    const body = contract.schema("DeviceRevokeRequest");
+    expect([body["required"], body["additionalProperties"]]).toEqual([["reason"], false]);
+    expect(props("DeviceRevokeRequest")).toEqual({
+      reason: { $ref: "#/components/schemas/RevokeReason" },
+      note: { $ref: "#/components/schemas/RevokeNote" },
+      acknowledgeCustodyException: expect.objectContaining({ type: "boolean" }),
     });
-    expect(doc.components!.schemas!["RevokeNote"]).toMatchObject({
-      type: "string",
-      minLength: 1,
-      maxLength: 500,
-      pattern: "\\S",
-    });
+    expect(contract.schema("RevokeNote")).toMatchObject({ type: "string", minLength: 1, maxLength: 500, pattern: "\\S" });
   });
 
-  it.each(REVOKE_REASONS.filter((r) => r !== "other"))("accepts reason %s without a note", (reason) => {
-    expect(validator("DeviceRevokeRequest")({ reason })).toBe(true);
-  });
-
-  it("accepts a recovery revoke with a note and the acknowledgement", () => {
-    expect(
-      validator("DeviceRevokeRequest")({
-        reason: "hardware_failure",
-        note: "Till will not boot; drawer cash counted into the safe",
-        acknowledgeCustodyException: true,
-      }),
-    ).toBe(true);
-    expect(validator("DeviceRevokeRequest")({ reason: "other", note: "Pilot ended" })).toBe(true);
+  it.each(REVOKE_REASONS.filter((r) => r !== "other").map((reason) => [reason]))("accepts %s alone", (reason) => {
+    expect(contract.accepts("DeviceRevokeRequest", { reason })).toBe(true);
   });
 
   it.each([
-    ["no reason", {}],
-    ["an unknown reason", { reason: "broken" }],
-    ["other without a note", { reason: "other" }],
-    ["an empty note", { reason: "lost", note: "" }],
-    ["a blank note", { reason: "lost", note: "   " }],
-    ["a note over 500 characters", { reason: "lost", note: "x".repeat(501) }],
-    ["a string acknowledgement", { reason: "hardware_failure", acknowledgeCustodyException: "true" }],
-    ["an unknown key", { reason: "lost", storeId: STORE_ID }],
-    ["a snake_case acknowledgement", { reason: "lost", acknowledge_custody_exception: true }],
-  ])("rejects a body with %s", (_label, payload) => {
-    expect(validator("DeviceRevokeRequest")(payload)).toBe(false);
+    [{ reason: "hardware_failure", note: "Till will not boot; cash in the safe", acknowledgeCustodyException: true }, true],
+    [{ reason: "other", note: "Pilot ended" }, true],
+    [{}, false],
+    [{ reason: "broken" }, false],
+    [{ reason: "other" }, false],
+    [{ reason: "lost", note: "" }, false],
+    [{ reason: "lost", note: "   " }, false],
+    [{ reason: "lost", note: "x".repeat(501) }, false],
+    [{ reason: "hardware_failure", acknowledgeCustodyException: "true" }, false],
+    [{ reason: "lost", storeId: STORE_ID }, false],
+    [{ reason: "lost", acknowledge_custody_exception: true }, false],
+  ])("judges %j as %s", (body, expected) => {
+    expect(contract.accepts("DeviceRevokeRequest", body)).toBe(expected);
   });
 });
 
 // ===========================================================================
-// 6. AJV fixtures
+// 6. POS surface untouched
 // ===========================================================================
-describe("devices — AJV fixtures", () => {
-  it("accepts an active device, a revoked one with a custody exception, a retired one and a page", () => {
-    expect(validator("DeviceSummary")(ACTIVE)).toBe(true);
-    expect(validator("DeviceSummary")({ ...ACTIVE, label: null, lastSeenAt: "2026-10-16T09:00:00.000Z" })).toBe(true);
-    expect(validator("DeviceSummary")(REVOKED_WITH_EXCEPTION)).toBe(true);
-    expect(
-      validator("DeviceSummary")({
-        ...REVOKED_WITH_EXCEPTION,
-        trustState: "retired",
-        revokeReason: "retired",
-        retiredAt: "2026-10-16T11:00:00.000Z",
-        custodyExceptionShiftId: null,
-        replacedByDeviceId: OTHER_DEVICE_ID,
-      }),
-    ).toBe(true);
-    expect(validator("DevicePage")({ items: [REVOKED_WITH_EXCEPTION, ACTIVE], nextCursor: "eyJyIjowfQ" })).toBe(true);
-    expect(validator("DevicePage")({ items: [], nextCursor: null })).toBe(true);
-  });
-
-  it("accepts a detail and both revoke outcomes", () => {
-    expect(validator("DeviceDetail")(DETAIL)).toBe(true);
-    expect(validator("DeviceDetail")({ ...ACTIVE, revokeNote: null, retiredByUserId: null, retireReason: null })).toBe(
-      true,
-    );
-    expect(validator("DeviceRevokeResult")({ outcome: "revoked", device: DETAIL })).toBe(true);
-    expect(validator("DeviceRevokeResult")({ outcome: "already_revoked", device: DETAIL })).toBe(true);
-  });
-
-  it.each([
-    ["an active device with a revoke time", { ...ACTIVE, revokedAt: "2026-10-16T10:00:00.000Z" }],
-    ["an active device with a custody exception", { ...ACTIVE, custodyExceptionShiftId: SHIFT_ID }],
-    ["a revoked device without a revoke time", { ...REVOKED_WITH_EXCEPTION, revokedAt: null }],
-    ["a revoked device with a retire time", { ...REVOKED_WITH_EXCEPTION, retiredAt: "2026-10-16T11:00:00.000Z" }],
-    ["a retired device without a retire time", { ...REVOKED_WITH_EXCEPTION, trustState: "retired" }],
-    ["an unknown trust state", { ...ACTIVE, trustState: "expired" }],
-    ["an unknown revoke reason", { ...REVOKED_WITH_EXCEPTION, revokeReason: "broken" }],
-    ["a missing last-seen key", without(ACTIVE, "lastSeenAt")],
-    ["a token hash", { ...ACTIVE, tokenHash: "abc" }],
-    ["the revoke note on the list item", { ...REVOKED_WITH_EXCEPTION, revokeNote: "x" }],
-  ])("rejects a summary with %s", (_label, payload) => {
-    expect(validator("DeviceSummary")(payload)).toBe(false);
-  });
-
-  it("rejects a revoke result with an unknown outcome or without the device", () => {
-    expect(validator("DeviceRevokeResult")({ outcome: "noop", device: DETAIL })).toBe(false);
-    expect(validator("DeviceRevokeResult")({ outcome: "revoked" })).toBe(false);
-  });
-
-  it("rejects a page over 200 items or without nextCursor", () => {
-    expect(validator("DevicePage")({ items: Array(201).fill(ACTIVE), nextCursor: null })).toBe(false);
-    expect(validator("DevicePage")({ items: [] })).toBe(false);
-  });
-
-  it("accepts the canonical error envelope", () => {
-    expect(
-      validator("Error")({ error: { code: "unresolved_cash_session", message: "Conflict", request_id: DEVICE_ID } }),
-    ).toBe(true);
-    expect(validator("Error")({ code: "not_found" })).toBe(false);
-  });
-});
-
-// ===========================================================================
-// 7. POS surface untouched
-// ===========================================================================
-describe("devices — POS surface unchanged", () => {
-  it("adds no POS path, and the pairing contract keeps its operations", () => {
-    expect(Object.keys(doc.paths ?? {}).filter((p) => p.startsWith("/api/pos/"))).toEqual([]);
-    const pairingOps = Object.values(pairingDoc.paths ?? {}).flatMap((item) =>
-      Object.values(item).map((o) => o.operationId),
-    );
-    expect(pairingOps.length).toBeGreaterThan(0);
-    expect(pairingOps.filter((id) => typeof id === "string" && OPERATION_IDS.includes(id as never))).toEqual([]);
+describe("devices contract — POS surface", () => {
+  it("adds no POS path, and the pairing contract keeps its own operations", () => {
+    expect(Object.keys(contract.document["paths"] as JsonObject).filter((p) => p.startsWith("/api/pos/"))).toEqual([]);
+    const pairingPaths = Object.keys(contract.sibling("pos-terminal-pairing.openapi")["paths"] as JsonObject);
+    expect(pairingPaths.length).toBeGreaterThan(0);
+    expect(pairingPaths.some((p) => p.startsWith("/api/v1/devices"))).toBe(false);
   });
 });
