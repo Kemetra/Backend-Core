@@ -220,6 +220,7 @@ describe("data-pulse-migrate CLI", () => {
     "0046_sale_void_approval",
     "0047_sale_history_capture",
     "0048_sales_store_business_date_idx",
+    "0050_shift_variance_policy",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -353,10 +354,25 @@ describe("data-pulse-migrate CLI", () => {
       WHERE c.relname = 'idx_sales_tenant_store_business_date' AND i.indisvalid`);
   }
 
+  /** 0050_shift_variance_policy (RT-385): its two tables, their policies and the new columns. */
+  const SHIFT_VARIANCE_POLICY_TABLES = ["cash_variance_policy_revisions", "shift_close_approver_checks"];
+  async function countShiftVariancePolicyObjects(): Promise<[string, string, string, string]> {
+    return [
+      await countPublicTables(SHIFT_VARIANCE_POLICY_TABLES),
+      await countPolicies(SHIFT_VARIANCE_POLICY_TABLES),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'shifts'
+          AND column_name LIKE 'frozen_policy%'`),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'shift_closes'
+          AND column_name IN ('approval_required_by_policy', 'approval_missing')`),
+    ];
+  }
+
   /**
-   * After one `down` from head: 0048's store/business-date index is gone, while
-   * 0047's receipt columns, line_seq and sale_reprints survive, as do 0046's
-   * approval columns on sale_voids, their CHECK and the single-use index,
+   * After one `down` from head: 0050's policy tables and columns are gone, while
+   * 0048's store/business-date index, 0047's receipt columns, line_seq and
+   * sale_reprints survive, as do 0046's approval columns on sale_voids, their CHECK and the single-use index,
    * 0045's tracking tables, the tenant_products Tracking Profile and
    * stock_movements.tracking_identity_id, 0044's stock_locations table, its
    * store trigger and the stock_movements position constraints, 0042's
@@ -365,11 +381,8 @@ describe("data-pulse-migrate CLI", () => {
    * 0037/0038's resolution table.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countValidSaleHistoryIndex()).toBe("0");
-    expect(
-      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_indexes
-        WHERE schemaname = 'public' AND indexname = 'idx_sales_tenant_store_business_date'`),
-    ).toBe("0");
+    expect(await countShiftVariancePolicyObjects()).toEqual(["0", "0", "0", "0"]);
+    expect(await countValidSaleHistoryIndex()).toBe("1");
     expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
     expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
     // 0032's void columns survive.
@@ -505,6 +518,10 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
     // 0048's store/business-date index, valid after the runner's CONCURRENTLY build (RT-538).
     expect(await countValidSaleHistoryIndex()).toBe("1");
+    // 0050's policy revisions and approver verdicts (SELECT + INSERT policies
+    // each), six frozen-policy columns on shifts and two tri-states on
+    // shift_closes (RT-385).
+    expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
   });
 
   it("up is idempotent on a second run", async () => {
@@ -542,7 +559,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0048 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0050 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
@@ -652,6 +669,7 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
     expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
     expect(await countValidSaleHistoryIndex()).toBe("1");
+    expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
   });
 
   it(
