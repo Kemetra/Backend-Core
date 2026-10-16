@@ -2,14 +2,14 @@
  * apps/api/test/console-sales/console-sales.contract.spec.ts
  *
  * RT-561 (RT-556 F1): the console sales read contract that Admin-Console spec
- * 012 (sales search and sale detail) consumes. `[GATED]` contract, pending
- * owner approval on RT-561; contract only. The runtime (and its HTTP
- * read-scope suite) is RT-562.
+ * 012 (sales search and sale detail) consumes. `[GATED]` contract, approved
+ * on RT-561 (PR #780). The runtime and its HTTP read-scope suite are RT-562
+ * (`console-sales.http.integration.spec.ts`).
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
  * app boot and no HTTP. What this pins:
  *
- *   1. Two GET operations at their paths, both `contract-only` until RT-562,
+ *   1. Two GET operations at their paths, both served (RT-562),
  *      with their audit actions; no write, and no operationId collision.
  *   2. Read scope (contract level): `cookieAuth` only; 404 (never 403) is the
  *      role / scope refusal; no tenant id from the request; `store_id`
@@ -211,10 +211,10 @@ describe("console-sales — document and operations", () => {
     }
   });
 
-  it("marks both operations contract-only until the RT-562 runtime", () => {
+  it("serves both operations: neither is marked contract-only (RT-562)", () => {
     for (const { path } of OPERATIONS) {
-      expect(api.get(path)["x-runtime-status"]).toBe("contract-only");
-      expect(api.get(path)["x-runtime-note"]).toMatch(/RT-562/);
+      expect(api.get(path)["x-runtime-status"]).toBeUndefined();
+      expect(api.get(path)["x-runtime-note"]).toBeUndefined();
     }
   });
 
