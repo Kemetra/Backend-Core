@@ -230,8 +230,9 @@ on the RT-224 device path. So any capture refusal arrives after the goods left.
 | `CaptureSaleRequest.responsibilities` (strict DTO rejects until RT-418) | POS capture | RT-420, after RT-418 deploys |
 | `Sale.responsibilities` on reads (`additionalProperties: false`) | POS strict response validation | re-pin before RT-418 deploys |
 | `Sale.responsibilities` on the feed | Connector (strict feed parsers re-pin) | RT-419 posts to the payer's Customer |
-| Credit only on the envelope path, synchronous before finalize | POS capture (new capture mode, departs from spec 020 FR-5) | RT-420 (or a new issue): synchronous pre-finalize capture, no outbox queuing |
+| Credit only on the envelope path, synchronous before finalize | POS capture (new capture mode, departs from spec 020 FR-5) | RT-420 (scope comment 12134): synchronous pre-finalize capture, no outbox queuing |
 
-Gaps left open: a POS-facing payer lookup (the till has no way to obtain
-`payerRef`s); a payer-update route to repair a missing `externalRef`; reversal
-semantics for responsibility-bearing sales.
+Gaps left open, each with its own issue: a POS-facing payer lookup /
+credit-decision read, since the till has no way to obtain `payerRef`s (RT-570,
+GATED); reversal semantics for responsibility-bearing sales (RT-571); a
+payer-account update route to repair a missing `externalRef` (RT-572).
