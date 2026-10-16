@@ -12,7 +12,8 @@
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
  * app boot and no HTTP. Pinned here:
  *
- *   1. Two GETs and one POST, implemented, no operationId collision.
+ *   1. The three RT-365 operations, implemented, no operationId collision
+ *      (the RT-366 impact preview is pinned in `devices-impact.contract.spec.ts`).
  *   2. cookieAuth only; role / scope refusal is 404; the revoke declares its
  *      403 / 409 / 422 refusals and their stable codes; no tenant from the
  *      request.
@@ -34,13 +35,17 @@ import {
 const LIST_PATH = "/api/v1/devices";
 const DETAIL_PATH = "/api/v1/devices/{deviceId}";
 const REVOKE_PATH = "/api/v1/devices/{deviceId}/revoke";
+const IMPACT_PATH = "/api/v1/devices/{deviceId}/impact";
 
-/** [method, path, operationId] of every operation the contract declares. */
+/** [method, path, operationId] of every RT-365 operation (implemented). */
 const OPERATIONS: ReadonlyArray<readonly [HttpMethod, ApiPath, string]> = [
   ["get", LIST_PATH, "consoleListDevices"],
   ["get", DETAIL_PATH, "consoleGetDevice"],
   ["post", REVOKE_PATH, "consoleRevokeDevice"],
 ];
+
+/** The RT-366 impact preview (`devices-impact.contract.spec.ts` pins it). */
+const IMPACT_OPERATION = ["get", IMPACT_PATH, "consoleGetDeviceImpact"] as const;
 
 const REVOKE_REASONS = [
   "lost",
@@ -139,13 +144,13 @@ const omit = (value: Record<string, unknown>, key: string): Record<string, unkno
 // 1. Operations
 // ===========================================================================
 describe("devices contract — operations", () => {
-  it("is OpenAPI 3.1.0 at 1.0.0-draft with exactly the three operations", () => {
+  it("is OpenAPI 3.1.0 at 1.1.0-draft with the three RT-365 operations and the RT-366 preview", () => {
     expect(contract.document["openapi"]).toBe("3.1.0");
-    expect((contract.document["info"] as JsonObject)["version"]).toBe("1.0.0-draft");
+    expect((contract.document["info"] as JsonObject)["version"]).toBe("1.1.0-draft");
     const declared = Object.entries(contract.document["paths"] as Record<string, JsonObject>).flatMap(([path, item]) =>
       Object.keys(item).map((method) => `${method} ${path}`),
     );
-    expect(declared.sort()).toEqual(OPERATIONS.map(([m, p]) => `${m} ${p}`).sort());
+    expect(declared.sort()).toEqual([...OPERATIONS, IMPACT_OPERATION].map(([m, p]) => `${m} ${p}`).sort());
   });
 
   it.each(OPERATIONS)("%s %s is %s, implemented (no contract-only marker)", (method, path, operationId) => {
@@ -159,6 +164,7 @@ describe("devices contract — operations", () => {
   it("takes a required JSON body on the revoke only", () => {
     expect(contract.operation("get", LIST_PATH)["requestBody"]).toBeUndefined();
     expect(contract.operation("get", DETAIL_PATH)["requestBody"]).toBeUndefined();
+    expect(contract.operation("get", IMPACT_PATH)["requestBody"]).toBeUndefined();
     expect(contract.operation("post", REVOKE_PATH)["requestBody"]).toEqual({
       required: true,
       content: { "application/json": { schema: { $ref: "#/components/schemas/DeviceRevokeRequest" } } },
