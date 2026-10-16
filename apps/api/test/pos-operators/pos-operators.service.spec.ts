@@ -99,17 +99,6 @@ const ACTIVE_DEVICE_ROW = {
   revokedAt: null,
   createdAt: new Date(),
   updatedAt: new Date(),
-  // 0040 lifecycle columns (RT-365 declares them on DeviceRow).
-  expiresAt: new Date(Date.now() + 90 * 24 * 3_600_000),
-  lastSeenAt: null,
-  revokedBy: null,
-  revokeReason: null,
-  revokeNote: null,
-  previousTokenHash: null,
-  previousValidUntil: null,
-  retiredAt: null,
-  retiredBy: null,
-  retireReason: null,
 };
 
 // -----------------------------------------------------------------------
