@@ -547,6 +547,13 @@ describe("RT-562 console sales — list", () => {
     expect(all.refs.slice(-2)).toEqual([BULK_VOID, BULK_REPAIR]);
   });
 
+  it("asOf is never earlier than the receivedAt of any sale on the page", async () => {
+    if (skip()) return;
+    const body = await page(SES_OWNER_ALL, { ...X_OCT, page_size: 100 });
+    const asOf = Date.parse(body["asOf"] as string);
+    for (const item of body.items) expect(Date.parse(item["receivedAt"] as string)).toBeLessThanOrEqual(asOf);
+  });
+
   it("stays stable while sales arrive: a newer arrival is not returned, an older one is returned once", async () => {
     if (skip()) return;
     const newer = "0a000000-0000-7000-8000-000000562a91";

@@ -91,7 +91,7 @@ export interface ListConsoleSalesInput extends ScopedReadInput {
   readonly pageSize: number;
 }
 
-/** Only for a sale that already matched the scoped query. */
+/** A store's timezone: the listed store (in scope), or the store of a sale that matched the scoped query. */
 const STORE_TIMEZONE_SQL = `SELECT timezone FROM stores WHERE id = $1::uuid AND tenant_id = $2::uuid`;
 
 /** $1 tenant, $2 sale ref, $3 scoped store ids (null = tenant-wide). */
@@ -125,15 +125,13 @@ export class ConsoleSalesReadService {
     return this.inTenant(input, async (client) => {
       const scope = await callerStoreScope(client, this.memberships, input);
       if (!inStoreScope(scope, input.storeId)) throw new StoreNotInScopeError();
-      const store = await client.query<{ timezone: string; as_of: Date }>(
-        `SELECT timezone, now() AS as_of FROM stores WHERE id = $1::uuid AND tenant_id = $2::uuid`,
-        [input.storeId, input.tenantId],
-      );
+      const store = await client.query<{ timezone: string }>(STORE_TIMEZONE_SQL, [input.storeId, input.tenantId]);
       const storeRow = store.rows[0];
       if (storeRow === undefined) throw new StoreNotInScopeError();
 
       const readLimit = hasAnyFilter(input.filters) ? this.scanLimit : input.pageSize + 1;
       const rows = await this.readRange(client, input, keyset, readLimit);
+      const asOf = await this.readClock(client);
       const page = assemblePage({
         rows,
         readLimit,
@@ -144,7 +142,7 @@ export class ConsoleSalesReadService {
       return {
         items: page.items,
         nextCursor: page.resumeAfter === null ? null : encodeConsoleSaleCursor(binding, page.resumeAfter),
-        asOf: storeRow.as_of.toISOString(),
+        asOf: asOf.toISOString(),
         storeRef: input.storeId,
         storeTimezone: storeRow.timezone,
         from: input.filters.from,
@@ -177,6 +175,17 @@ export class ConsoleSalesReadService {
     const row = matched.rows[0];
     if (row === undefined) throw new ConsoleSaleNotFoundError();
     return row.store_id;
+  }
+
+  /**
+   * `asOf`: the server clock AFTER the range read. Under READ COMMITTED the
+   * read can see sales committed after this transaction began, so the
+   * transaction's `now()` could precede an item's `receivedAt`; every sale the
+   * read saw committed before this later `clock_timestamp()`.
+   */
+  private async readClock(client: PoolClient): Promise<Date> {
+    const r = await client.query<{ as_of: Date }>(`SELECT clock_timestamp() AS as_of`);
+    return r.rows[0]!.as_of;
   }
 
   /** The timezone of a store a matched sale belongs to. */
