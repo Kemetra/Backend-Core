@@ -36,6 +36,8 @@
  */
 import { createHash } from "node:crypto";
 
+import { UnauthorizedException } from "@nestjs/common";
+
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Logger } from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
@@ -136,6 +138,9 @@ export class ShiftCashUpService {
       if (existing?.payloadHash.equals(hash)) return this.replayShift(client, existing, hash);
       await this.requireStatedUser(client, { ctx, userId: fact.openingUserId });
       if (existing !== null) throw new ShiftCashUpError("shift_payload_conflict");
+      // RT-365: a device revoked since this request authenticated opens no
+      // shift; it gets the revoked-device answer (PosDeviceAuthGuard's 401).
+      if (!(await this.repo.lockOpenableDevice(client, ctx.scope))) throw new UnauthorizedException("Unauthorized");
 
       const outcome = await this.repo.insertShift(client, ctx.scope, {
         ...fact,

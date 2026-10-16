@@ -25,9 +25,10 @@ info:
     device is never reactivated (RT-287 D-Q5): there is no un-revoke.
 
 
-    **Posture.** `1.0.0-draft`, `[GATED]` contract-first. Every operation is
-    `x-runtime-status: contract-only` until the RT-365 runtime ships it; the
-    runtime PR removes the markers without changing the wire.
+    **Posture.** `1.0.0-draft`, implemented. `[GATED]` contract-first (PR
+    #777, owner-approved and merged); the RT-365 runtime ships all three
+    operations unchanged on the wire, so none carries
+    `x-runtime-status: contract-only`.
 
 
     **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`)
@@ -79,7 +80,7 @@ info:
 
 
     **Revoke (one transaction).** Runtime requirement (implemented by the
-    RT-365 runtime, PR #781; not on `main` until it merges): the revoke and
+    RT-365 runtime, PR #781): the revoke and
     every shift open (the cash-up open and the audit-ingest `shift.open`)
     MUST take the same per-device lifecycle lock (a transaction-scoped
     advisory lock on tenant + device), and a shift open MUST recheck
@@ -183,10 +184,6 @@ paths:
       summary: List devices (exception-first, keyset paginated).
       operationId: consoleListDevices
       tags: [devices]
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-365 contract-first; the runtime ships in the RT-365 implementation
-        PR, which removes this marker.
       description: >
         The devices in the caller's tenant and store scope, exception-first
         (see the ordering rule above). Every filter is optional and they
@@ -219,10 +216,6 @@ paths:
       summary: Read one device.
       operationId: consoleGetDevice
       tags: [devices]
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-365 contract-first; the runtime ships in the RT-365 implementation
-        PR, which removes this marker.
       description: >
         One device with its revoke note and retire attribution (the History
         tab's revoke / retire / replace chain). A device of another tenant, of
@@ -251,10 +244,6 @@ paths:
       summary: Revoke a device (structured reason, cascade, Cash Session rule).
       operationId: consoleRevokeDevice
       tags: [devices]
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-365 contract-first; the runtime ships in the RT-365 implementation
-        PR, which removes this marker.
       description: >
         Revokes the device in one transaction, cascading to its live operator
         sessions and its pending pairing codes, under the Cash Session rule

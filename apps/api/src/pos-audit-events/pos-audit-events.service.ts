@@ -28,6 +28,7 @@ import type { Logger } from "@data-pulse-2/shared";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool, PoolClient } from "pg";
 
+import { lockDeviceLifecycle } from "../devices/device-lifecycle-lock";
 import { DeviceRepository } from "../pos-operators/device.repository";
 import {
   hasForbiddenField,
@@ -41,6 +42,30 @@ import {
 const ACTION_CATEGORY_SET = new Set<string>(POS_AUDIT_ACTION_CATEGORIES);
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The audit-ingest `shift.open` → legacy `shifts` row. $1 shift, $2 tenant,
+ * $3 store, $4 opening cashier, $5 device, $6 opened at. RT-365: the row is
+ * written only while the device is unrevoked (the caller holds the device
+ * lifecycle lock), so a shift never opens on a revoked device; the audit
+ * event itself is still recorded.
+ */
+/** One accepted `shift.open`, as `recordLegacyShiftOpen` needs it. */
+interface LegacyShiftOpen {
+  readonly event: AuditEventItemInput;
+  readonly eventId: string;
+  readonly actorUserId: string;
+  readonly deviceId: string;
+  readonly requestId: string | null;
+}
+
+export const LEGACY_SHIFT_OPEN_SQL = `
+  INSERT INTO shifts
+    (shift_id, tenant_id, store_id, opening_cashier_user_id, opening_device_id, opened_at)
+  SELECT $1::uuid, $2::uuid, $3::uuid, $4::uuid, d.id, $6::timestamptz
+    FROM devices d
+   WHERE d.id = $5::uuid AND d.tenant_id = $2::uuid AND d.revoked_at IS NULL
+  ON CONFLICT (shift_id) DO NOTHING`;
 
 @Injectable()
 export class PosAuditEventsService {
@@ -178,21 +203,7 @@ export class PosAuditEventsService {
         const accepted = r.rows.length > 0;
 
         if (accepted && event.action_category === "shift.open") {
-          const shiftId = (event.payload as Record<string, unknown>)["shift_id"] as string;
-          await client.query(
-            `INSERT INTO shifts
-               (shift_id, tenant_id, store_id, opening_cashier_user_id, opening_device_id, opened_at)
-             VALUES ($1, $2, $3, $4, $5, $6::timestamptz)
-             ON CONFLICT (shift_id) DO NOTHING`,
-            [
-              shiftId,
-              event.tenant_id,
-              event.branch_id,
-              actorUserId,
-              deviceId,
-              event.created_at,
-            ],
-          );
+          await this.recordLegacyShiftOpen(client, { event, eventId, actorUserId, deviceId, requestId });
         }
 
         return accepted ? "accepted" : "duplicate";
@@ -206,6 +217,37 @@ export class PosAuditEventsService {
     } else {
       duplicates.push(eventId);
     }
+  }
+
+  /**
+   * The legacy `shifts` row of an accepted `shift.open`, under the device
+   * lifecycle lock (RT-365). The guarded insert writes nothing for a device
+   * revoked since the batch authenticated; that case is logged (ids only) so
+   * the withheld row is visible. A zero-row insert for a shift id that already
+   * exists is the normal replay and is not logged.
+   */
+  private async recordLegacyShiftOpen(client: PoolClient, open: LegacyShiftOpen): Promise<void> {
+    const { event, deviceId } = open;
+    const shiftId = (event.payload as Record<string, unknown>)["shift_id"] as string;
+    await lockDeviceLifecycle(client, { tenantId: event.tenant_id, deviceId });
+    const inserted = await client.query(LEGACY_SHIFT_OPEN_SQL, [
+      shiftId,
+      event.tenant_id,
+      event.branch_id,
+      open.actorUserId,
+      deviceId,
+      event.created_at,
+    ]);
+    if ((inserted.rowCount ?? 0) > 0) return;
+    const device = await client.query<{ revoked: boolean }>(
+      `SELECT revoked_at IS NOT NULL AS revoked FROM devices WHERE id = $1::uuid AND tenant_id = $2::uuid`,
+      [deviceId, event.tenant_id],
+    );
+    if (device.rows[0]?.revoked !== true) return;
+    this.logger.warn(
+      { request_id: open.requestId, event_id: open.eventId, device_id: deviceId, shift_id: shiftId },
+      "pos-audit-events: shift.open from a revoked device; no shift row recorded",
+    );
   }
 
   private async resolveActorUserId(

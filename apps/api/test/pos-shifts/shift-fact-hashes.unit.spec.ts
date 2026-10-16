@@ -90,6 +90,8 @@ const SHIFT: CashUpShiftRow = {
 function recordingRepo(kind: FactKind) {
   const hashes: Buffer[] = [];
   const repo = {
+    // RT-365: the open takes the device lifecycle lock; the device is unrevoked here.
+    lockOpenableDevice: async () => true,
     findShift: async () => (kind === "open" ? null : SHIFT),
     findMovement: async () => null,
     findClose: async () => null,

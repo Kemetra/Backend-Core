@@ -135,3 +135,28 @@ describe("DeviceRepository — RT-213 tenant status gate", () => {
     expect(domain.connect).not.toHaveBeenCalled();
   });
 });
+
+// ===========================================================================
+// RT-365 — device auth does not depend on migration 0040
+// ===========================================================================
+
+describe("DeviceRepository — the device lookup names only pre-0040 columns (RT-365)", () => {
+  // The 0040 lifecycle columns `packages/db` now declares. Naming one in the
+  // auth lookup would make every till's authentication fail on a database
+  // where 0040 is not applied yet (or was rolled back).
+  const LIFECYCLE_COLUMNS =
+    /\b(expires_at|last_seen_at|revoked_by|revoke_reason|revoke_note|previous_token_hash|previous_valid_until|retired_at|retired_by|retire_reason)\b/;
+
+  it.each([
+    ["findActiveByAttestation", (repo: DeviceRepository) => repo.findActiveByAttestation("raw-token")],
+    ["findActiveById", (repo: DeviceRepository) => repo.findActiveById(DEVICE_ID)],
+  ] as const)("%s selects no lifecycle column", async (_name, lookup) => {
+    const { pool, query } = lookupPool(false);
+    await lookup(new DeviceRepository(pool, pool));
+    const sql = (query.mock.calls as Array<[{ text?: string } | string]>)
+      .map(([config]) => (typeof config === "string" ? config : (config.text ?? "")))
+      .join("\n");
+    expect(sql).toMatch(/\bfrom "devices"/i);
+    expect(sql).not.toMatch(LIFECYCLE_COLUMNS);
+  });
+});

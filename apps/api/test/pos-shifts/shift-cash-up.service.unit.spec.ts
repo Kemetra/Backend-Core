@@ -64,10 +64,15 @@ function shiftRow(payloadHash: Buffer): CashUpShiftRow {
   };
 }
 
-/** A repository double: `findShift` answers in order; `insertShift` answers `outcome`. */
-function fakeRepo(finds: Array<CashUpShiftRow | null>, outcome: InsertShiftOutcome) {
+/**
+ * A repository double: `findShift` answers in order; `insertShift` answers
+ * `outcome`; `lockOpenableDevice` answers whether the device is still
+ * unrevoked (RT-365).
+ */
+function fakeRepo(finds: Array<CashUpShiftRow | null>, outcome: InsertShiftOutcome, deviceActive = true) {
   const inserted: NewCashUpShift[] = [];
   const repo = {
+    lockOpenableDevice: jest.fn(async () => deviceActive),
     findShift: jest.fn(async () => finds.shift() ?? null),
     insertShift: jest.fn(async (_c: unknown, _s: unknown, shift: NewCashUpShift) => {
       inserted.push(shift);
@@ -126,6 +131,28 @@ describe("ShiftCashUpService.openShift — a concurrent identical open", () => {
     const offset = await recordedHash({ ...FACT, openedAt: "2026-10-05T10:00:00+02:00" });
     expect([respelled.equals(base), offset.equals(base)]).toEqual([true, true]);
     expect((await recordedHash({ ...FACT, openingFloat: "500.01" })).equals(base)).toBe(false);
+  });
+});
+
+describe("ShiftCashUpService.openShift — a device revoked after authentication (RT-365)", () => {
+  it("refuses with the revoked-device 401 and inserts nothing", async () => {
+    const { repo, inserted } = fakeRepo(
+      [null],
+      { kind: "inserted", shift: shiftRow(Buffer.alloc(32)), adoptedLegacy: false },
+      false,
+    );
+    const opened = new ShiftCashUpService(pool, repo).openShift(CTX, FACT);
+    await expect(opened).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(inserted).toEqual([]);
+  });
+
+  it("locks the device before it inserts the shift", async () => {
+    const { repo } = fakeRepo([null], { kind: "inserted", shift: shiftRow(Buffer.alloc(32)), adoptedLegacy: false });
+    await new ShiftCashUpService(pool, repo).openShift(CTX, FACT);
+    const lock = (repo.lockOpenableDevice as jest.Mock).mock.invocationCallOrder[0]!;
+    const insert = (repo.insertShift as jest.Mock).mock.invocationCallOrder[0]!;
+    expect(lock).toBeLessThan(insert);
+    expect((repo.lockOpenableDevice as jest.Mock).mock.calls[0]![1]).toEqual(SCOPE);
   });
 });
 

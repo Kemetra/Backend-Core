@@ -31,6 +31,13 @@
  * role reads its own tenant row through the `tenants_tenant_isolation`
  * policy. No grant or migration is needed. A row that is not visible fails
  * closed.
+ *
+ * Columns (RT-365)
+ * ----------------
+ * The lookup selects `AUTH_DEVICE_COLUMNS` only: columns present since
+ * migration 0001. `packages/db` also declares the 0040 lifecycle columns, and
+ * a bare `select()` would name them, so every till's authentication would
+ * fail on a database where 0040 is not applied yet (or was rolled back).
  */
 import { Injectable } from "@nestjs/common";
 import { hashToken } from "@data-pulse-2/auth";
@@ -45,6 +52,21 @@ type DrizzleClient = NodePgDatabase;
 function db(client: Pool): DrizzleClient {
   return drizzle(client);
 }
+
+/** The device columns the auth lookup reads: all present since 0001, none from 0040. */
+const AUTH_DEVICE_COLUMNS = {
+  id: devices.id,
+  tenantId: devices.tenantId,
+  storeId: devices.storeId,
+  label: devices.label,
+  tokenHash: devices.tokenHash,
+  revokedAt: devices.revokedAt,
+  createdAt: devices.createdAt,
+  updatedAt: devices.updatedAt,
+};
+
+/** A device as the auth lookup returns it. */
+export type AuthDeviceRow = Pick<DeviceRow, keyof typeof AUTH_DEVICE_COLUMNS>;
 
 interface TenantStatusRow {
   status: string;
@@ -73,7 +95,7 @@ export class DeviceRepository {
    * — the column is UNIQUE so the lookup is a single index probe and
    * returns at most one row regardless of input.
    */
-  async findActiveByAttestation(rawAttestation: string): Promise<DeviceRow | null> {
+  async findActiveByAttestation(rawAttestation: string): Promise<AuthDeviceRow | null> {
     if (rawAttestation.length === 0) return null;
     return this.findActive(eq(devices.tokenHash, hashToken(rawAttestation)));
   }
@@ -83,13 +105,13 @@ export class DeviceRepository {
    * (not revoked, tenant active). Used by the live reverifier, which knows
    * the device id from the operator envelope's `auth_tokens` row.
    */
-  async findActiveById(deviceId: string): Promise<DeviceRow | null> {
+  async findActiveById(deviceId: string): Promise<AuthDeviceRow | null> {
     return this.findActive(eq(devices.id, deviceId));
   }
 
-  private async findActive(match: SQL): Promise<DeviceRow | null> {
+  private async findActive(match: SQL): Promise<AuthDeviceRow | null> {
     const rows = await db(this.pool)
-      .select()
+      .select(AUTH_DEVICE_COLUMNS)
       .from(devices)
       .where(and(match, isNull(devices.revokedAt)))
       .limit(1);

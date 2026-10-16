@@ -8,7 +8,7 @@ import "reflect-metadata";
 import type { Pool } from "pg";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Logger } from "@data-pulse-2/shared";
-import { PosAuditEventsService } from "../../src/pos-audit-events/pos-audit-events.service";
+import { LEGACY_SHIFT_OPEN_SQL, PosAuditEventsService } from "../../src/pos-audit-events/pos-audit-events.service";
 import type { DeviceRepository } from "../../src/pos-operators/device.repository";
 import type { AuditEventItemInput, PosAuditEventsSyncInput } from "../../src/pos-audit-events/dto";
 
@@ -283,7 +283,7 @@ describe("syncBatch — accepted / duplicate outcomes", () => {
 // ===========================================================================
 
 describe("syncBatch — shift.open side-effect", () => {
-  it("SH1: shift.open accepted → actor validation + audit_events + shifts", async () => {
+  it("SH1: shift.open accepted → actor validation + audit_events + device lifecycle lock + shifts", async () => {
     mockPool.query.mockResolvedValue({ rows: [{ id: "user-1" }] });
 
     let capturedClient: { query: jest.Mock } | null = null;
@@ -294,7 +294,8 @@ describe("syncBatch — shift.open side-effect", () => {
           query: jest.fn()
             .mockResolvedValueOnce({ rows: [{ id: "user-1" }] })
             .mockResolvedValueOnce({ rows: [{ id: "aaaaaaaa-0000-4000-8000-000000000001" }] })
-            .mockResolvedValueOnce({ rows: [] }),
+            .mockResolvedValueOnce({ rows: [] })
+            .mockResolvedValueOnce({ rows: [], rowCount: 1 }),
         };
         return fn(capturedClient);
       },
@@ -302,7 +303,43 @@ describe("syncBatch — shift.open side-effect", () => {
 
     await service.syncBatch(makeBody([makeEvent({ action_category: "shift.open" })]), "req-id");
 
-    expect(capturedClient!.query).toHaveBeenCalledTimes(3);
+    expect(capturedClient!.query).toHaveBeenCalledTimes(4);
+    // RT-365: the device lifecycle lock is taken before the legacy shift row,
+    // which is written only while the device is unrevoked.
+    const statements = capturedClient!.query.mock.calls.map((call) => String(call[0]));
+    expect(statements[2]).toContain("pg_advisory_xact_lock");
+    expect(statements[3]).toBe(LEGACY_SHIFT_OPEN_SQL);
+    expect(LEGACY_SHIFT_OPEN_SQL).toContain("d.revoked_at IS NULL");
+  });
+
+  it("SH1b: shift.open of a device revoked meanwhile → no shift row, one ids-only warning (RT-365)", async () => {
+    mockPool.query.mockResolvedValue({ rows: [{ id: "user-1" }] });
+
+    let capturedClient: { query: jest.Mock } | null = null;
+
+    (runWithTenantContext as jest.Mock).mockImplementation(
+      async (_pool: unknown, _ctx: unknown, fn: (client: { query: jest.Mock }) => Promise<unknown>) => {
+        capturedClient = {
+          query: jest.fn()
+            .mockResolvedValueOnce({ rows: [{ id: "user-1" }] })
+            .mockResolvedValueOnce({ rows: [{ id: "aaaaaaaa-0000-4000-8000-000000000001" }] })
+            .mockResolvedValueOnce({ rows: [] })
+            .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+            .mockResolvedValueOnce({ rows: [{ revoked: true }] }),
+        };
+        return fn(capturedClient);
+      },
+    );
+
+    const result = await service.syncBatch(makeBody([makeEvent({ action_category: "shift.open" })]), "req-id");
+
+    // The audit event itself is still accepted; only the legacy shift row is withheld.
+    expect(result).toMatchObject({ accepted: [makeEvent().event_id] });
+    expect(capturedClient!.query).toHaveBeenCalledTimes(5);
+    expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+    const [fields, message] = mockLogger.warn.mock.calls[0] as unknown as [Record<string, unknown>, string];
+    expect(Object.keys(fields).sort()).toEqual(["device_id", "event_id", "request_id", "shift_id"]);
+    expect(message).toMatch(/revoked device/);
   });
 
   it("SH2: shift.close accepted → actor validation + audit insert only", async () => {

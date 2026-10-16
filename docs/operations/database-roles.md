@@ -138,6 +138,7 @@ Legitimate deployments never set a role option.
     (RT-17, migration 0036)
   - `erpnext_posting_resolution`: `SELECT`, `INSERT` (RT-330, migration 0037)
   - `sale_reprints`: `SELECT`, `INSERT` (RT-539, migration 0047)
+  - `devices`: `UPDATE` (RT-365: the Console device revoke)
 
   A deploy that skips that grant step now fails to boot, and the error names
   each missing privilege and table, instead of starting healthy with those
@@ -329,6 +330,20 @@ table the domain role must use needs a matching grant step at deploy time.
   (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). The new `sales.receipt_*` and
   `sale_lines.line_seq` columns live on tables the domain role already reads
   and writes.
+
+- **Console device revoke (RT-365, on migration `0040_device_lifecycle`).** Run
+  [`sql/device-lifecycle-domain-grants.sql`](sql/device-lifecycle-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `UPDATE` on `devices`:
+  `POST /api/v1/devices/{deviceId}/revoke` locks the device row `FOR UPDATE`
+  and sets the revoke fields. No earlier domain path wrote `devices`, so an
+  environment provisioned before RT-365 lacks it. Equivalent statement:
+  `GRANT UPDATE ON devices TO <DATABASE_URL role>;`. Never grant `DELETE` or
+  `TRUNCATE`. Without the grant the API refuses to boot
+  (`DOMAIN_REQUIRED_GRANTS`) rather than failing every revoke with 500. The
+  shift-open path does not need it (its device lifecycle lock is an advisory
+  lock).
 
 ## Redis credential
 

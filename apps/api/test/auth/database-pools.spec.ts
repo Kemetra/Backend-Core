@@ -59,6 +59,9 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   // RT-539 (0047): the receipt reprint record (append-only).
   "sale_reprints:SELECT",
   "sale_reprints:INSERT",
+  // RT-365: the Console revoke locks the device row FOR UPDATE and sets the
+  // revoke fields (FOR UPDATE needs the UPDATE privilege).
+  "devices:UPDATE",
 ]);
 
 const LOOKUP_GRANTS: ReadonlySet<string> = new Set(
