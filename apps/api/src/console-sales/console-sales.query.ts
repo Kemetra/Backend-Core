@@ -156,8 +156,13 @@ const CursorPayload = z
 
 type CursorPayload = z.infer<typeof CursorPayload>;
 
-/** True when `key` (UTC, six fractional digits) names a real instant, not a rolled-over one. */
+/**
+ * True when `key` (UTC, six fractional digits) names a real instant, not a
+ * rolled-over one, that Postgres can represent (year 0000 is a 22008), so a
+ * tampered cursor is refused here, before any read.
+ */
 function namesRealInstant(key: string): boolean {
+  if (key.startsWith("0000")) return false;
   const ms = Date.parse(key);
   return !Number.isNaN(ms) && new Date(ms).toISOString().slice(0, 19) === key.slice(0, 19);
 }

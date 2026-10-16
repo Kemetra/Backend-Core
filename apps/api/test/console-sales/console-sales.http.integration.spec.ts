@@ -72,6 +72,8 @@ import {
   SES_MANAGER_ACTIVE,
   SES_PLATFORM,
   SES_PLATFORM_ACTIVE,
+  SES_PLATFORM_MANAGER,
+  SES_PLATFORM_MANAGER_ACTIVE,
   SES_PLATFORM_OWNER_ACTIVE,
   SES_STAFF,
   USER_MANAGER,
@@ -276,6 +278,16 @@ describe("RT-562 console sales — role and store scope", () => {
     await expectNotFound(await get(detailPath(B_OCT02), SES_PLATFORM_OWNER_ACTIVE));
   });
 
+  it("a platform admin who is also a store_manager: tenant-wide (beyond the grant), narrowed by the active store", async () => {
+    if (skip()) return;
+    // The membership grants only X, but TenantContextGuard publishes `all` for a platform admin.
+    expect(await refs(SES_PLATFORM_MANAGER, { store_id: STORE_A_Y, ...OCTOBER })).toEqual([Y_OCT02]);
+    expect(await refs(SES_PLATFORM_MANAGER_ACTIVE, X_OCT)).toEqual(X_OCTOBER);
+    await expectNotFound(await get(LIST, SES_PLATFORM_MANAGER_ACTIVE, { store_id: STORE_A_Y, ...OCTOBER }));
+    await expectNotFound(await get(detailPath(Y_OCT02), SES_PLATFORM_MANAGER_ACTIVE));
+    await expectNotFound(await get(detailPath(B_OCT02), SES_PLATFORM_MANAGER));
+  });
+
   it("an owner with an `all` grant reads a soft-deleted store; a specific grant of it does not", async () => {
     if (skip()) return;
     expect(await refs(SES_OWNER_ALL, { store_id: S_DELETED, ...OCTOBER })).toEqual([DEL_OCT02]);
@@ -417,6 +429,12 @@ describe("RT-562 console sales — validation", () => {
     });
     await expectValidationError(await get(LIST, SES_OWNER_ALL, { ...X_OCT, cursor: foreign }));
     await expectValidationError(await get(LIST, SES_OWNER_ALL, { ...X_OCT, cursor: pos }));
+    // Year 0000 passes the shape but Postgres cannot cast it (22008): a 400, never a 500.
+    const year0 = encodeConsoleSaleCursor(
+      { tenantId: TENANT_A, storeId: STORE_A_X, filters },
+      { ...keyset, occurredAtKey: "0000-01-01T00:00:00.000000Z" },
+    );
+    await expectValidationError(await get(LIST, SES_OWNER_ALL, { ...X_OCT, cursor: year0 }));
     // Bound to tenant A, the hand-built cursor is accepted and only repositions the walk.
     const own = encodeConsoleSaleCursor({ tenantId: TENANT_A, storeId: STORE_A_X, filters }, keyset);
     expect((await page(SES_OWNER_ALL, { ...X_OCT, page_size: 100, cursor: own })).items.map((i) => i.saleRef)).toEqual(

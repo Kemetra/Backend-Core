@@ -59,11 +59,11 @@ info:
     RT-149), as on `shift-closes`. This contract neither widens nor narrows
     that platform rule. Cross-tenant platform reads are out of scope (spec
     012). A platform admin's store scope on these reads follows the
-    `shift-closes` runtime (RT-562), always within the session's tenant:
-    with no membership there it is tenant-wide, or the session's active
-    store when one is set; with a membership, it is that membership's
-    operator-surface scope, so an `owner` / `tenant_admin` membership is not
-    narrowed by the active store, as for any owner or tenant_admin.
+    `shift-closes` runtime (RT-562): tenant-wide in the session's tenant,
+    whatever store grants a membership carries, and narrowed to the
+    session's active store when one is set, unless the platform admin holds
+    an `owner` or `tenant_admin` membership in that tenant (then the active
+    store does not narrow it). Never another tenant.
 
 
     **One store per list (OD-556-2).** `store_id` is REQUIRED on the list in

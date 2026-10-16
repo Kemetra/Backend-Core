@@ -19,12 +19,12 @@
  *     run only for a sale that matched. An empty scope matches nothing.
  *   - Platform admins (the RT-383 shift-closes precedent): `RolesGuard` lets
  *     a platform admin's session through, and the scope is
- *     `callerStoreScope` of the session context. With no membership in the
- *     tenant: tenant-wide (`TenantContextGuard` publishes `storeAccess: all`),
- *     narrowed to the active store when one is set. With a membership, the
- *     role's operator-surface rule applies, so an owner / tenant_admin
- *     membership is not narrowed by the active store, exactly as for any
- *     owner. Never another tenant: the reads run with `isPlatformAdmin: false`.
+ *     `callerStoreScope` of the session context: tenant-wide in the session's
+ *     tenant (`TenantContextGuard` publishes `storeAccess: all` for a platform
+ *     admin, whatever grants a membership carries), narrowed to the active
+ *     store when one is set, unless the admin holds an owner / tenant_admin
+ *     membership there (`readScope` then ignores the active store). Never
+ *     another tenant: the reads run with `isPlatformAdmin: false`.
  *   - Paging: the 0048 index order `(business_date, occurred_at, id) DESC`,
  *     the keyset in the index condition. The SQL carries only the tenant, the
  *     store, the range and the keyset, so every list read is the same range

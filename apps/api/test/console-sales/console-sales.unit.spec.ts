@@ -159,6 +159,7 @@ describe("RT-562 console sales — cursor binding", () => {
     ["garbage", "bm90LWpzb24"],
     ["an empty object", Buffer.from("{}").toString("base64url")],
     ["a rolled-over instant", "at:2026-10-04T24:30:00.000000Z"],
+    ["year 0000, which Postgres cannot represent", "at:0000-01-01T00:00:00.000000Z"],
     ["a non-calendar date", "date:2026-02-30"],
     ["an extra key", "extra"],
   ])("refuses %s", (_label, variant) => {

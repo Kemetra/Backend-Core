@@ -15,6 +15,8 @@
  *     SES_PLATFORM_ACTIVE  the same platform admin with X active
  *     SES_PLATFORM_OWNER_ACTIVE  a platform admin who is also an `all` owner,
  *                          X active (the owner rule: not narrowed)
+ *     SES_PLATFORM_MANAGER(_ACTIVE)  a platform admin who is also a store_manager
+ *                          granted only X; no active store, then X active
  *   Bearers that must all be 401: the manager's `dashboard_api` token, a POS
  *   `pos_operator` token and the till's device token.
  *
@@ -107,6 +109,9 @@ export const SES_PLATFORM = id("5621a5");
 export const SES_PLATFORM_ACTIVE = id("5621a6");
 export const SES_PLATFORM_OWNER_ACTIVE = id("5621a7");
 const USER_PLATFORM_OWNER = id("562e07");
+export const SES_PLATFORM_MANAGER = id("5621a8");
+export const SES_PLATFORM_MANAGER_ACTIVE = id("5621a9");
+const USER_PLATFORM_MANAGER = id("562e08");
 export { USER_MANAGER };
 
 export const DASHBOARD_TOKEN = generateRawToken();
@@ -320,6 +325,12 @@ async function seedPeople(admin: Pool): Promise<void> {
     { userId: USER_STAFF, roleCode: "store_staff", stores: "all" as const, sessions: { [SES_STAFF]: null } },
     { userId: USER_ADMIN_EMPTY, roleCode: "tenant_admin", stores: [S_DELETED], sessions: { [SES_ADMIN_EMPTY]: null } },
     { userId: USER_PLATFORM_OWNER, roleCode: "owner", stores: "all" as const, sessions: { [SES_PLATFORM_OWNER_ACTIVE]: STORE_A_X } },
+    {
+      userId: USER_PLATFORM_MANAGER,
+      roleCode: "store_manager",
+      stores: [STORE_A_X],
+      sessions: { [SES_PLATFORM_MANAGER]: null, [SES_PLATFORM_MANAGER_ACTIVE]: STORE_A_X },
+    },
   ];
   for (const [i, m] of members.entries()) {
     await seedConsoleMember(admin, {
@@ -333,7 +344,9 @@ async function seedPeople(admin: Pool): Promise<void> {
       sessions: m.sessions,
     });
   }
-  await admin.query(`UPDATE users SET is_platform_admin = true WHERE id = $1`, [USER_PLATFORM_OWNER]);
+  await admin.query(`UPDATE users SET is_platform_admin = true WHERE id = ANY($1::uuid[])`, [
+    [USER_PLATFORM_OWNER, USER_PLATFORM_MANAGER],
+  ]);
   await admin.query(
     `INSERT INTO users (id, email, is_platform_admin) VALUES ($1, 'rt562-platform@example.test', true)`,
     [USER_PLATFORM],
