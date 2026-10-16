@@ -221,6 +221,14 @@ describe("pos-sales/sale-history.yaml — operations", () => {
     }
   });
 
+  it("marks every operation contract-only until the RT-539 runtime ships", () => {
+    for (const { id } of OPERATIONS) {
+      const operation = op(id) as OperationObject & { "x-runtime-status"?: string; "x-runtime-note"?: string };
+      expect(operation["x-runtime-status"]).toBe("contract-only");
+      expect(operation["x-runtime-note"]).toContain("RT-539");
+    }
+  });
+
   it("names its audit action on every operation (OD-534-7)", () => {
     for (const { id, audit } of OPERATIONS) {
       expect(op(id)["x-audit-action"]).toBe(audit);

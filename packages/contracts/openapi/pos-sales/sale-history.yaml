@@ -58,6 +58,8 @@ paths:
     get:
       summary: List received sales of the caller's store by business-date range.
       operationId: listSaleHistory
+      x-runtime-status: contract-only
+      x-runtime-note: RT-537 contract PR; the controller ships in RT-539 (S3).
       tags: [pos-sale-history]
       x-audit-action: sale_history.listed
       security:
@@ -105,6 +107,8 @@ paths:
     get:
       summary: Full recorded detail of one visible sale, with reprint eligibility.
       operationId: readSaleHistoryDetail
+      x-runtime-status: contract-only
+      x-runtime-note: RT-537 contract PR; the controller ships in RT-539 (S3).
       tags: [pos-sale-history]
       x-audit-action: sale_history.detail_read
       security:
@@ -146,6 +150,8 @@ paths:
     post:
       summary: Authorize, or record, one receipt reprint of a visible sale.
       operationId: recordSaleReprint
+      x-runtime-status: contract-only
+      x-runtime-note: RT-537 contract PR; the controller ships in RT-539 (S3).
       x-idempotency: required
       x-audit-action: sale.receipt.reprinted
       tags: [pos-sale-history]
