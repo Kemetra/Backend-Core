@@ -112,6 +112,14 @@ export class PostingResolutionNotFrozenError extends Error {
   }
 }
 
+/**
+ * RT-418: the payer ERPNext Customer link a fresh resolution freezes (one
+ * payer per sale; NULL without responsibilities). `$3` is the sale id.
+ */
+const FROZEN_PAYER_LINK_SQL = `(SELECT p.external_ref FROM sale_responsibilities sr
+    JOIN payer_account p ON p.id = sr.payer_id
+   WHERE sr.sale_id = $3 ORDER BY sr.sequence LIMIT 1)`;
+
 /** Log seam (tests inject one); production uses the shared pino logger. */
 export type PostingRequestedLogger = Pick<Logger, "warn" | "error">;
 
@@ -380,11 +388,7 @@ export class PostingRequestedConsumer
             payer_external_ref)
          SELECT $1, $2, 1, sl.id, m.erpnext_item_ref, m.id,
                 w.erpnext_warehouse_ref, w.id, 'system',
-                (SELECT p.external_ref
-                   FROM sale_responsibilities sr
-                   JOIN payer_account p ON p.id = sr.payer_id
-                  WHERE sr.sale_id = $3
-                  ORDER BY sr.sequence LIMIT 1)
+                ${FROZEN_PAYER_LINK_SQL}
            FROM sale_lines sl
            JOIN erpnext_warehouse_map w
              ON w.store_id = $4 AND w.purpose = 'stock' AND w.retired_at IS NULL
@@ -414,6 +418,39 @@ export class PostingRequestedConsumer
       `UPDATE erpnext_posting_status SET current_resolution_version = 1
         WHERE id = $1`,
       [input.intentId],
+    );
+    await this.signalUnlinkedPayer(client, input);
+  }
+
+  /**
+   * RT-418: a credit sale frozen without a usable payer link (NULL or blank)
+   * is held off the posting feed (fail closed, never the store Customer).
+   * Capture refuses such a payer, so this is a defect: say so once, at the
+   * freeze, so the hold is not silent. Identifiers only (no money, no PII).
+   */
+  private async signalUnlinkedPayer(
+    client: PoolClient,
+    input: { tenantId: string; intentId: string; kind: "sale_post" | "reversal"; saleId: string },
+  ): Promise<void> {
+    const r = await client.query<{ unlinked: boolean }>(
+      `SELECT (SELECT responsibility_count FROM sales WHERE id = $1) > 0
+          AND NOT EXISTS (
+            SELECT 1 FROM erpnext_posting_resolution
+             WHERE intent_id = $2 AND resolution_version = 1
+               AND payer_external_ref ~ '[^[:space:]]') AS unlinked`,
+      [input.saleId, input.intentId],
+    );
+    if (r.rows[0]?.unlinked !== true) return;
+    this.logger.warn(
+      {
+        event: "posting.credit_sale.unlinked_payer_held",
+        outcome: "held",
+        tenant_id: input.tenantId,
+        sale_id: input.saleId,
+        intent_id: input.intentId,
+        kind: input.kind,
+      },
+      "credit sale held off the posting feed: its payer has no ERPNext Customer link",
     );
   }
 

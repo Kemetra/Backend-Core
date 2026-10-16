@@ -560,6 +560,58 @@ describe("PostingRequestedConsumer.handle — RT-418 the payer link is frozen wi
     expect(await payerRefsOf(e, voidId)).toEqual(["CUST-418"]);
   });
 
+  it("a credit sale frozen with no payer link logs one operator signal (the feed holds it)", async () => {
+    if (skip) return;
+    const e = guard();
+    const unlinked = "01900000-0000-7000-8000-0000000af419";
+    await e.admin.query(
+      `INSERT INTO payer_account (id, tenant_id, store_id, category, display_name, external_ref)
+       VALUES ($1, $2, NULL, 'insurer', 'RT-418 unlinked', NULL)`,
+      [unlinked, TENANT],
+    );
+    const saleId = "01900000-0000-7000-8000-00000050e41b";
+    await seedSale(e, { id: saleId, store: STORE_MAPPED, externalId: "rt418-3", tenantProductRef: TPRODUCT });
+    await e.admin.query(`UPDATE sales SET responsibility_count = 1 WHERE id = $1`, [saleId]);
+    await e.admin.query(
+      `INSERT INTO sale_responsibilities (tenant_id, store_id, sale_id, payer_id, amount, sequence)
+       VALUES ($1, $2, $3, $4, 5, 1)`,
+      [TENANT, STORE_MAPPED, saleId, unlinked],
+    );
+    const warn = jest.fn();
+    await new PostingRequestedConsumer(e.app, { warn, error: jest.fn() }).handle(
+      salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev41b"),
+    );
+    expect(await payerRefsOf(e, saleId)).toEqual([null]);
+    const signals = warn.mock.calls.filter(([fields]) => fields?.event === "posting.credit_sale.unlinked_payer_held");
+    expect(signals).toHaveLength(1);
+    expect(signals[0]![0]).toEqual({
+      event: "posting.credit_sale.unlinked_payer_held",
+      outcome: "held",
+      tenant_id: TENANT,
+      sale_id: saleId,
+      intent_id: expect.any(String),
+      kind: "sale_post",
+    });
+  });
+
+  it("a linked credit sale logs no unlinked-payer signal", async () => {
+    if (skip) return;
+    const e = guard();
+    const saleId = "01900000-0000-7000-8000-00000050e41c";
+    await seedSale(e, { id: saleId, store: STORE_MAPPED, externalId: "rt418-4", tenantProductRef: TPRODUCT });
+    await e.admin.query(`UPDATE sales SET responsibility_count = 1 WHERE id = $1`, [saleId]);
+    await e.admin.query(
+      `INSERT INTO sale_responsibilities (tenant_id, store_id, sale_id, payer_id, amount, sequence)
+       VALUES ($1, $2, $3, $4, 5, 1)`,
+      [TENANT, STORE_MAPPED, saleId, PAYER_418],
+    );
+    const warn = jest.fn();
+    await new PostingRequestedConsumer(e.app, { warn, error: jest.fn() }).handle(
+      salePostEvent(saleId, "01900000-0000-7000-8000-0000000ev41c"),
+    );
+    expect(warn.mock.calls.filter(([fields]) => fields?.event === "posting.credit_sale.unlinked_payer_held")).toEqual([]);
+  });
+
   it("a sale without responsibilities freezes no payer link (NULL)", async () => {
     if (skip) return;
     const e = guard();

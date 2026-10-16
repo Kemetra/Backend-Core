@@ -375,30 +375,47 @@ describe("0051 down", () => {
     }
   });
 
+  const MIGRATION_OWNER = "rt418_migration_owner";
+  const OWNED_TABLES = ["sales", "payer_account", "sale_responsibilities", "erpnext_posting_resolution"];
+
+  /** Run each statement as the superuser, ignoring failures (best-effort teardown). */
+  async function quietly(statements: readonly string[]): Promise<void> {
+    for (const sql of statements) await pg().admin.query(sql).catch(() => undefined);
+  }
+
+  /** A NOSUPERUSER, NOBYPASSRLS role that owns the tables 0051 changes, like the production owner. */
+  async function becomeOwner(): Promise<string> {
+    const superuser = (await pg().admin.query<{ u: string }>(`SELECT current_user AS u`)).rows[0]!.u;
+    await pg().admin.query(`CREATE ROLE ${MIGRATION_OWNER} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
+    await pg().admin.query(`GRANT USAGE ON SCHEMA public TO ${MIGRATION_OWNER}`);
+    await pg().admin.query(`GRANT SELECT ON tenants TO ${MIGRATION_OWNER}`);
+    for (const table of OWNED_TABLES) await pg().admin.query(`ALTER TABLE ${table} OWNER TO ${MIGRATION_OWNER}`);
+    return superuser;
+  }
+
+  async function restoreOwner(superuser: string): Promise<void> {
+    await quietly([
+      ...OWNED_TABLES.map((table) => `ALTER TABLE ${table} OWNER TO ${superuser}`),
+      `DELETE FROM sale_responsibilities WHERE sale_id = '${SALE}'`,
+      `REVOKE ALL ON tenants FROM ${MIGRATION_OWNER}`,
+      `REVOKE ALL ON SCHEMA public FROM ${MIGRATION_OWNER}`,
+      `DROP ROLE ${MIGRATION_OWNER}`,
+    ]);
+  }
+
   // The production migration owner is NOT a superuser (database-roles.md), so
   // FORCE ROW LEVEL SECURITY applies to it: a guard that reads the table
   // without a tenant GUC sees no rows and would drop every credit fact.
   it("refuses as a NON-superuser owner under FORCE RLS (the production migration owner), and drops nothing", async () => {
     if (skip()) return;
-    const admin = pg().admin;
-    const owner = "rt418_migration_owner";
-    const superuser = (await admin.query<{ u: string }>(`SELECT current_user AS u`)).rows[0]!.u;
-    const owned = ["sales", "payer_account", "sale_responsibilities", "erpnext_posting_resolution"];
-    await admin.query(`CREATE ROLE ${owner} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
-    await admin.query(`GRANT USAGE ON SCHEMA public TO ${owner}`);
-    await admin.query(`GRANT SELECT ON tenants TO ${owner}`);
-    for (const table of owned) await admin.query(`ALTER TABLE ${table} OWNER TO ${owner}`);
-    await admin.query(insertSql, params({}));
+    const superuser = await becomeOwner();
+    await pg().admin.query(insertSql, params({}));
     try {
-      expect(await runDown(owner)).toBe("P0001");
+      expect(await runDown(MIGRATION_OWNER)).toBe("P0001");
       expect(await schemaState()).toEqual(UP_STATE);
       expect(await responsibilityRows()).toBe(1);
     } finally {
-      for (const table of owned) await admin.query(`ALTER TABLE ${table} OWNER TO ${superuser}`).catch(() => undefined);
-      await admin.query(`DELETE FROM sale_responsibilities WHERE sale_id = $1`, [SALE]).catch(() => undefined);
-      await admin.query(`REVOKE ALL ON tenants FROM ${owner}`).catch(() => undefined);
-      await admin.query(`REVOKE ALL ON SCHEMA public FROM ${owner}`).catch(() => undefined);
-      await admin.query(`DROP ROLE ${owner}`).catch(() => undefined);
+      await restoreOwner(superuser);
     }
   });
 
