@@ -1509,6 +1509,8 @@ describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
     const list = field("Sale", "responsibilities");
     expect(list?.type).toBe("array");
     expect(list?.items?.$ref).toBe("#/components/schemas/SaleResponsibility");
+    expect(list?.maxItems).toBe(1);
+    expect(list?.minItems).toBeUndefined();
     expect(schema("Sale")?.required).not.toContain("responsibilities");
   });
 

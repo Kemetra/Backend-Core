@@ -1649,11 +1649,13 @@ components:
             then.
         responsibilities:
           type: array
+          maxItems: 1
           items:
             $ref: "#/components/schemas/SaleResponsibility"
           description: >
             The sale's payer responsibilities as captured (RT-417). Empty for
-            a sale captured without them. Emitted from RT-418; optional until
+            a sale captured without them; at most one in this version, matching
+            the capture request and the posting feed. Emitted from RT-418; optional until
             then.
         lines:
           type: array
