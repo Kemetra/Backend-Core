@@ -188,6 +188,10 @@ info:
       - `blocked` → 409 with `error.code` = `blockCode`.
       - `no_change` → 200 `already_revoked`.
 
+    One rule comes first, whatever the verdict. A `revoke` with `other`
+    carries `requires: [note]`, and a body without the note is 400
+    `validation_error`. The body is checked before any read.
+
     RT-367 / RT-368 map `blocked` to 409 with `error.code` = `blockCode`, and
     `no_change` to their idempotent outcome.
 
@@ -922,6 +926,11 @@ components:
         `blockCode` (409). `forbidden_recovery`: a recovery revoke the caller's
         role may not make (403 `recovery_revoke_forbidden`). `no_change`: the
         action has already happened, so the mutation changes nothing.
+
+        **Extension policy:** adding a verdict is a minor contract version
+        bump. A client MUST treat an unknown verdict as `blocked` (fail-safe):
+        it never offers to proceed with an action whose verdict it doesn't
+        know.
     ImpactBlockCode:
       type: string
       enum: [unresolved_cash_session, unresolved_custody_exception, device_retired]
@@ -933,6 +942,10 @@ components:
         shift is the custody exception, which stays until the deferred
         force-seal / custody-reconciliation slice resolves it.
         `device_retired`: a retired device cannot be replaced or moved.
+
+        **Extension policy:** adding a block code is a minor contract version
+        bump. A client MUST treat an unknown block code as a refusal it
+        cannot resolve. It shows the code, and doesn't offer the action.
     ImpactRequirement:
       type: string
       enum: [owner_or_tenant_admin, note, acknowledge_custody_exception]
@@ -941,6 +954,10 @@ components:
         RT-287 D-Q4 amended). `owner_or_tenant_admin`: the caller's role.
         `note`: the body's `note`. `acknowledge_custody_exception`: the
         body's `acknowledgeCustodyException: true`.
+
+        **Extension policy:** adding a requirement is a minor contract
+        version bump. A client MUST treat an unknown requirement as unmet,
+        and doesn't offer the action.
 
     ImpactCashFacts:
       type: object
@@ -1094,9 +1111,12 @@ components:
             $ref: "#/components/schemas/ImpactRequirement"
           description: >
             The request requirements beyond the verdict, in the order the
-            mutation checks them. Non-empty only for a recovery revoke (a
-            `revoke` with `hardware_failure` while an active device has an
-            open shift), whatever the caller's role. Empty otherwise.
+            mutation checks them. For a recovery revoke (a `revoke` with
+            `hardware_failure` while an active device has an open shift):
+            [`owner_or_tenant_admin`, `note`, `acknowledge_custody_exception`],
+            whatever the caller's role. For a `revoke` with `other`: [`note`],
+            whatever the verdict, because the body schema requires it. Empty
+            otherwise.
         openShift:
           description: The open shift on the device; `null` when there is none.
           oneOf:
@@ -1138,9 +1158,10 @@ components:
 
     ImpactVerdictConsistency:
       description: >
-        `blockCode` is set exactly when the verdict is `blocked`. Only a
-        custody-exception or forbidden-recovery verdict carries `requires`,
-        and both need an open shift. A `no_change` verdict cascades nothing.
+        `blockCode` is set exactly when the verdict is `blocked`. `requires`
+        is the recovery revoke's three entries, or [`note`] for an `other`
+        revoke, and empty otherwise. A custody-exception or forbidden-recovery
+        verdict needs an open shift. A `no_change` verdict cascades nothing.
       allOf:
         - if:
             properties:
@@ -1155,15 +1176,6 @@ components:
             properties:
               blockCode:
                 type: "null"
-        - if:
-            properties:
-              verdict:
-                enum: [allowed, blocked, no_change]
-            required: [verdict]
-          then:
-            properties:
-              requires:
-                maxItems: 0
         - if:
             properties:
               verdict:
@@ -1269,7 +1281,8 @@ components:
                 const: hardware_failure
         # The recovery revoke (hardware_failure over an open shift) carries all
         # three requirements in the revoke's check order, whatever the role; a
-        # security revoke's custody exception carries none.
+        # revoke with `other` carries `note` whatever the verdict (the body
+        # schema's rule); every other preview carries none.
         - if:
             properties:
               verdict:
@@ -1282,9 +1295,21 @@ components:
               requires:
                 const: [owner_or_tenant_admin, note, acknowledge_custody_exception]
           else:
-            properties:
-              requires:
-                maxItems: 0
+            if:
+              properties:
+                action:
+                  const: revoke
+                revokeReason:
+                  const: other
+              required: [action, revokeReason]
+            then:
+              properties:
+                requires:
+                  const: [note]
+            else:
+              properties:
+                requires:
+                  maxItems: 0
         - if:
             properties:
               verdict:
@@ -1354,7 +1379,8 @@ components:
         An active device is the one a lifecycle action would revoke, so it
         has a cascade and no custody exception; a revoked or retired device
         has no cascade. A revoke of a revoked or retired device, and a retire
-        of a retired one, is `no_change`. A replace or move is `blocked`
+        of a retired one, is `no_change`. A retire of a revoked device is
+        `allowed` or `blocked`, never `no_change`. A replace or move is `blocked`
         `device_retired` on a retired device and `allowed` on a revoked one.
         Each block code belongs to one state: `unresolved_cash_session` to
         an active device, `unresolved_custody_exception` to a revoked one and
@@ -1400,6 +1426,20 @@ components:
             properties:
               verdict:
                 const: no_change
+        # A revoked (not retired) device's retire is still to do: `allowed`
+        # without an open shift, `blocked` `unresolved_custody_exception` with
+        # one (the shift rules pin which), never `no_change`.
+        - if:
+            properties:
+              trustState:
+                const: revoked
+              action:
+                const: retire
+            required: [trustState, action]
+          then:
+            properties:
+              verdict:
+                enum: [allowed, blocked]
         - if:
             properties:
               trustState:
