@@ -908,7 +908,7 @@ describe("erpnext-connector/posting-feed.yaml — RT-417 responsibility lines (1
   });
 
   it("a feed line is a gross share; tax is not split per payer (035 OQ-2)", () => {
-    expect(flat(schema("SaleResponsibility")?.description)).toContain("a gross share of `posTotal`; tax is not split per payer (035 OQ-2");
+    expect(flat((schema("SaleResponsibility") as { description?: string } | undefined)?.description)).toContain("a gross share of `posTotal`; tax is not split per payer (035 OQ-2");
   });
 
   it("the feed PositiveDecimalAmount is verbatim the sales.yaml pattern", () => {

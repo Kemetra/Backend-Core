@@ -1526,7 +1526,7 @@ describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
   });
 
   it("a share is gross: tax is not split per payer (035 OQ-2, review #779)", () => {
-    expect(flat(schema("SaleResponsibility")?.description)).toContain("a gross share of `posTotal`; tax is not split per payer (035 OQ-2");
+    expect(flat((schema("SaleResponsibility") as { description?: string } | undefined)?.description)).toContain("a gross share of `posTotal`; tax is not split per payer (035 OQ-2");
   });
 
   it("a payer resolves to this store or a tenant-wide payer (review #779)", () => {
