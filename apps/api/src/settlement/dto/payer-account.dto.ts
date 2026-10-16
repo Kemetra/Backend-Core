@@ -17,11 +17,23 @@ export type PayerCategory = (typeof PAYER_CATEGORIES)[number];
 
 export const PAYER_PAGE_SIZE_DEFAULT = 50;
 
+/**
+ * Text Postgres will store: no NUL (`text` refuses it, which would surface as
+ * a 500) and at least one non-whitespace character (a blank value is
+ * meaningless, and `display_name` carries a non-blank CHECK).
+ */
+const storableText = (max?: number) => {
+  const base = z.string().min(1);
+  return (max === undefined ? base : base.max(max))
+    .regex(/\S/, "must contain a non-whitespace character")
+    .refine((value) => !value.includes("\u0000"), "must not contain a NUL character");
+};
+
 export const PayerAccountCreateSchema = z
   .object({
     category: z.enum(PAYER_CATEGORIES),
-    displayName: z.string().min(1).max(200),
-    externalRef: z.string().min(1).regex(/\S/, "must contain a non-whitespace character").nullable().optional(),
+    displayName: storableText(200),
+    externalRef: storableText().nullable().optional(),
     storeId: z.string().uuid().nullable().optional(),
   })
   .strict();

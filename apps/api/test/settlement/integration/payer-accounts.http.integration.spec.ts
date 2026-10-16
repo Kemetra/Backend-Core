@@ -278,6 +278,11 @@ describe("consoleCreatePayerAccount", () => {
     ["a smuggled tenant_id", { tenant_id: TENANT_B }],
     ["an unknown category", { category: "bank" }],
     ["an empty displayName", { displayName: "" }],
+    // Schemathesis (the no-5xx gate): values the 2.0.0 schema admits but
+    // Postgres refuses must be a 400, never a 500.
+    ["a whitespace-only displayName (the table's non-blank CHECK)", { displayName: " \t " }],
+    ["a NUL in displayName (Postgres text refuses it)", { displayName: "Payer\u0000" }],
+    ["a NUL in externalRef", { externalRef: "CUST\u0000" }],
     ["a malformed storeId", { storeId: "store-x" }],
   ])("refuses %s with 400 validation_error, writing nothing", async (_name, patch) => {
     if (skip()) return;
