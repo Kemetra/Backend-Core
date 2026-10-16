@@ -163,13 +163,17 @@ function params(route: Route): ParameterObject[] {
   return [...pathLevel, ...(op(route).parameters ?? [])].map(resolveParameter);
 }
 
+/** Follows a `#/components/responses/<Name>` reference; throws when it is not declared. */
+function resolveResponse(ref: string): ResponseObject {
+  const found = doc.components?.responses?.[ref.replace("#/components/responses/", "")];
+  if (!found) throw new Error(`response ${ref} not declared`);
+  return found;
+}
+
 function response(route: Route, status: string): ResponseObject {
   const r = op(route).responses?.[status];
   if (!r) throw new Error(`${route.path} declares no ${status}`);
-  if (!r.$ref) return r;
-  const found = doc.components?.responses?.[r.$ref.replace("#/components/responses/", "")];
-  if (!found) throw new Error(`response ${r.$ref} not declared`);
-  return found;
+  return r.$ref ? resolveResponse(r.$ref) : r;
 }
 
 function statusesOf(route: Route): string[] {

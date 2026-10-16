@@ -1105,6 +1105,11 @@ describe("pos-shifts — RT-384 shift variance policy", () => {
     );
   });
 
+  it("expresses the open rules as if / then, never an allOf on the request body (oasdiff request-body-all-of-added)", () => {
+    expect(schema("OpenShiftRequest").allOf).toBeUndefined();
+    expect(schema("OpenShiftRequest")["if"]).toBeDefined();
+  });
+
   it("accepts a legacy open (no policy fields), a tenant open, a system open and a fallback open", () => {
     const v = validator("OpenShiftRequest");
     expect([VALID_OPEN, TENANT_OPEN, SYSTEM_OPEN, FALLBACK_OPEN].map((body) => v(body))).toEqual([true, true, true, true]);

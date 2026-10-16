@@ -759,14 +759,35 @@ components:
       type: object
       additionalProperties: false
       required: [shiftId, openedAt, openingUserId, currencyCode, openingFloat]
-      allOf:
-        - $ref: "#/components/schemas/FrozenPolicyAllOrNone"
-        - $ref: "#/components/schemas/FrozenPolicyRevisionRule"
+      # RT-384: the all-or-none and revision-id rules of FrozenPolicyAllOrNone
+      # and FrozenPolicyRevisionRule, inlined as `if` / `then` (as on
+      # CloseShiftRequest) so the request body gains no `allOf` branch.
+      if:
+        anyOf:
+          - required: [policySource]
+          - required: [policyRevisionId]
+          - required: [policyValue]
+      then:
+        required: [policySource, policyRevisionId, policyValue]
+        if:
+          properties:
+            policySource:
+              enum: [tenant, store]
+        then:
+          properties:
+            policyRevisionId:
+              type: string
+        else:
+          properties:
+            policyRevisionId:
+              type: "null"
       description: >
         The `ShiftOpened` fact. Tenant, store and device come from the
         credential and are rejected if present (strict body). The three
         RT-384 policy fields are optional and all-or-none (accepted from
-        RT-387; see `openShift`).
+        RT-387; see `openShift`): when any is present, all three are, and
+        `policyRevisionId` is a uuid for source `tenant` or `store` and `null`
+        for `system` or `fallback`.
       properties:
         policySource:
           type: string
