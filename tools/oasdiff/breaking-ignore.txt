@@ -7,12 +7,15 @@
 #
 # Example:
 #   RT-123 intentional: POST /api/v1/example added the new required request header 'X-Example'
-# RT-401 / spec 038 (PR #746): StoreUpdate gains timezone,
-# expected_current_timezone and timezone_impact_reviewed, which must be sent
-# together. oasdiff reports the new dependentRequired rules as breaking, but
-# they only involve properties added in this same PR, so no request that was
-# valid before becomes invalid. The two RT-17 lines inherited from #714 were
-# removed as check.sh asks.
-RT-401 intentional (StoreUpdate's new timezone change fields travel together; the rule binds only properties this PR adds, so no existing request changes; [GATED] owner approval of spec 038 on RT-401): in API PATCH /api/v1/stores/{store_id} the request body dependentRequired was added: when `expected_current_timezone` is present, `timezone` are required [request-body-dependent-required-added].
-RT-401 intentional (StoreUpdate's new timezone change fields travel together; the rule binds only properties this PR adds, so no existing request changes; [GATED] owner approval of spec 038 on RT-401): in API PATCH /api/v1/stores/{store_id} the request body dependentRequired was added: when `timezone` is present, `expected_current_timezone, timezone_impact_reviewed` are required [request-body-dependent-required-added].
-RT-401 intentional (StoreUpdate's new timezone change fields travel together; the rule binds only properties this PR adds, so no existing request changes; [GATED] owner approval of spec 038 on RT-401): in API PATCH /api/v1/stores/{store_id} the request body dependentRequired was added: when `timezone_impact_reviewed` is present, `timezone` are required [request-body-dependent-required-added].
+# RT-417 (PR #779): settlement.yaml 2.0.0 removes six 035 ledger operations
+# and PayerAccountCreate.creditTerms (ERPNext owns terms). The three inherited
+# RT-401 lines from #746 were removed as check.sh asks.
+RT-417 intentional (settlement.yaml 2.0.0, 035 narrowed to Option B per RT-413 R-1; the runtime keeps serving the route until RT-422; [GATED] owner authorization RT-417 comment 11671): in API POST /api/v1/settlement/claims api path removed without deprecation [api-path-removed-without-deprecation].
+RT-417 intentional (settlement.yaml 2.0.0, 035 narrowed to Option B per RT-413 R-1; the runtime keeps serving the route until RT-422; [GATED] owner authorization RT-417 comment 11671): in API POST /api/v1/settlement/claims/{claimRef}/reconcile-remittance api path removed without deprecation [api-path-removed-without-deprecation].
+RT-417 intentional (settlement.yaml 2.0.0, 035 narrowed to Option B per RT-413 R-1; the runtime keeps serving the route until RT-422; [GATED] owner authorization RT-417 comment 11671): in API GET /api/v1/settlement/receivables api path removed without deprecation [api-path-removed-without-deprecation].
+RT-417 intentional (settlement.yaml 2.0.0, 035 narrowed to Option B per RT-413 R-1; the runtime keeps serving the route until RT-422; [GATED] owner authorization RT-417 comment 11671): in API GET /api/v1/settlement/receivables/{receivableRef} api path removed without deprecation [api-path-removed-without-deprecation].
+RT-417 intentional (settlement.yaml 2.0.0, 035 narrowed to Option B per RT-413 R-1; the runtime keeps serving the route until RT-422; [GATED] owner authorization RT-417 comment 11671): in API POST /api/v1/settlement/receivables/{receivableRef}/apply-payment api path removed without deprecation [api-path-removed-without-deprecation].
+RT-417 intentional (settlement.yaml 2.0.0, 035 narrowed to Option B per RT-413 R-1; the runtime keeps serving the route until RT-422; [GATED] owner authorization RT-417 comment 11671): in API POST /api/v1/settlement/settlement-intent api path removed without deprecation [api-path-removed-without-deprecation].
+RT-417 intentional (ERPNext owns payment terms and credit limits; RT-421 drops the field from the Admin-Console form; [GATED] owner authorization RT-417 comment 11671): in API POST /api/v1/settlement/payer-accounts removed the request property `creditTerms` [request-property-removed].
+RT-417 intentional (Codex review of #779: a blank ERPNext Customer link can never resolve and would dead-letter at posting; the payer route is still contract-only, so no client sends it yet; [GATED] owner authorization RT-417 comment 11671): in API POST /api/v1/settlement/payer-accounts the `externalRef` request property's minLength was set to `1` [request-property-min-length-set].
+RT-417 intentional (Codex review of #779: a blank ERPNext Customer link can never resolve and would dead-letter at posting; the payer route is still contract-only, so no client sends it yet; [GATED] owner authorization RT-417 comment 11671): in API POST /api/v1/settlement/payer-accounts added the pattern `\S` to the request property `externalRef` [request-property-pattern-added].

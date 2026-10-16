@@ -89,10 +89,11 @@ const APPROVED_TENDER_FIELDS = [
 ];
 
 /**
- * RT-537: capture fields the contract declares before the server accepts them.
- * RT-539 added `receipt` to the capture DTO, so the list is empty.
+ * Capture fields the contract declares before the server accepts them.
+ * RT-539 added the RT-537 `receipt` to the capture DTO. RT-417 declares
+ * `responsibilities`; the RT-418 runtime adds it to the DTO.
  */
-const CONTRACT_AHEAD_OF_CAPTURE_DTO: readonly string[] = [];
+const CONTRACT_AHEAD_OF_CAPTURE_DTO: readonly string[] = ["responsibilities"];
 
 /** A property's `maxLength` in a schema; NaN when the schema does not bound it. */
 function maxLengthOf(schemaObject: { properties?: Record<string, unknown> } | undefined, prop: string): number {
@@ -902,11 +903,11 @@ describe("pos-sales/sales.yaml — RT-224 device-bearer cashier capture", () => 
     expect(describedBy(operatorUserId())).toContain("403 `refused`");
   });
 
-  it("captureSale declares the 403 Refused response; no other sale operation does except recordVoid (RT-530 VoidForbidden)", () => {
+  it("captureSale declares the 403 CaptureForbidden response (RT-224 refused + RT-417 role refusal); no other sale operation does except recordVoid (RT-530 VoidForbidden)", () => {
     const responses = (op: unknown): Record<string, unknown> =>
       ((op as { responses?: Record<string, unknown> }).responses ?? {});
     expect(responses(findOp("captureSale"))["403"]).toEqual({
-      $ref: "#/components/responses/Refused",
+      $ref: "#/components/responses/CaptureForbidden",
     });
     expect(responses(findOp("captureSale"))["401"]).toEqual({
       $ref: "#/components/responses/Unauthorized",
@@ -922,8 +923,8 @@ describe("pos-sales/sales.yaml — RT-224 device-bearer cashier capture", () => 
     }
   });
 
-  it("the Refused response is the generic Error envelope and says the device itself is valid", () => {
-    const refused = salesDoc.components?.responses?.["Refused"] as
+  it("the capture 403 (CaptureForbidden) is the generic Error envelope and says the device itself is valid", () => {
+    const refused = salesDoc.components?.responses?.["CaptureForbidden"] as
       | { description?: string; content?: Record<string, { schema?: unknown }> }
       | undefined;
     expect(refused?.content?.["application/json"]?.schema).toEqual({
@@ -1191,8 +1192,7 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
     return inner;
   }
 
-  it("bumps the version to 1.9.0-draft with an RT-537 note citing the [GATED] approval", () => {
-    expect(salesDoc.info?.version).toBe("1.9.0-draft");
+  it("the version note records RT-537 at 1.9.0-draft, citing the [GATED] approval (version moved on in RT-417)", () => {
     const info = salesDoc.info?.description ?? "";
     expect(info).toContain("RT-537 (1.9.0-draft");
     expect(info).toContain("[GATED] approval Jira RT-537 comment 12057");
@@ -1200,7 +1200,7 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
     expect(info).toContain("not send `receipt` sees no difference");
   });
 
-  it("adds an OPTIONAL receipt to the strict capture body, and nothing else", () => {
+  it("adds an OPTIONAL receipt to the strict capture body (key set pinned, RT-417 adds responsibilities)", () => {
     const request = schema("CaptureSaleRequest");
     expect(request?.additionalProperties).toBe(false);
     expect(request?.required).not.toContain("receipt");
@@ -1215,6 +1215,7 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
         "operatorUserId",
         "posTotal",
         "receipt",
+        "responsibilities",
         "sourceClockAt",
         "sourceSystem",
         "tenders",
@@ -1299,7 +1300,7 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
     const dto = captureDtoObject();
     expect(Object.keys(dto.shape)).toContain("receipt");
     expect(dto._def.unknownKeys).toBe("strict");
-    expect(CONTRACT_AHEAD_OF_CAPTURE_DTO).toEqual([]);
+    expect(CONTRACT_AHEAD_OF_CAPTURE_DTO).not.toContain("receipt");
 
     const receiptDto = CaptureSaleReceiptSchema;
     expect(receiptDto._def.unknownKeys).toBe("strict");
@@ -1332,4 +1333,218 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
       taxRegistrationId: "123-456-789",
     };
   }
+});
+
+// ===========================================================================
+// RT-417 — sale payer responsibilities + coverage rule (1.10.0-draft; [GATED]
+// approval Jira RT-417 comment 11671; owner decision R-1, RT-413 comment 11669)
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
+  type FieldNode = {
+    type?: string;
+    format?: string;
+    minimum?: number;
+    minItems?: number;
+    maxItems?: number;
+    pattern?: string;
+    $ref?: string;
+    items?: { $ref?: string };
+    description?: string;
+  };
+  const schema = (name: string): SchemaObject | undefined => salesDoc.components?.schemas?.[name];
+  const field = (schemaName: string, name: string): FieldNode | undefined =>
+    (schema(schemaName)?.properties ?? {})[name] as FieldNode | undefined;
+  const flat = (text: string | undefined): string => (text ?? "").replace(/\s+/g, " ");
+  const info = (): string => flat(salesDoc.info?.description);
+  const captureText = (): string => flat((findOp("captureSale") as { description?: string } | undefined)?.description);
+  const fieldText = (): string => flat(field("CaptureSaleRequest", "responsibilities")?.description);
+  const unprocessable = (): string =>
+    flat((salesDoc.components?.responses?.["CaptureUnprocessable"] as { description?: string } | undefined)?.description);
+
+  it("bumps the version to 1.10.0-draft with an RT-417 note citing the [GATED] approval and R-1", () => {
+    expect(salesDoc.info?.version).toBe("1.10.0-draft");
+    expect(info()).toContain("RT-417 (1.10.0-draft; [GATED] approval Jira RT-417 comment 11671");
+    expect(info()).toContain("R-1");
+  });
+
+  it("capture accepts an OPTIONAL responsibilities list of exactly one payer in this version (Codex #779 P1)", () => {
+    expect(schema("CaptureSaleRequest")?.required).not.toContain("responsibilities");
+    const list = field("CaptureSaleRequest", "responsibilities");
+    expect(list).toMatchObject({ type: "array", minItems: 1, maxItems: 1 });
+    expect(fieldText()).toContain("At most one payer per sale in this version");
+    expect(list?.items?.$ref).toBe("#/components/schemas/SaleResponsibility");
+  });
+
+  it("a responsibility is strict {payerRef uuid, amount > 0, sequence >= 1}, all required", () => {
+    const entry = schema("SaleResponsibility");
+    expect(entry?.additionalProperties).toBe(false);
+    expect(entry?.required?.slice().sort()).toEqual(["amount", "payerRef", "sequence"]);
+    expect(Object.keys(entry?.properties ?? {}).sort()).toEqual(["amount", "payerRef", "sequence"]);
+    expect(field("SaleResponsibility", "payerRef")).toMatchObject({ type: "string", format: "uuid" });
+    expect(field("SaleResponsibility", "amount")?.$ref).toBe("#/components/schemas/PositiveDecimalAmount");
+    expect(field("SaleResponsibility", "sequence")).toMatchObject({ type: "integer", minimum: 1 });
+  });
+
+  it("PositiveDecimalAmount is exact-decimal, numeric(19,4)-bounded, and rejects zero and negatives", () => {
+    const pattern = (schema("PositiveDecimalAmount") as { pattern?: string } | undefined)?.pattern;
+    expect(pattern).toBeDefined();
+    const positive = new RegExp(pattern ?? "$^");
+    for (const ok of ["0.0001", "1", "120.00", "999999999999999.9999"]) expect({ ok, m: positive.test(ok) }).toEqual({ ok, m: true });
+    for (const bad of ["0", "0.0000", "-1.00", "1.00001", "1e3", "1000000000000000"]) {
+      expect({ bad, m: positive.test(bad) }).toEqual({ bad, m: false });
+    }
+  });
+
+  it("states the coverage rule: sum(tenders) + sum(responsibilities) = posTotal, exactly", () => {
+    expect(fieldText()).toContain("sum(tenders) + sum(responsibilities) = posTotal");
+    expect(fieldText()).toContain("exact decimal arithmetic, no rounding");
+    expect(captureText()).toContain("sum(tenders) + sum(responsibilities) = posTotal");
+  });
+
+  it("a sale with responsibilities and no tenders is NOT a tender-unknown sale (absent tenders = 0)", () => {
+    expect(fieldText()).toContain("an absent `tenders` counts as zero");
+    expect(fieldText()).toContain("is NOT a tender-unknown sale");
+  });
+
+  it("qualifies the RT-76 tender-only rule to bodies without responsibilities (Codex #779 P1)", () => {
+    expect(captureText()).toContain(
+      "When `responsibilities` is absent, the amounts MUST sum to `posTotal` exactly",
+    );
+    expect(captureText()).toContain("When it is present, the combined coverage rule replaces this one");
+    expect(captureText()).toContain("The coverage rule (tender-only or combined) is checked first");
+    const tenders = flat(field("CaptureSaleRequest", "tenders")?.description);
+    expect(tenders).toContain("Without `responsibilities`, summing to `posTotal` exactly");
+  });
+
+  it("names 422 sale_responsibility_mismatch and orders it against sale_tender_mismatch", () => {
+    expect(unprocessable()).toContain("`sale_responsibility_mismatch`");
+    expect(unprocessable()).toContain("`sale_tender_mismatch` is returned only when `responsibilities` is absent");
+    expect(captureText()).toContain(
+      "Order of the 422s: the device-path offline refusal, then the coverage rule, then the line price invariant, then the payers",
+    );
+    expect(captureText()).not.toContain("the coverage rule is checked first, then the line price invariant");
+  });
+
+  it("names one non-disclosing 422 sale_responsibility_payer_invalid for every payer refusal", () => {
+    const text = unprocessable();
+    expect(text).toContain("`sale_responsibility_payer_invalid`");
+    for (const cause of [
+      "does not exist",
+      "belongs to another tenant",
+      "scoped to another store",
+      "is `suspended`",
+      "has no `externalRef`",
+      "null or blank",
+    ]) {
+      expect({ cause, found: text.includes(cause) }).toEqual({ cause, found: true });
+    }
+    expect(text).toContain("one body for every cause");
+  });
+
+  it("states the per-sale uniqueness rules OpenAPI cannot express, each a 400", () => {
+    expect(fieldText()).toContain("`payerRef` is unique within the sale");
+    expect(fieldText()).toContain("`sequence` is unique within the sale");
+    expect(fieldText()).toContain("400 `validation_error`");
+  });
+
+  it("hashes responsibilities into the payload; an absent list leaves the hash unchanged", () => {
+    expect(fieldText()).toContain("part of the sale `payload_hash`");
+    expect(fieldText()).toContain("a replay that adds, drops or changes a responsibility is a different payload (409)");
+    expect(fieldText()).toContain("An absent list leaves the `payload_hash` of the sale unchanged");
+  });
+
+  it("a replay answers after authentication and the RT-224 claim check, before the role check and every 422 (review #779)", () => {
+    expect(captureText()).toContain(
+      "A replay of an already-captured sale answers after authentication and the RT-224 cashier-claim check (403 `refused`), and before the role check (403 `sale_responsibility_role_refused`) and every 422",
+    );
+  });
+
+  it("a refusal of a responsibility-bearing sale is repair evidence, never silently retried", () => {
+    expect(info()).toContain("never silently retried");
+  });
+
+  it("offline credit (owner decision 2026-10-16, option A): envelope path only, synchronous before finalize", () => {
+    expect(info()).toContain("OFFLINE CREDIT (owner decision 2026-10-16, option A;");
+    expect(info()).toContain("accepted only on the `operatorAuthorization` path");
+    expect(info()).toContain(
+      "MUST capture a responsibility-bearing sale synchronously, online, before finalizing it, and MUST NOT queue it",
+    );
+    expect(info()).toContain("credit is manager/admin-only");
+    expect(info()).not.toContain("OFFLINE CREDIT (OWNER-PENDING");
+    expect(fieldText()).toContain("422 `sale_responsibility_offline_refused`");
+  });
+
+  it("limits responsibilities to an owner / tenant_admin / store_manager envelope operator, else 403 sale_responsibility_role_refused", () => {
+    expect(info()).not.toContain("OWNER-PENDING");
+    expect(info()).toContain("only for an envelope operator whose role is `owner`, `tenant_admin` or `store_manager`");
+    const forbidden = flat(
+      (salesDoc.components?.responses?.["CaptureForbidden"] as { description?: string } | undefined)?.description,
+    );
+    expect(forbidden).toContain("`refused`");
+    expect(forbidden).toContain("`sale_responsibility_role_refused`");
+    expect(forbidden).toContain("the RT-530 eligible set");
+    expect(
+      (salesDoc.components?.responses?.["CaptureForbidden"] as { content?: Record<string, { schema?: unknown }> } | undefined)
+        ?.content?.["application/json"]?.schema,
+    ).toEqual({ $ref: "#/components/schemas/Error" });
+    expect(captureText()).toContain(
+      "the role check (403 `sale_responsibility_role_refused`) is decided after authentication and before every 422",
+    );
+    expect(fieldText()).toContain("403 `sale_responsibility_role_refused`");
+  });
+
+  it("names 422 sale_responsibility_offline_refused for responsibilities on the device path, ordered first", () => {
+    expect(unprocessable()).toContain("`sale_responsibility_offline_refused`");
+    expect(unprocessable()).toContain("on the `device` path");
+    expect(captureText()).toContain(
+      "On the `device` path a body with `responsibilities` is 422 `sale_responsibility_offline_refused`, decided before the coverage rule",
+    );
+  });
+
+  it("on the synchronous path every 422 reaches the till before finalize; a transient failure is retried synchronously only", () => {
+    expect(info()).toContain("reaches the till BEFORE the sale is finalized");
+    expect(info()).toContain("never through the background drain");
+  });
+
+  it("states reversal semantics of a responsibility-bearing sale are undefined (OQ-4 carve)", () => {
+    expect(info()).toContain("Reversal (void / return) of a responsibility-bearing sale is UNDEFINED");
+  });
+
+  it("the sale read exposes responsibilities, OPTIONAL until RT-418 emits them", () => {
+    const list = field("Sale", "responsibilities");
+    expect(list?.type).toBe("array");
+    expect(list?.items?.$ref).toBe("#/components/schemas/SaleResponsibility");
+    expect(list?.maxItems).toBe(1);
+    expect(list?.minItems).toBeUndefined();
+    expect(schema("Sale")?.required).not.toContain("responsibilities");
+  });
+
+  it("orders the rollout: accepted from RT-418; strict clients re-pin first (RT-76 precedent)", () => {
+    expect(info()).toContain("the server accepts `responsibilities` from RT-418");
+    expect(info()).toContain("must re-pin this version BEFORE RT-418 deploys");
+    expect(fieldText()).toContain("Accepted from RT-418");
+  });
+
+  it("a share is gross: tax is not split per payer (035 OQ-2, review #779)", () => {
+    expect(flat((schema("SaleResponsibility") as { description?: string } | undefined)?.description)).toContain("a gross share of `posTotal`; tax is not split per payer (035 OQ-2");
+  });
+
+  it("a payer resolves to this store or a tenant-wide payer (review #779)", () => {
+    expect(flat(field("SaleResponsibility", "payerRef")?.description)).toContain(
+      "a payer of this store or a tenant-wide payer (`storeId` null)",
+    );
+  });
+
+  it("the read says absent, not empty, for a sale without responsibilities (review #779)", () => {
+    const list = flat(field("Sale", "responsibilities")?.description);
+    expect(list).toContain("Absent for a sale captured without them");
+    expect(list).not.toContain("Empty for");
+  });
+
+  it("is not a payment ledger and carries no balance or lifecycle state", () => {
+    expect(info()).toContain("NOT a receivable");
+    for (const banned of ["balance", "outstanding", "state", "status"]) {
+      expect(Object.keys(schema("SaleResponsibility")?.properties ?? {})).not.toContain(banned);
+    }
+  });
 });

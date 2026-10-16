@@ -358,22 +358,18 @@ export class UnknownItemsController {
    *   - No `@Idempotent` decorator: GETs are naturally idempotent
    *     and the interceptor expects a header on writes only.
    *
-   * Auth / RolesGuard (documented intentional gap):
-   *   This handler does NOT carry `@UseGuards(AuthGuard,
-   *   TenantContextGuard, RolesGuard)` or `@Roles(...)` decorators.
-   *   It inherits the same posture as `posCaptureItem` above —
-   *   the route is consumed by integration tests via a
-   *   configurable context guard, and production wiring of the
-   *   real auth+roles stack lands in a future Wave 1 slice. Auth
-   *   files (`apps/api/src/auth/**`) are forbidden surface for
-   *   005 per the slice contract, so adding decorators here
-   *   would silently expand scope. Flagged by CodeRabbit on
-   *   PR #334; tracked as a follow-up auth-wiring slice that
-   *   addresses both `posCaptureItem` and
-   *   `tenantAdminListUnknownItems` consistently.
+   * Auth / roles (RT-566):
+   *   `DashboardAuthGuard` → `TenantContextGuard` → `RolesGuard`, with
+   *   `@Roles("owner", "tenant_admin", "store_manager", { denyAs: 403 })` —
+   *   the same role set as dismiss, so `store_staff` cannot read the review
+   *   queue. A role refusal is `403 forbidden` (the contract's documented
+   *   response for this operation): the caller is acting within its own active
+   *   tenant, so the refusal reveals nothing about any resource. Store scope is
+   *   unchanged and still comes from RLS / `resolveStoreScope` (RT-131).
    */
   @Get("api/v1/catalog/unknown-items")
-  @UseGuards(DashboardAuthGuard, TenantContextGuard)
+  @UseGuards(DashboardAuthGuard, TenantContextGuard, RolesGuard)
+  @Roles("owner", "tenant_admin", "store_manager", { denyAs: 403 })
   async tenantAdminListUnknownItems(
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(ListUnknownItemsQuerySchema))
@@ -428,17 +424,20 @@ export class UnknownItemsController {
    * `resolved_product_id`; a store-scoped actor has it omitted (the item row
    * is still returned).
    *
-   * Auth posture mirrors the list route (FR-009 "inherits the document-level
-   * cookieAuth"): `DashboardAuthGuard + TenantContextGuard`, no `RolesGuard` —
-   * inspect is a read, and scope is enforced by RLS (a wrong-scope id is
-   * non-disclosing 404, never a role-based 403). The contract's documented 403
-   * exists for the shared `forbidden` category (used by reopen), not inspect.
+   * Auth posture mirrors the list route (RT-566): `DashboardAuthGuard` →
+   * `TenantContextGuard` → `RolesGuard`, `@Roles("owner", "tenant_admin",
+   * "store_manager", { denyAs: 403 })`. A role refusal is `403 forbidden` as the
+   * contract documents for this operation; it is evaluated BEFORE the id is
+   * looked up, so it is no existence oracle. Scope is still enforced by RLS: a
+   * permitted role asking for a wrong-scope / unknown id still gets the
+   * non-disclosing 404 (SI-004 / FR-062).
    *
    * No `@Auditable` (a read is not a state transition; matches list/FR-080
    * scope) and no `@Idempotent` (no Idempotency-Key on a GET).
    */
   @Get("api/v1/catalog/unknown-items/:id")
-  @UseGuards(DashboardAuthGuard, TenantContextGuard)
+  @UseGuards(DashboardAuthGuard, TenantContextGuard, RolesGuard)
+  @Roles("owner", "tenant_admin", "store_manager", { denyAs: 403 })
   async tenantAdminInspectUnknownItem(
     @Req() request: TenantContextRequest,
     @Param("id", new ZodValidationPipe(z.string().uuid()))
@@ -496,11 +495,8 @@ export class UnknownItemsController {
    *     Re-dismissing returns deterministic 409 from the lifecycle
    *     invariant — no client-side dedup key needed.
    *
-   * Auth gap (carried forward from CAPTURE-HAPPY / NON-DISCLOSING /
-   * LIST / IDEMP-WIRE / IDEMP-MISMATCH): no `@UseGuards(AuthGuard,
-   * TenantContextGuard, RolesGuard)`. Same documented intentional gap;
-   * `apps/api/src/auth/**` remains forbidden surface for 005.
-   * Tracked in wave-status.md "Outstanding known gap" section.
+   * Auth: `DashboardAuthGuard` → `TenantContextGuard` → `RolesGuard` with
+   * `@Roles("owner", "tenant_admin", "store_manager")` (see the decorators below).
    */
   @Post("api/v1/catalog/unknown-items/:id/dismiss")
   // NestJS's `@Post()` defaults to 201 Created. The OpenAPI contract

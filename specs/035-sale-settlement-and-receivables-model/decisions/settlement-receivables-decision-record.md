@@ -151,3 +151,95 @@ and payer_account.credit_terms are retired through gated forward migrations;
 0027.down is never applied to live data.
 
 OQ-4 (CARVE) and OQ-2 (tax-deactivated) remain in force for whatever survives.
+
+---
+
+## Amendment A2 — RT-417 contracts for R-1 (2026-10-16)
+Status: PROPOSED — `[GATED]` contract PR, owner ratifies at review (RT-417
+comment 11671 authorized the YAML; coordinator decisions below need ratifying).
+Deciders: owner (R-1, RT-413 comment 11669); coordinator under the owner's
+delegation (items marked *coordinator*); the RT-417 session (items marked
+*in remit*).
+
+### Context
+R-1 puts the payer responsibility allocation on the sale at capture. Three
+contracts carry it: the sale (`pos-sales/sales.yaml`), the Connector feed
+(`erpnext-connector/posting-feed.yaml`) and the payer facade
+(`settlement/settlement.yaml`). POS capture is deferred: finalize writes a local
+outbox row and a background drain sends `captureSale` later, with cashier sales
+on the RT-224 device path. So any capture refusal arrives after the goods left.
+
+### Decision
+- `sales.yaml` 1.10.0-draft (additive): optional
+  `responsibilities[{payerRef, amount > 0, sequence}]`, hashed into the payload
+  (an absent list leaves old hashes unchanged). Coverage
+  `sum(tenders) + sum(responsibilities) = posTotal` exactly, else 422
+  `sale_responsibility_mismatch`; with responsibilities present it replaces the
+  RT-76 tender-only rule and an absent `tenders` counts as zero (*in remit*).
+  Order: authentication and the RT-224 cashier-claim check (403 `refused`),
+  then a replay answers, then the 403 role check, then the 422s (offline
+  refusal, coverage, line pricing, payers) (*in remit*). One non-disclosing 422 `sale_responsibility_payer_invalid` for an
+  unknown, cross-tenant, other-store, suspended or unlinked (`externalRef` null
+  or blank) payer (*coordinator*). `payerRef` and `sequence` unique per sale; at most ONE
+  entry in this version, because the feed acknowledges one Sales Invoice per
+  work item and an ERPNext Sales Invoice bills one Customer; multi-payer waits
+  for RT-419's ERPNext shape and a later contract (*in remit*, Codex review of
+  #779). Reversal of such a sale is undefined (OQ-4 carve)
+  (*coordinator*).
+- `posting-feed.yaml` 1.8.0-draft (additive):
+  `Sale.responsibilities[{payerExternalRef, amount, sequence}]`;
+  `payerExternalRef` is frozen with the RT-332 resolution and is not in
+  `payloadHash` (*in remit*). Unmapped payer → `permanently_rejected` /
+  `validation`, never the store Customer. Responsibility-bearing `sale_post`
+  items are held until the Connector supports them (RT-419); their reversals are
+  held until a later issue defines them (*coordinator*).
+- `settlement.yaml` 2.0.0 (BREAKING): only `consoleCreatePayerAccount` /
+  `consoleListPayerAccounts` remain (contract-only until RT-418); six operations
+  retired (`x-retired-operations`, runtime removed in RT-422); `creditTerms`
+  removed; `externalRef` is the ERPNext Customer link and, when present, must be
+  nonblank: a blank value, accepted by 1.0.0-draft, is now a 400 (Codex review
+  of #779).
+- Offline credit (owner decision 2026-10-16, option A): `responsibilities` are
+  accepted only on the `operatorAuthorization` path; on the RT-224 `device`
+  path they are 422 `sale_responsibility_offline_refused`. The POS captures a
+  responsibility-bearing sale synchronously, online, before finalize, and never
+  queues it for the background drain, so every refusal reaches the till before
+  finalize. Credit is manager/admin-only: the server accepts responsibilities
+  only from an envelope operator who is owner, tenant_admin or store_manager
+  (the RT-530 set), else 403 `sale_responsibility_role_refused` (*coordinator*,
+  derived from the owner's option A wording). This departs from POS spec 020
+  FR-5.
+
+### Alternatives considered
+- **R-2, keep `settlement-intent` with posting held** — rejected by the owner
+  (RT-413 §1): two writes for one fact plus a hold state machine.
+- **Keep the six settlement routes as `deprecated`** — rejected: the issue
+  removes them, and a deprecated route still invites new consumers. The runtime
+  keeps serving them until RT-422, which conformance permits.
+- **Offline credit B: no server-side offline refusal, till-side gate only** —
+  rejected by the owner (2026-10-16) in favour of A: it leaves deferred capture
+  in place, so every capture refusal would land after the goods left.
+- **Offline credit C: server staleness proxy (`receivedAt − settledAt > N`)** —
+  rejected: it still refuses after finalize, and the drain backoff (up to
+  5 min) makes N fragile.
+- **Capture-time `externalRef` not checked; let the Connector reject** —
+  rejected (*coordinator*): with no payer-update route a null link would
+  dead-letter terminally.
+
+### Consequences — breaking changes and affected consumers
+| Change | Consumer | Follow-up |
+| --- | --- | --- |
+| 6 settlement operations removed | Admin-Console 018/019 screens + client wrappers | RT-421 removes them |
+| `PayerAccountCreate.creditTerms` removed (400 if sent) | Admin-Console 017 create form | RT-421 drops the field, labels `externalRef` as the ERPNext Customer link |
+| Payer routes still `contract-only` | Admin-Console 017 (404 today) | RT-418 ships them |
+| `posRecordSettlementIntent` removed | POS spec 020 (draft, unimplemented) | RT-420 sends `responsibilities` on capture |
+| `CaptureSaleRequest.responsibilities` (strict DTO rejects until RT-418) | POS capture | RT-420, after RT-418 deploys |
+| `Sale.responsibilities` on reads (`additionalProperties: false`) | POS strict response validation | re-pin before RT-418 deploys |
+| `Sale.responsibilities` on the feed | Connector (strict feed parsers re-pin) | RT-419 posts to the payer's Customer |
+| Capture 403 component renamed `Refused` → `CaptureForbidden` (same `refused` body, plus `sale_responsibility_role_refused`) | POS generated client (breaks on regeneration) | the POS client re-pin for RT-420 |
+| Credit only on the envelope path, synchronous before finalize | POS capture (new capture mode, departs from spec 020 FR-5) | RT-420 (scope comment 12134): synchronous pre-finalize capture, no outbox queuing |
+
+Gaps left open, each with its own issue: a POS-facing payer lookup /
+credit-decision read, since the till has no way to obtain `payerRef`s (RT-570,
+GATED); reversal semantics for responsibility-bearing sales (RT-571); a
+payer-account update route to repair a missing `externalRef` (RT-572).
