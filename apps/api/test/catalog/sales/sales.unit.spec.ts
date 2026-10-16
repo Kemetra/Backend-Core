@@ -322,7 +322,10 @@ describe("SalesService — capture branches (unit)", () => {
       svc.captureSale({ ...CAPTURE, body: body({ tenders: [{ method: "cash", amount: "1" }] }) }),
     ).rejects.toBeInstanceOf(SaleTenderMismatchError);
     const wrote = (table: string) =>
-      clientQuery.mock.calls.some((c) => new RegExp(`INSERT INTO ${table}\b`).test(String(c[0])));
+      clientQuery.mock.calls.some((c) => new RegExp(`INSERT INTO ${table}\\b`).test(String(c[0])));
+    // Positive control: the provenance insert into `sales` did run (and is
+    // rolled back by the throw), so the matcher really detects an INSERT.
+    expect(wrote("sales")).toBe(true);
     expect(["sale_lines", "sale_tenders", "outbox_events"].filter(wrote)).toEqual([]);
   });
 
