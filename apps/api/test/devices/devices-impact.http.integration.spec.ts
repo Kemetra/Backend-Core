@@ -65,6 +65,7 @@ import {
   SHIFT_REC,
   SHIFT_SEC,
 } from "./__support__/device-fixture";
+import { contractRevokeOutcome, type RevokeBodyView, type RevokeOutcome } from "./__support__/impact-outcome";
 
 const impactPath = (deviceId: string): string => `/api/v1/devices/${deviceId}/impact`;
 const revokePath = (deviceId: string): string => `/api/v1/devices/${deviceId}/revoke`;
@@ -98,29 +99,11 @@ async function preview(session: string, deviceId: string, action: string, reason
 
 const post = (deviceId: string, session: string, body: object): request.Test => h.post(revokePath(deviceId), session, body);
 
-/** The contract's verdict → revoke outcome table, for a body with `note` / `ack`. */
-function expectedRevoke(p: Preview, body: { reason?: string; note?: string; acknowledgeCustodyException?: boolean }): [number, string] {
-  switch (p.verdict) {
-    case "allowed":
-      return [200, "revoked"];
-    case "no_change":
-      return [200, "already_revoked"];
-    case "forbidden_recovery":
-      return [403, "recovery_revoke_forbidden"];
-    case "blocked":
-      return [409, String(p.blockCode)];
-    default: {
-      const requires = p["requires"] as string[];
-      if (requires.includes("note") && body.note === undefined) return [422, "recovery_note_required"];
-      if (requires.includes("acknowledge_custody_exception") && body.acknowledgeCustodyException !== true) {
-        return [422, "custody_exception_not_acknowledged"];
-      }
-      return [200, "revoked"];
-    }
-  }
-}
+/** The contract's outcome for `p` (the shared verdict → revoke outcome table). */
+const expectedRevoke = (p: Preview, body: RevokeBodyView): RevokeOutcome =>
+  contractRevokeOutcome({ verdict: p.verdict, blockCode: p.blockCode, requires: p["requires"] as string[] }, body);
 
-function outcomeOf(res: request.Response): [number, string] {
+function outcomeOf(res: request.Response): RevokeOutcome {
   const body = res.body as { outcome?: string; error?: { code?: string } };
   return [res.status, res.status === 200 ? String(body.outcome) : String(body.error?.code)];
 }
@@ -305,6 +288,37 @@ describe("consoleGetDeviceImpact — scope and validation", () => {
 // ===========================================================================
 // 3. Parity with the revoke
 // ===========================================================================
+
+interface RefusalCase {
+  readonly deviceId: string;
+  readonly session: string;
+  readonly body: { readonly reason: string } & RevokeBodyView;
+}
+
+/** The bodies tried for a reason: a recovery revoke missing each requirement, else the reason alone. */
+const refusalBodies = (reason: string): RefusalCase["body"][] =>
+  reason === "hardware_failure"
+    ? [{ reason }, { reason, note: NOTE }, { reason, acknowledgeCustodyException: true }]
+    : [{ reason, ...(reason === "other" ? { note: "x" } : {}) }];
+
+/** Every refusing reason × role × body on a legacy-shift and a cash-up-shift device: none revokes. */
+const REFUSAL_CASES: readonly RefusalCase[] = [R_BLOCK, R_REC_ADMIN].flatMap((deviceId) =>
+  [...NON_SECURITY, "hardware_failure"].flatMap((reason) =>
+    [SES_OWNER_ALL, SES_ADMIN_SPEC, SES_MANAGER].flatMap((session) =>
+      refusalBodies(reason).map((body) => ({ deviceId, session, body })),
+    ),
+  ),
+);
+
+/** Preview, then revoke: the outcome is the preview's, and a 409 carries the same preview. */
+async function expectRevokeAsPreviewed({ deviceId, session, body }: RefusalCase): Promise<void> {
+  const p = await preview(session, deviceId, "revoke", body.reason);
+  const res = await post(deviceId, session, body);
+  expect([deviceId, session, body, outcomeOf(res)]).toEqual([deviceId, session, body, expectedRevoke(p, body)]);
+  if (res.status !== 409) return;
+  h.conforms("DeviceImpactConflict", res.body);
+  expect(stateOf((res.body as { error: { details: Record<string, unknown> } }).error.details)).toEqual(stateOf(p));
+}
 describe("preview / revoke parity", () => {
   it("previews never write: no revoke, no cascade, no cash fact", async () => {
     if (skip()) return;
@@ -319,27 +333,7 @@ describe("preview / revoke parity", () => {
 
   it("every refusing reason × role revokes as its preview says, and the 409 carries that preview", async () => {
     if (skip()) return;
-    const bodies = (reason: string): object[] =>
-      reason === "hardware_failure"
-        ? [{ reason }, { reason, note: NOTE }, { reason, acknowledgeCustodyException: true }]
-        : [{ reason, ...(reason === "other" ? { note: "x" } : {}) }];
-    const sessions = [SES_OWNER_ALL, SES_ADMIN_SPEC, SES_MANAGER];
-    for (const deviceId of [R_BLOCK, R_REC_ADMIN]) {
-      for (const reason of [...NON_SECURITY, "hardware_failure"]) {
-        for (const session of sessions) {
-          for (const body of bodies(reason)) {
-            const p = await preview(session, deviceId, "revoke", reason);
-            const res = await post(deviceId, session, body);
-            expect([deviceId, reason, session, body, outcomeOf(res)]).toEqual([deviceId, reason, session, body, expectedRevoke(p, body)]);
-            if (res.status === 409) {
-              const details = (res.body as { error: { details: Record<string, unknown> } }).error.details;
-              h.conforms("DeviceImpactConflict", res.body);
-              expect(stateOf(details)).toEqual(stateOf(p));
-            }
-          }
-        }
-      }
-    }
+    for (const refusal of REFUSAL_CASES) await expectRevokeAsPreviewed(refusal);
     const untouched = await h.env().admin.query(`SELECT revoked_at FROM devices WHERE id = ANY($1::uuid[])`, [[R_BLOCK, R_REC_ADMIN]]);
     expect(untouched.rows.map((row) => row.revoked_at)).toEqual([null, null]);
   });

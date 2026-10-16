@@ -16,6 +16,7 @@ import {
   type LifecycleEvaluation,
 } from "../../src/devices/device-lifecycle.evaluator";
 import { decideRevoke, REVOKE_REASONS, type RevokeDecision, type RevokeReason } from "../../src/devices/devices.projections";
+import { contractRevokeOutcome, type RevokeOutcome } from "./__support__/impact-outcome";
 
 const SHIFT = "0190f5a2-3b4c-7d8e-9f01-000000000004";
 const SECURITY: readonly RevokeReason[] = ["lost", "stolen", "suspected_compromise"];
@@ -126,26 +127,15 @@ describe("revokeReasonOf", () => {
 // 2. Parity: the revoke decides what the preview says
 // ===========================================================================
 
-/** The contract's verdict → `consoleRevokeDevice` outcome table, written independently of the code. */
-function contractOutcome(evaluation: LifecycleEvaluation, state: DeviceLifecycleState, note: string | undefined, ack: boolean | undefined): RevokeDecision {
-  switch (evaluation.verdict) {
-    case "no_change":
-      return { kind: "already_revoked" };
-    case "allowed":
-      return { kind: "revoke", custodyExceptionShiftId: null };
-    case "forbidden_recovery":
-      return { kind: "refuse", status: 403, code: "recovery_revoke_forbidden" };
-    case "blocked":
-      return { kind: "refuse", status: 409, code: evaluation.blockCode as "unresolved_cash_session" };
-    case "allowed_with_custody_exception":
-      if (evaluation.requires.includes("note") && note === undefined) {
-        return { kind: "refuse", status: 422, code: "recovery_note_required" };
-      }
-      if (evaluation.requires.includes("acknowledge_custody_exception") && ack !== true) {
-        return { kind: "refuse", status: 422, code: "custody_exception_not_acknowledged" };
-      }
-      return { kind: "revoke", custodyExceptionShiftId: state.openShiftId };
-  }
+/** A revoke decision as the contract's outcome (status + outcome / code). */
+function outcomeOfDecision(decision: RevokeDecision): RevokeOutcome {
+  if (decision.kind === "refuse") return [decision.status, decision.code];
+  return [200, decision.kind === "revoke" ? "revoked" : "already_revoked"];
+}
+
+/** The custody exception a revoke makes: the open shift, exactly when the verdict says so. */
+function expectedException(evaluation: LifecycleEvaluation, state: DeviceLifecycleState): string | null {
+  return evaluation.verdict === "allowed_with_custody_exception" ? state.openShiftId : null;
 }
 
 describe("preview / revoke parity", () => {
@@ -170,7 +160,11 @@ describe("preview / revoke parity", () => {
         note,
         acknowledgeCustodyException: ack,
       });
-      return JSON.stringify(decision) !== JSON.stringify(contractOutcome(revokeVerdict(reason, state, role), state, note, ack));
+      const evaluation = revokeVerdict(reason, state, role);
+      const outcome = JSON.stringify(outcomeOfDecision(decision));
+      const expected = contractRevokeOutcome(evaluation, { note, acknowledgeCustodyException: ack });
+      const wrongException = decision.kind === "revoke" && decision.custodyExceptionShiftId !== expectedException(evaluation, state);
+      return outcome !== JSON.stringify(expected) || wrongException;
     });
     expect(mismatches).toEqual([]);
     expect(cases.length).toBe(REVOKE_REASONS.length * 4 * ROLES.length * 2 * 3);
