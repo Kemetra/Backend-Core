@@ -160,7 +160,7 @@ describe("pos-sales/sale-history.yaml — loadability and document conventions",
     const info = doc.info?.description ?? "";
     expect(info).toContain("[GATED] approval Jira RT-537 comment 12057");
     expect(info).toContain("OD-534-1..8");
-    expect(info).toContain("Contract only");
+    expect(info).toContain("Implemented: the runtime is RT-539");
   });
 
   it("states that a list covers only what the server has received (never the complete store)", () => {
@@ -221,11 +221,11 @@ describe("pos-sales/sale-history.yaml — operations", () => {
     }
   });
 
-  it("marks every operation contract-only until the RT-539 runtime ships", () => {
+  it("carries no contract-only marker now that the RT-539 runtime ships (RT-542 lift)", () => {
     for (const { id } of OPERATIONS) {
       const operation = op(id) as OperationObject & { "x-runtime-status"?: string; "x-runtime-note"?: string };
-      expect(operation["x-runtime-status"]).toBe("contract-only");
-      expect(operation["x-runtime-note"]).toContain("RT-539");
+      expect(operation["x-runtime-status"]).toBeUndefined();
+      expect(operation["x-runtime-note"]).toBeUndefined();
     }
   });
 

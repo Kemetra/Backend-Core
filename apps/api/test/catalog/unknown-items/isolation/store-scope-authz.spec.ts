@@ -82,12 +82,24 @@ const SES_MGR_XY = "0a000000-0000-7000-8000-0000013104a3";
 const SES_OWNER_ALL = "0a000000-0000-7000-8000-0000013104a4";
 const SES_MGR_X_ACTIVE_X = "0a000000-0000-7000-8000-0000013104a5";
 
+// RT-566: tenant-wide (`all`) tenant_admin and store_staff members. store_staff
+// has tenant-wide STORE access, so only the role gate can refuse it on the reads.
+const ROLE_TENANT_ADMIN = "0a000000-0000-7000-8000-0000013101a3";
+const ROLE_STORE_STAFF = "0a000000-0000-7000-8000-0000013101a4";
+const USER_ADMIN_ALL = "0a000000-0000-7000-8000-0000013102a5";
+const USER_STAFF_ALL = "0a000000-0000-7000-8000-0000013102a6";
+const SES_ADMIN_ALL = "0a000000-0000-7000-8000-0000013104a6";
+const SES_STAFF_ALL = "0a000000-0000-7000-8000-0000013104a7";
+const ITEM_MISSING = "0a000000-0000-7000-8000-0000013105ff";
+
 const SESSION_USER: Readonly<Record<string, string>> = {
   [SES_MGR_X]: USER_MGR_X,
   [SES_OWNER_X]: USER_OWNER_X,
   [SES_MGR_XY]: USER_MGR_XY,
   [SES_OWNER_ALL]: USER_OWNER_ALL,
   [SES_MGR_X_ACTIVE_X]: USER_MGR_X,
+  [SES_ADMIN_ALL]: USER_ADMIN_ALL,
+  [SES_STAFF_ALL]: USER_STAFF_ALL,
 };
 
 // Unknown items. Each mutation test owns its own row so ordering is irrelevant.
@@ -166,7 +178,29 @@ class HeaderSessionAuthGuard implements CanActivate {
 async function seed(admin: Pool): Promise<void> {
   await seedCatalogIsolationFixture({ admin });
   await seedMembers(admin);
+  await seedReadRoleMembers(admin);
   await seedItems(admin);
+}
+
+/** RT-566: tenant-wide tenant_admin + store_staff members, each with a session. */
+async function seedReadRoleMembers(admin: Pool): Promise<void> {
+  const members = [
+    { role: "tenant_admin", roleId: ROLE_TENANT_ADMIN, user: USER_ADMIN_ALL, ses: SES_ADMIN_ALL, mem: "0a000000-0000-7000-8000-0000013103a5" },
+    { role: "store_staff", roleId: ROLE_STORE_STAFF, user: USER_STAFF_ALL, ses: SES_STAFF_ALL, mem: "0a000000-0000-7000-8000-0000013103a6" },
+  ];
+  for (const m of members) {
+    await admin.query(`INSERT INTO users (id, email) VALUES ($1, $2)`, [m.user, `rt566-${m.role}@example.test`]);
+    await admin.query(`INSERT INTO roles (id, tenant_id, code, name) VALUES ($1, $2, $3, $3)`, [m.roleId, TENANT_A, m.role]);
+    await admin.query(
+      `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES ($1, $2, $3, $4, 'all')`,
+      [m.mem, TENANT_A, m.user, m.roleId],
+    );
+    await admin.query(
+      `INSERT INTO sessions (id, user_id, active_tenant_id, active_store_id, absolute_expires_at, credential_hash)
+       VALUES ($1, $2, $3, NULL, now() + interval '1 hour', decode(md5(random()::text), 'hex'))`,
+      [m.ses, m.user, TENANT_A],
+    );
+  }
 }
 
 /** Store Z, users, roles, memberships, store grants and sessions. */
@@ -460,6 +494,37 @@ describe("RT-131 — inspect is evaluated against the item's store", () => {
     if (skip()) return;
     await as(SES_OWNER_ALL).get(`${UI}/${ITEM.readZ}`).expect(200);
     await as(SES_OWNER_ALL).get(`${UI}/${ITEM.readB}`).expect(404);
+  });
+});
+
+// RT-566: the reads are role-gated like dismiss — store_staff is refused with
+// 403 even though its membership is tenant-wide, so only the role can refuse it.
+describe("RT-566 — list and inspect are role-gated", () => {
+  it.each([
+    ["owner", SES_OWNER_ALL],
+    ["tenant_admin", SES_ADMIN_ALL],
+  ])("%s (tenant-wide) → 200 on list and inspect", async (_role, ses) => {
+    if (skip()) return;
+    const res = await as(ses).get(`${UI}?status=pending&limit=200`).expect(200);
+    expect(listedIds(res.body)).toContain(ITEM.readX);
+    await as(ses).get(`${UI}/${ITEM.readX}`).expect(200);
+  });
+
+  it("store_staff (tenant-wide) → 403 forbidden on list, inspect, and a non-existent id", async () => {
+    if (skip()) return;
+    const list = await as(SES_STAFF_ALL).get(`${UI}?status=pending&limit=200`).expect(403);
+    expect(errorCode(list.body)).toBe("forbidden");
+    expect(list.body).not.toHaveProperty("items");
+    const inspect = await as(SES_STAFF_ALL).get(`${UI}/${ITEM.readX}`).expect(403);
+    expect(errorCode(inspect.body)).toBe("forbidden");
+    // The role refusal precedes the id lookup, so it is no existence oracle.
+    await as(SES_STAFF_ALL).get(`${UI}/${ITEM_MISSING}`).expect(403);
+  });
+
+  it("a permitted role still gets the non-disclosing 404 on a non-existent id", async () => {
+    if (skip()) return;
+    const res = await as(SES_OWNER_ALL).get(`${UI}/${ITEM_MISSING}`).expect(404);
+    expect(errorCode(res.body)).toBe("not_found");
   });
 });
 
