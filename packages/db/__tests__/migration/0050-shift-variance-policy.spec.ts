@@ -628,8 +628,8 @@ describe("0050 — the close tri-states", () => {
     ["limit 10", limit("10"), {}, { required: "no", missing: "no" }],
     ["|variance| == limit (5)", limit("5"), {}, { required: "no", missing: "no" }],
     ["|variance| just above limit (4.99)", limit("4.99"), {}, { required: "yes", missing: "yes" }],
-    ["a limit in another currency fails safe, no approver", limit("10", "USD"), {}, { required: "yes", missing: "yes" }],
-    ["a limit in another currency fails safe, an approver", limit("10", "USD"), { approver: OWNER_A }, { required: "yes", missing: "no" }],
+    ["a limit in another currency, within it (compared as frozen)", limit("10", "USD"), {}, { required: "no", missing: "no" }],
+    ["a limit in another currency, exceeded", limit("1", "USD"), { approver: OWNER_A }, { required: "yes", missing: "no" }],
   ])(
     "derives the values a pre-RT-387 close leaves at the default (rollback-safe): %s",
     async (_label, frozen, input, expected) => {
@@ -668,12 +668,18 @@ describe("0050 — the close tri-states", () => {
     await closeShift(await openShift({ frozen: limit("0") }), { required: "no", missing: "no", variance: "0.00" });
   });
 
-  it("fails a frozen limit in another currency safe to `yes` (never compared, never refused)", async () => {
+  it("compares a frozen limit in another currency as frozen (the contract, not a fail-safe)", async () => {
     if (skip()) return;
-    // |−5| is below 10, but a USD limit cannot clear an EGP variance.
-    await closeShift(await openShift({ frozen: limit("10", "USD") }), { required: "yes", missing: "yes" });
-    await closeShift(await openShift({ frozen: limit("10", "USD") }), { required: "yes", missing: "no", approver: OWNER_A });
-    await expectCode(closeShift(await openShift({ frozen: limit("10", "USD") }), { required: "no", missing: "no" }), "23514");
+    // pos-shifts CashVariancePolicyValue: "`limit`: approval is required exactly
+    // when `|variance| > limitAmount`. On an open it is the frozen value; its
+    // currency is not checked here (a `limit` currency other than the shift's is
+    // accepted and flagged `policy_value_mismatch`)." So a frozen 10 USD limit
+    // with a -5 EGP variance is approvalRequiredByPolicy = no.
+    const s = await openShift({ frozen: limit("10", "USD") });
+    await closeShift(s);
+    expect(await closeValues(s)).toEqual({ required: "no", missing: "no" });
+    await expectCode(closeShift(await openShift({ frozen: limit("10", "USD") }), { required: "yes", missing: "yes" }), "23514");
+    await closeShift(await openShift({ frozen: limit("1", "USD") }), { required: "yes", missing: "yes" });
   });
 
   it("keeps `unknown` on a close whose shift froze no policy (old and new writers)", async () => {

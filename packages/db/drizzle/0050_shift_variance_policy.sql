@@ -42,10 +42,9 @@
 --      - shift_closes_require_open_shift (replaced) also checks the close
 --        against the shift's frozen policy: 'unknown' exactly when none was
 --        frozen; 'no' under a frozen 'none'; under a frozen 'limit', 'yes'
---        exactly when |variance| > limit (D-1). A frozen limit in a currency
---        other than the shift's cannot be compared, and FAILS SAFE to 'yes'
---        (coordinator decision, owner to ratify; a flag, never a refusal).
---        A close left at the 'unknown' default on a shift that froze a policy
+--        exactly when |variance| > limit (D-1, as the contract states it:
+--        the frozen limit's currency is not checked; a mismatch is flagged
+--        policy_value_mismatch at open). A close left at the 'unknown' default on a shift that froze a policy
 --        (the pre-RT-387 writer after an RT-387 rollback, or a mixed-version
 --        deploy) gets the two values DERIVED there instead of being refused,
 --        so no POS close is ever stuck and 'unknown' never survives on a
@@ -459,15 +458,12 @@ CREATE OR REPLACE FUNCTION shift_closes_require_open_shift() RETURNS trigger
 AS $$
 DECLARE
   v_state    text;
-  v_currency text;
   v_mode     text;
   v_limit    numeric;
-  v_policy_currency text;
   v_required text;
 BEGIN
-  SELECT s.lifecycle_state, s.currency_code, s.frozen_policy_mode,
-         s.frozen_policy_limit_amount, s.frozen_policy_currency_code
-    INTO v_state, v_currency, v_mode, v_limit, v_policy_currency
+  SELECT s.lifecycle_state, s.frozen_policy_mode, s.frozen_policy_limit_amount
+    INTO v_state, v_mode, v_limit
     FROM public.shifts s
    WHERE s.shift_id = NEW.shift_id
      AND s.tenant_id = NEW.tenant_id
@@ -488,21 +484,18 @@ BEGIN
     RETURN NEW;
   END IF;
   -- The frozen value decides the close (D-1): approval is required exactly
-  -- under a 'limit' with |variance| > limitAmount, never under 'none'. A
-  -- frozen limit in a currency other than the shift's (flagged
-  -- policy_value_mismatch at open) cannot be compared with the variance: it
-  -- FAILS SAFE to 'yes' (coordinator decision, owner to ratify), never a
-  -- refusal. With a frozen policy the value is never 'unknown'
+  -- under a 'limit' with |variance| > limitAmount, never under 'none'. As
+  -- the contract states (pos-shifts CashVariancePolicyValue, shift-closes
+  -- D-1), the frozen limit's currency is not checked here: a limit in a
+  -- currency other than the shift's is compared as frozen and was flagged
+  -- policy_value_mismatch at open. With a frozen policy the value is never 'unknown'
   -- (ShiftPolicyMatchesClose): a writer that leaves BOTH values at the
   -- 'unknown' default (the pre-RT-387 writer after an RT-387 rollback, or
   -- during a mixed-version deploy) gets them derived here instead of a
   -- refused close; any other value must match (a half-'unknown' pair is
   -- refused). BEFORE INSERT only: shift_closes has no UPDATE path.
-  v_required := CASE
-                  WHEN v_mode = 'none' THEN 'no'
-                  WHEN v_policy_currency IS DISTINCT FROM v_currency THEN 'yes'
-                  WHEN abs(NEW.variance) > v_limit THEN 'yes'
-                  ELSE 'no' END;
+  v_required := CASE WHEN v_mode = 'limit' AND abs(NEW.variance) > v_limit
+                     THEN 'yes' ELSE 'no' END;
   IF NEW.approval_required_by_policy = 'unknown' AND NEW.approval_missing = 'unknown' THEN
     NEW.approval_required_by_policy := v_required;
     NEW.approval_missing := CASE WHEN v_required = 'yes'
