@@ -286,6 +286,22 @@ describe("console-sales — auth and read scope", () => {
     expect(doc.info?.description).toMatch(/guards run before request validation/i);
   });
 
+  it("states how a platform-admin session is handled (the RolesGuard bypass)", () => {
+    expect(doc.info?.description).toMatch(/platform admin/i);
+    expect(doc.info?.description).toContain("RT-132 D6");
+  });
+
+  it("records the audit ids in the event metadata, never as the interceptor's target", () => {
+    const description = doc.info?.description ?? "";
+    expect(description).toContain("annotateAudit");
+    expect(description).toContain("`sale_ref`");
+    expect(description).not.toMatch(/as its target/);
+  });
+
+  it("guarantees every non-null cursor moves the walk forward", () => {
+    expect(api.get(LIST_PATH).description).toMatch(/every non-null cursor moves the position forward/);
+  });
+
   it("resolves the detail in one scoped query, never fetch-then-check", () => {
     expect(api.get(DETAIL_PATH).description).toMatch(/never fetched first and checked after/);
   });
@@ -418,6 +434,18 @@ describe("console-sales — shared vocabulary with the POS sale history", () => 
     const history = pos.schema("SaleHistoryPage");
     const kept = Object.keys(history.properties ?? {}).filter((k) => !POS_ONLY_FIELDS.includes(k as never));
     expect(Object.keys(page.properties ?? {}).sort()).toEqual([...kept, "storeRef"].sort());
+    for (const key of kept.filter((k) => k !== "items")) {
+      expect({ key, shape: api.shape(page.properties![key]) }).toEqual({
+        key,
+        shape: pos.shape(history.properties![key]),
+      });
+    }
+    expect(page.properties!["items"]).toMatchObject({
+      type: "array",
+      maxItems: history.properties!["items"]!["maxItems"],
+      items: { $ref: "#/components/schemas/ConsoleSaleItem" },
+    });
+    expect(page.properties!["storeRef"]).toMatchObject({ type: "string", format: "uuid" });
   });
 
   it("carries no POS-only field or schema anywhere", () => {

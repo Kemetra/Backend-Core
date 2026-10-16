@@ -54,7 +54,12 @@ info:
     `denyAs: 404`, FR-ISO-4). There is no 403 on this surface. The guards
     run before request validation: an unauthenticated request is 401 and a
     role outside the list is 404 for any input, a malformed one included, so
-    validation never tells a refused role anything.
+    validation never tells a refused role anything. A platform admin's human
+    session passes `RolesGuard` (the platform-admin bypass, RT-132 D6 /
+    RT-149), as on `shift-closes`. This contract neither widens nor narrows
+    that platform rule. Cross-tenant platform reads are out of scope (spec
+    012), and how a platform admin's store scope resolves on these reads is
+    RT-562's to implement and test, following the `shift-closes` runtime.
 
 
     **One store per list (OD-556-2).** `store_id` is REQUIRED on the list in
@@ -132,9 +137,13 @@ info:
     **Audit (OD-534-7 applied to the console).** One `console_sales.listed`
     event per list request with the filters and the item count, and no row
     ids; the sale-number filter is recorded only as a flag. One
-    `console_sales.detail_read` event per authorized open, with the
-    `saleRef` as its target. Both name the session user and the store. No
-    receipt content, no names, no secrets. Rows are never audited
+    `console_sales.detail_read` event per authorized open. The actor is the
+    session user. The ids are recorded in the event METADATA through
+    `annotateAudit`, as `sale-history` does: `store_id` (the listed store, or
+    the sale's store) on both events, and `sale_ref` on the detail event. The
+    interceptor's `target_type` / `target_id` columns stay null, and its
+    `store_id` column is the session's active store, which can differ from
+    the store read. No receipt content, no names, no secrets. Rows are never audited
     individually. Events are emitted by the request audit interceptor after a
     200 only, as for `sale_history.*` and `shift_closes.*`: refusals (400 /
     401 / 404) are not audited, and the HTTP outcome never depends on the
@@ -179,11 +188,14 @@ paths:
         truncated, and any stored period stays reachable through another
         range. Every other filter is optional and they combine with AND. A
         `store_id` outside the caller's scope is the non-disclosing 404. An
-        empty page (`items: []`, `nextCursor: null`) is a 200.
+        empty page (`items: []`, `nextCursor: null`) is a 200. A page may be
+        short or empty with a non-null `nextCursor`; only `null` ends the
+        walk, and every non-null cursor moves the position forward, so a walk
+        always ends.
 
-        Audit: one `console_sales.listed` event per request, with the store,
-        the filters (the sale number only as a flag) and the item count, and
-        no row ids.
+        Audit: one `console_sales.listed` event per request, with `store_id`,
+        the filters (the sale number only as a flag) and the item count in
+        its metadata, and no row ids.
       parameters:
         - $ref: "#/components/parameters/StoreIdQuery"
         - $ref: "#/components/parameters/BusinessDateFrom"
@@ -237,7 +249,7 @@ paths:
         takes no query parameter; any query key is 400 `validation_error`.
 
         Audit: one `console_sales.detail_read` event per authorized open, with
-        the `saleRef` and the sale's store.
+        `sale_ref` and the sale's `store_id` in its metadata.
       parameters:
         - $ref: "#/components/parameters/SaleRef"
       responses:
