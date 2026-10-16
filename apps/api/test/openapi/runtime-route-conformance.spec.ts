@@ -131,9 +131,12 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       // RT-365 implementation PR.
       "consoleDeleteTenantLogo",
       "consoleGetDevice",
+      // RT-561 (RT-556 F1): console sales read contract; the runtime ships in RT-562.
+      "consoleGetSale",
       "consoleGetTenantLogo",
       "consoleListDevices",
       "consoleListPayerAccounts",
+      "consoleListSales",
       "consolePreviewTenantLogo",
       "consolePutTenantLogo",
       "consoleRevokeDevice",

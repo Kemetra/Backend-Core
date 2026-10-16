@@ -21,7 +21,7 @@
  *   5. The revoke body: D-Q3 reasons, `other` needs a note, the 0040 note shape.
  *   6. No POS path; the POS pairing contract keeps its operations.
  */
-import { readContract, type ContractReader, type HttpMethod, type JsonObject } from "../_helpers/openapi-contract";
+import { readContract, type ContractReader, type HttpMethod, type JsonObject } from "../_helpers/openapi-contract-reader";
 
 const LIST_PATH = "/api/v1/devices";
 const DETAIL_PATH = "/api/v1/devices/{deviceId}";

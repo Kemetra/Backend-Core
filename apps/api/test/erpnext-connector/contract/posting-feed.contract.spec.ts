@@ -791,8 +791,7 @@ describe("erpnext-connector/posting-feed.yaml — RT-359 tender-line identity (1
     return (tender()?.properties ?? {})[name] as FieldNode | undefined;
   }
 
-  it("is 1.7.0-draft and its note records RT-359", () => {
-    expect(feedDoc.info?.version).toBe("1.7.0-draft");
+  it("its note records RT-359 at 1.7.0-draft (version moved on in RT-417)", () => {
     expect(feedDoc.info?.description ?? "").toContain("RT-359 (1.7.0-draft");
   });
 
@@ -814,5 +813,115 @@ describe("erpnext-connector/posting-feed.yaml — RT-359 tender-line identity (1
       "MUST NOT offer a work item whose `sale.tenders` has more than one entry with the same `method`",
     );
     expect(description).toContain("RT-361");
+  });
+});
+
+// ===========================================================================
+// RT-417 — payer responsibility lines on the feed (1.8.0-draft; [GATED]
+// approval Jira RT-417 comment 11671; owner decision R-1)
+// ===========================================================================
+describe("erpnext-connector/posting-feed.yaml — RT-417 responsibility lines (1.8.0-draft)", () => {
+  type FieldNode = {
+    type?: string | string[];
+    minimum?: number;
+    minItems?: number;
+    $ref?: string;
+    items?: { $ref?: string };
+    description?: string;
+  };
+  const schema = (name: string): SchemaObject | undefined => feedDoc.components?.schemas?.[name];
+  const field = (schemaName: string, name: string): FieldNode | undefined =>
+    (schema(schemaName)?.properties ?? {})[name] as FieldNode | undefined;
+  const flat = (text: string | undefined): string => (text ?? "").replace(/\s+/g, " ");
+  const info = (): string => flat(feedDoc.info?.description);
+  const listText = (): string => flat(field("Sale", "responsibilities")?.description);
+
+  it("is 1.8.0-draft and its note records RT-417 with the [GATED] approval", () => {
+    expect(feedDoc.info?.version).toBe("1.8.0-draft");
+    expect(info()).toContain("RT-417 (1.8.0-draft; [GATED] approval Jira RT-417 comment 11671");
+  });
+
+  it("the feed sale carries an OPTIONAL responsibilities list of strict lines", () => {
+    expect(schema("Sale")?.required).not.toContain("responsibilities");
+    const list = field("Sale", "responsibilities");
+    expect(list?.type).toBe("array");
+    expect(list?.minItems).toBe(1);
+    expect((list as { maxItems?: number } | undefined)?.maxItems).toBe(1);
+    expect(info()).toContain("one Sales Invoice per work item, so one payer per sale in this version");
+    expect(list?.items?.$ref).toBe("#/components/schemas/SaleResponsibility");
+  });
+
+  it("a line is {payerExternalRef (nullable), amount > 0, sequence >= 1}, with no tenant_id or credential", () => {
+    const line = schema("SaleResponsibility");
+    expect(line?.additionalProperties).toBe(false);
+    expect(Object.keys(line?.properties ?? {}).sort()).toEqual(["amount", "payerExternalRef", "sequence"]);
+    expect(line?.required?.slice().sort()).toEqual(["amount", "payerExternalRef", "sequence"]);
+    expect(field("SaleResponsibility", "payerExternalRef")?.type).toEqual(["string", "null"]);
+    expect(field("SaleResponsibility", "amount")?.$ref).toBe("#/components/schemas/PositiveDecimalAmount");
+    expect(field("SaleResponsibility", "sequence")).toMatchObject({ type: "integer", minimum: 1 });
+  });
+
+  it("the Connector posts the payer's share against the payer's Customer and fails closed when unmapped", () => {
+    const text = flat(field("SaleResponsibility", "payerExternalRef")?.description);
+    expect(text).toContain("`permanently_rejected` / `validation`");
+    expect(text).toContain("never falls back to the store's Customer");
+    expect(text).toContain("Null, blank, or a link that resolves to no Customer");
+    expect(info()).toContain("one SI per payer or a split is decided in RT-419");
+  });
+
+  it("Backend-Core guarantees the combined coverage; the Connector still checks the document total", () => {
+    expect(info()).toContain("sum(tenders) + sum(responsibilities) = posTotal");
+    expect(info()).toContain("acks `permanently_rejected` / `validation`");
+  });
+
+  it("qualifies the RT-76 tender-total check to work items without responsibilities (Codex #779 P1)", () => {
+    expect(info()).toContain("For a work item WITHOUT `sale.responsibilities`, Backend-Core guarantees the tender amounts sum to `posTotal` exactly");
+    expect(info()).toContain("With `sale.responsibilities`, the RT-417 coverage check below replaces this tender-total check");
+  });
+
+  it("payerExternalRef is frozen with the RT-332 resolution and stays out of payloadHash", () => {
+    expect(listText()).toContain("frozen with the work item's resolution (RT-332)");
+    expect(listText()).toContain("not part of `payloadHash`");
+  });
+
+  it("the curated-subset note names the payerRef → payerExternalRef substitution as deliberate", () => {
+    expect(info()).toContain("carries `payerExternalRef` in place of 008's `payerRef`");
+  });
+
+  it("holds responsibility-bearing sales, and every reversal of one, until the Connector supports them (RT-419)", () => {
+    expect(info()).toContain("MUST NOT offer a `sale_post` work item for a sale with `responsibilities`");
+    expect(info()).toContain("MUST NOT offer any `reversal` work item of such a sale");
+    expect(info()).toContain("RT-419");
+  });
+
+  it("leaves the ERPNext document shape to RT-419 (review #779)", () => {
+    expect(info()).toContain(
+      "posted against the payer's ERPNext Customer; the document shape (including how till tenders are recorded) is decided in RT-419",
+    );
+    expect(info()).not.toContain("settles the tenders as payments");
+  });
+
+  it("holds a sale_post while a reversal of the sale exists (review #779)", () => {
+    expect(info()).toContain(
+      "a `sale_post` of a responsibility-bearing sale is also held while a reversal of that sale exists",
+    );
+  });
+
+  it("a feed line is a gross share; tax is not split per payer (035 OQ-2)", () => {
+    expect(flat((schema("SaleResponsibility") as { description?: string } | undefined)?.description)).toContain("a gross share of `posTotal`; tax is not split per payer (035 OQ-2");
+  });
+
+  it("the feed PositiveDecimalAmount is verbatim the sales.yaml pattern", () => {
+    const sales = loadOpenApiContracts({ dir: openapiSubDir("pos-sales") }).find((c) => c.id === "sales");
+    const salesPattern = (sales?.document as OpenApiDocument | undefined)?.components?.schemas?.["PositiveDecimalAmount"] as
+      | { pattern?: string }
+      | undefined;
+    const feedPattern = schema("PositiveDecimalAmount") as { pattern?: string } | undefined;
+    expect(feedPattern?.pattern).toBeDefined();
+    expect(feedPattern?.pattern).toBe(salesPattern?.pattern);
+  });
+
+  it("tells strict feed validators to re-pin first", () => {
+    expect(info()).toContain("`Sale` is `additionalProperties: false`, so a Connector that validates the feed strictly must re-pin first; RT-417");
   });
 });
