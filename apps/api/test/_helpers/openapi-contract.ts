@@ -17,85 +17,96 @@ export type HttpMethod = "get" | "post" | "put" | "patch" | "delete";
 
 const PARAMETER_REF = "#/components/parameters/";
 
-export interface ContractReader {
-  readonly document: JsonObject;
-  /** The operation object at `method path`; throws when absent. */
-  operation(method: HttpMethod, path: string): JsonObject;
-  /** The operation's parameters, with `$ref`s resolved. */
-  parameters(method: HttpMethod, path: string): JsonObject[];
-  /** `components.schemas[name]`; throws when absent. */
-  schema(name: string): JsonObject;
-  /** AJV verdict of `value` against `components.schemas[name]`. */
-  accepts(name: string, value: unknown): boolean;
-  /** operationIds declared by every other contract. */
-  readonly foreignOperationIds: ReadonlySet<string>;
-  /** Another contract's document, by loader id. */
-  sibling(id: string): JsonObject;
-}
+/** A contract's loader id, e.g. `devices.openapi`. */
+export type ContractId = string;
+/** An OpenAPI path template, e.g. `/api/v1/devices/{deviceId}`. */
+export type ApiPath = string;
+/** A `components.schemas` key. */
+export type SchemaName = string;
 
 interface LoadedContract {
   readonly id: string;
   readonly document: unknown;
 }
 
-/** `value[k1][k2]…`, or undefined as soon as a step is not an object. */
-function dig(value: unknown, ...keys: string[]): unknown {
+/** `value` followed along `keys`, or undefined as soon as a step is not an object. */
+function dig(value: unknown, keys: readonly string[]): unknown {
   return keys.reduce<unknown>(
     (current, key) => (current !== null && typeof current === "object" ? (current as JsonObject)[key] : undefined),
     value,
   );
 }
 
-function required<T>(value: T | undefined, what: string): T {
-  if (value === undefined) throw new Error(`${what} not declared`);
-  return value;
+function operationIdsOf(contract: LoadedContract): unknown[] {
+  const paths = Object.values((dig(contract.document, ["paths"]) ?? {}) as Record<string, JsonObject>);
+  return paths.flatMap((item) => Object.values(item).map((o) => dig(o, ["operationId"])));
 }
 
-function documentOf(all: readonly LoadedContract[], id: string): JsonObject {
-  const found = all.find((c) => c.id === id);
-  if (!found) throw new Error(`${id} not found in packages/contracts/openapi/`);
-  return found.document as JsonObject;
-}
+export class ContractReader {
+  readonly document: JsonObject;
+  /** operationIds declared by every other contract. */
+  readonly foreignOperationIds: ReadonlySet<string>;
+  private readonly ajv = new Ajv({ strict: false, allErrors: true });
 
-function operationIdsOf(document: unknown): unknown[] {
-  const paths = Object.values((dig(document, "paths") ?? {}) as Record<string, JsonObject>);
-  return paths.flatMap((item) => Object.values(item).map((o) => dig(o, "operationId")));
-}
+  private constructor(
+    private readonly id: ContractId,
+    private readonly all: readonly LoadedContract[],
+  ) {
+    this.document = this.documentOf(id);
+    const foreign = all.filter((c) => c.id !== id).flatMap(operationIdsOf);
+    this.foreignOperationIds = new Set(foreign.filter((v): v is string => typeof v === "string"));
+    addFormats(this.ajv);
+    this.ajv.addSchema(this.document, id);
+  }
 
-function foreignIds(all: readonly LoadedContract[], id: string): ReadonlySet<string> {
-  const ids = all.filter((c) => c.id !== id).flatMap((c) => operationIdsOf(c.document));
-  return new Set(ids.filter((v): v is string => typeof v === "string"));
-}
+  static read(id: ContractId): ContractReader {
+    return new ContractReader(id, loadOpenApiContracts() as readonly LoadedContract[]);
+  }
 
-function compile(document: JsonObject, id: string): (name: string, value: unknown) => boolean {
-  const ajv = new Ajv({ strict: false, allErrors: true });
-  addFormats(ajv);
-  ajv.addSchema(document, id);
-  return (name, value) => {
-    const validate = required(ajv.getSchema(`${id}#/components/schemas/${name}`), `ajv schema ${name} in ${id}`);
+  /** The operation object at `method path`; throws when absent. */
+  operation(method: HttpMethod, path: ApiPath): JsonObject {
+    return this.at(["paths", path, method]);
+  }
+
+  /** The operation's parameters, with `$ref`s resolved. */
+  parameters(method: HttpMethod, path: ApiPath): JsonObject[] {
+    const declared = (this.operation(method, path)["parameters"] ?? []) as JsonObject[];
+    return declared.map((p) =>
+      typeof p["$ref"] === "string" ? this.at(["components", "parameters", p["$ref"].replace(PARAMETER_REF, "")]) : p,
+    );
+  }
+
+  /** `components.schemas[name]`; throws when absent. */
+  schema(name: SchemaName): JsonObject {
+    return this.at(["components", "schemas", name]);
+  }
+
+  /** AJV verdict of `value` against `components.schemas[name]`. */
+  accepts(name: SchemaName, value: unknown): boolean {
+    const validate = this.ajv.getSchema(`${this.id}#/components/schemas/${name}`);
+    if (!validate) throw new Error(`ajv cannot resolve ${name} in ${this.id}`);
     return validate(value) === true;
-  };
+  }
+
+  /** Another contract's document, by loader id. */
+  sibling(id: ContractId): JsonObject {
+    return this.documentOf(id);
+  }
+
+  private at(keys: readonly string[]): JsonObject {
+    const found = dig(this.document, keys);
+    if (found === undefined) throw new Error(`${keys.join(".")} not declared in ${this.id}`);
+    return found as JsonObject;
+  }
+
+  private documentOf(id: ContractId): JsonObject {
+    const found = this.all.find((c) => c.id === id);
+    if (!found) throw new Error(`${id} not found in packages/contracts/openapi/`);
+    return found.document as JsonObject;
+  }
 }
 
-export function readContract(id: string): ContractReader {
-  const all = loadOpenApiContracts() as readonly LoadedContract[];
-  const document = documentOf(all, id);
-  const component = (section: string, name: string): JsonObject =>
-    required(dig(document, "components", section, name), `components.${section}.${name} in ${id}`) as JsonObject;
-  const operation = (method: HttpMethod, path: string): JsonObject =>
-    required(dig(document, "paths", path, method), `${method.toUpperCase()} ${path} in ${id}`) as JsonObject;
-  const resolve = (p: JsonObject): JsonObject => {
-    const ref = p["$ref"];
-    return typeof ref === "string" ? component("parameters", ref.replace(PARAMETER_REF, "")) : p;
-  };
-
-  return {
-    document,
-    operation,
-    parameters: (method, path) => ((operation(method, path)["parameters"] ?? []) as JsonObject[]).map(resolve),
-    schema: (name) => component("schemas", name),
-    accepts: compile(document, id),
-    foreignOperationIds: foreignIds(all, id),
-    sibling: (siblingId) => documentOf(all, siblingId),
-  };
+/** Shorthand for `ContractReader.read`. */
+export function readContract(id: ContractId): ContractReader {
+  return ContractReader.read(id);
 }
