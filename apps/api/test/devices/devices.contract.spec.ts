@@ -5,13 +5,14 @@
  * (`devices.openapi.yaml`) that Admin-Console RT-371 / RT-372 consume — the
  * device list and detail, and the revoke with a structured reason, the
  * session / pairing-code cascade and the Cash Session rule (RT-287 D-Q3 and
- * D-Q4 as amended). `[GATED]` contract-first: the three operations are marked
- * `x-runtime-status: contract-only` until the RT-365 runtime ships.
+ * D-Q4 as amended). `[GATED]` contract-first (PR #777); the RT-365 runtime
+ * ships all three operations unchanged on the wire
+ * (`devices.http.integration.spec.ts` covers them over HTTP).
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
  * app boot and no HTTP. What this pins:
  *
- *   1. Two GETs and one POST at their paths, contract-only, with no collision
+ *   1. Two GETs and one POST at their paths, implemented, with no collision
  *      with another contract's operationIds.
  *   2. Security is the human `cookieAuth` only; 404 (not 403) is the role /
  *      scope refusal; no tenant id is accepted from the request; the revoke
@@ -235,10 +236,10 @@ describe("devices — document and operations", () => {
     });
   });
 
-  it("marks every operation contract-only with a runtime note until the RT-365 runtime ships", () => {
+  it("marks no operation contract-only (the RT-365 runtime ships all three)", () => {
     for (const [path, method] of OPS) {
-      expect(op(path, method)["x-runtime-status"]).toBe("contract-only");
-      expect(op(path, method)["x-runtime-note"]).toMatch(/RT-365/);
+      expect(op(path, method)["x-runtime-status"]).toBeUndefined();
+      expect(op(path, method)["x-runtime-note"]).toBeUndefined();
     }
   });
 

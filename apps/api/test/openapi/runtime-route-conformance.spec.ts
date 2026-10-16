@@ -126,17 +126,11 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "backfillSaleLinkedMovements",
       "consoleCreatePayerAccount",
       // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
-      // RT-365 (RT-287 F2): devices contract (consoleGetDevice,
-      // consoleListDevices, consoleRevokeDevice); the runtime ships in the
-      // RT-365 implementation PR.
       "consoleDeleteTenantLogo",
-      "consoleGetDevice",
       "consoleGetTenantLogo",
-      "consoleListDevices",
       "consoleListPayerAccounts",
       "consolePreviewTenantLogo",
       "consolePutTenantLogo",
-      "consoleRevokeDevice",
       // RT-414: platform support-session contract; the runtime ships after owner approval.
       "endSupportSession",
       "getCurrentSupportSession",
