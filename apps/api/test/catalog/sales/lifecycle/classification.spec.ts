@@ -39,6 +39,7 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import {
   saleLines,
   saleRefunds,
+  saleReprints,
   saleReturnLines,
   saleReturns,
   saleReturnTenders,
@@ -90,6 +91,21 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       "device_id",
       "tender_count",
       "created_at",
+      // RT-538 (0047): the receipt snapshot — re-reviewed under SI-012. A sale /
+      // receipt number, the terminal label, a printed time, the STORE's branch
+      // name, address and tax id (business identity printed on every receipt)
+      // and the cash change amount. No customer, card or account data.
+      // EXCEPTION: receipt_operator_display_name is PII by review (the selling
+      // operator's display name; see REVIEWED_PII_COLUMNS below).
+      "receipt_sale_number",
+      "receipt_number",
+      "receipt_terminal_label",
+      "receipt_operator_display_name",
+      "receipt_settled_at",
+      "receipt_branch_name",
+      "receipt_branch_address",
+      "receipt_tax_registration_id",
+      "receipt_change_given",
     ],
   },
   {
@@ -108,6 +124,8 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       "tax_amount",
       "unit",
       "tenant_product_ref",
+      // RT-538 (0047): the line's receipt position (an ordinal, no PII).
+      "line_seq",
     ],
   },
   {
@@ -223,6 +241,30 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       "sequence",
     ],
   },
+  // RT-538 (0047) — reviewed under SI-012: the reprint record holds opaque
+  // UUIDs (sale, actor, device), the mode/kind enums, two mark flags, a copy
+  // number, two timestamps and the client's opaque idempotency key. No receipt
+  // content, customer, card or account data.
+  {
+    name: "sale_reprints",
+    table: saleReprints,
+    columns: [
+      "id",
+      "sale_id",
+      "tenant_id",
+      "store_id",
+      "mode",
+      "kind",
+      "marked_voided",
+      "marked_returned",
+      "copy_number",
+      "printed_at",
+      "recorded_at",
+      "created_by",
+      "device_id",
+      "idempotency_key",
+    ],
+  },
 ];
 
 /**
@@ -232,8 +274,21 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
  * `sale_tenders.tender_ref` (RT-360) is the tender line's opaque identity.
  */
 const REVIEWED_PAYMENT_NAMED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
-  sales: ["tender_count"],
+  // RT-538: receipt_branch_address is the STORE's address printed in the
+  // receipt header, not a customer address.
+  sales: ["tender_count", "receipt_branch_address"],
   sale_tenders: ["tender_ref"],
+};
+
+/**
+ * Columns classified PII by review (§XIV) that the substring denylist cannot
+ * catch (it deliberately avoids bare `name`). `sales.receipt_operator_display_name`
+ * (RT-538) is the selling operator's display name as printed: workforce data
+ * identifying the actor (as users.display_name), never a customer's. A future
+ * user-erasure flow tombstones only this column; 0047's header records it.
+ */
+const REVIEWED_PII_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  sales: ["receipt_operator_display_name"],
 };
 
 /**
@@ -293,6 +348,30 @@ describe("008-LIFECYCLE (T075) — sale-fact data-class classification (SI-012 /
         expect(offending).toEqual([]);
       },
     );
+  });
+});
+
+describe("RT-538 — reviewed PII columns are persisted and recorded", () => {
+  it.each(Object.entries(REVIEWED_PII_COLUMNS))(
+    "%s persists every reviewed PII column",
+    (name, cols) => {
+      const entry = BUSINESS_CLASS_COLUMNS.find((t) => t.name === name);
+      expect(entry).toBeDefined();
+      for (const col of cols) expect(persistedColumns(entry?.table)).toContain(col);
+    },
+  );
+
+  it("0047_sale_history_capture.sql header records the SI-012 review, the PII column and its tombstone", () => {
+    // Same six-hop repo root as the block below.
+    const repoRoot = path.resolve(__dirname, "../../../../../..");
+    const text = fs.readFileSync(
+      path.join(repoRoot, "packages/db/drizzle/0047_sale_history_capture.sql"),
+      "utf8",
+    );
+    expect(text).toMatch(/SI-012/);
+    expect(text).toMatch(/classified PII/i);
+    expect(text).toMatch(/receipt_operator_display_name/);
+    expect(text).toMatch(/tombston/i);
   });
 });
 

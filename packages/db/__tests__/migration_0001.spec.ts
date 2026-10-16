@@ -44,6 +44,8 @@ const UP_0035_PATH = resolve(DRIZZLE_DIR, "0035_cashier_admissions.sql");
 const DOWN_0035_PATH = resolve(DRIZZLE_DIR, "0035_cashier_admissions.down.sql");
 const UP_0036_PATH = resolve(DRIZZLE_DIR, "0036_shift_cash_up.sql");
 const DOWN_0036_PATH = resolve(DRIZZLE_DIR, "0036_shift_cash_up.down.sql");
+const UP_0047_PATH = resolve(DRIZZLE_DIR, "0047_sale_history_capture.sql");
+const DOWN_0047_PATH = resolve(DRIZZLE_DIR, "0047_sale_history_capture.down.sql");
 
 let env: PgTestEnv | null = null;
 let dockerSkipReason = "";
@@ -453,6 +455,8 @@ describe("0001_pos_operator_identity migration", () => {
     const up0035Sql = readFileSync(UP_0035_PATH, "utf8");
     const down0036Sql = readFileSync(DOWN_0036_PATH, "utf8");
     const up0036Sql = readFileSync(UP_0036_PATH, "utf8");
+    const down0047Sql = readFileSync(DOWN_0047_PATH, "utf8");
+    const up0047Sql = readFileSync(UP_0047_PATH, "utf8");
     const downSql = readFileSync(DOWN_0001_PATH, "utf8");
     const upSql = readFileSync(UP_0001_PATH, "utf8");
 
@@ -460,7 +464,9 @@ describe("0001_pos_operator_identity migration", () => {
     // Drop 0002 first so 0001 DOWN can remove devices without a FK violation.
     // 0033_sale_tenders likewise (sales.device_id → devices.id, RT-77), and
     // 0035_cashier_admissions (device_id → devices.id, RT-113 BC2), and
-    // 0036_shift_cash_up (its fact tables reference devices and shifts, RT-17).
+    // 0036_shift_cash_up (its fact tables reference devices and shifts, RT-17),
+    // and 0047_sale_history_capture (sale_reprints.device_id → devices.id, RT-538).
+    await env.admin.query(down0047Sql);
     await env.admin.query(down0036Sql);
     await env.admin.query(down0035Sql);
     await env.admin.query(down0033Sql);
@@ -498,11 +504,12 @@ describe("0001_pos_operator_identity migration", () => {
     `);
     expect(reDevices.rows[0]?.count).toBe("1");
 
-    // Restore 0002, 0033, 0035 and 0036 so subsequent tests in this suite have the full schema.
+    // Restore 0002, 0033, 0035, 0036 and 0047 so subsequent tests in this suite have the full schema.
     await env.admin.query(up0002Sql);
     await env.admin.query(up0033Sql);
     await env.admin.query(up0035Sql);
     await env.admin.query(up0036Sql);
+    await env.admin.query(up0047Sql);
 
     // After re-UP, the scope-aware CHECK is back and the original XOR is gone.
     const reCheck = await env.admin.query<{ conname: string }>(`

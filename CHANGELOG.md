@@ -55,6 +55,16 @@ This project follows [Semantic Versioning](https://semver.org/).
   `sale_voids` (all NULL for earlier voids); the `sale.voided` audit event
   carries the approver. The server re-validates every claim of the evidence but
   cannot prove that a PIN was typed on the terminal.
+- RT-538 `[GATED]`, owner-authorized 2026-10-16 for implement and merge, not
+  deploy (RT-538 comment 12079): storage for the store-wide sale history
+  (RT-537 contract). Migration 0047 adds the nullable receipt snapshot columns
+  on `sales` (`receipt_*`), `sale_lines.line_seq` and the append-only,
+  tenant-RLS `sale_reprints` table; migration 0048 builds
+  `idx_sales_tenant_store_business_date` (tenant, store, business date DESC,
+  occurred at DESC, id DESC) with `CREATE INDEX CONCURRENTLY`, as a
+  single-statement file so the runner does not wrap it in a transaction. No
+  backfill, no runtime or contract change; the routes stay contract-only until
+  RT-539.
 
 ### Changed
 - RT-113 BC1: `pos-operators.openapi.yaml` 1.1.1-draft is a prose-only fix.

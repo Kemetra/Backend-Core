@@ -86,6 +86,21 @@ export const sales = pgTable(
     deviceId: uuid("device_id").references(() => devices.id, { onDelete: "restrict" }),
     // RT-77 (0033): number of sale_tenders rows; the feed's visibility guard.
     tenderCount: smallint("tender_count").notNull().default(0),
+    // RT-538 (0047): the receipt snapshot (CaptureSaleReceipt, RT-537), presentation
+    // only — never used for authorization, attribution or scope (FR-061). All NULL
+    // when the sale was captured without one; otherwise the six header/identity
+    // fields are set (sales_receipt_snapshot_all_or_none, declared in the migration
+    // only). The operator display name alone may be NULL on a snapshot: user
+    // erasure tombstones it.
+    receiptSaleNumber: text("receipt_sale_number"),
+    receiptNumber: text("receipt_number"),
+    receiptTerminalLabel: text("receipt_terminal_label"),
+    receiptOperatorDisplayName: text("receipt_operator_display_name"),
+    receiptSettledAt: timestamp("receipt_settled_at", { withTimezone: true }),
+    receiptBranchName: text("receipt_branch_name"),
+    receiptBranchAddress: text("receipt_branch_address"),
+    receiptTaxRegistrationId: text("receipt_tax_registration_id"),
+    receiptChangeGiven: numeric("receipt_change_given", { precision: 19, scale: 4 }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -98,6 +113,11 @@ export const sales = pgTable(
     check("sales_pos_total_non_negative", sql`${t.posTotal} >= 0`),
     // RT-360 (0041): no longer capped at one tender per method.
     check("sales_tender_count_range", sql`${t.tenderCount} >= 0`),
+    // RT-538 (0047).
+    check(
+      "sales_receipt_change_given_non_negative",
+      sql`${t.receiptChangeGiven} IS NULL OR ${t.receiptChangeGiven} >= 0`,
+    ),
     // Backs the composite FK from each child table (sale_lines / sale_voids /
     // sale_refunds reference (id, tenant_id, store_id) so a child can never
     // attach to a sale in a different tenant/store).
@@ -110,6 +130,15 @@ export const sales = pgTable(
     ),
     index("idx_sales_tenant_store").on(t.tenantId, t.storeId),
     index("idx_sales_business_date").on(t.tenantId, t.businessDate),
+    // RT-538 (0048, built CONCURRENTLY): the store sale-history list, keyset
+    // ordered business_date DESC, occurred_at DESC, id DESC (RT-537 D-3).
+    index("idx_sales_tenant_store_business_date").on(
+      t.tenantId,
+      t.storeId,
+      t.businessDate.desc(),
+      t.occurredAt.desc(),
+      t.id.desc(),
+    ),
     index("idx_sales_unprocessed")
       .on(t.tenantId)
       .where(sql`${t.processedAt} IS NULL`),
