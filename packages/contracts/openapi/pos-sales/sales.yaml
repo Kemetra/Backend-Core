@@ -1067,22 +1067,26 @@ components:
         saleNumber:
           type: string
           minLength: 1
-          maxLength: 64
-          description: The sale number printed on the receipt (`Sale #`).
+          maxLength: 96
+          description: >
+            The sale number printed on the receipt (`Sale #`). The pairing
+            format `<terminal_label>-<YYYY-MM-DD>-<NNNNNN>` with a 64-character
+            `terminal_label` (`pos-terminal-pairing.openapi.yaml`) is at most
+            82 characters; the bound leaves room above that.
         receiptNumber:
           type: string
           minLength: 1
-          maxLength: 64
+          maxLength: 96
           description: The receipt number printed on the receipt, when it differs from `saleNumber`; omit it otherwise.
         terminalLabel:
           type: string
           minLength: 1
-          maxLength: 100
-          description: The terminal label printed on the receipt.
+          maxLength: 64
+          description: The terminal label printed on the receipt (the pairing `terminal_label`, at most 64 characters).
         operatorDisplayName:
           type: string
           minLength: 1
-          maxLength: 200
+          maxLength: 256
           description: The selling operator's display name as printed. Never an email address.
         settledAt:
           type: string
@@ -1091,16 +1095,18 @@ components:
         branchName:
           type: string
           minLength: 1
-          maxLength: 200
+          maxLength: 256
+          description: The branch name printed in the header (the pairing `branch_name`, at most 256 characters).
         branchAddress:
           type: string
           minLength: 1
-          maxLength: 500
+          maxLength: 512
+          description: The branch address printed in the header (the pairing `branch_address`, at most 512 characters).
         taxRegistrationId:
           type: string
           minLength: 1
           maxLength: 64
-          description: The tax registration id printed in the header and footer.
+          description: The tax registration id printed in the header and footer (the pairing `tenant_tax_registration_id`, at most 64 characters).
         changeGiven:
           $ref: "#/components/schemas/NonNegativeDecimalAmount"
           description: >

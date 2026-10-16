@@ -323,7 +323,7 @@ components:
       schema:
         type: string
         minLength: 1
-        maxLength: 64
+        maxLength: 96
       description: >
         Exact match on the captured receipt `saleNumber`
         (`CaptureSaleReceipt.saleNumber` in `sales.yaml`). A sale captured
@@ -565,8 +565,10 @@ components:
         The full recorded detail of one sale. `receiptFacts` is `complete` only
         when every field the original receipt printed is recorded (RT-537
         D-6): a receipt snapshot with its header, a `sequence` on every line,
-        `tenderState: recorded`, and the change known. A snapshot captured
-        without `changeGiven` records no change ("0"), so the change is known.
+        `tenderState: recorded` with the tender order known (a `sequence` on
+        every tender, or a single tender), and the change known. A snapshot
+        captured without `changeGiven` records no change ("0"), so the change
+        is known.
       properties:
         summary:
           $ref: "#/components/schemas/SaleHistoryItem"

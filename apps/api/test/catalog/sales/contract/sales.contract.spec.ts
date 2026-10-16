@@ -92,6 +92,29 @@ const APPROVED_TENDER_FIELDS = [
  */
 const CONTRACT_AHEAD_OF_CAPTURE_DTO = ["receipt"];
 
+/** A property's `maxLength` in a schema; NaN when the schema does not bound it. */
+function maxLengthOf(schemaObject: { properties?: Record<string, unknown> } | undefined, prop: string): number {
+  const node = schemaObject?.properties?.[prop] as { maxLength?: number } | undefined;
+  return node?.maxLength ?? Number.NaN;
+}
+
+/**
+ * RT-537: the `maxLength` of a property of the terminal-pairing contract, the
+ * source of the values the POS receipt prints.
+ */
+function pairingMaxLengths(): (prop: string) => number {
+  const pairing = loadOpenApiContracts().find((c) => c.id === "pos-terminal-pairing.openapi");
+  const schemas = Object.values(
+    (pairing?.document as { components?: { schemas?: Record<string, { properties?: Record<string, unknown> }> } })
+      ?.components?.schemas ?? {},
+  );
+  return (prop) => {
+    const bounded = schemas.map((s) => maxLengthOf(s, prop)).filter((n) => !Number.isNaN(n));
+    if (bounded.length === 0) throw new Error(`pairing property ${prop} not found`);
+    return Math.max(...bounded);
+  };
+}
+
 /** RT-10 D2: the pilot tender methods. `voucher` is deliberately excluded. */
 const PILOT_TENDER_METHODS = ["card_external", "cash"];
 
@@ -1197,6 +1220,22 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
         "tenders",
       ].sort(),
     );
+  });
+
+  it("accepts every value the pairing contract allows the receipt to print (no valid sale rejected)", () => {
+    const pairingMax = pairingMaxLengths();
+    const receiptMax = (prop: string): number => maxLengthOf(schema("CaptureSaleReceipt"), prop);
+
+    expect(receiptMax("terminalLabel")).toBeGreaterThanOrEqual(pairingMax("terminal_label"));
+    expect(receiptMax("branchName")).toBeGreaterThanOrEqual(pairingMax("branch_name"));
+    expect(receiptMax("branchAddress")).toBeGreaterThanOrEqual(pairingMax("branch_address"));
+    expect(receiptMax("taxRegistrationId")).toBeGreaterThanOrEqual(
+      pairingMax("tenant_tax_registration_id"),
+    );
+    // `<terminal_label>-<YYYY-MM-DD>-<NNNNNN>`: label + 1 + 10 + 1 + 6.
+    const longestSaleNumber = pairingMax("terminal_label") + 18;
+    expect(receiptMax("saleNumber")).toBeGreaterThanOrEqual(longestSaleNumber);
+    expect(receiptMax("receiptNumber")).toBeGreaterThanOrEqual(longestSaleNumber);
   });
 
   it("models every field the POS receipt prints that is not already a sale fact", () => {

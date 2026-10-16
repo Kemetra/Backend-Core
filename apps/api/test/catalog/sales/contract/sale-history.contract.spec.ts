@@ -355,6 +355,16 @@ describe("pos-sales/sale-history.yaml — readSaleHistoryDetail", () => {
     );
   });
 
+  it("a complete receipt needs the tender order: a sequence on every tender, or a single tender", () => {
+    expect((schema("SaleHistoryDetail").description ?? "").replace(/\s+/g, " ")).toContain(
+      "with the tender order known (a `sequence` on every tender, or a single tender)",
+    );
+  });
+
+  it("the sale_number filter fits the longest pairing-format sale number (82 characters)", () => {
+    expect(param("SaleNumberQuery").schema).toMatchObject({ maxLength: 96 });
+  });
+
   it("exposes the receipt number: equal to saleNumber when omitted, null only without a snapshot", () => {
     const detail = schema("SaleHistoryDetail");
     expect(detail.required).toContain("receiptNumber");
