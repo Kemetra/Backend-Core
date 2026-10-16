@@ -53,13 +53,15 @@ export function toConsoleSaleDetail(detail: SaleHistoryDetail, storeRef: string,
 
 /** The list filters, matched on the projected item. */
 export function matchesFilters(item: SaleHistoryItem, filters: ConsoleSaleFilters): boolean {
-  return (
-    (filters.saleNumber === null || item.saleNumber === filters.saleNumber) &&
-    (filters.syncStatus === null || item.syncStatus === filters.syncStatus) &&
-    (filters.voided === null || item.voided === filters.voided) &&
-    (filters.returnState === null || item.returnState === filters.returnState) &&
-    (filters.erpPostingState === null || item.erpPostingState === filters.erpPostingState)
-  );
+  const wanted: ReadonlyArray<readonly [unknown, unknown]> = [
+    [filters.saleNumber, item.saleNumber],
+    [filters.syncStatus, item.syncStatus],
+    [filters.voided, item.voided],
+    [filters.returnState, item.returnState],
+    [filters.erpPostingState, item.erpPostingState],
+  ];
+  // A null filter is not set; a set one must equal the projected value.
+  return wanted.every(([filter, value]) => filter === null || filter === value);
 }
 
 export function keysetOf(row: SaleHistoryRow): SaleHistoryKeyset {

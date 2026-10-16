@@ -125,11 +125,22 @@ interface SeedSale {
   readonly syncStatus?: string;
 }
 
+/** The eight receipt-snapshot columns: all null when the sale has no sale number. */
+function snapshotValues(s: SeedSale): Array<string | null> {
+  if (s.saleNumber === undefined) return Array.from({ length: 8 }, () => null);
+  return [s.saleNumber, "till-1 (printed)", "Cashier One (printed)", s.occurredAt, "Nile Branch", "1 Nile St, Cairo", "123-456-789", "2.50"];
+}
+
+/** STORE_A_X sales come from the till unless the seed says otherwise; other stores have none. */
+function deviceOf(s: SeedSale, storeId: string): string | null {
+  if (s.device !== undefined) return s.device;
+  return storeId === STORE_A_X ? DEVICE_X : null;
+}
+
 /** A sale with two lines (Widget 5.00, Gadget 7.50) and, when tendered, one cash tender. */
 async function seedSale(admin: Pool, s: SeedSale): Promise<void> {
   const tenantId = s.tenantId ?? TENANT_A;
   const storeId = s.storeId ?? STORE_A_X;
-  const snapshot = s.saleNumber !== undefined;
   const tendered = s.tendered ?? true;
   await admin.query(
     `INSERT INTO sales
@@ -149,32 +160,38 @@ async function seedSale(admin: Pool, s: SeedSale): Promise<void> {
       ZERO_HASH,
       CASHIER,
       s.syncStatus ?? "synced",
-      s.device === undefined ? (storeId === STORE_A_X ? DEVICE_X : null) : s.device,
+      deviceOf(s, storeId),
       tendered ? 1 : 0,
-      s.saleNumber ?? null,
-      snapshot ? "till-1 (printed)" : null,
-      snapshot ? "Cashier One (printed)" : null,
-      snapshot ? s.occurredAt : null,
-      snapshot ? "Nile Branch" : null,
-      snapshot ? "1 Nile St, Cairo" : null,
-      snapshot ? "123-456-789" : null,
-      snapshot ? "2.50" : null,
+      ...snapshotValues(s),
       `rt562-${s.id}`,
     ],
   );
-  const seqs = s.lineSeq === true ? [1, 2] : [null, null];
+  await seedLinesAndTender(admin, { id: s.id, tenantId, storeId, tendered, lineSeq: s.lineSeq === true });
+}
+
+interface SeededSaleShape {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly storeId: string;
+  readonly tendered: boolean;
+  readonly lineSeq: boolean;
+}
+
+async function seedLinesAndTender(admin: Pool, sale: SeededSaleShape): Promise<void> {
+  const { id: saleId, tenantId, storeId, tendered } = sale;
+  const seqs = sale.lineSeq ? [1, 2] : [null, null];
   await admin.query(
     `INSERT INTO sale_lines
        (id, sale_id, tenant_id, store_id, line_name, unit_price, currency_code, quantity, line_amount, unit, line_seq)
      VALUES (gen_random_uuid(), $1, $2, $3, 'Widget', 5.00, 'EGP', 1, 5.00, 'unit', $4),
             (gen_random_uuid(), $1, $2, $3, 'Gadget', 7.50, 'EGP', 1, 7.50, 'unit', $5)`,
-    [s.id, tenantId, storeId, seqs[0], seqs[1]],
+    [saleId, tenantId, storeId, seqs[0], seqs[1]],
   );
   if (tendered) {
     await admin.query(
       `INSERT INTO sale_tenders (id, sale_id, tenant_id, store_id, method, amount, currency_code, sequence)
        VALUES (gen_random_uuid(), $1, $2, $3, 'cash', 12.50, 'EGP', 1)`,
-      [s.id, tenantId, storeId],
+      [saleId, tenantId, storeId],
     );
   }
 }

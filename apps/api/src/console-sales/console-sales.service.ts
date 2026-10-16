@@ -156,23 +156,35 @@ export class ConsoleSalesReadService {
   /** The full recorded detail of one sale in the caller's scope; ConsoleSaleNotFoundError otherwise. */
   async get(input: ScopedReadInput, saleRef: string): Promise<ConsoleSaleDetail> {
     return this.inTenant(input, async (client) => {
-      const scope: StoreScope = await callerStoreScope(client, this.memberships, input);
-      // The scope is a predicate of this one query: the sale is never fetched first and checked after.
-      const matched = await client.query<{ store_id: string }>(SCOPED_SALE_STORE_SQL, [
-        input.tenantId,
-        saleRef,
-        scopeStoreIds(scope),
-      ]);
-      const storeId = matched.rows[0]?.store_id;
-      if (storeId === undefined) throw new ConsoleSaleNotFoundError();
-
+      const storeId = await this.scopedSaleStore(client, input, saleRef);
       const detail = await loadDetail(client, { tenantId: input.tenantId, storeId, visibility: { kind: "store" } }, saleRef);
       if (detail === null) throw new ConsoleSaleNotFoundError();
-      const store = await client.query<{ timezone: string }>(STORE_TIMEZONE_SQL, [storeId, input.tenantId]);
-      const timezone = store.rows[0]?.timezone;
-      if (timezone === undefined) throw new Error("console sales: the sale's store is not resolvable");
-      return toConsoleSaleDetail(detail.projection, storeId, timezone);
+      return toConsoleSaleDetail(detail.projection, storeId, await this.storeTimezone(client, input.tenantId, storeId));
     });
+  }
+
+  /**
+   * The store of a sale inside the caller's scope, else ConsoleSaleNotFoundError. The
+   * scope is a predicate of this one query: the sale is never fetched first and checked after.
+   */
+  private async scopedSaleStore(client: PoolClient, input: ScopedReadInput, saleRef: string): Promise<string> {
+    const scope: StoreScope = await callerStoreScope(client, this.memberships, input);
+    const matched = await client.query<{ store_id: string }>(SCOPED_SALE_STORE_SQL, [
+      input.tenantId,
+      saleRef,
+      scopeStoreIds(scope),
+    ]);
+    const row = matched.rows[0];
+    if (row === undefined) throw new ConsoleSaleNotFoundError();
+    return row.store_id;
+  }
+
+  /** The timezone of a store a matched sale belongs to. */
+  private async storeTimezone(client: PoolClient, tenantId: string, storeId: string): Promise<string> {
+    const store = await client.query<{ timezone: string }>(STORE_TIMEZONE_SQL, [storeId, tenantId]);
+    const row = store.rows[0];
+    if (row === undefined) throw new Error("console sales: the sale's store is not resolvable");
+    return row.timezone;
   }
 
   /** The store's sales in the range after `keyset`, in list order, at most `limit` rows. */
