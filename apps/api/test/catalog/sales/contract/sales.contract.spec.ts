@@ -39,7 +39,10 @@ import { resolve } from "node:path";
 
 import { z } from "zod";
 
-import { CaptureSaleRequestWithTendersSchema } from "../../../../src/catalog/sales/dto/capture-sale-request.dto";
+import {
+  CaptureSaleReceiptSchema,
+  CaptureSaleRequestWithTendersSchema,
+} from "../../../../src/catalog/sales/dto/capture-sale-request.dto";
 import { loadOpenApiContracts } from "../../../../src/openapi/loader";
 
 // ---------------------------------------------------------------------------
@@ -87,10 +90,9 @@ const APPROVED_TENDER_FIELDS = [
 
 /**
  * RT-537: capture fields the contract declares before the server accepts them.
- * The strict capture DTO rejects these until RT-539 adds them; RT-539 empties
- * this list.
+ * RT-539 added `receipt` to the capture DTO, so the list is empty.
  */
-const CONTRACT_AHEAD_OF_CAPTURE_DTO = ["receipt"];
+const CONTRACT_AHEAD_OF_CAPTURE_DTO: readonly string[] = [];
 
 /** A property's `maxLength` in a schema; NaN when the schema does not bound it. */
 function maxLengthOf(schemaObject: { properties?: Record<string, unknown> } | undefined, prop: string): number {
@@ -1002,10 +1004,8 @@ describe("pos-sales/sales.yaml — RT-225 admissionCheckAt", () => {
   });
 
   it("DTO/contract parity: the capture DTO accepts exactly the contract's properties and requires the same ones", () => {
-    // RT-537: `receipt` is in the contract ahead of the DTO. The server
-    // accepts it from RT-539 (see the 1.9.0-draft rollout order); until then
-    // the strict DTO rejects it. RT-539 removes it from this list when it adds
-    // the field to the DTO, and the RT-537 block below pins the rejection.
+    // RT-537 declared `receipt` ahead of the DTO; RT-539 added it, so nothing
+    // is filtered out any more (the RT-537 block below pins its shape).
     const contractKeys = Object.keys(captureRequest()?.properties ?? {})
       .filter((key) => !CONTRACT_AHEAD_OF_CAPTURE_DTO.includes(key))
       .sort();
@@ -1295,10 +1295,41 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
     expect(Object.keys(schema("Sale")?.properties ?? {})).not.toContain("receipt");
   });
 
-  it("the capture DTO still rejects receipt until RT-539 (contract ahead of the server)", () => {
+  it("the capture DTO accepts receipt since RT-539, with exactly the contract's fields and bounds", () => {
     const dto = captureDtoObject();
-    expect(Object.keys(dto.shape)).not.toContain("receipt");
+    expect(Object.keys(dto.shape)).toContain("receipt");
     expect(dto._def.unknownKeys).toBe("strict");
-    expect(CONTRACT_AHEAD_OF_CAPTURE_DTO).toEqual(["receipt"]);
+    expect(CONTRACT_AHEAD_OF_CAPTURE_DTO).toEqual([]);
+
+    const receiptDto = CaptureSaleReceiptSchema;
+    expect(receiptDto._def.unknownKeys).toBe("strict");
+    const contract = schema("CaptureSaleReceipt");
+    const shape = receiptDto.shape as Record<string, z.ZodTypeAny>;
+    expect(Object.keys(shape).sort()).toEqual(Object.keys(contract?.properties ?? {}).sort());
+    expect(Object.keys(shape).filter((k) => !shape[k]!.isOptional()).sort()).toEqual(
+      [...(contract?.required ?? [])].sort(),
+    );
+    for (const prop of ["saleNumber", "receiptNumber", "terminalLabel", "branchName", "branchAddress", "taxRegistrationId"]) {
+      const max = maxLengthOf(contract, prop);
+      const at = { ...validReceipt(), [prop]: "x".repeat(max) };
+      const over = { ...validReceipt(), [prop]: "x".repeat(max + 1) };
+      expect({ prop, ok: receiptDto.safeParse(at).success }).toEqual({ prop, ok: true });
+      expect({ prop, ok: receiptDto.safeParse(over).success }).toEqual({ prop, ok: false });
+    }
+    // operatorDisplayName has no bound of its own (users.display_name is unbounded).
+    expect(receiptDto.safeParse({ ...validReceipt(), operatorDisplayName: "n".repeat(2000) }).success).toBe(true);
+    expect(receiptDto.safeParse({ ...validReceipt(), changeGiven: "-1" }).success).toBe(false);
   });
+
+  function validReceipt(): Record<string, string> {
+    return {
+      saleNumber: "till-1-2026-10-16-000001",
+      terminalLabel: "till-1",
+      operatorDisplayName: "Cashier One",
+      settledAt: "2026-10-16T09:00:00.000Z",
+      branchName: "Branch",
+      branchAddress: "1 Nile St",
+      taxRegistrationId: "123-456-789",
+    };
+  }
 });

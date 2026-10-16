@@ -89,6 +89,11 @@ export const POS_WRITE_RATE_LIMIT_BUCKETS = {
   // is one open, a few movements and one close per terminal, so this sits
   // far above a real till's rate, including an offline backlog drain.
   posWriteShift: { limit: 120, windowMs: 60 * 60 * 1000 },
+  // RT-539: the POS sale history. The same per-device limiter (ADR 0009) is
+  // reused for the two reads (list and detail share one bucket, so a 31-day
+  // scan cannot be repeated without bound) and for the reprint record.
+  posReadSaleHistory: { limit: 1200, windowMs: 60 * 60 * 1000 },
+  posWriteSaleReprint: { limit: 120, windowMs: 60 * 60 * 1000 },
 } as const satisfies Record<string, RateLimitBucket>;
 
 export interface RateLimitBucket {

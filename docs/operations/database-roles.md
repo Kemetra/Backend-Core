@@ -137,6 +137,7 @@ Legitimate deployments never set a role option.
     `shift_cash_movements`, `shift_refund_claims`: `SELECT`, `INSERT`
     (RT-17, migration 0036)
   - `erpnext_posting_resolution`: `SELECT`, `INSERT` (RT-330, migration 0037)
+  - `sale_reprints`: `SELECT`, `INSERT` (RT-539, migration 0047)
 
   A deploy that skips that grant step now fails to boot, and the error names
   each missing privilege and table, instead of starting healthy with those
@@ -314,6 +315,20 @@ table the domain role must use needs a matching grant step at deploy time.
   memberships on this role (as `/context/me` does). Without the grants the API
   refuses to boot (`DOMAIN_REQUIRED_GRANTS`) rather than failing every Console
   sign-in with 500.
+
+- **Migration `0047_sale_history_capture` (RT-538 storage, RT-539 runtime).** Run
+  [`sql/sale-reprints-domain-grants.sql`](sql/sale-reprints-domain-grants.sql)
+  after `migrate up` (0047 and 0048) and before the API starts, in the same
+  step 2 of [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT` and `INSERT` on
+  `sale_reprints`, the append-only receipt reprint record: `recordSaleReprint`
+  writes one row per reprint and reads the sale's rows for the next server copy
+  number. The table has no `UPDATE` or `DELETE` policy; never grant `UPDATE`,
+  `DELETE` or `TRUNCATE`. Without the grants the API refuses to boot
+  (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold no privilege on it
+  (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). The new `sales.receipt_*` and
+  `sale_lines.line_seq` columns live on tables the domain role already reads
+  and writes.
 
 ## Redis credential
 

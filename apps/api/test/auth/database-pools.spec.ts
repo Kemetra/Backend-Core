@@ -56,6 +56,9 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "stock_locations:INSERT",
   // RT-448 (0045): tracking identities (read by the identity list). Read-only.
   "tracking_identities:SELECT",
+  // RT-539 (0047): the receipt reprint record (append-only).
+  "sale_reprints:SELECT",
+  "sale_reprints:INSERT",
 ]);
 
 const LOOKUP_GRANTS: ReadonlySet<string> = new Set(
@@ -271,6 +274,7 @@ describe("database pool boundary", () => {
       "stock_locations",
       "tracking_identities",
       "erpnext_tracking_map",
+      "sale_reprints",
     ]) {
       const entry = AUTH_LOOKUP_FORBIDDEN_GRANTS.find(([t]) => t === table);
       expect(entry).toBeDefined();

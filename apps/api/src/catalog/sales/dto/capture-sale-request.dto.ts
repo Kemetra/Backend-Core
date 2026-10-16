@@ -120,6 +120,30 @@ function checkAdmissionCheckAt(
 }
 
 /**
+ * RT-539 (sales.yaml 1.9.0-draft, RT-537): the receipt snapshot, the facts the
+ * original receipt printed that are not sale facts. Presentation only: it is
+ * never used for authorization, attribution or scope (FR-061), and the
+ * controller keeps it out of payload_hash. The bounds are the contract's.
+ */
+export const CaptureSaleReceiptSchema = z
+  .object({
+    saleNumber: z.string().min(1).max(96),
+    receiptNumber: z.string().min(1).max(96).optional(),
+    terminalLabel: z.string().min(1).max(64),
+    operatorDisplayName: z.string().min(1),
+    // Year 0000 is not a Postgres timestamptz (22008): a 400, never a 500.
+    settledAt: z
+      .string()
+      .datetime()
+      .refine((value) => !value.startsWith("0000"), "must be a representable instant"),
+    branchName: z.string().min(1).max(256),
+    branchAddress: z.string().min(1).max(512),
+    taxRegistrationId: z.string().min(1).max(64),
+    changeGiven: decimalAmount.optional(),
+  })
+  .strict();
+
+/**
  * The capture body's object shape (strict). The exported schemas below add
  * the RT-225 cross-field refinement; use this one only for shape
  * introspection or extension.
@@ -145,6 +169,8 @@ const CaptureSaleRequestObject = z
     // drops it before payload_hash). Device path only; see
     // checkAdmissionCheckAt for the cross-field rules.
     admissionCheckAt: z.string().datetime().optional(),
+    // RT-539: the optional receipt snapshot (first write wins; not hashed).
+    receipt: CaptureSaleReceiptSchema.optional(),
   })
   .strict();
 
@@ -245,3 +271,4 @@ export const CaptureSaleRequestWithSameMethodTendersSchema = CaptureSaleRequestO
 export type CaptureSaleRequestDto = z.infer<typeof CaptureSaleRequestWithTendersSchema>;
 export type SaleTenderDto = z.infer<typeof SaleTenderSchema>;
 export type CaptureSaleLineDto = z.infer<typeof CaptureSaleLineSchema>;
+export type CaptureSaleReceiptDto = z.infer<typeof CaptureSaleReceiptSchema>;

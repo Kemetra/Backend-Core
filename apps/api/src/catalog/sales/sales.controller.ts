@@ -239,9 +239,12 @@ export class SalesController {
     // sale fact either: dropped the same way, so payload_hash, the stored
     // occurred_at / business_date and the posting feed are unchanged. (Both
     // stay in the idempotency fingerprint, which covers the raw body.)
+    // RT-539: `receipt` is presentation, not a sale fact (sales.yaml 1.9.0):
+    // dropped from the hashed body and stored on its own, first write wins.
     const {
       operatorUserId: _attributionClaim,
       admissionCheckAt: _admissionCheckAt,
+      receipt,
       ...saleBody
     } = body;
 
@@ -253,6 +256,7 @@ export class SalesController {
         actorUserId: ctx.userId,
         deviceId: request.posDeviceId,
         body: saleBody,
+        ...(receipt === undefined ? {} : { receipt }),
       });
     } catch (err) {
       throw toCaptureHttpError(err);

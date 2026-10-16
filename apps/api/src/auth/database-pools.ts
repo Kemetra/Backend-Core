@@ -119,6 +119,8 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     "sale_return_lines",
     "sale_return_tenders",
     "sale_sync_deadletters",
+    // RT-539 (0047): the receipt reprint record.
+    "sale_reprints",
     "receivable",
     "claim",
     "claim_receivables",
@@ -217,6 +219,11 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   // neither INSERT nor any erpnext_tracking_map privilege is required. No
   // UPDATE / DELETE policy; never UPDATE, DELETE or TRUNCATE.
   ["tracking_identities", "SELECT"],
+  // RT-539 (0047): every reprint authorized or recorded writes one row, and
+  // the next server copy number reads them. Append-only (no UPDATE / DELETE
+  // policy); never UPDATE, DELETE or TRUNCATE.
+  ["sale_reprints", "SELECT"],
+  ["sale_reprints", "INSERT"],
 ];
 
 interface GrantRow {

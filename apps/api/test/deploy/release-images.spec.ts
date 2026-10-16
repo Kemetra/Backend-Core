@@ -239,7 +239,7 @@ describe("release bundle", () => {
       ["Caddyfile", "deploy/console-smoke.sh", "docker-compose.prod.yml", "docker-compose.release.yml"].sort(),
     );
     expect(sql.sort()).toEqual([...readmeDeploySql()].sort());
-    expect(sql).toHaveLength(9);
+    expect(sql).toHaveLength(10);
     expect(new Set(list).size).toBe(list.length);
     for (const f of list) expect(f).not.toMatch(/\.env(\.|$)|secret|password/i);
   });
