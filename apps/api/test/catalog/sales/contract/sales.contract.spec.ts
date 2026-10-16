@@ -1446,6 +1446,30 @@ describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
     expect(info()).toContain("never silently retried");
   });
 
+  it("offline credit (owner decision 2026-10-16, option A): envelope path only, synchronous before finalize", () => {
+    expect(info()).toContain("OFFLINE CREDIT (owner decision 2026-10-16, option A;");
+    expect(info()).toContain("accepted only on the `operatorAuthorization` path");
+    expect(info()).toContain(
+      "MUST capture a responsibility-bearing sale synchronously, online, before finalizing it, and MUST NOT queue it",
+    );
+    expect(info()).toContain("credit is manager/admin-only");
+    expect(info()).not.toContain("OWNER-PENDING");
+    expect(fieldText()).toContain("422 `sale_responsibility_offline_refused`");
+  });
+
+  it("names 422 sale_responsibility_offline_refused for responsibilities on the device path, ordered first", () => {
+    expect(unprocessable()).toContain("`sale_responsibility_offline_refused`");
+    expect(unprocessable()).toContain("on the `device` path");
+    expect(captureText()).toContain(
+      "On the `device` path a body with `responsibilities` is 422 `sale_responsibility_offline_refused`, decided before the coverage rule",
+    );
+  });
+
+  it("on the synchronous path every 422 reaches the till before finalize; a transient failure is retried synchronously only", () => {
+    expect(info()).toContain("reaches the till BEFORE the sale is finalized");
+    expect(info()).toContain("never through the background drain");
+  });
+
   it("states reversal semantics of a responsibility-bearing sale are undefined (OQ-4 carve)", () => {
     expect(info()).toContain("Reversal (void / return) of a responsibility-bearing sale is UNDEFINED");
   });

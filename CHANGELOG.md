@@ -105,6 +105,9 @@ This project follows [Semantic Versioning](https://semver.org/).
   coverage rule `sum(tenders) + sum(responsibilities) = posTotal` (422
   `sale_responsibility_mismatch`), 422 `sale_responsibility_payer_invalid`,
   hashed into the payload, and an optional `Sale.responsibilities`.
+  Responsibilities are accepted only on the `operatorAuthorization` path,
+  captured synchronously before finalize; on the device path they are 422
+  `sale_responsibility_offline_refused` (owner decision 2026-10-16, option A).
   `erpnext-connector/posting-feed.yaml` 1.8.0-draft (additive):
   `Sale.responsibilities[{payerExternalRef, amount, sequence}]`, failing closed
   for an unmapped payer; such sales and their reversals are held off the feed

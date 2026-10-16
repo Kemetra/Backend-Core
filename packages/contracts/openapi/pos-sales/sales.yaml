@@ -220,9 +220,9 @@ info:
     Receivables baseline). It replaces the retired
     `POST /api/v1/settlement/settlement-intent` (`settlement/settlement.yaml`
     2.0.0). `captureSale` gains the coverage rule `sum(tenders) +
-    sum(responsibilities) = posTotal` and two 422 codes,
-    `sale_responsibility_mismatch` and `sale_responsibility_payer_invalid`
-    (see `CaptureUnprocessable`). `Sale` gains an OPTIONAL `responsibilities`
+    sum(responsibilities) = posTotal` and three 422 codes,
+    `sale_responsibility_mismatch`, `sale_responsibility_payer_invalid` and
+    `sale_responsibility_offline_refused` (see `CaptureUnprocessable`). `Sale` gains an OPTIONAL `responsibilities`
     on `readSale` and `captureSale`. Additive in shape: a producer that sends
     no `responsibilities` sees no difference, and its sales hash as before.
     ROLLOUT ORDER: the server accepts `responsibilities` from RT-418; until
@@ -233,11 +233,25 @@ info:
     version BEFORE RT-418 deploys (the RT-76 order). The posting feed holds a
     responsibility-bearing sale until the Connector supports it (RT-419; see
     `erpnext-connector/posting-feed.yaml`).
-    Capture is deferred on the POS (outbox drain), so a 422 on a
-    responsibility-bearing sale arrives after finalize: the POS dead-letters it
-    for repair and surfaces it; it is never silently retried, and the sale is
-    never re-sent without its responsibilities or with them turned into a
-    tender.
+    OFFLINE CREDIT (owner decision 2026-10-16, option A; RT-413 R-1: offline
+    credit stays disabled until a cached credit decision exists):
+    `responsibilities` are accepted only on the `operatorAuthorization` path
+    (the manager/admin envelope). On the RT-224 `device` path a body that
+    carries them is refused 422 `sale_responsibility_offline_refused`. The
+    server does not add a role check on the envelope path; on the POS today
+    only manager/admin sessions hold an envelope, so credit is
+    manager/admin-only. The POS MUST capture a responsibility-bearing
+    sale synchronously, online, before finalizing it, and MUST NOT queue it
+    for the background outbox drain. This is a new POS capture mode (a
+    departure from POS spec 020 FR-5, by the same owner decision). Because the
+    capture precedes finalize, every 422 on such a sale (mismatch, payer
+    invalid, offline refused) reaches the till BEFORE the sale is finalized:
+    the POS shows it and does not finalize the sale as credit. A transient
+    failure (timeout, 429, 5xx) leaves the sale unfinalized; the POS may retry
+    the same capture synchronously with the same `Idempotency-Key`, never
+    through the background drain. A refusal is never silently retried, and the
+    sale is never re-sent without its responsibilities or with them turned
+    into a tender.
     Reversal (void / return) of a responsibility-bearing sale is UNDEFINED in
     this version (the 035 OQ-4 carve): the posting feed holds such reversal
     work items until a later issue defines them.
@@ -352,8 +366,13 @@ paths:
         sum(responsibilities) = posTotal` must hold exactly (else 422
         `sale_responsibility_mismatch`), and every payer must be eligible (else
         422 `sale_responsibility_payer_invalid`); see the field and
-        `CaptureUnprocessable`. Order: the coverage rule is checked first, then
-        the line price invariant, then the payers. A replay of an
+        `CaptureUnprocessable`. Responsibilities are accepted only on the
+        `operatorAuthorization` path (owner decision 2026-10-16, option A). On
+        the `device` path a body with `responsibilities` is 422
+        `sale_responsibility_offline_refused`, decided before the coverage rule
+        and after authentication and the RT-224 cashier-claim check (403
+        `refused`). Order: the coverage rule is checked first, then the line
+        price invariant, then the payers. A replay of an
         already-captured sale answers before these checks, so a payer suspended
         after capture never turns a stored result into a 422. Nothing is
         recorded on any failure.
@@ -994,7 +1013,9 @@ components:
             OPTIONAL (RT-417, owner decision R-1) — who owes the part of the
             sale not paid at the till: one entry per payer, each an amount in
             the sale's currency. Accepted from RT-418; do not send before then
-            (see the versioning note). When present, the coverage rule
+            (see the versioning note). Only on the `operatorAuthorization`
+            path, captured synchronously before finalize; on the `device` path
+            the body is 422 `sale_responsibility_offline_refused`. When present, the coverage rule
             `sum(tenders) + sum(responsibilities) = posTotal` must hold in
             exact decimal arithmetic, no rounding (else 422
             `sale_responsibility_mismatch`). It replaces the RT-76 tender-only
@@ -1965,11 +1986,15 @@ components:
         `posTotal` exactly; `sale_responsibility_payer_invalid` (RT-417) — a
         `payerRef` that does not exist, belongs to another tenant, is scoped to
         another store, is `suspended`, or has no `externalRef` (no ERPNext
-        Customer link), with one body for every cause, never naming which.
+        Customer link), with one body for every cause, never naming which;
+        `sale_responsibility_offline_refused` (RT-417, owner decision
+        2026-10-16) — `responsibilities` sent on the `device` path (credit is
+        accepted only on the `operatorAuthorization` path).
         `sale_tender_mismatch` is returned only when `responsibilities` is
         absent; with it, the combined rule replaces the tender-only rule.
-        Order: the coverage rule (tender or combined) first, then the line
-        price invariant, then the payers. Deterministic; nothing is recorded.
+        Order: `sale_responsibility_offline_refused` first, then the coverage
+        rule (tender or combined), then the line price invariant, then the
+        payers. Deterministic; nothing is recorded.
       content:
         application/json:
           schema:

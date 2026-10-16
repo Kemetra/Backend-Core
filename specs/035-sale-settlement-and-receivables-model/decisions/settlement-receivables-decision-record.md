@@ -193,7 +193,13 @@ on the RT-224 device path. So any capture refusal arrives after the goods left.
   `consoleListPayerAccounts` remain (contract-only until RT-418); six operations
   retired (`x-retired-operations`, runtime removed in RT-422); `creditTerms`
   removed; `externalRef` is the ERPNext Customer link.
-- Offline credit: PENDING owner decision (see the RT-417 PR).
+- Offline credit (owner decision 2026-10-16, option A): `responsibilities` are
+  accepted only on the `operatorAuthorization` path; on the RT-224 `device`
+  path they are 422 `sale_responsibility_offline_refused`. The POS captures a
+  responsibility-bearing sale synchronously, online, before finalize, and never
+  queues it for the background drain, so every refusal reaches the till before
+  finalize. On the POS only manager/admin sessions hold an envelope, so credit
+  is manager/admin-only. This departs from POS spec 020 FR-5.
 
 ### Alternatives considered
 - **R-2, keep `settlement-intent` with posting held** — rejected by the owner
@@ -201,6 +207,12 @@ on the RT-224 device path. So any capture refusal arrives after the goods left.
 - **Keep the six settlement routes as `deprecated`** — rejected: the issue
   removes them, and a deprecated route still invites new consumers. The runtime
   keeps serving them until RT-422, which conformance permits.
+- **Offline credit B: no server-side offline refusal, till-side gate only** —
+  rejected by the owner (2026-10-16) in favour of A: it leaves deferred capture
+  in place, so every capture refusal would land after the goods left.
+- **Offline credit C: server staleness proxy (`receivedAt − settledAt > N`)** —
+  rejected: it still refuses after finalize, and the drain backoff (up to
+  5 min) makes N fragile.
 - **Capture-time `externalRef` not checked; let the Connector reject** —
   rejected (*coordinator*): with no payer-update route a null link would
   dead-letter terminally.
@@ -215,7 +227,8 @@ on the RT-224 device path. So any capture refusal arrives after the goods left.
 | `CaptureSaleRequest.responsibilities` (strict DTO rejects until RT-418) | POS capture | RT-420, after RT-418 deploys |
 | `Sale.responsibilities` on reads (`additionalProperties: false`) | POS strict response validation | re-pin before RT-418 deploys |
 | `Sale.responsibilities` on the feed | Connector (strict feed parsers re-pin) | RT-419 posts to the payer's Customer |
+| Credit only on the envelope path, synchronous before finalize | POS capture (new capture mode, departs from spec 020 FR-5) | RT-420 (or a new issue): synchronous pre-finalize capture, no outbox queuing |
 
 Gaps left open: a POS-facing payer lookup (the till has no way to obtain
 `payerRef`s); a payer-update route to repair a missing `externalRef`; reversal
-semantics for responsibility-bearing sales; till-side offline-credit gate.
+semantics for responsibility-bearing sales.
