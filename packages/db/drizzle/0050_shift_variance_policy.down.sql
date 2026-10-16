@@ -11,8 +11,20 @@
 -- policy and its flags, every derived close value and every approver verdict
 -- is LOST. Shift and close rows themselves are kept. Roll back RT-387 first,
 -- and take a backup if the policy history matters.
+--
+-- Locks: as in the up migration (the 0047 precedent), lock_timeout = 2s per
+-- lock request and every lock taken up front in the runtime's order (the FK
+-- parents, then shifts before shift_closes, as the close path does), so the
+-- drops below never acquire shift_closes before shifts and cannot deadlock
+-- with an in-flight close. On a timeout the down rolls back with nothing
+-- changed; retry when the blocking transaction has ended.
 
 BEGIN;
+
+SET LOCAL lock_timeout = '2s';
+
+LOCK TABLE tenants, stores, users IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE shifts, shift_closes IN ACCESS EXCLUSIVE MODE;
 
 DROP TABLE IF EXISTS shift_close_approver_checks;
 DROP FUNCTION IF EXISTS shift_close_approver_checks_append_only();
