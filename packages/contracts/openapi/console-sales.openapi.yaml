@@ -1,0 +1,838 @@
+openapi: 3.1.0
+info:
+  title: Data-Pulse-2 — Console Sales Read API
+  version: "1.0.0-draft"
+  description: >
+    Jira RT-561 (RT-556 F1): the operator-facing read of received sales that
+    Admin-Console spec 012 (Sales search and sale detail, RT-556) consumes.
+    Two read operations over the sales Backend-Core has RECEIVED:
+
+      1. `consoleListSales` — one store's sales over an inclusive
+         business-date range, filtered and keyset paginated, newest first.
+      2. `consoleGetSale`   — the full recorded detail of one sale.
+
+    There is NO write here: no void, return, refund, repair, reprint or edit.
+    Receipt reprint stays a POS action (`recordSaleReprint`, RT-534 /
+    OD-534-2) and sync repair stays on `sale-sync-ops`.
+
+
+    **Posture.** `1.0.0-draft`, contract only. `[GATED]` contract, pending
+    owner approval on RT-561. No route, guard, service or DTO implements it
+    yet: the runtime is RT-562, and until it ships both operations carry
+    `x-runtime-status: contract-only` and are not served.
+
+
+    **Why a separate surface (OD-556-1).** The POS sale history
+    (`pos-sales/sale-history.yaml`, RT-537) takes its store from a POS
+    credential (the operator envelope, or a device plus `X-Cashier-Admission`)
+    and refuses a dashboard session. This surface reads the same recorded
+    sale facts for a human console session, with its own auth, store scope,
+    audit and shape. `sale-history.yaml` and `SaleHistoryAuthGuard` are not
+    changed. The shapes below reuse the sale-history vocabulary (field names,
+    enums and nested shapes, pinned identical by the contract test) so both
+    reads describe one sale the same way, minus the POS-only parts
+    (`visibility`, `receiptFacts`, `reprint`) and plus the store
+    (`storeRef`, `storeTimezone`), because the console spans stores.
+
+
+    **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`)
+    only, gated `SessionOnlyAdminGuard` → `TenantContextGuard` → `RolesGuard`
+    (the RT-383 shift-closes precedent); the session-only guard rejects every
+    bearer (a `dashboard_api` token, a POS `device` token and an
+    `operatorAuthorization` envelope included) with 401. Roles: `owner`,
+    `tenant_admin`, `store_manager` (OD-556-3). The tenant comes from the
+    session, never from the request (§II, §XII). The store scope is the
+    operator-surface rule (`operator-store-scope.ts`, RT-51 D6 / RT-131 /
+    RT-193): `owner` and `tenant_admin` see their membership's store authority
+    (tenant-wide for an `all` grant, never narrowed by the active store);
+    `store_manager` sees the standard resolved store scope, including
+    active-store narrowing. The sales RLS policies are tenant-only, so every
+    read carries an explicit store predicate. A role outside the list
+    (`store_staff`), a `store_id` outside the caller's scope or of another
+    tenant, a sale of a store outside the scope, a sale of another tenant and
+    an absent sale are the same non-disclosing 404 (`RolesGuard` default
+    `denyAs: 404`, FR-ISO-4). There is no 403 on this surface.
+
+
+    **One store per list (OD-556-2).** `store_id` is REQUIRED on the list in
+    v1. A tenant-wide "all stores" list or sale-number lookup is a v1
+    non-goal; it would be a later, separately approved slice. The detail takes
+    only the `saleRef` and resolves it anywhere in the caller's store scope, so
+    a link from another console screen (for example `Receivable.saleRef`)
+    opens without knowing the store.
+
+
+    **Storage.** No migration. The list is a range scan of the RT-538 index
+    `idx_sales_tenant_store_business_date`
+    `(tenant_id, store_id, business_date DESC, occurred_at DESC, id DESC)`
+    (migration 0048), which matches the list order, so no sort is needed.
+
+
+    **Status filters (RT-561 decision).** `sync_status`, `voided`,
+    `return_state` and `erp_posting_state` ship in v1 with no new index. None
+    of them can use an index without a migration: `sync_status` is a `sales`
+    column outside the 0048 key, and the other three are derived per sale
+    (`voided` from `sale_voids`, `return_state` from the returned quantities,
+    `erp_posting_state` from the posting row, including the absence of one).
+    Each is evaluated as a predicate on the rows of the 0048 range scan, with
+    the per-sale probes the projection already runs, each on an existing
+    per-sale index. The bound is honest: one store and at most 31 business
+    days. In the worst case (a selective value such as `return_state=full`)
+    one page evaluates those probes for every sale of that store in the
+    range before it fills or ends. An index cannot serve a derived state;
+    serving it from an index would need a denormalized column, which is a
+    migration and out of v1 (OD-556-2).
+
+
+    **Completeness.** A list reflects the sales the server has RECEIVED up to
+    `asOf`. Sales still queued on a terminal are unknown to the server and are
+    not included, so a client must never present a page or a walk as the
+    complete store history.
+
+
+    **Ordering and paging.** `businessDate DESC, occurredAt DESC, saleRef
+    DESC`: a total, stable order on values fixed at capture. Keyset pagination
+    with an opaque cursor bound to the operation, the tenant, the store and
+    every filter. Walking the pages with the same filters returns no sale
+    twice. The walk is not a snapshot: `occurredAt` is the POS clock and a
+    terminal drains late, so a sale received during a walk is returned by that
+    walk only if it sorts after the walk's current position. The status
+    values are read when each page is read, so a sale whose status changes
+    during a walk (a sync completes, a return or void is recorded, a posting
+    resolves) is matched by the status it has when its page is read.
+
+
+    **Money.** Exact-decimal strings paired with an ISO-4217 `currencyCode`;
+    no float ever appears on the wire. Amounts are returned as recorded (§III:
+    Backend-Core never rewrites a POS total); the server does not convert
+    currencies or re-round. Timestamps are RFC 3339 `date-time` in UTC.
+    Business dates are `YYYY-MM-DD` in the store timezone, as persisted at
+    capture and never recomputed.
+
+
+    **ERP state.** `erpPostingState` is a read-only operational posting state
+    (OD-534-5), never a tax or fiscal compliance claim. The ERP document id is
+    shown only for a `posted` state. This surface never calls ERPNext, Frappe
+    or the connector.
+
+
+    **PII.** User references are `users.id` values. A displayed operator name
+    is never an email address, not even as a fallback (OD-534-6). No phone,
+    PIN, credential or card data. `reference` on a tender is the short
+    card-terminal reference, never card data.
+
+
+    **Audit (OD-534-7 applied to the console).** One `console_sales.listed`
+    event per list request with the filters and the item count, and no row
+    ids; the sale-number filter is recorded only as a flag. One
+    `console_sales.detail_read` event per authorized open, with the
+    `saleRef` as its target. Both name the session user and the store. No
+    receipt content, no names, no secrets. Rows are never audited
+    individually. Events are written for a 200 only.
+
+
+    **Error envelope.** The canonical `{ error: { code, message, request_id } }`
+    shape (`auth` / `pos-sales` / `sale-sync-ops` / `shift-closes`). Status
+    mapping: 400 `validation_error` (a malformed path or query value, an unknown
+    query key, a missing `store_id`, `from` or `to`, a bad or too-wide range,
+    or a cursor the server did not issue for this query), 401 unauthenticated,
+    404 non-disclosing not-found, 500 internal. There is no console rate limit
+    on this surface, so no 429.
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: console-sales
+    description: >
+      Console-facing read of received sales (RT-561), for Admin-Console spec
+      012 sales search and sale detail.
+
+security:
+  - cookieAuth: []
+
+paths:
+  /api/v1/sales:
+    get:
+      summary: List one store's received sales by business-date range (newest first, keyset paginated).
+      operationId: consoleListSales
+      x-runtime-status: contract-only
+      x-runtime-note: RT-561 contract PR; the controller ships in RT-562.
+      x-audit-action: console_sales.listed
+      tags: [console-sales]
+      description: >
+        The received sales of one store in the caller's scope, newest first by
+        (`businessDate`, `occurredAt`, `saleRef`). `store_id`, `from` and `to`
+        are REQUIRED. `from` and `to` are both inclusive, `to >= from`, and the
+        range is at most 31 business days (`to - from <= 30`, OD-534-4 applied
+        to the console). A wider range is 400 `validation_error`; it is never
+        truncated, and any stored period stays reachable through another
+        range. Every other filter is optional and they combine with AND. A
+        `store_id` outside the caller's scope is the non-disclosing 404. An
+        empty page (`items: []`, `nextCursor: null`) is a 200.
+
+        Audit: one `console_sales.listed` event per request, with the store,
+        the filters (the sale number only as a flag) and the item count, and
+        no row ids.
+      parameters:
+        - $ref: "#/components/parameters/StoreIdQuery"
+        - $ref: "#/components/parameters/BusinessDateFrom"
+        - $ref: "#/components/parameters/BusinessDateTo"
+        - $ref: "#/components/parameters/SaleNumberQuery"
+        - $ref: "#/components/parameters/SyncStatusQuery"
+        - $ref: "#/components/parameters/VoidedQuery"
+        - $ref: "#/components/parameters/ReturnStateQuery"
+        - $ref: "#/components/parameters/ErpPostingStateQuery"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: One page of the store's received sales, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsoleSalePage"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/sales/{saleRef}:
+    get:
+      summary: Read the full recorded detail of one sale in the caller's store scope.
+      operationId: consoleGetSale
+      x-runtime-status: contract-only
+      x-runtime-note: RT-561 contract PR; the controller ships in RT-562.
+      x-audit-action: console_sales.detail_read
+      tags: [console-sales]
+      description: >
+        Every recorded fact of the sale: lines in receipt order when recorded,
+        tenders, change, the receipt header snapshot, the void and returns
+        summaries and the ERP posting state. A fact that was never recorded is
+        null or `unavailable`, never guessed or filled from current values
+        (OD-534-3/6). No reprint eligibility and no receipt-fact completeness:
+        those are POS concerns. The sale resolves anywhere in the caller's
+        store scope; a sale of another tenant, of a store outside the scope,
+        or an absent ref is the same non-disclosing 404. The operation takes
+        no query parameter; any query key is 400 `validation_error`.
+
+        Audit: one `console_sales.detail_read` event per authorized open, with
+        the `saleRef` and the sale's store.
+      parameters:
+        - $ref: "#/components/parameters/SaleRef"
+      responses:
+        "200":
+          description: The detail projection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsoleSaleDetail"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: dp2_session
+      description: >
+        The human dashboard session cookie (httpOnly `dp2_session`), verified
+        by `SessionOnlyAdminGuard`. The only accepted credential on this
+        surface: a machine bearer, a POS `device` token or an
+        `operatorAuthorization` envelope is rejected (401). `RolesGuard` +
+        `@Roles("owner", "tenant_admin", "store_manager")` gate both routes
+        (default deny → 404). 401 semantics are owned by 028 (G10).
+
+  parameters:
+    StoreIdQuery:
+      name: store_id
+      in: query
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        REQUIRED in v1 (OD-556-2). The one store whose sales are listed.
+        Validated against the caller's store scope: a store outside it, or of
+        another tenant, is the non-disclosing 404. Case insensitive. A missing
+        or malformed value is 400 `validation_error`.
+    BusinessDateFrom:
+      name: from
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date
+      description: First business day of the range, inclusive, in the store timezone.
+    BusinessDateTo:
+      name: to
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date
+      description: >
+        Last business day of the range, inclusive. `to >= from` and
+        `to - from <= 30` (31 business days), else 400 `validation_error`.
+        Never truncated.
+    SaleNumberQuery:
+      name: sale_number
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 96
+      description: >
+        Exact match on the captured receipt `saleNumber`
+        (`CaptureSaleReceipt.saleNumber` in `pos-sales/sales.yaml`), within the
+        store and range. A sale captured without a receipt snapshot has none
+        and never matches.
+    SyncStatusQuery:
+      name: sync_status
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/SyncStatus"
+      description: Only sales with this server-authoritative sync status (spec 032).
+    VoidedQuery:
+      name: voided
+      in: query
+      required: false
+      schema:
+        type: boolean
+      description: >
+        `true`: only voided sales. `false`: only sales that are not voided.
+        Only the literal values `true` and `false` are accepted; any other
+        value is 400 `validation_error`.
+    ReturnStateQuery:
+      name: return_state
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/ReturnState"
+      description: Only sales whose projected `returnState` is this value.
+    ErpPostingStateQuery:
+      name: erp_posting_state
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/ErpPostingState"
+      description: >
+        Only sales whose PROJECTED `erpPostingState` is this value, never the
+        raw posting status: `pending` matches a `pending` or
+        `failed_transient` posting, `failed` a `permanently_rejected` one, and
+        `unknown` a sale with no sale posting row (see `ErpPostingState`).
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 512
+        pattern: "^[A-Za-z0-9_-]+$"
+      description: >
+        Opaque keyset cursor from a prior page's `nextCursor`, bound to the
+        operation, the tenant, the store and every filter (`from`, `to`,
+        `sale_number`, `sync_status`, `voided`, `return_state`,
+        `erp_posting_state`). Do not decode or construct it; omit it for the
+        first page. A value the server did not issue, cannot decode, or that is
+        reused with another store or other filters is 400 `validation_error`.
+        The caller's store scope is checked on every request and is never
+        carried by the cursor.
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+      description: Maximum items per page. The server MAY return fewer.
+    SaleRef:
+      name: saleRef
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        Stable server-issued sale reference. Case insensitive. Resolves only
+        within the caller's store scope; any other ref is the non-disclosing
+        404. A value that is not a UUID is 400 `validation_error` and never
+        reaches the database.
+
+  schemas:
+    # -----------------------------------------------------------------------
+    # Shared vocabulary — identical to pos-sales/sale-history.yaml
+    # (pinned by console-sales.contract.spec.ts; descriptions may differ)
+    # -----------------------------------------------------------------------
+    DecimalAmount:
+      type: string
+      pattern: '^-?[0-9]{1,15}(\.[0-9]{1,4})?$'
+      description: Exact-decimal monetary amount as a string (never a float); `numeric(19,4)` at rest.
+    CurrencyCode:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      description: ISO-4217 alphabetic currency code.
+    SyncStatus:
+      type: string
+      enum: [captured, synced, failed-retryable, failed-needs-repair]
+      description: The server-authoritative sale status (spec 032), as on `Sale.syncStatus`.
+    ReturnState:
+      type: string
+      enum: [none, partial, full]
+      description: >
+        `none`: no return recorded. `partial`: at least one line has quantity
+        left to return. `full`: every line is fully returned.
+    ErpPostingState:
+      type: string
+      enum: [posted, pending, failed, unknown]
+      description: >
+        Read-only operational ERP posting state (OD-534-5), NOT a tax or
+        fiscal compliance claim. Mapped from `erpnext_posting_status`:
+        `posted` -> posted; `pending` and `failed_transient` -> pending;
+        `permanently_rejected` -> failed; no posting row (including a tenant
+        without ERP, or a sale stranded before its posting intent) -> unknown.
+        `unknown` never means "not posted".
+    NameSource:
+      type: string
+      enum: [snapshot, current, unavailable]
+      description: >
+        Where a displayed name or label comes from (OD-534-6). `snapshot`: the
+        value recorded when the sale was made. `current`: today's value, shown
+        for a sale captured without a snapshot. `unavailable`: no value. A
+        current value is never presented as the historical one.
+
+    DeviceView:
+      type: object
+      additionalProperties: false
+      required: [deviceRef, label, labelSource]
+      properties:
+        deviceRef:
+          type: [string, "null"]
+          format: uuid
+          description: Null for a sale captured before RT-77 device attribution.
+        label:
+          type: [string, "null"]
+        labelSource:
+          $ref: "#/components/schemas/NameSource"
+
+    OperatorView:
+      type: object
+      additionalProperties: false
+      required: [userRef, displayName, nameSource]
+      properties:
+        userRef:
+          type: [string, "null"]
+          format: uuid
+        displayName:
+          type: [string, "null"]
+          description: Never an email address, not even as a fallback (OD-534-6).
+        nameSource:
+          $ref: "#/components/schemas/NameSource"
+
+    SaleHistoryLine:
+      type: object
+      additionalProperties: false
+      required:
+        - lineRef
+        - sequence
+        - lineName
+        - unitPrice
+        - currencyCode
+        - quantity
+        - lineAmount
+        - taxAmount
+        - unit
+        - returnedQuantity
+      properties:
+        lineRef:
+          type: string
+          format: uuid
+        sequence:
+          type: [integer, "null"]
+          minimum: 1
+          description: 1-based position on the original receipt; null when not recorded.
+        lineName:
+          type: string
+        unitPrice:
+          $ref: "#/components/schemas/DecimalAmount"
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+        quantity:
+          type: string
+        lineAmount:
+          $ref: "#/components/schemas/DecimalAmount"
+        taxAmount:
+          anyOf:
+            - $ref: "#/components/schemas/DecimalAmount"
+            - type: "null"
+        unit:
+          type: string
+        returnedQuantity:
+          type: string
+          description: Cumulative quantity returned on this line ("0" when none).
+
+    SaleTenderView:
+      type: object
+      additionalProperties: false
+      required: [method, amount, reference, sequence]
+      description: A captured tender line (RT-10 D1); the amount is NET of change, as captured.
+      properties:
+        method:
+          type: string
+          enum: [cash, card_external]
+        amount:
+          $ref: "#/components/schemas/DecimalAmount"
+        reference:
+          type: [string, "null"]
+          description: The short card-terminal reference for `card_external`; never card data.
+        sequence:
+          type: [integer, "null"]
+          minimum: 1
+
+    ReceiptHeader:
+      type: object
+      additionalProperties: false
+      required: [branchName, branchAddress, taxRegistrationId]
+      description: >
+        The receipt header captured with the sale. Never today's store values:
+        a sale without a snapshot has no header.
+      properties:
+        branchName:
+          type: string
+        branchAddress:
+          type: string
+        taxRegistrationId:
+          type: string
+
+    VoidSummary:
+      type: object
+      additionalProperties: false
+      required: [voidedAt, voidBusinessDate, approved, approverRole]
+      properties:
+        voidedAt:
+          type: string
+          format: date-time
+        voidBusinessDate:
+          type: [string, "null"]
+          format: date
+        approved:
+          type: boolean
+          description: True for an RT-530 manager-approved void; false for a legacy void.
+        approverRole:
+          type: [string, "null"]
+          enum: [owner, tenant_admin, store_manager, null]
+          description: The approver's role only; no approver name or id is exposed.
+
+    ReturnSummary:
+      type: object
+      additionalProperties: false
+      required: [returnRef, recordedAt, businessDate, returnTotal, lines]
+      properties:
+        returnRef:
+          type: string
+          format: uuid
+        recordedAt:
+          type: string
+          format: date-time
+        businessDate:
+          type: string
+          format: date
+        returnTotal:
+          $ref: "#/components/schemas/DecimalAmount"
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReturnSummaryLine"
+
+    ReturnSummaryLine:
+      type: object
+      additionalProperties: false
+      required: [lineRef, quantity, lineAmount]
+      properties:
+        lineRef:
+          type: string
+          format: uuid
+        quantity:
+          type: string
+        lineAmount:
+          $ref: "#/components/schemas/DecimalAmount"
+
+    ErpPostingView:
+      type: object
+      additionalProperties: false
+      required: [sale, saleDocumentRef, reversal, reversalDocumentRef]
+      properties:
+        sale:
+          $ref: "#/components/schemas/ErpPostingState"
+        saleDocumentRef:
+          type: [string, "null"]
+          description: The ERPNext document id; present only when `sale` is `posted`.
+        reversal:
+          description: The void's reversal posting state; null unless the sale is voided.
+          anyOf:
+            - $ref: "#/components/schemas/ErpPostingState"
+            - type: "null"
+        reversalDocumentRef:
+          type: [string, "null"]
+
+    # -----------------------------------------------------------------------
+    # Console projections (explicit wire shapes, never DB rows)
+    # -----------------------------------------------------------------------
+    ConsoleSalePage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor, asOf, storeRef, storeTimezone, from, to]
+      description: One page of `consoleListSales`.
+      properties:
+        items:
+          type: array
+          # Mirrors the page_size maximum (100).
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/ConsoleSaleItem"
+        nextCursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page; `null` on the last page.
+        asOf:
+          type: string
+          format: date-time
+          description: >
+            Server time of this read. The page covers the sales the server had
+            received by then; sales still queued on any terminal are not
+            included.
+        storeRef:
+          type: string
+          format: uuid
+          description: The listed store (the `store_id` query value, lower case).
+        storeTimezone:
+          type: string
+          description: >
+            The store's current IANA time zone (for example `Africa/Cairo`),
+            for showing times. Business dates were fixed at capture in the
+            timezone of that time and are not recomputed if it later changed.
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+
+    ConsoleSaleItem:
+      type: object
+      additionalProperties: false
+      required:
+        - saleRef
+        - storeRef
+        - saleNumber
+        - businessDate
+        - occurredAt
+        - receivedAt
+        - device
+        - operator
+        - currencyCode
+        - posTotal
+        - syncStatus
+        - voided
+        - returnState
+        - erpPostingState
+      description: >
+        One sale in a console list, and the summary of its detail: the
+        `SaleHistoryItem` fields of `pos-sales/sale-history.yaml` plus the
+        sale's store.
+      properties:
+        saleRef:
+          type: string
+          format: uuid
+        storeRef:
+          type: string
+          format: uuid
+          description: The sale's store.
+        saleNumber:
+          type: [string, "null"]
+          description: The receipt sale number; null when the sale was captured without a receipt snapshot.
+        businessDate:
+          type: string
+          format: date
+        occurredAt:
+          type: string
+          format: date-time
+        receivedAt:
+          type: string
+          format: date-time
+          description: Server clock at receipt.
+        device:
+          $ref: "#/components/schemas/DeviceView"
+        operator:
+          $ref: "#/components/schemas/OperatorView"
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+        posTotal:
+          $ref: "#/components/schemas/DecimalAmount"
+        syncStatus:
+          $ref: "#/components/schemas/SyncStatus"
+        voided:
+          type: boolean
+        returnState:
+          $ref: "#/components/schemas/ReturnState"
+        erpPostingState:
+          $ref: "#/components/schemas/ErpPostingState"
+
+    ConsoleSaleDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - summary
+        - storeTimezone
+        - lines
+        - lineOrder
+        - tenderState
+        - tenders
+        - changeGiven
+        - settledAt
+        - receiptNumber
+        - receiptHeader
+        - void
+        - returns
+        - erpPosting
+      description: >
+        The full recorded detail of one sale: the `SaleHistoryDetail` facts of
+        `pos-sales/sale-history.yaml` without the POS-only `receiptFacts` and
+        `reprint`, plus the store's timezone.
+      properties:
+        summary:
+          $ref: "#/components/schemas/ConsoleSaleItem"
+        storeTimezone:
+          type: string
+          description: >
+            The sale's store's current IANA time zone, for showing times.
+            Business dates were fixed at capture and are not recomputed.
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/SaleHistoryLine"
+        lineOrder:
+          type: string
+          enum: [recorded, not_recorded]
+          description: "`not_recorded`: the lines are in a stable order that is not the original receipt order."
+        tenderState:
+          type: string
+          enum: [recorded, unknown]
+          description: "`unknown`: a tender-unknown sale (RT-10 D8); `tenders` is empty."
+        tenders:
+          type: array
+          items:
+            $ref: "#/components/schemas/SaleTenderView"
+        changeGiven:
+          description: >
+            Cash change given, from the receipt snapshot. "0" when a snapshot
+            was captured without `changeGiven`; null ONLY when the sale has no
+            receipt snapshot.
+          anyOf:
+            - $ref: "#/components/schemas/DecimalAmount"
+            - type: "null"
+        settledAt:
+          type: [string, "null"]
+          format: date-time
+          description: The time printed on the original receipt; null when not recorded.
+        receiptNumber:
+          type: [string, "null"]
+          description: >
+            The receipt number printed on the original receipt. Equals
+            `summary.saleNumber` when the snapshot omitted `receiptNumber`;
+            null ONLY when the sale has no receipt snapshot.
+        receiptHeader:
+          description: The receipt header captured with the sale; null when not recorded.
+          anyOf:
+            - $ref: "#/components/schemas/ReceiptHeader"
+            - type: "null"
+        void:
+          description: Present when the sale is voided.
+          anyOf:
+            - $ref: "#/components/schemas/VoidSummary"
+            - type: "null"
+        returns:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReturnSummary"
+        erpPosting:
+          $ref: "#/components/schemas/ErpPostingView"
+
+    # -----------------------------------------------------------------------
+    # Canonical error envelope (auth / pos-sales / sale-sync-ops / shift-closes)
+    # -----------------------------------------------------------------------
+    Error:
+      type: object
+      required: [error]
+      description: >
+        Canonical error envelope. Out-of-scope and cross-tenant refusals are
+        non-disclosing (§II, §XII): they never name the cause.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id; the cause is recorded server-side.
+
+  responses:
+    ValidationFailure:
+      description: >
+        validation_error (400): a malformed path or query value, an unknown
+        query key, a missing `store_id`, `from` or `to`, `to` before `from`, a
+        range wider than 31 business days, a `voided` value other than `true`
+        or `false`, or a cursor the server did not issue for this operation,
+        tenant, store and filters. Checked before any database read.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        Unauthenticated (401): a missing or invalid session cookie, or a
+        non-cookie credential. Non-disclosing. Owned by 028 (G10).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >
+        not_found (404), non-disclosing: identical for a role outside
+        `owner` / `tenant_admin` / `store_manager`, a `store_id` outside the
+        caller's scope or of another tenant, a sale of a store outside the
+        scope, a sale of another tenant and an absent ref.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SystemFailure:
+      description: >
+        system_failure (500): unexpected server error; the cause is recorded
+        server-side under `request_id`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

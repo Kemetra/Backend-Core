@@ -127,8 +127,11 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "consoleCreatePayerAccount",
       // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
       "consoleDeleteTenantLogo",
+      // RT-561 (RT-556 F1): console sales read contract; the runtime ships in RT-562.
+      "consoleGetSale",
       "consoleGetTenantLogo",
       "consoleListPayerAccounts",
+      "consoleListSales",
       "consolePreviewTenantLogo",
       "consolePutTenantLogo",
       // RT-414: platform support-session contract; the runtime ships after owner approval.
