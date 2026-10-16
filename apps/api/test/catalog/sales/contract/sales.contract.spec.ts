@@ -1419,7 +1419,10 @@ describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
   it("names 422 sale_responsibility_mismatch and orders it against sale_tender_mismatch", () => {
     expect(unprocessable()).toContain("`sale_responsibility_mismatch`");
     expect(unprocessable()).toContain("`sale_tender_mismatch` is returned only when `responsibilities` is absent");
-    expect(captureText()).toContain("the coverage rule is checked first, then the line price invariant, then the payers");
+    expect(captureText()).toContain(
+      "Order of the 422s: the device-path offline refusal, then the coverage rule, then the line price invariant, then the payers",
+    );
+    expect(captureText()).not.toContain("the coverage rule is checked first, then the line price invariant");
   });
 
   it("names one non-disclosing 422 sale_responsibility_payer_invalid for every payer refusal", () => {

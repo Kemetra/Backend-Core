@@ -183,6 +183,14 @@ describe("settlement.yaml — operations (RT-417)", () => {
     expect(doc.security).toBeUndefined();
   });
 
+  it("create declares the non-disclosing 404 for an out-of-scope storeId (CodeRabbit #779)", () => {
+    const responses = (findOp("consoleCreatePayerAccount")?.responses ?? {}) as Record<string, { $ref?: string }>;
+    expect(responses["404"]?.$ref).toBe("#/components/responses/NotFound");
+    const notFound = (doc.components?.responses?.["NotFound"] ?? {}) as { description?: string };
+    expect((notFound.description ?? "").replace(/\s+/g, " ")).toContain("out-of-scope `storeId`");
+    expect((doc.info?.description ?? "").replace(/\s+/g, " ")).toContain("404 not-found (non-disclosing)");
+  });
+
   it("requires an Idempotency-Key on create", () => {
     expect(findOp("consoleCreatePayerAccount")?.["x-idempotency"]).toBe("required");
   });

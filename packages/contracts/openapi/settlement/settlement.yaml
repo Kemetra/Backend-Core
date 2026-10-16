@@ -62,8 +62,9 @@ info:
     Error envelope: the canonical `{ error: { code, message, request_id } }`,
     identical to the shared shape (`auth` / `pos-sales` / `sale-sync-ops`).
     Status mapping: 400 validation, 401 unauthenticated, 403 insufficient-role
-    or `origin_rejected`, 409 conflict, 500 internal. Tenant isolation is RLS;
-    an out-of-scope id is a non-disclosing 404 wherever an id is accepted.
+    or `origin_rejected`, 404 not-found (non-disclosing), 409 conflict, 500
+    internal. Tenant isolation is RLS; an out-of-scope id is a non-disclosing
+    404 wherever an id is accepted (on create: an out-of-scope `storeId`).
 
 servers:
   - url: https://api.example.com
@@ -134,6 +135,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/ForbiddenOrOriginRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "500":
@@ -360,6 +363,15 @@ components:
         (G10). Also `origin_rejected` (RT-430): the request is authenticated by
         the `dp2_session` cookie and its `Origin` header is missing, or is
         neither the API's own origin nor listed in `ALLOWED_ORIGINS`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >
+        not_found (404) — an out-of-scope `storeId` on create: a store that
+        does not exist, belongs to another tenant, or is outside the caller's
+        store scope. Non-disclosing: one body for every cause (§II/§XII).
       content:
         application/json:
           schema:

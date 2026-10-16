@@ -380,8 +380,9 @@ paths:
         and after authentication and the RT-224 cashier-claim check (403
         `refused`). On the envelope path the role check (403
         `sale_responsibility_role_refused`) is decided after authentication and
-        before every 422. Order: the coverage rule is checked first, then the line
-        price invariant, then the payers. A replay of an
+        before every 422. Order of the 422s: the device-path offline refusal,
+        then the coverage rule, then the line price invariant, then the payers
+        (as in `CaptureUnprocessable`). A replay of an
         already-captured sale answers before these checks, so a payer suspended
         after capture never turns a stored result into a 422. Nothing is
         recorded on any failure.
