@@ -157,7 +157,7 @@ export async function assertResponsibilityPayersEligible(
         AND tenant_id = $2
         AND (store_id IS NULL OR store_id = $3)
         AND status = 'active'
-        AND external_ref ~ '\\S'
+        AND external_ref ~ '[^[:space:]]'
       FOR SHARE`,
     [payerIds, scope.tenantId, scope.storeId],
   );
