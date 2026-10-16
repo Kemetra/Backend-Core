@@ -321,9 +321,12 @@ paths:
         Tender (RT-10 D1, from RT-77): the optional `tenders` list records how
         the sale was paid. Each `amount` is NET of change (cash = tendered −
         change), each entry is one tender line (RT-359: `tenderRef` /
-        `sequence`; see the `tenders` field for the per-sale rules), and the
-        amounts MUST sum to `posTotal` exactly (else 422
-        `sale_tender_mismatch`); nothing is recorded on either failure. The
+        `sequence`; see the `tenders` field for the per-sale rules). When
+        `responsibilities` is absent, the amounts MUST sum to `posTotal` exactly
+        (else 422 `sale_tender_mismatch`); nothing is recorded on either
+        failure. When it is present, the combined coverage rule replaces this one
+        (RT-417, see Payer responsibilities below): the tenders cover only the
+        part paid at the till. The
         tender list is hashed into the payload, so a replay that adds, drops or
         changes tenders is a different payload (409). An absent list is a
         tender-unknown sale (RT-10 D8): it is captured exactly as before, and
@@ -331,8 +334,9 @@ paths:
 
         Line pricing (RT-105): every line must satisfy the `CaptureSaleLine`
         price invariant, else 422 `sale_line_pricing_invalid`; nothing is
-        recorded. The tender rule is checked first, so a body that breaks both
-        answers `sale_tender_mismatch`. The invariant applies to a first capture
+        recorded. The coverage rule (tender-only or combined) is checked first,
+        so a body that breaks both answers `sale_tender_mismatch` (or, with
+        `responsibilities`, `sale_responsibility_mismatch`). The invariant applies to a first capture
         only: a replay of a sale captured before RT-105 is never re-checked, and
         still returns 200 with the stored projection.
 
@@ -998,8 +1002,9 @@ components:
             $ref: "#/components/schemas/SaleTender"
           description: >
             OPTIONAL (RT-10 D1) — how the sale was paid, one entry per tender
-            line. Net of change, and summing to `posTotal` exactly (else 422
-            `sale_tender_mismatch`). Absent = a tender-unknown sale (RT-10 D8).
+            line. Net of change. Without `responsibilities`, summing to
+            `posTotal` exactly (else 422 `sale_tender_mismatch`); with them, the
+            combined coverage rule applies instead (RT-417). Absent = a tender-unknown sale (RT-10 D8).
             Accepted from RT-77; do not send before then (see the versioning
             note). Per-sale rules (RT-359), each a 400 `validation_error`:
             `tenderRef` is unique within the sale; `sequence` is unique within

@@ -67,15 +67,17 @@ info:
     Connector posts the sale as ONE settled (paid) sales document with one
     payment per tender, inside the same exactly-once submit — there is no
     separate payment document, no new work-item kind and no ack change (one
-    `documentRef` per work item). Backend-Core guarantees the tender amounts
-    sum to `posTotal` exactly; the Connector posts the amounts verbatim and
+    `documentRef` per work item). For a work item WITHOUT
+    `sale.responsibilities`, Backend-Core guarantees the tender amounts sum to `posTotal` exactly; the Connector posts the amounts verbatim and
     never rounds the document total. The Connector builds the document total
     from the frozen lines, and `posTotal` may differ from it (008 keeps the POS
     total verbatim; the difference is only an advisory mismatch flag). If the
     tender total differs from the document total the Connector would build, it
     acks `permanently_rejected` / `validation` (a reconciliation case). It
     never adjusts a line, invents change or leaves a partial balance to force a
-    match. When `sale.tenders` is absent (an older Backend-Core) or empty (a
+    match. With `sale.responsibilities`, the RT-417 coverage check below replaces this tender-total check:
+    the tenders settle only the part paid at the till and the payer's share stays
+    outstanding by design. When `sale.tenders` is absent (an older Backend-Core) or empty (a
     tender-unknown sale), the Connector posts exactly as before: an unpaid
     invoice with the amount outstanding (rider R1 interim mode). Tender is
     NEVER derived from `posTotal`.

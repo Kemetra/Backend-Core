@@ -1406,6 +1406,16 @@ describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
     expect(fieldText()).toContain("is NOT a tender-unknown sale");
   });
 
+  it("qualifies the RT-76 tender-only rule to bodies without responsibilities (Codex #779 P1)", () => {
+    expect(captureText()).toContain(
+      "When `responsibilities` is absent, the amounts MUST sum to `posTotal` exactly",
+    );
+    expect(captureText()).toContain("When it is present, the combined coverage rule replaces this one");
+    expect(captureText()).toContain("The coverage rule (tender-only or combined) is checked first");
+    const tenders = flat(field("CaptureSaleRequest", "tenders")?.description);
+    expect(tenders).toContain("Without `responsibilities`, summing to `posTotal` exactly");
+  });
+
   it("names 422 sale_responsibility_mismatch and orders it against sale_tender_mismatch", () => {
     expect(unprocessable()).toContain("`sale_responsibility_mismatch`");
     expect(unprocessable()).toContain("`sale_tender_mismatch` is returned only when `responsibilities` is absent");

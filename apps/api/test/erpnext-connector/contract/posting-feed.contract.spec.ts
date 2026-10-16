@@ -874,6 +874,11 @@ describe("erpnext-connector/posting-feed.yaml — RT-417 responsibility lines (1
     expect(info()).toContain("acks `permanently_rejected` / `validation`");
   });
 
+  it("qualifies the RT-76 tender-total check to work items without responsibilities (Codex #779 P1)", () => {
+    expect(info()).toContain("For a work item WITHOUT `sale.responsibilities`, Backend-Core guarantees the tender amounts sum to `posTotal` exactly");
+    expect(info()).toContain("With `sale.responsibilities`, the RT-417 coverage check below replaces this tender-total check");
+  });
+
   it("payerExternalRef is frozen with the RT-332 resolution and stays out of payloadHash", () => {
     expect(listText()).toContain("frozen with the work item's resolution (RT-332)");
     expect(listText()).toContain("not part of `payloadHash`");

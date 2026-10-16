@@ -195,7 +195,9 @@ on the RT-224 device path. So any capture refusal arrives after the goods left.
 - `settlement.yaml` 2.0.0 (BREAKING): only `consoleCreatePayerAccount` /
   `consoleListPayerAccounts` remain (contract-only until RT-418); six operations
   retired (`x-retired-operations`, runtime removed in RT-422); `creditTerms`
-  removed; `externalRef` is the ERPNext Customer link.
+  removed; `externalRef` is the ERPNext Customer link and, when present, must be
+  nonblank: a blank value, accepted by 1.0.0-draft, is now a 400 (Codex review
+  of #779).
 - Offline credit (owner decision 2026-10-16, option A): `responsibilities` are
   accepted only on the `operatorAuthorization` path; on the RT-224 `device`
   path they are 422 `sale_responsibility_offline_refused`. The POS captures a
