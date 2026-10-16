@@ -863,6 +863,7 @@ describe("erpnext-connector/posting-feed.yaml — RT-417 responsibility lines (1
     const text = flat(field("SaleResponsibility", "payerExternalRef")?.description);
     expect(text).toContain("`permanently_rejected` / `validation`");
     expect(text).toContain("never falls back to the store's Customer");
+    expect(text).toContain("Null, blank, or a link that resolves to no Customer");
     expect(info()).toContain("one SI per payer or a split is decided in RT-419");
   });
 

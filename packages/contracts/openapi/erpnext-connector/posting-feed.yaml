@@ -823,7 +823,7 @@ components:
           description: >
             The payer's ERPNext Customer link (`settlement/settlement.yaml`
             `PayerAccount.externalRef`), resolved by the Connector to the
-            Customer the share is posted against. Null, or a link that resolves
+            Customer the share is posted against. Null, blank, or a link that resolves
             to no Customer, is an unmapped payer: the Connector acks
             `permanently_rejected` / `validation` and never falls back to the
             store's Customer or any default Customer. (Capture already refuses

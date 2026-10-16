@@ -2003,7 +2003,7 @@ components:
         `posTotal` exactly; `sale_responsibility_payer_invalid` (RT-417) — a
         `payerRef` that does not exist, belongs to another tenant, is scoped to
         another store, is `suspended`, or has no `externalRef` (no ERPNext
-        Customer link), with one body for every cause, never naming which;
+        Customer link: null or blank), with one body for every cause, never naming which;
         `sale_responsibility_offline_refused` (RT-417, owner decision
         2026-10-16) — `responsibilities` sent on the `device` path (credit is
         accepted only on the `operatorAuthorization` path).

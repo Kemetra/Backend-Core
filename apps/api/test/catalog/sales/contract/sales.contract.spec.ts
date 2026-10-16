@@ -1420,6 +1420,7 @@ describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
       "scoped to another store",
       "is `suspended`",
       "has no `externalRef`",
+      "null or blank",
     ]) {
       expect({ cause, found: text.includes(cause) }).toEqual({ cause, found: true });
     }

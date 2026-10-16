@@ -266,6 +266,18 @@ describe("settlement.yaml — payer account shapes", () => {
     expect(text).toContain("never falls back to the store's Customer");
   });
 
+  it("a non-null externalRef must be nonblank (Codex #779: a blank link would dead-letter at posting)", () => {
+    const ref = schema("PayerAccountCreate")?.properties?.["externalRef"] as
+      | { type?: unknown; minLength?: number; pattern?: string; description?: string }
+      | undefined;
+    expect(ref?.type).toEqual(["string", "null"]);
+    expect(ref?.minLength).toBe(1);
+    const nonblank = new RegExp(ref?.pattern ?? "$^");
+    for (const ok of ["CUST-0001", "Acme Insurance", "x"]) expect({ ok, m: nonblank.test(ok) }).toEqual({ ok, m: true });
+    for (const bad of ["", " ", "   ", "\t", " \n "]) expect({ bad, m: nonblank.test(bad) }).toEqual({ bad, m: false });
+    expect((ref?.description ?? "").replace(/\s+/g, " ")).toContain("blank or whitespace-only value is a 400");
+  });
+
   it("the projection is strict, camelCase, with no tenant_id or credit terms (§IV)", () => {
     const payer = schema("PayerAccount");
     expect(payer?.additionalProperties).toBe(false);

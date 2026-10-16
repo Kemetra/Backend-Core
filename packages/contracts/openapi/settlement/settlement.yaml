@@ -247,6 +247,8 @@ components:
           maxLength: 200
         externalRef:
           type: [string, "null"]
+          minLength: 1
+          pattern: '\S'
           description: >
             The payer's ERPNext Customer link (RT-413 §2): the identifier the
             Connector resolves to the ERPNext Customer that a sale's
@@ -254,7 +256,10 @@ components:
             (no FK, never looked up here). Null = not yet linked; the
             Connector fails closed for an unlinked or unknown payer and never
             falls back to the store's Customer (see
-            `erpnext-connector/posting-feed.yaml`).
+            `erpnext-connector/posting-feed.yaml`). When present it must contain
+            a non-whitespace character: a blank or whitespace-only value is a
+            400 `validation_error`, because it could never resolve to a
+            Customer (Codex review of #779).
         storeId:
           type: [string, "null"]
           format: uuid
