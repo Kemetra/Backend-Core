@@ -3,8 +3,8 @@
  *
  * RT-366 (RT-287 F3): the device lifecycle impact preview in
  * `devices.openapi.yaml` — `consoleGetDeviceImpact` and the impact payload on
- * the revoke's 409. `[GATED]` contract-first; the operation stays
- * `contract-only` until the stacked RT-366 runtime ships.
+ * the revoke's 409. `[GATED]` contract-first; the RT-366 runtime ships it
+ * unchanged on the wire (`devices-impact.http.integration.spec.ts`).
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
  * app boot and no HTTP. Pinned here:
@@ -133,11 +133,11 @@ const omit = (value: Record<string, unknown>, key: string): Record<string, unkno
 // 1. Operation
 // ===========================================================================
 describe("devices impact contract — operation", () => {
-  it("is consoleGetDeviceImpact, contract-only until the RT-366 runtime, with no foreign collision", () => {
+  it("is consoleGetDeviceImpact, implemented (no contract-only marker), with no foreign collision", () => {
     const operation = contract.operation("get", IMPACT_PATH);
     expect(operation["operationId"]).toBe("consoleGetDeviceImpact");
-    expect(operation["x-runtime-status"]).toBe("contract-only");
-    expect(String(operation["x-runtime-note"])).toMatch(/RT-366/);
+    expect(operation["x-runtime-status"]).toBeUndefined();
+    expect(operation["x-runtime-note"]).toBeUndefined();
     expect(contract.foreignOperationIds.has("consoleGetDeviceImpact")).toBe(false);
   });
 

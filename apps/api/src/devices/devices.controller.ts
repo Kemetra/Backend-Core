@@ -5,6 +5,7 @@
  *   GET  /api/v1/devices                    consoleListDevices
  *   GET  /api/v1/devices/{deviceId}         consoleGetDevice
  *   POST /api/v1/devices/{deviceId}/revoke  consoleRevokeDevice
+ *   GET  /api/v1/devices/{deviceId}/impact  consoleGetDeviceImpact (RT-366)
  *
  * Auth: the HUMAN `cookieAuth` session only → `SessionOnlyAdminGuard` (any
  * bearer is 401; a cookie POST without a trusted `Origin` is 403
@@ -17,7 +18,8 @@
  * Refusals: a malformed path, query, body or cursor is 400
  * `validation_error`; every scope refusal (role, other tenant, store outside
  * the scope, absent device) is the same non-disclosing 404; the Cash Session
- * rule refuses with 403 / 409 / 422 and its stable code.
+ * rule refuses with 403 / 409 / 422 and its stable code, and a 409 carries the
+ * refused revoke's impact preview as `error.details` (RT-366).
  */
 import {
   BadRequestException,
@@ -48,11 +50,14 @@ import {
   type DevicePage,
   type DeviceRevokeResult,
 } from "./devices.projections";
+import type { DeviceImpactPreview } from "./device-impact.projections";
 import {
   DeviceIdParamSchema,
+  DeviceImpactQuerySchema,
   DeviceListQuerySchema,
   DeviceRevokeBodySchema,
   PAGE_SIZE_DEFAULT,
+  type DeviceImpactQuery,
   type DeviceListQuery,
   type DeviceRevokeBody,
 } from "./devices.query";
@@ -154,8 +159,35 @@ export class DevicesController {
     } catch (err) {
       if (err instanceof DeviceNotFoundError) throw new NotFoundException(NOT_FOUND);
       if (err instanceof DeviceRevokeRefusedError) {
-        throw new HttpException({ code: err.code, message: REFUSAL_MESSAGES[err.code] }, err.status);
+        const body = { code: err.code, message: REFUSAL_MESSAGES[err.code] };
+        throw new HttpException(err.impact !== undefined ? { ...body, details: err.impact } : body, err.status);
       }
+      throw err;
+    }
+  }
+
+  /** GET — the read-only impact preview of one lifecycle action (RT-366). */
+  @Get("api/v1/devices/:deviceId/impact")
+  @UseGuards(RolesGuard)
+  @Roles("owner", "tenant_admin", "store_manager")
+  @Auditable("devices.impact_read")
+  async impact(
+    @Req() request: TenantContextRequest,
+    @Param("deviceId") deviceId: string,
+    @Query(new ZodValidationPipe(DeviceImpactQuerySchema)) query: DeviceImpactQuery,
+  ): Promise<DeviceImpactPreview> {
+    const scoped = requireTenant(request);
+    const id = parseDeviceId(deviceId);
+    annotateAudit(request, { device_id: id, action: query.action });
+    try {
+      return await this.service.impact({
+        ...scoped,
+        deviceId: id,
+        action: query.action,
+        ...(query.reason !== undefined ? { reason: query.reason } : {}),
+      });
+    } catch (err) {
+      if (err instanceof DeviceNotFoundError) throw new NotFoundException(NOT_FOUND);
       throw err;
     }
   }
