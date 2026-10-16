@@ -23,13 +23,17 @@
  */
 import "reflect-metadata";
 
-import { readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
-
 import Ajv, { type ValidateFunction } from "ajv";
 import addFormats from "ajv-formats";
 
-import { loadOpenApiContracts, type LoadedContract } from "../../src/openapi/loader";
+import {
+  allContracts,
+  contractDocument,
+  contractReader,
+  operationIdsExcept,
+  type ContractReader,
+  type OpenApiDocument,
+} from "../_helpers/openapi-contract";
 
 const CONTRACT_ID = "console-sales.openapi";
 const SALE_HISTORY_ID = "sale-history";
@@ -59,137 +63,32 @@ const SHARED_SCHEMAS = [
   "ErpPostingView",
 ] as const;
 
+type SchemaName = "ConsoleSalePage" | "ConsoleSaleItem" | "ConsoleSaleDetail" | "Error";
+
 const POS_ONLY_FIELDS = ["visibility", "receiptFacts", "reprint"] as const;
-
-interface ParameterObject {
-  $ref?: string;
-  in?: string;
-  name?: string;
-  required?: boolean;
-  description?: string;
-  schema?: Record<string, unknown>;
-}
-
-interface OperationObject {
-  operationId?: string;
-  security?: Array<Record<string, unknown>>;
-  parameters?: ParameterObject[];
-  requestBody?: unknown;
-  responses?: Record<string, { $ref?: string }>;
-  "x-runtime-status"?: string;
-  "x-runtime-note"?: string;
-  "x-audit-action"?: string;
-}
-
-type SchemaObject = Record<string, unknown> & {
-  required?: string[];
-  properties?: Record<string, Record<string, unknown>>;
-  additionalProperties?: unknown;
-};
-
-interface OpenApiDocument {
-  openapi?: string;
-  info?: { version?: string; description?: string };
-  security?: Array<Record<string, unknown>>;
-  paths?: Record<string, Record<string, OperationObject>>;
-  components?: {
-    schemas?: Record<string, SchemaObject>;
-    parameters?: Record<string, ParameterObject>;
-    securitySchemes?: Record<string, Record<string, unknown>>;
-  };
-}
-
-function contractsDir(): string {
-  return resolve(__dirname, "..", "..", "..", "..", "packages", "contracts", "openapi");
-}
-
-/** Every contract, top level and one folder down (the loader's scan is non-recursive). */
-function allContracts(): LoadedContract[] {
-  const root = contractsDir();
-  const folders = readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => join(root, entry.name));
-  return [...loadOpenApiContracts(), ...folders.flatMap((dir) => loadOpenApiContracts({ dir }))];
-}
 
 let doc: OpenApiDocument;
 let historyDoc: OpenApiDocument;
+let api: ContractReader;
+let pos: ContractReader;
 let otherOperationIds: Set<string>;
 const ajv = new Ajv({ strict: false, allErrors: true });
 addFormats(ajv);
 
 beforeAll(() => {
   const contracts = allContracts();
-  const found = contracts.find((c) => c.id === CONTRACT_ID);
-  if (!found) throw new Error(`${CONTRACT_ID} not found in packages/contracts/openapi/`);
-  doc = found.document as OpenApiDocument;
-  const history = contracts.find((c) => c.id === SALE_HISTORY_ID);
-  if (!history) throw new Error(`${SALE_HISTORY_ID} not found in packages/contracts/openapi/pos-sales/`);
-  historyDoc = history.document as OpenApiDocument;
-  otherOperationIds = new Set<string>();
-  for (const c of contracts) {
-    if (c.id === CONTRACT_ID) continue;
-    for (const item of Object.values((c.document as OpenApiDocument).paths ?? {})) {
-      for (const o of Object.values(item)) {
-        if (typeof o?.operationId === "string") otherOperationIds.add(o.operationId);
-      }
-    }
-  }
+  doc = contractDocument(contracts, CONTRACT_ID);
+  historyDoc = contractDocument(contracts, SALE_HISTORY_ID);
+  api = contractReader(doc);
+  pos = contractReader(historyDoc);
+  otherOperationIds = operationIdsExcept(contracts, CONTRACT_ID);
   ajv.addSchema(doc as object, CONTRACT_ID);
 });
 
-function op(path: string): OperationObject {
-  const found = doc.paths?.[path]?.["get"];
-  if (!found) throw new Error(`GET ${path} not declared`);
-  return found;
-}
-
-function schemaOf(source: OpenApiDocument, name: string): SchemaObject {
-  const s = source.components?.schemas?.[name];
-  if (!s) throw new Error(`schema ${name} not declared`);
-  return s;
-}
-
-function schema(name: string): SchemaObject {
-  return schemaOf(doc, name);
-}
-
-function validator(name: string): ValidateFunction {
+function validator(name: SchemaName): ValidateFunction {
   const v = ajv.getSchema(`${CONTRACT_ID}#/components/schemas/${name}`);
   if (!v) throw new Error(`ajv cannot resolve ${name}`);
   return v;
-}
-
-/** Resolves `#/components/parameters/<Name>` references. */
-function params(path: string): ParameterObject[] {
-  return (op(path).parameters ?? []).map((p) =>
-    p.$ref ? doc.components!.parameters![p.$ref.replace("#/components/parameters/", "")]! : p,
-  );
-}
-
-function param(path: string, name: string): ParameterObject {
-  const found = params(path).find((p) => p.name === name);
-  if (!found) throw new Error(`parameter ${name} not declared on ${path}`);
-  return found;
-}
-
-/**
- * The wire shape of a schema in `source`: every local `$ref` inlined and every
- * `description` dropped, so a named enum and an inline one compare equal and
- * only the shape is compared.
- */
-function shapeOf(source: OpenApiDocument, value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((v) => shapeOf(source, v));
-  if (value === null || typeof value !== "object") return value;
-  const record = value as Record<string, unknown>;
-  if (typeof record["$ref"] === "string") {
-    return shapeOf(source, schemaOf(source, record["$ref"].replace("#/components/schemas/", "")));
-  }
-  return Object.fromEntries(
-    Object.entries(record)
-      .filter(([key]) => key !== "description")
-      .map(([key, v]) => [key, shapeOf(source, v)]),
-  );
 }
 
 function without<T extends object>(value: T, key: keyof T): Omit<T, typeof key> {
@@ -224,7 +123,7 @@ const ITEM = {
 
 const PAGE = {
   items: [ITEM],
-  nextCursor: "eyJrIjoiY29uc29sZV9zYWxlcyJ9",
+  nextCursor: "bmV4dC1wYWdl",
   asOf: "2026-10-16T08:00:00.000Z",
   storeRef: STORE_REF,
   storeTimezone: "Africa/Cairo",
@@ -307,20 +206,20 @@ describe("console-sales — document and operations", () => {
     expect(Object.keys(doc.paths ?? {}).sort()).toEqual([LIST_PATH, DETAIL_PATH].sort());
     for (const { id, path } of OPERATIONS) {
       expect(Object.keys(doc.paths![path]!)).toEqual(["get"]);
-      expect(op(path).operationId).toBe(id);
-      expect(op(path).requestBody).toBeUndefined();
+      expect(api.get(path).operationId).toBe(id);
+      expect(api.get(path).requestBody).toBeUndefined();
     }
   });
 
   it("marks both operations contract-only until the RT-562 runtime", () => {
     for (const { path } of OPERATIONS) {
-      expect(op(path)["x-runtime-status"]).toBe("contract-only");
-      expect(op(path)["x-runtime-note"]).toMatch(/RT-562/);
+      expect(api.get(path)["x-runtime-status"]).toBe("contract-only");
+      expect(api.get(path)["x-runtime-note"]).toMatch(/RT-562/);
     }
   });
 
   it("names one audit action per operation", () => {
-    for (const { path, audit } of OPERATIONS) expect(op(path)["x-audit-action"]).toBe(audit);
+    for (const { path, audit } of OPERATIONS) expect(api.get(path)["x-audit-action"]).toBe(audit);
   });
 
   it("collides with no operationId in any other contract", () => {
@@ -334,7 +233,7 @@ describe("console-sales — document and operations", () => {
 describe("console-sales — auth and read scope", () => {
   it("accepts only the human cookieAuth session", () => {
     expect(doc.security).toEqual([{ cookieAuth: [] }]);
-    for (const { path } of OPERATIONS) expect(op(path).security).toBeUndefined();
+    for (const { path } of OPERATIONS) expect(api.get(path).security).toBeUndefined();
     expect(Object.keys(doc.components?.securitySchemes ?? {})).toEqual(["cookieAuth"]);
     expect(doc.components!.securitySchemes!["cookieAuth"]).toMatchObject({
       type: "apiKey",
@@ -345,20 +244,20 @@ describe("console-sales — auth and read scope", () => {
 
   it("answers 200 / 400 / 401 / 404 / 500 only: the role or scope refusal is 404, never 403", () => {
     for (const { path } of OPERATIONS) {
-      expect(Object.keys(op(path).responses ?? {}).sort()).toEqual(["200", "400", "401", "404", "500"]);
-      expect(op(path).responses!["404"]).toEqual({ $ref: "#/components/responses/NotFound" });
+      expect(Object.keys(api.get(path).responses ?? {}).sort()).toEqual(["200", "400", "401", "404", "500"]);
+      expect(api.get(path).responses!["404"]).toEqual({ $ref: "#/components/responses/NotFound" });
     }
   });
 
   it("takes no tenant id and no POS selector from the request", () => {
     for (const { path } of OPERATIONS) {
-      expect(params(path).filter((p) => /tenant|admission|device|operator/i.test(p.name ?? ""))).toEqual([]);
-      expect(params(path).filter((p) => p.in === "header")).toEqual([]);
+      expect(api.params(path).filter((p) => /tenant|admission|device|operator/i.test(p.name ?? ""))).toEqual([]);
+      expect(api.params(path).filter((p) => p.in === "header")).toEqual([]);
     }
   });
 
   it("requires store_id on the list (OD-556-2)", () => {
-    expect(param(LIST_PATH, "store_id")).toMatchObject({
+    expect(api.param(LIST_PATH, "store_id")).toMatchObject({
       in: "query",
       required: true,
       schema: { type: "string", format: "uuid" },
@@ -366,8 +265,8 @@ describe("console-sales — auth and read scope", () => {
   });
 
   it("resolves the detail by saleRef alone, anywhere in the caller's scope", () => {
-    expect(params(DETAIL_PATH)).toHaveLength(1);
-    expect(param(DETAIL_PATH, "saleRef")).toMatchObject({
+    expect(api.params(DETAIL_PATH)).toHaveLength(1);
+    expect(api.param(DETAIL_PATH, "saleRef")).toMatchObject({
       in: "path",
       required: true,
       schema: { type: "string", format: "uuid" },
@@ -376,12 +275,10 @@ describe("console-sales — auth and read scope", () => {
 
   it("marks both 200 responses Cache-Control: no-store (staff names, tax id)", () => {
     for (const { path } of OPERATIONS) {
-      const ok = (op(path).responses as Record<string, { headers?: Record<string, { $ref?: string }> }>)["200"]!;
+      const ok = api.get(path).responses!["200"]!;
       expect(ok.headers?.["Cache-Control"]).toEqual({ $ref: "#/components/headers/CacheControlNoStore" });
     }
-    const header = (doc.components as Record<string, Record<string, { schema?: unknown }>>)["headers"]![
-      "CacheControlNoStore"
-    ]!;
+    const header = doc.components!.headers!["CacheControlNoStore"]!;
     expect(header.schema).toEqual({ type: "string", const: "no-store" });
   });
 
@@ -390,14 +287,11 @@ describe("console-sales — auth and read scope", () => {
   });
 
   it("resolves the detail in one scoped query, never fetch-then-check", () => {
-    expect(doc.paths![DETAIL_PATH]!["get"]!["description" as never]).toMatch(/never fetched first and checked after/);
+    expect(api.get(DETAIL_PATH).description).toMatch(/never fetched first and checked after/);
   });
 
   it("names every scope refusal in the one non-disclosing 404", () => {
-    const description = String(
-      (doc.components as Record<string, Record<string, { description?: string }>>)["responses"]!["NotFound"]!
-        .description,
-    );
+    const description = api.responseDescription("NotFound");
     for (const cause of ["owner", "tenant_admin", "store_manager", "store_id", "another tenant", "absent"]) {
       expect(description).toContain(cause);
     }
@@ -411,80 +305,77 @@ describe("console-sales — list filters and paging", () => {
   const FILTERS = ["sale_number", "sync_status", "voided", "return_state", "erp_posting_state"];
 
   it("declares the v1 query keys, all query parameters", () => {
-    expect(params(LIST_PATH).map((p) => p.name).sort()).toEqual(
+    expect(api.params(LIST_PATH).map((p) => p.name).sort()).toEqual(
       ["store_id", "from", "to", ...FILTERS, "cursor", "page_size"].sort(),
     );
-    for (const p of params(LIST_PATH)) expect(p.in).toBe("query");
+    for (const p of api.params(LIST_PATH)) expect(p.in).toBe("query");
   });
 
   it("requires an inclusive business-date range of at most 31 days", () => {
     for (const name of ["from", "to"]) {
-      expect(param(LIST_PATH, name)).toMatchObject({ required: true, schema: { type: "string", format: "date" } });
+      expect(api.param(LIST_PATH, name)).toMatchObject({ required: true, schema: { type: "string", format: "date" } });
     }
-    expect(param(LIST_PATH, "to").description).toMatch(/to - from <= 30/);
-    expect(param(LIST_PATH, "to").description).toMatch(/Never truncated/);
+    expect(api.param(LIST_PATH, "to").description).toMatch(/to - from <= 30/);
+    expect(api.param(LIST_PATH, "to").description).toMatch(/Never truncated/);
   });
 
   it("makes every filter optional", () => {
-    for (const name of [...FILTERS, "cursor", "page_size"]) expect(param(LIST_PATH, name).required).toBe(false);
+    for (const name of [...FILTERS, "cursor", "page_size"]) expect(api.param(LIST_PATH, name).required).toBe(false);
   });
 
   it("uses the sale-history enums for the status filters and a boolean for voided", () => {
-    expect(shapeOf(doc, param(LIST_PATH, "sync_status").schema)).toEqual({
+    expect(api.shape(api.param(LIST_PATH, "sync_status").schema)).toEqual({
       type: "string",
       enum: ["captured", "synced", "failed-retryable", "failed-needs-repair"],
     });
-    expect(shapeOf(doc, param(LIST_PATH, "return_state").schema)).toEqual({
+    expect(api.shape(api.param(LIST_PATH, "return_state").schema)).toEqual({
       type: "string",
       enum: ["none", "partial", "full"],
     });
-    expect(shapeOf(doc, param(LIST_PATH, "erp_posting_state").schema)).toEqual({
+    expect(api.shape(api.param(LIST_PATH, "erp_posting_state").schema)).toEqual({
       type: "string",
       enum: ["posted", "pending", "failed", "unknown"],
     });
-    expect(param(LIST_PATH, "voided").schema).toEqual({ type: "boolean" });
+    expect(api.param(LIST_PATH, "voided").schema).toEqual({ type: "boolean" });
   });
 
   it("matches the ERP filter on the projected state, not the raw posting status", () => {
-    const description = param(LIST_PATH, "erp_posting_state").description ?? "";
+    const description = api.param(LIST_PATH, "erp_posting_state").description ?? "";
     expect(description).toMatch(/PROJECTED/);
     expect(description).toContain("failed_transient");
     expect(description).toContain("no sale posting row");
   });
 
   it("bounds sale_number like the POS history filter", () => {
-    expect(param(LIST_PATH, "sale_number").schema).toEqual({ type: "string", minLength: 1, maxLength: 96 });
+    expect(api.param(LIST_PATH, "sale_number").schema).toEqual({ type: "string", minLength: 1, maxLength: 96 });
   });
 
   it("keeps the cursor opaque, bounded and bound to the store and every filter", () => {
-    const cursor = param(LIST_PATH, "cursor");
+    const cursor = api.param(LIST_PATH, "cursor");
     expect(cursor.schema).toEqual({ type: "string", minLength: 1, maxLength: 512, pattern: "^[A-Za-z0-9_-]+$" });
     for (const name of ["tenant", "store", "from", "to", ...FILTERS]) expect(cursor.description).toContain(name);
   });
 
   it("refuses a repeated query key and a non-calendar date as 400", () => {
-    const description = String(
-      (doc.components as Record<string, Record<string, { description?: string }>>)["responses"]!["ValidationFailure"]!
-        .description,
-    );
+    const description = api.responseDescription("ValidationFailure");
     expect(description).toContain("a query key given more than once");
     expect(description).toContain("2026-02-30");
   });
 
   it("ANDs the cursor position with the scope and range, never replacing them", () => {
-    expect(param(LIST_PATH, "cursor").description).toMatch(/never replaces them/);
+    expect(api.param(LIST_PATH, "cursor").description).toMatch(/never replaces them/);
   });
 
   it("lets a bounded page be short or empty while nextCursor is non-null", () => {
-    expect(validator("ConsoleSalePage")({ ...PAGE, items: [], nextCursor: "eyJrIjoxfQ" })).toBe(true);
-    expect(String(schema("ConsoleSalePage").properties!["nextCursor"]!["description"])).toMatch(
+    expect(validator("ConsoleSalePage")({ ...PAGE, items: [], nextCursor: "cGFnZS0y" })).toBe(true);
+    expect(String(api.schema("ConsoleSalePage").properties!["nextCursor"]!["description"])).toMatch(
       /only `null` ends the walk/,
     );
   });
 
   it("bounds page_size to 1..100, default 50, and caps a page at the maximum", () => {
-    expect(param(LIST_PATH, "page_size").schema).toEqual({ type: "integer", minimum: 1, maximum: 100, default: 50 });
-    expect(schema("ConsoleSalePage").properties?.["items"]).toMatchObject({ maxItems: 100 });
+    expect(api.param(LIST_PATH, "page_size").schema).toEqual({ type: "integer", minimum: 1, maximum: 100, default: 50 });
+    expect(api.schema("ConsoleSalePage").properties?.["items"]).toMatchObject({ maxItems: 100 });
   });
 });
 
@@ -493,38 +384,38 @@ describe("console-sales — list filters and paging", () => {
 // ===========================================================================
 describe("console-sales — shared vocabulary with the POS sale history", () => {
   it.each(SHARED_SCHEMAS)("%s is identical to sale-history.yaml", (name) => {
-    expect(shapeOf(doc, schema(name))).toEqual(shapeOf(historyDoc, schemaOf(historyDoc, name)));
+    expect(api.shape(api.schema(name))).toEqual(pos.shape(pos.schema(name)));
   });
 
   it("ConsoleSaleItem is the SaleHistoryItem plus storeRef", () => {
-    const item = schema("ConsoleSaleItem");
-    const history = schemaOf(historyDoc, "SaleHistoryItem");
+    const item = api.schema("ConsoleSaleItem");
+    const history = pos.schema("SaleHistoryItem");
     expect(Object.keys(item.properties ?? {}).sort()).toEqual(
       [...Object.keys(history.properties ?? {}), "storeRef"].sort(),
     );
     for (const [key, value] of Object.entries(history.properties ?? {})) {
-      expect({ key, shape: shapeOf(doc, item.properties![key]) }).toEqual({ key, shape: shapeOf(historyDoc, value) });
+      expect({ key, shape: api.shape(item.properties![key]) }).toEqual({ key, shape: pos.shape(value) });
     }
     expect(item.properties!["storeRef"]).toMatchObject({ type: "string", format: "uuid" });
   });
 
   it("ConsoleSaleDetail is the SaleHistoryDetail minus receiptFacts / reprint, plus storeTimezone", () => {
-    const detail = schema("ConsoleSaleDetail");
-    const history = schemaOf(historyDoc, "SaleHistoryDetail");
+    const detail = api.schema("ConsoleSaleDetail");
+    const history = pos.schema("SaleHistoryDetail");
     const kept = Object.keys(history.properties ?? {}).filter((k) => !POS_ONLY_FIELDS.includes(k as never));
     expect(Object.keys(detail.properties ?? {}).sort()).toEqual([...kept, "storeTimezone"].sort());
     for (const key of kept.filter((k) => k !== "summary")) {
-      expect({ key, shape: shapeOf(doc, detail.properties![key]) }).toEqual({
+      expect({ key, shape: api.shape(detail.properties![key]) }).toEqual({
         key,
-        shape: shapeOf(historyDoc, history.properties![key]),
+        shape: pos.shape(history.properties![key]),
       });
     }
     expect(detail.properties!["summary"]).toEqual({ $ref: "#/components/schemas/ConsoleSaleItem" });
   });
 
   it("ConsoleSalePage is the SaleHistoryPage minus visibility, plus storeRef", () => {
-    const page = schema("ConsoleSalePage");
-    const history = schemaOf(historyDoc, "SaleHistoryPage");
+    const page = api.schema("ConsoleSalePage");
+    const history = pos.schema("SaleHistoryPage");
     const kept = Object.keys(history.properties ?? {}).filter((k) => !POS_ONLY_FIELDS.includes(k as never));
     expect(Object.keys(page.properties ?? {}).sort()).toEqual([...kept, "storeRef"].sort());
   });
@@ -533,7 +424,7 @@ describe("console-sales — shared vocabulary with the POS sale history", () => 
     const names = Object.keys(doc.components?.schemas ?? {});
     expect(names.filter((n) => /reprint|receiptfacts/i.test(n))).toEqual([]);
     for (const name of names) {
-      const keys = Object.keys(schema(name).properties ?? {});
+      const keys = Object.keys(api.schema(name).properties ?? {});
       expect({ name, posOnly: keys.filter((k) => POS_ONLY_FIELDS.includes(k as never)) }).toEqual({ name, posOnly: [] });
     }
   });
@@ -564,8 +455,8 @@ describe("console-sales — projections", () => {
   });
 
   it("returns the item total as an exact-decimal string", () => {
-    expect(schema("ConsoleSaleItem").properties!["posTotal"]).toEqual({ $ref: "#/components/schemas/DecimalAmount" });
-    expect(schema("DecimalAmount")).toMatchObject({ type: "string" });
+    expect(api.schema("ConsoleSaleItem").properties!["posTotal"]).toEqual({ $ref: "#/components/schemas/DecimalAmount" });
+    expect(api.schema("DecimalAmount")).toMatchObject({ type: "string" });
   });
 });
 
@@ -581,33 +472,33 @@ describe("console-sales — AJV fixtures", () => {
   });
 
   it.each([
-    ["a float total", { ...ITEM, posTotal: 150 }],
-    ["more than 4 fractional digits", { ...ITEM, posTotal: "1.00001" }],
-    ["a lower-case currency", { ...ITEM, currencyCode: "egp" }],
-    ["no storeRef", without(ITEM, "storeRef")],
-    ["an unknown key", { ...ITEM, tenantId: STORE_REF }],
-    ["an unknown sync status", { ...ITEM, syncStatus: "posted" }],
-    ["an unknown ERP state", { ...ITEM, erpPostingState: "not_posted" }],
-    ["an unknown name source", { ...ITEM, operator: { ...ITEM.operator, nameSource: "email" } }],
-  ])("rejects an item with %s", (_label, payload) => {
+    { label: "a float total", payload: { ...ITEM, posTotal: 150 } },
+    { label: "more than 4 fractional digits", payload: { ...ITEM, posTotal: "1.00001" } },
+    { label: "a lower-case currency", payload: { ...ITEM, currencyCode: "egp" } },
+    { label: "no storeRef", payload: without(ITEM, "storeRef") },
+    { label: "an unknown key", payload: { ...ITEM, tenantId: STORE_REF } },
+    { label: "an unknown sync status", payload: { ...ITEM, syncStatus: "posted" } },
+    { label: "an unknown ERP state", payload: { ...ITEM, erpPostingState: "not_posted" } },
+    { label: "an unknown name source", payload: { ...ITEM, operator: { ...ITEM.operator, nameSource: "email" } } },
+  ])("rejects an item with $label", ({ payload }) => {
     expect(validator("ConsoleSaleItem")(payload)).toBe(false);
   });
 
   it.each([
-    ["receipt facts", { ...DETAIL, receiptFacts: "complete" }],
-    ["reprint eligibility", { ...DETAIL, reprint: { duplicate: "allowed", saleRecord: "allowed", marks: [] } }],
-    ["no storeTimezone", without(DETAIL, "storeTimezone")],
-    ["no erpPosting", without(DETAIL, "erpPosting")],
-  ])("rejects a detail with %s", (_label, payload) => {
+    { label: "receipt facts", payload: { ...DETAIL, receiptFacts: "complete" } },
+    { label: "reprint eligibility", payload: { ...DETAIL, reprint: { duplicate: "allowed", saleRecord: "allowed", marks: [] } } },
+    { label: "no storeTimezone", payload: without(DETAIL, "storeTimezone") },
+    { label: "no erpPosting", payload: without(DETAIL, "erpPosting") },
+  ])("rejects a detail with $label", ({ payload }) => {
     expect(validator("ConsoleSaleDetail")(payload)).toBe(false);
   });
 
   it.each([
-    ["more than 100 items", { ...PAGE, items: Array(101).fill(ITEM) }],
-    ["no asOf", without(PAGE, "asOf")],
-    ["no storeRef", without(PAGE, "storeRef")],
-    ["a POS visibility", { ...PAGE, visibility: "store" }],
-  ])("rejects a page with %s", (_label, payload) => {
+    { label: "more than 100 items", payload: { ...PAGE, items: Array(101).fill(ITEM) } },
+    { label: "no asOf", payload: without(PAGE, "asOf") },
+    { label: "no storeRef", payload: without(PAGE, "storeRef") },
+    { label: "a POS visibility", payload: { ...PAGE, visibility: "store" } },
+  ])("rejects a page with $label", ({ payload }) => {
     expect(validator("ConsoleSalePage")(payload)).toBe(false);
   });
 
