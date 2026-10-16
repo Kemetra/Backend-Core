@@ -5,7 +5,7 @@
  * workflow itself is exercised by a dry run on GitHub Actions.
  */
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { posix, resolve } from "node:path";
 import * as yaml from "js-yaml";
 
 const repoRoot = resolve(__dirname, "..", "..", "..", "..");
@@ -232,10 +232,15 @@ describe("release bundle", () => {
     return [...deploy.matchAll(/-f (docs\/operations\/sql\/[\w-]+\.sql)/g)].flatMap((m) => m[1] ?? []);
   }
 
-  it("is exactly the compose files, Caddyfile, smoke tool and the README's SQL scripts", () => {
+  it("is exactly the compose files, Caddyfile, smoke tool, the README's SQL scripts and their includes", () => {
     const list = allowlist();
     const sql = list.filter((f) => f.startsWith("docs/operations/sql/"));
-    expect(list.filter((f) => !f.startsWith("docs/operations/sql/")).sort()).toEqual(
+    const included = list.filter((f) => f.startsWith("packages/db/drizzle/"));
+    expect(included.sort()).toEqual([
+      "packages/db/drizzle/0038_erpnext_posting_resolution_backfill.sql",
+      "packages/db/drizzle/0043_inventory_effect_integration_backfill.sql",
+    ]);
+    expect(list.filter((f) => !sql.includes(f) && !included.includes(f)).sort()).toEqual(
       ["Caddyfile", "deploy/console-smoke.sh", "docker-compose.prod.yml", "docker-compose.release.yml"].sort(),
     );
     expect(sql.sort()).toEqual([...readmeDeploySql()].sort());
@@ -246,6 +251,23 @@ describe("release bundle", () => {
 
   it("only ships files that exist in the repo", () => {
     for (const f of allowlist()) expect(() => read(f)).not.toThrow();
+  });
+
+  it("ships every file a bundled SQL script includes with \\i or \\ir", () => {
+    // Deploy runs `psql -f docs/operations/sql/<x>.sql` from the bundle root, so
+    // \i resolves against the bundle root and \ir against the including file.
+    const list = allowlist();
+    const includes = list.filter((f) => f.endsWith(".sql")).flatMap((f) =>
+      [...read(f).matchAll(/^\s*\\(ir?|include(?:_relative)?)\s+(\S+)/gm)].map((m) => {
+        const relative = m[1] === "ir" || m[1] === "include_relative";
+        const target = posix.normalize(relative ? posix.join(posix.dirname(f), m[2] ?? "") : (m[2] ?? ""));
+        return { from: f, target };
+      }),
+    );
+    expect(includes.length).toBeGreaterThan(0);
+    for (const { from, target } of includes) {
+      expect({ from, target, inBundle: list.includes(target) }).toEqual({ from, target, inBundle: true });
+    }
   });
 
   it("validates digest refs and the SHA, and fails on any error", () => {

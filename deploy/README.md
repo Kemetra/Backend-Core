@@ -247,7 +247,8 @@ overwrite an existing release, tag or image). With `publish: false` (the
 default) it only builds and uploads a dry-run artifact whose digests are local
 image IDs, not registry digests. The release assets are
 `backend-core-release-<sha12>.tar.gz` (compose files, `Caddyfile`,
-`deploy/console-smoke.sh`, the seven grant scripts and two catch-up scripts, a
+`deploy/console-smoke.sh`, the seven grant scripts and two catch-up scripts
+plus the migrations 0038 and 0043 those catch-up scripts include, a
 `release.env` with the three image refs, and the manifest), `release-manifest.json`
 and `SHA256SUMS`. It holds no secrets and the workflow deploys nothing.
 
