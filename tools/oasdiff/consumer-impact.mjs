@@ -168,6 +168,12 @@ export function collectApiPaths(yamlText) {
   );
 }
 
+const jsonPathKeys = (text) => new Set(Object.keys(JSON.parse(text).paths ?? {}));
+
+/** Path keys of one pinned contract, parsed according to its file extension. */
+export const collectPathsFromFile = (filePath, text) =>
+  filePath.endsWith(".json") ? jsonPathKeys(text) : collectApiPaths(text);
+
 // ---- acknowledgement lines -------------------------------------------------
 
 const METHODS = "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE";
@@ -204,6 +210,16 @@ function affectedConsumers(ack, impactByConsumer) {
   return [...impactByConsumer].filter(([, paths]) => paths.has(ack.path)).map(([name]) => name);
 }
 
+const unknownTags = (ctx) =>
+  ctx.ack.tags.filter((tag) => tag !== "none" && !ctx.known.includes(tag));
+
+const unknownTagVerdict = (ctx) => {
+  const unknown = unknownTags(ctx);
+  if (unknown.length === 0) return undefined;
+  const tags = unknown.map((tag) => `consumer:${tag}`).join(" ");
+  return fail(ctx, `unknown consumer tag(s) ${tags} (known: ${[...ctx.known, "none"].join(", ")})`);
+};
+
 const fail = (ctx, reason) => verdict(false, ctx.affected, `${ctx.who}${reason}`);
 const pass = (ctx, reason) => verdict(true, ctx.affected, reason);
 
@@ -213,6 +229,7 @@ const RULES = [
     c.ack.tags.length === 0
       ? fail(c, "no consumer: tag (add consumer:<NAME> or consumer:none)")
       : undefined,
+  unknownTagVerdict,
   (c) =>
     hasNoneTag(c.ack) && c.ack.tags.length > 1
       ? fail(c, "consumer:none contradicts the other consumer: tags")
@@ -235,10 +252,14 @@ const RULES = [
   (c) => (c.ack.jira.length === 0 ? fail(c, "needs a Jira key (RT-<n>) on the line") : undefined),
 ];
 
-/** Judge one parsed acknowledgement against each consumer's pinned path set. */
-export function assessLine(ack, impactByConsumer) {
+/**
+ * Judge one parsed acknowledgement against each consumer's pinned path set.
+ * `knownConsumers` are the configured names (default: those with a loaded set),
+ * so a consumer whose PIN could not be read still counts as a valid tag.
+ */
+export function assessLine(ack, impactByConsumer, knownConsumers = [...impactByConsumer.keys()]) {
   const affected = affectedConsumers(ack, impactByConsumer);
-  const ctx = { ack, affected, who: affected.length > 0 ? `affects ${affected.join(", ")}: ` : "" };
+  const ctx = { ack, affected, known: knownConsumers, who: affected.length > 0 ? `affects ${affected.join(", ")}: ` : "" };
   for (const rule of RULES) {
     const result = rule(ctx);
     if (result !== undefined) return result;
@@ -291,15 +312,18 @@ const pinMismatch = (pin) =>
     ? undefined
     : `PIN names ${pin.repo} ${pin.source}, expected ${CONTRACTS_REPO} ${CONTRACTS_ROOT}`;
 
+async function pathsOfPinnedFile(pin, file, io) {
+  const text = await io.gitShow(pin.commit, `${CONTRACTS_ROOT}/${file.path}`);
+  return collectPathsFromFile(file.path, text);
+}
+
 async function pathsAtPinCommit(consumer, pin, io) {
   const unresolvable = (why) => ({ error: `consumer pin unresolvable: ${consumer.name} (${why})` });
   const mismatch = pinMismatch(pin);
   if (mismatch !== undefined) return unresolvable(mismatch);
   try {
-    const texts = await Promise.all(
-      pin.files.map((f) => io.gitShow(pin.commit, `${CONTRACTS_ROOT}/${f.path}`)),
-    );
-    return { paths: new Set(texts.flatMap((text) => [...collectApiPaths(text)])) };
+    const sets = await Promise.all(pin.files.map((f) => pathsOfPinnedFile(pin, f, io)));
+    return { paths: new Set(sets.flatMap((set) => [...set])) };
   } catch (error) {
     return unresolvable(`${pin.commit.slice(0, 7)}: ${messageOf(error)}`);
   }
@@ -315,6 +339,7 @@ async function loadImpacts(consumersFile, io) {
   const consumers = parseConsumers(readFileSync(consumersFile, "utf8"));
   const loaded = await Promise.all(consumers.map((consumer) => loadImpact(consumer, io)));
   return {
+    names: consumers.map((consumer) => consumer.name),
     impact: new Map(loaded.filter((l) => l.paths).map((l) => [l.name, l.paths])),
     errors: loaded.filter((l) => l.error).map((l) => l.error),
   };
@@ -327,9 +352,9 @@ const annotation = (level, message) =>
 
 const excerpt = (line) => (line.length > 160 ? `${line.slice(0, 60)}...${line.slice(-95)}` : line);
 
-const findViolations = (lines, impact) =>
+const findViolations = (lines, impact, names) =>
   lines
-    .map((line) => ({ line, result: assessLine(parseAckLine(line), impact) }))
+    .map((line) => ({ line, result: assessLine(parseAckLine(line), impact, names) }))
     .filter(({ result }) => !result.ok);
 
 function report({ log, mode, lines, violations, errors }) {
@@ -375,11 +400,11 @@ export async function main(ackSource, options = {}) {
     log("consumer-impact: no acknowledged breaks added by this change.");
     return 0;
   }
-  const { impact, errors } = await loadImpacts(
+  const { impact, errors, names } = await loadImpacts(
     options.consumersFile ?? DEFAULT_CONSUMERS_FILE,
     buildIo(options),
   );
-  const violations = findViolations(lines, impact);
+  const violations = findViolations(lines, impact, names);
   report({ log, mode, lines, violations, errors });
   return exitCodeFor(mode, violations.length + errors.length);
 }

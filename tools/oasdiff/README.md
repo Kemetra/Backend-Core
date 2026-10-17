@@ -71,6 +71,7 @@ commit** (what it built against, so a path the PR removes still counts). Then:
 
 - If a consumer pins the line's API path, the line must carry that consumer's tag
   and a Jira key (`RT-<n>`). `consumer:none` on such a path is a violation.
+- A tag must be a name from `consumers.txt` or `none`; a misspelled tag is a violation.
 - A line with no API path (a `components` finding) still needs a tag, but the tag
   is not verified ("impact not computable").
 - A consumer PIN that cannot be read (3 attempts) or resolved is reported, never

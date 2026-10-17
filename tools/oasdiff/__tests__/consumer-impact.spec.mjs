@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import {
   assessLine,
   collectApiPaths,
+  collectPathsFromFile,
   main,
   parseAckLine,
   parseConsumers,
@@ -199,6 +200,43 @@ test("assessLine with two consumers requires both tags when both pin the path", 
   ]);
   assert.equal(assessLine(parseAckLine(withTag("consumer:POS")), both).ok, false);
   assert.equal(assessLine(parseAckLine(withTag("consumer:POS consumer:admin")), both).ok, true);
+});
+
+test("assessLine rejects a tag that names no configured consumer", () => {
+  const verdict = assessLine(parseAckLine(withTag("consumer:PSO")), NO_CONSUMERS);
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /unknown consumer tag\(s\) consumer:PSO \(known: POS, none\)/);
+  assert.equal(assessLine(parseAckLine(withTag("consumer:PSO")), POS_ONLY).ok, false);
+});
+
+test("assessLine counts a consumer whose PIN could not be loaded as known", () => {
+  const ack = parseAckLine(withTag("consumer:POS consumer:admin"));
+  assert.equal(assessLine(ack, POS_ONLY).ok, false);
+  assert.equal(assessLine(ack, POS_ONLY, ["POS", "admin"]).ok, true);
+});
+
+test("collectPathsFromFile reads the paths keys of a .json contract and a .yaml one", () => {
+  const json = JSON.stringify({ paths: { "/api/a": {}, "/api/b/{id}": {} }, components: { "/api/x": {} } });
+  assert.deepEqual([...collectPathsFromFile("x/c.json", json)].sort(), ["/api/a", "/api/b/{id}"]);
+  assert.deepEqual([...collectPathsFromFile("c.yaml", "paths:\n  /y:\n    get: {}\n")], ["/y"]);
+  assert.equal(collectPathsFromFile("c.json", "{}").size, 0);
+  assert.throws(() => collectPathsFromFile("c.json", "{nope"));
+});
+
+test("main reads a JSON pinned contract instead of treating its paths as unpinned", async () => {
+  const f = fixture([PAIR_LINE.replace("intentional", "consumer:none intentional")]);
+  try {
+    const h = harness({
+      fetchText: async () => POS_PIN.replace("pos-terminal-pairing.openapi.yaml", "pos-terminal-pairing.json"),
+      gitShow: async (_commit, file) =>
+        file.endsWith(".json") ? JSON.stringify({ paths: { [PAIR_PATH]: {} } }) : "paths: {}\n",
+    });
+    const code = await main(f.ignoreFile, { ...h.opts, mode: "enforce", consumersFile: f.consumersFile });
+    assert.equal(code, 1);
+    assert.ok(h.out.some((l) => l.includes("consumer:none, but the pinned contracts contain this path")));
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
 });
 
 test("parseConsumers reads NAME URL lines and skips comments", () => {
