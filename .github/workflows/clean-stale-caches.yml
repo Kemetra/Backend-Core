@@ -1,7 +1,9 @@
 # The single Actions-cache cleaner (RT-582 merged the weekly clean-caches.yml
 # into this daily one). Its deletions are a superset of the weekly script's:
 # main, open-PR refs and PRs merged within 24 h stay protected, and refs that
-# are neither refs/heads/* nor refs/pull/* are skipped and listed.
+# are neither refs/heads/* nor refs/pull/* are skipped and listed. A second
+# step keeps only the newest 5 CodeQL overlay caches per language on main
+# (RT-589); pnpm caches on main are never touched.
 
 name: Clean Stale Caches
 
@@ -22,6 +24,7 @@ permissions:
 jobs:
   clean:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Cache usage (before)
         id: before
@@ -127,6 +130,59 @@ jobs:
             echo "Unknown-ref entries (skipped — investigate manually):"
             printf "%s" "$unknown_list"
           fi
+
+      # CodeQL default setup writes one ~200 MB codeql-overlay-base-database-*
+      # cache per main commit (per language). They all live on refs/heads/main,
+      # which the step above never touches, so they would otherwise fill the
+      # 10 GB cap and LRU-evict the pnpm caches CI needs (RT-589). Keep the
+      # newest KEEP per language family; the family is the key minus its
+      # trailing "-<codeql version>-<commit sha>-<run id>-<attempt>" so a
+      # CodeQL version bump does not strand a second set of old caches. A key
+      # that does not match that shape is its own family and is never pruned.
+      - name: Prune CodeQL overlay caches on main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          KEEP: '5'
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          PREFIX="codeql-overlay-base-database-"
+
+          # Listing failure aborts here (pipefail) before anything is deleted.
+          doomed=$(
+            gh api "repos/$REPO/actions/caches?per_page=100&ref=refs/heads/main&key=$PREFIX" --paginate \
+            | jq -rs --argjson keep "$KEEP" --arg prefix "$PREFIX" '
+                [ .[].actions_caches[]
+                  | select(.ref == "refs/heads/main" and (.key | startswith($prefix))) ]
+                | map(. + { family: (.key | sub("-[0-9]+\\.[0-9]+\\.[0-9]+-[0-9a-f]{40}-[0-9]+-[0-9]+$"; "")) })
+                | group_by(.family)[]
+                | sort_by(.created_at) | reverse | .[$keep:][]
+                | [.id, .key, .size_in_bytes] | @tsv'
+          )
+
+          deleted=0; failed=0; freed=0
+          if [ -n "$doomed" ]; then
+            while IFS=$'\t' read -r id key size; do
+              echo "prune id=$id size=$size B key=$key"
+              if [[ "$DRY_RUN" == "true" ]]; then
+                deleted=$((deleted + 1)); freed=$((freed + size)); continue
+              fi
+              if gh api -X DELETE "repos/$REPO/actions/caches/$id" --silent; then
+                deleted=$((deleted + 1)); freed=$((freed + size))
+              else
+                failed=$((failed + 1))
+                echo "::warning::could not delete CodeQL overlay cache id=$id"
+              fi
+            done <<< "$doomed"
+          fi
+
+          freed_gb=$(awk "BEGIN{printf \"%.3f\", $freed/1073741824}")
+          tag=$([ "$DRY_RUN" = "true" ] && echo " [DRY RUN — no deletions performed]" || echo "")
+          echo ""
+          echo "=== CodeQL Overlay Prune (keep newest $KEEP per language)${tag} ==="
+          printf "Pruned : %d (%.3f GB)\n" "$deleted" "$freed_gb"
+          printf "Failed : %d\n" "$failed"
 
       - name: Cache usage (after)
         env:
