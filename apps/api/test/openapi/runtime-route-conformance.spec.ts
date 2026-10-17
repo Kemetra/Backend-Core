@@ -128,6 +128,7 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "consoleDeleteTenantLogo",
       // RT-632: Console Sentry tunnel contract; the runtime ships in the RT-632 runtime PR.
       "consoleForwardTelemetryEnvelope",
+      "consoleGetTelemetryConfig",
       "consoleGetTenantLogo",
       "consolePreviewTenantLogo",
       "consolePutTenantLogo",

@@ -13,7 +13,7 @@ info:
     contract (OBS-1, RT-629).
 
 
-    **Posture.** `1.0.0-draft`, contract-only: the operation carries
+    **Posture.** `1.0.0-draft`, contract-only: both operations carry
     `x-runtime-status: contract-only` until the RT-632 runtime ships.
     `[GATED]` contract, approved by the owner on RT-632.
 
@@ -34,6 +34,26 @@ info:
     attachments, transactions, client reports, profiles, check-ins, …) is
     dropped. The envelope header is rebuilt with `event_id` and `sent_at`
     only. When nothing survives, nothing is forwarded.
+
+
+    **Server-stamped fields.** The forwarded event's `environment` is set by
+    the server (the API's Sentry environment: `SENTRY_ENVIRONMENT`, else
+    `DEPLOYMENT_ENVIRONMENT`), whatever the Console sent. `sdk` is rebuilt as
+    `{ name, version, settings: { infer_ip: "never" } }` (the inbound name
+    and version are kept only when they are short plain tokens), so Sentry
+    never infers an IP address for the event. Any `user` or IP data the
+    envelope carries is dropped by the scrubber.
+
+
+    **Console runtime config (decision recorded on RT-632).** The Console
+    bundle is immutable, so `consoleGetTelemetryConfig` tells it at runtime
+    whether to start its Sentry SDK: `200 { tunnel, environment }` when the
+    tunnel is configured, `204` when it is inert. It never returns a DSN.
+    The Console starts the SDK with a fixed, well-formed placeholder DSN,
+    which the tunnel ignores, so the real DSN cannot be used to post to
+    Sentry directly around the scrub and the rate limits. Public,
+    `Cache-Control: no-store`, no `Origin` check: it discloses only what the
+    tunnel's own behaviour already discloses (configured or inert).
 
 
     **Default-inert.** With `CONSOLE_SENTRY_DSN` unset, blank or malformed,
@@ -62,6 +82,38 @@ info:
 servers:
   - url: https://api.example.com
 paths:
+  /api/v1/console/telemetry/config:
+    get:
+      summary: Whether the Console should start its Sentry SDK, and with which tunnel and environment.
+      operationId: consoleGetTelemetryConfig
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-632 contract PR. The runtime ships in the RT-632 runtime PR, which
+        removes this marker.
+      security: []
+      responses:
+        "200":
+          description: >
+            The tunnel is configured. The Console starts its SDK with
+            `tunnel` and `environment`, and a fixed placeholder DSN.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsoleTelemetryConfig"
+        "204":
+          description: >
+            The tunnel is inert (`CONSOLE_SENTRY_DSN` unset, blank or
+            malformed). The Console does not start its SDK.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
   /api/v1/console/telemetry/envelope:
     post:
       summary: Forward a Sentry envelope from the Admin-Console to the Console Sentry project.
@@ -158,6 +210,24 @@ paths:
                 $ref: "#/components/schemas/Error"
 components:
   schemas:
+    ConsoleTelemetryConfig:
+      type: object
+      additionalProperties: false
+      required: [tunnel, environment]
+      description: Runtime Sentry settings for the Console. Never carries a DSN.
+      properties:
+        tunnel:
+          type: string
+          const: /api/v1/console/telemetry/envelope
+          description: The same-origin tunnel path for the SDK's `tunnel` option.
+        environment:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: >
+            The server's Sentry environment (`SENTRY_ENVIRONMENT`, else
+            `DEPLOYMENT_ENVIRONMENT`, else `unknown`). The tunnel stamps the
+            same value on forwarded events.
     Envelope:
       type: string
       maxLength: 65536
