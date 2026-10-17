@@ -56,7 +56,11 @@ Rules:
   `submit`, `approve` and `publish` run an intersection check against the revisions published since validation. A
   later revision **intersects** this set when it shares a `(Store, product, sell unit)` with the set's lines, judged on
   its store fan-out (spec 041 data-model §2.6). That covers Book and Zone events that change an inherited price the set's
-  preview or helpers were based on. It also intersects when it changes the Zone membership of a Store in the set.
+  preview or helpers were based on. It also intersects in two membership cases:
+  - it changes the Zone membership of a Store in the set;
+  - it moves **any** Store into or out of a Zone (or the Book's default Zone, by fallback) that one of the set's
+    Zone-scope lines targets, over an interval that overlaps that line. Such a Store was not in the materialized
+    preview, so store and device counts, old prices and the sensitivity decision may all be wrong.
   - **Intersecting** → `409 stale_validation`, and the set returns to `draft` to be re-validated.
   - **Not intersecting** → the call proceeds, and `validatedAtRevision` advances to the head. The preview still holds,
     because no line's old price, class or helper base can have changed.
@@ -186,10 +190,12 @@ RT-284 (the Policy engine) is not delivered. Until it is, a narrow tenant-level 
 ## 8. Rollback, superseding and concurrency (530–534)
 
 - **Rollback = new change set.** `POST …/{id}/rollback` generates a `kind = rollback` set whose lines restore,
-  **from a chosen instant forward** (default now), the events that the target revision superseded, and end the
-  events it introduced. It is validated, previewed, approved (always sensitive) and published like any set. The
+  **from a chosen instant forward** (default now), the events **and Zone memberships** that the target revision
+  superseded, and end the events and memberships it introduced. A rollback of a `move_store_zone` set therefore
+  restores the Store's prior membership timeline, using the same supersede-and-replace rows as a move (spec 041
+  data-model §2.3), and fans out to that Store. It is validated, previewed, approved (always sensitive) and published like any set. The
   original becomes `rolled_back`. History before the rollback instant is never rewritten (521, 531, 534).
-- A rollback of a set whose events were already superseded by later revisions is refused with the list of blocking
+- A rollback of a set whose events or memberships were already superseded by later revisions is refused with the list of blocking
   revisions; the author rolls back newest-first or authors a corrective set.
 - **Optimistic concurrency (532).** Every mutating call carries `expectedVersion` (or `If-Match`). A mismatch →
   `409 version_conflict`. Publish additionally re-checks the head revision (§3).

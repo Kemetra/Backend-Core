@@ -68,6 +68,15 @@ Visibility at revision R uses the same rule as `price_events` (§2.4): `publishe
 Membership changes go through a Change Set (moving a Store needs an Impact Preview, 488). Memberships are
 **absolute-instant** only; they are structural, not wall-clock price events.
 
+**Publishing a move never edits a row.** A move of Store S to Zone Z2 from instant M supersedes S's membership row
+that covers M (Z1, `[F, T)`), by setting its `state` and `ended_in_revision`, and inserts in the same revision:
+
+- a carried-forward row `Z1, [F, M)` for the part before the move, when `F < M`;
+- the new row `Z2, [M, T')`, where `T'` is the requested end or open.
+
+So at the new head an instant before M still resolves to Z1, not to the default Zone, and earlier revisions still see the
+original row unchanged. This is the same supersede-and-replace rule as price events (spec 041 §3.1).
+
 ### 2.4 `price_events`
 
 | Column | Type | Notes |
