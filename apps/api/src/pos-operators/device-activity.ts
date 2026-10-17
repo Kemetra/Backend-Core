@@ -16,10 +16,13 @@
  *   2. in the database, authoritative across replicas: the UPDATE matches
  *      only while `last_seen_at IS NULL OR last_seen_at < now() - interval`.
  *      Concurrent writers serialize on the row, and the later one re-checks
- *      the predicate and matches nothing. A row another transaction holds
- *      `FOR UPDATE` (revoke, retire, rotate, shift open) is skipped, not
- *      waited for, so a touch never holds a domain-pool connection behind a
- *      lifecycle transaction. A revoked device is never written.
+ *      the predicate and matches nothing. The row lock is `FOR NO KEY
+ *      UPDATE` (only a non-key column changes), so it never conflicts with
+ *      the `FOR KEY SHARE` that an FK check of a sale, shift or cash fact
+ *      takes on the device; a row another transaction holds `FOR UPDATE`
+ *      (revoke, retire, rotate, shift open) is skipped, not waited for, so a
+ *      touch never holds a domain-pool connection behind a lifecycle
+ *      transaction. A revoked device is never written.
  *
  * The write runs on the DOMAIN pool under the device's own tenant context
  * (constitution §II; `devices` is FORCE RLS). The lookup role has SELECT
@@ -51,7 +54,7 @@ const TOUCH_SQL = `UPDATE devices SET last_seen_at = now()
     SELECT id FROM devices
      WHERE id = $1::uuid AND tenant_id = $2::uuid AND revoked_at IS NULL
        AND (last_seen_at IS NULL OR last_seen_at < now() - make_interval(secs => $3))
-     FOR UPDATE SKIP LOCKED)`;
+     FOR NO KEY UPDATE SKIP LOCKED)`;
 
 let logger: Logger | null = null;
 function log(): Logger {

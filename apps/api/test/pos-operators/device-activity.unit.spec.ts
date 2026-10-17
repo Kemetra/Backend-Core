@@ -80,7 +80,8 @@ describe("DeviceActivityRecorder (RT-370)", () => {
     expect(touch).toMatch(/last_seen_at\s*=\s*now\(\)/i);
     expect(touch).toMatch(/revoked_at IS NULL/);
     expect(touch).toMatch(/last_seen_at IS NULL OR last_seen_at < now\(\) - make_interval/);
-    expect(touch).toMatch(/FOR UPDATE SKIP LOCKED/);
+    // NO KEY: never blocks an FK check (FOR KEY SHARE) of a sale or shift on the device.
+    expect(touch).toMatch(/FOR NO KEY UPDATE SKIP LOCKED/);
     const touchParams = params[statements.indexOf(touch!)];
     expect(touchParams).toEqual([DEVICE.id, DEVICE.tenantId, DEVICE_ACTIVITY_INTERVAL_MS / 1000]);
   });
