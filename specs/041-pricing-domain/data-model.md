@@ -124,9 +124,20 @@ Insert-only. No `UPDATE` or `DELETE` (530).
 
 ### 2.6 `pricing_revision_stores`
 
-Fan-out of which Stores a revision can change. Computed at publish from scopes: a Store event → that Store; a
-Zone event → every Store whose membership in that Zone intersects the event interval; a Book event → every Store
-using the Book.
+Fan-out of which Stores a revision can change. It is computed at publish, from every event **and membership** row the revision
+creates or ends:
+
+- a Store event → that Store;
+- a Zone event → every Store whose membership in that Zone intersects the event interval. For the Book's **default
+  Zone**, it also reaches every Store that has **no explicit membership** in that Book for any part of the interval
+  (spec 041 §4.2 step 4: those Stores fall back to the default Zone and have no membership row);
+- a Book event → every Store using the Book;
+- a Zone-membership change (`move_store_zone`, spec 042 §4.2) → the moved Store. The move changes which Zone prices
+  apply to it even though no event scope changes.
+
+The rule is "every Store whose resolved price *can* differ because of this revision". A Store that is missed keeps its
+applied revision while its prices change, and POS, which applies whole store revisions (628), would never pick the
+change up.
 
 | Column | Type | Notes |
 |---|---|---|

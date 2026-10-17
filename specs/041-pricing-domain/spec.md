@@ -55,7 +55,7 @@ Full column-level proposal: [data-model.md](data-model.md).
 | **Sell Unit** | Part of the price key. v1 has one implicit Sell Unit, `each` (OD-2). The key column exists so multi-UOM pricing (RT-281) is additive. | 475–476 |
 | **Price event** | One immutable fact: *at scope S, item I in sell unit U costs P in Book B, from instant F (inclusive) until T (exclusive, optional)*. Scope is `book`, `zone` or `store`. Kind is `regular` in v1 (`clearance` later, PR-13). | 507–509, 513–514 |
 | **Pricing Revision** | An immutable, tenant-wide, monotonically numbered publication of a Change Set's events (OD-3). Each event belongs to exactly one revision. | 528, 530 |
-| **Store applied revision** | The number of the latest tenant revision that changed anything visible to that Store. Monotonic and sparse per Store. | OD-3 |
+| **Store applied revision** | The number of the latest tenant revision that can change any resolved price for that Store, including through default-Zone fallback and Zone moves (fan-out rule: [data-model.md](data-model.md) §2.6). Monotonic and sparse per Store. | OD-3 |
 | **Provenance** | The identity of what produced a resolved price: source scope, event id, price kind, Book, Zone, revision. | 501 |
 
 What the model deliberately is **not**:

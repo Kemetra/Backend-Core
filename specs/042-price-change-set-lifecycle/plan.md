@@ -52,10 +52,17 @@ Rollback is a new revision. Nothing is edited in place.
 
 Rules:
 
-- **Validation is bound to a head revision.** If another revision is published after validation
-  (`head > validatedAtRevision`), `submit`, `approve` and `publish` fail with `409 stale_validation` and the set
-  returns to `draft` to be re-validated. This is how a change set never publishes on top of a timeline it has not
-  analyzed (525, 519).
+- **Validation is bound to a head revision, but only conflicts make it stale.** When `head > validatedAtRevision`,
+  `submit`, `approve` and `publish` run an intersection check against the revisions published since validation. A
+  later revision **intersects** this set when it shares a `(Store, product, sell unit)` with the set's lines, judged on
+  its store fan-out (spec 041 data-model §2.6). That covers Book and Zone events that change an inherited price the set's
+  preview or helpers were based on. It also intersects when it changes the Zone membership of a Store in the set.
+  - **Intersecting** → `409 stale_validation`, and the set returns to `draft` to be re-validated.
+  - **Not intersecting** → the call proceeds, and `validatedAtRevision` advances to the head. The preview still holds,
+    because no line's old price, class or helper base can have changed.
+
+  Publish repeats the check under the publish lock. This is how a change set never publishes on top of a timeline it has
+  not analyzed (525, 519), without one publish discarding every unrelated approval in flight.
 - **Approval is bound to the preview.** `approve` carries `previewHash`. A different hash → `409 preview_changed`.
   People approve what they saw (526–527).
 - **Publish is all-or-nothing.** One DB transaction under the per-tenant pricing publish lock: re-check head,
@@ -83,7 +90,7 @@ Each item is one operation on a **selector** (523):
 | `adjust_amount` / `adjust_percent` | Helper. Resolves to a concrete price per target at validation, from the price *inherited at the target's effective instant* (515–517) |
 | `end_price` | Ends the target-scope interval at an instant (for example the end of a limited-time regular price) |
 | `reset_store_override` | Ends Store-scope events so the inherited price applies (491) |
-| `move_store_zone` | New Zone membership interval; always produces an Impact Preview (488) |
+| `move_store_zone` | New Zone membership interval; always produces an Impact Preview (488). The revision fans out to the moved Store (spec 041 data-model §2.6) |
 
 Every item carries `effectiveFrom` (required), optional `effectiveTo` and `timeBasis` (`store_local` default; spec 041 §4.3).
 
@@ -113,7 +120,7 @@ Validation runs every rule from spec 041 §5 on the lines and classifies each li
 |---|---|---|
 | `new` | No active event of the same key overlaps | no |
 | `replaces` | Overlaps an active event of the same key and scope; publishing supersedes it (the old event is split/ended around the new interval) | no, but it is listed and must be acknowledged in the preview |
-| `conflicts_pending` | Overlaps lines in another change set that is `validated`/`pending_approval`/`approved` | no (first publish wins; the other goes stale) — shown as a warning |
+| `conflicts_pending` | Overlaps lines in another change set that is `validated`/`pending_approval`/`approved` | no. First publish wins; the other goes stale through the §3 intersection check. Shown as a warning |
 | `shadowed` | Valid, but a more specific scope already prices the target, so some Stores see no change | no; listed per Store |
 | `invalidates_dependent` | Changes the base of a **later, already-published** event that was authored with a helper. That later event keeps its approved concrete price (518). The finding asks the author whether it should be revised in this set | warning; approval requires explicit acknowledgement |
 | `past_dated` | `effectiveFrom` earlier than now | **yes**, unless `kind = emergency` with the past-dating capability (§7) and a reason (520) |
@@ -224,7 +231,7 @@ lines table (immutable after publish) and the audit row references it, so audit 
 | **Q-B4** | Deferred publish job vs publish-now with future effective time | **Publish now, future effective time** (no scheduler failure mode; enables pre-delivery) | A scheduler publishes at effective time |
 | **Q-B5** | Per-line before/after in `audit_events` or in change-set lines | **Lines table, referenced from one audit row per transition** | One audit row per line |
 | **Q-B6** | Line limit per change set | **50 000 lines**, revisit with RT-317-style measurement | Unlimited |
-| **Q-B7** | Do pending sets that overlap block each other? | **No; first publish wins, others go stale and re-validate** | Lock targets while a set is pending |
+| **Q-B7** | Do pending sets that overlap block each other? | **No; first publish wins. Only sets that intersect it (§3) go stale and re-validate; unrelated sets keep their approval** | Lock targets while a set is pending; or stale every pending set on any publish |
 
 Each row: Selected — recommended option, chosen by the coordinator under the owner's standing delegation of 2026-10-17; owner may revisit.
 
