@@ -185,6 +185,18 @@ This project follows [Semantic Versioning](https://semver.org/).
   every path. The issue's 201 is `Cache-Control: no-store`. Deploy
   precondition: the domain role needs INSERT on `pairing_codes` (new), plus
   the RT-365 UPDATE on `devices` / `auth_tokens`. No migration.
+- RT-368 `[GATED]`, pending owner approval (RT-287 F5; D-Q2 and D-Q4 as
+  amended): `devices.openapi.yaml` 1.3.0-draft adds
+  `POST /api/v1/devices/{deviceId}/retire` (`consoleRetireDevice`,
+  contract-only). Retire is a closeout, never a delete: it decides with the
+  shared lifecycle evaluator under the device lifecycle lock (409
+  `unresolved_cash_session` / `unresolved_custody_exception` with the retire
+  preview), revokes an active device first with reason `retired` through the
+  revoke cascade, cancels the device's pending codes, sets the retire
+  attribution and writes `pos.device.retired`. Idempotent (`already_retired`),
+  terminal, no un-retire, no DELETE. `consoleListDevices` without
+  `trust_state` no longer lists retired devices (RT-368 scope); they stay
+  queryable with `trust_state=retired`. No runtime or migration change.
 - RT-542 `[GATED]`, owner-approved 2026-10-16 (RT-542 comment 12124): the three
   sale-history operations (`listSaleHistory`, `readSaleHistoryDetail`,
   `recordSaleReprint`) lose `x-runtime-status: contract-only` now that the RT-539

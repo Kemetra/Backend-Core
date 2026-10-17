@@ -54,6 +54,9 @@ const PAIRING_CODE_OPERATIONS = [
   ["post", "/api/v1/pairing-codes/{pairingCodeId}/cancel", "consoleCancelPairingCode"],
 ] as const;
 
+/** The RT-368 retire (`devices-retire.contract.spec.ts` pins it). */
+const RETIRE_OPERATION = ["post", "/api/v1/devices/{deviceId}/retire", "consoleRetireDevice"] as const;
+
 const REVOKE_REASONS = [
   "lost",
   "stolen",
@@ -151,14 +154,16 @@ const omit = (value: Record<string, unknown>, key: string): Record<string, unkno
 // 1. Operations
 // ===========================================================================
 describe("devices contract — operations", () => {
-  it("is OpenAPI 3.1.0 at 1.2.0-draft with the RT-365 operations, the RT-366 preview and the RT-367 pairing codes", () => {
+  it("is OpenAPI 3.1.0 at 1.3.0-draft with the RT-365 operations, the RT-366 preview, the RT-367 pairing codes and the RT-368 retire", () => {
     expect(contract.document["openapi"]).toBe("3.1.0");
-    expect((contract.document["info"] as JsonObject)["version"]).toBe("1.2.0-draft");
+    expect((contract.document["info"] as JsonObject)["version"]).toBe("1.3.0-draft");
     const declared = Object.entries(contract.document["paths"] as Record<string, JsonObject>).flatMap(([path, item]) =>
       Object.keys(item).map((method) => `${method} ${path}`),
     );
     expect(declared.sort()).toEqual(
-      [...OPERATIONS, IMPACT_OPERATION, ...PAIRING_CODE_OPERATIONS].map(([m, p]) => `${m} ${p}`).sort(),
+      [...OPERATIONS, IMPACT_OPERATION, ...PAIRING_CODE_OPERATIONS, RETIRE_OPERATION]
+        .map(([m, p]) => `${m} ${p}`)
+        .sort(),
     );
   });
 
