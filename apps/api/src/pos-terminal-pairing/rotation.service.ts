@@ -8,7 +8,13 @@
  * §3): the lifecycle lock, the row lock, the same decision again on the
  * locked row (a revoke, retire or rotation may have committed meanwhile),
  * then the token swap and `pos.device.rotated`. A refusal under the lock
- * writes `pos.device.rotation_rejected` and changes nothing else.
+ * ends that transaction with no write, then records
+ * `pos.device.rotation_rejected` in its own transaction (contract R2).
+ *
+ * Every refusal row is bounded by the device's rotation budget (contract
+ * R1): the refusal spends from the `posRotateDevice` bucket first, and once
+ * it is spent no row is written (a warn log counts the suppression). A
+ * limiter outage fails open (the row is written), as ADR 0009 D3.
  *
  * The new raw token leaves this service once, in the result; only its
  * SHA-256 is written. Never logged.
@@ -20,6 +26,7 @@ import type { Logger } from "@data-pulse-2/shared";
 import type { Pool } from "pg";
 
 import { PG_POOL } from "../auth/auth.module";
+import { POS_WRITE_RATE_LIMIT_BUCKETS, RateLimiter } from "../auth/rate-limit";
 import { ROOT_LOGGER } from "../common/logging.interceptor";
 import { decideRotation, type RotationRejectReason } from "./rotation-decision";
 import {
@@ -46,19 +53,30 @@ export type RotationResult =
 export class RotationService {
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
+    private readonly rateLimiter: RateLimiter,
     @Optional() @Inject(ROOT_LOGGER) private readonly logger?: Pick<Logger, "warn">,
   ) {}
 
   /** Rotate the device's token; `presentedHash` is the hash of the bearer that authenticated. */
-  rotate(target: RotationTarget, presentedHash: Buffer): Promise<RotationResult> {
+  async rotate(target: RotationTarget, presentedHash: Buffer): Promise<RotationResult> {
+    const outcome = await this.rotateLocked(target, presentedHash);
+    if (outcome.kind === "refused") {
+      if (outcome.reason !== null) await this.recordRejection(target, outcome.reason);
+      return { kind: "rejected" };
+    }
+    return outcome;
+  }
+
+  /** The locked transaction: rotate, or end with no write and say why it refused. */
+  private rotateLocked(
+    target: RotationTarget,
+    presentedHash: Buffer,
+  ): Promise<RotationResult | { readonly kind: "refused"; readonly reason: RotationRejectReason | null }> {
     return runWithTenantContext(this.pool, { tenantId: target.tenantId, isPlatformAdmin: false }, async (client) => {
       const state = await lockDeviceForRotation(client, target);
-      if (state === null) return { kind: "rejected" };
+      if (state === null) return { kind: "refused", reason: null };
       const decision = decideRotation(state, presentedHash);
-      if (decision.kind === "rejected") {
-        await auditRotationRejected(client, target, decision.reason);
-        return { kind: "rejected" };
-      }
+      if (decision.kind === "rejected") return { kind: "refused", reason: decision.reason };
       const rawToken = generateRawToken();
       const write = await applyRotation(client, target, decision.credential, hashToken(rawToken));
       await auditRotated(client, target, decision.credential, decision.inGrace, write);
@@ -75,11 +93,12 @@ export class RotationService {
   }
 
   /**
-   * `pos.device.rotation_rejected` for a refusal the guard decided (no lock:
-   * nothing changes). A failed audit write never turns the 401 into a 5xx;
-   * it is logged without any token material.
+   * `pos.device.rotation_rejected` in its own transaction, within the
+   * device's rotation budget. A failed audit write never turns the 401 into
+   * a 5xx; it is logged without any token material.
    */
   async recordRejection(target: RotationTarget, reason: RotationRejectReason): Promise<void> {
+    if (!(await this.withinBudget(target, reason))) return;
     try {
       await runWithTenantContext(this.pool, { tenantId: target.tenantId, isPlatformAdmin: false }, (client) =>
         auditRotationRejected(client, target, reason),
@@ -95,6 +114,34 @@ export class RotationService {
         },
         "rotation refusal audit write failed",
       );
+    }
+  }
+
+  /** Spend one unit of the device's rotation budget; false once it is spent (fail-open on a limiter outage). */
+  private async withinBudget(target: RotationTarget, reason: RotationRejectReason): Promise<boolean> {
+    try {
+      const decision = await this.rateLimiter.check(
+        "posRotateDevice",
+        target.deviceId,
+        POS_WRITE_RATE_LIMIT_BUCKETS.posRotateDevice,
+      );
+      if (decision.allowed) return true;
+      this.logger?.warn(
+        { event: "pos.device.rotation_rejected.suppressed", tenant_id: target.tenantId, device_id: target.deviceId, reason },
+        "rotation refusal audit suppressed: the device's rotation budget is spent",
+      );
+      return false;
+    } catch (err: unknown) {
+      this.logger?.warn(
+        {
+          event: "pos.device.rotation_rejected.budget_unavailable",
+          tenant_id: target.tenantId,
+          device_id: target.deviceId,
+          error_class: err instanceof Error ? err.name : typeof err,
+        },
+        "rotation budget unavailable; failing open (refusal audited)",
+      );
+      return true;
     }
   }
 }

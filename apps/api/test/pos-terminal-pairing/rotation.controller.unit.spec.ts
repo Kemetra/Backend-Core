@@ -18,6 +18,7 @@ import { POS_WRITE_RATE_LIMIT_BUCKET_KEY } from "../../src/auth/pos-write-rate-l
 import { PosWriteRateLimitGuard } from "../../src/auth/pos-write-rate-limit.guard";
 import { POS_WRITE_RATE_LIMIT_BUCKETS, RateLimiter } from "../../src/auth/rate-limit";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
+import { ROOT_LOGGER } from "../../src/common/logging.interceptor";
 import { IDEMPOTENT_OPTIONS_KEY } from "../../src/idempotency/idempotent.decorator";
 import { DeviceRotationAuthGuard } from "../../src/pos-terminal-pairing/device-rotation-auth.guard";
 import { RotationController } from "../../src/pos-terminal-pairing/rotation.controller";
@@ -106,5 +107,86 @@ describe("RT-369 — rotate route wiring", () => {
 
   it("the rotation budget is small: a till rotates about once per 75 days", () => {
     expect(POS_WRITE_RATE_LIMIT_BUCKETS.posRotateDevice).toEqual({ limit: 10, windowMs: 60 * 60 * 1000 });
+  });
+});
+
+/** An in-memory Redis for the real RateLimiter. */
+class CountingRedis {
+  private readonly counts = new Map<string, number>();
+  incr(key: string): Promise<number> {
+    const n = (this.counts.get(key) ?? 0) + 1;
+    this.counts.set(key, n);
+    return Promise.resolve(n);
+  }
+  pexpireNx(): Promise<number> {
+    return Promise.resolve(1);
+  }
+  pttl(): Promise<number> {
+    return Promise.resolve(30_000);
+  }
+  decr(key: string): Promise<number> {
+    const n = (this.counts.get(key) ?? 0) - 1;
+    this.counts.set(key, n);
+    return Promise.resolve(n);
+  }
+  del(key: string): Promise<number> {
+    return Promise.resolve(this.counts.delete(key) ? 1 : 0);
+  }
+}
+
+describe("RT-369 — the real per-device budget on the device principal", () => {
+  async function boot(rateLimiter: unknown, warn: jest.Mock): Promise<INestApplication> {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [RotationController],
+      providers: [
+        Reflector,
+        PosWriteRateLimitGuard,
+        {
+          provide: RotationService,
+          useValue: {
+            rotate: () =>
+              Promise.resolve({
+                kind: "rotated",
+                body: { device_token: "t".repeat(43), terminal_id: DEVICE, expires_at: "x", rotate_after: "y" },
+              }),
+          },
+        },
+        { provide: RateLimiter, useValue: rateLimiter },
+        { provide: OPERATOR_CONTEXT_RESOLVER, useValue: { recoverDeviceId: jest.fn() } },
+        { provide: ROOT_LOGGER, useValue: { warn } },
+      ],
+    })
+      .overrideGuard(DeviceRotationAuthGuard)
+      .useValue(new StubDeviceGuard())
+      .compile();
+    const app = moduleRef.createNestApplication();
+    app.useGlobalFilters(new GlobalExceptionFilter());
+    await app.init();
+    return app;
+  }
+
+  it("ten rotations in an hour pass; the 11th is 429 RATE_LIMITED", async () => {
+    const app = await boot(new RateLimiter(new CountingRedis()), jest.fn());
+    try {
+      for (let i = 0; i < 10; i += 1) {
+        await request(app.getHttpServer()).post("/api/pos/v1/terminals/rotate").expect(200);
+      }
+      const res = await request(app.getHttpServer()).post("/api/pos/v1/terminals/rotate").expect(429);
+      expect((res.body as { error: { code: string } }).error.code).toBe("RATE_LIMITED");
+      expect(res.headers["retry-after"]).toBe("30");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("a limiter outage fails open with a warn log", async () => {
+    const warn = jest.fn();
+    const app = await boot({ check: () => Promise.reject(new Error("redis down")) }, warn);
+    try {
+      await request(app.getHttpServer()).post("/api/pos/v1/terminals/rotate").expect(200);
+      expect(warn).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("failing open"));
+    } finally {
+      await app.close();
+    }
   });
 });
