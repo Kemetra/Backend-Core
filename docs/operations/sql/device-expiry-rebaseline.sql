@@ -12,7 +12,7 @@
 -- before turning DEVICE_TOKEN_EXPIRY_ENFORCED on.
 --
 -- WHAT. For every device that is not revoked (a retired device is always
--- revoked) and can still rotate (`now() < expires_at + 7 days`), the new
+-- revoked) and can still rotate (`now() < expires_at + 168 hours`), the new
 -- expiry is
 --     today (00:00, database time zone) + min_days + a per-device offset in
 --     [0, spread_days)
@@ -76,7 +76,9 @@ SELECT (:min_days::int >= 1 AND :spread_days::int >= 1 AND :min_days::int + :spr
 SELECT set_config('app.is_platform_admin', 'true', false) AS platform_admin \gset
 
 -- The plan: every unrevoked device that can still rotate (inside the 7-day
--- grace of RT-369, ROTATION_GRACE_MS), its current and its new expiry.
+-- grace of RT-369, ROTATION_GRACE_MS: 168 hours, not '7 days', so a DST
+-- change in the session time zone cannot move it), its current and its new
+-- expiry.
 CREATE TEMP VIEW device_expiry_rebaseline_plan AS
   SELECT d.id,
          d.tenant_id,
@@ -91,13 +93,13 @@ CREATE TEMP VIEW device_expiry_rebaseline_plan AS
          ) AS new_expires_at
     FROM devices d
    WHERE d.revoked_at IS NULL
-     AND d.expires_at + interval '7 days' > now();
+     AND d.expires_at + interval '168 hours' > now();
 
 \echo 'Lapsed (unrevoked, past the 7-day rotate grace): NOT re-baselined; revoke or re-pair them:'
 SELECT count(*) AS lapsed_devices, min(expires_at) AS lapsed_min, max(expires_at) AS lapsed_max
   FROM devices
  WHERE revoked_at IS NULL
-   AND expires_at + interval '7 days' <= now();
+   AND expires_at + interval '168 hours' <= now();
 
 \echo 'Plan (unrevoked devices that can still rotate):'
 SELECT count(*)                                                  AS planned_devices,
@@ -121,7 +123,7 @@ SELECT date_trunc('week', new_expires_at) AS week, count(*) AS devices
     FROM device_expiry_rebaseline_plan p
    WHERE d.id = p.id
      AND d.revoked_at IS NULL
-     AND d.expires_at + interval '7 days' > now()
+     AND d.expires_at + interval '168 hours' > now()
      AND p.new_expires_at > d.expires_at;
   COMMIT;
   \echo 'APPLIED: device expiry re-baselined (see the UPDATE count above).'
