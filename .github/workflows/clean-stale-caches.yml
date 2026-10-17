@@ -1,7 +1,9 @@
 # The single Actions-cache cleaner (RT-582 merged the weekly clean-caches.yml
 # into this daily one). Its deletions are a superset of the weekly script's:
 # main, open-PR refs and PRs merged within 24 h stay protected, and refs that
-# are neither refs/heads/* nor refs/pull/* are skipped and listed.
+# are neither refs/heads/* nor refs/pull/* are skipped and listed. A second
+# step keeps only the newest 5 CodeQL overlay caches on main
+# (RT-589); pnpm caches on main are never touched.
 
 name: Clean Stale Caches
 
@@ -22,6 +24,7 @@ permissions:
 jobs:
   clean:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Cache usage (before)
         id: before
@@ -128,7 +131,70 @@ jobs:
             printf "%s" "$unknown_list"
           fi
 
+      # CodeQL default setup writes one ~200 MB codeql-overlay-base-database-*
+      # cache per main commit (per language). They all live on refs/heads/main,
+      # which the step above never touches, so they would otherwise fill the
+      # 10 GB cap and LRU-evict the pnpm caches CI needs (RT-589). Keep the
+      # newest KEEP of them in total (same semantics as POS) and delete the
+      # rest. Only keys with that exact prefix on main are candidates.
+      - name: Prune CodeQL overlay caches on main (keep newest N)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          KEEP: '5'
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          PREFIX="codeql-overlay-base-database-"
+          [[ "$KEEP" =~ ^[0-9]+$ ]] || { echo "Invalid KEEP: $KEEP" >&2; exit 1; }
+
+          # Newest first by created_at (ISO-8601 sorts lexicographically). A
+          # listing failure aborts here (pipefail) before anything is deleted.
+          overlay=$(
+            gh api "repos/$REPO/actions/caches?ref=refs/heads/main&per_page=100" --paginate \
+            | jq -rs --arg p "$PREFIX" '
+                [ .[].actions_caches[]
+                  | select(.ref == "refs/heads/main" and (.key | startswith($p))) ]
+                | sort_by(.created_at) | reverse
+                | .[] | [.id, .size_in_bytes, .created_at, .key] | @tsv'
+          )
+
+          total=0; [ -z "$overlay" ] || total=$(wc -l <<< "$overlay")
+          echo "CodeQL overlay caches on main: $total (keeping newest $KEEP)"
+
+          deleted=0; failed=0; freed=0; n=0
+          if [ -n "$overlay" ]; then
+            while IFS=$'\t' read -r id size created key; do
+              n=$((n + 1))
+              if (( n <= KEEP )); then
+                echo "KEEP   id=$id size=$size created=$created key=$key"
+                continue
+              fi
+              if [[ "$DRY_RUN" == "true" ]]; then
+                echo "WOULD DELETE id=$id size=$size created=$created key=$key"
+                deleted=$((deleted + 1)); freed=$((freed + size))
+              elif gh api -X DELETE "repos/$REPO/actions/caches/$id" --silent; then
+                echo "DELETED id=$id size=$size created=$created key=$key"
+                deleted=$((deleted + 1)); freed=$((freed + size))
+              else
+                echo "FAILED  id=$id key=$key" >&2
+                failed=$((failed + 1))
+              fi
+            done <<< "$overlay"
+          fi
+
+          freed_gb=$(awk "BEGIN{printf \"%.3f\", $freed/1073741824}")
+          tag=$([ "$DRY_RUN" = "true" ] && echo " [DRY RUN - no deletions performed]" || echo "")
+          echo ""
+          echo "=== CodeQL overlay prune${tag} ==="
+          printf "Found   : %d\n" "$total"
+          printf "Kept    : %d\n" "$(( total < KEEP ? total : KEEP ))"
+          printf "Deleted : %d (%.3f GB)\n" "$deleted" "$freed_gb"
+          printf "Failed  : %d\n" "$failed"
+          [ "$failed" -eq 0 ] || exit 1
+
       - name: Cache usage (after)
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BEFORE_BYTES: ${{ steps.before.outputs.before_bytes }}
