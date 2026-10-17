@@ -54,14 +54,15 @@ export interface OpenPolicyInput {
  * counts as inside the window.
  */
 function probePoints(history: PolicyHistory, from: number, to: number): number[] {
-  const points = [from];
-  for (const r of [...history.tenant, ...history.store]) {
-    for (const change of [r.createdAt.getTime(), r.effectiveUntil?.getTime()]) {
-      if (change === undefined || change < from || change > to) continue;
-      points.push(change, change - TICK_MS);
-    }
-  }
-  return points;
+  const changes = [...history.tenant, ...history.store].flatMap((r) => changeTimes(r));
+  const inside = changes.filter((change) => change >= from && change <= to);
+  return [from, ...inside.flatMap((change) => [change, change - TICK_MS])];
+}
+
+/** When a revision can change the effective policy: its publish, and its expiry if any. */
+function changeTimes(revision: PolicyHistory["tenant"][number]): number[] {
+  const until = revision.effectiveUntil;
+  return until === null ? [revision.createdAt.getTime()] : [revision.createdAt.getTime(), until.getTime()];
 }
 
 /** True when `matches` holds for the effective policy at some instant of the skew window. */

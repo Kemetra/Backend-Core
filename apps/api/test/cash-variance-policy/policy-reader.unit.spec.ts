@@ -35,6 +35,11 @@ function storeRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** The repository's latest-revision read of the store scope. */
+function isLatestStoreRead(sql: string): boolean {
+  return sql.includes("scope = 'store'") && sql.includes("LIMIT 1");
+}
+
 /** A client double: the clock, no tenant revision, `latestStore` for the store, and the audit insert. */
 function clientOf(latestStore: Record<string, unknown> | null, auditFails: boolean) {
   const statements: string[] = [];
@@ -46,7 +51,7 @@ function clientOf(latestStore: Record<string, unknown> | null, auditFails: boole
       if (auditFails) throw Object.assign(new Error("permission denied for table audit_events"), { code: "42501" });
       return { rows: [] };
     }
-    if (text.includes("scope = 'store'") && latestStore !== null && text.includes("LIMIT 1")) return { rows: [latestStore] };
+    if (isLatestStoreRead(text)) return { rows: latestStore === null ? [] : [latestStore] };
     return { rows: [] };
   });
   return { client: { query } as unknown as PoolClient, statements };

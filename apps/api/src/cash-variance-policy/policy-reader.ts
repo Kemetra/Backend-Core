@@ -31,6 +31,20 @@ export interface StoreResolution {
   readonly effective: ResolvedPolicy;
 }
 
+/** The store's latest revision when it is a `set` still in force at `now`, else null. */
+function activeOverrideOf(
+  latest: StoredRevision | null,
+  now: Date,
+): (StoredRevision & { readonly value: PolicyValue }) | null {
+  if (latest === null || !isActiveSet(latest, now)) return null;
+  return latest as StoredRevision & { readonly value: PolicyValue };
+}
+
+/** True for a store `set` (once not active, an expired one). */
+function isSet(revision: StoredRevision | null): revision is StoredRevision {
+  return revision?.kind === "set";
+}
+
 /** The tenant level from the tenant's latest revision. */
 export function tenantLevelOf(latestTenant: StoredRevision | null, now: Date): ResolvedPolicy {
   return tenantLevelAt(latestTenant === null ? [] : [latestTenant], now);
@@ -52,13 +66,8 @@ export class PolicyReader {
   async store(client: PoolClient, scope: { readonly tenantId: string; readonly storeId: string }): Promise<StoreResolution> {
     const { now, latest: latestTenant, level: tenantLevel } = await this.tenant(client, scope.tenantId);
     const latestStore = await this.repo.latest(client, scope);
-    const activeOverride =
-      latestStore !== null && latestStore.value !== null && isActiveSet(latestStore, now)
-        ? (latestStore as StoredRevision & { readonly value: PolicyValue })
-        : null;
-    if (latestStore !== null && activeOverride === null && latestStore.kind === "set") {
-      await this.auditExpiry(client, scope.tenantId, latestStore);
-    }
+    const activeOverride = activeOverrideOf(latestStore, now);
+    if (activeOverride === null && isSet(latestStore)) await this.auditExpiry(client, scope.tenantId, latestStore);
     return {
       now,
       tenantLevel,

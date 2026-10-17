@@ -87,8 +87,16 @@ export interface StoredPolicyValue {
  * than it (an accepted frozen value), the stored text without trailing zeros.
  */
 export function renderPolicyValue(stored: StoredPolicyValue): PolicyValue {
-  if (stored.mode !== "limit" || stored.limitAmount === null || stored.currencyCode === null) return { mode: "none" };
-  return { mode: "limit", limitAmount: renderAmount(stored.limitAmount, stored.currencyCode), currencyCode: stored.currencyCode };
+  const limit = storedLimit(stored);
+  if (limit === null) return { mode: "none" };
+  return { mode: "limit", limitAmount: renderAmount(limit.amount, limit.currencyCode), currencyCode: limit.currencyCode };
+}
+
+/** The amount and currency of a stored `limit` (the 0050 CHECKs make them all-or-none), else null. */
+function storedLimit(stored: StoredPolicyValue): { amount: string; currencyCode: string } | null {
+  if (stored.mode !== "limit") return null;
+  const { limitAmount, currencyCode } = stored;
+  return limitAmount !== null && currencyCode !== null ? { amount: limitAmount, currencyCode } : null;
 }
 
 /** An exact-decimal amount in its canonical form for `currencyCode` (see `renderPolicyValue`). */

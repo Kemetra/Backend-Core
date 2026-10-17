@@ -143,6 +143,30 @@ function isChainRefusal(err: unknown): boolean {
   return e.code === "23514" && typeof e.message === "string" && e.message.includes("is dated before the revision it supersedes");
 }
 
+/** The value columns of a revision: mode, limit and currency (all null for a `clear`, the last two for `none`). */
+function valueParams(value: PolicyValue | null): [string | null, string | null, string | null] {
+  if (value === null) return [null, null, null];
+  return value.mode === "limit" ? ["limit", value.limitAmount, value.currencyCode] : ["none", null, null];
+}
+
+/** $1-$14 of the revision INSERT. */
+function insertParams(revision: NewRevision): unknown[] {
+  return [
+    newId(),
+    revision.tenantId,
+    revision.storeId === null ? "tenant" : "store",
+    revision.storeId,
+    revision.kind,
+    ...valueParams(revision.value),
+    revision.reason,
+    revision.effectiveUntil,
+    revision.permanent,
+    revision.permanent ? revision.createdByUserId : null,
+    revision.supersedesRevisionId,
+    revision.createdByUserId,
+  ];
+}
+
 export class PolicyRepository {
   /** The transaction's clock: `now()` is fixed for the whole transaction, as the 0050 CHECKs see it. */
   async now(client: PoolClient): Promise<Date> {
@@ -233,23 +257,7 @@ export class PolicyRepository {
    * `ConcurrentPolicyChangeError`.
    */
   async insert(client: PoolClient, revision: NewRevision): Promise<StoredRevision> {
-    const value = revision.value;
-    const params = [
-      newId(),
-      revision.tenantId,
-      revision.storeId === null ? "tenant" : "store",
-      revision.storeId,
-      revision.kind,
-      value?.mode ?? null,
-      value?.mode === "limit" ? value.limitAmount : null,
-      value?.mode === "limit" ? value.currencyCode : null,
-      revision.reason,
-      revision.effectiveUntil,
-      revision.permanent,
-      revision.permanent ? revision.createdByUserId : null,
-      revision.supersedesRevisionId,
-      revision.createdByUserId,
-    ];
+    const params = insertParams(revision);
     try {
       const r = await client.query<RevisionDbRow>(
         `INSERT INTO cash_variance_policy_revisions

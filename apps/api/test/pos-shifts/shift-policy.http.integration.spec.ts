@@ -258,29 +258,38 @@ describe("open", () => {
   });
 });
 
+/** One cell of the flag matrix: the frozen policy, the till, how long ago it opened, the expected flags. */
+interface FlagCase {
+  readonly label: string;
+  readonly frozen: () => unknown;
+  readonly device: FixtureDevice;
+  readonly minutes: number;
+  readonly flags: string[];
+}
+
 describe("the accept-and-flag matrix (AD-CASH-001 D-6), one case per cell", () => {
   const tenantPolicy = (id: () => string, value: object = limit("50.00")) => () => ({ policySource: "tenant", policyRevisionId: id(), policyValue: value });
   const storePolicy = (id: () => string, value: object = limit("20.00")) => () => ({ policySource: "store", policyRevisionId: id(), policyValue: value });
 
-  it.each<[string, () => unknown, FixtureDevice, number, string[]]>([
+  it.each<FlagCase>([
     // tenant / store source: unknown
-    ["tenant: an id that is no revision of this tenant", tenantPolicy(() => randomUUID()), DEV_A1, 60, ["policy_revision_unknown"]],
-    ["tenant: another tenant's revision", tenantPolicy(() => otherTenantRevision), DEV_A1, 60, ["policy_revision_unknown"]],
-    ["store: another store's revision", storePolicy(() => storeSet), DEV_A1, 90, ["policy_revision_unknown"]],
-    ["tenant source naming a store revision (scope mismatch)", tenantPolicy(() => storeSet, limit("20.00")), DEV_A2, 90, ["policy_revision_unknown"]],
-    ["store: a clear revision", storePolicy(() => storeClear), DEV_A2, 70, ["policy_revision_unknown"]],
+    { label: "tenant: an id that is no revision of this tenant", frozen: tenantPolicy(() => randomUUID()), device: DEV_A1, minutes: 60, flags: ["policy_revision_unknown"] },
+    { label: "tenant: another tenant's revision", frozen: tenantPolicy(() => otherTenantRevision), device: DEV_A1, minutes: 60, flags: ["policy_revision_unknown"] },
+    { label: "store: another store's revision", frozen: storePolicy(() => storeSet), device: DEV_A1, minutes: 90, flags: ["policy_revision_unknown"] },
+    { label: "tenant source naming a store revision (scope mismatch)", frozen: tenantPolicy(() => storeSet, limit("20.00")), device: DEV_A2, minutes: 90, flags: ["policy_revision_unknown"] },
+    { label: "store: a clear revision", frozen: storePolicy(() => storeClear), device: DEV_A2, minutes: 70, flags: ["policy_revision_unknown"] },
     // store source: effective, superseded, value mismatch
-    ["store: the override in force at openedAt", storePolicy(() => storeSet), DEV_A2, 90, []],
-    ["store: the override after its clear (offline, older cache)", storePolicy(() => storeSet), DEV_A2, 60, ["policy_revision_superseded"]],
-    ["store: a value other than the override's", storePolicy(() => storeSet, limit("25.00")), DEV_A2, 90, ["policy_value_mismatch"]],
+    { label: "store: the override in force at openedAt", frozen: storePolicy(() => storeSet), device: DEV_A2, minutes: 90, flags: [] },
+    { label: "store: the override after its clear (offline, older cache)", frozen: storePolicy(() => storeSet), device: DEV_A2, minutes: 60, flags: ["policy_revision_superseded"] },
+    { label: "store: a value other than the override's", frozen: storePolicy(() => storeSet, limit("25.00")), device: DEV_A2, minutes: 90, flags: ["policy_value_mismatch"] },
     // tenant source: superseded and value together; a currency other than the shift's
-    ["tenant: superseded and another value", tenantPolicy(() => revOld, limit("99.00")), DEV_A1, 60, ["policy_revision_superseded", "policy_value_mismatch"]],
-    ["tenant: the limit in another currency than the shift's", tenantPolicy(() => revCurrent, limit("50.00", "USD")), DEV_A1, 60, ["policy_value_mismatch"]],
+    { label: "tenant: superseded and another value", frozen: tenantPolicy(() => revOld, limit("99.00")), device: DEV_A1, minutes: 60, flags: ["policy_revision_superseded", "policy_value_mismatch"] },
+    { label: "tenant: the limit in another currency than the shift's", frozen: tenantPolicy(() => revCurrent, limit("50.00", "USD")), device: DEV_A1, minutes: 60, flags: ["policy_value_mismatch"] },
     // tenant default under a stricter store override: the tenant revision was not the store's effective one
-    ["tenant: the default while a stricter override governed the store", tenantPolicy(() => revCurrent), DEV_A2, 90, ["policy_revision_superseded"]],
+    { label: "tenant: the default while a stricter override governed the store", frozen: tenantPolicy(() => revCurrent), device: DEV_A2, minutes: 90, flags: ["policy_revision_superseded"] },
     // fallback: never a revision flag
-    ["fallback: none", () => ({ policySource: "fallback", policyRevisionId: null, policyValue: NONE }), DEV_A1, 60, []],
-  ])("%s", async (_label, frozen, device, minutes, flags) => {
+    { label: "fallback: none", frozen: () => ({ policySource: "fallback", policyRevisionId: null, policyValue: NONE }), device: DEV_A1, minutes: 60, flags: [] },
+  ])("$label", async ({ frozen, device, minutes, flags }) => {
     if (skipped()) return;
     const { res } = await openWith(frozen(), { openedAt: minutesAgo(minutes) }, device);
     expect(res.status).toBe(201);
@@ -321,17 +330,26 @@ async function openAndClose(frozen: unknown, close: Record<string, unknown> = {}
 const tenantPolicy = (value: object) => ({ policySource: "tenant", policyRevisionId: revCurrent, policyValue: value });
 const ZERO_VARIANCE = { countedCash: "2755.00", variance: "0.00" };
 
+/** One D-1 branch: the frozen policy, the close overrides and the expected derived pair. */
+interface CloseCase {
+  readonly label: string;
+  readonly frozen: () => unknown;
+  readonly close: Record<string, unknown>;
+  readonly required: string;
+  readonly missing: string;
+}
+
 describe("close derivation (D-1 / D-7)", () => {
-  it.each([
-    ["no frozen policy (an old POS still closes)", () => undefined, {}, "unknown", "unknown"],
-    ["none", () => tenantPolicy(NONE), {}, "no", "no"],
-    ["a limit above |variance|", () => tenantPolicy(limit("10.00")), {}, "no", "no"],
-    ["a limit equal to |variance|", () => tenantPolicy(limit("5.00")), {}, "no", "no"],
-    ["a limit below |variance| with no approver", () => tenantPolicy(limit("4.99")), {}, "yes", "yes"],
-    ["limit 0 with a zero variance", () => tenantPolicy(limit("0.00")), ZERO_VARIANCE, "no", "no"],
-    ["a limit in another currency, compared as frozen", () => ({ policySource: "fallback", policyRevisionId: null, policyValue: limit("1", "USD") }), {}, "yes", "yes"],
-    ["the fallback limit 0", () => ({ policySource: "fallback", policyRevisionId: null, policyValue: limit("0.00") }), {}, "yes", "yes"],
-  ])("%s", async (_label, frozen, close, required, missing) => {
+  it.each<CloseCase>([
+    { label: "no frozen policy (an old POS still closes)", frozen: () => undefined, close: {}, required: "unknown", missing: "unknown" },
+    { label: "none", frozen: () => tenantPolicy(NONE), close: {}, required: "no", missing: "no" },
+    { label: "a limit above |variance|", frozen: () => tenantPolicy(limit("10.00")), close: {}, required: "no", missing: "no" },
+    { label: "a limit equal to |variance|", frozen: () => tenantPolicy(limit("5.00")), close: {}, required: "no", missing: "no" },
+    { label: "a limit below |variance| with no approver", frozen: () => tenantPolicy(limit("4.99")), close: {}, required: "yes", missing: "yes" },
+    { label: "limit 0 with a zero variance", frozen: () => tenantPolicy(limit("0.00")), close: ZERO_VARIANCE, required: "no", missing: "no" },
+    { label: "a limit in another currency, compared as frozen", frozen: () => ({ policySource: "fallback", policyRevisionId: null, policyValue: limit("1", "USD") }), close: {}, required: "yes", missing: "yes" },
+    { label: "the fallback limit 0", frozen: () => ({ policySource: "fallback", policyRevisionId: null, policyValue: limit("0.00") }), close: {}, required: "yes", missing: "yes" },
+  ])("$label", async ({ frozen, close, required, missing }) => {
     if (skipped()) return;
     const { res, stored } = await openAndClose(frozen(), close);
     expect(res.status).toBe(201);

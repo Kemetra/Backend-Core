@@ -210,18 +210,23 @@ function publisher(request: TenantContextRequest, input: ConsoleInput): PublishI
   return { ...input, actorUserId, requestId: request.requestId ?? null };
 }
 
+/** The contract's 4xx for a service refusal, or null for anything else (a 500). */
+function toHttpError(err: unknown): HttpException | null {
+  if (err instanceof InvalidPolicyCursorError) {
+    return new BadRequestException({ code: "validation_error", message: "cursor is not valid." });
+  }
+  if (err instanceof PolicyStoreNotFoundError) return new NotFoundException(NOT_FOUND);
+  if (err instanceof PolicyPublishRefusedError) {
+    return new HttpException({ code: err.code, message: REFUSAL_MESSAGES[err.code] }, err.status);
+  }
+  return null;
+}
+
 /** Maps the service's refusals to the contract's 4xx; anything else propagates (500). */
 async function mapErrors<T>(work: () => Promise<T>): Promise<T> {
   try {
     return await work();
   } catch (err) {
-    if (err instanceof InvalidPolicyCursorError) {
-      throw new BadRequestException({ code: "validation_error", message: "cursor is not valid." });
-    }
-    if (err instanceof PolicyStoreNotFoundError) throw new NotFoundException(NOT_FOUND);
-    if (err instanceof PolicyPublishRefusedError) {
-      throw new HttpException({ code: err.code, message: REFUSAL_MESSAGES[err.code] }, err.status);
-    }
-    throw err;
+    throw toHttpError(err) ?? err;
   }
 }

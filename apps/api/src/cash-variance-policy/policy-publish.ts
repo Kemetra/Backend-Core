@@ -73,6 +73,23 @@ function requireSupportedCurrency(value: PolicyValue | undefined): void {
   }
 }
 
+/** A `clear` needs an active override (422 `override_not_active`). */
+function requireActiveOverride(current: { readonly activeOverride: StoredRevision | null }): void {
+  if (current.activeOverride === null) throw new PolicyPublishRefusedError("override_not_active");
+}
+
+/** Stricter only (RT-284 Q5): a `set` may not be looser than the tenant level (422). */
+function requireNotLooser(value: PolicyValue | undefined, tenantLevel: PolicyValue): void {
+  if (value !== undefined && compareStrictness(value, tenantLevel) < 0) {
+    throw new PolicyPublishRefusedError("override_looser_than_tenant");
+  }
+}
+
+/** DR-4: a permanent override is owner-only (403 `owner_approval_required`). */
+function requireOwnerForPermanent(permanent: boolean, roleCode: string | null): void {
+  if (permanent && roleCode !== "owner") throw new PolicyPublishRefusedError("owner_approval_required");
+}
+
 function requireExpected(latest: StoredRevision | null, expected: string | null): void {
   if ((latest?.id ?? null) !== expected) throw new PolicyPublishRefusedError("cash_variance_policy_changed_concurrently");
 }
@@ -143,13 +160,10 @@ export class PolicyPublisher {
     },
   ): void {
     if (body.kind === "clear") {
-      if (state.current.activeOverride === null) throw new PolicyPublishRefusedError("override_not_active");
+      requireActiveOverride(state.current);
       return;
     }
-    const value = body.policyValue;
-    if (value !== undefined && compareStrictness(value, state.current.tenantLevel.policyValue) < 0) {
-      throw new PolicyPublishRefusedError("override_looser_than_tenant");
-    }
-    if (state.permanent && state.roleCode !== "owner") throw new PolicyPublishRefusedError("owner_approval_required");
+    requireNotLooser(body.policyValue, state.current.tenantLevel.policyValue);
+    requireOwnerForPermanent(state.permanent, state.roleCode);
   }
 }
