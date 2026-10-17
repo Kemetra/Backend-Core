@@ -1,13 +1,15 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — Console Device Registry API
-  version: "1.1.0-draft"
+  version: "1.2.0-draft"
   description: >
-    Jira RT-365 (RT-287 F2; RT-138 L3 / DL-2) and RT-366 (RT-287 F3): the
-    Console device registry that Admin-Console RT-371 (Devices destination,
-    fleet table, device detail) and RT-372 (lifecycle flows) consume. Four
-    operations over the `devices` table (migrations
-    `0001_pos_operator_identity`, `0040_device_lifecycle`):
+    Jira RT-365 (RT-287 F2; RT-138 L3 / DL-2), RT-366 (RT-287 F3) and RT-367
+    (RT-287 F4; RT-138 L1 / L5 / DL-3): the Console device registry that
+    Admin-Console RT-371 (Devices destination, fleet table, device detail) and
+    RT-372 (lifecycle flows, pairing codes) consume. Four operations over the
+    `devices` table (migrations `0001_pos_operator_identity`,
+    `0040_device_lifecycle`) and three over `pairing_codes` (migrations
+    `0024_pairing_codes`, `0040_device_lifecycle`):
 
       1. `consoleListDevices`  — a filtered, cursor-paginated fleet list,
          exception-first.
@@ -21,24 +23,32 @@ info:
          (RT-366): what a revoke, replace, move or retire of the device would
          do, and whether the server would allow it, before the operator
          confirms (see "Impact preview" below).
+      5. `consoleIssuePairingCode` — issue a one-time pairing code for a
+         store, optionally replacing or moving a device (RT-367, RT-287
+         D-Q1); the code is returned once (see "Pairing codes" below).
+      6. `consoleListPairingCodes` — the live pending codes in scope.
+      7. `consoleCancelPairingCode` — cancel a pending code.
 
-    Not on this surface (other RT-287 follow-ups): the pairing-code issue /
-    cancel API and the replace / move auto-revoke (RT-367), retire (RT-368),
-    rotate (RT-369), the throttled `last_seen_at` writer and the expiry
-    enforcement flag (RT-370), and resolving a custody exception (force-seal /
-    custody reconciliation, DEFERRED). The preview covers replace, move and
-    retire, but their mutations are RT-367 / RT-368. A revoked device is
-    never reactivated (RT-287 D-Q5): there is no un-revoke.
+    Not on this surface (other RT-287 follow-ups): retire (RT-368), rotate
+    (RT-369), the throttled `last_seen_at` writer and the expiry enforcement
+    flag (RT-370), and resolving a custody exception (force-seal / custody
+    reconciliation, DEFERRED). The preview covers retire, but its mutation is
+    RT-368. The pairing itself (the code's redemption, which mints the new
+    device and auto-revokes the replaced one) is the POS
+    `posPairTerminal` (`pos-terminal-pairing.openapi.yaml`). A revoked device
+    is never reactivated (RT-287 D-Q5): there is no un-revoke. The owner-run
+    CLI (`packages/db/src/cli/bootstrap-pairing-code.ts`) stays as the
+    bootstrap / break-glass issuer.
 
 
-    **Posture.** `1.1.0-draft`. `consoleListDevices`, `consoleGetDevice` and
+    **Posture.** `1.2.0-draft`. `consoleListDevices`, `consoleGetDevice` and
     `consoleRevokeDevice` are implemented (RT-365: contract PR #777, runtime
-    PR #781). `consoleGetDeviceImpact` and the impact payload on the revoke
-    409 are `[GATED]` contract-first (RT-366), and the RT-366 runtime ships
-    them unchanged on the wire, so no operation carries
-    `x-runtime-status: contract-only`. Every change from 1.0.0-draft is
-    additive: a new operation, new schemas, and an optional `error.details`
-    (the impact preview) on the existing 409.
+    PR #781), and so is `consoleGetDeviceImpact` with the impact payload on the
+    revoke 409 (RT-366: contract PR #784, runtime PR #785). The three
+    pairing-code operations are `[GATED]` contract-first (RT-367) and carry
+    `x-runtime-status: contract-only` until the RT-367 runtime ships them.
+    Every change from 1.1.0-draft is additive: three new operations and new
+    schemas. No existing operation, schema or response changes.
 
 
     **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`)
@@ -56,7 +66,8 @@ info:
     absent device are the same non-disclosing 404 (`RolesGuard` default
     `denyAs: 404`, FR-ISO-4); so is a `store_id` filter naming a store outside
     the scope. The revoke is a cookie-authenticated unsafe request, so it must
-    carry a trusted `Origin` (RT-430), else 403 `origin_rejected`.
+    carry a trusted `Origin` (RT-430), else 403 `origin_rejected`; so must the
+    pairing-code issue and cancel.
 
 
     **Trust state.** Derived from the row, mutually exclusive: `retired` when
@@ -216,6 +227,82 @@ info:
     (unknown), never zero.
 
 
+    **Pairing codes (RT-367, RT-287 D-Q1 / D-Q4 amended).** A pairing code is
+    a one-time credential that a POS terminal redeems once through
+    `posPairTerminal`. Each redemption mints a NEW device identity (a new
+    `devices` row and `terminal_id`) in the code's store. A device is never
+    re-pointed: `devices.store_id` never changes, and the old device keeps its
+    sales, shifts and cash facts under its old store.
+
+      - **Issue.** The caller names the store, the terminal binding the POS
+        pins at pairing (`branchName`, `branchAddress`, `taxRegistrationId`,
+        the printer ids). These are passed through to satisfy migration
+        0024's NOT NULL snapshot columns; this API does not manage them, and
+        Backend-Core has no other source for them. Then an
+        optional `terminalLabel`, an optional `ttlMinutes` (default 60, at most
+        1440 = 24 h) and optionally `replacesDeviceId`. The server generates
+        the code and returns it ONCE, in the 201 body only. It stores only a
+        hash (`code_hash`), so it can never return the code again: not on a
+        list, not on an idempotent retry. A same-key retry is answered 409
+        `idempotency_key_conflict` (RT-82 K3, as the connector credential
+        rotation). A client that lost the 201 finds the stray code with
+        `consoleListPairingCodes`, cancels it, and issues again with a new
+        key.
+      - **Replace and move.** With `replacesDeviceId`, the code replaces that
+        device. The server derives the kind from the stores, never from the
+        request: the device's own store is a `replace` (it records reason
+        `replaced`), another store of the tenant is a `move` (reason
+        `moved`). The device must be in the caller's tenant and store scope,
+        as must the code's store; anything else (another tenant's device, a
+        device or store outside the scope, an absent id) is the same
+        non-disclosing 404. The issue decides with the lifecycle evaluator
+        (`replace` / `move`, see "Impact preview"), under the replaced
+        device's lifecycle lock: `allowed` issues the code; `blocked` is 409
+        with `error.code` = `blockCode` (`unresolved_cash_session` for an
+        active device with an open shift, `device_retired` for a retired one)
+        and the replace / move preview as `error.details`. A revoked device,
+        including one whose open shift is the custody exception after a
+        security or recovery revoke, can be replaced or moved: the exception
+        stays on the old device and shift and is never transferred to the new
+        device (RT-287 comment 11493).
+      - **One replacement per device.** A device is replaced at most once
+        (`replacedByDeviceId` holds one id). After an `allowed` verdict, and
+        still under the replaced device's locks, the issue is refused with
+        409 when a code already replaces that device:
+        `replacement_already_pending` when a live code (`pending`, not past
+        `expiresAt`) names it, `device_already_replaced` when a used code
+        does. Cancel the pending code (or let it expire) to issue another.
+        These two refusals are not verdicts: the impact preview reports the
+        device's lifecycle state, and shows the facts behind them as
+        `replacedByDeviceId` and `cascade.pendingPairingCodeCount`. They carry
+        no `error.details`. A `blocked` verdict is always reported first.
+      - **Redemption** (`posPairTerminal`) decides again, under the replaced
+        device's lifecycle lock, with the same evaluator. If it is still
+        allowed, ONE transaction burns the code, inserts the new device and,
+        when the replaced device is still active, revokes it with reason
+        `replaced` / `moved` through the revoke cascade (its live operator
+        sessions are revoked and its other pending codes cancelled), with no
+        actor (`revokedByUserId` null: the redemption is the terminal's, not a
+        session user's; the issuer is on the `pos.device.pairing_code.issued`
+        row; the revoke's audit row carries `pairing_code_id` to join them).
+        On an already revoked device the auto-revoke changes nothing, and the
+        redemption still cancels any other pending code that replaces the
+        same device, so no second replacement can follow. If a shift opened on the replaced device after the issue, the
+        redemption is refused (`REPLACEMENT_BLOCKED`, see the pairing
+        contract) and the code stays pending.
+      - **List** returns the live codes: `pending` and not past `expiresAt`.
+        Expiry is time-based (nothing rewrites the row); an expired code is
+        never redeemable and is not listed.
+      - **Cancel** sets a pending code `cancelled`, whether or not it has
+        expired. Idempotent: a cancelled code answers 200
+        `already_cancelled`. A used code is 409 `pairing_code_used`. A code
+        of another tenant, of a store outside the caller's scope, or absent
+        is the non-disclosing 404.
+
+    The code, its hash and the device token never appear in any response
+    other than the issue's 201, in any log or in audit metadata.
+
+
     **Audit.** The revoke writes `pos.device.revoked` in the same transaction
     (target `device` / the device id; actor the session user) with metadata
     limited to the RT-135 allowlist: `reason`, `revoked_session_count`,
@@ -226,6 +313,21 @@ info:
     `pos.device.revoked` row. The reads are audited `devices.listed` /
     `devices.read`. The impact preview is audited `devices.impact_read`,
     with the device id and the action, never a note.
+
+    RT-367 adds, each in its mutation's transaction:
+    `pos.device.pairing_code.issued` (target `pairing_code` / its id; actor
+    the session user; metadata `kind`, `replaces_device_id`, `ttl_minutes`,
+    `terminal_id`), `pos.device.pairing_code.cancelled` (target
+    `pairing_code`; actor the session user) and, at redemption,
+    `pos.device.paired` (target `device` / the new device id; no actor user;
+    metadata `pairing_code_id`, `kind`, `replaces_device_id`). The
+    redemption's auto-revoke writes `pos.device.revoked` with no actor user,
+    `reason` `replaced` / `moved`, the cascade counts,
+    `custody_exception: false`, `replaced_by_device_id` and
+    `pairing_code_id` (joins it to the issuer's
+    `pos.device.pairing_code.issued` row). A refused issue,
+    cancel or redemption writes none of these. The list is audited
+    `pairing_codes.listed`.
 
 
     **Ordering and paging (exception-first, for RT-371).** The list is ordered
@@ -261,7 +363,13 @@ info:
     under its lock. Status mapping: 400 `validation_error`, 401 unauthenticated, 403
     `origin_rejected` / `recovery_revoke_forbidden`, 404 non-disclosing
     not-found, 409 `unresolved_cash_session`, 422 `recovery_note_required` /
-    `custody_exception_not_acknowledged`, 500 internal.
+    `custody_exception_not_acknowledged`, 500 internal. The pairing-code
+    operations (RT-367) add: 400 `idempotency_key_required` /
+    `idempotency_key_malformed` on the issue; 409 `unresolved_cash_session` /
+    `device_retired` (with the replace / move preview as `error.details`),
+    `replacement_already_pending` / `device_already_replaced` and
+    `idempotency_key_conflict` on the issue; 409 `pairing_code_used` on the
+    cancel; 425 `idempotency_in_progress` on the issue.
 
 servers:
   - url: https://api.example.com
@@ -271,6 +379,10 @@ tags:
     description: >
       Console device registry (RT-365): the fleet list, a device's detail and
       the revoke.
+  - name: pairing-codes
+    description: >
+      Console pairing codes (RT-367): issue (optionally replacing or moving a
+      device), list and cancel.
 
 security:
   - cookieAuth: []
@@ -415,6 +527,126 @@ paths:
         "500":
           $ref: "#/components/responses/SystemFailure"
 
+  /api/v1/pairing-codes:
+    post:
+      summary: Issue a one-time pairing code (optionally replacing or moving a device).
+      operationId: consoleIssuePairingCode
+      tags: [pairing-codes]
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-367 contract-first ([GATED]); the RT-367 runtime implements it after
+        owner approval.
+      x-idempotency: required
+      description: >
+        Issues a pairing code for a store in the caller's scope (see "Pairing
+        codes" above). The code is in this 201 body only, once. With
+        `replacesDeviceId` the code replaces (same store) or moves (another
+        store) that device, under the Cash Session rule: an active device with
+        an open shift, or a retired device, is 409 with the replace / move
+        preview. The body is checked (400) before any read; a store or device
+        that is absent, of another tenant or outside the caller's scope is the
+        non-disclosing 404.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PairingCodeIssueRequest"
+      responses:
+        "201":
+          description: >
+            The code is issued. The body carries the code ONCE (SECRET): show it
+            to the operator to type into the terminal, never store or log it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairingCodeIssued"
+        "400":
+          $ref: "#/components/responses/IssueValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/PairingCodeIssueConflict"
+        "425":
+          $ref: "#/components/responses/IdempotencyInProgress"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+    get:
+      summary: List the live pending pairing codes in scope.
+      operationId: consoleListPairingCodes
+      tags: [pairing-codes]
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-367 contract-first ([GATED]); the RT-367 runtime implements it after
+        owner approval.
+      description: >
+        The `pending` codes that have not expired, in the caller's tenant and
+        store scope, newest first (`createdAt` descending, then
+        `pairingCodeId`). Never the code or its hash. With no `store_id`, every
+        store in the caller's scope is listed. An empty page is a 200.
+      parameters:
+        - $ref: "#/components/parameters/StoreIdQuery"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of live pending codes, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairingCodePage"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/pairing-codes/{pairingCodeId}/cancel:
+    post:
+      summary: Cancel a pending pairing code.
+      operationId: consoleCancelPairingCode
+      tags: [pairing-codes]
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-367 contract-first ([GATED]); the RT-367 runtime implements it after
+        owner approval.
+      description: >
+        Sets a pending code `cancelled` (expired or not), so it can never be
+        redeemed. Idempotent: an already cancelled code answers 200
+        `already_cancelled` and changes nothing. A used code is 409
+        `pairing_code_used`. A code of another tenant, of a store outside the
+        caller's scope, or absent is the non-disclosing 404. No body.
+      parameters:
+        - $ref: "#/components/parameters/PairingCodeIdPath"
+      responses:
+        "200":
+          description: The code is cancelled, by this request or already.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairingCodeCancelResult"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/PairingCodeUsed"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
 components:
   securitySchemes:
     cookieAuth:
@@ -505,6 +737,34 @@ components:
         record their own reason (`replaced`, `moved`, `retired`). There is no
         note parameter: the note and the acknowledgement are not verdict
         inputs (see `requires`).
+    PairingCodeIdPath:
+      name: pairingCodeId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        The pairing code's id (`pairing_codes.id`), never the code itself. Case
+        insensitive. A value that is not a UUID is 400 `validation_error`.
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
+      description: >
+        Client-generated opaque token (UUIDv7 recommended). Missing → 400
+        `idempotency_key_required`; malformed → 400 `idempotency_key_malformed`.
+        Non-replayable (RT-82 K3): the issued code is never stored, so a retry
+        with the same key never issues a second code and never returns the
+        first one; it is answered 409 `idempotency_key_conflict`, and so is the
+        same key with a different body. A request still in progress under the
+        key is 425. Never retry with the same key: list the live codes, cancel
+        a stray one, and issue again with a new key.
 
   schemas:
     # -----------------------------------------------------------------------
@@ -627,8 +887,11 @@ components:
           type: [string, "null"]
           format: uuid
           description: >
-            The `users.id` who revoked it. `null` while active, and on a revoke
-            recorded before RT-365 (actor unknown).
+            The `users.id` who revoked it. `null` while active, on a revoke
+            recorded before RT-365 (actor unknown), and on the auto-revoke of a
+            replaced or moved device at pairing (RT-367: the terminal's
+            redemption has no session user; the issuer is on the code's
+            `pos.device.pairing_code.issued` audit row).
         revokeReason:
           description: >
             The structured reason. `null` while active, and on a revoke
@@ -1543,6 +1806,382 @@ components:
                     const: unresolved_cash_session
 
     # -----------------------------------------------------------------------
+    # Pairing codes (RT-367)
+    # -----------------------------------------------------------------------
+    PairingCodeKind:
+      type: string
+      enum: [pair, replace, move]
+      description: >
+        What redeeming the code does. `pair`: a new device, nothing replaced.
+        `replace`: a new device in the replaced device's store, which is
+        revoked with reason `replaced`. `move`: a new device in another store
+        of the tenant, and the replaced device is revoked with reason `moved`
+        (RT-287 D-Q1). Derived by the server from the stores, never sent.
+    TerminalLabel:
+      type: string
+      minLength: 1
+      maxLength: 64
+      # Not blank, and no NUL (0024 CHECK `pairing_codes_terminal_label_non_empty`).
+      pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
+      description: >
+        The terminal's display name (e.g. "Counter 1"), printed on receipts and
+        in the POS sale number (`<terminal_label>-<YYYY-MM-DD>-<NNNNNN>`), so
+        keep it unique within the store.
+    BindingText:
+      type: string
+      minLength: 1
+      maxLength: 512
+      pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
+      description: Operator text pinned on the code, not blank, no NUL.
+    PrinterUsbId:
+      type: string
+      pattern: "^0x[0-9A-Fa-f]{4}$"
+      description: A USB vendor or product id as `0xHHHH` (0024 CHECK).
+
+    PairingCodeIssueRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - storeId
+        - branchName
+        - branchAddress
+        - taxRegistrationId
+        - printerVendorId
+        - printerProductId
+      description: >
+        The code to issue. The tenant is the session's, never the request's.
+        `branchName`, `branchAddress`, `taxRegistrationId` and the printer
+        fields are the terminal binding `posPairTerminal` returns: the
+        terminal pins them at pairing and prints them on receipts. Backend-Core
+        holds no store address, tax registration or printer, so the issuer
+        supplies them, as the bootstrap CLI does.
+      properties:
+        storeId:
+          type: string
+          format: uuid
+          description: The store the new device is paired into (the code's store).
+        terminalLabel:
+          description: >
+            The new terminal's label. When omitted, the server derives it
+            from the new `terminalId` prefix: `T-` + its first 8 hex digits,
+            upper case. It is never the replaced device's label (the old
+            till's sale numbers stay its own). Give an explicit label to keep
+            labels distinct within a store.
+          allOf:
+            - $ref: "#/components/schemas/TerminalLabel"
+        ttlMinutes:
+          type: integer
+          minimum: 1
+          maximum: 1440
+          default: 60
+          description: How long the code stays redeemable, in minutes (at most 24 h).
+        replacesDeviceId:
+          type: string
+          format: uuid
+          description: >
+            The device this code replaces (same store) or moves (another store
+            of the tenant). It must be in the caller's tenant and store scope
+            (404 otherwise). Omit it for a plain pairing.
+        branchName:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
+          description: The branch name printed on receipts.
+        branchAddress:
+          description: The branch address printed on receipts (`\n` allowed).
+          allOf:
+            - $ref: "#/components/schemas/BindingText"
+        taxRegistrationId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
+          description: The tenant's tax registration id printed on fiscal receipts.
+        printerVendorId:
+          $ref: "#/components/schemas/PrinterUsbId"
+        printerProductId:
+          $ref: "#/components/schemas/PrinterUsbId"
+        printerComPort:
+          description: >
+            The optional RS-232 port alongside the USB printer (e.g. `COM3`);
+            omitted or null for a USB-only printer.
+          oneOf:
+            - type: string
+              minLength: 1
+              maxLength: 32
+              pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
+            - type: "null"
+
+    PairingCodeIssued:
+      type: object
+      additionalProperties: false
+      required:
+        - pairingCodeId
+        - code
+        - kind
+        - storeId
+        - terminalId
+        - terminalLabel
+        - replacesDeviceId
+        - expiresAt
+        - createdAt
+      description: >
+        The issued code. `code` is the SECRET, present here only, once. Every
+        other field can be read again from the list while the code is live.
+      properties:
+        pairingCodeId:
+          type: string
+          format: uuid
+          description: The code's id (`pairing_codes.id`); cancel uses it.
+        code:
+          type: string
+          minLength: 16
+          maxLength: 32
+          description: >
+            The one-time pairing code (SECRET) the operator types into the
+            terminal (`posPairTerminal` `pairing_code`). Server-generated: 16
+            characters from an alphabet without look-alike characters in v1;
+            a client treats it as opaque. Shown once, never stored by the
+            server (only its hash), never logged or audited.
+        kind:
+          $ref: "#/components/schemas/PairingCodeKind"
+        storeId:
+          type: string
+          format: uuid
+        terminalId:
+          type: string
+          format: uuid
+          description: The id the new device will have once paired (`devices.id`).
+        terminalLabel:
+          $ref: "#/components/schemas/TerminalLabel"
+        replacesDeviceId:
+          type: [string, "null"]
+          format: uuid
+          description: The replaced or moved device; `null` for `pair`.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the code stops being redeemable (server clock).
+        createdAt:
+          type: string
+          format: date-time
+      allOf:
+        - if:
+            properties:
+              kind:
+                const: pair
+            required: [kind]
+          then:
+            properties:
+              replacesDeviceId:
+                type: "null"
+          else:
+            properties:
+              replacesDeviceId:
+                type: string
+
+    PairingCodeSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - pairingCodeId
+        - kind
+        - storeId
+        - terminalId
+        - terminalLabel
+        - status
+        - replacesDeviceId
+        - expiresAt
+        - createdAt
+      description: >
+        A pairing code without its secret: no code, no hash.
+      properties:
+        pairingCodeId:
+          type: string
+          format: uuid
+        kind:
+          description: >
+            What redeeming the code does, derived as on the issue. Reported
+            even when the replaced device is outside the caller's scope (then
+            `replacesDeviceId` is null), so the list flags every code that
+            will revoke a device.
+          allOf:
+            - $ref: "#/components/schemas/PairingCodeKind"
+        storeId:
+          type: string
+          format: uuid
+        terminalId:
+          type: string
+          format: uuid
+        terminalLabel:
+          $ref: "#/components/schemas/TerminalLabel"
+        status:
+          type: string
+          enum: [pending, cancelled]
+          description: >
+            `pending` on the list (live codes only); `cancelled` after a cancel.
+        replacesDeviceId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            The device the code replaces or moves. `null` for a plain pairing,
+            and `null` when that device is in a store outside the caller's
+            scope (out-of-scope reads as absent).
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    PairingCodePage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      description: A keyset page of live pending codes, newest first.
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items:
+            allOf:
+              - $ref: "#/components/schemas/PairingCodeSummary"
+              - properties:
+                  status:
+                    const: pending
+        nextCursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page; `null` on the last page.
+
+    PairingCodeCancelResult:
+      type: object
+      additionalProperties: false
+      required: [outcome, pairingCode]
+      description: The cancel outcome and the code after the request.
+      properties:
+        outcome:
+          type: string
+          enum: [cancelled, already_cancelled]
+          description: >
+            `cancelled`: this request cancelled the code. `already_cancelled`:
+            it was cancelled already; nothing changed.
+        pairingCode:
+          allOf:
+            - $ref: "#/components/schemas/PairingCodeSummary"
+            - properties:
+                status:
+                  const: cancelled
+
+    PairingCodeIssueConflict:
+      type: object
+      required: [error]
+      description: >
+        The issue's 409: the canonical error envelope. For a refused replace or
+        move (`unresolved_cash_session`, `device_retired`) it carries the
+        replace / move impact preview, computed under the replaced device's
+        lock, as `error.details`; its verdict is `blocked` and its `blockCode`
+        equals `error.code`. `replacement_already_pending`,
+        `device_already_replaced` and `idempotency_key_conflict` carry no
+        details.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - unresolved_cash_session
+                - device_retired
+                - replacement_already_pending
+                - device_already_replaced
+                - idempotency_key_conflict
+              description: Stable machine-readable error code.
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id; the cause is recorded server-side.
+            details:
+              allOf:
+                - $ref: "#/components/schemas/DeviceImpactPreview"
+                - properties:
+                    action:
+                      enum: [replace, move]
+                    verdict:
+                      const: blocked
+      allOf:
+        # A refused replace / move always carries its preview, and the preview's
+        # block code is the envelope's code.
+        - if:
+            properties:
+              error:
+                properties:
+                  code:
+                    enum: [unresolved_cash_session, device_retired]
+                required: [code]
+            required: [error]
+          then:
+            properties:
+              error:
+                required: [details]
+          else:
+            properties:
+              error:
+                not:
+                  required: [details]
+        - if:
+            properties:
+              error:
+                properties:
+                  code:
+                    const: unresolved_cash_session
+                required: [code]
+            required: [error]
+          then:
+            properties:
+              error:
+                properties:
+                  details:
+                    properties:
+                      blockCode:
+                        const: unresolved_cash_session
+        - if:
+            properties:
+              error:
+                properties:
+                  code:
+                    const: device_retired
+                required: [code]
+            required: [error]
+          then:
+            properties:
+              error:
+                properties:
+                  details:
+                    properties:
+                      blockCode:
+                        const: device_retired
+
+    IdempotencyInProgress:
+      type: object
+      additionalProperties: false
+      required: [error, retryAfterSec]
+      description: >
+        The platform idempotency interceptor's 425 body (not the canonical
+        envelope).
+      properties:
+        error:
+          type: string
+          enum: [idempotency_in_progress]
+        retryAfterSec:
+          type: integer
+          minimum: 1
+
+    # -----------------------------------------------------------------------
     # Canonical error envelope (auth / pos-sales / shift-closes)
     # -----------------------------------------------------------------------
     Error:
@@ -1632,6 +2271,66 @@ components:
       description: >
         system_failure (500): unexpected server error; the cause is recorded
         server-side under `request_id`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    IssueValidationFailure:
+      description: >
+        Bad request (400), checked before any read: `validation_error` (a
+        malformed or unknown body key), `idempotency_key_required` (no
+        `Idempotency-Key`) or `idempotency_key_malformed`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    OriginRejected:
+      description: >
+        origin_rejected (403): a cookie-authenticated unsafe request without a
+        trusted `Origin` (RT-430).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PairingCodeIssueConflict:
+      description: >
+        Conflict (409), nothing issued. `unresolved_cash_session`: the replaced
+        device is active and has an open shift (close it on the till and let
+        it sync first). `device_retired`: the replaced device is retired. Both
+        carry the replace / move preview as `error.details`.
+        `replacement_already_pending`: a live pending code already replaces
+        the device (cancel it first). `device_already_replaced`: a used code
+        already replaced it (a device is replaced once).
+        `idempotency_key_conflict`: the `Idempotency-Key` was already used (a
+        retry is never replayed, because the code is never stored) or was used
+        with another body; issue again with a new key.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PairingCodeIssueConflict"
+    IdempotencyInProgress:
+      description: >
+        Too Early (425): a request with this `Idempotency-Key` is still in
+        progress. The key is non-replayable (RT-82 K3): once that request
+        completes, any retry with the same key is 409
+        `idempotency_key_conflict` and never returns the code. Do not retry
+        with the same key. After `Retry-After` seconds, check
+        `consoleListPairingCodes`, cancel the stray code if one was issued,
+        and issue again with a new key.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            minimum: 1
+          description: Seconds to wait before retrying.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/IdempotencyInProgress"
+    PairingCodeUsed:
+      description: >
+        pairing_code_used (409): the code was already redeemed, so it cannot be
+        cancelled. Revoke the device it paired instead. Nothing was changed.
       content:
         application/json:
           schema:
