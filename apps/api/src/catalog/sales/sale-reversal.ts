@@ -19,6 +19,24 @@ export class SaleAlreadyReversedError extends Error {
   }
 }
 
+/**
+ * RT-577 (owner-approved V1 decision, 2026-10-17): the sale has payer
+ * responsibilities, so the ordinary void / return / refund routes refuse it
+ * for every operator → 403 `credit_sale_reversal_restricted`. A
+ * Manager/Admin reverses it with `recordCreditSaleReversal` instead.
+ */
+export class CreditSaleReversalRestrictedError extends Error {
+  constructor() {
+    super("a sale with payer responsibilities is reversed only through the credit reversal");
+    this.name = "CreditSaleReversalRestrictedError";
+  }
+}
+
+/** RT-577: refuse an ordinary reversal of a credit sale (`responsibility_count > 0`). */
+export function assertNotCreditSale(sale: { readonly responsibilityCount: number }): void {
+  if (sale.responsibilityCount > 0) throw new CreditSaleReversalRestrictedError();
+}
+
 /** Cumulative returned quantity would exceed the quantity sold → 409 over_return. */
 export class ReturnOverReturnError extends Error {
   constructor() {
@@ -58,6 +76,8 @@ export class ReturnLineInvalidError extends Error {
 export interface LockedSale {
   readonly currencyCode: string;
   readonly timezone: string;
+  /** RT-577: `sales.responsibility_count` (> 0 is a credit sale). */
+  readonly responsibilityCount: number;
 }
 
 /**
@@ -70,8 +90,8 @@ export async function lockSaleForReversal(
   saleRef: string,
   storeId: string,
 ): Promise<LockedSale> {
-  const r = await client.query<{ currency_code: string; timezone: string }>(
-    `SELECT s.currency_code, st.timezone
+  const r = await client.query<{ currency_code: string; timezone: string; responsibility_count: number }>(
+    `SELECT s.currency_code, st.timezone, s.responsibility_count
        FROM sales s JOIN stores st ON st.id = s.store_id
       WHERE s.id = $1 AND s.store_id = $2
         FOR UPDATE OF s`,
@@ -79,7 +99,11 @@ export async function lockSaleForReversal(
   );
   const row = r.rows[0];
   if (!row) throw new SaleNotFoundError();
-  return { currencyCode: row.currency_code, timezone: row.timezone };
+  return {
+    currencyCode: row.currency_code,
+    timezone: row.timezone,
+    responsibilityCount: Number(row.responsibility_count),
+  };
 }
 
 /** Whether the (locked) sale already has a void and/or any return. */

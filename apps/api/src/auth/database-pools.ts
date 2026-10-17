@@ -123,6 +123,11 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     "sale_reprints",
     // RT-418 (0051): payer responsibilities on the sale fact.
     "sale_responsibilities",
+    // RT-577 (0054): credit-sale reversals, their refund tenders and the
+    // shared approval-use ledger.
+    "sale_credit_reversals",
+    "sale_credit_reversal_tenders",
+    "sale_approval_uses",
     "receivable",
     "claim",
     "claim_receivables",
@@ -245,6 +250,18 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   ["payer_account", "SELECT"],
   ["payer_account", "INSERT"],
   ["payer_account", "UPDATE"],
+  // RT-577 (0054): a credit reversal writes its row and refund tenders, and its
+  // projection and replay read them back; a cash-paying credit return writes
+  // its approval id to the shared single-use ledger and reads it to refuse a
+  // reuse. All append-only (no UPDATE / DELETE policy); never UPDATE, DELETE
+  // or TRUNCATE. (A void's ledger row is written by the SECURITY DEFINER
+  // sale_voids trigger and needs no grant.)
+  ["sale_credit_reversals", "SELECT"],
+  ["sale_credit_reversals", "INSERT"],
+  ["sale_credit_reversal_tenders", "SELECT"],
+  ["sale_credit_reversal_tenders", "INSERT"],
+  ["sale_approval_uses", "SELECT"],
+  ["sale_approval_uses", "INSERT"],
   // RT-387 (0050): the Console publishes policy revisions and every resolution
   // (device read, Console reads, the open's accept-and-flag check) reads them;
   // a close's approver verdict is written once after the commit and read back

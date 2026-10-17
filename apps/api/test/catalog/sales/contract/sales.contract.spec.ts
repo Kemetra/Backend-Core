@@ -38,6 +38,10 @@ import "reflect-metadata";
 import { resolve } from "node:path";
 
 import { z } from "zod";
+import {
+  CreditReversalRefundTenderSchema,
+  CreditSaleReversalRequestSchema,
+} from "../../../../src/catalog/sales/dto/credit-sale-reversal-request.dto";
 import Ajv2020, { type ValidateFunction } from "ajv/dist/2020";
 import addFormats from "ajv-formats";
 
@@ -1577,7 +1581,7 @@ describe("pos-sales/sales.yaml — RT-417 payer responsibilities", () => {
 // void / return / refund routes refuse it for every operator, and a
 // Manager/Admin reverses it through `recordCreditSaleReversal`, which pays out
 // only the collected share and turns the credit share into a receivable
-// adjustment. The new operation is contract-only until the RT-577 runtime PR.
+// adjustment. The operation is live since the RT-577 runtime (contract-only lifted).
 // ===========================================================================
 describe("pos-sales/sales.yaml — RT-577 credit-sale reversal", () => {
   type Node = {
@@ -1612,10 +1616,20 @@ describe("pos-sales/sales.yaml — RT-577 credit-sale reversal", () => {
     expect(info()).toContain("RT-577 (1.11.0-draft; [GATED] owner-approved V1 decision, Jira RT-577, 2026-10-17");
   });
 
-  it("marks the new operation contract-only with a runtime note naming the RT-577 runtime PR", () => {
+  it("is implemented since the RT-577 runtime: no contract-only marker or runtime note", () => {
     const op = reversalOp();
-    expect(op?.["x-runtime-status"]).toBe("contract-only");
-    expect(String(op?.["x-runtime-note"] ?? "")).toContain("RT-577 runtime");
+    expect(op?.["x-runtime-status"]).toBeUndefined();
+    expect(op?.["x-runtime-note"]).toBeUndefined();
+    expect(info()).not.toContain("Contract-only until the RT-577 runtime PR");
+  });
+
+  it("DTO/contract parity: the credit reversal DTO accepts exactly the contract's properties", () => {
+    const contractProps = Object.keys(schema("CreditSaleReversalRequest")?.properties ?? {}).sort();
+    const dtoShape = (CreditSaleReversalRequestSchema as unknown as { _def: { schema: { shape: Record<string, unknown> } } })._def.schema.shape;
+    expect(Object.keys(dtoShape).sort()).toEqual(contractProps);
+    const tenderProps = Object.keys(schema("CreditReversalRefundTender")?.properties ?? {}).sort();
+    const tenderShape = (CreditReversalRefundTenderSchema as unknown as { _def: { schema: { shape: Record<string, unknown> } } })._def.schema.shape;
+    expect(Object.keys(tenderShape).sort()).toEqual(tenderProps);
   });
 
   it("is a POS write on the operator envelope with the shared Idempotency-Key", () => {

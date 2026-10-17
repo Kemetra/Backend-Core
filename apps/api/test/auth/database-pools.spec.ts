@@ -66,6 +66,14 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "payer_account:SELECT",
   "payer_account:INSERT",
   "payer_account:UPDATE",
+  // RT-577 (0054): credit-sale reversals and their refund tenders (append-only),
+  // and the shared approval-use ledger a credit return writes (append-only).
+  "sale_credit_reversals:SELECT",
+  "sale_credit_reversals:INSERT",
+  "sale_credit_reversal_tenders:SELECT",
+  "sale_credit_reversal_tenders:INSERT",
+  "sale_approval_uses:SELECT",
+  "sale_approval_uses:INSERT",
   // RT-387 (0050): the shift variance policy revisions (append-only; the
   // Console publishes and every resolution reads them) and the persisted
   // approver verdict of a close (append-only, written once after the commit).
@@ -301,6 +309,9 @@ describe("database pool boundary", () => {
       "erpnext_tracking_map",
       "sale_reprints",
       "sale_responsibilities",
+      "sale_credit_reversals",
+      "sale_credit_reversal_tenders",
+      "sale_approval_uses",
       "cash_variance_policy_revisions",
       "shift_close_approver_checks",
     ]) {

@@ -30,6 +30,7 @@ import type { RecordReturnRequestDto } from "./dto/record-return-request.dto";
 import { sha256CanonicalHex } from "./payload-hash";
 import { TerminalEventProvenanceConflictError } from "./sale-errors";
 import {
+  assertNotCreditSale,
   lockSaleForReversal,
   readReversalState,
   ReturnLineInvalidError,
@@ -78,7 +79,7 @@ export interface SaleReturnResult {
   readonly created: boolean;
 }
 
-interface PricedLine {
+export interface PricedLine {
   readonly lineRef: string;
   readonly quantity: string;
   readonly lineAmount: string;
@@ -98,8 +99,16 @@ export class SaleReturnsService {
       { tenantId, isPlatformAdmin: false },
       async (client): Promise<SaleReturnResult> => {
         const sale = await lockSaleForReversal(client, saleRef, input.storeId);
+        // RT-577: a return a credit reversal created is never replayed here; on
+        // its own sale the call falls through to the credit refusal below.
         const existing = await findReturnByProvenance(client, tenantId, body);
-        if (existing) return replay(client, existing, saleRef, payloadHash);
+        if (existing && !(existing.credit_linked && existing.sale_id === saleRef)) {
+          return replay(client, existing, saleRef, payloadHash);
+        }
+
+        // RT-577: a credit sale is refused for every operator, before
+        // exclusivity and the line and tender checks.
+        assertNotCreditSale(sale);
 
         if ((await readReversalState(client, saleRef)).voided) {
           throw new SaleAlreadyReversedError();
@@ -112,6 +121,8 @@ export class SaleReturnsService {
           // The same provenance was recorded concurrently against another sale.
           const winner = await findReturnByProvenance(client, tenantId, body);
           if (!winner) throw new Error("return conflict but no existing return found");
+          // RT-577: a credit reversal's return is never an ordinary replay.
+          if (winner.credit_linked) throw new TerminalEventProvenanceConflictError();
           return replay(client, winner, saleRef, payloadHash);
         }
         await insertLinesAndTenders(client, input, returnId, lines);
@@ -133,14 +144,24 @@ export class SaleReturnsService {
   }
 }
 
+interface ReturnProvenanceRow {
+  readonly id: string;
+  readonly sale_id: string;
+  readonly payload_hash: string;
+  /** RT-577: the return a credit reversal created (never replayed by recordReturn). */
+  readonly credit_linked: boolean;
+}
+
 async function findReturnByProvenance(
   client: PoolClient,
   tenantId: string,
   body: RecordReturnRequestDto,
-): Promise<{ id: string; sale_id: string; payload_hash: string } | null> {
-  const r = await client.query<{ id: string; sale_id: string; payload_hash: string }>(
-    `SELECT id, sale_id, payload_hash FROM sale_returns
-      WHERE tenant_id = $1 AND source_system = $2 AND external_id = $3`,
+): Promise<ReturnProvenanceRow | null> {
+  const r = await client.query<ReturnProvenanceRow>(
+    `SELECT r.id, r.sale_id, r.payload_hash,
+            EXISTS (SELECT 1 FROM sale_credit_reversals c WHERE c.return_id = r.id) AS credit_linked
+       FROM sale_returns r
+      WHERE r.tenant_id = $1 AND r.source_system = $2 AND r.external_id = $3`,
     [tenantId, body.sourceSystem, body.externalId],
   );
   return r.rows[0] ?? null;
@@ -163,7 +184,7 @@ async function replay(
  * Price each requested line from its frozen sale line, in request order.
  * c = quantity already returned on the line (under the sale lock, so stable).
  */
-async function priceReturnLines(
+export async function priceReturnLines(
   client: PoolClient,
   saleRef: string,
   lines: RecordReturnRequestDto["lines"],
@@ -307,7 +328,7 @@ async function insertLinesAndTenders(
 }
 
 /** Build the `SaleReturn` projection from the stored rows (replay-stable). */
-async function loadSaleReturn(client: PoolClient, returnId: string): Promise<SaleReturnProjection> {
+export async function loadSaleReturn(client: PoolClient, returnId: string): Promise<SaleReturnProjection> {
   const header = await client.query<{
     sale_id: string;
     returned_at: Date;

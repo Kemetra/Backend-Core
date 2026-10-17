@@ -47,7 +47,7 @@ info:
       6. `recordCreditSaleReversal` — RT-577: the Manager/Admin-only void or
          return of a sale with payer responsibilities, refunding only the
          collected share and turning the credit share into a receivable
-         adjustment. Contract-only until the RT-577 runtime PR.
+         adjustment. Live from the RT-577 runtime (migration 0054).
 
     RT-72 versioning (additive): `recordReturn` is new; `SaleLine` gains
     `lineRef`, `returnedQuantity` and `returnableQuantity`, and `Sale` gains
@@ -274,8 +274,8 @@ info:
     included (see `CreditSaleReversalRestricted`): an ordinary return pays
     the whole `returnTotal` out in cash, which for a credit sale would pay out
     money the till never collected. The only way to reverse such a sale is the
-    new `recordCreditSaleReversal` (contract-only until the RT-577 runtime
-    PR): a Manager/Admin-only, audited reversal whose cash refund is capped at
+    new `recordCreditSaleReversal` (live from the RT-577 runtime, migration
+    0054): a Manager/Admin-only, audited reversal whose cash refund is capped at
     the server-computed share of the reversal that was actually collected,
     and whose credit share becomes a receivable adjustment owed back to the
     payer, corrected only through the posting feed (Backend-Core →
@@ -869,11 +869,6 @@ paths:
       summary: Reverse a sale with payer responsibilities (Manager/Admin only).
       operationId: recordCreditSaleReversal
       x-idempotency: required
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-577 contract (owner-approved V1 decision, 2026-10-17). The route is
-        not served until the RT-577 runtime PR, which also starts refusing
-        credit sales on `recordVoid`, `recordReturn` and `recordRefund`.
       tags: [pos-sales]
       security:
         - operatorAuthorization: []
