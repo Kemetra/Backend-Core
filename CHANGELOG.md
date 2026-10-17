@@ -243,7 +243,9 @@ This project follows [Semantic Versioning](https://semver.org/).
   per-device `posRotateDevice` budget (10 / hour, 429 `RATE_LIMITED`); the
   200 is sent `Cache-Control: no-store` / `Pragma: no-cache`; every
   `rotation_rejected` row is written in its own transaction and spends from
-  the same budget first (once spent: still 401, no row, a warn log); the
+  a separate per-device `posRotateRefusalAudit` budget first (20 / hour;
+  once spent: still 401, no row, a warn log), so a refused token never
+  429s a valid rotation; the
   service re-decides under the device lifecycle lock and the row lock
   (constant-time hash compare), swaps the token and writes
   `pos.device.rotated`. Every device-authenticated route now accepts the

@@ -98,6 +98,10 @@ export const POS_WRITE_RATE_LIMIT_BUCKETS = {
   // (plus a retry after a lost response), so this only bounds abuse by a
   // device that holds a live token.
   posRotateDevice: { limit: 10, windowMs: 60 * 60 * 1000 },
+  // RT-369: `pos.device.rotation_rejected` rows per matched device. Separate
+  // from posRotateDevice, so a refused (stale) token can never spend the
+  // live till's rotation budget and 429 its real rotation.
+  posRotateRefusalAudit: { limit: 20, windowMs: 60 * 60 * 1000 },
 } as const satisfies Record<string, RateLimitBucket>;
 
 export interface RateLimitBucket {

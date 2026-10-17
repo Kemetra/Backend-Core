@@ -84,11 +84,16 @@ describe("RotationService — refusal audit (R1 / R2)", () => {
     expect(txs[1]!.statements).toContain("COMMIT");
   });
 
-  it("R1: the refusal spends the device's rotation budget before the row", async () => {
+  it("R1: the refusal spends the device's refusal-audit budget, never its rotation budget", async () => {
     const { pool } = fakePool();
     const { rateLimiter, check } = limiter(true);
-    await new RotationService(pool, rateLimiter).recordRejection(TARGET, "revoked");
-    expect(check).toHaveBeenCalledWith("posRotateDevice", TARGET.deviceId, POS_WRITE_RATE_LIMIT_BUCKETS.posRotateDevice);
+    await new RotationService(pool, rateLimiter).recordRejection(TARGET, "previous_expired");
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(check).toHaveBeenCalledWith(
+      "posRotateRefusalAudit",
+      TARGET.deviceId,
+      POS_WRITE_RATE_LIMIT_BUCKETS.posRotateRefusalAudit,
+    );
   });
 
   it("R1: with the budget spent the refusal writes no row and logs a suppressed refusal", async () => {

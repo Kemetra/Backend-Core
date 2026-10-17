@@ -11,10 +11,12 @@
  * ends that transaction with no write, then records
  * `pos.device.rotation_rejected` in its own transaction (contract R2).
  *
- * Every refusal row is bounded by the device's rotation budget (contract
- * R1): the refusal spends from the `posRotateDevice` bucket first, and once
- * it is spent no row is written (a warn log counts the suppression). A
- * limiter outage fails open (the row is written), as ADR 0009 D3.
+ * Every refusal row is bounded per matched device (contract R1): the refusal
+ * spends from the `posRotateRefusalAudit` bucket first, and once it is spent
+ * no row is written (a warn log counts the suppression). That bucket is
+ * separate from the rotation budget (`posRotateDevice`), so a refused token
+ * can never make a valid rotation 429. A limiter outage fails open (the row
+ * is written), as ADR 0009 D3.
  *
  * The new raw token leaves this service once, in the result; only its
  * SHA-256 is written. Never logged.
@@ -117,18 +119,18 @@ export class RotationService {
     }
   }
 
-  /** Spend one unit of the device's rotation budget; false once it is spent (fail-open on a limiter outage). */
+  /** Spend one unit of the device's refusal-audit budget; false once it is spent (fail-open on a limiter outage). */
   private async withinBudget(target: RotationTarget, reason: RotationRejectReason): Promise<boolean> {
     try {
       const decision = await this.rateLimiter.check(
-        "posRotateDevice",
+        "posRotateRefusalAudit",
         target.deviceId,
-        POS_WRITE_RATE_LIMIT_BUCKETS.posRotateDevice,
+        POS_WRITE_RATE_LIMIT_BUCKETS.posRotateRefusalAudit,
       );
       if (decision.allowed) return true;
       this.logger?.warn(
         { event: "pos.device.rotation_rejected.suppressed", tenant_id: target.tenantId, device_id: target.deviceId, reason },
-        "rotation refusal audit suppressed: the device's rotation budget is spent",
+        "rotation refusal audit suppressed: the device's refusal-audit budget is spent",
       );
       return false;
     } catch (err: unknown) {
@@ -139,7 +141,7 @@ export class RotationService {
           device_id: target.deviceId,
           error_class: err instanceof Error ? err.name : typeof err,
         },
-        "rotation budget unavailable; failing open (refusal audited)",
+        "refusal-audit budget unavailable; failing open (refusal audited)",
       );
       return true;
     }
