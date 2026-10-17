@@ -288,7 +288,11 @@ describe("the accept-and-flag matrix (AD-CASH-001 D-6), one case per cell", () =
     // tenant default under a stricter store override: the tenant revision was not the store's effective one
     { label: "tenant: the default while a stricter override governed the store", frozen: tenantPolicy(() => revCurrent), device: DEV_A2, minutes: 90, flags: ["policy_revision_superseded"] },
     // fallback: never a revision flag
-    { label: "fallback: none", frozen: () => ({ policySource: "fallback", policyRevisionId: null, policyValue: NONE }), device: DEV_A1, minutes: 60, flags: [] },
+    // fallback: the fail-closed `limit 0` in the shift's currency (DR-6) only; anything else is not a real fallback
+    { label: "fallback: none (not the fail-closed value)", frozen: () => ({ policySource: "fallback", policyRevisionId: null, policyValue: NONE }), device: DEV_A1, minutes: 60, flags: ["policy_value_mismatch"] },
+    { label: "fallback: a loose limit", frozen: () => ({ policySource: "fallback", policyRevisionId: null, policyValue: limit("500.00") }), device: DEV_A1, minutes: 60, flags: ["policy_value_mismatch"] },
+    { label: "fallback: limit 0 in the shift's currency", frozen: () => ({ policySource: "fallback", policyRevisionId: null, policyValue: limit("0") }), device: DEV_A1, minutes: 60, flags: [] },
+    { label: "fallback: limit 0 in another currency", frozen: () => ({ policySource: "fallback", policyRevisionId: null, policyValue: limit("0.00", "USD") }), device: DEV_A1, minutes: 60, flags: ["policy_value_mismatch"] },
   ])("$label", async ({ frozen, device, minutes, flags }) => {
     if (skipped()) return;
     const { res } = await openWith(frozen(), { openedAt: minutesAgo(minutes) }, device);

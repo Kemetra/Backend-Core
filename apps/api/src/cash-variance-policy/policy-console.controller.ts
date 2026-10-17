@@ -63,6 +63,7 @@ import {
   type PublishTenantPolicyBody,
   type RevisionListQuery,
 } from "./policy.query";
+import { ConcurrentPolicyChangeError } from "./policy.repository";
 import {
   CashVariancePolicyService,
   PolicyStoreNotFoundError,
@@ -210,8 +211,19 @@ function publisher(request: TenantContextRequest, input: ConsoleInput): PublishI
   return { ...input, actorUserId, requestId: request.requestId ?? null };
 }
 
+/**
+ * A lost chain race in the database (the 0050 chain index / guard behind the
+ * advisory lock) is the same 409 as a stale `expectedRevisionId`.
+ */
+function asRefusal(err: unknown): unknown {
+  return err instanceof ConcurrentPolicyChangeError
+    ? new PolicyPublishRefusedError("cash_variance_policy_changed_concurrently")
+    : err;
+}
+
 /** The contract's 4xx for a service refusal, or null for anything else (a 500). */
-function toHttpError(err: unknown): HttpException | null {
+function toHttpError(thrown: unknown): HttpException | null {
+  const err = asRefusal(thrown);
   if (err instanceof InvalidPolicyCursorError) {
     return new BadRequestException({ code: "validation_error", message: "cursor is not valid." });
   }

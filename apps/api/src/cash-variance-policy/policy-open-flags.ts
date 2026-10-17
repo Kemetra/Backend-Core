@@ -19,13 +19,18 @@
  *     currency differs from the shift's.
  *
  * `fallback` is the POS's own never-fetched value (DR-6), never a server
- * revision: only the currency rule applies to it.
+ * revision, so it is never `unknown` or `superseded`; but both contracts
+ * define it as the fail-closed `limit 0`, so any other `fallback` value — `none`
+ * or a non-zero limit — is `policy_value_mismatch` (with the currency rule, a
+ * `limit 0` in another currency than the shift's is one too). Otherwise a POS
+ * could claim `fallback` + `none` and defeat `approvalMissing` reporting.
  */
 import type { PoolClient } from "pg";
 
 import type { FrozenPolicyFact, PolicyFlag } from "../pos-shifts/shift-frozen-policy";
 import { effectiveAt, type PolicyHistory, type ResolvedPolicy } from "./policy-resolution";
-import { samePolicyValue, SYSTEM_DEFAULT } from "./policy-value";
+import { scaled } from "../pos-shifts/shift-cash-arithmetic";
+import { samePolicyValue, SYSTEM_DEFAULT, type PolicyValue } from "./policy-value";
 import { PolicyRepository, type StoredRevision } from "./policy.repository";
 
 /**
@@ -81,6 +86,11 @@ function isUnknownFor(frozen: FrozenPolicyFact, storeId: string, revision: Store
   );
 }
 
+/** The DR-6 fail-closed fallback: a `limit` of exactly 0 (its currency is checked by the currency rule). */
+function isFailClosed(value: PolicyValue): boolean {
+  return value.mode === "limit" && scaled(value.limitAmount) === 0n;
+}
+
 export class OpenPolicyFlagger {
   constructor(private readonly repo: PolicyRepository = new PolicyRepository()) {}
 
@@ -88,19 +98,19 @@ export class OpenPolicyFlagger {
   async flags(client: PoolClient, input: OpenPolicyInput): Promise<PolicyFlag[]> {
     const { frozen } = input;
     const found = new Set<PolicyFlag>();
-    if (frozen.policySource === "tenant" || frozen.policySource === "store") {
-      await this.revisionFlags(client, input, found);
-    } else if (frozen.policySource === "system") {
-      if (!(await this.wasEffective(client, input, (p) => p.policySource === "system"))) {
-        found.add("policy_revision_superseded");
-      }
-      if (!samePolicyValue(frozen.policyValue, SYSTEM_DEFAULT)) found.add("policy_value_mismatch");
-    }
+    if (frozen.policySource === "tenant" || frozen.policySource === "store") await this.revisionFlags(client, input, found);
+    if (frozen.policySource === "system") await this.systemFlags(client, input, found);
+    if (frozen.policySource === "fallback" && !isFailClosed(frozen.policyValue)) found.add("policy_value_mismatch");
     const value = frozen.policyValue;
     if (value.mode === "limit" && value.currencyCode !== input.shiftCurrencyCode) found.add("policy_value_mismatch");
     return (["policy_revision_unknown", "policy_revision_superseded", "policy_value_mismatch"] as const).filter((f) =>
       found.has(f),
     );
+  }
+
+  private async systemFlags(client: PoolClient, input: OpenPolicyInput, found: Set<PolicyFlag>): Promise<void> {
+    if (!(await this.wasEffective(client, input, (p) => p.policySource === "system"))) found.add("policy_revision_superseded");
+    if (!samePolicyValue(input.frozen.policyValue, SYSTEM_DEFAULT)) found.add("policy_value_mismatch");
   }
 
   private async revisionFlags(client: PoolClient, input: OpenPolicyInput, found: Set<PolicyFlag>): Promise<void> {
