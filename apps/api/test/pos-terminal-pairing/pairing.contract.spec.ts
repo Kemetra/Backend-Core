@@ -698,15 +698,15 @@ describe("pos-terminal-pairing.yaml — posRotateTerminalToken (RT-369)", () => 
     expect(param?.schema).toMatchObject({ type: "string", minLength: 16, maxLength: 128 });
   });
 
-  it("declares exactly 200 / 400 / 401 / 409 / 425 / 500", () => {
+  it("declares exactly 200 / 400 / 401 / 409 / 425 / 429 / 500", () => {
     expect(Object.keys(rotateOp()?.responses ?? {}).sort()).toEqual(
-      ["200", "400", "401", "409", "425", "500"].sort(),
+      ["200", "400", "401", "409", "425", "429", "500"].sort(),
     );
   });
 
   it("answers 200 with TerminalRotateResponse and every error with its own RotateError", () => {
     expect(responseSchemaRef("200")).toBe("#/components/schemas/TerminalRotateResponse");
-    for (const status of ["400", "401", "409", "500"]) {
+    for (const status of ["400", "401", "409", "429", "500"]) {
       expect(responseSchemaRef(status)).toBe("#/components/schemas/RotateError");
     }
     expect(responseSchemaRef("425")).toBe("#/components/schemas/IdempotencyInProgress");
@@ -715,6 +715,23 @@ describe("pos-terminal-pairing.yaml — posRotateTerminalToken (RT-369)", () => 
   it("425 declares Retry-After", () => {
     const r425 = rotateOp()?.responses?.["425"] as ResponseObject | undefined;
     expect(r425?.headers?.["Retry-After"]).toBeDefined();
+  });
+
+  it("429 declares Retry-After bounded [1, 300], as the pair 429", () => {
+    const r429 = rotateOp()?.responses?.["429"] as
+      | { headers?: Record<string, { schema?: Record<string, unknown> }> }
+      | undefined;
+    expect(r429?.headers?.["Retry-After"]?.schema).toEqual({ type: "integer", minimum: 1, maximum: 300 });
+  });
+
+  it("marks the 200 Cache-Control: no-store and Pragma: no-cache (the body carries a secret)", () => {
+    const ok = rotateOp()?.responses?.["200"] as { headers?: Record<string, unknown> } | undefined;
+    expect(ok?.headers?.["Cache-Control"]).toEqual({ $ref: "#/components/headers/CacheControlNoStore" });
+    expect(ok?.headers?.["Pragma"]).toEqual({ $ref: "#/components/headers/PragmaNoCache" });
+    const headers = (pairingDoc.components as { headers?: Record<string, { schema?: unknown }> } | undefined)
+      ?.headers;
+    expect(headers?.["CacheControlNoStore"]?.schema).toEqual({ type: "string", const: "no-store" });
+    expect(headers?.["PragmaNoCache"]?.schema).toEqual({ type: "string", const: "no-cache" });
   });
 
   it("TerminalRotateResponse is closed and requires the token, terminal id, expiry and hint", () => {
@@ -758,15 +775,58 @@ describe("pos-terminal-pairing.yaml — posRotateTerminalToken (RT-369)", () => 
         "idempotency_key_required",
         "idempotency_key_malformed",
         "idempotency_key_conflict",
+        "RATE_LIMITED",
         "internal_error",
       ].sort(),
     );
   });
 
+  /** The contract's rotation prose: the info description plus the operation's, whitespace-normalised. */
+  const prose = (): string =>
+    [(pairingDoc.info as { description?: string } | undefined)?.description, (rotateOp() as { description?: string } | undefined)?.description]
+      .join(" ")
+      .replace(/\s+/g, " ");
+
   it("names both RT-369 audit actions (RT-135 catalogue)", () => {
-    const description = pairingDoc.info as { description?: string } | undefined;
-    const text = description?.description ?? "";
-    expect(text).toContain("pos.device.rotated");
-    expect(text).toContain("pos.device.rotation_rejected");
+    expect(prose()).toContain("pos.device.rotated");
+    expect(prose()).toContain("pos.device.rotation_rejected");
+  });
+
+  it("pins the ratified constants: 90 days, 10 minutes, 7 days, 15 days", () => {
+    const text = prose();
+    expect(text).toContain("`expires_at` becomes `now() + 90 days`");
+    expect(text).toMatch(/`previous_valid_until = now\(\) \+ 10 minutes`/);
+    expect(text).toContain("`now() < expires_at + 7 days`");
+    expect(text).toContain("`rotate_after = expires_at - 15 days`");
+  });
+
+  it("states the window is never extended and the grace is rotate-only", () => {
+    const text = prose();
+    expect(text).toContain("the window is never extended");
+    expect(text).toMatch(/rotate-only grace/);
+    expect(text).toContain("this operation is the ONLY one that reads `expires_at`");
+  });
+
+  it("keeps tokens, hashes and keys out of audit and uses unambiguous rejection reasons", () => {
+    const text = prose();
+    expect(text).toContain("Neither row ever carries a token, a token hash, an `Idempotency-Key` or a request header");
+    for (const reason of ["revoked", "retired", "previous_expired", "token_replaced", "grace_elapsed"]) {
+      expect(text).toContain(`\`${reason}\``);
+    }
+    expect(text).not.toContain("superseded");
+  });
+
+  it("states the client rules (one rotation in flight, first-start rotation) and the previous-token trade-off", () => {
+    const text = prose();
+    expect(text).toContain("at most one rotation in flight");
+    expect(text).toContain("never rotates with the previous token once it has stored a 200");
+    expect(text).toContain("rotates once on its first start with the rotation client");
+    expect(text).toContain("a leaked previous token can rotate the device");
+  });
+
+  it("documents the per-device rate limit before the idempotency checks", () => {
+    const text = prose();
+    expect(text).toContain("429 `RATE_LIMITED`");
+    expect(text).toContain("per-device rotation budget");
   });
 });

@@ -22,9 +22,8 @@ info:
     success — returns the new device's `device_token` (SECRET)
     plus the terminal's full tenant + store binding + display +
     operational config. The endpoint is the ONLY backend operation
-    that runs WITHOUT a prior `clerkJwt`; every other POS operation
-    is `clerkJwt`-authenticated (see the "Authentication boundary"
-    note below for the full auth posture). The terminal MUST store
+    that runs without any credential (see the "Authentication
+    boundary" note below for the full auth posture). The terminal MUST store
     the returned `device_token` in OS-level secret storage (Electron
     `safeStorage` / DPAPI on Windows) and MUST NEVER log or echo it
     to the renderer.
@@ -81,9 +80,10 @@ info:
 
     Authentication boundary: `posPairTerminal` is the ONLY backend operation
     callable without `clerkJwt` or any device-bound bearer
-    (`posRotateTerminalToken` requires the device bearer). All other
-    POS operations (sign-in, sales finalization, receipts, etc.) are
-    `clerkJwt`-authenticated. Backend-Core enforces both a durable
+    (`posRotateTerminalToken` requires the device bearer). Every other
+    POS operation authenticates a person (an operator credential), a
+    device (the device bearer: every route that resolves a device by
+    token), or both. Backend-Core enforces both a durable
     per-`pairing_code` attempt budget and a Redis-backed per-source-IP
     window before code lookup. Source IP is derived using the deployment's
     explicit trusted-proxy configuration per FR-9.
@@ -121,11 +121,12 @@ info:
 
 
     **Credential rotation (RT-369; RT-138 L4 / DL-4, owner-ratified
-    2026-10-02 with the grace clarification).** `posRotateTerminalToken`
-    replaces the device's token with a new one. The caller is the paired
-    terminal, authenticated by its current device token (the `device`
-    scheme); there is no operator credential and no request body. In one
-    transaction, under the server clock (`now()`):
+    2026-10-02 with the grace clarification; contract decisions
+    coordinator-approved under owner delegation 2026-10-17).**
+    `posRotateTerminalToken` replaces the device's token with a new one.
+    The caller is the paired terminal, authenticated by its current device
+    token (the `device` scheme); there is no operator credential and no
+    request body. In one transaction, under the server clock (`now()`):
 
       - a new random 32-byte token is minted and returned ONCE; only its
         SHA-256 is stored (`devices.token_hash`), as at pairing;
@@ -135,24 +136,26 @@ info:
         Live operator sessions bound to the device and its pending pairing
         codes are not touched.
 
+    The 200 also carries the hint `rotate_after = expires_at - 15 days`
+    (RT-138 L4: rotate when fewer than 15 days remain). A server hint on
+    the other device routes is deferred to RT-370.
+
 
     **Overlap (10 minutes).** The previous token keeps authenticating for
     10 minutes (`devices.previous_token_hash` /
     `devices.previous_valid_until`), so a lost response does not lock the
     till out: it retries the rotation with the previous token and a NEW
-    `Idempotency-Key` inside the window. Inside the window every
-    device-authenticated route (this contract's `device` scheme, the
-    read-down, cashier admissions, operator sign-in and takeover, POS audit
-    events, the device leg of sale capture and the shift cash-up writes)
-    accepts either the new token or the previous one, for the same device
-    and scope. After `previous_valid_until` the previous token is refused
-    like an unknown one.
+    `Idempotency-Key` inside the window. Inside the window every route that
+    resolves a device by token accepts either the new token or the previous
+    one, for the same device and scope (the previous hash is honoured only
+    on a device that is not revoked). After `previous_valid_until` the
+    previous token is refused like an unknown one. The ratified 10-minute
+    overlap is never closed early.
 
     Which hash becomes the previous one:
 
       - the call presented the current token: the current hash becomes
-        `previous_token_hash` and `previous_valid_until = now() + 10
-        minutes`;
+        `previous_token_hash` and `previous_valid_until = now() + 10 minutes`;
       - the call presented the previous token inside its window (the retry
         after a lost response): the current hash (a token the client never
         received) is replaced and dropped; `previous_token_hash` and
@@ -160,10 +163,27 @@ info:
         extended.
 
     So at most two tokens authenticate a device at any time: the newest one
-    and the previous one inside its window. Two concurrent rotations are
-    serialized by the device lock (below); the later one replaces the
-    earlier one's new token, so they never leave two new tokens valid, and
-    a previous token can never extend its own life.
+    and the previous one inside its window. Two concurrent rotations that
+    present the same current token are serialized by the device lock
+    (below): the first takes the current-token branch; the second then finds
+    that token in the previous hash, inside its window, so it SUCCEEDS
+    through the previous-token branch and replaces the first one's new
+    token. They never leave two new tokens valid, and a previous token can
+    never extend its own life.
+
+    **Trade-off (named).** A previous-token rotation replaces the current
+    token; this is what makes a lost response recoverable. The cost: a
+    leaked previous token can rotate the device within its 10-minute window
+    and take the credential from the till that holds the newest token (that
+    till then gets 401 and must re-pair). The window is the bound.
+
+    **Client rules (RT-373).** A terminal keeps at most one rotation in
+    flight; it never rotates with the previous token once it has stored a
+    200 from a rotation (it uses the new token from then on); it rotates at
+    or after `rotate_after`; and a terminal that does not know its
+    credential's expiry (it paired before `expires_at` was returned, or lost
+    it) rotates once on its first start with the rotation client, to learn
+    it.
 
 
     **Expiry and the rotate-only grace (7 days).** A rotation is accepted
@@ -171,22 +191,39 @@ info:
     `expires_at` but not revoked may rotate during those 7 days; after
     them it is refused (401) and the till must be re-paired. A revoked
     device, and so a retired one (retire implies revoke), never gets a
-    grace: its tokens are refused at once. Until RT-370 turns
-    `DEVICE_TOKEN_EXPIRY_ENFORCED` on, this operation is the ONLY one that
-    reads `expires_at`: every other device-authenticated route still
-    accepts an expired token. With enforcement on (RT-370's contract), an
-    expired token, in its grace or not, is refused on every other route,
-    so during the grace a till can only rotate.
+    grace: its tokens are refused at once. This is the literal ratified L4
+    rule; it is NOT gated on `DEVICE_TOKEN_EXPIRY_ENFORCED`. Until RT-370
+    turns that flag on, this operation is the ONLY one that reads
+    `expires_at`: every other device-authenticated route still accepts an
+    expired token. With enforcement on (RT-370's contract), an expired
+    token, in its grace or not, is refused on every other route, so during
+    the grace a till can only rotate.
+
+    **Fleet expiry cluster (RT-370 / RT-373 sequencing).** Migration 0040
+    gave every device that existed then the same `expires_at` (its apply
+    time + 90 days), so that fleet's rotate-only grace ends together, 97
+    days after 0040 was applied. RT-373 tills must be live before that
+    date, or RT-370 must re-baseline expiry before it; a till past the
+    grace can only re-pair.
 
 
     **Concurrency.** The runtime takes the device lifecycle lock (RT-365,
     the advisory lock on tenant + device that revoke, retire and shift open
-    take), then locks the device row, then re-checks under the lock which
-    hash the presented token matches and that the device is still not
-    revoked, not retired and inside the grace. A revoke or retire that
-    commits first wins (the rotation is 401); a rotation that commits first
-    is followed by the revoke as usual, which voids both hashes. The token
-    comparison under the lock is constant-time.
+    take), then locks the device row, then re-checks under the lock that
+    the presented token still matches the device's current hash or its
+    in-window previous hash, and that the device is still not revoked, not
+    retired and inside the grace. A revoke or retire that commits first
+    wins (the rotation is 401); a rotation that commits first is followed
+    by the revoke as usual, which voids both hashes. The token comparison
+    under the lock is constant-time.
+
+
+    **Rate limit.** A per-device rotation budget (the ADR 0009 per-device
+    limiter, keyed on the authenticated device) bounds how often a device
+    can rotate: over it, 429 `RATE_LIMITED` with `Retry-After` (seconds,
+    `[1, 300]`), nothing changed, no audit row. It is checked after device
+    authentication and before the idempotency checks, and it fails open if
+    the limiter's store is unavailable (ADR 0009 D3).
 
 
     **Idempotency.** `Idempotency-Key` is required and non-replayable
@@ -207,17 +244,19 @@ info:
         `previous`: which token authenticated the call), `in_grace`
         (boolean: the device was past `expires_at`), `expires_at` (the new
         expiry) and `previous_valid_until`.
-      - `pos.device.rotation_rejected`, in its own transaction, when a
-        refused rotation presented a token that matches a device row (its
-        current hash, or its previous hash). Target `device` / the device
-        id; no actor user. Metadata allowlist: `reason`, one of `revoked`,
-        `retired`, `grace_elapsed`, `superseded` (the previous token after
-        its window).
+      - `pos.device.rotation_rejected`, when a refused rotation presented a
+        token that matches (or, before the lock, matched) a device row.
+        Target `device` / the device id; no actor user. Metadata allowlist:
+        `reason`, one of `revoked`, `retired`, `grace_elapsed`,
+        `previous_expired` (the token is the device's previous one and its
+        window has closed) or `token_replaced` (under the lock the token is
+        neither the current nor the previous one: another rotation replaced
+        it meanwhile).
 
     A token that matches no device row has no tenant to record under and
     writes no row; neither does a device of an inactive tenant (RT-213),
-    which is refused like an unknown token. The 400 / 409 / 425 answers of
-    the idempotency layer write no row.
+    which is refused like an unknown token. The 400 / 409 / 425 / 429
+    answers write no row.
 
 servers:
   - url: https://api.example.com
@@ -383,16 +422,21 @@ paths:
              `expires_at + 7 days`. One body for every case
              (non-disclosing); to the POS every 401 here means "re-pair"
              (RT-138 L6).
-          2. 400 `idempotency_key_required` / `idempotency_key_malformed`.
-          3. 425 `idempotency_in_progress` — a request with this key is
+          2. 429 `RATE_LIMITED` — the device's rotation budget is spent
+             (`Retry-After`).
+          3. 400 `idempotency_key_required` / `idempotency_key_malformed`.
+          4. 425 `idempotency_in_progress` — a request with this key is
              still running.
-          4. 409 `idempotency_key_conflict` — the key already completed a
+          5. 409 `idempotency_key_conflict` — the key already completed a
              rotation of this device (never replayed: no second rotation,
              no token).
-          5. 401 `unauthorized` — the re-check under the device lock fails
-             (a revoke or retire committed first, or another rotation
-             already superseded the presented token).
-          6. 200 — rotated.
+          6. 401 `unauthorized` — the re-check under the device lock: the
+             presented token no longer matches the device's current hash or
+             its in-window previous hash (another rotation replaced it
+             meanwhile), or a revoke or retire committed first. A concurrent
+             rotation that presented the same current token is NOT refused
+             here: it succeeds through the previous-token branch.
+          7. 200 — rotated.
 
 
         No request body is read. Retry rules: after a 5xx or a lost
@@ -406,7 +450,13 @@ paths:
           description: >
             Rotated. The body carries the new `device_token` ONCE (SECRET):
             the terminal replaces its stored token in OS secret storage
-            before any other call, and never logs it.
+            before any other call, and never logs it. Never cached
+            (`Cache-Control: no-store`, `Pragma: no-cache`).
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            Pragma:
+              $ref: "#/components/headers/PragmaNoCache"
           content:
             application/json:
               schema:
@@ -430,10 +480,12 @@ paths:
                 $ref: "#/components/schemas/RotateError"
         "409":
           description: >
-            `idempotency_key_conflict`: the key already completed a
-            rotation of this device, or was used with a different request.
-            Nothing changed; the token is never returned again. Rotate with
-            a NEW key.
+            `idempotency_key_conflict`: this device already used the key,
+            for a rotation that completed (a same-key retry is never
+            replayed, because the token is never stored) or for a different
+            request. This request changed nothing and returns no token.
+            Rotate again with a NEW key, presenting the token the client
+            holds.
           content:
             application/json:
               schema:
@@ -454,6 +506,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IdempotencyInProgress"
+        "429":
+          description: >
+            `RATE_LIMITED`: the device's rotation budget is spent (the ADR
+            0009 per-device limiter). Nothing changed; no audit row. Retry
+            after `Retry-After` seconds, as the pair 429.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+                maximum: 300
+              description: Seconds to wait before retrying, clamped to `[1, 300]`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateError"
         "500":
           description: >
             `internal_error`: unexpected server error; nothing was rotated
@@ -482,6 +550,22 @@ components:
         `previous_valid_until` is in the future (RT-369 overlap). The row
         supplies the tenant, store and device; the request never does.
         Fail-closed and non-disclosing: every refusal is the same 401.
+
+  headers:
+    CacheControlNoStore:
+      description: >
+        `no-store` on the rotate 200: the body carries the new device token,
+        so no shared or client cache may keep it.
+      schema:
+        type: string
+        const: no-store
+    PragmaNoCache:
+      description: >
+        `no-cache`, for HTTP/1.0 caches, on the rotate 200 (with
+        `Cache-Control: no-store`).
+      schema:
+        type: string
+        const: no-cache
 
   parameters:
     IdempotencyKey:
@@ -566,6 +650,7 @@ components:
                 - idempotency_key_required
                 - idempotency_key_malformed
                 - idempotency_key_conflict
+                - RATE_LIMITED
                 - internal_error
             message:
               type: string
