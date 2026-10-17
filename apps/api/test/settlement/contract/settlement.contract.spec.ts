@@ -17,7 +17,7 @@
  */
 import "reflect-metadata";
 
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { loadOpenApiContracts } from "../../../src/openapi/loader";
@@ -453,7 +453,7 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
     expect(prop?.minLength).toBe(1);
     expect(prop?.maxLength).toBe(140); // Frappe document names are at most 140 characters
     expect(prop?.pattern).toBe(
-      String.raw`^[^\s\u0000-\u001f\u007f-\u009f​-‍  ﻿](?:[^\u0000-\u001f\u007f-\u009f​-‍  ﻿]*[^\s\u0000-\u001f\u007f-\u009f​-‍  ﻿])?$`,
+      String.raw`^[^\s\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2028\u2029\ufeff](?:[^\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2028\u2029\ufeff]*[^\s\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2028\u2029\ufeff])?$`,
     );
     const accepts = new RegExp(prop?.pattern ?? "$^");
     for (const ok of ["CUST-0001", "Acme Insurance", "x", "a b", "ab"]) {
@@ -462,11 +462,19 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
     const bad = [
       "", " ", "   ", "\t", " padded", "padded ", " padded ", "a\nb", "a\tb", "a\r", "a\u0000b", "\u0000",
       " \u0000 ", "a\u007fb", "a\u0085b", " x", "x ",
-      "a​b", "​x", "x‍", "a﻿b", "﻿x", "a b", "x ",
+      "a\u200bb", "\u200bx", "x\u200d", "a\ufeffb", "\ufeffx", "a\u2028b", "x\u2029",
     ];
     for (const value of bad) {
       expect({ value, m: accepts.test(value) }).toEqual({ value, m: false });
     }
+  });
+
+  it("the contract source holds no raw zero-width, separator or control characters (Gitar #804)", () => {
+    const source = readFileSync(resolve(CONTRACTS_ROOT, "settlement", "settlement.yaml"), "utf8");
+    const invisible = [...source].filter((ch) =>
+      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200d\u2028\u2029\ufeff]/.test(ch),
+    );
+    expect(invisible.map((ch) => ch.codePointAt(0)?.toString(16))).toEqual([]);
   });
 
   it("the text patterns are linear and pinned: long NUL / whitespace inputs are refused fast (Gitar #804)", () => {

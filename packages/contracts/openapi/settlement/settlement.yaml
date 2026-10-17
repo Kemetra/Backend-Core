@@ -462,7 +462,7 @@ components:
           type: string
           minLength: 1
           maxLength: 140
-          pattern: '^[^\s\u0000-\u001f\u007f-\u009f​-‍  ﻿](?:[^\u0000-\u001f\u007f-\u009f​-‍  ﻿]*[^\s\u0000-\u001f\u007f-\u009f​-‍  ﻿])?$'
+          pattern: '^[^\s\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2028\u2029\ufeff](?:[^\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2028\u2029\ufeff]*[^\s\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2028\u2029\ufeff])?$'
           description: >
             Set or replace the payer's ERPNext Customer link (see
             `PayerAccountCreate.externalRef`). Not nullable: the link cannot be
