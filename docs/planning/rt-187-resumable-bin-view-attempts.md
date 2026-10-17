@@ -148,7 +148,7 @@ Consequences:
 
 | Option | For | Against |
 | --- | --- | --- |
-| **A. Backend-Core TTL from window 0's server-clock `recordedAt`: 30 minutes (Recommended)** | Server clock, so it is a real security and expiry clock (§X: `readAt` is connector-reported and is never a security clock). 30 min ≈ five 5-minute retry ticks plus one 660 s attempt, so it covers the connector's whole retry horizon. It bounds the §2.5 staleness gap. | One new constant, `BIN_VIEW_ATTEMPT_TTL_SECONDS`. |
+| **A. Backend-Core TTL from window 0's server-clock `recordedAt`: 40 minutes (Recommended)** | Server clock, so it is a real security and expiry clock (§X: `readAt` is connector-reported and is never a security clock). Five 5-minute retry ticks (25 min) plus one full 660 s attempt is about 36 min, so 40 min covers the connector's whole retry horizon, including a resume on the last retry tick. It bounds the §2.5 staleness gap. | One new constant, `BIN_VIEW_ATTEMPT_TTL_SECONDS`. |
 | B. TTL from `readAt` | Measures data age directly. | `readAt` is untrusted (§X / FR-016). A skewed connector clock would expire attempts early or never. |
 | C. No TTL (today) | Nothing to build. | A resume could complete days later under a stale `readAt`. |
 
@@ -252,7 +252,7 @@ This is the specification a later `[GATED]` issue would apply. It would go into 
 
 ### 5.3 Attempt lifetime and expiry (D3)
 
-* `BIN_VIEW_ATTEMPT_TTL_SECONDS = 1800`, measured from the server-clock `recordedAt` of the attempt's window 0. The
+* `BIN_VIEW_ATTEMPT_TTL_SECONDS = 2400`, measured from the server-clock `recordedAt` of the attempt's window 0. The
   window 0 `recordedAt` is already stored, in `windows[0].recordedAt`, so no new field is needed.
 * Window `k > 0` of an attempt past its TTL → 409 `window_sequence_conflict`, deterministic and with no side effects.
   This **reuses the existing code**. The connector on `main` already treats a `window_sequence_conflict` at
@@ -267,7 +267,7 @@ This is the specification a later `[GATED]` issue would apply. It would go into 
 * Unchanged per-window key `binview-{requestRef}-{attemptRef}-w{windowSeq}`. A resumed window is byte-identical to
   its first send, because it comes from the persisted rows and the quantities are already quantized strings. It
   therefore replays rather than conflicting.
-* After the 72 h interceptor TTL, the service-level O-3 replay still decides, and the 30 min attempt TTL means a
+* After the 72 h interceptor TTL, the service-level O-3 replay still decides, and the 40 min attempt TTL means a
   continuation never gets near 72 h.
 
 ### 5.5 Failure behaviour (summary)
@@ -304,7 +304,7 @@ This is the specification a later `[GATED]` issue would apply. It would go into 
   `frappe_glue.py`). It is unchanged by this decision and already a recorded connector follow-up.
 * **§2.4 is a live gap on `main`.** Until F1 ships, an abandoned request silently stops scheduled reconciliation for
   its store. An operator can still trigger an on-demand run.
-* The 2 h run TTL and the 30 min attempt TTL are proposals. F1 and F3 confirm them against the cron cadence in force
+* The 2 h run TTL and the 40 min attempt TTL are proposals. F1 and F3 confirm them against the cron cadence in force
   when they are built.
 * §2.1 describes behaviour that `main`'s window rules and tests imply. A resume across processes has not been
   exercised as a runtime scenario.
