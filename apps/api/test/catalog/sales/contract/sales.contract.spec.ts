@@ -95,6 +95,9 @@ const APPROVED_TENDER_FIELDS = [
   // cash it refunds, capped at the server-computed collected share.
   "CreditSaleReversalRequest.refundTenders",
   "CreditSaleReversal.refundTenders",
+  // RT-577 D8 (owner ruling 2026-10-17): a credit void refunds by mirroring
+  // each collected tender line, addressed by its tenderRef.
+  "CreditReversalRefundTender.tenderRef",
 ];
 
 /**
@@ -1686,21 +1689,22 @@ describe("pos-sales/sales.yaml — RT-577 credit-sale reversal", () => {
       expect(field("CreditSaleReversalRequest", "kind")?.enum).toEqual(["void", "return"]);
     });
 
-    it("reuses the return line, the cash refund tender and the RT-530 void approval", () => {
+    it("reuses the return line and the RT-530 approval evidence; refund tenders are the D8 mirror shape", () => {
       expect(field("CreditSaleReversalRequest", "lines")?.items?.$ref).toBe("#/components/schemas/ReturnLineRequest");
-      expect(field("CreditSaleReversalRequest", "refundTenders")?.items?.$ref).toBe("#/components/schemas/RefundTender");
+      expect(field("CreditSaleReversalRequest", "refundTenders")?.items?.$ref).toBe("#/components/schemas/CreditReversalRefundTender");
       expect(field("CreditSaleReversalRequest", "refundTenders")?.minItems).toBe(0);
       expect(field("CreditSaleReversalRequest", "approval")?.$ref).toBe("#/components/schemas/VoidApproval");
       expect(field("CreditSaleReversalRequest", "businessDate")).toMatchObject({ type: "string", format: "date" });
       expect(schema("RefundTender")?.properties?.["method"]).toMatchObject({ enum: ["cash"] });
     });
 
-    it("binds lines to a return and approval/businessDate to a void in the schema", () => {
+    it("binds lines and cash-only refunds to a return, and businessDate to a void, in the schema (D6/D8)", () => {
       const s = schema("CreditSaleReversalRequest") as Record<string, unknown>;
       expect(s["if"]).toEqual({ properties: { kind: { const: "return" } }, required: ["kind"] });
       expect(s["then"]).toEqual({
         required: ["lines"],
-        not: { anyOf: [{ required: ["approval"] }, { required: ["businessDate"] }] },
+        not: { required: ["businessDate"] },
+        properties: { refundTenders: { items: { $ref: "#/components/schemas/RefundTender" } } },
       });
       expect(s["else"]).toEqual({ not: { required: ["lines"] } });
     });
@@ -1778,7 +1782,7 @@ describe("pos-sales/sales.yaml — RT-577 credit-sale reversal", () => {
 
   it("orders every check of the new operation", () => {
     expect(reversalText()).toContain(
-      "Order: the returns gate (404, `kind: return` only), the sale (404), a provenance replay (200, or its 409 `conflict`), the role (403 `credit_reversal_role_refused`), the sale's credit status (422 `credit_reversal_not_applicable`), reversal exclusivity (409 `already_reversed`), then for a void the RT-530 checks and for a return the line checks (400, 409 `over_return`), then allocation (422 `credit_reversal_allocation_unavailable`), payer settlement (422 `credit_reversal_settlement_unavailable`) and the refund tenders (422 `credit_reversal_refund_mismatch`)",
+      "Order: the returns gate (404, `kind: return` only), the sale (404), a provenance replay (200, or its 409 `conflict`), the role (403 `credit_reversal_role_refused`), the sale's credit status (422 `credit_reversal_not_applicable`), reversal exclusivity (409 `already_reversed`), then for a void the RT-530 checks and for a return the line checks (400, 409 `over_return`), then allocation (422 `credit_reversal_allocation_unavailable`), payer settlement (422 `credit_reversal_settlement_unavailable`), for a return the second approval (403 `credit_return_approval_required`, then 403 `credit_return_approval_refused`) and the refund tenders (422 `credit_reversal_refund_mismatch`)",
     );
   });
 
@@ -1851,7 +1855,7 @@ describe("pos-sales/sales.yaml — RT-577 Opus review hardening", () => {
 
   it("H1: a sale whose lines do not sum to posTotal is allocation_unavailable, so X1 never exceeds P", () => {
     expect(reversalText()).toContain(
-      "the sale's lines do not sum to its `posTotal` exactly (its `mismatchFlag` is true)",
+      "the sale's lines do not sum to its `posTotal` exactly (its stored `mismatch_flag` is true or null,",
     );
     expect(reversalText()).toContain("so X1 never exceeds P");
     expect(response("CreditReversalUnprocessable")).toContain(
@@ -1905,10 +1909,21 @@ describe("pos-sales/sales.yaml — RT-577 Opus review hardening", () => {
       expect(requestValidator()({ ...voidBody, lines: returnBody.lines })).toBe(false);
     });
 
-    it("rejects a return that carries an approval or a businessDate", () => {
+    it("accepts a return carrying a second approval (D6) and rejects one carrying a businessDate", () => {
       const validate = requestValidator();
-      expect(validate({ ...returnBody, approval })).toBe(false);
+      const returnApproval = { ...approval, action: "sale.credit_return", amount: "10.00" };
+      const paid = { ...returnBody, refundTenders: [{ method: "cash", amount: "10.00" }], approval: returnApproval };
+      expect({ ok: validate(paid), errors: validate.errors }).toMatchObject({ ok: true });
       expect(validate({ ...returnBody, businessDate: "2026-10-17" })).toBe(false);
+    });
+
+    it("D8: a void may mirror a card tender; a return refund is cash only", () => {
+      const validate = requestValidator();
+      const card = { method: "card_external", amount: "4.00", tenderRef: UUID, reference: "A1B2" };
+      const mirrored = { ...voidBody, refundTenders: [{ method: "cash", amount: "6.00", tenderRef: UUID }, card] };
+      expect({ ok: validate(mirrored), errors: validate.errors }).toMatchObject({ ok: true });
+      expect(validate({ ...returnBody, refundTenders: [card] })).toBe(false);
+      expect(validate({ ...voidBody, refundTenders: [{ method: "cash", amount: "6.00", reference: "A1B2" }] })).toBe(false);
     });
 
     it("rejects a return without lines, a blank reason and a reason holding NUL", () => {
@@ -1918,5 +1933,89 @@ describe("pos-sales/sales.yaml — RT-577 Opus review hardening", () => {
       expect(validate({ ...returnBody, reason: "   " })).toBe(false);
       expect(validate({ ...returnBody, reason: "a\u0000b" })).toBe(false);
     });
+  });
+});
+
+// ===========================================================================
+// RT-577 — owner rulings 2026-10-17 on #803 (D6 second approval, D8 void
+// refund tenders) and review N1 (null mismatch_flag)
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-577 owner rulings (D6, D8, N1)", () => {
+  const flat = (t: string | undefined): string => (t ?? "").replace(/\s+/g, " ");
+  const described = (node: unknown): string => flat((node as { description?: string } | undefined)?.description);
+  const reversalText = (): string => described(findOp("recordCreditSaleReversal"));
+  const response = (name: string): string => described(salesDoc.components?.responses?.[name]);
+  const schemaOf = (name: string): (SchemaObject & Record<string, unknown>) | undefined =>
+    salesDoc.components?.schemas?.[name] as (SchemaObject & Record<string, unknown>) | undefined;
+
+  describe("D6: a cash-paying credit return needs a second approval", () => {
+    it("requires it only when the return pays out cash; a payout-free reversal needs the single Manager/Admin", () => {
+      expect(reversalText()).toContain(
+        "When a `return` pays out cash (`refundableAmount` > 0), a second approval is REQUIRED",
+      );
+      expect(reversalText()).toContain(
+        "A reversal with no cash payout (a receivable adjustment only) needs only the authorized Manager/Admin",
+      );
+    });
+
+    it("binds the approval to `sale.credit_return`, this sale and the server-computed refundableAmount", () => {
+      expect(reversalText()).toContain(
+        "`approval.action` is `sale.credit_return`, `approval.saleRef` is the path sale, `approval.amount` equals the server-computed `refundableAmount` as an exact decimal",
+      );
+    });
+
+    it("never counts the same actor twice", () => {
+      expect(reversalText()).toContain("The same actor never counts twice");
+      expect(reversalText()).toContain(
+        "the approver is an eligible manager who is neither the requester nor the user who captured the sale",
+      );
+    });
+
+    it("refuses a missing approval and any failing one with stable 403 codes, recording nothing", () => {
+      const forbidden = response("CreditReversalForbidden");
+      expect(forbidden).toContain("`credit_return_approval_required`");
+      expect(forbidden).toContain("`credit_return_approval_refused`");
+      expect(forbidden).toContain("one body for every cause");
+    });
+
+    it("states the replay semantics: replay answers first; a refusal does not consume the approvalId", () => {
+      expect(reversalText()).toContain(
+        "An `approvalId` is single-use within the tenant across `recordVoid` and this route; a refused request does not consume it",
+      );
+    });
+
+    it("the approval property describes both uses", () => {
+      expect(described(schemaOf("CreditSaleReversalRequest")?.properties?.["approval"])).toContain(
+        "`return`: required when `refundableAmount` > 0",
+      );
+    });
+  });
+
+  describe("D8: a void mirrors the collected tenders; a return refunds cash only", () => {
+    it("states the mirror rule and that there is no card-to-cash path", () => {
+      expect(reversalText()).toContain("A `void` refunds by mirroring the sale's collected `tenders` (RT-10 D6)");
+      expect(reversalText()).toContain("There is no card-to-cash path");
+      expect(reversalText()).toContain("A `return` refunds in cash only (RT-14 D3)");
+      expect(reversalText()).not.toContain("whatever the collected tender method");
+    });
+
+    it("defines the strict mirror tender shape: cash or card_external, reference only on a card", () => {
+      const t = schemaOf("CreditReversalRefundTender");
+      expect(t?.additionalProperties).toBe(false);
+      expect(t?.required?.slice().sort()).toEqual(["amount", "method"]);
+      expect((t?.properties?.["method"] as { enum?: string[] } | undefined)?.enum).toEqual(["cash", "card_external"]);
+      expect(t?.["if"]).toEqual({ properties: { method: { const: "cash" } }, required: ["method"] });
+      expect(t?.["then"]).toEqual({ not: { required: ["reference"] } });
+    });
+
+    it("the reversal projection carries the mirror tender shape", () => {
+      const items = (schemaOf("CreditSaleReversal")?.properties?.["refundTenders"] as { items?: { $ref?: string } } | undefined)?.items;
+      expect(items?.$ref).toBe("#/components/schemas/CreditReversalRefundTender");
+    });
+  });
+
+  it("N1: a null mismatch_flag is allocation_unavailable, never a pass", () => {
+    expect(reversalText()).toContain("its stored `mismatch_flag` is true or null");
+    expect(response("CreditReversalUnprocessable")).toContain("its stored `mismatch_flag` is true or null");
   });
 });
