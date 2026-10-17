@@ -189,6 +189,19 @@ This project follows [Semantic Versioning](https://semver.org/).
   grants the domain role SELECT / INSERT / UPDATE on `pairing_codes`, which
   `DOMAIN_REQUIRED_GRANTS` checks at boot; the lookup role may hold SELECT
   only on it (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). No migration.
+- RT-572 `[GATED]`, pending owner approval: `settlement/settlement.yaml` 2.1.0 adds
+  `consoleUpdatePayerAccount` (`PATCH /api/v1/settlement/payer-accounts/{payerRef}`,
+  contract-only), so a payer created without `externalRef` (its ERPNext Customer
+  link) can be repaired instead of failing every credit sale with
+  `sale_responsibility_payer_invalid`. Additive to 2.0.0: no existing operation
+  or schema changes. Body `PayerAccountUpdate`: `expectedVersion` (the existing
+  `PayerAccount.version`, so no new column) plus at least one of `displayName`,
+  `externalRef` (set or replace, never cleared) and `status` (active / suspended);
+  `category` and `storeId` are immutable. A stale `expectedVersion` is 409
+  `payer_version_conflict`; a no-op is 200 with the version unchanged; an
+  effective update emits `settlement.payer_account.updated` (field names only).
+  A changed `externalRef` never touches a posting that already froze its payer
+  link (RT-332). Runtime follows in the RT-572 runtime PR.
 - RT-368 `[GATED]`, pending owner approval (RT-287 F5; D-Q2 and D-Q4 as
   amended): `devices.openapi.yaml` 1.3.0-draft adds
   `POST /api/v1/devices/{deviceId}/retire` (`consoleRetireDevice`,

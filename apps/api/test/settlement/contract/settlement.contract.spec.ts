@@ -29,6 +29,11 @@ const KEPT_OPERATIONS = {
   consoleListPayerAccounts: { path: "/api/v1/settlement/payer-accounts", method: "get" },
 } as const;
 
+/** RT-572 (2.1.0): the payer repair route, contract-only until the RT-572 runtime PR. */
+const UPDATE_OPERATION = {
+  consoleUpdatePayerAccount: { path: "/api/v1/settlement/payer-accounts/{payerRef}", method: "patch" },
+} as const;
+
 const RETIRED_OPERATIONS = {
   consoleApplyPayment: "POST /api/v1/settlement/receivables/{receivableRef}/apply-payment",
   consoleSubmitClaim: "POST /api/v1/settlement/claims",
@@ -146,8 +151,8 @@ describe("settlement.yaml — loadability and version", () => {
     expect(doc.openapi).toBe("3.1.0");
   });
 
-  it("is the RT-417 2.0.0 major, replacing the stale 1.0.0-draft, citing the [GATED] approval", () => {
-    expect(doc.info?.version).toBe("2.0.0");
+  it("is the RT-572 2.1.0 additive minor on the RT-417 2.0.0 major, citing the [GATED] approval", () => {
+    expect(doc.info?.version).toBe("2.1.0");
     const info = doc.info?.description ?? "";
     expect(info).toContain("RT-417 (2.0.0; [GATED] approval Jira RT-417 comment 11671");
     expect(info).toContain("replacing the stale `1.0.0-draft`");
@@ -159,9 +164,9 @@ describe("settlement.yaml — loadability and version", () => {
 // 2. Operation set — exactly the payer facade
 // ===========================================================================
 describe("settlement.yaml — operations (RT-417)", () => {
-  it("declares exactly the two payer-account operations at their paths", () => {
+  it("declares exactly the three payer-account operations at their paths", () => {
     const declared = operations().map(({ path, method, op }) => `${op.operationId} ${method} ${path}`);
-    const expected = Object.entries(KEPT_OPERATIONS).map(
+    const expected = Object.entries({ ...KEPT_OPERATIONS, ...UPDATE_OPERATION }).map(
       ([id, { path, method }]) => `${id} ${method} ${path}`,
     );
     expect(declared.sort()).toEqual(expected.sort());
@@ -175,8 +180,8 @@ describe("settlement.yaml — operations (RT-417)", () => {
     }
   });
 
-  it("guards both routes with cookieAuth only (no POS envelope on this surface)", () => {
-    for (const id of Object.keys(KEPT_OPERATIONS)) {
+  it("guards every route with cookieAuth only (no POS envelope on this surface)", () => {
+    for (const id of [...Object.keys(KEPT_OPERATIONS), ...Object.keys(UPDATE_OPERATION)]) {
       expect(findOp(id)?.security).toEqual([{ cookieAuth: [] }]);
     }
     expect(Object.keys(doc.components?.securitySchemes ?? {})).toEqual(["cookieAuth"]);
@@ -204,7 +209,7 @@ describe("settlement.yaml — operations (RT-417)", () => {
 
   it("operationIds do not collide with any other contract", () => {
     const elsewhere = new Set(otherContracts.flatMap((d) => operations(d).map((o) => o.op.operationId)));
-    for (const id of Object.keys(KEPT_OPERATIONS)) {
+    for (const id of [...Object.keys(KEPT_OPERATIONS), ...Object.keys(UPDATE_OPERATION)]) {
       expect(elsewhere.has(id)).toBe(false);
     }
   });
@@ -312,5 +317,149 @@ describe("settlement.yaml — payer account shapes", () => {
 
   it("Error is the canonical envelope { error: { code, message, request_id? } }", () => {
     expect(schema("Error")?.required).toEqual(["error"]);
+  });
+});
+
+// ===========================================================================
+// 5. RT-572 — consoleUpdatePayerAccount (2.1.0, additive, contract-only)
+// ===========================================================================
+describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
+  interface UpdateOperation extends OperationObject {
+    description?: string;
+    parameters?: Array<{ $ref?: string; name?: string; in?: string; required?: boolean }>;
+    requestBody?: { required?: boolean; content?: Record<string, { schema?: { $ref?: string } }> };
+  }
+
+  const flat = (text: string | undefined): string => (text ?? "").replace(/\s+/g, " ");
+  const update = (): UpdateOperation | undefined => findOp("consoleUpdatePayerAccount") as UpdateOperation | undefined;
+
+  type UpdateProperty = {
+    type?: unknown;
+    enum?: string[];
+    minLength?: number;
+    maxLength?: number;
+    minimum?: number;
+    pattern?: string;
+    description?: string;
+  };
+  const updateSchema = () =>
+    schema("PayerAccountUpdate") as
+      | (SchemaObject & { anyOf?: Array<{ required?: string[] }>; properties?: Record<string, UpdateProperty> })
+      | undefined;
+
+  it("is a contract-only PATCH on the payer, with a runtime note naming the RT-572 runtime", () => {
+    expect(update()?.["x-runtime-status"]).toBe("contract-only");
+    expect(flat(update()?.["x-runtime-note"])).toContain("RT-572 runtime");
+  });
+
+  it("requires an Idempotency-Key and addresses the payer by a uuid path parameter", () => {
+    expect(update()?.["x-idempotency"]).toBe("required");
+    const refs = (update()?.parameters ?? []).map((p) => p.$ref);
+    expect(refs).toContain("#/components/parameters/IdempotencyKey");
+    expect(refs).toContain("#/components/parameters/PayerRef");
+    const payerRef = doc.components?.parameters?.["PayerRef"] as
+      | { in?: string; required?: boolean; schema?: { format?: string } }
+      | undefined;
+    expect(payerRef?.in).toBe("path");
+    expect(payerRef?.required).toBe(true);
+    expect(payerRef?.schema?.format).toBe("uuid");
+  });
+
+  it("takes the strict PayerAccountUpdate body and returns the PayerAccount projection on 200", () => {
+    const body = update()?.requestBody;
+    expect(body?.required).toBe(true);
+    expect(body?.content?.["application/json"]?.schema?.$ref).toBe("#/components/schemas/PayerAccountUpdate");
+    const ok = (update()?.responses ?? {})["200"] as { content?: Record<string, { schema?: { $ref?: string } }> };
+    expect(ok?.content?.["application/json"]?.schema?.$ref).toBe("#/components/schemas/PayerAccount");
+  });
+
+  it("declares 400/401/403/404/409/500 and no 201", () => {
+    const codes = Object.keys(update()?.responses ?? {}).sort();
+    expect(codes).toEqual(["200", "400", "401", "403", "404", "409", "500"]);
+    const refs = update()?.responses as Record<string, { $ref?: string }>;
+    expect(refs["403"]?.$ref).toBe("#/components/responses/ForbiddenOrOriginRejected");
+    expect(refs["404"]?.$ref).toBe("#/components/responses/PayerNotFound");
+    expect(refs["409"]?.$ref).toBe("#/components/responses/PayerUpdateConflict");
+  });
+
+  it("409 names payer_version_conflict (stale expectedVersion) and idempotency_key_conflict", () => {
+    const conflict = (doc.components?.responses?.["PayerUpdateConflict"] ?? {}) as { description?: string };
+    const text = flat(conflict.description);
+    expect(text).toContain("payer_version_conflict");
+    expect(text).toContain("idempotency_key_conflict");
+    expect(text).toContain("expectedVersion");
+  });
+
+  it("404 is non-disclosing for an unknown, other-tenant or out-of-store-scope payer", () => {
+    const notFound = (doc.components?.responses?.["PayerNotFound"] ?? {}) as { description?: string };
+    const text = flat(notFound.description);
+    expect(text.toLowerCase()).toContain("non-disclosing");
+    expect(text).toContain("another tenant");
+    expect(text).toContain("outside the caller's store access");
+  });
+
+  it("the body is strict, needs expectedVersion plus at least one changed field, and is the minimal field set", () => {
+    const body = updateSchema();
+    expect(body?.additionalProperties).toBe(false);
+    expect(body?.required).toEqual(["expectedVersion"]);
+    expect(Object.keys(body?.properties ?? {}).sort()).toEqual(["displayName", "expectedVersion", "externalRef", "status"]);
+    expect((body?.anyOf ?? []).map((a) => a.required?.join(",")).sort()).toEqual(["displayName", "externalRef", "status"]);
+    for (const immutable of ["category", "storeId", "payerRef", "tenant_id", "tenantId", "version", "creditTerms"]) {
+      expect(body?.properties?.[immutable]).toBeUndefined();
+    }
+  });
+
+  it("expectedVersion is the payer's existing version (integer >= 0), not a new column", () => {
+    const expected = updateSchema()?.properties?.["expectedVersion"];
+    expect(expected?.type).toBe("integer");
+    expect(expected?.minimum).toBe(0);
+    expect(flat(expected?.description)).toContain("PayerAccount.version");
+  });
+
+  it("status is the active / suspended vocabulary", () => {
+    expect(updateSchema()?.properties?.["status"]?.enum).toEqual(["active", "suspended"]);
+  });
+
+  it("displayName and externalRef reject blank, whitespace-only and NUL text at the schema (400, never 5xx)", () => {
+    const props = updateSchema()?.properties ?? {};
+    for (const field of ["displayName", "externalRef"] as const) {
+      const prop = props[field];
+      expect(prop?.type).toBe("string"); // externalRef cannot be cleared: no null
+      expect(prop?.minLength).toBe(1);
+      const accepts = new RegExp(prop?.pattern ?? "$^");
+      for (const ok of ["CUST-0001", "Acme Insurance", "x", " padded ", "a\nb"]) {
+        expect({ field, ok, m: accepts.test(ok) }).toEqual({ field, ok, m: true });
+      }
+      for (const bad of ["", " ", "   ", "\t", " \n ", "a\u0000b", "\u0000", " \u0000 "]) {
+        expect({ field, bad, m: accepts.test(bad) }).toEqual({ field, bad, m: false });
+      }
+    }
+    expect(props["displayName"]?.maxLength).toBe(200);
+  });
+
+  it("states that a changed externalRef never touches already-frozen postings (RT-332)", () => {
+    const text = flat(update()?.description);
+    expect(text).toContain("RT-332");
+    expect(text).toContain("frozen");
+    expect(text).toContain("payerExternalRef");
+    expect(text).toContain("only by resolutions frozen after");
+    expect(flat(updateSchema()?.properties?.["externalRef"]?.description)).toContain("already-frozen");
+  });
+
+  it("documents the version bump, the no-op, the audit and the role gate", () => {
+    const text = flat(update()?.description);
+    expect(text).toContain("version + 1");
+    expect(text).toContain("no-op");
+    expect(text).toContain("settlement.payer_account.updated");
+    expect(text).toContain("owner / tenant_admin");
+    expect(text).toContain("changedFields");
+    expect(text).toContain("never records the displayName or externalRef text");
+  });
+
+  it("the 2.1.0 changelog in info records the decisions and that 2.0.0 consumers are unaffected", () => {
+    const info = flat(doc.info?.description);
+    expect(info).toContain("RT-572 (2.1.0");
+    expect(info).toContain("additive");
+    expect(info).toContain("`consoleUpdatePayerAccount`");
   });
 });
