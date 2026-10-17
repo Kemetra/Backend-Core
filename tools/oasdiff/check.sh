@@ -78,7 +78,7 @@ case "$consumer_mode" in
     ;;
   *)
     # A typo must not leave an intended enforce gate fail-open.
-    echo "::error::unknown CONSUMER_IMPACT_MODE '$consumer_mode' (expected report or enforce)"
+    echo "::error::unknown CONSUMER_IMPACT_MODE '$consumer_mode' (expected report or enforce)" >&2
     exit 1
     ;;
 esac
