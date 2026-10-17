@@ -24,7 +24,9 @@ name: CI
     branches: [main]
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # push runs on main get a per-SHA group so each commit keeps its own completed
+  # run (attribution / bisect); PR runs stay per-ref and are still superseded.
+  group: ci-${{ github.ref }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: true
 
 permissions:
