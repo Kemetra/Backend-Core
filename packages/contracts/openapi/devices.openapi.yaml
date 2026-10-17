@@ -478,11 +478,6 @@ paths:
       summary: List devices (exception-first, keyset paginated).
       operationId: consoleListDevices
       tags: [devices]
-      x-runtime-note: >
-        RT-368 [GATED] default change: from the RT-368 runtime on, a list
-        without `trust_state` excludes retired devices. Until that runtime
-        ships, production still returns retired devices by default. The
-        RT-368 runtime PR removes this note.
       description: >
         The devices in the caller's tenant and store scope, exception-first
         (see the ordering rule above). Every filter is optional and they
@@ -812,11 +807,6 @@ components:
       name: trust_state
       in: query
       required: false
-      x-runtime-note: >
-        RT-368 [GATED] default change: from the RT-368 runtime on, a list
-        without `trust_state` excludes retired devices. Until that runtime
-        ships, production still returns retired devices by default. The
-        RT-368 runtime PR removes this note.
       schema:
         $ref: "#/components/schemas/TrustState"
       description: >

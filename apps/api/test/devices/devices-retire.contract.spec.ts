@@ -196,11 +196,10 @@ describe("devices retire contract — rules", () => {
     expect(info()).toMatch(/The retire reason never enters audit\s+metadata/);
   });
 
-  it("notes on the live list that production keeps the old default until the RT-368 runtime", () => {
-    const list = contract.operation("get", "/api/v1/devices");
-    expect(String(list["x-runtime-note"])).toMatch(/production still returns retired devices by default/);
+  it("drops the pre-runtime note now that the RT-368 runtime ships the default", () => {
+    expect(contract.operation("get", "/api/v1/devices")["x-runtime-note"]).toBeUndefined();
     const trust = contract.parameters("get", "/api/v1/devices").find((p) => p["name"] === "trust_state");
-    expect(String(trust?.["x-runtime-note"])).toMatch(/RT-368 runtime PR removes this note/);
+    expect(trust?.["x-runtime-note"]).toBeUndefined();
   });
 
   it("warns that retiring a revoked device cancels its pending replacement codes", () => {

@@ -201,11 +201,15 @@ describe("consoleRetireDevice — effects", () => {
       ]);
     expect(codes.rows.map((r: { status: string }) => r.status).sort()).toEqual(["cancelled", "cancelled"]);
     const [revoked] = await auditRows("pos.device.revoked", R_PLAIN);
-    expect(revoked).toMatchObject({ actor_user_id: row["revoked_by"], metadata: { reason: "retired" } });
+    expect(revoked).toMatchObject({
+      actor_user_id: row["revoked_by"],
+      metadata: { reason: "retired", cancelled_pairing_code_count: 2 },
+    });
+    // The revoke row counts the cascaded codes; the retire row counts only its own (none here).
     const [retired] = await auditRows("pos.device.retired", R_PLAIN);
     expect(retired).toMatchObject({
       actor_user_id: row["retired_by"],
-      metadata: { revoked_by_retire: true, cancelled_pairing_code_count: 2 },
+      metadata: { revoked_by_retire: true, cancelled_pairing_code_count: 0 },
     });
     expect(JSON.stringify(retired)).not.toContain(REASON);
   });
