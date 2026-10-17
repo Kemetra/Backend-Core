@@ -265,6 +265,12 @@ async function decideReplacementUnderLock(
   if (row === null) return "blocked";
   const decision = decideReplacement(row, targetStoreId);
   if (decision.evaluation.verdict !== "allowed") return "blocked";
+  // One replacement per device (contract C7): another code already used for it blocks this one.
+  const used = await client.query(
+    `SELECT 1 FROM pairing_codes WHERE tenant_id = $1::uuid AND replaces_device_id = $2::uuid AND status = 'used' LIMIT 1`,
+    [tenantId, deviceId],
+  );
+  if ((used.rowCount ?? 0) > 0) return "blocked";
   return { deviceId, storeId: locked.storeId, alreadyRevoked: locked.revokedAt !== null, decision };
 }
 
@@ -273,13 +279,21 @@ async function decideReplacementUnderLock(
  * auto-revoke through the revoke cascade. It runs after the burn, so the code
  * being redeemed is not cancelled by the cascade; the device's other pending
  * codes are. An already revoked device is left as it is (its custody
- * exception, if any, stays on it).
+ * exception, if any, stays on it), but any other pending code replacing it is
+ * still cancelled, so no second replacement can follow (contract C7).
  */
 async function recordPairing(
   client: PoolClient,
   input: { readonly codeId: string; readonly tenantId: string; readonly storeId: string; readonly terminalId: string },
   replacement: AllowedReplacement | null,
 ): Promise<void> {
+  if (replacement?.alreadyRevoked === true) {
+    await client.query(
+      `UPDATE pairing_codes SET status = 'cancelled'
+        WHERE tenant_id = $1::uuid AND status = 'pending' AND replaces_device_id = $2::uuid`,
+      [input.tenantId, replacement.deviceId],
+    );
+  }
   if (replacement !== null && !replacement.alreadyRevoked) {
     await applyDeviceRevoke(client, {
       tenantId: input.tenantId,
@@ -289,7 +303,7 @@ async function recordPairing(
       reason: replacement.decision.reason,
       note: null,
       custodyExceptionShiftId: null,
-      extraMetadata: { replaced_by_device_id: input.terminalId },
+      extraMetadata: { replaced_by_device_id: input.terminalId, pairing_code_id: input.codeId },
     });
   }
   await insertDeviceAudit(client, {

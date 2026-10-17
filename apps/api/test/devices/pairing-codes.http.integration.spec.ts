@@ -46,12 +46,17 @@ import {
   OP_TOKEN_FREE,
   PARITY_DEVICES,
   RP_DEAD,
+  MV_LIST,
   RP_RACE,
+  RP_REISSUE,
+  RP_REV_SIB,
+  RP_TWICE,
   SES_MANAGER_X,
   SES_STAFF,
   SHIFT_DEAD,
   SHIFT_RACE,
   SIBLING_CODE,
+  STALE_SIBLING_CODE,
   openLegacyShift,
   seedPairingCodeFixture,
   shiftOf,
@@ -190,7 +195,11 @@ describe("replace / move parity (preview == issue == redemption)", () => {
       actor_user_id: null,
       metadata: { reason: "replaced", revoked_session_count: 1, cancelled_pairing_code_count: 1, custody_exception: false },
     });
-    expect((revoked!["metadata"] as Record<string, unknown>)["replaced_by_device_id"]).toEqual(expect.any(String));
+    const metadata = revoked!["metadata"] as Record<string, unknown>;
+    expect(metadata["replaced_by_device_id"]).toEqual(expect.any(String));
+    // C3: the auto-revoke joins to the issuer's pos.device.pairing_code.issued row.
+    const [issued] = await auditRows("pos.device.pairing_code.issued", String(metadata["pairing_code_id"]));
+    expect(issued).toMatchObject({ actor_user_id: expect.any(String) });
     // The old operator token no longer authenticates anything (revoked_at set above).
     expect(OP_TOKEN_FREE.length).toBeGreaterThan(0);
   });
@@ -268,12 +277,54 @@ describe("redemption re-check (D-Q4) and the broken till (RT-287 11493)", () => 
 });
 
 // ===========================================================================
+// 2b. One replacement per device (C7)
+// ===========================================================================
+describe("one replacement per device (C7)", () => {
+  it("refuses a second code while one is live, and after one was used", async () => {
+    if (skip()) return;
+    const first = await issueOk(SES_OWNER_ALL, { storeId: STORE_A_X, replacesDeviceId: RP_TWICE });
+    const pending = await issue(SES_OWNER_ALL, { storeId: STORE_A_X, replacesDeviceId: RP_TWICE });
+    expect([pending.status, pending.body.error?.code, pending.body.error?.details]).toEqual([
+      409,
+      "replacement_already_pending",
+      undefined,
+    ]);
+    h.conforms("PairingCodeIssueConflict", pending.body);
+    // The preview reports the lifecycle verdict, not this precondition.
+    expect((await preview(RP_TWICE, "replace")).verdict).toBe("allowed");
+
+    expect((await pair(first.code)).status).toBe(200);
+    const used = await issue(SES_OWNER_ALL, { storeId: STORE_A_X, replacesDeviceId: RP_TWICE });
+    expect([used.status, used.body.error?.code]).toEqual([409, "device_already_replaced"]);
+  });
+
+  it("lets a cancelled code be followed by a new one", async () => {
+    if (skip()) return;
+    const first = await issueOk(SES_OWNER_ALL, { storeId: STORE_A_X, replacesDeviceId: RP_REISSUE });
+    expect((await h.post(cancelPath(first.pairingCodeId), SES_OWNER_ALL, {})).status).toBe(200);
+    await issueOk(SES_OWNER_ALL, { storeId: STORE_A_X, replacesDeviceId: RP_REISSUE });
+  });
+
+  it("cancels a sibling replacement code when the replaced device was already revoked", async () => {
+    if (skip()) return;
+    const issued = await issueOk(SES_OWNER_ALL, { storeId: STORE_A_X, replacesDeviceId: RP_REV_SIB });
+    expect(await codeStatus(STALE_SIBLING_CODE)).toBe("pending");
+    expect((await pair(issued.code)).status).toBe(200);
+    expect(await codeStatus(STALE_SIBLING_CODE)).toBe("cancelled");
+    expect(await auditRows("pos.device.revoked", RP_REV_SIB)).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
 // 3. Issue
 // ===========================================================================
 describe("consoleIssuePairingCode", () => {
   it("issues a plain code once: 16 characters, hashed at rest, default label, redeemable", async () => {
     if (skip()) return;
-    const issued = await issueOk(SES_OWNER_ALL, { storeId: STORE_A_X, ttlMinutes: 30 });
+    const res = await issue(SES_OWNER_ALL, { storeId: STORE_A_X, ttlMinutes: 30 });
+    expect(res.status).toBe(201);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    const issued = res.body as Issued;
     expect(issued).toMatchObject({ kind: "pair", replacesDeviceId: null, storeId: STORE_A_X });
     expect(issued.code).toMatch(/^[A-HJ-KMNP-TV-Z2-9]{16}$/);
     expect(issued.terminalLabel).toBe(`T-${issued.terminalId.replace(/-/g, "").slice(0, 8).toUpperCase()}`);
@@ -382,12 +433,12 @@ describe("consoleListPairingCodes / consoleCancelPairingCode", () => {
 
   it("hides a move code's replaced device from a caller who cannot see its store", async () => {
     if (skip()) return;
-    const issued = await issueOk(SES_OWNER_ALL, { storeId: STORE_A_X, replacesDeviceId: PARITY_DEVICES.move.rev });
+    const issued = await issueOk(SES_OWNER_ALL, { storeId: STORE_A_X, replacesDeviceId: MV_LIST });
     const scoped = await h.get(CODES, SES_ADMIN_SPEC, { page_size: 200 });
-    const item = (scoped.body.items as Array<{ pairingCodeId: string; replacesDeviceId: string | null }>).find(
-      (i) => i.pairingCodeId === issued.pairingCodeId,
-    );
-    expect(item?.replacesDeviceId).toBeNull();
+    const item = (
+      scoped.body.items as Array<{ pairingCodeId: string; kind: string; replacesDeviceId: string | null }>
+    ).find((i) => i.pairingCodeId === issued.pairingCodeId);
+    expect(item).toMatchObject({ kind: "move", replacesDeviceId: null });
   });
 
   it("cancels idempotently; a cancelled code is not listed and not redeemable", async () => {

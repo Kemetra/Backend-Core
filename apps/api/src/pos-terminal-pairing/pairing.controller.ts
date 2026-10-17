@@ -137,7 +137,7 @@ export class PairingController {
         // RT-367: never names the shift or the device (unauthenticated caller).
         throw new ConflictException({
           code: "REPLACEMENT_BLOCKED",
-          message: "The device this code replaces cannot be replaced now. Close its open shift first.",
+          message: "The device this code replaces cannot be replaced now.",
         });
 
       case "rate_limited": {

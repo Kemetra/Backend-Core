@@ -14,8 +14,8 @@
  *   issued for the device's own store (STORE_A_X), a move code for STORE_A_X
  *   from a device in STORE_A_Y:
  *     *_FREE   active, no shift          (RP_FREE also has a live operator
- *                                          token and a sibling pending
- *                                          replacement code)
+ *                                          token and a pending code of its
+ *                                          own terminal id, both cascaded)
  *     *_SHIFT  active, open legacy shift
  *     *_REV    revoked (admin_error), no shift
  *     *_EXC    revoked (stolen) with its shift still open (custody exception)
@@ -51,6 +51,15 @@ export const PARITY_DEVICES: Readonly<Record<Kind, Readonly<Record<LifecycleStat
 };
 export const RP_DEAD = id("01b1");
 export const RP_RACE = id("01b2");
+/** Active, no shift: a second replacement code for it is refused. */
+export const RP_TWICE = id("01b3");
+/** Revoked, with an expired (not live) pending replacement code: the sibling the redemption cancels. */
+export const RP_REV_SIB = id("01b4");
+export const STALE_SIBLING_CODE = id("08a2");
+/** Active, no shift: a cancelled replacement code is followed by a new one. */
+export const RP_REISSUE = id("01b5");
+/** STORE_A_Y, active, no shift: a move code listed by a caller who cannot see Y. */
+export const MV_LIST = id("02b1");
 export const D_B2 = "0b000000-0000-7000-8000-0000036701b1";
 export const NO_DEVICE = id("01ff");
 
@@ -65,7 +74,7 @@ const USER_STAFF = id("04a2");
 export const SES_MANAGER_X = id("07a1");
 export const SES_STAFF = id("07a3");
 
-/** RP_FREE's live operator session and the sibling pending replacement code for it. */
+/** RP_FREE's live operator session and a pending code of its own terminal id (both cascaded). */
 export const OP_TOKEN_FREE = generateRawToken();
 export const SIBLING_CODE = id("08a1");
 
@@ -96,6 +105,10 @@ function devices(): SeedDevice[] {
   }
   list.push({ id: RP_DEAD, tenantId: TENANT_A, storeId: STORE_A_X });
   list.push({ id: RP_RACE, tenantId: TENANT_A, storeId: STORE_A_X });
+  list.push({ id: RP_TWICE, tenantId: TENANT_A, storeId: STORE_A_X });
+  list.push({ id: RP_REV_SIB, tenantId: TENANT_A, storeId: STORE_A_X });
+  list.push({ id: RP_REISSUE, tenantId: TENANT_A, storeId: STORE_A_X });
+  list.push({ id: MV_LIST, tenantId: TENANT_A, storeId: STORE_A_Y });
   list.push({ id: D_B2, tenantId: TENANT_B, storeId: STORE_B_X });
   return list;
 }
@@ -160,6 +173,9 @@ async function seedLifecycle(admin: Pool): Promise<void> {
       `UPDATE devices SET revoked_at = now() - interval '1 hour', revoke_reason = 'stolen' WHERE id = $1`,
       [d.exc],
     );
+    await admin.query(`UPDATE devices SET revoked_at = now() - interval '1 day', revoke_reason = 'lost' WHERE id = $1`, [
+      RP_REV_SIB,
+    ]);
     await admin.query(
       `UPDATE devices SET revoked_at = now() - interval '2 days', revoke_reason = 'retired',
               retired_at = now() - interval '2 days', retire_reason = 'Decommissioned'
@@ -178,10 +194,18 @@ async function seedCredentials(admin: Pool): Promise<void> {
   await admin.query(
     `INSERT INTO pairing_codes
        (id, tenant_id, store_id, code_hash, terminal_id, terminal_label, branch_name, branch_address,
-        tenant_tax_registration_id, printer_vendor_id, printer_product_id, status, expires_at, replaces_device_id)
-     VALUES ($1, $2, $3, $4, gen_random_uuid(), 'Sibling', 'Branch', 'Address', 'TAX-1', '0x04b8', '0x0202',
-             'pending', now() + interval '1 day', $5)`,
+        tenant_tax_registration_id, printer_vendor_id, printer_product_id, status, expires_at)
+     VALUES ($1, $2, $3, $4, $5, 'Sibling', 'Branch', 'Address', 'TAX-1', '0x04b8', '0x0202',
+             'pending', now() + interval '1 day')`,
     [SIBLING_CODE, TENANT_A, STORE_A_X, digest(`code:${SIBLING_CODE}`), PARITY_DEVICES.replace.free],
+  );
+  await admin.query(
+    `INSERT INTO pairing_codes
+       (id, tenant_id, store_id, code_hash, terminal_id, terminal_label, branch_name, branch_address,
+        tenant_tax_registration_id, printer_vendor_id, printer_product_id, status, expires_at, replaces_device_id)
+     VALUES ($1, $2, $3, $4, gen_random_uuid(), 'Stale', 'Branch', 'Address', 'TAX-1', '0x04b8', '0x0202',
+             'pending', now() - interval '1 minute', $5)`,
+    [STALE_SIBLING_CODE, TENANT_A, STORE_A_X, digest(`code:${STALE_SIBLING_CODE}`), RP_REV_SIB],
   );
 }
 

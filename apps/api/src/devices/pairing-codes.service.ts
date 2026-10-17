@@ -12,11 +12,16 @@
  *     else reads as absent (`PairingCodeNotFoundError` → the shared 404).
  *   - The code is a SECRET: generated here, returned once by `issue`, stored
  *     only as `hashToken(code)`, never logged or audited.
- *   - Replace / move: the issue decides with the shared lifecycle evaluator
- *     (`decideReplacement`) under the replaced device's lifecycle lock and row
- *     lock (`lockDeviceForLifecycle`), on the impact read the preview uses, so
- *     its outcome is the preview's verdict on the same state. `blocked` → 409
- *     with the preview. The issue changes no device: the redemption revokes.
+ *   - Replace / move: the replaced device's scope is checked before any lock
+ *     (an out-of-scope id takes no lock). The issue then decides with the
+ *     shared lifecycle evaluator (`decideReplacement`) under the device's
+ *     lifecycle lock and row lock (`lockDeviceForLifecycle`), on the impact
+ *     read the preview uses, so its outcome is the preview's verdict on the
+ *     same state. `blocked` → 409 with the preview. Then, still under the
+ *     locks, one replacement per device (contract C7): a live or used code
+ *     naming the device → 409 `replacement_already_pending` /
+ *     `device_already_replaced`. The issue changes no device: the redemption
+ *     revokes.
  *   - Each mutation writes its `pos.device.pairing_code.*` audit row in its own
  *     transaction (allowlist: ids, kind, TTL; never the code).
  */
@@ -69,6 +74,14 @@ export class PairingCodeIssueRefusedError extends Error {
   }
 }
 
+/** A second replacement of one device (409, no details; contract C7). */
+export class PairingCodeReplacementExistsError extends Error {
+  constructor(readonly code: "replacement_already_pending" | "device_already_replaced") {
+    super(code);
+    this.name = "PairingCodeReplacementExistsError";
+  }
+}
+
 /** A cancel of a redeemed code (409 `pairing_code_used`). */
 export class PairingCodeUsedError extends Error {
   constructor() {
@@ -97,14 +110,27 @@ export interface CancelPairingCodeInput extends ScopedInput {
 /**
  * The code columns, with the replaced device's id only when that device is in
  * the caller's scope ($2, null = tenant-wide): out of scope reads as absent.
+ * The kind is derived from the replaced device's store whatever the scope, so
+ * the list flags every code that will revoke a device.
  */
 const CODE_SELECT = `
   SELECT pc.id, pc.store_id, pc.terminal_id, pc.terminal_label, pc.status,
          pc.expires_at, pc.created_at, ${CREATED_AT_KEY_SQL} AS created_at_key,
-         od.id AS replaces_device_id
+         od.id AS replaces_device_id,
+         CASE WHEN pc.replaces_device_id IS NULL THEN 'pair'
+              WHEN rd.store_id = pc.store_id THEN 'replace'
+              ELSE 'move' END AS kind
     FROM pairing_codes pc
-    LEFT JOIN devices od ON od.id = pc.replaces_device_id AND od.tenant_id = pc.tenant_id
-                        AND ($2::uuid[] IS NULL OR od.store_id = ANY($2::uuid[]))`;
+    LEFT JOIN devices rd ON rd.id = pc.replaces_device_id AND rd.tenant_id = pc.tenant_id
+    LEFT JOIN devices od ON od.id = rd.id AND ($2::uuid[] IS NULL OR od.store_id = ANY($2::uuid[]))`;
+
+/** The used, or live pending, codes naming a device ($1 tenant, $2 device), used first. */
+const EXISTING_REPLACEMENT_SQL = `
+  SELECT status FROM pairing_codes
+   WHERE tenant_id = $1::uuid AND replaces_device_id = $2::uuid
+     AND (status = 'used' OR (status = 'pending' AND expires_at > now()))
+   ORDER BY (status = 'used') DESC
+   LIMIT 1`;
 
 /** $1 tenant, $2 scope, $3 store filter, $4 / $5 keyset (created_at, id), $6 limit. */
 const LIST_SQL = `${CODE_SELECT}
@@ -274,6 +300,13 @@ export class PairingCodesService {
     scope: StoreScope,
     deviceId: string,
   ): Promise<Exclude<PairingCodeKind, "pair">> {
+    // Scope first, without a lock: an out-of-scope id never takes the device's locks.
+    const seen = await client.query<{ store_id: string }>(
+      `SELECT store_id FROM devices WHERE id = $1::uuid AND tenant_id = $2::uuid`,
+      [deviceId, input.tenantId],
+    );
+    const store = seen.rows[0]?.store_id;
+    if (store === undefined || !inStoreScope(scope, store)) throw new PairingCodeNotFoundError();
     const locked = await lockDeviceForLifecycle(client, { tenantId: input.tenantId, deviceId });
     if (locked === null || !inStoreScope(scope, locked.storeId)) throw new PairingCodeNotFoundError();
     const row = await readDeviceImpact(client, input.tenantId, deviceId, scopeStoreIds(scope));
@@ -286,6 +319,13 @@ export class PairingCodesService {
     }
     // Replace / move verdicts are `allowed` or `blocked` (the evaluator's rules).
     if (evaluation.verdict !== "allowed") throw new Error(`unexpected ${decision.kind} verdict ${evaluation.verdict}`);
+    const existing = await client.query<{ status: "pending" | "used" }>(EXISTING_REPLACEMENT_SQL, [
+      input.tenantId,
+      deviceId,
+    ]);
+    const status = existing.rows[0]?.status;
+    if (status === "used") throw new PairingCodeReplacementExistsError("device_already_replaced");
+    if (status === "pending") throw new PairingCodeReplacementExistsError("replacement_already_pending");
     return decision.kind;
   }
 

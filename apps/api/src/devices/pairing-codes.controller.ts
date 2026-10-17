@@ -23,6 +23,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   HttpCode,
   HttpException,
   NotFoundException,
@@ -59,6 +60,7 @@ import {
 import {
   PairingCodeIssueRefusedError,
   PairingCodeNotFoundError,
+  PairingCodeReplacementExistsError,
   PairingCodesService,
   PairingCodeUsedError,
 } from "./pairing-codes.service";
@@ -74,6 +76,11 @@ const BLOCK_MESSAGES: Readonly<Record<PairingCodeIssueRefusedError["code"], stri
   device_retired: "A retired device cannot be replaced or moved.",
 };
 
+const REPLACEMENT_EXISTS_MESSAGES: Readonly<Record<PairingCodeReplacementExistsError["code"], string>> = {
+  replacement_already_pending: "A live pairing code already replaces this device. Cancel it first.",
+  device_already_replaced: "This device was already replaced.",
+};
+
 @Controller()
 @UseGuards(SessionOnlyAdminGuard, TenantContextGuard)
 export class PairingCodesController {
@@ -82,6 +89,8 @@ export class PairingCodesController {
   /** POST — issue a code (returned once), optionally replacing or moving a device. */
   @Post("api/v1/pairing-codes")
   @HttpCode(201)
+  // The body carries the one-time code: never cached (security review MEDIUM-1).
+  @Header("Cache-Control", "no-store")
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin", "store_manager")
   @Idempotent("required", { replay: "forbid", replayMarkerFields: ["pairingCodeId"] })
@@ -97,6 +106,9 @@ export class PairingCodesController {
       if (err instanceof PairingCodeNotFoundError) throw new NotFoundException(NOT_FOUND);
       if (err instanceof PairingCodeIssueRefusedError) {
         throw new HttpException({ code: err.code, message: BLOCK_MESSAGES[err.code], details: err.impact }, 409);
+      }
+      if (err instanceof PairingCodeReplacementExistsError) {
+        throw new HttpException({ code: err.code, message: REPLACEMENT_EXISTS_MESSAGES[err.code] }, 409);
       }
       throw err;
     }

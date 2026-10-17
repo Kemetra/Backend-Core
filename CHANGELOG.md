@@ -176,7 +176,10 @@ This project follows [Semantic Versioning](https://semver.org/).
   (reason `replaced` / `moved`, no actor user) and writes `pos.device.paired`;
   it now returns `expires_at`. The revoke's SQL and cascade moved to
   `device-lifecycle.store.ts`, shared by the revoke, the issue and the pair;
-  the revoke's 409 code is now the evaluator's `blockCode`. Deploy
+  the revoke's 409 code is now the evaluator's `blockCode`. One replacement
+  per device: the issue refuses a second (409 `replacement_already_pending` /
+  `device_already_replaced`) and the redemption cancels sibling codes on
+  every path. The issue's 201 is `Cache-Control: no-store`. Deploy
   precondition: the domain role needs INSERT on `pairing_codes` (new), plus
   the RT-365 UPDATE on `devices` / `auth_tokens`. No migration.
 - RT-542 `[GATED]`, owner-approved 2026-10-16 (RT-542 comment 12124): the three

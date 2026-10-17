@@ -97,6 +97,8 @@ export type PairingCodeKind = "pair" | "replace" | "move";
 /** A `pairing_codes` row as the service reads it (never `code_hash`). */
 export interface PairingCodeReadRow {
   readonly id: string;
+  /** Derived from the stores, whatever the caller's scope. */
+  readonly kind: PairingCodeKind;
   readonly store_id: string;
   readonly terminal_id: string;
   readonly terminal_label: string;
@@ -110,6 +112,7 @@ export interface PairingCodeReadRow {
 
 export interface PairingCodeSummary {
   readonly pairingCodeId: string;
+  readonly kind: PairingCodeKind;
   readonly storeId: string;
   readonly terminalId: string;
   readonly terminalLabel: string;
@@ -146,6 +149,7 @@ export function toPairingCodeSummary(row: PairingCodeReadRow): PairingCodeSummar
   if (row.status === "used") throw new Error("a used code has no summary");
   return {
     pairingCodeId: row.id,
+    kind: row.kind,
     storeId: row.store_id,
     terminalId: row.terminal_id,
     terminalLabel: row.terminal_label,
