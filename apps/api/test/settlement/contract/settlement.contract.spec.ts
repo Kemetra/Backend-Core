@@ -349,7 +349,15 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
 
   it("is a contract-only PATCH on the payer, with a runtime note naming the RT-572 runtime", () => {
     expect(update()?.["x-runtime-status"]).toBe("contract-only");
-    expect(flat(update()?.["x-runtime-note"])).toContain("RT-572 runtime");
+    const note = flat(update()?.["x-runtime-note"]);
+    expect(note).toContain("RT-572 runtime");
+    // M1: a malformed payerRef is a 400, never a pg 22P02 -> 500
+    expect(note).toContain("validate `payerRef` as a uuid before any SQL cast");
+    expect(note).toContain("22P02");
+    // M3: the audit row is written in the update's transaction, not by @Auditable alone
+    expect(note).toContain("same transaction");
+    expect(note).toContain("insertSettlementAudit");
+    expect(note).toContain("tenant-level");
   });
 
   it("requires an Idempotency-Key and addresses the payer by a uuid path parameter", () => {
@@ -409,70 +417,130 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
     }
   });
 
-  it("expectedVersion is the payer's existing version (integer >= 0), not a new column", () => {
+  it("expectedVersion is the payer's existing version, bounded to int4 (M1), not a new column", () => {
     const expected = updateSchema()?.properties?.["expectedVersion"];
     expect(expected?.type).toBe("integer");
     expect(expected?.minimum).toBe(0);
+    expect(expected?.maximum).toBe(2147483647);
     expect(flat(expected?.description)).toContain("PayerAccount.version");
   });
 
-  it("status is the active / suspended vocabulary", () => {
-    expect(updateSchema()?.properties?.["status"]?.enum).toEqual(["active", "suspended"]);
+  it("status is the active / suspended vocabulary, and says what suspension also does (RT-577 D12)", () => {
+    const status = updateSchema()?.properties?.["status"];
+    expect(status?.enum).toEqual(["active", "suspended"]);
+    const text = flat(status?.description);
+    expect(text).toContain("credit_reversal_settlement_unavailable");
+    expect(text).toContain("RT-577");
+    expect(text).toContain("postings are unaffected");
   });
 
-  it("displayName and externalRef reject blank, whitespace-only and NUL text at the schema (400, never 5xx)", () => {
-    const props = updateSchema()?.properties ?? {};
-    for (const field of ["displayName", "externalRef"] as const) {
-      const prop = props[field];
-      expect(prop?.type).toBe("string"); // externalRef cannot be cleared: no null
-      expect(prop?.minLength).toBe(1);
-      const accepts = new RegExp(prop?.pattern ?? "$^");
-      for (const ok of ["CUST-0001", "Acme Insurance", "x", " padded ", "a\nb"]) {
-        expect({ field, ok, m: accepts.test(ok) }).toEqual({ field, ok, m: true });
-      }
-      for (const bad of ["", " ", "   ", "\t", " \n ", "a\u0000b", "\u0000", " \u0000 "]) {
-        expect({ field, bad, m: accepts.test(bad) }).toEqual({ field, bad, m: false });
-      }
+  it("displayName rejects blank, whitespace-only and NUL text at the schema (400, never 5xx)", () => {
+    const prop = updateSchema()?.properties?.["displayName"];
+    expect(prop?.type).toBe("string");
+    expect(prop?.minLength).toBe(1);
+    expect(prop?.maxLength).toBe(200);
+    expect(prop?.pattern).toBe(String.raw`^\s*[^\s\u0000][^\u0000]*$`);
+    const accepts = new RegExp(prop?.pattern ?? "$^");
+    for (const ok of ["Acme Insurance", "x", " padded ", "a\nb"]) {
+      expect({ ok, m: accepts.test(ok) }).toEqual({ ok, m: true });
     }
-    expect(props["displayName"]?.maxLength).toBe(200);
-    expect(props["externalRef"]?.maxLength).toBe(140); // Frappe document names are at most 140 characters
+    for (const bad of ["", " ", "   ", "\t", " \n ", "a\u0000b", "\u0000", " \u0000 "]) {
+      expect({ bad, m: accepts.test(bad) }).toEqual({ bad, m: false });
+    }
   });
 
-  it("the text pattern is linear: a long NUL-bearing value is refused in milliseconds (Gitar #804)", () => {
-    for (const field of ["displayName", "externalRef"] as const) {
+  it("externalRef is an identifier (M5): no surrounding whitespace, no control characters, no NUL, 1..140", () => {
+    const prop = updateSchema()?.properties?.["externalRef"];
+    expect(prop?.type).toBe("string"); // cannot be cleared: no null
+    expect(prop?.minLength).toBe(1);
+    expect(prop?.maxLength).toBe(140); // Frappe document names are at most 140 characters
+    expect(prop?.pattern).toBe(
+      String.raw`^[^\s\u0000-\u001f\u007f-\u009f](?:[^\u0000-\u001f\u007f-\u009f]*[^\s\u0000-\u001f\u007f-\u009f])?$`,
+    );
+    const accepts = new RegExp(prop?.pattern ?? "$^");
+    for (const ok of ["CUST-0001", "Acme Insurance", "x", "a b", "ab"]) {
+      expect({ ok, m: accepts.test(ok) }).toEqual({ ok, m: true });
+    }
+    const bad = [
+      "", " ", "   ", "\t", " padded", "padded ", " padded ", "a\nb", "a\tb", "a\r", "a\u0000b", "\u0000",
+      " \u0000 ", "a\u007fb", "a\u0085b", " x", "x ",
+    ];
+    for (const value of bad) {
+      expect({ value, m: accepts.test(value) }).toEqual({ value, m: false });
+    }
+  });
+
+  it("the text patterns are linear and pinned: long NUL / whitespace inputs are refused fast (Gitar #804)", () => {
+    // The patterns are pinned above, so a rewrite into a backtracking form fails those tests first. The
+    // timing is a coarse backstop with a very generous margin: a quadratic form takes minutes at 200k.
+    const long = 200_000;
+    const inputs: Array<[string, string, boolean]> = [
+      ["displayName", "a".repeat(long) + "\u0000", false],
+      ["displayName", "\u0000" + "a".repeat(long), false],
+      ["displayName", " ".repeat(long) + "\u0000", false],
+      ["displayName", " ".repeat(long) + "x" + "y".repeat(long), true],
+      ["externalRef", "a".repeat(long) + "\u0000", false],
+      ["externalRef", "a".repeat(long) + " ", false],
+      ["externalRef", "a ".repeat(long / 2) + "\n", false],
+      ["externalRef", " ".repeat(long) + "x", false],
+    ];
+    for (const [field, value, expected] of inputs) {
       const re = new RegExp(updateSchema()?.properties?.[field]?.pattern ?? "$^");
-      for (const value of ["a".repeat(100_000) + " ", " " + "a".repeat(100_000), " ".repeat(100_000) + " "]) {
-        const start = Date.now();
-        expect(re.test(value)).toBe(false);
-        expect(Date.now() - start).toBeLessThan(200);
-      }
-      expect(re.test(" ".repeat(50_000) + "x" + "y".repeat(50_000))).toBe(true);
+      const start = Date.now();
+      expect({ field, m: re.test(value) }).toEqual({ field, m: expected });
+      expect(Date.now() - start).toBeLessThan(3000);
     }
   });
 
-  it("states that a changed externalRef never touches already-frozen postings (RT-332)", () => {
+  it("states that a changed externalRef never touches already-frozen postings (RT-332), except an operator re-resolution", () => {
     const text = flat(update()?.description);
     expect(text).toContain("RT-332");
     expect(text).toContain("frozen");
     expect(text).toContain("payerExternalRef");
     expect(text).toContain("only by resolutions frozen after");
+    expect(text).toContain("freezeOperatorResolution");
+    expect(text).toContain("re-reads the live");
     expect(flat(updateSchema()?.properties?.["externalRef"]?.description)).toContain("already-frozen");
   });
 
-  it("documents the version bump, the no-op, the audit and the role gate", () => {
+  it("documents the version bump, the no-op, the same-transaction audit with both externalRef values, and the role gate", () => {
     const text = flat(update()?.description);
     expect(text).toContain("version + 1");
     expect(text).toContain("no-op");
     expect(text).toContain("settlement.payer_account.updated");
     expect(text).toContain("owner / tenant_admin");
     expect(text).toContain("changedFields");
-    expect(text).toContain("never records the displayName or externalRef text");
+    expect(text).toContain("externalRefFrom");
+    expect(text).toContain("externalRefTo");
+    expect(text).toContain("same transaction as the update");
+    expect(text).toContain("not emitted for a no-op");
+    expect(text).toContain("never records the displayName");
+    expect(text).not.toContain("never records the displayName or externalRef text");
   });
 
-  it("the 2.1.0 changelog in info records the decisions and that 2.0.0 consumers are unaffected", () => {
+  it("suspension also fails credit reversals closed under RT-577 D12, and leaves postings alone", () => {
+    const text = flat(update()?.description);
+    expect(text).toContain("credit_reversal_settlement_unavailable");
+    expect(text).toContain("RT-577");
+    expect(text).toContain("fail closed");
+    expect(text).not.toContain("Already-captured sales are unaffected");
+  });
+
+  it("a status or externalRef change on a tenant-wide payer needs tenant-wide store scope, else the same 404 (M4)", () => {
+    const text = flat(update()?.description);
+    expect(text).toContain("status` or `externalRef` of a tenant-wide payer");
+    expect(text).toContain("tenant-wide store scope");
+    const notFound = (doc.components?.responses?.["PayerNotFound"] ?? {}) as { description?: string };
+    expect(flat(notFound.description)).toContain("tenant-wide payer");
+  });
+
+  it("the 2.1.0 changelog in info records the decisions, with the D12 reason for immutable storeId", () => {
     const info = flat(doc.info?.description);
     expect(info).toContain("RT-572 (2.1.0");
     expect(info).toContain("additive");
     expect(info).toContain("`consoleUpdatePayerAccount`");
+    expect(info).toContain("scoped to another store");
+    expect(info).toContain("RT-577 D12");
+    expect(info).toContain("externalRefFrom");
   });
 });
