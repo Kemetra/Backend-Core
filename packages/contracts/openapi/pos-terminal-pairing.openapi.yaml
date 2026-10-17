@@ -225,6 +225,15 @@ info:
     authentication and before the idempotency checks, and it fails open if
     the limiter's store is unavailable (ADR 0009 D3).
 
+    Refusals are bounded too. Before a refused rotation writes
+    `pos.device.rotation_rejected`, the same per-device budget is checked on
+    the matched device (the row the presented token matched, revoked,
+    retired or expired as it may be), and the refusal spends from it. While
+    budget remains, the row is written; once it is spent the refusal is
+    still the same 401 but writes no audit row (a log line counts the
+    suppressed refusals instead). So a holder of a refused token cannot
+    write audit rows without bound.
+
 
     **Idempotency.** `Idempotency-Key` is required and non-replayable
     (RT-82 K3 / RT-155): the new token is never stored for replay. A retry
@@ -244,9 +253,13 @@ info:
         `previous`: which token authenticated the call), `in_grace`
         (boolean: the device was past `expires_at`), `expires_at` (the new
         expiry) and `previous_valid_until`.
-      - `pos.device.rotation_rejected`, when a refused rotation presented a
-        token that matches (or, before the lock, matched) a device row.
-        Target `device` / the device id; no actor user. Metadata allowlist:
+      - `pos.device.rotation_rejected`, in its own transaction, when a
+        refused rotation presented a token that matches (or, before the
+        lock, matched) a device row, within the budget above. The row never
+        rides on a rotation that rolls back: a refusal under the lock
+        changes nothing on the device and commits only this row, so a
+        refusal under the lock still records its row. Target `device` / the
+        device id; no actor user. Metadata allowlist:
         `reason`, one of `revoked`, `retired`, `grace_elapsed`,
         `previous_expired` (the token is the device's previous one and its
         window has closed) or `token_replaced` (under the lock the token is

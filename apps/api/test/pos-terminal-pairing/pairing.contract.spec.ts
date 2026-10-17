@@ -829,4 +829,18 @@ describe("pos-terminal-pairing.yaml — posRotateTerminalToken (RT-369)", () => 
     expect(text).toContain("429 `RATE_LIMITED`");
     expect(text).toContain("per-device rotation budget");
   });
+
+  it("bounds refused-path audit rows by the same per-device budget (R1)", () => {
+    const text = prose();
+    expect(text).toContain(
+      "Before a refused rotation writes `pos.device.rotation_rejected`, the same per-device budget is checked on the matched device",
+    );
+    expect(text).toContain("once it is spent the refusal is still the same 401 but writes no audit row");
+  });
+
+  it("writes rotation_rejected in its own transaction, so a refusal under the lock still records it (R2)", () => {
+    const text = prose();
+    expect(text).toContain("`pos.device.rotation_rejected`, in its own transaction");
+    expect(text).toContain("a refusal under the lock still records its row");
+  });
 });
