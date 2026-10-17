@@ -332,6 +332,9 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
 
   const flat = (text: string | undefined): string => (text ?? "").replace(/\s+/g, " ");
   const update = (): UpdateOperation | undefined => findOp("consoleUpdatePayerAccount") as UpdateOperation | undefined;
+  const expectAll = (text: string, parts: string[]): void => {
+    for (const part of parts) expect(text).toContain(part);
+  };
 
   type UpdateProperty = {
     type?: unknown;
@@ -355,9 +358,7 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
     expect(note).toContain("validate `payerRef` as a uuid before any SQL cast");
     expect(note).toContain("22P02");
     // M3: the audit row is written in the update's transaction, not by @Auditable alone
-    expect(note).toContain("same transaction");
-    expect(note).toContain("insertSettlementAudit");
-    expect(note).toContain("tenant-level");
+    expectAll(note, ["same transaction", "insertSettlementAudit", "tenant-level"]);
   });
 
   it("requires an Idempotency-Key and addresses the payer by a uuid path parameter", () => {
@@ -393,9 +394,7 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
   it("409 names payer_version_conflict (stale expectedVersion) and idempotency_key_conflict", () => {
     const conflict = (doc.components?.responses?.["PayerUpdateConflict"] ?? {}) as { description?: string };
     const text = flat(conflict.description);
-    expect(text).toContain("payer_version_conflict");
-    expect(text).toContain("idempotency_key_conflict");
-    expect(text).toContain("expectedVersion");
+    expectAll(text, ["payer_version_conflict", "idempotency_key_conflict", "expectedVersion"]);
   });
 
   it("404 is non-disclosing for an unknown, other-tenant or out-of-store-scope payer", () => {
@@ -429,9 +428,7 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
     const status = updateSchema()?.properties?.["status"];
     expect(status?.enum).toEqual(["active", "suspended"]);
     const text = flat(status?.description);
-    expect(text).toContain("credit_reversal_settlement_unavailable");
-    expect(text).toContain("RT-577");
-    expect(text).toContain("postings are unaffected");
+    expectAll(text, ["credit_reversal_settlement_unavailable", "RT-577", "postings are unaffected"]);
   });
 
   it("displayName rejects blank, whitespace-only and NUL text at the schema (400, never 5xx)", () => {
@@ -494,35 +491,19 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
 
   it("states that a changed externalRef never touches already-frozen postings (RT-332), except an operator re-resolution", () => {
     const text = flat(update()?.description);
-    expect(text).toContain("RT-332");
-    expect(text).toContain("frozen");
-    expect(text).toContain("payerExternalRef");
-    expect(text).toContain("only by resolutions frozen after");
-    expect(text).toContain("freezeOperatorResolution");
-    expect(text).toContain("re-reads the live");
+    expectAll(text, ["RT-332", "frozen", "payerExternalRef", "only by resolutions frozen after", "freezeOperatorResolution", "re-reads the live"]);
     expect(flat(updateSchema()?.properties?.["externalRef"]?.description)).toContain("already-frozen");
   });
 
   it("documents the version bump, the no-op, the same-transaction audit with both externalRef values, and the role gate", () => {
     const text = flat(update()?.description);
-    expect(text).toContain("version + 1");
-    expect(text).toContain("no-op");
-    expect(text).toContain("settlement.payer_account.updated");
-    expect(text).toContain("owner / tenant_admin");
-    expect(text).toContain("changedFields");
-    expect(text).toContain("externalRefFrom");
-    expect(text).toContain("externalRefTo");
-    expect(text).toContain("same transaction as the update");
-    expect(text).toContain("not emitted for a no-op");
-    expect(text).toContain("never records the displayName");
+    expectAll(text, ["version + 1", "no-op", "settlement.payer_account.updated", "owner / tenant_admin", "changedFields", "externalRefFrom", "externalRefTo", "same transaction as the update", "not emitted for a no-op", "never records the displayName"]);
     expect(text).not.toContain("never records the displayName or externalRef text");
   });
 
   it("suspension also fails credit reversals closed under RT-577 D12, and leaves postings alone", () => {
     const text = flat(update()?.description);
-    expect(text).toContain("credit_reversal_settlement_unavailable");
-    expect(text).toContain("RT-577");
-    expect(text).toContain("fail closed");
+    expectAll(text, ["credit_reversal_settlement_unavailable", "RT-577", "fail closed"]);
     expect(text).not.toContain("Already-captured sales are unaffected");
   });
 
@@ -536,11 +517,6 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
 
   it("the 2.1.0 changelog in info records the decisions, with the D12 reason for immutable storeId", () => {
     const info = flat(doc.info?.description);
-    expect(info).toContain("RT-572 (2.1.0");
-    expect(info).toContain("additive");
-    expect(info).toContain("`consoleUpdatePayerAccount`");
-    expect(info).toContain("scoped to another store");
-    expect(info).toContain("RT-577 D12");
-    expect(info).toContain("externalRefFrom");
+    expectAll(info, ["RT-572 (2.1.0", "additive", "`consoleUpdatePayerAccount`", "scoped to another store", "RT-577 D12", "externalRefFrom"]);
   });
 });
