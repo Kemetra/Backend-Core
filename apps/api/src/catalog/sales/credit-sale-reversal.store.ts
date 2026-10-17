@@ -141,14 +141,25 @@ function approvalColumns(approval: VoidApprovalDto | undefined): Array<string | 
 
 /** The refund paid out, in request order. */
 async function insertRefundTenders(client: PoolClient, w: CreditReversalWrite, reversalId: string): Promise<void> {
-  for (const [ordinal, t] of w.body.refundTenders.entries()) {
-    await client.query(
-      `INSERT INTO sale_credit_reversal_tenders
-         (id, reversal_id, tenant_id, store_id, ordinal, method, amount, tender_ref, reference)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::numeric, $8, $9)`,
-      [newId(), reversalId, w.tenantId, w.storeId, ordinal, t.method, t.amount, t.tenderRef ?? null, t.reference ?? null],
-    );
-  }
+  const tenders = w.body.refundTenders;
+  if (tenders.length === 0) return;
+  await client.query(
+    `INSERT INTO sale_credit_reversal_tenders
+       (id, reversal_id, tenant_id, store_id, ordinal, method, amount, tender_ref, reference)
+     SELECT t.id, $1, $2, $3, t.ord - 1, t.method, t.amount, t.tender_ref, t.reference
+       FROM unnest($4::uuid[], $5::text[], $6::numeric[], $7::uuid[], $8::text[])
+            WITH ORDINALITY AS t(id, method, amount, tender_ref, reference, ord)`,
+    [
+      reversalId,
+      w.tenantId,
+      w.storeId,
+      tenders.map(() => newId()),
+      tenders.map((t) => t.method),
+      tenders.map((t) => t.amount),
+      tenders.map((t) => t.tenderRef ?? null),
+      tenders.map((t) => t.reference ?? null),
+    ],
+  );
 }
 
 /** The void row; a provenance an ordinary void already holds is a 409. */
@@ -218,24 +229,47 @@ async function insertReturn(client: PoolClient, w: CreditReversalWrite): Promise
   );
   const returnId = r.rows[0]?.id;
   if (returnId === undefined) throw new TerminalEventProvenanceConflictError();
-  for (const l of w.priced) {
-    await client.query(
-      `INSERT INTO sale_return_lines
-         (id, return_id, sale_line_id, tenant_id, store_id, quantity, line_amount, tax_amount, returned_quantity_after)
-       VALUES ($1, $2, $3, $4, $5, $6::numeric, $7::numeric, $8::numeric, $9::numeric)`,
-      [newId(), returnId, l.lineRef, w.tenantId, w.storeId, l.quantity, l.lineAmount, l.taxAmount, l.returnedAfter],
-    );
-  }
-  // The cash paid out, also on the return itself: the shift cash-up and the
-  // posting projection read sale_return_tenders.
-  for (const [ordinal, t] of w.body.refundTenders.entries()) {
-    await client.query(
-      `INSERT INTO sale_return_tenders (id, return_id, tenant_id, store_id, ordinal, method, amount)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::numeric)`,
-      [newId(), returnId, w.tenantId, w.storeId, ordinal, t.method, t.amount],
-    );
-  }
+  await insertReturnLines(client, w, returnId);
+  await insertReturnTenders(client, w, returnId);
   return returnId;
+}
+
+/** The priced return lines (the `recordReturn` columns). */
+async function insertReturnLines(client: PoolClient, w: CreditReversalWrite, returnId: string): Promise<void> {
+  const lines = w.priced;
+  await client.query(
+    `INSERT INTO sale_return_lines
+       (id, return_id, sale_line_id, tenant_id, store_id, quantity, line_amount, tax_amount, returned_quantity_after)
+     SELECT l.id, $1, l.sale_line_id, $2, $3, l.quantity, l.line_amount, l.tax_amount, l.returned_after
+       FROM unnest($4::uuid[], $5::uuid[], $6::numeric[], $7::numeric[], $8::numeric[], $9::numeric[])
+            AS l(id, sale_line_id, quantity, line_amount, tax_amount, returned_after)`,
+    [
+      returnId,
+      w.tenantId,
+      w.storeId,
+      lines.map(() => newId()),
+      lines.map((l) => l.lineRef),
+      lines.map((l) => l.quantity),
+      lines.map((l) => l.lineAmount),
+      lines.map((l) => l.taxAmount),
+      lines.map((l) => l.returnedAfter),
+    ],
+  );
+}
+
+/**
+ * The cash paid out, also on the return itself: the shift cash-up and the
+ * posting projection read sale_return_tenders.
+ */
+async function insertReturnTenders(client: PoolClient, w: CreditReversalWrite, returnId: string): Promise<void> {
+  const tenders = w.body.refundTenders;
+  if (tenders.length === 0) return;
+  await client.query(
+    `INSERT INTO sale_return_tenders (id, return_id, tenant_id, store_id, ordinal, method, amount)
+     SELECT t.id, $1, $2, $3, t.ord - 1, t.method, t.amount
+       FROM unnest($4::uuid[], $5::text[], $6::numeric[]) WITH ORDINALITY AS t(id, method, amount, ord)`,
+    [returnId, w.tenantId, w.storeId, tenders.map(() => newId()), tenders.map((t) => t.method), tenders.map((t) => t.amount)],
+  );
 }
 
 /** D6: consume the second approval's id in the shared single-use ledger. */

@@ -75,7 +75,7 @@ interface Scope {
 export class CreditSaleReversalService {
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
 
-  async record(input: CreditSaleReversalInput): Promise<CreditSaleReversalResult> {
+  record(input: CreditSaleReversalInput): Promise<CreditSaleReversalResult> {
     const payloadHash = sha256CanonicalHex(input.body);
     return runWithTenantContext(
       this.pool,

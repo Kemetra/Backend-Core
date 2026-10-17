@@ -21,9 +21,12 @@ import { VoidApprovalSchema } from "./record-void-request.dto";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const AMOUNT_RE = /^\d{1,15}(\.\d{1,4})?$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-/** At least one non-whitespace character and no NUL anywhere (contract `reason` pattern). */
-// eslint-disable-next-line no-control-regex
-const REASON_RE = /^[^\u0000]*[^\s\u0000][^\u0000]*$/u;
+/**
+ * At least one non-whitespace character and no NUL anywhere (the contract
+ * `reason` pattern), checked as two linear tests rather than one backtracking
+ * regular expression.
+ */
+const isReason = (v: string): boolean => !v.includes("\u0000") && /\S/u.test(v);
 
 const isCalendarDay = (v: string): boolean => {
   const d = new Date(`${v}T00:00:00.000Z`);
@@ -54,7 +57,7 @@ export const CreditSaleReversalRequestSchema = z
       )
       .optional(),
     refundTenders: z.array(CreditReversalRefundTenderSchema),
-    reason: z.string().min(1).max(500).regex(REASON_RE, "must hold a non-whitespace character and no NUL"),
+    reason: z.string().min(1).max(500).refine(isReason, "must hold a non-whitespace character and no NUL"),
     businessDate: z.string().regex(DATE_RE).refine(isCalendarDay).optional(),
     approval: VoidApprovalSchema.optional(),
   })

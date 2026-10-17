@@ -313,7 +313,7 @@ async function expectRefusedWithoutWrites(sale: CapturedSale, send: () => Promis
   const audits = spy.calls.length;
   expectRefusal(await send(), refusal);
   expect(await written(sale)).toEqual(before);
-  expect(spy.calls.length).toBe(audits);
+  expect(spy.calls).toHaveLength(audits);
 }
 
 const CASH_SALE: Omit<CaptureSpec, "externalId"> = { credit: "0", tenders: [{ method: "cash", amount: "12.5" }] };
