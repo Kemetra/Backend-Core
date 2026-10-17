@@ -88,8 +88,16 @@ describe("RT-631 — HTTP 500 through GlobalExceptionFilter into Sentry", () => 
   let app: INestApplication;
   let tracer: ReturnType<typeof createTestTracerProvider>;
   const traceIds: string[] = [];
+  // Sentry.init adds process-level handlers (strict unhandledRejection exits
+  // the process). Jest workers share `process` across files, so remove them.
+  type ProcessListener = (...args: unknown[]) => void;
+  const PROCESS_EVENTS = ["unhandledRejection", "uncaughtException"] as const;
+  const processListeners = (event: (typeof PROCESS_EVENTS)[number]): ProcessListener[] =>
+    process.listeners(event as "uncaughtException") as ProcessListener[];
+  const listenersBefore = new Map<string, ProcessListener[]>();
 
   beforeAll(async () => {
+    for (const event of PROCESS_EVENTS) listenersBefore.set(event, processListeners(event));
     sink = await startSentrySink();
     tracer = createTestTracerProvider();
     const result = initApiSentry({
@@ -116,6 +124,12 @@ describe("RT-631 — HTTP 500 through GlobalExceptionFilter into Sentry", () => 
   afterAll(async () => {
     await app?.close();
     await Sentry.close(2000);
+    for (const event of PROCESS_EVENTS) {
+      const before = listenersBefore.get(event) ?? [];
+      for (const listener of processListeners(event)) {
+        if (!before.includes(listener)) process.removeListener(event, listener);
+      }
+    }
     await tracer.teardown();
     context.disable();
     trace.disable();
