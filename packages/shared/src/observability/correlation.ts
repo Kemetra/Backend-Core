@@ -24,22 +24,25 @@ import { trace } from "@opentelemetry/api";
 const INVALID_TRACE_ID = "00000000000000000000000000000000";
 
 /**
+ * The active span's trace ID (32 lowercase hex), or `undefined` when no span
+ * is active or its context is invalid. Never throws: a broken OTel install
+ * must not poison logging or error reporting.
+ */
+export function getActiveTraceId(): string | undefined {
+  try {
+    const traceId = trace.getActiveSpan()?.spanContext()?.traceId;
+    if (!traceId || traceId === INVALID_TRACE_ID) return undefined;
+    return traceId;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Resolve a correlation ID. Reads the active OTel span; returns its trace
  * ID when valid, otherwise returns `fallback`. Never throws — even if the
  * OTel API surface is broken or stubbed, the fallback is honored.
  */
 export function getCorrelationId(fallback: string): string {
-  try {
-    const span = trace.getActiveSpan();
-    if (!span) return fallback;
-    const ctx = span.spanContext();
-    if (!ctx?.traceId || ctx.traceId === INVALID_TRACE_ID) {
-      return fallback;
-    }
-    return ctx.traceId;
-  } catch {
-    // Defensive: a broken OTel install MUST NOT poison logging. The
-    // request_id fallback is always available — keep logs flowing.
-    return fallback;
-  }
+  return getActiveTraceId() ?? fallback;
 }

@@ -2,15 +2,24 @@
  * Spec 037 US1 — Sentry error export: default-inert init + allowlist scrubber.
  * Pure module: no `@sentry/node` import; the SDK init is injected.
  */
+import { context, trace } from "@opentelemetry/api";
+
+import { createTestTracerProvider } from "../../src/observability/bullmq-propagation";
 import {
+  SENTRY_ALLOWED_TAG_KEYS,
   SENTRY_FORBIDDEN_KEYS,
   initSentry,
   resolveSentryConfig,
   scrubSentryEvent,
+  sentryCorrelationTags,
   type SentryEventLike,
 } from "../../src/observability/sentry";
 
 const VALID_DSN = "https://abc123@o1.ingest.de.sentry.io/42";
+const SERVICE = "backend-api";
+const SHA12 = "36bb0c7e1f2a";
+const REQUEST_ID = "018f3b1d-7c2a-7e3a-9bcd-0123456789ab";
+const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 
 describe("resolveSentryConfig (AC-1 default-inert)", () => {
   it.each([undefined, "", "   "])("returns null for DSN %p", (dsn) => {
@@ -27,9 +36,15 @@ describe("resolveSentryConfig (AC-1 default-inert)", () => {
       resolveSentryConfig({
         SENTRY_DSN: `  ${VALID_DSN}  `,
         SENTRY_ENVIRONMENT: "pilot",
-        SENTRY_RELEASE: "abc1234",
+        SENTRY_RELEASE: SHA12,
       }),
-    ).toEqual({ dsn: VALID_DSN, environment: "pilot", release: "abc1234" });
+    ).toEqual({ dsn: VALID_DSN, environment: "pilot", release: SHA12 });
+  });
+
+  it("drops a release that is not a SHA12 (OBS-1 §1: release = SHA12)", () => {
+    expect(
+      resolveSentryConfig({ SENTRY_DSN: VALID_DSN, SENTRY_RELEASE: "abc1234" }),
+    ).toEqual({ dsn: VALID_DSN, environment: "unknown" });
   });
 
   it("falls back to DEPLOYMENT_ENVIRONMENT then 'unknown'; release stays unset", () => {
@@ -47,7 +62,7 @@ describe("initSentry (AC-1, AC-3)", () => {
   it("does not call the SDK when the DSN is empty", () => {
     const sentryInit = jest.fn();
     const warn = jest.fn();
-    expect(initSentry({}, { sentryInit, warn })).toBe("disabled");
+    expect(initSentry({}, { sentryInit, warn, service: SERVICE })).toBe("disabled");
     expect(sentryInit).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
   });
@@ -55,7 +70,7 @@ describe("initSentry (AC-1, AC-3)", () => {
   it("warns once, never echoing the DSN, for a malformed DSN, and does not throw", () => {
     const sentryInit = jest.fn();
     const warn = jest.fn();
-    const result = initSentry({ SENTRY_DSN: "garbage-dsn-secret" }, { sentryInit, warn });
+    const result = initSentry({ SENTRY_DSN: "garbage-dsn-secret" }, { sentryInit, warn, service: SERVICE });
     expect(result).toBe("disabled");
     expect(sentryInit).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledTimes(1);
@@ -65,7 +80,7 @@ describe("initSentry (AC-1, AC-3)", () => {
   it("initialises the SDK with safe, errors-only options", () => {
     const sentryInit = jest.fn();
     expect(
-      initSentry({ SENTRY_DSN: VALID_DSN, SENTRY_ENVIRONMENT: "pilot" }, { sentryInit, warn: jest.fn() }),
+      initSentry({ SENTRY_DSN: VALID_DSN, SENTRY_ENVIRONMENT: "pilot" }, { sentryInit, warn: jest.fn(), service: SERVICE }),
     ).toBe("initialized");
     expect(sentryInit).toHaveBeenCalledTimes(1);
     const opts = sentryInit.mock.calls[0]![0] as Record<string, unknown>;
@@ -81,8 +96,22 @@ describe("initSentry (AC-1, AC-3)", () => {
 
   it("passes release through when set", () => {
     const sentryInit = jest.fn();
-    initSentry({ SENTRY_DSN: VALID_DSN, SENTRY_RELEASE: "r1" }, { sentryInit, warn: jest.fn() });
-    expect((sentryInit.mock.calls[0]![0] as Record<string, unknown>)["release"]).toBe("r1");
+    initSentry({ SENTRY_DSN: VALID_DSN, SENTRY_RELEASE: SHA12 }, { sentryInit, warn: jest.fn(), service: SERVICE });
+    expect((sentryInit.mock.calls[0]![0] as Record<string, unknown>)["release"]).toBe(SHA12);
+  });
+
+  it("tags every event with the contract service and version (OBS-1 §1)", () => {
+    const sentryInit = jest.fn();
+    initSentry({ SENTRY_DSN: VALID_DSN, SENTRY_RELEASE: SHA12 }, { sentryInit, warn: jest.fn(), service: SERVICE });
+    const opts = sentryInit.mock.calls[0]![0] as Record<string, unknown>;
+    expect(opts["initialScope"]).toEqual({ tags: { service: SERVICE, version: SHA12 } });
+  });
+
+  it("omits the version tag when no SHA12 release is configured", () => {
+    const sentryInit = jest.fn();
+    initSentry({ SENTRY_DSN: VALID_DSN }, { sentryInit, warn: jest.fn(), service: "backend-worker" });
+    const opts = sentryInit.mock.calls[0]![0] as Record<string, unknown>;
+    expect(opts["initialScope"]).toEqual({ tags: { service: "backend-worker" } });
   });
 
   it("catches a throwing SDK init, warns once without the DSN, and continues", () => {
@@ -90,7 +119,7 @@ describe("initSentry (AC-1, AC-3)", () => {
       throw new Error(`boom ${VALID_DSN}`);
     });
     const warn = jest.fn();
-    expect(initSentry({ SENTRY_DSN: VALID_DSN }, { sentryInit, warn })).toBe("failed");
+    expect(initSentry({ SENTRY_DSN: VALID_DSN }, { sentryInit, warn, service: SERVICE })).toBe("failed");
     expect(warn).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(warn.mock.calls)).not.toContain(VALID_DSN);
   });
@@ -160,6 +189,53 @@ describe("scrubSentryEvent (AC-2)", () => {
   it("drops forbidden tag keys and non-string tag values, keeps safe ones", () => {
     const out = scrubSentryEvent(dirty)!;
     expect(out.tags).toEqual({ route: "/v1/sales/:id" });
+  });
+
+  const scrubTagsOf = (tags: Record<string, unknown>): Record<string, unknown> | undefined =>
+    scrubSentryEvent({ tags, exception: { values: [{ type: "Error", value: "x" }] } })!.tags;
+
+  it("keeps contract tags and well-formed correlation ids", () => {
+    const tags = {
+      service: SERVICE,
+      version: SHA12,
+      env: "staging",
+      method: "GET",
+      status: "500",
+      request_id: REQUEST_ID,
+      trace_id: TRACE_ID,
+    };
+    expect(scrubTagsOf(tags)).toEqual(tags);
+  });
+
+  it("drops tags outside the allowlist, even when their key is not a known secret (OBS-1 §1)", () => {
+    expect(
+      scrubTagsOf({
+        tenant_id: "t1",
+        store_id: "s1",
+        user_id: "u1",
+        actor_id: "a1",
+        device_id: "d1",
+        sale_id: "x1",
+        free_text: "anything",
+        transaction: "/v1/tenants/123/sales",
+      }),
+    ).toBeUndefined();
+  });
+
+  it.each([
+    ["request_id not a UUID", { request_id: "a@b.c" }],
+    ["request_id with a suffix", { request_id: `${REQUEST_ID}x` }],
+    ["trace_id not hex", { trace_id: "z".repeat(32) }],
+    ["trace_id wrong length", { trace_id: TRACE_ID.slice(1) }],
+    ["trace_id all zeros (invalid trace)", { trace_id: "0".repeat(32) }],
+  ])("drops a malformed correlation tag (%s)", (_label, tags) => {
+    expect(scrubTagsOf(tags)).toBeUndefined();
+  });
+
+  it("never allowlists a key from the redaction matrix", () => {
+    for (const key of SENTRY_ALLOWED_TAG_KEYS) {
+      expect(SENTRY_FORBIDDEN_KEYS.has(key)).toBe(false);
+    }
   });
 
   it("strips Postgres 'Key (col)=(value)' detail and truncates long messages", () => {
@@ -263,6 +339,42 @@ describe("scrubSentryEvent (AC-2)", () => {
     const copy = JSON.parse(JSON.stringify(dirty)) as SentryEventLike;
     scrubSentryEvent(dirty);
     expect(dirty).toEqual(copy);
+  });
+});
+
+describe("sentryCorrelationTags (RT-631: request_id + active trace_id)", () => {
+  it("returns only a well-formed request_id when no span is active", () => {
+    expect(sentryCorrelationTags(REQUEST_ID)).toEqual({ request_id: REQUEST_ID });
+    expect(sentryCorrelationTags("not-a-uuid")).toEqual({});
+    expect(sentryCorrelationTags(undefined)).toEqual({});
+  });
+
+  describe("with a registered tracer provider", () => {
+    let teardown: () => Promise<void>;
+
+    beforeEach(() => {
+      teardown = createTestTracerProvider().teardown;
+    });
+
+    afterEach(async () => {
+      await teardown();
+      context.disable();
+      trace.disable();
+    });
+
+    it("adds the active span's trace_id", () => {
+      const span = trace.getTracer("t").startSpan("http.server");
+      const tags = context.with(trace.setSpan(context.active(), span), () =>
+        sentryCorrelationTags(REQUEST_ID),
+      );
+      span.end();
+      expect(tags).toEqual({ request_id: REQUEST_ID, trace_id: span.spanContext().traceId });
+      expect(tags["trace_id"]).toMatch(/^[0-9a-f]{32}$/);
+    });
+
+    it("adds no trace_id outside any span", () => {
+      expect(sentryCorrelationTags(REQUEST_ID)).toEqual({ request_id: REQUEST_ID });
+    });
   });
 });
 

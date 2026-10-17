@@ -35,7 +35,7 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
 import { PgInstrumentation } from "@opentelemetry/instrumentation-pg";
 import { RedisInstrumentation } from "@opentelemetry/instrumentation-redis";
-import { NodeSDK } from "@opentelemetry/sdk-node";
+import { NodeSDK, resources } from "@opentelemetry/sdk-node";
 
 import {
   RedactingSpanExporter,
@@ -81,8 +81,8 @@ export interface MetricsOptions {
 export interface OtelOptions {
   /** Service name written into every span's `service.name` resource attr. */
   serviceName: string;
-  /** Service version (e.g., git SHA or semver). */
-  serviceVersion?: string;
+  /** Service version (the release SHA12); omitted from spans when unset. */
+  serviceVersion?: string | undefined;
   /**
    * Override the default OTLP/HTTP traces endpoint.
    * Defaults to `OTEL_EXPORTER_OTLP_ENDPOINT` env var, then the SDK default.
@@ -164,7 +164,11 @@ export function createOtelSdk(opts: OtelOptions): NodeSDK {
 
   return new NodeSDK({
     serviceName: opts.serviceName,
-    ...(opts.serviceVersion ? { serviceVersion: opts.serviceVersion } : {}),
+    // NodeSDK has no `serviceVersion` option; the version must be a resource
+    // attribute or it is silently dropped (RT-631).
+    ...(opts.serviceVersion
+      ? { resource: resources.resourceFromAttributes({ "service.version": opts.serviceVersion }) }
+      : {}),
     traceExporter,
     instrumentations,
     ...(metricReaders ? { metricReaders } : {}),

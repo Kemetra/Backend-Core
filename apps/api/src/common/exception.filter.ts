@@ -143,7 +143,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       const code = userCode ?? statusToCode(status);
       if (status >= 500) {
         recordHttp5xxError({ route, status: String(status) });
-        captureServerError(exception);
+        captureServerError(exception, requestId);
       } else if (status >= 400) {
         recordHttp4xxError({ route, status: String(status) });
       }
@@ -172,7 +172,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     // Unhandled — never leak internals to the client.
     // exception.message must not be copied into the response body.
     recordHttp5xxError({ route, status: "500" });
-    captureServerError(exception);
+    captureServerError(exception, requestId);
     const envelope = errorEnvelope({
       code: ErrorCodes.INTERNAL,
       message: "Internal Server Error",

@@ -14,9 +14,12 @@
  *    safe fields. Request data, users, extras, contexts and breadcrumbs are
  *    dropped wholesale. Redaction keys come from the logger's
  *    `DEFAULT_REDACT_PATHS` (redaction-matrix single source of truth), not a
- *    forked list.
+ *    forked list. Tags are allowlisted too (OBS-1 §1, RT-631): only contract
+ *    keys survive, and the correlation ids must match their exact format.
  */
 import { DEFAULT_REDACT_PATHS } from "../logger/pino";
+import { getActiveTraceId } from "./correlation";
+import { resolveReleaseVersion } from "./release-version";
 
 /** Max length of an exception message that leaves the process. */
 const MAX_MESSAGE_LENGTH = 300;
@@ -28,6 +31,37 @@ export const SENTRY_FORBIDDEN_KEYS: ReadonlySet<string> = new Set(
     return leaf.replace(/^\[?["']?/, "").replace(/["']?\]?$/, "").toLowerCase();
   }).filter((key) => key !== "*" && key.length > 0),
 );
+
+/**
+ * The only tag keys an event may carry (OBS-1 §1 and §2): the contract tags,
+ * the bounded extras, and the two correlation ids. Never tenant, store, user,
+ * device or sale ids, and no free text.
+ */
+export const SENTRY_ALLOWED_TAG_KEYS: ReadonlySet<string> = new Set([
+  "env",
+  "service",
+  "version",
+  "route",
+  "method",
+  "status",
+  "status_class",
+  "queue",
+  "job_name",
+  "error_class",
+  "outcome",
+  "request_id",
+  "trace_id",
+]);
+
+const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TRACE_ID_PATTERN = /^[0-9a-f]{32}$/;
+const INVALID_TRACE_ID = "0".repeat(32);
+
+/** Correlation ids are kept only in their exact format, never as free text. */
+const TAG_VALUE_CHECKS: Readonly<Record<string, (value: string) => boolean>> = {
+  request_id: (value) => REQUEST_ID_PATTERN.test(value),
+  trace_id: (value) => TRACE_ID_PATTERN.test(value) && value !== INVALID_TRACE_ID,
+};
 
 export interface SentryFrameLike {
   filename?: string;
@@ -193,14 +227,33 @@ function scrubException(entry: SentryExceptionValueLike): SentryExceptionValueLi
   return out;
 }
 
+function isAllowedTag(key: string, value: unknown): value is string {
+  if (typeof value !== "string" || !SENTRY_ALLOWED_TAG_KEYS.has(key)) return false;
+  return TAG_VALUE_CHECKS[key]?.(value) ?? true;
+}
+
 function scrubTags(tags: Record<string, unknown> | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(tags ?? {})) {
-    if (typeof value === "string" && !SENTRY_FORBIDDEN_KEYS.has(key.toLowerCase())) {
-      out[key] = value;
-    }
+    if (isAllowedTag(key, value)) out[key] = value;
   }
   return out;
+}
+
+/**
+ * Correlation tags for one captured error (OBS-1 §2): the caller's
+ * `request_id` (when well-formed) and the active OTel `trace_id` (when a
+ * span is active). Read at the capture site, so they belong to the request
+ * that failed, then re-checked by the scrubber.
+ */
+export function sentryCorrelationTags(requestId: string | undefined): Record<string, string> {
+  const tags: Record<string, string> = {};
+  if (requestId !== undefined && isAllowedTag("request_id", requestId)) {
+    tags["request_id"] = requestId;
+  }
+  const traceId = getActiveTraceId();
+  if (traceId !== undefined) tags["trace_id"] = traceId;
+  return tags;
 }
 
 /**
@@ -253,7 +306,7 @@ function firstEnv(env: NodeJS.ProcessEnv, keys: readonly string[]): string | und
 export function resolveSentryConfig(env: NodeJS.ProcessEnv): SentryConfig | null {
   const dsn = firstEnv(env, ["SENTRY_DSN"]);
   if (!dsn || !isUsableDsn(dsn)) return null;
-  const release = firstEnv(env, ["SENTRY_RELEASE"]);
+  const release = resolveReleaseVersion(env);
   return {
     dsn,
     environment: firstEnv(env, ["SENTRY_ENVIRONMENT", "DEPLOYMENT_ENVIRONMENT"]) ?? "unknown",
@@ -268,11 +321,16 @@ export interface SentryInitDeps {
   sentryInit: (options: Record<string, unknown>) => unknown;
   /** One-line diagnostics; must never receive the DSN. */
   warn: (message: string) => void;
+  /** Contract `service` tag (OBS-1 §1): `backend-api` or `backend-worker`. */
+  service: string;
 }
 
-function buildInitOptions(config: SentryConfig): Record<string, unknown> {
+function buildInitOptions(config: SentryConfig, service: string): Record<string, unknown> {
+  const tags: Record<string, string> = { service };
+  if (config.release) tags["version"] = config.release;
   return {
     ...config,
+    initialScope: { tags },
     // Errors only. Traces/metrics are exported by the OpenTelemetry layer, so
     // the SDK must not set up its own OTel provider (it would fight NodeSDK)
     // nor rewrite modules at load time for span/breadcrumb integrations.
@@ -298,7 +356,7 @@ export function initSentry(env: NodeJS.ProcessEnv, deps: SentryInitDeps): Sentry
   }
 
   try {
-    deps.sentryInit(buildInitOptions(config));
+    deps.sentryInit(buildInitOptions(config, deps.service));
     return "initialized";
   } catch {
     deps.warn("sentry disabled: SDK initialisation failed");
