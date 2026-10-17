@@ -14,20 +14,19 @@ import type { InProgressMarker } from "../../src/idempotency/in-progress-marker"
 
 class FakeRedis {
   private readonly store = new Map<string, { value: string; expiresAt: number }>();
-  async get(key: string): Promise<string | null> {
+  get(key: string): Promise<string | null> {
     const e = this.store.get(key);
-    if (!e || Date.now() > e.expiresAt) return null;
-    return e.value;
+    return Promise.resolve(!e || Date.now() > e.expiresAt ? null : e.value);
   }
-  async set(key: string, value: string, options: { px: number }): Promise<unknown> {
+  set(key: string, value: string, options: { px: number }): Promise<unknown> {
     this.store.set(key, { value, expiresAt: Date.now() + options.px });
-    return "OK";
+    return Promise.resolve("OK");
   }
 }
 
 class FakeMarker {
-  async trySet(): Promise<boolean> {
-    return true;
+  trySet(): Promise<boolean> {
+    return Promise.resolve(true);
   }
   async del(): Promise<void> {
     /* no-op */
@@ -39,9 +38,7 @@ export function idempotencyProviders(): Provider[] {
     redis: new FakeRedis(),
     pgWriter: { async insert() {} },
     pgReader: {
-      async find() {
-        return null;
-      },
+      find: () => Promise.resolve(null),
     },
     defaultTtlMs: 72 * 60 * 60 * 1000,
   });

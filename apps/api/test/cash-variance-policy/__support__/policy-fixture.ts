@@ -95,13 +95,17 @@ async function seedDevices(admin: Pool): Promise<void> {
     { id: DEV_Y, tenantId: TENANT_A, storeId: STORE_A_Y, token: TOKEN_Y },
     { id: DEV_B, tenantId: TENANT_B, storeId: STORE_B_X, token: TOKEN_B },
   ];
-  for (const d of devices) {
-    await admin.query(
-      `INSERT INTO devices (id, tenant_id, store_id, label, token_hash, expires_at)
-       VALUES ($1, $2, $3, 'RT-387 till', $4, now() + interval '30 days')`,
-      [d.id, d.tenantId, d.storeId, hashToken(d.token)],
-    );
-  }
+  await admin.query(
+    `INSERT INTO devices (id, tenant_id, store_id, label, token_hash, expires_at)
+     SELECT d.id, d.tenant_id, d.store_id, 'RT-387 till', d.token_hash, now() + interval '30 days'
+       FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::bytea[]) AS d(id, tenant_id, store_id, token_hash)`,
+    [
+      devices.map((d) => d.id),
+      devices.map((d) => d.tenantId),
+      devices.map((d) => d.storeId),
+      devices.map((d) => hashToken(d.token)),
+    ],
+  );
 }
 
 export async function seedPolicyFixture(env: PgTestEnv): Promise<void> {

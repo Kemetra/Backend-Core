@@ -63,9 +63,15 @@ export function deriveCloseApproval(input: {
  * `none`, a lower `limitAmount` is stricter than a higher one.
  */
 export function compareStrictness(a: PolicyValue, b: PolicyValue): number {
-  if (a.mode === "none" || b.mode === "none") return (a.mode === "limit" ? 1 : 0) - (b.mode === "limit" ? 1 : 0);
+  if (a.mode === "none" || b.mode === "none") return limitRank(a) - limitRank(b);
   const diff = scaled(b.limitAmount) - scaled(a.limitAmount);
-  return diff === 0n ? 0 : diff > 0n ? 1 : -1;
+  if (diff === 0n) return 0;
+  return diff > 0n ? 1 : -1;
+}
+
+/** `none` ranks below any `limit`. */
+function limitRank(value: PolicyValue): number {
+  return value.mode === "limit" ? 1 : 0;
 }
 
 /** True when two values are the same policy (numerically equal limit, same currency). */

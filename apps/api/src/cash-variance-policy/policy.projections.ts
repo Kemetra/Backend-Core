@@ -19,7 +19,6 @@ import { z } from "zod";
 import { canonicalJson } from "../idempotency/canonical-json";
 import { revisionState, type ResolvedPolicy, type RevisionState } from "./policy-resolution";
 import type { PolicyValue } from "./policy-value";
-import { PERMANENT_HORIZON_DAYS } from "./policy-value";
 import type { RevisionKeyset, StoredRevision } from "./policy.repository";
 
 export interface RevisionBody {
@@ -112,7 +111,7 @@ export function toActiveOverride(revision: StoredRevision & { readonly value: Po
   };
 }
 
-export const HORIZON_DAYS = PERMANENT_HORIZON_DAYS;
+export { PERMANENT_HORIZON_DAYS as HORIZON_DAYS } from "./policy-value";
 
 /**
  * The strong ETag of a resolved policy: the quoted lowercase hex SHA-256 of
