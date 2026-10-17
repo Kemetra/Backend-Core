@@ -171,10 +171,7 @@ describe("devices contract — operations", () => {
     const operation = contract.operation(method, path);
     expect(operation["operationId"]).toBe(operationId);
     expect(operation["x-runtime-status"]).toBeUndefined();
-    // RT-368: consoleListDevices carries a note on its default change until the
-    // RT-368 runtime ships the filter (the runtime PR removes it).
-    if (operationId === "consoleListDevices") expect(String(operation["x-runtime-note"])).toMatch(/RT-368/);
-    else expect(operation["x-runtime-note"]).toBeUndefined();
+    expect(operation["x-runtime-note"]).toBeUndefined();
     expect(contract.foreignOperationIds.has(operationId)).toBe(false);
   });
 
