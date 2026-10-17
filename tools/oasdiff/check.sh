@@ -14,6 +14,8 @@
 # (relative to <base-ref>) are honoured. Lines already on the base are inherited
 # acknowledgements for changes that have merged; they cannot match again and are
 # dropped, so a suppression never outlives the PR that introduced it.
+#
+# Each added line is also checked by consumer-impact.mjs (RT-674, report mode).
 set -euo pipefail
 
 BASE_REF="${1:?usage: tools/oasdiff/check.sh <base-ref>}"
@@ -60,6 +62,16 @@ fi
 stale=$(grep -cxF -f "$WORK/base-ignore.txt" "$WORK/head-ignore.txt" 2>/dev/null || true)
 if [[ "${stale:-0}" -gt 0 ]]; then
   echo "Note: $stale inherited entr(y/ies) in breaking-ignore.txt are no longer applied; remove them."
+fi
+
+# Consumer impact of the new acknowledgements (RT-674): each line must carry a
+# `consumer:<NAME>` tag naming the consumers that pin the affected path.
+# CONSUMER_IMPACT_MODE=report (default) only warns, and a crash of the script can
+# never fail this gate; enforce (RT-680) propagates the exit code.
+if [[ "${CONSUMER_IMPACT_MODE:-report}" == "enforce" ]]; then
+  node "$CFG/consumer-impact.mjs" "$WORK/ignore.txt"
+else
+  node "$CFG/consumer-impact.mjs" "$WORK/ignore.txt" || echo "::warning::consumer-impact errored"
 fi
 
 format=text
