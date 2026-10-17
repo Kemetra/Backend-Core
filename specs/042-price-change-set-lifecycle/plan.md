@@ -67,10 +67,12 @@ Rules:
 
   Publish repeats the check under the publish lock. This is how a change set never publishes on top of a timeline it has
   not analyzed (525, 519), without one publish discarding every unrelated approval in flight.
-- **Store lifecycle also makes a set stale (Q-B8).** Creating, activating, deactivating or retiring a Store produces no
+- **Store lifecycle also makes a set stale (Q-B8).** Creating, activating, deactivating or retiring a Store, or changing its time zone, produces no
   pricing revision, yet it changes which Stores a Book-scope or Zone-scope line reaches (a new Store with no explicit
   membership falls back to the default Zone). Validation therefore stores a **`targetStoreSetHash`**: a hash of the
-  sorted Store ids each line's scope reaches over its interval, and it is part of `previewHash`. `submit`, `approve`
+  sorted `(store_id, timezone)` pairs each line's scope reaches over its interval, and it is part of `previewHash`.
+  Because the time zone is hashed, a Store time-zone change (spec 038) also changes the hash: it moves `store_local`
+  activation instants that the approver saw in the preview. `submit`, `approve`
   and `publish` (the last under the publish lock) recompute the target Store set. If it differs → `409 stale_validation`,
   the set returns to `draft`, and it must be re-validated and **re-approved** against the new preview. Store-scope lines
   are affected only when their own Store is deactivated or retired. For the publish recheck to be atomic with Store
