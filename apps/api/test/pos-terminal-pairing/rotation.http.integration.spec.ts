@@ -16,6 +16,8 @@
  *   - revoked and retired devices are 401 (no grace);
  *   - replay is refused (409, no second rotation, no token), per device;
  *   - two concurrent rotates never leave two new tokens valid;
+ *   - a revoke or retire that commits while a rotate waits on the device
+ *     lifecycle lock wins: the rotate is 401 and changes nothing;
  *   - refusal order (401 before 400) and audit rows without secrets.
  *
  * "Grace allows only rotate": every other route ignores expiry until RT-370
@@ -30,6 +32,7 @@ import { generateRawToken, hashToken } from "@data-pulse-2/auth";
 import type { Pool } from "pg";
 import type request from "supertest";
 
+import { lockDeviceLifecycle } from "../../src/devices/device-lifecycle-lock";
 import { DeviceRepository } from "../../src/pos-operators/device.repository";
 import { DeviceRotationModule } from "../../src/pos-terminal-pairing/device-rotation.module";
 import { idempotencyProviders } from "../_helpers/idempotency-providers";
@@ -50,9 +53,25 @@ const D_REPLAY = id("0007");
 const D_OTHER = id("0008");
 const D_RACE = id("0009");
 const D_ORDER = id("000a");
+/** Revoked / retired while a rotate waits on its lifecycle lock. */
+const D_RACE_REVOKE = id("000b");
+const D_RACE_RETIRE = id("000c");
 
 const TOKENS: Record<string, string> = Object.fromEntries(
-  [D_MAIN, D_WINDOW, D_GRACE, D_LAPSED, D_REVOKED, D_RETIRED, D_REPLAY, D_OTHER, D_RACE, D_ORDER].map((d) => [
+  [
+    D_MAIN,
+    D_WINDOW,
+    D_GRACE,
+    D_LAPSED,
+    D_REVOKED,
+    D_RETIRED,
+    D_REPLAY,
+    D_OTHER,
+    D_RACE,
+    D_ORDER,
+    D_RACE_REVOKE,
+    D_RACE_RETIRE,
+  ].map((d) => [
     d,
     generateRawToken(),
   ]),
@@ -75,6 +94,8 @@ async function seed(admin: Pool): Promise<void> {
     [D_OTHER, "now() + interval '30 days'"],
     [D_RACE, "now() + interval '30 days'"],
     [D_ORDER, "now() + interval '30 days'"],
+    [D_RACE_REVOKE, "now() + interval '30 days'"],
+    [D_RACE_RETIRE, "now() + interval '30 days'"],
   ];
   for (const [deviceId, expiresSql] of rows) {
     await admin.query(
@@ -362,16 +383,85 @@ describe("posRotateTerminalToken — idempotency and refusal order", () => {
 // 6. Concurrency: two rotates at once never leave two new tokens valid
 // ===========================================================================
 describe("posRotateTerminalToken — concurrent rotates", () => {
-  it("both answer, but only the later new token and the presented one authenticate", async () => {
+  it("both answer 200 (the second through the previous-token branch); only the later new token and the presented one authenticate", async () => {
     if (skip()) return;
     const [a, b] = await Promise.all([rotate(TOKENS[D_RACE]!), rotate(TOKENS[D_RACE]!)]);
-    const ok = [a, b].filter((r) => r.status === 200).map((r) => (r.body as Rotated).device_token);
-    secrets.push(...ok);
-    expect(ok.length).toBeGreaterThanOrEqual(1);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    const tokens = [a, b].map((r) => (r.body as Rotated).device_token);
+    secrets.push(...tokens);
     const live = [];
-    for (const token of ok) if ((await authenticates(token)) === D_RACE) live.push(token);
+    for (const token of tokens) if ((await authenticates(token)) === D_RACE) live.push(token);
     expect(live).toHaveLength(1);
     expect(await authenticates(TOKENS[D_RACE]!)).toBe(D_RACE);
+
+    // The first took the current-token branch, the second the previous-token
+    // branch, which kept the first one's window: it was never extended.
+    const rotated = await audits("pos.device.rotated", D_RACE);
+    expect(rotated.map((r) => r.metadata["credential"])).toEqual(["current", "previous"]);
+    const row = await deviceRow(D_RACE);
+    expect(row.previous_token_hash?.equals(hashToken(TOKENS[D_RACE]!))).toBe(true);
+    const windows = rotated.map((r) => new Date(String(r.metadata["previous_valid_until"])).getTime());
+    expect(windows[1]).toBe(windows[0]);
+    expect(row.previous_valid_until?.getTime()).toBe(windows[0]);
+  });
+});
+
+// ===========================================================================
+// 6b. Rotate racing a revoke / retire on the device lifecycle lock
+// ===========================================================================
+describe("posRotateTerminalToken — revoke or retire committed while a rotate waits", () => {
+  /** Resolves once a backend is waiting on an advisory lock. */
+  async function untilAdvisoryWaiter(admin: Pool): Promise<void> {
+    for (let i = 0; i < 200; i += 1) {
+      const r = await admin.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+      );
+      if (r.rows[0]!.n > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error("the rotate never waited on the device lifecycle lock");
+  }
+
+  it.each([
+    [
+      "revoke",
+      D_RACE_REVOKE,
+      "revoked",
+      `UPDATE devices SET revoked_at = now(), revoke_reason = 'lost' WHERE id = $1`,
+    ],
+    [
+      "retire",
+      D_RACE_RETIRE,
+      "retired",
+      `UPDATE devices SET revoked_at = now(), revoke_reason = 'retired', retired_at = now(), retire_reason = 'EOL'
+        WHERE id = $1`,
+    ],
+  ])("a %s that commits first wins: 401, one %s row, the hash unchanged", async (_action, deviceId, reason, sql) => {
+    if (skip()) return;
+    const admin = h.env().admin;
+    const before = await deviceRow(deviceId);
+    const holder = await admin.connect();
+    let pending: Promise<request.Response> | undefined;
+    try {
+      await holder.query("BEGIN");
+      await lockDeviceLifecycle(holder, { tenantId: TENANT_A, deviceId });
+      // The guard's unlocked read sees an active device; the service then waits on the lock.
+      pending = rotate(TOKENS[deviceId]!).then((res) => res);
+      await untilAdvisoryWaiter(admin);
+      await holder.query(sql, [deviceId]);
+      await holder.query("COMMIT");
+    } catch (err) {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      throw err;
+    } finally {
+      holder.release();
+    }
+
+    expectRefusal(await pending, 401, "unauthorized");
+    expect((await deviceRow(deviceId)).token_hash.equals(before.token_hash)).toBe(true);
+    expect(await audits("pos.device.rotated", deviceId)).toHaveLength(0);
+    const rejected = await audits("pos.device.rotation_rejected", deviceId);
+    expect(rejected.map((r) => r.metadata)).toEqual([{ reason }]);
   });
 });
 
