@@ -37,12 +37,17 @@ const SENTRY_CLIENT = "backend-core-console-tunnel/1.0";
 interface ForwardTarget {
   readonly url: string;
   readonly auth: string;
+  /** The server's Sentry environment, served by the config read and stamped on events. */
+  readonly environment: string;
 }
+
+/** `ConsoleTelemetryConfig.environment` is at most 64 characters. */
+const MAX_ENVIRONMENT_LENGTH = 64;
 
 type WarnLogger = Pick<Logger, "warn">;
 
 /** Envelope endpoint and auth header from a DSN `scheme://key@host[/prefix]/project`. */
-function targetFromDsn(dsn: string): ForwardTarget {
+function targetFromDsn(dsn: string, environment: string): ForwardTarget {
   const url = new URL(dsn);
   // `resolveSentryConfig` already checked the last segment is a numeric id.
   const segments = url.pathname.split("/");
@@ -52,6 +57,7 @@ function targetFromDsn(dsn: string): ForwardTarget {
   return {
     url: `${url.protocol}//${url.host}${prefix}/api/${projectId}/envelope/`,
     auth: `Sentry sentry_version=7, sentry_key=${key}, sentry_client=${SENTRY_CLIENT}`,
+    environment: environment.slice(0, MAX_ENVIRONMENT_LENGTH),
   };
 }
 
@@ -59,12 +65,18 @@ function targetFromDsn(dsn: string): ForwardTarget {
 export function resolveForwardTarget(env: NodeJS.ProcessEnv, logger?: WarnLogger): ForwardTarget | null {
   const raw = env["CONSOLE_SENTRY_DSN"]?.trim();
   if (!raw) return null;
-  const config = resolveSentryConfig({ SENTRY_DSN: raw });
+  // The API's own Sentry environment (SENTRY_ENVIRONMENT, else
+  // DEPLOYMENT_ENVIRONMENT, else "unknown"), with the Console DSN.
+  const config = resolveSentryConfig({
+    SENTRY_DSN: raw,
+    SENTRY_ENVIRONMENT: env["SENTRY_ENVIRONMENT"],
+    DEPLOYMENT_ENVIRONMENT: env["DEPLOYMENT_ENVIRONMENT"],
+  });
   if (config === null) {
     logger?.warn("console telemetry disabled: CONSOLE_SENTRY_DSN is not a valid DSN");
     return null;
   }
-  return targetFromDsn(config.dsn);
+  return targetFromDsn(config.dsn, config.environment);
 }
 
 @Injectable()
@@ -79,8 +91,9 @@ export class ConsoleTelemetryForwarder {
     this.target = resolveForwardTarget(process.env, logger);
   }
 
-  get enabled(): boolean {
-    return this.target !== null;
+  /** The environment to serve and stamp, or `null` when the tunnel is inert. */
+  get environment(): string | null {
+    return this.target?.environment ?? null;
   }
 
   /** Starts the forward and returns at once. Never throws. */

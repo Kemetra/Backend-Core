@@ -411,7 +411,9 @@ its Sentry SDK posts to the api's same-origin tunnel
 `POST /api/v1/console/telemetry/envelope`. Set `CONSOLE_SENTRY_DSN` (the Console
 Sentry project) and recreate `api`. The tunnel forwards only the scrubbed error
 event, only to that DSN (the DSN in the envelope is ignored), with a 64 KiB cap,
-a trusted-`Origin` check and per-IP + global rate limits. Empty = inert.
+a trusted-`Origin` check and per-IP + global rate limits. The Console reads
+`GET /api/v1/console/telemetry/config` at runtime (`{ tunnel, environment }`, or
+204 when inert; never the DSN). Empty = inert.
 
 **Datadog (traces + metrics).** The Agent is an opt-in compose profile that only
 listens on the internal network (OTLP `datadog-agent:4318`) and scrapes the api's

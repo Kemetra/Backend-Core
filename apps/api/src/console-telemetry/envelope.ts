@@ -11,6 +11,9 @@
  * the shared allowlist scrubber (OBS-1 §3), under a header rebuilt from
  * `event_id` and `sent_at` only. The inbound `dsn`, `sdk` and `trace` header
  * fields never leave, so the destination comes from server config alone.
+ * The server then stamps the event's `environment` and rebuilds its `sdk`
+ * with `settings.infer_ip = "never"`, so Sentry never infers an IP address
+ * (the scrubber already dropped `user` and `request`).
  *
  * Errors carry a fixed message: `JSON.parse` messages quote the input, so
  * they are never passed on or logged.
@@ -22,6 +25,9 @@ export const MAX_ENVELOPE_ITEMS = 50;
 
 /** Longest `event_id` / `sent_at` header value kept (a UUID or ISO timestamp is far shorter). */
 const MAX_HEADER_VALUE_LENGTH = 64;
+/** An SDK name or version kept from the Console: a short plain token (anchored, linear). */
+const SDK_TOKEN = /^[\w.-]{1,64}$/;
+const DEFAULT_SDK = { name: "backend-core.console-tunnel", version: "1.0.0" } as const;
 const NEWLINE = 0x0a;
 
 export class EnvelopeMalformedError extends Error {
@@ -120,6 +126,21 @@ function shortString(value: unknown): string | undefined {
   return typeof value === "string" && value.length <= MAX_HEADER_VALUE_LENGTH ? value : undefined;
 }
 
+function isSdkToken(value: unknown): value is string {
+  return typeof value === "string" && SDK_TOKEN.test(value);
+}
+
+/** `{ name, version, settings: { infer_ip: "never" } }`; anything else the SDK sent is dropped. */
+function rebuildSdk(inbound: unknown): JsonObject {
+  const sdk = isJsonObject(inbound) ? inbound : {};
+  const keep = isSdkToken(sdk["name"]) && isSdkToken(sdk["version"]);
+  return {
+    name: keep ? sdk["name"] : DEFAULT_SDK.name,
+    version: keep ? sdk["version"] : DEFAULT_SDK.version,
+    settings: { infer_ip: "never" },
+  };
+}
+
 function rebuildHeader(inbound: JsonObject, event: SentryEventLike): JsonObject {
   const out: JsonObject = {};
   const eventId = shortString(event.event_id);
@@ -131,18 +152,21 @@ function rebuildHeader(inbound: JsonObject, event: SentryEventLike): JsonObject 
 
 /**
  * Parses an inbound envelope and returns the one to forward, or `null` when
- * nothing survives (no error event, or the scrubber dropped it). Throws
+ * nothing survives (no error event, or the scrubber dropped it). `environment`
+ * is the server's Sentry environment, stamped over the Console's. Throws
  * {@link EnvelopeMalformedError} on a malformed envelope.
  */
-export function buildForwardEnvelope(body: Buffer): Buffer | null {
+export function buildForwardEnvelope(body: Buffer, environment: string): Buffer | null {
   const { header, items } = parseEnvelope(body);
   const eventItem = items.find((item) => item.type === "event");
   if (eventItem === undefined) return null;
 
-  const scrubbed = scrubSentryEvent(parseObject(eventItem.payload) as SentryEventLike);
+  const inbound = parseObject(eventItem.payload);
+  const scrubbed = scrubSentryEvent(inbound as SentryEventLike);
   if (scrubbed === null) return null;
 
-  const payload = Buffer.from(JSON.stringify(scrubbed), "utf8");
+  const event = { ...scrubbed, environment, sdk: rebuildSdk(inbound["sdk"]) };
+  const payload = Buffer.from(JSON.stringify(event), "utf8");
   return Buffer.concat([
     Buffer.from(`${JSON.stringify(rebuildHeader(header, scrubbed))}\n`, "utf8"),
     Buffer.from(`${JSON.stringify({ type: "event", length: payload.length })}\n`, "utf8"),

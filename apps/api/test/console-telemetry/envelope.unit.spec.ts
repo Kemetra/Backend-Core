@@ -68,6 +68,11 @@ function decode(out: Buffer): { header: Record<string, unknown>; itemHeader: Rec
 }
 
 const FOREIGN_DSN = "https://otherkey@o999.ingest.us.sentry.io/4242";
+const SERVER_ENV = "lab";
+
+function build(body: Buffer): Buffer | null {
+  return buildForwardEnvelope(body, SERVER_ENV);
+}
 
 describe("buildForwardEnvelope", () => {
   it("rebuilds the header without the inbound dsn, sdk or trace context", () => {
@@ -82,14 +87,14 @@ describe("buildForwardEnvelope", () => {
       [eventItem(errorEvent())],
     );
 
-    const { header } = decode(buildForwardEnvelope(body)!);
+    const { header } = decode(build(body)!);
 
     expect(header).toEqual({ event_id: EVENT_ID, sent_at: "2026-10-17T10:00:00.000Z" });
     expect(JSON.stringify(header)).not.toContain("otherkey");
   });
 
   it("applies the shared allowlist scrubber to the event", () => {
-    const { event, itemHeader } = decode(buildForwardEnvelope(envelope({ event_id: EVENT_ID }, [eventItem(errorEvent())]))!);
+    const { event, itemHeader } = decode(build(envelope({ event_id: EVENT_ID }, [eventItem(errorEvent())]))!);
 
     for (const dropped of ["request", "user", "extra", "contexts", "breadcrumbs"]) {
       expect(event).not.toHaveProperty(dropped);
@@ -99,6 +104,39 @@ describe("buildForwardEnvelope", () => {
     expect(value.value).toBe("failed for [email] at https://lab.example/x");
     expect(value.stacktrace.frames).toEqual([{ filename: "app.js", lineno: 3 }]);
     expect(itemHeader).toEqual({ type: "event", length: Buffer.byteLength(JSON.stringify(event)) });
+  });
+
+  it("stamps the server environment over the Console's", () => {
+    const { event } = decode(build(envelope({}, [eventItem(errorEvent({ environment: "spoofed-prod" }))]))!);
+    expect(event["environment"]).toBe(SERVER_ENV);
+  });
+
+  it("rebuilds sdk with infer_ip never, keeping only a short plain name and version", () => {
+    const inbound = { name: "sentry.javascript.react", version: "11.0.0", integrations: ["x"], packages: [{ name: "p" }] };
+    const kept = decode(build(envelope({}, [eventItem(errorEvent({ sdk: inbound }))]))!).event;
+    expect(kept["sdk"]).toEqual({
+      name: "sentry.javascript.react",
+      version: "11.0.0",
+      settings: { infer_ip: "never" },
+    });
+
+    const odd = { name: "owner@example.com", version: "x".repeat(100) };
+    const replaced = decode(build(envelope({}, [eventItem(errorEvent({ sdk: odd }))]))!).event;
+    expect(replaced["sdk"]).toEqual({
+      name: "backend-core.console-tunnel",
+      version: "1.0.0",
+      settings: { infer_ip: "never" },
+    });
+    const missing = decode(build(envelope({}, [eventItem(errorEvent())]))!).event;
+    expect((missing["sdk"] as { settings: unknown }).settings).toEqual({ infer_ip: "never" });
+  });
+
+  it("drops user and IP data the envelope carries", () => {
+    const out = build(envelope({}, [eventItem(errorEvent({ user: { ip_address: "{{auto}}", id: "u1" } }))]))!;
+    const { event } = decode(out);
+    expect(event).not.toHaveProperty("user");
+    expect(out.toString("utf8")).not.toContain("{{auto}}");
+    expect(out.toString("utf8")).not.toContain("10.0.0.1");
   });
 
   it("forwards only the first event and drops every other item type", () => {
@@ -112,7 +150,7 @@ describe("buildForwardEnvelope", () => {
       { header: { type: "client_report" }, payload: JSON.stringify({ discarded_events: [] }) },
     ]);
 
-    const { event } = decode(buildForwardEnvelope(body)!);
+    const { event } = decode(build(body)!);
 
     expect(event["event_id"]).toBe(EVENT_ID);
   });
@@ -122,12 +160,12 @@ describe("buildForwardEnvelope", () => {
       { header: { type: "session" }, payload: JSON.stringify({ sid: "s" }) },
       { header: { type: "replay_event" }, payload: JSON.stringify({ replay_id: "r" }) },
     ]);
-    expect(buildForwardEnvelope(body)).toBeNull();
+    expect(build(body)).toBeNull();
   });
 
   it("returns null when the scrubber drops the event (no exception)", () => {
     const body = envelope({}, [eventItem({ event_id: EVENT_ID, message: "hello owner@example.com" })]);
-    expect(buildForwardEnvelope(body)).toBeNull();
+    expect(build(body)).toBeNull();
   });
 
   it("reads a length-delimited multibyte payload by bytes", () => {
@@ -141,7 +179,7 @@ describe("buildForwardEnvelope", () => {
       { header: { type: "event", length: Buffer.byteLength(payload) }, payload },
     ]);
 
-    const decoded = decode(buildForwardEnvelope(body)!);
+    const decoded = decode(build(body)!);
 
     const values = (decoded.event["exception"] as { values: Array<{ value: string }> }).values;
     expect(values[0]!.value).toBe("فشل التحميل — ✓ émoji 😀");
@@ -150,8 +188,8 @@ describe("buildForwardEnvelope", () => {
 
   it("accepts a newline-delimited event without length and a missing trailing newline", () => {
     const body = Buffer.from(`{}\n{"type":"event"}\n${JSON.stringify(errorEvent())}`);
-    expect(buildForwardEnvelope(body)).not.toBeNull();
-    expect(buildForwardEnvelope(envelope({}, [eventItem(errorEvent(), false)]))).not.toBeNull();
+    expect(build(body)).not.toBeNull();
+    expect(build(envelope({}, [eventItem(errorEvent(), false)]))).not.toBeNull();
   });
 
   it.each([
@@ -167,7 +205,7 @@ describe("buildForwardEnvelope", () => {
     ["a non-JSON event payload", Buffer.from('{}\n{"type":"event"}\n{not json\n')],
     ["an array event payload", Buffer.from('{}\n{"type":"event"}\n[1]\n')],
   ])("rejects %s as malformed", (_name, body) => {
-    expect(() => buildForwardEnvelope(body)).toThrow(EnvelopeMalformedError);
+    expect(() => build(body)).toThrow(EnvelopeMalformedError);
   });
 
   it("rejects more than MAX_ENVELOPE_ITEMS items", () => {
@@ -175,13 +213,13 @@ describe("buildForwardEnvelope", () => {
       header: { type: "client_report" },
       payload: "{}",
     }));
-    expect(() => buildForwardEnvelope(envelope({}, items))).toThrow(EnvelopeMalformedError);
+    expect(() => build(envelope({}, items))).toThrow(EnvelopeMalformedError);
   });
 
   it("never quotes the input in the error message", () => {
     const secret = "owner@example.com eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig";
     try {
-      buildForwardEnvelope(Buffer.from(`{"a":"${secret}"\n`));
+      build(Buffer.from(`{"a":"${secret}"\n`));
       throw new Error("expected a throw");
     } catch (err) {
       expect(err).toBeInstanceOf(EnvelopeMalformedError);

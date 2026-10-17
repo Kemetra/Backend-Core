@@ -126,6 +126,49 @@ afterAll(() => {
   else process.env["CONSOLE_SENTRY_DSN"] = ORIGINAL_DSN;
 });
 
+const CONFIG_PATH = "/api/v1/console/telemetry/config";
+const ENV_KEYS = ["SENTRY_ENVIRONMENT", "DEPLOYMENT_ENVIRONMENT"] as const;
+const ORIGINAL_ENVIRONMENT = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+
+afterEach(() => {
+  for (const [key, value] of Object.entries(ORIGINAL_ENVIRONMENT)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
+
+describe("console telemetry config", () => {
+  it("answers 204 no-store when the tunnel is inert", async () => {
+    harness = await boot();
+    const res = await request(harness.app.getHttpServer()).get(CONFIG_PATH);
+    expect(res.status).toBe(204);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.text).toBe("");
+  });
+
+  it("answers 200 no-store with the tunnel and the server environment, never the DSN", async () => {
+    process.env["SENTRY_ENVIRONMENT"] = "staging";
+    harness = await boot({ dsn: CONSOLE_DSN });
+    const res = await request(harness.app.getHttpServer()).get(CONFIG_PATH);
+    expect(res.status).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.body).toEqual({ tunnel: PATH, environment: "staging" });
+    expect(res.text).not.toContain("consolekey");
+    expect(res.text).not.toContain("sentry.io");
+  });
+
+  it("falls back to DEPLOYMENT_ENVIRONMENT, then unknown", async () => {
+    delete process.env["SENTRY_ENVIRONMENT"];
+    process.env["DEPLOYMENT_ENVIRONMENT"] = "lab";
+    harness = await boot({ dsn: CONSOLE_DSN });
+    expect((await request(harness.app.getHttpServer()).get(CONFIG_PATH)).body.environment).toBe("lab");
+    await harness.app.close();
+    delete process.env["DEPLOYMENT_ENVIRONMENT"];
+    harness = await boot({ dsn: CONSOLE_DSN });
+    expect((await request(harness.app.getHttpServer()).get(CONFIG_PATH)).body.environment).toBe("unknown");
+  });
+});
+
 describe("console telemetry tunnel — no DSN configured", () => {
   it.each([undefined, "", "   ", "not-a-dsn", "https://o1.ingest.de.sentry.io/1"])(
     "is inert (DSN %p): 204, nothing forwarded, no rate-limit hit",
@@ -169,6 +212,17 @@ describe("console telemetry tunnel — DSN configured", () => {
     expect(forwarded).not.toContain("s3cret");
     expect(forwarded).not.toContain("breadcrumbs");
     expect(forwarded).toContain("boom for [email]");
+    expect(forwarded).toContain('"infer_ip":"never"');
+  });
+
+  it("stamps the server environment on the forwarded event", async () => {
+    process.env["SENTRY_ENVIRONMENT"] = "staging";
+    harness = await boot({ dsn: CONSOLE_DSN });
+    await post(harness, errorEnvelope());
+    await settle();
+    const init = harness.fetchSpy.mock.calls[0]?.[1] as { body: Buffer };
+    const event = JSON.parse(Buffer.from(init.body).toString("utf8").split("\n")[2]!) as Record<string, unknown>;
+    expect(event["environment"]).toBe("staging");
   });
 
   it("does not pass inbound headers upstream", async () => {

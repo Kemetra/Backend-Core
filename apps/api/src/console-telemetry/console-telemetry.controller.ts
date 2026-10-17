@@ -1,5 +1,10 @@
 /**
- * Console Sentry tunnel (RT-632, OBS-3), contract `console-telemetry.openapi.yaml`.
+ * Console Sentry tunnel and its runtime config (RT-632, OBS-3), contract
+ * `console-telemetry.openapi.yaml`.
+ *
+ * `GET config` tells the immutable Console bundle whether to start its SDK:
+ * `{ tunnel, environment }`, or `204` when inert. It never returns the DSN;
+ * the Console uses a placeholder DSN, which the tunnel ignores.
  *
  * The Admin-Console runs under `connect-src 'self'`, so its Sentry SDK posts
  * envelopes here (`tunnel` option) and this route forwards the scrubbed error
@@ -19,6 +24,7 @@
 import {
   BadRequestException,
   Controller,
+  Get,
   HttpCode,
   HttpException,
   HttpStatus,
@@ -40,6 +46,15 @@ import {
 import { EnvelopeMalformedError, buildForwardEnvelope } from "./envelope";
 import { assertEnvelopeMediaType, readEnvelopeBody } from "./read-envelope-body";
 
+const ROUTE_PREFIX = "api/v1/console/telemetry";
+const TUNNEL_PATH = `/${ROUTE_PREFIX}/envelope`;
+
+/** Contract `ConsoleTelemetryConfig`. */
+export interface ConsoleTelemetryConfig {
+  tunnel: string;
+  environment: string;
+}
+
 /** The contract's 429 `RATE_LIMITED`, `Retry-After` clamped to [1, 600]. */
 function rateLimited(res: Response, resetMs: number): HttpException {
   const resetSeconds = resetMs < 0 ? 1 : Math.ceil(resetMs / 1000);
@@ -51,12 +66,23 @@ function rateLimited(res: Response, resetMs: number): HttpException {
 }
 
 @Public()
-@Controller("api/v1/console/telemetry")
+@Controller(ROUTE_PREFIX)
 export class ConsoleTelemetryController {
   constructor(
     private readonly forwarder: ConsoleTelemetryForwarder,
     private readonly rateLimiter: RateLimiter,
   ) {}
+
+  @Get("config")
+  config(@Res({ passthrough: true }) res: Response): ConsoleTelemetryConfig | undefined {
+    res.setHeader("Cache-Control", "no-store");
+    const environment = this.forwarder.environment;
+    if (environment === null) {
+      res.status(HttpStatus.NO_CONTENT);
+      return undefined;
+    }
+    return { tunnel: TUNNEL_PATH, environment };
+  }
 
   @Post("envelope")
   @HttpCode(HttpStatus.NO_CONTENT)
@@ -64,7 +90,8 @@ export class ConsoleTelemetryController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
-    if (!this.forwarder.enabled) return;
+    const environment = this.forwarder.environment;
+    if (environment === null) return;
     assertTrustedOrigin(req);
     if (!(await this.withinBudget(req, res))) return;
     assertEnvelopeMediaType(req);
@@ -72,7 +99,7 @@ export class ConsoleTelemetryController {
     const body = await readEnvelopeBody(req, MAX_ENVELOPE_BYTES);
     let envelope: Buffer | null;
     try {
-      envelope = buildForwardEnvelope(body);
+      envelope = buildForwardEnvelope(body, environment);
     } catch (err: unknown) {
       if (!(err instanceof EnvelopeMalformedError)) throw err;
       throw new BadRequestException({ code: "envelope_malformed", message: err.message });
