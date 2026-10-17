@@ -15,6 +15,7 @@ import "reflect-metadata";
 
 import type { Pool } from "pg";
 
+import { deviceActivity } from "../../src/pos-operators/device-activity";
 import { DeviceRepository } from "../../src/pos-operators/device.repository";
 
 describe("DeviceRepository.findActiveByAttestation — empty attestation guard", () => {
@@ -170,5 +171,114 @@ describe("DeviceRepository — the device lookup names only the 0040 columns it 
     expect(rest).toBeDefined();
     expect(selectList!.match(LIFECYCLE_COLUMNS)).toBeNull();
     expect([...new Set(rest!.match(LIFECYCLE_COLUMNS))].sort()).toEqual(OVERLAP_COLUMNS);
+  });
+});
+
+// ===========================================================================
+// RT-370 — the expiry flag and the activity write
+// ===========================================================================
+
+describe("DeviceRepository — DEVICE_TOKEN_EXPIRY_ENFORCED (RT-370)", () => {
+  const FLAG = "DEVICE_TOKEN_EXPIRY_ENFORCED";
+  const saved = process.env[FLAG];
+  afterEach(() => {
+    if (saved === undefined) delete process.env[FLAG];
+    else process.env[FLAG] = saved;
+  });
+
+  async function whereClause(lookup: (repo: DeviceRepository) => Promise<unknown>): Promise<string> {
+    const { pool, query } = lookupPool(false);
+    await lookup(new DeviceRepository(pool, pool));
+    const sql = (query.mock.calls as Array<[{ text?: string } | string]>)
+      .map(([config]) => (typeof config === "string" ? config : (config.text ?? "")))
+      .join("\n");
+    const [selectList, rest] = sql.split(/\bfrom "devices"/i);
+    expect(selectList!).not.toMatch(/expires_at/);
+    return rest!;
+  }
+
+  it.each([
+    ["findActiveByAttestation", (repo: DeviceRepository) => repo.findActiveByAttestation("raw-token")],
+    ["findActiveById", (repo: DeviceRepository) => repo.findActiveById(DEVICE_ID)],
+  ])("%s: flag off (unset) → the lookup does not read expires_at", async (_label, lookup) => {
+    delete process.env[FLAG];
+    expect(await whereClause(lookup)).not.toMatch(/expires_at/);
+  });
+
+  it.each([
+    ["findActiveByAttestation", (repo: DeviceRepository) => repo.findActiveByAttestation("raw-token")],
+    ["findActiveById", (repo: DeviceRepository) => repo.findActiveById(DEVICE_ID)],
+  ])("%s: flag on → the lookup requires expires_at > now() (database clock)", async (_label, lookup) => {
+    process.env[FLAG] = "true";
+    expect(await whereClause(lookup)).toMatch(/"devices"\."expires_at" > now\(\)/);
+  });
+
+  it("flag on: findForRotation (the rotate-only grace) still matches any expiry", async () => {
+    process.env[FLAG] = "true";
+    const query = jest.fn(async () => ({ rows: [] }));
+    const pool = { query } as unknown as Pool;
+    await new DeviceRepository(pool, pool).findForRotation("raw-token");
+    const [sql] = query.mock.calls[0] as unknown as [string];
+    expect(sql).not.toMatch(/expires_at\s*>/);
+  });
+});
+
+describe("DeviceRepository — activity write (RT-370)", () => {
+  beforeEach(() => deviceActivity.reset());
+  afterEach(async () => {
+    await deviceActivity.flush();
+    deviceActivity.reset();
+  });
+
+  const touched = (queries: string[]): number => queries.filter((q) => /\bupdate\s+devices\b/i.test(q)).length;
+
+  it("an authenticated device is recorded once, on the domain pool, however often it authenticates", async () => {
+    const domain = domainPool(ACTIVE);
+    const repo = new DeviceRepository(lookupPool(true).pool, domain.pool);
+    await repo.findActiveByAttestation("device-token");
+    await repo.findActiveByAttestation("device-token");
+    await repo.findActiveById(DEVICE_ID);
+    await deviceActivity.flush();
+    expect(touched(domain.queries)).toBe(1);
+  });
+
+  it("an unknown or revoked device, or one of an inactive tenant, is not recorded", async () => {
+    const none = domainPool(ACTIVE);
+    await new DeviceRepository(lookupPool(false).pool, none.pool).findActiveByAttestation("device-token");
+    const suspended = domainPool(SUSPENDED);
+    await new DeviceRepository(lookupPool(true).pool, suspended.pool).findActiveByAttestation("device-token");
+    await deviceActivity.flush();
+    expect(touched(none.queries)).toBe(0);
+    expect(touched(suspended.queries)).toBe(0);
+  });
+
+  it("a failing activity write does not change the lookup's result", async () => {
+    const lookup = lookupPool(true);
+    let calls = 0;
+    const domain = {
+      connect: jest.fn(async () => {
+        calls += 1;
+        // First connect: the tenant-status read succeeds; second: the activity write's connection fails.
+        if (calls > 1) throw new Error("connection refused");
+        return {
+          query: jest.fn(async (text: string) =>
+            /\bfrom\s+tenants\b/i.test(text) ? { rows: [ACTIVE] } : { rows: [] },
+          ),
+          release: jest.fn(),
+        };
+      }),
+    } as unknown as Pool;
+    const row = await new DeviceRepository(lookup.pool, domain).findActiveByAttestation("device-token");
+    expect(row?.id).toBe(DEVICE_ID);
+    await expect(deviceActivity.flush()).resolves.toBeUndefined();
+  });
+
+  it("recordActivity (the rotation guard's path) records through the same throttle", async () => {
+    const domain = domainPool(ACTIVE);
+    const repo = new DeviceRepository(lookupPool(true).pool, domain.pool);
+    repo.recordActivity({ id: DEVICE_ID, tenantId: TENANT_ID });
+    await repo.findActiveById(DEVICE_ID);
+    await deviceActivity.flush();
+    expect(touched(domain.queries)).toBe(1);
   });
 });

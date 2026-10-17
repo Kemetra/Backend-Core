@@ -1,9 +1,19 @@
 /**
- * tenant-status-device-auth.http.integration.spec.ts — RT-213.
+ * tenant-status-device-auth.http.integration.spec.ts — RT-213, RT-370.
  *
  * A POS device whose tenant is suspended, pending or soft-deleted must be
  * refused on every device route family with the SAME response a revoked
  * device gets today, so the refusal discloses nothing about the tenant.
+ * RT-370: so must an expired device while `DEVICE_TOKEN_EXPIRY_ENFORCED` is
+ * on; with it off (the default) an expired device keeps working everywhere.
+ * (Rotate inside the grace, with the flag on, is proven in
+ * `test/pos-terminal-pairing/rotation.http.integration.spec.ts`.)
+ *
+ * RT-370 activity (`devices.last_seen_at`): N requests inside 5 minutes
+ * write it once (a test-only trigger counts the writes), concurrent writers
+ * from separate processes still write once, a refused device is never
+ * recorded, and a write the domain role cannot make leaves the response
+ * unchanged.
  *
  * Real PostgreSQL (all migrations) and the real production modules, wired
  * like production: the pre-tenant lookup pool (AUTH_LOOKUP_POOL) is the
@@ -55,6 +65,7 @@ import { ZodValidationPipe } from "../../src/common/zod-validation.pipe";
 import { PosAuditEventsModule } from "../../src/pos-audit-events/pos-audit-events.module";
 import { CashierAdmissionsModule } from "../../src/pos-cashier-admissions/cashier-admissions.module";
 import { CLERK_VERIFIER, type ClerkVerifier } from "../../src/pos-operators/clerk-verifier";
+import { DeviceActivityRecorder, deviceActivity } from "../../src/pos-operators/device-activity";
 import { PosOperatorsModule } from "../../src/pos-operators/pos-operators.module";
 import {
   applyAllUpAndCreateAppRole,
@@ -202,9 +213,54 @@ async function revokeDevice(): Promise<void> {
 }
 
 async function restoreDevice(): Promise<void> {
-  await E().admin.query("UPDATE devices SET revoked_at = NULL WHERE id = $1", [
+  await E().admin.query(
+    "UPDATE devices SET revoked_at = NULL, expires_at = now() + interval '90 days' WHERE id = $1",
+    [TERMINAL.deviceId],
+  );
+}
+
+// RT-370 — device expiry and its enforcement flag.
+const EXPIRY_FLAG = "DEVICE_TOKEN_EXPIRY_ENFORCED";
+const savedExpiryFlag = process.env[EXPIRY_FLAG];
+
+function enforceExpiry(on: boolean): void {
+  if (on) process.env[EXPIRY_FLAG] = "true";
+  else if (savedExpiryFlag === undefined) delete process.env[EXPIRY_FLAG];
+  else process.env[EXPIRY_FLAG] = savedExpiryFlag;
+}
+
+async function expireDevice(): Promise<void> {
+  await E().admin.query("UPDATE devices SET expires_at = now() - interval '1 day' WHERE id = $1", [
     TERMINAL.deviceId,
   ]);
+}
+
+/** A state TERMINAL is put in before a test. */
+interface DeviceState {
+  readonly label: string;
+  readonly apply: () => Promise<void>;
+}
+
+/** States that must refuse TERMINAL exactly like a revoked device. */
+const REFUSAL_STATES: ReadonlyArray<DeviceState> = [
+  ...INACTIVE_STATES.map((state) => ({
+    label: `RT-213 — ${state.label} tenant`,
+    apply: () => setTenant(state),
+  })),
+  {
+    label: "RT-370 — expired device, DEVICE_TOKEN_EXPIRY_ENFORCED on",
+    apply: async () => {
+      enforceExpiry(true);
+      await expireDevice();
+    },
+  },
+];
+
+/** Undo every refusal state: tenant active, device unrevoked and unexpired, flag back to its default. */
+async function liftRefusal(): Promise<void> {
+  await restoreTenant();
+  await restoreDevice();
+  enforceExpiry(false);
 }
 
 // ---------------------------------------------------------------------------
@@ -455,6 +511,7 @@ beforeAll(async () => {
 }, 240_000);
 
 afterAll(async () => {
+  await deviceActivity.flush();
   if (app) await app.close().catch(() => undefined);
   if (env) await stopPgEnv(env);
 }, 60_000);
@@ -462,8 +519,11 @@ afterAll(async () => {
 
 afterEach(async () => {
   if (!env) return;
-  await restoreTenant();
-  await restoreDevice();
+  await liftRefusal();
+  // RT-370: no activity write outlives its test.
+  await deviceActivity.flush();
+  deviceActivity.reset();
+  await env.admin.query("DELETE FROM rt370_touch_log");
   // One live operator session / admission per user: start each test clean.
   await env.admin.query("DELETE FROM auth_tokens WHERE scope = 'pos_operator'");
   await env.admin.query("DELETE FROM cashier_admission_requests");
@@ -525,12 +585,43 @@ async function seed(e: PgTestEnv): Promise<void> {
       [t.deviceId, t.tenantId, t.storeId, hashToken(t.deviceToken), revoked ? new Date() : null],
     );
   }
+  // RT-370 (test only): count every write that moves a device's last_seen_at.
+  await a.query(`CREATE TABLE rt370_touch_log (device_id uuid NOT NULL)`);
+  await a.query(
+    `CREATE FUNCTION rt370_log_touch() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+     BEGIN
+       IF NEW.last_seen_at IS DISTINCT FROM OLD.last_seen_at THEN
+         INSERT INTO rt370_touch_log (device_id) VALUES (NEW.id);
+       END IF;
+       RETURN NEW;
+     END $$`,
+  );
+  await a.query(
+    `CREATE TRIGGER rt370_touch_log AFTER UPDATE ON devices FOR EACH ROW EXECUTE FUNCTION rt370_log_touch()`,
+  );
 }
 
 // ===========================================================================
 // Active tenant: every family still works
 // ===========================================================================
-describe("RT-213 — an active tenant's device still works", () => {
+/** States in which TERMINAL must keep working on every family. */
+const WORKING_STATES: ReadonlyArray<DeviceState> = [
+  { label: "RT-213 — an active tenant's device", apply: async () => undefined },
+  {
+    label: "RT-370 — an expired device, DEVICE_TOKEN_EXPIRY_ENFORCED off (the default)",
+    apply: expireDevice,
+  },
+  {
+    label: "RT-370 — an unexpired device, DEVICE_TOKEN_EXPIRY_ENFORCED on",
+    apply: async () => enforceExpiry(true),
+  },
+];
+
+describe.each(WORKING_STATES)("$label still works", (working) => {
+  beforeEach(async () => {
+    if (!skip()) await working.apply();
+  });
+
   it("cashier-admissions: admit → 200 admitted, roster → 200", async () => {
     if (skip()) return;
     const calls = admissionCalls(TERMINAL);
@@ -567,10 +658,10 @@ describe("RT-213 — an active tenant's device still works", () => {
 // ===========================================================================
 // Inactive tenant: every family refuses exactly like a revoked device
 // ===========================================================================
-describe.each(INACTIVE_STATES)("RT-213 — $label tenant: refused like a revoked device", (state) => {
+describe.each(REFUSAL_STATES)("$label: refused like a revoked device", (state) => {
   it("cashier-admissions: admit / roster / end", async () => {
     if (skip()) return;
-    await setTenant(state);
+    await state.apply();
     await expectFamilyRefused({
       refused: admissionCalls(TERMINAL),
       baseline: admissionCalls(REVOKED_TERMINAL),
@@ -579,7 +670,7 @@ describe.each(INACTIVE_STATES)("RT-213 — $label tenant: refused like a revoked
 
   it("read-down: snapshot / deltas", async () => {
     if (skip()) return;
-    await setTenant(state);
+    await state.apply();
     await expectFamilyRefused({
       refused: readDownCalls(TERMINAL),
       baseline: readDownCalls(REVOKED_TERMINAL),
@@ -588,7 +679,7 @@ describe.each(INACTIVE_STATES)("RT-213 — $label tenant: refused like a revoked
 
   it("pos-operators: sign-in", async () => {
     if (skip()) return;
-    await setTenant(state);
+    await state.apply();
     await expectFamilyRefused({
       refused: { signIn: signInCall(TERMINAL) },
       baseline: { signIn: signInCall(REVOKED_TERMINAL) },
@@ -597,7 +688,7 @@ describe.each(INACTIVE_STATES)("RT-213 — $label tenant: refused like a revoked
 
   it("audit-event sync", async () => {
     if (skip()) return;
-    await setTenant(state);
+    await state.apply();
     await expectFamilyRefused({
       refused: { sync: auditEventsCall({ terminal: TERMINAL }) },
       baseline: { sync: auditEventsCall({ terminal: REVOKED_TERMINAL }) },
@@ -612,10 +703,10 @@ describe.each(INACTIVE_STATES)("RT-213 — $label tenant: refused like a revoked
       read: { call: calls.read!, requestId: randomUUID() },
     };
 
-    await setTenant(state);
+    await state.apply();
     const refused = { capture: await run(probes.capture), read: await run(probes.read) };
 
-    await restoreTenant();
+    await liftRefusal();
     await revokeDevice();
     const revoked = { capture: await run(probes.capture), read: await run(probes.read) };
 
@@ -625,16 +716,132 @@ describe.each(INACTIVE_STATES)("RT-213 — $label tenant: refused like a revoked
 
   it("another tenant's device is unaffected", async () => {
     if (skip()) return;
-    await setTenant(state);
+    await state.apply();
     expect((await readDownCalls(CONTROL_TERMINAL).snapshot!(randomUUID())).status).toBe(200);
     expect((await admissionCalls(CONTROL_TERMINAL).roster!(randomUUID())).status).toBe(200);
   });
 
-  it("restoring the tenant re-admits the same device (the refusal is the live state)", async () => {
+  it("lifting the refusal re-admits the same device (the refusal is the live state)", async () => {
     if (skip()) return;
-    await setTenant(state);
+    await state.apply();
     expect((await readDownCalls(TERMINAL).snapshot!(randomUUID())).status).toBe(401);
-    await restoreTenant();
+    await liftRefusal();
     expect((await readDownCalls(TERMINAL).snapshot!(randomUUID())).status).toBe(200);
+  });
+});
+
+// ===========================================================================
+// RT-370 — device activity: devices.last_seen_at, at most once per 5 minutes
+// ===========================================================================
+async function touchCount(deviceId: Uuid): Promise<number> {
+  const r = await E().admin.query<{ n: string }>(
+    "SELECT count(*) AS n FROM rt370_touch_log WHERE device_id = $1",
+    [deviceId],
+  );
+  return Number(r.rows[0]!.n);
+}
+
+async function lastSeenAt(deviceId: Uuid): Promise<Date | null> {
+  const r = await E().admin.query<{ last_seen_at: Date | null }>(
+    "SELECT last_seen_at FROM devices WHERE id = $1",
+    [deviceId],
+  );
+  return r.rows[0]!.last_seen_at;
+}
+
+/** Move TERMINAL's last_seen_at back by `minutes` (the backdate itself is not counted). */
+async function backdateLastSeen(minutes: number): Promise<void> {
+  await E().admin.query(
+    "UPDATE devices SET last_seen_at = now() - make_interval(mins => $2) WHERE id = $1",
+    [TERMINAL.deviceId, minutes],
+  );
+  await E().admin.query("DELETE FROM rt370_touch_log");
+}
+
+describe("RT-370 — device activity (last_seen_at)", () => {
+  beforeEach(async () => {
+    if (skip()) return;
+    await E().admin.query("UPDATE devices SET last_seen_at = NULL");
+    await E().admin.query("DELETE FROM rt370_touch_log");
+    deviceActivity.reset();
+  });
+
+  it("N authenticated requests inside 5 minutes, across route families, write last_seen_at exactly once", async () => {
+    if (skip()) return;
+    const before = Date.now();
+    for (let i = 0; i < 4; i += 1) {
+      expect((await readDownCalls(TERMINAL).snapshot!(randomUUID())).status).toBe(200);
+      expect((await admissionCalls(TERMINAL).roster!(randomUUID())).status).toBe(200);
+    }
+    await deviceActivity.flush();
+    expect(await touchCount(TERMINAL.deviceId)).toBe(1);
+    expect((await lastSeenAt(TERMINAL.deviceId))!.getTime()).toBeGreaterThanOrEqual(before - 5_000);
+    // Only the device that called: the others stay never-seen.
+    expect(await lastSeenAt(CONTROL_TERMINAL.deviceId)).toBeNull();
+  });
+
+  it("another replica (no in-process mark) inside the 5 minutes writes nothing; after them it writes again", async () => {
+    if (skip()) return;
+    expect((await readDownCalls(TERMINAL).snapshot!(randomUUID())).status).toBe(200);
+    await deviceActivity.flush();
+    expect(await touchCount(TERMINAL.deviceId)).toBe(1);
+
+    deviceActivity.reset(); // as if a different API process served the next request
+    await backdateLastSeen(4);
+    expect((await readDownCalls(TERMINAL).snapshot!(randomUUID())).status).toBe(200);
+    await deviceActivity.flush();
+    expect(await touchCount(TERMINAL.deviceId)).toBe(0);
+
+    deviceActivity.reset();
+    await backdateLastSeen(6);
+    expect((await readDownCalls(TERMINAL).snapshot!(randomUUID())).status).toBe(200);
+    await deviceActivity.flush();
+    expect(await touchCount(TERMINAL.deviceId)).toBe(1);
+  });
+
+  it("concurrent writers from separate processes write once (conditional UPDATE, FORCE RLS, domain role)", async () => {
+    if (skip()) return;
+    const replicas = Array.from({ length: 6 }, () => new DeviceActivityRecorder());
+    for (const r of replicas) r.record(E().app, { id: TERMINAL.deviceId, tenantId: TERMINAL.tenantId });
+    await Promise.all(replicas.map((r) => r.flush()));
+    expect(await touchCount(TERMINAL.deviceId)).toBe(1);
+  });
+
+  it("the write runs in the device's own tenant: another tenant's context matches no row", async () => {
+    if (skip()) return;
+    const recorder = new DeviceActivityRecorder();
+    recorder.record(E().app, { id: TERMINAL.deviceId, tenantId: CONTROL.tenantId });
+    await recorder.flush();
+    expect(await touchCount(TERMINAL.deviceId)).toBe(0);
+  });
+
+  it("a revoked device, and an expired one with enforcement on, are refused and never recorded", async () => {
+    if (skip()) return;
+    expect((await readDownCalls(REVOKED_TERMINAL).snapshot!(randomUUID())).status).toBe(401);
+    enforceExpiry(true);
+    await expireDevice();
+    expect((await readDownCalls(TERMINAL).snapshot!(randomUUID())).status).toBe(401);
+    await deviceActivity.flush();
+    expect(await touchCount(REVOKED_TERMINAL.deviceId)).toBe(0);
+    expect(await touchCount(TERMINAL.deviceId)).toBe(0);
+  });
+
+  it("a write the domain role cannot make leaves the response unchanged", async () => {
+    if (skip()) return;
+    const expected = await readDownCalls(CONTROL_TERMINAL).snapshot!(randomUUID());
+    expect(expected.status).toBe(200);
+    await deviceActivity.flush();
+    deviceActivity.reset();
+    await E().admin.query("UPDATE devices SET last_seen_at = NULL");
+    await E().admin.query(`REVOKE UPDATE ON devices FROM app_test`);
+    try {
+      const res = await readDownCalls(CONTROL_TERMINAL).snapshot!(randomUUID());
+      expect(res.status).toBe(200);
+      expect(res.body.items).toEqual(expected.body.items);
+      await deviceActivity.flush();
+      expect(await lastSeenAt(CONTROL_TERMINAL.deviceId)).toBeNull();
+    } finally {
+      await E().admin.query(`GRANT UPDATE ON devices TO app_test`);
+    }
   });
 });
