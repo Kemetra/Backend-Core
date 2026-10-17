@@ -72,49 +72,84 @@ const SAFE_TOP_LEVEL = [
   "server_name",
 ] as const;
 
-const POSTGRES_KEY_DETAIL = /Key \([^)]*\)=\([^)]*\)/g;
-// URLs may carry userinfo or a query string (e.g. an ERPNext call that failed);
-// keep scheme + host + path, drop the rest. Runs before the email pass so
-// `user:pass@host` is not left half-masked.
-const URL_WITH_SECRETS = /\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@]*@)?([^\s/?#]+)([^\s?#]*)(?:[?#]\S*)?/gi;
-// Three base64url segments, header starting `eyJ` — a JWT (Clerk session/operator tokens).
-const JWT_LIKE = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g;
-const EMAIL_LIKE = /[^\s@()]+@[^\s@()]+\.[^\s@()]+/g;
+// Bounds regex work on untrusted input before any pattern runs.
+const MAX_SCAN_LENGTH = 2000;
+// `[^()]` (not `[^)]`) keeps each match attempt from rescanning past the next
+// `(`, so a string full of `Key (` stays linear.
+const POSTGRES_KEY_DETAIL = /Key \([^()]*\)=\([^()]*\)/g;
+const FRAME_KEYS = ["filename", "function", "lineno", "colno", "module", "in_app"] as const;
+const MECHANISM_KEYS = ["type", "handled"] as const;
 
-function sanitizeMessage(value: string): string {
-  const cleaned = value
-    .replace(POSTGRES_KEY_DETAIL, "Key (...)=(...)")
-    .replace(JWT_LIKE, "[jwt]")
-    .replace(URL_WITH_SECRETS, "$1$2$3")
-    .replace(EMAIL_LIKE, "[email]");
-  return cleaned.length > MAX_MESSAGE_LENGTH
-    ? `${cleaned.slice(0, MAX_MESSAGE_LENGTH - 3)}...`
-    : cleaned;
-}
-
-function scrubFrame(frame: SentryFrameLike): SentryFrameLike {
-  const out: SentryFrameLike = {};
-  if (frame.filename !== undefined) out.filename = frame.filename;
-  if (frame.function !== undefined) out.function = frame.function;
-  if (frame.lineno !== undefined) out.lineno = frame.lineno;
-  if (frame.colno !== undefined) out.colno = frame.colno;
-  if (frame.module !== undefined) out.module = frame.module;
-  if (frame.in_app !== undefined) out.in_app = frame.in_app;
+/** Copy only the listed keys whose value is defined. */
+function pickDefined<K extends string>(
+  source: Partial<Record<K, unknown>>,
+  keys: readonly K[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (source[key] !== undefined) out[key] = source[key];
+  }
   return out;
 }
 
-function scrubException(entry: SentryExceptionValueLike): SentryExceptionValueLike {
-  const out: SentryExceptionValueLike = {};
-  if (entry.type !== undefined) out.type = entry.type;
-  if (typeof entry.value === "string") out.value = sanitizeMessage(entry.value);
-  if (entry.mechanism !== undefined) {
-    out.mechanism = {
-      ...(entry.mechanism.type !== undefined ? { type: entry.mechanism.type } : {}),
-      ...(entry.mechanism.handled !== undefined ? { handled: entry.mechanism.handled } : {}),
-    };
+function parseUrl(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
   }
+}
+
+/** Keep scheme + host + path of a URL token; drop userinfo, query and fragment. */
+function stripUrlSecrets(token: string): string | null {
+  if (!token.includes("://")) return null;
+  const url = parseUrl(token);
+  return url ? `${url.protocol}//${url.host}${url.pathname}` : null;
+}
+
+function isJwtLike(token: string): boolean {
+  return token.startsWith("eyJ") && token.split(".").length >= 3;
+}
+
+function isEmailLike(token: string): boolean {
+  const at = token.indexOf("@");
+  return at > 0 && token.includes(".", at);
+}
+
+/**
+ * Mask one whitespace-delimited token: a JWT (Clerk session/operator tokens),
+ * a URL carrying userinfo or a query string (e.g. a failed ERPNext call), or an
+ * email. Token-wise checks avoid backtracking-heavy patterns on library input.
+ */
+function scrubToken(token: string): string {
+  if (isJwtLike(token)) return "[jwt]";
+  const url = stripUrlSecrets(token);
+  if (url !== null) return url;
+  return isEmailLike(token) ? "[email]" : token;
+}
+
+function truncate(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max - 3)}...` : value;
+}
+
+function sanitizeMessage(value: string): string {
+  const cleaned = value
+    .slice(0, MAX_SCAN_LENGTH)
+    .replace(POSTGRES_KEY_DETAIL, "Key (...)=(...)")
+    .split(/(\s+)/)
+    .map(scrubToken)
+    .join("");
+  return truncate(cleaned, MAX_MESSAGE_LENGTH);
+}
+
+function scrubException(entry: SentryExceptionValueLike): SentryExceptionValueLike {
+  const out: SentryExceptionValueLike = pickDefined(entry, ["type"]);
+  if (typeof entry.value === "string") out.value = sanitizeMessage(entry.value);
+  if (entry.mechanism !== undefined) out.mechanism = pickDefined(entry.mechanism, MECHANISM_KEYS);
   const frames = entry.stacktrace?.frames;
-  if (Array.isArray(frames)) out.stacktrace = { frames: frames.map(scrubFrame) };
+  if (Array.isArray(frames)) {
+    out.stacktrace = { frames: frames.map((frame) => pickDefined(frame, FRAME_KEYS)) };
+  }
   return out;
 }
 
@@ -136,11 +171,7 @@ export function scrubSentryEvent(event: SentryEventLike): SentryEventLike | null
   const values = event.exception?.values;
   if (!Array.isArray(values) || values.length === 0) return null;
 
-  const out: Record<string, unknown> = {};
-  for (const key of SAFE_TOP_LEVEL) {
-    const value = event[key];
-    if (value !== undefined) out[key] = value;
-  }
+  const out = pickDefined(event, SAFE_TOP_LEVEL);
   const tags = scrubTags(event.tags);
   if (Object.keys(tags).length > 0) out["tags"] = tags;
   out["exception"] = { values: values.map(scrubException) };
@@ -153,17 +184,26 @@ export interface SentryConfig {
   release?: string;
 }
 
+const DSN_PROTOCOLS: ReadonlySet<string> = new Set(["https:", "http:"]);
+
+/** A DSN carries a public key (username) and ends in a numeric project id. */
+function hasDsnShape(url: URL): boolean {
+  const projectId = url.pathname.split("/").pop() ?? "";
+  return url.username.length > 0 && /^\d+$/.test(projectId);
+}
+
 function isUsableDsn(dsn: string): boolean {
-  try {
-    const url = new URL(dsn);
-    return (
-      (url.protocol === "https:" || url.protocol === "http:") &&
-      url.username.length > 0 &&
-      /^\/(?:.*\/)?\d+$/.test(url.pathname)
-    );
-  } catch {
-    return false;
+  const url = parseUrl(dsn);
+  return url !== null && DSN_PROTOCOLS.has(url.protocol) && hasDsnShape(url);
+}
+
+/** First env value, among `keys`, that is non-blank after trimming. */
+function firstEnv(env: NodeJS.ProcessEnv, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = env[key]?.trim();
+    if (value) return value;
   }
+  return undefined;
 }
 
 /**
@@ -171,13 +211,12 @@ function isUsableDsn(dsn: string): boolean {
  * DSN is unset, blank or malformed. Never logs or returns a bad DSN.
  */
 export function resolveSentryConfig(env: NodeJS.ProcessEnv): SentryConfig | null {
-  const dsn = env["SENTRY_DSN"]?.trim();
+  const dsn = firstEnv(env, ["SENTRY_DSN"]);
   if (!dsn || !isUsableDsn(dsn)) return null;
-  const release = env["SENTRY_RELEASE"]?.trim();
+  const release = firstEnv(env, ["SENTRY_RELEASE"]);
   return {
     dsn,
-    environment:
-      env["SENTRY_ENVIRONMENT"]?.trim() || env["DEPLOYMENT_ENVIRONMENT"]?.trim() || "unknown",
+    environment: firstEnv(env, ["SENTRY_ENVIRONMENT", "DEPLOYMENT_ENVIRONMENT"]) ?? "unknown",
     ...(release ? { release } : {}),
   };
 }
@@ -189,6 +228,19 @@ export interface SentryInitDeps {
   sentryInit: (options: Record<string, unknown>) => unknown;
   /** One-line diagnostics; must never receive the DSN. */
   warn: (message: string) => void;
+}
+
+function buildInitOptions(config: SentryConfig): Record<string, unknown> {
+  return {
+    ...config,
+    // Errors only. Traces/metrics are exported by the OpenTelemetry layer, so
+    // the SDK must not set up its own OTel provider (it would fight NodeSDK)
+    // nor rewrite modules at load time for span/breadcrumb integrations.
+    enableOpenTelemetrySetup: false,
+    enableRuntimeChannelInjection: false,
+    maxBreadcrumbs: 0,
+    beforeSend: scrubSentryEvent,
+  };
 }
 
 /**
@@ -206,18 +258,7 @@ export function initSentry(env: NodeJS.ProcessEnv, deps: SentryInitDeps): Sentry
   }
 
   try {
-    deps.sentryInit({
-      dsn: config.dsn,
-      environment: config.environment,
-      ...(config.release ? { release: config.release } : {}),
-      // Errors only. Traces/metrics are exported by the OpenTelemetry layer, so
-      // the SDK must not set up its own OTel provider (it would fight NodeSDK)
-      // nor rewrite modules at load time for span/breadcrumb integrations.
-      enableOpenTelemetrySetup: false,
-      enableRuntimeChannelInjection: false,
-      maxBreadcrumbs: 0,
-      beforeSend: scrubSentryEvent,
-    });
+    deps.sentryInit(buildInitOptions(config));
     return "initialized";
   } catch {
     deps.warn("sentry disabled: SDK initialisation failed");

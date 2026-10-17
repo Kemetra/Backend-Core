@@ -194,6 +194,22 @@ describe("scrubSentryEvent (AC-2)", () => {
     expect(value).toContain("https://erp.example.test/api/resource/Item");
   });
 
+  it("stays fast on adversarial messages (no polynomial regex backtracking)", () => {
+    const adversarial = [
+      "Key (".repeat(50_000),
+      "a.".repeat(50_000),
+      "eyJ-".repeat(50_000),
+      "x@".repeat(50_000),
+      `${"/".repeat(50_000)}://`,
+    ];
+    const started = Date.now();
+    for (const value of adversarial) {
+      const out = scrubSentryEvent({ exception: { values: [{ type: "Error", value }] } })!;
+      expect(out.exception!.values![0]!.value!.length).toBeLessThanOrEqual(300);
+    }
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
   it("keeps stack frame location but never vars or source context", () => {
     const frame = scrubSentryEvent(dirty)!.exception!.values![0]!.stacktrace!.frames![0]!;
     expect(frame).toEqual({
