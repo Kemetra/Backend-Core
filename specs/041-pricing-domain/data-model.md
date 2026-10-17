@@ -31,7 +31,7 @@ change_sets (spec 042) 1──* pricing_revisions
 | `tax_price_basis` | text | `inclusive` \| `exclusive` (473). Declared only; Fiscal derives tax |
 | `pricing_context` | text | `retail` only in v1 (474) |
 | `is_default` | boolean | v1: **exactly one non-retired Book per `(tenant, context)`** (partial unique index on `(tenant_id, pricing_context) WHERE retired_at IS NULL`). A tenant therefore has one retail Book and one currency in v1, so a Store's Book is unambiguous without an assignment table. A second Book (another currency or context) needs the explicit `store_price_book_assignments` seam in §2.7 first |
-| `retired_at` | timestamptz null | Books are retired, never deleted |
+| `retired_at` | timestamptz null | Books are retired, never deleted. **In v1 the tenant's only retail Book cannot be retired or replaced**: there is then exactly one Book for every instant and revision, so step 1 needs no revision bound. Retiring or replacing a Book requires the §2.7 seam first, whose rows carry `published_in_revision` / `ended_in_revision` so historical and as-of-revision inquiries keep resolving against the Book known at R |
 
 Unique: `(tenant_id, code)`; `(id, tenant_id)` as composite FK target (the pattern of `uq_tenant_products_id_tenant`).
 

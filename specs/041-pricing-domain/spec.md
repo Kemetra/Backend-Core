@@ -96,7 +96,7 @@ revision the store had applied then.
 
 ### 4.2 Steps
 
-1. **Book.** Take the Store's effective Book for the `retail` context. v1: the tenant's single non-retired retail Book (OD-1; DB-enforced, data-model §2.1). With the §2.7 seam it is the Store's assignment visible at `(instant, asOfRevision)`.
+1. **Book.** Take the Store's effective Book for the `retail` context. v1: the tenant's single retail Book (OD-1; DB-enforced, and it cannot be retired or replaced in v1, data-model §2.1, so it is the same Book at every instant and revision). With the §2.7 seam it is the Store's assignment visible at `(instant, asOfRevision)`.
    No Book → `unpriced(reason: no_price_book)`.
 2. **Candidate events.** Visible events with that Book, `item`, `sellUnit` and `price_kind = regular`, whose
    interval `[effective_from, effective_to)` contains `instant`.
