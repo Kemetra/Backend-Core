@@ -40,6 +40,19 @@ describe("Caddyfile same-origin gateway", () => {
     expect(site.indexOf("handle @api {")).toBeLessThan(site.indexOf("handle {"));
   });
 
+  it("drops only successful liveness probes from the access log (RT-616)", () => {
+    expect(site).toContain("@health_live path /api/v1/health/live");
+    const live = blockAfter(site, "handle @health_live {");
+    const proxy = blockAfter(live, "reverse_proxy api:3000 {");
+    expect(proxy).toContain("@probe_ok status 2xx 3xx");
+    const ok = blockAfter(proxy, "handle_response @probe_ok {");
+    expect(ok.trim().split(/\s+/)).toEqual(["log_skip", "copy_response"]);
+    // Matched before the general /api handler; nothing else in the site skips logs.
+    expect(site.indexOf("handle @health_live {")).toBeLessThan(site.indexOf("handle @api {"));
+    expect(site.match(/log_skip|skip_log/g)).toEqual(["log_skip"]);
+    expect(blockAfter(site, "\tlog {")).toContain("output stdout");
+  });
+
   it("serves the current Console release with an SPA fallback to index.html", () => {
     const consoleBlock = blockAfter(site, "handle {");
     expect(consoleBlock).toContain("root * /srv/console/current");

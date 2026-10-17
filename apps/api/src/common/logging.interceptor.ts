@@ -62,6 +62,15 @@ function effectiveErrorStatus(err: unknown): number {
 export const ROOT_LOGGER = Symbol.for("api.rootLogger");
 
 /**
+ * RT-616: routes whose successful (< 400) responses write no request log
+ * line. VN-S6 POS terminals probe liveness every 10 s (owner decision on
+ * RT-600); a failure on the route is still logged, and HTTP metrics are
+ * still emitted. Matched on the route template, so a query string or a
+ * rendered URL cannot bring the line back.
+ */
+const UNLOGGED_SUCCESS_ROUTES: ReadonlySet<string> = new Set(["/api/v1/health/live"]);
+
+/**
  * Logs one structured line per request, on response.
  *
  * Structured-log fields (FR-B-004 / Track B / P4 / T474):
@@ -113,15 +122,18 @@ export class LoggingInterceptor implements NestInterceptor {
         next: () => {
           const latencyNs = process.hrtime.bigint() - start;
           const latencyMs = Number(latencyNs / 1_000_000n);
-          childLogger.info(
-            {
-              method: request.method,
-              route: routeTemplate(context, request),
-              status: response.statusCode,
-              latency_ms: latencyMs,
-            },
-            "request completed",
-          );
+          const route = routeTemplate(context, request);
+          if (!(UNLOGGED_SUCCESS_ROUTES.has(route) && response.statusCode < 400)) {
+            childLogger.info(
+              {
+                method: request.method,
+                route,
+                status: response.statusCode,
+                latency_ms: latencyMs,
+              },
+              "request completed",
+            );
+          }
           emitHttpMetrics(context, request.method, response.statusCode, latencyNs);
         },
         error: (err: unknown) => {

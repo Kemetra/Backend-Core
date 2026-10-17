@@ -16,6 +16,20 @@
 {$CADDY_SITE_ADDRESS:api.example.test} {
 	encode gzip
 
+	# RT-616: VN-S6 POS terminals probe liveness every 10 s (owner decision on
+	# RT-600). A 2xx/3xx answer is proxied unchanged but writes no access-log
+	# line; an upstream error, a timeout or a 4xx/5xx answer is still logged.
+	@health_live path /api/v1/health/live
+	handle @health_live {
+		reverse_proxy api:3000 {
+			@probe_ok status 2xx 3xx
+			handle_response @probe_ok {
+				log_skip
+				copy_response
+			}
+		}
+	}
+
 	# Matched before the Console: an unknown /api path gets the API's own 404,
 	# never the SPA's index.html. The API keeps its own (helmet) headers.
 	@api path /api /api/*
