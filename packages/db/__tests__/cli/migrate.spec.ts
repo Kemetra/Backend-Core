@@ -222,6 +222,7 @@ describe("data-pulse-migrate CLI", () => {
     "0048_sales_store_business_date_idx",
     "0050_shift_variance_policy",
     "0051_sale_responsibilities",
+    "0054_sale_credit_reversals",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -385,13 +386,30 @@ describe("data-pulse-migrate CLI", () => {
   }
 
   /**
-   * After one `down` from head: 0051's sale_responsibilities and its two sales /
-   * resolution columns are gone and payer_account.credit_terms is back, while
-   * 0050's policy tables and columns, 0048's store/business-date index and
-   * everything older survive.
+   * 0054_sale_credit_reversals (RT-577): [its three tables, their policies, the
+   * sale_voids approval-use trigger, the (id, sale_id) FK-target indexes on
+   * sale_voids and sale_returns].
+   */
+  async function countSaleCreditReversalObjects(): Promise<[string, string, string, string]> {
+    return [
+      await countPublicTables(CREDIT_REVERSAL_TABLES),
+      await countPolicies(CREDIT_REVERSAL_TABLES),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_trigger
+        WHERE tgname = 'sale_voids_record_approval_use'`),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_indexes
+        WHERE schemaname = 'public' AND indexname IN ('uq_sale_voids_id_sale', 'uq_sale_returns_id_sale')`),
+    ];
+  }
+
+  /**
+   * After one `down` from head: 0054's credit reversal tables, approval-use
+   * ledger, trigger and FK-target indexes are gone, while 0051's
+   * sale_responsibilities, 0050's policy tables and columns, 0048's
+   * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countSaleResponsibilityObjects()).toEqual(["0", "0", "0", "0", "1"]);
+    expect(await countSaleCreditReversalObjects()).toEqual(["0", "0", "0", "0"]);
+    expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
     expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
     expect(await countValidSaleHistoryIndex()).toBe("1");
     await expectBelow0048Applied();
@@ -426,6 +444,9 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicTables(RESOLUTION_TABLES)).toBe("1");
     expect(await countResolutionVersionColumn()).toBe("1");
   }
+
+  /** The three tables created by 0054_sale_credit_reversals (RT-577). */
+  const CREDIT_REVERSAL_TABLES = ["sale_credit_reversals", "sale_credit_reversal_tenders", "sale_approval_uses"];
 
   /** The three return tables created by 0032_sale_returns (RT-73). */
   const RETURN_TABLES = ["sale_returns", "sale_return_lines", "sale_return_tenders"];
@@ -550,6 +571,9 @@ describe("data-pulse-migrate CLI", () => {
     // 0051's sale_responsibilities (SELECT + INSERT policies), the two new
     // columns, and payer_account.credit_terms dropped (RT-418).
     expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
+    // 0054's three credit reversal tables (SELECT + INSERT policies each), the
+    // sale_voids approval-use trigger and the two FK-target indexes (RT-577).
+    expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
   });
 
   it("up is idempotent on a second run", async () => {
@@ -587,7 +611,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0051 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0054 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
@@ -699,6 +723,7 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countValidSaleHistoryIndex()).toBe("1");
     expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
     expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
+    expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
   });
 
   it(

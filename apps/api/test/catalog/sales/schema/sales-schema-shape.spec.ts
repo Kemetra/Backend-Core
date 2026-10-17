@@ -24,6 +24,9 @@ import "reflect-metadata";
 import { getTableConfig } from "drizzle-orm/pg-core";
 
 import {
+  saleApprovalUses,
+  saleCreditReversals,
+  saleCreditReversalTenders,
   saleLines,
   saleRefunds,
   saleReprints,
@@ -85,6 +88,11 @@ const ALL_TABLES: ReadonlyArray<{ name: string; table: unknown }> = [
   { name: "sale_tenders", table: saleTenders },
   { name: "sale_reprints", table: saleReprints },
   { name: "sale_responsibilities", table: saleResponsibilities },
+  // RT-577 (0054): credit-sale reversals, their refund tenders, the shared
+  // approval-use ledger.
+  { name: "sale_credit_reversals", table: saleCreditReversals },
+  { name: "sale_credit_reversal_tenders", table: saleCreditReversalTenders },
+  { name: "sale_approval_uses", table: saleApprovalUses },
 ];
 
 describe("sales schema shape — sales (header)", () => {
@@ -371,6 +379,8 @@ describe("sales schema shape — load-bearing negatives", () => {
     const allowed: Readonly<Record<string, readonly string[]>> = {
       sales: ["tender_count"],
       sale_tenders: ["tender_ref"],
+      // RT-577 D8: the sale tender a credit void's refund mirrors (a UUID).
+      sale_credit_reversal_tenders: ["tender_ref"],
     };
     for (const { name, table } of ALL_TABLES) {
       const offending = [...columns(table).keys()].filter(

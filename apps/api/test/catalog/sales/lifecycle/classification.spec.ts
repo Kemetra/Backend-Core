@@ -37,6 +37,9 @@ import * as path from "node:path";
 import { getTableConfig } from "drizzle-orm/pg-core";
 
 import {
+  saleApprovalUses,
+  saleCreditReversals,
+  saleCreditReversalTenders,
   saleLines,
   saleRefunds,
   saleReprints,
@@ -276,6 +279,58 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
     table: saleResponsibilities,
     columns: ["id", "tenant_id", "store_id", "sale_id", "payer_id", "amount", "sequence", "created_at"],
   },
+  // RT-577 (0054) — reviewed under SI-012: a credit reversal's allocation
+  // (amounts), the payer as an opaque UUID, the actor and approver as user
+  // UUIDs, a role code, a policy version and a short reason the contract bars
+  // from carrying PII. No customer, card or account data.
+  {
+    name: "sale_credit_reversals",
+    table: saleCreditReversals,
+    columns: [
+      "id",
+      "tenant_id",
+      "store_id",
+      "sale_id",
+      "kind",
+      "void_id",
+      "return_id",
+      "source_system",
+      "external_id",
+      "payload_hash",
+      "business_date",
+      "currency_code",
+      "reversal_total",
+      "refundable_amount",
+      "adjustment_amount",
+      "payer_id",
+      "adjustment_ref",
+      "actor_user_id",
+      "actor_role",
+      "reason",
+      "approval_id",
+      "approved_by_user_id",
+      "requested_by_user_id",
+      "approval_policy_version",
+      "approved_at",
+      "created_at",
+    ],
+  },
+  // RT-577 D8 — reviewed under SI-012: the refund paid out. `method` and
+  // `amount`, the sale tender line it mirrors (`tender_ref`, an opaque UUID)
+  // and the card terminal's 1-6 character printed refund reference, NEVER card
+  // data (the `sale_tenders.reference` precedent).
+  {
+    name: "sale_credit_reversal_tenders",
+    table: saleCreditReversalTenders,
+    columns: ["id", "reversal_id", "tenant_id", "store_id", "ordinal", "method", "amount", "tender_ref", "reference"],
+  },
+  // RT-577 (0054) — reviewed under SI-012: the shared single-use ledger of
+  // approval ids. Ids, a route code and a timestamp only.
+  {
+    name: "sale_approval_uses",
+    table: saleApprovalUses,
+    columns: ["tenant_id", "approval_id", "source", "created_at"],
+  },
 ];
 
 /**
@@ -289,6 +344,8 @@ const REVIEWED_PAYMENT_NAMED_COLUMNS: Readonly<Record<string, readonly string[]>
   // receipt header, not a customer address.
   sales: ["tender_count", "receipt_branch_address"],
   sale_tenders: ["tender_ref"],
+  // RT-577 D8: the sale tender line a credit void's refund mirrors (a UUID).
+  sale_credit_reversal_tenders: ["tender_ref"],
 };
 
 /**

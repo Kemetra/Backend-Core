@@ -372,6 +372,22 @@ table the domain role must use needs a matching grant step at deploy time.
   and `shift_closes.approval_*` columns live on tables the domain role already
   reads and writes.
 
+- **Migration `0054_sale_credit_reversals` (RT-577).** Run
+  [`sql/sale-credit-reversals-domain-grants.sql`](sql/sale-credit-reversals-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT` and `INSERT` on
+  `sale_credit_reversals` and `sale_credit_reversal_tenders` (a credit
+  reversal writes them; its projection and replay read them) and on
+  `sale_approval_uses` (the shared single-use ledger of approval ids: a
+  cash-paying credit return writes its id and reads the ledger). All three are
+  append-only: never grant `UPDATE`, `DELETE` or `TRUNCATE`. A void's ledger
+  row is written by the `SECURITY DEFINER` trigger
+  `sale_voids_record_approval_use`, so voids recorded between `migrate up` and
+  the grants keep working. Without the grants the API refuses to boot
+  (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold no privilege on
+  any of them (`AUTH_LOOKUP_FORBIDDEN_GRANTS`).
+
 - **Console device revoke (RT-365, on migration `0040_device_lifecycle`).** Run
   [`sql/device-lifecycle-domain-grants.sql`](sql/device-lifecycle-domain-grants.sql)
   after `migrate up` and before the API starts, in the same step 2 of
