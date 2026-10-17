@@ -964,7 +964,8 @@ paths:
         Idempotency: the `Idempotency-Key` header is REQUIRED and the
         reversal is deduped on its own `(tenant, sourceSystem, externalId)`
         provenance. The same provenance with the same payload replays (200)
-        before every check, so a later change of role, payer or approver never
+        right after the returns gate and the sale resolve (404) and before
+        every other check, so a later change of role, payer or approver never
         turns a stored result into a refusal; with a different payload or
         against a different sale it is 409 `conflict`. A same-key retry
         returns the stored `201` (RT-82 K4); a refused request stores no

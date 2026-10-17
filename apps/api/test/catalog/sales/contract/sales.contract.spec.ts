@@ -1780,6 +1780,13 @@ describe("pos-sales/sales.yaml — RT-577 credit-sale reversal", () => {
     );
   });
 
+  it("places the provenance replay after the returns gate and the sale lookup, as the Order does (review #803)", () => {
+    expect(reversalText()).toContain(
+      "replays (200) right after the returns gate and the sale resolve (404) and before every other check",
+    );
+    expect(reversalText()).not.toContain("replays (200) before every check");
+  });
+
   it("records the audit evidence the decision lists", () => {
     const text = reversalText();
     expect(text).toContain("`sale.credit_reversed`");
