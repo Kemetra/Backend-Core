@@ -1994,11 +1994,10 @@ describe("pos-sales/sales.yaml — RT-577 owner rulings (D6, D8, N1)", () => {
   describe("D8: a void mirrors the collected tenders; a return refunds cash only", () => {
     it("states the mirror rule; only a void has no card-to-cash path, a return pays a card-collected share in cash", () => {
       expect(reversalText()).toContain("A `void` refunds by mirroring the sale's collected `tenders` (RT-10 D6)");
-      expect(reversalText()).toContain("A `void` has no card-to-cash path");
-      expect(reversalText()).not.toContain("There is no card-to-cash path");
       expect(reversalText()).toContain(
-        "pays its `refundableAmount` out in cash even when that share was collected by `card_external`",
+        "For a void there is no card-to-cash path; a return refunds its collected share in cash, including any share collected by card (owner ruling D8).",
       );
+      expect(reversalText()).not.toContain("There is no card-to-cash path");
       expect(reversalText()).toContain("A `return` refunds in cash only (RT-14 D3)");
       expect(reversalText()).not.toContain("whatever the collected tender method");
     });
