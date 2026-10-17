@@ -29,9 +29,9 @@
 -- subject to row security. The auth lookup role must hold no privilege on it
 -- (AUTH_LOOKUP_FORBIDDEN_GRANTS).
 --
--- payer_account: SELECT, INSERT and UPDATE. The Console routes list and
--- create payers; a credit capture locks its payer row FOR SHARE, which needs
--- UPDATE. No route deletes a payer: never grant DELETE or TRUNCATE.
+-- payer_account: SELECT, INSERT and UPDATE. The Console routes list, create
+-- and (RT-572) update payers; a credit capture locks its payer row FOR SHARE,
+-- which also needs UPDATE. No route deletes a payer: never grant DELETE or TRUNCATE.
 
 \set ON_ERROR_STOP on
 

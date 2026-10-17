@@ -43,8 +43,8 @@ info:
     repairs a payer. A payer created without `externalRef` (its ERPNext
     Customer link) fails every credit sale against it with 422
     `sale_responsibility_payer_invalid`, and 2.0.0 had no way to fix it. The
-    operation carries `x-runtime-status: contract-only` until the RT-572
-    runtime PR. Coordinator decisions (owner delegation, 2026-10-17): (1) the
+    RT-572 runtime serves it (no migration: it uses the existing
+    `payer_account.version`), so it carries no `x-runtime-status`. Coordinator decisions (owner delegation, 2026-10-17): (1) the
     update set is `displayName`, `externalRef` (set or replace, never cleared)
     and `status` (active / suspended); `category` and `storeId` are immutable
     because a sale's payer must belong to the sale's store (capture checks it,
@@ -197,21 +197,6 @@ paths:
       summary: Update a payer account (repair a missing ERPNext Customer link, rename, suspend or reactivate).
       operationId: consoleUpdatePayerAccount
       x-idempotency: required
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-572 contract. The runtime ships in the RT-572 runtime PR (no
-        migration: it uses the existing `payer_account.version`). Runtime
-        requirements: (1) validate `payerRef` as a uuid before any SQL cast, so
-        a malformed value is a 400 and never a 500 (pg 22P02,
-        invalid_text_representation); (2) write the audit row in the same
-        transaction as the update, and not on a no-op: `@Auditable` alone cannot
-        do this (it fires per request, including a no-op) and
-        `insertSettlementAudit` needs a `storeId` that a tenant-wide payer lacks,
-        so the runtime writes a tenant-level audit event (`store_id` null) for
-        those; (3) validate `externalRef` with the contract pattern verbatim,
-        which also excludes the zero-width characters U+200B-U+200D and U+FEFF
-        and the line / paragraph separators U+2028 / U+2029, not a looser
-        re-implementation. Do not generate this as a shipped route until then.
       tags: [settlement-console]
       security:
         - cookieAuth: []

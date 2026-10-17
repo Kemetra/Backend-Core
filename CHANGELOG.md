@@ -189,6 +189,20 @@ This project follows [Semantic Versioning](https://semver.org/).
   grants the domain role SELECT / INSERT / UPDATE on `pairing_codes`, which
   `DOMAIN_REQUIRED_GRANTS` checks at boot; the lookup role may hold SELECT
   only on it (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). No migration.
+- RT-572 `[GATED: contract posture lift]`: runtime for `consoleUpdatePayerAccount`
+  (`PATCH /api/v1/settlement/payer-accounts/{payerRef}`, `settlement.yaml` 2.1.0);
+  the operation is no longer contract-only. `PayerAccountsService.update` runs one
+  transaction: lock the payer row, then 404 (absent / other tenant / store-scoped
+  outside the caller's stores), 403 `payer_scope_insufficient` (a `status` or
+  `externalRef` field on a tenant-wide payer without tenant-wide store scope; by
+  presence), 409 `payer_version_conflict`, then a no-op returns the unchanged
+  payer, else `version + 1` and `settlement.payer_account.updated` in the same
+  transaction (tenant-level, `store_id` null, for a tenant-wide payer; field
+  names, status and `externalRef` before / after, never the display name).
+  `payerRef` is validated as a uuid before any SQL cast. No migration (it uses the
+  existing `payer_account.version`; 0053 is not consumed) and no new grant
+  (`payer_account` `UPDATE` and `audit_events` `INSERT` already exist; comments
+  and `docs/operations/database-roles.md` updated).
 - RT-572 `[GATED]`, pending owner approval: `settlement/settlement.yaml` 2.1.0 adds
   `consoleUpdatePayerAccount` (`PATCH /api/v1/settlement/payer-accounts/{payerRef}`,
   contract-only), so a payer created without `externalRef` (its ERPNext Customer

@@ -29,7 +29,7 @@ const KEPT_OPERATIONS = {
   consoleListPayerAccounts: { path: "/api/v1/settlement/payer-accounts", method: "get" },
 } as const;
 
-/** RT-572 (2.1.0): the payer repair route, contract-only until the RT-572 runtime PR. */
+/** RT-572 (2.1.0): the payer repair route; the RT-572 runtime serves it (contract-only lifted). */
 const UPDATE_OPERATION = {
   consoleUpdatePayerAccount: { path: "/api/v1/settlement/payer-accounts/{payerRef}", method: "patch" },
 } as const;
@@ -321,7 +321,7 @@ describe("settlement.yaml — payer account shapes", () => {
 });
 
 // ===========================================================================
-// 5. RT-572 — consoleUpdatePayerAccount (2.1.0, additive, contract-only)
+// 5. RT-572 — consoleUpdatePayerAccount (2.1.0, additive; served by the RT-572 runtime)
 // ===========================================================================
 describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
   interface UpdateOperation extends OperationObject {
@@ -350,16 +350,10 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
       | (SchemaObject & { anyOf?: Array<{ required?: string[] }>; properties?: Record<string, UpdateProperty> })
       | undefined;
 
-  it("is a contract-only PATCH on the payer, with a runtime note naming the RT-572 runtime", () => {
-    expect(update()?.["x-runtime-status"]).toBe("contract-only");
-    const note = flat(update()?.["x-runtime-note"]);
-    expect(note).toContain("RT-572 runtime");
-    // M1: a malformed payerRef is a 400, never a pg 22P02 -> 500
-    expect(note).toContain("validate `payerRef` as a uuid before any SQL cast");
-    expect(note).toContain("22P02");
-    // M3: the audit row is written in the update's transaction, not by @Auditable alone
-    // LOW 4: the runtime validator applies the contract pattern verbatim
-    expectAll(note, ["same transaction", "insertSettlementAudit", "tenant-level", "verbatim"]);
+  it("is a served PATCH on the payer: the contract-only status and its runtime note are lifted", () => {
+    expect(update()?.["x-runtime-status"]).toBeUndefined();
+    expect(update()?.["x-runtime-note"]).toBeUndefined();
+    expect(flat(doc.info?.description)).toContain("The RT-572 runtime serves it");
   });
 
   it("requires an Idempotency-Key and addresses the payer by a uuid path parameter", () => {
