@@ -172,13 +172,13 @@ Notes:
     - `class`: the six classes plus `exempt` (closed set);
     - `outcome` (mutually exclusive): `allowed` (utilisation under 50%), `near_limit` (allowed, utilisation 50% or more), `would_limit` (over budget, report mode), `limited` (over budget, enforce mode), `fail_open`;
     - `route`: the route template, the same bounded label `http_error_4xx_total` already uses (`api.metrics.ts:325-328`), about 110 values.
-  - Histogram `console_rate_limit_utilisation{class}`: `count / limit` of the principal's bucket at each check, buckets `0.1, 0.25, 0.5, 0.75, 0.9, 1, 2`. It shows how close real traffic runs to each budget without identifying anyone.
+  - Histogram `console_rate_limit_utilisation{class, route}`: `count / limit` of the principal's bucket at each check, buckets `0.1, 0.25, 0.5, 0.75, 0.9, 1, 2`; `route` is the same bounded template label as the counter (about 110 values, so roughly 1,000 histogram series). It shows how close real traffic runs to each budget, per route, without identifying anyone.
   - A **per-tenant aggregate** is deliberately **not** proposed: tenant is not resolvable at the guard (D1), so it would need a second hook after `TenantContextGuard`. Revisit only if the owner wants tenant-level visibility.
 - **Exit criteria for the enforce flip** (all required; measured only with the telemetry above, not per-user percentiles, which the label set cannot express):
   1. issue 2 (contract) and issue 3 (Admin-Console handling) merged;
   2. at least 14 days (or the owner's chosen pilot window) of `report` data on production traffic;
-  3. for every class: `would_limit` is zero for ordinary users over the window (every nonzero route is explained: a script, a bug, or a budget raised);
-  4. for every route: `near_limit` is under 1% of that route's requests and the utilisation histogram's 99.9th percentile is under 1.0 (i.e. no ordinary request reaches the limit); any route above that is reclassified or its budget raised first;
+  3. for every class and route: `would_limit` is zero over the window, or each nonzero route is explained from logs or audit events (a script, a bug, or a budget raised); the metric carries no user label, so "ordinary vs scripted" is judged by that explanation, not by the counter;
+  4. for every route: `near_limit` is under 1% of that route's requests and that route's utilisation histogram 99.9th percentile is under 1.0 (i.e. no request is at the limit); any route above that is reclassified or its budget raised first;
   5. no unexplained `fail_open` burst, and the `report` latency overhead (added p99 of console requests) is recorded and accepted;
   6. owner sign-off.
 
@@ -264,7 +264,7 @@ Dependency order: **1a** → **1** → (**2** ∥ **3**) → **4**. Issue **5** 
   - Keying per D2 (`rl:console_<class>:u:<userId>` / `:t:<tokenId>`; skip `pos`/`pos_operator`/`connector` scopes and requests with no principal).
   - Modes `off`/`report`/`enforce` (default `off`), boot-time env; 429 shape per D5 (code per O1; `Retry-After` [1,3600]; `Cache-Control: no-store`; guard-assigned `request_id` and `X-Request-Id`).
   - 250 ms timeout + circuit breaker (half-open one-request probe), fail-open (D4); decide the dedicated limiter connection with `enableOfflineQueue: false` vs documented recovery behaviour (L5).
-  - Telemetry per D6: `console_rate_limit_total{class,outcome,route}` and `console_rate_limit_utilisation{class}`, bounded labels, registered through the existing label-assertion helper.
+  - Telemetry per D6: `console_rate_limit_total{class,outcome,route}` and `console_rate_limit_utilisation{class,route}`, bounded labels, registered through the existing label-assertion helper.
 - **Out of scope:** POS/device/connector routes; contract text (issue 2); Admin-Console (issue 3); sign-in/email-verify behaviour (issue 5); a per-IP pre-auth limiter; enabling `report`/`enforce` in any environment (issue 4).
 - **Acceptance criteria:**
   1. With the default (`off`) the guard performs no Redis call and changes no response.
