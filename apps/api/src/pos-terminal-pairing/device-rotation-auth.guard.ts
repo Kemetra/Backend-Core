@@ -14,7 +14,7 @@
  *   1. reads `Authorization: Bearer <device_token>` (cookies are ignored);
  *   2. resolves the device whose current or previous hash matches
  *      (`DeviceRepository.findForRotation`, lookup pool, tenant active);
- *   3. classifies it with `decideRotation` (retired, revoked, superseded,
+ *   3. classifies it with `decideRotation` (retired, revoked, previous_expired, token_replaced,
  *      grace elapsed, else allowed);
  *   4. refused with a known device → `pos.device.rotation_rejected`, then the
  *      generic 401; unknown token, inactive tenant, no bearer → the generic

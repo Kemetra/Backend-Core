@@ -13,6 +13,7 @@ import { Module } from "@nestjs/common";
 import type { Pool } from "pg";
 
 import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../auth/auth.module";
+import { PosWriteRateLimitGuard } from "../auth/pos-write-rate-limit.guard";
 import { DeviceRepository } from "../pos-operators/device.repository";
 import { DeviceRotationAuthGuard } from "./device-rotation-auth.guard";
 import { RotationController } from "./rotation.controller";
@@ -29,6 +30,9 @@ import { RotationService } from "./rotation.service";
       inject: [AUTH_LOOKUP_POOL, PG_POOL],
     },
     DeviceRotationAuthGuard,
+    // The per-device rotation budget (ADR 0009); RateLimiter and
+    // OPERATOR_CONTEXT_RESOLVER come from AuthModule.
+    PosWriteRateLimitGuard,
   ],
 })
 export class DeviceRotationModule {}

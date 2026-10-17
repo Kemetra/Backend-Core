@@ -41,18 +41,18 @@ describe("decideRotation", () => {
     expect(decideRotation(state(), PREVIOUS)).toEqual({ kind: "allowed", credential: "previous", inGrace: false });
   });
 
-  it("refuses the previous token at or after its window as superseded", () => {
+  it("refuses the previous token at or after its window as previous_expired", () => {
     expect(decideRotation(state({ previousValidUntil: NOW }), PREVIOUS)).toEqual({
       kind: "rejected",
-      reason: "superseded",
+      reason: "previous_expired",
     });
   });
 
-  it("refuses a hash that matches neither as superseded (replaced by another rotation)", () => {
-    expect(decideRotation(state(), OTHER)).toEqual({ kind: "rejected", reason: "superseded" });
+  it("refuses a hash that matches neither as token_replaced (another rotation replaced it)", () => {
+    expect(decideRotation(state(), OTHER)).toEqual({ kind: "rejected", reason: "token_replaced" });
     expect(decideRotation(state({ previousTokenHash: null, previousValidUntil: null }), PREVIOUS)).toEqual({
       kind: "rejected",
-      reason: "superseded",
+      reason: "token_replaced",
     });
   });
 
@@ -83,15 +83,19 @@ describe("decideRotation", () => {
     });
   });
 
-  it("checks retired and revoked before superseded and grace", () => {
+  it("checks retired and revoked before the token match and grace", () => {
     const dead = state({ revokedAt: at(-MIN), expiresAt: at(-30 * DAY), previousValidUntil: at(-MIN) });
     expect(decideRotation(dead, PREVIOUS)).toEqual({ kind: "rejected", reason: "revoked" });
   });
 
-  it("checks superseded before grace", () => {
+  it("checks the token match before grace", () => {
     expect(decideRotation(state({ expiresAt: at(-30 * DAY) }), OTHER)).toEqual({
       kind: "rejected",
-      reason: "superseded",
+      reason: "token_replaced",
+    });
+    expect(decideRotation(state({ expiresAt: at(-30 * DAY), previousValidUntil: at(-MIN) }), PREVIOUS)).toEqual({
+      kind: "rejected",
+      reason: "previous_expired",
     });
   });
 });

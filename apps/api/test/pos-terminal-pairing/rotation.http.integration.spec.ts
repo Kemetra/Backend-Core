@@ -204,6 +204,16 @@ describe("posRotateTerminalToken — success", () => {
     expect(after.expires_at.getTime()).toBe(expiresAt);
   });
 
+  it("answers the 200 with Cache-Control no-store and Pragma no-cache", async () => {
+    if (skip()) return;
+    const res = await rotate(TOKENS[D_OTHER]!);
+    expect(res.status).toBe(200);
+    secrets.push((res.body as Rotated).device_token);
+    TOKENS[D_OTHER] = (res.body as Rotated).device_token;
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.headers["pragma"]).toBe("no-cache");
+  });
+
   it("audits pos.device.rotated with the allowlisted metadata and no actor user", async () => {
     if (skip()) return;
     const rows = await audits("pos.device.rotated", D_MAIN);
@@ -243,7 +253,7 @@ describe("posRotateTerminalToken — overlap", () => {
     expect(rotated.map((r) => r.metadata["credential"])).toEqual(["current", "previous"]);
   });
 
-  it("after the window the old token authenticates nothing and rotate is 401 superseded", async () => {
+  it("after the window the old token authenticates nothing and rotate is 401 previous_expired", async () => {
     if (skip()) return;
     await h
       .env()
@@ -251,7 +261,7 @@ describe("posRotateTerminalToken — overlap", () => {
     expect(await authenticates(TOKENS[D_WINDOW]!)).toBeNull();
     expectRefusal(await rotate(TOKENS[D_WINDOW]!), 401, "unauthorized");
     const rejected = await audits("pos.device.rotation_rejected", D_WINDOW);
-    expect(rejected.map((r) => r.metadata)).toEqual([{ reason: "superseded" }]);
+    expect(rejected.map((r) => r.metadata)).toEqual([{ reason: "previous_expired" }]);
   });
 });
 
@@ -289,6 +299,19 @@ describe("posRotateTerminalToken — revoked / retired / unknown", () => {
     const rejected = await audits("pos.device.rotation_rejected", deviceId);
     expect(rejected.map((r) => r.metadata)).toEqual([{ reason }]);
     expect(rejected[0]!.actor_user_id).toBeNull();
+  });
+
+  it("a revoked device's previous token authenticates nothing, even inside its window", async () => {
+    if (skip()) return;
+    const previous = generateRawToken();
+    await h
+      .env()
+      .admin.query(
+        `UPDATE devices SET previous_token_hash = $2, previous_valid_until = now() + interval '5 minutes' WHERE id = $1`,
+        [D_REVOKED, hashToken(previous)],
+      );
+    expect(await authenticates(previous)).toBeNull();
+    expect(await authenticates(TOKENS[D_REVOKED]!)).toBeNull();
   });
 
   it("an unknown token, no bearer and a dashboard session are 401 with no audit row", async () => {

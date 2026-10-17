@@ -237,8 +237,11 @@ This project follows [Semantic Versioning](https://semver.org/).
   `posRotateTerminalToken` ships unchanged on the wire and loses
   `x-runtime-status: contract-only`. `DeviceRotationAuthGuard` (a reviewed
   device-bearer composite) resolves the current or previous hash, applies
-  the rotation decision (retired, revoked, superseded, 7-day grace) and
-  writes `pos.device.rotation_rejected` for a known token it refuses; the
+  the rotation decision (retired, revoked, previous_expired /
+  token_replaced, 7-day grace) and writes `pos.device.rotation_rejected`
+  for a known token it refuses; `PosWriteRateLimitGuard` applies the
+  per-device `posRotateDevice` budget (10 / hour, 429 `RATE_LIMITED`); the
+  200 is sent `Cache-Control: no-store` / `Pragma: no-cache`; the
   service re-decides under the device lifecycle lock and the row lock
   (constant-time hash compare), swaps the token and writes
   `pos.device.rotated`. Every device-authenticated route now accepts the
