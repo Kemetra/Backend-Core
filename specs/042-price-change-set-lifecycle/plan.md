@@ -45,8 +45,8 @@ Rollback is a new revision. Nothing is edited in place.
 | `validated` | Selectors materialized, concrete prices computed, conflicts analyzed, Impact Preview stored with a `previewHash`. Valid only against the tenant's **head revision at validation** (`validatedAtRevision`). | no; any edit returns it to `draft` |
 | `pending_approval` | Submitted; the policy said approval is required (§7). | no |
 | `approved` | Approved for exactly the `previewHash` that was shown. | no |
-| `published` | Its events exist in revision `revisionNo`. Display status is **`scheduled`** while its earliest effective instant is in the future, **`active`** after. | terminal for content |
-| `superseded` | Every event it published has been superseded by later revisions. Derived and set at the publish that completes it. | terminal |
+| `published` | Its events and membership rows exist in revision `revisionNo`. Display status is **`scheduled`** until the earliest exact per-Store activation instant of its events **and** memberships, computed at read time from each targeted Store's zone, and **`active`** after. It is not derived from `earliest_effective_at`, which is only a conservative pre-delivery bound (spec 041 data-model §2.5). | terminal for content |
+| `superseded` | Every event **and every Zone-membership row** it published has been superseded by later revisions. Derived and set at the publish that completes it. | terminal |
 | `rolled_back` | A rollback change set restoring the prior state was published. | terminal |
 | `cancelled` | Abandoned before publish. Kept for audit. | terminal |
 
@@ -67,6 +67,17 @@ Rules:
 
   Publish repeats the check under the publish lock. This is how a change set never publishes on top of a timeline it has
   not analyzed (525, 519), without one publish discarding every unrelated approval in flight.
+- **Store lifecycle also makes a set stale (Q-B8).** Creating, activating, deactivating or retiring a Store, or changing its time zone, produces no
+  pricing revision, yet it changes which Stores a Book-scope or Zone-scope line reaches (a new Store with no explicit
+  membership falls back to the default Zone). Validation therefore stores a **`targetStoreSetHash`**: a hash of the
+  sorted `(store_id, timezone)` pairs each line's scope reaches over its interval, and it is part of `previewHash`.
+  Because the time zone is hashed, a Store time-zone change (spec 038) also changes the hash: it moves `store_local`
+  activation instants that the approver saw in the preview. `submit`, `approve`
+  and `publish` (the last under the publish lock) recompute the target Store set. If it differs → `409 stale_validation`,
+  the set returns to `draft`, and it must be re-validated and **re-approved** against the new preview. Store-scope lines
+  are affected only when their own Store is deactivated or retired. For the publish recheck to be atomic with Store
+  lifecycle writes, those writes take the same per-tenant pricing publish lock (§8). A Store created after publish is
+  covered by the bootstrap rule in spec 041 data-model §2.6.
 - **Approval is bound to the preview.** `approve` carries `previewHash`. A different hash → `409 preview_changed`.
   People approve what they saw (526–527).
 - **Publish is all-or-nothing.** One DB transaction under the per-tenant pricing publish lock: re-check head,
@@ -134,7 +145,7 @@ Unchanged lines (new price = current price) are dropped with a note.
 
 ## 6. Impact Preview (526)
 
-Stored at validation, keyed by `previewHash = sha256(canonical JSON of lines + classes + validatedAtRevision)`.
+Stored at validation, keyed by `previewHash = sha256(canonical JSON of lines + classes + targetStoreSetHash + validatedAtRevision)`.
 
 Draft payload (PR-04 commits it to OpenAPI):
 
@@ -199,8 +210,13 @@ RT-284 (the Policy engine) is not delivered. Until it is, a narrow tenant-level 
   revisions; the author rolls back newest-first or authors a corrective set.
 - **Optimistic concurrency (532).** Every mutating call carries `expectedVersion` (or `If-Match`). A mismatch →
   `409 version_conflict`. Publish additionally re-checks the head revision (§3).
-- **Publish serialization.** Per-tenant transaction-scoped advisory lock around publish only. Authoring and
-  validation do not take it.
+- **Publish serialization.** Per-tenant transaction-scoped advisory lock around publish. Authoring and validation do
+  not take it. **Store lifecycle writes take it too**: create, activate, deactivate and retire, plus a time-zone change
+  (spec 038), because that moves `store_local` instants. They take it inside their own transaction, before mutating the
+  `stores` row. Then the §3 target-Store recheck, the revision fan-out and any Store lifecycle change are serialized:
+  either the Store change commits first and the publish recheck sees it (→ stale), or the publish commits first and the
+  new Store gets the head through the bootstrap row (spec 041 data-model §2.6). This puts one lock acquisition into the
+  Store write paths. That is an implementation change for PR-10, recorded here so it is not missed.
 - **Canary rollouts (533)** are out of v1 (OD-1 later list); the revision model leaves room for per-store activation in RT-487.
 
 ## 9. Reuse of the RT-281 primitive (OD-4)
@@ -238,6 +254,7 @@ lines table (immutable after publish) and the audit row references it, so audit 
 | **Q-B5** | Per-line before/after in `audit_events` or in change-set lines | **Lines table, referenced from one audit row per transition** | One audit row per line |
 | **Q-B6** | Line limit per change set | **50 000 lines**, revisit with RT-317-style measurement | Unlimited |
 | **Q-B7** | Do pending sets that overlap block each other? | **No; first publish wins. Only sets that intersect it (§3) go stale and re-validate; unrelated sets keep their approval** | Lock targets while a set is pending; or stale every pending set on any publish |
+| **Q-B8** | Store lifecycle changes (create, activate, deactivate, retire, time-zone change; no revision) alter a set's target Stores or their activation instants | **Bind the target Store set into the preview (`targetStoreSetHash`) and stale the set on mismatch at submit/approve/publish; re-approval required** | Re-materialize silently at publish (approver never sees the new Stores) |
 
 Each row: Selected — recommended option, chosen by the coordinator under the owner's standing delegation of 2026-10-17; owner may revisit.
 

@@ -6,7 +6,7 @@ Each one below is marked:
 > **Selected — recommended option, chosen by the coordinator under the owner's standing delegation of 2026-10-17; owner may revisit.**
 
 Source of the OD questions: `docs/planning/rt-282-pricing-backlog-draft.md` §3 (merged in #765). The open
-questions Q-1 to Q-7 were raised while writing spec 041 and are handled the same way.
+questions Q-1 to Q-7 were raised while writing spec 041, and Q-8 in its review (#824); all are handled the same way.
 
 **What "may revisit" costs.** Nothing here is in OpenAPI, a migration or code. A reversal before RT-282 PR-04/PR-05
 merge costs only a doc change. After those merge, a reversal is a gated contract/migration change.
@@ -95,5 +95,6 @@ Action carried by RT-282 PR-06 / PR-07 (they are the first contract bumps). The 
 | **Q-5** | Can a Book's tax-price basis change? | **Fixed at Book creation in v1.** A change (598) needs a new Book or a later effective-dated Fiscal-reviewed feature, after RT-294. | Make it an effective-dated Book attribute now. |
 | **Q-6** | May one price key mix `store_local` and `absolute` events while both are active? | **No:** validation rejects mixing within one key; a change of basis supersedes the old events. Keeps DB overlap checks exact. | Allow mixing and validate per Store in the application only. |
 | **Q-7** | Which reasons make the resolver return `error` rather than `unpriced`? | **Only data-integrity defects** (overlap, ambiguous membership). They are surfaced in Pricing Health (PR-12) and read-down omits the row with an issue metric, like unpriced rows today (F4). | Treat them as `unpriced`. Hides defects. |
+| **Q-8** | Can a Book's default Zone change? (Raised in review of #824.) | **No, in v1:** `is_default` is immutable and the default Zone cannot be retired (data-model §2.2), so fallback resolution is revision-stable. | Version the default-Zone choice through revisions now. |
 
 Each Q row: Selected — recommended option, chosen by the coordinator under the owner's standing delegation of 2026-10-17; owner may revisit.
