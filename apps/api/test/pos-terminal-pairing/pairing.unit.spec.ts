@@ -41,6 +41,7 @@ function aRow(over: Partial<PairingCodeRow> = {}): PairingCodeRow {
     expires_at: new Date(Date.now() + 600_000),
     attempt_count: 0,
     last_attempt_at: null,
+    replaces_device_id: null,
     ...over,
   };
 }
@@ -178,8 +179,70 @@ describe("toTerminalPairBody — projection", () => {
     expect(body.branch_id).toBe(STORE_X);
     expect(body.device_token).toBe("raw-token-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
     expect(body.printer_com_port).toBe("COM3");
-    // expires_at is omitted (POS-Pulse v1 ignores it; contract makes it optional).
+    // Without the device's expiry (an older caller), expires_at is omitted.
     expect(body.expires_at).toBeUndefined();
+  });
+
+  it("populates expires_at from the minted device's expiry (RT-367 / RT-287 F9)", () => {
+    const expiresAt = new Date("2027-01-15T10:00:00.000Z");
+    const body = toTerminalPairBody(
+      {
+        tenant_id: TENANT,
+        store_id: STORE_X,
+        terminal_id: TERMINAL,
+        terminal_label: "Counter 1",
+        branch_name: "Branch X",
+        branch_address: "Addr",
+        tenant_tax_registration_id: "123456789",
+        printer_vendor_id: "0x04B8",
+        printer_product_id: "0x0202",
+        printer_com_port: null,
+      },
+      "raw-token-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      expiresAt,
+    );
+    expect(body.expires_at).toBe("2027-01-15T10:00:00.000Z");
+  });
+});
+
+describe("PairingService.pair — replacement codes (RT-367)", () => {
+  it("a replacement the evaluator now blocks → replacement_blocked (the code stays pending)", async () => {
+    const refundAttempt = jest.fn().mockResolvedValue(undefined);
+    const svc = serviceWith({
+      findByCode: jest.fn().mockResolvedValue(aRow()),
+      recordAttempt: jest.fn().mockResolvedValue(1),
+      refundAttempt,
+      findPairedBranch: jest.fn().mockResolvedValue(null),
+      burnAndProvision: jest.fn().mockResolvedValue("replacement_blocked"),
+    });
+    expect(await svc.pair("code-123456")).toEqual({ kind: "replacement_blocked" });
+    // M1: a blocked try proves the caller holds the code; it gives its attempt back.
+    expect(refundAttempt).toHaveBeenCalledWith(aRow().id, aRow().tenant_id);
+  });
+
+  it("does not refund the attempt of any other outcome", async () => {
+    const refundAttempt = jest.fn().mockResolvedValue(undefined);
+    const svc = serviceWith({
+      findByCode: jest.fn().mockResolvedValue(aRow()),
+      recordAttempt: jest.fn().mockResolvedValue(1),
+      refundAttempt,
+      findPairedBranch: jest.fn().mockResolvedValue(null),
+      burnAndProvision: jest.fn().mockResolvedValue("lost_race"),
+    });
+    await svc.pair("code-123456");
+    expect(refundAttempt).not.toHaveBeenCalled();
+  });
+
+  it("carries the minted device's expiry onto the body", async () => {
+    const expiresAt = new Date("2027-01-15T10:00:00.000Z");
+    const svc = serviceWith({
+      findByCode: jest.fn().mockResolvedValue(aRow()),
+      recordAttempt: jest.fn().mockResolvedValue(1),
+      findPairedBranch: jest.fn().mockResolvedValue(null),
+      burnAndProvision: jest.fn().mockResolvedValue({ kind: "ok", rawToken: "t".repeat(40), expiresAt }),
+    });
+    const r = await svc.pair("code-123456");
+    expect(r.kind === "ok" ? r.body.expires_at : null).toBe("2027-01-15T10:00:00.000Z");
   });
 });
 

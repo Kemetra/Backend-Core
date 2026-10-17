@@ -76,6 +76,11 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   // RT-365: the Console revoke locks the device row FOR UPDATE and sets the
   // revoke fields (FOR UPDATE needs the UPDATE privilege).
   "devices:UPDATE",
+  // RT-367: the Console pairing codes INSERT (issue), SELECT (list, cancel,
+  // the one-replacement check) and UPDATE (cancel; the redemption's burn).
+  "pairing_codes:SELECT",
+  "pairing_codes:INSERT",
+  "pairing_codes:UPDATE",
 ]);
 
 const LOOKUP_GRANTS: ReadonlySet<string> = new Set(
@@ -306,8 +311,8 @@ describe("database pool boundary", () => {
     }
   });
 
-  it("RT-212: forbids every privilege except SELECT on memberships and store_access", () => {
-    for (const table of ["memberships", "store_access"]) {
+  it("RT-212: forbids every privilege except SELECT on memberships, store_access and pairing_codes", () => {
+    for (const table of ["memberships", "store_access", "pairing_codes"]) {
       const entry = AUTH_LOOKUP_FORBIDDEN_GRANTS.find(([t]) => t === table);
       expect(entry).toBeDefined();
       const listed = entry![1].split(",").map((p) => p.trim());
