@@ -394,10 +394,12 @@ describe("posRotateTerminalToken — concurrent rotates", () => {
     expect(live).toHaveLength(1);
     expect(await authenticates(TOKENS[D_RACE]!)).toBe(D_RACE);
 
-    // The first took the current-token branch, the second the previous-token
-    // branch, which kept the first one's window: it was never extended.
+    // One took the current-token branch, the other the previous-token branch,
+    // which kept the first one's window: it was never extended. Compared
+    // without order: `occurred_at` is each transaction's start time, and the
+    // transaction that began second may win the lock.
     const rotated = await audits("pos.device.rotated", D_RACE);
-    expect(rotated.map((r) => r.metadata["credential"])).toEqual(["current", "previous"]);
+    expect(rotated.map((r) => String(r.metadata["credential"])).sort()).toEqual(["current", "previous"]);
     const row = await deviceRow(D_RACE);
     expect(row.previous_token_hash?.equals(hashToken(TOKENS[D_RACE]!))).toBe(true);
     const windows = rotated.map((r) => new Date(String(r.metadata["previous_valid_until"])).getTime());
@@ -410,11 +412,26 @@ describe("posRotateTerminalToken — concurrent rotates", () => {
 // 6b. Rotate racing a revoke / retire on the device lifecycle lock
 // ===========================================================================
 describe("posRotateTerminalToken — revoke or retire committed while a rotate waits", () => {
-  /** Resolves once a backend is waiting on an advisory lock. */
-  async function untilAdvisoryWaiter(admin: Pool): Promise<void> {
+  /**
+   * Resolves once another backend waits on THIS device's lifecycle lock: the
+   * key `lockDeviceLifecycle` hashes (`hashtextextended(key, 0)`, a bigint
+   * that pg_locks splits into classid = high 32 bits, objid = low 32 bits,
+   * objsubid = 1), in this database, not held by the test's own backend.
+   * If the key format drifts, this never matches and the test fails loudly.
+   */
+  async function untilLifecycleLockWaiter(admin: Pool, deviceId: string, holderPid: number): Promise<void> {
+    const key = `device_lifecycle:${TENANT_A.toLowerCase()}:${deviceId.toLowerCase()}`;
     for (let i = 0; i < 200; i += 1) {
       const r = await admin.query<{ n: number }>(
-        `SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+        `WITH k AS (SELECT hashtextextended($1, 0) AS v)
+         SELECT count(*)::int AS n
+           FROM pg_locks l, k
+          WHERE l.locktype = 'advisory' AND NOT l.granted AND l.pid <> $2
+            AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+            AND l.objsubid = 1
+            AND l.classid::bigint = (k.v >> 32) & 4294967295
+            AND l.objid::bigint = k.v & 4294967295`,
+        [key, holderPid],
       );
       if (r.rows[0]!.n > 0) return;
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -445,9 +462,10 @@ describe("posRotateTerminalToken — revoke or retire committed while a rotate w
     try {
       await holder.query("BEGIN");
       await lockDeviceLifecycle(holder, { tenantId: TENANT_A, deviceId });
+      const holderPid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
       // The guard's unlocked read sees an active device; the service then waits on the lock.
       pending = rotate(TOKENS[deviceId]!).then((res) => res);
-      await untilAdvisoryWaiter(admin);
+      await untilLifecycleLockWaiter(admin, deviceId, holderPid);
       await holder.query(sql, [deviceId]);
       await holder.query("COMMIT");
     } catch (err) {
