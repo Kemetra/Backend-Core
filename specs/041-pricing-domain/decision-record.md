@@ -17,7 +17,7 @@ merge costs only a doc change. After those merge, a reversal is a gated contract
 
 | Option | Content |
 |---|---|
-| **A (recommended)** | v1 = one Price Book per tenant and currency (EGP, tax basis declared); an optional Zone layer with an implicit default Zone; Store override; effective-dated timeline; Change Set with publish/schedule/rollback; inquiry plus "why this price". **Later:** Clearance, Open Price, price-point profiles, cost guardrails, compare-at, recommendations, measured pricing. |
+| **A (recommended)** | v1 = one Price Book per tenant (single currency, EGP for the pilot; tax basis declared; a second Book needs the explicit assignment seam); an optional Zone layer with an implicit default Zone; Store override; effective-dated timeline; Change Set with publish/schedule/rollback; inquiry plus "why this price". **Later:** Clearance, Open Price, price-point profiles, cost guardrails, compare-at, recommendations, measured pricing. |
 | B | A plus Clearance in v1. Blocked by G2 (RT-486) anyway. |
 | C | Minimal: Book + Store override only, no Zones, no timeline. Fails 487–489 and 507–513 and would need a second migration. |
 

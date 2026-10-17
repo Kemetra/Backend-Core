@@ -49,7 +49,7 @@ Full column-level proposal: [data-model.md](data-model.md).
 | Concept | Definition | Decisions |
 |---|---|---|
 | **Price Book** | A tenant-owned set of regular prices in **one currency**, with a declared **tax-price basis** (`inclusive` or `exclusive`). | 471–473 |
-| **Price Book assignment** | Which Book a Store uses for a pricing context. v1 has one context (`retail`) and one Book per tenant/currency, so the assignment is implicit (OD-1). | 474 |
+| **Price Book assignment** | Which Book a Store uses for a pricing context. v1 has one context (`retail`) and **exactly one non-retired Book per tenant** (enforced by the data model), so the assignment is implicit and unambiguous (OD-1). An explicit, effective-dated assignment is a seam for a second Book ([data-model.md](data-model.md) §2.7). | 474 |
 | **Price Zone** | An independent commercial grouping of Stores *within one Book*. It inherits the Book's currency. It is not an Organization/Store Group. Each Book has one **implicit default Zone** (OD-1). | 483–486, 492 |
 | **Zone membership** | Effective-dated: a Store belongs to exactly one Zone per Book at any instant. Gaps fall back to the default Zone; overlaps are invalid. | 485, 487, 494 |
 | **Sell Unit** | Part of the price key. v1 has one implicit Sell Unit, `each` (OD-2). The key column exists so multi-UOM pricing (RT-281) is additive. | 475–476 |
@@ -96,7 +96,7 @@ revision the store had applied then.
 
 ### 4.2 Steps
 
-1. **Book.** Take the Store's effective Book for the `retail` context. v1: the tenant's single Book (OD-1).
+1. **Book.** Take the Store's effective Book for the `retail` context. v1: the tenant's single non-retired retail Book (OD-1; DB-enforced, data-model §2.1). With the §2.7 seam it is the Store's assignment visible at `(instant, asOfRevision)`.
    No Book → `unpriced(reason: no_price_book)`.
 2. **Candidate events.** Visible events with that Book, `item`, `sellUnit` and `price_kind = regular`, whose
    interval `[effective_from, effective_to)` contains `instant`.
@@ -105,6 +105,7 @@ revision the store had applied then.
    - More than one → `error(overlap_violation)`. It never picks one (498–500). This can only happen if a DB
      constraint was bypassed; it is reported, not resolved.
 4. **Zone layer.** Find the Store's Zone membership at `instant` in this Book.
+   - Memberships are read as visible at `asOfRevision` (data-model §2.3), not by current state.
    - Exactly one membership → that Zone; none → the Book's default Zone; more than one →
      `error(ambiguous_zone_membership)` (494).
    - Exactly one candidate at `scope = zone` for that Zone → result, `sourceScope = zone`. More than one → `error(overlap_violation)`.

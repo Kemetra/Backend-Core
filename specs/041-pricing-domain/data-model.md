@@ -30,7 +30,7 @@ change_sets (spec 042) 1──* pricing_revisions
 | `currency_code` | char(3) | one currency per Book (472) |
 | `tax_price_basis` | text | `inclusive` \| `exclusive` (473). Declared only; Fiscal derives tax |
 | `pricing_context` | text | `retail` only in v1 (474) |
-| `is_default` | boolean | v1: exactly one default Book per `(tenant, currency, context)` (partial unique index) |
+| `is_default` | boolean | v1: **exactly one non-retired Book per `(tenant, context)`** (partial unique index on `(tenant_id, pricing_context) WHERE retired_at IS NULL`). A tenant therefore has one retail Book and one currency in v1, so a Store's Book is unambiguous without an assignment table. A second Book (another currency or context) needs the explicit `store_price_book_assignments` seam in §2.7 first |
 | `retired_at` | timestamptz null | Books are retired, never deleted |
 
 Unique: `(tenant_id, code)`; `(id, tenant_id)` as composite FK target (the pattern of `uq_tenant_products_id_tenant`).
@@ -58,9 +58,12 @@ later without changing precedence.
 | `effective_to` | timestamptz null | exclusive |
 | `state` | text | `active` \| `superseded` |
 | `published_in_revision` | bigint | the revision that created it |
+| `ended_in_revision` | bigint null | the revision that superseded it (a Zone move ends the old row and adds a new one) |
 
 Constraint: `EXCLUDE USING gist (tenant_id WITH =, price_book_id WITH =, store_id WITH =, tstzrange(effective_from, effective_to, '[)') WITH &&) WHERE (state = 'active')` (494). Needs `btree_gist`;
 whether the extension is already available is a PR-05 check.
+
+Visibility at revision R uses the same rule as `price_events` (§2.4): `published_in_revision <= R AND (ended_in_revision IS NULL OR ended_in_revision > R)`. Resolution at `asOfRevision` reads memberships through this rule, never through the current `state`, so a historical or POS-belief inquiry sees the Zone the Store was in *as known at R*. The exclusion constraint above applies to `active` rows only, which are exactly the rows visible at the head.
 
 Membership changes go through a Change Set (moving a Store needs an Impact Preview, 488). Memberships are
 **absolute-instant** only; they are structural, not wall-clock price events.
@@ -148,6 +151,14 @@ PK `(tenant_id, store_id, revision_no)`. **Store applied revision** (OD-3) =
 `max(revision_no) for the store`. It is monotonic per Store and sparse, like `catalog_change_log.sequence` (F12).
 POS applies whole store revisions (628). Receipt/apply state per device is **not** here; it is PR-05's
 G4a-gated table, shaped by RT-487.
+
+### 2.7 Seam: `store_price_book_assignments` (not in v1)
+
+When a tenant needs a second Book (another currency or pricing context, 474), Book selection must become explicit.
+The seam is an effective-dated `(tenant_id, store_id, pricing_context, price_book_id, effective_from, effective_to,
+published_in_revision, ended_in_revision)` table, with one active assignment per `(store, context)` at any instant,
+published through Change Sets like memberships. Resolution step 1 then reads it at `(instant, asOfRevision)`. Until it
+exists, the v1 single-Book constraint (§2.1) makes step 1 unambiguous.
 
 ## 3. What happens to the legacy columns (OD-5)
 
