@@ -69,6 +69,7 @@ classify() {
       echo high
       return
       ;;
+    *) ;; # not an explicit High path; keep classifying
   esac
   if is_test_input "$p"; then
     echo high
@@ -79,6 +80,7 @@ classify() {
       echo low
       return
       ;;
+    *) ;; # not a docs path; keep classifying
   esac
   case "$p" in
     apps/* | packages/*)
@@ -92,10 +94,11 @@ classify() {
       ;;
     *.png | *.jpg | *.jpeg | *.gif | *.svg | *.webp | *.ico)
       echo low
-      return
+      ;;
+    *)
+      echo high # unmatched paths are High
       ;;
   esac
-  echo high
 }
 
 rank() { case "$1" in low) echo 0 ;; medium) echo 1 ;; *) echo 2 ;; esac; }
@@ -129,6 +132,7 @@ case "$tier" in
     run_schemathesis=false
     ;;
   medium) run_schemathesis="$api_touched" ;;
+  *) ;; # high: everything runs
 esac
 
 echo "tier=$tier"
