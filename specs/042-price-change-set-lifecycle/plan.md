@@ -45,8 +45,8 @@ Rollback is a new revision. Nothing is edited in place.
 | `validated` | Selectors materialized, concrete prices computed, conflicts analyzed, Impact Preview stored with a `previewHash`. Valid only against the tenant's **head revision at validation** (`validatedAtRevision`). | no; any edit returns it to `draft` |
 | `pending_approval` | Submitted; the policy said approval is required (§7). | no |
 | `approved` | Approved for exactly the `previewHash` that was shown. | no |
-| `published` | Its events exist in revision `revisionNo`. Display status is **`scheduled`** while its earliest effective instant is in the future, **`active`** after. | terminal for content |
-| `superseded` | Every event it published has been superseded by later revisions. Derived and set at the publish that completes it. | terminal |
+| `published` | Its events and membership rows exist in revision `revisionNo`. Display status is **`scheduled`** while the revision's `earliest_effective_at` (events **and** memberships) is in the future, **`active`** after. | terminal for content |
+| `superseded` | Every event **and every Zone-membership row** it published has been superseded by later revisions. Derived and set at the publish that completes it. | terminal |
 | `rolled_back` | A rollback change set restoring the prior state was published. | terminal |
 | `cancelled` | Abandoned before publish. Kept for audit. | terminal |
 
@@ -67,6 +67,13 @@ Rules:
 
   Publish repeats the check under the publish lock. This is how a change set never publishes on top of a timeline it has
   not analyzed (525, 519), without one publish discarding every unrelated approval in flight.
+- **Store lifecycle also makes a set stale (Q-B8).** Creating, activating, deactivating or retiring a Store produces no
+  pricing revision, yet it changes which Stores a Book-scope or Zone-scope line reaches (a new Store with no explicit
+  membership falls back to the default Zone). Validation therefore stores a **`targetStoreSetHash`**: a hash of the
+  sorted Store ids each line's scope reaches over its interval, and it is part of `previewHash`. `submit`, `approve`
+  and `publish` (the last under the publish lock) recompute the target Store set. If it differs → `409 stale_validation`,
+  the set returns to `draft`, and it must be re-validated and **re-approved** against the new preview. Store-scope lines
+  are affected only when their own Store is deactivated or retired.
 - **Approval is bound to the preview.** `approve` carries `previewHash`. A different hash → `409 preview_changed`.
   People approve what they saw (526–527).
 - **Publish is all-or-nothing.** One DB transaction under the per-tenant pricing publish lock: re-check head,
@@ -134,7 +141,7 @@ Unchanged lines (new price = current price) are dropped with a note.
 
 ## 6. Impact Preview (526)
 
-Stored at validation, keyed by `previewHash = sha256(canonical JSON of lines + classes + validatedAtRevision)`.
+Stored at validation, keyed by `previewHash = sha256(canonical JSON of lines + classes + targetStoreSetHash + validatedAtRevision)`.
 
 Draft payload (PR-04 commits it to OpenAPI):
 
@@ -238,6 +245,7 @@ lines table (immutable after publish) and the audit row references it, so audit 
 | **Q-B5** | Per-line before/after in `audit_events` or in change-set lines | **Lines table, referenced from one audit row per transition** | One audit row per line |
 | **Q-B6** | Line limit per change set | **50 000 lines**, revisit with RT-317-style measurement | Unlimited |
 | **Q-B7** | Do pending sets that overlap block each other? | **No; first publish wins. Only sets that intersect it (§3) go stale and re-validate; unrelated sets keep their approval** | Lock targets while a set is pending; or stale every pending set on any publish |
+| **Q-B8** | Store lifecycle changes (no revision) alter a set's target Stores | **Bind the target Store set into the preview (`targetStoreSetHash`) and stale the set on mismatch at submit/approve/publish; re-approval required** | Re-materialize silently at publish (approver never sees the new Stores) |
 
 Each row: Selected — recommended option, chosen by the coordinator under the owner's standing delegation of 2026-10-17; owner may revisit.
 

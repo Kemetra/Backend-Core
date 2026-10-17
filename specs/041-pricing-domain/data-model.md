@@ -42,7 +42,7 @@ Unique: `(tenant_id, code)`; `(id, tenant_id)` as composite FK target (the patte
 | `id` | uuid PK | |
 | `price_book_id` | uuid | composite FK `(price_book_id, tenant_id)` |
 | `code`, `name` | text | unique `(tenant_id, price_book_id, code)` |
-| `is_default` | boolean | exactly one per Book (partial unique index). Created with the Book (OD-1) |
+| `is_default` | boolean | exactly one per Book (partial unique index). Created with the Book (OD-1). **Immutable in v1** (Q-8): a trigger rejects any change of `is_default`, and the default Zone cannot be retired. So the Zone that a Store with no explicit membership falls back to is the same at every instant and revision, which keeps step 4 of the resolver bitemporal. Switching the default Zone needs a revision-versioned default first (not in v1) |
 | `retired_at` | timestamptz null | a Zone with active memberships or events cannot be retired |
 
 `category_scope` is **not** added. Category-specific zones (493) stay a seam: a nullable column can be added
@@ -135,7 +135,7 @@ Indexes: `(tenant_id, product_id, sell_unit, price_book_id) WHERE state = 'activ
 | `rolls_back_revision_no` | bigint null | for `kind = rollback` |
 | `published_at` | timestamptz | |
 | `published_by` | uuid | |
-| `earliest_effective_at` | timestamptz null | earliest absolute instant any of its events can take effect (for scheduling and G4 pre-delivery) |
+| `earliest_effective_at` | timestamptz null | earliest absolute instant at which **any row the revision creates or ends** takes effect: price events **and** Zone-membership rows (for example a revision holding only a future `move_store_zone`). `store_local` bounds are converted with each affected Store's zone and the minimum is taken. Used for the scheduled/active display status (spec 042 §3) and G4 pre-delivery |
 
 Insert-only. No `UPDATE` or `DELETE` (530).
 
