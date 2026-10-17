@@ -971,9 +971,12 @@ paths:
         `method` and `amount` and, when the sale tender carries a `tenderRef`,
         the same `tenderRef`, so the card share goes back to the card
         (`card_external`; its optional `reference` is the card terminal's
-        refund reference) and the cash share goes back as cash. There is no card-to-cash path. A `return` refunds in cash only (RT-14 D3), as `RefundTender`,
+        refund reference) and the cash share goes back as cash. A `void` has no card-to-cash path. A `return` refunds in cash only (RT-14 D3), as `RefundTender`,
         capped at the collected and refundable amount: its `refundTenders`
-        sum to `refundableAmount` exactly (an empty list when it is 0).
+        sum to `refundableAmount` exactly (an empty list when it is 0). A
+        return therefore pays its `refundableAmount` out in cash even when that share was collected by `card_external`
+        (the RT-14 D3 return rule, kept by the D8 ruling); it never pays out
+        more than that collected share.
         Either way the refund sums to `refundableAmount` (for a void, C), and
         any other list is 422 `credit_reversal_refund_mismatch`. A client can compute
         the amount beforehand from `readSale` (`posTotal`, `tenders`,
