@@ -26,6 +26,7 @@ import Ajv2020, { type ValidateFunction } from "ajv/dist/2020";
 import addFormats from "ajv-formats";
 
 import { loadOpenApiContracts } from "../../../../src/openapi/loader";
+import { PayerAccountsService } from "../../../../src/settlement/payer-accounts.service";
 import {
   startCaptureHarness,
   stopCaptureHarness,
@@ -421,5 +422,62 @@ describe("RT-418 — replay", () => {
     await captureOnce("rt418-replay-mm");
     const res = await post(captureBody({ externalId: "rt418-replay-mm", tenders: CASH_2_5, responsibilities: [credit(P_STORE, "1")] }));
     expect(errorOf(res)).toEqual({ status: 409, code: "idempotency_key_conflict" });
+  });
+});
+
+// ===========================================================================
+// RT-572 — the payer repair route unblocks capture
+// ===========================================================================
+describe("RT-572 — repairing a payer's missing ERPNext link lets a credit sale through", () => {
+  const P_REPAIR = "0a000000-0000-7000-8000-0000004187c1";
+
+  beforeAll(async () => {
+    if (skip()) return;
+    await h.harness!.env.admin.query(
+      `INSERT INTO payer_account (id, tenant_id, store_id, category, display_name, external_ref, status)
+       VALUES ($1, $2, NULL, 'insurer', 'Created without a link', NULL, 'active')`,
+      [P_REPAIR, TENANT_A],
+    );
+  });
+
+  /** The real update path (`PayerAccountsService.update`) as an owner with access to every store. */
+  function updatePayer(body: { expectedVersion: number; externalRef?: string; status?: "active" | "suspended" }) {
+    return new PayerAccountsService(h.harness!.env.app).update({
+      tenantId: TENANT_A,
+      context: {
+        userId: APPROVER_OWNER,
+        tenantId: TENANT_A,
+        storeId: null,
+        isPlatformAdmin: false,
+        source: "session",
+        storeAccess: { kind: "all" },
+      },
+      payerRef: P_REPAIR,
+      actorUserId: APPROVER_OWNER,
+      requestId: null,
+      body,
+    });
+  }
+
+  const sale = (externalId: string) => captureBody({ externalId, responsibilities: [credit(P_REPAIR, "12.5")] });
+
+  it("an unlinked payer is refused, a repaired one is captured, and a suspended one is refused again", async () => {
+    if (skip()) return;
+    const refused = await post(sale("rt572-before-repair"));
+    expect(errorOf(refused)).toEqual({ status: 422, code: "sale_responsibility_payer_invalid" });
+    expect(await written("rt572-before-repair")).toEqual(NOTHING);
+
+    expect(await updatePayer({ expectedVersion: 0, externalRef: "CUST-REPAIRED" })).toMatchObject({
+      external_ref: "CUST-REPAIRED",
+      version: 1,
+    });
+    const captured = await post(sale("rt572-after-repair"));
+    expect(captured.status).toBe(201);
+    expect(await written("rt572-after-repair")).toEqual({ sales: 1, responsibilities: 1 });
+
+    await updatePayer({ expectedVersion: 1, status: "suspended" });
+    expect(errorOf(await post(sale("rt572-suspended")))).toEqual({ status: 422, code: "sale_responsibility_payer_invalid" });
+    await updatePayer({ expectedVersion: 2, status: "active" });
+    expect((await post(sale("rt572-reactivated"))).status).toBe(201);
   });
 });

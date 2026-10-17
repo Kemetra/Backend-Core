@@ -346,8 +346,8 @@ table the domain role must use needs a matching grant step at deploy time.
   `sale_responsibilities` (part of the immutable sale fact: a credit capture
   writes it; the sale read and the posting feed and worker read it) and
   `SELECT`, `INSERT` and `UPDATE` on `payer_account` (the Console payer
-  routes; a credit capture locks its payer row `FOR SHARE`, which needs
-  `UPDATE`). Never grant `UPDATE`, `DELETE` or `TRUNCATE` on
+  routes list, create and, from RT-572, update payers; a credit capture
+  locks its payer row `FOR SHARE`, which also needs `UPDATE`). Never grant `UPDATE`, `DELETE` or `TRUNCATE` on
   `sale_responsibilities`, nor `DELETE` or `TRUNCATE` on `payer_account`.
   Without the grants the API refuses to boot (`DOMAIN_REQUIRED_GRANTS`). The
   auth lookup role must hold no privilege on `sale_responsibilities`
