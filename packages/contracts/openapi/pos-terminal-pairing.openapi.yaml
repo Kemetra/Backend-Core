@@ -226,13 +226,16 @@ info:
     the limiter's store is unavailable (ADR 0009 D3).
 
     Refusals are bounded too. Before a refused rotation writes
-    `pos.device.rotation_rejected`, the same per-device budget is checked on
-    the matched device (the row the presented token matched, revoked,
-    retired or expired as it may be), and the refusal spends from it. While
-    budget remains, the row is written; once it is spent the refusal is
-    still the same 401 but writes no audit row (a log line counts the
-    suppressed refusals instead). So a holder of a refused token cannot
-    write audit rows without bound.
+    `pos.device.rotation_rejected`, a per-device refusal-audit budget is
+    checked on the matched device (the row the presented token matched,
+    revoked, retired or expired as it may be), and the refusal spends from
+    it. That budget is separate from the rotation budget, so a refused
+    token can never make a valid rotation 429: a stale previous token held
+    by someone else cannot starve the live till's rotations. While budget
+    remains, the row is written; once it is spent the refusal is still the
+    same 401 but writes no audit row (a log line counts the suppressed
+    refusals instead). So a holder of a refused token cannot write audit
+    rows without bound.
 
 
     **Idempotency.** `Idempotency-Key` is required and non-replayable
@@ -255,7 +258,7 @@ info:
         expiry) and `previous_valid_until`.
       - `pos.device.rotation_rejected`, in its own transaction, when a
         refused rotation presented a token that matches (or, before the
-        lock, matched) a device row, within the budget above. The row never
+        lock, matched) a device row, within the refusal-audit budget above. The row never
         rides on a rotation that rolls back: a refusal under the lock
         changes nothing on the device and commits only this row, so a
         refusal under the lock still records its row. Target `device` / the
