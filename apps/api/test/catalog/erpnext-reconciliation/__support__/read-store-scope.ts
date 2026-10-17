@@ -19,7 +19,7 @@
  * `.ts` (not `.spec.ts`) so Jest does not collect it. IDs use the `0192`
  * mnemonic (hex only).
  */
-import type { CanActivate, DynamicModule, ExecutionContext, INestApplication, Type } from "@nestjs/common";
+import type { CanActivate, DynamicModule, ExecutionContext, INestApplication, Provider, Type } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import type { Pool } from "pg";
 
@@ -248,19 +248,20 @@ const NOOP_AUDIT_ENQUEUER: AuditJobEnqueuer = { enqueue: () => Promise.resolve()
  * test header; without it the real guard decides. `authLookupPool` (default: the
  * app pool) resolves sessions and bearer tokens for that real guard; pass the
  * RLS-exempt admin pool, as the production auth-lookup role is, to exercise a
- * real bearer token (RT-383).
+ * real bearer token (RT-383). `providers` adds test-only providers, such as an
+ * idempotency interceptor over a fake Redis (RT-418).
  */
 export async function bootScopedApp(
   env: PgTestEnv,
   module: Type<unknown> | DynamicModule,
   auditEnqueuer: AuditJobEnqueuer = NOOP_AUDIT_ENQUEUER,
-  options: { readonly authLookupPool?: Pool } = {},
+  options: { readonly authLookupPool?: Pool; readonly providers?: Provider[] } = {},
 ): Promise<INestApplication> {
   const appPool = env.app;
   const lookupPool = options.authLookupPool ?? appPool;
   const sessions = new SessionRepository(lookupPool);
   const authTokens = new AuthTokenRepository(lookupPool);
-  const moduleRef = await Test.createTestingModule({ imports: [module] })
+  const moduleRef = await Test.createTestingModule({ imports: [module], providers: options.providers ?? [] })
     .overrideProvider(PG_POOL)
     .useValue(appPool)
     .overrideProvider(AUTH_LOOKUP_POOL)

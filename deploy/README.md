@@ -113,7 +113,9 @@ op run --env-file=deploy/grants.env -- sh -c \
    psql -X -v domain_role="$DOMAIN_DB_ROLE" \
         -f docs/operations/sql/sale-reprints-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/device-lifecycle-domain-grants.sql'
+        -f docs/operations/sql/device-lifecycle-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
+        -f docs/operations/sql/sale-responsibilities-domain-grants.sql'
 
 # 3. Start everything (migrate re-runs as a no-op, then api/worker start).
 op run --env-file=deploy/prod.env -- \
@@ -154,6 +156,35 @@ Step 2 needs a `psql` client on the deploy host. It reads the connection from
 full command line, password included, is readable by other users through
 `/proc/<pid>/cmdline`. `DOMAIN_DB_ROLE` is the role name in `DATABASE_URL`; it
 is a name, not a secret.
+
+### Enabling credit posting (RT-418 hold lift, once, after RT-419)
+
+Credit sales (sales with payer `responsibilities`) are captured from RT-418,
+but the posting feed holds their `sale_post` until the Connector can post them
+to the payer's ERPNext Customer (RT-419). Do this ONCE, only after the RT-419
+Connector is deployed:
+
+1. Map `ERPNEXT_FEED_RESPONSIBILITIES_ENABLED` into the `api` service's
+   `environment` in `docker-compose.prod.yml`. This release deliberately does
+   NOT map it: an unmapped flag is unset inside the container, so credit
+   sales stay held (fail safe). The mapping is part of the RT-419 hold-lift
+   change, as a reviewed production-config edit. Then set it to `true` in
+   `deploy/prod.env` and recreate the API:
+   `op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d api`.
+   It is read per process, so every API replica must run with the same value.
+2. Re-head the held rows, so a Connector whose cursor has already moved past
+   them is offered them again (without this step they are never posted):
+
+```bash
+op run --env-file=deploy/grants.env -- sh -c \
+  'psql -X -f docs/operations/sql/sale-responsibilities-feed-rehead.sql'
+```
+
+The script moves only the gate-held rows, each tenant under its posting-feed
+sequence lock, and is safe to re-run. Reversals of credit sales, and the
+`sale_post` of a credit sale that has a void, refund or return, stay held
+until a later issue (RT-571) defines them; lifting that hold needs the same
+re-head for those rows.
 
 ## Admin Console release
 
@@ -294,7 +325,8 @@ op run --env-file=deploy/grants.env -- sh -c \
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/tracking-foundation-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/signin-memberships-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/sale-reprints-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/device-lifecycle-domain-grants.sql'
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/device-lifecycle-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/sale-responsibilities-domain-grants.sql'
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d --build
 op run --env-file=deploy/grants.env -- sh -c \
   'psql -X -f docs/operations/sql/erpnext-posting-resolution-catchup.sql &&

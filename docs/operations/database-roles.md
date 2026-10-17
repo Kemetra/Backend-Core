@@ -139,6 +139,8 @@ Legitimate deployments never set a role option.
   - `erpnext_posting_resolution`: `SELECT`, `INSERT` (RT-330, migration 0037)
   - `sale_reprints`: `SELECT`, `INSERT` (RT-539, migration 0047)
   - `devices`: `UPDATE` (RT-365: the Console device revoke)
+  - `sale_responsibilities`: `SELECT`, `INSERT`; `payer_account`: `SELECT`,
+    `INSERT`, `UPDATE` (RT-418, migration 0051)
 
   A deploy that skips that grant step now fails to boot, and the error names
   each missing privilege and table, instead of starting healthy with those
@@ -330,6 +332,23 @@ table the domain role must use needs a matching grant step at deploy time.
   (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). The new `sales.receipt_*` and
   `sale_lines.line_seq` columns live on tables the domain role already reads
   and writes.
+
+- **Migration `0051_sale_responsibilities` (RT-418).** Run
+  [`sql/sale-responsibilities-domain-grants.sql`](sql/sale-responsibilities-domain-grants.sql)
+  after `migrate up` and before the API and worker start, in the same step 2
+  of [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT` and `INSERT` on
+  `sale_responsibilities` (part of the immutable sale fact: a credit capture
+  writes it; the sale read and the posting feed and worker read it) and
+  `SELECT`, `INSERT` and `UPDATE` on `payer_account` (the Console payer
+  routes; a credit capture locks its payer row `FOR SHARE`, which needs
+  `UPDATE`). Never grant `UPDATE`, `DELETE` or `TRUNCATE` on
+  `sale_responsibilities`, nor `DELETE` or `TRUNCATE` on `payer_account`.
+  Without the grants the API refuses to boot (`DOMAIN_REQUIRED_GRANTS`). The
+  auth lookup role must hold no privilege on `sale_responsibilities`
+  (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). The new `sales.responsibility_count` and
+  `erpnext_posting_resolution.payer_external_ref` columns live on tables the
+  domain role already reads and writes.
 
 - **Console device revoke (RT-365, on migration `0040_device_lifecycle`).** Run
   [`sql/device-lifecycle-domain-grants.sql`](sql/device-lifecycle-domain-grants.sql)

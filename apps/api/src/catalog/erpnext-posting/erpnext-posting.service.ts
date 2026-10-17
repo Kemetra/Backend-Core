@@ -27,6 +27,7 @@ import {
   buildWorkItem,
   type PostingWorkItem,
 } from "./posting-work-item.projection";
+import { isFeedResponsibilitiesEnabled } from "./responsibilities-feed-gate";
 
 /**
  * Hard ceiling on a single pull page — the 012 contract `Limit.maximum` (500),
@@ -207,6 +208,27 @@ export class ErpnextPostingService {
         // idx_erpnext_posting_status_pending backs this scan. ORDER BY names the
         // table column: a bare `sequence` would resolve to the ::text alias and
         // sort "10" before "9", advancing the cursor past unsent rows (RT-325).
+        //
+        // RT-418 HOLDS (posting-feed.yaml 1.8.0, RT-417): a work item of a sale
+        // with payer responsibilities is not offered when
+        //   - it is a `reversal`: reversal of such a sale is undefined in this
+        //     version (035 OQ-4 carve), whatever the Connector supports;
+        //   - it is a `sale_post` and the Connector gate is off (ROLLOUT ORDER,
+        //     see responsibilities-feed-gate.ts);
+        //   - it is a `sale_post` and a void / refund / return of the sale
+        //     exists: a credit sale reversed before posting never posts alone
+        //     while its reversal is held.
+        //   - its visible responsibility rows differ from
+        //     `sales.responsibility_count` (an RLS fault or a missing row):
+        //     FAIL CLOSED, held, never offered as a cash sale.
+        //   - its payer link is NULL or blank: the frozen one when the row has a
+        //     resolution version (the live one never fills it in), else the
+        //     live payer's. Capture refuses an unlinked payer, so this is a
+        //     detectable defect: FAIL CLOSED, held, never the store Customer.
+        // The key is `sales.responsibility_count`, written with the rows in the
+        // capture transaction (the projection keeps a second guard that throws).
+        // A missing grant on sale_responsibilities fails the whole pull. Held rows are filtered here, not dropped in the projection, so
+        // a page is never short; lifting a hold must re-head their sequence.
         const rows = await client.query<{
           id: string;
           kind: "sale_post" | "reversal";
@@ -224,9 +246,32 @@ export class ErpnextPostingService {
              FROM erpnext_posting_status
             WHERE status = 'pending'
               AND ($1::bigint IS NULL OR sequence > $1::bigint)
+              AND NOT EXISTS (
+                SELECT 1 FROM sales s
+                 WHERE s.id = erpnext_posting_status.sale_id
+                   AND s.responsibility_count > 0
+                   AND (erpnext_posting_status.kind = 'reversal'
+                        OR NOT $3::boolean
+                        OR (SELECT count(*) FROM sale_responsibilities sr
+                             WHERE sr.sale_id = s.id) <> s.responsibility_count
+                        OR NOT (CASE
+                          WHEN erpnext_posting_status.current_resolution_version IS NOT NULL THEN EXISTS (
+                            SELECT 1 FROM erpnext_posting_resolution fr
+                             WHERE fr.intent_id = erpnext_posting_status.id
+                               AND fr.resolution_version = erpnext_posting_status.current_resolution_version
+                               AND fr.payer_external_ref ~ '[^[:space:]]')
+                          ELSE NOT EXISTS (
+                            SELECT 1 FROM sale_responsibilities sr
+                              JOIN payer_account p ON p.id = sr.payer_id
+                             WHERE sr.sale_id = s.id
+                               AND (p.external_ref IS NULL OR p.external_ref !~ '[^[:space:]]'))
+                        END)
+                        OR EXISTS (SELECT 1 FROM sale_voids v WHERE v.sale_id = s.id)
+                        OR EXISTS (SELECT 1 FROM sale_refunds f WHERE f.sale_id = s.id)
+                        OR EXISTS (SELECT 1 FROM sale_returns r WHERE r.sale_id = s.id)))
             ORDER BY erpnext_posting_status.sequence
             LIMIT $2`,
-          [input.since !== null ? input.since.toString() : null, limit],
+          [input.since !== null ? input.since.toString() : null, limit, isFeedResponsibilitiesEnabled()],
         );
 
         const items: PostingWorkItem[] = [];

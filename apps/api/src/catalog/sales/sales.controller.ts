@@ -77,6 +77,13 @@ import {
 } from "./void-approval";
 import { SaleCaptureAuthGuard } from "./sale-capture-auth.guard";
 import {
+  SaleResponsibilityMismatchError,
+  SaleResponsibilityOfflineRefusedError,
+  SaleResponsibilityPayerInvalidError,
+  SaleResponsibilityReplayConflictError,
+  SaleResponsibilityRoleRefusedError,
+} from "./sale-responsibilities";
+import {
   SaleReturnsService,
   type SaleReturnProjection,
 } from "./sale-returns.service";
@@ -103,6 +110,8 @@ import {
  * status fallback has no 422 case, so the code is passed explicitly.
  */
 function toCaptureHttpError(err: unknown): unknown {
+  const responsibility = toResponsibilityHttpError(err);
+  if (responsibility !== null) return responsibility;
   if (err instanceof SaleTenderMismatchError) {
     return new UnprocessableEntityException({
       code: "sale_tender_mismatch",
@@ -124,6 +133,30 @@ function toCaptureHttpError(err: unknown): unknown {
     });
   }
   return err;
+}
+
+/**
+ * RT-418 (sales.yaml 1.10.0-draft `CaptureForbidden` / `CaptureUnprocessable`
+ * / `Conflict`): the responsibility refusals, each one body for every cause;
+ * null for any other error.
+ */
+function toResponsibilityHttpError(err: unknown): unknown {
+  if (err instanceof SaleResponsibilityRoleRefusedError) {
+    return new ForbiddenException({ code: "sale_responsibility_role_refused", message: err.message });
+  }
+  if (err instanceof SaleResponsibilityOfflineRefusedError) {
+    return new UnprocessableEntityException({ code: "sale_responsibility_offline_refused", message: err.message });
+  }
+  if (err instanceof SaleResponsibilityMismatchError) {
+    return new UnprocessableEntityException({ code: "sale_responsibility_mismatch", message: err.message });
+  }
+  if (err instanceof SaleResponsibilityPayerInvalidError) {
+    return new UnprocessableEntityException({ code: "sale_responsibility_payer_invalid", message: err.message });
+  }
+  if (err instanceof SaleResponsibilityReplayConflictError) {
+    return new ConflictException({ code: "idempotency_key_conflict", message: err.message });
+  }
+  return null;
 }
 
 /** Canonical UUID shape (any version) — a saleRef that fails this never hits the DB. */
@@ -255,6 +288,9 @@ export class SalesController {
         storeId: ctx.storeId,
         actorUserId: ctx.userId,
         deviceId: request.posDeviceId,
+        // RT-418: the path SaleCaptureAuthGuard took, chosen by the same rule
+        // (the presence of `operatorUserId`); credit is envelope-only.
+        authPath: _attributionClaim === undefined ? "envelope" : "device",
         body: saleBody,
         ...(receipt === undefined ? {} : { receipt }),
       });

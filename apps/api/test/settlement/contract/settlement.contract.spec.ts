@@ -8,7 +8,7 @@
  *   - the six retired operations: absent from `paths`, listed in
  *     `x-retired-operations` (runtime removal in RT-422), and declared by no
  *     other contract;
- *   - cookieAuth on both routes, `contract-only` until RT-418;
+ *   - cookieAuth on both routes, implemented (RT-418 removed `contract-only`);
  *   - the strict payer DTO without `creditTerms`, and `externalRef` as the
  *     ERPNext Customer link;
  *   - the §IV payer projection (camelCase, no tenant_id / credit terms).
@@ -167,11 +167,11 @@ describe("settlement.yaml — operations (RT-417)", () => {
     expect(declared.sort()).toEqual(expected.sort());
   });
 
-  it("keeps both payer routes contract-only, with a note naming RT-418", () => {
+  it("marks neither payer route contract-only: the RT-418 runtime serves both", () => {
     for (const id of Object.keys(KEPT_OPERATIONS)) {
       const op = findOp(id);
-      expect(op?.["x-runtime-status"]).toBe("contract-only");
-      expect(op?.["x-runtime-note"] ?? "").toContain("RT-418");
+      expect(op?.["x-runtime-status"]).toBeUndefined();
+      expect(op?.["x-runtime-note"]).toBeUndefined();
     }
   });
 

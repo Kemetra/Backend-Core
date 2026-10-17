@@ -59,6 +59,13 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   // RT-539 (0047): the receipt reprint record (append-only).
   "sale_reprints:SELECT",
   "sale_reprints:INSERT",
+  // RT-418 (0051): payer responsibilities (append-only), and the payer rows the
+  // Console routes create and a credit capture locks FOR SHARE (needs UPDATE).
+  "sale_responsibilities:SELECT",
+  "sale_responsibilities:INSERT",
+  "payer_account:SELECT",
+  "payer_account:INSERT",
+  "payer_account:UPDATE",
   // RT-365: the Console revoke locks the device row FOR UPDATE and sets the
   // revoke fields (FOR UPDATE needs the UPDATE privilege).
   "devices:UPDATE",
@@ -278,6 +285,7 @@ describe("database pool boundary", () => {
       "tracking_identities",
       "erpnext_tracking_map",
       "sale_reprints",
+      "sale_responsibilities",
     ]) {
       const entry = AUTH_LOOKUP_FORBIDDEN_GRANTS.find(([t]) => t === table);
       expect(entry).toBeDefined();

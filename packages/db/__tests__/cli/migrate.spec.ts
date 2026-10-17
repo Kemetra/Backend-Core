@@ -221,6 +221,7 @@ describe("data-pulse-migrate CLI", () => {
     "0047_sale_history_capture",
     "0048_sales_store_business_date_idx",
     "0050_shift_variance_policy",
+    "0051_sale_responsibilities",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -370,8 +371,34 @@ describe("data-pulse-migrate CLI", () => {
   }
 
   /**
-   * After one `down` from head: 0050's policy tables and columns are gone, while
-   * 0048's store/business-date index, 0047's receipt columns, line_seq and
+   * 0051_sale_responsibilities (RT-418): [table, its policies, sales.responsibility_count,
+   * erpnext_posting_resolution.payer_external_ref, payer_account.credit_terms].
+   */
+  async function countSaleResponsibilityObjects(): Promise<[string, string, string, string, string]> {
+    return [
+      await countPublicTables(["sale_responsibilities"]),
+      await countPolicies(["sale_responsibilities"]),
+      await countPublicColumn("sales", "responsibility_count"),
+      await countPublicColumn("erpnext_posting_resolution", "payer_external_ref"),
+      await countPublicColumn("payer_account", "credit_terms"),
+    ];
+  }
+
+  /**
+   * After one `down` from head: 0051's sale_responsibilities and its two sales /
+   * resolution columns are gone and payer_account.credit_terms is back, while
+   * 0050's policy tables and columns, 0048's store/business-date index and
+   * everything older survive.
+   */
+  async function expectOnlyLatestRolledBack(): Promise<void> {
+    expect(await countSaleResponsibilityObjects()).toEqual(["0", "0", "0", "0", "1"]);
+    expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
+    expect(await countValidSaleHistoryIndex()).toBe("1");
+    await expectBelow0048Applied();
+  }
+
+  /**
+   * Everything below 0048 is applied: 0047's receipt columns, line_seq and
    * sale_reprints survive, as do 0046's approval columns on sale_voids, their CHECK and the single-use index,
    * 0045's tracking tables, the tenant_products Tracking Profile and
    * stock_movements.tracking_identity_id, 0044's stock_locations table, its
@@ -380,9 +407,7 @@ describe("data-pulse-migrate CLI", () => {
    * columns, 0040's device lifecycle columns, 0039's evidence column and
    * 0037/0038's resolution table.
    */
-  async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countShiftVariancePolicyObjects()).toEqual(["0", "0", "0", "0"]);
-    expect(await countValidSaleHistoryIndex()).toBe("1");
+  async function expectBelow0048Applied(): Promise<void> {
     expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
     expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
     // 0032's void columns survive.
@@ -522,6 +547,9 @@ describe("data-pulse-migrate CLI", () => {
     // each), six frozen-policy columns on shifts and two tri-states on
     // shift_closes (RT-385).
     expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
+    // 0051's sale_responsibilities (SELECT + INSERT policies), the two new
+    // columns, and payer_account.credit_terms dropped (RT-418).
+    expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
   });
 
   it("up is idempotent on a second run", async () => {
@@ -559,7 +587,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0050 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0051 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
@@ -670,6 +698,7 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
     expect(await countValidSaleHistoryIndex()).toBe("1");
     expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
+    expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
   });
 
   it(

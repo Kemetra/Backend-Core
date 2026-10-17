@@ -144,6 +144,46 @@ export const CaptureSaleReceiptSchema = z
   .strict();
 
 /**
+ * RT-418 (contract RT-417, `PositiveDecimalAmount`): a strictly positive
+ * exact-decimal money string, at most 15 integer and 4 fractional digits.
+ */
+const positiveDecimalAmount = z
+  .string()
+  .regex(/^(?!0+(?:\.0+)?$)\d{1,15}(\.\d{1,4})?$/, "must be a positive exact-decimal string");
+
+/**
+ * RT-418 (contract RT-417 `SaleResponsibility`, owner decision R-1): one
+ * payer's share of the sale. `sequence` is bounded by its SMALLINT column.
+ */
+export const SaleResponsibilitySchema = z
+  .object({
+    payerRef: z.string().uuid("must be a uuid"),
+    amount: positiveDecimalAmount,
+    sequence: z.number().int().min(1).max(32767),
+  })
+  .strict();
+
+/**
+ * At most ONE payer per sale in this version (`maxItems: 1`): the posting
+ * feed acknowledges one Sales Invoice per work item. `payerRef` and
+ * `sequence` are unique within the sale (vacuous at one entry, kept for the
+ * contract rule). The coverage rule and payer eligibility need the database
+ * and run in the service (422).
+ */
+const responsibilityList = z
+  .array(SaleResponsibilitySchema)
+  .min(1)
+  .max(1)
+  .superRefine((rs, ctx) => {
+    if (hasRepeat(rs.map((r) => r.payerRef))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "payerRef must be unique within the sale" });
+    }
+    if (hasRepeat(rs.map((r) => r.sequence))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "sequence must be unique within the sale" });
+    }
+  });
+
+/**
  * The capture body's object shape (strict). The exported schemas below add
  * the RT-225 cross-field refinement; use this one only for shape
  * introspection or extension.
@@ -171,6 +211,10 @@ const CaptureSaleRequestObject = z
     admissionCheckAt: z.string().datetime().optional(),
     // RT-539: the optional receipt snapshot (first write wins; not hashed).
     receipt: CaptureSaleReceiptSchema.optional(),
+    // RT-418: who owes the part of the sale not paid at the till. A sale fact
+    // (hashed); accepted on the operatorAuthorization path only (the service
+    // refuses it on the device path, after a replay resolves).
+    responsibilities: responsibilityList.optional(),
   })
   .strict();
 
@@ -272,3 +316,4 @@ export type CaptureSaleRequestDto = z.infer<typeof CaptureSaleRequestWithTenders
 export type SaleTenderDto = z.infer<typeof SaleTenderSchema>;
 export type CaptureSaleLineDto = z.infer<typeof CaptureSaleLineSchema>;
 export type CaptureSaleReceiptDto = z.infer<typeof CaptureSaleReceiptSchema>;
+export type SaleResponsibilityDto = z.infer<typeof SaleResponsibilitySchema>;

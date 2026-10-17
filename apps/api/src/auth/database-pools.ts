@@ -121,6 +121,8 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     "sale_sync_deadletters",
     // RT-539 (0047): the receipt reprint record.
     "sale_reprints",
+    // RT-418 (0051): payer responsibilities on the sale fact.
+    "sale_responsibilities",
     "receivable",
     "claim",
     "claim_receivables",
@@ -224,6 +226,18 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   // policy); never UPDATE, DELETE or TRUNCATE.
   ["sale_reprints", "SELECT"],
   ["sale_reprints", "INSERT"],
+  // RT-418 (0051): a credit capture writes the sale's responsibilities, and
+  // the sale read and the posting feed (API and worker share this role) read
+  // them. Append-only (no UPDATE / DELETE policy); never UPDATE, DELETE or
+  // TRUNCATE.
+  ["sale_responsibilities", "SELECT"],
+  ["sale_responsibilities", "INSERT"],
+  // RT-418: the Console payer-account routes read and create payers, and a
+  // credit capture locks its payer row FOR SHARE (which needs UPDATE) so the
+  // payer cannot be suspended between the check and the sale. No DELETE.
+  ["payer_account", "SELECT"],
+  ["payer_account", "INSERT"],
+  ["payer_account", "UPDATE"],
   // RT-365: the Console device revoke locks the device row FOR UPDATE (which
   // needs UPDATE) and sets the revoke fields. No earlier domain path wrote
   // `devices` (pairing only INSERTs), so a deploy that skips the grant must
