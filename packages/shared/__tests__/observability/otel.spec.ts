@@ -16,9 +16,7 @@ jest.mock("@opentelemetry/sdk-node", () => {
     start: mockStart,
     shutdown: mockShutdown,
   }));
-  // The real `resources` namespace, so the service.version resource is real.
-  const { resources } = jest.requireActual("@opentelemetry/sdk-node");
-  return { NodeSDK: MockNodeSDK, resources };
+  return { NodeSDK: MockNodeSDK };
 });
 
 jest.mock("@opentelemetry/exporter-trace-otlp-http", () => ({
@@ -47,6 +45,12 @@ import {
 
 const MockNodeSDK = NodeSDK as jest.MockedClass<typeof NodeSDK>;
 
+// Only NodeSDK is stubbed: give the module the real `resources` namespace so
+// the service.version resource under test is a real Resource.
+type SdkNodeModule = typeof import("@opentelemetry/sdk-node");
+jest.requireMock<SdkNodeModule>("@opentelemetry/sdk-node").resources =
+  jest.requireActual<SdkNodeModule>("@opentelemetry/sdk-node").resources;
+
 // ---------------------------------------------------------------------------
 // createOtelSdk
 // ---------------------------------------------------------------------------
@@ -73,6 +77,8 @@ describe("createOtelSdk", () => {
     expect(ctorArg).not.toHaveProperty("serviceVersion");
     const resource = ctorArg["resource"] as { attributes: Record<string, unknown> };
     expect(resource.attributes["service.version"]).toBe("36bb0c7e1f2a");
+    // A custom resource replaces sdk-node's default; keep its SDK attributes.
+    expect(resource.attributes["telemetry.sdk.language"]).toBe("nodejs");
   });
 
   it("passes no resource when serviceVersion is not provided", () => {

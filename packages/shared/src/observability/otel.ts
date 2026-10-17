@@ -135,9 +135,14 @@ export function createOtelSdk(opts: OtelOptions): NodeSDK {
   return new NodeSDK({
     serviceName: opts.serviceName,
     // NodeSDK has no `serviceVersion` option; the version must be a resource
-    // attribute or it is silently dropped (RT-631).
+    // attribute or it is silently dropped (RT-631). A custom resource replaces
+    // the SDK default, so merge onto it to keep the telemetry.sdk.* attributes.
     ...(opts.serviceVersion
-      ? { resource: resources.resourceFromAttributes({ "service.version": opts.serviceVersion }) }
+      ? {
+          resource: resources
+            .defaultResource()
+            .merge(resources.resourceFromAttributes({ "service.version": opts.serviceVersion })),
+        }
       : {}),
     traceExporter,
     instrumentations,
