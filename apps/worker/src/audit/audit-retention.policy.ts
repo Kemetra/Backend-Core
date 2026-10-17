@@ -39,3 +39,5 @@ export function computeCutoff(now: Date): Date {
   cutoff.setUTCDate(cutoff.getUTCDate() - RETENTION_DAYS);
   return cutoff;
 }
+
+// RT-582 probe: worker-only change
