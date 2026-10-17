@@ -44,9 +44,10 @@ type WarnLogger = Pick<Logger, "warn">;
 /** Envelope endpoint and auth header from a DSN `scheme://key@host[/prefix]/project`. */
 function targetFromDsn(dsn: string): ForwardTarget {
   const url = new URL(dsn);
+  // `resolveSentryConfig` already checked the last segment is a numeric id.
   const segments = url.pathname.split("/");
   const projectId = segments.pop() ?? "";
-  const prefix = segments.join("/").replace(/\/+$/, "");
+  const prefix = segments.join("/");
   const key = decodeURIComponent(url.username);
   return {
     url: `${url.protocol}//${url.host}${prefix}/api/${projectId}/envelope/`,
