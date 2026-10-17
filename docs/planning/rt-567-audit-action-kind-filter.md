@@ -65,8 +65,9 @@ hidden. Hiding an unclassified event from an audit view is the worse failure; sh
 The guard in §4.3 keeps that case rare.
 
 **D-3 — Retired codes stay in the registry.** Rows are append-only and never deleted (migration 0034), so a
-code whose route is gone (for example the RT-421 `settlement.receivable.*` reads) still needs its kind.
-Registry entries are never removed, only added.
+code whose route is later removed still needs its kind for historical rows. Registry entries are never removed,
+only added. The drift guard (§4.3) therefore checks that every live `GET` code is registered as `read`. It does
+not require every registered code to have a live route.
 
 ### 4.2 Where the registry lives
 
