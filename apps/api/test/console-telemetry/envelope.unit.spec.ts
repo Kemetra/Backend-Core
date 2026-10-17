@@ -131,6 +131,33 @@ describe("buildForwardEnvelope", () => {
     expect((missing["sdk"] as { settings: unknown }).settings).toEqual({ infer_ip: "never" });
   });
 
+  it("keeps only OBS-1 tag keys (no user, IP, tenant or store ids)", () => {
+    const tags = {
+      service: "admin-console",
+      route: "/tenants/:tenantId/sales",
+      request_id: "0190f5a2-3b4c-7d8e-9f01-000000000001",
+      user_id: "u1",
+      ip: "10.0.0.1",
+      ip_address: "10.0.0.2",
+      tenant_id: "t1",
+      store_id: "s1",
+      email: "owner@example.com",
+      "browser.name": "Chrome",
+      outcome: "x".repeat(201),
+    };
+    const { event } = decode(build(envelope({}, [eventItem(errorEvent({ tags }))]))!);
+    expect(event["tags"]).toEqual({
+      service: "admin-console",
+      route: "/tenants/:tenantId/sales",
+      request_id: "0190f5a2-3b4c-7d8e-9f01-000000000001",
+    });
+  });
+
+  it("omits tags when none survive", () => {
+    const { event } = decode(build(envelope({}, [eventItem(errorEvent({ tags: { user_id: "u1" } }))]))!);
+    expect(event).not.toHaveProperty("tags");
+  });
+
   it("drops user and IP data the envelope carries", () => {
     const out = build(envelope({}, [eventItem(errorEvent({ user: { ip_address: "{{auto}}", id: "u1" } }))]))!;
     const { event } = decode(out);

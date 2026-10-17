@@ -13,7 +13,9 @@
  * fields never leave, so the destination comes from server config alone.
  * The server then stamps the event's `environment` and rebuilds its `sdk`
  * with `settings.infer_ip = "never"`, so Sentry never infers an IP address
- * (the scrubber already dropped `user` and `request`).
+ * (the scrubber already dropped `user` and `request`). Tags are cut to the
+ * OBS-1 §1/§2 key set here too, so a Console tag such as `user_id` or `ip`
+ * never leaves even where the shared scrubber only drops redacted keys.
  *
  * Errors carry a fixed message: `JSON.parse` messages quote the input, so
  * they are never passed on or logged.
@@ -28,6 +30,20 @@ const MAX_HEADER_VALUE_LENGTH = 64;
 /** An SDK name or version kept from the Console: a short plain token (anchored, linear). */
 const SDK_TOKEN = /^[\w.-]{1,64}$/;
 const DEFAULT_SDK = { name: "backend-core.console-tunnel", version: "1.0.0" } as const;
+/** OBS-1 §1 contract and bounded tags, plus the §2 `request_id`. */
+const ALLOWED_TAG_KEYS: ReadonlySet<string> = new Set([
+  "env",
+  "service",
+  "version",
+  "route",
+  "method",
+  "status",
+  "status_class",
+  "error_class",
+  "outcome",
+  "request_id",
+]);
+const MAX_TAG_VALUE_LENGTH = 200;
 const NEWLINE = 0x0a;
 
 export class EnvelopeMalformedError extends Error {
@@ -141,6 +157,14 @@ function rebuildSdk(inbound: unknown): JsonObject {
   };
 }
 
+function allowedTags(tags: SentryEventLike["tags"]): Record<string, unknown> | undefined {
+  const kept = Object.entries(tags ?? {}).filter(
+    ([key, value]) =>
+      ALLOWED_TAG_KEYS.has(key) && typeof value === "string" && value.length <= MAX_TAG_VALUE_LENGTH,
+  );
+  return kept.length > 0 ? Object.fromEntries(kept) : undefined;
+}
+
 function rebuildHeader(inbound: JsonObject, event: SentryEventLike): JsonObject {
   const out: JsonObject = {};
   const eventId = shortString(event.event_id);
@@ -165,7 +189,9 @@ export function buildForwardEnvelope(body: Buffer, environment: string): Buffer 
   const scrubbed = scrubSentryEvent(inbound as SentryEventLike);
   if (scrubbed === null) return null;
 
-  const event = { ...scrubbed, environment, sdk: rebuildSdk(inbound["sdk"]) };
+  const { tags, ...rest } = scrubbed;
+  const kept = allowedTags(tags);
+  const event = { ...rest, ...(kept ? { tags: kept } : {}), environment, sdk: rebuildSdk(inbound["sdk"]) };
   const payload = Buffer.from(JSON.stringify(event), "utf8");
   return Buffer.concat([
     Buffer.from(`${JSON.stringify(rebuildHeader(header, scrubbed))}\n`, "utf8"),
