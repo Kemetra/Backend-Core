@@ -90,6 +90,9 @@ export class ShiftClosesController {
           ...(query.min_abs_variance !== undefined ? { minAbsVariance: query.min_abs_variance } : {}),
           ...(query.currency_code !== undefined ? { currencyCode: query.currency_code } : {}),
           ...(query.approval !== undefined ? { approval: query.approval } : {}),
+          ...(query.approval_required !== undefined ? { approvalRequired: query.approval_required } : {}),
+          ...(query.approval_missing !== undefined ? { approvalMissing: query.approval_missing } : {}),
+          ...(query.approver_check !== undefined ? { approverCheck: query.approver_check } : {}),
         },
       });
     } catch (err) {

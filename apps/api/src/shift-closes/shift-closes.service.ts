@@ -24,6 +24,10 @@
  *     no `shift_closes` row, so it is never listed and its detail is a 404.
  *   - Order: `closed_at DESC, shift_id DESC`, a total order over immutable
  *     rows; the keyset compares the full-precision `closed_at`.
+ *   - RT-387: every close carries the shift's frozen policy (the 1:1 shift
+ *     join), the derived `approvalRequiredByPolicy` / `approvalMissing` and
+ *     the persisted `approverCheck` (the verdict row, else the
+ *     not_applicable / check_unavailable rule), and the list filters on them.
  */
 import { Inject, Injectable } from "@nestjs/common";
 import { runWithTenantContext } from "@data-pulse-2/db";
@@ -34,6 +38,7 @@ import { MembershipRepository } from "../context/membership.repository";
 import { callerStoreScope, inStoreScope, scopeStoreIds } from "../context/operator-store-scope";
 import type { StoreScope } from "../context/store-scope";
 import type { ResolvedContext } from "../context/types";
+import { FROZEN_POLICY_COLUMNS } from "../pos-shifts/shift-frozen-policy";
 import {
   CLOSED_AT_KEY_SQL,
   decodeShiftCloseCursor,
@@ -81,6 +86,10 @@ export interface ShiftCloseListFilters {
   readonly minAbsVariance?: string;
   readonly currencyCode?: string;
   readonly approval?: "approved" | "not_approved";
+  /** RT-387: the derived tri-states and the persisted approver check. */
+  readonly approvalRequired?: "yes" | "no" | "unknown";
+  readonly approvalMissing?: "yes" | "no" | "unknown";
+  readonly approverCheck?: "not_applicable" | "verified" | "unverified";
 }
 
 export interface ListShiftClosesInput extends ScopedReadInput {
@@ -98,16 +107,35 @@ const CLOSE_COLUMNS = `
   c.cash_refunds_total::text AS cash_refunds_total, c.pay_in_total::text AS pay_in_total,
   c.pay_out_total::text AS pay_out_total, c.expected_cash::text AS expected_cash,
   c.counted_cash::text AS counted_cash, c.variance::text AS variance,
-  c.sale_count, c.received_at`;
+  c.sale_count, c.received_at,
+  c.approval_required_by_policy, c.approval_missing,
+  v.status AS verdict_status, v.reason AS verdict_reason,
+  ${FROZEN_POLICY_COLUMNS}`;
+
+/**
+ * The close, its shift (1:1, the frozen policy) and its approver verdict, if
+ * any. Every join is on the close's own tenant (and store), never wider.
+ */
+const CLOSE_FROM = `
+    FROM shift_closes c
+    JOIN shifts s
+      ON s.shift_id = c.shift_id AND s.tenant_id = c.tenant_id AND s.store_id = c.store_id
+    LEFT JOIN shift_close_approver_checks v
+      ON v.shift_id = c.shift_id AND v.tenant_id = c.tenant_id`;
+
+/** The persisted `approverCheck.status` of a close (the contract's placeholder rule included). */
+const APPROVER_CHECK_SQL = `CASE WHEN c.variance_approved_by_user_id IS NULL THEN 'not_applicable'
+            ELSE COALESCE(v.status, 'unverified') END`;
 
 /**
  * $1 tenant, $2 scoped store ids (null = tenant-wide), $3 store filter,
  * $4 closed_from, $5 closed_to, $6 close kind, $7 min |variance|, $8 currency,
- * $9 approval, $10 / $11 keyset (closed_at, shift_id), $12 limit.
+ * $9 approval, $10 / $11 keyset (closed_at, shift_id), $12 limit,
+ * $13 approval_required, $14 approval_missing, $15 approver_check (RT-387).
  */
 const LIST_SQL = `
   SELECT ${CLOSE_COLUMNS}
-    FROM shift_closes c
+  ${CLOSE_FROM}
    WHERE c.tenant_id = $1::uuid
      AND ($2::uuid[] IS NULL OR c.store_id = ANY($2::uuid[]))
      AND ($3::uuid IS NULL OR c.store_id = $3::uuid)
@@ -118,6 +146,9 @@ const LIST_SQL = `
      AND ($8::text IS NULL OR c.currency_code = $8::text)
      AND ($9::text IS NULL
           OR ($9::text = 'approved') = (c.variance_approved_by_user_id IS NOT NULL))
+     AND ($13::text IS NULL OR c.approval_required_by_policy = $13::text)
+     AND ($14::text IS NULL OR c.approval_missing = $14::text)
+     AND ($15::text IS NULL OR ${APPROVER_CHECK_SQL} = $15::text)
      AND ($10::timestamptz IS NULL OR (c.closed_at, c.shift_id) < ($10::timestamptz, $11::uuid))
    ORDER BY c.closed_at DESC, c.shift_id DESC
    LIMIT $12`;
@@ -127,9 +158,7 @@ const DETAIL_SQL = `
   SELECT ${CLOSE_COLUMNS},
          s.opened_at, s.opening_cashier_user_id AS opening_user_id,
          c.recorded_by_user_id
-    FROM shift_closes c
-    JOIN shifts s
-      ON s.shift_id = c.shift_id AND s.tenant_id = c.tenant_id AND s.store_id = c.store_id
+  ${CLOSE_FROM}
    WHERE c.shift_id = $1::uuid
      AND c.tenant_id = $2::uuid
      AND ($3::uuid[] IS NULL OR c.store_id = ANY($3::uuid[]))`;
@@ -167,6 +196,9 @@ export class ShiftClosesReadService {
         keyset?.closedAtKey ?? null,
         keyset?.shiftId ?? null,
         input.limit + 1,
+        filters.approvalRequired ?? null,
+        filters.approvalMissing ?? null,
+        filters.approverCheck ?? null,
       ]);
       const rows = r.rows.slice(0, input.limit);
       const last = rows[rows.length - 1];

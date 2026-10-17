@@ -43,7 +43,7 @@ export const CASH_UP_AMOUNT_FIELDS: ReadonlyArray<keyof CashUpTotals> = [
 const SCALE = 4;
 
 /** An exact-decimal string (optionally signed, ≤ 4 fractional digits) in 10⁻⁴ units. */
-function scaled(amount: string): bigint {
+export function scaled(amount: string): bigint {
   const negative = amount.startsWith("-");
   const [whole = "0", fraction = ""] = (negative ? amount.slice(1) : amount).split(".");
   const units = BigInt(whole + fraction.padEnd(SCALE, "0"));

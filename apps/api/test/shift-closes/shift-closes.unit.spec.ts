@@ -83,9 +83,61 @@ function detailRow(overrides: Partial<ShiftCloseDetailRow> = {}): ShiftCloseDeta
     opened_at: new Date("2026-10-03T02:00:00.000Z"),
     opening_user_id: USER,
     recorded_by_user_id: USER,
+    approval_required_by_policy: "unknown",
+    approval_missing: "unknown",
+    verdict_status: null,
+    verdict_reason: null,
+    frozen_policy_source: null,
+    frozen_policy_revision_id: null,
+    frozen_policy_mode: null,
+    frozen_policy_limit_amount: null,
+    frozen_policy_currency_code: null,
+    frozen_policy_flags: null,
     ...overrides,
   };
 }
+
+describe("RT-387: the policy fields of a close", () => {
+  it("reads a close whose open carried no policy as frozenPolicy null and unknown", () => {
+    expect(toShiftCloseSummary(detailRow())).toMatchObject({
+      frozenPolicy: null,
+      approvalRequiredByPolicy: "unknown",
+      approvalMissing: "unknown",
+      approverCheck: { status: "not_applicable", reason: null },
+    });
+  });
+
+  it("projects the frozen policy with its flags, and the derived values as stored", () => {
+    const summary = toShiftCloseSummary(
+      detailRow({
+        frozen_policy_source: "tenant",
+        frozen_policy_revision_id: SHIFT,
+        frozen_policy_mode: "limit",
+        frozen_policy_limit_amount: "10.0000",
+        frozen_policy_currency_code: "EGP",
+        frozen_policy_flags: ["policy_value_mismatch", "policy_revision_superseded"],
+        approval_required_by_policy: "yes",
+        approval_missing: "yes",
+      }),
+    );
+    expect(summary.frozenPolicy).toEqual({
+      policySource: "tenant",
+      policyRevisionId: SHIFT,
+      policyValue: { mode: "limit", limitAmount: "10.00", currencyCode: "EGP" },
+      policyFlags: ["policy_revision_superseded", "policy_value_mismatch"],
+    });
+    expect(summary).toMatchObject({ approvalRequiredByPolicy: "yes", approvalMissing: "yes" });
+  });
+
+  it.each([
+    ["no verdict row: the check_unavailable placeholder", null, null, { status: "unverified", reason: "check_unavailable" }],
+    ["a verified row", "verified", null, { status: "verified", reason: null }],
+    ["an unverified row", "unverified", "not_manager", { status: "unverified", reason: "not_manager" }],
+  ])("an approver with %s", (_label, status, reason, expected) => {
+    const row = detailRow({ variance_approved_by_user_id: USER, verdict_status: status, verdict_reason: reason });
+    expect(toShiftCloseSummary(row).approverCheck).toEqual(expected);
+  });
+});
 
 describe("shift-close projections", () => {
   it("formats stored numeric(19,4) money to the currency's minor unit, signed", () => {

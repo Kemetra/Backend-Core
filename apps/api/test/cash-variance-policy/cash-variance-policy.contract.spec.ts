@@ -3,13 +3,13 @@
  *
  * RT-384 (AD-CASH-001 follow-up 1): the shift variance policy contract,
  * `cash-variance-policy.openapi.yaml` 1.0.0-draft. `[GATED]` contract; the
- * runtime is RT-387 on the RT-385 migration, so every operation is
- * `x-runtime-status: contract-only`.
+ * runtime is RT-387 on the RT-385 migration; since RT-387 no operation is
+ * `x-runtime-status: contract-only` (the runtime ships them unchanged).
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
  * app boot and no HTTP. What this pins:
  *
- *   1. The seven operations at their paths, all contract-only, with no
+ *   1. The seven operations at their paths, all implemented, with no
  *      operationId collision in any other contract.
  *   2. Auth: the POS read is `device` only; the Console operations are the
  *      human `cookieAuth` only. Scope never comes from a query or body field.
@@ -286,9 +286,9 @@ describe("cash-variance-policy — document and operations", () => {
     );
   });
 
-  it.each(OPERATIONS)("%s is contract-only until RT-387, with a runtime note", (_id, route) => {
-    expect(op(route)["x-runtime-status"]).toBe("contract-only");
-    expect(flat(op(route)["x-runtime-note"])).toContain("RT-387");
+  it.each(OPERATIONS)("%s is implemented since RT-387 (no contract-only marker)", (_id, route) => {
+    expect(op(route)["x-runtime-status"]).toBeUndefined();
+    expect(op(route)["x-runtime-note"]).toBeUndefined();
   });
 
   it("collides with no operationId in any other contract", () => {

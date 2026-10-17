@@ -7,7 +7,7 @@
  *
  * `.ts` (not `.spec.ts`) so Jest does not collect it.
  */
-import type { DynamicModule, INestApplication, Type } from "@nestjs/common";
+import type { DynamicModule, INestApplication, Provider, Type } from "@nestjs/common";
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
 import request from "supertest";
@@ -32,6 +32,8 @@ export interface ScopedHttpHarnessOptions {
   readonly contractId: string;
   readonly module: Type<unknown> | DynamicModule;
   readonly seed: (env: PgTestEnv) => Promise<void>;
+  /** Test-only providers, such as an idempotency interceptor over a fake Redis (RT-387). */
+  readonly providers?: Provider[];
 }
 
 interface HarnessState {
@@ -55,7 +57,10 @@ async function setUp(state: HarnessState, options: ScopedHttpHarnessOptions): Pr
     return;
   }
   // Bearer tokens resolve on the RLS-exempt pool, as the production auth-lookup role does.
-  state.app = await bootScopedApp(state.env, options.module, undefined, { authLookupPool: state.env.admin });
+  state.app = await bootScopedApp(state.env, options.module, undefined, {
+    authLookupPool: state.env.admin,
+    ...(options.providers !== undefined ? { providers: options.providers } : {}),
+  });
 }
 
 /** A validator for `components.schemas[name]` of the contract `contractId`. */

@@ -16,6 +16,9 @@ import type {
   ShiftCloseKind,
   ShiftCloseRow,
 } from "./shift-cash-up.repository";
+import type { PolicyTriState } from "../cash-variance-policy/policy-value";
+import { approverCheckOf, type ApproverCheck } from "./shift-close-approver";
+import type { RecordedFrozenPolicy } from "./shift-frozen-policy";
 import { formatMoney } from "./shift-money";
 
 export interface ShiftCloseProjection {
@@ -35,6 +38,10 @@ export interface ShiftCloseProjection {
   readonly cashRefundReturnRefs: ReadonlyArray<string>;
   readonly varianceApprovedByUserId?: string;
   readonly receivedAt: string;
+  /** RT-387: derived from the frozen policy (`unknown` without one) and the persisted verdict. */
+  readonly approvalRequiredByPolicy: PolicyTriState;
+  readonly approvalMissing: PolicyTriState;
+  readonly approverCheck: ApproverCheck;
 }
 
 export interface ShiftProjection {
@@ -46,6 +53,8 @@ export interface ShiftProjection {
   readonly openingUserId: string;
   readonly receivedAt: string;
   readonly close?: ShiftCloseProjection;
+  /** RT-387: present exactly when the open carried a frozen policy. */
+  readonly frozenPolicy?: RecordedFrozenPolicy;
 }
 
 export interface CashMovementProjection {
@@ -88,12 +97,16 @@ function closeProjection(close: ShiftCloseRow, currencyCode: string): ShiftClose
       ? { varianceApprovedByUserId: close.varianceApprovedByUserId }
       : {}),
     receivedAt: close.receivedAt.toISOString(),
+    approvalRequiredByPolicy: close.approvalRequiredByPolicy ?? "unknown",
+    approvalMissing: close.approvalMissing ?? "unknown",
+    approverCheck: approverCheckOf(close.varianceApprovedByUserId, close.approverVerdict ?? null),
   };
 }
 
 /** The `Shift` projection; `close` is present exactly when the shift is closed. */
 export function toShiftProjection(shift: CashUpShiftRow, close: ShiftCloseRow | null): ShiftProjection {
   return {
+    ...(shift.frozenPolicy ? { frozenPolicy: shift.frozenPolicy } : {}),
     shiftId: shift.shiftId,
     status: shift.lifecycleState === "open" ? "open" : "closed",
     currencyCode: shift.currencyCode,

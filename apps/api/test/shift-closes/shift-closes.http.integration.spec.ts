@@ -291,6 +291,11 @@ describe("RT-383 shift-closes — detail", () => {
     const res = await get(detail(CLOSE_X3), SES_OWNER_SPEC).expect(200);
     expectValid(detailSchema, res.body);
     expect(res.body).toEqual({
+      // RT-387: an open without a frozen policy, no approver recorded.
+      frozenPolicy: null,
+      approvalRequiredByPolicy: "unknown",
+      approvalMissing: "unknown",
+      approverCheck: { status: "not_applicable", reason: null },
       shiftId: CLOSE_X3,
       storeId: STORE_A_X,
       currencyCode: "EGP",
@@ -394,6 +399,11 @@ describe("RT-383 shift-closes — list projection and ordering", () => {
           variance: "-20.00",
           saleCount: 7,
           receivedAt: expect.any(String),
+          // RT-387: an open without a frozen policy, no approver recorded.
+          frozenPolicy: null,
+          approvalRequiredByPolicy: "unknown",
+          approvalMissing: "unknown",
+          approverCheck: { status: "not_applicable", reason: null },
         },
       ],
       nextCursor: null,

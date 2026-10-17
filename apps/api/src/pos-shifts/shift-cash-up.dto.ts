@@ -14,6 +14,7 @@
 import { z } from "zod";
 
 import { minorUnitExponent } from "../catalog/sales/iso4217-minor-units";
+import { FrozenPolicySchema } from "./shift-frozen-policy";
 import { fitsCurrencyPrecision } from "./shift-money";
 
 /**
@@ -88,6 +89,8 @@ export const OpenShiftRequestSchema = z
     openingUserId: uuid,
     currencyCode,
     openingFloat: nonNegativeAmount,
+    /** RT-387 (pos-shifts 1.2.0-draft): the policy the POS froze; optional (an old POS sends none). */
+    frozenPolicy: FrozenPolicySchema.optional(),
     operatorUserId,
   })
   .strict()

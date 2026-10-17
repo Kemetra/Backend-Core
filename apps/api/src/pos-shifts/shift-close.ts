@@ -6,6 +6,7 @@
  */
 import { createHash } from "node:crypto";
 
+import type { CloseApproval } from "../cash-variance-policy/policy-value";
 import { canonicalJson } from "../idempotency/canonical-json";
 import { CASH_UP_AMOUNT_FIELDS } from "./shift-cash-arithmetic";
 import type { CloseShiftFact } from "./shift-cash-up.dto";
@@ -41,10 +42,11 @@ export function closeHash(shift: CashUpShiftRow, fact: CloseShiftFact): Buffer {
   return createHash("sha256").update(canonicalJson(canonical)).digest();
 }
 
-/** Who recorded a close and its payload hash. */
+/** Who recorded a close, its payload hash and its derived policy values (RT-387). */
 export interface CloseProvenance {
   readonly recordedByUserId: string;
   readonly payloadHash: Buffer;
+  readonly approval: CloseApproval;
 }
 
 /** The fact as the repository records it: verbatim, absent optionals as null. */
@@ -55,6 +57,7 @@ export function toCloseRecord(fact: CloseShiftFact, provenance: CloseProvenance)
     varianceApprovedByUserId: fact.varianceApprovedByUserId ?? null,
     recordedByUserId: provenance.recordedByUserId,
     payloadHash: provenance.payloadHash,
+    ...provenance.approval,
   };
 }
 

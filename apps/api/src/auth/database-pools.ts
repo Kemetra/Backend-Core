@@ -137,6 +137,10 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     "shift_closes",
     "shift_cash_movements",
     "shift_refund_claims",
+    // RT-387 (0050): the shift variance policy revisions and the persisted
+    // approver verdict of a close.
+    "cash_variance_policy_revisions",
+    "shift_close_approver_checks",
     // RT-213: with BYPASSRLS any grant on tenants would expose every tenant
     // row. Device auth reads tenant status on the domain role instead.
     "tenants",
@@ -238,6 +242,16 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   ["payer_account", "SELECT"],
   ["payer_account", "INSERT"],
   ["payer_account", "UPDATE"],
+  // RT-387 (0050): the Console publishes policy revisions and every resolution
+  // (device read, Console reads, the open's accept-and-flag check) reads them;
+  // a close's approver verdict is written once after the commit and read back
+  // by the close replay and the admin shift-close reads. Both tables are
+  // append-only (no UPDATE / DELETE policy, a trigger refuses both); never
+  // UPDATE, DELETE or TRUNCATE.
+  ["cash_variance_policy_revisions", "SELECT"],
+  ["cash_variance_policy_revisions", "INSERT"],
+  ["shift_close_approver_checks", "SELECT"],
+  ["shift_close_approver_checks", "INSERT"],
   // RT-365: the Console device revoke locks the device row FOR UPDATE (which
   // needs UPDATE) and sets the revoke fields. No earlier domain path wrote
   // `devices` (pairing only INSERTs), so a deploy that skips the grant must
