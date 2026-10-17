@@ -236,15 +236,18 @@ info:
 
       - **Issue.** The caller names the store, the terminal binding the POS
         pins at pairing (`branchName`, `branchAddress`, `taxRegistrationId`,
-        the printer ids; Backend-Core has no other source for them), an
+        the printer ids). These are passed through to satisfy migration
+        0024's NOT NULL snapshot columns; this API does not manage them, and
+        Backend-Core has no other source for them. Then an
         optional `terminalLabel`, an optional `ttlMinutes` (default 60, at most
         1440 = 24 h) and optionally `replacesDeviceId`. The server generates
         the code and returns it ONCE, in the 201 body only. It stores only a
         hash (`code_hash`), so it can never return the code again: not on a
         list, not on an idempotent retry. A same-key retry is answered 409
         `idempotency_key_conflict` (RT-82 K3, as the connector credential
-        rotation); a client that lost the 201 cancels that code and issues a
-        new one with a new key.
+        rotation). A client that lost the 201 finds the stray code with
+        `consoleListPairingCodes`, cancels it, and issues again with a new
+        key.
       - **Replace and move.** With `replacesDeviceId`, the code replaces that
         device. The server derives the kind from the stores, never from the
         request: the device's own store is a `replace` (it records reason
@@ -262,6 +265,17 @@ info:
         security or recovery revoke, can be replaced or moved: the exception
         stays on the old device and shift and is never transferred to the new
         device (RT-287 comment 11493).
+      - **One replacement per device.** A device is replaced at most once
+        (`replacedByDeviceId` holds one id). After an `allowed` verdict, and
+        still under the replaced device's locks, the issue is refused with
+        409 when a code already replaces that device:
+        `replacement_already_pending` when a live code (`pending`, not past
+        `expiresAt`) names it, `device_already_replaced` when a used code
+        does. Cancel the pending code (or let it expire) to issue another.
+        These two refusals are not verdicts: the impact preview reports the
+        device's lifecycle state, and shows the facts behind them as
+        `replacedByDeviceId` and `cascade.pendingPairingCodeCount`. They carry
+        no `error.details`. A `blocked` verdict is always reported first.
       - **Redemption** (`posPairTerminal`) decides again, under the replaced
         device's lifecycle lock, with the same evaluator. If it is still
         allowed, ONE transaction burns the code, inserts the new device and,
@@ -270,8 +284,10 @@ info:
         sessions are revoked and its other pending codes cancelled), with no
         actor (`revokedByUserId` null: the redemption is the terminal's, not a
         session user's; the issuer is on the `pos.device.pairing_code.issued`
-        row). On an already revoked device the auto-revoke changes nothing.
-        If a shift opened on the replaced device after the issue, the
+        row; the revoke's audit row carries `pairing_code_id` to join them).
+        On an already revoked device the auto-revoke changes nothing, and the
+        redemption still cancels any other pending code that replaces the
+        same device, so no second replacement can follow. If a shift opened on the replaced device after the issue, the
         redemption is refused (`REPLACEMENT_BLOCKED`, see the pairing
         contract) and the code stays pending.
       - **List** returns the live codes: `pending` and not past `expiresAt`.
@@ -307,7 +323,9 @@ info:
     metadata `pairing_code_id`, `kind`, `replaces_device_id`). The
     redemption's auto-revoke writes `pos.device.revoked` with no actor user,
     `reason` `replaced` / `moved`, the cascade counts,
-    `custody_exception: false` and `replaced_by_device_id`. A refused issue,
+    `custody_exception: false`, `replaced_by_device_id` and
+    `pairing_code_id` (joins it to the issuer's
+    `pos.device.pairing_code.issued` row). A refused issue,
     cancel or redemption writes none of these. The list is audited
     `pairing_codes.listed`.
 
@@ -348,7 +366,8 @@ info:
     `custody_exception_not_acknowledged`, 500 internal. The pairing-code
     operations (RT-367) add: 400 `idempotency_key_required` /
     `idempotency_key_malformed` on the issue; 409 `unresolved_cash_session` /
-    `device_retired` (with the replace / move preview as `error.details`) and
+    `device_retired` (with the replace / move preview as `error.details`),
+    `replacement_already_pending` / `device_already_replaced` and
     `idempotency_key_conflict` on the issue; 409 `pairing_code_used` on the
     cancel; 425 `idempotency_in_progress` on the issue.
 
@@ -744,7 +763,8 @@ components:
         with the same key never issues a second code and never returns the
         first one; it is answered 409 `idempotency_key_conflict`, and so is the
         same key with a different body. A request still in progress under the
-        key is 425.
+        key is 425. Never retry with the same key: list the live codes, cancel
+        a stray one, and issue again with a new key.
 
   schemas:
     # -----------------------------------------------------------------------
@@ -1842,10 +1862,11 @@ components:
           description: The store the new device is paired into (the code's store).
         terminalLabel:
           description: >
-            The new terminal's label. When omitted, the server assigns
-            `T-` + the first 8 hex digits of the new `terminalId`, upper case:
-            unique, and never the replaced device's label (its sale numbers
-            stay its own).
+            The new terminal's label. When omitted, the server derives it
+            from the new `terminalId` prefix: `T-` + its first 8 hex digits,
+            upper case. It is never the replaced device's label (the old
+            till's sale numbers stay its own). Give an explicit label to keep
+            labels distinct within a store.
           allOf:
             - $ref: "#/components/schemas/TerminalLabel"
         ttlMinutes:
@@ -1965,6 +1986,7 @@ components:
       additionalProperties: false
       required:
         - pairingCodeId
+        - kind
         - storeId
         - terminalId
         - terminalLabel
@@ -1978,6 +2000,14 @@ components:
         pairingCodeId:
           type: string
           format: uuid
+        kind:
+          description: >
+            What redeeming the code does, derived as on the issue. Reported
+            even when the replaced device is outside the caller's scope (then
+            `replacesDeviceId` is null), so the list flags every code that
+            will revoke a device.
+          allOf:
+            - $ref: "#/components/schemas/PairingCodeKind"
         storeId:
           type: string
           format: uuid
@@ -2051,7 +2081,9 @@ components:
         move (`unresolved_cash_session`, `device_retired`) it carries the
         replace / move impact preview, computed under the replaced device's
         lock, as `error.details`; its verdict is `blocked` and its `blockCode`
-        equals `error.code`. `idempotency_key_conflict` carries no details.
+        equals `error.code`. `replacement_already_pending`,
+        `device_already_replaced` and `idempotency_key_conflict` carry no
+        details.
       properties:
         error:
           type: object
@@ -2059,7 +2091,12 @@ components:
           properties:
             code:
               type: string
-              enum: [unresolved_cash_session, device_retired, idempotency_key_conflict]
+              enum:
+                - unresolved_cash_session
+                - device_retired
+                - replacement_already_pending
+                - device_already_replaced
+                - idempotency_key_conflict
               description: Stable machine-readable error code.
             message:
               type: string
@@ -2261,6 +2298,9 @@ components:
         device is active and has an open shift (close it on the till and let
         it sync first). `device_retired`: the replaced device is retired. Both
         carry the replace / move preview as `error.details`.
+        `replacement_already_pending`: a live pending code already replaces
+        the device (cancel it first). `device_already_replaced`: a used code
+        already replaced it (a device is replaced once).
         `idempotency_key_conflict`: the `Idempotency-Key` was already used (a
         retry is never replayed, because the code is never stored) or was used
         with another body; issue again with a new key.
@@ -2271,7 +2311,12 @@ components:
     IdempotencyInProgress:
       description: >
         Too Early (425): a request with this `Idempotency-Key` is still in
-        progress. Retry after `Retry-After` seconds with the same key and body.
+        progress. The key is non-replayable (RT-82 K3): once that request
+        completes, any retry with the same key is 409
+        `idempotency_key_conflict` and never returns the code. Do not retry
+        with the same key. After `Retry-After` seconds, check
+        `consoleListPairingCodes`, cancel the stray code if one was issued,
+        and issue again with a new key.
       headers:
         Retry-After:
           schema:

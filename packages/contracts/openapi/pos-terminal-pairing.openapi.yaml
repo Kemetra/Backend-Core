@@ -254,10 +254,12 @@ components:
           minLength: 6
           maxLength: 32
           description: >
-            Short-lived pairing code issued by a tenant admin via the
-            dashboard. Format is opaque to the POS terminal (server
-            chooses; current default is 8 character alphanumeric).
-            Single-use: a successful pair burns the code server-side.
+            Short-lived pairing code, issued through the Console
+            (`consoleIssuePairingCode`: 16 characters from an alphabet
+            without look-alikes) or the owner-run bootstrap CLI (24
+            base64url characters with `--generate`). Format is opaque to
+            the POS terminal; send it exactly as entered. Single-use: a
+            successful pair burns the code server-side.
 
     TerminalPairResponse:
       type: object

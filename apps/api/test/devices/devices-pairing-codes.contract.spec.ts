@@ -77,6 +77,7 @@ const ISSUED = {
 
 const SUMMARY = {
   pairingCodeId: CODE_ID,
+  kind: "pair",
   storeId: STORE_ID,
   terminalId: TERMINAL_ID,
   terminalLabel: "Counter 1",
@@ -236,6 +237,13 @@ describe("pairing codes contract — the issue body", () => {
     expect(contract.accepts("PairingCodeIssueRequest", { ...ISSUE_REQUEST, ...patch })).toBe(false);
   });
 
+  it("passes the terminal binding through for 0024 and derives (never promises unique) the default label", () => {
+    expect(info()).toMatch(/passed through to satisfy migration\s+0024's NOT NULL snapshot columns/);
+    const label = String(props("PairingCodeIssueRequest")["terminalLabel"]?.["description"]);
+    expect(label).toMatch(/derives it\s+from the new `terminalId` prefix/);
+    expect(label).not.toMatch(/unique/i);
+  });
+
   it("accepts the optional label, TTL, replaced device and COM port", () => {
     const full = {
       ...ISSUE_REQUEST,
@@ -290,6 +298,29 @@ describe("pairing codes contract — issued code and 409", () => {
     expect(contract.accepts("PairingCodeIssueConflict", body)).toBe(false);
   });
 
+  it.each(["replacement_already_pending", "device_already_replaced"])(
+    "refuses a second replacement with %s, without details",
+    (code) => {
+      expect(contract.accepts("PairingCodeIssueConflict", conflict(code))).toBe(true);
+      expect(contract.accepts("PairingCodeIssueConflict", conflict(code, BLOCKED_REPLACE_PREVIEW))).toBe(false);
+    },
+  );
+
+  it("documents one replacement per device, reported after a blocked verdict", () => {
+    expect(info()).toMatch(/A device is replaced at most once/);
+    expect(info()).toMatch(/A `blocked` verdict is always reported first/);
+  });
+
+  it("never tells a client to retry the non-replayable key", () => {
+    const responses = (contract.document["components"] as JsonObject)["responses"] as Record<string, JsonObject>;
+    const tooEarly = String(responses["IdempotencyInProgress"]?.["description"]);
+    expect(tooEarly).not.toMatch(/with the same key and body/);
+    expect(tooEarly).toMatch(/Do not retry\s+with the same key/);
+    expect(tooEarly).toMatch(/consoleListPairingCodes/);
+    const header = contract.parameters("post", CODES_PATH)[0];
+    expect(String(header?.["description"])).toMatch(/Never retry with the same key/);
+  });
+
   it("answers an idempotency conflict without details, and a 425 with the interceptor's body", () => {
     expect(contract.accepts("PairingCodeIssueConflict", conflict("idempotency_key_conflict"))).toBe(true);
     expect(contract.accepts("IdempotencyInProgress", { error: "idempotency_in_progress", retryAfterSec: 2 })).toBe(true);
@@ -306,6 +337,13 @@ describe("pairing codes contract — issued code and 409", () => {
 // 5. List and cancel
 // ===========================================================================
 describe("pairing codes contract — list and cancel", () => {
+  it("flags the kind on every summary, even when the replaced device is out of scope", () => {
+    expect(contract.schema("PairingCodeSummary")["required"]).toContain("kind");
+    expect(contract.accepts("PairingCodeSummary", omit(SUMMARY, "kind"))).toBe(false);
+    expect(contract.accepts("PairingCodeSummary", { ...SUMMARY, kind: "move", replacesDeviceId: null })).toBe(true);
+    expect(contract.accepts("PairingCodeSummary", { ...SUMMARY, kind: "swap" })).toBe(false);
+  });
+
   it("lists closed, secret-free summaries of live pending codes only", () => {
     const s = contract.schema("PairingCodeSummary");
     expect(s["additionalProperties"]).toBe(false);
@@ -349,6 +387,14 @@ describe("pos-terminal-pairing contract — RT-367 wording", () => {
     expect(String(pairProps()["terminal_id"]?.["description"])).toMatch(/Stable across credential rotation/);
     expect(String(pairProps()["terminal_id"]?.["description"])).toMatch(/NOT across\s+re-pairing/);
     expect(String(pairProps()["expires_at"]?.["description"])).toMatch(/Populated by Backend-Core since\s+RT-367/);
+  });
+
+  it("describes the pairing_code as the Console's 16 or the CLI's 24 characters", () => {
+    const request = ((pairing()["components"] as JsonObject)["schemas"] as JsonObject)["TerminalPairRequest"] as JsonObject;
+    const code = String(((request["properties"] as JsonObject)["pairing_code"] as JsonObject)["description"]);
+    expect(code).toMatch(/16 characters/);
+    expect(code).toMatch(/24\s+base64url characters/);
+    expect(code).not.toMatch(/8 character|tenant admin/);
   });
 
   it("documents REPLACEMENT_BLOCKED on the 409, with the code left pending", () => {

@@ -155,11 +155,15 @@ This project follows [Semantic Versioning](https://semver.org/).
   (`consoleCancelPairingCode`, idempotent). A code with `replacesDeviceId`
   replaces (same store) or moves (another store) the device; the issue and
   the redemption decide with the shared lifecycle evaluator, and a blocked
-  replace / move is 409 with the preview. `pos-terminal-pairing.openapi.yaml`
-  1.1.0-draft: `terminal_id` survives rotation, not re-pairing; the token is
-  no longer "long-lived"; `expires_at` is populated; a new 409
-  `REPLACEMENT_BLOCKED` for the pair-time Cash Session re-check. Additive
-  only. No runtime or migration change.
+  replace / move is 409 with the preview; a device is replaced at most once
+  (409 `replacement_already_pending` / `device_already_replaced`).
+  `pos-terminal-pairing.openapi.yaml` 1.1.0-draft: `terminal_id` survives
+  rotation, not re-pairing; the token is no longer "long-lived"; `expires_at`
+  is populated; and a new 409 `REPLACEMENT_BLOCKED` for the pair-time Cash
+  Session re-check. That last one is NOT additive: it is a POS-visible value
+  added to the closed `error.code` enum, which oasdiff grades as breaking
+  (cross-repo POS contract change; POS must handle `REPLACEMENT_BLOCKED`),
+  pending owner approval. No runtime or migration change.
 - RT-542 `[GATED]`, owner-approved 2026-10-16 (RT-542 comment 12124): the three
   sale-history operations (`listSaleHistory`, `readSaleHistoryDetail`,
   `recordSaleReprint`) lose `x-runtime-status: contract-only` now that the RT-539
