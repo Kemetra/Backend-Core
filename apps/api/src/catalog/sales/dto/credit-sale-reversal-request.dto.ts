@@ -28,6 +28,16 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  */
 const isReason = (v: string): boolean => !v.includes("\u0000") && /\S/u.test(v);
 
+/** No NUL in a stored text column (Postgres refuses it: 22021, never a 500). */
+const hasNoNul = (v: string): boolean => !v.includes("\u0000");
+const NO_NUL = "must not hold a NUL character";
+
+/** The RT-530 approval shape, with its stored policy version NUL-free. */
+const CreditReversalApprovalSchema = VoidApprovalSchema.refine((a) => hasNoNul(a.policyVersion), {
+  message: NO_NUL,
+  path: ["policyVersion"],
+});
+
 const isCalendarDay = (v: string): boolean => {
   const d = new Date(`${v}T00:00:00.000Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
@@ -45,8 +55,8 @@ export const CreditReversalRefundTenderSchema = z
 
 export const CreditSaleReversalRequestSchema = z
   .object({
-    sourceSystem: z.string().min(1).max(100),
-    externalId: z.string().min(1).max(200),
+    sourceSystem: z.string().min(1).max(100).refine(hasNoNul, NO_NUL),
+    externalId: z.string().min(1).max(200).refine(hasNoNul, NO_NUL),
     kind: z.enum(["void", "return"]),
     lines: z
       .array(ReturnLineRequestSchema)
@@ -59,7 +69,7 @@ export const CreditSaleReversalRequestSchema = z
     refundTenders: z.array(CreditReversalRefundTenderSchema),
     reason: z.string().min(1).max(500).refine(isReason, "must hold a non-whitespace character and no NUL"),
     businessDate: z.string().regex(DATE_RE).refine(isCalendarDay).optional(),
-    approval: VoidApprovalSchema.optional(),
+    approval: CreditReversalApprovalSchema.optional(),
   })
   .strict()
   .superRefine((body, ctx) => {

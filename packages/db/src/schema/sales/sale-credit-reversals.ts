@@ -125,6 +125,7 @@ export const saleCreditReversals = pgTable(
     uniqueIndex("uq_sale_credit_reversals_tenant_source_external").on(t.tenantId, t.sourceSystem, t.externalId),
     index("idx_sale_credit_reversals_sale").on(t.saleId),
     index("idx_sale_credit_reversals_tenant_store").on(t.tenantId, t.storeId),
+    index("idx_sale_credit_reversals_tenant_payer").on(t.tenantId, t.payerId),
   ],
 );
 

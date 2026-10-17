@@ -257,6 +257,8 @@ CREATE UNIQUE INDEX uq_sale_credit_reversals_tenant_source_external
   ON sale_credit_reversals (tenant_id, source_system, external_id);
 CREATE INDEX idx_sale_credit_reversals_sale ON sale_credit_reversals (sale_id);
 CREATE INDEX idx_sale_credit_reversals_tenant_store ON sale_credit_reversals (tenant_id, store_id);
+-- The payer FK's referencing side (its RESTRICT checks, per-payer reads).
+CREATE INDEX idx_sale_credit_reversals_tenant_payer ON sale_credit_reversals (tenant_id, payer_id);
 
 ALTER TABLE sale_credit_reversals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sale_credit_reversals FORCE ROW LEVEL SECURITY;

@@ -283,7 +283,17 @@ export async function assertCreditReturnApproval(client: PoolClient, input: Cred
   }
   if (!RETURN_APPROVAL_CLAIMS.every((holds) => holds(approval, input))) throw new CreditReturnApprovalRefusedError();
   await assertApprovalBoundAndUnused(client, approval, input);
-  const standing = await storeUsers.approverStanding(client, { scope: input.scope, userId: approval.approverUserId });
+  await assertSecondApproverEligible(client, input.scope, approval.approverUserId);
+}
+
+/** The approver's CURRENT standing; a lookup that fails refuses (never a 5xx). */
+async function assertSecondApproverEligible(client: PoolClient, scope: SaleScope, approverUserId: string): Promise<void> {
+  let standing;
+  try {
+    standing = await storeUsers.approverStanding(client, { scope, userId: approverUserId });
+  } catch {
+    throw new CreditReturnApprovalRefusedError();
+  }
   if (standingFinding(standing) !== null) throw new CreditReturnApprovalRefusedError();
 }
 
@@ -326,7 +336,10 @@ export async function assertRefundTenders(
   const refs = input.tenders.map((t) => (t.tenderRef === undefined ? null : t.tenderRef.toLowerCase()));
   const r = await client.query<{ ok: boolean }>(
     input.kind === "return"
-      ? `SELECT COALESCE((SELECT SUM(a) FROM unnest($1::numeric[]) a), 0) = $2::numeric AS ok`
+      ? // The cash sums to the refund exactly; a zero refund takes an empty list
+        // (a 0 cash row would still count as a cash refund in the shift cash-up).
+        `SELECT COALESCE((SELECT SUM(a) FROM unnest($1::numeric[]) a), 0) = $2::numeric
+                AND ($2::numeric > 0 OR cardinality($1::numeric[]) = 0) AS ok`
       : `WITH req AS (
            SELECT m, a::numeric AS a, r FROM unnest($3::text[], $2::numeric[], $4::uuid[]) AS x(m, a, r)
          ), stored AS (

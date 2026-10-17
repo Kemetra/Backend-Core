@@ -31,7 +31,10 @@ import {
   captureBody,
   idempKey,
   STORE_A_X,
+  STORE_A_Y,
+  STORE_B_X,
   TENANT_A,
+  TENANT_B,
   type HarnessHandle,
 } from "../capture/__capture-harness";
 import {
@@ -108,12 +111,13 @@ const CLEANUP: readonly string[] = [
   `DELETE FROM sale_return_lines WHERE return_id IN (${RETURNS})`,
   `DELETE FROM sale_returns WHERE sale_id IN (${SALES})`,
   `DELETE FROM sale_voids WHERE sale_id IN (${SALES})`,
+  `DELETE FROM sale_refunds WHERE sale_id IN (${SALES})`,
   `DELETE FROM sale_responsibilities WHERE sale_id IN (${SALES})`,
   `DELETE FROM sale_tenders WHERE sale_id IN (${SALES})`,
   `DELETE FROM sale_lines WHERE sale_id IN (${SALES})`,
   `DELETE FROM sales WHERE source_system = 'pos-1'`,
   `DELETE FROM outbox_events`,
-  `UPDATE payer_account SET status = 'active', external_ref = 'CUST-577' WHERE id = '${PAYER}'`,
+  `UPDATE payer_account SET status = 'active', external_ref = 'CUST-577', store_id = '${STORE_A_X}' WHERE id = '${PAYER}'`,
 ];
 afterEach(async () => {
   if (!h.harness) return;
@@ -563,6 +567,15 @@ async function seedOrdinaryReturn(sale: CapturedSale): Promise<void> {
   );
 }
 
+/** Seed an ordinary amount-only refund on the sale (recordRefund before the runtime). */
+async function seedOrdinaryRefund(sale: CapturedSale): Promise<void> {
+  await h.harness!.env.admin.query(
+    `INSERT INTO sale_refunds (sale_id, tenant_id, store_id, pos_refund_amount, currency_code, source_system, external_id, payload_hash, created_by)
+     VALUES ($1, $2, $3, 1, 'USD', 'pos-1', 'legacy-ref', $4, $5)`,
+    [sale.saleRef, TENANT_A, STORE_A_X, "b".repeat(64), APPROVER_MANAGER],
+  );
+}
+
 /** Set the stored mismatch flag (true, or NULL: never recorded). */
 async function setMismatchFlag(sale: CapturedSale, flag: { readonly value: boolean | null }): Promise<void> {
   await h.harness!.env.admin.query(`UPDATE sales SET mismatch_flag = $2 WHERE id = $1`, [sale.saleRef, flag.value]);
@@ -571,6 +584,7 @@ async function setMismatchFlag(sale: CapturedSale, flag: { readonly value: boole
 describe("RT-577 credit reversal — fail closed", () => {
   it.each([
     ["a return recorded through recordReturn", seedOrdinaryReturn],
+    ["a refund recorded through recordRefund", seedOrdinaryRefund],
     ["lines that do not sum to posTotal (mismatch_flag true)", (sale: CapturedSale) => setMismatchFlag(sale, { value: true })],
     ["a mismatch_flag never recorded (null)", (sale: CapturedSale) => setMismatchFlag(sale, { value: null })],
   ])("refuses %s with 422 credit_reversal_allocation_unavailable", async (_name, seed) => {
@@ -583,6 +597,10 @@ describe("RT-577 credit reversal — fail closed", () => {
   it.each([
     ["a suspended payer", `UPDATE payer_account SET status = 'suspended' WHERE id = '${PAYER}'`],
     ["a payer with no ERPNext link", `UPDATE payer_account SET external_ref = ' ' WHERE id = '${PAYER}'`],
+    ["a payer scoped to another store", `UPDATE payer_account SET store_id = '${STORE_A_Y}' WHERE id = '${PAYER}'`],
+    // The sale is still a credit sale (responsibility_count 1) but its payer
+    // row cannot be found (a visibility fault): never paid out.
+    ["a payer that cannot be found", `DELETE FROM sale_responsibilities WHERE payer_id = '${PAYER}'`],
   ])("refuses %s with 422 credit_reversal_settlement_unavailable", async (_name, sql) => {
     if (skip()) return;
     const sale = await captureSale({ externalId: "fc-settle" });
@@ -603,6 +621,12 @@ describe("RT-577 credit reversal — request validation and precedence", () => {
     ["a reason holding NUL", (s: CapturedSale) => zeroReturn(s, { reason: "bad\u0000reason" })],
     ["no reason", (s: CapturedSale) => { const { reason: _r, ...b } = returnBody(s, { lines: [0] }); return b; }],
     ["an unknown field", (s: CapturedSale) => zeroReturn(s, { tenantId: TENANT_A })],
+    ["a sourceSystem holding NUL", (s: CapturedSale) => zeroReturn(s, { sourceSystem: "pos\u00001" })],
+    ["an externalId holding NUL", (s: CapturedSale) => zeroReturn(s, { externalId: "ret\u00001" })],
+    ["an approval policyVersion holding NUL", (s: CapturedSale) => ({
+      ...returnBody(s, { lines: [0], refund: "1" }),
+      approval: approval(s, { amount: "1", policyVersion: "v\u00001" }),
+    })],
   ])("refuses %s with 400 and writes nothing", async (_name, build) => {
     if (skip()) return;
     const sale = await captureSale({ externalId: "val-1" });
@@ -707,5 +731,59 @@ describe("RT-577 credit reversal — audit trail and posting", () => {
       [sale.saleRef],
     );
     expect(outbox.rows).toEqual([{ kind: "reversal" }]);
+  });
+});
+
+describe("RT-577 credit reversal — Opus review hardening (#806)", () => {
+  it("a zero refund takes an empty list: [{cash, 0}] is 422 credit_reversal_refund_mismatch and writes no tender", async () => {
+    if (skip()) return;
+    const sale = await captureSale({ externalId: "zero-tender", ...FULL_CREDIT });
+    const body = { ...returnBody(sale, { lines: [0] }), refundTenders: [{ method: "cash", amount: "0" }] };
+    await expectRefusedWithoutWrites(sale, () => post(sale, body), REFUND_MISMATCH);
+  });
+
+  it.each([
+    ["another store of the tenant", { tenantId: TENANT_A, storeId: STORE_A_Y }],
+    ["another tenant", { tenantId: TENANT_B, storeId: STORE_B_X }],
+  ])("is a non-disclosing 404 from %s, writing nothing", async (_name, scope) => {
+    if (skip()) return;
+    const sale = await captureSale({ externalId: "scope-1" });
+    const body = returnBody(sale, { lines: [0], refund: "1" });
+    const before = await written(sale);
+    Object.assign(h.harness!.contextGuard, scope);
+    expect((await post(sale, body)).status).toBe(404);
+    Object.assign(h.harness!.contextGuard, { tenantId: TENANT_A, storeId: STORE_A_X });
+    expect(await written(sale)).toEqual(before);
+  });
+
+  it("serializes concurrent partial returns on the sale lock: the later one allocates from the earlier one's X0", async () => {
+    if (skip()) return;
+    const one = { unitPrice: "1.0000", lineAmount: "1.0000" };
+    const sale = await captureSale({
+      externalId: "concurrent-1",
+      posTotal: "3.0000",
+      tenders: [{ method: "cash", amount: "1" }],
+      credit: "2",
+      lines: [{ lineName: "A", ...one }, { lineName: "B", ...one }, { lineName: "C", ...one }],
+    });
+    expect((await post(sale, returnBody(sale, { lines: [0], refund: "0.33" }))).status).toBe(201);
+    // B and C race. Serialized, the second sees X0 = 1.00 (0.33) and the third
+    // X0 = 2.00 (0.34): only the one that commits second matches a 0.33
+    // approval. A race on X0 would accept both at 0.33 and lose a minor unit.
+    const [b, c] = await Promise.all([
+      post(sale, returnBody(sale, { lines: [1], refund: "0.33" })),
+      post(sale, returnBody(sale, { lines: [2], refund: "0.33" })),
+    ]);
+    expect([b.status, c.status].sort()).toEqual([201, 403]);
+    const refusedLine = b.status === 403 ? 1 : 2;
+    expectRefusal((b.status === 403 ? b : c) as Res, APPROVAL_REFUSED);
+    expect((await post(sale, returnBody(sale, { lines: [refusedLine], refund: "0.34" }))).status).toBe(201);
+    const totals = await h.harness!.env.admin.query<{ refunded: string; adjusted: string; n: number }>(
+      `SELECT SUM(refundable_amount)::numeric(19,4)::text AS refunded,
+              SUM(adjustment_amount)::numeric(19,4)::text AS adjusted, count(*)::int AS n
+         FROM sale_credit_reversals WHERE sale_id = $1`,
+      [sale.saleRef],
+    );
+    expect(totals.rows[0]).toEqual({ refunded: "1.0000", adjusted: "2.0000", n: 3 });
   });
 });

@@ -417,6 +417,16 @@ describe("0054 sale_credit_reversals constraints", () => {
   });
 });
 
+describe("0054 indexes", () => {
+  it("indexes the payer FK's referencing side (tenant_id, payer_id)", async () => {
+    if (skip()) return;
+    const r = await pg().admin.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_sale_credit_reversals_tenant_payer'`,
+    );
+    expect(r.rows.map((x) => x.indexdef)).toEqual([expect.stringContaining("(tenant_id, payer_id)")]);
+  });
+});
+
 describe("0054 sale_credit_reversal_tenders constraints", () => {
   it("accepts a cash tender and a card tender with a terminal reference", async () => {
     if (skip()) return;
