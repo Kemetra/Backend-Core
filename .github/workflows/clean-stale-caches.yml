@@ -194,6 +194,7 @@ jobs:
           [ "$failed" -eq 0 ] || exit 1
 
       - name: Cache usage (after)
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BEFORE_BYTES: ${{ steps.before.outputs.before_bytes }}
