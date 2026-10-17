@@ -120,9 +120,12 @@ abandoned. It is the real failure-and-expiry question of this ticket. See D5.
 and `buildStored` writes that current `erpnext_warehouse_ref` without comparing it with the stored report's.
 Suppose the store is remapped (old map retired, new one active) between window `k` and window `k+1` of one attempt.
 Window `k+1` is then accepted, and the whole report, including windows read from the old warehouse, is labelled
-with the new warehouse and reconciled against it. On `main` this can only happen inside one attempt of at most
-660 s, so it is narrow. A resumable attempt with a 40 min lifetime would widen it. §5.1 adds the binding rule, and
-F1 proposes the same check on `main`.
+with the new warehouse and reconciled against it. The same happens to a **fresh** window 0 after a remap. The
+connector's retry set keeps the originally pulled request, including the old `erpnextWarehouseRef`, and the report
+body carries no warehouse. A retry therefore reads the old warehouse, and Backend-Core labels the result with the new
+one. On `main` the in-attempt case is narrow (at most 660 s), but the retry case spans the connector's whole retry
+horizon (about 25 min). A resumable attempt would widen both. §5.1 adds the binding rule, and F1 proposes it on
+`main`.
 
 ### 2.6 Staleness grows with completion delay
 
@@ -234,8 +237,9 @@ contract.
 
 Reopen D1/D2 and build §5 when pilot evidence shows **any** of the following:
 
-1. `bin_view.report.incomplete_abandoned` with `reason=attempt_deadline` at least once per week for one store, with
-   DP2 otherwise healthy;
+1. `bin_view.report.deadline_reached` at `window_seq` **> 0**, ending in `incomplete_abandoned` with
+   `reason=attempt_deadline`, at least once per week for one store. Only a deadline after window 0 shows DP2-side
+   slowness that resuming can bridge;
 2. a mapped pilot warehouse holding more than **5,000** Bin items (half the 10,000 capacity). Raising
    `BIN_VIEW_MAX_WINDOWS` above about 38 would then push the budget to the 1200 s cap;
 3. a DP2 `binViewReportSnapshot` p95 latency above **10 s** on pilot hardware.
@@ -255,11 +259,21 @@ This is the specification a later `[GATED]` issue would apply. It would go into 
 ### 5.1 Continuation semantics (no new token)
 
 * **No continuation token.** The continuation identity is the existing tuple
-  `(requestRef, attemptRef, next windowSeq, readAt)`, **bound to the attempt's warehouse** (§2.5). Backend-Core
-  refuses window `k > 0` with 409 `window_sequence_conflict`, with no side effects, when the run's currently active
-  `erpnext_warehouse_ref` differs from the stored report's `erpnextWarehouseRef`. The connector keys its persisted
-  snapshot by `(requestRef, attemptRef, erpnextWarehouseRef)`. After a remap, the connector's next pull or retry
-  starts a fresh attempt from window 0 against the new warehouse. The contract text would state normatively that windows of one
+  `(requestRef, attemptRef, next windowSeq, readAt)`, **bound to the warehouse mapping the request was pulled
+  under** (§2.5). The binding goes into `requestRef` itself, so it also covers window 0 and needs no new body field:
+  * Backend-Core derives `requestRef = deterministicId(NS, "<runId>:<warehouseMapId>:0")` (today `"<runId>:0"`).
+    `lockRun` re-derives the ref from the store's **currently active** map. After a remap, a request pulled under
+    the old map no longer resolves and gets today's non-disclosing 404 `not_found` on **every** window, window 0
+    included. The connector already treats that as terminal (`bin_view.report.stale`), so it never reports old-
+    warehouse rows under the new mapping. `requestRef` stays opaque, so the wire shape does not change; only its
+    contract description is extended to say it identifies the run **and** its warehouse mapping.
+  * There is no re-pull path, and none is needed. The remapped run can no longer complete. D5 expires it, and the
+    next scheduled or on-demand run is created under the new mapping, with a new `requestRef` that the feed offers.
+  * The connector keys its persisted snapshot by `(requestRef, attemptRef)`. The warehouse is implied by
+    `requestRef`.
+  * Cutover: on deploy, every in-flight `requestRef` changes once. Those reports get 404, and their runs are expired
+    by D5. To avoid that, `lockRun` may also accept the legacy `"<runId>:0"` derivation for runs started before the
+    deploy, but only while the run's map is unchanged. The implementing issue chooses between the two. The contract text would state normatively that windows of one
   attempt **may** be sent by different processes and in different ticks, within the attempt lifetime (5.3).
 * **Finding the position.** The connector keeps its own acknowledgement log (the highest acknowledged `windowSeq`)
   next to the snapshot. If that log is lost, it resends from window 0 of the **same** attempt. Recorded windows
@@ -307,7 +321,7 @@ This is the specification a later `[GATED]` issue would apply. It would go into 
 | Resume after attempt TTL | 409 `window_sequence_conflict` | Fresh attempt from window 0 (existing handling) |
 | Run expired (D5) | Non-disclosing 404 | `bin_view.report.stale`, terminal (existing) |
 | Snapshot lost on the connector | — | Fresh attempt (supersede), as on `main` today |
-| Store remapped mid-attempt | 409 `window_sequence_conflict` (warehouse differs, §5.1) | Fresh attempt against the new warehouse |
+| Store remapped mid-attempt or before a retry | 404 `not_found` (the `requestRef` no longer resolves, §5.1) | Terminal (`bin_view.report.stale`). D5 expires the run, and the next run uses the new mapping |
 | Capacity above `maxWindows × maxItems` | — | `limit_exceeded`, nothing reported (unchanged) |
 
 ### 5.6 Tests the activating issue would need
@@ -317,14 +331,14 @@ This is the specification a later `[GATED]` issue would apply. It would go into 
 * Connector: resume continues after the last acknowledged window with the original `readAt` and rows (no Bin re-read,
   asserted with the fake reader's call count); a lost acknowledgement log resends from window 0 of the same attempt
   and recovers; a snapshot past its TTL forces a fresh attempt.
-* Both sides: a remap between windows `k` and `k+1` gives 409 on `k+1`, and the next attempt reports the new
-  warehouse only.
+* Both sides: after a remap between windows `k` and `k+1`, window `k+1` and a fresh window 0 under the old
+  `requestRef` both get 404. Nothing is recorded under the new mapping until a new run's request is pulled.
 
 ## 6. Proposed follow-up work (not created)
 
 | # | Repo | Work Mode | Scope | Gate |
 | --- | --- | --- | --- | --- |
-| F1 | Backend-Core | Implementation | D5 stock-run expiry sweep (`running → failed`, `summary.failure`, audit row) and the D4 `erpnext_stock_run_stranded` gauge plus `erpnext_stock_run_expired_total` counter. Also the §2.5 warehouse binding on `main`: window `k > 0` whose run's active warehouse differs from the stored report's → 409 `window_sequence_conflict`. No migration. The binding adds one listed cause to an existing 409 code, so it needs the stock-view contract text updated under `[GATED]`. | Run-lifecycle change: owner approval on the issue. |
+| F1 | Backend-Core | Implementation | D5 stock-run expiry sweep (`running → failed`, `summary.failure`, audit row) and the D4 `erpnext_stock_run_stranded` gauge plus `erpnext_stock_run_expired_total` counter. Also the §2.5 warehouse binding on `main`: derive `requestRef` from `(run, active warehouse map)`, so that a request pulled before a remap gets 404 on every window. No migration and no wire-shape change, but the `requestRef` description in `stock-view.yaml` changes under `[GATED]`. | Run-lifecycle change: owner approval on the issue. |
 | F2 | ERPNext-Connector | Implementation (config) | D4 monitors on `incomplete_abandoned` and `limit_exceeded`, within the RT-629 allowlist. | Owner (observability destinations are already approved). |
 | F3 | Backend-Core + Connector | Planning → Implementation | Activate §5 only if a §4 trigger fires: ADR in Orchestrator, `stock-view.yaml` 1.4.0-draft, runtime TTL, connector snapshot persistence. | `[GATED]` contract plus a cross-repo issue. |
 
