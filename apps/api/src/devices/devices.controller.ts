@@ -5,6 +5,7 @@
  *   GET  /api/v1/devices                    consoleListDevices
  *   GET  /api/v1/devices/{deviceId}         consoleGetDevice
  *   POST /api/v1/devices/{deviceId}/revoke  consoleRevokeDevice
+ *   POST /api/v1/devices/{deviceId}/retire  consoleRetireDevice (RT-368)
  *   GET  /api/v1/devices/{deviceId}/impact  consoleGetDeviceImpact (RT-366)
  *
  * Auth: the HUMAN `cookieAuth` session only → `SessionOnlyAdminGuard` (any
@@ -48,6 +49,7 @@ import {
   InvalidDeviceCursorError,
   type DeviceDetail,
   type DevicePage,
+  type DeviceRetireResult,
   type DeviceRevokeResult,
 } from "./devices.projections";
 import type { DeviceImpactPreview } from "./device-impact.projections";
@@ -55,14 +57,17 @@ import {
   DeviceIdParamSchema,
   DeviceImpactQuerySchema,
   DeviceListQuerySchema,
+  DeviceRetireBodySchema,
   DeviceRevokeBodySchema,
   PAGE_SIZE_DEFAULT,
   type DeviceImpactQuery,
   type DeviceListQuery,
+  type DeviceRetireBody,
   type DeviceRevokeBody,
 } from "./devices.query";
 import {
   DeviceNotFoundError,
+  DeviceRetireRefusedError,
   DeviceRevokeRefusedError,
   DevicesService,
   DeviceStoreNotInScopeError,
@@ -163,6 +168,31 @@ export class DevicesController {
       if (err instanceof DeviceRevokeRefusedError) {
         const body = { code: err.code, message: REFUSAL_MESSAGES[err.code] };
         throw new HttpException(err.impact !== undefined ? { ...body, details: err.impact } : body, err.status);
+      }
+      throw err;
+    }
+  }
+
+  /** POST — retire (decommission) a device: terminal, never a delete (RT-368). */
+  @Post("api/v1/devices/:deviceId/retire")
+  @HttpCode(200)
+  @UseGuards(RolesGuard)
+  @Roles("owner", "tenant_admin", "store_manager")
+  async retire(
+    @Req() request: TenantContextRequest,
+    @Param("deviceId") deviceId: string,
+    @Body(new ZodValidationPipe(DeviceRetireBodySchema)) body: DeviceRetireBody,
+  ): Promise<DeviceRetireResult> {
+    const scoped = requireTenant(request);
+    const actorUserId = scoped.context.userId;
+    if (actorUserId === null) throw new UnauthorizedException("Unauthorized");
+    const id = parseDeviceId(deviceId);
+    try {
+      return await this.service.retire({ ...scoped, actorUserId, deviceId: id, retireReason: body.retireReason });
+    } catch (err) {
+      if (err instanceof DeviceNotFoundError) throw new NotFoundException(NOT_FOUND);
+      if (err instanceof DeviceRetireRefusedError) {
+        throw new HttpException({ code: err.code, message: REFUSAL_MESSAGES[err.code], details: err.impact }, 409);
       }
       throw err;
     }

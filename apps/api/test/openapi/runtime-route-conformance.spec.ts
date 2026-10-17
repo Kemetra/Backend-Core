@@ -129,8 +129,6 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "consoleGetTenantLogo",
       "consolePreviewTenantLogo",
       "consolePutTenantLogo",
-      // RT-368: device retire contract; the runtime ships in the RT-368 runtime PR.
-      "consoleRetireDevice",
       // RT-414: platform support-session contract; the runtime ships after owner approval.
       "endSupportSession",
       "getCurrentSupportSession",

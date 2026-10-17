@@ -88,8 +88,10 @@ import {
 const LIST = "/api/v1/devices";
 const detail = (deviceId: string): string => `${LIST}/${deviceId}`;
 const revoke = (deviceId: string): string => `${LIST}/${deviceId}/revoke`;
+/** The default list (no `trust_state`) leaves retired devices out (RT-368). */
+const DEFAULT_ORDER = TENANT_A_ORDER.filter((d) => d !== D_RETIRED);
 const X_DEVICES = TENANT_A_ORDER.filter((d) => ![D_LATE_Y, R_Y, D_RETIRED].includes(d));
-const Y_DEVICES = [D_LATE_Y, R_Y, D_RETIRED];
+const Y_DEVICES = [D_LATE_Y, R_Y];
 
 let ownerUserId = "";
 let cashBaseline = "";
@@ -164,19 +166,20 @@ const deviceLookup = (): DeviceRepository => new DeviceRepository(h.env().admin,
 describe("consoleListDevices", () => {
   it("lists tenant A exception-first for the all-store owner", async () => {
     if (skip()) return;
-    expect(await ids(SES_OWNER_ALL)).toEqual(TENANT_A_ORDER);
+    expect(await ids(SES_OWNER_ALL)).toEqual(DEFAULT_ORDER);
   });
 
   it("walks the same order once at every page size", async () => {
     if (skip()) return;
-    for (const size of [1, 2, 3, 5]) expect(await walk(SES_OWNER_ALL, size)).toEqual(TENANT_A_ORDER);
+    for (const size of [1, 2, 3, 5]) expect(await walk(SES_OWNER_ALL, size)).toEqual(DEFAULT_ORDER);
   });
 
   it("applies the operator store scope", async () => {
     if (skip()) return;
     expect(await ids(SES_ADMIN_SPEC)).toEqual(X_DEVICES);
-    expect(await ids(SES_MANAGER)).toEqual(TENANT_A_ORDER);
+    expect(await ids(SES_MANAGER)).toEqual(DEFAULT_ORDER);
     expect(await ids(SES_MANAGER_ACTIVE)).toEqual(Y_DEVICES);
+    expect(await ids(SES_MANAGER_ACTIVE, { trust_state: "retired" })).toEqual([D_RETIRED]);
   });
 
   it("filters by store and trust state", async () => {
@@ -184,6 +187,7 @@ describe("consoleListDevices", () => {
     expect(await ids(SES_OWNER_ALL, { store_id: STORE_A_Y })).toEqual(Y_DEVICES);
     expect(await ids(SES_OWNER_ALL, { trust_state: "revoked" })).toEqual([D_EXC, D_OLD]);
     expect(await ids(SES_OWNER_ALL, { trust_state: "retired" })).toEqual([D_RETIRED]);
+    expect(await ids(SES_OWNER_ALL)).not.toContain(D_RETIRED);
     expect(await ids(SES_OWNER_ALL, { trust_state: "active", store_id: STORE_A_Y })).toEqual([D_LATE_Y, R_Y]);
   });
 
@@ -215,14 +219,17 @@ describe("consoleListDevices", () => {
       revokedByUserId: null,
       replacedByDeviceId: D_NEW,
     });
-    expect(byId.get(D_RETIRED)).toMatchObject({ trustState: "retired", revokeReason: "retired" });
+    const retired = (await page(SES_OWNER_ALL, { page_size: 200, trust_state: "retired" })).items;
+    expect(retired.find((i) => i.deviceId === D_RETIRED)).toMatchObject({ trustState: "retired", revokeReason: "retired" });
     expect(byId.get(D_SOON)).toMatchObject({ expiresAt: "2026-11-01T00:00:00.000Z", lastSeenAt: null });
   });
 });
 
 describe("replace links and the store scope", () => {
   const linksOf = async (session: string, deviceId: string) => {
-    const item = (await page(session, { page_size: 200 })).items.find((i) => i.deviceId === deviceId);
+    // A retired device is listed only with trust_state=retired (RT-368 default filter).
+    const query = deviceId === D_RETIRED ? { page_size: 200, trust_state: "retired" } : { page_size: 200 };
+    const item = (await page(session, query)).items.find((i) => i.deviceId === deviceId);
     return item === undefined ? undefined : { replaces: item["replacesDeviceId"], replacedBy: item["replacedByDeviceId"] };
   };
 

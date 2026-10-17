@@ -67,6 +67,23 @@ export const DeviceRevokeBodySchema = z
 export type DeviceRevokeBody = z.infer<typeof DeviceRevokeBodySchema>;
 
 /**
+ * `consoleRetireDevice` (RT-368): the retire reason is free operator text
+ * (0040 `devices_retire_reason_shape`), not a `RevokeReason`.
+ */
+export const DeviceRetireBodySchema = z
+  .object({
+    retireReason: z
+      .string()
+      .min(1)
+      .max(500)
+      .regex(/\S/, "retireReason must not be blank")
+      .refine((reason) => !reason.includes("\u0000"), "retireReason must not contain a NUL character"),
+  })
+  .strict();
+
+export type DeviceRetireBody = z.infer<typeof DeviceRetireBodySchema>;
+
+/**
  * `consoleGetDeviceImpact` (RT-366): the action, and the revoke reason exactly
  * when the action is `revoke` (replace / move / retire record their own).
  */

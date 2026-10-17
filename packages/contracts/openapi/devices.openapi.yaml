@@ -49,17 +49,18 @@ info:
     `consoleRevokeDevice` are implemented (RT-365: contract PR #777, runtime
     PR #781), and so is `consoleGetDeviceImpact` with the impact payload on the
     revoke 409 (RT-366: contract PR #784, runtime PR #785), and so are the
-    three pairing-code operations (RT-367: contract PR #789, runtime PR #798).
-    The retire (RT-368) is `[GATED]` contract-first: an operation that carries
-    `x-runtime-status: contract-only` is not served yet, and every other
-    operation is. 1.2.0-draft (RT-367) was additive: three new operations and
+    three pairing-code operations (RT-367: contract PR #789, runtime PR #798),
+    and so is the retire (RT-368: contract PR #799, runtime PR #802). No
+    operation carries `x-runtime-status: contract-only`; every operation is
+    served. 1.2.0-draft (RT-367) was additive: three new operations and
     new schemas. 1.3.0-draft (RT-368) adds one operation and changes one
     default; see the next paragraph.
 
 
     **Posture (RT-368).** `1.3.0-draft`. `consoleRetireDevice` is `[GATED]`
-    contract-first (RT-368) and carries `x-runtime-status: contract-only`
-    until the RT-368 runtime ships it. The change from 1.2.0-draft adds one
+    contract-first (RT-368: contract PR #799) and implemented by the RT-368
+    runtime, unchanged on the wire, so it carries no
+    `x-runtime-status: contract-only`. The change from 1.2.0-draft adds one
     operation and its schemas, and changes one default: `consoleListDevices`
     without `trust_state` no longer lists retired devices (RT-368 scope,
     "excluded from the default list filter but stay queryable"); they stay
@@ -164,8 +165,8 @@ info:
     read-only: it writes nothing, takes no lock and cascades nothing.
 
     One evaluator decides both the verdict and the real mutation, so the two
-    cannot drift. The revoke (and the RT-367 replace / move and RT-368
-    retire, when they ship) MUST decide with the same evaluator, from the
+    cannot drift. The revoke, the RT-367 replace / move and RT-368
+    retire MUST decide with the same evaluator, from the
     same inputs: the action, the revoke reason it records, whether the device
     is revoked or retired, its open shift and the caller's role. The
     request's note and acknowledgement are not inputs to the verdict. They
@@ -477,11 +478,6 @@ paths:
       summary: List devices (exception-first, keyset paginated).
       operationId: consoleListDevices
       tags: [devices]
-      x-runtime-note: >
-        RT-368 [GATED] default change: from the RT-368 runtime on, a list
-        without `trust_state` excludes retired devices. Until that runtime
-        ships, production still returns retired devices by default. The
-        RT-368 runtime PR removes this note.
       description: >
         The devices in the caller's tenant and store scope, exception-first
         (see the ordering rule above). Every filter is optional and they
@@ -588,10 +584,6 @@ paths:
       summary: Retire (decommission) a device. Terminal; never a delete.
       operationId: consoleRetireDevice
       tags: [devices]
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-368 contract-first ([GATED]); the RT-368 runtime implements it after
-        owner approval.
       description: >
         Retires the device in one transaction under the Cash Session rule (see
         "Retire" above): revokes it first with reason `retired` when it is
@@ -815,11 +807,6 @@ components:
       name: trust_state
       in: query
       required: false
-      x-runtime-note: >
-        RT-368 [GATED] default change: from the RT-368 runtime on, a list
-        without `trust_state` excludes retired devices. Until that runtime
-        ships, production still returns retired devices by default. The
-        RT-368 runtime PR removes this note.
       schema:
         $ref: "#/components/schemas/TrustState"
       description: >

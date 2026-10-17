@@ -23,6 +23,7 @@ export interface ScopedHttpHarness {
   skipped(): boolean;
   get(path: string, session: string | null, query?: Record<string, string | number>): request.Test;
   post(path: string, session: string | null, body: object): request.Test;
+  del(path: string, session: string | null): request.Test;
   /** Throws with the AJV errors when `body` does not match `components.schemas[name]`. */
   conforms(name: string, body: unknown): void;
 }
@@ -110,6 +111,7 @@ export function scopedHttpHarness(options: ScopedHttpHarnessOptions): ScopedHttp
     skipped,
     get: (path, session, query = {}) => asSession(request(server()).get(path).query(query), session),
     post: (path, session, body) => asSession(request(server()).post(path).send(body), session),
+    del: (path, session) => asSession(request(server()).delete(path), session),
     conforms,
   };
 }

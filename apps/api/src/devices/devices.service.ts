@@ -45,7 +45,9 @@ import { PG_POOL } from "../auth/auth.module";
 import { evaluateLifecycle, revokeReasonOf, type LifecycleAction } from "./device-lifecycle.evaluator";
 import {
   applyDeviceRevoke,
+  cancelPendingCodes,
   DETAIL_SQL,
+  insertDeviceAudit,
   DEVICE_COLUMNS,
   linksCte,
   lockDeviceForLifecycle,
@@ -71,6 +73,7 @@ import {
   type DeviceDetail,
   type DevicePage,
   type DeviceReadRow,
+  type DeviceRetireResult,
   type DeviceRevokeResult,
   type RevokeReason,
   type RevokeRefusalCode,
@@ -127,6 +130,24 @@ export interface RevokeDeviceInput extends ScopedInput {
   readonly acknowledgeCustodyException?: boolean;
 }
 
+export interface RetireDeviceInput extends ScopedInput {
+  /** The session user (`users.id`): the retire's actor. */
+  readonly actorUserId: string;
+  readonly deviceId: string;
+  readonly retireReason: string;
+}
+
+/** A retire refused by the Cash Session rule (409 `blockCode`, with the retire preview). */
+export class DeviceRetireRefusedError extends Error {
+  constructor(
+    readonly code: "unresolved_cash_session" | "unresolved_custody_exception",
+    readonly impact: DeviceImpactPreview,
+  ) {
+    super(code);
+    this.name = "DeviceRetireRefusedError";
+  }
+}
+
 export interface DeviceImpactInput extends ScopedInput {
   readonly deviceId: string;
   readonly action: LifecycleAction;
@@ -156,7 +177,7 @@ const LIST_SQL = `
      WHERE d.tenant_id = $1::uuid
        AND ($2::uuid[] IS NULL OR d.store_id = ANY($2::uuid[]))
        AND ($3::uuid IS NULL OR d.store_id = $3::uuid)
-       AND ($4::text IS NULL
+       AND (($4::text IS NULL AND d.retired_at IS NULL)
             OR ($4::text = 'active' AND d.revoked_at IS NULL)
             OR ($4::text = 'revoked' AND d.revoked_at IS NOT NULL AND d.retired_at IS NULL)
             OR ($4::text = 'retired' AND d.retired_at IS NOT NULL))
@@ -268,6 +289,82 @@ export class DevicesService {
   }
 
   /**
+   * Retire one device (RT-368, `devices.openapi.yaml` "Retire"): under the
+   * lifecycle and row locks, decide with the lifecycle evaluator on the impact
+   * read (the preview's verdict on the same state). `no_change` →
+   * `already_retired`, nothing written; `blocked` → `DeviceRetireRefusedError`
+   * with the preview; `allowed` → revoke an active device first (reason
+   * `retired`, the cascade) or cancel a revoked one's pending codes, set the
+   * retire fields and write `pos.device.retired`. No shift or cash fact is
+   * ever written, and no row is ever deleted.
+   */
+  async retire(input: RetireDeviceInput): Promise<DeviceRetireResult> {
+    return this.inTenant(input, async (client) => {
+      const caller = await this.callerOf(client, input);
+      const device = await this.lockInScope(client, input, caller.scope);
+      const scoped = scopeStoreIds(caller.scope);
+      const row = await this.readImpact(client, input.tenantId, input.deviceId, scoped);
+      const evaluation = evaluateLifecycle({
+        action: "retire",
+        reason: "retired",
+        state: lifecycleStateOf(row),
+        callerRole: caller.roleCode,
+      });
+      if (evaluation.verdict === "blocked") {
+        if (evaluation.blockCode === "device_retired") throw new Error("retire is never blocked as device_retired");
+        const impact = toDeviceImpactPreview({ row, action: "retire", reason: "retired", evaluation });
+        throw new DeviceRetireRefusedError(evaluation.blockCode, impact);
+      }
+      const retired = evaluation.verdict === "allowed";
+      if (retired) await this.applyRetire(client, input, device);
+      return {
+        outcome: retired ? "retired" : "already_retired",
+        device: await this.readDetail(client, input.tenantId, input.deviceId, scoped),
+      };
+    });
+  }
+
+  /** The retire's writes and its audit row, inside the caller's transaction. */
+  private async applyRetire(
+    client: PoolClient,
+    input: RetireDeviceInput,
+    device: { readonly storeId: string; readonly revokedAt: Date | null },
+  ): Promise<void> {
+    const revokedByRetire = device.revokedAt === null;
+    // `cancelled_pairing_code_count` counts only the codes this retire step itself
+    // cancels (a device already revoked). When the retire revokes, the revoke
+    // cascade cancels them and its own `pos.device.revoked` row counts them.
+    let cancelledPairingCodeCount = 0;
+    if (revokedByRetire) {
+      await applyDeviceRevoke(client, {
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        storeId: device.storeId,
+        actorUserId: input.actorUserId,
+        reason: "retired",
+        note: null,
+        custodyExceptionShiftId: null,
+      });
+    } else {
+      cancelledPairingCodeCount = await cancelPendingCodes(client, input.tenantId, input.deviceId);
+    }
+    await client.query(
+      `UPDATE devices SET retired_at = now(), retired_by = $3::uuid, retire_reason = $4
+        WHERE id = $1::uuid AND tenant_id = $2::uuid AND retired_at IS NULL`,
+      [input.deviceId, input.tenantId, input.actorUserId, input.retireReason],
+    );
+    await insertDeviceAudit(client, {
+      tenantId: input.tenantId,
+      storeId: device.storeId,
+      actorUserId: input.actorUserId,
+      action: "pos.device.retired",
+      targetType: "device",
+      targetId: input.deviceId,
+      metadata: { revoked_by_retire: revokedByRetire, cancelled_pairing_code_count: cancelledPairingCodeCount },
+    });
+  }
+
+  /**
    * The impact preview of one lifecycle action (RT-366): read-only, no lock.
    * Absent, foreign or out of scope → `DeviceNotFoundError`.
    */
@@ -289,13 +386,22 @@ export class DevicesService {
   /**
    * Take the device lifecycle lock and the device row `FOR UPDATE` (see the
    * class header) and check it is in the caller's scope; absent, foreign or
-   * out of scope → `DeviceNotFoundError`.
+   * out of scope → `DeviceNotFoundError`. Scope is checked first without a
+   * lock, so an out-of-scope id never takes the device's locks (RT-368
+   * security review LOW-1); the store never changes, and it is checked again
+   * on the locked row.
    */
   private async lockInScope(
     client: PoolClient,
-    input: RevokeDeviceInput,
+    input: { readonly tenantId: string; readonly deviceId: string },
     scope: StoreScope,
   ): Promise<{ readonly storeId: string; readonly revokedAt: Date | null }> {
+    const seen = await client.query<{ store_id: string }>(
+      `SELECT store_id FROM devices WHERE id = $1::uuid AND tenant_id = $2::uuid`,
+      [input.deviceId, input.tenantId],
+    );
+    const store = seen.rows[0]?.store_id;
+    if (store === undefined || !inStoreScope(scope, store)) throw new DeviceNotFoundError();
     const row = await lockDeviceForLifecycle(client, input);
     if (row === null || !inStoreScope(scope, row.storeId)) throw new DeviceNotFoundError();
     return row;
@@ -308,11 +414,10 @@ export class DevicesService {
     deviceId: string,
     scopedStoreIds: readonly string[] | null,
   ): Promise<DeviceImpactRow> {
-    const row = await readDeviceImpact(client, tenantId, deviceId, scopedStoreIds);
-    if (row === null) throw new DeviceNotFoundError();
-    return row;
+    return orNotFound(await readDeviceImpact(client, tenantId, deviceId, scopedStoreIds));
   }
 
+  /** The detail read. Absent, foreign or out of scope → `DeviceNotFoundError`. */
   private async readDetail(
     client: PoolClient,
     tenantId: string,
@@ -320,9 +425,7 @@ export class DevicesService {
     scopedStoreIds: readonly string[] | null,
   ): Promise<DeviceDetail> {
     const r = await client.query<DeviceReadRow>(DETAIL_SQL, [tenantId, deviceId, scopedStoreIds]);
-    const row = r.rows[0];
-    if (row === undefined) throw new DeviceNotFoundError();
-    return toDeviceDetail(row);
+    return toDeviceDetail(orNotFound(r.rows[0]));
   }
 
   private inTenant<T>(input: ScopedInput, work: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -343,4 +446,10 @@ export class DevicesService {
   ): Promise<void> {
     if (!(await storeInCallerScope(client, { tenantId, scope, storeId }))) throw new DeviceStoreNotInScopeError();
   }
+}
+
+/** A row the caller may read, or the non-disclosing `DeviceNotFoundError`. */
+function orNotFound<T>(row: T | null | undefined): T {
+  if (row === null || row === undefined) throw new DeviceNotFoundError();
+  return row;
 }

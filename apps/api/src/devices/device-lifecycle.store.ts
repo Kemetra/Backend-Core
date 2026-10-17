@@ -171,12 +171,18 @@ export interface ApplyRevokeInput {
   readonly extraMetadata?: Readonly<Record<string, string>>;
 }
 
+/** What a revoke cascaded (the counts its audit row records). */
+export interface RevokeCascade {
+  readonly revokedSessionCount: number;
+  readonly cancelledPairingCodeCount: number;
+}
+
 /**
  * The revoke fields, the cascade (live operator sessions, pending codes) and
  * the `pos.device.revoked` audit row, inside the caller's transaction. Audit
  * metadata is the RT-135 allowlist: never the note, a token, a hash or a code.
  */
-export async function applyDeviceRevoke(client: PoolClient, input: ApplyRevokeInput): Promise<void> {
+export async function applyDeviceRevoke(client: PoolClient, input: ApplyRevokeInput): Promise<RevokeCascade> {
   await client.query(
     `UPDATE devices
         SET revoked_at = now(), revoked_by = $3::uuid, revoke_reason = $4, revoke_note = $5
@@ -189,14 +195,12 @@ export async function applyDeviceRevoke(client: PoolClient, input: ApplyRevokeIn
   );
   // The device's own pending codes and the pending replacement codes for it.
   // A code issued after this revoke is untouched (RT-367 replace / move).
-  const codes = await client.query(
-    `UPDATE pairing_codes SET status = 'cancelled' WHERE ${PENDING_PAIRING_CODES} RETURNING id`,
-    [input.tenantId, input.deviceId],
-  );
+  const cancelledPairingCodeCount = await cancelPendingCodes(client, input.tenantId, input.deviceId);
+  const revokedSessionCount = sessions.rowCount ?? 0;
   const metadata: Record<string, unknown> = {
     reason: input.reason,
-    revoked_session_count: sessions.rowCount ?? 0,
-    cancelled_pairing_code_count: codes.rowCount ?? 0,
+    revoked_session_count: revokedSessionCount,
+    cancelled_pairing_code_count: cancelledPairingCodeCount,
     custody_exception: input.custodyExceptionShiftId !== null,
     ...(input.custodyExceptionShiftId !== null ? { shift_id: input.custodyExceptionShiftId } : {}),
     ...input.extraMetadata,
@@ -210,6 +214,20 @@ export async function applyDeviceRevoke(client: PoolClient, input: ApplyRevokeIn
     targetId: input.deviceId,
     metadata,
   });
+  return { revokedSessionCount, cancelledPairingCodeCount };
+}
+
+/**
+ * Cancel the device's pending codes: its own (`terminal_id`) and the
+ * replacement codes naming it (the revoke cascade's predicate). Returns how
+ * many were cancelled.
+ */
+export async function cancelPendingCodes(client: PoolClient, tenantId: string, deviceId: string): Promise<number> {
+  const codes = await client.query(
+    `UPDATE pairing_codes SET status = 'cancelled' WHERE ${PENDING_PAIRING_CODES} RETURNING id`,
+    [tenantId, deviceId],
+  );
+  return codes.rowCount ?? 0;
 }
 
 /** One `pos.device.*` audit row, in the caller's transaction. */
