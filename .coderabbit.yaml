@@ -36,6 +36,7 @@ reviews:
     - "!**/*.jpeg"
     - "!**/*.gif"
     - "!**/*.svg"
+    - "!**/*.snap"
 
   path_instructions:
     - path: "packages/db/**"
