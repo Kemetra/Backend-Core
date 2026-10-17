@@ -4,24 +4,25 @@
 |---|---|
 | **Jira** | RT-574 (parent epic RT-5, relates to RT-561) |
 | **Work Mode** | Planning (security). Docs-only; no production code, contract, migration or CI change. |
-| **Status** | PROPOSAL for owner review. Nothing here is ratified until the owner approves this PR. |
-| **Baseline** | `Kemetra/Backend-Core` `origin/main` = `d9723aa708edb42020d8ac50f59af7e3b3f8eab3` (RT-616, #811). Branch `claude/rt-574-ratelimit-plan-3c4a09`. |
-| **Supersedes / extends** | Extends ADR 0009 (`.specify/memory/decisions/0009-pos-write-endpoint-rate-limiting.md`) from POS write routes to console routes. Does not change ADR 0009. |
+| **Status** | PROPOSAL, **revision 2** (incorporates the coordinator/Opus review of revision 1). Nothing here is ratified until the owner approves this PR. |
+| **Baseline** | `Kemetra/Backend-Core` `origin/main` = `d9723aa708edb42020d8ac50f59af7e3b3f8eab3` (RT-616, #811). Branch `claude/rt-574-ratelimit-plan-3c4a09`. Admin-Console facts verified at `Kemetra/Admin-Console` `origin/main` `f8c972a`. |
+| **Extends** | ADR 0009 (`.specify/memory/decisions/0009-pos-write-endpoint-rate-limiting.md`) from POS write routes to console routes. Does not change ADR 0009. |
 | **Origin** | RT-561 security review (PR #780): the console read contracts cannot honestly document a 429 because no console limiter exists. |
 
 Line references are to `origin/main` at the baseline SHA above.
 
 ---
 
-## 0. Recommendation in five lines
+## 0. Recommendation in six lines
 
 1. **Reuse the existing Redis `RateLimiter`** behind **one new global guard**, registered right after `FailClosedAuthGuard`. No new dependency (`@nestjs/throttler` would need `package.json` + lockfile approval and still needs custom cost-class, report-only and fail-open code).
 2. **Key per authenticated user** (`userId`, or `tokenId` for a `dashboard_api` bearer with no user), never per session, tenant or IP.
-3. **Four cost classes** with tunable starting budgets: `cheapRead` 300/min, `expensiveRead` 60/min, `write` 30/min, `heavyOrSensitive` 10 per 10 min. Default class by HTTP method; explicit per-route overrides; a ratchet spec forces every cookieAuth route to resolve to a class.
-4. **Fail-open with a bounded timeout** (250 ms) and a small circuit breaker, plus a new bounded-label metric. Ship in **report-only** mode first; enforcing is a separate owner decision.
-5. **429 contract is additive** (`TooManyRequests` response + `Retry-After` header on every cookieAuth operation, GATED). Admin-Console treats 429 as "back off", never as sign-out, never auto-retries a mutation.
+3. **Six cost classes** with tunable starting budgets (§D3): `cheapRead` 300/min, `expensiveRead` 60/min, `write` 30/min, `jobOrPreview` 10/10 min, `onboarding` 20/h, `incidentControl` 120/10 min (generous, so an incident is never locked out). Default class by HTTP method; a ratchet spec snapshots every route with its class.
+4. **Fail-open with a bounded timeout** (250 ms) and a circuit breaker, plus new bounded-label telemetry. The guard ships **default `off`**; `report` is enabled by explicit config, then `enforce` as a separate owner decision. Merging the guard is not a behaviour change; switching it to `report` is a (small, measured) latency and Redis-load change.
+5. **429 contract is additive** on **103** cookieAuth operations (106 minus three shared exemptions: `signOut`, `requestEmailVerification`, `refreshSession`), GATED. Admin-Console treats 429 as back-off, never as sign-out, never auto-retries a mutation.
+6. **Sign-in has its own, separate gaps** (no `Retry-After`, lockout-DoS, no `email/verify/confirm` limit, unset-`TRUST_PROXY` collapse, Redis-outage posture). They are split into their own drafted issue (§5, issue 5) so they do not ride on the console decision.
 
-Four child issues are drafted in §8, in dependency order: runtime (report-only) → contract + Admin-Console client (parallel) → enforce flip (owner).
+Draft issues, in dependency order (§5): **1a** primitive hardening → **1** runtime → (**2** contract ∥ **3** Admin-Console) → **4** report-then-enforce (owner); **5** sign-in hardening is independent.
 
 ---
 
@@ -31,152 +32,184 @@ Four child issues are drafted in §8, in dependency order: runtime (report-only)
 
 | Item | Evidence | What it does |
 |---|---|---|
-| `RateLimiter.check(bucketName, identifier, bucket)` | `apps/api/src/auth/rate-limit.ts:148-165` | Redis fixed-window counter. `INCR`; on the first hit `PEXPIRE … NX`; `PTTL` read back. Returns `{allowed, count, remaining, resetMs}`. Key `rl:<bucket>:<identifier>` (`:128-132`). |
-| `RateLimiter.release` | `rate-limit.ts:176-180` | Gives one hit back (used by sign-in so only failed authentications count, RT-136). |
-| `RedisLike` port | `rate-limit.ts:38-54` | Narrow interface; production adapter is `IoredisIdempotencyAdapter` (`apps/api/src/auth/ioredis-idempotency-adapter.ts`). |
-| Provider + export | `auth.module.ts:252-255`, `:324-328` | One shared `RateLimiter`, exported from `AuthModule` for downstream modules (ADR 0009 rationale, `:324-327`). |
+| `RateLimiter.check(bucketName, identifier, bucket)` | `apps/api/src/auth/rate-limit.ts:148-165` | Redis fixed-window counter. `INCR`; on the first hit `PEXPIRE … NX`; `PTTL` read back: **2-3 Redis round trips per check**. Returns `{allowed, count, remaining, resetMs}`. Key `rl:<bucket>:<identifier>` (`:128-132`). |
+| `RateLimiter.release` | `rate-limit.ts:176-180` | Gives one hit back (sign-in uses it so only failed authentications count, RT-136). |
+| `RedisLike` port | `rate-limit.ts:38-54` | Narrow interface (`incr`, `pexpireNx`, `pttl`, `decr`, `del`; no `eval`); production adapter is `IoredisIdempotencyAdapter` (`auth/ioredis-idempotency-adapter.ts`). |
+| Provider + export | `auth.module.ts:252-255`, `:324-328` | One shared `RateLimiter`, exported from `AuthModule` for downstream modules. |
 | Redis client | `auth.module.ts:100-116` | `new Redis(url)` at `:114` with **ioredis defaults** (offline queue on, retries on). `NODE_ENV=production` without `REDIS_URL` throws at boot (`:103-107`); non-prod falls back to `AlwaysAllowRedis` (`:187-209`), whose `incr` always returns 1, so **limits never trigger in dev/CI without Redis**. |
 
 ### 1.2 Buckets that exist
 
 | Bucket(s) | Where | Keyed by | Posture |
 |---|---|---|---|
-| `signInPerAccount` 5/15 min, `signInPerIp` 30/h, `passwordResetPerIp` 100/day, `passwordResetConfirmPerIp` 10/15 min | `rate-limit.ts:62-75`; used at `auth.controller.ts:121`, `:124`, `:207`, `:225` | account / IP | **Not fail-open.** `guardRateLimit` (`auth.controller.ts:290-316`) awaits `check` with no catch (`:295`), so a Redis outage on these public routes is a 500. The 429 (`RATE_LIMIT_429`, `:88-91`) is a bare `HttpException("Too many requests", 429)` with **no `Retry-After`**; the exception filter fills in the lowercase code `rate_limited` (`common/exception.filter.ts:38-39`, `packages/shared/src/errors/envelope.ts:7`). |
+| `signInPerAccount` 5/15 min, `signInPerIp` 30/h, `passwordResetPerIp` 100/day, `passwordResetConfirmPerIp` 10/15 min | `rate-limit.ts:62-75`; used at `auth.controller.ts:121`, `:124`, `:207`, `:225` | account (email) / IP | **Not fail-open and unbounded in time.** `guardRateLimit` (`auth.controller.ts:290-316`) awaits `check` with no catch and no timeout (`:295`): with ioredis defaults a Redis outage hangs or 500s the public routes. The 429 (`RATE_LIMIT_429`, `:88-91`) is a bare `HttpException("Too many requests", 429)` with **no `Retry-After`**; the filter fills in the lowercase code `rate_limited` (`common/exception.filter.ts:38-39`, `packages/shared/src/errors/envelope.ts:7`). `auth.openapi.yaml:49-54` documents the sign-in 429 without a `Retry-After` header; `requestPasswordReset` (`:102-120`) documents no 429 at all although the runtime can throw one. |
+| *(missing)* | `auth.controller.ts:266-274` | none | **`POST /auth/email/verify/confirm` is public and has no limiter.** `POST /auth/password-reset/request` is limited per IP only (`:207`), not per email. There is no global failed-sign-in cap. |
 | `pairingPerIp` 30/h, `pairingInvalidGlobal` 300/15 min | `rate-limit.ts:67`, `:74`; `pairing.controller.ts:69-72`, `:94-97` | IP / global | 429 `RATE_LIMITED` + `Retry-After` clamped [1,300] (`pairing.controller.ts:143-161`). POS onboarding, public. |
-| `emailVerifyRequestPerUser` 3/h | `rate-limit.ts:70`; `auth.controller.ts:253-258` | user | **The one cookieAuth route that is already limited.** Over the limit the route still answers 202 (no signal, by contract). No catch around `check` (a Redis outage is a 500 on this route). |
+| `emailVerifyRequestPerUser` 3/h | `rate-limit.ts:70`; `auth.controller.ts:253-258` | user | **The one cookieAuth route that is already limited.** Over the limit the route still answers 202 (no signal, by contract). No catch or timeout around `check`. |
 | POS write buckets: `posWriteSale` 300/h, `posWriteSettlementIntent` 120/h, `posWriteShift` 120/h, `posReadSaleHistory` 1200/h, `posWriteSaleReprint` 120/h | `rate-limit.ts:85-105` | **device** (ADR 0009 D1) | `PosWriteRateLimitGuard`; fail-open. |
 | `posRotateDevice` 10/h, `posRotateRefusalAudit` 20/h (RT-369) | `rate-limit.ts:100`, `:104`; `rotation.service.ts:126-129`; `rotation.controller.ts:34` | device | Separate budgets so a refused token cannot spend the live till's budget. POS surface, out of scope here. |
 | `cashierAdmissionTakeover` | `pos-cashier-admissions/takeover-rate-limit.ts` | device | Fail-open **with a 250 ms timeout** (`DEFAULT_TAKEOVER_LIMITER_TIMEOUT_MS`, `cashier-admissions.config.ts:26`), because an ioredis client with an offline queue "could otherwise hold [locks] for seconds" (`takeover-rate-limit.ts:8-15`). |
 
 ### 1.3 The guard pattern and ADR 0009
 
-- `PosWriteRateLimitGuard` (`auth/pos-write-rate-limit.guard.ts:49`): per-route bucket from route metadata via `@PosWriteRateLimitBucket(...)` (`pos-write-rate-limit.decorator.ts:23-28`); a route without the decorator is **not throttled** (`guard.ts:70-76`, inert until a route opts in). Keyed by device (`:94-110`). Over limit → 429 `{code:"RATE_LIMITED", message:"Too many requests."}` + `Retry-After` clamped to [1,300] (`:128-141`). **Fail-open** when device resolution or `check` throws (`:92-126`). **No timeout** on `check`: with ioredis defaults an outage hangs the request rather than throwing. Only POS routes carry the decorator (`sales.controller.ts:248`, `sale-history.controller.ts:177,207,231`, `shift-cash-up.controller.ts:112,129,152`, `settlement.controller.ts:119`, `rotation.controller.ts:34`).
-- ADR 0009: D1 key per device, not IP/token/tenant; D2 tunable starting defaults; **D3 fail-open for writes with an alert**; D4 429 + `Retry-After`, a contract (GATED) and paired-client change.
-- The ADR's alert counter is "AD-TOOL-003-phase-gated"; **`api.metrics.ts` has no rate-limit counter today**. Only the generic `http_error_4xx_total` (`recordHttp4xxError`, `api.metrics.ts:387`) and `auth_failure_total{cause="rate_limited"}` (sign-in only) exist.
+- `PosWriteRateLimitGuard` (`auth/pos-write-rate-limit.guard.ts:49`): per-route bucket from route metadata via `@PosWriteRateLimitBucket(...)` (`pos-write-rate-limit.decorator.ts:23-28`); a route without the decorator is **not throttled** (`guard.ts:70-76`). Keyed by device (`:94-110`). Over limit → 429 `{code:"RATE_LIMITED", message:"Too many requests."}` + `Retry-After` clamped to [1,300] (`:128-141`). **Fail-open** when device resolution or `check` throws (`:92-126`). **No timeout** on `check`, so the fail-open catch never fires during a hang. Only POS routes carry the decorator (`sales.controller.ts:248`, `sale-history.controller.ts:177,207,231`, `shift-cash-up.controller.ts:112,129,152`, `settlement.controller.ts:119`, `rotation.controller.ts:34`).
+- ADR 0009: D1 key per device, not IP/token/tenant; D2 tunable starting defaults; **D3 fail-open for writes with an alert**; D4 429 + `Retry-After`, a contract (GATED) and a paired-client change.
+- The ADR's alert counter is "AD-TOOL-003-phase-gated"; **`api.metrics.ts` has no rate-limit counter today**. Only the generic `http_error_4xx_total{route,status}` (`recordHttp4xxError`, `api.metrics.ts:325-328, 387`) and `auth_failure_total{cause="rate_limited"}` (sign-in only) exist.
 
 ### 1.4 What else sits in front of console routes
 
 | Layer | Finding | Evidence |
 |---|---|---|
-| Reverse proxy | Caddy config has **no** rate-limit directive; stock Caddy has none (it needs a plugin build). The `Caddyfile` only does gzip, the `log_skip` for health probes, `reverse_proxy api:3000`, and static serving. | `Caddyfile:16-70` |
+| Reverse proxy | Caddy config has **no** rate-limit directive; stock Caddy has none (it needs a plugin build). | `Caddyfile:16-70` |
 | `@nestjs/throttler` | **Not present** in the root or `apps/api` `package.json`. | grep of both manifests |
-| Trust proxy | `TRUST_PROXY` defaults to `false`; prod example/compose set `1`. IP keying is only correct if that stays configured. | `main.ts:46-56`, `deploy/prod.env.example:34-35`, `docker-compose.prod.yml:96` |
+| Trust proxy | `TRUST_PROXY` defaults to `false` when unset; prod example/compose set `1`. With it unset behind Caddy, `req.ip` is Caddy's address, so **all clients share one IP bucket** (the 30/h sign-in IP budget becomes a global one). | `main.ts:46-56`, `deploy/prod.env.example:34-35`, `docker-compose.prod.yml:96` |
 | Global auth | `FailClosedAuthGuard` is the only `APP_GUARD`. It runs `AuthGuard` for every non-public, non-device route. | `app.module.ts:240`, `auth/fail-closed-auth.guard.ts:23-48` |
-| Per-route console guards | Console controllers use `SessionOnlyAdminGuard` (a cookie session only; token principals rejected, `session-only-admin.guard.ts:39-54`) → `TenantContextGuard` → `RolesGuard`, e.g. `console-sales.controller.ts:92-94`. Some routes use `AuthGuard`/`DashboardAuthGuard` and **accept a `dashboard_api` bearer as well as the cookie**. | `auth.guard.ts:115-162` |
+| Per-route console guards | Console controllers use `SessionOnlyAdminGuard` (a cookie session only; token principals rejected, `session-only-admin.guard.ts:39-54`) → `TenantContextGuard` → `RolesGuard`, e.g. `console-sales.controller.ts:92-94`. Some routes use `AuthGuard`/`DashboardAuthGuard` and **accept a `dashboard_api` bearer as well as the cookie** (`auth.guard.ts:145-162`). | |
 | Idempotency | `IdempotencyInterceptor` saves a replay record only on success and releases its claim on error (`idempotency.interceptor.ts:486-510`), so a 429 is never replayed. Guards also run before interceptors, so a guard-thrown 429 never claims an idempotency key. | same file |
+| Request id | `RequestIdInterceptor` is a **global interceptor** (`main.ts:77-82`), so it runs after guards. A guard-thrown 429 reaches the filter with `request.requestId` unset; the filter mints a new id (`exception.filter.ts:106`) that is not echoed in `X-Request-Id` and matches no log line (see D5). | |
 
 ### 1.5 Answer to "what protects cookieAuth console routes today?"
 
 **Almost nothing.** Method: every OpenAPI file under `packages/contracts/openapi` was parsed; an operation counts as cookie-authenticated when its effective `security` names `cookieAuth`.
 
-- **151** operations in total; **106** declare `cookieAuth`, across 27 contract files (`audit`, `auth` (signout/refresh/email-verify), `cash-variance-policy`, `catalog/*`, `connector-admin`, `console-sales`, `context`, `devices`, `connector-health`, `erpnext-reconciliation`, `erpnext-sync-ops`, `inventory`, `memberships`, `outbox`, `platform-support-sessions`, `sale-sync-ops`, `settlement` (payer-accounts), `shift-closes`, `stores`, `tenant-branding`, `tenants`). The per-file operation list is in Appendix A.
-- **0 of the 106 document a 429.** The word `Retry-After` appears in `memberships`, `devices`, `cash-variance-policy` and `unknown-items` only in their *idempotency in-progress* (425/409) descriptions, not as a rate limit. `console-sales.openapi.yaml:162-163` states outright: "There is no console rate limit on this surface, so no 429."
-- **Runtime:** exactly one cookieAuth route has a limiter (`requestEmailVerification`, §1.2). No console route has a throttle, and no limit is applied by Caddy.
-- **Scope is by principal and scheme, not by path.** The cookieAuth set includes `/api/inventory/v1/*` (security default `cookieAuth`, `inventory.yaml:118-119`), which lies outside `/api/v1`. Conversely `POST /api/v1/settlement/settlement-intent` is a POS route that sits under `/api/v1` and is already limited (ADR 0009). A path prefix would get both wrong.
+- **151** operations in total; **106** declare `cookieAuth`, across **25** contract files (Appendix A). **0 of the 106 document a 429.** The word `Retry-After` appears in `memberships`, `devices`, `cash-variance-policy` and `unknown-items` only in their *idempotency in-progress* (425/409) descriptions, not as a rate limit. `console-sales.openapi.yaml:162-163` states outright: "There is no console rate limit on this surface, so no 429."
+- **Runtime:** exactly one cookieAuth route has a limiter (`requestEmailVerification`, §1.2). No console route has a throttle, and Caddy applies none.
+- **Scope is by principal and scheme, not by path.** The cookieAuth set includes `/api/inventory/v1/*` (security default `cookieAuth`, `inventory.yaml:118-119`), which lies outside `/api/v1`. Conversely `POST /api/v1/settlement/settlement-intent` is a POS route under `/api/v1` that is already limited (ADR 0009). A path prefix would get both wrong.
 
-**Net exposure.** A valid (or stolen) console session, or a `dashboard_api` bearer, can issue unbounded requests against the most expensive console reads (31-day sales range scans `console-sales.openapi.yaml:188`, audit search, reconciliation/posting backlog lists, device impact), trigger reconciliation runs, and send invitations, all without any ceiling. A garbage or forged cookie also costs one DB lookup per request (`auth.guard.ts:125`) before any controller-level limiter could run (see residual risk R1).
+**Net exposure.** A valid (or stolen) console session, or a `dashboard_api` bearer, can issue unbounded requests against the most expensive console reads (31-day sales range scans `console-sales.openapi.yaml:188`, audit search, reconciliation/posting backlog lists, device impact), trigger reconciliation runs, and send invitations, all without any ceiling. A garbage or forged cookie also costs one DB lookup per request (`auth.guard.ts:125`) before any controller-level limiter could run (residual risk R1).
 
 ---
 
 ## 2. Decisions
 
-Each decision gives the options, the recommendation and the rationale. "Owner decision" marks the points where the choice is not purely technical.
+"Owner decision" marks the points where the choice is not purely technical; all are collected in §7.
 
 ### D1. Mechanism
 
 | Option | Verdict |
 |---|---|
 | **A. Reuse `RateLimiter` + one new global guard** | **Recommended.** Zero new dependencies (the primitive was written to need none, `rate-limit.ts:19-23`); same Redis client, key namespace and operational story as ADR 0009; full control of the cost classes, report-only mode, fail-open timeout, envelope and `Retry-After`. |
-| B. `@nestjs/throttler` | Rejected for v1. New dependency = `package.json` + lockfile (GATED, needs explicit owner approval, CLAUDE.md §10) and a separate Redis storage adapter (another dependency). It would still need custom code for per-user keying, cost classes, report-only, a fail-open timeout, and the repo's error envelope. Net more surface, not less. |
+| B. `@nestjs/throttler` | Rejected for v1. New dependency = `package.json` + lockfile (GATED, needs explicit owner approval, CLAUDE.md §10) and a separate Redis storage adapter (another dependency). It would still need custom code for per-user keying, cost classes, report-only, a fail-open timeout, and the repo's error envelope. |
 | C. Caddy rate limit | Rejected. Needs a non-stock plugin build (supply chain), cannot key on the authenticated user, and cannot return the application error envelope. Remains a candidate for the *pre-auth* gap (R1) only. |
 | D. In-memory per-instance limiter | Rejected. With several API instances the effective limit multiplies by instance count and resets on restart. |
 
 **Shape of A (guard, not interceptor).**
-- A **global `APP_GUARD` registered immediately after `FailClosedAuthGuard`** (`app.module.ts:240`). Global guards run before controller guards and before all interceptors, so (a) `request.principal` is already set, (b) it covers every console controller by default (secure by default, instead of ~25 controllers each having to remember `@UseGuards`), and (c) a 429 never claims an idempotency key (§1.4).
-- **It skips** requests with no principal (public routes and device-bearer routes, whose own guards set the principal later), `token` principals whose scope is `pos`, `pos_operator` or `connector`, and routes marked `@ConsoleRateLimit("exempt")`.
-- **Exempt:** `POST /auth/signout` (a user must always be able to leave) and `POST /auth/email/verify/request` (it keeps its own silent per-user bucket).
-- **Cost class** from a route decorator `@ConsoleRateLimit("cheapRead" | "expensiveRead" | "write" | "heavyOrSensitive" | "exempt")`, **defaulting by HTTP method** (GET/HEAD → `cheapRead`; other verbs → `write`). Explicit overrides pin the expensive and sensitive routes (§D3).
-- **Ratchet spec** in the style of `test/auth/route-auth-markers.enforcement.spec.ts`: sweep the real `AppModule`; every route whose contract operation declares `cookieAuth` must resolve to a class; the explicit override list is pinned so a new expensive route cannot silently inherit `cheapRead`. **Order spec:** pin that the limiter guard is registered after `FailClosedAuthGuard`.
-- Tenant is not yet resolved at this point (`TenantContextGuard` is controller-level and runs later), which is a further reason to key on the user rather than the tenant.
+- A **global `APP_GUARD` registered immediately after `FailClosedAuthGuard`**, **in the same `providers` array of `AppModule`, adjacent** (`app.module.ts:240`; global-guard order across modules depends on module import order, so it is pinned by an order spec rather than assumed). Global guards run before controller guards and before all interceptors, so (a) `request.principal` is already set, (b) it covers every console controller by default instead of ~25 controllers each having to remember `@UseGuards`, and (c) a 429 never claims an idempotency key (§1.4).
+- **It skips** requests with no principal (public routes and device-bearer routes, whose own guards set the principal later), `token` principals whose scope is `pos`, `pos_operator` or `connector`, and routes on the **shared exemption list**.
+- **One shared exemption list**, a single module imported by both the runtime ratchet spec and the contract sweep of issue 2, so the sweep can never force a false 429 into a contract: `signOut`, `requestEmailVerification`, `refreshSession`.
+  - `signOut`: a user must always be able to leave.
+  - `requestEmailVerification`: keeps its own silent per-user bucket (always 202).
+  - `refreshSession`: **Admin-Console treats a non-ok refresh as session loss** (`auth-interceptor.ts`: `if (!refreshed.ok) { deps.onSessionLost(); … }`, Admin-Console `f8c972a`), so a 429 on refresh could sign the user out. Whether a 429 maps to `ok:false` depends on the caller, so the route is exempt either way. Refresh is cheap (one session lookup) and already requires a live session.
+- **Cost class** from a route decorator `@ConsoleRateLimit("cheapRead" | "expensiveRead" | "write" | "jobOrPreview" | "onboarding" | "incidentControl" | "exempt")`, **defaulting by HTTP method** (GET/HEAD → `cheapRead`; other verbs → `write`). Explicit overrides pin the expensive, job, onboarding and incident routes (§D3).
+- **Ratchet spec** in the style of `test/auth/route-auth-markers.enforcement.spec.ts`: sweep the real `AppModule` and **snapshot every route that serves a cookieAuth operation, with its resolved class.** A new route that is not in the snapshot fails the spec, which forces its author to classify it explicitly (the runtime still falls back to the method default, so a missed spec never leaves a route unlimited). A change to any entry is a deliberate snapshot edit in review.
+- **Order spec:** pin that the limiter guard runs after `FailClosedAuthGuard` and before every controller guard.
+- Tenant is not resolved at this point (`TenantContextGuard` is controller-level and runs later; a session principal carries only `userId`, `auth.guard.ts:64-69`), which is a further reason to key on the user rather than the tenant.
 
 ### D2. Keying
 
 | Option | Verdict |
 |---|---|
 | **Per user** (`principal.userId`; for a `dashboard_api` bearer with no user, `tokenId`) | **Recommended.** Stable subject: a compromised account that opens N sessions cannot multiply its budget, and a re-sign-in does not reset it. The same reasoning ADR 0009 D1 used against per-token keying. |
-| Per session | Rejected as the key. A successful sign-in is not throttled per account (the account bucket counts failures only and is released on success, `rate-limit.ts:6-8`, `auth.controller.ts:116-135`); only the per-IP bucket counts every attempt (30/h/IP, `auth.controller.ts:119-120`, `:124`). Someone holding credentials can therefore mint sessions from a few IPs and multiply a per-session budget. |
-| Per tenant | Rejected for v1, for ADR 0009 D1's reason: one abusive subject would consume the whole tenant's budget and degrade every other operator. Revisit only if report-only data shows a tenant-wide fan-out problem. |
-| Per IP (post-auth) | Rejected. Stores sit behind shared NAT; per-IP either throttles a whole store or is so high it protects nothing (ADR 0009 D1). Also IP is PII (`redaction-matrix.md:113`). |
+| Per session | Rejected as the key. A successful sign-in is not throttled per account (the account bucket counts failures only and is released on success, `rate-limit.ts:6-8`, `auth.controller.ts:116-135`); only the per-IP bucket counts every attempt (30/h/IP, `:119-120`, `:124`). Someone holding credentials can therefore mint sessions from a few IPs and multiply a per-session budget. |
+| Per tenant | Rejected for v1, for ADR 0009 D1's reason: one abusive subject would consume the whole tenant's budget and degrade every other operator. Also not resolvable at the guard (D1). Revisit only if report-only data shows a tenant-wide fan-out problem. |
+| Per IP (post-auth) | Rejected. Stores sit behind shared NAT; per-IP either throttles a whole store or is so high it protects nothing (ADR 0009 D1). IP is also PII (`redaction-matrix.md:113`). |
 
-**Include `dashboard_api` bearer principals** in the same classes. Several console routes accept the bearer as well as the cookie (`auth.guard.ts:145-162`); limiting only the cookie would leave a trivial bypass.
-
-**Shared logins** (one console account used by several staff) collapse onto one budget. The starting budgets are deliberately generous for that reason; report-only will show whether it is a real pattern.
+- **Key format:** `rl:console_<class>:u:<userId>` or `…:t:<tokenId>`. The `u:`/`t:` prefix keeps a user id and a token id from ever colliding in one namespace.
+- **Cardinality and lifetime:** one key per (active principal, class), at most six per principal, each with a TTL equal to its window (1 min to 1 h). Redis only holds principals active in the last hour; for a pilot-sized fleet that is hundreds of keys.
+- **Include `dashboard_api` bearer principals** in the same classes. Several console routes accept the bearer as well as the cookie; limiting only the cookie would leave a trivial bypass.
+- **Shared logins** (one console account used by several staff) collapse onto one budget; the starting budgets are deliberately generous and report-only will show whether it is a real pattern.
 
 ### D3. Budgets (tunable starting defaults, not frozen contract: ADR 0009 D2)
 
-Fixed window per user per class. Short windows are chosen so a limited operator recovers in at most a minute or ten (a `Retry-After` an operator will actually wait out).
+Fixed window per user per class. Short windows are chosen so a limited operator recovers in at most a minute or an hour, with a `Retry-After` an operator will actually wait out. **The class split and the numbers are an owner decision (O4).**
 
 | Class | Applies to | Starting budget | Sizing rationale |
 |---|---|---|---|
-| `cheapRead` | GET by id, small lists, `context/me`, reference reads | **300 / min / user** | A page load fans out to roughly 5-10 parallel reads (assumption, to be verified against Admin-Console in issue 3). 300/min is ~30 navigations per minute: far above a human, well below a script. |
+| `cheapRead` | GET by id, small lists, `context/me`, reference reads | **300 / min / user** | Admin-Console has **no polling** (no `refetchInterval`, `refetchOnWindowFocus: false`, `staleTime` 30 s; verified `f8c972a`), so reads come from navigations and manual filters. A page load fans out to several parallel reads (not yet measured, issue 3). 300/min is ~30 navigations per minute: far above a human, well below a script. |
 | `expensiveRead` | `consoleListSales` (31-day range scan), `listAuditEvents`, `consoleGetSaleAuditTimeline`, `consoleListNeedsRepair`, `consoleListPostingBacklog`, `listPostingBacklog`, `listProductReconciliationBacklog`, `listReconciliationResults`, `getProductReconciliationRunResults`, `listErpnextNegativeOnHand`, `listErpnextNegativeOnHandStores`, `consoleGetSyncOpsSummary`, `consoleGetDeviceImpact`, `listStockMovements`, `listOutboxDeadLetters`, `consoleListShiftCloses`, `tenantAdminListUnknownItems` | **60 / min / user** | One request per second sustained is already faster than a person filtering and paging; a scraper hits it in seconds. |
-| `write` | every other non-GET (default) | **30 / min / user** | Human-paced mutations (repair, publish policy, create store, stock movement). |
-| `heavyOrSensitive` | job triggers and bulk or heavy operations: `triggerReconciliationRun`, `triggerProductReconciliationRun`, `tenantAdminBulkDismissUnknownItems`, `consolePutTenantLogo`, `consolePreviewTenantLogo`, `previewStoreTimezoneChange`; security-sensitive writes: `createInvitation`, `consoleIssuePairingCode`, `tenantAdminIssueConnectorCredential`, `tenantAdminRotateConnectorCredential`, `consoleRevokeDevice`, `consoleRetireDevice`, `openSupportSession`, `createTenant` | **10 / 10 min / user** | Each call is expensive, enqueues background work, sends an email or mints/revokes a credential. A human does this a handful of times a day. |
+| `write` | every other non-GET (default), including `updateMembership`, `softDelete*`, stock movements, repairs, policy publish | **30 / min / user** | Human-paced mutations. |
+| `jobOrPreview` | job triggers and heavy previews: `triggerReconciliationRun`, `triggerProductReconciliationRun`, `tenantAdminBulkDismissUnknownItems`, `consolePutTenantLogo`, `consolePreviewTenantLogo`, `previewStoreTimezoneChange` | **10 / 10 min / user** | Each call is expensive or enqueues background work. |
+| `onboarding` | account and fleet onboarding: `createInvitation` (sends an email), `consoleIssuePairingCode`, `createTenant`, `tenantAdminRegisterConnectorInstance`, `tenantAdminIssueConnectorCredential`, `openSupportSession` | **20 / hour / user** | A handful a day. Sized to include client retries: see M4 note below. |
+| `incidentControl` | containment actions: `consoleRevokeDevice`, `consoleRetireDevice`, `tenantAdminRotateConnectorCredential`, `tenantAdminRevokeConnectorCredential`, `tenantAdminDisableConnectorInstance`, `revokeMembership`, `consoleCancelPairingCode`, `endSupportSession` | **120 / 10 min / user** (generous, separate) | An operator revoking every device of a compromised store, or rotating every credential, must never be throttled by the same budget as ordinary writes. 12/min is far above a manual response yet still bounds a runaway script. **Owner may instead choose `exempt`** (no limit at all); the recommendation is a generous separate budget so the class is still bounded and observable. |
 
 Notes:
-- The route-to-class lists above are the **initial proposal**; the runtime issue finalises them against the real route table and pins them in the ratchet spec.
-- Windows differ by class; the 10-minute window means `Retry-After` can be up to 600 s (see D5).
-- **Calibrate from report-only data**, as ADR 0009 D2 did, before any enforce flip. Admin-Console polling intervals (sync-ops summary, health) are **not verified here** (cross-repo); if any poll runs faster than the budget allows, report-only must show it before enforcement.
+- The route-to-class lists are the **initial proposal**; issue 1 finalises them against the real route table and pins them in the ratchet snapshot (D1).
+- **Idempotent retries spend budget (M4).** The guard runs before the idempotency interceptor, so a replay of a completed key and an in-progress (425) retry are counted like any request. Skipping them at the guard would need an extra Redis read of the in-progress marker for every request (and the marker is owned by a later stage), so the proposal is to **size for it, not skip it**: `onboarding` 20/h covers one logical invitation plus a couple of 425 retries each (the in-progress hint is 2 s, `idempotency.interceptor.ts:304-305`). Budgets count requests, not logical operations. Revisit if report-only shows 425 retries dominating a class.
+- Windows differ by class (1 min, 10 min, 1 h), so `Retry-After` can reach 3600 s for `onboarding`. See D5 for the clamp.
+- **Calibrate from report-only data** before any enforce flip (D6).
 - Fixed windows allow up to 2× burst across a window boundary; accepted (same trade-off as every existing bucket).
 
 ### D4. Store and failure posture
 
 - **Store: the existing Redis** (`REDIS_URL`, required in production, `auth.module.ts:103-107`). Multi-instance safe. No in-memory fallback.
-- **Fail-open for every class**, matching ADR 0009 D3: the limiter is defence in depth, and a limiter outage must not become a console outage. Fail-closed for `heavyOrSensitive` buys nothing: the job triggers enqueue on the same Redis through BullMQ, so an outage already stops them; and the credential/device writes do not depend on Redis, so failing them closed would turn a limiter outage into a lock-out of the very controls an operator needs during an incident. Revisit as an owner decision at the enforce flip.
-- **"Fail-open" must be real, so it needs a bound.** `new Redis(url)` uses ioredis defaults (offline queue + retries), so during an outage `check` *hangs* rather than throws, and `PosWriteRateLimitGuard`'s catch never fires (§1.3). `TakeoverRateLimit` already solves this with a 250 ms race. The new guard **must**:
-  1. race `check` against a timeout (default **250 ms**, env `CONSOLE_RATE_LIMIT_TIMEOUT_MS`, 1-10000, read at boot, the same convention as `CASHIER_TAKEOVER_LIMITER_TIMEOUT_MS`);
-  2. on timeout or error: allow, increment `outcome=fail_open`, warn-log (no identifiers);
-  3. keep a small in-process **circuit breaker** (open after 5 consecutive failures, retry after 10 s) so a sustained outage does not add 250 ms to every console request.
-- **Primitive hardening (shared code, flagged).** `check` seeds the TTL only when `count === 1` (`rate-limit.ts:155-157`). If the process dies, or the `PEXPIRE` fails, between `INCR` and `PEXPIRE`, the key keeps no TTL and the bucket never resets. For an IP/device key that is a nuisance; for a long-lived **per-user** key it is a **permanent lockout** of that user once enforced. The runtime issue must self-heal: when `pttl` reports no TTL (`-1`), re-apply `pexpireNx`. This changes a shared primitive (all existing buckets benefit); existing unit tests (`test/auth/rate-limit*.spec.ts`) must stay green or be changed deliberately.
+- **Fail-open for every class**, an extension of ADR 0009 D3 from POS writes to console routes: the limiter is defence in depth, and a limiter outage must not become a console outage. Fail-closed for `jobOrPreview` buys nothing: the job triggers enqueue on the same Redis through BullMQ, so an outage already stops them; and the credential/device writes do not depend on Redis, so failing them closed would turn a limiter outage into a lock-out of the very controls an operator needs during an incident. **Owner decision O3** (explicitly: is ADR 0009 D3 extended to console routes?).
+- **"Fail-open" must be real, so it needs a bound.** `new Redis(url)` uses ioredis defaults (offline queue + retries), so during an outage `check` *hangs* rather than throws, and a bare `try/catch` never fires (§1.3). `TakeoverRateLimit` already solves this with a 250 ms race. The new guard **must**:
+  1. race `check` against a timeout (default **250 ms**, env `CONSOLE_RATE_LIMIT_TIMEOUT_MS`, 1-10000, read at boot, same convention as `CASHIER_TAKEOVER_LIMITER_TIMEOUT_MS`);
+  2. on timeout or error: allow, count `outcome=fail_open`, warn-log (no identifiers);
+  3. keep a small in-process **circuit breaker** (open after 5 consecutive failures, half-open probe of **one** request after 10 s) so a sustained outage does not add 250 ms to every console request.
+- **ioredis offline-queue replay (L5).** A command whose 250 ms race timed out is still queued inside the client; when Redis returns, the queued `INCR`s replay and **over-count** the buckets, which in `enforce` could cause a short burst of spurious 429s right after recovery (the safe direction, but visible). Issue 1 must either give the limiter its own connection with `enableOfflineQueue: false` (the production health check already builds such a client, `docker-compose.prod.yml:161`) or document and test the recovery behaviour. Not a blocker for `report`.
+- **Primitive hardening is its own issue (1a, L1/L2).** `check` seeds the TTL only when `count === 1` (`rate-limit.ts:155-157`); if the process dies, or the `PEXPIRE` fails, between `INCR` and `PEXPIRE`, the key keeps no TTL and the bucket never resets. For an IP/device key that is a nuisance; for a long-lived **per-user** key it is a **permanent lockout** once enforced. The fix is a single Lua script (or `MULTI`) that increments, seeds the TTL if absent and returns `PTTL` in **one atomic round trip**: it makes the TTL self-heal atomic and cuts the cost from 2-3 round trips to 1, which also shrinks the `report`-mode overhead (D6). It changes a shared primitive (all existing buckets benefit), so it ships on its own with its own review, before issue 1.
 
 ### D5. Response (429 envelope and `Retry-After`)
 
 - **Status 429**, body in the canonical envelope `{ "error": { "code", "message", "request_id" } }`, **non-disclosing** message `"Too many requests."` (no budget, class or window in the body).
-- **`Retry-After: <seconds>`**, an integer from `ceil(resetMs/1000)`, clamped to **[1, 600]**. The POS clamp is [1,300] (`pos-write-rate-limit.guard.ts:129-132`); console needs 600 because of the 10-minute class window, otherwise a limited operator is told to retry before the window opens. If `resetMs` is unknown (`-1`), use 1.
+- **`Retry-After: <seconds>`**, an integer from `ceil(resetMs/1000)`, clamped to **[1, 3600]**. If `resetMs` is unknown (`-1`), use 1. **This is a deliberate exception to the POS clamp of [1,300]** (`pos-write-rate-limit.guard.ts:129-132`, `RetryAfter` header max 300 in `pos-sales/*.yaml`): console windows are up to one hour, and a clamp below the window would tell an operator to retry while still limited and invite retry loops. The console `RetryAfter` header is therefore its own schema (`integer`, 1-3600) in each console contract; it is not `$ref`-shared with the POS one.
 - **`Cache-Control: no-store`** on the 429 (guard-thrown exceptions bypass the handler's `@Header`, so the guard sets it).
 - **No `X-RateLimit-*` headers in v1**: not needed by the client, and they tell an attacker the budget. Can be added additively later.
+- **`request_id` (L6).** Because `RequestIdInterceptor` runs after guards (§1.4), a guard-thrown 429 would carry a freshly minted id that appears in no log and not in `X-Request-Id`. The guard must assign `request.requestId` itself (honouring a well-formed inbound `X-Request-Id`, the same rule as the interceptor), set the `X-Request-Id` response header, and use that id in any warn log it writes.
 - **Error code: OWNER DECISION O1.** The repo is split by case:
   - `RATE_LIMITED` (uppercase): `PosWriteRateLimitGuard` (`pos-write-rate-limit.guard.ts:138`), pairing (`pairing.controller.ts:148,161`), all POS contracts;
   - `rate_limited` (lowercase): the exception filter's canonical status-derived code (`exception.filter.ts:38-39`, `envelope.ts:7`), the takeover limiter, the sign-in 429.
-  Console envelopes are lowercase everywhere (`validation_error`, `not_found`, `console-sales.controller.ts:78,82`). **Recommendation: `rate_limited`**, so the console surface is internally consistent and the guard needs no special code. Admin-Console must key on the **HTTP status 429**, treating the code as informational and matching it case-insensitively. If the owner prefers `RATE_LIMITED` for cross-surface uniformity with POS, that is a one-line change in the guard and the contract text; decide before issue 2 merges.
+  Console envelopes are lowercase everywhere (`validation_error`, `not_found`, `console-sales.controller.ts:78,82`). **Recommendation: `rate_limited`**, so the console surface is internally consistent and the guard needs no special code. Admin-Console must key on the **HTTP status 429**, treating the code as informational and matching it case-insensitively. If the owner prefers `RATE_LIMITED` for cross-surface uniformity with POS, it is a one-line change in the guard and the contract text; decide before issue 2 merges.
 
-### D6. Rollout: report-only first
+### D6. Rollout: default off, report next, enforce last
 
-- Boot-time `CONSOLE_RATE_LIMIT_MODE`: `off` | `report` | `enforce`. **Default when unset: `report`** (observe only; no behaviour change, no deploy-config change needed to start gathering data).
-- `report`: run the same check and classification; on a would-be refusal count `outcome=would_limit` and warn-log at most once per class per 60 s (**class only: no user, tenant or IP**, IP is PII per `redaction-matrix.md:113`); **never throw**.
-- `enforce`: throw 429. Enabling it requires an explicit config change (`deploy/prod.env.example` + compose passthrough, i.e. production configuration), which is the **owner-gated issue 4**.
-- **Metric (new, required):** counter `console_rate_limit_total` with labels `class` (bounded: the four classes plus `exempt`) and `outcome` (`allowed` | `would_limit` | `limited` | `fail_open`). **No user, tenant, IP or route-template labels.** Existing generic 429s are also visible in `http_error_4xx_total`.
-- **Exit criteria for the enforce flip** (all required): issue 2 (contract) and issue 3 (Admin-Console handling) merged; at least 14 days (or the owner's chosen pilot window) of report data; for every class the per-user p99.9 hit count stays below 50% of the budget, or the budget is raised; no unexplained `fail_open` bursts; owner sign-off.
+- Boot-time `CONSOLE_RATE_LIMIT_MODE`: `off` | `report` | `enforce`. **Default when unset: `off`.** Merging issue 1 therefore changes nothing in production. (Revision 1 proposed `report` as the default; rejected because `report` costs 2-3 Redis round trips (1 after issue 1a) and up to 250 ms on a Redis stall on **every** console request, so it must be switched on deliberately, staging first.)
+- `report`: run the same check and classification; on a would-be refusal count `would_limit` and warn-log at most once per class per 60 s (**class only: no user, tenant or IP**, IP is PII per `redaction-matrix.md:113`); **never throw**.
+- `enforce`: throw 429. Both `report` and `enforce` are explicit configuration changes (`deploy/prod.env.example` + compose passthrough = production configuration), owned by issue 4.
+- **Telemetry (new, required; this is what makes the exit criteria measurable).** Bounded labels only; **no user, tenant or IP label**.
+  - Counter `console_rate_limit_total{class, outcome, route}`:
+    - `class`: the six classes plus `exempt` (closed set);
+    - `outcome` (mutually exclusive): `allowed` (utilisation under 50%), `near_limit` (allowed, utilisation 50% or more), `would_limit` (over budget, report mode), `limited` (over budget, enforce mode), `fail_open`;
+    - `route`: the route template, the same bounded label `http_error_4xx_total` already uses (`api.metrics.ts:325-328`), about 110 values.
+  - Histogram `console_rate_limit_utilisation{class}`: `count / limit` of the principal's bucket at each check, buckets `0.1, 0.25, 0.5, 0.75, 0.9, 1, 2`. It shows how close real traffic runs to each budget without identifying anyone.
+  - A **per-tenant aggregate** is deliberately **not** proposed: tenant is not resolvable at the guard (D1), so it would need a second hook after `TenantContextGuard`. Revisit only if the owner wants tenant-level visibility.
+- **Exit criteria for the enforce flip** (all required; measured only with the telemetry above, not per-user percentiles, which the label set cannot express):
+  1. issue 2 (contract) and issue 3 (Admin-Console handling) merged;
+  2. at least 14 days (or the owner's chosen pilot window) of `report` data on production traffic;
+  3. for every class: `would_limit` is zero for ordinary users over the window (every nonzero route is explained: a script, a bug, or a budget raised);
+  4. for every route: `near_limit` is under 1% of that route's requests and the utilisation histogram's 99.9th percentile is under 1.0 (i.e. no ordinary request reaches the limit); any route above that is reclassified or its budget raised first;
+  5. no unexplained `fail_open` burst, and the `report` latency overhead (added p99 of console requests) is recorded and accepted;
+  6. owner sign-off.
 
 ### D7. Contract impact (additive, GATED)
 
-- Add to **every cookieAuth operation** (106 operations, 27 files, Appendix A): `429` → `$ref: "#/components/responses/TooManyRequests"`, with a `Retry-After` header (`integer`, `minimum: 1`, `maximum: 600`) and the file's existing `Error` schema. Each contract file already carries its own `components`; the repo convention (e.g. `pos-sales/sale-history.yaml:394-400, 954-966`) is a per-file `TooManyRequests` response and `RetryAfter` header, so follow it.
-- Remove the contradicting sentence at `console-sales.openapi.yaml:162-163` ("There is no console rate limit on this surface, so no 429.") and any equivalent in other files.
-- Wording per operation: *"429 `rate_limited` — the caller's per-user budget for this class of operation is spent; honour `Retry-After`; never auto-retry a mutation."* No numbers in the contract (they are tunable, D3).
+- Add to **every cookieAuth operation except the shared exemption list**, i.e. **103 operations in 25 files** (106 minus `signOut`, `requestEmailVerification`, `refreshSession`; Appendix A): `429` → `$ref: "#/components/responses/TooManyRequests"` with a `Retry-After` header (`integer`, `minimum: 1`, `maximum: 3600`, **its own schema, see D5**) and the file's existing `Error` schema. Follow the per-file convention (e.g. `pos-sales/sale-history.yaml:394-400, 954-966`).
+- Remove the contradicting sentence at `console-sales.openapi.yaml:162-163` and any equivalent in other files.
+- Wording per operation: *"429 `rate_limited`: the caller's per-user budget for this class of operation is spent; honour `Retry-After`; never auto-retry a mutation."* No numbers in the contract (they are tunable, D3).
 - **Additive.** Adding a non-2xx response is not a breaking change; the issue's acceptance criterion is `oasdiff` green **with no breaking-ignore lines** and `contract-conformance.spec.ts` green.
-- **Ordering.** The contract may merge while the runtime is still `report`: the wording is "may return 429", and the sentence stating otherwise must go before enforcement. Contract merges **before** the enforce flip.
-- `[GATED]` per `standing-rules.md` §3 (`packages/contracts/openapi/**`) and the Jira scope; `x-runtime-status` unaffected.
+- **Ordering.** The contract may merge while the runtime is still `off` or `report`: the wording is "may return 429". It merges **before** the enforce flip.
+- **Exemptions and the sweep.** The contract sweep in issue 2 imports the same exemption list as the runtime ratchet (D1), so it requires a 429 on every cookieAuth operation **except** the exempt ones and never forces a false 429 into `signOut`, `requestEmailVerification` or `refreshSession`.
+- `[GATED]` per `standing-rules.md` §3 (`packages/contracts/openapi/**`) and the Jira scope; `x-runtime-status` unaffected. Execution needs explicit owner authorisation (O7).
 
-### D8. How Admin-Console should react (spec for issue 3; cross-repo, not implemented here)
+### D8. How Admin-Console should react (spec for issue 3; verified against Admin-Console `origin/main` `f8c972a`)
 
-- **429 is not 401.** It must never trigger sign-out, re-authentication or the session-expired flow.
-- Read `Retry-After` (integer seconds); if missing or invalid use 30 s; clamp to [1, 600].
-- **Mutations (POST/PUT/PATCH/DELETE): never retried automatically.** Preserve form state; show the failure with a "Try again in Ns" affordance.
-- **Reads: at most one automatic retry**, after `Retry-After` plus 0-1 s jitter, and only for a request the user initiated (not background polling).
-- **Global back-off gate:** on any 429, suppress background polling and prefetch until the `Retry-After` has elapsed, so one limited class does not spawn a storm of failing background calls.
-- **Disable the query-client default retry for 429.** (A TanStack-style default of 3 exponential retries would hammer the limiter. Admin-Console's actual default cannot be verified from this repo: issue 3 must check it.)
-- UX: a non-blocking, dismissible banner ("Too many requests, retrying in Ns") with a manual retry; no raw error strings; accessible live region.
-- Match `error.code` case-insensitively; key behaviour on the status.
+**What the client does today** (verified):
+- `src/lib/query.ts`: queries `retry: 1`, mutations `retry: false`, `refetchOnWindowFocus: false`, `staleTime` 30 s; **no `refetchInterval` anywhere in `src`** (git grep). There is no background polling to pause.
+- `src/lib/client.ts`: the wrappers return `{ status, data, error }` and **do not throw** on non-2xx. Only `signIn` parses `Retry-After`.
+- `src/lib/auth-interceptor.ts`: only a **401** triggers `refreshSession`; a refresh that returns `ok:false` calls `onSessionLost` (clear cache and redirect to sign-in).
+
+**So the real questions for issue 3 are:**
+1. Do the `queryFn`s (and mutation functions) throw on a 429 or return `{status: 429}` as data? If they return it, TanStack never retries it and the UI must branch on `status`; if they throw, `retry: 1` fires after its default 1 s backoff, ignoring `Retry-After`. Audit every `queryFn`/mutation that uses the wrappers and make 429 handling uniform at the `client.ts` boundary.
+2. Add a shared 429 classification (status 429, `retryAfterSeconds` parsed as `signIn` already does: integer seconds, 30 s fallback, clamped [1, 3600]).
+
+**Behaviour:**
+- **429 is not 401.** It must never trigger sign-out, re-authentication, `onSessionLost`, or the session-expired flow. (This is also why `refreshSession` is exempt server-side, D1.)
+- **Mutations: never retried automatically.** Preserve form state; show the failure with a "Try again in Ns" affordance.
+- **Reads: no automatic retry on 429**, or at most the existing single retry delayed by `Retry-After` (+ 0-1 s jitter) through `retryDelay`, for a user-initiated read only. Never the default 1 s backoff.
+- **Repeat-submit gate:** while a `Retry-After` is running, the control that caused the 429 (submit, filter apply, export) is disabled with a countdown, so a user cannot hammer it. (There is no background polling or prefetch to pause today; if any is added later it must honour the same gate.)
+- UX: a non-blocking, dismissible banner ("Too many requests, you can retry in Ns") with a manual retry; no raw error strings; accessible live region.
+- Match `error.code` case-insensitively; behaviour keys on status 429.
 
 ---
 
@@ -184,118 +217,141 @@ Notes:
 
 | ID | Risk / boundary | Treatment |
 |---|---|---|
-| R1 | **Pre-auth gap.** A garbage or forged cookie (and any unauthenticated request to a guarded route) costs a session lookup at `auth.guard.ts:125` before any post-auth limiter sees it. | Not solved by this proposal. Candidate follow-up: a high, NAT-safe per-IP pre-auth ceiling (report-only first), or a Caddy-level limit (needs a plugin build: a new dependency, owner approval). **Owner decision O2: accept R1 for now, or open a separate issue.** |
-| R2 | Redis outage disables the limiter (fail-open). | Visible via `fail_open` outcome; alert on it. Same accepted trade-off as ADR 0009 D3. |
+| R1 | **Pre-auth gap.** A garbage or forged cookie (and any unauthenticated request to a guarded route) costs a session lookup at `auth.guard.ts:125` before any post-auth limiter sees it. | Not solved by this proposal. Candidate follow-up: a high, NAT-safe per-IP pre-auth ceiling (report-only first), or a Caddy-level limit (needs a plugin build: a new dependency, owner approval). **Owner decision O5.** |
+| R2 | Redis outage disables the limiter (fail-open). | Visible via `outcome=fail_open`; alert on it. Same accepted trade-off as ADR 0009 D3. |
 | R3 | Shared console logins share a budget. | Generous starting budgets; report-only will show it. |
 | R4 | Fixed-window 2× burst at the boundary. | Accepted. |
 | R5 | `AlwaysAllowRedis` in non-prod: limits never trigger without `REDIS_URL`. | Enforcement tests need real Redis (Docker-gated integration). Unit tests use fakes. |
-| R6 | **Pre-existing:** sign-in and email-verify limiters are not fail-open (a Redis outage is a 500, `auth.controller.ts:295`) and sign-in 429 has no `Retry-After`. | Out of scope here. Failing closed on sign-in is arguably right for brute-force protection; flagged so the owner can decide separately (**O3**). |
-| Out of scope | POS and device routes (ADR 0009), connector routes (`/api/connector/v1/*`), public auth routes, and non-`dashboard_api` bearer scopes. | Unchanged. |
+| R6 | **Pre-existing sign-in gaps** (no `Retry-After`, lockout-DoS, no `email/verify/confirm` limit, unset `TRUST_PROXY`, Redis-outage hang/500). | Separate drafted issue 5, independent of the console decision. Fail posture is **owner decision O6**. |
+| Out of scope | POS and device routes (ADR 0009), connector routes (`/api/connector/v1/*`), public auth routes (except issue 5), and non-`dashboard_api` bearer scopes. | Unchanged. |
 
 ---
 
-## 4. Owner decisions needed
+## 4. Verification performed for this record
 
-| # | Decision | Recommendation |
-|---|---|---|
-| O1 | Console 429 error code: `rate_limited` vs `RATE_LIMITED`. | `rate_limited` (D5). |
-| O2 | Treat the pre-auth cookie-flood gap (R1) as accepted, or open a follow-up issue? | Open a separate, report-only follow-up after issue 1 lands. |
-| O3 | Separate decision on sign-in / email-verify Redis-outage posture (R6)? | Raise separately; not part of RT-574. |
-| O4 | Approve the cost-class model and starting numbers (D3) as *starting defaults*. | Approve; calibrate in report-only. |
-| O5 | The enforce flip itself (issue 4). | After the exit criteria in D6. |
+- Repository state: `git fetch origin`; branch clean at the time of writing; `HEAD` = `origin/main` = `d9723aa7` for Backend-Core.
+- All Backend-Core `file:line` references were read at that SHA. Admin-Console facts (D8) were read from `origin/main` `f8c972a` (`src/lib/query.ts`, `client.ts`, `auth-interceptor.ts`, `git grep` for `refetchInterval`).
+- The cookieAuth/429 counts come from parsing every YAML under `packages/contracts/openapi` (script run locally; not committed): 151 operations, 106 `cookieAuth` in 25 files, 0 documenting a 429.
+- **Not verified (stated as assumptions):** production API instance count; the ioredis hang-on-outage and offline-queue replay behaviours are inferred from the default client options (`auth.module.ts:114`) and the existing takeover limiter's own documentation (`takeover-rate-limit.ts:8-15`), not reproduced; Admin-Console page-load fan-out (issue 3 measures it); whether Admin-Console's `refreshed.ok` is false on a 429 (depends on the caller; the route is exempt regardless).
+- No production code, contract, migration, dependency or CI file was modified.
 
 ---
 
 ## 5. Draft implementation issues (text only; **not created in Jira**)
 
-Dependency order: **1** → (**2** ∥ **3**) → **4**.
+Dependency order: **1a** → **1** → (**2** ∥ **3**) → **4**. Issue **5** is independent.
 
-### Issue 1: Backend-Core — console rate limiting runtime: global guard, cost classes, report-only (RT-574 follow-up)
+### Issue 1a: Backend-Core — harden `RateLimiter` into one atomic round trip with TTL self-heal (shared primitive)
 
-- **Repo:** Backend-Core. **Work Mode:** Implementation. **Depends on:** RT-574 decision approved (O1, O4). **GATED surfaces:** none (no dependency, migration, contract or CI change). Documenting the new env vars in `deploy/prod.env.example` is optional and value-neutral; changing a prod value is not part of this issue.
-- **Scope:**
-  - `ConsoleRateLimitGuard` + `@ConsoleRateLimit(...)` decorator + class table (`CONSOLE_RATE_LIMIT_CLASSES`) next to `rate-limit.ts`; registered as an `APP_GUARD` immediately after `FailClosedAuthGuard`.
-  - Skip rules, exemptions, default-by-method and the explicit overrides in D1/D3, finalised against the real route table.
-  - Keying per D2 (`userId ?? tokenId` for `dashboard_api`; skip `pos`/`pos_operator`/`connector` scopes and requests with no principal).
-  - Modes `off`/`report`/`enforce` (default `report`), boot-time env; 429 shape per D5 (code per O1).
-  - Timeout (default 250 ms) + circuit breaker, fail-open (D4).
-  - `console_rate_limit_total{class,outcome}` metric (bounded labels).
-  - `RateLimiter.check` self-heal for a TTL-less key (D4).
-- **Out of scope:** POS/device/connector routes; contract text (issue 2); Admin-Console (issue 3); changing sign-in/email-verify behaviour; any per-IP pre-auth limiter; flipping to `enforce`.
+- **Repo:** Backend-Core. **Work Mode:** Implementation. **GATED:** none (no dependency, migration, contract or CI change; `ioredis` already present, `eval`/script is part of it).
+- **Scope:** make `check` one atomic operation (a Lua script or `MULTI`: `INCR`, `PEXPIRE … NX` when no TTL, return count and `PTTL`) and self-heal a TTL-less key (re-seed the TTL when `PTTL` is `-1`). Extend the `RedisLike` port, `IoredisIdempotencyAdapter`, `AlwaysAllowRedis` and the test fakes accordingly. No behaviour change for any existing bucket.
+- **Out of scope:** any new bucket, guard or route; sign-in policy.
 - **Acceptance criteria:**
-  1. In `report` mode no request is ever refused by the guard; would-be refusals increment `outcome=would_limit`; warn logs contain no user, tenant or IP.
-  2. In `enforce` mode the (limit+1)-th request in a window to a class returns 429 with the canonical envelope, `Retry-After` in [1,600] and `Cache-Control: no-store`; the next window succeeds.
-  3. Keying is per user: two sessions of one user share a budget; two users do not; a `dashboard_api` bearer without a user keys on `tokenId`.
-  4. Every cookieAuth route resolves to a class; the explicit-override list is pinned by a ratchet spec, so a new route that is not on the list inherits the method default (`cheapRead` / `write`) and a change to the pinned list needs a deliberate spec edit.
-  5. POS, device, connector and unauthenticated requests are not touched; `signOut` and `requestEmailVerification` are exempt.
-  6. Redis down or hanging: the request is allowed within the timeout; `fail_open` is counted; after 5 consecutive failures the breaker skips checks for 10 s; no request is delayed by more than the timeout.
-  7. A TTL-less counter key is repaired on the next `check`.
+  1. `check` is one Redis round trip and returns the same `{allowed, count, remaining, resetMs}` for every existing bucket.
+  2. A key that exists without a TTL is given one on the next `check` (no permanent lock).
+  3. `release` semantics are unchanged (RT-136 sign-in behaviour intact).
+  4. All existing consumers (sign-in, pairing, email-verify, POS write guard, takeover, rotation) are untouched and their tests pass.
+  5. db-integration CI green.
+- **Tests:** unit with a fake client (single call, TTL seeded once, TTL-less repair, count/limit boundary, `resetMs`); real-Redis integration (Docker-gated): window rollover, concurrent increments, kill-between-commands equivalent; all existing `test/auth/rate-limit*.spec.ts` and `pos-write-rate-limit.guard.unit.spec.ts` stay green unchanged.
+
+### Issue 1: Backend-Core — console rate limiting runtime: global guard, cost classes, modes, telemetry (RT-574 follow-up)
+
+- **Repo:** Backend-Core. **Work Mode:** Implementation. **Depends on:** RT-574 decision approved (O1, O3, O4) and issue 1a merged. **GATED surfaces:** none. Documenting the new env vars in `deploy/prod.env.example` is optional and value-neutral; changing a prod value is issue 4.
+- **Behaviour on merge:** **none.** The default mode is `off`; this issue is not a no-op only in that it adds code and tests.
+- **Scope:**
+  - `ConsoleRateLimitGuard` + `@ConsoleRateLimit(...)` decorator + the six-class table + the shared exemption list module (also consumed by issue 2's sweep), registered as an `APP_GUARD` adjacent to and after `FailClosedAuthGuard` in the same providers array.
+  - Skip rules, exemptions (`signOut`, `requestEmailVerification`, `refreshSession`), default-by-method and the explicit overrides of D3, finalised against the real route table.
+  - Keying per D2 (`rl:console_<class>:u:<userId>` / `:t:<tokenId>`; skip `pos`/`pos_operator`/`connector` scopes and requests with no principal).
+  - Modes `off`/`report`/`enforce` (default `off`), boot-time env; 429 shape per D5 (code per O1; `Retry-After` [1,3600]; `Cache-Control: no-store`; guard-assigned `request_id` and `X-Request-Id`).
+  - 250 ms timeout + circuit breaker (half-open one-request probe), fail-open (D4); decide the dedicated limiter connection with `enableOfflineQueue: false` vs documented recovery behaviour (L5).
+  - Telemetry per D6: `console_rate_limit_total{class,outcome,route}` and `console_rate_limit_utilisation{class}`, bounded labels, registered through the existing label-assertion helper.
+- **Out of scope:** POS/device/connector routes; contract text (issue 2); Admin-Console (issue 3); sign-in/email-verify behaviour (issue 5); a per-IP pre-auth limiter; enabling `report`/`enforce` in any environment (issue 4).
+- **Acceptance criteria:**
+  1. With the default (`off`) the guard performs no Redis call and changes no response.
+  2. In `report` mode no request is ever refused by the guard; would-be refusals increment `would_limit`; warn logs contain no user, tenant or IP.
+  3. In `enforce` mode the (limit+1)-th request in a window to a class returns 429 with the canonical envelope, `Retry-After` in [1,3600], `Cache-Control: no-store`, and a `request_id` equal to the `X-Request-Id` response header; the next window succeeds.
+  4. Keying is per user: two sessions of one user share a budget; two users do not; a `dashboard_api` bearer without a user keys on `tokenId`; a user id and a token id with the same string never share a key.
+  5. **The ratchet snapshot lists every route serving a cookieAuth operation with its resolved class; a route absent from the snapshot fails the spec; a changed entry is a deliberate snapshot edit.**
+  6. POS, device, connector and unauthenticated requests are not touched; the three exempt operations are exempt (and appear in the shared exemption list used by issue 2).
+  7. Redis down or hanging: the request is allowed within the timeout; `fail_open` is counted; after 5 consecutive failures the breaker skips checks and probes with one request after 10 s; no request is delayed by more than the timeout.
   8. A guard-thrown 429 neither claims nor stores an idempotency key (retrying with the same key after the window succeeds).
-  9. The limiter guard is registered after `FailClosedAuthGuard` (order spec).
-  10. No new dependency; no change to `package.json`, lockfile, migrations, `.github/**` or `packages/contracts/openapi/**`.
-  11. **db-integration CI is green** (every harness that boots `AppModule` still boots; the guard's dependencies resolve there and in standalone harnesses: see the soft-skip hazard in project memory).
+  9. The guard is registered immediately after `FailClosedAuthGuard` in the same providers array (order spec).
+  10. The metric label sets are bounded and contain no user, tenant or IP value.
+  11. No new dependency; no change to `package.json`, lockfile, migrations, `.github/**` or `packages/contracts/openapi/**`.
+  12. **db-integration CI is green** (every harness that boots `AppModule` still boots; the guard's dependencies resolve there and in standalone harnesses: see the soft-skip hazard in project memory).
 - **Tests:**
-  - Unit (fakes, Docker-free): classification and default-by-method; keying matrix; skip/exempt rules; over-limit 429 headers/body; `report` never throws; `enforce` throws; fail-open on throw and on timeout; breaker open/close; self-heal; metric labels are bounded (no user/tenant/IP).
-  - Ratchet spec over the real `AppModule` (pattern: `test/auth/route-auth-markers.enforcement.spec.ts`) and a guard-order spec.
-  - HTTP integration with real Redis (Docker-gated): boundary 429, window rollover, idempotency non-claim, Redis stop → fail-open within the timeout.
-  - Existing `test/auth/rate-limit*.spec.ts` and `pos-write-rate-limit.guard.unit.spec.ts` stay green.
+  - Unit (fakes, Docker-free): classification and default-by-method; keying matrix; skip/exempt rules; over-limit 429 headers/body/request id; `off` makes no call; `report` never throws; `enforce` throws; fail-open on throw and on timeout; breaker open/half-open/close; utilisation and `near_limit` outcome boundaries; metric labels bounded.
+  - Ratchet snapshot spec over the real `AppModule` (pattern: `test/auth/route-auth-markers.enforcement.spec.ts`) and a guard-order spec.
+  - HTTP integration with real Redis (Docker-gated): boundary 429, window rollover, idempotency non-claim, Redis stop → fail-open within the timeout, recovery without a spurious burst of 429s.
+  - Existing rate-limit and POS guard specs stay green.
 
 ### Issue 2: Backend-Core — console contract wording: documented 429 on cookieAuth operations (GATED, contract-first)
 
-- **Repo:** Backend-Core. **Work Mode:** Implementation (contract). **GATED:** `packages/contracts/openapi/**`; needs explicit owner authorisation. **Depends on:** RT-574 decision (O1). Can merge before the runtime enforces.
-- **Scope:** per D7: add `429` + `TooManyRequests` response + `Retry-After` header to all 106 cookieAuth operations in the 27 contract files (Appendix A); delete the "no 429" sentence in `console-sales.openapi.yaml:162-163` and any equivalent; update affected `info.description` status mappings and changelog entries.
-- **Out of scope:** runtime change; POS/device contracts; new error codes beyond the one chosen in O1; request-body changes.
+- **Repo:** Backend-Core. **Work Mode:** Implementation (contract). **GATED:** `packages/contracts/openapi/**`; needs explicit owner authorisation (O7). **Depends on:** RT-574 decision (O1). Can merge before the runtime enforces.
+- **Scope:** per D7: add `429` + `TooManyRequests` response + a console `Retry-After` header (`integer`, 1-3600, own schema) to the **103** cookieAuth operations that are not on the shared exemption list, in 25 files (Appendix A); delete the "no 429" sentence at `console-sales.openapi.yaml:162-163` and any equivalent; update affected `info.description` status mappings and changelog entries.
+- **Out of scope:** runtime change; POS/device contracts; the public auth contract (issue 5); new error codes beyond the one chosen in O1; request-body changes.
 - **Acceptance criteria:**
-  1. Every operation that declares `cookieAuth` documents a 429 with the `Retry-After` header (`integer`, 1-600) and the file's `Error` schema; no operation outside the cookieAuth set gains a 429.
+  1. Every cookieAuth operation **not on the shared exemption list** documents a 429 with the `Retry-After` header and the file's `Error` schema; `signOut`, `requestEmailVerification` and `refreshSession` do **not** gain a 429; no operation outside the cookieAuth set gains one.
   2. `oasdiff` breaking-change gate green **with no breaking-ignore lines** added.
   3. `contract-conformance.spec.ts` green; OpenAPI lint green; no `x-runtime-status` change.
   4. No contract text states a numeric budget.
-- **Tests:** a contract test (sweep all contract files) asserting that every `cookieAuth` operation has a `429` response referencing `Retry-After`, so a future cookieAuth operation without it fails CI; oasdiff run attached as evidence.
+- **Tests:** a contract test (sweep of all contract files) that imports **the same exemption list as the runtime ratchet** and asserts every `cookieAuth` operation outside it has a `429` response with `Retry-After`, and every exempt one has none, so a future cookieAuth operation without a 429 fails CI and the sweep can never force a false 429; oasdiff run attached as evidence.
 
-### Issue 3: Admin-Console — handle 429 from Backend-Core (backoff, `Retry-After`, no retry storms)
+### Issue 3: Admin-Console — handle 429 from Backend-Core (verified-facts scope)
 
 - **Repo:** `Kemetra/Admin-Console`. **Work Mode:** Implementation. **Depends on:** issue 2 merged (contract-first); not on the runtime enforcing.
-- **Scope:** per D8: status-based 429 handling in the HTTP/query layer; `Retry-After` parsing with a 30 s fallback and [1,600] clamp; no automatic mutation retry; at most one deferred read retry for user-initiated reads; global back-off gate pausing polling/prefetch; banner with live region; verify and override the query-client default retry for 429. First task: **inventory every polling interval and parallel page-load fan-out** and report it on the RT-574 thread (it validates D3's `cheapRead` assumption).
-- **Out of scope:** any Backend-Core change; changing 401/403 handling; per-route custom UX beyond the shared banner.
+- **Verified starting point** (`f8c972a`): queries `retry: 1`, mutations `retry: false`; no `refetchInterval`; `refetchOnWindowFocus: false`; the `client.ts` wrappers return `{status}` and do not throw; only `signIn` parses `Retry-After`; only a 401 triggers refresh, and an `ok:false` refresh signs the user out.
+- **Scope:** (a) **audit every `queryFn` and mutation function** for whether a 429 is thrown or returned as data, and report the result on the RT-574 thread (this also records page-load fan-out and validates the `cheapRead` budget); (b) a shared 429 classification at the `client.ts` boundary (status, `retryAfterSeconds`, 30 s fallback, clamp [1,3600]); (c) retry policy: never auto-retry a mutation; for reads, no retry on 429 or one retry delayed by `Retry-After` + jitter via `retryDelay`, never the default 1 s backoff; (d) repeat-submit gate with a countdown on the control that caused the 429; (e) non-blocking banner with a live region; (f) guarantee a 429 never reaches `onSessionLost` or the sign-in redirect.
+- **Out of scope:** any Backend-Core change; 401/403 handling; per-route custom UX beyond the shared banner; polling (none exists).
 - **Acceptance criteria:**
-  1. A 429 never signs the user out or routes to sign-in.
+  1. A 429 never signs the user out or routes to sign-in, including a 429 returned by a call that goes through the 401 interceptor.
   2. A mutation that gets a 429 is not retried automatically and the form input is preserved.
-  3. A user-initiated read is retried at most once, after `Retry-After` (+jitter); background polling and prefetch are suppressed until the back-off elapses.
-  4. A missing/invalid `Retry-After` falls back to 30 s; values are clamped to [1,600].
-  5. The banner is dismissible, announced to assistive tech, and shows the remaining time.
+  3. A user-initiated read is retried at most once, after `Retry-After` (+jitter); there is no 1 s default-backoff retry on a 429.
+  4. A missing/invalid `Retry-After` falls back to 30 s; values are clamped to [1,3600].
+  5. The control that caused a 429 is disabled with a visible countdown until `Retry-After` elapses; the banner is dismissible and announced to assistive tech.
   6. `error.code` is matched case-insensitively; behaviour keys on status 429.
-- **Tests:** unit tests for the `Retry-After` parser and the retry policy; component/integration tests with a mocked 429 asserting exact request counts (no storm), no sign-out, mutation not retried, polling paused then resumed; an accessibility check on the banner.
+  7. Every `queryFn`/mutation that uses the wrappers is covered by the shared 429 handling (the audit list is attached).
+- **Tests:** unit tests for the `Retry-After` parser and the retry policy; component/integration tests with a mocked 429 asserting exact request counts (no storm), no sign-out, mutation not retried, control disabled then re-enabled after the countdown; an accessibility check on the banner.
 
-### Issue 4: Backend-Core — flip console rate limiting from report-only to enforce (OWNER DECISION, production config)
+### Issue 4: Backend-Core — enable console rate limiting: report mode, then enforce (OWNER DECISION, production config)
 
-- **Repo:** Backend-Core (+ deploy config). **Work Mode:** Implementation. **GATED:** production configuration (CLAUDE.md §10); explicit owner approval required. **Depends on:** issues 1, 2 and 3 merged, and the D6 exit criteria met.
-- **Scope:** set `CONSOLE_RATE_LIMIT_MODE=enforce` through the deploy path (`deploy/prod.env.example` and the compose passthrough); adjust any class budget the report data shows is wrong; record the calibration evidence and a rollback step (set `report`; no deploy of code needed).
+- **Repo:** Backend-Core (+ deploy config). **Work Mode:** Implementation. **GATED:** production configuration (CLAUDE.md §10); explicit owner approval at each phase. **Depends on:** issue 1 (and 1a) merged for phase A; issues 2 and 3 merged **and** the D6 exit criteria met for phase B.
+- **Phase A, enable `report`:** set `CONSOLE_RATE_LIMIT_MODE=report` through the deploy path (staging first, then production; `deploy/prod.env.example` + the compose passthrough). Record the baseline console p99 latency before and after.
+- **Phase B, flip to `enforce`:** after the exit criteria; adjust any class budget the report data shows is wrong; record the calibration evidence and a one-step rollback (`report`; no code deploy).
 - **Out of scope:** new classes, new keying, contract changes.
 - **Acceptance criteria:**
-  1. The calibration evidence (window, per-class p99.9 vs budget, `fail_open` count) is attached before the flip.
-  2. After the flip, `console_rate_limit_total{outcome="limited"}` is non-zero only for the expected classes; Admin-Console shows the banner (not an error page) when a limit is provoked on staging.
-  3. A documented one-step rollback (`report`) is verified on staging.
-  4. The owner records approval on the issue.
-- **Tests / evidence:** staging run that provokes each class once; screenshots/logs of the banner and the 429 headers; metric snapshot before and after.
+  1. Phase A: before/after console latency recorded and accepted by the owner; `console_rate_limit_total` and the utilisation histogram receive data in production.
+  2. Phase B evidence attached before the flip: the report window, per-class `would_limit` (zero for ordinary users or each cause explained), per-route `near_limit` share under 1%, utilisation p99.9 under 1.0, `fail_open` count.
+  3. **Staging provocation test (scripted, repeatable):** with a dedicated test user and `enforce` on staging, send `budget+1` requests to one named route of each class (the script lists them); assert the (budget+1)-th returns 429 with `Retry-After` in range and `Cache-Control: no-store`; assert `console_rate_limit_total{outcome="limited"}` increases by exactly the number of refused requests, labelled with only the expected class and route; assert the Admin-Console banner appears (not an error page, not a sign-out) via a recorded browser run.
+  4. The one-step rollback (`report`) is exercised on staging and confirmed to stop all refusals.
+  5. The owner records approval on the issue for each phase.
+- **Tests / evidence:** the staging script and its output, a metric snapshot before and after each phase, screenshots/logs of the banner and the 429 headers.
+
+### Issue 5: Backend-Core — sign-in and public-auth rate-limit hardening (independent of the console decision)
+
+- **Repo:** Backend-Core. **Work Mode:** Implementation (parts GATED: `auth.openapi.yaml` and production boot behaviour). **Depends on:** none (benefits from issue 1a). **Context:** R6; `auth.controller.ts`, `main.ts`, `auth.openapi.yaml`.
+- **Scope** (each item independently shippable):
+  1. **`Retry-After` on the sign-in 429** (and the other public auth 429s). `RATE_LIMIT_429` (`auth.controller.ts:88-91`) sends none; the Admin-Console `signIn` wrapper already parses it. Clamp to [1,3600]. Document the header on `signIn` (`auth.openapi.yaml:49-54`) and document the 429 that `requestPasswordReset` can already return. **GATED** (`packages/contracts/openapi/**`).
+  2. **`TRUST_PROXY` boot check.** Unset means `false` (`main.ts:53`), which behind Caddy collapses every client onto one IP bucket (the 30/h sign-in IP budget becomes global, an easy sign-in denial of service). Warn at boot when `NODE_ENV=production` (or a deployed `DEPLOYMENT_ENVIRONMENT`) and `TRUST_PROXY` is unset; option to fail fast. Explicit `TRUST_PROXY=false` stays valid for a direct deployment.
+  3. **Lockout-DoS mitigation.** Five failed guesses against an email lock out the correct password for 15 minutes (`signInPerAccount`, keyed by email). Proposal for review: key the 5/15 min failure bucket on the (email, IP) pair and keep a higher per-email-only cap (for example 20/15 min) so a lone attacker IP cannot lock the owner out from their usual IP, while distributed guessing is still capped. Needs security review; **owner decision** on the numbers.
+  4. **Global failed-sign-in alert** (metric + alert only, **not enforced**: an enforced global cap would itself be a lockout DoS).
+  5. **Per-email limit on `password-reset/request`** (for example 5/h per email, still always 202) so one victim's inbox cannot be flooded within the per-IP budget (`:207`).
+  6. **Limit on `email/verify/confirm`** (public, currently unlimited; for example 20/15 min/IP).
+  7. **Redis-outage posture for the public auth limiters (O6).** Today `guardRateLimit` awaits `check` with no catch and no timeout (`auth.controller.ts:295`): an outage hangs or 500s sign-in. Options: (a) keep fail-closed but make it deliberate: bounded timeout, then 503 with `Retry-After` (recommended: sign-in is where brute-force protection matters, and already-signed-in console sessions keep working because the console limiter fails open); (b) fail-open with a timeout, which lets guessing proceed unthrottled during an outage.
+- **Out of scope:** the console limiter (issues 1-4); POS onboarding limits; changing session lifetime.
+- **Acceptance criteria:** per item above, each with its own test; sign-in behaviour for a correct password from an unlocked IP is unchanged; no new dependency; the contract changes (item 1) pass `oasdiff` with no breaking-ignore lines; db-integration CI green.
+- **Tests:** unit and real-Redis integration per bucket (boundary, rollover, (email, IP) vs email-only interplay, 202 preserved on password-reset over limit, `Retry-After` present and in range); a boot-check test for `TRUST_PROXY`; a Redis-stop test asserting the chosen posture (503 with `Retry-After`, not a hang).
 
 ---
 
-## 6. Verification performed for this record
+## 6. Appendix A. cookieAuth operations by contract (from the parse; none documents a 429)
 
-- Repository state: `git fetch origin`; branch clean; `HEAD` = `origin/main` = `d9723aa7`.
-- All `file:line` references were read at that SHA.
-- The cookieAuth/429 counts come from parsing every YAML under `packages/contracts/openapi` (script run locally; not committed).
-- **Not verified (stated as assumptions):** Admin-Console's real polling intervals and query-client retry default (cross-repo); production API instance count; the ioredis hang-on-outage behaviour is inferred from the default client options (`auth.module.ts:114`) and the existing takeover limiter's own documentation (`takeover-rate-limit.ts:8-15`), not reproduced here.
-- No production code, contract, migration, dependency or CI file was modified.
-
----
-
-## Appendix A. cookieAuth operations by contract (from the parse; none documents a 429)
+25 files, 106 operations. **Exempt (no 429 is added): `signOut`, `requestEmailVerification`, `refreshSession`** (all in `auth.openapi.yaml`), leaving 103.
 
 | Contract | Ops | Operations |
 |---|---:|---|
 | `audit.openapi.yaml` | 1 | `listAuditEvents` |
-| `auth.openapi.yaml` | 3 | `signOut`, `refreshSession`, `requestEmailVerification` |
+| `auth.openapi.yaml` | 3 | `signOut`, `refreshSession`, `requestEmailVerification` (all exempt) |
 | `cash-variance-policy.openapi.yaml` | 6 | `consoleGet/List…/Publish…` tenant and store policy |
 | `catalog/erpnext-item-map.yaml` | 4 | `tenantAdminList/Suggest/Confirm/RetireErpnextItemMapping` |
 | `catalog/erpnext-warehouse-map.yaml` | 3 | `tenantAdminList/Set/RetireErpnextWarehouseMapping` |
@@ -320,4 +376,21 @@ Dependency order: **1** → (**2** ∥ **3**) → **4**.
 | `tenant-branding.openapi.yaml` | 4 | logo get/put/delete/preview |
 | `tenants.openapi.yaml` | 6 | list/create/read/update/delete tenant, list members |
 
-(The per-operation `operationId` list was produced by the parse and is reproduced in full in the runtime issue's route-table task, which is the authoritative source for the ratchet spec.)
+The per-operation route table (operation id, route template, class) is produced by issue 1's ratchet snapshot, which is the authoritative source.
+
+---
+
+## 7. Owner decisions
+
+Each with the recommendation. Nothing in this record is ratified until the owner answers.
+
+| # | Decision | Recommendation |
+|---|---|---|
+| **O1** | Console 429 error-code case: `rate_limited` vs `RATE_LIMITED`. | **`rate_limited`** (console envelopes and the filter are lowercase; Admin-Console keys on status 429 and matches the code case-insensitively). Decide before issue 2 merges. |
+| **O2 / O4** | The cost-class model and starting budgets (D3), **including the split of the old heavy class into `jobOrPreview` 10/10 min, `onboarding` 20/h and `incidentControl`**; and whether `incidentControl` is a generous separate budget (120/10 min) or fully `exempt`. | Approve the six classes as *starting defaults*; make `incidentControl` a generous separate budget (still bounded and observable); calibrate every number in `report`. |
+| **O3** | Extend ADR 0009 D3 (fail-open with an alert) to **every console class**. | **Yes.** Fail-closed gains nothing for job triggers (same Redis) and would lock operators out of containment controls during an incident. Bounded by a 250 ms timeout and a breaker. |
+| **O3b** | Default mode when `CONSOLE_RATE_LIMIT_MODE` is unset. | **`off`**; `report` is switched on explicitly (staging first). `report` adds Redis round trips and up to 250 ms on a Redis stall to every console request. |
+| **O5** | The pre-auth cookie-flood gap (R1): accept for now, or open a follow-up? Any Caddy rate-limit plugin (a non-stock build, i.e. a new dependency) needs your approval. | Accept for now; open a separate report-only per-IP follow-up after issue 1 lands; do not add a Caddy plugin in this cycle. |
+| **O6** | Sign-in / public-auth fail posture on a Redis outage (issue 5, item 7). | Deliberate fail-closed with a bounded timeout and a 503 + `Retry-After` (not a hang or an unexplained 500); already-signed-in console sessions keep working. |
+| **O7** | GATED execution of issue 2 (`packages/contracts/openapi/**`, 103 operations in 25 files). | Authorise it as one additive PR once O1 is decided; it may merge before enforcement. |
+| **O8** | The enforce flip (issue 4, phase B) and enabling `report` in production (phase A), both production configuration. | Phase A after issues 1a and 1; phase B only after issues 2 and 3 are merged and the D6 exit criteria are met, with your sign-off on the calibration evidence. |
