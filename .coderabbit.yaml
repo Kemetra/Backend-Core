@@ -8,11 +8,24 @@ reviews:
   high_level_summary: true
   review_status: true
   review_details: true
+  poem: false
+  in_progress_fortune: false
+  suggested_reviewers: false
+  # RT-590: CodeRabbit is capped at ~1 review/hour, and every push counts
+  # against the cap. Only the first push is reviewed automatically; High-tier
+  # PRs (RT-582) get a manual `@coderabbitai review` on the final head.
   auto_review:
     enabled: true
     drafts: false
+    auto_incremental_review: false
+    ignore_usernames:
+      - "dependabot[bot]"
+      - "renovate[bot]"
+    labels:
+      - "!skip-coderabbit"
 
   path_filters:
+    - "!pnpm-lock.yaml"
     - "!**/dist/**"
     - "!**/node_modules/**"
     - "!**/.next/**"
@@ -23,6 +36,7 @@ reviews:
     - "!**/*.jpeg"
     - "!**/*.gif"
     - "!**/*.svg"
+    - "!**/*.snap"
 
   path_instructions:
     - path: "packages/db/**"
