@@ -10,7 +10,7 @@
  * ReadableSpan shape, including the prototype `spanContext()` method that the
  * OTLP transformer calls.
  */
-import type { IncomingMessage, RequestOptions } from "http";
+import type { IncomingMessage, RequestOptions } from "node:http";
 
 import { tracing } from "@opentelemetry/sdk-node";
 

@@ -40,7 +40,7 @@ jest.mock("@opentelemetry/instrumentation-redis", () => ({
 }));
 
 // Import after mocks are hoisted.
-import type { IncomingMessage, RequestOptions } from "http";
+import type { IncomingMessage, RequestOptions } from "node:http";
 
 import { PrometheusExporter } from "@opentelemetry/exporter-prometheus";
 import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";

@@ -18,16 +18,16 @@
  * unparsable -> `[url]`), so both egress channels agree. Pure; no SDK runtime
  * imports (type-only), so it is unit-testable without starting NodeSDK.
  */
-import type { IncomingMessage, RequestOptions } from "http";
+import type { IncomingMessage, RequestOptions } from "node:http";
 
 import type { Attributes } from "@opentelemetry/api";
 import type { core, tracing } from "@opentelemetry/sdk-node";
 
 /** Attributes holding a full or relative request URL (old + stable semconv). */
-const URL_ATTRIBUTE_KEYS: readonly string[] = ["http.url", "http.target", "url.full"];
+const URL_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set(["http.url", "http.target", "url.full"]);
 
 /** Attributes holding only the query string; removed outright. */
-const QUERY_ATTRIBUTE_KEYS: readonly string[] = ["url.query"];
+const QUERY_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set(["url.query"]);
 
 /** Cut a relative target (`/path?query#fragment`) at the first `?` or `#`. */
 function pathOnly(target: string): string {
@@ -53,9 +53,9 @@ export function redactUrlValue(value: string): string {
 export function redactSpanAttributes(attributes: Attributes): Attributes {
   const out: Attributes = {};
   for (const [key, value] of Object.entries(attributes)) {
-    if (QUERY_ATTRIBUTE_KEYS.includes(key)) continue;
+    if (QUERY_ATTRIBUTE_KEYS.has(key)) continue;
     out[key] =
-      URL_ATTRIBUTE_KEYS.includes(key) && typeof value === "string"
+      URL_ATTRIBUTE_KEYS.has(key) && typeof value === "string"
         ? redactUrlValue(value)
         : value;
   }
