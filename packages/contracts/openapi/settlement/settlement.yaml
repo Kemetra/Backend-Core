@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — Payer Accounts (settlement) API
-  version: "2.0.0"
+  version: "2.1.0"
   description: >
     Spec 035 (sale-settlement-and-receivables-model), narrowed to Option B
     (RT-413; RT-277 comment 11662; decision-record amendment A1). Backend-Core
@@ -37,6 +37,31 @@ info:
       The `operatorAuthorization` scheme, the POS 429 response and every
       receivable / claim / remittance schema leave this document with the
       operations that used them.
+
+    RT-572 (2.1.0; [GATED], additive to 2.0.0; no change to any existing
+    operation or schema): adds `consoleUpdatePayerAccount`, a PATCH that
+    repairs a payer. A payer created without `externalRef` (its ERPNext
+    Customer link) fails every credit sale against it with 422
+    `sale_responsibility_payer_invalid`, and 2.0.0 had no way to fix it. The
+    operation carries `x-runtime-status: contract-only` until the RT-572
+    runtime PR. Coordinator decisions (owner delegation, 2026-10-17): (1) the
+    update set is `displayName`, `externalRef` (set or replace, never cleared)
+    and `status` (active / suspended); `category` and `storeId` are immutable
+    because a sale's payer must belong to the sale's store (capture checks it,
+    and RT-577 D12 refuses a credit reversal whose payer is scoped to another
+    store), so moving a payer's store would turn existing sales' reversals
+    into 422s; (2) the optimistic precondition is the existing
+    `PayerAccount.version`, sent as `expectedVersion`, so the runtime needs no
+    new column; (3) a changed `externalRef` never touches a posting that
+    already froze its payer link (RT-332), see the operation; (4) the audit
+    records field names, `status` and `externalRef` before / after
+    (`externalRefFrom` / `externalRefTo`: ERPNext Customer identifiers,
+    business-class, not PII), never the displayName; (5) suspension refuses
+    new capture and, under RT-577 D12, fails credit reversals of that payer's
+    sales closed; (6) a `status` or `externalRef` change of a tenant-wide
+    payer needs tenant-wide store scope, else 403 `payer_scope_insufficient`
+    (every owner / tenant_admin sees tenant-wide payers in the list, so a 404
+    would hide nothing).
 
     RUNTIME DURING THE TRANSITION: the six removed routes are still served by
     the 035 runtime until RT-422 deletes them (RT-418 leaves them in place).
@@ -167,6 +192,138 @@ paths:
         "500":
           $ref: "#/components/responses/SystemFailure"
 
+  /api/v1/settlement/payer-accounts/{payerRef}:
+    patch:
+      summary: Update a payer account (repair a missing ERPNext Customer link, rename, suspend or reactivate).
+      operationId: consoleUpdatePayerAccount
+      x-idempotency: required
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-572 contract. The runtime ships in the RT-572 runtime PR (no
+        migration: it uses the existing `payer_account.version`). Runtime
+        requirements: (1) validate `payerRef` as a uuid before any SQL cast, so
+        a malformed value is a 400 and never a 500 (pg 22P02,
+        invalid_text_representation); (2) write the audit row in the same
+        transaction as the update, and not on a no-op: `@Auditable` alone cannot
+        do this (it fires per request, including a no-op) and
+        `insertSettlementAudit` needs a `storeId` that a tenant-wide payer lacks,
+        so the runtime writes a tenant-level audit event (`store_id` null) for
+        those; (3) validate `externalRef` with the contract pattern verbatim,
+        which also excludes the zero-width characters U+200B-U+200D and U+FEFF
+        and the line / paragraph separators U+2028 / U+2029, not a looser
+        re-implementation. Do not generate this as a shipped route until then.
+      tags: [settlement-console]
+      security:
+        - cookieAuth: []
+      description: >
+        Change a payer's `displayName`, `externalRef` or `status`. Role: owner /
+        tenant_admin (403 otherwise). `tenant_id` and the actor are
+        server-resolved (§XII). A malformed `payerRef` is a 400
+        `validation_error`.
+
+
+        Scope. A store-scoped payer outside the caller's store access is a
+        non-disclosing 404, as is an unknown or other-tenant `payerRef`. A change
+        to `status` or `externalRef` of a tenant-wide payer (`storeId` null)
+        needs a caller with tenant-wide store scope (access to all stores, with
+        no single store selected): a store-restricted owner / tenant_admin gets
+        403 `payer_scope_insufficient` and nothing is written, because the
+        change reaches every store. It is a 403, not a 404, because every owner
+        / tenant_admin already sees tenant-wide payers in the list, so the
+        refusal hides nothing. The gate triggers on `status` or `externalRef`
+        being present in the body, not on an effective change: a request that
+        repeats the current value is refused too, and a request that mixes such
+        a field with `displayName` is refused as a whole. A `displayName`-only
+        change to a tenant-wide payer follows the store-scope rule of the list.
+        Order: validation (400) and not-found / out-of-store-scope (404) first;
+        the scope check (403) runs before the version check (409).
+
+
+        Fields. Every field is optional, but the body must carry `expectedVersion`
+        and at least one of `displayName`, `externalRef` or `status`
+        (otherwise 400 `validation_error`). `category` and `storeId` cannot be
+        changed; sending them is a 400 (strict body). `externalRef` sets or
+        replaces the ERPNext Customer link and cannot be cleared: `null` is a
+        400, because an unlinked payer is the fault this route repairs. It is an
+        identifier: 1..140 characters, no leading or trailing whitespace, no
+        control characters, no NUL, no zero-width character (U+200B-U+200D,
+        U+FEFF) and no line / paragraph separator (U+2028 / U+2029). `displayName` must contain a non-whitespace
+        character and no NUL. A value that breaks these rules is a 400
+        `validation_error`, never a 5xx.
+
+
+        Concurrency. `expectedVersion` must equal the payer's current
+        `version`, else 409 `payer_version_conflict` and nothing is written:
+        re-list the payer and retry. An effective update sets `version` to
+        version + 1 in the same transaction that writes the change and returns
+        the updated `PayerAccount`. A request whose values all equal the current
+        ones is a no-op: 200 with the unchanged payer, `version` not bumped, no
+        audit event. The version check runs before any write, so a stale
+        `expectedVersion` is a 409 even for a no-op. Idempotent on `Idempotency-Key`: the same key
+        and body replay the stored 200 (including after the version moved on);
+        the key with another body is 409 `idempotency_key_conflict`.
+
+
+        Effect on sales. A credit sale captured after a repair succeeds.
+        `suspended` refuses new capture (`sale_responsibility_payer_invalid`) and,
+        under RT-577 D12, makes a credit reversal of any of that payer's sales
+        fail closed (422 `credit_reversal_settlement_unavailable`); `active`
+        reinstates both. Postings, frozen or pending, are unaffected by a status
+        change. Captured `sale_responsibilities` and their `payerRef` are not
+        changed by any update.
+
+
+        Effect on postings (RT-332). A changed `externalRef` NEVER touches a
+        posting that has already frozen its payer link: each work item freezes
+        `payerExternalRef` in its resolution version, so the posting feed keeps
+        serving the frozen value and no edit retargets it. A new `externalRef` is
+        picked up only by resolutions frozen after the update (a sale whose
+        posting intent has not yet been created, or a new sale). The one
+        exception is deliberate: an RT-332 operator re-resolution
+        (`freezeOperatorResolution`) re-reads the live `external_ref`, so
+        re-resolving a pending posting after an update repoints it to the new
+        value. An update itself never re-resolves anything.
+
+
+        Audit. An effective update writes `settlement.payer_account.updated` in the
+        same transaction as the update (a failed audit write rolls the update
+        back); it is not emitted for a no-op. Metadata: `payerRef`,
+        `changedFields` (the field names that changed), `fromVersion`,
+        `toVersion`, `statusFrom` / `statusTo` when the status changed, and
+        `externalRefFrom` / `externalRefTo` when the link changed (ERPNext
+        Customer identifiers, business-class and not PII per migration 0051;
+        `externalRefFrom` is null for an unlinked payer). It never records the
+        displayName (§XIV). Cookie-authenticated, so the RT-430 `Origin` check
+        applies.
+      parameters:
+        - $ref: "#/components/parameters/PayerRef"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PayerAccountUpdate"
+      responses:
+        "200":
+          description: The payer after the update (or unchanged, for a no-op).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PayerAccount"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ForbiddenOrOriginRejected"
+        "404":
+          $ref: "#/components/responses/PayerNotFound"
+        "409":
+          $ref: "#/components/responses/PayerUpdateConflict"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
 components:
   securitySchemes:
     cookieAuth:
@@ -180,6 +337,16 @@ components:
         rejected. 401/403 semantics owned by 028 (G10).
 
   parameters:
+    PayerRef:
+      name: payerRef
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        The payer's stable reference (`PayerAccount.payerRef`). A malformed value
+        is a 400 `validation_error`.
     PayerCategoryQuery:
       name: category
       in: query
@@ -263,6 +430,57 @@ components:
           type: [string, "null"]
           format: uuid
           description: Optional store scope; null = tenant-wide payer.
+    PayerAccountUpdate:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion]
+      anyOf:
+        - required: [displayName]
+        - required: [externalRef]
+        - required: [status]
+      description: >
+        Update-a-payer-account request (RT-572). `expectedVersion` plus at least
+        one change. `category`, `storeId`, `payerRef`, `version`, `tenant_id`
+        and any other key are refused (strict). Omitted fields are unchanged.
+      properties:
+        expectedVersion:
+          type: integer
+          minimum: 0
+          maximum: 2147483647
+          description: >
+            The `PayerAccount.version` the caller last saw (an int4 column, hence
+            the bound). A mismatch is 409 `payer_version_conflict`.
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: '^\s*[^\s\u0000][^\u0000]*$'
+          description: >
+            New display name. Must contain a non-whitespace character and no
+            NUL; otherwise 400 `validation_error`.
+        externalRef:
+          type: string
+          minLength: 1
+          maxLength: 140
+          pattern: '^[^\s\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2028\u2029\ufeff](?:[^\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2028\u2029\ufeff]*[^\s\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2028\u2029\ufeff])?$'
+          description: >
+            Set or replace the payer's ERPNext Customer link (see
+            `PayerAccountCreate.externalRef`). Not nullable: the link cannot be
+            cleared. It is an identifier: 1..140 characters (a Frappe document
+            name), no leading or trailing whitespace, no control characters, no
+            NUL, no zero-width character (U+200B-U+200D, U+FEFF) and no line /
+            paragraph separator (U+2028 / U+2029); otherwise 400
+            `validation_error`. It never alters an
+            already-frozen posting (RT-332): only resolutions frozen after the
+            update use it.
+        status:
+          type: string
+          enum: [active, suspended]
+          description: >
+            `suspended` refuses new capture (`sale_responsibility_payer_invalid`)
+            and, under RT-577 D12, makes credit reversals of that payer's sales
+            fail closed (`credit_reversal_settlement_unavailable`); postings are
+            unaffected. `active` reinstates both.
     PayerAccount:
       type: object
       additionalProperties: false
@@ -376,6 +594,25 @@ components:
       description: >
         conflict (409) — a deterministic, side-effect-free refusal:
         `idempotency_key_conflict` (the key reused with a different payload).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PayerNotFound:
+      description: >
+        not_found (404) — the payer does not exist, belongs to another tenant,
+        or is store-scoped outside the caller's store access. Non-disclosing: one
+        body for every cause (§II/§XII).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PayerUpdateConflict:
+      description: >
+        conflict (409) — a deterministic refusal that writes nothing:
+        `payer_version_conflict` (`expectedVersion` is not the payer's current
+        `version`; re-list and retry) or `idempotency_key_conflict` (the key
+        reused with a different payload).
       content:
         application/json:
           schema:
