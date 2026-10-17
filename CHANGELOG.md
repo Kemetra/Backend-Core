@@ -222,11 +222,17 @@ This project follows [Semantic Versioning](https://semver.org/).
   device-authenticated route; a retry with the previous token replaces the
   undelivered new token without extending the window. An expired, unrevoked
   device may rotate for 7 days after `expires_at` (the only route that reads
-  expiry until RT-370); a revoked or retired device never. One generic 401,
-  required non-replayable `Idempotency-Key` scoped to the device (409
-  `idempotency_key_conflict` on a same-key retry), its own `RotateError`
-  code set, and the `pos.device.rotated` / `pos.device.rotation_rejected`
-  audit allowlists. Additive; no runtime or migration change.
+  expiry until RT-370; literal L4, not gated on the enforcement flag); a
+  revoked or retired device never. One generic 401, a per-device rotation
+  budget (429 `RATE_LIMITED` with `Retry-After`), required non-replayable
+  `Idempotency-Key` scoped to the device (409 `idempotency_key_conflict` on
+  a same-key retry), `Cache-Control: no-store` / `Pragma: no-cache` on the
+  200, its own `RotateError` code set, the client rules (one rotation in
+  flight, first-start rotation), and the `pos.device.rotated` /
+  `pos.device.rotation_rejected` audit allowlists (reasons `revoked`,
+  `retired`, `grace_elapsed`, `previous_expired`, `token_replaced`).
+  Decisions coordinator-approved under owner delegation 2026-10-17.
+  Additive; no runtime or migration change.
 - RT-369: runtime for the device token rotation (`DeviceRotationModule`).
   `posRotateTerminalToken` ships unchanged on the wire and loses
   `x-runtime-status: contract-only`. `DeviceRotationAuthGuard` (a reviewed
