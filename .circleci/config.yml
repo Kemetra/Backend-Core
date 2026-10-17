@@ -1,0 +1,175 @@
+# RT-594 — isolated, manual-only CircleCI PoC for the apps/api Jest suite.
+#
+# NOT a CI migration and NOT a gate. GitHub Actions (.github/workflows/ci.yml)
+# stays the only CI of record. This file lives on a PoC branch only.
+#
+# Manual-only: the project has an enabled `all-pushes` trigger, so every push of
+# this file creates a pipeline. The only workflow is gated on `run_rt594_poc`
+# (default false), so push-created pipelines run no jobs and spend no credits.
+# Trial runs are launched explicitly with run_rt594_poc=true.
+#
+# Arms (same commit):
+#   api-jest-control : the exact GitHub command, unsplit, config thresholds on.
+#   api-jest-split   : N nodes; per-shard threshold OFF; coverage-final.json kept.
+#   api-coverage-gate: fan-in. Fails unless every shard reported, the executed
+#                      spec files equal `jest --listTests` exactly once each, and
+#                      the MERGED coverage meets apps/api/jest.config.cjs floors
+#                      (read from the file, never copied). Also checks merged
+#                      covered/total counts equal the control's.
+
+version: 2.1
+
+parameters:
+  run_rt594_poc:
+    type: boolean
+    default: false
+  split_nodes:
+    type: integer
+    default: 2
+  # Jest's default maxWorkers is cores - 1, so the node size changes the result
+  # as much as splitting does. `large` (4 vCPU) is meant to match the GitHub
+  # public-repo ubuntu-latest runner (4 vCPU); confirm from `nproc` in both logs.
+  # Both arms use the same class so the split is compared like-for-like.
+  control_size:
+    type: string
+    default: large
+  split_size:
+    type: string
+    default: large
+
+executors:
+  linux-vm:
+    parameters:
+      size:
+        type: string
+    # Machine executor: Testcontainers needs a local Docker daemon with reachable
+    # mapped ports; setup_remote_docker breaks getMappedPort(). Pin a dated image
+    # tag at authorization time.
+    machine:
+      image: ubuntu-2404:current
+    resource_class: << parameters.size >>
+
+commands:
+  install:
+    steps:
+      # No `checkout` step: the project has no checkout key. The repo is public,
+      # so clone anonymously over HTTPS and pin to the exact pipeline commit.
+      - run:
+          name: Clone over HTTPS, pinned to the pipeline commit
+          command: |
+            git clone https://github.com/Kemetra/Backend-Core.git .
+            git checkout --detach "$CIRCLE_SHA1"
+            git log -1 --oneline
+      - run:
+          name: Node 22 + pnpm 9.15.0 (same pins as ci.yml)
+          command: |
+            nvm install 22 && nvm alias default 22
+            corepack enable
+            corepack prepare pnpm@9.15.0 --activate
+            echo "nproc=$(nproc) mem=$(free -g | awk '/Mem:/{print $2}')G"
+            node --version && pnpm --version
+      # No dependency cache: the Free plan has 2 GB of storage and overage costs
+      # credits; the cost is about a minute of install time per job.
+      - run:
+          name: Install dependencies
+          command: pnpm install --frozen-lockfile --ignore-scripts
+  build-and-pull:
+    steps:
+      - run:
+          name: Build workspaces required by api tests
+          command: >-
+            pnpm --filter @data-pulse-2/shared --filter @data-pulse-2/auth
+            --filter @data-pulse-2/db --filter @data-pulse-2/worker run build
+      - run:
+          name: Pre-pull postgres:16-alpine
+          command: docker pull postgres:16-alpine
+
+jobs:
+  api-jest-control:
+    executor:
+      name: linux-vm
+      size: << pipeline.parameters.control_size >>
+    environment:
+      OUT: /tmp/ws/control
+    steps:
+      - install
+      - build-and-pull
+      - run:
+          name: API Jest unsplit (exact GitHub command; config thresholds enforced)
+          no_output_timeout: 40m
+          command: |
+            mkdir -p "$OUT"
+            pnpm --filter @data-pulse-2/api test -- --coverage --forceExit --json --outputFile="$OUT/jest.json"
+      - run:
+          name: Collect control results
+          when: always
+          command: |
+            cp apps/api/coverage/coverage-final.json "$OUT/" || echo "no coverage-final.json"
+            node .circleci/scripts/jest-json-to-junit.cjs "$OUT/jest.json" /tmp/junit/api-jest.xml "$PWD/apps/api"
+      - store_test_results:
+          path: /tmp/junit
+      - persist_to_workspace:
+          root: /tmp/ws
+          paths: [control]
+
+  api-jest-split:
+    executor:
+      name: linux-vm
+      size: << pipeline.parameters.split_size >>
+    parallelism: << pipeline.parameters.split_nodes >>
+    steps:
+      - install
+      - build-and-pull
+      - run:
+          name: API Jest shard (per-shard threshold off; enforced once in gate)
+          working_directory: ~/project/apps/api
+          no_output_timeout: 40m
+          command: |
+            OUT="/tmp/ws/split/node-$CIRCLE_NODE_INDEX"
+            mkdir -p "$OUT"
+            pnpm exec jest --listTests | sed "s#^$PWD/##" | sort > "$OUT/all-tests.txt"
+            test -s "$OUT/all-tests.txt"
+            # --runTestsByPath: exact paths, never regex (a pattern like
+            # auth.spec.ts would also match oauth.spec.ts in another shard).
+            # xargs -r: an empty shard must not fall through to "run everything".
+            circleci tests run --verbose --split-by=timings --timings-type=filename \
+              --command="tee $OUT/shard-files.txt | xargs -r pnpm exec jest --runTestsByPath --coverage --coverageThreshold='{}' --coverageReporters=json --coverageDirectory=$OUT --forceExit --json --outputFile=$OUT/jest.json" \
+              < "$OUT/all-tests.txt"
+            test -s "$OUT/shard-files.txt" || { echo "empty shard"; exit 1; }
+      - run:
+          name: Shard JUnit
+          when: always
+          command: |
+            OUT="/tmp/ws/split/node-$CIRCLE_NODE_INDEX"
+            node .circleci/scripts/jest-json-to-junit.cjs "$OUT/jest.json" /tmp/junit/api-jest.xml "$PWD/apps/api"
+      - store_test_results:
+          path: /tmp/junit
+      - persist_to_workspace:
+          root: /tmp/ws
+          paths: [split]
+
+  api-coverage-gate:
+    executor:
+      name: linux-vm
+      size: medium
+    steps:
+      - install
+      - attach_workspace:
+          at: /tmp/ws
+      - run:
+          name: Inventory + merged coverage gate + control parity
+          command: >-
+            node .circleci/scripts/coverage-gate.cjs
+            apps/api /tmp/ws/split << pipeline.parameters.split_nodes >>
+            /tmp/ws/control/coverage-final.json
+      - store_artifacts:
+          path: /tmp/ws/merged
+
+workflows:
+  rt594-api-jest-poc:
+    when: << pipeline.parameters.run_rt594_poc >>
+    jobs:
+      - api-jest-control
+      - api-jest-split
+      - api-coverage-gate:
+          requires: [api-jest-control, api-jest-split]
