@@ -110,7 +110,8 @@ export interface CreditSaleFacts {
   readonly currencyCode: string;
   readonly businessDate: string;
   readonly sellerUserId: string;
-  readonly payerId: string;
+  /** The sale's payer; null only on a visibility fault (refused at the settlement step). */
+  readonly payerId: string | null;
   /** sum of `reversal_total` over the sale's earlier credit reversals (X0). */
   readonly creditReversedBefore: string;
   /** true when the allocation cannot be established (see `assertAllocationAvailable`). */
@@ -151,7 +152,6 @@ export async function readCreditSaleFacts(client: PoolClient, saleRef: string): 
   );
   const row = r.rows[0];
   if (row === undefined) throw new Error("locked sale not readable");
-  if (row.payer_id === null) throw new CreditReversalSettlementUnavailableError();
   return {
     posTotal: row.pos_total,
     collected: row.collected,
@@ -219,7 +219,8 @@ export async function allocate(
  * this store or tenant-wide, is active, and has a non-blank ERPNext Customer
  * link. Locked FOR SHARE until commit (the capture precedent).
  */
-export async function assertPayerSettlement(client: PoolClient, scope: SaleScope, payerId: string): Promise<void> {
+export async function assertPayerSettlement(client: PoolClient, scope: SaleScope, payerId: string | null): Promise<string> {
+  if (payerId === null) throw new CreditReversalSettlementUnavailableError();
   const r = await client.query<{ id: string }>(
     `SELECT id::text AS id FROM payer_account
       WHERE id = $1 AND tenant_id = $2 AND (store_id IS NULL OR store_id = $3)
@@ -228,6 +229,7 @@ export async function assertPayerSettlement(client: PoolClient, scope: SaleScope
     [payerId, scope.tenantId, scope.storeId],
   );
   if (r.rows.length !== 1) throw new CreditReversalSettlementUnavailableError();
+  return payerId;
 }
 
 const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();

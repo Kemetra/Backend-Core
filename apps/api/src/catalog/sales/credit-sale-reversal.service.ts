@@ -128,7 +128,7 @@ async function recordNew(
     reversalTotal = await sumOf(client, priced.map((l) => l.lineAmount));
   }
   const allocation = await allocate(client, saleRef, facts, reversalTotal);
-  await assertPayerSettlement(client, scope, facts.payerId);
+  const payerId = await assertPayerSettlement(client, scope, facts.payerId);
   if (body.kind === "return") {
     await assertCreditReturnApproval(client, {
       scope,
@@ -149,7 +149,7 @@ async function recordNew(
     actorRole,
     timezone: sale.timezone,
     currencyCode: sale.currencyCode,
-    payerId: facts.payerId,
+    payerId,
     payloadHash,
     body,
     allocation,
