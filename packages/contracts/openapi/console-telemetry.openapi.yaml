@@ -52,8 +52,11 @@ info:
     The Console starts the SDK with a fixed, well-formed placeholder DSN,
     which the tunnel ignores, so the real DSN cannot be used to post to
     Sentry directly around the scrub and the rate limits. Public,
-    `Cache-Control: no-store`, no `Origin` check: it discloses only what the
-    tunnel's own behaviour already discloses (configured or inert).
+    `Cache-Control: no-store`, no `Origin` check. Beyond what the tunnel
+    already discloses (configured or inert), it reveals the server's Sentry
+    environment name (for example `staging`). That is a deployment label,
+    not a secret or a credential, and the Console needs it before sign-in to
+    label its own events.
 
 
     **Default-inert.** With `CONSOLE_SENTRY_DSN` unset, blank or malformed,
