@@ -1796,9 +1796,10 @@ describe("pos-sales/sales.yaml — RT-577 credit-sale reversal", () => {
     }
   });
 
-  it("orders the rollout: the server refuses from the RT-577 runtime; the POS stops sending credit-sale reversals on the ordinary routes first", () => {
+  it("orders the rollout: the server refuses from the RT-577 runtime without waiting for the POS (RT-530 order)", () => {
     expect(info()).toContain("ROLLOUT ORDER");
     expect(info()).toContain("from the RT-577 runtime");
+    expect(info()).toContain("which does not wait for a POS release: the server refusal is the control");
     expect(info()).toContain("changes no existing request or response schema");
   });
 });

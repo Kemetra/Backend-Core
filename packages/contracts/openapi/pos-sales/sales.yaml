@@ -288,13 +288,15 @@ info:
     response schema. It does not lift the RT-418 posting-feed hold on
     reversals of responsibility-bearing sales (RT-571 / RT-419 define their
     ERPNext shape). ROLLOUT ORDER: the ordinary routes refuse from the RT-577
-    runtime. Before it deploys, the POS stops offering void and return on a
-    sale whose `responsibilities` is present and stops queueing them. A
-    reversal of such a sale already queued on a till is refused on arrival
-    (403 `credit_sale_reversal_restricted`, nothing recorded): the POS shows
-    it as terminal, does not retry it, does not re-send it under another
-    envelope and does not turn it into a tender; a Manager/Admin performs the
-    reversal with `recordCreditSaleReversal` once its runtime ships.
+    runtime, which does not wait for a POS release: the server refusal is the
+    control (the RT-530 order: server first, POS change after). From then on
+    a reversal of such a sale sent by any till, queued or live, is refused
+    (403 `credit_sale_reversal_restricted`): nothing is recorded and nothing
+    reaches the posting feed. The POS follow-up then stops offering void and
+    return on a sale whose `responsibilities` is present, shows the refusal
+    as terminal, does not retry it, does not re-send it under another
+    envelope and does not turn it into a tender, and offers the
+    Manager/Admin `recordCreditSaleReversal` once its runtime ships.
 
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
