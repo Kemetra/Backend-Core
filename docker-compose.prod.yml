@@ -100,6 +100,15 @@ services:
       CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:?CLERK_SECRET_KEY required (Clerk backend key)}
       CLERK_AUTHORIZED_PARTIES: ${CLERK_AUTHORIZED_PARTIES:-}
       CLERK_JWT_AUDIENCE: ${CLERK_JWT_AUDIENCE:-}
+      # Spec 037 observability. All default-inert: an empty SENTRY_DSN sends no
+      # Sentry events; traces go to OTEL_EXPORTER_OTLP_ENDPOINT (the SDK default
+      # until pointed at the datadog-agent profile, see deploy/README.md).
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}
+      OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.1}
     networks: [dp2]
     expose:
       - "3000"
@@ -137,6 +146,13 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       NODE_ENV: production
+      # Spec 037 observability — same default-inert posture as the api service.
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}
+      OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.1}
     networks: [dp2]
     healthcheck:
       # Authenticate with the configured URL and require an application-level
@@ -147,6 +163,39 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  # Spec 037 US2: Datadog Agent as the OTLP collector + OpenMetrics scraper.
+  # Opt-in: only runs with `--profile datadog`, so a plain `docker compose up`
+  # is unchanged. Internal only (no published ports). It does NOT mount the
+  # Docker socket or host paths, so container logs and host metrics are out of
+  # scope until that trade-off is approved (spec 037 US3). Enable by setting
+  # DD_API_KEY and OTEL_EXPORTER_OTLP_ENDPOINT=http://datadog-agent:4318.
+  datadog-agent:
+    image: datadog/agent:7
+    container_name: dp2-datadog-agent
+    profiles: ["datadog"]
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      - api
+    environment:
+      DD_API_KEY: ${DD_API_KEY:-}
+      DD_SITE: ${DD_SITE:-us5.datadoghq.com}
+      # Without the Docker socket the agent has no reliable hostname source.
+      # The real name belongs in private ops config (deploy/README.md).
+      DD_HOSTNAME: ${DD_HOSTNAME:-}
+      DD_ENV: ${DEPLOYMENT_ENVIRONMENT:-}
+      DD_APM_ENABLED: "true"
+      DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: 0.0.0.0:4318
+      DD_LOGS_ENABLED: "false"
+    # Prometheus scrape of the api metrics listener (METRICS_PORT 9464); the
+    # check config is inline below so the release bundle needs no extra file.
+    configs:
+      - source: dd_openmetrics
+        target: /etc/datadog-agent/conf.d/openmetrics.d/conf.yaml
+    expose:
+      - "4318"
+    networks: [dp2]
 
   caddy:
     image: caddy:2-alpine
@@ -179,3 +228,21 @@ volumes:
   dp2_redis_data:
   dp2_caddy_data:
   dp2_caddy_config:
+
+# Datadog Agent OpenMetrics check (profile `datadog` only). It scrapes the api's
+# existing Prometheus listener over the internal network, so no endpoint is
+# added (spec 037 FR-008). The allowlist is the signal families documented in
+# docs/observability/signals.md: Datadog bills each metric name as a custom
+# metric, so this never uses `.*`. Add a prefix only with a signals.md entry.
+# The worker's listener binds 127.0.0.1, so the agent cannot reach it yet.
+configs:
+  dd_openmetrics:
+    content: |
+      init_config:
+      instances:
+        - openmetrics_endpoint: http://api:9464/metrics
+          namespace: dp2
+          metrics:
+            - "^(http|auth|tenant|validation|suspicious|cross_tenant|idempotency|db|redis|queue|worker|outbox|sale|erpnext|shift|unknown_item|catalog|settlement)_.*"
+          tags:
+            - service:api

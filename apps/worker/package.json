@@ -17,6 +17,7 @@
     "@data-pulse-2/shared": "workspace:*",
     "@nestjs/common": "11.1.19",
     "@nestjs/core": "11.1.19",
+    "@sentry/node": "11.8.0",
     "bullmq": "5.76.5",
     "ioredis": "5.10.1",
     "pg": "8.20.0",
