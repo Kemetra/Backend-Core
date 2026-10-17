@@ -96,8 +96,9 @@ export class RotationService {
 
   /**
    * `pos.device.rotation_rejected` in its own transaction, within the
-   * device's rotation budget. A failed audit write never turns the 401 into
-   * a 5xx; it is logged without any token material.
+   * device's refusal-audit budget (`posRotateRefusalAudit`), never the
+   * rotation budget. A failed audit write never turns the 401 into a 5xx; it
+   * is logged without any token material.
    */
   async recordRejection(target: RotationTarget, reason: RotationRejectReason): Promise<void> {
     if (!(await this.withinBudget(target, reason))) return;
