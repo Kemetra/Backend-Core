@@ -41,6 +41,16 @@
  * Since RT-369 the lookup's predicate reads the 0040 rotation columns
  * (`previous_token_hash`, `previous_valid_until`), so it needs 0040, which
  * every environment has had since RT-365 shipped.
+ *
+ * Expiry and activity (RT-370)
+ * ----------------------------
+ * With `DEVICE_TOKEN_EXPIRY_ENFORCED` on (default off), `findActive*` also
+ * requires `expires_at > now()` (database clock), so an expired device
+ * resolves to null and every caller refuses it with the response it gives a
+ * revoked device. `findForRotation` is not affected: rotation applies its own
+ * 7-day grace (RT-369). Every device `findActive*` resolves is recorded as
+ * activity (`devices.last_seen_at`, throttled, best effort; see
+ * `device-activity.ts`), so a refused device is never recorded.
  */
 import { Injectable } from "@nestjs/common";
 import { hashToken } from "@data-pulse-2/auth";
@@ -51,6 +61,8 @@ import { and, eq, gt, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Pool } from "pg";
 
 import type { RotationDeviceState } from "../pos-terminal-pairing/rotation-decision";
+import { deviceActivity, type ActiveDevice } from "./device-activity";
+import { isDeviceTokenExpiryEnforced } from "./device-token-expiry-gate";
 
 type DrizzleClient = NodePgDatabase;
 
@@ -179,15 +191,29 @@ export class DeviceRepository {
     return this.findActive(eq(devices.id, deviceId));
   }
 
+  /**
+   * RT-370 — record that `device` authenticated (throttled, best effort; never
+   * throws or waits). For a device route that resolves its device without
+   * `findActive*`: the rotate guard, after `decideRotation` allows it.
+   */
+  recordActivity(device: ActiveDevice): void {
+    deviceActivity.record(this.domainPool, device);
+  }
+
   private async findActive(match: SQL): Promise<AuthDeviceRow | null> {
+    const live = isDeviceTokenExpiryEnforced()
+      ? and(isNull(devices.revokedAt), gt(devices.expiresAt, sql`now()`))
+      : isNull(devices.revokedAt);
     const rows = await db(this.pool)
       .select(AUTH_DEVICE_COLUMNS)
       .from(devices)
-      .where(and(match, isNull(devices.revokedAt)))
+      .where(and(match, live))
       .limit(1);
     const device = rows[0];
     if (!device) return null;
-    return (await this.tenantIsActive(device.tenantId)) ? device : null;
+    if (!(await this.tenantIsActive(device.tenantId))) return null;
+    this.recordActivity(device);
+    return device;
   }
 
   private async tenantIsActive(tenantId: string): Promise<boolean> {

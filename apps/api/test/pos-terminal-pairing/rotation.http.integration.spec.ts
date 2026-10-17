@@ -20,9 +20,11 @@
  *     lifecycle lock wins: the rotate is 401 and changes nothing;
  *   - refusal order (401 before 400) and audit rows without secrets.
  *
- * "Grace allows only rotate": every other route ignores expiry until RT-370
- * turns DEVICE_TOKEN_EXPIRY_ENFORCED on, so only the rotate half is provable
- * here.
+ * "Grace allows only rotate": with RT-370's DEVICE_TOKEN_EXPIRY_ENFORCED on,
+ * an in-grace device is refused by the shared device lookup and still
+ * rotates here (the flag never gates the grace). Every other route family's
+ * flag-on refusal is proven in
+ * test/auth/tenant-status-device-auth.http.integration.spec.ts.
  *
  * Docker policy: HARD failure unless MIGRATION_TEST_ALLOW_SKIP=1.
  */
@@ -56,6 +58,8 @@ const D_ORDER = id("000a");
 /** Revoked / retired while a rotate waits on its lifecycle lock. */
 const D_RACE_REVOKE = id("000b");
 const D_RACE_RETIRE = id("000c");
+/** RT-370: expired, inside the grace, rotated with DEVICE_TOKEN_EXPIRY_ENFORCED on. */
+const D_GRACE_ENFORCED = id("000d");
 
 const TOKENS: Record<string, string> = Object.fromEntries(
   [
@@ -71,6 +75,7 @@ const TOKENS: Record<string, string> = Object.fromEntries(
     D_ORDER,
     D_RACE_REVOKE,
     D_RACE_RETIRE,
+    D_GRACE_ENFORCED,
   ].map((d) => [
     d,
     generateRawToken(),
@@ -96,6 +101,7 @@ async function seed(admin: Pool): Promise<void> {
     [D_ORDER, "now() + interval '30 days'"],
     [D_RACE_REVOKE, "now() + interval '30 days'"],
     [D_RACE_RETIRE, "now() + interval '30 days'"],
+    [D_GRACE_ENFORCED, "now() - interval '3 days'"],
   ];
   for (const [deviceId, expiresSql] of rows) {
     await admin.query(
@@ -295,6 +301,24 @@ describe("posRotateTerminalToken — grace", () => {
     await rotateOk(TOKENS[D_GRACE]!);
     const rows = await audits("pos.device.rotated", D_GRACE);
     expect(rows.map((r) => r.metadata["in_grace"])).toEqual([true]);
+  });
+
+  it("RT-370: with DEVICE_TOKEN_EXPIRY_ENFORCED on, an in-grace device can only rotate", async () => {
+    if (skip()) return;
+    const saved = process.env["DEVICE_TOKEN_EXPIRY_ENFORCED"];
+    process.env["DEVICE_TOKEN_EXPIRY_ENFORCED"] = "true";
+    try {
+      // Every other device route refuses it (the shared lookup)...
+      expect(await authenticates(TOKENS[D_GRACE_ENFORCED]!)).toBeNull();
+      // ...and rotate still accepts it inside the grace.
+      const rotated = await rotateOk(TOKENS[D_GRACE_ENFORCED]!);
+      expect(await authenticates(rotated.device_token)).toBe(D_GRACE_ENFORCED);
+      const rows = await audits("pos.device.rotated", D_GRACE_ENFORCED);
+      expect(rows.map((r) => r.metadata["in_grace"])).toEqual([true]);
+    } finally {
+      if (saved === undefined) delete process.env["DEVICE_TOKEN_EXPIRY_ENFORCED"];
+      else process.env["DEVICE_TOKEN_EXPIRY_ENFORCED"] = saved;
+    }
   });
 
   it("past expires_at + 7 days is 401 grace_elapsed and nothing changes", async () => {

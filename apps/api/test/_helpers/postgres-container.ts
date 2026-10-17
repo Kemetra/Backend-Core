@@ -19,6 +19,8 @@ import {
 } from "@testcontainers/postgresql";
 import { Client, Pool } from "pg";
 
+import { deviceActivity } from "../../src/pos-operators/device-activity";
+
 const DRIZZLE_DIR = resolve(
   __dirname,
   "..",
@@ -182,6 +184,8 @@ async function waitForOtherBackendsToExit(uri: string, timeoutMs = 5000): Promis
 }
 
 export async function stopPgEnv(env: PgTestEnv): Promise<void> {
+  // RT-370: let in-flight device activity writes finish before the pools end.
+  await deviceActivity.flush();
   await endPoolQuietly(env.app);
   await endPoolQuietly(env.admin);
   await waitForOtherBackendsToExit(env.adminUri).catch(() => undefined);

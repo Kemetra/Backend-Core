@@ -21,7 +21,9 @@
  *      401 with no audit row (no tenant to record under);
  *   5. allowed → publishes the device principal and scope exactly as
  *      PosDeviceAuthGuard does (tenant, store and device from the ROW), plus
- *      the presented hash for the service's locked re-check.
+ *      the presented hash for the service's locked re-check, and records
+ *      the device's activity (RT-370 `last_seen_at`, throttled, best effort;
+ *      a refused token is never recorded).
  *
  * Every 401 is the same body (non-disclosing; RT-138 L6). The raw token is
  * never stored on the request, logged or audited; only its SHA-256 is kept.
@@ -85,6 +87,7 @@ export class DeviceRotationAuthGuard implements CanActivate {
     request.context = context;
     request.posDeviceId = device.id;
     request.rotationPresentedHash = presentedHash;
+    this.devices.recordActivity({ id: device.id, tenantId: device.tenantId });
     return true;
   }
 }
