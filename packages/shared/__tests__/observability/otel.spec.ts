@@ -16,7 +16,9 @@ jest.mock("@opentelemetry/sdk-node", () => {
     start: mockStart,
     shutdown: mockShutdown,
   }));
-  return { NodeSDK: MockNodeSDK };
+  // The real `resources` namespace, so the service.version resource is real.
+  const { resources } = jest.requireActual("@opentelemetry/sdk-node");
+  return { NodeSDK: MockNodeSDK, resources };
 });
 
 jest.mock("@opentelemetry/exporter-trace-otlp-http", () => ({
@@ -63,16 +65,21 @@ describe("createOtelSdk", () => {
     expect(ctorArg["serviceName"]).toBe("my-service");
   });
 
-  it("includes serviceVersion when provided", () => {
-    createOtelSdk({ serviceName: "svc", serviceVersion: "1.2.3" });
+  // NodeSDK has no `serviceVersion` option: it must arrive as a resource
+  // attribute, or it is silently dropped (RT-631).
+  it("sets service.version as a resource attribute when provided", () => {
+    createOtelSdk({ serviceName: "svc", serviceVersion: "36bb0c7e1f2a" });
     const [ctorArg] = MockNodeSDK.mock.calls[0] as [Record<string, unknown>];
-    expect(ctorArg["serviceVersion"]).toBe("1.2.3");
+    expect(ctorArg).not.toHaveProperty("serviceVersion");
+    const resource = ctorArg["resource"] as { attributes: Record<string, unknown> };
+    expect(resource.attributes["service.version"]).toBe("36bb0c7e1f2a");
   });
 
-  it("omits serviceVersion when not provided", () => {
+  it("passes no resource when serviceVersion is not provided", () => {
     createOtelSdk({ serviceName: "svc" });
     const [ctorArg] = MockNodeSDK.mock.calls[0] as [Record<string, unknown>];
     expect(ctorArg).not.toHaveProperty("serviceVersion");
+    expect(ctorArg).not.toHaveProperty("resource");
   });
 
   it("passes an OTLP exporter to NodeSDK", () => {

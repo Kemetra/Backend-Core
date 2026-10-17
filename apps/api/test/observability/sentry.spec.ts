@@ -44,7 +44,15 @@ describe("captureServerError", () => {
   it("forwards the exception to the SDK", () => {
     const err = new Error("boom");
     captureServerError(err);
-    expect(Sentry.captureException).toHaveBeenCalledWith(err);
+    expect(Sentry.captureException).toHaveBeenCalledWith(err, { tags: {} });
+  });
+
+  it("tags the capture with a well-formed request_id (OBS-1 §2)", () => {
+    const err = new Error("boom");
+    captureServerError(err, "018f3b1d-7c2a-7e3a-9bcd-0123456789ab");
+    expect(Sentry.captureException).toHaveBeenCalledWith(err, {
+      tags: { request_id: "018f3b1d-7c2a-7e3a-9bcd-0123456789ab" },
+    });
   });
 
   it("never throws if the SDK throws", () => {

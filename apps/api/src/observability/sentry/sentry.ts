@@ -7,7 +7,7 @@
  * event is rebuilt by the shared allowlist scrubber before it is sent.
  */
 import * as Sentry from "@sentry/node";
-import { initSentry, type SentryInitResult } from "@data-pulse-2/shared";
+import { initSentry, sentryCorrelationTags, type SentryInitResult } from "@data-pulse-2/shared";
 
 /** Called at module-evaluation time from `instrumentation.ts`. Never throws. */
 export function initApiSentry(env: NodeJS.ProcessEnv = process.env): SentryInitResult {
@@ -21,17 +21,19 @@ export function initApiSentry(env: NodeJS.ProcessEnv = process.env): SentryInitR
         integrations: [Sentry.onUnhandledRejectionIntegration({ mode: "strict" })],
       }),
     warn: (message) => console.warn(message),
+    service: "backend-api",
   });
 }
 
 /**
- * Report a server-side error. A no-op until the SDK is initialised, and never
- * throws, so error reporting can never turn into a second failure in the
- * exception filter.
+ * Report a server-side error, tagged with the `request_id` the client received
+ * and the active OTel `trace_id` (OBS-1 §2). A no-op until the SDK is
+ * initialised, and never throws, so error reporting can never turn into a
+ * second failure in the exception filter.
  */
-export function captureServerError(exception: unknown): void {
+export function captureServerError(exception: unknown, requestId?: string): void {
   try {
-    Sentry.captureException(exception);
+    Sentry.captureException(exception, { tags: sentryCorrelationTags(requestId) });
   } catch {
     // Telemetry must never break the request path.
   }

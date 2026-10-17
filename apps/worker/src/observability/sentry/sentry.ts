@@ -20,5 +20,6 @@ export function initWorkerSentry(env: NodeJS.ProcessEnv = process.env): SentryIn
         integrations: [Sentry.onUnhandledRejectionIntegration({ mode: "strict" })],
       }),
     warn: (message) => console.warn(message),
+    service: "backend-worker",
   });
 }
