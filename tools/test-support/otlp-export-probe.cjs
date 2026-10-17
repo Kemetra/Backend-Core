@@ -91,37 +91,38 @@ async function probeExportedResource({ appDir, spanName, env = {} }) {
 }
 
 const SHA40 = "36bb0c7e1f2a3b4c5d6e7f8091a2b3c4d5e6f708";
-const PROBE_TIMEOUT_MS = 30_000;
 
 /**
- * Jest suite shared by the api and worker specs: the app's instrumentation
- * exports spans as `serviceName`, with `service.version` = the release SHA12
- * when `SENTRY_RELEASE` is a commit SHA and no version otherwise.
+ * `it.each` rows shared by the api and worker specs. Each row is
+ * `[title, run]`; `run(appDir, metricsPortVar)` probes the app's
+ * instrumentation and asserts `service.name` and `service.version` (the
+ * release SHA12 when `SENTRY_RELEASE` is a commit SHA, absent otherwise).
  *
- * @param {{ appDir: string, label: string, serviceName: string, metricsPortVar: string }} opts
+ * @param {string} serviceName
+ * @returns {Array<[string, (appDir: string, metricsPortVar: string) => Promise<void>]>}
  */
-function describeTraceExport({ appDir, label, serviceName, metricsPortVar }) {
-  const probe = (spanName, release) =>
-    probeExportedResource({
-      appDir,
-      spanName,
-      env: { SENTRY_RELEASE: release, [metricsPortVar]: "0" },
-    });
-
-  describe(`RT-631 — ${label} trace export`, () => {
-    it(`exports spans as ${serviceName} with the release SHA12 as service.version`, async () => {
-      const resource = await probe(`${label}.rt631.probe`, SHA40);
-      expect(resource["service.name"]).toBe(serviceName);
-      expect(resource["service.version"]).toBe(SHA40.slice(0, 12));
-      expect(resource["telemetry.sdk.language"]).toBe("nodejs");
-    }, PROBE_TIMEOUT_MS);
-
-    it("omits service.version when the release is not a commit SHA", async () => {
-      const resource = await probe(`${label}.rt631.unversioned`, "backend-core-36bb0c7e1f2a");
-      expect(resource["service.name"]).toBe(serviceName);
-      expect(resource["service.version"]).toBeUndefined();
-    }, PROBE_TIMEOUT_MS);
-  });
+function traceExportCases(serviceName) {
+  const probe = (appDir, metricsPortVar, spanName, release) =>
+    probeExportedResource({ appDir, spanName, env: { SENTRY_RELEASE: release, [metricsPortVar]: "0" } });
+  return [
+    [
+      `exports spans as ${serviceName} with the release SHA12 as service.version`,
+      async (appDir, metricsPortVar) => {
+        const resource = await probe(appDir, metricsPortVar, "rt631.probe", SHA40);
+        expect(resource["service.name"]).toBe(serviceName);
+        expect(resource["service.version"]).toBe(SHA40.slice(0, 12));
+        expect(resource["telemetry.sdk.language"]).toBe("nodejs");
+      },
+    ],
+    [
+      "omits service.version when the release is not a commit SHA",
+      async (appDir, metricsPortVar) => {
+        const resource = await probe(appDir, metricsPortVar, "rt631.unversioned", "backend-core-36bb0c7e1f2a");
+        expect(resource["service.name"]).toBe(serviceName);
+        expect(resource["service.version"]).toBeUndefined();
+      },
+    ],
+  ];
 }
 
-module.exports = { probeExportedResource, describeTraceExport };
+module.exports = { probeExportedResource, traceExportCases };

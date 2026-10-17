@@ -12,11 +12,12 @@
 import * as path from "path";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { describeTraceExport } = require("../../../../tools/test-support/otlp-export-probe.cjs");
+const { traceExportCases } = require("../../../../tools/test-support/otlp-export-probe.cjs");
 
-describeTraceExport({
-  appDir: path.resolve(__dirname, "../.."),
-  label: "worker",
-  serviceName: "backend-worker",
-  metricsPortVar: "WORKER_METRICS_PORT",
+type TraceExportCase = [string, (appDir: string, metricsPortVar: string) => Promise<void>];
+
+describe("RT-631 — worker trace export", () => {
+  it.each(traceExportCases("backend-worker") as TraceExportCase[])("%s", async (_title, run) => {
+    await run(path.resolve(__dirname, "../.."), "WORKER_METRICS_PORT");
+  }, 30_000);
 });

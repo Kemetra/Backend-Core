@@ -9,11 +9,12 @@
 import * as path from "path";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { describeTraceExport } = require("../../../../tools/test-support/otlp-export-probe.cjs");
+const { traceExportCases } = require("../../../../tools/test-support/otlp-export-probe.cjs");
 
-describeTraceExport({
-  appDir: path.resolve(__dirname, "../.."),
-  label: "api",
-  serviceName: "backend-api",
-  metricsPortVar: "METRICS_PORT",
+type TraceExportCase = [string, (appDir: string, metricsPortVar: string) => Promise<void>];
+
+describe("RT-631 — api trace export", () => {
+  it.each(traceExportCases("backend-api") as TraceExportCase[])("%s", async (_title, run) => {
+    await run(path.resolve(__dirname, "../.."), "METRICS_PORT");
+  }, 30_000);
 });
