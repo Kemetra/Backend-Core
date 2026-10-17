@@ -39,3 +39,6 @@ export function computeCutoff(now: Date): Date {
   cutoff.setUTCDate(cutoff.getUTCDate() - RETENTION_DAYS);
   return cutoff;
 }
+
+// RT-582 probe: forced failure
+export const rt582ForcedFailure: number = "not a number";
