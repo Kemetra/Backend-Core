@@ -72,11 +72,17 @@ const SAFE_TOP_LEVEL = [
   "server_name",
 ] as const;
 
-// Bounds regex work on untrusted input before any pattern runs.
+// Bounds the work done on untrusted input before any scanning runs.
 const MAX_SCAN_LENGTH = 2000;
-// `[^()]` (not `[^)]`) keeps each match attempt from rescanning past the next
-// `(`, so a string full of `Key (` stays linear.
-const POSTGRES_KEY_DETAIL = /Key \([^()]*\)=\([^()]*\)/g;
+// Postgres echoes row values after these markers ("Key (email)=(a@b.c) already
+// exists.", "Failing row contains (1, a@b.c, ...)"). Values may contain
+// parentheses, so everything from the marker on is masked (indexOf, no regex).
+const POSTGRES_ROW_MARKERS = [
+  { marker: "Key (", mask: "Key (...)=(...)" },
+  { marker: "Failing row contains (", mask: "Failing row contains (...)" },
+] as const;
+const SCHEME_CHAR = /^[a-z0-9+.-]$/i;
+const TRAILING_PUNCTUATION: ReadonlySet<string> = new Set([`"`, "'", ")", "]", ",", ";", ".", ">"]);
 const FRAME_KEYS = ["filename", "function", "lineno", "colno", "module", "in_app"] as const;
 const MECHANISM_KEYS = ["type", "handled"] as const;
 
@@ -100,46 +106,80 @@ function parseUrl(value: string): URL | null {
   }
 }
 
-/** Keep scheme + host + path of a URL token; drop userinfo, query and fragment. */
-function stripUrlSecrets(token: string): string | null {
-  if (!token.includes("://")) return null;
-  const url = parseUrl(token);
-  return url ? `${url.protocol}//${url.host}${url.pathname}` : null;
-}
-
-function isJwtLike(token: string): boolean {
-  return token.startsWith("eyJ") && token.split(".").length >= 3;
-}
-
-function isEmailLike(token: string): boolean {
-  const at = token.indexOf("@");
-  return at > 0 && token.includes(".", at);
+function maskPostgresRowValues(value: string): string {
+  let out = value;
+  for (const { marker, mask } of POSTGRES_ROW_MARKERS) {
+    const at = out.indexOf(marker);
+    if (at !== -1) out = `${out.slice(0, at)}${mask}`;
+  }
+  return out;
 }
 
 /**
- * Mask one whitespace-delimited token: a JWT (Clerk session/operator tokens),
- * a URL carrying userinfo or a query string (e.g. a failed ERPNext call), or an
- * email. Token-wise checks avoid backtracking-heavy patterns on library input.
+ * One whitespace-delimited token of an exception message. Secrets are masked
+ * wherever they sit in it (`token=eyJ…`, `"https://u:p@host/x?api_key=…"`):
+ * URLs first (userinfo and query), then JWTs, then emails. Index scans only,
+ * so the work stays linear on untrusted input.
  */
-function scrubToken(token: string): string {
-  if (isJwtLike(token)) return "[jwt]";
-  const url = stripUrlSecrets(token);
-  if (url !== null) return url;
-  return isEmailLike(token) ? "[email]" : token;
-}
+class MessageToken {
+  private readonly text: string;
 
-function truncate(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max - 3)}...` : value;
+  constructor(text: string) {
+    this.text = text;
+  }
+
+  scrubbed(): string {
+    const masked = this.withoutUrl().withoutJwt();
+    return masked.isEmailLike() ? "[email]" : masked.text;
+  }
+
+  /** Keep scheme + host + path; drop userinfo, query, fragment. Unparsable -> `[url]`. */
+  private withoutUrl(): MessageToken {
+    const sep = this.text.indexOf("://");
+    const start = sep > 0 ? this.schemeStart(sep) : sep;
+    if (start < 0 || start === sep) return this;
+    const raw = this.text.slice(start);
+    const end = new MessageToken(raw).bodyLength();
+    const url = parseUrl(raw.slice(0, end));
+    const safe = url ? `${url.protocol}//${url.host}${url.pathname}` : "[url]";
+    return new MessageToken(`${this.text.slice(0, start)}${safe}${raw.slice(end)}`);
+  }
+
+  /** Mask a JWT (Clerk session/operator token) and everything after it. */
+  private withoutJwt(): MessageToken {
+    const at = this.text.indexOf("eyJ");
+    if (at === -1 || this.text.slice(at).split(".").length < 3) return this;
+    return new MessageToken(`${this.text.slice(0, at)}[jwt]`);
+  }
+
+  private isEmailLike(): boolean {
+    const at = this.text.indexOf("@");
+    return at > 0 && this.text.includes(".", at);
+  }
+
+  /** Index where the URL scheme ending at `sep` (the `://`) starts. */
+  private schemeStart(sep: number): number {
+    let start = sep;
+    while (start > 0 && SCHEME_CHAR.test(this.text.charAt(start - 1))) start--;
+    return start;
+  }
+
+  /** Length without trailing quotes/brackets/punctuation. */
+  private bodyLength(): number {
+    let end = this.text.length;
+    while (end > 0 && TRAILING_PUNCTUATION.has(this.text.charAt(end - 1))) end--;
+    return end;
+  }
 }
 
 function sanitizeMessage(value: string): string {
-  const cleaned = value
-    .slice(0, MAX_SCAN_LENGTH)
-    .replace(POSTGRES_KEY_DETAIL, "Key (...)=(...)")
+  const cleaned = maskPostgresRowValues(value.slice(0, MAX_SCAN_LENGTH))
     .split(/(\s+)/)
-    .map(scrubToken)
+    .map((token) => new MessageToken(token).scrubbed())
     .join("");
-  return truncate(cleaned, MAX_MESSAGE_LENGTH);
+  return cleaned.length > MAX_MESSAGE_LENGTH
+    ? `${cleaned.slice(0, MAX_MESSAGE_LENGTH - 3)}...`
+    : cleaned;
 }
 
 function scrubException(entry: SentryExceptionValueLike): SentryExceptionValueLike {

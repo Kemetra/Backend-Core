@@ -194,6 +194,38 @@ describe("scrubSentryEvent (AC-2)", () => {
     expect(value).toContain("https://erp.example.test/api/resource/Item");
   });
 
+  const scrubValue = (value: string): string =>
+    scrubSentryEvent({ exception: { values: [{ type: "Error", value }] } })!.exception!.values![0]!.value!;
+
+  it.each([
+    ["key=value prefix", "token=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln rejected"],
+    ["quoted", 'bad "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln" token'],
+  ])("masks a JWT that is not at the start of its token (%s)", (_label, value) => {
+    const out = scrubValue(value);
+    expect(out).toContain("[jwt]");
+    expect(out).not.toContain("eyJ");
+  });
+
+  it.each([
+    ["key=value prefix", "url=https://erp.example.test/api?api_key=SECRET failed", "url=https://erp.example.test/api failed"],
+    ["quoted", 'call "https://erp.example.test/api?token=abc" failed', 'call "https://erp.example.test/api" failed'],
+    ["userinfo", "GET https://u:SECRET@erp.example.test/x", "GET https://erp.example.test/x"],
+  ])("strips URL secrets wherever the URL sits in its token (%s)", (_label, value, expected) => {
+    expect(scrubValue(value)).toBe(expected);
+  });
+
+  it("masks a URL it cannot parse instead of passing it through", () => {
+    const out = scrubValue("bad=http://[::not-a-host/?token=SECRET");
+    expect(out).toBe("bad=[url]");
+  });
+
+  it("masks Postgres row values even when they contain parentheses", () => {
+    const keyDetail = scrubValue('duplicate key "u_name" Key (name)=(Acme (Cairo) Ltd) already exists.');
+    expect(keyDetail).toBe('duplicate key "u_name" Key (...)=(...)');
+    const failingRow = scrubValue("new row violates check. Failing row contains (1, Acme (Cairo), 01012345678).");
+    expect(failingRow).toBe("new row violates check. Failing row contains (...)");
+  });
+
   it("stays fast on adversarial messages (no polynomial regex backtracking)", () => {
     const adversarial = [
       "Key (".repeat(50_000),
