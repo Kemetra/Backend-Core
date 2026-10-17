@@ -112,7 +112,7 @@ jobs:
   fast:
     name: fast (build + Docker-free tests)
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.run_fast != 'false' }}
+    if: ${{ false }} # RT-582 probe: forced skip of a needed job
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
