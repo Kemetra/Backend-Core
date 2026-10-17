@@ -59,7 +59,9 @@ info:
     business-class, not PII), never the displayName; (5) suspension refuses
     new capture and, under RT-577 D12, fails credit reversals of that payer's
     sales closed; (6) a `status` or `externalRef` change of a tenant-wide
-    payer needs tenant-wide store scope.
+    payer needs tenant-wide store scope, else 403 `payer_scope_insufficient`
+    (every owner / tenant_admin sees tenant-wide payers in the list, so a 404
+    would hide nothing).
 
     RUNTIME DURING THE TRANSITION: the six removed routes are still served by
     the 035 runtime until RT-422 deletes them (RT-418 leaves them in place).
@@ -206,7 +208,10 @@ paths:
         do this (it fires per request, including a no-op) and
         `insertSettlementAudit` needs a `storeId` that a tenant-wide payer lacks,
         so the runtime writes a tenant-level audit event (`store_id` null) for
-        those. Do not generate this as a shipped route until then.
+        those; (3) validate `externalRef` with the contract pattern verbatim,
+        which also excludes the zero-width characters U+200B-U+200D and U+FEFF
+        and the line / paragraph separators U+2028 / U+2029, not a looser
+        re-implementation. Do not generate this as a shipped route until then.
       tags: [settlement-console]
       security:
         - cookieAuth: []
@@ -222,10 +227,16 @@ paths:
         to `status` or `externalRef` of a tenant-wide payer (`storeId` null)
         needs a caller with tenant-wide store scope (access to all stores, with
         no single store selected): a store-restricted owner / tenant_admin gets
-        the same non-disclosing 404 and nothing is written, because the change
-        reaches every store. A request that mixes such a change with a
-        `displayName` is refused as a whole. A `displayName`-only change to a
-        tenant-wide payer follows the store-scope rule of the list.
+        403 `payer_scope_insufficient` and nothing is written, because the
+        change reaches every store. It is a 403, not a 404, because every owner
+        / tenant_admin already sees tenant-wide payers in the list, so the
+        refusal hides nothing. The gate triggers on `status` or `externalRef`
+        being present in the body, not on an effective change: a request that
+        repeats the current value is refused too, and a request that mixes such
+        a field with `displayName` is refused as a whole. A `displayName`-only
+        change to a tenant-wide payer follows the store-scope rule of the list.
+        Order: validation (400) and not-found / out-of-store-scope (404) first;
+        the scope check (403) runs before the version check (409).
 
 
         Fields. Every field is optional, but the body must carry `expectedVersion`
@@ -235,7 +246,8 @@ paths:
         replaces the ERPNext Customer link and cannot be cleared: `null` is a
         400, because an unlinked payer is the fault this route repairs. It is an
         identifier: 1..140 characters, no leading or trailing whitespace, no
-        control characters, no NUL. `displayName` must contain a non-whitespace
+        control characters, no NUL, no zero-width character (U+200B-U+200D,
+        U+FEFF) and no line / paragraph separator (U+2028 / U+2029). `displayName` must contain a non-whitespace
         character and no NUL. A value that breaks these rules is a 400
         `validation_error`, never a 5xx.
 
@@ -246,8 +258,8 @@ paths:
         version + 1 in the same transaction that writes the change and returns
         the updated `PayerAccount`. A request whose values all equal the current
         ones is a no-op: 200 with the unchanged payer, `version` not bumped, no
-        audit event. The version check runs first, so a stale `expectedVersion`
-        is a 409 even for a no-op. Idempotent on `Idempotency-Key`: the same key
+        audit event. The version check runs before any write, so a stale
+        `expectedVersion` is a 409 even for a no-op. Idempotent on `Idempotency-Key`: the same key
         and body replay the stored 200 (including after the version moved on);
         the key with another body is 409 `idempotency_key_conflict`.
 
@@ -450,13 +462,15 @@ components:
           type: string
           minLength: 1
           maxLength: 140
-          pattern: '^[^\s\u0000-\u001f\u007f-\u009f](?:[^\u0000-\u001f\u007f-\u009f]*[^\s\u0000-\u001f\u007f-\u009f])?$'
+          pattern: '^[^\s\u0000-\u001f\u007f-\u009f​-‍  ﻿](?:[^\u0000-\u001f\u007f-\u009f​-‍  ﻿]*[^\s\u0000-\u001f\u007f-\u009f​-‍  ﻿])?$'
           description: >
             Set or replace the payer's ERPNext Customer link (see
             `PayerAccountCreate.externalRef`). Not nullable: the link cannot be
             cleared. It is an identifier: 1..140 characters (a Frappe document
             name), no leading or trailing whitespace, no control characters, no
-            NUL; otherwise 400 `validation_error`. It never alters an
+            NUL, no zero-width character (U+200B-U+200D, U+FEFF) and no line /
+            paragraph separator (U+2028 / U+2029); otherwise 400
+            `validation_error`. It never alters an
             already-frozen posting (RT-332): only resolutions frozen after the
             update use it.
         status:
@@ -587,10 +601,8 @@ components:
     PayerNotFound:
       description: >
         not_found (404) — the payer does not exist, belongs to another tenant,
-        or is store-scoped outside the caller's store access; or the change is a
-        `status` / `externalRef` change of a tenant-wide payer by a caller
-        without tenant-wide store scope. Non-disclosing: one body for every
-        cause (§II/§XII).
+        or is store-scoped outside the caller's store access. Non-disclosing: one
+        body for every cause (§II/§XII).
       content:
         application/json:
           schema:

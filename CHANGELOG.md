@@ -197,11 +197,11 @@ This project follows [Semantic Versioning](https://semver.org/).
   or schema changes. Body `PayerAccountUpdate`: `expectedVersion` (the existing
   `PayerAccount.version`, int4-bounded, so no new column) plus at least one of
   `displayName`, `externalRef` (set or replace, never cleared; an identifier of
-  1..140 characters with no surrounding whitespace or control characters) and
+  1..140 characters with no surrounding whitespace, control, zero-width or separator characters) and
   `status` (active / suspended); `category` and `storeId` are immutable. A stale
   `expectedVersion` is 409 `payer_version_conflict`; a no-op is 200 with the
   version unchanged. A `status` or `externalRef` change of a tenant-wide payer
-  needs tenant-wide store scope (else the non-disclosing 404). `suspended` also
+  needs tenant-wide store scope (else 403 `payer_scope_insufficient`). `suspended` also
   fails credit reversals of that payer's sales closed under RT-577 D12. An
   effective update writes `settlement.payer_account.updated` in the same
   transaction as the update (field names, status and `externalRef` before / after, never the

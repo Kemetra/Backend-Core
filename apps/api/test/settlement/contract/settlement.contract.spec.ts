@@ -358,7 +358,8 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
     expect(note).toContain("validate `payerRef` as a uuid before any SQL cast");
     expect(note).toContain("22P02");
     // M3: the audit row is written in the update's transaction, not by @Auditable alone
-    expectAll(note, ["same transaction", "insertSettlementAudit", "tenant-level"]);
+    // LOW 4: the runtime validator applies the contract pattern verbatim
+    expectAll(note, ["same transaction", "insertSettlementAudit", "tenant-level", "verbatim"]);
   });
 
   it("requires an Idempotency-Key and addresses the payer by a uuid path parameter", () => {
@@ -446,13 +447,13 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
     }
   });
 
-  it("externalRef is an identifier (M5): no surrounding whitespace, no control characters, no NUL, 1..140", () => {
+  it("externalRef is an identifier (M5): no surrounding whitespace, control, zero-width or separator characters, 1..140", () => {
     const prop = updateSchema()?.properties?.["externalRef"];
     expect(prop?.type).toBe("string"); // cannot be cleared: no null
     expect(prop?.minLength).toBe(1);
     expect(prop?.maxLength).toBe(140); // Frappe document names are at most 140 characters
     expect(prop?.pattern).toBe(
-      String.raw`^[^\s\u0000-\u001f\u007f-\u009f](?:[^\u0000-\u001f\u007f-\u009f]*[^\s\u0000-\u001f\u007f-\u009f])?$`,
+      String.raw`^[^\s\u0000-\u001f\u007f-\u009f​-‍  ﻿](?:[^\u0000-\u001f\u007f-\u009f​-‍  ﻿]*[^\s\u0000-\u001f\u007f-\u009f​-‍  ﻿])?$`,
     );
     const accepts = new RegExp(prop?.pattern ?? "$^");
     for (const ok of ["CUST-0001", "Acme Insurance", "x", "a b", "ab"]) {
@@ -461,6 +462,7 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
     const bad = [
       "", " ", "   ", "\t", " padded", "padded ", " padded ", "a\nb", "a\tb", "a\r", "a\u0000b", "\u0000",
       " \u0000 ", "a\u007fb", "a\u0085b", " x", "x ",
+      "a​b", "​x", "x‍", "a﻿b", "﻿x", "a b", "x ",
     ];
     for (const value of bad) {
       expect({ value, m: accepts.test(value) }).toEqual({ value, m: false });
@@ -507,16 +509,24 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
     expect(text).not.toContain("Already-captured sales are unaffected");
   });
 
-  it("a status or externalRef change on a tenant-wide payer needs tenant-wide store scope, else the same 404 (M4)", () => {
+  it("a status or externalRef change on a tenant-wide payer needs tenant-wide store scope, else 403 payer_scope_insufficient", () => {
     const text = flat(update()?.description);
-    expect(text).toContain("status` or `externalRef` of a tenant-wide payer");
-    expect(text).toContain("tenant-wide store scope");
+    expectAll(text, [
+      "status` or `externalRef` of a tenant-wide payer",
+      "tenant-wide store scope",
+      "403 `payer_scope_insufficient`",
+      "present in the body",
+      "not on an effective change",
+      "scope check (403) runs before the version check (409)",
+    ]);
+    const forbidden = (update()?.responses ?? {})["403"] as { $ref?: string };
+    expect(forbidden.$ref).toBe("#/components/responses/ForbiddenOrOriginRejected");
     const notFound = (doc.components?.responses?.["PayerNotFound"] ?? {}) as { description?: string };
-    expect(flat(notFound.description)).toContain("tenant-wide payer");
+    expect(flat(notFound.description)).not.toContain("tenant-wide payer");
   });
 
   it("the 2.1.0 changelog in info records the decisions, with the D12 reason for immutable storeId", () => {
     const info = flat(doc.info?.description);
-    expectAll(info, ["RT-572 (2.1.0", "additive", "`consoleUpdatePayerAccount`", "scoped to another store", "RT-577 D12", "externalRefFrom"]);
+    expectAll(info, ["payer_scope_insufficient", "RT-572 (2.1.0", "additive", "`consoleUpdatePayerAccount`", "scoped to another store", "RT-577 D12", "externalRefFrom"]);
   });
 });
