@@ -245,6 +245,11 @@ export interface DeviceRevokeResult {
   readonly device: DeviceDetail;
 }
 
+export interface DeviceRetireResult {
+  readonly outcome: "retired" | "already_retired";
+  readonly device: DeviceDetail;
+}
+
 function iso(value: Date | null): string | null {
   return value === null ? null : value.toISOString();
 }

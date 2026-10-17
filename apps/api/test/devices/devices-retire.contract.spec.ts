@@ -3,12 +3,13 @@
  *
  * RT-368 (RT-287 F5; D-Q2, D-Q4 as amended): `consoleRetireDevice` in
  * `devices.openapi.yaml`, and the list's new default filter. `[GATED]`
- * contract-first; contract-only until the RT-368 runtime ships it.
+ * contract-first; the RT-368 runtime ships it unchanged on the wire
+ * (`devices-retire.http.integration.spec.ts`).
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
  * app boot and no HTTP. Pinned here:
  *
- *   1. The operation: contract-only, cookie auth, Origin-checked, the shared
+ *   1. The operation: implemented, cookie auth, Origin-checked, the shared
  *      404, a closed body with a free-text `retireReason` (not a RevokeReason).
  *   2. The result: `retired` / `already_retired`, the device always retired.
  *   3. The 409: the retire preview, whose block code is the envelope's code.
@@ -103,11 +104,11 @@ const conflict = (code: string, details?: unknown): JsonObject => ({
 // 1. Operation and body
 // ===========================================================================
 describe("devices retire contract — operation", () => {
-  it("is consoleRetireDevice, contract-only until the RT-368 runtime, with no foreign collision", () => {
+  it("is consoleRetireDevice, implemented (no contract-only marker), with no foreign collision", () => {
     const operation = contract.operation("post", RETIRE_PATH);
     expect(operation["operationId"]).toBe("consoleRetireDevice");
-    expect(operation["x-runtime-status"]).toBe("contract-only");
-    expect(String(operation["x-runtime-note"])).toMatch(/RT-368/);
+    expect(operation["x-runtime-status"]).toBeUndefined();
+    expect(operation["x-runtime-note"]).toBeUndefined();
     expect(operation["security"]).toBeUndefined();
     expect(contract.foreignOperationIds.has("consoleRetireDevice")).toBe(false);
   });
