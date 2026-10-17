@@ -75,6 +75,8 @@ import { SalesController } from "../../../../src/catalog/sales/sales.controller"
 import { SaleCaptureAuthGuard } from "../../../../src/catalog/sales/sale-capture-auth.guard";
 import { SalesService } from "../../../../src/catalog/sales/sales.service";
 import { SaleReturnsService } from "../../../../src/catalog/sales/sale-returns.service";
+import { CreditSaleReversalService } from "../../../../src/catalog/sales/credit-sale-reversal.service";
+import { CreditSaleReversalsController } from "../../../../src/catalog/sales/credit-sale-reversals.controller";
 import {
   approvedVoidBody,
   seedVoidApprovers,
@@ -240,6 +242,8 @@ export async function startCaptureHarness(
       { provide: PG_POOL, useFactory: (): Pool => env.app },
       SalesService,
       SaleReturnsService,
+      // RT-577: the credit-sale reversal route (its own controller).
+      CreditSaleReversalService,
       { provide: IDEMPOTENCY_KEY_STORE, useValue: idempStore },
       { provide: INFLIGHT_REDIS, useValue: fakeRedis },
       { provide: InProgressMarker, useValue: fakeMarker },
@@ -274,7 +278,7 @@ export async function startCaptureHarness(
     // below. The guard's real envelope auth + live reverify is covered by its
     // own specs.
     const moduleRef = await Test.createTestingModule({
-      controllers: [SalesController],
+      controllers: [SalesController, CreditSaleReversalsController],
       providers,
     })
       // Write routes (capture/void/refund) use PosOperatorEnvelopeSaleGuard

@@ -168,7 +168,7 @@ const SALE_REF_RE =
  * Map a void / return service error to its contract response. Every code is
  * passed explicitly: the filter's status fallback has no 422 case.
  */
-function toReversalHttpError(err: unknown): unknown {
+export function toReversalHttpError(err: unknown): unknown {
   if (err instanceof SaleNotFoundError) {
     // Cross-tenant / cross-store / unknown sale are indistinguishable.
     return new NotFoundException("not_found");

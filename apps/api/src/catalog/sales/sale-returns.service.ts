@@ -79,7 +79,7 @@ export interface SaleReturnResult {
   readonly created: boolean;
 }
 
-interface PricedLine {
+export interface PricedLine {
   readonly lineRef: string;
   readonly quantity: string;
   readonly lineAmount: string;
@@ -184,7 +184,7 @@ async function replay(
  * Price each requested line from its frozen sale line, in request order.
  * c = quantity already returned on the line (under the sale lock, so stable).
  */
-async function priceReturnLines(
+export async function priceReturnLines(
   client: PoolClient,
   saleRef: string,
   lines: RecordReturnRequestDto["lines"],
@@ -328,7 +328,7 @@ async function insertLinesAndTenders(
 }
 
 /** Build the `SaleReturn` projection from the stored rows (replay-stable). */
-async function loadSaleReturn(client: PoolClient, returnId: string): Promise<SaleReturnProjection> {
+export async function loadSaleReturn(client: PoolClient, returnId: string): Promise<SaleReturnProjection> {
   const header = await client.query<{
     sale_id: string;
     returned_at: Date;

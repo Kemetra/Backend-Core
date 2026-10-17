@@ -33,6 +33,8 @@ import { IdempotencyModule } from "../../idempotency/idempotency.module";
 import { SalesController } from "./sales.controller";
 import { SalesService } from "./sales.service";
 import { SaleReturnsService } from "./sale-returns.service";
+import { CreditSaleReversalService } from "./credit-sale-reversal.service";
+import { CreditSaleReversalsController } from "./credit-sale-reversals.controller";
 import { DeviceRepository } from "../../pos-operators/device.repository";
 import {
   OPERATOR_CONTEXT_RESOLVER,
@@ -79,10 +81,12 @@ import { SaleHistoryService } from "./history/sale-history.service";
   imports: [AuthModule, IdempotencyModule, AuditModule, ContextModule],
   // RT-539: the POS sale history is its own controller (no new SalesController
   // dependency), reusing this module's envelope and device guard providers.
-  controllers: [SalesController, SaleHistoryController],
+  // RT-577: the credit-sale reversal is its own controller too.
+  controllers: [SalesController, SaleHistoryController, CreditSaleReversalsController],
   providers: [
     SalesService,
     SaleReturnsService,
+    CreditSaleReversalService,
     SaleHistoryService,
     {
       provide: IDENTITY_PROVIDER_PORT,
