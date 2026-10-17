@@ -261,7 +261,8 @@ info:
     into a tender.
     Reversal (void / return) of a responsibility-bearing sale is UNDEFINED in
     this version (the 035 OQ-4 carve): the posting feed holds such reversal
-    work items until a later issue defines them.
+    work items until a later issue defines them. Superseded on the POS side
+    by RT-577 below; the posting-feed hold stays.
 
     RT-577 (1.11.0-draft; [GATED] owner-approved V1 decision, Jira RT-577, 2026-10-17;
     refines RT-577 Option A): CREDIT-SALE REVERSAL. A sale with payer
@@ -659,7 +660,7 @@ paths:
         with payer responsibilities is refused with 403
         `credit_sale_reversal_restricted` for every operator (see
         `CreditSaleReversalRestricted`); there is no amount-only refund of a
-        credit sale. The refusal is decided after the sale resolves (404) and a provenance replay (200).
+        credit sale. The refusal is decided after the sale resolves (404) and a provenance replay (200, or its 409 provenance conflict), and before every other check (422 `already_applied`).
         Nothing is recorded.
       parameters:
         - $ref: "#/components/parameters/SaleRef"
@@ -917,7 +918,12 @@ paths:
         amount collected at the till; 0 when `tenders` is absent), and m the
         currency's ISO-4217 minor unit (as RT-105). Let X0 be the sum of
         `reversalTotal` over the sale's earlier credit reversals and X1 = X0 +
-        this reversal's `reversalTotal` (a void: X0 = 0 and X1 = P). Then
+        this reversal's `reversalTotal` (a void: X0 = 0 and X1 = P). X0 is read under the sale row lock (`FOR UPDATE`)
+        that serializes every reversal of the sale (the `lockSaleForReversal`
+        lock of the ordinary routes), so two concurrent credit returns never
+        allocate against the same X0. A return's `reversalTotal` is Σ its
+        returned `lineAmount`, so X1 equals P only when the sale's lines sum to
+        P exactly; a sale whose lines do not is refused (see Fail closed), so X1 never exceeds P. Then
         `refundableAmount = floor_m(C × X1 / P) − floor_m(C × X0 / P)`, where
         `floor_m` truncates toward zero to m fractional digits, and the receivable adjustment is `reversalTotal − refundableAmount`,
         owed back to the sale's payer (`responsibilities[0].payerRef`; one
@@ -935,14 +941,19 @@ paths:
         server-computed `refundableAmount` exactly (an empty list when it is
         0), else 422 `credit_reversal_refund_mismatch`. A client can compute
         the amount beforehand from `readSale` (`posTotal`, `tenders`,
-        `responsibilities`, each line's `returnedQuantity`).
+        `responsibilities`, each line's `returnedQuantity`). Exactness relies on the RT-105 line invariant: a
+        line captured under it prices every return to exactly `unitPrice × q`
+        in the currency's minor unit, so `reversalTotal`, C and P are all exact
+        in m and `floor_m` only ever truncates the pro-rata share.
 
 
         Fail closed: when the allocation cannot be established (the sale
         already has a return or refund recorded through `recordReturn` or
-        `recordRefund`, whose payout was never allocated; or a tender or
-        responsibility amount, or `posTotal`, is not exact in the currency's
-        minor unit, or the currency has none) the reversal is 422
+        `recordRefund`, whose payout was never allocated; or the sale's lines do not sum to its `posTotal` exactly (its `mismatchFlag` is true):
+        the pro-rata share would then pay out more, or leave less, than was
+        collected; or a tender or responsibility amount, or `posTotal`, is
+        not exact in the currency's minor unit, or the currency has none)
+        the reversal is 422
         `credit_reversal_allocation_unavailable`. When the payer settlement
         cannot be established (the sale's payer no longer exists, is scoped to
         another store, is `suspended`, or has no `externalRef`: the receivable
@@ -1800,7 +1811,7 @@ components:
           type: string
           minLength: 1
           maxLength: 500
-          pattern: '\S'
+          pattern: '^[^\x00]*[^\s\x00][^\x00]*$'
           description: >
             Why the sale is reversed (required for the audit trail). At least
             one non-whitespace character; a blank value or one holding a NUL
@@ -2203,12 +2214,12 @@ components:
         currencyCode:
           $ref: "#/components/schemas/CurrencyCode"
         reversalTotal:
-          $ref: "#/components/schemas/DecimalAmount"
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
           description: >
             The amount reversed: Σ returned `lineAmount` for a return,
             `posTotal` for a void.
         refundableAmount:
-          $ref: "#/components/schemas/DecimalAmount"
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
           description: >
             The collected share of `reversalTotal`, computed by the server
             (see `recordCreditSaleReversal`), and the sum of `refundTenders`.
@@ -2459,7 +2470,9 @@ components:
         too, who reverses it with `recordCreditSaleReversal` instead, so that
         no credit-funded or uncollected amount is ever paid out. The refusal
         is decided by the server from the stored sale fact, never from the
-        request. Hiding the action on the till is not the control. A sale without responsibilities is unaffected.
+        request. Hiding the action on the till is not the control. The `Idempotency-Key` layer answers first on every route (a same-key replay
+        of a stored result, or 409 `idempotency_key_conflict`), as it does for
+        every refusal. A sale without responsibilities is unaffected.
         Replay. A reversal recorded before the RT-577 runtime still replays its stored result (a provenance replay is
         answered before the refusal). A refused request is not applied:
         nothing is recorded and no idempotency entry is stored, so the same request answers the same 403 every time
@@ -2495,8 +2508,9 @@ components:
         business day fails (see `VoidUnprocessable`);
         `credit_reversal_allocation_unavailable` - the refundable share cannot
         be established (the sale has a return or refund recorded through
-        `recordReturn` or `recordRefund`, or an amount that is not exact in
-        the currency's minor unit); `credit_reversal_settlement_unavailable` -
+        `recordReturn` or `recordRefund`, the sale's lines do not sum to its `posTotal` exactly (its `mismatchFlag` is true), or an
+        amount that is not exact in the currency's minor unit);
+        `credit_reversal_settlement_unavailable` -
         the payer settlement cannot be established (the payer no longer
         exists, is scoped to another store, is `suspended`, or has no
         `externalRef`), one body for every cause;

@@ -38,6 +38,8 @@ import "reflect-metadata";
 import { resolve } from "node:path";
 
 import { z } from "zod";
+import Ajv2020, { type ValidateFunction } from "ajv/dist/2020";
+import addFormats from "ajv-formats";
 
 import {
   CaptureSaleReceiptSchema,
@@ -1656,7 +1658,7 @@ describe("pos-sales/sales.yaml — RT-577 credit-sale reversal", () => {
         "after the returns gate and the sale resolve (404) and a provenance replay (200, or its 409 `conflict`), and before reversal exclusivity (409), the line checks (400, 409 `over_return`) and the tender check (422)",
       );
       expect(described(findOp("recordRefund"))).toContain(
-        "after the sale resolves (404) and a provenance replay (200)",
+        "after the sale resolves (404) and a provenance replay (200, or its 409 provenance conflict)",
       );
     });
 
@@ -1808,5 +1810,109 @@ describe("pos-sales/sales.yaml — RT-577 credit-sale reversal", () => {
     expect(info()).toContain("from the RT-577 runtime");
     expect(info()).toContain("which does not wait for a POS release: the server refusal is the control");
     expect(info()).toContain("changes no existing request or response schema");
+  });
+});
+
+// ===========================================================================
+// RT-577 — coordinator Opus review of #803 (H1, M1, L1–L5, L7)
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-577 Opus review hardening", () => {
+  const flat = (t: string | undefined): string => (t ?? "").replace(/\s+/g, " ");
+  const described = (node: unknown): string => flat((node as { description?: string } | undefined)?.description);
+  const reversalText = (): string => described(findOp("recordCreditSaleReversal"));
+  const response = (name: string): string => described(salesDoc.components?.responses?.[name]);
+  const prop = (schemaName: string, name: string): { $ref?: string; pattern?: string } | undefined =>
+    (salesDoc.components?.schemas?.[schemaName]?.properties ?? {})[name] as { $ref?: string; pattern?: string } | undefined;
+
+  function requestValidator(): ValidateFunction {
+    const ajv = new Ajv2020({ strict: false, allErrors: true });
+    addFormats(ajv);
+    ajv.addSchema({ ...(salesDoc as object), $id: "sales" });
+    return ajv.compile({ $ref: "sales#/components/schemas/CreditSaleReversalRequest" });
+  }
+  const UUID = "0190a8a0-0000-7000-8000-000000000001";
+  const base = { sourceSystem: "pos-pulse", externalId: "rev-1", refundTenders: [], reason: "customer returned goods" };
+  const returnBody = { ...base, kind: "return", lines: [{ lineRef: UUID, quantity: "1" }] };
+  const approval = {
+    approvalId: UUID,
+    action: "sale.void",
+    saleRef: UUID,
+    amount: "10.00",
+    requesterUserId: UUID,
+    approverUserId: "0190a8a0-0000-7000-8000-000000000002",
+    policyVersion: "v1",
+    approvedAt: "2026-10-17T10:00:00Z",
+  };
+  const voidBody = { ...base, kind: "void", refundTenders: [{ method: "cash", amount: "10.00" }], businessDate: "2026-10-17", approval };
+
+  it("H1: a sale whose lines do not sum to posTotal is allocation_unavailable, so X1 never exceeds P", () => {
+    expect(reversalText()).toContain(
+      "the sale's lines do not sum to its `posTotal` exactly (its `mismatchFlag` is true)",
+    );
+    expect(reversalText()).toContain("so X1 never exceeds P");
+    expect(response("CreditReversalUnprocessable")).toContain(
+      "the sale's lines do not sum to its `posTotal` exactly",
+    );
+  });
+
+  it("M1: the refund's 403 comes after the sale and a provenance replay, before every other check", () => {
+    expect(described(findOp("recordRefund"))).toContain(
+      "after the sale resolves (404) and a provenance replay (200, or its 409 provenance conflict), and before every other check (422 `already_applied`)",
+    );
+    expect(response("CreditSaleReversalRestricted")).toContain(
+      "The `Idempotency-Key` layer answers first on every route",
+    );
+  });
+
+  it("L1: the RT-417 UNDEFINED reversal note points at RT-577", () => {
+    expect(flat(salesDoc.info?.description)).toContain(
+      "UNDEFINED in this version (the 035 OQ-4 carve): the posting feed holds such reversal work items until a later issue defines them. Superseded on the POS side by RT-577 below; the posting-feed hold stays.",
+    );
+  });
+
+  it("L2: refundableAmount and reversalTotal are non-negative amounts", () => {
+    expect(prop("CreditSaleReversal", "refundableAmount")?.$ref).toBe("#/components/schemas/NonNegativeDecimalAmount");
+    expect(prop("CreditSaleReversal", "reversalTotal")?.$ref).toBe("#/components/schemas/NonNegativeDecimalAmount");
+  });
+
+  it("L3: the reason pattern itself excludes NUL and blank values", () => {
+    const re = new RegExp(prop("CreditSaleReversalRequest", "reason")?.pattern ?? "$^", "u");
+    expect(re.test("customer returned goods")).toBe(true);
+    expect(re.test(" \t ")).toBe(false);
+    expect(re.test("bad\u0000reason")).toBe(false);
+  });
+
+  it("L4: the allocation reads X0 under the sale row lock", () => {
+    expect(reversalText()).toContain("X0 is read under the sale row lock (`FOR UPDATE`)");
+  });
+
+  it("L7: the allocation relies on the RT-105 minor-unit line invariant", () => {
+    expect(reversalText()).toContain("relies on the RT-105 line invariant");
+  });
+
+  describe("L5: sample bodies against the request schema (if/then/else)", () => {
+    it("accepts a well-formed return and a well-formed void", () => {
+      const validate = requestValidator();
+      expect({ ok: validate(returnBody), errors: validate.errors }).toMatchObject({ ok: true });
+      expect({ ok: validate(voidBody), errors: validate.errors }).toMatchObject({ ok: true });
+    });
+
+    it("rejects a void that carries lines", () => {
+      expect(requestValidator()({ ...voidBody, lines: returnBody.lines })).toBe(false);
+    });
+
+    it("rejects a return that carries an approval or a businessDate", () => {
+      const validate = requestValidator();
+      expect(validate({ ...returnBody, approval })).toBe(false);
+      expect(validate({ ...returnBody, businessDate: "2026-10-17" })).toBe(false);
+    });
+
+    it("rejects a return without lines, a blank reason and a reason holding NUL", () => {
+      const validate = requestValidator();
+      const { lines: _omit, ...noLines } = returnBody;
+      expect(validate(noLines)).toBe(false);
+      expect(validate({ ...returnBody, reason: "   " })).toBe(false);
+      expect(validate({ ...returnBody, reason: "a\u0000b" })).toBe(false);
+    });
   });
 });
