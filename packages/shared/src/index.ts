@@ -6,6 +6,7 @@ export * from "./observability/metrics-labels";
 export * from "./observability/correlation";
 export * from "./observability/meter";
 export * from "./observability/sentry";
+export * from "./observability/release-version";
 export * from "./ids/uuid";
 export * from "./queues/queue.config";
 export * from "./idempotency";

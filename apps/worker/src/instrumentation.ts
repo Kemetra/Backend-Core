@@ -31,7 +31,7 @@
  *
  * Constitution §VII / T483.
  */
-import { shouldStartOtel, startOtel } from "@data-pulse-2/shared";
+import { resolveReleaseVersion, shouldStartOtel, startOtel } from "@data-pulse-2/shared";
 
 import { initWorkerSentry } from "./observability/sentry/sentry";
 
@@ -40,7 +40,9 @@ import { initWorkerSentry } from "./observability/sentry/sentry";
 // The guard is before startOtel so a disable flag never constructs the SDK.
 if (shouldStartOtel(process.env)) {
   startOtel({
-    serviceName: "worker",
+    // OBS-1 §1 (RT-631): contract service name; version = release SHA12.
+    serviceName: "backend-worker",
+    serviceVersion: resolveReleaseVersion(process.env),
     metrics: {
       port: Number(process.env["WORKER_METRICS_PORT"] ?? 9091),
       host: process.env["WORKER_METRICS_BIND_HOST"] ?? "127.0.0.1",
