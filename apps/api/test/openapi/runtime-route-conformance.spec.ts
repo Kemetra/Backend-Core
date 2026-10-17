@@ -136,7 +136,11 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "posGetTenantBranding",
       "posRedeemVoucher",
       "posReverseVoucher",
+      // RT-369: device token rotation contract; the runtime ships in the RT-369 runtime PR.
+      "posRotateTerminalToken",
       "posValidateVoucher",
+      // RT-577: credit-sale reversal contract; the runtime ships in the RT-577 runtime PR.
+      "recordCreditSaleReversal",
       "renewSupportSession",
     ]);
     expect(missing).toEqual([]);

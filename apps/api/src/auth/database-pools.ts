@@ -239,7 +239,7 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   // TRUNCATE.
   ["sale_responsibilities", "SELECT"],
   ["sale_responsibilities", "INSERT"],
-  // RT-418: the Console payer-account routes read and create payers, and a
+  // RT-418, RT-572: the Console payer-account routes read, create and update payers, and a
   // credit capture locks its payer row FOR SHARE (which needs UPDATE) so the
   // payer cannot be suspended between the check and the sale. No DELETE.
   ["payer_account", "SELECT"],
