@@ -164,6 +164,21 @@ This project follows [Semantic Versioning](https://semver.org/).
   added to the closed `error.code` enum, which oasdiff grades as breaking
   (cross-repo POS contract change; POS must handle `REPLACEMENT_BLOCKED`),
   pending owner approval. No runtime or migration change.
+- RT-367: runtime for the Console pairing codes (`PairingCodesController` /
+  `PairingCodesService` in `DevicesModule`). The three operations ship
+  unchanged on the wire and lose `x-runtime-status: contract-only`. The issue
+  generates a 16-character code, stores only its hash, returns it once
+  (`@Idempotent` with `replay: "forbid"`) and, for `replacesDeviceId`, decides
+  replace / move with the shared lifecycle evaluator under the replaced
+  device's lifecycle lock. `posPairTerminal` re-decides in its burn
+  transaction (refusal: 409 `REPLACEMENT_BLOCKED`, code left pending), then
+  auto-revokes a still-active replaced device through the RT-365 cascade
+  (reason `replaced` / `moved`, no actor user) and writes `pos.device.paired`;
+  it now returns `expires_at`. The revoke's SQL and cascade moved to
+  `device-lifecycle.store.ts`, shared by the revoke, the issue and the pair;
+  the revoke's 409 code is now the evaluator's `blockCode`. Deploy
+  precondition: the domain role needs INSERT on `pairing_codes` (new), plus
+  the RT-365 UPDATE on `devices` / `auth_tokens`. No migration.
 - RT-542 `[GATED]`, owner-approved 2026-10-16 (RT-542 comment 12124): the three
   sale-history operations (`listSaleHistory`, `readSaleHistoryDetail`,
   `recordSaleReprint`) lose `x-runtime-status: contract-only` now that the RT-539

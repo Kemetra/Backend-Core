@@ -25,6 +25,11 @@
  *      race (0 rows burned) → `expired` (410); a device already provisioned for
  *      the terminal (distinct-code race / already paired) → `already_paired`
  *      (409, never a 500). Success → `ok` with the raw token ONCE.
+ *   6. A replacement code (RT-367, `replaces_device_id`) re-decides the replace /
+ *      move in that same transaction, under the replaced device's lifecycle
+ *      lock (RT-287 D-Q4): refused → `replacement_blocked` (409
+ *      REPLACEMENT_BLOCKED; nothing written, the code stays pending); allowed →
+ *      the replaced device is auto-revoked with the new device's pairing.
  */
 import { Inject, Injectable } from "@nestjs/common";
 
@@ -48,6 +53,7 @@ export type PairResult =
   | { kind: "expired" }
   | { kind: "already_paired" }
   | { kind: "branch_mismatch" }
+  | { kind: "replacement_blocked" }
   | { kind: "rate_limited"; retryAfterSeconds: number };
 
 @Injectable()
@@ -92,13 +98,16 @@ export class PairingService {
       storeId: code.store_id,
       terminalId: code.terminal_id,
       terminalLabel: code.terminal_label,
+      replacesDeviceId: code.replaces_device_id,
     });
     // A concurrent redemption of the SAME code won the burn race → spent → 410.
     if (provision === "lost_race") return { kind: "expired" };
     // The burn won but a device already exists for this terminal (two distinct
     // codes for one terminal_id raced, or already paired) → 409, never a 500.
     if (provision === "already_provisioned") return { kind: "already_paired" };
-    const rawToken = provision.rawToken;
+    // The replaced device's Cash Session rule refuses the replacement now.
+    if (provision === "replacement_blocked") return { kind: "replacement_blocked" };
+    const { rawToken, expiresAt } = provision;
 
     const binding: PairingCodeBindingRow = {
       tenant_id: code.tenant_id,
@@ -112,7 +121,7 @@ export class PairingService {
       printer_product_id: code.printer_product_id,
       printer_com_port: code.printer_com_port,
     };
-    return { kind: "ok", body: toTerminalPairBody(binding, rawToken) };
+    return { kind: "ok", body: toTerminalPairBody(binding, rawToken, expiresAt) };
   }
 
   /** A code is no longer redeemable when not pending, or past its expiry. */

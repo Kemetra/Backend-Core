@@ -16,11 +16,30 @@
  * returned to the caller ONCE and is NEVER persisted — only its hash lands in
  * `devices.token_hash` (the existing PosDeviceAuthGuard credential path). The
  * `pairing_code` is never stored in plaintext (only `code_hash`).
+ *
+ * RT-367 replacement codes (`replaces_device_id`): the burn transaction first
+ * takes the replaced device's lifecycle lock and row lock
+ * (`lockDeviceForLifecycle`, the order the Console revoke uses, so the two
+ * never deadlock), re-reads it with the impact read and re-decides the replace
+ * / move with the shared evaluator (`decideReplacement`). Refused → nothing is
+ * written and the code stays pending. Allowed → burn, insert the new device,
+ * then auto-revoke the replaced device through the revoke cascade (reason
+ * `replaced` / `moved`, no actor user) when it is still active, and write
+ * `pos.device.paired`.
  */
 import { Injectable } from "@nestjs/common";
 import { generateRawToken, hashToken } from "@data-pulse-2/auth";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool, PoolClient } from "pg";
+
+import {
+  applyDeviceRevoke,
+  decideReplacement,
+  insertDeviceAudit,
+  lockDeviceForLifecycle,
+  readDeviceImpact,
+  type ReplacementDecision,
+} from "../devices/device-lifecycle.store";
 
 /** A pairing_codes row as read at consume time (snake_case from SQL). */
 export interface PairingCodeRow {
@@ -39,13 +58,15 @@ export interface PairingCodeRow {
   expires_at: Date;
   attempt_count: number;
   last_attempt_at: Date | null;
+  /** The device this code replaces or moves (RT-367); null for a plain pairing. */
+  replaces_device_id: string | null;
 }
 
 const CODE_COLS =
   "id, tenant_id, store_id, terminal_id, terminal_label, branch_name, " +
   "branch_address, tenant_tax_registration_id, printer_vendor_id, " +
   "printer_product_id, printer_com_port, status, expires_at, attempt_count, " +
-  "last_attempt_at";
+  "last_attempt_at, replaces_device_id";
 
 @Injectable()
 export class PairingRepository {
@@ -119,14 +140,17 @@ export class PairingRepository {
 
   /**
    * Burn the code (pending → used) and provision the device trust, in ONE
-   * transaction under the code's tenant GUC. Returns the minted raw device_token
-   * Returns a discriminated outcome:
-   *   - `{ kind: 'ok', rawToken }` — burned + provisioned; token returned ONCE.
+   * transaction under the code's tenant GUC. Returns a discriminated outcome:
+   *   - `{ kind: 'ok', rawToken, expiresAt }` — burned + provisioned; token
+   *     returned ONCE, with the new device's `expires_at`.
    *   - `'lost_race'` — the guarded burn updated 0 rows (a concurrent redemption
    *     of the SAME code won) → caller maps to 410 EXPIRED_CODE.
    *   - `'already_provisioned'` — the burn won but a `devices` row already exists
    *     for this `terminal_id` (a 23505 on insert; e.g. two DISTINCT codes issued
    *     for the same terminal raced) → caller maps to 409 ALREADY_PAIRED, NOT a 500.
+   *   - `'replacement_blocked'` — a replacement code (RT-367) whose replaced
+   *     device the lifecycle evaluator refuses now (see the file header) → 409
+   *     REPLACEMENT_BLOCKED; nothing written.
    *
    * The burn is a guarded conditional UPDATE (`WHERE status = 'pending'`) so two
    * terminals racing the same code cannot both succeed. The `devices` row is
@@ -140,16 +164,22 @@ export class PairingRepository {
     storeId: string;
     terminalId: string;
     terminalLabel: string;
-  }): Promise<{ kind: "ok"; rawToken: string } | "lost_race" | "already_provisioned"> {
+    replacesDeviceId?: string | null;
+  }): Promise<BurnOutcome> {
     const rawToken = generateRawToken();
     const tokenHash = hashToken(rawToken);
 
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
-      async (
-        client: PoolClient,
-      ): Promise<{ kind: "ok"; rawToken: string } | "lost_race" | "already_provisioned"> => {
+      async (client: PoolClient): Promise<BurnOutcome> => {
+        // A replacement locks and re-decides before any write (the lock order).
+        const replacement =
+          input.replacesDeviceId !== undefined && input.replacesDeviceId !== null
+            ? await decideReplacementUnderLock(client, input.tenantId, input.replacesDeviceId, input.storeId)
+            : null;
+        if (replacement === "blocked") return "replacement_blocked";
+
         // Guarded burn: only a row still `pending` AND not-yet-expired transitions.
         // The `expires_at > now()` predicate is in the SAME atomic UPDATE so a code
         // that crosses its expiry between the service's isSpent() pre-check and this
@@ -169,10 +199,12 @@ export class PairingRepository {
         // the raw token. A 23505 here means a device already exists for this
         // terminal (two distinct codes for the same terminal_id raced, or it was
         // already paired) — surface as already_provisioned → 409, never a 500.
+        let expiresAt: Date;
         try {
-          await client.query(
+          const inserted = await client.query<{ expires_at: Date }>(
             `INSERT INTO devices (id, tenant_id, store_id, label, token_hash)
-             VALUES ($1, $2, $3, $4, $5)`,
+             VALUES ($1, $2, $3, $4, $5)
+             RETURNING expires_at`,
             [
               input.terminalId,
               input.tenantId,
@@ -181,6 +213,7 @@ export class PairingRepository {
               tokenHash,
             ],
           );
+          expiresAt = inserted.rows[0]!.expires_at;
         } catch (err) {
           if (err instanceof Error && (err as { code?: string }).code === "23505") {
             return "already_provisioned";
@@ -194,8 +227,82 @@ export class PairingRepository {
           [input.codeId, input.terminalId],
         );
 
-        return { kind: "ok", rawToken };
+        await recordPairing(client, input, replacement);
+        return { kind: "ok", rawToken, expiresAt };
       },
     );
   }
+}
+
+export type BurnOutcome =
+  | { kind: "ok"; rawToken: string; expiresAt: Date }
+  | "lost_race"
+  | "already_provisioned"
+  | "replacement_blocked";
+
+interface AllowedReplacement {
+  readonly deviceId: string;
+  readonly storeId: string;
+  readonly alreadyRevoked: boolean;
+  readonly decision: ReplacementDecision;
+}
+
+/**
+ * Lock the replaced device (lifecycle lock, then its row) and re-decide the
+ * replace / move with the shared evaluator on the impact read, tenant-wide
+ * (the redemption has no caller scope; the issue checked it). Anything but
+ * `allowed`, or a device that has vanished, is `blocked`.
+ */
+async function decideReplacementUnderLock(
+  client: PoolClient,
+  tenantId: string,
+  deviceId: string,
+  targetStoreId: string,
+): Promise<AllowedReplacement | "blocked"> {
+  const locked = await lockDeviceForLifecycle(client, { tenantId, deviceId });
+  if (locked === null) return "blocked";
+  const row = await readDeviceImpact(client, tenantId, deviceId, null);
+  if (row === null) return "blocked";
+  const decision = decideReplacement(row, targetStoreId);
+  if (decision.evaluation.verdict !== "allowed") return "blocked";
+  return { deviceId, storeId: locked.storeId, alreadyRevoked: locked.revokedAt !== null, decision };
+}
+
+/**
+ * The redemption's audit and, for a replacement of a still-active device, its
+ * auto-revoke through the revoke cascade. It runs after the burn, so the code
+ * being redeemed is not cancelled by the cascade; the device's other pending
+ * codes are. An already revoked device is left as it is (its custody
+ * exception, if any, stays on it).
+ */
+async function recordPairing(
+  client: PoolClient,
+  input: { readonly codeId: string; readonly tenantId: string; readonly storeId: string; readonly terminalId: string },
+  replacement: AllowedReplacement | null,
+): Promise<void> {
+  if (replacement !== null && !replacement.alreadyRevoked) {
+    await applyDeviceRevoke(client, {
+      tenantId: input.tenantId,
+      deviceId: replacement.deviceId,
+      storeId: replacement.storeId,
+      actorUserId: null,
+      reason: replacement.decision.reason,
+      note: null,
+      custodyExceptionShiftId: null,
+      extraMetadata: { replaced_by_device_id: input.terminalId },
+    });
+  }
+  await insertDeviceAudit(client, {
+    tenantId: input.tenantId,
+    storeId: input.storeId,
+    actorUserId: null,
+    action: "pos.device.paired",
+    targetType: "device",
+    targetId: input.terminalId,
+    metadata: {
+      pairing_code_id: input.codeId,
+      kind: replacement?.decision.kind ?? "pair",
+      replaces_device_id: replacement?.deviceId ?? null,
+    },
+  });
 }

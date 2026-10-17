@@ -36,7 +36,7 @@ export interface TerminalPairResponseBody {
   readonly printer_vendor_id: string;
   readonly printer_product_id: string;
   readonly printer_com_port: string | null;
-  /** Optional ISO-8601 expiry hint; POS-Pulse v1 ignores it. */
+  /** The device credential's expiry (`devices.expires_at`, RT-138 L2); POS-Pulse v1 ignores it. */
   readonly expires_at?: string | null;
 }
 
@@ -60,14 +60,16 @@ export interface PairingCodeBindingRow {
 /**
  * Project a pairing_codes binding + the raw minted token into the wire envelope.
  * The raw token is supplied separately (never read from the DB — it is not
- * stored). `expires_at` is omitted (POS-Pulse v1 ignores it; the contract makes
- * it optional/nullable).
+ * stored). `expires_at` is the minted device's `devices.expires_at` (RT-367 /
+ * RT-287 F9: populated); omitted only when the caller has none.
  */
 export function toTerminalPairBody(
   binding: PairingCodeBindingRow,
   rawDeviceToken: string,
+  deviceExpiresAt?: Date,
 ): TerminalPairResponseBody {
   return {
+    ...(deviceExpiresAt !== undefined ? { expires_at: deviceExpiresAt.toISOString() } : {}),
     device_token: rawDeviceToken,
     tenant_id: binding.tenant_id,
     branch_id: binding.store_id,

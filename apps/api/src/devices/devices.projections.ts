@@ -18,7 +18,12 @@
  */
 import { z } from "zod";
 
-import { evaluateLifecycle, type LifecycleEvaluation, type RevokeReason } from "./device-lifecycle.evaluator";
+import {
+  evaluateLifecycle,
+  type ImpactBlockCode,
+  type LifecycleEvaluation,
+  type RevokeReason,
+} from "./device-lifecycle.evaluator";
 
 export { REVOKE_REASONS, type RevokeReason } from "./device-lifecycle.evaluator";
 
@@ -52,7 +57,7 @@ export type RevokeRefusalCode =
   | "recovery_revoke_forbidden"
   | "recovery_note_required"
   | "custody_exception_not_acknowledged"
-  | "unresolved_cash_session";
+  | ImpactBlockCode;
 
 export type RevokeDecision =
   | { readonly kind: "already_revoked" }
@@ -95,8 +100,8 @@ function decisionOf(evaluation: LifecycleEvaluation, input: RevokeDecisionInput)
     case "forbidden_recovery":
       return refuse(403, "recovery_revoke_forbidden");
     case "blocked":
-      // A revoke is only ever blocked by its open shift (evaluateRevoke).
-      return refuse(409, "unresolved_cash_session");
+      // The 409's code is the evaluator's block code (the contract's "blocked → 409 blockCode").
+      return refuse(409, evaluation.blockCode);
     case "allowed_with_custody_exception":
       return requirementRefusal(evaluation, input) ?? { kind: "revoke", custodyExceptionShiftId: input.openShiftId };
   }

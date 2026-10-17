@@ -133,6 +133,13 @@ export class PairingController {
           message: "Terminal is already paired under a different branch.",
         });
 
+      case "replacement_blocked":
+        // RT-367: never names the shift or the device (unauthenticated caller).
+        throw new ConflictException({
+          code: "REPLACEMENT_BLOCKED",
+          message: "The device this code replaces cannot be replaced now. Close its open shift first.",
+        });
+
       case "rate_limited": {
         // Retry-After in seconds, clamped to the contract's [1, 300].
         const retryAfter = Math.min(300, Math.max(1, result.retryAfterSeconds));
