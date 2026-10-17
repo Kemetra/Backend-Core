@@ -91,9 +91,10 @@ The "resume" gap is therefore **connector-side persistence**. It is not a missin
 `attempt_deadline` abandonment therefore needs either a DP2 that is **persistently** near its transport timeout or
 an ERPNext Bin read that **persistently** takes more than about 10 minutes. Both are degraded systems, and the
 operational answer is an alert, not a protocol. A resumable attempt would not help the slow-read case at all: the
-read happens before any window, so a resume has nothing to continue. D4 therefore alerts on `deadline_reached` with
-its `window_seq`. A `window_seq` of 0 points at the ERPNext read, and a higher one points at DP2. §4 adds a
-read-duration trigger.
+read happens before any window, so a resume has nothing to continue. The `window_seq` on `deadline_reached` cannot
+tell the two causes apart: the deadline counts total elapsed time, so a read of about 620 s followed by a few fast
+DP2 calls also trips at a later window. Telling them apart needs the read duration logged separately. F2 adds
+`read_ms` and `report_ms` (summed window-call time) to `deadline_reached`, and §4 keys its triggers on those.
 
 ### 2.4 Gap found: an abandoned run stays `running`
 
@@ -182,7 +183,7 @@ owner's standing delegation of 2026-10-17; owner may revisit.
 
 | Option | For | Against |
 | --- | --- | --- |
-| **A. Alert on the connector's existing events, plus a Backend-Core stranded-run signal (Recommended)** | The connector already logs `bin_view.report.incomplete_abandoned` (with `reason`), `bin_view.report.deadline_reached` and `bin_view.window.limit_exceeded`. Backend-Core is the only side that sees a run stuck in `running` (§2.4), whatever the connector did. The `window_seq` on `deadline_reached` separates a slow ERPNext read (0) from a slow DP2 (> 0). | Two places to watch. |
+| **A. Alert on the connector's existing events, plus a Backend-Core stranded-run signal (Recommended)** | The connector already logs `bin_view.report.incomplete_abandoned` (with `reason`), `bin_view.report.deadline_reached` and `bin_view.window.limit_exceeded`. Backend-Core is the only side that sees a run stuck in `running` (§2.4), whatever the connector did. With F2's `read_ms` / `report_ms` on `deadline_reached`, the alert names which system ran out the budget. | Two places to watch. |
 | B. Connector events only | No Backend-Core change. | Misses a stranded run caused by a dead connector, which emits nothing. |
 
 **Selected: A** — recommended option, chosen by the coordinator under the owner's standing delegation of
@@ -210,7 +211,12 @@ Proposed shape, for the follow-up issues in §6:
 2026-10-17; owner may revisit.
 
 Proposed rule: run TTL = **2 hours** from `started_at`. That is four times the connector's retry horizon (about
-25 min) plus margin, and far shorter than the scheduled period. The rule needs:
+25 min) plus margin, and far shorter than the scheduled period. The sweep expires **only runs whose Bin report is
+not complete** (`summary.bin_view_report.complete` is not `true`). A run whose final window is recorded stays
+`running` until the reconciliation worker processes the emitted `erpnext.reconciliation.requested`. Expiring it
+would make a delayed outbox or consumer find a terminal run that it can no longer complete. A run that is stuck
+after a complete report is a worker-processing problem, so it gets its own signal (the D4 gauge counts it with
+outcome `report_complete`) and no expiry from this sweep. The rule needs:
 
 * a per-tenant sweep under the tenant GUC, the same posture as RT-179;
 * `FOR UPDATE` on the run, re-checking `status='running'` so it never races a completing report (the report path
@@ -237,15 +243,15 @@ contract.
 
 Reopen D1/D2 and build §5 when pilot evidence shows **any** of the following:
 
-1. `bin_view.report.deadline_reached` at `window_seq` **> 0**, ending in `incomplete_abandoned` with
-   `reason=attempt_deadline`, at least once per week for one store. Only a deadline after window 0 shows DP2-side
-   slowness that resuming can bridge;
+1. `bin_view.report.deadline_reached` ending in `incomplete_abandoned` with `reason=attempt_deadline`, at least once
+   per week for one store, where F2's `report_ms` is the larger share of the budget (`report_ms > read_ms`). Only
+   DP2-side slowness is something resuming can bridge;
 2. a mapped pilot warehouse holding more than **5,000** Bin items (half the 10,000 capacity). Raising
    `BIN_VIEW_MAX_WINDOWS` above about 38 would then push the budget to the 1200 s cap;
 3. a DP2 `binViewReportSnapshot` p95 latency above **10 s** on pilot hardware.
 
-A `deadline_reached` at `window_seq` 0 (§2.3, slow ERPNext read) is **not** a trigger for (a), because resuming cannot
-shorten a read that happens before any window. It is a trigger for a separate connector-side fix: time the read,
+A `deadline_reached` dominated by the ERPNext read (`read_ms ≥ report_ms`, §2.3) is **not** a trigger for (a),
+because resuming cannot shorten a read that happens before any window. It is a trigger for a separate connector-side fix: time the read,
 and either split the read budget from the window budget or raise the read allowance. That fix would be planned on
 its own issue.
 
@@ -271,7 +277,8 @@ This is the specification a later `[GATED]` issue would apply. It would go into 
     contract description is extended to say it identifies the run **and** its warehouse mapping.
   * There is no re-pull path, and none is needed. A remapped run can no longer complete, so the remap ends it at
     once. The warehouse-map retire path (`erpnext-warehouse-map.service.ts`, `SET retired_at = now()`), in the same
-    transaction and under `FOR UPDATE` on the run, moves the store's in-flight `running` stock run to `failed` with
+    transaction and under `FOR UPDATE` on the run, moves the store's in-flight `running` stock run, unless its
+    report is already complete (the same exclusion as D5), to `failed` with
     `summary.failure = {"reason": "warehouse_remapped"}` and an audit row. The RT-179 sweep is then not blocked
     (`skipped_running`) for the 2 h D5 window, and the next scheduled or on-demand run is created under the new
     mapping, with a new `requestRef` that the feed offers. D5 stays as the backstop.
@@ -344,7 +351,7 @@ This is the specification a later `[GATED]` issue would apply. It would go into 
 | # | Repo | Work Mode | Scope | Gate |
 | --- | --- | --- | --- | --- |
 | F1 | Backend-Core | Implementation | D5 stock-run expiry sweep (`running → failed`, `summary.failure`, audit row) and the D4 `erpnext_stock_run_stranded` gauge plus `erpnext_stock_run_expired_total` counter. Also the §2.5 warehouse binding on `main`: derive `requestRef` from `(run, active warehouse map)`, so that a request pulled before a remap gets 404 on every window, and have the remap fail the store's in-flight `running` stock run (`warehouse_remapped`) in the same transaction, so the sweep is not blocked until D5. No migration and no wire-shape change, but the `requestRef` description in `stock-view.yaml` changes under `[GATED]`. | Run-lifecycle change: owner approval on the issue. |
-| F2 | ERPNext-Connector | Implementation (config) | D4 monitors on `incomplete_abandoned` and `limit_exceeded`, within the RT-629 allowlist. | Owner (observability destinations are already approved). |
+| F2 | ERPNext-Connector | Implementation | D4 monitors on `incomplete_abandoned` and `limit_exceeded`, plus two allowlisted numeric fields on `deadline_reached`: `read_ms` (Bin read) and `report_ms` (summed window calls), within the RT-629 allowlist. | Owner (observability destinations are already approved). |
 | F3 | Backend-Core + Connector | Planning → Implementation | Activate §5 only if a §4 trigger fires: ADR in Orchestrator, `stock-view.yaml` 1.4.0-draft, runtime TTL, connector snapshot persistence. | `[GATED]` contract plus a cross-repo issue. |
 
 ## 7. Risks and assumptions
