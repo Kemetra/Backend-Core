@@ -400,18 +400,20 @@ components:
           type: string
           minLength: 1
           maxLength: 200
-          pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
+          pattern: '^\s*[^\s\u0000][^\u0000]*$'
           description: >
             New display name. Must contain a non-whitespace character and no
             NUL; otherwise 400 `validation_error`.
         externalRef:
           type: string
           minLength: 1
-          pattern: '^[^\u0000]*[^\s\u0000][^\u0000]*$'
+          maxLength: 140
+          pattern: '^\s*[^\s\u0000][^\u0000]*$'
           description: >
             Set or replace the payer's ERPNext Customer link (see
             `PayerAccountCreate.externalRef`). Not nullable: the link cannot be
-            cleared. Must contain a non-whitespace character and no NUL. It
+            cleared. At most 140 characters (a Frappe document name). Must contain
+            a non-whitespace character and no NUL. It
             never alters an already-frozen posting (RT-332): only resolutions
             frozen after the update use it.
         status:

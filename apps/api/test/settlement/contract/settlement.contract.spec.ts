@@ -435,6 +435,19 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
       }
     }
     expect(props["displayName"]?.maxLength).toBe(200);
+    expect(props["externalRef"]?.maxLength).toBe(140); // Frappe document names are at most 140 characters
+  });
+
+  it("the text pattern is linear: a long NUL-bearing value is refused in milliseconds (Gitar #804)", () => {
+    for (const field of ["displayName", "externalRef"] as const) {
+      const re = new RegExp(updateSchema()?.properties?.[field]?.pattern ?? "$^");
+      for (const value of ["a".repeat(100_000) + " ", " " + "a".repeat(100_000), " ".repeat(100_000) + " "]) {
+        const start = Date.now();
+        expect(re.test(value)).toBe(false);
+        expect(Date.now() - start).toBeLessThan(200);
+      }
+      expect(re.test(" ".repeat(50_000) + "x" + "y".repeat(50_000))).toBe(true);
+    }
   });
 
   it("states that a changed externalRef never touches already-frozen postings (RT-332)", () => {
