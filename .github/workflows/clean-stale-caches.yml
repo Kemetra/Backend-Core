@@ -2,7 +2,7 @@
 # into this daily one). Its deletions are a superset of the weekly script's:
 # main, open-PR refs and PRs merged within 24 h stay protected, and refs that
 # are neither refs/heads/* nor refs/pull/* are skipped and listed. A second
-# step keeps only the newest 5 CodeQL overlay caches per language on main
+# step keeps only the newest 5 CodeQL overlay caches on main
 # (RT-589); pnpm caches on main are never touched.
 
 name: Clean Stale Caches
@@ -135,11 +135,9 @@ jobs:
       # cache per main commit (per language). They all live on refs/heads/main,
       # which the step above never touches, so they would otherwise fill the
       # 10 GB cap and LRU-evict the pnpm caches CI needs (RT-589). Keep the
-      # newest KEEP per language family; the family is the key minus its
-      # trailing "-<codeql version>-<commit sha>-<run id>-<attempt>" so a
-      # CodeQL version bump does not strand a second set of old caches. A key
-      # that does not match that shape is its own family and is never pruned.
-      - name: Prune CodeQL overlay caches on main
+      # newest KEEP of them in total (same semantics as POS) and delete the
+      # rest. Only keys with that exact prefix on main are candidates.
+      - name: Prune CodeQL overlay caches on main (keep newest N)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
@@ -148,41 +146,52 @@ jobs:
           set -euo pipefail
           REPO="$GITHUB_REPOSITORY"
           PREFIX="codeql-overlay-base-database-"
+          [[ "$KEEP" =~ ^[0-9]+$ ]] || { echo "Invalid KEEP: $KEEP" >&2; exit 1; }
 
-          # Listing failure aborts here (pipefail) before anything is deleted.
-          doomed=$(
-            gh api "repos/$REPO/actions/caches?per_page=100&ref=refs/heads/main&key=$PREFIX" --paginate \
-            | jq -rs --argjson keep "$KEEP" --arg prefix "$PREFIX" '
+          # Newest first by created_at (ISO-8601 sorts lexicographically). A
+          # listing failure aborts here (pipefail) before anything is deleted.
+          overlay=$(
+            gh api "repos/$REPO/actions/caches?ref=refs/heads/main&per_page=100" --paginate \
+            | jq -rs --arg p "$PREFIX" '
                 [ .[].actions_caches[]
-                  | select(.ref == "refs/heads/main" and (.key | startswith($prefix))) ]
-                | map(. + { family: (.key | sub("-[0-9]+\\.[0-9]+\\.[0-9]+-[0-9a-f]{40}-[0-9]+-[0-9]+$"; "")) })
-                | group_by(.family)[]
-                | sort_by(.created_at) | reverse | .[$keep:][]
-                | [.id, .key, .size_in_bytes] | @tsv'
+                  | select(.ref == "refs/heads/main" and (.key | startswith($p))) ]
+                | sort_by(.created_at) | reverse
+                | .[] | [.id, .size_in_bytes, .created_at, .key] | @tsv'
           )
 
-          deleted=0; failed=0; freed=0
-          if [ -n "$doomed" ]; then
-            while IFS=$'\t' read -r id key size; do
-              echo "prune id=$id size=$size B key=$key"
-              if [[ "$DRY_RUN" == "true" ]]; then
-                deleted=$((deleted + 1)); freed=$((freed + size)); continue
+          total=0; [ -z "$overlay" ] || total=$(wc -l <<< "$overlay")
+          echo "CodeQL overlay caches on main: $total (keeping newest $KEEP)"
+
+          deleted=0; failed=0; freed=0; n=0
+          if [ -n "$overlay" ]; then
+            while IFS=$'\t' read -r id size created key; do
+              n=$((n + 1))
+              if (( n <= KEEP )); then
+                echo "KEEP   id=$id size=$size created=$created key=$key"
+                continue
               fi
-              if gh api -X DELETE "repos/$REPO/actions/caches/$id" --silent; then
+              if [[ "$DRY_RUN" == "true" ]]; then
+                echo "WOULD DELETE id=$id size=$size created=$created key=$key"
+                deleted=$((deleted + 1)); freed=$((freed + size))
+              elif gh api -X DELETE "repos/$REPO/actions/caches/$id" --silent; then
+                echo "DELETED id=$id size=$size created=$created key=$key"
                 deleted=$((deleted + 1)); freed=$((freed + size))
               else
+                echo "FAILED  id=$id key=$key" >&2
                 failed=$((failed + 1))
-                echo "::warning::could not delete CodeQL overlay cache id=$id"
               fi
-            done <<< "$doomed"
+            done <<< "$overlay"
           fi
 
           freed_gb=$(awk "BEGIN{printf \"%.3f\", $freed/1073741824}")
-          tag=$([ "$DRY_RUN" = "true" ] && echo " [DRY RUN — no deletions performed]" || echo "")
+          tag=$([ "$DRY_RUN" = "true" ] && echo " [DRY RUN - no deletions performed]" || echo "")
           echo ""
-          echo "=== CodeQL Overlay Prune (keep newest $KEEP per language)${tag} ==="
-          printf "Pruned : %d (%.3f GB)\n" "$deleted" "$freed_gb"
-          printf "Failed : %d\n" "$failed"
+          echo "=== CodeQL overlay prune${tag} ==="
+          printf "Found   : %d\n" "$total"
+          printf "Kept    : %d\n" "$(( total < KEEP ? total : KEEP ))"
+          printf "Deleted : %d (%.3f GB)\n" "$deleted" "$freed_gb"
+          printf "Failed  : %d\n" "$failed"
+          [ "$failed" -eq 0 ] || exit 1
 
       - name: Cache usage (after)
         env:
