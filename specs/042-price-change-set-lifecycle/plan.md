@@ -45,7 +45,7 @@ Rollback is a new revision. Nothing is edited in place.
 | `validated` | Selectors materialized, concrete prices computed, conflicts analyzed, Impact Preview stored with a `previewHash`. Valid only against the tenant's **head revision at validation** (`validatedAtRevision`). | no; any edit returns it to `draft` |
 | `pending_approval` | Submitted; the policy said approval is required (§7). | no |
 | `approved` | Approved for exactly the `previewHash` that was shown. | no |
-| `published` | Its events and membership rows exist in revision `revisionNo`. Display status is **`scheduled`** while the revision's `earliest_effective_at` (events **and** memberships) is in the future, **`active`** after. | terminal for content |
+| `published` | Its events and membership rows exist in revision `revisionNo`. Display status is **`scheduled`** until the earliest exact per-Store activation instant of its events **and** memberships, computed at read time from each targeted Store's zone, and **`active`** after. It is not derived from `earliest_effective_at`, which is only a conservative pre-delivery bound (spec 041 data-model §2.5). | terminal for content |
 | `superseded` | Every event **and every Zone-membership row** it published has been superseded by later revisions. Derived and set at the publish that completes it. | terminal |
 | `rolled_back` | A rollback change set restoring the prior state was published. | terminal |
 | `cancelled` | Abandoned before publish. Kept for audit. | terminal |
