@@ -94,6 +94,14 @@ export const POS_WRITE_RATE_LIMIT_BUCKETS = {
   // scan cannot be repeated without bound) and for the reprint record.
   posReadSaleHistory: { limit: 1200, windowMs: 60 * 60 * 1000 },
   posWriteSaleReprint: { limit: 120, windowMs: 60 * 60 * 1000 },
+  // RT-369: the device token rotation. A till rotates about once per 75 days
+  // (plus a retry after a lost response), so this only bounds abuse by a
+  // device that holds a live token.
+  posRotateDevice: { limit: 10, windowMs: 60 * 60 * 1000 },
+  // RT-369: `pos.device.rotation_rejected` rows per matched device. Separate
+  // from posRotateDevice, so a refused (stale) token can never spend the
+  // live till's rotation budget and 429 its real rotation.
+  posRotateRefusalAudit: { limit: 20, windowMs: 60 * 60 * 1000 },
 } as const satisfies Record<string, RateLimitBucket>;
 
 export interface RateLimitBucket {

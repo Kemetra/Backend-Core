@@ -38,14 +38,19 @@
  * migration 0001. `packages/db` also declares the 0040 lifecycle columns, and
  * a bare `select()` would name them, so every till's authentication would
  * fail on a database where 0040 is not applied yet (or was rolled back).
+ * Since RT-369 the lookup's predicate reads the 0040 rotation columns
+ * (`previous_token_hash`, `previous_valid_until`), so it needs 0040, which
+ * every environment has had since RT-365 shipped.
  */
 import { Injectable } from "@nestjs/common";
 import { hashToken } from "@data-pulse-2/auth";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import { devices, type DeviceRow } from "@data-pulse-2/db/schema";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
-import { and, eq, isNull, type SQL } from "drizzle-orm";
+import { and, eq, gt, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Pool } from "pg";
+
+import type { RotationDeviceState } from "../pos-terminal-pairing/rotation-decision";
 
 type DrizzleClient = NodePgDatabase;
 
@@ -73,6 +78,27 @@ interface TenantStatusRow {
   deleted_at: Date | null;
 }
 
+interface RotationLookupRow {
+  id: string;
+  tenant_id: string;
+  store_id: string;
+  token_hash: Buffer;
+  previous_token_hash: Buffer | null;
+  previous_valid_until: Date | null;
+  revoked_at: Date | null;
+  retired_at: Date | null;
+  expires_at: Date;
+  db_now: Date;
+}
+
+/** A device as the RT-369 rotation guard sees it (any lifecycle state). */
+export interface RotationLookup {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly storeId: string;
+  readonly state: RotationDeviceState;
+}
+
 @Injectable()
 export class DeviceRepository {
   /**
@@ -91,13 +117,57 @@ export class DeviceRepository {
    * the hash matches, `revoked_at IS NULL` and the device's tenant is
    * active; returns null otherwise.
    *
-   * Constant-time hash compare is provided by Postgres' BYTEA equality
-   * — the column is UNIQUE so the lookup is a single index probe and
-   * returns at most one row regardless of input.
+   * The hash matches the current `token_hash`, or (RT-369 rotation overlap)
+   * the `previous_token_hash` while `previous_valid_until` is in the future
+   * on the database clock. Both columns are UNIQUE (the previous one through
+   * a partial index), so the lookup is two index probes returning at most
+   * one row regardless of input; the hash is never compared in JS here.
    */
   async findActiveByAttestation(rawAttestation: string): Promise<AuthDeviceRow | null> {
     if (rawAttestation.length === 0) return null;
-    return this.findActive(eq(devices.tokenHash, hashToken(rawAttestation)));
+    const hash = hashToken(rawAttestation);
+    return this.findActive(
+      or(
+        eq(devices.tokenHash, hash),
+        and(eq(devices.previousTokenHash, hash), gt(devices.previousValidUntil, sql`now()`)),
+      )!,
+    );
+  }
+
+  /**
+   * RT-369 — the rotation guard's lookup: the device whose current OR
+   * previous hash matches, whatever its window, revoke, retire or expiry
+   * state (the rotation decision classifies it), with the database clock.
+   * Null when no row matches or the device's tenant is not active (RT-213),
+   * so an inactive tenant is refused like an unknown token.
+   */
+  async findForRotation(rawAttestation: string): Promise<RotationLookup | null> {
+    if (rawAttestation.length === 0) return null;
+    const res = await this.pool.query<RotationLookupRow>(
+      `SELECT id, tenant_id, store_id, token_hash, previous_token_hash, previous_valid_until,
+              revoked_at, retired_at, expires_at, now() AS db_now
+         FROM devices
+        WHERE token_hash = $1 OR previous_token_hash = $1
+        LIMIT 1`,
+      [hashToken(rawAttestation)],
+    );
+    const row = res.rows[0];
+    if (!row) return null;
+    if (!(await this.tenantIsActive(row.tenant_id))) return null;
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      storeId: row.store_id,
+      state: {
+        tokenHash: row.token_hash,
+        previousTokenHash: row.previous_token_hash,
+        previousValidUntil: row.previous_valid_until,
+        revokedAt: row.revoked_at,
+        retiredAt: row.retired_at,
+        expiresAt: row.expires_at,
+        now: row.db_now,
+      },
+    };
   }
 
   /**

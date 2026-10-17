@@ -42,6 +42,14 @@ export interface IdempotentOptions {
    * non-secret identifiers, e.g. `["credential_id"]`.
    */
   replayMarkerFields?: readonly string[];
+  /**
+   * `"device"` — key the replay store by the authenticated device
+   * (`request.posDeviceId`, set by the route's device guard) instead of the
+   * user. A device principal has no user, so the default would share one
+   * `"anonymous"` partition across the tenant's devices (RT-369). Opt-in per
+   * route: the store key of every other route is unchanged.
+   */
+  clientScope?: "device";
 }
 
 export const IDEMPOTENT_POLICY_KEY = "dp2:idempotent:policy";

@@ -674,9 +674,9 @@ describe("pos-terminal-pairing.yaml — posRotateTerminalToken (RT-369)", () => 
     expect(rotateOp()?.tags).toEqual(["pos-terminal-pairing"]);
   });
 
-  it("is contract-only with a runtime note until the RT-369 runtime ships", () => {
-    expect(rotateOp()?.["x-runtime-status"]).toBe("contract-only");
-    expect(rotateOp()?.["x-runtime-note"]?.trim().length).toBeGreaterThan(0);
+  it("is served by the RT-369 runtime (no contract-only marker)", () => {
+    expect(rotateOp()?.["x-runtime-status"]).toBeUndefined();
+    expect(rotateOp()?.["x-runtime-note"]).toBeUndefined();
   });
 
   it("is authenticated by the device bearer only", () => {

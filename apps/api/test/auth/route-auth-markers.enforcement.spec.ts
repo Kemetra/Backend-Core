@@ -20,6 +20,7 @@ import { PosDeviceAuthGuard } from "../../src/auth/pos-device-auth.guard";
 import { SaleCaptureAuthGuard } from "../../src/catalog/sales/sale-capture-auth.guard";
 import { SaleHistoryAuthGuard } from "../../src/catalog/sales/history/sale-history-auth.guard";
 import { ShiftCashUpAuthGuard } from "../../src/pos-shifts/shift-cash-up-auth.guard";
+import { DeviceRotationAuthGuard } from "../../src/pos-terminal-pairing/device-rotation-auth.guard";
 import { DEVICE_ATTESTED_KEY, DEVICE_BEARER_KEY, DeviceBearer } from "../../src/auth/route-auth";
 
 const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "ALL", "OPTIONS", "HEAD"];
@@ -50,11 +51,19 @@ const REVIEWED_DEVICE_ATTESTED = ["PosAuditEventsController.syncBatch"];
  * composite, the cashier selected by X-Cashier-Admission (RT-537 Q-2;
  * security-reviewed in the RT-539 PR); covered by
  * sale-history-auth.guard.unit.spec.ts and sale-history.http.integration.spec.ts.
+ * RT-369: DeviceRotationAuthGuard (posRotateTerminalToken only) is the
+ * device bearer with the rotation's own rules instead of PosDeviceAuthGuard:
+ * the same lookup of the current or in-window previous hash, plus the
+ * rotate-only 7-day expiry grace and the `pos.device.rotation_rejected` audit
+ * of a known token it refuses; the same generic 401 and the same
+ * row-sourced principal. Security-reviewed in the RT-369 runtime PR; covered
+ * by rotation-decision.unit.spec.ts and rotation.http.integration.spec.ts.
  */
 const REVIEWED_DEVICE_GUARD_COMPOSITES: readonly unknown[] = [
   SaleCaptureAuthGuard,
   ShiftCashUpAuthGuard,
   SaleHistoryAuthGuard,
+  DeviceRotationAuthGuard,
 ];
 
 interface MarkedRoute {
@@ -158,6 +167,8 @@ describe("route auth markers are enforced at the route (RT-129 / A9)", () => {
       "CashierAdmissionsController.roster",
       "ReadDownController.getDeltas",
       "ReadDownController.getSnapshot",
+      // RT-369: the device token rotation (DeviceRotationAuthGuard).
+      "RotationController.rotate",
       // RT-539: the POS sale history (envelope, or device + X-Cashier-Admission).
       "SaleHistoryController.listSaleHistory",
       "SaleHistoryController.readSaleHistoryDetail",
