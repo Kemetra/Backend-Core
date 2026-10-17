@@ -1,10 +1,29 @@
-# Backend-Core CI (T305).
+# Backend-Core CI (T305, risk tiers RT-582).
 #
-# Two-job split:
-#   - fast            : no Docker. Static checks + build all workspaces plus
-#                       Docker-free unit tests for worker / shared / auth.
-#   - db-integration  : Docker/Testcontainers. Real Postgres 16-alpine boots for
-#                       packages/db migration UP/DOWN cycles and apps/api RLS suites.
+# Job graph:
+#   changes         : classifies the PR's changed paths into a risk tier with
+#                     .github/scripts/ci-tier.sh (Low / Medium / High; unmatched
+#                     paths are High). Non-PR events are always High.
+#   fast            : no Docker. Static checks + build all workspaces plus
+#                     Docker-free unit tests for worker / shared / auth.
+#                     Medium and High.
+#   db-integration  : Docker/Testcontainers. Real Postgres 16-alpine boots for
+#                     packages/db migration UP/DOWN cycles and apps/api RLS suites.
+#                     Medium and High.
+#   oasdiff         : OpenAPI breaking-change gate (RT-52). Every PR, any tier.
+#   schemathesis    : API fuzz over the cookieAuth surface (RT-59). PRs that are
+#                     High, or Medium outside apps/worker/. Nightly full run on
+#                     main: api-fuzz.yml.
+#   ci              : always-reporting aggregate. Fails when a job the tier
+#                     requires failed, was cancelled or was skipped.
+#
+# Gating rules (RT-582):
+#   - Job-level `if:` only, never workflow-level `paths:`. A skipped job still
+#     reports its check run, so the four required contexts always report.
+#   - The four required jobs keep their exact `name:` values: ruleset 24169937
+#     matches them by name, and release-images.yml reads fast + db-integration.
+#   - Fail-open: a gated job is skipped ONLY when `changes` says 'false'. If
+#     `changes` fails or emits nothing, everything runs (and `ci` goes red).
 #
 # Notes:
 #   - MIGRATION_TEST_ALLOW_SKIP is intentionally NOT set anywhere. CI must fail if
@@ -33,8 +52,67 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: changes (risk tier)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+      run_fast: ${{ steps.tier.outputs.run_fast }}
+      run_db: ${{ steps.tier.outputs.run_db }}
+      run_schemathesis: ${{ steps.tier.outputs.run_schemathesis }}
+    steps:
+      # pull_request checks out the synthetic merge commit; depth 2 makes its
+      # first parent (the base-branch tip) available, so HEAD^1..HEAD is
+      # exactly the PR's change set.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Self-test the tier rules
+        run: bash .github/scripts/ci-tier.test.sh
+
+      - name: Classify changed paths
+        id: tier
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/tier.out"
+          paths="$RUNNER_TEMP/paths.txt"
+          : >"$paths"
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "Event $EVENT: full CI (high)."
+            printf 'tier=high\nrun_fast=true\nrun_db=true\nrun_schemathesis=true\n' >"$out"
+          else
+            # --no-renames: a rename lists its old path too, so moving a High
+            # file into docs/ cannot hide it.
+            git diff -z --no-renames --name-only HEAD^1 HEAD >"$RUNNER_TEMP/changed.z"
+            bash .github/scripts/ci-tier.sh <"$RUNNER_TEMP/changed.z" >"$out" 2>"$paths"
+          fi
+          cat "$out"
+          cat "$out" >>"$GITHUB_OUTPUT"
+          fence='```'
+          {
+            echo "### Risk tier (RT-582)"
+            echo "$fence"
+            cat "$out"
+            echo "$fence"
+            if [ -s "$paths" ]; then
+              echo "<details><summary>Per-path tiers</summary>"
+              echo
+              echo "$fence"
+              cat "$paths"
+              echo "$fence"
+              echo "</details>"
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
   fast:
     name: fast (build + Docker-free tests)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.run_fast != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -90,6 +168,8 @@ jobs:
 
   db-integration:
     name: db-integration (Testcontainers + RLS + migrations)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.run_db != 'false' }}
     runs-on: ubuntu-latest
     # 40 (was 25): measured locally (WSL Docker), the full api suite runs ~16.5
     # min WITH coverage on a 2-core host — over the old 25-min ceiling once the
@@ -200,3 +280,152 @@ jobs:
           disable_search: true
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Moved here from openapi-breaking.yml (RT-582) so `ci` can depend on it.
+  # Compares packages/contracts/openapi/** at the PR merge-base with the PR
+  # head, in oasdiff composed mode, and fails on WARN or higher. Configuration
+  # and the acknowledgement workflow live in tools/oasdiff/ (see its README).
+  # Runs on every PR regardless of tier (it needs no install, DB or Docker) and
+  # does not wait for `changes`. A push to main has no merge-base to compare.
+  oasdiff:
+    name: oasdiff (breaking changes vs merge-base)
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      OASDIFF_VERSION: "1.32.1"
+      # sha256 of oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz from the release checksums.txt
+      OASDIFF_SHA256: "7c8939fc49b75ee11fec66a5b83b37a2fca6aee109fed85013b1ba2ac2a1ee7f"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install oasdiff (pinned, checksum-verified)
+        run: |
+          archive="oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/$archive"
+          echo "${OASDIFF_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/oasdiff"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/oasdiff" oasdiff
+          echo "$RUNNER_TEMP/oasdiff" >> "$GITHUB_PATH"
+
+      - name: Check for breaking changes
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          oasdiff --version
+          base="$(git merge-base "origin/$BASE_REF" HEAD)"
+          echo "Comparing against merge-base $base"
+          bash tools/oasdiff/check.sh "$base"
+
+  # Moved here from api-fuzz.yml (RT-582) so `ci` can depend on it.
+  # Boots an ephemeral Backend-Core stack (fresh Postgres + Redis, documented DB
+  # roles, throwaway owner session, no worker), then runs Schemathesis over every
+  # cookieAuth operation in packages/contracts/openapi:
+  #
+  #   - gate:   not_a_server_error. Fails on any 5xx that is not in
+  #             tools/schemathesis/5xx-baseline.json.
+  #   - report: positive_data_acceptance. Findings never fail the job; they are
+  #             listed in the job summary.
+  #
+  # Either step fails if Schemathesis could not run (schema, network or tool
+  # error). @PlatformAdminOnly operations run with a platform-admin session.
+  # PR-only; main gets the nightly full run in api-fuzz.yml. Everything it
+  # creates is local to the runner; see tools/schemathesis/README.md.
+  schemathesis:
+    name: schemathesis (cookieAuth surface)
+    needs: changes
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.run_schemathesis != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The scripts write to $RUNNER_TEMP/api-fuzz (the runner context is not
+      # available in job-level env, so the path is not set here).
+      FUZZ_PROJECT: api-fuzz
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start ephemeral stack
+        run: bash tools/schemathesis/stack-up.sh
+
+      - name: "Gate: no 5xx (not_a_server_error)"
+        run: bash tools/schemathesis/run.sh gate
+
+      # Findings never fail this step; it fails only if Schemathesis could not run.
+      - name: "Report (non-gating findings): positive_data_acceptance"
+        if: always()
+        run: bash tools/schemathesis/run.sh report
+
+      - name: Tear down
+        if: always()
+        run: |
+          out="$RUNNER_TEMP/api-fuzz"
+          if [ -f "$out/stack.env" ]; then
+            set -a; . "$out/stack.env"; set +a
+            export API_IMAGE=api-fuzz-api:local
+            docker compose -p "$FUZZ_PROJECT" -f tools/schemathesis/compose.yml down -v
+          fi
+          rm -rf "$out"
+
+  # Always-reporting aggregate (RT-582), modelled on Kemetra/POS ci.yml. RT-583
+  # makes `ci` the only required check, so its name must not change.
+  # oasdiff's requirement comes from the event alone, so a broken `changes`
+  # cannot waive it; the other jobs are required unless `changes` said 'false'.
+  ci:
+    name: ci
+    needs: [changes, fast, db-integration, oasdiff, schemathesis]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check job results
+        env:
+          EVENT: ${{ github.event_name }}
+          CHANGES: ${{ needs.changes.result }}
+          TIER: ${{ needs.changes.outputs.tier }}
+          RUN_FAST: ${{ needs.changes.outputs.run_fast }}
+          RUN_DB: ${{ needs.changes.outputs.run_db }}
+          RUN_SCHEMATHESIS: ${{ needs.changes.outputs.run_schemathesis }}
+          FAST: ${{ needs.fast.result }}
+          DB: ${{ needs.db-integration.result }}
+          OASDIFF: ${{ needs.oasdiff.result }}
+          SCHEMATHESIS: ${{ needs.schemathesis.result }}
+        run: |
+          set -u
+          echo "event=$EVENT changes=$CHANGES tier=$TIER"
+          echo "run_fast=$RUN_FAST run_db=$RUN_DB run_schemathesis=$RUN_SCHEMATHESIS"
+          echo "fast=$FAST db-integration=$DB oasdiff=$OASDIFF schemathesis=$SCHEMATHESIS"
+          failed=0
+          err() { echo "::error::$*"; failed=1; }
+
+          [ "$CHANGES" = "success" ] || err "changes result is '$CHANGES' (expected success)"
+          case "$TIER" in
+            low | medium | high) ;;
+            *) err "changes emitted no valid tier ('$TIER')" ;;
+          esac
+
+          pr=false
+          [ "$EVENT" = "pull_request" ] && pr=true
+          want_schemathesis=false
+          [ "$pr" = true ] && [ "$RUN_SCHEMATHESIS" != "false" ] && want_schemathesis=true
+
+          # check <job> <required: true|false> <result>
+          check() {
+            if [ "$2" = true ]; then
+              [ "$3" = "success" ] || err "$1 is required (tier '$TIER') but its result is '$3'"
+            else
+              case "$3" in
+                success | skipped) ;;
+                *) err "$1 result is '$3'" ;;
+              esac
+            fi
+          }
+          check fast "$([ "$RUN_FAST" != "false" ] && echo true || echo false)" "$FAST"
+          check db-integration "$([ "$RUN_DB" != "false" ] && echo true || echo false)" "$DB"
+          check oasdiff "$pr" "$OASDIFF"
+          check schemathesis "$want_schemathesis" "$SCHEMATHESIS"
+          exit "$failed"
