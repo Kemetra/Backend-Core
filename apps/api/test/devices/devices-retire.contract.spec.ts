@@ -217,6 +217,13 @@ describe("devices retire contract — rules", () => {
     expect(info()).toMatch(/so must the\s+pairing-code issue and cancel, and the retire/);
   });
 
+  it("states in every posture paragraph that the retire is served, with no pending runtime left", () => {
+    expect(info()).toMatch(/and so is the retire\s+\(RT-368: contract PR #799, runtime PR #802\)/);
+    expect(info()).toMatch(/No operation carries\s+`x-runtime-status: contract-only`/);
+    expect(info()).not.toMatch(/The retire \(RT-368\) is `\[GATED\]` contract-first/);
+    expect(info()).not.toMatch(/when they ship/);
+  });
+
   it("drops retired devices from the default list, keeping them queryable", () => {
     expect(info()).toMatch(/Without `trust_state`, the list returns the\s+`active` and `revoked` devices only/);
     const trust = contract.parameters("get", "/api/v1/devices").find((p) => p["name"] === "trust_state");
