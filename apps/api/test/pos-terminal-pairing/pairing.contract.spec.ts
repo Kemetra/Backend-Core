@@ -75,17 +75,20 @@ const POS_PAIR_PATH = "/api/pos/v1/terminals/pair";
 
 /**
  * Expected closed-set `error.code` enum on the contract's `Error`
- * envelope. The five SCREAMING_CASE codes mirror POS-Pulse
+ * envelope. The five original SCREAMING_CASE codes mirror POS-Pulse
  * `src/main/pairing/failure-mapping.ts:73-87` switch keys exactly;
- * the `validation_failure` snake_case code mirrors the convention
- * used by `vouchers.yaml` and every other Data-Pulse-2 contract
- * for 400-body-shape failures.
+ * `REPLACEMENT_BLOCKED` (RT-367, pair-time Cash Session re-check on a
+ * replacement code) is new and lands in POS-Pulse's `unknown_error`
+ * catch-all until POS maps it. The `validation_failure` snake_case code
+ * mirrors the convention used by `vouchers.yaml` and every other
+ * Data-Pulse-2 contract for 400-body-shape failures.
  */
 const EXPECTED_ERROR_CODES = [
   "INVALID_CODE",
   "EXPIRED_CODE",
   "ALREADY_PAIRED",
   "BRANCH_MISMATCH",
+  "REPLACEMENT_BLOCKED",
   "RATE_LIMITED",
   "validation_failure",
 ] as const;

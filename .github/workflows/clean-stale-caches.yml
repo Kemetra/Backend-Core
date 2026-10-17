@@ -1,3 +1,8 @@
+# The single Actions-cache cleaner (RT-582 merged the weekly clean-caches.yml
+# into this daily one). Its deletions are a superset of the weekly script's:
+# main, open-PR refs and PRs merged within 24 h stay protected, and refs that
+# are neither refs/heads/* nor refs/pull/* are skipped and listed.
+
 name: Clean Stale Caches
 
 on:

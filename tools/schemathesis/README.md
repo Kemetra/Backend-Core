@@ -1,9 +1,15 @@
 # API fuzz (Schemathesis)
 
-`.github/workflows/api-fuzz.yml` runs [Schemathesis](https://github.com/schemathesis/schemathesis)
-against an ephemeral Backend-Core stack on every pull request. It generates
-boundary and edge-case inputs from the OpenAPI contracts and sends them to the
-real API, with a real Postgres behind it.
+The `schemathesis (cookieAuth surface)` job in `.github/workflows/ci.yml` runs
+[Schemathesis](https://github.com/schemathesis/schemathesis) against an
+ephemeral Backend-Core stack on pull requests. It generates boundary and
+edge-case inputs from the OpenAPI contracts and sends them to the real API, with
+a real Postgres behind it.
+
+Since RT-582 it runs on High-risk PRs and on Medium PRs outside `apps/worker/`
+(tiers: `.github/scripts/ci-tier.sh`); docs-only and worker-only PRs skip it.
+`.github/workflows/api-fuzz.yml` runs the same steps nightly on `main`, whatever
+changed.
 
 It was adopted after the RT-38 PoC, which found the int4 `version` overflow 5xx
 that the fixture-based tests missed, and the RT-59 noise measurement. The

@@ -124,9 +124,13 @@ describe("OpenAPI operations map to registered Nest routes", () => {
     expect(explicitContractOnly.sort()).toEqual([
       "acceptInvitation",
       "backfillSaleLinkedMovements",
+      // RT-367: pairing-code issue / list / cancel contract; the runtime ships in RT-367 PR B.
+      "consoleCancelPairingCode",
       // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
       "consoleDeleteTenantLogo",
       "consoleGetTenantLogo",
+      "consoleIssuePairingCode",
+      "consoleListPairingCodes",
       "consolePreviewTenantLogo",
       "consolePutTenantLogo",
       // RT-414: platform support-session contract; the runtime ships after owner approval.

@@ -1,7 +1,8 @@
 # OpenAPI breaking-change gate
 
-`.github/workflows/openapi-breaking.yml` runs [oasdiff](https://github.com/oasdiff/oasdiff)
-on every pull request. It compares all contracts under `packages/contracts/openapi/`
+The `oasdiff (breaking changes vs merge-base)` job in `.github/workflows/ci.yml`
+runs [oasdiff](https://github.com/oasdiff/oasdiff) on every pull request, whatever
+its risk tier. It compares all contracts under `packages/contracts/openapi/`
 at the PR merge-base with the PR head, in composed mode, and fails when it finds a
 change at **WARN** or **ERR** that the PR has not acknowledged.
 

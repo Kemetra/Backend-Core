@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Terminal Pairing API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     POS-Pulse 002-terminal-pairing + 008-sale-finalization-and-receipts
     terminal pairing surface. Defines the single unauthenticated
@@ -10,7 +10,7 @@ info:
 
 
     `posPairTerminal` accepts a short-lived `pairing_code` and — on
-    success — returns the device's long-lived `device_token` (SECRET)
+    success — returns the new device's `device_token` (SECRET)
     plus the terminal's full tenant + store binding + display +
     operational config. The endpoint is the ONLY backend operation
     that runs WITHOUT a prior `clerkJwt`; every other POS operation
@@ -31,14 +31,18 @@ info:
 
     **POS-Pulse-consumed fields (Constitution §IV + POS-Pulse FR-014
     + 008 plan §AD-12)**:
-      - `device_token`: opaque long-lived bearer. SECRET — stored
-        exclusively via `safeStorage`; redacted in every log sink.
+      - `device_token`: opaque bearer bound to this device identity.
+        SECRET — stored exclusively via `safeStorage`; redacted in every
+        log sink. It is not permanent: it stops authenticating at once
+        when the device is revoked (`devices.openapi.yaml`, RT-365), and
+        it carries an expiry (`expires_at`).
       - `tenant_id`, `branch_id`, `terminal_id`, `terminal_label`:
         populate the single-row `terminal_assignment` table at the
         terminal. Lifetime: until clear-pairing.
-      - `expires_at`: optional ISO-8601 expiry hint. POS-Pulse v1
-        ignores this field; reserved for future device-rotation
-        feature.
+      - `expires_at`: the device credential's expiry (RT-138 L2, 90
+        days), populated by Backend-Core since RT-367. Not enforced
+        until RT-370 turns enforcement on; POS-Pulse v1 ignores it, and
+        the rotation client (RT-373) rotates before it.
       - `branch_name`, `branch_address`, `tenant_tax_registration_id`:
         terminal-resident copies of branch + tenant detail used by the
         POS receipt template (008 AD-6). The terminal does NOT re-fetch
@@ -73,6 +77,18 @@ info:
     per-`pairing_code` attempt budget and a Redis-backed per-source-IP
     window before code lookup. Source IP is derived using the deployment's
     explicit trusted-proxy configuration per FR-9.
+
+
+    Identity model (RT-367 / RT-287 F9): every successful pairing mints a
+    NEW device identity — a new `terminal_id` (= `devices.id`) in the
+    code's store. `terminal_id` survives credential rotation (RT-369), not
+    re-pairing: re-pairing a terminal, replacing a broken one or moving one
+    to another store always redeems a fresh code and gets a fresh
+    `terminal_id`. A code issued to replace or move a device
+    (`consoleIssuePairingCode` with `replacesDeviceId`) revokes the
+    replaced device in the same transaction as the pairing (reason
+    `replaced` / `moved`), so the old credential never stays live; the old
+    device keeps its history under its old store.
 
 
     Idempotency model: the contract does NOT require an
@@ -111,29 +127,43 @@ paths:
       tags: [pos-terminal-pairing]
       security: []
       description: >
-        Consume a one-time `pairing_code` (issued out-of-band by a
-        tenant admin via the dashboard) and bind the requesting
-        terminal to the tenant + branch the code was scoped to. The
-        success response carries the long-lived `device_token` plus
+        Consume a one-time `pairing_code` (issued out-of-band through
+        the Console's `consoleIssuePairingCode`, or the owner-run
+        bootstrap CLI) and bind the requesting terminal to the tenant +
+        branch the code was scoped to, as a NEW device identity. The
+        success response carries the new device's `device_token` plus
         the terminal's full operational config.
 
 
         **Failure-response error codes** (closed set, mirrors POS-Pulse
         `src/main/pairing/failure-mapping.ts` switch keys):
         `INVALID_CODE`, `EXPIRED_CODE`, `ALREADY_PAIRED`,
-        `BRANCH_MISMATCH`, `RATE_LIMITED`, `validation_failure`.
+        `BRANCH_MISMATCH`, `REPLACEMENT_BLOCKED`, `RATE_LIMITED`,
+        `validation_failure`.
 
 
         **State transitions**: on success the `pairing_code` row
-        transitions `pending → used`; a subsequent call with the same
-        code returns 410 `EXPIRED_CODE`. The terminal's
-        `terminal_assignment` row is created server-side; on
-        re-pairing of an already-paired terminal under the SAME
-        branch the response is 409 `ALREADY_PAIRED` (NOT a fresh
-        token); under a DIFFERENT branch the response is 409
-        `BRANCH_MISMATCH` (FR-14 — re-pair to a different branch
-        is admin-driven; the device retains its previously persisted
-        terminal_assignment row).
+        transitions `pending → used` and a new `devices` row is
+        created with the code's `terminal_id`; a subsequent call with
+        the same code returns 410 `EXPIRED_CODE`. Re-pairing is a new
+        code and a new identity (see "Identity model" above), never a
+        re-use of a `terminal_id`. 409 `ALREADY_PAIRED` /
+        `BRANCH_MISMATCH` mean a live device already exists for the
+        code's `terminal_id` (under the code's branch / another
+        branch); with server-generated terminal ids this is only a
+        race of two codes for one terminal id, not a re-pair signal.
+        Neither clears nor replaces the existing device.
+
+
+        **Replacement codes** (RT-367): for a code that replaces or
+        moves a device, the pairing re-checks the Cash Session rule on
+        the replaced device under its lifecycle lock (RT-287 D-Q4). If
+        the replaced device is still active and a shift has opened on
+        it since the code was issued (or the device was retired), the
+        pairing is refused with 409 `REPLACEMENT_BLOCKED`, nothing is
+        changed and the code stays pending (close the shift on the old
+        till, let it sync, and enter the code again before it
+        expires). The response never says which shift or device.
       requestBody:
         required: true
         content:
@@ -143,7 +173,7 @@ paths:
       responses:
         "200":
           description: >
-            Pairing succeeded. Body carries the long-lived
+            Pairing succeeded. Body carries the new device's
             `device_token` (SECRET) plus the full terminal binding.
             The token MUST be persisted in OS-level secret storage
             and MUST NEVER be logged.
@@ -172,12 +202,13 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            Conflict. The terminal is already paired (under the
-            requesting code's branch or a different branch).
-            `error.code` is one of `ALREADY_PAIRED`, `BRANCH_MISMATCH`.
-            Note: `BRANCH_MISMATCH` MUST NOT clear or replace the
-            prior pairing — recovery is admin-driven per POS-Pulse
-            FR-14.
+            Conflict, nothing changed. `error.code` is one of:
+            `ALREADY_PAIRED` / `BRANCH_MISMATCH` — a live device
+            already exists for the code's `terminal_id` (under the
+            code's branch / another branch); neither clears nor
+            replaces it. `REPLACEMENT_BLOCKED` — the code replaces or
+            moves a device that now has an open shift (or is retired);
+            the code stays pending (see "Replacement codes" above).
           content:
             application/json:
               schema:
@@ -223,10 +254,12 @@ components:
           minLength: 6
           maxLength: 32
           description: >
-            Short-lived pairing code issued by a tenant admin via the
-            dashboard. Format is opaque to the POS terminal (server
-            chooses; current default is 8 character alphanumeric).
-            Single-use: a successful pair burns the code server-side.
+            Short-lived pairing code, issued through the Console
+            (`consoleIssuePairingCode`: 16 characters from an alphabet
+            without look-alikes) or the owner-run bootstrap CLI (24
+            base64url characters with `--generate`). Format is opaque to
+            the POS terminal; send it exactly as entered. Single-use: a
+            successful pair burns the code server-side.
 
     TerminalPairResponse:
       type: object
@@ -255,7 +288,9 @@ components:
           minLength: 32
           maxLength: 512
           description: >
-            Long-lived opaque device-authentication token. SECRET —
+            Opaque device-authentication token for this device
+            identity. Valid until the device is revoked, and subject to
+            `expires_at` once expiry is enforced (RT-370). SECRET —
             stored exclusively via `safeStorage` (DPAPI on Windows).
             MUST NEVER appear in any log sink, audit-event payload,
             support bundle, or response body of any other endpoint.
@@ -264,9 +299,11 @@ components:
           format: date-time
           nullable: true
           description: >
-            Optional ISO-8601 expiry hint. POS-Pulse v1 ignores this
-            field; reserved for a future device-rotation feature
-            that may pre-fetch a fresh token before this timestamp.
+            The device credential's expiry (`devices.expires_at`, RT-138
+            L2: 90 days after pairing). Populated by Backend-Core since
+            RT-367; older servers omitted it, so a client tolerates its
+            absence. Reported, not enforced until RT-370. POS-Pulse v1
+            ignores it; the rotation client (RT-373) rotates before it.
         tenant_id:
           type: string
           format: uuid
@@ -286,9 +323,10 @@ components:
           type: string
           format: uuid
           description: >
-            Stable identifier for this physical terminal. Survives
-            re-pairing under the same branch (re-pair returns
-            `ALREADY_PAIRED`).
+            The device identity this pairing created (`devices.id`).
+            Stable across credential rotation (RT-369), NOT across
+            re-pairing: every pairing, including a replace or move,
+            mints a new `terminal_id` (RT-287 F9).
         terminal_label:
           type: string
           minLength: 1
@@ -390,6 +428,7 @@ components:
                 - EXPIRED_CODE
                 - ALREADY_PAIRED
                 - BRANCH_MISMATCH
+                - REPLACEMENT_BLOCKED
                 - RATE_LIMITED
                 - validation_failure
             message:
