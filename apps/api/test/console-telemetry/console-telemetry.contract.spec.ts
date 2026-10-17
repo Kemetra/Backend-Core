@@ -134,8 +134,8 @@ describe("console-telemetry.openapi — RT-632 Console Sentry tunnel", () => {
     expect(text).toContain("never logs envelope content");
   });
 
-  it("stays contract-only until the RT-632 runtime ships", () => {
-    expect(op()["x-runtime-status"]).toBe("contract-only");
-    expect(op()["x-runtime-note"]?.trim().length).toBeGreaterThan(0);
+  it("is implemented: no contract-only marker since the RT-632 runtime", () => {
+    expect(op()["x-runtime-status"]).toBeUndefined();
+    expect(op()["x-runtime-note"]).toBeUndefined();
   });
 });

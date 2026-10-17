@@ -13,9 +13,9 @@ info:
     contract (OBS-1, RT-629).
 
 
-    **Posture.** `1.0.0-draft`, contract-only: the operation carries
-    `x-runtime-status: contract-only` until the RT-632 runtime ships.
-    `[GATED]` contract, approved by the owner on RT-632.
+    **Posture.** `1.0.0-draft`, implemented: the RT-632 runtime ships the
+    operation unchanged on the wire, so it carries no `x-runtime-status:
+    contract-only`. `[GATED]` contract, approved by the owner on RT-632.
 
 
     **Not an open relay.** The tunnel forwards only to the Sentry project
@@ -62,10 +62,6 @@ paths:
     post:
       summary: Forward a Sentry envelope from the Admin-Console to the Console Sentry project.
       operationId: consoleForwardTelemetryEnvelope
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-632 contract PR. The runtime (NestJS module, env mapping and tests)
-        ships in the RT-632 runtime PR, which removes this marker.
       security: []
       parameters:
         - name: Origin
