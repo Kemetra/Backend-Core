@@ -69,7 +69,7 @@ Each decision lists the options, the one marked **Recommended**, and the selecti
 
 | Option | For | Against |
 | --- | --- | --- |
-| **A. Additive extension of `consoleGetSyncOpsSummary` (Recommended)** | The console already fetches the summary for the same panel (`erpQueryKeys.summary`, keyed by tenant + store). One round trip; the freshness values and the dead-letter count share one transaction, one `now()` and the same store scope. Reuses the existing route, guards, scope assertion and 404 rules unchanged. | Grows one response; the summary query does a little more work. |
+| **A. Additive extension of `consoleGetSyncOpsSummary` (Recommended)** | The console already fetches the summary for the same panel (`erpQueryKeys.summary`, keyed by tenant + store). One round trip; the freshness values and the dead-letter count share one transaction and the same store scope. Reuses the existing route, guards, scope assertion and 404 rules unchanged. | Grows one response; the summary query does a little more work. |
 | B. New `GET /api/v1/catalog/erpnext-sync-ops/posting-freshness` | Independent caching and evolution. | A new route, new contract tests and new auth-boundary tests for the same scope; a second request whose as-of can disagree with the summary's dead-letter count. |
 | C. New fields on the generic `DomainSummary` | No new object. | `DomainSummary` is one shape for four domains; posting-only fields would be null for the other three and blur the shape. |
 
@@ -147,8 +147,23 @@ healthy (016 A-4/A-5 spirit).
 
 ### D6 — Response `asOf`
 
-Add a required top-level `asOf` to `SyncOpsSummary`: the transaction's `now()`, the same instant the age is
-computed against. It gives 016 A-5 its "as-of time from the read" for every domain, not only freshness.
+Add a required top-level `asOf` to `SyncOpsSummary`. It gives 016 A-5 its "as-of time from the read".
+
+`asOf` is **not** the transaction's `now()`. `runWithTenantContext` runs at PostgreSQL's default `READ COMMITTED`,
+so each statement takes its own snapshot. A row committed after the transaction started but before the freshness
+statement can be visible with a `created_at` or `posted_at` later than the transaction's `now()`, which would give
+a negative age or `lastPosted.at > asOf`. Instead:
+
+* every freshness fact comes from **one statement** (§5), so all of them see one snapshot and cannot contradict each
+  other (for example `pendingCount = 0` with a non-null `oldestPendingAt`, or `unknown` for a row that has
+  `posted_at`);
+* `asOf` is `clock_timestamp()` evaluated **inside that statement**. Every visible row was committed before the
+  statement's snapshot, and its `created_at` / `posted_at` is the writing transaction's `now()`, which is no later
+  than its commit. So every returned timestamp is at or before `asOf`, and the age is never negative;
+* the age is additionally clamped with `GREATEST(0, …)` as a guard against clock adjustment.
+
+The other summary legs (dead-letter count, reconciliation) remain separate statements, as today. `asOf` is the
+instant of the freshness read; it is within the same request and transaction as those legs, not the same snapshot.
 
 **Selected:** add it — recommended option, chosen by the coordinator under the owner's standing delegation of
 2026-10-17; owner may revisit.
@@ -162,18 +177,19 @@ Two costs, both on the console's polling path:
   store-filtered (`store_id`, or the RT-192 membership store list). A tenant-only index does not bound the store
   case: a quiet store would walk past every newer posting of the tenant's other stores.
 * **Oldest pending / pending count.** The existing partial index `(tenant_id, sequence) WHERE status = 'pending'`
-  restricts the read to pending rows, but `sequence` is not `created_at` and carries no `store_id`, so the read is
-  O(pending rows of the tenant). It is bounded by the backlog, which is exactly what grows during a connector
-  outage.
+  restricts the read to pending rows, but `sequence` is not `created_at` and carries no `store_id`, so the oldest
+  lookup is O(pending rows of the tenant). It is bounded by the backlog, which is exactly what grows during a
+  connector outage. As with last posted, both scopes must be bounded: a store-first index cannot serve the
+  tenant-wide `ORDER BY created_at LIMIT 1`, and a tenant-first index cannot serve a quiet store.
 
 | Option | |
 | --- | --- |
-| **A. `[GATED]` additive index migration in the build issue (Recommended)** | Three partial indexes: (1) `(tenant_id, posted_at DESC) WHERE posted_at IS NOT NULL` for the tenant-wide last posting (one probe); (2) `(tenant_id, store_id, posted_at DESC) WHERE posted_at IS NOT NULL` for a store-filtered last posting (one probe per store; for a membership scope, one probe per scoped store via `LATERAL … LIMIT 1`, then the max); (3) `(tenant_id, store_id, created_at) WHERE status = 'pending'` for the oldest pending per store (one probe per store), with the pending count still O(pending rows in scope). Index (3) may replace or sit beside the existing pending index; the build issue decides from `EXPLAIN`. No data change. Lock mode and `CONCURRENTLY` follow the repo's migration convention, decided in the build issue. |
+| **A. `[GATED]` additive index migration in the build issue (Recommended)** | Four partial indexes, a tenant-first and a store-first one for each lookup. (1) `(tenant_id, posted_at DESC) WHERE posted_at IS NOT NULL`: tenant-wide last posting, one probe. (2) `(tenant_id, store_id, posted_at DESC) WHERE posted_at IS NOT NULL`: store-filtered last posting, one probe per store; for a membership scope, one probe per scoped store via `LATERAL … LIMIT 1`, then the max. (3) `(tenant_id, created_at) WHERE status = 'pending'`: tenant-wide oldest pending, one probe. (4) `(tenant_id, store_id, created_at) WHERE status = 'pending'`: per-store oldest pending, one probe per store. The pending count stays O(pending rows in scope) on (3)/(4). The existing `(tenant_id, sequence)` pending index stays: the posting feed uses it. No data change. Lock mode and `CONCURRENTLY` follow the repo's migration convention, decided in the build issue. |
 | B. Ship without an index and measure | Defers a known linear cost onto the console's polling path. |
 
 **Selected: A** — recommended option, chosen by the coordinator under the owner's standing delegation of
 2026-10-17; owner may revisit. The build issue must attach `EXPLAIN (ANALYZE)` evidence on a seeded volume for
-every statement in §5, in three scopes: tenant-wide, one `store_id`, and a multi-store membership scope, including
+each subquery in §5, in three scopes: tenant-wide, one `store_id`, and a multi-store membership scope, including
 a quiet store inside a busy tenant.
 
 ## 3. Interaction with existing semantics (what does **not** change)
@@ -199,8 +215,9 @@ Additive only. Shown as the intended YAML; it is **not** applied by this PR.
           type: string
           format: date-time
           description: >
-            Server instant the summary was computed at (the read transaction's
-            now()). Every age in this response is measured against it.
+            Server instant of the posting-freshness read (taken inside the
+            statement that reads it). Every timestamp in postingFreshness is at
+            or before it, and every age is measured against it.
         postingFreshness:
           $ref: "#/components/schemas/PostingFreshness"
 
@@ -262,31 +279,31 @@ Additive only. Shown as the intended YAML; it is **not** applied by this PR.
 ## 5. Proposed SQL shape (for the build issue; illustrative)
 
 Inside the existing `getSummary` transaction, with the same `$1` store filter and `$2` scope array as the posting leg.
-These are separate statements, each shaped for one D7 index, not one aggregate over all of the tenant's rows. The
-tenant-wide form is shown; with a store filter or membership scope, the build issue runs (1) and (3) per scoped
-store (`LATERAL … LIMIT 1` over the store list) and takes the max / min.
+It is **one statement** (one snapshot, D6). Each scalar subquery is shaped for one D7 index; there is no aggregate
+over all of the tenant's rows. The tenant-wide form is shown. With a store filter or membership scope, the build issue
+writes subqueries (a) and (c) as one `LATERAL … LIMIT 1` probe per scoped store on indexes (2) / (4), taking the
+max / min.
 
 ```sql
--- (1) last posted: one probe on index (1), or index (2) per store
-SELECT posted_at FROM erpnext_posting_status
- WHERE posted_at IS NOT NULL
- ORDER BY posted_at DESC LIMIT 1;
-
--- (2) only when (1) found nothing: `unknown` vs `none`
-SELECT EXISTS (SELECT 1 FROM erpnext_posting_status WHERE status = 'posted') AS any_posted;
-
--- (3) oldest pending: one probe per store on index (3)
-SELECT created_at FROM erpnext_posting_status
- WHERE status = 'pending'
- ORDER BY created_at LIMIT 1;
-
--- (4) pending count: O(pending rows in scope), on the pending partial index
-SELECT count(*) FROM erpnext_posting_status WHERE status = 'pending';
+SELECT clock_timestamp() AS as_of,                         -- after the snapshot (D6)
+       (SELECT posted_at FROM erpnext_posting_status       -- (a) index (1)
+         WHERE posted_at IS NOT NULL
+         ORDER BY posted_at DESC LIMIT 1)                  AS last_posted_at,
+       EXISTS (SELECT 1 FROM erpnext_posting_status        -- (b) unknown vs none
+                WHERE status = 'posted')                   AS any_posted,
+       (SELECT created_at FROM erpnext_posting_status      -- (c) index (3)
+         WHERE status = 'pending'
+         ORDER BY created_at LIMIT 1)                      AS oldest_pending_at,
+       (SELECT count(*) FROM erpnext_posting_status        -- (d) O(pending in scope)
+         WHERE status = 'pending')                         AS pending_count;
 ```
 
-Every statement also carries the `$1` / `$2` store predicates, and tenant RLS applies to all of them. Statement (2)
-runs only before a tenant's first post-`0042` posting, so its cost disappears once `posted_at` exists. `asOf` is
-the transaction's `now()`. Age = `floor(extract(epoch FROM now() - oldest_pending_at))`.
+Every subquery also carries the `$1` / `$2` store predicates, and tenant RLS applies to all of them. Subquery (b)
+only matters when (a) is null; the build issue may write it as `CASE WHEN (a) IS NULL THEN EXISTS(…) END` so that
+it costs nothing once `posted_at` exists. Age = `GREATEST(0, floor(extract(epoch FROM as_of - oldest_pending_at)))`.
+
+`clock_timestamp()` is volatile, so the build issue must check that it is evaluated once per row of this
+single-row statement (it is in the target list of a `FROM`-less `SELECT`) and must not move it into a subquery.
 
 ## 6. Required tests for the build issue
 
@@ -297,7 +314,10 @@ the transaction's `now()`. Age = `floor(extract(epoch FROM now() - oldest_pendin
   RT-418-held row included; `pendingCount = 0` ⇒ both nulls.
 * Isolation: cross-tenant rows invisible (RLS); store filter and membership scope (RT-192) honored; out-of-scope
   `store_id` → 404; store_manager / cashier → existing denial; machine credential rejected.
-* `asOf` equals the instant the age is computed against.
+* `asOf` equals the instant the age is computed against; `lastPosted.at <= asOf` and `oldestPendingAt <= asOf`.
+* Consistency: `pendingCount = 0` ⇔ `oldestPendingAt` is null; `lastPosted.state = unknown` never coexists with a
+  visible `posted_at`. A concurrency test that commits an ack and a new intent between the summary's `BEGIN` and the
+  freshness statement must still satisfy both rules and a non-negative age.
 * `EXPLAIN (ANALYZE)` evidence per D7 (tenant-wide, single store, multi-store scope, quiet store in a busy tenant).
 
 ## 7. Proposed follow-up work (not created)
@@ -320,5 +340,7 @@ separate planning item (it would read the RT-457 / RT-207 sources, not `erpnext_
 * **Held rows inflate age by design** while `ERPNEXT_FEED_RESPONSIBILITIES_ENABLED` is off. The console copy should
   not call the oldest pending row "stuck in ERPNext".
 * **Volume/latency NOT VERIFIED.** D7's `EXPLAIN` gate covers it.
-* Assumes `runWithTenantContext` keeps one transaction per summary (it issues `BEGIN`; `packages/db/src/middleware/tenant-context.ts`),
-  so `now()` is one instant across the summary's statements.
+* `runWithTenantContext` issues `BEGIN` at the default `READ COMMITTED` (`packages/db/src/middleware/tenant-context.ts`).
+  The freshness facts therefore rely on being one statement (D6), not on the transaction. The dead-letter count is a
+  separate statement and may be one commit apart from the freshness facts. That is acceptable for an operator view,
+  and the same as the existing summary legs today.
