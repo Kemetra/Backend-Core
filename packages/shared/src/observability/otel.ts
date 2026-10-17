@@ -12,6 +12,11 @@
  * (standard Prometheus OTel port allocation); the worker should override with
  * `WORKER_METRICS_PORT` / 9091 and bind to `127.0.0.1`.
  *
+ * Span redaction (RT-609 F1): the OTLP exporter is wrapped in
+ * `RedactingSpanExporter`, so exported URL attributes keep scheme + host + path
+ * only (no query, userinfo or fragment). Sentry ingest requests and scrapes of
+ * the metrics listener are not traced at all. See `./span-redaction`.
+ *
  * BullMQ instrumentation is INTENTIONALLY DEFERRED.
  *
  *   The OpenTelemetry contrib org does not publish
@@ -31,6 +36,13 @@ import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
 import { PgInstrumentation } from "@opentelemetry/instrumentation-pg";
 import { RedisInstrumentation } from "@opentelemetry/instrumentation-redis";
 import { NodeSDK } from "@opentelemetry/sdk-node";
+
+import {
+  RedactingSpanExporter,
+  createMetricsScrapeFilter,
+  isSentryIngestRequest,
+  type MetricsScrapeTarget,
+} from "./span-redaction";
 
 /**
  * Re-export the classes and API objects that test files need to construct
@@ -95,17 +107,35 @@ export interface OtelOptions {
 
 let sdk: NodeSDK | null = null;
 
+/** Port + path of the Prometheus listener, or `null` when metrics are off. */
+function resolveMetricsTarget(metrics: OtelOptions["metrics"]): MetricsScrapeTarget | null {
+  if (!metrics) return null;
+  return {
+    port: metrics.port ?? Number(process.env["METRICS_PORT"] ?? 9464),
+    endpoint: metrics.endpoint ?? "/metrics",
+  };
+}
+
+function createHttpInstrumentation(metricsTarget: MetricsScrapeTarget | null): HttpInstrumentation {
+  const isMetricsScrape = metricsTarget ? createMetricsScrapeFilter(metricsTarget) : null;
+  return new HttpInstrumentation({
+    ignoreOutgoingRequestHook: isSentryIngestRequest,
+    ignoreIncomingRequestHook: (request) => isMetricsScrape?.(request) ?? false,
+  });
+}
+
 export function createOtelSdk(opts: OtelOptions): NodeSDK {
   if (opts.debug) {
     diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.DEBUG);
   }
 
-  const traceExporter = new OTLPTraceExporter(
-    opts.otlpEndpoint ? { url: opts.otlpEndpoint } : {},
+  const traceExporter = new RedactingSpanExporter(
+    new OTLPTraceExporter(opts.otlpEndpoint ? { url: opts.otlpEndpoint } : {}),
   );
 
+  const metricsTarget = resolveMetricsTarget(opts.metrics);
   const instrumentations = [
-    new HttpInstrumentation(),
+    createHttpInstrumentation(metricsTarget),
     new PgInstrumentation(),
     new RedisInstrumentation(),
     // BullMQ instrumentation deferred — see file header.
@@ -120,11 +150,11 @@ export function createOtelSdk(opts: OtelOptions): NodeSDK {
   // interface marks `host` as `string | undefined` but the TS compiler with
   // `exactOptionalPropertyTypes: true` treats explicit `undefined` as a type
   // error on a property that doesn't declare `undefined` in its union.
-  const metricReaders = opts.metrics
+  const metricReaders = opts.metrics && metricsTarget
     ? [
         new PrometheusExporter({
-          port: opts.metrics.port ?? Number(process.env["METRICS_PORT"] ?? 9464),
-          endpoint: opts.metrics.endpoint ?? "/metrics",
+          port: metricsTarget.port,
+          endpoint: metricsTarget.endpoint,
           ...(opts.metrics.host !== undefined
             ? { host: opts.metrics.host }
             : {}),
