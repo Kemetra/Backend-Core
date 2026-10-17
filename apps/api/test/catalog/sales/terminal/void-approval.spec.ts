@@ -51,6 +51,7 @@ afterEach(async () => {
   const admin = h.harness.env.admin;
   await admin.query("DELETE FROM outbox_events WHERE event_type = 'erpnext.posting.requested'").catch(() => undefined);
   await admin.query("DELETE FROM sale_voids WHERE source_system = 'pos-1'");
+  await admin.query("DELETE FROM sale_approval_uses"); // RT-577 (0054): the shared approval-use ledger.
   await admin.query("DELETE FROM sale_return_tenders WHERE return_id IN (SELECT id FROM sale_returns WHERE source_system = 'pos-1')");
   await admin.query("DELETE FROM sale_return_lines WHERE return_id IN (SELECT id FROM sale_returns WHERE source_system = 'pos-1')");
   await admin.query("DELETE FROM sale_returns WHERE source_system = 'pos-1'");

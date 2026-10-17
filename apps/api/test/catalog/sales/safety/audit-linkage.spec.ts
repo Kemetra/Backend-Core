@@ -61,6 +61,8 @@ afterEach(async () => {
     await h.harness.env.admin.query(
       "DELETE FROM sale_voids WHERE source_system = 'pos-1'",
     );
+    // RT-577 (0054): the shared approval-use ledger the sale_voids trigger fills.
+    await h.harness.env.admin.query("DELETE FROM sale_approval_uses");
     await h.harness.env.admin.query(
       "DELETE FROM sale_lines WHERE sale_id IN (SELECT id FROM sales WHERE source_system = 'pos-1')",
     );

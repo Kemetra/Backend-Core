@@ -88,6 +88,7 @@ import {
   type SaleReturnProjection,
 } from "./sale-returns.service";
 import {
+  CreditSaleReversalRestrictedError,
   ReturnLineInvalidError,
   ReturnOverReturnError,
   ReturnQuantityNotWholeError,
@@ -175,6 +176,10 @@ function toReversalHttpError(err: unknown): unknown {
   if (err instanceof TerminalEventProvenanceConflictError) {
     // Provenance reused for a different sale or payload → 409 (FR-013).
     return new ConflictException("conflict");
+  }
+  if (err instanceof CreditSaleReversalRestrictedError) {
+    // RT-577: one body for every operator; nothing was recorded.
+    return new ForbiddenException({ code: "credit_sale_reversal_restricted", message: err.message });
   }
   if (err instanceof SaleAlreadyReversedError) {
     return new ConflictException({ code: "already_reversed", message: "sale already reversed" });
@@ -482,6 +487,9 @@ export class SalesController {
       if (err instanceof TerminalEventProvenanceConflictError) {
         // Refund provenance reused for a different sale → 409 (FR-013).
         throw new ConflictException("conflict");
+      }
+      if (err instanceof CreditSaleReversalRestrictedError) {
+        throw toReversalHttpError(err);
       }
       throw err;
     }

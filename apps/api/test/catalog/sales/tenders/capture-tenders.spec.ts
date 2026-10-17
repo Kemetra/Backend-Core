@@ -85,6 +85,7 @@ afterEach(async () => {
   const q = (sql: string) => h.harness!.env.admin.query(sql);
   const sales = "SELECT id FROM sales WHERE source_system = 'pos-1'";
   await q(`DELETE FROM sale_voids WHERE sale_id IN (${sales})`);
+  await q(`DELETE FROM sale_approval_uses`); // RT-577 (0054): the shared approval-use ledger.
   await q(`DELETE FROM sale_tenders WHERE sale_id IN (${sales})`);
   await q(`DELETE FROM sale_lines WHERE sale_id IN (${sales})`);
   await q(`DELETE FROM sales WHERE source_system = 'pos-1'`);

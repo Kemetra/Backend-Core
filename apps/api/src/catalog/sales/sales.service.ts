@@ -75,6 +75,7 @@ import {
   type SaleResponsibilityRow,
 } from "./sale-responsibilities";
 import {
+  assertNotCreditSale,
   lockSaleForReversal,
   mapOneVoidViolation,
   readReversalState,
@@ -572,9 +573,17 @@ export class SalesService {
         const sale = await lockSaleForReversal(client, saleRef, storeId);
 
         // A re-delivery replays BEFORE any check: the answer is the stored one,
-        // even if the approver has left since (RT-530).
+        // even if the approver has left since (RT-530). RT-577: a void a credit
+        // reversal created is never replayed here; on its own sale the call
+        // falls through to the credit refusal below.
         const existing = await findVoidByProvenance(client, tenantId, body);
-        if (existing) return replayVoid(existing, saleRef);
+        if (existing && !(existing.credit_linked && existing.sale_id === saleRef)) {
+          return replayVoid(existing, saleRef);
+        }
+
+        // RT-577: a credit sale is refused for every operator, before
+        // exclusivity and every RT-530 check.
+        assertNotCreditSale(sale);
 
         const state = await readReversalState(client, saleRef);
         if (state.voided || state.returned) throw new SaleAlreadyReversedError();
@@ -627,6 +636,8 @@ export class SalesService {
           if (!winner) {
             throw new Error("void conflict but no existing terminal event found");
           }
+          // RT-577: a credit reversal's void is never an ordinary replay.
+          if (winner.credit_linked) throw new TerminalEventProvenanceConflictError();
           return replayVoid(winner, saleRef);
         }
 
@@ -685,13 +696,19 @@ export class SalesService {
       this.pool,
       { tenantId, isPlatformAdmin: false },
       async (client): Promise<TerminalEventResult> => {
-        const sale = await client.query<{ id: string }>(
-          `SELECT id FROM sales WHERE id = $1 AND store_id = $2`,
+        const sale = await client.query<{ id: string; responsibility_count: number }>(
+          `SELECT id, responsibility_count FROM sales WHERE id = $1 AND store_id = $2`,
           [saleRef, storeId],
         );
         if (!sale.rows[0]) {
           throw new SaleNotFoundError();
         }
+
+        // RT-577: a refund recorded before the RT-577 runtime replays BEFORE the
+        // credit refusal, so a stored result is never turned into a 403.
+        const prior = await replayRefundByProvenance(client, tenantId, body, saleRef);
+        if (prior) return prior;
+        assertNotCreditSale({ responsibilityCount: Number(sale.rows[0].responsibility_count) });
 
         const eventId = newId();
         const inserted = await client.query<{
@@ -721,39 +738,12 @@ export class SalesService {
         );
 
         if (inserted.rows.length === 0) {
-          // Provenance already exists — a replay only if it points at the SAME
-          // sale (FR-013); otherwise a conflict (never echo the caller's ref).
-          const existing = await client.query<{
-            id: string;
-            sale_id: string;
-            refunded_at: Date;
-            pos_refund_amount: string;
-            currency_code: string;
-          }>(
-            `SELECT id, sale_id, refunded_at, pos_refund_amount, currency_code
-               FROM sale_refunds
-              WHERE tenant_id = $1 AND source_system = $2 AND external_id = $3
-              LIMIT 1`,
-            [tenantId, body.sourceSystem, body.externalId],
-          );
-          const row = existing.rows[0];
-          if (!row) {
+          // The same provenance was recorded concurrently: resolve it like a replay.
+          const winner = await replayRefundByProvenance(client, tenantId, body, saleRef);
+          if (!winner) {
             throw new Error("refund conflict but no existing terminal event found");
           }
-          if (row.sale_id !== saleRef) {
-            throw new TerminalEventProvenanceConflictError();
-          }
-          return {
-            projection: toTerminalEvent(
-              "refund",
-              row.id,
-              row.sale_id,
-              row.refunded_at,
-              row.pos_refund_amount,
-              row.currency_code,
-            ),
-            created: false,
-          };
+          return winner;
         }
 
         const row = inserted.rows[0]!;
@@ -792,9 +782,46 @@ export class SalesService {
   }
 }
 
+/**
+ * A refund provenance already recorded: a deterministic replay only if it
+ * points at the SAME sale (FR-013); otherwise a conflict (never echo the
+ * caller's ref). Null when the provenance is unused.
+ */
+async function replayRefundByProvenance(
+  client: PoolClient,
+  tenantId: string,
+  body: RecordRefundRequestDto,
+  saleRef: string,
+): Promise<TerminalEventResult | null> {
+  const existing = await client.query<{
+    id: string;
+    sale_id: string;
+    refunded_at: Date;
+    pos_refund_amount: string;
+    currency_code: string;
+  }>(
+    `SELECT id, sale_id, refunded_at, pos_refund_amount, currency_code
+       FROM sale_refunds
+      WHERE tenant_id = $1 AND source_system = $2 AND external_id = $3
+      LIMIT 1`,
+    [tenantId, body.sourceSystem, body.externalId],
+  );
+  const row = existing.rows[0];
+  if (!row) return null;
+  if (row.sale_id !== saleRef) {
+    throw new TerminalEventProvenanceConflictError();
+  }
+  return {
+    projection: toTerminalEvent("refund", row.id, row.sale_id, row.refunded_at, row.pos_refund_amount, row.currency_code),
+    created: false,
+  };
+}
+
 interface VoidProvenanceRow {
   id: string;
   sale_id: string;
+  /** RT-577: the void a credit reversal created (never replayed by recordVoid). */
+  credit_linked: boolean;
   voided_at: Date;
   approval_id: string | null;
   approved_by_user_id: string | null;
@@ -802,10 +829,17 @@ interface VoidProvenanceRow {
   approval_policy_version: string | null;
 }
 
-/** RT-530: an approval id reused for another void (the single-use index) -> 422. */
-function mapApprovalReuseViolation(err: unknown): unknown {
+/**
+ * RT-530: an approval id reused for another void (the single-use index) -> 422.
+ * RT-577: also one a credit return consumed (the shared ledger, filled for a
+ * void by the 0054 sale_voids trigger).
+ */
+export function mapApprovalReuseViolation(err: unknown): unknown {
   const pg = err as { code?: string; constraint?: string };
-  if (pg.code === "23505" && pg.constraint === "uq_sale_voids_tenant_approval") {
+  if (
+    pg.code === "23505" &&
+    (pg.constraint === "uq_sale_voids_tenant_approval" || pg.constraint === "sale_approval_uses_pkey")
+  ) {
     return new VoidApprovalInvalidError();
   }
   return err;
@@ -817,12 +851,13 @@ async function findVoidByProvenance(
   body: RecordVoidRequestDto,
 ): Promise<VoidProvenanceRow | null> {
   const r = await client.query<VoidProvenanceRow>(
-    `SELECT id, sale_id, voided_at, approval_id::text AS approval_id,
-            approved_by_user_id::text AS approved_by_user_id,
-            requested_by_user_id::text AS requested_by_user_id,
-            approval_policy_version
-       FROM sale_voids
-      WHERE tenant_id = $1 AND source_system = $2 AND external_id = $3
+    `SELECT v.id, v.sale_id, v.voided_at, v.approval_id::text AS approval_id,
+            v.approved_by_user_id::text AS approved_by_user_id,
+            v.requested_by_user_id::text AS requested_by_user_id,
+            v.approval_policy_version,
+            EXISTS (SELECT 1 FROM sale_credit_reversals c WHERE c.void_id = v.id) AS credit_linked
+       FROM sale_voids v
+      WHERE v.tenant_id = $1 AND v.source_system = $2 AND v.external_id = $3
       LIMIT 1`,
     [tenantId, body.sourceSystem, body.externalId],
   );
