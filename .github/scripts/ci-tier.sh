@@ -32,16 +32,21 @@
 # line) for the self-test in ci-tier.test.sh.
 set -euo pipefail
 
-# Paths under docs/, specs/ and .specify/ that code or tests name in a quoted
-# string literal (readFileSync / path.join targets). A docs-only edit to one
-# of these can break a test, so it is not Low. Comment mentions are ignored.
+# Would-be-Low files that code or tests name in a quoted string literal
+# (readFileSync / path.join targets): anything under docs/, specs/, .specify/
+# or .claude/, and any repo-relative *.md path (e.g. "deploy/README.md", which
+# release-images.spec.ts parses). A docs-only edit to one of these can break a
+# test, so it is not Low. Comment mentions and bare "README.md" fixture names
+# are ignored.
 test_inputs() {
   if [[ -n "${CI_TIER_TEST_INPUTS+x}" ]]; then
     printf '%s\n' "$CI_TIER_TEST_INPUTS"
     return
   fi
-  git grep -ohE "[\"'](docs|specs|\\.specify)/[A-Za-z0-9._/-]*" -- apps packages tools |
-    sed "s/^[\"']//" | sort -u || true
+  {
+    git grep -ohE "[\"'](docs|specs|\\.specify|\\.claude)/[A-Za-z0-9._/-]*" -- apps packages tools || true
+    git grep -ohE "[\"'][A-Za-z0-9._-]+/[A-Za-z0-9._/-]*\\.md[\"']" -- apps packages tools || true
+  } | sed "s/^[\"']//; s/[\"']\$//" | sort -u
 }
 
 mapfile -t INPUTS < <(test_inputs | sed '/^$/d')

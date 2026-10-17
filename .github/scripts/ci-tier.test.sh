@@ -87,16 +87,18 @@ expect "$HIGH" docs/old-migration.sql packages/db/drizzle/0051_sale_responsibili
 # Highest tier wins regardless of order
 expect "$HIGH" docs/x.md apps/worker/src/a.ts .github/workflows/ci.yml
 
-# The live test-input scan (no override) must still find a docs file a test
-# reads, or a broken grep would quietly turn those docs Low.
-live="$(printf '%s\0' docs/observability/signals.md |
-  env -u CI_TIER_TEST_INPUTS bash "$HERE/ci-tier.sh" 2>/dev/null | sed -n 's/^tier=//p')"
-if [[ "$live" == high ]]; then
-  echo "ok    live test-input scan finds docs/observability/signals.md"
-else
-  echo "FAIL  live test-input scan: docs/observability/signals.md classified '$live'"
-  fails=$((fails + 1))
-fi
+# The live test-input scan (no override) must still find the docs that tests
+# read, or a broken grep would quietly turn them Low.
+for f in docs/observability/signals.md deploy/README.md; do
+  live="$(printf '%s\0' "$f" |
+    env -u CI_TIER_TEST_INPUTS bash "$HERE/ci-tier.sh" 2>/dev/null | sed -n 's/^tier=//p')"
+  if [[ "$live" == high ]]; then
+    echo "ok    live test-input scan finds $f"
+  else
+    echo "FAIL  live test-input scan: $f classified '$live'"
+    fails=$((fails + 1))
+  fi
+done
 
 if ((fails > 0)); then
   echo "$fails ci-tier case(s) failed"
