@@ -1,0 +1,258 @@
+openapi: 3.1.0
+info:
+  title: Backend-Core — Console Telemetry (Sentry tunnel) API
+  version: "1.0.0-draft"
+  description: >
+    Jira RT-632 (OBS-3, epic RT-617). A same-origin endpoint that takes Sentry
+    envelopes from the browser Admin-Console and forwards the error events to
+    the Console Sentry project. The Console is served from the same Caddy
+    origin as the API, and its Content Security Policy is `connect-src
+    'self'`, so the browser cannot reach Sentry directly. The owner chose
+    this tunnel over loosening the CSP because it keeps a server-side scrub
+    (RT-632 owner comment, 2026-10-17). It conforms to the Observability
+    contract (OBS-1, RT-629).
+
+
+    **Posture.** `1.0.0-draft`, contract-only: both operations carry
+    `x-runtime-status: contract-only` until the RT-632 runtime ships.
+    `[GATED]` contract, approved by the owner on RT-632.
+
+
+    **Not an open relay.** The tunnel forwards only to the Sentry project
+    named by the server's own `CONSOLE_SENTRY_DSN`. The `dsn` in the envelope
+    header is ignored, so a caller cannot choose the destination project,
+    organization or host. No inbound header (cookie, user agent, forwarding
+    headers) is passed on.
+
+
+    **What is forwarded.** Only the first error `event` item. Each event is
+    rebuilt by the shared allowlist scrubber of Backend-Core
+    (`packages/shared/src/observability/sentry.ts`, OBS-1 §3): request data,
+    user, extras, contexts and breadcrumbs are dropped, and secrets, emails
+    and URL query strings are masked in exception messages. An event with no
+    exception is dropped. Every other item type (sessions, replays,
+    attachments, transactions, client reports, profiles, check-ins, …) is
+    dropped. The envelope header is rebuilt with `event_id` and `sent_at`
+    only. When nothing survives, nothing is forwarded.
+
+
+    **Server-stamped fields.** The forwarded event's `environment` is set by
+    the server (the API's Sentry environment: `SENTRY_ENVIRONMENT`, else
+    `DEPLOYMENT_ENVIRONMENT`), whatever the Console sent. `sdk` is rebuilt as
+    `{ name, version, settings: { infer_ip: "never" } }` (the inbound name
+    and version are kept only when they are short plain tokens), so Sentry
+    never infers an IP address for the event. Any `user` or IP data the
+    envelope carries is dropped by the scrubber.
+
+
+    **Console runtime config (decision recorded on RT-632).** The Console
+    bundle is immutable, so `consoleGetTelemetryConfig` tells it at runtime
+    whether to start its Sentry SDK: `200 { tunnel, environment }` when the
+    tunnel is configured, `204` when it is inert. It never returns a DSN.
+    The Console starts the SDK with a fixed, well-formed placeholder DSN,
+    which the tunnel ignores, so the real DSN cannot be used to post to
+    Sentry directly around the scrub and the rate limits. Public,
+    `Cache-Control: no-store`, no `Origin` check. Beyond what the tunnel
+    already discloses (configured or inert), it reveals the server's Sentry
+    environment name (for example `staging`). That is a deployment label,
+    not a secret or a credential, and the Console needs it before sign-in to
+    label its own events.
+
+
+    **Default-inert.** With `CONSOLE_SENTRY_DSN` unset, blank or malformed,
+    the tunnel forwards nothing and answers `204` without checking `Origin`,
+    the rate limits or the body. Whether the tunnel is configured is not a
+    secret: a malformed body can tell the two states apart (`204` inert,
+    `400` configured). What `204` never discloses is what happened to a
+    well-formed envelope on a configured tunnel.
+    Forwarding runs after the response is sent, with a short timeout and a
+    bound on concurrent forwards. A Sentry failure or slowness never changes
+    the response and never affects other API traffic. The tunnel never logs
+    envelope content, the DSN or the upstream URL.
+
+
+    **Auth (decision recorded on RT-632).** None: `security: []`. Errors can
+    happen before sign-in, so the `dp2_session` cookie is not required, and
+    it is never read. The request must carry an `Origin` that is the API's
+    own origin or is listed in `ALLOWED_ORIGINS` (the RT-430 rule); a missing
+    `Origin` is refused, since browsers always send it on a `POST`. Abuse is
+    bounded by a 64 KiB body cap and by a per-client-IP and a global rate
+    limit, checked before the body is read.
+
+
+    **The path** avoids the word "sentry", so content blockers do not block
+    it.
+servers:
+  - url: https://api.example.com
+paths:
+  /api/v1/console/telemetry/config:
+    get:
+      summary: Whether the Console should start its Sentry SDK, and with which tunnel and environment.
+      operationId: consoleGetTelemetryConfig
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-632 contract PR. The runtime ships in the RT-632 runtime PR, which
+        removes this marker.
+      security: []
+      responses:
+        "200":
+          description: >
+            The tunnel is configured. The Console starts its SDK with
+            `tunnel` and `environment`, and a fixed placeholder DSN.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsoleTelemetryConfig"
+        "204":
+          description: >
+            The tunnel is inert (`CONSOLE_SENTRY_DSN` unset, blank or
+            malformed). The Console does not start its SDK.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+  /api/v1/console/telemetry/envelope:
+    post:
+      summary: Forward a Sentry envelope from the Admin-Console to the Console Sentry project.
+      operationId: consoleForwardTelemetryEnvelope
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-632 contract PR. The runtime (NestJS module, env mapping and tests)
+        ships in the RT-632 runtime PR, which removes this marker.
+      security: []
+      parameters:
+        - name: Origin
+          in: header
+          required: true
+          description: >
+            The API's own origin or an origin listed in `ALLOWED_ORIGINS`.
+            Missing or foreign → `403 origin_rejected`.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: >
+          A Sentry envelope (newline-delimited: an envelope header line, then
+          items, each an item header line and a payload). At most 65,536
+          bytes (`413 envelope_too_large`); a body with a
+          `Content-Encoding` other than `identity` is `415`. The browser SDK
+          sends a string body as `text/plain`.
+        content:
+          text/plain:
+            schema:
+              $ref: "#/components/schemas/Envelope"
+          application/x-sentry-envelope:
+            schema:
+              $ref: "#/components/schemas/Envelope"
+          application/octet-stream:
+            schema:
+              $ref: "#/components/schemas/Envelope"
+      responses:
+        "204":
+          description: >
+            Accepted. On a configured tunnel a well-formed envelope gets the
+            same `204` whether its error event was forwarded, dropped by the
+            scrubber or by the forward bound, or dropped because the
+            rate-limit store is unavailable. An inert tunnel answers `204`
+            to every request (see Default-inert).
+        "400":
+          description: >
+            `envelope_malformed`: the body is empty, or the envelope header,
+            an item header or an event payload is not a JSON object, or an
+            item's `length` runs past the end of the body. The message is
+            fixed and never quotes the input.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            `origin_rejected` (RT-430 rule): the `Origin` header is missing,
+            or is neither the API's own origin nor listed in
+            `ALLOWED_ORIGINS`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: "`envelope_too_large`: the body is larger than 65,536 bytes."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: >
+            `unsupported_media_type`: the `Content-Type` is not `text/plain`,
+            `application/x-sentry-envelope` or `application/octet-stream`
+            (a missing `Content-Type` is accepted), or the body has a
+            `Content-Encoding` other than `identity`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: >
+            `RATE_LIMITED`: the client IP's budget or the global budget for
+            this endpoint is spent. The Sentry SDK backs off for
+            `Retry-After` seconds.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+                maximum: 600
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  schemas:
+    ConsoleTelemetryConfig:
+      type: object
+      additionalProperties: false
+      required: [tunnel, environment]
+      description: Runtime Sentry settings for the Console. Never carries a DSN.
+      properties:
+        tunnel:
+          type: string
+          const: /api/v1/console/telemetry/envelope
+          description: The same-origin tunnel path for the SDK's `tunnel` option.
+        environment:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: >
+            The server's Sentry environment (`SENTRY_ENVIRONMENT`, else
+            `DEPLOYMENT_ENVIRONMENT`, else `unknown`). The tunnel stamps the
+            same value on forwarded events.
+    Envelope:
+      type: string
+      maxLength: 65536
+      description: >
+        A Sentry envelope as raw text. `maxLength` is the byte cap; a body
+        of multibyte text reaches the cap with fewer characters.
+    Error:
+      type: object
+      required: [error]
+      description: Canonical error envelope.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+            message:
+              type: string
+              description: Fixed human-readable summary. Never quotes the request body.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id.
