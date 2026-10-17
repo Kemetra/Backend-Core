@@ -68,11 +68,20 @@ fi
 # `consumer:<NAME>` tag naming the consumers that pin the affected path.
 # CONSUMER_IMPACT_MODE=report (default) only warns, and a crash of the script can
 # never fail this gate; enforce (RT-680) propagates the exit code.
-if [[ "${CONSUMER_IMPACT_MODE:-report}" == "enforce" ]]; then
-  node "$CFG/consumer-impact.mjs" <"$WORK/ignore.txt"
-else
-  node "$CFG/consumer-impact.mjs" <"$WORK/ignore.txt" || echo "::warning::consumer-impact errored"
-fi
+consumer_mode="${CONSUMER_IMPACT_MODE:-report}"
+case "$consumer_mode" in
+  enforce)
+    node "$CFG/consumer-impact.mjs" <"$WORK/ignore.txt"
+    ;;
+  report)
+    node "$CFG/consumer-impact.mjs" <"$WORK/ignore.txt" || echo "::warning::consumer-impact errored"
+    ;;
+  *)
+    # A typo must not leave an intended enforce gate fail-open.
+    echo "::error::unknown CONSUMER_IMPACT_MODE '$consumer_mode' (expected report or enforce)"
+    exit 1
+    ;;
+esac
 
 format=text
 if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then

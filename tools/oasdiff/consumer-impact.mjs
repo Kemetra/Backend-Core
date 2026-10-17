@@ -135,7 +135,6 @@ export const parseConsumers = (text) => contentLines(text).map(parseConsumerLine
 
 // ---- OpenAPI paths ---------------------------------------------------------
 
-const PATHS_HEADER = /^paths:/;
 // A top-level path key, bare or quoted: `/api/x:`, `'/api/x/{id}':`, `"/api/x":`.
 const PATH_KEY = /^(['"]?)(\/[^'"\s]*)\1:(?:\s|$)/;
 
@@ -144,7 +143,7 @@ const pathKeyOf = (line) => PATH_KEY.exec(line.trim())?.[2];
 
 /** The lines indented under the first top-level `paths:` header. */
 function pathsBlock(lines) {
-  const start = lines.findIndex((line) => PATHS_HEADER.test(line));
+  const start = lines.findIndex((line) => line.startsWith("paths:"));
   if (start === -1) return [];
   const rest = lines.slice(start + 1);
   const end = rest.findIndex((line) => indentOf(line) === 0);
@@ -177,8 +176,8 @@ export const collectPathsFromFile = (filePath, text) =>
 // ---- acknowledgement lines -------------------------------------------------
 
 const METHODS = "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE";
-const IN_API = new RegExp(`\\bin API (${METHODS}) (/\\S*)`);
-const BARE_OPERATION = new RegExp(`\\b(${METHODS}) (/\\S*)`);
+const IN_API = new RegExp(String.raw`\bin API (${METHODS}) (/\S*)`);
+const BARE_OPERATION = new RegExp(String.raw`\b(${METHODS}) (/\S*)`);
 const TAG = /(?<![\w:])consumer:([A-Za-z0-9][\w-]*)/g;
 const JIRA = /\bRT-\d+\b/g;
 
@@ -210,18 +209,20 @@ function affectedConsumers(ack, impactByConsumer) {
   return [...impactByConsumer].filter(([, paths]) => paths.has(ack.path)).map(([name]) => name);
 }
 
+const asTag = (name) => `consumer:${name}`;
+
+const fail = (ctx, reason) => verdict(false, ctx.affected, `${ctx.who}${reason}`);
+const pass = (ctx, reason) => verdict(true, ctx.affected, reason);
+
 const unknownTags = (ctx) =>
   ctx.ack.tags.filter((tag) => tag !== "none" && !ctx.known.includes(tag));
 
 const unknownTagVerdict = (ctx) => {
   const unknown = unknownTags(ctx);
   if (unknown.length === 0) return undefined;
-  const tags = unknown.map((tag) => `consumer:${tag}`).join(" ");
+  const tags = unknown.map(asTag).join(" ");
   return fail(ctx, `unknown consumer tag(s) ${tags} (known: ${[...ctx.known, "none"].join(", ")})`);
 };
-
-const fail = (ctx, reason) => verdict(false, ctx.affected, `${ctx.who}${reason}`);
-const pass = (ctx, reason) => verdict(true, ctx.affected, reason);
 
 // Each rule returns a verdict, or undefined to defer to the next rule.
 const RULES = [
@@ -246,7 +247,7 @@ const RULES = [
   (c) => {
     const missing = c.affected.filter((name) => !c.ack.tags.includes(name));
     return missing.length > 0
-      ? fail(c, `missing ${missing.map((name) => `consumer:${name}`).join(" ")}`)
+      ? fail(c, `missing ${missing.map(asTag).join(" ")}`)
       : undefined;
   },
   (c) => (c.ack.jira.length === 0 ? fail(c, "needs a Jira key (RT-<n>) on the line") : undefined),
@@ -285,17 +286,14 @@ async function defaultGitShow(commit, file) {
 
 const sleep = (ms) => (ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : undefined);
 
-async function withRetries(attempts, delayMs, fn) {
-  let lastError;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error;
-      await sleep(attempt < attempts ? delayMs * attempt : 0);
-    }
+async function withRetries(attempts, delayMs, fn, attempt = 1) {
+  try {
+    return await fn();
+  } catch (error) {
+    if (attempt >= attempts) throw error;
+    await sleep(delayMs * attempt);
+    return withRetries(attempts, delayMs, fn, attempt + 1);
   }
-  throw lastError;
 }
 
 async function readPin(consumer, io) {
@@ -348,7 +346,7 @@ async function loadImpacts(consumersFile, io) {
 // ---- reporting -------------------------------------------------------------
 
 const annotation = (level, message) =>
-  `::${level}::${message.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")}`;
+  `::${level}::${message.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A")}`;
 
 const excerpt = (line) => (line.length > 160 ? `${line.slice(0, 60)}...${line.slice(-95)}` : line);
 
