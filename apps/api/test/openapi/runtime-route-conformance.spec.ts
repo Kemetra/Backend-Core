@@ -129,8 +129,6 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "consoleGetTenantLogo",
       "consolePreviewTenantLogo",
       "consolePutTenantLogo",
-      // RT-572: payer-account update contract; the runtime ships in the RT-572 runtime PR.
-      "consoleUpdatePayerAccount",
       // RT-414: platform support-session contract; the runtime ships after owner approval.
       "endSupportSession",
       "getCurrentSupportSession",
@@ -138,6 +136,8 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "posGetTenantBranding",
       "posRedeemVoucher",
       "posReverseVoucher",
+      // RT-369: device token rotation contract; the runtime ships in the RT-369 runtime PR.
+      "posRotateTerminalToken",
       "posValidateVoucher",
       "renewSupportSession",
     ]);
