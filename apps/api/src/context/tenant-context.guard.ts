@@ -43,10 +43,19 @@
  *
  * Token principals
  * ----------------
- * Tokens carry a tenant binding from issuance. We do NOT re-validate
- * the tenant per-request in this slice; if the tenant was deleted, the
- * eventual DB middleware (T155) sets `app.current_tenant` to the
- * deleted UUID and RLS naturally returns no rows — defence in depth.
+ * Tokens carry a tenant binding from issuance. A `dashboard_api` token is
+ * re-checked per request against its tenant's status (RT-669): a token of
+ * a suspended, pending or soft-deleted tenant fails with the same
+ * `UnauthorizedException` an invalid token gets. Other bearer scopes are
+ * not re-checked here (POS scopes are refused on the device path, RT-213).
+ *
+ * Tenant status (RT-669)
+ * ----------------------
+ * A session of a non-platform-admin whose active tenant is not active
+ * (`status = 'active' AND deleted_at IS NULL`) fails the membership check:
+ * `findActiveMembership` applies the rule, so the refusal is the existing
+ * non-disclosing 404. Platform admins are exempt so they can enter and
+ * reactivate the tenant.
  *
  * A token with `principal.tenantId === null` fails closed with
  * `UnauthorizedException` (RT-132 D6 / RT-149). Platform authority
@@ -149,12 +158,21 @@ export class TenantContextGuard implements CanActivate {
     return this.resolveSession(principal);
   }
 
-  private resolveToken(
+  private async resolveToken(
     principal: Extract<Principal, { kind: "token" }>,
-  ): ResolvedContext {
+  ): Promise<ResolvedContext> {
     // RT-132 D6: a null-tenant bearer token carries no tenant and no
     // platform authority — fail closed rather than resolve a context.
     if (principal.tenantId === null) throw unauthorized();
+    // RT-669: a console token of a non-active tenant reads as an invalid token.
+    if (principal.scope === "dashboard_api") {
+      const tenantId = principal.tenantId;
+      let active = false;
+      await this.withBootstrapCtx(async (client) => {
+        active = await this.memberships.isTenantActive(tenantId, client);
+      });
+      if (!active) throw unauthorized();
+    }
     return {
       userId: principal.userId,
       tenantId: principal.tenantId,

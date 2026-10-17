@@ -26,6 +26,10 @@
  *   TCG11 — resolveSession, platform admin, no store → success, membership NOT queried
  *   TCG12 — resolveSession, platform admin, store set, canAccessStore=true → success, synthetic membershipId
  *   TCG13 — resolveSession, platform admin, store set, canAccessStore=false → NotFoundException
+ *   TCG14 — RT-669: dashboard_api token of a non-active tenant → UnauthorizedException
+ *   TCG15 — RT-669: tenant status is read only for dashboard_api tokens (POS scopes unchanged)
+ *   TCG16 — RT-669: session non-admin → membership read refuses a non-active tenant (404);
+ *           platform admin never consults tenant status (D-a)
  */
 import "reflect-metadata";
 
@@ -95,6 +99,7 @@ function makeGuard(opts: {
   findActiveMembership?: jest.Mock;
   canAccessStore?: jest.Mock;
   listGrantedStoreIds?: jest.Mock;
+  isTenantActive?: jest.Mock;
 } = {}) {
   const fakeSessions = {
     findActiveById: opts.sessionFindActive ?? jest.fn().mockResolvedValue(null),
@@ -104,6 +109,7 @@ function makeGuard(opts: {
     findActiveMembership:  opts.findActiveMembership  ?? jest.fn().mockResolvedValue(null),
     canAccessStore:        opts.canAccessStore         ?? jest.fn().mockResolvedValue(false),
     listGrantedStoreIds:   opts.listGrantedStoreIds    ?? jest.fn().mockResolvedValue([]),
+    isTenantActive:        opts.isTenantActive         ?? jest.fn().mockResolvedValue(true),
   };
   const guard = new TenantContextGuard(
     fakeSessions as unknown as SessionRepository,
@@ -395,5 +401,90 @@ describe("TCG13 — platform admin: store set, access denied", () => {
     await expect(guard.resolve(sessionPrincipal())).rejects.toBeInstanceOf(
       NotFoundException,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TCG14 — RT-669: dashboard_api token of a non-active tenant → 401
+// ---------------------------------------------------------------------------
+
+describe("TCG14 — RT-669: dashboard_api token, tenant not active", () => {
+  it("rejects with the same UnauthorizedException as an invalid token", async () => {
+    const isTenantActive = jest.fn().mockResolvedValue(false);
+    const { guard } = makeGuard({ isTenantActive });
+    const err = await guard.resolve(tokenPrincipal(TENANT_ID)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnauthorizedException);
+    expect((err as UnauthorizedException).getResponse()).toEqual(
+      new UnauthorizedException("Unauthorized").getResponse(),
+    );
+    expect(isTenantActive).toHaveBeenCalledWith(TENANT_ID, undefined);
+  });
+
+  it("canActivate: does not attach a context", async () => {
+    const { guard } = makeGuard({ isTenantActive: jest.fn().mockResolvedValue(false) });
+    const request: Partial<TenantContextRequest> & { principal: Principal } = {
+      principal: tokenPrincipal(TENANT_ID),
+    };
+    await expect(guard.canActivate(makeExecCtx(request))).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect((request as TenantContextRequest).context).toBeUndefined();
+  });
+
+  it("an active tenant still resolves (and the tenant is read)", async () => {
+    const isTenantActive = jest.fn().mockResolvedValue(true);
+    const { guard } = makeGuard({ isTenantActive });
+    const ctx = await guard.resolve(tokenPrincipal(TENANT_ID));
+    expect(ctx.tenantId).toBe(TENANT_ID);
+    expect(isTenantActive).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TCG15 — RT-669: only dashboard_api tokens read tenant status here
+// ---------------------------------------------------------------------------
+
+describe("TCG15 — RT-669: POS / connector token scopes are unchanged", () => {
+  // POS scopes are refused for non-active tenants on the device path
+  // (RT-213); this guard's token branch stays as it was for them.
+  for (const scope of ["pos", "pos_operator", "connector"] as const) {
+    it(`${scope}: resolves without reading tenant status`, async () => {
+      const isTenantActive = jest.fn().mockResolvedValue(false);
+      const { guard } = makeGuard({ isTenantActive });
+      const ctx = await guard.resolve({ ...tokenPrincipal(TENANT_ID), scope });
+      expect(ctx.source).toBe("token");
+      expect(isTenantActive).not.toHaveBeenCalled();
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// TCG16 — RT-669: session branch
+// ---------------------------------------------------------------------------
+
+describe("TCG16 — RT-669: session branch", () => {
+  it("non-admin: a non-active tenant reads as no membership → NotFoundException", async () => {
+    // The tenant-active predicate lives in findActiveMembership's SQL
+    // (membership.repository.tenant-status.unit.spec.ts): it returns null.
+    const isTenantActive = jest.fn();
+    const { guard } = makeGuard({
+      sessionFindActive: jest.fn().mockResolvedValue(makeSession()),
+      findActiveMembership: jest.fn().mockResolvedValue(null),
+      isTenantActive,
+    });
+    await expect(guard.resolve(sessionPrincipal())).rejects.toBeInstanceOf(NotFoundException);
+    expect(isTenantActive).not.toHaveBeenCalled();
+  });
+
+  it("platform admin (D-a): tenant status is never consulted", async () => {
+    const isTenantActive = jest.fn().mockResolvedValue(false);
+    const { guard } = makeGuard({
+      sessionFindActive: jest.fn().mockResolvedValue(makeSession()),
+      isPlatformAdmin: jest.fn().mockResolvedValue(true),
+      isTenantActive,
+    });
+    const ctx = await guard.resolve(sessionPrincipal());
+    expect(ctx.isPlatformAdmin).toBe(true);
+    expect(isTenantActive).not.toHaveBeenCalled();
   });
 });
