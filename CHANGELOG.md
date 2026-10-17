@@ -145,8 +145,9 @@ This project follows [Semantic Versioning](https://semver.org/).
   writes nothing (audited `devices.impact_read`). The revoke now decides from
   that same read under its locks, and its 409 carries the refused state's
   preview as `error.details`. No migration.
-- RT-367 `[GATED]`, pending owner approval (RT-287 F4 + F9; D-Q1 and D-Q4
-  as amended): `devices.openapi.yaml` 1.2.0-draft adds the Console pairing
+- RT-367 `[GATED]` (RT-287 F4 + F9; D-Q1 and D-Q4 as amended; decisions C1
+  and C2 owner-approved 2026-10-17, the PR itself pending the owner's GATED
+  approval): `devices.openapi.yaml` 1.2.0-draft adds the Console pairing
   codes, contract-only: `POST /api/v1/pairing-codes`
   (`consoleIssuePairingCode`; required non-replayable `Idempotency-Key`; the
   code is returned once and never stored), `GET /api/v1/pairing-codes`
@@ -162,8 +163,10 @@ This project follows [Semantic Versioning](https://semver.org/).
   is populated; and a new 409 `REPLACEMENT_BLOCKED` for the pair-time Cash
   Session re-check. That last one is NOT additive: it is a POS-visible value
   added to the closed `error.code` enum, which oasdiff grades as breaking
-  (cross-repo POS contract change; POS must handle `REPLACEMENT_BLOCKED`),
-  pending owner approval. No runtime or migration change.
+  (cross-repo POS contract change; POS must handle `REPLACEMENT_BLOCKED`,
+  tracked as RT-591). The owner approved it on 2026-10-17, and
+  `tools/oasdiff/breaking-ignore.txt` acknowledges the five findings. No
+  runtime or migration change.
 - RT-542 `[GATED]`, owner-approved 2026-10-16 (RT-542 comment 12124): the three
   sale-history operations (`listSaleHistory`, `readSaleHistoryDetail`,
   `recordSaleReprint`) lose `x-runtime-status: contract-only` now that the RT-539
