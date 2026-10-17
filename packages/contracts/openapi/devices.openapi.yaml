@@ -45,10 +45,11 @@ info:
     `consoleRevokeDevice` are implemented (RT-365: contract PR #777, runtime
     PR #781), and so is `consoleGetDeviceImpact` with the impact payload on the
     revoke 409 (RT-366: contract PR #784, runtime PR #785). The three
-    pairing-code operations are `[GATED]` contract-first (RT-367) and carry
-    `x-runtime-status: contract-only` until the RT-367 runtime ships them.
-    Every change from 1.1.0-draft is additive: three new operations and new
-    schemas. No existing operation, schema or response changes.
+    pairing-code operations are `[GATED]` contract-first (RT-367: contract PR
+    #789) and implemented by the RT-367 runtime, unchanged on the wire, so no
+    operation carries `x-runtime-status: contract-only`. Every change from
+    1.1.0-draft is additive: three new operations and new schemas. No existing
+    operation, schema or response changes.
 
 
     **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`)
@@ -320,7 +321,10 @@ info:
     `terminal_id`), `pos.device.pairing_code.cancelled` (target
     `pairing_code`; actor the session user) and, at redemption,
     `pos.device.paired` (target `device` / the new device id; no actor user;
-    metadata `pairing_code_id`, `kind`, `replaces_device_id`). The
+    metadata `pairing_code_id`, `kind`, `replaces_device_id` and
+    `cancelled_pairing_code_count`: the sibling replacement codes the
+    redemption itself cancelled on an already revoked device, 0 otherwise,
+    where the auto-revoke's own row counts them). The
     redemption's auto-revoke writes `pos.device.revoked` with no actor user,
     `reason` `replaced` / `moved`, the cascade counts,
     `custody_exception: false`, `replaced_by_device_id` and
@@ -532,10 +536,6 @@ paths:
       summary: Issue a one-time pairing code (optionally replacing or moving a device).
       operationId: consoleIssuePairingCode
       tags: [pairing-codes]
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-367 contract-first ([GATED]); the RT-367 runtime implements it after
-        owner approval.
       x-idempotency: required
       description: >
         Issues a pairing code for a store in the caller's scope (see "Pairing
@@ -581,10 +581,6 @@ paths:
       summary: List the live pending pairing codes in scope.
       operationId: consoleListPairingCodes
       tags: [pairing-codes]
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-367 contract-first ([GATED]); the RT-367 runtime implements it after
-        owner approval.
       description: >
         The `pending` codes that have not expired, in the caller's tenant and
         store scope, newest first (`createdAt` descending, then
@@ -615,10 +611,6 @@ paths:
       summary: Cancel a pending pairing code.
       operationId: consoleCancelPairingCode
       tags: [pairing-codes]
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-367 contract-first ([GATED]); the RT-367 runtime implements it after
-        owner approval.
       description: >
         Sets a pending code `cancelled` (expired or not), so it can never be
         redeemed. Idempotent: an already cancelled code answers 200

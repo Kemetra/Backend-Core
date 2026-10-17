@@ -5,12 +5,13 @@
  * `devices.openapi.yaml` — `consoleIssuePairingCode`, `consoleListPairingCodes`
  * and `consoleCancelPairingCode`, plus the F9 wording and the pair-time
  * refusal in `pos-terminal-pairing.openapi.yaml`. `[GATED]` contract-first;
- * the operations are contract-only until the RT-367 runtime ships them.
+ * the RT-367 runtime ships them unchanged on the wire
+ * (`pairing-codes.http.integration.spec.ts`).
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
  * app boot and no HTTP. Pinned here:
  *
- *   1. The operations: contract-only, cookie auth, Origin-checked POSTs, the
+ *   1. The operations: implemented, cookie auth, Origin-checked POSTs, the
  *      non-replayable Idempotency-Key on the issue, scope refusals as 404.
  *   2. The code is returned once: only the issue's 201 carries it; no other
  *      schema has a code, hash or token field.
@@ -133,11 +134,11 @@ describe("pairing codes contract — operations", () => {
     ["post", CODES_PATH, "consoleIssuePairingCode"],
     ["get", CODES_PATH, "consoleListPairingCodes"],
     ["post", CANCEL_PATH, "consoleCancelPairingCode"],
-  ] as const)("%s %s is %s, contract-only until the RT-367 runtime, with no foreign collision", (m, p, id) => {
+  ] as const)("%s %s is %s, implemented (no contract-only marker), with no foreign collision", (m, p, id) => {
     const operation = contract.operation(m, p);
     expect(operation["operationId"]).toBe(id);
-    expect(operation["x-runtime-status"]).toBe("contract-only");
-    expect(String(operation["x-runtime-note"])).toMatch(/RT-367/);
+    expect(operation["x-runtime-status"]).toBeUndefined();
+    expect(operation["x-runtime-note"]).toBeUndefined();
     expect(operation["tags"]).toEqual(["pairing-codes"]);
     expect(operation["security"]).toBeUndefined();
     expect(contract.foreignOperationIds.has(id)).toBe(false);

@@ -81,6 +81,8 @@ const REFUSAL_MESSAGES: Readonly<Record<DeviceRevokeRefusedError["code"], string
   recovery_note_required: "A recovery revoke needs a note.",
   custody_exception_not_acknowledged: "A recovery revoke needs the custody exception acknowledged.",
   unresolved_cash_session: "The device has an open shift. Close it and let it sync first.",
+  unresolved_custody_exception: "The device's custody exception is unresolved.",
+  device_retired: "The device is retired.",
 };
 
 @Controller()
