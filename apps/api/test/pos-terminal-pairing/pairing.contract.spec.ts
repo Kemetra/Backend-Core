@@ -830,12 +830,15 @@ describe("pos-terminal-pairing.yaml — posRotateTerminalToken (RT-369)", () => 
     expect(text).toContain("per-device rotation budget");
   });
 
-  it("bounds refused-path audit rows by the same per-device budget (R1)", () => {
+  it("bounds refused-path audit rows by a separate per-device refusal budget that never spends the rotation budget (R1)", () => {
     const text = prose();
     expect(text).toContain(
-      "Before a refused rotation writes `pos.device.rotation_rejected`, the same per-device budget is checked on the matched device",
+      "Before a refused rotation writes `pos.device.rotation_rejected`, a per-device refusal-audit budget is checked on the matched device",
     );
+    expect(text).toContain("separate from the rotation budget");
+    expect(text).toContain("a refused token can never make a valid rotation 429");
     expect(text).toContain("once it is spent the refusal is still the same 401 but writes no audit row");
+    expect(text).not.toContain("the same per-device budget is checked");
   });
 
   it("writes rotation_rejected in its own transaction, so a refusal under the lock still records it (R2)", () => {
