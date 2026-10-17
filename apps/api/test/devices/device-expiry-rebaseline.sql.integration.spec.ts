@@ -8,6 +8,8 @@
  *   - apply spreads the cluster over [today + min_days, today + min_days +
  *     spread_days), only extends, never touches a revoked device, never goes
  *     beyond 90 days, and covers every tenant;
+ *   - a device past its 7-day rotate grace (lapsed) is never revived: the
+ *     dry run counts it separately and apply leaves it unchanged;
  *   - a same-day re-run changes nothing;
  *   - invalid parameters fail non-zero before anything changes.
  *
@@ -48,6 +50,8 @@ const ROTATED = id("0008");
 const REVOKED = id("0009");
 /** Expired, inside its 7-day grace: extended like the rest. */
 const IN_GRACE = id("000a");
+/** Past its 7-day grace (an abandoned till nobody revoked): never revived. */
+const LAPSED = id("000b");
 
 const DAY = 86_400_000;
 
@@ -111,6 +115,7 @@ beforeAll(async () => {
     [ROTATED, TENANT_A, STORE_A, "now() + interval '90 days'"],
     [REVOKED, TENANT_A, STORE_A, cluster],
     [IN_GRACE, TENANT_B, STORE_B, "now() - interval '3 days'"],
+    [LAPSED, TENANT_A, STORE_A, "now() - interval '8 days'"],
   ];
   for (const [deviceId, tenantId, storeId, expiresSql] of rows) {
     await a.query(
@@ -152,6 +157,8 @@ describe("device-expiry-rebaseline.sql (RT-370)", () => {
     expect(run.exitCode).toBe(0);
     expect(run.output).toMatch(/DRY RUN: nothing changed/);
     expect(run.output).toMatch(/would_extend/);
+    // The lapsed device is reported on its own, not planned.
+    expect(run.output).toMatch(/lapsed_devices[^\n]*\n[-+]+\n\s+1\s*\|/);
     expect(await expiries()).toEqual(before);
   });
 
@@ -177,6 +184,8 @@ describe("device-expiry-rebaseline.sql (RT-370)", () => {
     // A later expiry (a rotated device) and a revoked device are untouched.
     expect(after.get(ROTATED)).toBe(before.get(ROTATED));
     expect(after.get(REVOKED)).toBe(before.get(REVOKED));
+    // A device past its rotate grace stays lapsed: no credential is revived.
+    expect(after.get(LAPSED)).toBe(before.get(LAPSED));
   });
 
   it("a same-day re-run with the same parameters changes nothing", async () => {
