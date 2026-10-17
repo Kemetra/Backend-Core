@@ -79,3 +79,4 @@ components:
           additionalProperties: true
 security:
   - cookieAuth: []
+# RT-582 probe: contract change
