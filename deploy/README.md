@@ -385,3 +385,39 @@ the hourly default.
 
 - **Hardening:** run containers as a non-root user; add resource limits; offsite backups
   for `<managed-db>`; monitoring/alerting; log shipping.
+
+## Observability (Sentry + Datadog, spec 037)
+
+Both are off by default: with the variables below empty, nothing leaves the host
+and a plain `docker compose up` starts the same stack as before. Real values live
+in `deploy/prod.env` (secret-manager references), never in git.
+
+**Sentry (errors only).** Set `SENTRY_DSN` (and optionally `SENTRY_RELEASE`) in
+`deploy/prod.env`, then recreate `api` and `worker`:
+
+```bash
+op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d api worker
+```
+
+Events are rebuilt from an allowlist before sending (no request data, users,
+cookies or tokens). With a DSN set, an unhandled rejection still crashes the
+process after it is reported, so `restart: unless-stopped` behaves as before.
+
+**Datadog (traces + metrics).** The Agent is an opt-in compose profile that only
+listens on the internal network (OTLP `datadog-agent:4318`) and scrapes the api's
+existing Prometheus listener. Set `DD_API_KEY`, `DD_SITE` (default
+`us5.datadoghq.com`), `DD_HOSTNAME` and
+`OTEL_EXPORTER_OTLP_ENDPOINT=http://datadog-agent:4318`, then:
+
+```bash
+op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml --profile datadog up -d
+```
+
+Traces are sampled at 10% by default (`OTEL_TRACES_SAMPLER_ARG`). Not covered yet:
+container logs and host metrics (they need the Docker socket mounted into the
+Agent, which is a separate approval), worker metrics (the worker listener binds
+`127.0.0.1`), and BullMQ failed-job events in Sentry.
+
+**Rollback.** Unset `SENTRY_DSN` and recreate `api`/`worker` to stop Sentry egress;
+stop the Agent with `docker compose -f docker-compose.prod.yml --profile datadog stop datadog-agent`
+and point `OTEL_EXPORTER_OTLP_ENDPOINT` back to its default.

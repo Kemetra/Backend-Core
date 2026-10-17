@@ -15,6 +15,7 @@ import {
   recordHttp5xxError,
   recordValidationFailure,
 } from "../observability/metrics/api.metrics";
+import { captureServerError } from "../observability/sentry/sentry";
 import { isPostgresInputError } from "./postgres-input-error";
 import { routeTemplate } from "./route-template";
 
@@ -142,6 +143,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       const code = userCode ?? statusToCode(status);
       if (status >= 500) {
         recordHttp5xxError({ route, status: String(status) });
+        captureServerError(exception);
       } else if (status >= 400) {
         recordHttp4xxError({ route, status: String(status) });
       }
@@ -170,6 +172,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     // Unhandled — never leak internals to the client.
     // exception.message must not be copied into the response body.
     recordHttp5xxError({ route, status: "500" });
+    captureServerError(exception);
     const envelope = errorEnvelope({
       code: ErrorCodes.INTERNAL,
       message: "Internal Server Error",

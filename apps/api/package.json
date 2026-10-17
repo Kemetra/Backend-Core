@@ -20,6 +20,7 @@
     "@nestjs/common": "11.1.19",
     "@nestjs/core": "11.1.19",
     "@nestjs/platform-express": "11.1.19",
+    "@sentry/node": "11.8.0",
     "bullmq": "5.76.5",
     "cookie-parser": "1.4.7",
     "drizzle-orm": "0.45.2",

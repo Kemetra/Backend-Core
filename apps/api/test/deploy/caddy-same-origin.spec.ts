@@ -77,9 +77,13 @@ describe("production compose for the same-origin gateway", () => {
   const services = compose.slice(compose.indexOf("services:"), compose.indexOf("\nnetworks:"));
   const caddy = compose.slice(compose.indexOf("  caddy:"), compose.indexOf("\nnetworks:"));
 
-  it("adds no new service, container or VM", () => {
+  it("adds no new service, container or VM (beyond the opt-in datadog profile)", () => {
     const names = [...services.matchAll(/^ {2}([a-z][a-z0-9-]*):\s*$/gm)].map((m) => m[1]);
-    expect(names).toEqual(["redis", "migrate", "api", "worker", "caddy"]);
+    expect(names).toEqual(["redis", "migrate", "api", "worker", "datadog-agent", "caddy"]);
+    // Spec 037: the only addition is the Datadog Agent, and it must stay opt-in
+    // so a plain `docker compose up` still starts exactly the RT-336 stack.
+    const agent = services.slice(services.indexOf("  datadog-agent:"), services.indexOf("  caddy:"));
+    expect(agent).toContain('profiles: ["datadog"]');
   });
 
   it("mounts the pinned Console releases directory read-only and requires it to be set", () => {

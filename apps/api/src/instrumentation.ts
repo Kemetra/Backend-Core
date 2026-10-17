@@ -32,6 +32,8 @@
  */
 import { shouldStartOtel, startOtel } from "@data-pulse-2/shared";
 
+import { initApiSentry } from "./observability/sentry/sentry";
+
 // Read env vars at module-evaluation time. Node.js has already populated
 // `process.env` from the OS environment by this point, so these reads are safe.
 // The guard is before startOtel so a disable flag never constructs the SDK.
@@ -43,3 +45,7 @@ if (shouldStartOtel(process.env)) {
     },
   });
 }
+
+// Spec 037 US1: errors-only Sentry, default-inert (no valid SENTRY_DSN = no-op).
+// Runs after the OTel bootstrap and never throws, so it cannot block boot.
+initApiSentry(process.env);
