@@ -1,10 +1,12 @@
 // RT-674 (contracts-sync S1): spec for tools/oasdiff/consumer-impact.mjs.
 // Plain ESM + node:test, no dependencies (the `oasdiff` job has no install step).
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   assessLine,
@@ -410,4 +412,23 @@ test("main rejects an unknown mode", async () => {
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
   }
+});
+
+// ---- CLI (stdin) -----------------------------------------------------------
+
+const CLI = fileURLToPath(new URL("../consumer-impact.mjs", import.meta.url));
+
+test("the CLI reads acknowledged lines from stdin and exits 0 when there are none", () => {
+  const out = execFileSync(process.execPath, [CLI], { input: "# only a comment\n", encoding: "utf8" });
+  assert.match(out, /no acknowledged breaks/);
+});
+
+test("the CLI reports a bad CONSUMER_IMPACT_MODE as an error annotation and exits 1", () => {
+  const run = spawnSync(process.execPath, [CLI], {
+    input: `${PAIR_LINE}\n`,
+    encoding: "utf8",
+    env: { ...process.env, CONSUMER_IMPACT_MODE: "enforse" },
+  });
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /^::error::consumer-impact: unknown CONSUMER_IMPACT_MODE/);
 });

@@ -69,9 +69,9 @@ fi
 # CONSUMER_IMPACT_MODE=report (default) only warns, and a crash of the script can
 # never fail this gate; enforce (RT-680) propagates the exit code.
 if [[ "${CONSUMER_IMPACT_MODE:-report}" == "enforce" ]]; then
-  node "$CFG/consumer-impact.mjs" "$WORK/ignore.txt"
+  node "$CFG/consumer-impact.mjs" <"$WORK/ignore.txt"
 else
-  node "$CFG/consumer-impact.mjs" "$WORK/ignore.txt" || echo "::warning::consumer-impact errored"
+  node "$CFG/consumer-impact.mjs" <"$WORK/ignore.txt" || echo "::warning::consumer-impact errored"
 fi
 
 format=text
