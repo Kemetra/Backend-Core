@@ -81,8 +81,11 @@ reads (29 codes today, Appendix A) plus a test-only list of known `change` codes
   handler on a `GET` route has a code that is not registered as `read`, or a code on a non-`GET` route is
   registered as `read`. GET-without-side-effects is the rule this repo follows today: both `.pulled` routes are
   `GET`.
-- Direct emit sites (service-level `action: "…"`) are all changes today. The same test asserts the read set
-  contains none of the known direct-emit codes.
+- The read set is closed, not open-ended. The same test asserts that every code in the read set is either the
+  code of a live `GET` `@Auditable` handler or appears on an explicit, reviewed `RETIRED_READ_CODES` list (D-3).
+  So a direct-emit change code (service-level `action: …`, constants such as `AUTH_AUDIT_ACTIONS`) can't enter
+  the read set by mistake, and the guard needs no hand-kept list of direct-emit codes, which would drift (Appendix A
+  is not exhaustive).
 - Interaction with **RT-548** (audit the POS `readSale`, planned in parallel): whatever code RT-548 picks
   (e.g. `pos_sales.detail_read`) is a `read` and must be added to the registry **in the same PR** that adds the
   `@Auditable`. The guard above fails that PR otherwise. RT-548 does not block RT-567, and RT-567 does not
@@ -115,11 +118,16 @@ cursor format or error envelopes.
 ```yaml
 kind:
   type: string
+  # also add `kind` to AuditEvent.required (the schema has no required list today)
   description: >
     Action kind derived by the server from `action` (not stored). Known
     values: `read`, `change`. More values may be added; treat an unknown
     value as `change`. An action the server has not classified is `change`.
 ```
+
+`AuditEvent` gets `required: [kind]` (it has no `required` list today), so generated clients type `kind` as
+always present, which matches acceptance test 6. Adding a required **response** field is additive for
+consumers. The server always sets it.
 
 **Order and stability, stated on the operation (BC-009-3):**
 
@@ -171,7 +179,8 @@ derived docs.
 5. Isolation unchanged: tenant B never sees tenant A rows with `kind` set; `store_manager` still gets 403;
    platform admin still scoped to the active tenant.
 6. Every item carries `kind`, and `kind === kindOf(action)`.
-7. Drift guard (§4.3) passes on `main` and fails when a `GET` `@Auditable` code is unregistered.
+7. Drift guard (§4.3) passes on `main`. It fails when a `GET` `@Auditable` code is unregistered, and when the
+   read set holds a code that is neither a live `GET` `@Auditable` code nor on `RETIRED_READ_CODES`.
 
 ## 8. Risks and gaps
 
@@ -213,7 +222,13 @@ Direct emit: `auth.signin.{ok,failed}`, `connector.credential.{issued,rotated,re
 `inventory.movement.{create,backfill}`, `pos.device.{paired,retired,revoked,rotated,rotation_rejected}`,
 `pos.device.pairing_code.{issued,cancelled}`, `sale.receipt.reprinted`,
 `settlement.{intent.recorded,payment.applied,claim.submitted,remittance.reconciled}`,
-`unknown_item.idempotency_mismatch_rejected`.
+`unknown_item.idempotency_mismatch_rejected`, `store.timezone.changed`, `inventory.transfer.create`,
+`inventory.count.record`, `operator.session.takeover`,
+`pos.cashier_admission.{admitted,ended,expired,refused,renewed,takeover}`,
+`cash_variance_policy.{changed,override_expired}`.
 
-The inventory came from `grep` over `apps/api/src` and is a snapshot. RT-567-I's guard (§4.3), not this list,
-is the source of truth.
+**This change list is not exhaustive.** It came from `grep` over `apps/api/src` and is a snapshot. Direct emit
+codes live in constants and helpers that a literal grep misses (the review of this record found eleven more).
+That doesn't affect correctness: D-2 defaults every unlisted code to `change`, and the §4.3 guard closes the
+read set instead of enumerating changes. The read list above is complete for `@Auditable` on `ff9e683`, and the
+RT-567-I guard re-derives it.
