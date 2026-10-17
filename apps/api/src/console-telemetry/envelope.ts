@@ -38,6 +38,10 @@ interface EnvelopeItem {
 
 type JsonObject = Record<string, unknown>;
 
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function parseObject(bytes: Buffer): JsonObject {
   let value: unknown;
   try {
@@ -45,10 +49,23 @@ function parseObject(bytes: Buffer): JsonObject {
   } catch {
     throw new EnvelopeMalformedError();
   }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new EnvelopeMalformedError();
-  }
-  return value as JsonObject;
+  if (!isJsonObject(value)) throw new EnvelopeMalformedError();
+  return value;
+}
+
+/** The item `type`: a non-empty string. */
+function itemType(header: JsonObject): string {
+  const type = header["type"];
+  if (typeof type !== "string" || type.length === 0) throw new EnvelopeMalformedError();
+  return type;
+}
+
+/** The item `length` in bytes, or `undefined` for a newline-delimited payload. */
+function itemLength(header: JsonObject): number | undefined {
+  const length = header["length"];
+  if (length === undefined || length === null) return undefined;
+  if (!Number.isSafeInteger(length) || (length as number) < 0) throw new EnvelopeMalformedError();
+  return length as number;
 }
 
 /** Reads one envelope at a time; `pos` only moves forward. */
@@ -81,13 +98,9 @@ class EnvelopeReader {
 
   item(): EnvelopeItem {
     const header = parseObject(this.line());
-    const { type, length } = header;
-    if (typeof type !== "string" || type.length === 0) throw new EnvelopeMalformedError();
-    if (length === undefined || length === null) return { type, payload: this.line() };
-    if (typeof length !== "number" || !Number.isInteger(length) || length < 0) {
-      throw new EnvelopeMalformedError();
-    }
-    return { type, payload: this.bytes(length) };
+    const type = itemType(header);
+    const length = itemLength(header);
+    return { type, payload: length === undefined ? this.line() : this.bytes(length) };
   }
 }
 
