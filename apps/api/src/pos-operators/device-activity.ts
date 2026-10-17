@@ -100,7 +100,10 @@ export class DeviceActivityRecorder {
 
   /** Wait for every write in flight (tests, shutdown). Never rejects. */
   async flush(): Promise<void> {
-    while (this.pending.size > 0) await Promise.all([...this.pending]);
+    if (this.pending.size === 0) return;
+    await Promise.all(this.pending);
+    // A write recorded while this one waited: wait for it too.
+    return this.flush();
   }
 
   /** Forget every mark (tests). */
