@@ -155,6 +155,9 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
   ].map((table) => [table, ALL_TABLE_PRIVILEGES] as const),
   ["memberships", ALL_PRIVILEGES_EXCEPT_SELECT],
   ["store_access", ALL_PRIVILEGES_EXCEPT_SELECT],
+  // RT-367: the lookup role reads a pairing code by hash at the anonymous
+  // bootstrap (SELECT); every write (issue, cancel, burn) is the domain role's.
+  ["pairing_codes", ALL_PRIVILEGES_EXCEPT_SELECT],
 ];
 
 /**
@@ -244,6 +247,16 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   // fail here at boot, not answer 500 on every revoke. Apply:
   //   GRANT UPDATE ON devices TO <DATABASE_URL role>;
   ["devices", "UPDATE"],
+  // RT-367: the Console pairing codes. INSERT: the issue (until RT-367 only
+  // the owner-run CLI inserted codes, as the table owner). SELECT: the list,
+  // the cancel and the one-replacement check. UPDATE: the cancel, and the
+  // redemption's attempt count and burn. A deploy that skips the grant must
+  // fail here at boot, not answer 500 on every issue. Apply with
+  // docs/operations/sql/device-lifecycle-domain-grants.sql. No DELETE (spent
+  // codes are kept for audit).
+  ["pairing_codes", "SELECT"],
+  ["pairing_codes", "INSERT"],
+  ["pairing_codes", "UPDATE"],
 ];
 
 interface GrantRow {

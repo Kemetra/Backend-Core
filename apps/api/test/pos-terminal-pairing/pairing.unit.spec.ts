@@ -207,13 +207,30 @@ describe("toTerminalPairBody — projection", () => {
 
 describe("PairingService.pair — replacement codes (RT-367)", () => {
   it("a replacement the evaluator now blocks → replacement_blocked (the code stays pending)", async () => {
+    const refundAttempt = jest.fn().mockResolvedValue(undefined);
     const svc = serviceWith({
       findByCode: jest.fn().mockResolvedValue(aRow()),
       recordAttempt: jest.fn().mockResolvedValue(1),
+      refundAttempt,
       findPairedBranch: jest.fn().mockResolvedValue(null),
       burnAndProvision: jest.fn().mockResolvedValue("replacement_blocked"),
     });
     expect(await svc.pair("code-123456")).toEqual({ kind: "replacement_blocked" });
+    // M1: a blocked try proves the caller holds the code; it gives its attempt back.
+    expect(refundAttempt).toHaveBeenCalledWith(aRow().id, aRow().tenant_id);
+  });
+
+  it("does not refund the attempt of any other outcome", async () => {
+    const refundAttempt = jest.fn().mockResolvedValue(undefined);
+    const svc = serviceWith({
+      findByCode: jest.fn().mockResolvedValue(aRow()),
+      recordAttempt: jest.fn().mockResolvedValue(1),
+      refundAttempt,
+      findPairedBranch: jest.fn().mockResolvedValue(null),
+      burnAndProvision: jest.fn().mockResolvedValue("lost_race"),
+    });
+    await svc.pair("code-123456");
+    expect(refundAttempt).not.toHaveBeenCalled();
   });
 
   it("carries the minted device's expiry onto the body", async () => {

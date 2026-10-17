@@ -113,6 +113,22 @@ export class PairingRepository {
   }
 
   /**
+   * Give back one attempt of a code (RT-367 M1): a redemption refused as
+   * `replacement_blocked` reached the replacement re-check, which proves the
+   * caller holds the code, so it must not wear down the code's attempt budget
+   * while the old till's shift is still open. Never below zero. The per-IP and
+   * global wrong-code budgets still bound guessing.
+   */
+  async refundAttempt(codeId: string, tenantId: string): Promise<void> {
+    await runWithTenantContext(this.pool, { tenantId, isPlatformAdmin: false }, async (client) => {
+      await client.query(
+        `UPDATE pairing_codes SET attempt_count = GREATEST(attempt_count - 1, 0) WHERE id = $1`,
+        [codeId],
+      );
+    });
+  }
+
+  /**
    * Is there an active (unrevoked) device already paired for this terminal? Used
    * for the ALREADY_PAIRED / BRANCH_MISMATCH decision (FR-14). The device id
    * equals the terminal id (we mint `devices.id = terminal_id` on the burn), so a
@@ -194,32 +210,8 @@ export class PairingRepository {
         );
         if (burn.rowCount === 0) return "lost_race";
 
-        // Provision the device trust. id = terminal_id so the device principal's
-        // (tenant_id, store_id) match the paired branch. token_hash only — never
-        // the raw token. A 23505 here means a device already exists for this
-        // terminal (two distinct codes for the same terminal_id raced, or it was
-        // already paired) — surface as already_provisioned → 409, never a 500.
-        let expiresAt: Date;
-        try {
-          const inserted = await client.query<{ expires_at: Date }>(
-            `INSERT INTO devices (id, tenant_id, store_id, label, token_hash)
-             VALUES ($1, $2, $3, $4, $5)
-             RETURNING expires_at`,
-            [
-              input.terminalId,
-              input.tenantId,
-              input.storeId,
-              input.terminalLabel,
-              tokenHash,
-            ],
-          );
-          expiresAt = inserted.rows[0]!.expires_at;
-        } catch (err) {
-          if (err instanceof Error && (err as { code?: string }).code === "23505") {
-            return "already_provisioned";
-          }
-          throw err;
-        }
+        const expiresAt = await insertDevice(client, input, tokenHash);
+        if (expiresAt === "already_provisioned") return "already_provisioned";
 
         // Link the device back onto the burned code for the audit trail.
         await client.query(
@@ -287,12 +279,17 @@ async function recordPairing(
   input: { readonly codeId: string; readonly tenantId: string; readonly storeId: string; readonly terminalId: string },
   replacement: AllowedReplacement | null,
 ): Promise<void> {
+  // Codes this redemption step itself cancels (the already-revoked path); on the
+  // active path the revoke cascade cancels them and its own audit row counts them.
+  let cancelledPairingCodeCount = 0;
   if (replacement?.alreadyRevoked === true) {
-    await client.query(
+    const siblings = await client.query(
       `UPDATE pairing_codes SET status = 'cancelled'
-        WHERE tenant_id = $1::uuid AND status = 'pending' AND replaces_device_id = $2::uuid`,
+        WHERE tenant_id = $1::uuid AND status = 'pending' AND replaces_device_id = $2::uuid
+      RETURNING id`,
       [input.tenantId, replacement.deviceId],
     );
+    cancelledPairingCodeCount = siblings.rowCount ?? 0;
   }
   if (replacement !== null && !replacement.alreadyRevoked) {
     await applyDeviceRevoke(client, {
@@ -317,6 +314,33 @@ async function recordPairing(
       pairing_code_id: input.codeId,
       kind: replacement?.decision.kind ?? "pair",
       replaces_device_id: replacement?.deviceId ?? null,
+      cancelled_pairing_code_count: cancelledPairingCodeCount,
     },
   });
+}
+
+/**
+ * Provision the device trust. id = terminal_id so the device principal's
+ * (tenant_id, store_id) match the paired branch. token_hash only, never the raw
+ * token. A 23505 here means a device already exists for this terminal (two
+ * distinct codes for the same terminal_id raced, or it was already paired):
+ * `already_provisioned` → 409, never a 500. Returns the device's `expires_at`.
+ */
+async function insertDevice(
+  client: PoolClient,
+  input: { tenantId: string; storeId: string; terminalId: string; terminalLabel: string },
+  tokenHash: Buffer,
+): Promise<Date | "already_provisioned"> {
+  try {
+    const inserted = await client.query<{ expires_at: Date }>(
+      `INSERT INTO devices (id, tenant_id, store_id, label, token_hash)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING expires_at`,
+      [input.terminalId, input.tenantId, input.storeId, input.terminalLabel, tokenHash],
+    );
+    return inserted.rows[0]!.expires_at;
+  } catch (err) {
+    if (err instanceof Error && (err as { code?: string }).code === "23505") return "already_provisioned";
+    throw err;
+  }
 }

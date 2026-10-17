@@ -182,9 +182,13 @@ This project follows [Semantic Versioning](https://semver.org/).
   the revoke's 409 code is now the evaluator's `blockCode`. One replacement
   per device: the issue refuses a second (409 `replacement_already_pending` /
   `device_already_replaced`) and the redemption cancels sibling codes on
-  every path. The issue's 201 is `Cache-Control: no-store`. Deploy
-  precondition: the domain role needs INSERT on `pairing_codes` (new), plus
-  the RT-365 UPDATE on `devices` / `auth_tokens`. No migration.
+  every path. The issue's 201 is `Cache-Control: no-store`. A
+  `REPLACEMENT_BLOCKED` redemption gives its per-code attempt back, so a
+  blocked replacement code stays redeemable once the shift closes. Deploy:
+  `docs/operations/sql/device-lifecycle-domain-grants.sql` (step 2) now also
+  grants the domain role SELECT / INSERT / UPDATE on `pairing_codes`, which
+  `DOMAIN_REQUIRED_GRANTS` checks at boot; the lookup role may hold SELECT
+  only on it (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). No migration.
 - RT-542 `[GATED]`, owner-approved 2026-10-16 (RT-542 comment 12124): the three
   sale-history operations (`listSaleHistory`, `readSaleHistoryDetail`,
   `recordSaleReprint`) lose `x-runtime-status: contract-only` now that the RT-539
