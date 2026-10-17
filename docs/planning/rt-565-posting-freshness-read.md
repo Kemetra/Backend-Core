@@ -83,13 +83,15 @@ Three facts, all scoped by D4, all computed on read (no mirror, no counter table
 1. **Last successful posting** = `max(posted_at)` over `status='posted'` rows in scope.
    This is correct even with pre-`0042` rows present: every posting after `0042` sets `posted_at`, and every
    pre-`0042` posting happened before that deploy, so whenever any `posted_at` exists, the max **is** the latest.
-2. **Oldest pending** = `min(created_at)` over `status IN ('pending','failed_transient')` rows in scope
-   (`failed_transient` only for forward-compat; see §1.1), returned both as an instant and as whole seconds
+2. **Oldest pending** = `min(created_at)` over `status = 'pending'` rows in scope, returned both as an instant and as whole seconds
    before `asOf`. Age is measured from the intent's creation, so a row that has been retried for an hour reads an
-   hour old, not seconds old after its last re-head. A dead letter that an operator repairs (017 `repairPosting`:
+   hour old, not seconds old after its last re-head. `failed_transient` is **not** in the predicate: no writer
+   stores it (§1.1), and adding it would stop the read from using the `status = 'pending'` partial index. If a
+   future change starts storing `failed_transient`, that change must extend this read and its index together.
+   A dead letter that an operator repairs (017 `repairPosting`:
    `permanently_rejected` → `pending`) keeps its `created_at`, so it re-enters as old as it truly is.
-3. **Pending count** = count of the same rows. It distinguishes "one stuck row" from "a growing queue" and costs
-   nothing extra.
+3. **Pending count** = count of the same rows. It distinguishes "one stuck row" from "a growing queue". It is
+   one count over the pending rows in scope (D7).
 
 Dead-lettered (`permanently_rejected`) rows are **not** pending: they stay in the existing `posting`
 `headlineCount`.
@@ -151,20 +153,28 @@ computed against. It gives 016 A-5 its "as-of time from the read" for every doma
 **Selected:** add it — recommended option, chosen by the coordinator under the owner's standing delegation of
 2026-10-17; owner may revisit.
 
-### D7 — Query cost: index on `posted_at`
+### D7 — Query cost: freshness indexes
 
-`min(created_at)` over pending rows is bounded by the pending backlog, through the existing partial pending index.
-`max(posted_at)` has **no** index today and would scan the tenant's posted rows on every summary request, a cost
-that grows with sales volume.
+Two costs, both on the console's polling path:
+
+* **Last posted.** `max(posted_at)` has **no** index today and would scan the tenant's posted rows on every
+  summary request, a cost that grows with sales volume. Both scopes must be bounded: tenant-wide, and
+  store-filtered (`store_id`, or the RT-192 membership store list). A tenant-only index does not bound the store
+  case: a quiet store would walk past every newer posting of the tenant's other stores.
+* **Oldest pending / pending count.** The existing partial index `(tenant_id, sequence) WHERE status = 'pending'`
+  restricts the read to pending rows, but `sequence` is not `created_at` and carries no `store_id`, so the read is
+  O(pending rows of the tenant). It is bounded by the backlog, which is exactly what grows during a connector
+  outage.
 
 | Option | |
 | --- | --- |
-| **A. `[GATED]` additive index migration in the build issue (Recommended)** | `CREATE INDEX … ON erpnext_posting_status (tenant_id, posted_at DESC) WHERE posted_at IS NOT NULL`. Tenant-wide max becomes one index probe; a store-filtered max walks the index backwards to the first matching store. Catalog-only for existing rows' semantics; no data change. Lock mode and `CONCURRENTLY` follow the repo's migration convention, decided in the build issue. |
+| **A. `[GATED]` additive index migration in the build issue (Recommended)** | Three partial indexes: (1) `(tenant_id, posted_at DESC) WHERE posted_at IS NOT NULL` for the tenant-wide last posting (one probe); (2) `(tenant_id, store_id, posted_at DESC) WHERE posted_at IS NOT NULL` for a store-filtered last posting (one probe per store; for a membership scope, one probe per scoped store via `LATERAL … LIMIT 1`, then the max); (3) `(tenant_id, store_id, created_at) WHERE status = 'pending'` for the oldest pending per store (one probe per store), with the pending count still O(pending rows in scope). Index (3) may replace or sit beside the existing pending index; the build issue decides from `EXPLAIN`. No data change. Lock mode and `CONCURRENTLY` follow the repo's migration convention, decided in the build issue. |
 | B. Ship without an index and measure | Defers a known linear cost onto the console's polling path. |
 
 **Selected: A** — recommended option, chosen by the coordinator under the owner's standing delegation of
-2026-10-17; owner may revisit. The build issue must attach `EXPLAIN` evidence for both queries (tenant-wide and
-store-filtered) on a seeded volume.
+2026-10-17; owner may revisit. The build issue must attach `EXPLAIN (ANALYZE)` evidence on a seeded volume for
+every statement in §5, in three scopes: tenant-wide, one `store_id`, and a multi-store membership scope, including
+a quiet store inside a busy tenant.
 
 ## 3. Interaction with existing semantics (what does **not** change)
 
@@ -251,22 +261,32 @@ Additive only. Shown as the intended YAML; it is **not** applied by this PR.
 
 ## 5. Proposed SQL shape (for the build issue; illustrative)
 
-Inside the existing `getSummary` transaction, same `$1` store filter and `$2` scope array as the posting leg:
+Inside the existing `getSummary` transaction, with the same `$1` store filter and `$2` scope array as the posting leg.
+These are separate statements, each shaped for one D7 index, not one aggregate over all of the tenant's rows. The
+tenant-wide form is shown; with a store filter or membership scope, the build issue runs (1) and (3) per scoped
+store (`LATERAL … LIMIT 1` over the store list) and takes the max / min.
 
 ```sql
-SELECT now()                                                     AS as_of,
-       max(posted_at)  FILTER (WHERE status = 'posted')          AS last_posted_at,
-       count(*)        FILTER (WHERE status = 'posted')          AS posted_count,
-       count(*)        FILTER (WHERE status IN ('pending','failed_transient')) AS pending_count,
-       min(created_at) FILTER (WHERE status IN ('pending','failed_transient')) AS oldest_pending_at
-  FROM erpnext_posting_status
- WHERE ($1::uuid   IS NULL OR store_id = $1::uuid)
-   AND ($2::uuid[] IS NULL OR store_id = ANY($2::uuid[]));
+-- (1) last posted: one probe on index (1), or index (2) per store
+SELECT posted_at FROM erpnext_posting_status
+ WHERE posted_at IS NOT NULL
+ ORDER BY posted_at DESC LIMIT 1;
+
+-- (2) only when (1) found nothing: `unknown` vs `none`
+SELECT EXISTS (SELECT 1 FROM erpnext_posting_status WHERE status = 'posted') AS any_posted;
+
+-- (3) oldest pending: one probe per store on index (3)
+SELECT created_at FROM erpnext_posting_status
+ WHERE status = 'pending'
+ ORDER BY created_at LIMIT 1;
+
+-- (4) pending count: O(pending rows in scope), on the pending partial index
+SELECT count(*) FROM erpnext_posting_status WHERE status = 'pending';
 ```
 
-`posted_count` only drives `known/unknown/none` and need not be exact beyond `> 0`; the build issue may split this
-into separate index-friendly statements (`ORDER BY posted_at DESC LIMIT 1`, `EXISTS`) per the D7 `EXPLAIN`
-evidence. Age = `floor(extract(epoch FROM as_of - oldest_pending_at))`.
+Every statement also carries the `$1` / `$2` store predicates, and tenant RLS applies to all of them. Statement (2)
+runs only before a tenant's first post-`0042` posting, so its cost disappears once `posted_at` exists. `asOf` is
+the transaction's `now()`. Age = `floor(extract(epoch FROM now() - oldest_pending_at))`.
 
 ## 6. Required tests for the build issue
 
@@ -278,12 +298,13 @@ evidence. Age = `floor(extract(epoch FROM as_of - oldest_pending_at))`.
 * Isolation: cross-tenant rows invisible (RLS); store filter and membership scope (RT-192) honored; out-of-scope
   `store_id` → 404; store_manager / cashier → existing denial; machine credential rejected.
 * `asOf` equals the instant the age is computed against.
+* `EXPLAIN (ANALYZE)` evidence per D7 (tenant-wide, single store, multi-store scope, quiet store in a busy tenant).
 
 ## 7. Proposed follow-up work (not created)
 
 | # | Proposed item | Mode | Repo | Gate | Acceptance |
 | --- | --- | --- | --- | --- | --- |
-| 1 | BC — Posting freshness on `consoleGetSyncOpsSummary` (contract `1.1.0-draft` + read + `posted_at` index) | Implementation | Backend-Core | `[GATED]` OpenAPI (`packages/contracts/openapi/**`) **and** `[GATED]` migration (D7) | §4 contract applied; §5 read; §6 tests green; `EXPLAIN` evidence attached |
+| 1 | BC — Posting freshness on `consoleGetSyncOpsSummary` (contract `1.1.0-draft` + read + D7 indexes) | Implementation | Backend-Core | `[GATED]` OpenAPI (`packages/contracts/openapi/**`) **and** `[GATED]` migration (D7) | §4 contract applied; §5 read; §6 tests green; `EXPLAIN` evidence attached |
 | 2 | Admin-Console — 016: consume posting freshness | Implementation | Admin-Console | Depends on #1 merged; PIN bump | Renders `known`/`unknown`/`none` honestly; never shows "current" for `none` + 0 pending; uses `asOf` for A-5 |
 
 Upstream lag before an intent exists (§1.2) is out of scope here. If the owner wants it on the console, it is a
