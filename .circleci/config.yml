@@ -64,10 +64,16 @@ commands:
           name: Node 22 + pnpm 9.15.0 (same pins as ci.yml)
           command: |
             nvm install 22 && nvm alias default 22
+            # Every `run` step is a fresh shell, so put Node's bin dir (which
+            # also holds the corepack/pnpm shims) on PATH through BASH_ENV.
+            echo "export PATH=\"$(dirname "$(nvm which 22)"):\$PATH\"" >> "$BASH_ENV"
             corepack enable
             corepack prepare pnpm@9.15.0 --activate
             echo "nproc=$(nproc) mem=$(free -g | awk '/Mem:/{print $2}')G"
             node --version && pnpm --version
+      - run:
+          name: Check Node and pnpm persist into a fresh step
+          command: node --version && pnpm --version
       # No dependency cache: the Free plan has 2 GB of storage and overage costs
       # credits; the cost is about a minute of install time per job.
       - run:
