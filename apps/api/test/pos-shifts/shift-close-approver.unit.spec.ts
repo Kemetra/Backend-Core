@@ -85,11 +85,19 @@ const MANAGER: ApproverStanding = { active: true, roleCode: "store_manager", sto
 /** The order things happened in, across the doubles. */
 type Step = "insertClose" | "approverStanding" | "BEGIN" | "COMMIT" | "ROLLBACK";
 
-/** A pool whose clients answer every statement with no rows and note BEGIN / COMMIT / ROLLBACK. */
-function poolOf(steps: Step[]): Pool {
-  const query = async (sql: unknown) => {
+/**
+ * A pool whose clients answer every statement with no rows and note BEGIN /
+ * COMMIT / ROLLBACK; `verdicts` collects the RT-387 approver verdict writes,
+ * which throw when `failVerdict` is set.
+ */
+function poolOf(steps: Step[], verdicts: unknown[][] = [], failVerdict = false): Pool {
+  const query = async (sql: unknown, params?: unknown[]) => {
     const text = typeof sql === "string" ? sql.trim().toUpperCase() : "";
     for (const step of ["BEGIN", "COMMIT", "ROLLBACK"] as const) if (text.startsWith(step)) steps.push(step);
+    if (text.startsWith("INSERT INTO SHIFT_CLOSE_APPROVER_CHECKS")) {
+      if (failVerdict) throw new Error("permission denied for table shift_close_approver_checks");
+      verdicts.push(params ?? []);
+    }
     return { rows: [] };
   };
   return { connect: async () => ({ query, release: () => undefined }) } as unknown as Pool;
@@ -127,10 +135,13 @@ interface State {
   readonly insertFailures?: unknown[];
   /** The logger's warn throws. */
   readonly warnThrows?: boolean;
+  /** RT-387: the verdict write fails. */
+  readonly verdictFails?: boolean;
 }
 
 function harness(state: State = {}) {
   const steps: Step[] = [];
+  const verdicts: unknown[][] = [];
   const recorded: ShiftCloseFact[] = [];
   const finds = [...(state.shifts ?? [shiftRow("open")])];
   const failures = [...(state.insertFailures ?? [])];
@@ -161,12 +172,12 @@ function harness(state: State = {}) {
     }),
   };
   const service = new ShiftCashUpService(
-    poolOf(steps),
+    poolOf(steps, verdicts, state.verdictFails === true),
     repo as unknown as ShiftCashUpRepository,
     reader as unknown as ShiftStoreUserReader,
     logger,
   );
-  return { service, repo, reader, logger, recorded, steps };
+  return { service, repo, reader, logger, recorded, steps, verdicts };
 }
 
 type Harness = ReturnType<typeof harness>;
@@ -220,12 +231,15 @@ describe("closeShift — a first record with an approver that fails the check: s
     expect(hx.logger.warn.mock.calls[0]?.[0]).toMatchObject({ event: APPROVER_UNVERIFIED_EVENT, reason });
   });
 
-  it("the projection and the recorded row are exactly those of a verified approver", async () => {
+  it("the recorded row is that of a verified approver; only the persisted approverCheck differs (RT-387)", async () => {
     const verified = harness();
     const unverified = harness({ standing: { ...MANAGER, roleCode: "store_staff" } });
     const a = await verified.service.closeShift(DEVICE, SHIFT_ID, FACT);
     const b = await unverified.service.closeShift(DEVICE, SHIFT_ID, FACT);
-    expect(b).toEqual(a);
+    expect(a.projection.close?.approverCheck).toEqual({ status: "verified", reason: null });
+    expect(b.projection.close?.approverCheck).toEqual({ status: "unverified", reason: "not_manager" });
+    const withoutCheck = (r: typeof a) => ({ ...r, projection: { ...r.projection, close: { ...r.projection.close, approverCheck: null } } });
+    expect(withoutCheck(b)).toEqual(withoutCheck(a));
     expect(unverified.recorded).toEqual(verified.recorded);
     expect(unverified.recorded[0]?.varianceApprovedByUserId).toBe(APPROVER);
   });
@@ -247,7 +261,8 @@ describe("closeShift — a first record with an approver that fails the check: s
   it("the lookup runs after the close committed, in its own transaction, for the scope's tenant and store", async () => {
     const hx = harness({ standing: { ...MANAGER, roleCode: "store_staff" } });
     await closeWith(hx);
-    expect(hx.steps).toEqual(["BEGIN", "insertClose", "COMMIT", "BEGIN", "approverStanding", "COMMIT"]);
+    // RT-387: then the verdict is persisted in a transaction of its own.
+    expect(hx.steps).toEqual(["BEGIN", "insertClose", "COMMIT", "BEGIN", "approverStanding", "COMMIT", "BEGIN", "COMMIT"]);
     expect(hx.reader.approverStanding).toHaveBeenCalledWith(expect.anything(), { scope: SCOPE, userId: APPROVER });
   });
 
@@ -257,6 +272,32 @@ describe("closeShift — a first record with an approver that fails the check: s
     expect(hx.steps.slice(0, 3)).toEqual(["BEGIN", "insertClose", "COMMIT"]);
     expect(reasons()).toEqual(["check_unavailable"]);
     expect(logged(hx)).not.toContain("pool exhausted");
+  });
+
+  it("RT-387: a failed lookup writes no verdict and answers the check_unavailable placeholder", async () => {
+    const hx = harness({ standing: new Error("pool exhausted") });
+    const result = await hx.service.closeShift(DEVICE, SHIFT_ID, FACT);
+    expect(result.projection.close?.approverCheck).toEqual({ status: "unverified", reason: "check_unavailable" });
+    expect(hx.verdicts).toEqual([]);
+  });
+
+  it("RT-387: the verdict is written once with the close's scope and approver", async () => {
+    const hx = harness({ standing: { ...MANAGER, storeAccess: false } });
+    const result = await hx.service.closeShift(DEVICE, SHIFT_ID, FACT);
+    expect(result.projection.close?.approverCheck).toEqual({ status: "unverified", reason: "no_store_access" });
+    expect(hx.verdicts).toEqual([[SHIFT_ID, SCOPE.tenantId, SCOPE.storeId, APPROVER, "unverified", "no_store_access"]]);
+  });
+
+  it("RT-387: a failed verdict write keeps the close, answers the placeholder and counts check_unavailable", async () => {
+    const hx = harness({ verdictFails: true });
+    const result = await hx.service.closeShift(DEVICE, SHIFT_ID, FACT);
+    expect(result.created).toBe(true);
+    expect(result.projection.close?.approverCheck).toEqual({ status: "unverified", reason: "check_unavailable" });
+    expect(reasons()).toEqual(["check_unavailable"]);
+    expect(hx.logger.warn.mock.calls.map(([attrs]) => (attrs as { event: string }).event)).toContain(
+      "shift.close.approver_verdict_unwritten",
+    );
+    expect(logged(hx)).not.toContain("permission denied");
   });
 
   it("a log sink that throws does not fail the close, and the count is still taken", async () => {

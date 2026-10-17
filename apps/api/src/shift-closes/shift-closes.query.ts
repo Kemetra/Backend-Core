@@ -63,6 +63,10 @@ export const ShiftCloseListQuerySchema = z
       .regex(/^[A-Z]{3}$/)
       .optional(),
     approval: z.enum(["approved", "not_approved"]).optional(),
+    // RT-387 (shift-closes 1.1.0-draft): accepted from the policy runtime on.
+    approval_required: z.enum(["yes", "no", "unknown"]).optional(),
+    approval_missing: z.enum(["yes", "no", "unknown"]).optional(),
+    approver_check: z.enum(["not_applicable", "verified", "unverified"]).optional(),
     cursor: z
       .string()
       .min(1)

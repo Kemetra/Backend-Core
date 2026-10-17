@@ -33,6 +33,7 @@ ALLOWLIST=(
   docs/operations/sql/sale-reprints-domain-grants.sql
   docs/operations/sql/device-lifecycle-domain-grants.sql
   docs/operations/sql/sale-responsibilities-domain-grants.sql
+  docs/operations/sql/shift-variance-policy-domain-grants.sql
   docs/operations/sql/sale-responsibilities-feed-rehead.sql
   docs/operations/sql/erpnext-posting-resolution-catchup.sql
   docs/operations/sql/inventory-effect-integration-catchup.sql

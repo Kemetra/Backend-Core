@@ -143,6 +143,8 @@ Legitimate deployments never set a role option.
     pairing codes and the redemption)
   - `sale_responsibilities`: `SELECT`, `INSERT`; `payer_account`: `SELECT`,
     `INSERT`, `UPDATE` (RT-418, migration 0051)
+  - `cash_variance_policy_revisions`, `shift_close_approver_checks`: `SELECT`,
+    `INSERT` (RT-387, migration 0050)
 
   A deploy that skips that grant step now fails to boot, and the error names
   each missing privilege and table, instead of starting healthy with those
@@ -352,6 +354,23 @@ table the domain role must use needs a matching grant step at deploy time.
   (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). The new `sales.responsibility_count` and
   `erpnext_posting_resolution.payer_external_ref` columns live on tables the
   domain role already reads and writes.
+
+- **Shift variance policy (RT-387, on migration `0050_shift_variance_policy`).**
+  Run
+  [`sql/shift-variance-policy-domain-grants.sql`](sql/shift-variance-policy-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT` and `INSERT` on
+  `cash_variance_policy_revisions` (the Console publishes revisions; the POS
+  policy read, the Console reads and the cash-up open's accept-and-flag check
+  read them) and on `shift_close_approver_checks` (a close's approver verdict,
+  written once after the commit and read back by the close replay and the
+  admin shift-close reads). Both tables are append-only: never grant `UPDATE`,
+  `DELETE` or `TRUNCATE`. Without the grants the API refuses to boot
+  (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold no privilege on
+  either (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). The new `shifts.frozen_policy_*`
+  and `shift_closes.approval_*` columns live on tables the domain role already
+  reads and writes.
 
 - **Console device revoke (RT-365, on migration `0040_device_lifecycle`).** Run
   [`sql/device-lifecycle-domain-grants.sql`](sql/device-lifecycle-domain-grants.sql)

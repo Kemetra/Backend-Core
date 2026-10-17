@@ -33,6 +33,16 @@
  * standing is checked in a separate read after the commit; a failure is a
  * warning log and a count only (`shift-close-approver.ts`). Never on a
  * replay, never refusing, and a failed lookup never fails the close.
+ *
+ * The shift variance policy (RT-387, AD-CASH-001 D-6 / D-7). An open may
+ * carry the policy the POS froze (`frozenPolicy`): it is recorded verbatim
+ * with its accept-and-flag findings (`OpenPolicyFlagger`), never refused, and
+ * is part of the open's hash only when present (absent = omitted, so a
+ * pre-upgrade open keeps its exact hash). A close records
+ * `approvalRequiredByPolicy` / `approvalMissing` derived from the shift's
+ * frozen value (`unknown` without one), the rule the 0050 close guard
+ * enforces, and the 201 carries the awaited approver verdict, persisted in
+ * `shift_close_approver_checks` (a failed check keeps the placeholder).
  */
 import { createHash } from "node:crypto";
 
@@ -42,6 +52,8 @@ import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Logger } from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
 
+import { OpenPolicyFlagger } from "../cash-variance-policy/policy-open-flags";
+import { deriveCloseApproval } from "../cash-variance-policy/policy-value";
 import { canonicalJson } from "../idempotency/canonical-json";
 import type { ShiftCloseApproverUnverifiedReason } from "../observability/metrics/api.metrics";
 import type { DeviceScope } from "../pos-cashier-admissions/device-scope";
@@ -64,7 +76,15 @@ import {
   type ShiftCloseRow,
 } from "./shift-cash-up.repository";
 import { closeHash, closedShift, isRacedClose, isTransactionConflict, toCloseRecord } from "./shift-close";
-import { reportUnverifiedApprover, standingFinding } from "./shift-close-approver";
+import {
+  approverCheckOf,
+  persistApproverVerdict,
+  reportUnverifiedApprover,
+  reportVerdictUnwritten,
+  standingFinding,
+  type ApproverCheck,
+} from "./shift-close-approver";
+import { frozenPolicyHashForm, type RecordedFrozenPolicy } from "./shift-frozen-policy";
 import { refundRefFailure } from "./shift-refund-refs";
 import { ShiftStoreUserReader } from "./shift-store-user";
 import { canonicalInstant, fitsCurrencyPrecision, formatMoney } from "./shift-money";
@@ -97,6 +117,8 @@ function openHash(fact: OpenShiftFact): Buffer {
     openingUserId: fact.openingUserId,
     currencyCode: fact.currencyCode,
     openingFloat: formatMoney({ amount: fact.openingFloat, currencyCode: fact.currencyCode }),
+    // RT-387: present only when sent; never `?? null` (a legacy open keeps its hash).
+    ...(fact.frozenPolicy !== undefined ? { frozenPolicy: frozenPolicyHashForm(fact.frozenPolicy) } : {}),
   });
 }
 
@@ -113,6 +135,9 @@ function movementHash(shift: CashUpShiftRow, fact: CashMovementFact): Buffer {
 }
 
 export class ShiftCashUpService {
+  /** RT-387: the open's accept-and-flag findings on a frozen policy. */
+  private readonly policyFlagger = new OpenPolicyFlagger();
+
   constructor(
     /** The NOBYPASSRLS domain pool (PG_POOL). */
     private readonly pool: Pool,
@@ -146,6 +171,7 @@ export class ShiftCashUpService {
         ...fact,
         recordedByUserId: ctx.actorUserId,
         payloadHash: hash,
+        frozenPolicy: await this.recordedPolicy(client, ctx, fact),
       });
       if (outcome.kind === "inserted") {
         return { created: true, projection: toShiftProjection(outcome.shift, null) };
@@ -195,22 +221,55 @@ export class ShiftCashUpService {
     fact: CloseShiftFact,
   ): Promise<ShiftWriteResult<ShiftProjection>> {
     const result = await this.closeWithRetry({ ctx, shiftId, fact });
-    if (result.created) await this.checkApprover(ctx, fact);
-    return result;
+    if (!result.created) return result;
+    const check = await this.checkApprover(ctx, { shiftId, fact });
+    return check === null ? result : { ...result, projection: withApproverCheck(result.projection, check) };
   }
 
   /**
    * RT-17 comment 10955, option A: after a close was first recorded, checks
    * its variance approver and reports a failure (log + count) without ever
-   * refusing. Runs in its own read transaction AFTER the close committed, so
-   * a failing lookup cannot roll the close back; it reports
-   * `check_unavailable` instead. Never throws.
+   * refusing. Runs in its own transactions AFTER the close committed, so a
+   * failing lookup cannot roll the close back; it reports
+   * `check_unavailable` instead. RT-387: the verdict is persisted and
+   * returned (null when no approver was recorded); a failed lookup or write
+   * persists nothing and returns the placeholder. Never throws.
    */
-  private async checkApprover(ctx: ShiftWriteContext, fact: CloseShiftFact): Promise<void> {
+  private async checkApprover(ctx: ShiftWriteContext, close: ClosedShift): Promise<ApproverCheck | null> {
+    const { fact } = close;
     const approver = fact.varianceApprovedByUserId;
-    if (approver === undefined) return;
+    if (approver === undefined) return null;
     const reason = approver === fact.closingUserId ? "approver_is_closer" : await this.approverFinding(ctx, approver);
     if (reason !== null) reportUnverifiedApprover(this.logger, { reason, authPath: ctx.path });
+    if (reason === "check_unavailable") return approverCheckOf(approver, null);
+    try {
+      const target = { shiftId: close.shiftId, tenantId: ctx.scope.tenantId, storeId: ctx.scope.storeId, approverUserId: approver };
+      await this.inTenant(ctx, (client) => persistApproverVerdict(client, target, reason));
+    } catch {
+      // The placeholder stands (a replay reads it); it is never retried.
+      reportVerdictUnwritten(this.logger, ctx.path);
+      if (reason === null) reportUnverifiedApprover(this.logger, { reason: "check_unavailable", authPath: ctx.path });
+      return approverCheckOf(approver, null);
+    }
+    return approverCheckOf(approver, { status: reason === null ? "verified" : "unverified", reason });
+  }
+
+  /** The frozen policy to record with a first open, with its flags; null when the open carried none. */
+  private async recordedPolicy(
+    client: PoolClient,
+    ctx: ShiftWriteContext,
+    fact: OpenShiftFact,
+  ): Promise<RecordedFrozenPolicy | null> {
+    const frozen = fact.frozenPolicy;
+    if (frozen === undefined) return null;
+    const policyFlags = await this.policyFlagger.flags(client, {
+      tenantId: ctx.scope.tenantId,
+      storeId: ctx.scope.storeId,
+      openedAt: fact.openedAt,
+      shiftCurrencyCode: fact.currencyCode,
+      frozen,
+    });
+    return { ...frozen, policyFlags };
   }
 
   /** The approver's standing in the credential's tenant and store, as a finding. */
@@ -267,7 +326,13 @@ export class ShiftCashUpService {
     await this.requireStatedUser(client, { ctx, userId: fact.closingUserId });
     if (shift.lifecycleState !== "open") throw new ShiftCashUpError("shift_payload_conflict");
     await this.checkClose(client, { shift, fact });
-    return this.recordClose(client, { shift, fact, record: toCloseRecord(fact, { recordedByUserId: ctx.actorUserId, payloadHash: hash }) });
+    const approval = deriveCloseApproval({
+      frozen: shift.frozenPolicy?.policyValue ?? null,
+      variance: fact.variance,
+      approverUserId: fact.varianceApprovedByUserId ?? null,
+    });
+    const record = toCloseRecord(fact, { recordedByUserId: ctx.actorUserId, payloadHash: hash, approval });
+    return this.recordClose(client, { shift, fact, record });
   }
 
   private inTenant<T>(ctx: ShiftWriteContext, work: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -414,6 +479,17 @@ interface RefusedOpen {
   readonly scope: DeviceScope;
   readonly shiftId: string;
   readonly hash: Buffer;
+}
+
+/** A close that was first recorded: its path shift and fact. */
+interface ClosedShift {
+  readonly shiftId: string;
+  readonly fact: CloseShiftFact;
+}
+
+/** The projection with the close's `approverCheck` replaced by the awaited verdict. */
+function withApproverCheck(projection: ShiftProjection, check: ApproverCheck): ShiftProjection {
+  return projection.close === undefined ? projection : { ...projection, close: { ...projection.close, approverCheck: check } };
 }
 
 /** A close as the controller hands it over. */

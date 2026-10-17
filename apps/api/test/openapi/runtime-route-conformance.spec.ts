@@ -126,15 +126,8 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "backfillSaleLinkedMovements",
       // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
       "consoleDeleteTenantLogo",
-      // RT-384: shift variance policy contract; the runtime ships in RT-387.
-      "consoleGetStoreCashVariancePolicy",
-      "consoleGetTenantCashVariancePolicy",
       "consoleGetTenantLogo",
-      "consoleListStoreCashVariancePolicyRevisions",
-      "consoleListTenantCashVariancePolicyRevisions",
       "consolePreviewTenantLogo",
-      "consolePublishStoreCashVariancePolicyOverride",
-      "consolePublishTenantCashVariancePolicy",
       "consolePutTenantLogo",
       // RT-368: device retire contract; the runtime ships in the RT-368 runtime PR.
       "consoleRetireDevice",
@@ -142,7 +135,6 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "endSupportSession",
       "getCurrentSupportSession",
       "openSupportSession",
-      "posGetCashVariancePolicy",
       "posGetTenantBranding",
       "posRedeemVoucher",
       "posReverseVoucher",

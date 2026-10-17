@@ -1379,7 +1379,9 @@ components:
         120 s clock-skew tolerance (an offline open on an older cached
         revision, DR-8). `policy_value_mismatch`: the frozen value differs
         from that revision's stored value (for `system`, from Backend-Core's
-        System default), or a `limit` currency differs from the shift's.
+        System default), or a `limit` currency differs from the shift's. A
+        `fallback` value other than the fail-closed `limit 0` (DR-6) is also
+        `policy_value_mismatch`.
     PolicyTriState:
       type: string
       enum: ["yes", "no", "unknown"]

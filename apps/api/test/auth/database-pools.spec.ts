@@ -66,6 +66,13 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "payer_account:SELECT",
   "payer_account:INSERT",
   "payer_account:UPDATE",
+  // RT-387 (0050): the shift variance policy revisions (append-only; the
+  // Console publishes and every resolution reads them) and the persisted
+  // approver verdict of a close (append-only, written once after the commit).
+  "cash_variance_policy_revisions:SELECT",
+  "cash_variance_policy_revisions:INSERT",
+  "shift_close_approver_checks:SELECT",
+  "shift_close_approver_checks:INSERT",
   // RT-365: the Console revoke locks the device row FOR UPDATE and sets the
   // revoke fields (FOR UPDATE needs the UPDATE privilege).
   "devices:UPDATE",
@@ -263,6 +270,9 @@ describe("database pool boundary", () => {
     ["shift_closes", "SELECT"],
     ["shift_cash_movements", "INSERT"],
     ["shift_refund_claims", "REFERENCES"],
+    // RT-387 (0050): the policy revisions and the approver verdicts are tenant data.
+    ["cash_variance_policy_revisions", "SELECT"],
+    ["shift_close_approver_checks", "INSERT"],
   ])("rejects a lookup role holding %s %s", async (table, privilege) => {
     const grants = new Set([...REQUIRED, `${table}:${privilege}`]);
     await expect(
@@ -291,6 +301,8 @@ describe("database pool boundary", () => {
       "erpnext_tracking_map",
       "sale_reprints",
       "sale_responsibilities",
+      "cash_variance_policy_revisions",
+      "shift_close_approver_checks",
     ]) {
       const entry = AUTH_LOOKUP_FORBIDDEN_GRANTS.find(([t]) => t === table);
       expect(entry).toBeDefined();

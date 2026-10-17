@@ -22,6 +22,7 @@
  * §XIV, FR-B-006).
  */
 import type { Logger } from "@data-pulse-2/shared";
+import type { PoolClient } from "pg";
 
 import {
   recordShiftCloseApproverUnverified,
@@ -33,6 +34,25 @@ export type { ApproverStanding } from "./shift-store-user";
 
 /** The log line's fixed `event`. */
 export const APPROVER_UNVERIFIED_EVENT = "shift.close.approver_unverified";
+
+/** RT-387: the post-commit verdict could not be persisted (the close keeps the placeholder). */
+export const APPROVER_VERDICT_UNWRITTEN_EVENT = "shift.close.approver_verdict_unwritten";
+
+/**
+ * One warning for a verdict that was checked but not persisted; the close
+ * keeps `unverified` / `check_unavailable`. No id, as for the unverified
+ * signal. Never throws.
+ */
+export function reportVerdictUnwritten(logger: Pick<Logger, "warn"> | undefined, authPath: "device" | "envelope"): void {
+  try {
+    logger?.warn(
+      { event: APPROVER_VERDICT_UNWRITTEN_EVENT, auth_path: authPath, outcome: "placeholder_kept" },
+      "shift close: approver verdict not persisted; close recorded with check_unavailable",
+    );
+  } catch {
+    // A signal only.
+  }
+}
 
 /** The roles that may approve a variance: the POS manager / admin set. */
 const APPROVER_ROLE_CODES: ReadonlySet<string> = new Set(["owner", "tenant_admin", "store_manager"]);
@@ -73,4 +93,56 @@ export function reportUnverifiedApprover(logger: Pick<Logger, "warn"> | undefine
   } catch {
     // As above.
   }
+}
+
+// ---------------------------------------------------------------------------
+// RT-387 (AD-CASH-001 D-7, K-4): the persisted `approverCheck`
+// ---------------------------------------------------------------------------
+
+/** The wire `approverCheck` of a close (pos-shifts / shift-closes `ApproverCheck`). */
+export interface ApproverCheck {
+  readonly status: "not_applicable" | "verified" | "unverified";
+  readonly reason: string | null;
+}
+
+/**
+ * A close's `approverCheck`: `not_applicable` with no recorded approver; the
+ * persisted verdict when the post-commit check stored one; otherwise the
+ * placeholder `unverified` / `check_unavailable` (the check failed, or the
+ * close predates RT-387 — coordinator decision 4). `not_applicable` and the
+ * placeholder are never stored: they are what a close with no row reads as.
+ */
+export function approverCheckOf(
+  approverUserId: string | null,
+  verdict: { readonly status: string; readonly reason: string | null } | null,
+): ApproverCheck {
+  if (approverUserId === null) return { status: "not_applicable", reason: null };
+  if (verdict === null) return { status: "unverified", reason: "check_unavailable" };
+  return verdict.status === "verified" ? { status: "verified", reason: null } : { status: "unverified", reason: verdict.reason };
+}
+
+/** The close an approver verdict belongs to (its composite FK target). */
+export interface VerdictTarget {
+  readonly shiftId: string;
+  readonly tenantId: string;
+  readonly storeId: string;
+  readonly approverUserId: string;
+}
+
+/**
+ * Records the post-commit verdict once (append-only; a second write for the
+ * same close is ignored). `reason` null means verified. `check_unavailable`
+ * is never stored: the caller writes nothing when the check itself failed.
+ */
+export async function persistApproverVerdict(
+  client: PoolClient,
+  target: VerdictTarget,
+  reason: Exclude<ShiftCloseApproverUnverifiedReason, "check_unavailable"> | null,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO shift_close_approver_checks (shift_id, tenant_id, store_id, approver_user_id, status, reason)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (shift_id) DO NOTHING`,
+    [target.shiftId, target.tenantId, target.storeId, target.approverUserId, reason === null ? "verified" : "unverified", reason],
+  );
 }

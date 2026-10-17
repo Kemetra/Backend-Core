@@ -38,6 +38,8 @@ import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool, PoolClient } from "pg";
 
 import type { DeviceScope } from "../../../src/pos-cashier-admissions/device-scope";
+import { persistApproverVerdict } from "../../../src/pos-shifts/shift-close-approver";
+import type { RecordedFrozenPolicy } from "../../../src/pos-shifts/shift-frozen-policy";
 import {
   ShiftCashUpRepository,
   type CashUpShiftRow,
@@ -142,13 +144,17 @@ export interface SeedClose {
   readonly closingUserId?: string;
   readonly movements?: ReadonlyArray<Omit<NewCashMovement, "payloadHash" | "recordedByUserId">>;
   readonly refundRefs?: ReadonlyArray<string>;
+  /** RT-387: the policy frozen with the open (the close's derived values follow from it). */
+  readonly frozenPolicy?: RecordedFrozenPolicy;
+  /** RT-387: the persisted approver verdict (null reason = verified); absent = no row. */
+  readonly verdict?: { readonly reason: "approver_is_closer" | "inactive_membership" | "not_manager" | "no_store_access" | null };
 }
 
 function inTenant<T>(app: Pool, tenantId: string, work: (c: PoolClient) => Promise<T>): Promise<T> {
   return runWithTenantContext(app, { tenantId, isPlatformAdmin: false }, work);
 }
 
-async function openShift(app: Pool, seed: Pick<SeedClose, "shiftId" | "scope" | "currencyCode" | "closingUserId"> & {
+async function openShift(app: Pool, seed: Pick<SeedClose, "shiftId" | "scope" | "currencyCode" | "closingUserId" | "frozenPolicy"> & {
   readonly openedAt: string;
   readonly openingFloat: string;
 }): Promise<CashUpShiftRow> {
@@ -162,6 +168,7 @@ async function openShift(app: Pool, seed: Pick<SeedClose, "shiftId" | "scope" | 
       openingFloat: seed.openingFloat,
       recordedByUserId: user,
       payloadHash: digest(`open:${seed.shiftId}`),
+      frozenPolicy: seed.frozenPolicy ?? null,
     }),
   );
   if (outcome.kind !== "inserted") throw new Error(`open ${seed.shiftId} failed: ${outcome.kind}`);
@@ -201,6 +208,13 @@ export async function seedClose(app: Pool, seed: SeedClose): Promise<void> {
       payloadHash: digest(`close:${seed.shiftId}`),
     }),
   );
+  // The derived values are left at the column default: the 0050 close guard
+  // derives them from the frozen policy, as for any writer that sends none.
+  const verdict = seed.verdict;
+  if (verdict !== undefined && seed.approverId !== undefined) {
+    const target = { shiftId: seed.shiftId, tenantId: seed.scope.tenantId, storeId: seed.scope.storeId, approverUserId: seed.approverId };
+    await inTenant(app, seed.scope.tenantId, (c) => persistApproverVerdict(c, target, verdict.reason));
+  }
 }
 
 /** opening 500.00, sales 1000.00, nothing else; `counted` sets the variance. */

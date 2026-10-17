@@ -10,11 +10,12 @@ info:
     RT-236 comment 11539 with the owner rulings of comment 11543.
 
 
-    **Posture.** `1.0.0-draft`, contract-only: every operation carries
-    `x-runtime-status: contract-only` until the RT-387 runtime ships on the
-    RT-385 `[GATED]` migration. `[GATED]` contract; it needs the owner's
-    approval before merge. `pos-shifts.openapi.yaml` 1.2.0-draft (the policy
-    fields frozen on a shift open and the derived close values) and
+    **Posture.** `1.0.0-draft`, implemented: the RT-387 runtime ships every
+    operation unchanged on the wire on the RT-385 `[GATED]` migration, so no
+    operation carries `x-runtime-status: contract-only`. `[GATED]` contract,
+    approved by the owner on RT-384 (#778). `pos-shifts.openapi.yaml`
+    1.2.0-draft (the policy fields frozen on a shift open and the derived
+    close values) and
     `shift-closes.openapi.yaml` 1.1.0-draft (the same values on the admin
     close read) are the other two halves of this contract.
 
@@ -137,8 +138,6 @@ paths:
     get:
       summary: Read the paired terminal's resolved shift variance policy.
       operationId: posGetCashVariancePolicy
-      x-runtime-status: contract-only
-      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
       tags: [cash-variance-policy-pos]
       security:
         - device: []
@@ -185,8 +184,6 @@ paths:
     get:
       summary: Read the tenant default shift variance policy.
       operationId: consoleGetTenantCashVariancePolicy
-      x-runtime-status: contract-only
-      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
       tags: [cash-variance-policy-console]
       security:
         - cookieAuth: []
@@ -217,8 +214,6 @@ paths:
     get:
       summary: List the tenant default's revisions (newest first).
       operationId: consoleListTenantCashVariancePolicyRevisions
-      x-runtime-status: contract-only
-      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
       tags: [cash-variance-policy-console]
       security:
         - cookieAuth: []
@@ -246,8 +241,6 @@ paths:
     post:
       summary: Publish a new tenant default (Apply Now).
       operationId: consolePublishTenantCashVariancePolicy
-      x-runtime-status: contract-only
-      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
       x-idempotency: required
       tags: [cash-variance-policy-console]
       security:
@@ -312,8 +305,6 @@ paths:
     get:
       summary: Read a store's effective shift variance policy and its override.
       operationId: consoleGetStoreCashVariancePolicy
-      x-runtime-status: contract-only
-      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
       tags: [cash-variance-policy-console]
       security:
         - cookieAuth: []
@@ -347,8 +338,6 @@ paths:
     get:
       summary: List a store's override revisions (newest first).
       operationId: consoleListStoreCashVariancePolicyRevisions
-      x-runtime-status: contract-only
-      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
       tags: [cash-variance-policy-console]
       security:
         - cookieAuth: []
@@ -378,8 +367,6 @@ paths:
     post:
       summary: Set or clear the store override (Apply Now).
       operationId: consolePublishStoreCashVariancePolicyOverride
-      x-runtime-status: contract-only
-      x-runtime-note: RT-384 contract PR; the controller ships in RT-387 on the RT-385 migration.
       x-idempotency: required
       tags: [cash-variance-policy-console]
       security:

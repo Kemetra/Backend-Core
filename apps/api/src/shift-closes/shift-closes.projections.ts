@@ -21,6 +21,13 @@
  */
 import { z } from "zod";
 
+import type { PolicyTriState } from "../cash-variance-policy/policy-value";
+import { approverCheckOf, type ApproverCheck } from "../pos-shifts/shift-close-approver";
+import {
+  toRecordedFrozenPolicy,
+  type FrozenPolicyDbColumns,
+  type RecordedFrozenPolicy,
+} from "../pos-shifts/shift-frozen-policy";
 import { formatMoney } from "../pos-shifts/shift-money";
 
 // ---------------------------------------------------------------------------
@@ -98,8 +105,12 @@ function isCalendarInstant(key: string): boolean {
 
 export type ShiftCloseKind = "normal" | "forced";
 
-/** One `shift_closes` row as the list and the detail read it. */
-export interface ShiftCloseReadRow {
+/**
+ * One `shift_closes` row as the list and the detail read it, with the shift's
+ * frozen policy (RT-387, through the 1:1 shift join) and the persisted
+ * approver verdict (null when none was recorded).
+ */
+export interface ShiftCloseReadRow extends FrozenPolicyDbColumns {
   readonly shift_id: string;
   readonly store_id: string;
   readonly currency_code: string;
@@ -119,6 +130,10 @@ export interface ShiftCloseReadRow {
   readonly variance: string;
   readonly sale_count: number;
   readonly received_at: Date;
+  readonly approval_required_by_policy: PolicyTriState;
+  readonly approval_missing: PolicyTriState;
+  readonly verdict_status: string | null;
+  readonly verdict_reason: string | null;
 }
 
 /** The detail adds the shift's opening and the recording actor. */
@@ -162,6 +177,11 @@ export interface ShiftCloseSummary {
   readonly variance: string;
   readonly saleCount: number;
   readonly receivedAt: string;
+  /** RT-384 / RT-387: null when the open carried no frozen policy. */
+  readonly frozenPolicy: RecordedFrozenPolicy | null;
+  readonly approvalRequiredByPolicy: PolicyTriState;
+  readonly approvalMissing: PolicyTriState;
+  readonly approverCheck: ApproverCheck;
 }
 
 export interface ShiftClosePage {
@@ -214,6 +234,13 @@ export function toShiftCloseSummary(row: ShiftCloseReadRow): ShiftCloseSummary {
     variance: money(row.variance, currency),
     saleCount: row.sale_count,
     receivedAt: row.received_at.toISOString(),
+    frozenPolicy: toRecordedFrozenPolicy(row),
+    approvalRequiredByPolicy: row.approval_required_by_policy,
+    approvalMissing: row.approval_missing,
+    approverCheck: approverCheckOf(
+      row.variance_approved_by_user_id,
+      row.verdict_status === null ? null : { status: row.verdict_status, reason: row.verdict_reason },
+    ),
   };
 }
 

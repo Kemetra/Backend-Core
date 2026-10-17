@@ -155,3 +155,45 @@ describe("an upper-case spelling of the ids is the same fact (PR #714 round 1)",
     expect(await hashOf(kind, upperIds(body, ids))).toBe(PINNED[kind]);
   });
 });
+
+describe("RT-387: the open's frozenPolicy in the payload hash (AD-CASH-001 D-7)", () => {
+  const frozen = (policyValue: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    ...OPEN,
+    frozenPolicy: { policySource: "tenant", policyRevisionId: "0e170000-0000-4000-8000-0000000f0001", policyValue, ...extra },
+  });
+
+  it("leaves a legacy open byte-identical: an absent frozenPolicy is omitted, never null", async () => {
+    expect(await hashOf("open", OPEN)).toBe(PINNED.open);
+    expect(await hashOf("open", { ...OPEN, frozenPolicy: undefined })).toBe(PINNED.open);
+  });
+
+  it("makes an open with a frozen policy a different fact", async () => {
+    expect(await hashOf("open", frozen({ mode: "none" }))).not.toBe(PINNED.open);
+  });
+
+  it("hashes the limit in the frozen currency's minor unit ('50' and '50.00' EGP are one fact)", async () => {
+    const a = await hashOf("open", frozen({ mode: "limit", limitAmount: "50", currencyCode: "EGP" }));
+    expect(await hashOf("open", frozen({ mode: "limit", limitAmount: "50.00", currencyCode: "EGP" }))).toBe(a);
+    expect(await hashOf("open", frozen({ mode: "limit", limitAmount: "50.01", currencyCode: "EGP" }))).not.toBe(a);
+    expect(await hashOf("open", frozen({ mode: "limit", limitAmount: "50", currencyCode: "USD" }))).not.toBe(a);
+  });
+
+  it("hashes an amount finer than the minor unit, or in a code with none, verbatim (never rejected)", async () => {
+    const fine = await hashOf("open", frozen({ mode: "limit", limitAmount: "0.005", currencyCode: "EGP" }));
+    expect(await hashOf("open", frozen({ mode: "limit", limitAmount: "0.0050", currencyCode: "EGP" }))).not.toBe(fine);
+    const noMinor = await hashOf("open", frozen({ mode: "limit", limitAmount: "7", currencyCode: "XXX" }));
+    expect(await hashOf("open", frozen({ mode: "limit", limitAmount: "7.0", currencyCode: "XXX" }))).not.toBe(noMinor);
+  });
+
+  it("hashes a present null policyRevisionId as null (system / fallback), distinct from the source", async () => {
+    const system = await hashOf("open", { ...OPEN, frozenPolicy: { policySource: "system", policyRevisionId: null, policyValue: { mode: "none" } } });
+    const fallback = await hashOf("open", { ...OPEN, frozenPolicy: { policySource: "fallback", policyRevisionId: null, policyValue: { mode: "none" } } });
+    expect(system).not.toBe(fallback);
+    expect(system).not.toBe(PINNED.open);
+  });
+
+  it("is case-insensitive in the revision id", async () => {
+    const lower = await hashOf("open", frozen({ mode: "none" }));
+    expect(await hashOf("open", frozen({ mode: "none" }, { policyRevisionId: "0E170000-0000-4000-8000-0000000F0001" }))).toBe(lower);
+  });
+});

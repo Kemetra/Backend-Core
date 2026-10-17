@@ -23,8 +23,16 @@
  */
 import type { PoolClient } from "pg";
 
+import type { PolicyTriState } from "../cash-variance-policy/policy-value";
 import { lockDeviceLifecycle } from "../devices/device-lifecycle-lock";
 import type { DeviceScope } from "../pos-cashier-admissions/device-scope";
+import {
+  FROZEN_POLICY_COLUMNS,
+  frozenPolicyParams,
+  toRecordedFrozenPolicy,
+  type FrozenPolicyDbColumns,
+  type RecordedFrozenPolicy,
+} from "./shift-frozen-policy";
 
 export type ShiftLifecycleState = "open" | "closed" | "closed_forced";
 export type CashMovementKind = "pay_in" | "pay_out";
@@ -46,6 +54,8 @@ export interface CashUpShiftRow {
   readonly receivedAt: Date;
   readonly recordedByUserId: string;
   readonly payloadHash: Buffer;
+  /** RT-387: the policy frozen with the open and its flags; null (or absent) when the open carried none. */
+  readonly frozenPolicy?: RecordedFrozenPolicy | null;
 }
 
 /** The ShiftOpened fact to record; scope comes from the `DeviceScope`. */
@@ -61,6 +71,8 @@ export interface NewCashUpShift {
   readonly recordedByUserId: string;
   /** sha256 of the canonical open fact (32 bytes). */
   readonly payloadHash: Buffer;
+  /** RT-387: recorded verbatim with its accept-and-flag findings; null (or absent) for an open without one. */
+  readonly frozenPolicy?: RecordedFrozenPolicy | null;
 }
 
 export type InsertShiftOutcome =
@@ -120,12 +132,27 @@ export interface ShiftCloseFact {
   readonly varianceApprovedByUserId: string | null;
   readonly recordedByUserId: string;
   readonly payloadHash: Buffer;
+  /**
+   * RT-387: derived from the shift's frozen policy (D-7); the 0050 close guard
+   * re-checks it. Absent is the column default `unknown`, which the guard
+   * derives on a frozen-policy shift (the pre-RT-387 writer's shape).
+   */
+  readonly approvalRequiredByPolicy?: PolicyTriState;
+  readonly approvalMissing?: PolicyTriState;
+}
+
+/** The persisted post-commit verdict on the close's approver (`shift_close_approver_checks`). */
+export interface ApproverVerdict {
+  readonly status: "verified" | "unverified";
+  readonly reason: string | null;
 }
 
 export interface ShiftCloseRow extends Omit<ShiftCloseFact, "closedAt"> {
   readonly shiftId: string;
   readonly closedAt: Date;
   readonly receivedAt: Date;
+  /** Null (or absent) until, or unless, the post-commit check recorded one. */
+  readonly approverVerdict?: ApproverVerdict | null;
 }
 
 /** A refund ref as the close validation needs it. */
@@ -168,7 +195,8 @@ export const OPEN_DEVICE_INDEX = "uq_shifts_cash_up_open_device";
 const SHIFT_COLUMNS = `
   shift_id, tenant_id, store_id, opening_device_id, opening_cashier_user_id, opened_at,
   lifecycle_state, currency_code, opening_float::text AS opening_float,
-  business_date::text AS business_date, received_at, recorded_by_user_id, payload_hash`;
+  business_date::text AS business_date, received_at, recorded_by_user_id, payload_hash,
+  ${FROZEN_POLICY_COLUMNS}`;
 
 const MOVEMENT_COLUMNS = `
   id, shift_id, kind, amount::text AS amount, currency_code, reason_code, note, occurred_at,
@@ -180,11 +208,14 @@ const CLOSE_COLUMNS = `
   cash_refunds_total::text AS cash_refunds_total, pay_in_total::text AS pay_in_total,
   pay_out_total::text AS pay_out_total, expected_cash::text AS expected_cash,
   counted_cash::text AS counted_cash, variance::text AS variance, sale_count,
-  variance_approved_by_user_id, recorded_by_user_id, received_at, payload_hash`;
+  variance_approved_by_user_id, recorded_by_user_id, received_at, payload_hash,
+  approval_required_by_policy, approval_missing`;
 
 /**
  * $1 shift, $2 tenant, $3 store, $4 device, $5 opening user, $6 openedAt,
- * $7 currency, $8 opening float, $9 recording actor, $10 payload hash.
+ * $7 currency, $8 opening float, $9 recording actor, $10 payload hash,
+ * $11-$16 the frozen policy (source, revision, mode, limit, currency, flags;
+ * all null for an open without one, RT-387).
  *
  * The store zone is read `FOR SHARE` here and in the adoption below (spec
  * 038 FR-007): a store time zone change holds the store row `FOR UPDATE`
@@ -195,11 +226,12 @@ const INSERT_SHIFT_SQL = `
   INSERT INTO shifts
     (shift_id, tenant_id, store_id, opening_device_id, opening_cashier_user_id, opened_at,
      source, currency_code, opening_float, business_date, received_at, recorded_by_user_id,
-     payload_hash)
+     payload_hash, frozen_policy_source, frozen_policy_revision_id, frozen_policy_mode,
+     frozen_policy_limit_amount, frozen_policy_currency_code, frozen_policy_flags)
   VALUES ($1, $2, $3, $4, $5, $6::timestamptz, 'cash_up', $7, $8::numeric,
           (SELECT ($6::timestamptz AT TIME ZONE s.timezone)::date
              FROM stores s WHERE s.id = $3 AND s.tenant_id = $2 FOR SHARE),
-          now(), $9, $10)
+          now(), $9, $10, $11, $12::uuid, $13, $14::numeric, $15, $16::text[])
   ON CONFLICT (shift_id) DO NOTHING
   RETURNING ${SHIFT_COLUMNS}`;
 
@@ -214,7 +246,13 @@ const ADOPT_LEGACY_SHIFT_SQL = `
                              FOR SHARE),
          received_at = now(),
          recorded_by_user_id = $9,
-         payload_hash = $10
+         payload_hash = $10,
+         frozen_policy_source = $11,
+         frozen_policy_revision_id = $12::uuid,
+         frozen_policy_mode = $13,
+         frozen_policy_limit_amount = $14::numeric,
+         frozen_policy_currency_code = $15,
+         frozen_policy_flags = $16::text[]
    WHERE shift_id = $1
      AND tenant_id = $2
      AND store_id = $3
@@ -225,7 +263,7 @@ const ADOPT_LEGACY_SHIFT_SQL = `
      AND lifecycle_state = 'open'
   RETURNING ${SHIFT_COLUMNS}`;
 
-interface ShiftDbRow {
+interface ShiftDbRow extends FrozenPolicyDbColumns {
   shift_id: string;
   tenant_id: string;
   store_id: string;
@@ -274,6 +312,8 @@ interface CloseDbRow {
   recorded_by_user_id: string;
   received_at: Date;
   payload_hash: Buffer;
+  approval_required_by_policy: PolicyTriState;
+  approval_missing: PolicyTriState;
 }
 
 function toShift(row: ShiftDbRow): CashUpShiftRow {
@@ -291,6 +331,7 @@ function toShift(row: ShiftDbRow): CashUpShiftRow {
     receivedAt: row.received_at,
     recordedByUserId: row.recorded_by_user_id,
     payloadHash: row.payload_hash,
+    frozenPolicy: toRecordedFrozenPolicy(row),
   };
 }
 
@@ -310,7 +351,7 @@ function toMovement(row: MovementDbRow): CashMovementRow {
   };
 }
 
-function toClose(row: CloseDbRow, refs: ReadonlyArray<string>): ShiftCloseRow {
+function toClose(row: CloseDbRow, refs: ReadonlyArray<string>, verdict: ApproverVerdict | null): ShiftCloseRow {
   return {
     shiftId: row.shift_id,
     closedAt: row.closed_at,
@@ -331,6 +372,9 @@ function toClose(row: CloseDbRow, refs: ReadonlyArray<string>): ShiftCloseRow {
     recordedByUserId: row.recorded_by_user_id,
     receivedAt: row.received_at,
     payloadHash: row.payload_hash,
+    approvalRequiredByPolicy: row.approval_required_by_policy,
+    approvalMissing: row.approval_missing,
+    approverVerdict: verdict,
   };
 }
 
@@ -445,6 +489,7 @@ export class ShiftCashUpRepository {
       shift.openingFloat,
       shift.recordedByUserId,
       shift.payloadHash,
+      ...frozenPolicyParams(shift.frozenPolicy ?? null),
     ];
     await client.query("SAVEPOINT shift_cash_up_open");
     let outcome: InsertShiftOutcome;
@@ -532,7 +577,7 @@ export class ShiftCashUpRepository {
     return row === undefined ? null : toMovement(row);
   }
 
-  /** The recorded close of `shift` with its refund refs in claim order, or null. */
+  /** The recorded close of `shift` with its refund refs in claim order and its approver verdict, or null. */
   async findClose(client: PoolClient, shift: CashUpShiftRow): Promise<ShiftCloseRow | null> {
     const r = await client.query<CloseDbRow>(
       `SELECT ${CLOSE_COLUMNS}
@@ -548,7 +593,15 @@ export class ShiftCashUpRepository {
         ORDER BY ordinal`,
       [shift.shiftId, shift.tenantId, shift.storeId],
     );
-    return toClose(row, refs.rows.map((ref) => ref.return_id));
+    const verdict = await client.query<ApproverVerdict>(
+      `SELECT status, reason FROM shift_close_approver_checks WHERE shift_id = $1 AND tenant_id = $2`,
+      [shift.shiftId, shift.tenantId],
+    );
+    return toClose(
+      row,
+      refs.rows.map((ref) => ref.return_id),
+      verdict.rows[0] ?? null,
+    );
   }
 
   /**
@@ -615,10 +668,11 @@ export class ShiftCashUpRepository {
          (shift_id, tenant_id, store_id, device_id, currency_code, closed_at, closing_user_id,
           close_kind, forced_reason, opening_float, cash_sales_total, cash_refunds_total,
           pay_in_total, pay_out_total, expected_cash, counted_cash, variance, sale_count,
-          variance_approved_by_user_id, recorded_by_user_id, received_at, payload_hash)
+          variance_approved_by_user_id, recorded_by_user_id, received_at, payload_hash,
+          approval_required_by_policy, approval_missing)
        VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7, $8, $9, $10::numeric, $11::numeric,
                $12::numeric, $13::numeric, $14::numeric, $15::numeric, $16::numeric,
-               $17::numeric, $18, $19, $20, now(), $21)
+               $17::numeric, $18, $19, $20, now(), $21, $22, $23)
        RETURNING ${CLOSE_COLUMNS}`,
       [
         shift.shiftId,
@@ -642,6 +696,8 @@ export class ShiftCashUpRepository {
         close.varianceApprovedByUserId,
         close.recordedByUserId,
         close.payloadHash,
+        close.approvalRequiredByPolicy ?? "unknown",
+        close.approvalMissing ?? "unknown",
       ],
     );
     const row = r.rows[0] as CloseDbRow;
@@ -671,6 +727,6 @@ export class ShiftCashUpRepository {
       ],
     );
     if (moved.rowCount !== 1) throw new ShiftCloseNotAppliedError();
-    return toClose(row, refs);
+    return toClose(row, refs, null);
   }
 }
