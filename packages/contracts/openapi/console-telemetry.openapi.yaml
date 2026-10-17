@@ -37,7 +37,11 @@ info:
 
 
     **Default-inert.** With `CONSOLE_SENTRY_DSN` unset, blank or malformed,
-    the tunnel forwards nothing and answers `204` without reading the body.
+    the tunnel forwards nothing and answers `204` without checking `Origin`,
+    the rate limits or the body. Whether the tunnel is configured is not a
+    secret: a malformed body can tell the two states apart (`204` inert,
+    `400` configured). What `204` never discloses is what happened to a
+    well-formed envelope on a configured tunnel.
     Forwarding runs after the response is sent, with a short timeout and a
     bound on concurrent forwards. A Sentry failure or slowness never changes
     the response and never affects other API traffic. The tunnel never logs
@@ -97,9 +101,11 @@ paths:
       responses:
         "204":
           description: >
-            Accepted. The response is the same whether the error event was
-            forwarded, dropped by the scrubber, or the tunnel is inert, so it
-            discloses nothing about the configuration.
+            Accepted. On a configured tunnel a well-formed envelope gets the
+            same `204` whether its error event was forwarded, dropped by the
+            scrubber or by the forward bound, or dropped because the
+            rate-limit store is unavailable. An inert tunnel answers `204`
+            to every request (see Default-inert).
         "400":
           description: >
             `envelope_malformed`: the body is empty, or the envelope header,
