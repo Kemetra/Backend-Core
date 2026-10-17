@@ -87,9 +87,10 @@ reads (29 codes today, Appendix A) plus a test-only list of known `change` codes
   So a direct-emit change code (service-level `action: …`, constants such as `AUTH_AUDIT_ACTIONS`) can't enter
   the read set by mistake, and the guard needs no hand-kept list of direct-emit codes, which would drift (Appendix A
   is not exhaustive).
-- Interaction with **RT-548** (audit the POS `readSale`, planned in parallel): whatever code RT-548 picks
-  (e.g. `pos_sales.detail_read`) is a `read` and must be added to the registry **in the same PR** that adds the
-  `@Auditable`. The guard above fails that PR otherwise. RT-548 does not block RT-567, and RT-567 does not
+- Interaction with **RT-548** (audit the POS `readSale`): its plan merged as #822 (`19ca8a8`,
+  `docs/planning/rt-547-548-readsale-line-order-and-audit.md`) and selected **`pos_sales.detail_read`**
+  (OD-548-1, success-only, metadata `{ sale_ref }`). It is a `read` on a `GET` route and must be added to the
+  registry **in the same PR** that adds the `@Auditable`. The guard above fails that PR otherwise. RT-548 does not block RT-567, and RT-567 does not
   block RT-548. Whichever lands second adds the entry.
 
 ## 5. Proposed contract change (`audit.openapi.yaml`, [GATED], additive)
@@ -211,6 +212,9 @@ on, since action codes contain no `%`, and `_` only ever needs to match itself. 
 `sale_history.detail_read`, `sale_history.listed`, `sale_sync_ops.audit_timeline.read`,
 `sale_sync_ops.needs_repair.listed`, `sale_sync_ops.status.read`, `settlement.payer_account.listed`,
 `settlement.receivable.listed`, `settlement.receivable.read`, `shift_closes.listed`, `shift_closes.read`.
+
+**`read`, planned (not on `ff9e683`):** `pos_sales.detail_read` (RT-548, plan #822). It joins the registry with
+the RT-548 Implementation item or with RT-567-I, whichever lands second.
 
 **`change` (everything else), as found:**
 `@Auditable`: `catalog.product.create`, `catalog.tracking_profile.set`, `context.clear.store`,
