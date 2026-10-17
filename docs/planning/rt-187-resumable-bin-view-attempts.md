@@ -193,11 +193,14 @@ Proposed shape, for the follow-up issues in §6:
 
 * **Connector (ERPNext-Connector repo):** a Sentry/Datadog monitor on `incomplete_abandoned` (any reason) and
   `limit_exceeded`, at error level. This is allowlisted fields only (`request_ref`, `reason`, `window_seq`, counts),
-  under the RT-629 observability contract. It is configuration of the existing log events.
+  under the RT-629 observability contract. The monitors are configuration of existing log events. Two new numeric
+  fields on `deadline_reached`, `read_ms` and `report_ms`, are a small connector code change (F2).
 * **Backend-Core:** a worker gauge `erpnext_stock_run_stranded` counting `kind='stock'` runs that have been in
-  `running` for longer than the D5 run TTL. It carries no labels except a bounded outcome, following the RT-629
-  label rules (no tenant or store ids). It becomes zero once D5 expires such runs, and its transitions are then
-  counted as `erpnext_stock_run_expired_total`.
+  `running` for longer than the D5 run TTL. It carries no labels except a bounded outcome
+  (`report_incomplete` / `report_complete`), following the RT-629 label rules (no tenant or store ids). The
+  `report_incomplete` series becomes zero once D5 expires those runs, and each expiry is counted as
+  `erpnext_stock_run_expired_total`. The `report_complete` series is cleared only when the reconciliation worker
+  processes the run, because D5 never expires it.
 
 ### D5 — Run lifetime and expiry (gap §2.4; applies under every option)
 
