@@ -395,7 +395,7 @@ Both are off by default: with the variables below empty, nothing leaves the host
 and a plain `docker compose up` starts the same stack as before. Real values live
 in `deploy/prod.env` (secret-manager references), never in git.
 
-**Sentry (errors only).** Set `SENTRY_DSN` (and optionally `SENTRY_RELEASE`) in
+**Sentry (errors only).** Set `SENTRY_DSN` (and `SENTRY_RELEASE`) in
 `deploy/prod.env`, then recreate `api` and `worker`:
 
 ```bash
@@ -403,7 +403,10 @@ op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml u
 ```
 
 Events are rebuilt from an allowlist before sending (no request data, users,
-cookies or tokens). With a DSN set, an unhandled rejection still crashes the
+cookies or tokens). `SENTRY_RELEASE` is the release SHA12 (a full 40-char SHA is
+shortened); it is both the Sentry `release` and the `service.version` on spans,
+and any other value is ignored (RT-631). Services report as `backend-api` and
+`backend-worker`; api errors carry `request_id` and `trace_id` tags. With a DSN set, an unhandled rejection still crashes the
 process after it is reported, so `restart: unless-stopped` behaves as before.
 
 **Console errors (RT-632).** The Admin-Console's CSP is `connect-src 'self'`, so

@@ -248,4 +248,4 @@ configs:
           metrics:
             - "^(http|auth|tenant|validation|suspicious|cross_tenant|idempotency|db|redis|queue|worker|outbox|sale|erpnext|shift|unknown_item|catalog|settlement)_.*"
           tags:
-            - service:api
+            - service:backend-api

@@ -826,6 +826,26 @@ describe("RT-370 — device activity (last_seen_at)", () => {
     expect(await touchCount(TERMINAL.deviceId)).toBe(0);
   });
 
+  it("a table lock on devices (e.g. a migration) makes the touch give up within ~1 s; the request is unaffected", async () => {
+    if (skip()) return;
+    const holder = await E().admin.connect();
+    try {
+      await holder.query("BEGIN");
+      // Conflicts with the UPDATE's ROW EXCLUSIVE, not with the lookup's ACCESS SHARE.
+      await holder.query("LOCK TABLE devices IN SHARE ROW EXCLUSIVE MODE");
+      const res = await readDownCalls(CONTROL_TERMINAL).snapshot!(randomUUID());
+      expect(res.status).toBe(200);
+      const started = Date.now();
+      await deviceActivity.flush();
+      const waited = Date.now() - started;
+      expect(waited).toBeLessThan(2_500);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+    }
+    expect(await lastSeenAt(CONTROL_TERMINAL.deviceId)).toBeNull();
+  });
+
   it("a write the domain role cannot make leaves the response unchanged", async () => {
     if (skip()) return;
     const expected = await readDownCalls(CONTROL_TERMINAL).snapshot!(randomUUID());

@@ -581,6 +581,10 @@ reference-on-demand and may lag the spec files.
 
 </details>
 
+## Allowed observability egress (RT-629 OBS-1 §6, D9)
+
+> **Allowed observability egress.** This service may send telemetry only to Sentry (`*.ingest.de.sentry.io`, org `kemetra`) and Datadog (`*.us5.datadoghq.com`, or the internal Datadog Agent). It must follow the Observability contract (RT-629): allowlisted fields only, no PII, secrets or business payloads, default-inert without keys, and never blocking on vendor failure. Any new destination is a separate owner decision.
+
 ## What this repo does NOT own
 
 Does not own POS (`Kemetra/POS`) or the admin/operator frontend (`Kemetra/Admin-Console`) — see the RT operating instructions §3 for repo ownership. This repo owns the SaaS backend, workers, infrastructure, and the OpenAPI contracts both POS and Admin-Console consume.
