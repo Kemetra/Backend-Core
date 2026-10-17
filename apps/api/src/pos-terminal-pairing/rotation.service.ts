@@ -81,7 +81,7 @@ export class RotationService {
       if (decision.kind === "rejected") return { kind: "refused", reason: decision.reason };
       const rawToken = generateRawToken();
       const write = await applyRotation(client, target, decision.credential, hashToken(rawToken));
-      await auditRotated(client, target, decision.credential, decision.inGrace, write);
+      await auditRotated(client, target, { credential: decision.credential, inGrace: decision.inGrace, write });
       return {
         kind: "rotated",
         body: {

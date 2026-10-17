@@ -91,14 +91,16 @@ export async function applyRotation(
   return { expiresAt: row.expires_at, rotateAfter: row.rotate_after, previousValidUntil: row.previous_valid_until };
 }
 
+/** What a completed rotation records: the token that authenticated, the grace flag and the write. */
+export interface RotationRecord {
+  readonly credential: RotationCredential;
+  readonly inGrace: boolean;
+  readonly write: RotationWrite;
+}
+
 /** `pos.device.rotated` (RT-135 allowlist: never a token, hash or key). */
-export function auditRotated(
-  client: PoolClient,
-  target: RotationTarget,
-  credential: RotationCredential,
-  inGrace: boolean,
-  write: RotationWrite,
-): Promise<void> {
+export function auditRotated(client: PoolClient, target: RotationTarget, record: RotationRecord): Promise<void> {
+  const { credential, inGrace, write } = record;
   return insertDeviceAudit(client, {
     tenantId: target.tenantId,
     storeId: target.storeId,
