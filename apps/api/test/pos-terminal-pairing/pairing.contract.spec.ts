@@ -71,7 +71,15 @@ const NEW_CONTRACT_ID = "pos-terminal-pairing.openapi";
 
 const PAIRING_OPERATION_IDS = ["posPairTerminal"] as const;
 
+/** RT-369: the device-authenticated credential rotation. */
+const ROTATE_OPERATION_ID = "posRotateTerminalToken";
+
+/** Every operation this contract declares. */
+const ALL_OPERATION_IDS = [...PAIRING_OPERATION_IDS, ROTATE_OPERATION_ID] as const;
+
 const POS_PAIR_PATH = "/api/pos/v1/terminals/pair";
+
+const POS_ROTATE_PATH = "/api/pos/v1/terminals/rotate";
 
 /**
  * Expected closed-set `error.code` enum on the contract's `Error`
@@ -247,19 +255,19 @@ describe("pos-terminal-pairing.yaml — operationId", () => {
     expect(op?.operationId).toBe("posPairTerminal");
   });
 
-  it("declares only the single operation (no smuggled-in operations)", () => {
+  it("declares only the pair and rotate operations (no smuggled-in operations)", () => {
     const declared = newContractOperations()
       .map(({ op }) => op.operationId)
       .filter((id): id is string => typeof id === "string")
       .sort();
-    expect(declared).toEqual([...PAIRING_OPERATION_IDS].sort());
+    expect(declared).toEqual([...ALL_OPERATION_IDS].sort());
   });
 
   it("does not collide with any operationId in the existing top-level contracts", () => {
     // Stop condition: this YAML must not edit or shadow any existing
     // operationId across `packages/contracts/openapi/*.yaml`.
     const collisions: string[] = [];
-    for (const id of PAIRING_OPERATION_IDS) {
+    for (const id of ALL_OPERATION_IDS) {
       if (topLevelOperationIds.has(id)) {
         collisions.push(id);
       }
@@ -284,19 +292,19 @@ describe("pos-terminal-pairing.yaml — unauthenticated bootstrap operation", ()
   });
 
   it("does NOT declare a document-level default security block", () => {
-    // Because pairing is the only operation and it is unauthenticated,
-    // there is no document-level default to inherit from. (Compare with
-    // vouchers.yaml which declares `security: [{ clerkJwt: [] }]` at
-    // the document level.)
+    // Each operation states its own security: pairing is unauthenticated,
+    // rotate (RT-369) takes the device bearer. There is no document-level
+    // default to inherit from. (Compare with vouchers.yaml which declares
+    // `security: [{ clerkJwt: [] }]` at the document level.)
     expect(pairingDoc.security).toBeUndefined();
   });
 
-  it("does NOT declare any securitySchemes (no clerkJwt, no cookieAuth, no other)", () => {
-    // No schemes are referenced anywhere in this contract because the
-    // single operation is unauthenticated. Declaring schemes without
-    // using them would mislead readers and tooling.
+  it("declares only the role-named `device` scheme (no clerkJwt, no cookieAuth)", () => {
+    // RT-369 adds the device bearer for the rotation; nothing else.
     const schemes = pairingDoc.components?.securitySchemes ?? {};
-    expect(Object.keys(schemes)).toEqual([]);
+    expect(Object.keys(schemes)).toEqual(["device"]);
+    expect(schemes["device"]).toMatchObject({ type: "http", scheme: "bearer" });
+    expect(schemes["device"]?.["bearerFormat"]).toBeUndefined();
   });
 });
 
@@ -622,5 +630,143 @@ describe("pos-terminal-pairing.yaml — failure-response coverage", () => {
     expect(retryAfter?.schema?.type).toBe("integer");
     expect(retryAfter?.schema?.minimum).toBe(1);
     expect(retryAfter?.schema?.maximum).toBe(300);
+  });
+});
+
+// ===========================================================================
+// 11. RT-369 — device token rotation (contract-first)
+// ===========================================================================
+describe("pos-terminal-pairing.yaml — posRotateTerminalToken (RT-369)", () => {
+  type RotateOperation = OperationObject & {
+    tags?: string[];
+    requestBody?: unknown;
+    "x-idempotency"?: string;
+    "x-runtime-status"?: string;
+    "x-runtime-note"?: string;
+  };
+  interface ParameterRef {
+    $ref?: string;
+  }
+  interface ResponseObject {
+    headers?: Record<string, unknown>;
+    content?: Record<string, { schema?: { $ref?: string } }>;
+  }
+  interface ParameterObject {
+    name?: string;
+    in?: string;
+    required?: boolean;
+    schema?: Record<string, unknown>;
+  }
+
+  const rotateOp = (): RotateOperation | undefined =>
+    pairingDoc.paths?.[POS_ROTATE_PATH]?.["post"] as RotateOperation | undefined;
+
+  const schema = (name: string): Record<string, unknown> =>
+    pairingDoc.components?.schemas?.[name] ?? {};
+
+  const responseSchemaRef = (status: string): string | undefined =>
+    (rotateOp()?.responses?.[status] as ResponseObject | undefined)?.content?.[
+      "application/json"
+    ]?.schema?.$ref;
+
+  it("is mounted at POST /api/pos/v1/terminals/rotate under the pos-terminal-pairing tag", () => {
+    expect(rotateOp()?.operationId).toBe(ROTATE_OPERATION_ID);
+    expect(rotateOp()?.tags).toEqual(["pos-terminal-pairing"]);
+  });
+
+  it("is contract-only with a runtime note until the RT-369 runtime ships", () => {
+    expect(rotateOp()?.["x-runtime-status"]).toBe("contract-only");
+    expect(rotateOp()?.["x-runtime-note"]?.trim().length).toBeGreaterThan(0);
+  });
+
+  it("is authenticated by the device bearer only", () => {
+    expect(rotateOp()?.security).toEqual([{ device: [] }]);
+  });
+
+  it("reads no request body", () => {
+    expect(rotateOp()?.requestBody).toBeUndefined();
+  });
+
+  it("requires a non-replayable Idempotency-Key header", () => {
+    expect(rotateOp()?.["x-idempotency"]).toBe("required");
+    const refs = (rotateOp()?.parameters ?? []) as ParameterRef[];
+    expect(refs).toEqual([{ $ref: "#/components/parameters/IdempotencyKey" }]);
+    const param = (
+      pairingDoc.components as { parameters?: Record<string, ParameterObject> } | undefined
+    )?.parameters?.["IdempotencyKey"];
+    expect(param).toMatchObject({ name: "Idempotency-Key", in: "header", required: true });
+    expect(param?.schema).toMatchObject({ type: "string", minLength: 16, maxLength: 128 });
+  });
+
+  it("declares exactly 200 / 400 / 401 / 409 / 425 / 500", () => {
+    expect(Object.keys(rotateOp()?.responses ?? {}).sort()).toEqual(
+      ["200", "400", "401", "409", "425", "500"].sort(),
+    );
+  });
+
+  it("answers 200 with TerminalRotateResponse and every error with its own RotateError", () => {
+    expect(responseSchemaRef("200")).toBe("#/components/schemas/TerminalRotateResponse");
+    for (const status of ["400", "401", "409", "500"]) {
+      expect(responseSchemaRef(status)).toBe("#/components/schemas/RotateError");
+    }
+    expect(responseSchemaRef("425")).toBe("#/components/schemas/IdempotencyInProgress");
+  });
+
+  it("425 declares Retry-After", () => {
+    const r425 = rotateOp()?.responses?.["425"] as ResponseObject | undefined;
+    expect(r425?.headers?.["Retry-After"]).toBeDefined();
+  });
+
+  it("TerminalRotateResponse is closed and requires the token, terminal id, expiry and hint", () => {
+    const s = schema("TerminalRotateResponse") as {
+      additionalProperties?: unknown;
+      required?: string[];
+      properties?: Record<string, Record<string, unknown>>;
+    };
+    expect(s.additionalProperties).toBe(false);
+    expect([...(s.required ?? [])].sort()).toEqual(
+      ["device_token", "expires_at", "rotate_after", "terminal_id"].sort(),
+    );
+    expect(Object.keys(s.properties ?? {}).sort()).toEqual(
+      ["device_token", "expires_at", "rotate_after", "terminal_id"].sort(),
+    );
+    expect(s.properties?.["device_token"]).toMatchObject({
+      type: "string",
+      minLength: 32,
+      maxLength: 512,
+    });
+    expect(s.properties?.["terminal_id"]).toMatchObject({ type: "string", format: "uuid" });
+    expect(s.properties?.["expires_at"]).toMatchObject({ type: "string", format: "date-time" });
+    expect(s.properties?.["rotate_after"]).toMatchObject({ type: "string", format: "date-time" });
+  });
+
+  it("RotateError is closed with its own error.code set; the pairing Error enum is unchanged", () => {
+    const s = schema("RotateError") as {
+      additionalProperties?: unknown;
+      properties?: {
+        error?: {
+          additionalProperties?: unknown;
+          properties?: { code?: { enum?: string[] } };
+        };
+      };
+    };
+    expect(s.additionalProperties).toBe(false);
+    expect(s.properties?.error?.additionalProperties).toBe(false);
+    expect([...(s.properties?.error?.properties?.code?.enum ?? [])].sort()).toEqual(
+      [
+        "unauthorized",
+        "idempotency_key_required",
+        "idempotency_key_malformed",
+        "idempotency_key_conflict",
+        "internal_error",
+      ].sort(),
+    );
+  });
+
+  it("names both RT-369 audit actions (RT-135 catalogue)", () => {
+    const description = pairingDoc.info as { description?: string } | undefined;
+    const text = description?.description ?? "";
+    expect(text).toContain("pos.device.rotated");
+    expect(text).toContain("pos.device.rotation_rejected");
   });
 });
