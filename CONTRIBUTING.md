@@ -55,3 +55,11 @@ Every PR should include:
   runtime wiring changes.
 
 Prefer small PRs that map to a specific spec task or reviewable behavior slice.
+
+### CodeRabbit review
+
+CodeRabbit is the primary AI reviewer, but it is capped at about one review per
+hour, so `.coderabbit.yaml` reviews only the first push of a PR automatically
+(`auto_incremental_review: false`). Add the `skip-coderabbit` label to opt a PR
+out. For High-tier PRs (the risk tiers in `.github/scripts/ci-tier.sh`,
+RT-582), comment `@coderabbitai review` on the final head once it is pushed.
