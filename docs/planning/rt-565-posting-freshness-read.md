@@ -184,13 +184,13 @@ Two costs, both on the console's polling path:
 
 | Option | |
 | --- | --- |
-| **A. `[GATED]` additive index migration in the build issue (Recommended)** | Four partial indexes, a tenant-first and a store-first one for each lookup. (1) `(tenant_id, posted_at DESC) WHERE posted_at IS NOT NULL`: tenant-wide last posting, one probe. (2) `(tenant_id, store_id, posted_at DESC) WHERE posted_at IS NOT NULL`: store-filtered last posting, one probe per store; for a membership scope, one probe per scoped store via `LATERAL … LIMIT 1`, then the max. (3) `(tenant_id, created_at) WHERE status = 'pending'`: tenant-wide oldest pending, one probe. (4) `(tenant_id, store_id, created_at) WHERE status = 'pending'`: per-store oldest pending, one probe per store. The pending count stays O(pending rows in scope) on (3)/(4). The existing `(tenant_id, sequence)` pending index stays: the posting feed uses it. No data change. Lock mode and `CONCURRENTLY` follow the repo's migration convention, decided in the build issue. |
+| **A. `[GATED]` additive index migration in the build issue (Recommended)** | Five partial indexes: a tenant-first and a store-first one for each lookup, plus one for the legacy-row existence probe. (1) `(tenant_id, posted_at DESC) WHERE posted_at IS NOT NULL`: tenant-wide last posting, one probe. (2) `(tenant_id, store_id, posted_at DESC) WHERE posted_at IS NOT NULL`: store-filtered last posting, one probe per store; for a membership scope, one probe per scoped store via `LATERAL … LIMIT 1`, then the max. (3) `(tenant_id, created_at) WHERE status = 'pending'`: tenant-wide oldest pending, one probe. (4) `(tenant_id, store_id, created_at) WHERE status = 'pending'`: per-store oldest pending, one probe per store. (5) `(tenant_id, store_id) WHERE status = 'posted' AND posted_at IS NULL`: the `unknown`-vs-`none` existence probe, tenant-wide (leading `tenant_id`) and per store. It holds only pre-`0042` posted rows. That set never grows, because every later posting sets `posted_at`, so the index stays small and fixed in size. The pending count stays O(pending rows in scope) on (3)/(4). The existing `(tenant_id, sequence)` pending index stays: the posting feed uses it. No data change. Lock mode and `CONCURRENTLY` follow the repo's migration convention, decided in the build issue. |
 | B. Ship without an index and measure | Defers a known linear cost onto the console's polling path. |
 
 **Selected: A** — recommended option, chosen by the coordinator under the owner's standing delegation of
 2026-10-17; owner may revisit. The build issue must attach `EXPLAIN (ANALYZE)` evidence on a seeded volume for
 each subquery in §5, in three scopes: tenant-wide, one `store_id`, and a multi-store membership scope, including
-a quiet store inside a busy tenant.
+a quiet store inside a busy tenant, and a `none` / `unknown` scope (no `posted_at` in scope) so probe (b) is covered.
 
 ## 3. Interaction with existing semantics (what does **not** change)
 
@@ -289,8 +289,9 @@ SELECT clock_timestamp() AS as_of,                         -- after the snapshot
        (SELECT posted_at FROM erpnext_posting_status       -- (a) index (1)
          WHERE posted_at IS NOT NULL
          ORDER BY posted_at DESC LIMIT 1)                  AS last_posted_at,
-       EXISTS (SELECT 1 FROM erpnext_posting_status        -- (b) unknown vs none
-                WHERE status = 'posted')                   AS any_posted,
+       EXISTS (SELECT 1 FROM erpnext_posting_status        -- (b) unknown vs none, index (5)
+                WHERE status = 'posted'
+                  AND posted_at IS NULL)                   AS any_legacy_posted,
        (SELECT created_at FROM erpnext_posting_status      -- (c) index (3)
          WHERE status = 'pending'
          ORDER BY created_at LIMIT 1)                      AS oldest_pending_at,
@@ -299,8 +300,10 @@ SELECT clock_timestamp() AS as_of,                         -- after the snapshot
 ```
 
 Every subquery also carries the `$1` / `$2` store predicates, and tenant RLS applies to all of them. Subquery (b)
-only matters when (a) is null; the build issue may write it as `CASE WHEN (a) IS NULL THEN EXISTS(…) END` so that
-it costs nothing once `posted_at` exists. Age = `GREATEST(0, floor(extract(epoch FROM as_of - oldest_pending_at)))`.
+only matters when (a) is null. Then no in-scope posted row has `posted_at`, so "any posted row" is the same as
+"any posted row with `posted_at IS NULL`", which is what (b) probes on index (5). It runs on every poll of a
+`none` / `unknown` scope, so it must be an index probe, not a scan. The build issue may also write it as
+`CASE WHEN (a) IS NULL THEN EXISTS(…) END`. Age = `GREATEST(0, floor(extract(epoch FROM as_of - oldest_pending_at)))`.
 
 `clock_timestamp()` is volatile, so the build issue must check that it is evaluated once per row of this
 single-row statement (it is in the target list of a `FROM`-less `SELECT`) and must not move it into a subquery.
