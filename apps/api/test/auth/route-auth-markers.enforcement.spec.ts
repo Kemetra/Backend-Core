@@ -150,6 +150,8 @@ describe("route auth markers are enforced at the route (RT-129 / A9)", () => {
 
   it("finds the marked routes (the sweep is not vacuous)", () => {
     expect(deviceBearer.map((r) => r.id).sort()).toEqual([
+      // RT-387: the POS read of the resolved shift variance policy (device bearer only).
+      "CashVariancePolicyDeviceController.read",
       // RT-113 BC2: the cashier-admissions surface (device bearer only).
       "CashierAdmissionsController.admit",
       "CashierAdmissionsController.end",
