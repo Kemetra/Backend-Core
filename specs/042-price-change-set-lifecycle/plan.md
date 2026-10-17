@@ -73,7 +73,9 @@ Rules:
   sorted Store ids each line's scope reaches over its interval, and it is part of `previewHash`. `submit`, `approve`
   and `publish` (the last under the publish lock) recompute the target Store set. If it differs → `409 stale_validation`,
   the set returns to `draft`, and it must be re-validated and **re-approved** against the new preview. Store-scope lines
-  are affected only when their own Store is deactivated or retired.
+  are affected only when their own Store is deactivated or retired. For the publish recheck to be atomic with Store
+  lifecycle writes, those writes take the same per-tenant pricing publish lock (§8). A Store created after publish is
+  covered by the bootstrap rule in spec 041 data-model §2.6.
 - **Approval is bound to the preview.** `approve` carries `previewHash`. A different hash → `409 preview_changed`.
   People approve what they saw (526–527).
 - **Publish is all-or-nothing.** One DB transaction under the per-tenant pricing publish lock: re-check head,
@@ -206,8 +208,13 @@ RT-284 (the Policy engine) is not delivered. Until it is, a narrow tenant-level 
   revisions; the author rolls back newest-first or authors a corrective set.
 - **Optimistic concurrency (532).** Every mutating call carries `expectedVersion` (or `If-Match`). A mismatch →
   `409 version_conflict`. Publish additionally re-checks the head revision (§3).
-- **Publish serialization.** Per-tenant transaction-scoped advisory lock around publish only. Authoring and
-  validation do not take it.
+- **Publish serialization.** Per-tenant transaction-scoped advisory lock around publish. Authoring and validation do
+  not take it. **Store lifecycle writes take it too**: create, activate, deactivate and retire, plus a time-zone change
+  (spec 038), because that moves `store_local` instants. They take it inside their own transaction, before mutating the
+  `stores` row. Then the §3 target-Store recheck, the revision fan-out and any Store lifecycle change are serialized:
+  either the Store change commits first and the publish recheck sees it (→ stale), or the publish commits first and the
+  new Store gets the head through the bootstrap row (spec 041 data-model §2.6). This puts one lock acquisition into the
+  Store write paths. That is an implementation change for PR-10, recorded here so it is not missed.
 - **Canary rollouts (533)** are out of v1 (OD-1 later list); the revision model leaves room for per-store activation in RT-487.
 
 ## 9. Reuse of the RT-281 primitive (OD-4)

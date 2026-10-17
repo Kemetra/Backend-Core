@@ -58,6 +58,7 @@ later without changing precedence.
 | `effective_to` | timestamptz null | exclusive |
 | `state` | text | `active` \| `superseded` |
 | `published_in_revision` | bigint | the revision that created it |
+| `carried_forward` | boolean | `true` for a head or tail row that only preserves an unchanged segment when a row is superseded (§2.3 move rule). Such rows change no resolved price |
 | `ended_in_revision` | bigint null | the revision that superseded it (a Zone move ends the old row and adds a new one) |
 
 Constraint: `EXCLUDE USING gist (tenant_id WITH =, price_book_id WITH =, store_id WITH =, tstzrange(effective_from, effective_to, '[)') WITH &&) WHERE (state = 'active')` (494). Needs `btree_gist`;
@@ -107,6 +108,7 @@ lists every superseded row, so replacing a later scheduled move is visible befor
 | `supersedes_event_id` | uuid null | lineage for "why" and audit |
 | `change_set_id` | uuid | spec 042 |
 | `source` | text | `change_set` \| `emergency` \| `rollback` \| `legacy_import` (RT-485) |
+| `carried_forward` | boolean | `true` for a replacement copy that only preserves an unchanged segment of a superseded event (spec 041 §3.1). Such rows change no resolved price |
 
 Constraints:
 
@@ -135,7 +137,7 @@ Indexes: `(tenant_id, product_id, sell_unit, price_book_id) WHERE state = 'activ
 | `rolls_back_revision_no` | bigint null | for `kind = rollback` |
 | `published_at` | timestamptz | |
 | `published_by` | uuid | |
-| `earliest_effective_at` | timestamptz null | earliest absolute instant at which **any row the revision creates or ends** takes effect: price events **and** Zone-membership rows (for example a revision holding only a future `move_store_zone`). `store_local` bounds are converted with each affected Store's zone and the minimum is taken. Used for the scheduled/active display status (spec 042 §3) and G4 pre-delivery |
+| `earliest_effective_at` | timestamptz null | earliest absolute instant at which the revision **changes resolved pricing** for any Store. It is the minimum, over price events **and** Zone-membership rows, of: the start of every row it creates with `carried_forward = false`, and the instant where every row it supersedes stops being represented (the end of that row's carried-forward head, or its start when there is no head). Carried-forward rows are excluded, because they preserve the past. A revision holding only a future `move_store_zone` at M therefore gets M, not the start of the old membership. `store_local` bounds are converted with each affected Store's zone. Used for the scheduled/active display status (spec 042 §3) and G4 pre-delivery |
 
 Insert-only. No `UPDATE` or `DELETE` (530).
 
@@ -165,6 +167,14 @@ PK `(tenant_id, store_id, revision_no)`. **Store applied revision** (OD-3) =
 `max(revision_no) for the store`. It is monotonic per Store and sparse, like `catalog_change_log.sequence` (F12).
 POS applies whole store revisions (628). Receipt/apply state per device is **not** here; it is PR-05's
 G4a-gated table, shaped by RT-487.
+
+**Bootstrap for new Stores.** A Store created or (re)activated after some revisions were published has no fan-out rows
+for them, yet it inherits their Book and default-Zone events (including future ones not yet effective). So the Store
+lifecycle transaction that creates or activates a Store also inserts a **bootstrap row** `(store_id, head revision_no)`,
+under the pricing publish lock (spec 042 §8). Its applied revision starts at the head. Because a revision is cumulative
+(resolution at R sees everything visible at R), POS's first snapshot at that revision already contains every published
+current and future price for the Store. Without the bootstrap row, a Store would resolve prices from revisions POS is
+never told to apply.
 
 ### 2.7 Seam: `store_price_book_assignments` (not in v1)
 
