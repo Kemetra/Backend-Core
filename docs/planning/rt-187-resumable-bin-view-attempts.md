@@ -71,21 +71,29 @@ A window 0 under a new `attemptRef` supersedes the incomplete attempt in Backend
 
 The "resume" gap is therefore **connector-side persistence**. It is not a missing Backend-Core primitive.
 
-### 2.3 The budget cannot run out on today's sizes
+### 2.3 The budget runs out only when DP2 or ERPNext is degraded
 
 * Backend-Core advertises `itemWindow.maxWindows = BIN_VIEW_MAX_WINDOWS = 20` and `maxItems = 500`
   (`snapshot-report.dto.ts`). The most a paged read can carry is 10,000 Bin items.
 * The connector budget is `20 × 30 + 60 = 660 s`, well under the 1200 s cap. The "`maxWindows` > ~38" case in the
   ticket is **unreachable** while Backend-Core advertises 20.
-* `AttemptDeadline.check` refuses a window when `elapsed + 30 s > 660 s`. For 20 windows to fail that check, the
-  Bin read plus the window calls must average close to 30 s per call. 30 s is also the transport timeout, so at
-  that latency calls would already be failing as transport errors.
+* `AttemptDeadline.check` refuses a window when `elapsed + 30 s > 660 s`, and `elapsed` includes the ERPNext Bin
+  read, which completes before window 0 is sent (§2.2). The deadline can therefore fire for two reasons:
+  * **slow DP2:** the window calls average close to 30 s each. 30 s is also the transport timeout, so at that
+    latency calls would already be failing as transport errors;
+  * **slow ERPNext read:** the keyset Bin read (at most 21 pages of ≤ 500 rows for one warehouse) takes more than
+    about 630 s. Then window 0 is refused even when every DP2 call is fast. The read is not timed on `main`, so
+    its duration is NOT VERIFIED. A read that slow means ERPNext or its database is degraded.
 * A warehouse above 10,000 items is refused deterministically with `bin_view.window.limit_exceeded`. Nothing is
   reported and nothing is retried. That is the **capacity** limit. It is separate from the deadline, and resuming
   would not help with it.
 
-`attempt_deadline` abandonment therefore needs a DP2 that is **persistently** near its transport timeout. That is an
-outage, and the operational answer to an outage is an alert, not a protocol.
+`attempt_deadline` abandonment therefore needs either a DP2 that is **persistently** near its transport timeout or
+an ERPNext Bin read that **persistently** takes more than about 10 minutes. Both are degraded systems, and the
+operational answer is an alert, not a protocol. A resumable attempt would not help the slow-read case at all: the
+read happens before any window, so a resume has nothing to continue. D4 therefore alerts on `deadline_reached` with
+its `window_seq`. A `window_seq` of 0 points at the ERPNext read, and a higher one points at DP2. §4 adds a
+read-duration trigger.
 
 ### 2.4 Gap found: an abandoned run stays `running`
 
@@ -96,15 +104,27 @@ When the connector abandons a request, for any reason (`attempt_deadline`, retry
 
 * the run stays `running` indefinitely, with `finished_at` NULL;
 * the RT-179 scheduled sweep skips that store from then on (`skipped_running`,
-  `stock-run-sweep.repository.ts:142-151`), so **scheduled stock reconciliation stops for that store** until someone
-  triggers an on-demand run (on-demand runs are not blocked);
+  `stock-run-sweep.repository.ts:142-151`), so **scheduled stock reconciliation stops for that store**. An on-demand
+  run does **not** clear this. `createStockReconciliationRun` only inserts another row, and the sweep keeps skipping
+  while any run of the store is `running`. An on-demand run gives a one-off reconciliation, but the abandoned row
+  blocks every later scheduled run until something makes it terminal (D5);
 * the run stays in the bin-view feed, but the connector cursor has already passed it, so nothing offers it again
   until a `snapshot_required` re-baseline.
 
 This affects options (a), (b) and (c) alike, and resuming would not remove it, since a resumed attempt can also be
 abandoned. It is the real failure-and-expiry question of this ticket. See D5.
 
-### 2.5 Staleness grows with completion delay
+### 2.5 Gap found: windows of one attempt are not bound to one warehouse
+
+`ErpnextBinViewService.lockRun` re-resolves the store's **currently active** `stock` warehouse map on every window,
+and `buildStored` writes that current `erpnext_warehouse_ref` without comparing it with the stored report's.
+Suppose the store is remapped (old map retired, new one active) between window `k` and window `k+1` of one attempt.
+Window `k+1` is then accepted, and the whole report, including windows read from the old warehouse, is labelled
+with the new warehouse and reconciled against it. On `main` this can only happen inside one attempt of at most
+660 s, so it is narrow. A resumable attempt with a 40 min lifetime would widen it. §5.1 adds the binding rule, and
+F1 proposes the same check on `main`.
+
+### 2.6 Staleness grows with completion delay
 
 The 017 processor compares the Bin snapshot (as of `readAt`) with DP2 on-hand **read at compare time**
 (`reconciliation-run.processor.ts:178-192`, `SUM(stock_movements.quantity)` with no time bound). Every sale or
@@ -121,7 +141,7 @@ Each decision lists the options, the one marked **Recommended**, and the selecti
 
 | Option | For | Against |
 | --- | --- | --- |
-| **A. Not on `main`'s current bounds; reopen on pilot evidence (Recommended)** | §2.3: 20 windows give a 660 s budget, and the deadline fires only near DP2's transport timeout. The size limit (10,000 items) is a separate, deterministic refusal. | No witnessed pilot data. Warehouse sizes and DP2 latency are NOT VERIFIED. |
+| **A. Not on `main`'s current bounds; reopen on pilot evidence (Recommended)** | §2.3: 20 windows give a 660 s budget, and the deadline fires only when DP2 is near its transport timeout or the ERPNext Bin read takes more than about 10 minutes. The size limit (10,000 items) is a separate, deterministic refusal. | No witnessed pilot data. Warehouse sizes, DP2 latency and Bin-read duration are NOT VERIFIED. |
 | B. Realistic; build (a) now | Removes the limit before the pilot. | Builds a cross-repo protocol (contract, runtime, connector persistence) for a case `main` cannot currently reach, without evidence. |
 
 **Selected: A** — recommended option, chosen by the coordinator under the owner's standing delegation of
@@ -131,7 +151,7 @@ Each decision lists the options, the one marked **Recommended**, and the selecti
 
 | Option | For | Against |
 | --- | --- | --- |
-| (a) Resumable attempts now | Survives a slow DP2 across ticks. | Needs connector snapshot persistence (Redis or a DocType), a Backend-Core attempt TTL, contract text, tests on both sides and an ADR, all for an unreached case. It also widens the staleness gap (§2.5). |
+| (a) Resumable attempts now | Survives a slow DP2 across ticks. | Needs connector snapshot persistence (Redis or a DocType), a Backend-Core attempt TTL, contract text, tests on both sides and an ADR, all for an unreached case. It also widens the staleness gap (§2.6). |
 | (b) Larger `maxItems` / smaller `maxWindows` | Fewer calls per attempt. | `maxItems` is capped at 500 by the contract schema (`BinViewSnapshotReport.entries.maxItems`) and by RT-189's stored-report size concern. A smaller `maxWindows` only lowers capacity, and neither change helps a slow DP2. |
 | **(c) Accept the limit, alert on abandonment, and keep (a) specified but dormant (Recommended)** | Matches §2.3. The alert covers the one realistic cause (a DP2 near outage). §5 keeps (a) ready to build, and the trigger in §4 says when. | A store whose report genuinely needs more than 660 s cannot reconcile until (a) is built. Today that case does not exist. |
 
@@ -148,7 +168,7 @@ Consequences:
 
 | Option | For | Against |
 | --- | --- | --- |
-| **A. Backend-Core TTL from window 0's server-clock `recordedAt`: 40 minutes (Recommended)** | Server clock, so it is a real security and expiry clock (§X: `readAt` is connector-reported and is never a security clock). Five 5-minute retry ticks (25 min) plus one full 660 s attempt is about 36 min, so 40 min covers the connector's whole retry horizon, including a resume on the last retry tick. It bounds the §2.5 staleness gap. | One new constant, `BIN_VIEW_ATTEMPT_TTL_SECONDS`. |
+| **A. Backend-Core TTL from window 0's server-clock `recordedAt`: 40 minutes (Recommended)** | Server clock, so it is a real security and expiry clock (§X: `readAt` is connector-reported and is never a security clock). Five 5-minute retry ticks (25 min) plus one full 660 s attempt is about 36 min, so 40 min covers the connector's whole retry horizon, including a resume on the last retry tick. It bounds the §2.6 staleness gap. | One new constant, `BIN_VIEW_ATTEMPT_TTL_SECONDS`. |
 | B. TTL from `readAt` | Measures data age directly. | `readAt` is untrusted (§X / FR-016). A skewed connector clock would expire attempts early or never. |
 | C. No TTL (today) | Nothing to build. | A resume could complete days later under a stale `readAt`. |
 
@@ -159,7 +179,7 @@ owner's standing delegation of 2026-10-17; owner may revisit.
 
 | Option | For | Against |
 | --- | --- | --- |
-| **A. Alert on the connector's existing events, plus a Backend-Core stranded-run signal (Recommended)** | The connector already logs `bin_view.report.incomplete_abandoned` (with `reason`), `bin_view.report.deadline_reached` and `bin_view.window.limit_exceeded`. Backend-Core is the only side that sees a run stuck in `running` (§2.4), whatever the connector did. | Two places to watch. |
+| **A. Alert on the connector's existing events, plus a Backend-Core stranded-run signal (Recommended)** | The connector already logs `bin_view.report.incomplete_abandoned` (with `reason`), `bin_view.report.deadline_reached` and `bin_view.window.limit_exceeded`. Backend-Core is the only side that sees a run stuck in `running` (§2.4), whatever the connector did. The `window_seq` on `deadline_reached` separates a slow ERPNext read (0) from a slow DP2 (> 0). | Two places to watch. |
 | B. Connector events only | No Backend-Core change. | Misses a stranded run caused by a dead connector, which emits nothing. |
 
 **Selected: A** — recommended option, chosen by the coordinator under the owner's standing delegation of
@@ -220,6 +240,11 @@ Reopen D1/D2 and build §5 when pilot evidence shows **any** of the following:
    `BIN_VIEW_MAX_WINDOWS` above about 38 would then push the budget to the 1200 s cap;
 3. a DP2 `binViewReportSnapshot` p95 latency above **10 s** on pilot hardware.
 
+A `deadline_reached` at `window_seq` 0 (§2.3, slow ERPNext read) is **not** a trigger for (a), because resuming cannot
+shorten a read that happens before any window. It is a trigger for a separate connector-side fix: time the read,
+and either split the read budget from the window budget or raise the read allowance. That fix would be planned on
+its own issue.
+
 Below these, (c) stands.
 
 ## 5. Dormant (a) design — resumable attempt contract (not applied)
@@ -230,7 +255,11 @@ This is the specification a later `[GATED]` issue would apply. It would go into 
 ### 5.1 Continuation semantics (no new token)
 
 * **No continuation token.** The continuation identity is the existing tuple
-  `(requestRef, attemptRef, next windowSeq, readAt)`. The contract text would state normatively that windows of one
+  `(requestRef, attemptRef, next windowSeq, readAt)`, **bound to the attempt's warehouse** (§2.5). Backend-Core
+  refuses window `k > 0` with 409 `window_sequence_conflict`, with no side effects, when the run's currently active
+  `erpnext_warehouse_ref` differs from the stored report's `erpnextWarehouseRef`. The connector keys its persisted
+  snapshot by `(requestRef, attemptRef, erpnextWarehouseRef)`. After a remap, the connector's next pull or retry
+  starts a fresh attempt from window 0 against the new warehouse. The contract text would state normatively that windows of one
   attempt **may** be sent by different processes and in different ticks, within the attempt lifetime (5.3).
 * **Finding the position.** The connector keeps its own acknowledgement log (the highest acknowledged `windowSeq`)
   next to the snapshot. If that log is lost, it resends from window 0 of the **same** attempt. Recorded windows
@@ -246,7 +275,7 @@ This is the specification a later `[GATED]` issue would apply. It would go into 
   is a normative connector obligation, covered by a connector test.
 * **ERPNext changes mid-attempt** are deliberately not reflected. The attempt is a point-in-time view at `readAt`.
   Changes after `readAt` show up in the next run. The staleness this adds against DP2 on-hand, which is read at
-  compare time (§2.5), is bounded by the attempt TTL (5.3).
+  compare time (§2.6), is bounded by the attempt TTL (5.3).
 * The connector persists the snapshot (Redis, under the same key family as the retry set) with a TTL **≤** the
   Backend-Core attempt TTL, so it never resends an attempt that Backend-Core has already expired.
 
@@ -278,6 +307,7 @@ This is the specification a later `[GATED]` issue would apply. It would go into 
 | Resume after attempt TTL | 409 `window_sequence_conflict` | Fresh attempt from window 0 (existing handling) |
 | Run expired (D5) | Non-disclosing 404 | `bin_view.report.stale`, terminal (existing) |
 | Snapshot lost on the connector | — | Fresh attempt (supersede), as on `main` today |
+| Store remapped mid-attempt | 409 `window_sequence_conflict` (warehouse differs, §5.1) | Fresh attempt against the new warehouse |
 | Capacity above `maxWindows × maxItems` | — | `limit_exceeded`, nothing reported (unchanged) |
 
 ### 5.6 Tests the activating issue would need
@@ -287,23 +317,25 @@ This is the specification a later `[GATED]` issue would apply. It would go into 
 * Connector: resume continues after the last acknowledged window with the original `readAt` and rows (no Bin re-read,
   asserted with the fake reader's call count); a lost acknowledgement log resends from window 0 of the same attempt
   and recovers; a snapshot past its TTL forces a fresh attempt.
+* Both sides: a remap between windows `k` and `k+1` gives 409 on `k+1`, and the next attempt reports the new
+  warehouse only.
 
 ## 6. Proposed follow-up work (not created)
 
 | # | Repo | Work Mode | Scope | Gate |
 | --- | --- | --- | --- | --- |
-| F1 | Backend-Core | Implementation | D5 stock-run expiry sweep (`running → failed`, `summary.failure`, audit row) and the D4 `erpnext_stock_run_stranded` gauge plus `erpnext_stock_run_expired_total` counter. No migration, no contract change. | Run-lifecycle change: owner approval on the issue. |
+| F1 | Backend-Core | Implementation | D5 stock-run expiry sweep (`running → failed`, `summary.failure`, audit row) and the D4 `erpnext_stock_run_stranded` gauge plus `erpnext_stock_run_expired_total` counter. Also the §2.5 warehouse binding on `main`: window `k > 0` whose run's active warehouse differs from the stored report's → 409 `window_sequence_conflict`. No migration. The binding adds one listed cause to an existing 409 code, so it needs the stock-view contract text updated under `[GATED]`. | Run-lifecycle change: owner approval on the issue. |
 | F2 | ERPNext-Connector | Implementation (config) | D4 monitors on `incomplete_abandoned` and `limit_exceeded`, within the RT-629 allowlist. | Owner (observability destinations are already approved). |
 | F3 | Backend-Core + Connector | Planning → Implementation | Activate §5 only if a §4 trigger fires: ADR in Orchestrator, `stock-view.yaml` 1.4.0-draft, runtime TTL, connector snapshot persistence. | `[GATED]` contract plus a cross-repo issue. |
 
 ## 7. Risks and assumptions
 
-* **No pilot data.** D1 rests on code-enforced bounds (20 × 500, a 660 s budget, a 30 s transport timeout). If the
+* **No pilot data.** D1 rests on code-enforced bounds (20 × 500, a 660 s budget, a 30 s transport timeout). The ERPNext Bin-read duration is not measured on `main`. If the
   pilot shows large warehouses or slow DP2 calls, §4 reopens the decision.
 * **Bin-read consistency across keyset pages** is a connector assumption that is not bench-verified (REPEATABLE READ,
   `frappe_glue.py`). It is unchanged by this decision and already a recorded connector follow-up.
 * **§2.4 is a live gap on `main`.** Until F1 ships, an abandoned request silently stops scheduled reconciliation for
-  its store. An operator can still trigger an on-demand run.
+  its store. An on-demand run gives a one-off reconciliation, but it does not clear the block (§2.4).
 * The 2 h run TTL and the 40 min attempt TTL are proposals. F1 and F3 confirm them against the cron cadence in force
   when they are built.
 * §2.1 describes behaviour that `main`'s window rules and tests imply. A resume across processes has not been
