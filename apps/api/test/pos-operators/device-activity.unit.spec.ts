@@ -10,6 +10,7 @@ import type { Pool } from "pg";
 
 import {
   DEVICE_ACTIVITY_INTERVAL_MS,
+  DEVICE_ACTIVITY_MAX_IN_FLIGHT,
   DEVICE_ACTIVITY_MAX_TRACKED,
   DeviceActivityRecorder,
 } from "../../src/pos-operators/device-activity";
@@ -86,6 +87,51 @@ describe("DeviceActivityRecorder (RT-370)", () => {
     expect(touchParams).toEqual([DEVICE.id, DEVICE.tenantId, DEVICE_ACTIVITY_INTERVAL_MS / 1000]);
   });
 
+  it("bounds the write inside its transaction: lock_timeout 1s and statement_timeout 2s before the UPDATE", async () => {
+    const recorder = new DeviceActivityRecorder(() => 1_000_000);
+    const { pool, statements } = domainPool();
+    recorder.record(pool, DEVICE);
+    await recorder.flush();
+    const begin = statements.indexOf("BEGIN");
+    const lockTimeout = statements.findIndex((q) => /^SET LOCAL lock_timeout = '1s'$/.test(q));
+    const statementTimeout = statements.findIndex((q) => /^SET LOCAL statement_timeout = '2s'$/.test(q));
+    const update = statements.findIndex((q) => /\bupdate\s+devices\b/i.test(q));
+    expect(begin).toBeGreaterThanOrEqual(0);
+    expect(lockTimeout).toBeGreaterThan(begin);
+    expect(statementTimeout).toBeGreaterThan(begin);
+    expect(update).toBeGreaterThan(Math.max(lockTimeout, statementTimeout));
+  });
+
+  it("never holds more than DEVICE_ACTIVITY_MAX_IN_FLIGHT domain connections: extra devices are skipped and counted", async () => {
+    const recorder = new DeviceActivityRecorder(() => 1_000_000);
+    const release: Array<() => void> = [];
+    const client = { query: jest.fn(async () => ({ rows: [], rowCount: 1 })), release: jest.fn() };
+    const connect = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          release.push(() => resolve(client));
+        }),
+    );
+    const pool = { connect } as unknown as Pool;
+    const devices = Array.from({ length: DEVICE_ACTIVITY_MAX_IN_FLIGHT + 3 }, (_, i) => ({
+      id: `device-${i}`,
+      tenantId: DEVICE.tenantId,
+    }));
+    for (const d of devices) recorder.record(pool, d);
+    await new Promise((r) => setImmediate(r));
+    expect(connect).toHaveBeenCalledTimes(DEVICE_ACTIVITY_MAX_IN_FLIGHT);
+    expect(recorder.skippedCount()).toBe(3);
+
+    for (const r of release) r();
+    await recorder.flush();
+    // A skipped device is not marked: it is written on its next request once a slot is free.
+    recorder.record(pool, devices[DEVICE_ACTIVITY_MAX_IN_FLIGHT]!);
+    await new Promise((r) => setImmediate(r));
+    expect(connect).toHaveBeenCalledTimes(DEVICE_ACTIVITY_MAX_IN_FLIGHT + 1);
+    release[DEVICE_ACTIVITY_MAX_IN_FLIGHT]!();
+    await recorder.flush();
+  });
+
   it("does not run the write on the caller's tick (the request never waits for it)", async () => {
     const recorder = new DeviceActivityRecorder(() => 1_000_000);
     const { pool, statements } = domainPool();
@@ -126,8 +172,9 @@ describe("DeviceActivityRecorder (RT-370)", () => {
     const { pool } = domainPool();
     for (let i = 0; i <= DEVICE_ACTIVITY_MAX_TRACKED; i += 1) {
       recorder.record(pool, { id: `device-${i}`, tenantId: DEVICE.tenantId });
+      // Stay under the in-flight cap: a skipped device is not marked.
+      await recorder.flush();
     }
-    await recorder.flush();
     expect(recorder.trackedCount()).toBe(DEVICE_ACTIVITY_MAX_TRACKED);
   });
 

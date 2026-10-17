@@ -4,10 +4,20 @@
  * {@link DEVICE_ACTIVITY_INTERVAL_MS} per device.
  *
  * Best effort, never in the request's way: the request is already
- * authenticated when this runs. The write starts on a later tick, its
- * outcome is never awaited by the caller, and any error is logged (device id
- * and error code only) and dropped. A failed write only leaves `lastSeenAt`
- * older; it never grants or refuses anything. There is no idle auto-revoke.
+ * authenticated when this runs. The write is chained on a resolved promise,
+ * so it starts after `record()` returns and its outcome is never awaited by
+ * the caller; any error is logged (device id and error code only) and
+ * dropped. A failed write only leaves `lastSeenAt` older; it never grants or
+ * refuses anything. There is no idle auto-revoke.
+ *
+ * It can never drain the domain pool (pg default max 10):
+ *   - at most {@link DEVICE_ACTIVITY_MAX_IN_FLIGHT} writes are in flight per
+ *     process; a device seen while the cap is full is skipped (not marked,
+ *     so its next request tries again) and counted, with one warn log per
+ *     saturation episode and one info log with the total when it clears;
+ *   - each write's transaction sets `lock_timeout = 1s` and
+ *     `statement_timeout = 2s` (SET LOCAL), so a table lock (a migration's
+ *     SHARE ROW EXCLUSIVE) or a slow database makes it give up, not wait.
  *
  * Two throttle layers:
  *   1. in process: a mark per device, set BEFORE the write starts, so a burst
@@ -42,6 +52,8 @@ import type { Pool } from "pg";
 export const DEVICE_ACTIVITY_INTERVAL_MS = 5 * 60_000;
 /** Devices whose last attempt a process remembers; the oldest is dropped first. */
 export const DEVICE_ACTIVITY_MAX_TRACKED = 10_000;
+/** Activity writes (so domain-pool connections) one process may hold at once. */
+export const DEVICE_ACTIVITY_MAX_IN_FLIGHT = 4;
 
 /** The authenticated device: its id and the tenant whose context the write runs in. */
 export interface ActiveDevice {
@@ -69,14 +81,19 @@ function errorCode(err: unknown): string {
 }
 
 async function touchLastSeen(pool: Pool, device: ActiveDevice): Promise<void> {
-  await runWithTenantContext(pool, { tenantId: device.tenantId, isPlatformAdmin: false }, (client) =>
-    client.query(TOUCH_SQL, [device.id, device.tenantId, DEVICE_ACTIVITY_INTERVAL_MS / 1000]),
-  );
+  await runWithTenantContext(pool, { tenantId: device.tenantId, isPlatformAdmin: false }, async (client) => {
+    // Give up rather than wait: a timeout is an error, logged and dropped.
+    await client.query("SET LOCAL lock_timeout = '1s'");
+    await client.query("SET LOCAL statement_timeout = '2s'");
+    await client.query(TOUCH_SQL, [device.id, device.tenantId, DEVICE_ACTIVITY_INTERVAL_MS / 1000]);
+  });
 }
 
 export class DeviceActivityRecorder {
   private readonly lastAttemptMs = new Map<string, number>();
   private readonly pending = new Set<Promise<void>>();
+  private skipped = 0;
+  private skippedThisEpisode = 0;
 
   constructor(private readonly clock: () => number = Date.now) {}
 
@@ -85,6 +102,10 @@ export class DeviceActivityRecorder {
     const now = this.clock();
     const last = this.lastAttemptMs.get(device.id);
     if (last !== undefined && now - last < DEVICE_ACTIVITY_INTERVAL_MS) return;
+    if (this.pending.size >= DEVICE_ACTIVITY_MAX_IN_FLIGHT) {
+      this.skip(device);
+      return;
+    }
     this.mark(device.id, now);
 
     const write: Promise<void> = Promise.resolve()
@@ -94,11 +115,12 @@ export class DeviceActivityRecorder {
       })
       .finally(() => {
         this.pending.delete(write);
+        this.endEpisodeIfClear();
       });
     this.pending.add(write);
   }
 
-  /** Wait for every write in flight (tests, shutdown). Never rejects. */
+  /** Wait for every write in flight, including any recorded meanwhile (tests). Never rejects. */
   async flush(): Promise<void> {
     if (this.pending.size === 0) return;
     await Promise.all(this.pending);
@@ -111,9 +133,31 @@ export class DeviceActivityRecorder {
     this.lastAttemptMs.clear();
   }
 
+  /** Devices skipped because the in-flight cap was full, since start (tests). */
+  skippedCount(): number {
+    return this.skipped;
+  }
+
   /** How many devices this process remembers (tests). */
   trackedCount(): number {
     return this.lastAttemptMs.size;
+  }
+
+  private skip(device: ActiveDevice): void {
+    this.skipped += 1;
+    this.skippedThisEpisode += 1;
+    if (this.skippedThisEpisode === 1) {
+      log().warn(
+        { device_id: device.id, in_flight: this.pending.size, max_in_flight: DEVICE_ACTIVITY_MAX_IN_FLIGHT },
+        "device activity: in-flight cap reached; last_seen_at writes skipped until a slot frees",
+      );
+    }
+  }
+
+  private endEpisodeIfClear(): void {
+    if (this.skippedThisEpisode === 0 || this.pending.size >= DEVICE_ACTIVITY_MAX_IN_FLIGHT) return;
+    log().info({ skipped: this.skippedThisEpisode }, "device activity: in-flight cap cleared");
+    this.skippedThisEpisode = 0;
   }
 
   private mark(deviceId: string, now: number): void {
