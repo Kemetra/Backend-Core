@@ -87,7 +87,6 @@ beforeAll(async () => {
 }, 180_000);
 afterAll(async () => {
   delete process.env[TENDERS_FLAG];
-  delete process.env["POS_SALE_TENDER_SAME_METHOD_ENABLED"];
   disableReturns();
   await stopCaptureHarness(h);
 }, 60_000);
@@ -98,23 +97,27 @@ beforeEach(() => {
   enableReturns();
   if (h.harness) h.harness.contextGuard.userId = APPROVER_TENANT_ADMIN;
 });
+
+const SALES = "SELECT id FROM sales WHERE source_system = 'pos-1'";
+const RETURNS = `SELECT id FROM sale_returns WHERE sale_id IN (${SALES})`;
+const CLEANUP: readonly string[] = [
+  `DELETE FROM sale_credit_reversal_tenders`,
+  `DELETE FROM sale_credit_reversals`,
+  `DELETE FROM sale_approval_uses`,
+  `DELETE FROM sale_return_tenders WHERE return_id IN (${RETURNS})`,
+  `DELETE FROM sale_return_lines WHERE return_id IN (${RETURNS})`,
+  `DELETE FROM sale_returns WHERE sale_id IN (${SALES})`,
+  `DELETE FROM sale_voids WHERE sale_id IN (${SALES})`,
+  `DELETE FROM sale_responsibilities WHERE sale_id IN (${SALES})`,
+  `DELETE FROM sale_tenders WHERE sale_id IN (${SALES})`,
+  `DELETE FROM sale_lines WHERE sale_id IN (${SALES})`,
+  `DELETE FROM sales WHERE source_system = 'pos-1'`,
+  `DELETE FROM outbox_events`,
+  `UPDATE payer_account SET status = 'active', external_ref = 'CUST-577' WHERE id = '${PAYER}'`,
+];
 afterEach(async () => {
   if (!h.harness) return;
-  const q = (sql: string) => h.harness!.env.admin.query(sql);
-  const sales = "SELECT id FROM sales WHERE source_system = 'pos-1'";
-  await q(`DELETE FROM sale_credit_reversal_tenders`);
-  await q(`DELETE FROM sale_credit_reversals`);
-  await q(`DELETE FROM sale_approval_uses`);
-  await q(`DELETE FROM sale_return_tenders WHERE return_id IN (SELECT id FROM sale_returns WHERE sale_id IN (${sales}))`);
-  await q(`DELETE FROM sale_return_lines WHERE return_id IN (SELECT id FROM sale_returns WHERE sale_id IN (${sales}))`);
-  await q(`DELETE FROM sale_returns WHERE sale_id IN (${sales})`);
-  await q(`DELETE FROM sale_voids WHERE sale_id IN (${sales})`);
-  await q(`DELETE FROM sale_responsibilities WHERE sale_id IN (${sales})`);
-  await q(`DELETE FROM sale_tenders WHERE sale_id IN (${sales})`);
-  await q(`DELETE FROM sale_lines WHERE sale_id IN (${sales})`);
-  await q(`DELETE FROM sales WHERE source_system = 'pos-1'`);
-  await q(`DELETE FROM outbox_events`);
-  await q(`UPDATE payer_account SET status = 'active', external_ref = 'CUST-577' WHERE id = '${PAYER}'`);
+  for (const sql of CLEANUP) await h.harness.env.admin.query(sql);
 });
 
 const skip = (): boolean => h.dockerSkipped || !h.harness;
@@ -124,6 +127,8 @@ const nextKey = (): string => idempKey(`rt577c${(keySeq += 1)}`);
 let approvalSeq = 0;
 const nextApprovalId = (): string => `0a000000-0000-7000-8000-${(0x5772000000 + (approvalSeq += 1)).toString(16).padStart(12, "0")}`;
 
+type Body = Record<string, unknown>;
+
 interface Line {
   readonly lineName: string;
   readonly unitPrice: string;
@@ -132,7 +137,7 @@ interface Line {
 
 interface CaptureSpec {
   readonly externalId: string;
-  readonly tenders?: ReadonlyArray<Record<string, unknown>>;
+  readonly tenders?: ReadonlyArray<Body>;
   readonly credit?: string;
   readonly lines?: ReadonlyArray<Line>;
   readonly posTotal?: string;
@@ -141,49 +146,59 @@ interface CaptureSpec {
 
 interface CapturedSale {
   readonly saleRef: string;
+  /** Line refs in REQUEST order (the projection's order is not the request's). */
   readonly lineRefs: string[];
 }
 
-/** Capture as the store manager (the seller). Defaults: USD 12.5 = cash 2.5 + credit 10, lines 5 + 7.5. */
-async function captureSale(spec: CaptureSpec): Promise<CapturedSale> {
-  const harness = h.harness!;
-  const actor = harness.contextGuard.userId;
-  harness.contextGuard.userId = APPROVER_MANAGER;
+const DEFAULT_LINES: ReadonlyArray<Line> = [
+  { lineName: "Widget", unitPrice: "5.0000", lineAmount: "5.0000" },
+  { lineName: "Gadget", unitPrice: "7.5000", lineAmount: "7.5000" },
+];
+
+/** The capture body. Defaults: USD 12.5 = cash 2.5 + credit 10, lines 5 + 7.5. */
+function captureRequest(spec: CaptureSpec): { body: Body; lines: ReadonlyArray<Line> } {
   const currency = spec.currency ?? "USD";
-  const lines = (spec.lines ?? [
-    { lineName: "Widget", unitPrice: "5.0000", lineAmount: "5.0000" },
-    { lineName: "Gadget", unitPrice: "7.5000", lineAmount: "7.5000" },
-  ]).map((l) => ({ ...l, currencyCode: currency, quantity: "1", unit: "ea" }));
-  const credit = spec.credit === undefined ? "10" : spec.credit;
+  const lines = spec.lines ?? DEFAULT_LINES;
+  const credit = spec.credit ?? "10";
+  const tenders = spec.tenders ?? [{ method: "cash", amount: "2.5" }];
   const body = captureBody({
     externalId: spec.externalId,
     currencyCode: currency,
     posTotal: spec.posTotal ?? "12.5000",
-    lines,
-    ...(spec.tenders === undefined ? { tenders: [{ method: "cash", amount: "2.5" }] } : spec.tenders.length === 0 ? {} : { tenders: spec.tenders }),
+    lines: lines.map((l) => ({ ...l, currencyCode: currency, quantity: "1", unit: "ea" })),
+    ...(tenders.length === 0 ? {} : { tenders }),
     ...(credit === "0" ? {} : { responsibilities: [{ payerRef: PAYER, amount: credit, sequence: 1 }] }),
   });
+  return { body, lines };
+}
+
+/** Capture as the store manager (the seller), then restore the actor. */
+async function captureSale(spec: CaptureSpec): Promise<CapturedSale> {
+  const harness = h.harness!;
+  const actor = harness.contextGuard.userId;
+  harness.contextGuard.userId = APPROVER_MANAGER;
+  const { body, lines } = captureRequest(spec);
   const res = await harness.http().post("/api/pos/v1/sales").set("Idempotency-Key", nextKey()).send(body);
   harness.contextGuard.userId = actor;
   if (res.status !== 201) throw new Error(`capture failed: ${res.status} ${JSON.stringify(res.body)}`);
-  // Line refs in REQUEST order (the projection's order is not the request's).
   const byName = new Map((res.body.lines as Array<{ lineRef: string; lineName: string }>).map((l) => [l.lineName, l.lineRef]));
   return { saleRef: res.body.saleRef, lineRefs: lines.map((l) => byName.get(l.lineName)!) };
 }
 
-async function saleFacts(saleRef: string): Promise<{ amount: string; businessDate: string }> {
+async function saleFacts(sale: CapturedSale): Promise<{ amount: string; businessDate: string }> {
   const r = await h.harness!.env.admin.query<{ amount: string; business_date: string }>(
     `SELECT pos_total::text AS amount, business_date::text AS business_date FROM sales WHERE id = $1`,
-    [saleRef],
+    [sale.saleRef],
   );
   return { amount: r.rows[0]!.amount, businessDate: r.rows[0]!.business_date };
 }
 
-function approval(saleRef: string, overrides: Record<string, unknown>): Record<string, unknown> {
+/** An RT-530-shaped second approval for `sale`, requested by the current actor. */
+function approval(sale: CapturedSale, overrides: Body): Body {
   return {
     approvalId: nextApprovalId(),
     action: "sale.credit_return",
-    saleRef,
+    saleRef: sale.saleRef,
     amount: "0",
     requesterUserId: h.harness!.contextGuard.userId,
     approverUserId: APPROVER_OWNER,
@@ -193,8 +208,16 @@ function approval(saleRef: string, overrides: Record<string, unknown>): Record<s
   };
 }
 
-async function voidBody(saleRef: string, overrides: Record<string, unknown> = {}, approvalOverrides: Record<string, unknown> = {}) {
-  const facts = await saleFacts(saleRef);
+interface BodyOptions {
+  /** Top-level body overrides. */
+  readonly overrides?: Body;
+  /** Overrides of the approval. */
+  readonly approval?: Body;
+}
+
+/** A valid credit void: the cash 2.5 mirrored, the RT-530 approval bound to posTotal. */
+async function voidBody(sale: CapturedSale, opts: BodyOptions = {}): Promise<Body> {
+  const facts = await saleFacts(sale);
   return {
     sourceSystem: "pos-1",
     externalId: "credit-void-1",
@@ -202,32 +225,38 @@ async function voidBody(saleRef: string, overrides: Record<string, unknown> = {}
     refundTenders: [{ method: "cash", amount: "2.5" }],
     reason: "customer cancelled the order",
     businessDate: facts.businessDate,
-    approval: approval(saleRef, { action: "sale.void", amount: facts.amount, ...approvalOverrides }),
-    ...overrides,
+    approval: approval(sale, { action: "sale.void", amount: facts.amount, ...opts.approval }),
+    ...opts.overrides,
   };
 }
 
-function returnBody(
-  saleRef: string,
-  lineRefs: string[],
-  refund: string | null,
-  overrides: Record<string, unknown> = {},
-  approvalOverrides: Record<string, unknown> = {},
-): Record<string, unknown> {
+interface ReturnOptions extends BodyOptions {
+  /** Indexes into the sale's lines, each returned in quantity 1. */
+  readonly lines: ReadonlyArray<number>;
+  /** The cash refund (and its approval's amount); absent for a zero-payout return. */
+  readonly refund?: string;
+}
+
+function returnBody(sale: CapturedSale, opts: ReturnOptions): Body {
+  const lineRefs = opts.lines.map((i) => sale.lineRefs[i]!);
+  const paysOut = opts.refund !== undefined;
   return {
     sourceSystem: "pos-1",
     externalId: `credit-return-${lineRefs.join("-").slice(-12)}`,
     kind: "return",
     lines: lineRefs.map((lineRef) => ({ lineRef, quantity: "1" })),
-    refundTenders: refund === null || Number(refund) === 0 ? [] : [{ method: "cash", amount: refund }],
+    refundTenders: paysOut ? [{ method: "cash", amount: opts.refund }] : [],
     reason: "customer returned the goods",
-    ...(refund === null || Number(refund) === 0 ? {} : { approval: approval(saleRef, { amount: refund, ...approvalOverrides }) }),
-    ...overrides,
+    ...(paysOut ? { approval: approval(sale, { amount: opts.refund, ...opts.approval }) } : {}),
+    ...opts.overrides,
   };
 }
 
-function post(saleRef: string, body: Record<string, unknown>, key = nextKey()) {
-  return h.harness!.http().post(`/api/pos/v1/sales/${saleRef}/credit-reversals`).set("Idempotency-Key", key).send(body);
+function post(sale: CapturedSale, body: Body, opts: { readonly key?: string } = {}) {
+  return h.harness!.http()
+    .post(`/api/pos/v1/sales/${sale.saleRef}/credit-reversals`)
+    .set("Idempotency-Key", opts.key ?? nextKey())
+    .send(body);
 }
 
 interface Written {
@@ -240,7 +269,7 @@ interface Written {
   approvalUses: number;
 }
 
-async function written(saleRef: string): Promise<Written> {
+async function written(sale: CapturedSale): Promise<Written> {
   const r = await h.harness!.env.admin.query<Record<keyof Written, string>>(
     `SELECT (SELECT count(*) FROM sale_voids WHERE sale_id = $1)::text AS voids,
             (SELECT count(*) FROM sale_returns WHERE sale_id = $1)::text AS returns,
@@ -251,26 +280,50 @@ async function written(saleRef: string): Promise<Written> {
               WHERE r.sale_id = $1)::text AS "returnTenders",
             (SELECT count(*) FROM outbox_events WHERE payload->>'sale_id' = $1::text)::text AS outbox,
             (SELECT count(*) FROM sale_approval_uses)::text AS "approvalUses"`,
-    [saleRef],
+    [sale.saleRef],
   );
-  const row = r.rows[0]!;
-  return Object.fromEntries(Object.entries(row).map(([k, v]) => [k, Number(v)])) as unknown as Written;
+  return Object.fromEntries(Object.entries(r.rows[0]!).map(([k, v]) => [k, Number(v)])) as unknown as Written;
 }
 
-type Res = { status: number; body: { error?: { code?: string } } & Record<string, unknown>; headers: Record<string, string> };
+type Res = { status: number; body: { error?: { code?: string } } & Body; headers: Record<string, string> };
 
-function expectCode(res: Res, status: number, code: string): void {
-  expect({ status: res.status, code: res.body.error?.code }).toEqual({ status, code });
+interface Refusal {
+  readonly status: number;
+  readonly code: string;
+}
+
+const ROLE_REFUSED: Refusal = { status: 403, code: "credit_reversal_role_refused" };
+const NOT_APPLICABLE: Refusal = { status: 422, code: "credit_reversal_not_applicable" };
+const REFUND_MISMATCH: Refusal = { status: 422, code: "credit_reversal_refund_mismatch" };
+const ALLOCATION_UNAVAILABLE: Refusal = { status: 422, code: "credit_reversal_allocation_unavailable" };
+const SETTLEMENT_UNAVAILABLE: Refusal = { status: 422, code: "credit_reversal_settlement_unavailable" };
+const APPROVAL_REQUIRED: Refusal = { status: 403, code: "credit_return_approval_required" };
+const APPROVAL_REFUSED: Refusal = { status: 403, code: "credit_return_approval_refused" };
+const ALREADY_REVERSED: Refusal = { status: 409, code: "already_reversed" };
+const OVER_RETURN: Refusal = { status: 409, code: "over_return" };
+const CONFLICT: Refusal = { status: 409, code: "conflict" };
+
+function expectRefusal(res: Res, refusal: Refusal): void {
+  expect({ status: res.status, code: res.body.error?.code }).toEqual({ status: refusal.status, code: refusal.code });
 }
 
 /** Assert a refusal changed nothing and emitted no audit event. */
-async function expectRefusedWithoutWrites(saleRef: string, send: () => Promise<Res>, status: number, code: string): Promise<void> {
-  const before = await written(saleRef);
+async function expectRefusedWithoutWrites(sale: CapturedSale, send: () => Promise<Res>, refusal: Refusal): Promise<void> {
+  const before = await written(sale);
   const audits = spy.calls.length;
-  expectCode(await send(), status, code);
-  expect(await written(saleRef)).toEqual(before);
+  expectRefusal(await send(), refusal);
+  expect(await written(sale)).toEqual(before);
   expect(spy.calls.length).toBe(audits);
 }
+
+const CASH_SALE: Omit<CaptureSpec, "externalId"> = { credit: "0", tenders: [{ method: "cash", amount: "12.5" }] };
+const FULL_CREDIT: Omit<CaptureSpec, "externalId"> = { tenders: [], credit: "12.5" };
+const MIXED_CARD: Omit<CaptureSpec, "externalId"> = {
+  tenders: [
+    { method: "cash", amount: "1.5", tenderRef: TENDER_CASH, sequence: 1 },
+    { method: "card_external", amount: "1", reference: "AB12", tenderRef: TENDER_CARD, sequence: 2 },
+  ],
+};
 
 describe("RT-577 credit reversal — authorization", () => {
   it.each([
@@ -279,34 +332,34 @@ describe("RT-577 credit reversal — authorization", () => {
     ["a revoked store manager", APPROVER_REVOKED],
   ])("refuses %s with 403 credit_reversal_role_refused and writes nothing", async (_who, actor) => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "auth-1" });
+    const sale = await captureSale({ externalId: "auth-1" });
     h.harness!.contextGuard.userId = actor;
-    await expectRefusedWithoutWrites(saleRef, () => post(saleRef, returnBody(saleRef, [lineRefs[0]!], "1")), 403, "credit_reversal_role_refused");
+    await expectRefusedWithoutWrites(sale, () => post(sale, returnBody(sale, { lines: [0], refund: "1" })), ROLE_REFUSED);
   });
 
   it("refuses the role before the credit status: a cashier on a cash sale is 403, not 422", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "auth-2", credit: "0", tenders: [{ method: "cash", amount: "12.5" }] });
+    const sale = await captureSale({ externalId: "auth-2", ...CASH_SALE });
     h.harness!.contextGuard.userId = HARNESS_REQUESTER;
-    expectCode(await post(saleRef, returnBody(saleRef, [lineRefs[0]!], "5")), 403, "credit_reversal_role_refused");
+    expectRefusal(await post(sale, returnBody(sale, { lines: [0], refund: "5" })), ROLE_REFUSED);
   });
 
   it("refuses a sale without responsibilities with 422 credit_reversal_not_applicable", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "auth-3", credit: "0", tenders: [{ method: "cash", amount: "12.5" }] });
-    await expectRefusedWithoutWrites(saleRef, () => post(saleRef, returnBody(saleRef, [lineRefs[0]!], "5")), 422, "credit_reversal_not_applicable");
+    const sale = await captureSale({ externalId: "auth-3", ...CASH_SALE });
+    await expectRefusedWithoutWrites(sale, () => post(sale, returnBody(sale, { lines: [0], refund: "5" })), NOT_APPLICABLE);
   });
 });
 
 describe("RT-577 credit reversal — the Manager/Admin void (D8 mirror)", () => {
   it("voids a mixed sale: refunds the collected cash, adjusts the credit share, sale reads voided", async () => {
     if (skip()) return;
-    const { saleRef } = await captureSale({ externalId: "void-1" });
-    const res = await post(saleRef, await voidBody(saleRef));
+    const sale = await captureSale({ externalId: "void-1" });
+    const res = await post(sale, await voidBody(sale));
     expect(res.status).toBe(201);
     expectValidReversal(res.body);
     expect(res.body).toMatchObject({
-      saleRef,
+      saleRef: sale.saleRef,
       kind: "void",
       currencyCode: "USD",
       reversalTotal: "12.5000",
@@ -316,25 +369,19 @@ describe("RT-577 credit reversal — the Manager/Admin void (D8 mirror)", () => 
       refundTenders: [{ method: "cash", amount: "2.5000" }],
       reason: "customer cancelled the order",
     });
-    const read = await h.harness!.http().get(`/api/pos/v1/sales/${saleRef}`);
+    const read = await h.harness!.http().get(`/api/pos/v1/sales/${sale.saleRef}`);
     expect(read.body.voided).toBe(true);
-    expect(await written(saleRef)).toMatchObject({ voids: 1, reversals: 1, tenders: 1, approvalUses: 1 });
+    expect(await written(sale)).toMatchObject({ voids: 1, reversals: 1, tenders: 1, approvalUses: 1 });
   });
 
   it("mirrors a cash + card sale tender for tender; card goes back to card", async () => {
     if (skip()) return;
-    const { saleRef } = await captureSale({
-      externalId: "void-card",
-      tenders: [
-        { method: "cash", amount: "1.5", tenderRef: TENDER_CASH, sequence: 1 },
-        { method: "card_external", amount: "1", reference: "AB12", tenderRef: TENDER_CARD, sequence: 2 },
-      ],
-    });
+    const sale = await captureSale({ externalId: "void-card", ...MIXED_CARD });
     const mirror = [
       { method: "card_external", amount: "1", tenderRef: TENDER_CARD, reference: "RF9" },
       { method: "cash", amount: "1.5", tenderRef: TENDER_CASH },
     ];
-    const res = await post(saleRef, await voidBody(saleRef, { refundTenders: mirror }));
+    const res = await post(sale, await voidBody(sale, { overrides: { refundTenders: mirror } }));
     expect(res.status).toBe(201);
     expectValidReversal(res.body);
     expect(res.body["refundTenders"]).toEqual([
@@ -349,79 +396,76 @@ describe("RT-577 credit reversal — the Manager/Admin void (D8 mirror)", () => 
     ["a wrong tenderRef", [{ method: "cash", amount: "1.5", tenderRef: TENDER_CARD }, { method: "card_external", amount: "1", tenderRef: TENDER_CASH }]],
   ])("refuses %s with 422 credit_reversal_refund_mismatch and writes nothing", async (_name, refundTenders) => {
     if (skip()) return;
-    const { saleRef } = await captureSale({
-      externalId: "void-card-bad",
-      tenders: [
-        { method: "cash", amount: "1.5", tenderRef: TENDER_CASH, sequence: 1 },
-        { method: "card_external", amount: "1", tenderRef: TENDER_CARD, sequence: 2 },
-      ],
-    });
-    const body = await voidBody(saleRef, { refundTenders });
-    await expectRefusedWithoutWrites(saleRef, () => post(saleRef, body), 422, "credit_reversal_refund_mismatch");
+    const sale = await captureSale({ externalId: "void-card-bad", ...MIXED_CARD });
+    const body = await voidBody(sale, { overrides: { refundTenders } });
+    await expectRefusedWithoutWrites(sale, () => post(sale, body), REFUND_MISMATCH);
   });
 
   it("keeps RT-530 on a credit void: no approval → 403 void_approval_required; another day → 422", async () => {
     if (skip()) return;
-    const { saleRef } = await captureSale({ externalId: "void-530" });
-    const body = await voidBody(saleRef);
+    const sale = await captureSale({ externalId: "void-530" });
+    const body = await voidBody(sale);
     const { approval: _a, ...noApproval } = body;
-    await expectRefusedWithoutWrites(saleRef, () => post(saleRef, noApproval), 403, "void_approval_required");
-    await expectRefusedWithoutWrites(saleRef, () => post(saleRef, { ...body, businessDate: "2020-01-01" }), 422, "void_outside_business_day");
-    await expectRefusedWithoutWrites(
-      saleRef,
-      async () => post(saleRef, await voidBody(saleRef, {}, { approverUserId: APPROVER_MANAGER })),
-      403,
-      "void_self_approval",
-    );
+    await expectRefusedWithoutWrites(sale, () => post(sale, noApproval), { status: 403, code: "void_approval_required" });
+    await expectRefusedWithoutWrites(sale, () => post(sale, { ...body, businessDate: "2020-01-01" }), { status: 422, code: "void_outside_business_day" });
+    const seller = await voidBody(sale, { approval: { approverUserId: APPROVER_MANAGER } });
+    await expectRefusedWithoutWrites(sale, () => post(sale, seller), { status: 403, code: "void_self_approval" });
   });
 
   it("refuses a credit void of a sale with a return: 409 already_reversed", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "void-excl" });
-    expect((await post(saleRef, returnBody(saleRef, [lineRefs[0]!], "1"))).status).toBe(201);
-    await expectRefusedWithoutWrites(saleRef, async () => post(saleRef, await voidBody(saleRef, { externalId: "credit-void-2" })), 409, "already_reversed");
+    const sale = await captureSale({ externalId: "void-excl" });
+    expect((await post(sale, returnBody(sale, { lines: [0], refund: "1" }))).status).toBe(201);
+    const body = await voidBody(sale, { overrides: { externalId: "credit-void-2" } });
+    await expectRefusedWithoutWrites(sale, () => post(sale, body), ALREADY_REVERSED);
   });
 });
 
 describe("RT-577 credit reversal — allocation (D7: pro rata, floor, cumulative)", () => {
   it("allocates two partial returns of a mixed sale so refunds sum to the cash and adjustments to the credit", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "alloc-1" });
-    const first = await post(saleRef, returnBody(saleRef, [lineRefs[0]!], "1"));
+    const sale = await captureSale({ externalId: "alloc-1" });
+    const first = await post(sale, returnBody(sale, { lines: [0], refund: "1" }));
     expect(first.status).toBe(201);
     expectValidReversal(first.body);
     expect(first.body).toMatchObject({ reversalTotal: "5.0000", refundableAmount: "1.0000", receivableAdjustment: { amount: "4.0000" } });
-    const second = await post(saleRef, returnBody(saleRef, [lineRefs[1]!], "1.5"));
+    const second = await post(sale, returnBody(sale, { lines: [1], refund: "1.5" }));
     expect(second.status).toBe(201);
     expect(second.body).toMatchObject({ reversalTotal: "7.5000", refundableAmount: "1.5000", receivableAdjustment: { amount: "6.0000" } });
   });
 
+  /** Return each of three equal lines in turn; the refunds and adjustments, in order. */
+  async function returnEachLine(sale: CapturedSale, refunds: ReadonlyArray<string>): Promise<{ refunds: unknown[]; adjustments: unknown[] }> {
+    const out: { refunds: unknown[]; adjustments: unknown[] } = { refunds: [], adjustments: [] };
+    for (const [i, refund] of refunds.entries()) {
+      const res = await post(sale, returnBody(sale, { lines: [i], refund }));
+      expect(res.status).toBe(201);
+      out.refunds.push(res.body["refundableAmount"]);
+      out.adjustments.push((res.body["receivableAdjustment"] as { amount: string }).amount);
+    }
+    return out;
+  }
+
   it("sums a repeating fraction exactly: 1.00 of 3.00 collected, three 1.00 returns refund 0.33 + 0.33 + 0.34", async () => {
     if (skip()) return;
     const one = { unitPrice: "1.0000", lineAmount: "1.0000" };
-    const { saleRef, lineRefs } = await captureSale({
+    const sale = await captureSale({
       externalId: "alloc-3",
       posTotal: "3.0000",
       tenders: [{ method: "cash", amount: "1" }],
       credit: "2",
       lines: [{ lineName: "A", ...one }, { lineName: "B", ...one }, { lineName: "C", ...one }],
     });
-    const refunds: string[] = [];
-    const adjustments: string[] = [];
-    for (const [i, refund] of ["0.33", "0.33", "0.34"].entries()) {
-      const res = await post(saleRef, returnBody(saleRef, [lineRefs[i]!], refund));
-      expect(res.status).toBe(201);
-      refunds.push(res.body["refundableAmount"] as string);
-      adjustments.push((res.body["receivableAdjustment"] as { amount: string }).amount);
-    }
-    expect(refunds).toEqual(["0.3300", "0.3300", "0.3400"]);
-    expect(adjustments).toEqual(["0.6700", "0.6700", "0.6600"]);
+    expect(await returnEachLine(sale, ["0.33", "0.33", "0.34"])).toEqual({
+      refunds: ["0.3300", "0.3300", "0.3400"],
+      adjustments: ["0.6700", "0.6700", "0.6600"],
+    });
   });
 
   it("floors to a 0-decimal currency (JPY): 100 of 300 collected refunds 33 + 33 + 34", async () => {
     if (skip()) return;
     const hundred = { unitPrice: "100", lineAmount: "100" };
-    const { saleRef, lineRefs } = await captureSale({
+    const sale = await captureSale({
       externalId: "alloc-jpy",
       currency: "JPY",
       posTotal: "300",
@@ -429,44 +473,38 @@ describe("RT-577 credit reversal — allocation (D7: pro rata, floor, cumulative
       credit: "200",
       lines: [{ lineName: "A", ...hundred }, { lineName: "B", ...hundred }, { lineName: "C", ...hundred }],
     });
-    const refunds: string[] = [];
-    for (const [i, refund] of ["33", "33", "34"].entries()) {
-      const res = await post(saleRef, returnBody(saleRef, [lineRefs[i]!], refund));
-      expect(res.status).toBe(201);
-      refunds.push(res.body["refundableAmount"] as string);
-    }
-    expect(refunds).toEqual(["33.0000", "33.0000", "34.0000"]);
+    expect((await returnEachLine(sale, ["33", "33", "34"])).refunds).toEqual(["33.0000", "33.0000", "34.0000"]);
   });
 
   it("refunds nothing on a full-credit sale and needs no second approval", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "alloc-full", tenders: [], credit: "12.5" });
-    const res = await post(saleRef, returnBody(saleRef, [lineRefs[0]!], null));
+    const sale = await captureSale({ externalId: "alloc-full", ...FULL_CREDIT });
+    const res = await post(sale, returnBody(sale, { lines: [0] }));
     expect(res.status).toBe(201);
     expectValidReversal(res.body);
     expect(res.body).toMatchObject({ refundableAmount: "0.0000", refundTenders: [], receivableAdjustment: { amount: "5.0000" } });
-    expect(await written(saleRef)).toMatchObject({ returnTenders: 0, approvalUses: 0 });
+    expect(await written(sale)).toMatchObject({ returnTenders: 0, approvalUses: 0 });
   });
 
   it("never pays out uncollected credit: a refund above the collected share is 422 credit_reversal_refund_mismatch", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "alloc-over" });
+    const sale = await captureSale({ externalId: "alloc-over" });
     // The collected share of the 5.00 line is 1.00; the till asks for the whole
     // line (the second approval is bound to the true 1.00, so only the tenders fail).
-    const body = returnBody(saleRef, [lineRefs[0]!], "5", {}, { amount: "1" });
-    await expectRefusedWithoutWrites(saleRef, () => post(saleRef, body), 422, "credit_reversal_refund_mismatch");
-    const full = await captureSale({ externalId: "alloc-over-2", tenders: [], credit: "12.5" });
-    const payout = returnBody(full.saleRef, [full.lineRefs[0]!], "1", {}, { amount: "0", saleRef: full.saleRef });
-    await expectRefusedWithoutWrites(full.saleRef, () => post(full.saleRef, payout), 422, "credit_reversal_refund_mismatch");
+    const body = returnBody(sale, { lines: [0], refund: "5", approval: { amount: "1" } });
+    await expectRefusedWithoutWrites(sale, () => post(sale, body), REFUND_MISMATCH);
+    const full = await captureSale({ externalId: "alloc-over-2", ...FULL_CREDIT });
+    const payout = returnBody(full, { lines: [0], refund: "1", approval: { amount: "0" } });
+    await expectRefusedWithoutWrites(full, () => post(full, payout), REFUND_MISMATCH);
   });
 });
 
 describe("RT-577 credit reversal — D6 second approval of a cash-paying return", () => {
   it("requires it when the return pays out cash: 403 credit_return_approval_required", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "d6-1" });
-    const { approval: _a, ...body } = returnBody(saleRef, [lineRefs[0]!], "1");
-    await expectRefusedWithoutWrites(saleRef, () => post(saleRef, body), 403, "credit_return_approval_required");
+    const sale = await captureSale({ externalId: "d6-1" });
+    const { approval: _a, ...body } = returnBody(sale, { lines: [0], refund: "1" });
+    await expectRefusedWithoutWrites(sale, () => post(sale, body), APPROVAL_REQUIRED);
   });
 
   it.each([
@@ -481,61 +519,65 @@ describe("RT-577 credit reversal — D6 second approval of a cash-paying return"
     ["a future-dated approval", { approvedAt: new Date(Date.now() + 3_600_000).toISOString() }],
   ])("refuses %s with 403 credit_return_approval_refused and writes nothing", async (_name, overrides) => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "d6-2" });
-    const body = returnBody(saleRef, [lineRefs[0]!], "1", {}, overrides);
-    await expectRefusedWithoutWrites(saleRef, () => post(saleRef, body), 403, "credit_return_approval_refused");
+    const sale = await captureSale({ externalId: "d6-2" });
+    const body = returnBody(sale, { lines: [0], refund: "1", approval: overrides });
+    await expectRefusedWithoutWrites(sale, () => post(sale, body), APPROVAL_REFUSED);
   });
 
   it("refuses an approval id already used by a void: single use across routes", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "d6-3" });
+    const sale = await captureSale({ externalId: "d6-3" });
     const used = nextApprovalId();
     await h.harness!.env.admin.query(`INSERT INTO sale_approval_uses (tenant_id, approval_id, source) VALUES ($1, $2, 'void')`, [TENANT_A, used]);
-    const body = returnBody(saleRef, [lineRefs[0]!], "1", {}, { approvalId: used });
-    await expectRefusedWithoutWrites(saleRef, () => post(saleRef, body), 403, "credit_return_approval_refused");
+    const body = returnBody(sale, { lines: [0], refund: "1", approval: { approvalId: used } });
+    await expectRefusedWithoutWrites(sale, () => post(sale, body), APPROVAL_REFUSED);
   });
 
   it("checks an approval sent with a zero-payout return (its amount must be 0)", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "d6-4", tenders: [], credit: "12.5" });
-    const stale = { ...returnBody(saleRef, [lineRefs[0]!], null), approval: approval(saleRef, { amount: "1" }) };
-    await expectRefusedWithoutWrites(saleRef, () => post(saleRef, stale), 403, "credit_return_approval_refused");
-    const zero = { ...returnBody(saleRef, [lineRefs[0]!], null), approval: approval(saleRef, { amount: "0" }) };
-    expect((await post(saleRef, zero)).status).toBe(201);
+    const sale = await captureSale({ externalId: "d6-4", ...FULL_CREDIT });
+    const stale = { ...returnBody(sale, { lines: [0] }), approval: approval(sale, { amount: "1" }) };
+    await expectRefusedWithoutWrites(sale, () => post(sale, stale), APPROVAL_REFUSED);
+    const zero = { ...returnBody(sale, { lines: [0] }), approval: approval(sale, { amount: "0" }) };
+    expect((await post(sale, zero)).status).toBe(201);
   });
 
   it("records the approval and consumes its id", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "d6-5" });
-    const body = returnBody(saleRef, [lineRefs[0]!], "1");
-    expect((await post(saleRef, body)).status).toBe(201);
+    const sale = await captureSale({ externalId: "d6-5" });
+    const body = returnBody(sale, { lines: [0], refund: "1" });
+    expect((await post(sale, body)).status).toBe(201);
     const id = (body["approval"] as { approvalId: string }).approvalId;
     const r = await h.harness!.env.admin.query(`SELECT source FROM sale_approval_uses WHERE approval_id = $1`, [id]);
     expect(r.rows).toEqual([{ source: "credit_return" }]);
   });
 });
 
-describe("RT-577 credit reversal — fail closed", () => {
-  async function seedOrdinaryReturn(saleRef: string): Promise<void> {
-    await h.harness!.env.admin.query(
-      `INSERT INTO sale_returns (sale_id, tenant_id, store_id, return_seq, business_date, currency_code, return_total,
-                                 source_system, external_id, payload_hash, created_by)
-       VALUES ($1, $2, $3, 1, CURRENT_DATE, 'USD', 1, 'pos-1', 'legacy-ret', $4, $5)`,
-      [saleRef, TENANT_A, STORE_A_X, "a".repeat(64), APPROVER_MANAGER],
-    );
-  }
+/** Seed an ordinary return on the sale (recorded through recordReturn before the runtime). */
+async function seedOrdinaryReturn(sale: CapturedSale): Promise<void> {
+  await h.harness!.env.admin.query(
+    `INSERT INTO sale_returns (sale_id, tenant_id, store_id, return_seq, business_date, currency_code, return_total,
+                               source_system, external_id, payload_hash, created_by)
+     VALUES ($1, $2, $3, 1, CURRENT_DATE, 'USD', 1, 'pos-1', 'legacy-ret', $4, $5)`,
+    [sale.saleRef, TENANT_A, STORE_A_X, "a".repeat(64), APPROVER_MANAGER],
+  );
+}
 
+/** Set the stored mismatch flag (true, or NULL: never recorded). */
+async function setMismatchFlag(sale: CapturedSale, flag: { readonly value: boolean | null }): Promise<void> {
+  await h.harness!.env.admin.query(`UPDATE sales SET mismatch_flag = $2 WHERE id = $1`, [sale.saleRef, flag.value]);
+}
+
+describe("RT-577 credit reversal — fail closed", () => {
   it.each([
-    ["a return recorded through recordReturn", (saleRef: string) => seedOrdinaryReturn(saleRef)],
-    ["lines that do not sum to posTotal (mismatch_flag true)", (saleRef: string) =>
-      h.harness!.env.admin.query(`UPDATE sales SET mismatch_flag = true WHERE id = $1`, [saleRef]).then(() => undefined)],
-    ["a mismatch_flag never recorded (null)", (saleRef: string) =>
-      h.harness!.env.admin.query(`UPDATE sales SET mismatch_flag = NULL WHERE id = $1`, [saleRef]).then(() => undefined)],
+    ["a return recorded through recordReturn", seedOrdinaryReturn],
+    ["lines that do not sum to posTotal (mismatch_flag true)", (sale: CapturedSale) => setMismatchFlag(sale, { value: true })],
+    ["a mismatch_flag never recorded (null)", (sale: CapturedSale) => setMismatchFlag(sale, { value: null })],
   ])("refuses %s with 422 credit_reversal_allocation_unavailable", async (_name, seed) => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "fc-alloc" });
-    await seed(saleRef);
-    await expectRefusedWithoutWrites(saleRef, () => post(saleRef, returnBody(saleRef, [lineRefs[1]!], "1.5")), 422, "credit_reversal_allocation_unavailable");
+    const sale = await captureSale({ externalId: "fc-alloc" });
+    await seed(sale);
+    await expectRefusedWithoutWrites(sale, () => post(sale, returnBody(sale, { lines: [1], refund: "1.5" })), ALLOCATION_UNAVAILABLE);
   });
 
   it.each([
@@ -543,110 +585,110 @@ describe("RT-577 credit reversal — fail closed", () => {
     ["a payer with no ERPNext link", `UPDATE payer_account SET external_ref = ' ' WHERE id = '${PAYER}'`],
   ])("refuses %s with 422 credit_reversal_settlement_unavailable", async (_name, sql) => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "fc-settle" });
+    const sale = await captureSale({ externalId: "fc-settle" });
     await h.harness!.env.admin.query(sql);
-    await expectRefusedWithoutWrites(saleRef, () => post(saleRef, returnBody(saleRef, [lineRefs[0]!], "1")), 422, "credit_reversal_settlement_unavailable");
+    await expectRefusedWithoutWrites(sale, () => post(sale, returnBody(sale, { lines: [0], refund: "1" })), SETTLEMENT_UNAVAILABLE);
   });
 });
 
+/** A zero-payout return of the first line, with `extra` merged in. */
+const zeroReturn = (sale: CapturedSale, extra: Body): Body => ({ ...returnBody(sale, { lines: [0] }), ...extra });
+
 describe("RT-577 credit reversal — request validation and precedence", () => {
   it.each([
-    ["a void with lines", (s: string, l: string[]) => ({ ...returnBody(s, [l[0]!], null), kind: "void" })],
-    ["a return with a businessDate", (s: string, l: string[]) => ({ ...returnBody(s, [l[0]!], null), businessDate: "2026-10-17" })],
-    ["a return with a card refund", (s: string, l: string[]) => ({ ...returnBody(s, [l[0]!], "1"), refundTenders: [{ method: "card_external", amount: "1" }] })],
-    ["a blank reason", (s: string, l: string[]) => ({ ...returnBody(s, [l[0]!], null), reason: "   " })],
-    ["a reason holding NUL", (s: string, l: string[]) => ({ ...returnBody(s, [l[0]!], null), reason: "bad\u0000reason" })],
-    ["no reason", (s: string, l: string[]) => { const { reason: _r, ...b } = returnBody(s, [l[0]!], null); return b; }],
-    ["an unknown field", (s: string, l: string[]) => ({ ...returnBody(s, [l[0]!], null), tenantId: TENANT_A })],
+    ["a void with lines", (s: CapturedSale) => zeroReturn(s, { kind: "void" })],
+    ["a return with a businessDate", (s: CapturedSale) => zeroReturn(s, { businessDate: "2026-10-17" })],
+    ["a return with a card refund", (s: CapturedSale) => ({ ...returnBody(s, { lines: [0], refund: "1" }), refundTenders: [{ method: "card_external", amount: "1" }] })],
+    ["a blank reason", (s: CapturedSale) => zeroReturn(s, { reason: "   " })],
+    ["a reason holding NUL", (s: CapturedSale) => zeroReturn(s, { reason: "bad\u0000reason" })],
+    ["no reason", (s: CapturedSale) => { const { reason: _r, ...b } = returnBody(s, { lines: [0] }); return b; }],
+    ["an unknown field", (s: CapturedSale) => zeroReturn(s, { tenantId: TENANT_A })],
   ])("refuses %s with 400 and writes nothing", async (_name, build) => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "val-1" });
-    const before = await written(saleRef);
-    expect((await post(saleRef, build(saleRef, lineRefs))).status).toBe(400);
-    expect(await written(saleRef)).toEqual(before);
+    const sale = await captureSale({ externalId: "val-1" });
+    const before = await written(sale);
+    expect((await post(sale, build(sale))).status).toBe(400);
+    expect(await written(sale)).toEqual(before);
   });
 
   it("answers 404 for an unknown sale and for a credit return while POS_RETURNS_ENABLED is off", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "val-2" });
-    const ghost = "0a000000-0000-7000-8000-0000005771fe";
-    expect((await post(ghost, returnBody(ghost, [lineRefs[0]!], null))).status).toBe(404);
+    const sale = await captureSale({ externalId: "val-2" });
+    const ghost: CapturedSale = { saleRef: "0a000000-0000-7000-8000-0000005771fe", lineRefs: sale.lineRefs };
+    expect((await post(ghost, returnBody(ghost, { lines: [0] }))).status).toBe(404);
     disableReturns();
-    expect((await post(saleRef, returnBody(saleRef, [lineRefs[0]!], null))).status).toBe(404);
+    expect((await post(sale, returnBody(sale, { lines: [0] }))).status).toBe(404);
   });
 
   it("over-returns are 409 over_return, and a foreign line is 400", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "val-3" });
-    await expectRefusedWithoutWrites(
-      saleRef,
-      () => post(saleRef, { ...returnBody(saleRef, [lineRefs[0]!], null), lines: [{ lineRef: lineRefs[0], quantity: "2" }] }),
-      409,
-      "over_return",
-    );
+    const sale = await captureSale({ externalId: "val-3" });
+    const over = zeroReturn(sale, { lines: [{ lineRef: sale.lineRefs[0], quantity: "2" }] });
+    await expectRefusedWithoutWrites(sale, () => post(sale, over), OVER_RETURN);
     const other = await captureSale({ externalId: "val-3b" });
-    expect((await post(saleRef, returnBody(saleRef, [other.lineRefs[0]!], null))).status).toBe(400);
+    const foreign = zeroReturn(sale, { lines: [{ lineRef: other.lineRefs[0], quantity: "1" }] });
+    expect((await post(sale, foreign)).status).toBe(400);
   });
 });
 
 describe("RT-577 credit reversal — replay and idempotency", () => {
   it("replays the same provenance and payload with 200 and the identical body, writing nothing", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "rep-1" });
-    const body = returnBody(saleRef, [lineRefs[0]!], "1");
-    const first = await post(saleRef, body);
+    const sale = await captureSale({ externalId: "rep-1" });
+    const body = returnBody(sale, { lines: [0], refund: "1" });
+    const first = await post(sale, body);
     expect(first.status).toBe(201);
-    const before = await written(saleRef);
-    const again = await post(saleRef, body);
+    const before = await written(sale);
+    const again = await post(sale, body);
     expect({ status: again.status, replayed: again.headers["idempotent-replayed"] }).toEqual({ status: 200, replayed: "true" });
     expect(again.body).toEqual(first.body);
-    expect(await written(saleRef)).toEqual(before);
+    expect(await written(sale)).toEqual(before);
   });
 
   it("replays a same-key retry with the stored 201", async () => {
     if (skip()) return;
-    const { saleRef } = await captureSale({ externalId: "rep-2" });
-    const body = await voidBody(saleRef);
+    const sale = await captureSale({ externalId: "rep-2" });
+    const body = await voidBody(sale);
     const key = nextKey();
-    const first = await post(saleRef, body, key);
-    const retry = await post(saleRef, body, key);
+    const first = await post(sale, body, { key });
+    const retry = await post(sale, body, { key });
     expect({ status: retry.status, replayed: retry.headers["idempotent-replayed"] }).toEqual({ status: 201, replayed: "true" });
     expect(retry.body).toEqual(first.body);
   });
 
   it("refuses the same provenance with a different payload or on another sale: 409 conflict", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "rep-3" });
-    const body = returnBody(saleRef, [lineRefs[0]!], "1");
-    expect((await post(saleRef, body)).status).toBe(201);
-    expectCode(await post(saleRef, { ...body, reason: "changed" }), 409, "conflict");
+    const sale = await captureSale({ externalId: "rep-3" });
+    const body = returnBody(sale, { lines: [0], refund: "1" });
+    expect((await post(sale, body)).status).toBe(201);
+    expectRefusal(await post(sale, { ...body, reason: "changed" }), CONFLICT);
     const other = await captureSale({ externalId: "rep-3b" });
-    expectCode(await post(other.saleRef, { ...body, lines: [{ lineRef: other.lineRefs[0], quantity: "1" }] }), 409, "conflict");
+    expectRefusal(await post(other, { ...body, lines: [{ lineRef: other.lineRefs[0], quantity: "1" }] }), CONFLICT);
   });
 
   it("a replay never re-checks: a stored result survives the payer's suspension", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "rep-4" });
-    const body = returnBody(saleRef, [lineRefs[0]!], "1");
-    expect((await post(saleRef, body)).status).toBe(201);
+    const sale = await captureSale({ externalId: "rep-4" });
+    const body = returnBody(sale, { lines: [0], refund: "1" });
+    expect((await post(sale, body)).status).toBe(201);
     await h.harness!.env.admin.query(`UPDATE payer_account SET status = 'suspended' WHERE id = $1`, [PAYER]);
-    expect((await post(saleRef, body)).status).toBe(200);
+    expect((await post(sale, body)).status).toBe(200);
   });
 });
 
 describe("RT-577 credit reversal — audit trail and posting", () => {
   it("emits one sale.credit_reversed audit event with the decision's evidence, and one posting reversal", async () => {
     if (skip()) return;
-    const { saleRef, lineRefs } = await captureSale({ externalId: "audit-1" });
-    const body = returnBody(saleRef, [lineRefs[0]!], "1");
-    const res = await post(saleRef, body);
+    const sale = await captureSale({ externalId: "audit-1" });
+    const body = returnBody(sale, { lines: [0], refund: "1" });
+    const res = await post(sale, body);
     expect(res.status).toBe(201);
     const events = spy.calls.filter((c) => c.action === "sale.credit_reversed");
     expect(events).toHaveLength(1);
     const e = events[0]!;
     expect(e).toMatchObject({ actor_user_id: APPROVER_TENANT_ADMIN, tenant_id: TENANT_A, store_id: STORE_A_X });
     expect(e.metadata).toMatchObject({
-      sale_ref: saleRef,
+      sale_ref: sale.saleRef,
       reversal_ref: res.body["reversalRef"],
       kind: "return",
       actor_role: "tenant_admin",
@@ -659,10 +701,10 @@ describe("RT-577 credit reversal — audit trail and posting", () => {
       approver_user_id: APPROVER_OWNER,
       requester_user_id: APPROVER_TENANT_ADMIN,
     });
-    expect(typeof (e.metadata as Record<string, unknown>)["recorded_at"]).toBe("string");
+    expect(typeof (e.metadata as Body)["recorded_at"]).toBe("string");
     const outbox = await h.harness!.env.admin.query(
       `SELECT payload->>'kind' AS kind FROM outbox_events WHERE payload->>'sale_id' = $1 AND payload->>'kind' = 'reversal'`,
-      [saleRef],
+      [sale.saleRef],
     );
     expect(outbox.rows).toEqual([{ kind: "reversal" }]);
   });
