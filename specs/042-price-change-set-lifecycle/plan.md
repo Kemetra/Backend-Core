@@ -254,7 +254,7 @@ lines table (immutable after publish) and the audit row references it, so audit 
 | **Q-B5** | Per-line before/after in `audit_events` or in change-set lines | **Lines table, referenced from one audit row per transition** | One audit row per line |
 | **Q-B6** | Line limit per change set | **50 000 lines**, revisit with RT-317-style measurement | Unlimited |
 | **Q-B7** | Do pending sets that overlap block each other? | **No; first publish wins. Only sets that intersect it (§3) go stale and re-validate; unrelated sets keep their approval** | Lock targets while a set is pending; or stale every pending set on any publish |
-| **Q-B8** | Store lifecycle changes (no revision) alter a set's target Stores | **Bind the target Store set into the preview (`targetStoreSetHash`) and stale the set on mismatch at submit/approve/publish; re-approval required** | Re-materialize silently at publish (approver never sees the new Stores) |
+| **Q-B8** | Store lifecycle changes (create, activate, deactivate, retire, time-zone change; no revision) alter a set's target Stores or their activation instants | **Bind the target Store set into the preview (`targetStoreSetHash`) and stale the set on mismatch at submit/approve/publish; re-approval required** | Re-materialize silently at publish (approver never sees the new Stores) |
 
 Each row: Selected — recommended option, chosen by the coordinator under the owner's standing delegation of 2026-10-17; owner may revisit.
 
