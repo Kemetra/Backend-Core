@@ -12,10 +12,11 @@ info:
 
     **Posture (RT-369).** `1.2.0-draft` adds one operation,
     `posRotateTerminalToken` (`POST /api/pos/v1/terminals/rotate`), and
-    its schemas. It is `[GATED]` contract-first and carries
-    `x-runtime-status: contract-only` until the RT-369 runtime ships.
-    Additive: `posPairTerminal` is unchanged on the wire. See
-    "Credential rotation" below.
+    its schemas. It is `[GATED]` contract-first (RT-369 contract PR #805)
+    and implemented by the RT-369 runtime, unchanged on the wire, so it
+    carries no `x-runtime-status: contract-only`. Additive:
+    `posPairTerminal` is unchanged on the wire. See "Credential rotation"
+    below.
 
 
     `posPairTerminal` accepts a short-lived `pairing_code` and — on
@@ -358,10 +359,6 @@ paths:
       operationId: posRotateTerminalToken
       tags: [pos-terminal-pairing]
       x-idempotency: required
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-369 contract-first ([GATED]). The route ships with the RT-369
-        runtime PR, which removes this marker.
       security:
         - device: []
       description: >

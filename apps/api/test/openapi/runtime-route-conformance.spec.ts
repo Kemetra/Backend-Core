@@ -136,8 +136,6 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "posGetTenantBranding",
       "posRedeemVoucher",
       "posReverseVoucher",
-      // RT-369: device token rotation contract; the runtime ships in the RT-369 runtime PR.
-      "posRotateTerminalToken",
       "posValidateVoucher",
       "renewSupportSession",
     ]);

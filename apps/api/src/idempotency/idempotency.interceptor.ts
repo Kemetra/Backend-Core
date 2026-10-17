@@ -36,6 +36,7 @@ import {
   Inject,
   Injectable,
   Optional,
+  UnauthorizedException,
   type CallHandler,
   type ExecutionContext,
   type NestInterceptor,
@@ -94,6 +95,17 @@ const KEY_REGEX = /^[\x21-\x7E]{16,128}$/;
 function clientId(ctx: ExecutionContext): string {
   const req = ctx.switchToHttp().getRequest<{ context?: ResolvedContext; principal?: { userId?: string } }>();
   return req.context?.userId ?? req.principal?.userId ?? "anonymous";
+}
+
+/**
+ * RT-369 — the client partition of a `clientScope: "device"` route: the
+ * device the route's guard authenticated (`request.posDeviceId`). Fails
+ * closed (401) when the guard published none.
+ */
+function deviceClientId(ctx: ExecutionContext): string {
+  const req = ctx.switchToHttp().getRequest<{ posDeviceId?: string }>();
+  if (!req.posDeviceId) throw new UnauthorizedException("Unauthorized");
+  return `device:${req.posDeviceId}`;
 }
 
 function tenantId(ctx: ExecutionContext): string | null {
@@ -259,7 +271,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
     const method = req.method.toUpperCase();
     const routePath = req.route?.path ?? req.url;
-    const cId = clientId(execCtx);
+    const cId = options.clientScope === "device" ? deviceClientId(execCtx) : clientId(execCtx);
     const tId = tenantId(execCtx) ?? "no-tenant";
     const route = `${method}:${routePath}`;
 

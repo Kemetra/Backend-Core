@@ -137,26 +137,38 @@ describe("DeviceRepository — RT-213 tenant status gate", () => {
 });
 
 // ===========================================================================
-// RT-365 — device auth does not depend on migration 0040
+// RT-365 / RT-369 — the 0040 columns device auth may name
 // ===========================================================================
 
-describe("DeviceRepository — the device lookup names only pre-0040 columns (RT-365)", () => {
-  // The 0040 lifecycle columns `packages/db` now declares. Naming one in the
-  // auth lookup would make every till's authentication fail on a database
-  // where 0040 is not applied yet (or was rolled back).
+describe("DeviceRepository — the device lookup names only the 0040 columns it needs (RT-365 / RT-369)", () => {
+  // The 0040 lifecycle columns `packages/db` declares. RT-365 kept the auth
+  // lookup off all of them so it survived a database without 0040. RT-369's
+  // rotation overlap needs two of them in the attestation lookup's predicate
+  // (0040 is a prerequisite since RT-365 shipped); every other lifecycle
+  // column stays out, and the select list is unchanged.
   const LIFECYCLE_COLUMNS =
-    /\b(expires_at|last_seen_at|revoked_by|revoke_reason|revoke_note|previous_token_hash|previous_valid_until|retired_at|retired_by|retire_reason)\b/;
+    /\b(expires_at|last_seen_at|revoked_by|revoke_reason|revoke_note|previous_token_hash|previous_valid_until|retired_at|retired_by|retire_reason)\b/g;
+  const OVERLAP_COLUMNS = ["previous_token_hash", "previous_valid_until"];
 
-  it.each([
-    ["findActiveByAttestation", (repo: DeviceRepository) => repo.findActiveByAttestation("raw-token")],
-    ["findActiveById", (repo: DeviceRepository) => repo.findActiveById(DEVICE_ID)],
-  ] as const)("%s selects no lifecycle column", async (_name, lookup) => {
+  async function lookupSql(lookup: (repo: DeviceRepository) => Promise<unknown>): Promise<string> {
     const { pool, query } = lookupPool(false);
     await lookup(new DeviceRepository(pool, pool));
-    const sql = (query.mock.calls as Array<[{ text?: string } | string]>)
+    return (query.mock.calls as Array<[{ text?: string } | string]>)
       .map(([config]) => (typeof config === "string" ? config : (config.text ?? "")))
       .join("\n");
+  }
+
+  it("findActiveById names no lifecycle column", async () => {
+    const sql = await lookupSql((repo) => repo.findActiveById(DEVICE_ID));
     expect(sql).toMatch(/\bfrom "devices"/i);
-    expect(sql).not.toMatch(LIFECYCLE_COLUMNS);
+    expect(sql.match(LIFECYCLE_COLUMNS)).toBeNull();
+  });
+
+  it("findActiveByAttestation selects no lifecycle column and filters only on the overlap pair", async () => {
+    const sql = await lookupSql((repo) => repo.findActiveByAttestation("raw-token"));
+    const [selectList, rest] = sql.split(/\bfrom "devices"/i);
+    expect(rest).toBeDefined();
+    expect(selectList!.match(LIFECYCLE_COLUMNS)).toBeNull();
+    expect([...new Set(rest!.match(LIFECYCLE_COLUMNS))].sort()).toEqual(OVERLAP_COLUMNS);
   });
 });
