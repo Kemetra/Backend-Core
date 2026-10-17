@@ -63,11 +63,14 @@ What changed since the tickets were written (they cite `main@9f2b0428`):
 * **Compatibility:**
   * The response shape is unchanged. Clients that match lines by `lineRef` are unaffected.
   * **Replay across the deploy:** a `captureSale` replay served after the deploy, for a sale first answered before it, can list the same lines in a different order than the original 201. FR-100 promises an identical body.
-    * This affects only sales captured after 0047 (they have `line_seq`) and before the fix deploys, and only if their capture order was not alphabetical.
+    * Two cases are affected:
+      * sales captured after 0047 (they have `line_seq`) and before the fix deploys, whose capture order was not alphabetical;
+      * any sale, pre-0047 included, that has two or more lines with the same `line_name`. Today's `ORDER BY sl.line_name` leaves the relative order of equal names unspecified (in practice, whatever plan order Postgres returns), and the new key pins it to `id`. Those lines can swap places even on a sale with no `line_seq`. The same holds between two plain reads today: the current order of equal names is not guaranteed stable either, so the new tiebreak is a fix as well as a change.
     * The line set and every line's fields are unchanged; only their array order differs. Whether the POS compares replay bodies by array position is **NOT VERIFIED**. The risk is accepted and noted in the changelog. No mitigation code is proposed.
 * **Tests (to write in the implementation PR):**
   * Capture lines in a non-alphabetical order, for example `["Zeta", "Alpha", "Mid"]`. Assert that `readSale`, the 201 response and the replay all return capture order.
   * A legacy fixture with all `line_seq` NULL, including two lines with the same name, returns name-then-`lineRef` order.
+  * A replay of that legacy duplicate-name sale returns the same name-then-`lineRef` order as `readSale`, and two consecutive reads return an identical body (the tiebreak makes the order deterministic).
   * Grep the existing `apps/api/test/catalog/sales/**` suites for any assertion on name order by index (for example `lines[0]` after mixed names), and update each one in the same PR.
 * **Repo:** Backend-Core only. POS needs no change under A.
 
@@ -164,7 +167,7 @@ What changed since the tickets were written (they cite `main@9f2b0428`):
 * **NOT VERIFIED:** production audit-worker durability. In non-production the enqueuer is `NoOpAuditJobEnqueuer`. This is an ops check that applies to every `@Auditable` route, not just this one.
 * **NOT VERIFIED:** POS strict-vs-lenient response validation. It does not matter under A (no new field). It matters if B is ever taken.
 * **NOT VERIFIED:** whether any existing test asserts name order by index. It must be checked in the implementation PR (§1.3).
-* **Accepted:** the one-time replay body order change across the deploy (§1.3).
+* **Accepted:** the one-time replay body order change across the deploy (§1.3). It covers post-0047 sales captured in non-alphabetical order, and duplicate-name lines on any sale, legacy included.
 
 ## 6. Next safe action
 
