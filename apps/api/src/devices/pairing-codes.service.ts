@@ -37,9 +37,15 @@ import { MembershipRepository } from "../context/membership.repository";
 import { inStoreScope, scopeStoreIds } from "../context/operator-store-scope";
 import type { StoreScope } from "../context/store-scope";
 import { resolveDeviceCaller, storeInCallerScope, type ScopedInput } from "./device-caller";
-import { toDeviceImpactPreview, type DeviceImpactPreview } from "./device-impact.projections";
+import { toDeviceImpactPreview, type DeviceImpactPreview, type DeviceImpactRow } from "./device-impact.projections";
 import type { ImpactBlockCode } from "./device-lifecycle.evaluator";
-import { decideReplacement, insertDeviceAudit, lockDeviceForLifecycle, readDeviceImpact } from "./device-lifecycle.store";
+import {
+  decideReplacement,
+  insertDeviceAudit,
+  lockDeviceForLifecycle,
+  readDeviceImpact,
+  type ReplacementDecision,
+} from "./device-lifecycle.store";
 import {
   CREATED_AT_KEY_SQL,
   decodePairingCodeCursor,
@@ -165,64 +171,27 @@ export class PairingCodesService {
       });
       if (!storeVisible) throw new PairingCodeNotFoundError();
       const kind =
-        body.replacesDeviceId === undefined ? "pair" : await this.decideReplace(client, input, scope, body.replacesDeviceId);
-
+        body.replacesDeviceId === undefined ? "pair" : await decideReplace(client, input, scope, body.replacesDeviceId);
       const code = generatePairingCode();
       // A random (v4) terminal id, as the CLI and the 0024 default: the default
       // label takes its first 8 hex digits, which a time-ordered v7 would repeat.
       const terminalId = randomUUID();
-      const terminalLabel = body.terminalLabel ?? defaultTerminalLabel(terminalId);
-      const ttlMinutes = body.ttlMinutes ?? TTL_MINUTES_DEFAULT;
-      const inserted = await client.query<{ id: string; created_at: Date; expires_at: Date }>(
-        `INSERT INTO pairing_codes
-           (id, tenant_id, store_id, code_hash, terminal_id, terminal_label, branch_name, branch_address,
-            tenant_tax_registration_id, printer_vendor_id, printer_product_id, printer_com_port,
-            status, expires_at, replaces_device_id)
-         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                 'pending', now() + make_interval(mins => $12::int), $13)
-         RETURNING id, created_at, expires_at`,
-        [
-          input.tenantId,
-          body.storeId,
-          hashToken(code),
-          terminalId,
-          terminalLabel,
-          body.branchName,
-          body.branchAddress,
-          body.taxRegistrationId,
-          body.printerVendorId,
-          body.printerProductId,
-          body.printerComPort ?? null,
-          ttlMinutes,
-          body.replacesDeviceId ?? null,
-        ],
-      );
-      const row = inserted.rows[0]!;
+      const issued = await insertCode(client, input, { code, terminalId, kind });
       await insertDeviceAudit(client, {
         tenantId: input.tenantId,
         storeId: body.storeId,
         actorUserId: input.actorUserId,
         action: "pos.device.pairing_code.issued",
         targetType: "pairing_code",
-        targetId: row.id,
+        targetId: issued.pairingCodeId,
         metadata: {
           kind,
-          replaces_device_id: body.replacesDeviceId ?? null,
-          ttl_minutes: ttlMinutes,
+          replaces_device_id: issued.replacesDeviceId,
+          ttl_minutes: body.ttlMinutes ?? TTL_MINUTES_DEFAULT,
           terminal_id: terminalId,
         },
       });
-      return {
-        pairingCodeId: row.id,
-        code,
-        kind,
-        storeId: body.storeId,
-        terminalId,
-        terminalLabel,
-        replacesDeviceId: body.replacesDeviceId ?? null,
-        expiresAt: row.expires_at.toISOString(),
-        createdAt: row.created_at.toISOString(),
-      };
+      return issued;
     });
   }
 
@@ -231,10 +200,7 @@ export class PairingCodesService {
     const keyset = input.cursor === null ? null : decodePairingCodeCursor({ tenantId: input.tenantId, cursor: input.cursor });
     return this.inTenant(input, async (client) => {
       const { scope } = await resolveDeviceCaller(this.memberships, client, input);
-      if (input.storeId !== undefined) {
-        const visible = await storeInCallerScope(client, { tenantId: input.tenantId, scope, storeId: input.storeId });
-        if (!visible) throw new PairingCodeNotFoundError();
-      }
+      await assertStoreFilterVisible(client, input, scope);
       const r = await client.query<PairingCodeReadRow>(LIST_SQL, [
         input.tenantId,
         scopeStoreIds(scope),
@@ -243,13 +209,7 @@ export class PairingCodesService {
         keyset?.pairingCodeId ?? null,
         input.limit + 1,
       ]);
-      const rows = r.rows.slice(0, input.limit);
-      const last = rows[rows.length - 1];
-      const nextCursor =
-        r.rows.length > input.limit && last !== undefined
-          ? encodePairingCodeCursor({ tenantId: input.tenantId, createdAtKey: last.created_at_key, pairingCodeId: last.id })
-          : null;
-      return { items: rows.map(toPairingCodeSummary), nextCursor };
+      return pageOf(r.rows, input.limit, input.tenantId);
     });
   }
 
@@ -265,21 +225,7 @@ export class PairingCodesService {
       if (code === undefined || !inStoreScope(scope, code.store_id)) throw new PairingCodeNotFoundError();
       if (code.status === "used") throw new PairingCodeUsedError();
       const cancelled = code.status === "pending";
-      if (cancelled) {
-        await client.query(`UPDATE pairing_codes SET status = 'cancelled' WHERE id = $1::uuid AND tenant_id = $2::uuid`, [
-          input.pairingCodeId,
-          input.tenantId,
-        ]);
-        await insertDeviceAudit(client, {
-          tenantId: input.tenantId,
-          storeId: code.store_id,
-          actorUserId: input.actorUserId,
-          action: "pos.device.pairing_code.cancelled",
-          targetType: "pairing_code",
-          targetId: input.pairingCodeId,
-          metadata: {},
-        });
-      }
+      if (cancelled) await cancelCode(client, input, code.store_id);
       const r = await client.query<PairingCodeReadRow>(ONE_CODE_SQL, [
         input.tenantId,
         scopeStoreIds(scope),
@@ -289,47 +235,163 @@ export class PairingCodesService {
     });
   }
 
-  /**
-   * The replace / move decision under the replaced device's locks: the device
-   * must be in scope (else 404); `blocked` → `PairingCodeIssueRefusedError`
-   * with the preview of that state.
-   */
-  private async decideReplace(
-    client: PoolClient,
-    input: IssuePairingCodeInput,
-    scope: StoreScope,
-    deviceId: string,
-  ): Promise<Exclude<PairingCodeKind, "pair">> {
-    // Scope first, without a lock: an out-of-scope id never takes the device's locks.
-    const seen = await client.query<{ store_id: string }>(
-      `SELECT store_id FROM devices WHERE id = $1::uuid AND tenant_id = $2::uuid`,
-      [deviceId, input.tenantId],
-    );
-    const store = seen.rows[0]?.store_id;
-    if (store === undefined || !inStoreScope(scope, store)) throw new PairingCodeNotFoundError();
-    const locked = await lockDeviceForLifecycle(client, { tenantId: input.tenantId, deviceId });
-    if (locked === null || !inStoreScope(scope, locked.storeId)) throw new PairingCodeNotFoundError();
-    const row = await readDeviceImpact(client, input.tenantId, deviceId, scopeStoreIds(scope));
-    if (row === null) throw new PairingCodeNotFoundError();
-    const decision = decideReplacement(row, input.body.storeId);
-    const { evaluation } = decision;
-    if (evaluation.verdict === "blocked") {
-      const impact = toDeviceImpactPreview({ row, action: decision.kind, reason: decision.reason, evaluation });
-      throw new PairingCodeIssueRefusedError(evaluation.blockCode, impact);
-    }
-    // Replace / move verdicts are `allowed` or `blocked` (the evaluator's rules).
-    if (evaluation.verdict !== "allowed") throw new Error(`unexpected ${decision.kind} verdict ${evaluation.verdict}`);
-    const existing = await client.query<{ status: "pending" | "used" }>(EXISTING_REPLACEMENT_SQL, [
-      input.tenantId,
-      deviceId,
-    ]);
-    const status = existing.rows[0]?.status;
-    if (status === "used") throw new PairingCodeReplacementExistsError("device_already_replaced");
-    if (status === "pending") throw new PairingCodeReplacementExistsError("replacement_already_pending");
-    return decision.kind;
-  }
-
   private inTenant<T>(input: ScopedInput, work: (client: PoolClient) => Promise<T>): Promise<T> {
     return runWithTenantContext(this.pool, { tenantId: input.tenantId, isPlatformAdmin: false }, work);
   }
+}
+
+/**
+ * The replace / move decision under the replaced device's locks: the device
+ * must be in scope (else 404); `blocked` → `PairingCodeIssueRefusedError`
+ * with the preview of that state; then one replacement per device (C7).
+ */
+async function decideReplace(
+  client: PoolClient,
+  input: IssuePairingCodeInput,
+  scope: StoreScope,
+  deviceId: string,
+): Promise<Exclude<PairingCodeKind, "pair">> {
+  const row = await lockReplacedDevice(client, input.tenantId, scope, deviceId);
+  const decision = decideReplacement(row, input.body.storeId);
+  assertReplacementAllowed(row, decision);
+  await assertNotReplacedYet(client, input.tenantId, deviceId);
+  return decision.kind;
+}
+
+/** True when the store is known and in the caller's scope. */
+function visibleIn(scope: StoreScope, storeId: string | undefined): boolean {
+  return storeId !== undefined && inStoreScope(scope, storeId);
+}
+
+/**
+ * The replaced device's impact read under its lifecycle and row locks. Scope
+ * first, without a lock: an out-of-scope id never takes the device's locks.
+ * Absent, foreign or out of scope → `PairingCodeNotFoundError`.
+ */
+async function lockReplacedDevice(
+  client: PoolClient,
+  tenantId: string,
+  scope: StoreScope,
+  deviceId: string,
+): Promise<DeviceImpactRow> {
+  await assertDeviceVisible(client, tenantId, scope, deviceId);
+  const locked = await lockDeviceForLifecycle(client, { tenantId, deviceId });
+  if (!visibleIn(scope, locked?.storeId)) throw new PairingCodeNotFoundError();
+  const row = await readDeviceImpact(client, tenantId, deviceId, scopeStoreIds(scope));
+  if (row === null) throw new PairingCodeNotFoundError();
+  return row;
+}
+
+/** The lock-free scope pre-check: absent, foreign or out of scope → `PairingCodeNotFoundError`. */
+async function assertDeviceVisible(
+  client: PoolClient,
+  tenantId: string,
+  scope: StoreScope,
+  deviceId: string,
+): Promise<void> {
+  const seen = await client.query<{ store_id: string }>(
+    `SELECT store_id FROM devices WHERE id = $1::uuid AND tenant_id = $2::uuid`,
+    [deviceId, tenantId],
+  );
+  if (!visibleIn(scope, seen.rows[0]?.store_id)) throw new PairingCodeNotFoundError();
+}
+
+/** `blocked` → the 409 with the preview; replace / move verdicts are `allowed` or `blocked`. */
+function assertReplacementAllowed(row: DeviceImpactRow, decision: ReplacementDecision): void {
+  const { evaluation } = decision;
+  if (evaluation.verdict === "blocked") {
+    const impact = toDeviceImpactPreview({ row, action: decision.kind, reason: decision.reason, evaluation });
+    throw new PairingCodeIssueRefusedError(evaluation.blockCode, impact);
+  }
+  if (evaluation.verdict !== "allowed") throw new Error(`unexpected ${decision.kind} verdict ${evaluation.verdict}`);
+}
+
+/** One replacement per device (C7): a used or live pending code naming it refuses the issue. */
+async function assertNotReplacedYet(client: PoolClient, tenantId: string, deviceId: string): Promise<void> {
+  const existing = await client.query<{ status: "pending" | "used" }>(EXISTING_REPLACEMENT_SQL, [tenantId, deviceId]);
+  const status = existing.rows[0]?.status;
+  if (status === "used") throw new PairingCodeReplacementExistsError("device_already_replaced");
+  if (status === "pending") throw new PairingCodeReplacementExistsError("replacement_already_pending");
+}
+
+/** Insert the code (its hash only) and project the 201; the raw code is in the result only. */
+async function insertCode(
+  client: PoolClient,
+  input: IssuePairingCodeInput,
+  issue: { readonly code: string; readonly terminalId: string; readonly kind: PairingCodeKind },
+): Promise<PairingCodeIssued> {
+  const body = input.body;
+  const terminalLabel = body.terminalLabel ?? defaultTerminalLabel(issue.terminalId);
+  const replacesDeviceId = body.replacesDeviceId ?? null;
+  const inserted = await client.query<{ id: string; created_at: Date; expires_at: Date }>(
+    `INSERT INTO pairing_codes
+       (id, tenant_id, store_id, code_hash, terminal_id, terminal_label, branch_name, branch_address,
+        tenant_tax_registration_id, printer_vendor_id, printer_product_id, printer_com_port,
+        status, expires_at, replaces_device_id)
+     VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+             'pending', now() + make_interval(mins => $12::int), $13)
+     RETURNING id, created_at, expires_at`,
+    [
+      input.tenantId,
+      body.storeId,
+      hashToken(issue.code),
+      issue.terminalId,
+      terminalLabel,
+      body.branchName,
+      body.branchAddress,
+      body.taxRegistrationId,
+      body.printerVendorId,
+      body.printerProductId,
+      body.printerComPort ?? null,
+      body.ttlMinutes ?? TTL_MINUTES_DEFAULT,
+      replacesDeviceId,
+    ],
+  );
+  const row = inserted.rows[0]!;
+  return {
+    pairingCodeId: row.id,
+    code: issue.code,
+    kind: issue.kind,
+    storeId: body.storeId,
+    terminalId: issue.terminalId,
+    terminalLabel,
+    replacesDeviceId,
+    expiresAt: row.expires_at.toISOString(),
+    createdAt: row.created_at.toISOString(),
+  };
+}
+
+/** A `store_id` filter must name a store in the caller's scope and tenant (else 404). */
+async function assertStoreFilterVisible(client: PoolClient, input: ListPairingCodesInput, scope: StoreScope): Promise<void> {
+  if (input.storeId === undefined) return;
+  const visible = await storeInCallerScope(client, { tenantId: input.tenantId, scope, storeId: input.storeId });
+  if (!visible) throw new PairingCodeNotFoundError();
+}
+
+/** One page from `limit + 1` rows: the extra row only says another page follows. */
+function pageOf(rows: readonly PairingCodeReadRow[], limit: number, tenantId: string): PairingCodePage {
+  const items = rows.slice(0, limit);
+  const last = items[items.length - 1];
+  const nextCursor =
+    rows.length > limit && last !== undefined
+      ? encodePairingCodeCursor({ tenantId, createdAtKey: last.created_at_key, pairingCodeId: last.id })
+      : null;
+  return { items: items.map(toPairingCodeSummary), nextCursor };
+}
+
+/** Cancel a pending code and write its audit row, in the caller's transaction. */
+async function cancelCode(client: PoolClient, input: CancelPairingCodeInput, storeId: string): Promise<void> {
+  await client.query(`UPDATE pairing_codes SET status = 'cancelled' WHERE id = $1::uuid AND tenant_id = $2::uuid`, [
+    input.pairingCodeId,
+    input.tenantId,
+  ]);
+  await insertDeviceAudit(client, {
+    tenantId: input.tenantId,
+    storeId,
+    actorUserId: input.actorUserId,
+    action: "pos.device.pairing_code.cancelled",
+    targetType: "pairing_code",
+    targetId: input.pairingCodeId,
+    metadata: {},
+  });
 }

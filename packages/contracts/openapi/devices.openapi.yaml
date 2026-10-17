@@ -371,7 +371,10 @@ info:
     `terminal_id`), `pos.device.pairing_code.cancelled` (target
     `pairing_code`; actor the session user) and, at redemption,
     `pos.device.paired` (target `device` / the new device id; no actor user;
-    metadata `pairing_code_id`, `kind`, `replaces_device_id`). The
+    metadata `pairing_code_id`, `kind`, `replaces_device_id` and
+    `cancelled_pairing_code_count`: the sibling replacement codes the
+    redemption itself cancelled on an already revoked device, 0 otherwise,
+    where the auto-revoke's own row counts them). The
     redemption's auto-revoke writes `pos.device.revoked` with no actor user,
     `reason` `replaced` / `moved`, the cascade counts,
     `custody_exception: false`, `replaced_by_device_id` and

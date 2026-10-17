@@ -60,6 +60,11 @@ export const STALE_SIBLING_CODE = id("08a2");
 export const RP_REISSUE = id("01b5");
 /** STORE_A_Y, active, no shift: a move code listed by a caller who cannot see Y. */
 export const MV_LIST = id("02b1");
+/** Active, no shift: two replacement codes for it are redeemed at once (L3). */
+export const RP_CONC = id("01b6");
+/** A seeded pending replacement code for RP_CONC, with a known raw value. */
+export const CONC_SIBLING_CODE = id("08a3");
+export const CONC_SIBLING_RAW = "CONCSIBLINGRAWCODE01";
 export const D_B2 = "0b000000-0000-7000-8000-0000036701b1";
 export const NO_DEVICE = id("01ff");
 
@@ -109,6 +114,7 @@ function devices(): SeedDevice[] {
   list.push({ id: RP_REV_SIB, tenantId: TENANT_A, storeId: STORE_A_X });
   list.push({ id: RP_REISSUE, tenantId: TENANT_A, storeId: STORE_A_X });
   list.push({ id: MV_LIST, tenantId: TENANT_A, storeId: STORE_A_Y });
+  list.push({ id: RP_CONC, tenantId: TENANT_A, storeId: STORE_A_X });
   list.push({ id: D_B2, tenantId: TENANT_B, storeId: STORE_B_X });
   return list;
 }
@@ -206,6 +212,14 @@ async function seedCredentials(admin: Pool): Promise<void> {
      VALUES ($1, $2, $3, $4, gen_random_uuid(), 'Stale', 'Branch', 'Address', 'TAX-1', '0x04b8', '0x0202',
              'pending', now() - interval '1 minute', $5)`,
     [STALE_SIBLING_CODE, TENANT_A, STORE_A_X, digest(`code:${STALE_SIBLING_CODE}`), RP_REV_SIB],
+  );
+  await admin.query(
+    `INSERT INTO pairing_codes
+       (id, tenant_id, store_id, code_hash, terminal_id, terminal_label, branch_name, branch_address,
+        tenant_tax_registration_id, printer_vendor_id, printer_product_id, status, expires_at, replaces_device_id)
+     VALUES ($1, $2, $3, $4, gen_random_uuid(), 'Conc', 'Branch', 'Address', 'TAX-1', '0x04b8', '0x0202',
+             'pending', now() + interval '1 hour', $5)`,
+    [CONC_SIBLING_CODE, TENANT_A, STORE_A_X, digest(CONC_SIBLING_RAW), RP_CONC],
   );
 }
 

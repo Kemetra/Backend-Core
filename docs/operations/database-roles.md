@@ -139,6 +139,8 @@ Legitimate deployments never set a role option.
   - `erpnext_posting_resolution`: `SELECT`, `INSERT` (RT-330, migration 0037)
   - `sale_reprints`: `SELECT`, `INSERT` (RT-539, migration 0047)
   - `devices`: `UPDATE` (RT-365: the Console device revoke)
+  - `pairing_codes`: `SELECT`, `INSERT`, `UPDATE` (RT-367: the Console
+    pairing codes and the redemption)
   - `sale_responsibilities`: `SELECT`, `INSERT`; `payer_account`: `SELECT`,
     `INSERT`, `UPDATE` (RT-418, migration 0051)
 
@@ -191,7 +193,8 @@ password. Grant only the operations required by the auth boundary:
 - `stores`: `SELECT` (resolve a supplied store id to its tenant before RLS)
 - `external_identity_links`: `SELECT`
 - `connector_registration`: `SELECT` (connector-token bootstrap only)
-- `pairing_codes`: `SELECT` (anonymous pairing-code bootstrap only)
+- `pairing_codes`: `SELECT` (anonymous pairing-code bootstrap only; every
+  other privilege is forbidden and fails boot, RT-367)
 
 Tables protected by `FORCE ROW LEVEL SECURITY` require the lookup login to have
 `BYPASSRLS`; the restricted table grants above are therefore the primary
@@ -363,6 +366,19 @@ table the domain role must use needs a matching grant step at deploy time.
   (`DOMAIN_REQUIRED_GRANTS`) rather than failing every revoke with 500. The
   shift-open path does not need it (its device lifecycle lock is an advisory
   lock).
+
+- **Console pairing codes (RT-367, on migrations `0024` / `0040`).** The same
+  script also grants the domain role `SELECT`, `INSERT`, `UPDATE` on
+  `pairing_codes`. `INSERT` is new: `POST /api/v1/pairing-codes` issues a code
+  as the domain role, where until RT-367 only the owner-run CLI inserted codes
+  as the table owner. `SELECT` serves the list, the cancel and the
+  one-replacement check; `UPDATE` the cancel and the redemption's attempt
+  count and burn. Equivalent statement:
+  `GRANT SELECT, INSERT, UPDATE ON pairing_codes TO <DATABASE_URL role>;`.
+  Never grant `DELETE` or `TRUNCATE` (spent codes are retained). Without it
+  the API refuses to boot (`DOMAIN_REQUIRED_GRANTS`) rather than failing every
+  issue with 500. The lookup role keeps `SELECT` only on `pairing_codes`
+  (`AUTH_LOOKUP_FORBIDDEN_GRANTS`).
 
 ## Redis credential
 

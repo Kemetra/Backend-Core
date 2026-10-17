@@ -40,7 +40,7 @@ import {
   type TerminalPairResponseBody,
   toTerminalPairBody,
 } from "./dto/terminal-pair.dto";
-import { PairingRepository, type PairingCodeRow } from "./pairing.repository";
+import { PairingRepository, type BurnOutcome, type PairingCodeRow } from "./pairing.repository";
 
 /** Per-code attempt budget before 429 (FR-008). */
 export const MAX_ATTEMPTS_PER_CODE = 5;
@@ -100,28 +100,23 @@ export class PairingService {
       terminalLabel: code.terminal_label,
       replacesDeviceId: code.replaces_device_id,
     });
+    return this.outcomeOf(code, provision);
+  }
+
+  /** The burn's outcome as the pair result (the contract's closed set). */
+  private async outcomeOf(code: PairingCodeRow, provision: BurnOutcome): Promise<PairResult> {
     // A concurrent redemption of the SAME code won the burn race → spent → 410.
     if (provision === "lost_race") return { kind: "expired" };
     // The burn won but a device already exists for this terminal (two distinct
     // codes for one terminal_id raced, or already paired) → 409, never a 500.
     if (provision === "already_provisioned") return { kind: "already_paired" };
     // The replaced device's Cash Session rule refuses the replacement now.
-    if (provision === "replacement_blocked") return { kind: "replacement_blocked" };
-    const { rawToken, expiresAt } = provision;
-
-    const binding: PairingCodeBindingRow = {
-      tenant_id: code.tenant_id,
-      store_id: code.store_id,
-      terminal_id: code.terminal_id,
-      terminal_label: code.terminal_label,
-      branch_name: code.branch_name,
-      branch_address: code.branch_address,
-      tenant_tax_registration_id: code.tenant_tax_registration_id,
-      printer_vendor_id: code.printer_vendor_id,
-      printer_product_id: code.printer_product_id,
-      printer_com_port: code.printer_com_port,
-    };
-    return { kind: "ok", body: toTerminalPairBody(binding, rawToken, expiresAt) };
+    if (provision === "replacement_blocked") {
+      // It reached the re-check, so the caller holds the code: give the attempt back (M1).
+      await this.repo.refundAttempt(code.id, code.tenant_id);
+      return { kind: "replacement_blocked" };
+    }
+    return { kind: "ok", body: toTerminalPairBody(bindingOf(code), provision.rawToken, provision.expiresAt) };
   }
 
   /** A code is no longer redeemable when not pending, or past its expiry. */
@@ -129,4 +124,20 @@ export class PairingService {
     if (code.status !== "pending") return true;
     return code.expires_at.getTime() <= Date.now();
   }
+}
+
+/** The pinned terminal binding of a code (the pair response's non-secret fields). */
+function bindingOf(code: PairingCodeRow): PairingCodeBindingRow {
+  return {
+    tenant_id: code.tenant_id,
+    store_id: code.store_id,
+    terminal_id: code.terminal_id,
+    terminal_label: code.terminal_label,
+    branch_name: code.branch_name,
+    branch_address: code.branch_address,
+    tenant_tax_registration_id: code.tenant_tax_registration_id,
+    printer_vendor_id: code.printer_vendor_id,
+    printer_product_id: code.printer_product_id,
+    printer_com_port: code.printer_com_port,
+  };
 }

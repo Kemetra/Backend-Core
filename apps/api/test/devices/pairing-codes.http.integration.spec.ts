@@ -41,12 +41,15 @@ import { STORE_A_X, STORE_A_Y } from "../catalog/__support__/isolation-harness";
 import { SES_ADMIN_SPEC, SES_OWNER_ALL } from "../catalog/erpnext-reconciliation/__support__/read-store-scope";
 import {
   BINDING,
+  CONC_SIBLING_CODE,
+  CONC_SIBLING_RAW,
   D_B2,
   NO_DEVICE,
   OP_TOKEN_FREE,
   PARITY_DEVICES,
   RP_DEAD,
   MV_LIST,
+  RP_CONC,
   RP_RACE,
   RP_REISSUE,
   RP_REV_SIB,
@@ -214,7 +217,12 @@ describe("replace / move parity (preview == issue == redemption)", () => {
     expect(r.rows.length).toBeGreaterThan(0);
     for (const row of r.rows) {
       expect(row.actor_user_id).toBeNull();
-      expect(Object.keys(row.metadata).sort()).toEqual(["kind", "pairing_code_id", "replaces_device_id"]);
+      expect(Object.keys(row.metadata).sort()).toEqual([
+        "cancelled_pairing_code_count",
+        "kind",
+        "pairing_code_id",
+        "replaces_device_id",
+      ]);
     }
   });
 });
@@ -236,6 +244,50 @@ describe("redemption re-check (D-Q4) and the broken till (RT-287 11493)", () => 
     expect((await deviceRow(RP_RACE))["revoked_at"]).toBeNull();
     const minted = await h.env().admin.query(`SELECT 1 FROM devices WHERE id = $1`, [issued.terminalId]);
     expect(minted.rowCount).toBe(0);
+
+    // M1: a blocked try proves the caller holds the code, so it does not use the
+    // per-code attempt budget (5): more than 5 blocked tries, then the shift
+    // closes, and the same code still pairs.
+    for (let i = 0; i < 6; i += 1) {
+      expect((await pair(issued.code)).body.error?.code).toBe("REPLACEMENT_BLOCKED");
+    }
+    await h.env().admin.query(`UPDATE shifts SET lifecycle_state = 'closed' WHERE shift_id = $1`, [SHIFT_RACE]);
+    const paired = await pair(issued.code);
+    expect(paired.status).toBe(200);
+    expect((await deviceRow(RP_RACE))["revoke_reason"]).toBe("replaced");
+  });
+
+  it("lets exactly one of two concurrent replacement redemptions win (L3)", async () => {
+    if (skip()) return;
+    // The C7 issue check refuses a second live code, so the sibling is seeded.
+    await h
+      .env()
+      .admin.query(`UPDATE pairing_codes SET expires_at = now() - interval '1 second' WHERE id = $1`, [
+        CONC_SIBLING_CODE,
+      ]);
+    const issued = await issueOk(SES_OWNER_ALL, { storeId: STORE_A_X, replacesDeviceId: RP_CONC });
+    await h
+      .env()
+      .admin.query(`UPDATE pairing_codes SET expires_at = now() + interval '1 hour' WHERE id = $1`, [
+        CONC_SIBLING_CODE,
+      ]);
+    const [a, b] = await Promise.all([pair(issued.code), pair(CONC_SIBLING_RAW)]);
+    const outcomes = [a, b].map((r) => (r.status === 200 ? "200" : `${r.status} ${r.body.error?.code}`)).sort();
+    expect(outcomes[0]).toBe("200");
+    expect(["409 REPLACEMENT_BLOCKED", "410 EXPIRED_CODE"]).toContain(outcomes[1]);
+    const used = await h
+      .env()
+      .admin.query(`SELECT count(*)::int AS n FROM pairing_codes WHERE replaces_device_id = $1 AND status = 'used'`, [
+        RP_CONC,
+      ]);
+    expect(used.rows[0].n).toBe(1);
+    const replacements = await h
+      .env()
+      .admin.query(
+        `SELECT count(*)::int AS n FROM devices d JOIN pairing_codes pc ON pc.device_id = d.id WHERE pc.replaces_device_id = $1`,
+        [RP_CONC],
+      );
+    expect(replacements.rows[0].n).toBe(1);
   });
 
   it("revokes a dead till for recovery, replaces it, and keeps the custody exception on the old shift", async () => {
@@ -312,6 +364,9 @@ describe("one replacement per device (C7)", () => {
     expect((await pair(issued.code)).status).toBe(200);
     expect(await codeStatus(STALE_SIBLING_CODE)).toBe("cancelled");
     expect(await auditRows("pos.device.revoked", RP_REV_SIB)).toHaveLength(0);
+    // L2: the redemption itself cancelled the sibling, so its paired row counts it.
+    const paired = await auditRows("pos.device.paired", issued.terminalId);
+    expect((paired[0]?.["metadata"] as Record<string, unknown>)["cancelled_pairing_code_count"]).toBe(1);
   });
 });
 
