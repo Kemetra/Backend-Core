@@ -101,6 +101,14 @@ class FakeMembershipRepository {
   async listGrantedStoreIds(): Promise<readonly string[]> {
     return this.grantedStoreIds;
   }
+
+  // RT-669: dashboard_api token branch reads the tenant's status.
+  tenantActiveResult = true;
+  isTenantActiveCalls: string[] = [];
+  async isTenantActive(tenantId: string): Promise<boolean> {
+    this.isTenantActiveCalls.push(tenantId);
+    return this.tenantActiveResult;
+  }
 }
 
 // --- Helpers ----------------------------------------------------------
@@ -437,6 +445,24 @@ describe("TenantContextGuard — token principal", () => {
     });
     await expect(guard.canActivate(makeContext(request))).resolves.toBe(true);
     expect(request.context?.tenantId).toBe(OTHER_TENANT_ID);
+    expect(memberships.findActiveMembershipCalls).toHaveLength(0);
+  });
+
+  it("RT-669: dashboard_api token of a non-active tenant → 401, no context published", async () => {
+    memberships.tenantActiveResult = false;
+    const request = makeRequest({
+      kind: "token",
+      tokenId: TOKEN_ID,
+      tenantId: TENANT_ID,
+      userId: USER_ID,
+      storeId: null,
+      scope: "dashboard_api",
+    });
+    await expect(guard.canActivate(makeContext(request))).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(request.context).toBeUndefined();
+    expect(memberships.isTenantActiveCalls).toEqual([TENANT_ID]);
     expect(memberships.findActiveMembershipCalls).toHaveLength(0);
   });
 });

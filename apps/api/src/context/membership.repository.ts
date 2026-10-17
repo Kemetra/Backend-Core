@@ -36,6 +36,21 @@
  * RLS policies on `memberships` and `store_access` are still in force
  * for normal application traffic; this is the deliberately scoped
  * exception, gated behind the guard's narrow query surface.
+ *
+ * Tenant status (RT-669)
+ * ----------------------
+ * A membership admits its user only while its tenant is active: `status =
+ * 'active'` (the `tenants_status_valid` CHECK allows active, suspended and
+ * pending) AND `deleted_at IS NULL` — the RT-213 device-path rule. Every read
+ * that admits a member into a tenant (`findActiveMembership`,
+ * `findRoleCodeForUserInTenant`, the `listForUser` / `listTenantRolesForUser`
+ * membership lists) joins `tenants` and applies it, so a membership in a
+ * suspended, pending or soft-deleted tenant reads exactly like a revoked one
+ * and every caller refuses it with the response it already gives a
+ * non-member. `isTenantActive` answers the same question for the
+ * `dashboard_api` token branch of `TenantContextGuard`. Platform admins never
+ * reach these reads (FR-TEN-6), so they can still enter and reactivate a
+ * non-active tenant.
  */
 import { Injectable } from "@nestjs/common";
 import {
@@ -48,7 +63,7 @@ import {
   type StoreAccessKind,
 } from "@data-pulse-2/db/schema";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, type SQL } from "drizzle-orm";
 import type { Pool, PoolClient } from "pg";
 
 /**
@@ -113,6 +128,11 @@ export interface StoreSummary {
   readonly name: string;
 }
 
+/** RT-669: the tenant is active (`status = 'active'`) and not soft-deleted. */
+function tenantIsActive(): SQL | undefined {
+  return and(eq(tenants.status, "active"), isNull(tenants.deletedAt));
+}
+
 @Injectable()
 export class MembershipRepository {
   private readonly db: NodePgDatabase;
@@ -145,7 +165,8 @@ export class MembershipRepository {
    * none exists. "Active" means:
    *   - membership row exists,
    *   - `revoked_at IS NULL`,
-   *   - `deleted_at IS NULL`.
+   *   - `deleted_at IS NULL`,
+   *   - its tenant is active and not soft-deleted (RT-669).
    *
    * Callers translate `null` into a 404 (not 403) per FR-ISO-4 — the
    * absence of a membership must look identical to "tenant doesn't
@@ -170,12 +191,14 @@ export class MembershipRepository {
         storeAccessKind: memberships.storeAccessKind,
       })
       .from(memberships)
+      .innerJoin(tenants, eq(tenants.id, memberships.tenantId))
       .where(
         and(
           eq(memberships.userId, userId),
           eq(memberships.tenantId, tenantId),
           isNull(memberships.revokedAt),
           isNull(memberships.deletedAt),
+          tenantIsActive(),
         ),
       )
       .limit(1);
@@ -341,7 +364,7 @@ export class MembershipRepository {
     }));
   }
 
-  /** The user's unrevoked, undeleted memberships in undeleted tenants. */
+  /** The user's unrevoked, undeleted memberships in active, undeleted tenants (RT-669). */
   private activeMembershipRows(db: NodePgDatabase, userId: string) {
     return db
       .select({
@@ -359,7 +382,7 @@ export class MembershipRepository {
           eq(memberships.userId, userId),
           isNull(memberships.revokedAt),
           isNull(memberships.deletedAt),
-          isNull(tenants.deletedAt),
+          tenantIsActive(),
         ),
       );
   }
@@ -389,6 +412,26 @@ export class MembershipRepository {
       .where(and(eq(tenants.id, tenantId), isNull(tenants.deletedAt)))
       .limit(1);
     return rows[0] ?? null;
+  }
+
+  /**
+   * RT-669: `true` iff the tenant is active and not soft-deleted — the
+   * RT-213 rule. A missing or invisible row is `false` (fail closed).
+   * Used by `TenantContextGuard` for `dashboard_api` tokens, whose tenant
+   * is baked at issuance and has no membership read to carry the rule.
+   *
+   * @param client — Optional `PoolClient` from `runWithTenantContext`.
+   *   Same semantics as `findActiveMembership`.
+   */
+  async isTenantActive(tenantId: string, client?: PoolClient): Promise<boolean> {
+    const db = client ? drizzle(client) : this.db;
+    const rows = await db
+      .select({ status: tenants.status, deletedAt: tenants.deletedAt })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1);
+    const row = rows[0];
+    return row !== undefined && row.status === "active" && row.deletedAt === null;
   }
 
   /**
@@ -503,7 +546,7 @@ export class MembershipRepository {
   /**
    * Look up the role code (e.g., `'tenant_admin'`, `'owner'`) for a
    * user's active membership in a given tenant. Returns `null` if no
-   * active membership exists.
+   * active membership exists, or if the tenant is not active (RT-669).
    *
    * Used by `TenantsService` to authorize `PATCH /tenants/:id` —
    * inline pending the `RolesGuard` / `@Roles()` refactor in
@@ -519,6 +562,7 @@ export class MembershipRepository {
     const rows = await db
       .select({ code: roles.code })
       .from(memberships)
+      .innerJoin(tenants, eq(tenants.id, memberships.tenantId))
       .innerJoin(roles, eq(roles.id, memberships.roleId))
       .where(
         and(
@@ -526,6 +570,7 @@ export class MembershipRepository {
           eq(memberships.tenantId, tenantId),
           isNull(memberships.revokedAt),
           isNull(memberships.deletedAt),
+          tenantIsActive(),
         ),
       )
       .limit(1);
