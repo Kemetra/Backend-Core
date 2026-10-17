@@ -96,13 +96,42 @@ async function replay(
   input: CreditSaleReversalInput,
   payloadHash: string,
 ): Promise<CreditSaleReversalResult | null> {
-  const existing = await findCreditReversalByProvenance(client, input.tenantId, input.body);
-  if (existing === null) return null;
-  if (existing.id === "" || existing.sale_id !== input.saleRef || existing.payload_hash !== payloadHash) {
-    throw new TerminalEventProvenanceConflictError();
+  const { credit, ordinaryHolds } = await findCreditReversalByProvenance(client, input.tenantId, input.body);
+  if (credit === null) {
+    // An ordinary void or return already holds this provenance: never a replay.
+    if (ordinaryHolds) throw new TerminalEventProvenanceConflictError();
+    return null;
   }
-  const stored = await loadCreditReversal(client, existing.id);
+  if (!isSameReversal(credit, input.saleRef, payloadHash)) throw new TerminalEventProvenanceConflictError();
+  const stored = await loadCreditReversal(client, credit.id);
   return { projection: stored.projection, created: false, audit: auditOf(stored) };
+}
+
+/** A replay only for the SAME sale and the same payload (FR-013). */
+function isSameReversal(credit: { readonly sale_id: string; readonly payload_hash: string }, saleRef: string, payloadHash: string): boolean {
+  return credit.sale_id === saleRef && credit.payload_hash === payloadHash;
+}
+
+/** The credit status and exclusivity checks, in the contract's order. */
+function assertReversible(sale: LockedSale, state: { voided: boolean; returned: boolean }, kind: "void" | "return"): void {
+  if (sale.responsibilityCount <= 0) throw new CreditReversalNotApplicableError();
+  if (state.voided) throw new SaleAlreadyReversedError();
+  if (kind === "void" && state.returned) throw new SaleAlreadyReversedError();
+}
+
+/** A void's RT-530 checks and total (the sale's posTotal), or a return's priced lines and total. */
+async function priceReversal(
+  client: PoolClient,
+  scope: Scope,
+  input: CreditSaleReversalInput,
+  posTotal: string,
+): Promise<{ priced: PricedLine[]; reversalTotal: string }> {
+  if (input.body.kind === "void") {
+    await checkCreditVoidApproval(client, scope, input);
+    return { priced: [], reversalTotal: posTotal };
+  }
+  const priced = await priceReturnLines(client, input.saleRef, input.body.lines ?? []);
+  return { priced, reversalTotal: await sumOf(client, priced.map((l) => l.lineAmount)) };
 }
 
 async function recordNew(
@@ -114,21 +143,13 @@ async function recordNew(
   const { body, saleRef, actorUserId } = input;
   const scope: Scope = { tenantId: input.tenantId, storeId: input.storeId };
   const actorRole = await assertCreditReversalActor(client, scope, actorUserId);
-  if (sale.responsibilityCount <= 0) throw new CreditReversalNotApplicableError();
-  const state = await readReversalState(client, saleRef);
-  if (state.voided || (body.kind === "void" && state.returned)) throw new SaleAlreadyReversedError();
+  assertReversible(sale, await readReversalState(client, saleRef), body.kind);
 
   const facts = await readCreditSaleFacts(client, saleRef);
-  let priced: PricedLine[] = [];
-  let reversalTotal = facts.posTotal;
-  if (body.kind === "void") {
-    await checkCreditVoidApproval(client, scope, input);
-  } else {
-    priced = await priceReturnLines(client, saleRef, body.lines ?? []);
-    reversalTotal = await sumOf(client, priced.map((l) => l.lineAmount));
-  }
+  const { priced, reversalTotal } = await priceReversal(client, scope, input, facts.posTotal);
   const allocation = await allocate(client, saleRef, facts, reversalTotal);
   const payerId = await assertPayerSettlement(client, scope, facts.payerId);
+  // D6: only a return carries the second approval (a void's is its RT-530 approval).
   if (body.kind === "return") {
     await assertCreditReturnApproval(client, {
       scope,

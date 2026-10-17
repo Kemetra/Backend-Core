@@ -137,30 +137,32 @@ const REVERSAL_SQL = `INSERT INTO sale_credit_reversals
              $9::numeric, $10::numeric, $11::numeric, $12, $13, $14, 'store_manager', $15,
              $16, $17, $18, $19, $20)`;
 
+const REVERSAL_DEFAULTS = {
+  kind: "void",
+  voidId: VOID_A as string | null,
+  returnId: null as string | null,
+  saleId: SALE_VOIDED,
+  externalId: "credit-1",
+  total: "10",
+  refundable: "4",
+  adjustment: "6",
+  adjustmentRef: "0a000000-0000-7000-8000-0000000577f1" as string | null,
+  reason: "customer returned the goods",
+  approvalId: null as string | null,
+};
+
+/** The five approval columns: all set for an approval id, else all NULL (unless overridden). */
+function approvalParams(approvalId: string | null, approverId: string | null | undefined): unknown[] {
+  if (approvalId === null) return [null, approverId ?? null, null, null, null];
+  return [approvalId, approverId === undefined ? APPROVER : approverId, ACTOR, "v1", "2026-10-17T10:00:00Z"];
+}
+
 function reversalParams(row: ReversalRow): unknown[] {
-  const approvalId = row.approvalId ?? null;
-  const approved = approvalId !== null;
+  const r = { ...REVERSAL_DEFAULTS, ...row };
   return [
-    TENANT,
-    STORE,
-    row.saleId ?? SALE_VOIDED,
-    row.kind ?? "void",
-    row.voidId === undefined ? VOID_A : row.voidId,
-    row.returnId === undefined ? null : row.returnId,
-    row.externalId ?? "credit-1",
-    "e".repeat(64),
-    row.total ?? "10",
-    row.refundable ?? "4",
-    row.adjustment ?? "6",
-    PAYER,
-    row.adjustmentRef === undefined ? "0a000000-0000-7000-8000-0000000577f1" : row.adjustmentRef,
-    ACTOR,
-    row.reason ?? "customer returned the goods",
-    approvalId,
-    row.approverId === undefined ? (approved ? APPROVER : null) : row.approverId,
-    approved ? ACTOR : null,
-    approved ? "v1" : null,
-    approved ? "2026-10-17T10:00:00Z" : null,
+    TENANT, STORE, r.saleId, r.kind, r.voidId, r.returnId, r.externalId, "e".repeat(64),
+    r.total, r.refundable, r.adjustment, PAYER, r.adjustmentRef, ACTOR, r.reason,
+    ...approvalParams(r.approvalId, row.approverId),
   ];
 }
 

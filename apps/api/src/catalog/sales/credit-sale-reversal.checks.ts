@@ -184,9 +184,10 @@ export async function allocate(
   facts: CreditSaleFacts,
   reversalTotal: string,
 ): Promise<Allocation> {
+  if (facts.allocationBlocked) throw new CreditReversalAllocationUnavailableError();
   const m = minorUnitExponent(facts.currencyCode);
-  if (facts.allocationBlocked || m === null) throw new CreditReversalAllocationUnavailableError();
-  const r = await client.query<{ exact: boolean; refundable: string | null; adjustment: string | null; total: string }>(
+  if (m === null) throw new CreditReversalAllocationUnavailableError();
+  const r = await client.query<AllocationRow>(
     `WITH f AS (
        SELECT $2::numeric AS p, $3::numeric AS c, $4::numeric AS x0,
               $4::numeric + $5::numeric AS x1, $5::numeric AS total, power(10::numeric, $6::int) AS k
@@ -207,11 +208,23 @@ export async function allocate(
        FROM checks`,
     [saleRef, facts.posTotal, facts.collected, facts.creditReversedBefore, reversalTotal, m],
   );
-  const row = r.rows[0];
-  if (row?.exact !== true || row.refundable === null || row.adjustment === null) {
-    throw new CreditReversalAllocationUnavailableError();
-  }
-  return { reversalTotal: row.total, refundable: row.refundable, adjustment: row.adjustment };
+  return toAllocation(r.rows[0]);
+}
+
+interface AllocationRow {
+  readonly exact: boolean;
+  readonly total: string;
+  readonly refundable: string | null;
+  readonly adjustment: string | null;
+}
+
+/** The allocation of an exact row; any other row is unavailable (fail closed). */
+function toAllocation(row: AllocationRow | undefined): Allocation {
+  if (row?.exact !== true) throw new CreditReversalAllocationUnavailableError();
+  const { refundable, adjustment } = row;
+  if (refundable === null) throw new CreditReversalAllocationUnavailableError();
+  if (adjustment === null) throw new CreditReversalAllocationUnavailableError();
+  return { reversalTotal: row.total, refundable, adjustment };
 }
 
 /**
@@ -234,44 +247,59 @@ export async function assertPayerSettlement(client: PoolClient, scope: SaleScope
 
 const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 
+/** What the D6 checks read: the request, the actor and the server-computed refund. */
+export interface CreditReturnApprovalInput {
+  readonly scope: SaleScope;
+  readonly saleRef: string;
+  readonly actorUserId: string;
+  readonly sellerUserId: string;
+  readonly refundable: string;
+  readonly approval: VoidApprovalDto | undefined;
+  readonly now: Date;
+}
+
+type ApprovalClaim = (approval: VoidApprovalDto, input: CreditReturnApprovalInput) => boolean;
+
+/** The D6 claims, each a predicate (the RT-530 shape, bound to `sale.credit_return`). */
+const RETURN_APPROVAL_CLAIMS: ReadonlyArray<ApprovalClaim> = [
+  (a) => a.action === CREDIT_RETURN_APPROVAL_ACTION,
+  (a, i) => same(a.saleRef, i.saleRef),
+  (a, i) => Date.parse(a.approvedAt) <= i.now.getTime() + VOID_APPROVAL_SKEW_MS,
+  (a, i) => same(a.requesterUserId, i.actorUserId),
+  // The same actor never counts twice: neither the requester nor the seller approves.
+  (a) => !same(a.approverUserId, a.requesterUserId),
+  (a, i) => !same(a.approverUserId, i.sellerUserId),
+];
+
 /**
  * D6: a cash-paying credit return needs a second approval; an approval that is
  * sent is always checked. Every failure is one refusal (no cause disclosed).
  */
-export async function assertCreditReturnApproval(
-  client: PoolClient,
-  input: {
-    readonly scope: SaleScope;
-    readonly saleRef: string;
-    readonly actorUserId: string;
-    readonly sellerUserId: string;
-    readonly refundable: string;
-    readonly approval: VoidApprovalDto | undefined;
-    readonly now: Date;
-  },
-): Promise<void> {
+export async function assertCreditReturnApproval(client: PoolClient, input: CreditReturnApprovalInput): Promise<void> {
   const { approval } = input;
   if (approval === undefined) {
     if (await isPositive(client, input.refundable)) throw new CreditReturnApprovalRequiredError();
     return;
   }
-  const claimsHold =
-    approval.action === CREDIT_RETURN_APPROVAL_ACTION &&
-    same(approval.saleRef, input.saleRef) &&
-    Date.parse(approval.approvedAt) <= input.now.getTime() + VOID_APPROVAL_SKEW_MS &&
-    same(approval.requesterUserId, input.actorUserId) &&
-    !same(approval.approverUserId, approval.requesterUserId) &&
-    !same(approval.approverUserId, input.sellerUserId);
-  if (!claimsHold) throw new CreditReturnApprovalRefusedError();
-  const r = await client.query<{ amount_ok: boolean; used: boolean }>(
-    `SELECT $1::numeric = $2::numeric AS amount_ok,
-            (EXISTS (SELECT 1 FROM sale_approval_uses u WHERE u.tenant_id = $3 AND u.approval_id = $4)
-             OR EXISTS (SELECT 1 FROM sale_voids v WHERE v.tenant_id = $3 AND v.approval_id = $4)) AS used`,
-    [approval.amount, input.refundable, input.scope.tenantId, approval.approvalId],
-  );
-  if (r.rows[0]?.amount_ok !== true || r.rows[0].used) throw new CreditReturnApprovalRefusedError();
+  if (!RETURN_APPROVAL_CLAIMS.every((holds) => holds(approval, input))) throw new CreditReturnApprovalRefusedError();
+  await assertApprovalBoundAndUnused(client, approval, input);
   const standing = await storeUsers.approverStanding(client, { scope: input.scope, userId: approval.approverUserId });
   if (standingFinding(standing) !== null) throw new CreditReturnApprovalRefusedError();
+}
+
+/** The approval's amount is the server-computed refund, and its id was never used. */
+async function assertApprovalBoundAndUnused(
+  client: PoolClient,
+  approval: VoidApprovalDto,
+  input: CreditReturnApprovalInput,
+): Promise<void> {
+  const r = await client.query<{ ok: boolean }>(
+    `SELECT $1::numeric = $2::numeric
+            AND NOT EXISTS (SELECT 1 FROM sale_approval_uses u WHERE u.tenant_id = $3 AND u.approval_id = $4)
+            AND NOT EXISTS (SELECT 1 FROM sale_voids v WHERE v.tenant_id = $3 AND v.approval_id = $4) AS ok`,
+    [approval.amount, input.refundable, input.scope.tenantId, approval.approvalId],
+  );
+  if (r.rows[0]?.ok !== true) throw new CreditReturnApprovalRefusedError();
 }
 
 async function isPositive(client: PoolClient, amount: string): Promise<boolean> {

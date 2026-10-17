@@ -16,6 +16,7 @@ import type { PoolClient } from "pg";
 
 import { CreditReturnApprovalRefusedError, type Allocation } from "./credit-sale-reversal.checks";
 import type { CreditSaleReversalRequestDto } from "./dto/credit-sale-reversal-request.dto";
+import type { VoidApprovalDto } from "./dto/record-void-request.dto";
 import { TerminalEventProvenanceConflictError } from "./sale-errors";
 import { loadSaleReturn, type PricedLine, type ReturnLineProjection } from "./sale-returns.service";
 import { mapOneVoidViolation } from "./sale-reversal";
@@ -80,6 +81,7 @@ export interface CreditReversalWrite {
 export async function writeCreditReversal(client: PoolClient, w: CreditReversalWrite): Promise<string> {
   const link = w.body.kind === "void" ? await insertVoid(client, w) : await insertReturn(client, w);
   const reversalId = newId();
+  // D6: a return's second approval lives on the reversal (a void's on its sale_voids row).
   const approval = w.body.kind === "return" ? w.body.approval : undefined;
   await client.query(
     `INSERT INTO sale_credit_reversals
@@ -97,8 +99,7 @@ export async function writeCreditReversal(client: PoolClient, w: CreditReversalW
       w.storeId,
       w.saleRef,
       w.body.kind,
-      w.body.kind === "void" ? link : null,
-      w.body.kind === "return" ? link : null,
+      ...linkColumns(w.body.kind, link),
       w.body.sourceSystem,
       w.body.externalId,
       w.payloadHash,
@@ -112,21 +113,10 @@ export async function writeCreditReversal(client: PoolClient, w: CreditReversalW
       w.actorUserId,
       w.actorRole,
       w.body.reason,
-      approval?.approvalId ?? null,
-      approval?.approverUserId ?? null,
-      approval?.requesterUserId ?? null,
-      approval?.policyVersion ?? null,
-      approval?.approvedAt ?? null,
+      ...approvalColumns(approval),
     ],
   );
-  for (const [ordinal, t] of w.body.refundTenders.entries()) {
-    await client.query(
-      `INSERT INTO sale_credit_reversal_tenders
-         (id, reversal_id, tenant_id, store_id, ordinal, method, amount, tender_ref, reference)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::numeric, $8, $9)`,
-      [newId(), reversalId, w.tenantId, w.storeId, ordinal, t.method, t.amount, t.tenderRef ?? null, t.reference ?? null],
-    );
-  }
+  await insertRefundTenders(client, w, reversalId);
   if (approval !== undefined) await consumeReturnApproval(client, w.tenantId, approval.approvalId);
   await emit(client, {
     eventType: OUTBOX_EVENT_TYPES.ERPNEXT_POSTING_REQUESTED,
@@ -136,6 +126,29 @@ export async function writeCreditReversal(client: PoolClient, w: CreditReversalW
     correlationId: null,
   });
   return reversalId;
+}
+
+/** `void_id`, `return_id`: the link column of the reversal's kind. */
+function linkColumns(kind: "void" | "return", link: string): [string | null, string | null] {
+  return kind === "void" ? [link, null] : [null, link];
+}
+
+/** The five approval columns, all NULL without a (return's) second approval. */
+function approvalColumns(approval: VoidApprovalDto | undefined): Array<string | null> {
+  if (approval === undefined) return [null, null, null, null, null];
+  return [approval.approvalId, approval.approverUserId, approval.requesterUserId, approval.policyVersion, approval.approvedAt];
+}
+
+/** The refund paid out, in request order. */
+async function insertRefundTenders(client: PoolClient, w: CreditReversalWrite, reversalId: string): Promise<void> {
+  for (const [ordinal, t] of w.body.refundTenders.entries()) {
+    await client.query(
+      `INSERT INTO sale_credit_reversal_tenders
+         (id, reversal_id, tenant_id, store_id, ordinal, method, amount, tender_ref, reference)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::numeric, $8, $9)`,
+      [newId(), reversalId, w.tenantId, w.storeId, ordinal, t.method, t.amount, t.tenderRef ?? null, t.reference ?? null],
+    );
+  }
 }
 
 /** The void row; a provenance an ordinary void already holds is a 409. */
@@ -287,41 +300,54 @@ export async function loadCreditReversal(client: PoolClient, reversalId: string)
     [reversalId],
   );
   const lines = row.return_id === null ? [] : (await loadSaleReturn(client, row.return_id)).lines;
+  return { projection: toProjection(row, lines, tenders.rows.map(toTender)), actorRole: row.actor_role, approval: approvalOf(row) };
+}
+
+function toProjection(
+  row: ReversalRow,
+  lines: ReadonlyArray<ReturnLineProjection>,
+  refundTenders: ReadonlyArray<CreditReversalRefundTenderProjection>,
+): CreditSaleReversalProjection {
   return {
-    projection: {
-      reversalRef: row.id,
-      saleRef: row.sale_id,
-      kind: row.kind,
-      recordedAt: row.created_at.toISOString(),
-      businessDate: row.business_date,
-      sourceSystem: row.source_system,
-      externalId: row.external_id,
-      currencyCode: row.currency_code,
-      reversalTotal: row.reversal_total,
-      refundableAmount: row.refundable_amount,
-      receivableAdjustment:
-        row.adjustment_ref === null
-          ? null
-          : { adjustmentRef: row.adjustment_ref, payerRef: row.payer_id, amount: row.adjustment_amount },
-      lines,
-      refundTenders: tenders.rows.map((t) => ({
-        method: t.method,
-        amount: t.amount,
-        ...(t.tender_ref === null ? {} : { tenderRef: t.tender_ref }),
-        ...(t.reference === null ? {} : { reference: t.reference }),
-      })),
-      reason: row.reason,
-    },
-    actorRole: row.actor_role,
-    approval:
-      row.approval_id === null || row.approved_by_user_id === null || row.requested_by_user_id === null || row.approval_policy_version === null
-        ? null
-        : {
-            approvalId: row.approval_id,
-            approverUserId: row.approved_by_user_id,
-            requesterUserId: row.requested_by_user_id,
-            policyVersion: row.approval_policy_version,
-          },
+    reversalRef: row.id,
+    saleRef: row.sale_id,
+    kind: row.kind,
+    recordedAt: row.created_at.toISOString(),
+    businessDate: row.business_date,
+    sourceSystem: row.source_system,
+    externalId: row.external_id,
+    currencyCode: row.currency_code,
+    reversalTotal: row.reversal_total,
+    refundableAmount: row.refundable_amount,
+    receivableAdjustment: adjustmentOf(row),
+    lines,
+    refundTenders,
+    reason: row.reason,
+  };
+}
+
+function adjustmentOf(row: ReversalRow): CreditSaleReversalProjection["receivableAdjustment"] {
+  if (row.adjustment_ref === null) return null;
+  return { adjustmentRef: row.adjustment_ref, payerRef: row.payer_id, amount: row.adjustment_amount };
+}
+
+function toTender(t: { method: string; amount: string; tender_ref: string | null; reference: string | null }): CreditReversalRefundTenderProjection {
+  return {
+    method: t.method,
+    amount: t.amount,
+    ...(t.tender_ref === null ? {} : { tenderRef: t.tender_ref }),
+    ...(t.reference === null ? {} : { reference: t.reference }),
+  };
+}
+
+/** The approval evidence (all four columns, or none: the 0046 / 0054 all-or-none CHECKs). */
+function approvalOf(row: ReversalRow): CreditReversalApprovalEvidence | null {
+  if (row.approval_id === null) return null;
+  return {
+    approvalId: row.approval_id,
+    approverUserId: row.approved_by_user_id ?? "",
+    requesterUserId: row.requested_by_user_id ?? "",
+    policyVersion: row.approval_policy_version ?? "",
   };
 }
 
@@ -330,8 +356,8 @@ export async function findCreditReversalByProvenance(
   client: PoolClient,
   tenantId: string,
   body: Pick<CreditSaleReversalRequestDto, "sourceSystem" | "externalId">,
-): Promise<{ id: string; sale_id: string; payload_hash: string; ordinary_holds: boolean } | null> {
-  const r = await client.query<{ id: string | null; sale_id: string | null; payload_hash: string | null; ordinary_holds: boolean }>(
+): Promise<ProvenanceHolders> {
+  const r = await client.query<{ id: string | null; sale_id: string; payload_hash: string; ordinary_holds: boolean }>(
     `SELECT c.id, c.sale_id, c.payload_hash,
             (EXISTS (SELECT 1 FROM sale_voids v WHERE v.tenant_id = $1 AND v.source_system = $2 AND v.external_id = $3)
              OR EXISTS (SELECT 1 FROM sale_returns x WHERE x.tenant_id = $1 AND x.source_system = $2 AND x.external_id = $3))
@@ -341,7 +367,13 @@ export async function findCreditReversalByProvenance(
          ON c.tenant_id = $1 AND c.source_system = $2 AND c.external_id = $3`,
     [tenantId, body.sourceSystem, body.externalId],
   );
-  const row = r.rows[0];
-  if (row === undefined || (row.id === null && !row.ordinary_holds)) return null;
-  return { id: row.id ?? "", sale_id: row.sale_id ?? "", payload_hash: row.payload_hash ?? "", ordinary_holds: row.ordinary_holds };
+  const row = r.rows[0]!;
+  const credit = row.id === null ? null : { id: row.id, sale_id: row.sale_id, payload_hash: row.payload_hash };
+  return { credit, ordinaryHolds: row.ordinary_holds };
+}
+
+/** Who holds a provenance: a credit reversal (with what a replay compares), and/or an ordinary reversal. */
+export interface ProvenanceHolders {
+  readonly credit: { readonly id: string; readonly sale_id: string; readonly payload_hash: string } | null;
+  readonly ordinaryHolds: boolean;
 }

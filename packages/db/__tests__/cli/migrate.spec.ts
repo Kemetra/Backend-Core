@@ -445,6 +445,27 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countResolutionVersionColumn()).toBe("1");
   }
 
+  /** Every migration from 0046 to the head is applied. */
+  async function expectFrom0046Applied(): Promise<void> {
+    // 0046's approval columns, CHECK and single-use index on sale_voids (RT-530).
+    expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
+    // 0047's nine receipt columns, line_seq, sale_reprints and its SELECT +
+    // INSERT policies (RT-538).
+    expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
+    // 0048's store/business-date index, valid after the runner's CONCURRENTLY build (RT-538).
+    expect(await countValidSaleHistoryIndex()).toBe("1");
+    // 0050's policy revisions and approver verdicts (SELECT + INSERT policies
+    // each), six frozen-policy columns on shifts and two tri-states on
+    // shift_closes (RT-385).
+    expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
+    // 0051's sale_responsibilities (SELECT + INSERT policies), the two new
+    // columns, and payer_account.credit_terms dropped (RT-418).
+    expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
+    // 0054's three credit reversal tables (SELECT + INSERT policies each), the
+    // sale_voids approval-use trigger and the two FK-target indexes (RT-577).
+    expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
+  }
+
   /** The three tables created by 0054_sale_credit_reversals (RT-577). */
   const CREDIT_REVERSAL_TABLES = ["sale_credit_reversals", "sale_credit_reversal_tenders", "sale_approval_uses"];
 
@@ -557,23 +578,7 @@ describe("data-pulse-migrate CLI", () => {
     // the Tracking Profile columns and the two guard triggers (RT-448).
     await expectTrackingFoundationApplied();
     expect(await countPolicies(TRACKING_TABLES)).toBe("4");
-    // 0046's approval columns, CHECK and single-use index on sale_voids (RT-530).
-    expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
-    // 0047's nine receipt columns, line_seq, sale_reprints and its SELECT +
-    // INSERT policies (RT-538).
-    expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
-    // 0048's store/business-date index, valid after the runner's CONCURRENTLY build (RT-538).
-    expect(await countValidSaleHistoryIndex()).toBe("1");
-    // 0050's policy revisions and approver verdicts (SELECT + INSERT policies
-    // each), six frozen-policy columns on shifts and two tri-states on
-    // shift_closes (RT-385).
-    expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
-    // 0051's sale_responsibilities (SELECT + INSERT policies), the two new
-    // columns, and payer_account.credit_terms dropped (RT-418).
-    expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
-    // 0054's three credit reversal tables (SELECT + INSERT policies each), the
-    // sale_voids approval-use trigger and the two FK-target indexes (RT-577).
-    expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
+    await expectFrom0046Applied();
   });
 
   it("up is idempotent on a second run", async () => {
@@ -718,12 +723,7 @@ describe("data-pulse-migrate CLI", () => {
     await expectInventoryEffectsApplied();
     expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("1");
     await expectTrackingFoundationApplied();
-    expect(await countSaleVoidApprovalObjects()).toEqual(["6", "1", "1"]);
-    expect(await countSaleHistoryCaptureObjects()).toEqual(["9", "1", "1", "2"]);
-    expect(await countValidSaleHistoryIndex()).toBe("1");
-    expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
-    expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
-    expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
+    await expectFrom0046Applied();
   });
 
   it(
