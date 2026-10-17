@@ -1809,7 +1809,11 @@ describe("pos-sales/sales.yaml — RT-577 credit-sale reversal", () => {
     expect(info()).toContain("ROLLOUT ORDER");
     expect(info()).toContain("from the RT-577 runtime");
     expect(info()).toContain("which does not wait for a POS release: the server refusal is the control");
-    expect(info()).toContain("changes no existing request or response schema");
+    expect(info()).toContain(
+      "adds the code `credit_sale_reversal_restricted` to the existing 403 `VoidForbidden` of `recordVoid`, so a client that switches on its codes sees a new value",
+    );
+    expect(info()).toContain("No existing request schema or schema object changes");
+    expect(info()).not.toContain("changes no existing request or response schema");
   });
 });
 

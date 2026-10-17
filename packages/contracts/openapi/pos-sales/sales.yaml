@@ -285,8 +285,8 @@ info:
     without responsibilities are unchanged on every route. This version
     adds one operation, three schemas (`CreditSaleReversalRequest`,
     `CreditSaleReversal`, `ReceivableAdjustment`), three responses and a 403
-    on `recordReturn` and `recordRefund`, and changes no existing request or
-    response schema. It does not lift the RT-418 posting-feed hold on
+    on `recordReturn` and `recordRefund`, and adds the code `credit_sale_reversal_restricted` to the existing 403 `VoidForbidden` of `recordVoid`, so a client that switches on its codes sees a new value
+    (handled as described below). No existing request schema or schema object changes. It does not lift the RT-418 posting-feed hold on
     reversals of responsibility-bearing sales (RT-571 / RT-419 define their
     ERPNext shape). ROLLOUT ORDER: the ordinary routes refuse from the RT-577
     runtime, which does not wait for a POS release: the server refusal is the
