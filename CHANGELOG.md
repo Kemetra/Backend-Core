@@ -198,9 +198,7 @@ This project follows [Semantic Versioning](https://semver.org/).
   preview), revokes an active device first with reason `retired` through the
   revoke cascade, cancels the device's pending codes, sets the retire
   attribution and writes `pos.device.retired`. Idempotent (`already_retired`),
-  terminal, no un-retire, no DELETE. `consoleListDevices` without
-  `trust_state` no longer lists retired devices (RT-368 scope); they stay
-  queryable with `trust_state=retired`. No runtime or migration change.
+  terminal, no un-retire, no DELETE. No runtime or migration change.
 - RT-368: runtime for the device retire (`DevicesService.retire`).
   `consoleRetireDevice` ships unchanged on the wire and loses
   `x-runtime-status: contract-only`. Under the lifecycle and row locks it
@@ -275,6 +273,13 @@ This project follows [Semantic Versioning](https://semver.org/).
   INSERT / UPDATE).
 
 ### Changed
+- RT-368 `[GATED]`, pending owner approval: `consoleListDevices` without
+  `trust_state` no longer lists retired devices (RT-368 scope, decision R1):
+  a default-behaviour change to a live operation. Retired devices stay
+  queryable with `trust_state=retired` and by id. Admin-Console RT-371's fleet
+  table stops showing them unless it filters for them; RT-372 adds a retired
+  filter. Production keeps the old default until the RT-368 runtime ships
+  (an `x-runtime-note` says so until then).
 - RT-113 BC1: `pos-operators.openapi.yaml` 1.1.1-draft is a prose-only fix.
   The roster and active-session descriptions now match the `security` block
   and the runtime (RT-182): an operator-identity JWT, an RT-150

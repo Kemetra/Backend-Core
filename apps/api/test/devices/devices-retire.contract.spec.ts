@@ -196,6 +196,28 @@ describe("devices retire contract — rules", () => {
     expect(info()).toMatch(/The retire reason never enters audit\s+metadata/);
   });
 
+  it("notes on the live list that production keeps the old default until the RT-368 runtime", () => {
+    const list = contract.operation("get", "/api/v1/devices");
+    expect(String(list["x-runtime-note"])).toMatch(/production still returns retired devices by default/);
+    const trust = contract.parameters("get", "/api/v1/devices").find((p) => p["name"] === "trust_state");
+    expect(String(trust?.["x-runtime-note"])).toMatch(/RT-368 runtime PR removes this note/);
+  });
+
+  it("warns that retiring a revoked device cancels its pending replacement codes", () => {
+    expect(info()).toMatch(/Retiring a revoked device cancels its pending replacement codes/);
+    expect(info()).toMatch(/looks for one whose `replacesDeviceId` is\s+the device/);
+  });
+
+  it("counts on pos.device.retired only the codes the retire step itself cancelled", () => {
+    expect(info()).toMatch(/only the codes the retire step itself\s+cancelled/);
+    expect(info()).toMatch(/nothing is counted twice/);
+  });
+
+  it("states the posture without the stale 'no existing operation changes' claim", () => {
+    expect(info()).not.toMatch(/No existing operation, schema or response changes/);
+    expect(info()).toMatch(/so must the\s+pairing-code issue and cancel, and the retire/);
+  });
+
   it("drops retired devices from the default list, keeping them queryable", () => {
     expect(info()).toMatch(/Without `trust_state`, the list returns the\s+`active` and `revoked` devices only/);
     const trust = contract.parameters("get", "/api/v1/devices").find((p) => p["name"] === "trust_state");
