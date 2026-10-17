@@ -29,6 +29,7 @@ This changes what the list returns, not what is recorded.
 |---|---|---|---|
 | F1 | `listAuditEvents` takes `action`, `actor_user_id`, `store_id`, `from`, `to`, `cursor`, `limit`. The query schema is `.strict()`, so an unknown param is a 400 today. | `packages/contracts/openapi/audit.openapi.yaml`; `apps/api/src/audit/audit.query.schema.ts` | A new param is additive for the contract, but older servers reject it. Consumers must wait for the deploy (§6). |
 | F2 | `action` is a **prefix** match (`LIKE '<value>%'`), and the contract says so. The RT-567 ticket text says "exact"; the code and contract disagree with the ticket, not with each other. | `audit.repository.ts` `filterPredicates`; contract `action` description | Only one prefix can be passed. A prefix list can't express "everything except reads" (§3, option C). |
+| F2b | The prefix match does **not** escape `LIKE` metacharacters. `filterPredicates` appends `%` to the raw value, so `action=%` matches everything and `auth_%` matches beyond the literal prefix. This is a pre-existing defect, limited to the caller's own tenant (RLS + explicit tenant predicate), so it is not a cross-tenant leak. | `audit.repository.ts` `filterPredicates` (`like(table.action, \`${input.action}%\`)`) | Fixed in RT-567-I (§5): the contract promises a **literal** prefix. |
 | F3 | Order is `occurred_at DESC, id DESC`, with keyset cursor `(occurred_at, id)` and the RT-211 µs anchor. The contract does not state the order (spec 009 BC-009-3). | `audit.repository.ts` `runQuery` | Stated in the contract as part of this change (§5). |
 | F4 | Action codes have **no registry and no kind**. They are string literals spread across `@Auditable("…")` route decorators (56 codes) and direct emit sites in services (23 more: connector, POS device, settlement, reconciliation repair, unknown-item), plus constants such as `AUTH_AUDIT_ACTIONS`, `REPRINT_AUDIT_ACTION`, `inventory.movement.*`. | `grep '@Auditable(' apps/api/src`; `grep 'action: "' apps/api/src` | Classification needs one place to live (§4). |
 | F5 | Read codes do not share a naming pattern: `.listed`, `.read`, `.detail_read`, `.impact_read`, `.device_read`, `.store_revisions_listed`, `.pulled`. | Inventory in Appendix A | Name-based (suffix/regex) classification would be wrong for some codes and silently wrong for future ones. |
@@ -139,9 +140,11 @@ description: >
   filters (including `kind`) it was issued under.
 ```
 
-Also correct the `action` description to match runtime: "Filter by action code **prefix** (e.g. `auth.`,
-or a full code for an exact family)". It already says prefix; keep it, and drop any "exact" wording in
-derived docs.
+Make the `action` description precise: "Filter by a **literal** action-code prefix (e.g. `auth.`). `%`, `_`
+and `\` are matched literally, not as patterns." RT-567-I makes runtime match: it escapes `\`, `%` and `_` in the
+value and uses `LIKE … ESCAPE '\'` (F2b). That is a behaviour fix for a pattern no legitimate caller relies
+on, since action codes contain no `%`, and `_` only ever needs to match itself. Add tests: `action=%` and
+`action=auth_%` return only codes that literally start with those strings.
 
 ### 5.1 Runtime shape (for the Implementation item)
 
@@ -165,7 +168,7 @@ derived docs.
 
 | Item | Repo | Mode | Scope | Gate |
 |---|---|---|---|---|
-| **RT-567-I** — action-kind registry + `kind` filter/field | BC | Implementation | §4.2, §4.3, §5, §5.1 and tests §7.1 | **[GATED]**: `packages/contracts/openapi/audit.openapi.yaml`. No migration. |
+| **RT-567-I** — action-kind registry + `kind` filter/field | BC | Implementation | §4.2, §4.3, §5 (incl. the F2b literal-prefix fix), §5.1 and tests §7.1 | **[GATED]**: `packages/contracts/openapi/audit.openapi.yaml`. No migration. |
 | Overview P-5 return + shared audit-action copy catalog | CON | Planning → Implementation | Spec 009 OD-009-3 reversal, AC-10 rewrite, re-pin | After RT-567-I is merged and deployed |
 
 ### 7.1 Acceptance tests for RT-567-I
