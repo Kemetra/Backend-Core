@@ -68,14 +68,19 @@ Visibility at revision R uses the same rule as `price_events` (§2.4): `publishe
 Membership changes go through a Change Set (moving a Store needs an Impact Preview, 488). Memberships are
 **absolute-instant** only; they are structural, not wall-clock price events.
 
-**Publishing a move never edits a row.** A move of Store S to Zone Z2 from instant M supersedes S's membership row
-that covers M (Z1, `[F, T)`), by setting its `state` and `ended_in_revision`, and inserts in the same revision:
+**Publishing a move never edits a row.** A move of Store S to Zone Z2 over `[M, T')` (`T'` = the requested end, or
+open) supersedes **every** active membership row of S that overlaps `[M, T')`, by setting its `state` and
+`ended_in_revision`. In the same revision it inserts:
 
-- a carried-forward row `Z1, [F, M)` for the part before the move, when `F < M`;
-- the new row `Z2, [M, T')`, where `T'` is the requested end or open.
+- a carried-forward **head** row `Zx, [F, M)` for the first superseded row `Zx, [F, T)`, when `F < M`;
+- a carried-forward **tail** row `Zy, [T', T)` for the last superseded row `Zy, [F, T)`, when `T'` is bounded and `T' < T`;
+- the new row `Z2, [M, T')`.
 
-So at the new head an instant before M still resolves to Z1, not to the default Zone, and earlier revisions still see the
-original row unchanged. This is the same supersede-and-replace rule as price events (spec 041 §3.1).
+Superseded rows lying wholly inside `[M, T')` are not carried forward; the move replaces them. So at the new head an
+instant before M still resolves to the Zone it had, an instant after a bounded move returns to the Zone it had, the
+`active` rows never overlap (the exclusion constraint holds), and earlier revisions still see the original rows
+unchanged. This is the same supersede-and-replace rule as price events (spec 041 §3.1). The Impact Preview of a move
+lists every superseded row, so replacing a later scheduled move is visible before approval.
 
 ### 2.4 `price_events`
 
