@@ -25,6 +25,11 @@
  *      race (0 rows burned) → `expired` (410); a device already provisioned for
  *      the terminal (distinct-code race / already paired) → `already_paired`
  *      (409, never a 500). Success → `ok` with the raw token ONCE.
+ *   6. A replacement code (RT-367, `replaces_device_id`) re-decides the replace /
+ *      move in that same transaction, under the replaced device's lifecycle
+ *      lock (RT-287 D-Q4): refused → `replacement_blocked` (409
+ *      REPLACEMENT_BLOCKED; nothing written, the code stays pending); allowed →
+ *      the replaced device is auto-revoked with the new device's pairing.
  */
 import { Inject, Injectable } from "@nestjs/common";
 
@@ -35,7 +40,7 @@ import {
   type TerminalPairResponseBody,
   toTerminalPairBody,
 } from "./dto/terminal-pair.dto";
-import { PairingRepository, type PairingCodeRow } from "./pairing.repository";
+import { PairingRepository, type BurnOutcome, type PairingCodeRow } from "./pairing.repository";
 
 /** Per-code attempt budget before 429 (FR-008). */
 export const MAX_ATTEMPTS_PER_CODE = 5;
@@ -48,6 +53,7 @@ export type PairResult =
   | { kind: "expired" }
   | { kind: "already_paired" }
   | { kind: "branch_mismatch" }
+  | { kind: "replacement_blocked" }
   | { kind: "rate_limited"; retryAfterSeconds: number };
 
 @Injectable()
@@ -92,27 +98,25 @@ export class PairingService {
       storeId: code.store_id,
       terminalId: code.terminal_id,
       terminalLabel: code.terminal_label,
+      replacesDeviceId: code.replaces_device_id,
     });
+    return this.outcomeOf(code, provision);
+  }
+
+  /** The burn's outcome as the pair result (the contract's closed set). */
+  private async outcomeOf(code: PairingCodeRow, provision: BurnOutcome): Promise<PairResult> {
     // A concurrent redemption of the SAME code won the burn race → spent → 410.
     if (provision === "lost_race") return { kind: "expired" };
     // The burn won but a device already exists for this terminal (two distinct
     // codes for one terminal_id raced, or already paired) → 409, never a 500.
     if (provision === "already_provisioned") return { kind: "already_paired" };
-    const rawToken = provision.rawToken;
-
-    const binding: PairingCodeBindingRow = {
-      tenant_id: code.tenant_id,
-      store_id: code.store_id,
-      terminal_id: code.terminal_id,
-      terminal_label: code.terminal_label,
-      branch_name: code.branch_name,
-      branch_address: code.branch_address,
-      tenant_tax_registration_id: code.tenant_tax_registration_id,
-      printer_vendor_id: code.printer_vendor_id,
-      printer_product_id: code.printer_product_id,
-      printer_com_port: code.printer_com_port,
-    };
-    return { kind: "ok", body: toTerminalPairBody(binding, rawToken) };
+    // The replaced device's Cash Session rule refuses the replacement now.
+    if (provision === "replacement_blocked") {
+      // It reached the re-check, so the caller holds the code: give the attempt back (M1).
+      await this.repo.refundAttempt(code.id, code.tenant_id);
+      return { kind: "replacement_blocked" };
+    }
+    return { kind: "ok", body: toTerminalPairBody(bindingOf(code), provision.rawToken, provision.expiresAt) };
   }
 
   /** A code is no longer redeemable when not pending, or past its expiry. */
@@ -120,4 +124,20 @@ export class PairingService {
     if (code.status !== "pending") return true;
     return code.expires_at.getTime() <= Date.now();
   }
+}
+
+/** The pinned terminal binding of a code (the pair response's non-secret fields). */
+function bindingOf(code: PairingCodeRow): PairingCodeBindingRow {
+  return {
+    tenant_id: code.tenant_id,
+    store_id: code.store_id,
+    terminal_id: code.terminal_id,
+    terminal_label: code.terminal_label,
+    branch_name: code.branch_name,
+    branch_address: code.branch_address,
+    tenant_tax_registration_id: code.tenant_tax_registration_id,
+    printer_vendor_id: code.printer_vendor_id,
+    printer_product_id: code.printer_product_id,
+    printer_com_port: code.printer_com_port,
+  };
 }

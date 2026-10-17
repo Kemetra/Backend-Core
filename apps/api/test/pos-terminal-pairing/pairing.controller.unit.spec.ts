@@ -180,3 +180,21 @@ describe("PairingController global wrong-code budget (RT-141)", () => {
     expect(check.mock.calls.map((c) => c[0])).toEqual(["pairing_ip"]);
   });
 });
+
+describe("PairingController — replacement codes (RT-367)", () => {
+  it("maps replacement_blocked to 409 REPLACEMENT_BLOCKED", async () => {
+    const pair = jest.fn().mockResolvedValue({ kind: "replacement_blocked" });
+    const check = jest.fn().mockResolvedValue({ allowed: true, count: 1, remaining: 29, resetMs: 60_000 });
+    const release = jest.fn().mockResolvedValue(undefined);
+    const controller = new PairingController(
+      { pair } as unknown as PairingService,
+      { check, release } as unknown as RateLimiter,
+    );
+    const err: unknown = await controller
+      .pair({ pairing_code: "REPLACE-CODE-01" }, requestWithIp("192.0.2.10"), responseStub() as unknown as Response)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HttpException);
+    expect((err as HttpException).getStatus()).toBe(409);
+    expect((err as HttpException).getResponse()).toMatchObject({ code: "REPLACEMENT_BLOCKED" });
+  });
+});
