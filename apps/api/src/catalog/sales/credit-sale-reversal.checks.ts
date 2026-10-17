@@ -15,7 +15,7 @@
 import type { PoolClient } from "pg";
 
 import { standingFinding } from "../../pos-shifts/shift-close-approver";
-import { ShiftStoreUserReader } from "../../pos-shifts/shift-store-user";
+import { ShiftStoreUserReader, type ApproverStanding } from "../../pos-shifts/shift-store-user";
 import type { CreditReversalRefundTenderDto } from "./dto/credit-sale-reversal-request.dto";
 import type { VoidApprovalDto } from "./dto/record-void-request.dto";
 import { minorUnitExponent } from "./iso4217-minor-units";
@@ -93,14 +93,28 @@ const storeUsers = new ShiftStoreUserReader();
  * role code for the audit trail. A lookup that fails refuses (never a 5xx).
  */
 export async function assertCreditReversalActor(client: PoolClient, scope: SaleScope, actorUserId: string): Promise<string> {
-  let standing;
-  try {
-    standing = await storeUsers.approverStanding(client, { scope, userId: actorUserId });
-  } catch {
-    throw new CreditReversalRoleRefusedError();
-  }
-  if (standing === null || standingFinding(standing) !== null) throw new CreditReversalRoleRefusedError();
+  const standing = await eligibleStanding(client, { scope, userId: actorUserId }, () => new CreditReversalRoleRefusedError());
   return standing.roleCode;
+}
+
+/**
+ * A user's CURRENT standing when it is an active owner / tenant_admin /
+ * store_manager with access to the store (the RT-530 set); otherwise, or when
+ * the lookup itself fails, `refusal()` is thrown (fail closed, never a 5xx).
+ */
+async function eligibleStanding(
+  client: PoolClient,
+  user: { readonly scope: SaleScope; readonly userId: string },
+  refusal: () => Error,
+): Promise<ApproverStanding> {
+  let standing: ApproverStanding | null;
+  try {
+    standing = await storeUsers.approverStanding(client, user);
+  } catch {
+    throw refusal();
+  }
+  if (standing === null || standingFinding(standing) !== null) throw refusal();
+  return standing;
 }
 
 /** What the allocation and the approval checks read about the (locked) sale. */
@@ -288,13 +302,7 @@ export async function assertCreditReturnApproval(client: PoolClient, input: Cred
 
 /** The approver's CURRENT standing; a lookup that fails refuses (never a 5xx). */
 async function assertSecondApproverEligible(client: PoolClient, scope: SaleScope, approverUserId: string): Promise<void> {
-  let standing;
-  try {
-    standing = await storeUsers.approverStanding(client, { scope, userId: approverUserId });
-  } catch {
-    throw new CreditReturnApprovalRefusedError();
-  }
-  if (standingFinding(standing) !== null) throw new CreditReturnApprovalRefusedError();
+  await eligibleStanding(client, { scope, userId: approverUserId }, () => new CreditReturnApprovalRefusedError());
 }
 
 /** The approval's amount is the server-computed refund, and its id was never used. */
