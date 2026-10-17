@@ -106,6 +106,9 @@ services:
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-}
       SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+      # RT-632: the Console Sentry project, used only by the same-origin tunnel
+      # POST /api/v1/console/telemetry/envelope. Empty = tunnel inert.
+      CONSOLE_SENTRY_DSN: ${CONSOLE_SENTRY_DSN:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}
       OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
       OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.1}

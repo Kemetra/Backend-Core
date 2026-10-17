@@ -409,6 +409,15 @@ and any other value is ignored (RT-631). Services report as `backend-api` and
 `backend-worker`; api errors carry `request_id` and `trace_id` tags. With a DSN set, an unhandled rejection still crashes the
 process after it is reported, so `restart: unless-stopped` behaves as before.
 
+**Console errors (RT-632).** The Admin-Console's CSP is `connect-src 'self'`, so
+its Sentry SDK posts to the api's same-origin tunnel
+`POST /api/v1/console/telemetry/envelope`. Set `CONSOLE_SENTRY_DSN` (the Console
+Sentry project) and recreate `api`. The tunnel forwards only the scrubbed error
+event, only to that DSN (the DSN in the envelope is ignored), with a 64 KiB cap,
+a trusted-`Origin` check and per-IP + global rate limits. The Console reads
+`GET /api/v1/console/telemetry/config` at runtime (`{ tunnel, environment }`, or
+204 when inert; never the DSN). Empty = inert.
+
 **Datadog (traces + metrics).** The Agent is an opt-in compose profile that only
 listens on the internal network (OTLP `datadog-agent:4318`) and scrapes the api's
 existing Prometheus listener. Set `DD_API_KEY`, `DD_SITE` (default
@@ -424,6 +433,6 @@ container logs and host metrics (they need the Docker socket mounted into the
 Agent, which is a separate approval), worker metrics (the worker listener binds
 `127.0.0.1`), and BullMQ failed-job events in Sentry.
 
-**Rollback.** Unset `SENTRY_DSN` and recreate `api`/`worker` to stop Sentry egress;
+**Rollback.** Unset `SENTRY_DSN` and `CONSOLE_SENTRY_DSN` and recreate `api`/`worker` to stop Sentry egress;
 stop the Agent with `docker compose -f docker-compose.prod.yml --profile datadog stop datadog-agent`
 and point `OTEL_EXPORTER_OTLP_ENDPOINT` back to its default.

@@ -152,9 +152,9 @@ describe("console-telemetry.openapi — RT-632 Console Sentry tunnel", () => {
     expect(text).toContain("It never returns a DSN");
   });
 
-  it.each(["post", "get"])("keeps the %s operation contract-only until the RT-632 runtime ships", (method) => {
+  it.each(["post", "get"])("the %s operation is implemented: no contract-only marker since the RT-632 runtime", (method) => {
     const operation = method === "post" ? op : config;
-    expect(operation["x-runtime-status"]).toBe("contract-only");
-    expect(operation["x-runtime-note"]!.trim().length).toBeGreaterThan(0);
+    expect(operation["x-runtime-status"]).toBeUndefined();
+    expect(operation["x-runtime-note"]).toBeUndefined();
   });
 });
