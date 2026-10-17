@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.10.0-draft"
+  version: "1.11.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -11,7 +11,7 @@ info:
     audit, and outbox. It does NOT re-invent ingestion. Tender (gate A.5) was
     deferred until RT-10; from RT-76 a sale carries its tender facts (below).
 
-    Five operations, all POS-facing (`/api/pos/v1/...`), authenticated via the
+    Six operations, all POS-facing (`/api/pos/v1/...`), authenticated via the
     `operatorAuthorization` scheme — the opaque DP-2-issued operator-authorization
     ENVELOPE presented as `Authorization: Bearer <envelope>` (031 D1+D2). This
     REPLACES the prior 008 Option-Y auth (a genuine Clerk JWT +
@@ -44,6 +44,10 @@ info:
          `lines[{lineRef, quantity}]`; the server computes all money and
          records the refund tender as a fact. Live from RT-73 behind the
          `POS_RETURNS_ENABLED` deployment gate.
+      6. `recordCreditSaleReversal` — RT-577: the Manager/Admin-only void or
+         return of a sale with payer responsibilities, refunding only the
+         collected share and turning the credit share into a receivable
+         adjustment. Contract-only until the RT-577 runtime PR.
 
     RT-72 versioning (additive): `recordReturn` is new; `SaleLine` gains
     `lineRef`, `returnedQuantity` and `returnableQuantity`, and `Sale` gains
@@ -257,7 +261,47 @@ info:
     into a tender.
     Reversal (void / return) of a responsibility-bearing sale is UNDEFINED in
     this version (the 035 OQ-4 carve): the posting feed holds such reversal
-    work items until a later issue defines them.
+    work items until a later issue defines them. Superseded on the POS side
+    by RT-577 below; the posting-feed hold stays.
+
+    RT-577 (1.11.0-draft; [GATED] owner-approved V1 decision, Jira RT-577, 2026-10-17;
+    refines RT-577 Option A): CREDIT-SALE REVERSAL. A sale with payer
+    responsibilities (`sales.responsibility_count > 0`; on the wire, a
+    `Sale` whose `responsibilities` is present) can no longer be reversed
+    through the ordinary routes. From the RT-577 runtime, `recordVoid`,
+    `recordReturn` and the deprecated `recordRefund` refuse such a sale with
+    403 `credit_sale_reversal_restricted`, for every operator, a cashier
+    included (see `CreditSaleReversalRestricted`): an ordinary return pays
+    the whole `returnTotal` out in cash, which for a credit sale would pay out
+    money the till never collected. The only way to reverse such a sale is the
+    new `recordCreditSaleReversal` (contract-only until the RT-577 runtime
+    PR): a Manager/Admin-only, audited reversal whose cash refund is capped at
+    the server-computed share of the reversal that was actually collected,
+    and whose credit share becomes a receivable adjustment owed back to the
+    payer, corrected only through the posting feed (Backend-Core →
+    ERPNext-Connector → ERPNext), never by a payout. When the allocation, the
+    payer settlement or the operator's standing cannot be established, the
+    reversal is refused and nothing is recorded or paid (fail closed). Sales
+    without responsibilities are unchanged on every route. This version
+    adds one operation, four schemas (`CreditSaleReversalRequest`,
+    `CreditReversalRefundTender`, `CreditSaleReversal`,
+    `ReceivableAdjustment`), three responses and a 403
+    on `recordReturn` and `recordRefund`, and adds the code `credit_sale_reversal_restricted` to the existing 403 `VoidForbidden` of `recordVoid`, so a client that switches on its codes sees a new value
+    (handled as described below). No existing request schema or schema object changes. Owner rulings
+    2026-10-17 (D6, D8): a credit return that pays out cash needs a second,
+    distinct approver; a credit void refunds by mirroring the collected
+    tenders (card to card, cash to cash). It does not lift the RT-418 posting-feed hold on
+    reversals of responsibility-bearing sales (RT-571 / RT-419 define their
+    ERPNext shape). ROLLOUT ORDER: the ordinary routes refuse from the RT-577
+    runtime, which does not wait for a POS release: the server refusal is the
+    control (the RT-530 order: server first, POS change after). From then on
+    a reversal of such a sale sent by any till, queued or live, is refused
+    (403 `credit_sale_reversal_restricted`): nothing is recorded and nothing
+    reaches the posting feed. The POS follow-up then stops offering void and
+    return on a sale whose `responsibilities` is present, shows the refusal
+    as terminal, does not retry it, does not re-send it under another
+    envelope and does not turn it into a tender, and offers the
+    Manager/Admin `recordCreditSaleReversal` once its runtime ships.
 
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
@@ -270,8 +314,8 @@ info:
     forbidden, system-failure) under a single canonical `Error` envelope that
     matches `auth.openapi.yaml` / `outbox.openapi.yaml`.
 
-    Idempotency: `captureSale`, `recordVoid`, and `recordRefund` REQUIRE the
-    `Idempotency-Key` header, reusing the existing `IdempotencyInterceptor`
+    Idempotency: `captureSale`, `recordVoid`, `recordRefund`, `recordReturn`
+    and `recordCreditSaleReversal` REQUIRE the `Idempotency-Key` header, reusing the existing `IdempotencyInterceptor`
     (FR-051) — no new primitive. Identical retry replays the stored response;
     key-reuse with a different logical payload returns 409
     `idempotency_key_conflict` (FR-051, 005 FR-021c).
@@ -500,6 +544,13 @@ paths:
         sale, or a void of a sale that has any return, is 409
         `already_reversed` (see `ReversalConflict`); nothing is recorded.
 
+        Credit sales (RT-577, from the RT-577 runtime): a sale with payer
+        responsibilities is refused with 403 `credit_sale_reversal_restricted`
+        for every operator (see `CreditSaleReversalRestricted`), even with a
+        valid manager approval; it is voided only through
+        `recordCreditSaleReversal`. The refusal is decided after the sale resolves (404) and a provenance replay (200), and before reversal exclusivity (409) and every RT-530 check.
+        Nothing is recorded.
+
         Manager approval (RT-530): a void is recorded only with a bound
         manager approval (`approval`) and the void's `businessDate`. Checks run
         in this order, after the sale resolves (404), a provenance replay
@@ -608,6 +659,13 @@ paths:
 
         Idempotency: the `Idempotency-Key` header is REQUIRED; a re-delivered
         refund (same provenance) is not double-applied (FR-013).
+
+        Credit sales (RT-577, from the RT-577 runtime): a refund of a sale
+        with payer responsibilities is refused with 403
+        `credit_sale_reversal_restricted` for every operator (see
+        `CreditSaleReversalRestricted`); there is no amount-only refund of a
+        credit sale. The refusal is decided after the sale resolves (404) and a provenance replay (200, or its 409 provenance conflict), and before every other check (422 `already_applied`).
+        Nothing is recorded.
       parameters:
         - $ref: "#/components/parameters/SaleRef"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -650,6 +708,8 @@ paths:
           $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/CreditSaleReversalRestricted"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -732,6 +792,15 @@ paths:
         Online-only (D4) and same-terminal lookup (D5) are POS rules.
 
 
+        Credit sales (RT-577, from the RT-577 runtime): a return of a sale
+        with payer responsibilities is refused with 403
+        `credit_sale_reversal_restricted` for every operator (see
+        `CreditSaleReversalRestricted`), because its refund tenders must equal
+        the whole `returnTotal` and part of that was never collected; it is
+        returned only through `recordCreditSaleReversal`. The refusal is decided after the returns gate and the sale resolve (404) and a provenance replay (200, or its 409 `conflict`), and before reversal exclusivity (409), the line checks (400, 409 `over_return`) and the tender check (422).
+        Nothing is recorded.
+
+
         Idempotency: the `Idempotency-Key` header is REQUIRED and the return is
         deduped on its own `(tenant, sourceSystem, externalId)` provenance. The
         same provenance with the same payload replays (200); with a different
@@ -785,12 +854,243 @@ paths:
           $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/CreditSaleReversalRestricted"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/ReversalConflict"
         "422":
           $ref: "#/components/responses/ReturnTenderMismatch"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+  /api/pos/v1/sales/{saleRef}/credit-reversals:
+    post:
+      summary: Reverse a sale with payer responsibilities (Manager/Admin only).
+      operationId: recordCreditSaleReversal
+      x-idempotency: required
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-577 contract (owner-approved V1 decision, 2026-10-17). The route is
+        not served until the RT-577 runtime PR, which also starts refusing
+        credit sales on `recordVoid`, `recordReturn` and `recordRefund`.
+      tags: [pos-sales]
+      security:
+        - operatorAuthorization: []
+      description: >
+        RT-577 (owner-approved V1 decision, 2026-10-17). The administrative
+        reversal of a sale with payer responsibilities (a credit sale:
+        `sales.responsibility_count > 0`). It is the only way to void or return
+        such a sale: the ordinary routes refuse it for every operator (403
+        `credit_sale_reversal_restricted`). The original sale and its lines
+        are NEVER mutated; the reversal is a separate append-only record. A
+        sale without responsibilities is refused here (422
+        `credit_reversal_not_applicable`) and keeps the ordinary routes.
+
+
+        Kind: `void` reverses the whole sale on its own business day and
+        carries the RT-530 `approval` and `businessDate`; `return` reverses
+        the named `lines` and quantities, priced by the `recordReturn`
+        cumulative-difference rule, and carries a second `approval` when it
+        pays out cash (D6). Void and return exclude each other and a
+        sale has at most one void, across this route and the ordinary ones
+        (409 `already_reversed`); per line, cumulative returned ≤ sold (409
+        `over_return`). A credit return counts in `returnedQuantity` /
+        `returnableQuantity` and a credit void sets `voided` on the `Sale`
+        exactly as an ordinary one does. A `return` is subject to the
+        `POS_RETURNS_ENABLED` gate (404 `not_found` while it is off).
+
+
+        Authorization (an eligible role is necessary, never sufficient): the
+        envelope operator must, at the time of the request, hold `owner`,
+        `tenant_admin` or `store_manager` in the tenant with an active
+        membership and access to the sale's store (the RT-530 eligible set,
+        re-checked live, as `sale_responsibility_role_refused` is on capture),
+        else 403 `credit_reversal_role_refused`; a standing that cannot be
+        established is refused the same way, never a 5xx. For a `void`, the
+        RT-530 checks 1 to 7 run in their order and with their codes (see
+        `recordVoid`): the approval is bound to action `sale.void`, this sale
+        and its `posTotal`; the requester is the authenticated operator; the
+        approver is a second eligible manager who is neither the requester
+        nor the user who captured the sale. An eligible role is necessary but never sufficient
+        to pay anything out: the server alone computes the refundable amount
+        from the sale's facts, and no role, approval or request field can
+        raise it or bypass a refusal below.
+
+
+        Second approval for a cash-paying return (D6, owner ruling
+        2026-10-17). When a `return` pays out cash (`refundableAmount` > 0), a second approval is REQUIRED, RT-530 style, from a
+        distinct second authorized approver. A reversal with no cash payout (a receivable adjustment only) needs only the authorized Manager/Admin
+        whose envelope sends it. The checks run after allocation and payer
+        settlement (they need the server-computed `refundableAmount`) and
+        before the refund tenders: 1. an `approval` is present when
+        `refundableAmount` > 0, else 403 `credit_return_approval_required`;
+        2. `approval.action` is `sale.credit_return`, `approval.saleRef` is the path sale, `approval.amount` equals the server-computed `refundableAmount` as an exact decimal,
+        `approval.approvedAt` is not in the future beyond 120 s,
+        `approval.requesterUserId` is the authenticated operator, the approver is an eligible manager who is neither the requester nor the user who captured the sale
+        (an `owner`, `tenant_admin` or `store_manager` of the tenant with an
+        active membership and access to the sale's store, checked live), and
+        the `approvalId` is unused, else 403 `credit_return_approval_refused`,
+        one body for every cause (logged server-side keyed by `request_id`).
+        The same actor never counts twice: the requester's envelope is the
+        first authorization and can never also be the approval. An approval
+        sent with a return that pays nothing is checked the same way (its
+        `amount` is then 0). An `approvalId` is single-use within the tenant across `recordVoid` and this route; a refused request does not consume it.
+        A provenance replay answers before these checks and never re-runs
+        them, so an approver who has since left never turns a stored result
+        into a refusal.
+
+
+        Allocation (money; every step in exact `numeric`, never a float). Let
+        P be the sale's `posTotal`, C the sum of its `tenders` amounts (the
+        amount collected at the till; 0 when `tenders` is absent), and m the
+        currency's ISO-4217 minor unit (as RT-105). Let X0 be the sum of
+        `reversalTotal` over the sale's earlier credit reversals and X1 = X0 +
+        this reversal's `reversalTotal` (a void: X0 = 0 and X1 = P). X0 is read under the sale row lock (`FOR UPDATE`)
+        that serializes every reversal of the sale (the `lockSaleForReversal`
+        lock of the ordinary routes), so two concurrent credit returns never
+        allocate against the same X0. A return's `reversalTotal` is Σ its
+        returned `lineAmount`, so X1 equals P only when the sale's lines sum to
+        P exactly; a sale whose lines do not is refused (see Fail closed), so X1 never exceeds P. Then
+        `refundableAmount = floor_m(C × X1 / P) − floor_m(C × X0 / P)`, where
+        `floor_m` truncates toward zero to m fractional digits, and the receivable adjustment is `reversalTotal − refundableAmount`,
+        owed back to the sale's payer (`responsibilities[0].payerRef`; one
+        payer per sale in this version). The rule is pro rata to the share of
+        the sale actually collected, cumulative across partial returns (so
+        rounding never accumulates), and rounds the payout DOWN to a payable
+        minor unit (a sub-unit remainder joins the receivable adjustment
+        until the last reversal settles it): the cash refunded on a sale never exceeds C,
+        the adjustments never exceed the sum of its responsibilities, both are
+        non-negative on every reversal, and once the whole sale is reversed
+        they equal C and the responsibilities exactly. A full-credit sale (no `tenders`) refunds nothing: its
+        whole reversal is a receivable adjustment.
+
+
+        Refund tenders (D8, owner ruling 2026-10-17). A `void` refunds by mirroring the sale's collected `tenders` (RT-10 D6):
+        `refundTenders` holds exactly one entry per sale tender, with the same
+        `method` and `amount` and, when the sale tender carries a `tenderRef`,
+        the same `tenderRef`, so the card share goes back to the card
+        (`card_external`; its optional `reference` is the card terminal's
+        refund reference) and the cash share goes back as cash.
+        For a void there is no card-to-cash path; a return refunds its collected share in cash, including any share collected by card (owner ruling D8).
+        A `return` refunds in cash only (RT-14 D3), as `RefundTender`,
+        capped at the collected and refundable amount: its `refundTenders`
+        sum to `refundableAmount` exactly (an empty list when it is 0), and it
+        never pays out more than that collected share.
+        Either way the refund sums to `refundableAmount` (for a void, C), and
+        any other list is 422 `credit_reversal_refund_mismatch`. A client can compute
+        the amount beforehand from `readSale` (`posTotal`, `tenders`,
+        `responsibilities`, each line's `returnedQuantity`). Exactness relies on the RT-105 line invariant: a
+        line captured under it prices every return to exactly `unitPrice × q`
+        in the currency's minor unit, so `reversalTotal`, C and P are all exact
+        in m and `floor_m` only ever truncates the pro-rata share.
+
+
+        Fail closed: when the allocation cannot be established (the sale
+        already has a return or refund recorded through `recordReturn` or
+        `recordRefund`, whose payout was never allocated; or the sale's lines do not sum to its `posTotal` exactly (its stored `mismatch_flag` is true or null,
+        never treated as a pass):
+        the pro-rata share would then pay out more, or leave less, than was
+        collected; or a tender or responsibility amount, or `posTotal`, is
+        not exact in the currency's minor unit, or the currency has none)
+        the reversal is 422
+        `credit_reversal_allocation_unavailable`. When the payer settlement
+        cannot be established (the sale's payer no longer exists, is scoped to
+        another store, is `suspended`, or has no `externalRef`: the receivable
+        adjustment could not reach the payer's ERPNext Customer) it is 422
+        `credit_reversal_settlement_unavailable`, one body for every cause.
+        Either way nothing is recorded and nothing may be paid out: the sale
+        stays unreversed and is held for administrative investigation; the
+        cause is logged server-side keyed by `request_id`.
+
+
+        Order: the returns gate (404, `kind: return` only), the sale (404), a provenance replay (200, or its 409 `conflict`), the role (403 `credit_reversal_role_refused`), the sale's credit status (422 `credit_reversal_not_applicable`), reversal exclusivity (409 `already_reversed`), then for a void the RT-530 checks and for a return the line checks (400, 409 `over_return`), then allocation (422 `credit_reversal_allocation_unavailable`), payer settlement (422 `credit_reversal_settlement_unavailable`), for a return the second approval (403 `credit_return_approval_required`, then 403 `credit_return_approval_refused`) and the refund tenders (422 `credit_reversal_refund_mismatch`).
+        Schema-level 400s (including a `void` with `lines`, a `return` with a
+        `businessDate` or a refund tender that is not cash, a cash refund
+        tender with a `reference`, and a `reason` that is blank or holds a
+        NUL) and the 401 come first. Every refusal is deterministic and
+        records nothing (no reversal, no audit event, no outbox event and no
+        idempotency entry).
+
+
+        Idempotency: the `Idempotency-Key` header is REQUIRED and the
+        reversal is deduped on its own `(tenant, sourceSystem, externalId)`
+        provenance. The same provenance with the same payload replays (200)
+        right after the returns gate and the sale resolve (404) and before
+        every other check, so a later change of role, payer or approver never
+        turns a stored result into a refusal; with a different payload or
+        against a different sale it is 409 `conflict`. A same-key retry
+        returns the stored `201` (RT-82 K4); a refused request stores no
+        entry, so its retry is checked again and answers the same.
+
+
+        Audit: a recorded reversal emits the `sale.credit_reversed` audit
+        event with the sale, the reversal, its kind, the actor's user id and role at
+        recording, the store, the reason, the server time, the reversal
+        total, the refundable amount, the refund tenders, the receivable adjustment (payer, amount and
+        `adjustmentRef`), for a void and for a cash-paying return the approval evidence (approver,
+        requester, approval id, policy version), and the `request_id` as the
+        correlation id.
+
+
+        Posting: the reversal and its allocation become a `reversal` work item
+        on the ERPNext posting feed, in the same transaction. The payer's
+        outstanding amount is corrected only through the governed
+        Backend-Core → ERPNext-Connector → ERPNext flow (a credit note or
+        receivable adjustment against the payer's Customer for the
+        adjustment, a refund for `refundTenders`). The feed holds reversal
+        work items of responsibility-bearing sales (RT-418) until RT-571 /
+        RT-419 define that ERPNext shape; this contract does not lift that hold
+        and changes no posting-feed field.
+      parameters:
+        - $ref: "#/components/parameters/SaleRef"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreditSaleReversalRequest"
+      responses:
+        "200":
+          description: >
+            Provenance replay — this credit reversal was already recorded with
+            the same provenance and payload, and no live replay entry exists
+            for this `Idempotency-Key`. Returns the identical projection with
+            `Idempotent-Replayed: true`; no duplicate record. A
+            same-`Idempotency-Key` retry returns the stored `201` instead
+            (RT-82 K4).
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreditSaleReversal"
+        "201":
+          description: >
+            Credit reversal recorded for the first time. A retry with the same
+            `Idempotency-Key` on the same sale replays this stored `201` with
+            `Idempotent-Replayed: true` (RT-82 K4).
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreditSaleReversal"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/CreditReversalForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/ReversalConflict"
+        "422":
+          $ref: "#/components/responses/CreditReversalUnprocessable"
         "500":
           $ref: "#/components/responses/SystemFailure"
 
@@ -1477,6 +1777,150 @@ components:
             refund is not recorded here.
         amount:
           $ref: "#/components/schemas/NonNegativeDecimalAmount"
+
+    CreditReversalRefundTender:
+      type: object
+      additionalProperties: false
+      required: [method, amount]
+      if:
+        properties:
+          method:
+            const: cash
+        required: [method]
+      then:
+        not:
+          required: [reference]
+      description: >
+        RT-577 D8 (owner ruling 2026-10-17). One refund payout of a credit
+        reversal, in the sale's currency. A `void` mirrors each collected sale
+        tender with one of these (RT-10 D6: card to card, cash to cash); a
+        `return` is restricted to the cash-only `RefundTender` shape.
+      properties:
+        method:
+          type: string
+          enum: [cash, card_external]
+          description: >
+            The method of the sale tender this refund reverses. `card_external`
+            is refunded on the standalone card terminal, never in cash.
+        amount:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        tenderRef:
+          type: string
+          format: uuid
+          description: >
+            The `tenderRef` of the sale tender this entry reverses; required
+            in effect when that tender carries one (else 422
+            `credit_reversal_refund_mismatch`). Absent for a legacy tender,
+            matched by `(sale, method)`.
+        reference:
+          type: string
+          pattern: '^[A-Z0-9]{1,6}$'
+          description: >
+            OPTIONAL, `card_external` only: the short reference the card
+            terminal printed for the refund. NEVER a card number or any other
+            card data.
+
+    # -----------------------------------------------------------------------
+    # Credit-sale reversal request (RT-577) — strict; the server computes all
+    # money, including the refundable share
+    # -----------------------------------------------------------------------
+    CreditSaleReversalRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceSystem, externalId, kind, refundTenders, reason]
+      if:
+        properties:
+          kind:
+            const: return
+        required: [kind]
+      then:
+        required: [lines]
+        not:
+          required: [businessDate]
+        properties:
+          refundTenders:
+            items:
+              $ref: "#/components/schemas/RefundTender"
+      else:
+        not:
+          required: [lines]
+      description: >
+        RT-577. The administrative reversal of a sale with payer
+        responsibilities (see `recordCreditSaleReversal`). A `return` names
+        `lines`, carries no `businessDate`, refunds in cash only, and carries
+        the second `approval` when it pays out cash (D6); a `void` carries
+        no `lines` and is checked against its RT-530 `approval` and
+        `businessDate` (each missing one is the RT-530 refusal, not a 400).
+        `recordedAt` / business date / tenant / store / actor / role resolve
+        server-side and are rejected if body-supplied (FR-061). Auth: the
+        operator-authorization envelope in `Authorization: Bearer <envelope>`
+        (`operatorAuthorization`), re-verified live per request (G-4).
+      properties:
+        sourceSystem:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Provenance + dedup key of the reversal itself (FR-013).
+        externalId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: POS-side reversal identifier; with `sourceSystem`, the reversal's dedup key.
+        kind:
+          type: string
+          enum: [void, return]
+          description: >
+            `void` reverses the whole sale on its business day; `return`
+            reverses the named lines. There is no amount-only credit refund.
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ReturnLineRequest"
+          description: >
+            `return` only (required), as on `recordReturn`: each `lineRef` a
+            line of this sale at most once, each quantity > 0 and whole on a
+            line sold in a whole quantity (400 `validation_error`), within the
+            line's `returnableQuantity` (409 `over_return`).
+        refundTenders:
+          type: array
+          minItems: 0
+          items:
+            $ref: "#/components/schemas/CreditReversalRefundTender"
+          description: >
+            The refund paid out for this reversal (D8): for a `void`, one entry
+            mirroring each collected sale tender (card to card, cash to cash);
+            for a `return`, cash only (`RefundTender`). The amounts sum to the
+            server-computed `refundableAmount` (the collected share, see
+            `recordCreditSaleReversal`) exactly, else 422
+            `credit_reversal_refund_mismatch`; an empty list when that amount
+            is 0 (a full-credit sale). Never the credit share.
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          pattern: '^[^\x00]*[^\s\x00][^\x00]*$'
+          description: >
+            Why the sale is reversed (required for the audit trail). At least
+            one non-whitespace character; a blank value or one holding a NUL
+            character is 400 `validation_error`. No PII.
+        businessDate:
+          type: string
+          format: date
+          description: >
+            `void` only: the device-side business day of the void, as
+            `RecordVoidRequest.businessDate` (RT-530). It must equal the sale's
+            `businessDate`, else 422 `void_outside_business_day`.
+        approval:
+          $ref: "#/components/schemas/VoidApproval"
+          description: >
+            The second approver's evidence, in the RT-530 shape. `void`: the
+            RT-530 manager approval, re-validated as on `recordVoid` (action
+            `sale.void`, amount `posTotal`). `return`: required when `refundableAmount` > 0
+            (D6), with action `sale.credit_return` and amount the
+            server-computed `refundableAmount`. Either way its
+            `requesterUserId` is the authenticated Manager/Admin and its
+            approver is a distinct second eligible manager.
     SaleTender:
       type: object
       additionalProperties: false
@@ -1808,6 +2252,112 @@ components:
         returnableQuantity:
           type: string
           description: Quantity still returnable on the line after this return.
+    CreditSaleReversal:
+      type: object
+      additionalProperties: false
+      required:
+        - reversalRef
+        - saleRef
+        - kind
+        - recordedAt
+        - businessDate
+        - sourceSystem
+        - externalId
+        - currencyCode
+        - reversalTotal
+        - refundableAmount
+        - receivableAdjustment
+        - lines
+        - refundTenders
+        - reason
+      description: >
+        RT-577. Wire projection of a recorded credit-sale reversal. A
+        separate append-only record; the sale is unchanged. Carries no
+        `tenant_id`, no `payload_hash`, no `created_by`; the actor and role
+        are in the `sale.credit_reversed` audit event.
+      properties:
+        reversalRef:
+          type: string
+          format: uuid
+          description: >
+            Stable reference to the reversal; the correlation key of its
+            posting work item.
+        saleRef:
+          type: string
+          format: uuid
+          description: The sale this reversal is against.
+        kind:
+          type: string
+          enum: [void, return]
+        recordedAt:
+          type: string
+          format: date-time
+          description: Server-clock stamp of the reversal (never a client time).
+        businessDate:
+          type: string
+          format: date
+          description: >
+            The reversal's own business day: `recordedAt` in the store
+            timezone, persisted at insert (as `SaleReturn.businessDate`).
+        sourceSystem:
+          type: string
+        externalId:
+          type: string
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+        reversalTotal:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+          description: >
+            The amount reversed: Σ returned `lineAmount` for a return,
+            `posTotal` for a void.
+        refundableAmount:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+          description: >
+            The collected share of `reversalTotal`, computed by the server
+            (see `recordCreditSaleReversal`), and the sum of `refundTenders`.
+        receivableAdjustment:
+          description: >
+            The credit share (`reversalTotal − refundableAmount`) owed back to
+            the payer; null when it is 0.
+          anyOf:
+            - $ref: "#/components/schemas/ReceivableAdjustment"
+            - type: "null"
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReturnLine"
+          description: The returned lines as priced by the server; empty for a void.
+        refundTenders:
+          type: array
+          items:
+            $ref: "#/components/schemas/CreditReversalRefundTender"
+          description: >
+            The refund paid out (D8): for a void, the mirror of the collected
+            tenders; for a return, cash only. Empty when `refundableAmount` is 0.
+        reason:
+          type: string
+    ReceivableAdjustment:
+      type: object
+      additionalProperties: false
+      required: [adjustmentRef, payerRef, amount]
+      description: >
+        RT-577. The part of a credit-sale reversal that reduces what the payer
+        owes instead of being paid out. A fact recorded with the reversal, NOT
+        a receivable balance (ERPNext owns the A/R balance): it reaches the
+        payer's ERPNext Customer only through the posting feed (Backend-Core →
+        ERPNext-Connector → ERPNext), held until RT-571 / RT-419 define its
+        shape.
+      properties:
+        adjustmentRef:
+          type: string
+          format: uuid
+          description: Stable reference to the adjustment, carried to the posting for correlation.
+        payerRef:
+          type: string
+          format: uuid
+          description: The sale's payer (`SaleResponsibility.payerRef`).
+        amount:
+          $ref: "#/components/schemas/PositiveDecimalAmount"
     SaleTerminalEvent:
       type: object
       additionalProperties: false
@@ -1966,7 +2516,10 @@ components:
         not a user of the tenant with access to the sale's store; `void_approver_not_eligible` - the approver is not
         an `owner`, `tenant_admin` or `store_manager` of the tenant with an
         active membership and access to the sale store (a user of another
-        tenant, an unknown user and a revoked membership are all this).
+        tenant, an unknown user and a revoked membership are all this);
+        `credit_sale_reversal_restricted` (RT-577, from the RT-577 runtime) -
+        the sale has payer responsibilities (see
+        `CreditSaleReversalRestricted`).
         Deterministic; nothing is recorded.
       content:
         application/json:
@@ -1996,6 +2549,76 @@ components:
         void of an already-voided sale; `over_return` (returns only) — the cumulative
         returned quantity on a line would exceed the quantity sold.
         Deterministic; nothing is recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    CreditSaleReversalRestricted:
+      description: >
+        403 `credit_sale_reversal_restricted` (RT-577, owner-approved V1
+        decision 2026-10-17; from the RT-577 runtime) on `recordReturn` and
+        `recordRefund`, and one of the `VoidForbidden` codes on `recordVoid`.
+        The sale has payer responsibilities (`sales.responsibility_count > 0`;
+        on the wire, `Sale.responsibilities` is present), and the ordinary
+        reversal routes refuse such a sale for every operator, whatever the role: a cashier always, and a Manager/Admin
+        too, who reverses it with `recordCreditSaleReversal` instead, so that
+        no credit-funded or uncollected amount is ever paid out. The refusal
+        is decided by the server from the stored sale fact, never from the
+        request. Hiding the action on the till is not the control. The `Idempotency-Key` layer answers first on every route (a same-key replay
+        of a stored result, or 409 `idempotency_key_conflict`), as it does for
+        every refusal. A sale without responsibilities is unaffected.
+        Replay. A reversal recorded before the RT-577 runtime still replays its stored result (a provenance replay is
+        answered before the refusal). A refused request is not applied:
+        nothing is recorded and no idempotency entry is stored, so the same request answers the same 403 every time
+        (the responsibilities are immutable). The POS treats it as terminal
+        for that request: it does not retry it, MUST NOT re-send it under another envelope, and never turns the
+        reversal into a tender or a refund.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    CreditReversalForbidden:
+      description: >
+        403 on `recordCreditSaleReversal` (RT-577). `error.code` is one of:
+        `credit_reversal_role_refused` - the envelope operator is not, at the
+        time of the request, an `owner`, `tenant_admin` or `store_manager` of
+        the tenant with an active membership and access to the sale's store,
+        or that standing cannot be established (fail closed; a cashier is
+        always this); for a `void` only, the RT-530 codes in their order:
+        `void_approval_required`, `void_requester_mismatch`,
+        `void_self_approval`, `void_requester_not_eligible`,
+        `void_approver_not_eligible` (see `VoidForbidden`); for a `return`
+        only (D6): `credit_return_approval_required` - the return pays out
+        cash and no `approval` accompanied it; `credit_return_approval_refused`
+        - the approval is not bound to `sale.credit_return`, this sale and the
+        server-computed `refundableAmount`, is future-dated or already used,
+        names a requester who is not the authenticated operator, or an
+        approver who is the requester, the user who captured the sale, or not
+        an eligible manager with access to the sale's store, with one body for every cause.
+        Deterministic; nothing is recorded and nothing is paid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    CreditReversalUnprocessable:
+      description: >
+        422 on `recordCreditSaleReversal` (RT-577). `error.code` is one of:
+        `credit_reversal_not_applicable` - the sale has no payer
+        responsibilities (use the ordinary routes); `void_approval_invalid`
+        and `void_outside_business_day` - a `void` whose RT-530 approval or
+        business day fails (see `VoidUnprocessable`);
+        `credit_reversal_allocation_unavailable` - the refundable share cannot
+        be established (the sale has a return or refund recorded through
+        `recordReturn` or `recordRefund`, the sale's lines do not sum to its `posTotal` exactly (its stored `mismatch_flag` is true or null), or an
+        amount that is not exact in the currency's minor unit);
+        `credit_reversal_settlement_unavailable` -
+        the payer settlement cannot be established (the payer no longer
+        exists, is scoped to another store, is `suspended`, or has no
+        `externalRef`), one body for every cause;
+        `credit_reversal_refund_mismatch` - `refundTenders` do not sum to the
+        server-computed `refundableAmount` exactly. In the order of
+        `recordCreditSaleReversal`. Deterministic. Nothing is recorded and nothing is paid: the sale stays
+        unreversed for administrative investigation.
       content:
         application/json:
           schema:

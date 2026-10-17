@@ -137,6 +137,8 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "posRedeemVoucher",
       "posReverseVoucher",
       "posValidateVoucher",
+      // RT-577: credit-sale reversal contract; the runtime ships in the RT-577 runtime PR.
+      "recordCreditSaleReversal",
       "renewSupportSession",
     ]);
     expect(missing).toEqual([]);
