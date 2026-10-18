@@ -110,7 +110,7 @@ class FakeRedis implements RedisLike {
     return entry;
   }
   async incrWindow(key: string, ttlMs: number): Promise<WindowHit> {
-    return fixedWindowHit(this.store, key, this.gc(key), ttlMs, Date.now());
+    return fixedWindowHit(this.store, key, ttlMs, Date.now());
   }
   async pttl(key: string): Promise<number> {
     const live = this.gc(key);

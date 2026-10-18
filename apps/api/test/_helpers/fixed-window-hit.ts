@@ -1,7 +1,8 @@
 /**
  * In-memory twin of the RT-618 rate-limit script, shared by the stateful
- * `RedisLike` fakes: INCR (creating the key with no TTL), seed the TTL when
- * the key has none, and return the count with the remaining TTL.
+ * `RedisLike` fakes: INCR (creating the key with no TTL, or afresh once the
+ * old TTL has passed), seed the TTL when the key has none, and return the
+ * count with the remaining TTL.
  */
 import type { WindowHit } from "../../src/auth/rate-limit";
 
@@ -11,14 +12,15 @@ export interface FixedWindowEntry {
   expiresAt: number | null;
 }
 
-/** `live` is the key's unexpired entry (or undefined); `now` is the fake's clock. */
+/** `now` is the fake's clock (wall-clock ms). */
 export function fixedWindowHit(
   store: Map<string, FixedWindowEntry>,
   key: string,
-  live: FixedWindowEntry | undefined,
   ttlMs: number,
   now: number,
 ): WindowHit {
+  const existing = store.get(key);
+  const live = existing && (existing.expiresAt === null || now < existing.expiresAt) ? existing : undefined;
   const entry = live ?? { value: 0, expiresAt: null };
   store.set(key, entry);
   entry.value += 1;
