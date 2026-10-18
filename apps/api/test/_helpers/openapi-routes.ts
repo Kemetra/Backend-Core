@@ -39,21 +39,20 @@ export const CONTRACTS_DIR = resolve(__dirname, "..", "..", "..", "..", "package
 export function yamlFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
-    return entry.isDirectory()
-      ? yamlFiles(path)
-      : /\.ya?ml$/i.test(entry.name)
-        ? [path]
-        : [];
+    if (entry.isDirectory()) return yamlFiles(path);
+    return /\.ya?ml$/i.test(entry.name) ? [path] : [];
   });
+}
+
+function normalizeSegment(segment: string): string {
+  const colon = segment.indexOf(":");
+  const express = colon >= 0 ? `${segment.slice(0, colon)}{param}` : segment;
+  return express.replace(/\{[^/}]*\}/g, "{param}");
 }
 
 /** `/a/:id/` and `/a/{id}` both become `/a/{param}`. */
 export function normalizePath(path: string): string {
-  const normalized = `/${path}`
-    .replace(/\/+/, "/")
-    .replace(/:[^/]+/g, "{param}")
-    .replace(/\{[^/}]+\}/g, "{param}");
-  return normalized.length > 1 ? normalized.replace(/\/$/, "") : normalized;
+  return "/" + path.split("/").filter((s) => s.length > 0).map(normalizeSegment).join("/");
 }
 
 export function contractRoutes(dir: string = CONTRACTS_DIR): ContractRoute[] {
@@ -83,10 +82,12 @@ export interface ControllerRoute {
 }
 
 function joinPath(base: unknown, sub: unknown): string {
-  const parts = [base, sub]
+  const segments = [base, sub]
     .flatMap((p) => (Array.isArray(p) ? [p[0]] : [p]))
-    .filter((p): p is string => typeof p === "string" && p.length > 0 && p !== "/");
-  return "/" + parts.map((p) => p.replace(/^\/+|\/+$/g, "")).join("/");
+    .filter((p): p is string => typeof p === "string")
+    .flatMap((p) => p.split("/"))
+    .filter((s) => s.length > 0);
+  return "/" + segments.join("/");
 }
 
 /** Every route handler of `controller`, keyed by method and normalized path. */

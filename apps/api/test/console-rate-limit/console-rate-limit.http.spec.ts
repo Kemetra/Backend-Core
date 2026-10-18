@@ -219,7 +219,7 @@ describe("enforce mode over HTTP (in-memory Redis fake)", () => {
     const before = h.reached.keys.length;
     const refused = await post(h.app, "alice", { "idempotency-key": "key-31" });
     expect(refused.status).toBe(429);
-    expect(h.reached.keys.length).toBe(before);
+    expect(h.reached.keys).toHaveLength(before);
 
     h.advance(60_000);
     const retried = await post(h.app, "alice", { "idempotency-key": "key-31" });

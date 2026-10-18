@@ -139,17 +139,19 @@ export class ConsoleRateLimitGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     if (this.config.mode === "off") return true;
+    const refusal = await this.evaluateFailingOpen(context);
+    return refusal === null || this.refuse(context, refusal);
+  }
 
-    let refusal: Refusal | null;
+  /** {@link evaluate}, except that any unexpected error allows the request. */
+  private async evaluateFailingOpen(context: ExecutionContext): Promise<Refusal | null> {
     try {
-      refusal = await this.evaluate(context);
+      return await this.evaluate(context);
     } catch (err) {
       // A bug here must never turn into a 500 on every console request.
       this.warnThrottled("internal", { err_class: errClass(err) }, "console rate limit: guard error; failing open (request allowed)");
-      return true;
+      return null;
     }
-    if (refusal) this.refuse(context, refusal);
-    return true;
   }
 
   private async evaluate(context: ExecutionContext): Promise<Refusal | null> {
