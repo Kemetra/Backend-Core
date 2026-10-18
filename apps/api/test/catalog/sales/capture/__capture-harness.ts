@@ -27,6 +27,7 @@ import {
   AUDIT_JOB_ENQUEUER,
   type AuditJobEnqueuer,
 } from "../../../../src/audit/audit-job.enqueuer";
+import type { AuditJobPayload } from "../../../../src/audit/audit-job.types";
 import { Test } from "@nestjs/testing";
 import type { Pool } from "pg";
 import request from "supertest";
@@ -339,6 +340,30 @@ export async function stopCaptureHarness(h: HarnessHandle): Promise<void> {
     await h.harness.app.close();
     await stopPgEnv(h.harness.env);
   }
+}
+
+/**
+ * RT-689: an in-memory audit enqueuer for `startCaptureHarness({ auditEnqueuer })`.
+ * `enqueue` pushes before any `await`: the interceptor fires emitAsync without
+ * awaiting, so a spec reads `calls` synchronously after the response.
+ */
+export class SpyAuditEnqueuer implements AuditJobEnqueuer {
+  public calls: AuditJobPayload[] = [];
+  async enqueue(payload: AuditJobPayload): Promise<void> {
+    this.calls.push(payload);
+  }
+  reset(): void {
+    this.calls = [];
+  }
+}
+
+/** Delete the sales (and their lines) the harness captured as `pos-1`. */
+export async function deleteCapturedSales(h: HarnessHandle): Promise<void> {
+  if (!h.harness) return;
+  await h.harness.env.admin.query(
+    "DELETE FROM sale_lines WHERE sale_id IN (SELECT id FROM sales WHERE source_system = 'pos-1')",
+  );
+  await h.harness.env.admin.query("DELETE FROM sales WHERE source_system = 'pos-1'");
 }
 
 /** Reset per-test context + redis. */

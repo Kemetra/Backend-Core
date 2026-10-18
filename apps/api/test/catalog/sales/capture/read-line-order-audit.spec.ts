@@ -17,26 +17,15 @@ import {
   stopCaptureHarness,
   resetHarness,
   captureBody,
+  deleteCapturedSales,
   idempKey,
+  SpyAuditEnqueuer,
   DEVICE_USER_ID,
   TENANT_A,
   STORE_A_X,
   STORE_A_Y,
   type HarnessHandle,
 } from "./__capture-harness";
-import type { AuditJobEnqueuer } from "../../../../src/audit/audit-job.enqueuer";
-import type { AuditJobPayload } from "../../../../src/audit/audit-job.types";
-
-class SpyAuditEnqueuer implements AuditJobEnqueuer {
-  public calls: AuditJobPayload[] = [];
-  async enqueue(payload: AuditJobPayload): Promise<void> {
-    // Push before any `await`: the interceptor fires emitAsync without awaiting.
-    this.calls.push(payload);
-  }
-  reset(): void {
-    this.calls = [];
-  }
-}
 
 const spy = new SpyAuditEnqueuer();
 const h: HarnessHandle = { harness: null, dockerSkipped: false };
@@ -44,21 +33,12 @@ const h: HarnessHandle = { harness: null, dockerSkipped: false };
 beforeAll(async () => {
   Object.assign(h, await startCaptureHarness({ auditEnqueuer: spy }));
 }, 180_000);
-afterAll(async () => {
-  await stopCaptureHarness(h);
-}, 60_000);
+afterAll(() => stopCaptureHarness(h), 60_000);
 beforeEach(() => {
   resetHarness(h);
   spy.reset();
 });
-afterEach(async () => {
-  if (h.harness) {
-    await h.harness.env.admin.query(
-      "DELETE FROM sale_lines WHERE sale_id IN (SELECT id FROM sales WHERE source_system = 'pos-1')",
-    );
-    await h.harness.env.admin.query("DELETE FROM sales WHERE source_system = 'pos-1'");
-  }
-});
+afterEach(() => deleteCapturedSales(h));
 
 function line(lineName: string, amount: string): Record<string, unknown> {
   return { lineName, unitPrice: amount, currencyCode: "USD", quantity: "1", lineAmount: amount, unit: "ea" };
