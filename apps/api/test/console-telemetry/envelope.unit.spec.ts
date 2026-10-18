@@ -106,6 +106,15 @@ describe("buildForwardEnvelope", () => {
     expect(itemHeader).toEqual({ type: "event", length: Buffer.byteLength(JSON.stringify(event)) });
   });
 
+  it("masks Bearer/Authorization credentials and phones like every other surface (OBS-1 §3.2, RT-682)", () => {
+    const exception = {
+      values: [{ type: "Error", value: "Authorization: Bearer rt638-console-bearer for +201000000638" }],
+    };
+    const { event } = decode(build(envelope({}, [eventItem(errorEvent({ exception }))]))!);
+    const value = (event["exception"] as { values: Array<{ value: string }> }).values[0]!;
+    expect(value.value).toBe("Authorization: [redacted] [redacted] for [phone]");
+  });
+
   it("stamps the server environment over the Console's", () => {
     const { event } = decode(build(envelope({}, [eventItem(errorEvent({ environment: "spoofed-prod" }))]))!);
     expect(event["environment"]).toBe(SERVER_ENV);

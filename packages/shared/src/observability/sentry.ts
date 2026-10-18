@@ -117,6 +117,25 @@ const POSTGRES_ROW_MARKERS = [
 ] as const;
 const SCHEME_CHAR = /^[a-z0-9+.-]$/i;
 const TRAILING_PUNCTUATION: ReadonlySet<string> = new Set([`"`, "'", ")", "]", ",", ";", ".", ">"]);
+const REDACTED = "[redacted]";
+// OBS-1 §3.2 (RT-682): characters ignored around `Bearer` and an auth-scheme word.
+const WORD_WRAPPERS = `"'{[(,:`;
+const QUOTES = `"'`;
+const IDENTIFIER_CHAR = /^[a-z0-9_-]$/i;
+const ASCII_ALNUM = /^[a-z0-9]$/i;
+const ASCII_DIGIT = /^\d$/;
+const AUTHORIZATION_KEY = "authorization";
+// After `Authorization:`, a scheme word means the credential is the word after it.
+const AUTH_SCHEMES: ReadonlySet<string> = new Set(["bearer", "basic", "digest", "token", "apikey", "negotiate", "ntlm"]);
+// Egyptian mobile `1[0125]` + 8 digits behind a national (`0`) or country (`20`, `0020`) prefix.
+const EGYPT_MOBILE_PREFIX_BY_LENGTH: ReadonlyMap<number, string> = new Map([
+  [11, "0"],
+  [12, "20"],
+  [14, "0020"],
+]);
+const EGYPT_MOBILE_OPERATORS: readonly string[] = ["10", "11", "12", "15"];
+const E164_MIN_DIGITS = 8;
+const E164_MAX_DIGITS = 15;
 const FRAME_KEYS = ["filename", "function", "lineno", "colno", "module", "in_app"] as const;
 const MECHANISM_KEYS = ["type", "handled"] as const;
 
@@ -149,11 +168,85 @@ function maskPostgresRowValues(value: string): string {
   return out;
 }
 
+/** A span `[start, end)` inside one word. */
+interface Span {
+  start: number;
+  end: number;
+}
+
+/**
+ * Phone masking for one word (OBS-1 §3.2, RT-682). A maximal ASCII digit run
+ * with no letter or digit on either side becomes `[phone]` when it is E.164
+ * (`+` and 8-15 digits, not starting with 0; the `+` is masked too) or an
+ * Egyptian mobile. One pass over the word.
+ */
+class PhoneMasker {
+  private readonly word: string;
+
+  constructor(word: string) {
+    this.word = word;
+  }
+
+  masked(): string {
+    const out: string[] = [];
+    let at = 0;
+    while (at < this.word.length) {
+      const run = this.digitRun({ start: at, end: at });
+      if (run.end === at) {
+        out.push(this.word.charAt(at++));
+        continue;
+      }
+      const kind = this.phoneKind(run);
+      if (kind === "e164") out.pop();
+      out.push(kind === null ? this.word.slice(run.start, run.end) : "[phone]");
+      at = run.end;
+    }
+    return out.join("");
+  }
+
+  /** `from` grown over the maximal digit run at its end; unchanged when no digit is there. */
+  private digitRun(from: Span): Span {
+    let end = from.end;
+    while (ASCII_DIGIT.test(this.word.charAt(end))) end++;
+    return { start: from.start, end };
+  }
+
+  /** Verdict for one digit run: `e164`, `national` or not a phone. */
+  private phoneKind(run: Span): "e164" | "national" | null {
+    const before = this.word.charAt(run.start - 1);
+    const plusBefore = this.word.charAt(run.start - 2);
+    if (ASCII_ALNUM.test(this.word.charAt(run.end))) return null;
+    if (before === "+" && !ASCII_ALNUM.test(plusBefore) && this.isE164(run)) return "e164";
+    return !ASCII_ALNUM.test(before) && this.isEgyptianMobile(run) ? "national" : null;
+  }
+
+  /** 8-15 digits, not starting with 0 (the `+` is checked by the caller). */
+  private isE164({ start, end }: Span): boolean {
+    const digits = end - start;
+    return this.word.charAt(start) !== "0" && digits >= E164_MIN_DIGITS && digits <= E164_MAX_DIGITS;
+  }
+
+  /** `0`, `20` or `0020`, then `1[0125]` and 8 more digits. */
+  private isEgyptianMobile({ start, end }: Span): boolean {
+    const run = this.word.slice(start, end);
+    const prefix = EGYPT_MOBILE_PREFIX_BY_LENGTH.get(run.length);
+    if (prefix === undefined || !run.startsWith(prefix)) return false;
+    return EGYPT_MOBILE_OPERATORS.includes(run.slice(prefix.length, prefix.length + 2));
+  }
+}
+
+/** A scrubbed word, and whether the word after it is a credential to mask (OBS-1 §3.2). */
+interface ScrubbedWord {
+  text: string;
+  maskNext: boolean;
+}
+
 /**
  * One whitespace-delimited token of an exception message. Secrets are masked
  * wherever they sit in it (`token=eyJ…`, `"https://u:p@host/x?api_key=…"`):
- * URLs first (userinfo and query), then JWTs, then emails. Index scans only,
- * so the work stays linear on untrusted input.
+ * `Bearer` first, then URLs (userinfo and query), `Authorization` values,
+ * JWTs, emails and phones. Index scans only, so the work stays linear on
+ * untrusted input.
  */
 class MessageToken {
   private readonly text: string;
@@ -162,9 +255,59 @@ class MessageToken {
     this.text = text;
   }
 
-  scrubbed(): string {
-    const masked = this.withoutUrl().withoutJwt();
-    return masked.isEmailLike() ? "[email]" : masked.text;
+  scrubbed(): ScrubbedWord {
+    if (this.unwrapped() === "bearer") return { text: REDACTED, maskNext: true };
+    const url = this.withoutUrl();
+    const authorization = url.maskedAuthorization();
+    // The rest of the word (the part before `authorization=`) still gets the JWT/email/phone masks.
+    const masked = (authorization ? new MessageToken(authorization.text) : url).withoutJwt();
+    const text = masked.isEmailLike() ? "[email]" : new PhoneMasker(masked.text).masked();
+    return { text, maskNext: authorization?.maskNext ?? false };
+  }
+
+  /**
+   * `Authorization:<value>` / `"authorization":` / `headers.authorization=`:
+   * the value is masked, or the next word when the value is empty. A scheme
+   * value (`Bearer`) means the credential is the next word.
+   */
+  private maskedAuthorization(): ScrubbedWord | null {
+    for (let sep = 0; sep < this.text.length; sep++) {
+      if (this.isAuthorizationSeparator({ start: sep, end: sep + 1 })) {
+        const value = new MessageToken(this.text.slice(sep + 1));
+        if (value.text === "") return { text: this.text, maskNext: true };
+        return { text: `${this.text.slice(0, sep + 1)}${REDACTED}`, maskNext: value.isAuthScheme() };
+      }
+    }
+    return null;
+  }
+
+  /** An auth-scheme word (`Bearer`, `'Basic`), which means the credential is the next word. */
+  isAuthScheme(): boolean {
+    return AUTH_SCHEMES.has(this.unwrapped());
+  }
+
+  /** Lower-cased, without the wrapper characters around it (`'Bearer` -> `bearer`). */
+  private unwrapped(): string {
+    let start = 0;
+    let end = this.text.length;
+    while (start < end && WORD_WRAPPERS.includes(this.text.charAt(start))) start++;
+    while (end > start && WORD_WRAPPERS.includes(this.text.charAt(end - 1))) end--;
+    return this.text.slice(start, end).toLowerCase();
+  }
+
+  /** A `:` or `=` whose key ends in `authorization` (`Proxy-Authorization:`, `"authorization":`). */
+  private isAuthorizationSeparator(sep: Span): boolean {
+    const char = this.text.charAt(sep.start);
+    return (char === ":" || char === "=") && this.keyBefore(sep).endsWith(AUTHORIZATION_KEY);
+  }
+
+  /** Lower-cased identifier ending at `sep`, skipping quotes. Stops at the previous separator. */
+  private keyBefore(sep: Span): string {
+    let end = sep.start;
+    while (end > 0 && QUOTES.includes(this.text.charAt(end - 1))) end--;
+    let start = end;
+    while (start > 0 && IDENTIFIER_CHAR.test(this.text.charAt(start - 1))) start--;
+    return this.text.slice(start, end).toLowerCase();
   }
 
   /** Keep scheme + host + path; drop userinfo, query, fragment. Unparsable -> `[url]`. */
@@ -206,11 +349,30 @@ class MessageToken {
   }
 }
 
+/**
+ * Scrub each word, carrying one "mask the next word" flag across words
+ * (`Bearer <x>`, `Authorization: Basic <x>`). Whitespace passes through.
+ */
+function scrubWords(parts: readonly string[]): string {
+  let maskNext = false;
+  const out: string[] = [];
+  for (const part of parts) {
+    if (part.trim() === "") {
+      out.push(part);
+    } else if (maskNext) {
+      maskNext = new MessageToken(part).isAuthScheme();
+      out.push(REDACTED);
+    } else {
+      const word = new MessageToken(part).scrubbed();
+      maskNext = word.maskNext;
+      out.push(word.text);
+    }
+  }
+  return out.join("");
+}
+
 function sanitizeMessage(value: string): string {
-  const cleaned = maskPostgresRowValues(value.slice(0, MAX_SCAN_LENGTH))
-    .split(/(\s+)/)
-    .map((token) => new MessageToken(token).scrubbed())
-    .join("");
+  const cleaned = scrubWords(maskPostgresRowValues(value.slice(0, MAX_SCAN_LENGTH)).split(/(\s+)/));
   return cleaned.length > MAX_MESSAGE_LENGTH
     ? `${cleaned.slice(0, MAX_MESSAGE_LENGTH - 3)}...`
     : cleaned;
