@@ -345,13 +345,15 @@ fails, if any of these checks fails:
 
 The ledger is uploaded as the `deploy-lab-ledger-<run id>` artifact and shown in
 the run summary. That includes a run where evidence collection stopped early,
-for example on a checksum mismatch: the reason is the ledger's first refusal. Record it on the Jira issue. It covers the source SHA, the
-digests, the grant and catch-up scripts, the migrations added since
+for example on a checksum mismatch: the reason is the ledger's first refusal.
+Record it on the Jira issue. It covers the source SHA, the digests, the grant
+and catch-up scripts, the migrations added, removed or edited in place since
 `current_release`, the planned live sequence and the pending approvals.
 
 **Recovery rule.** Redeploying earlier application digests is planned only when
-no migration was added or removed between the two releases. Even then, the
-contract still needs a compatibility review. Any schema change means no
+no migration was added, removed or edited in place (same file name, different
+SQL) between the two releases. Even then, the contract still needs a
+compatibility review. Any schema change, an in-place edit included, means no
 automatic database downgrade: go to a restore or forward-fix decision, using
 verified backups and financial and outbox checks. Deploying a release that
 lacks a migration the host already has is refused.
