@@ -25,9 +25,18 @@ const EMAIL = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 const dryRun = process.argv.includes("--dry-run");
 const site = process.env.DD_SITE || "us5.datadoghq.com";
 
+// Log lines carry Datadog API text, so keep each on one line (no forged lines).
+function oneLine(text) {
+  return String(text).replaceAll(/[\r\n]+/g, " ");
+}
+
 function fail(message) {
-  console.error(`[FAIL] ${message}`);
+  console.error(oneLine(`[FAIL] ${message}`));
   process.exit(1);
+}
+
+function ok(message) {
+  console.log(oneLine(message));
 }
 
 function readJson(name) {
@@ -76,7 +85,8 @@ async function api(method, path, body) {
 }
 
 async function upsertMonitor({ key, body }) {
-  const found = await api("GET", `/api/v1/monitor?monitor_tags=${encodeURIComponent(`${KEY_TAG}:${key}`)}`);
+  const keyTag = encodeURIComponent(`${KEY_TAG}:${key}`);
+  const found = await api("GET", `/api/v1/monitor?monitor_tags=${keyTag}`);
   if (found.length > 1) fail(`${found.length} monitors carry ${KEY_TAG}:${key}`);
   if (found.length === 1) {
     await api("PUT", `/api/v1/monitor/${found[0].id}`, body);
@@ -117,16 +127,21 @@ async function main() {
   const dashboard = readJson("dashboard-retail-tower-lab.json");
 
   if (dryRun) {
-    for (const m of monitors) console.log(`[DRY] monitor ${m.key}: ${m.body.name}`);
-    console.log(`[DRY] synthetics ${synthetic.key}: ${synthetic.body.name}`);
-    console.log(`[DRY] dashboard: ${dashboard.title} (${dashboard.widgets.length} groups)`);
+    for (const m of monitors) ok(`[DRY] monitor ${m.key}: ${m.body.name}`);
+    ok(`[DRY] synthetics ${synthetic.key}: ${synthetic.body.name}`);
+    ok(`[DRY] dashboard: ${dashboard.title} (${dashboard.widgets.length} groups)`);
     return;
   }
   if (!process.env.DD_API_KEY || !process.env.DD_APP_KEY) fail("DD_API_KEY and DD_APP_KEY are required");
 
-  for (const m of monitors) console.log(`[OK] ${m.key}: ${await upsertMonitor(m)}`);
-  console.log(`[OK] ${synthetic.key}: ${await upsertSynthetic(synthetic)}`);
-  console.log(`[OK] dashboard: ${await upsertDashboard(dashboard)}`);
+  const results = await Promise.all(monitors.map(upsertMonitor));
+  monitors.forEach((m, i) => ok(`[OK] ${m.key}: ${results[i]}`));
+  ok(`[OK] ${synthetic.key}: ${await upsertSynthetic(synthetic)}`);
+  ok(`[OK] dashboard: ${await upsertDashboard(dashboard)}`);
 }
 
-main().catch((err) => fail(err instanceof Error ? err.message : String(err)));
+try {
+  await main();
+} catch (err) {
+  fail(err instanceof Error ? err.message : String(err));
+}
