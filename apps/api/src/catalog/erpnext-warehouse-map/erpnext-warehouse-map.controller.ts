@@ -134,11 +134,12 @@ export class ErpnextWarehouseMapController {
     @Body(new ZodValidationPipe(VersionedMutationRequestSchema))
     body: VersionedMutationRequestDto,
   ): Promise<ErpnextWarehouseMappingBody> {
-    const { tenantId } = this.requireContext(request);
+    const { tenantId, userId } = this.requireContext(request);
     const result = await this.service.retire({
       tenantId,
       id,
       version: body.version,
+      actorUserId: userId,
     });
     if (result.kind === "ok") {
       return toErpnextWarehouseMapping(result.row);

@@ -207,6 +207,9 @@ describe("Drift contract: every signal in the catalogue is represented", () => {
     "erpnext_reconciliation_repair_total",
     // ERPNext stock reconciliation sweep — RT-179. `outcome` (closed set).
     "erpnext_stock_reconciliation_sweep_total",
+    // ERPNext stock run expiry — RT-688. Gauge `outcome` (closed set); counter unlabeled.
+    "erpnext_stock_run_stranded",
+    "erpnext_stock_run_expired_total",
     // ERPNext posting reversal dead-lettered awaiting its sale_post — RT-207. Unlabeled.
     "erpnext_posting_reversal_deferred_dead_letter_total",
     // Sale re-drive sweep — RT-457. `reason` (closed set).

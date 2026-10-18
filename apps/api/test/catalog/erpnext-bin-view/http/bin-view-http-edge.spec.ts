@@ -23,7 +23,7 @@ import type { Pool } from "pg";
 import request from "supertest";
 
 import { generateRawToken } from "@data-pulse-2/auth";
-import { deterministicId, newId } from "@data-pulse-2/shared";
+import { newId } from "@data-pulse-2/shared";
 
 import { GlobalExceptionFilter } from "../../../../src/common/exception.filter";
 import { PG_POOL } from "../../../../src/auth/auth.module";
@@ -41,13 +41,14 @@ import {
 } from "../../../_helpers/postgres-container";
 import { ACTOR_A, PRODUCT_A_ACTIVE, STORE_A_X, TENANT_A } from "../../__support__/isolation-harness";
 import { seedReconciliationFixture } from "../../erpnext-reconciliation/__support__/seed-reconciliation";
+import { requestRefFor } from "../__support__/request-ref";
 
 const FEED_PATH = "/api/connector/v1/erpnext/bin-view-requests";
 const ACTOR_USER = "01900000-0000-7000-8000-0000000be001";
-const BIN_VIEW_REQUEST_NS = "0190b1de-0000-7000-8000-0000000be019";
 const RUN_HTTP = "0a000000-0000-7000-8000-00000e7042a1";
 const ERP_ITEM_REF = "ERP-ITEM-7042A";
-const REQUEST_REF = deterministicId(BIN_VIEW_REQUEST_NS, `${RUN_HTTP}:0`);
+// RT-688: bound to the run AND its store's active stock map (read back in beforeAll).
+let snapshotPath = "";
 
 let connectorToken = "";
 let dashboardToken = "";
@@ -111,6 +112,7 @@ beforeAll(async () => {
        VALUES (gen_random_uuid(), $1, $2, $3, 'confirmed', 'manual', $4, now()) ON CONFLICT DO NOTHING`,
       [TENANT_A, PRODUCT_A_ACTIVE, ERP_ITEM_REF, ACTOR_USER],
     );
+    snapshotPath = `/api/connector/v1/erpnext/bin-view-requests/${await requestRefFor(a, RUN_HTTP)}/snapshot`;
 
     const CONNECTOR_REG = "01900000-0000-7000-8000-0000000be009";
     await a.query(
@@ -158,7 +160,6 @@ afterAll(async () => {
 }, 60_000);
 
 const http = () => request(app!.getHttpServer());
-const SNAPSHOT_PATH = `/api/connector/v1/erpnext/bin-view-requests/${REQUEST_REF}/snapshot`;
 
 const validReport = {
   entries: [
@@ -204,7 +205,7 @@ describe("binViewReportSnapshot — strict DTO + idempotency", () => {
   it("body smuggling storeId → 400 (§XII strict boundary)", async () => {
     if (skip) return;
     await http()
-      .post(SNAPSHOT_PATH)
+      .post(snapshotPath)
       .set("Authorization", `Bearer ${connectorToken}`)
       .set("Idempotency-Key", "http-idem-bad-scope")
       .send({ ...validReport, storeId: STORE_A_X })
@@ -214,7 +215,7 @@ describe("binViewReportSnapshot — strict DTO + idempotency", () => {
   it("float-shaped quantity → 400 (exact-decimal string only, §III)", async () => {
     if (skip) return;
     await http()
-      .post(SNAPSHOT_PATH)
+      .post(snapshotPath)
       .set("Authorization", `Bearer ${connectorToken}`)
       .set("Idempotency-Key", "http-idem-float")
       .send({
@@ -227,14 +228,14 @@ describe("binViewReportSnapshot — strict DTO + idempotency", () => {
   it("connector token → 201 first record, then SAME report replays 200", async () => {
     if (skip) return;
     await http()
-      .post(SNAPSHOT_PATH)
+      .post(snapshotPath)
       .set("Authorization", `Bearer ${connectorToken}`)
       .set("Idempotency-Key", "http-idem-ok-1")
       .send(validReport)
       .expect(201);
     // Fresh idempotency key, same logical report → service-level O-3 echo → 200.
     const replay = await http()
-      .post(SNAPSHOT_PATH)
+      .post(snapshotPath)
       .set("Authorization", `Bearer ${connectorToken}`)
       .set("Idempotency-Key", "http-idem-ok-2")
       .send(validReport)

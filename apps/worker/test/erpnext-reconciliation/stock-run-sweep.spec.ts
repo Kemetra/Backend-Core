@@ -37,6 +37,8 @@ import {
 import {
   NoOpStockRunSweepRepository,
   PgStockRunSweepRepository,
+  STOCK_RUN_TTL_MS,
+  type ExpireStaleRunsResult,
   type StockRunSweepRepository,
   type SweepStoreInput,
   type SweepStoreResult,
@@ -46,6 +48,7 @@ import {
   StockRunSweepWorker,
 } from "../../src/erpnext-reconciliation/stock-run-sweep.worker";
 import type { JobLike, WorkerFactory, WorkerLike } from "../../src/email/email.worker";
+import * as workerMetrics from "../../src/observability/metrics/worker.metrics";
 import {
   AuditDbPool,
   WorkerModule,
@@ -117,12 +120,20 @@ describe("RT-179 sweep interval config", () => {
 // Processor
 // ---------------------------------------------------------------------------
 
+const NO_EXPIRY: ExpireStaleRunsResult = {
+  expired: [],
+  strandedIncomplete: 0,
+  strandedComplete: 0,
+};
+
 class FakeRepo implements StockRunSweepRepository {
   calls: SweepStoreInput[] = [];
+  expiryCalls: Array<{ tenantId: string; now: Date }> = [];
   constructor(
     private readonly stores: Record<string, string[]>,
     private readonly outcomes: Record<string, SweepStoreResult["outcome"]> = {},
     private readonly failTenants: ReadonlySet<string> = new Set(),
+    private readonly expiries: Record<string, ExpireStaleRunsResult> = {},
   ) {}
   async listActiveTenantIds(): Promise<string[]> {
     return Object.keys(this.stores);
@@ -140,6 +151,10 @@ class FakeRepo implements StockRunSweepRepository {
     const outcome = this.outcomes[input.target.storeId] ?? "created";
     const runId = outcome === "skipped_ineligible" ? null : `run-${input.target.storeId}`;
     return { outcome, runId };
+  }
+  async expireStaleRuns(tenantId: string, now: Date): Promise<ExpireStaleRunsResult> {
+    this.expiryCalls.push({ tenantId, now });
+    return this.expiries[tenantId] ?? NO_EXPIRY;
   }
 }
 
@@ -165,6 +180,10 @@ describe("RT-179 StockRunSweepProcessor", () => {
       skippedIneligible: 1,
       failedTenants: 0,
       failedStores: 0,
+      expired: 0,
+      strandedIncomplete: 0,
+      strandedComplete: 0,
+      failedExpiries: 0,
     });
     expect(repo.calls.map((c) => [c.target.tenantId, c.target.storeId])).toEqual([
       ["t-a", "s-1"],
@@ -233,6 +252,7 @@ describe("RT-179 StockRunSweepProcessor", () => {
         throw "plain string";
       },
       sweepStore: async () => ({ outcome: "created", runId: "r" }),
+      expireStaleRuns: async () => NO_EXPIRY,
     };
     const lines: StockRunSweepLogLine[] = [];
     await expect(makeProcessor(repo, lines).process(STOCK_RUN_SWEEP_JOB_NAME, {})).rejects.toThrow(
@@ -250,6 +270,7 @@ describe("RT-179 StockRunSweepProcessor", () => {
         throw err;
       },
       sweepStore: async () => ({ outcome: "created", runId: "r" }),
+      expireStaleRuns: async () => NO_EXPIRY,
     };
     const lines: StockRunSweepLogLine[] = [];
     await expect(makeProcessor(repo, lines).process(STOCK_RUN_SWEEP_JOB_NAME, {})).rejects.toThrow();
@@ -270,6 +291,7 @@ describe("RT-179 StockRunSweepProcessor", () => {
         }
         return real.sweepStore(input);
       },
+      expireStaleRuns: (t, now) => real.expireStaleRuns(t, now),
     };
     const lines: StockRunSweepLogLine[] = [];
     let thrown: unknown;
@@ -319,6 +341,7 @@ describe("RT-179 StockRunSweepProcessor", () => {
         throw Object.assign(new Error("x"), { name: "error", code: "57P01" });
       },
       sweepStore: async () => ({ outcome: "created", runId: "r" }),
+      expireStaleRuns: async () => NO_EXPIRY,
     };
     const lines: StockRunSweepLogLine[] = [];
     await expect(makeProcessor(repo, lines).process(STOCK_RUN_SWEEP_JOB_NAME, {})).rejects.toThrow();
@@ -396,6 +419,141 @@ describe("RT-179 NoOpStockRunSweepRepository", () => {
     await expect(
       repo.sweepStore({ target: { tenantId: "t", storeId: "s" }, period: { start: NOW, now: NOW } }),
     ).rejects.toThrow("no database configured");
+    await expect(repo.expireStaleRuns("t", NOW)).rejects.toThrow("no database configured");
+  });
+});
+
+describe("RT-688 stock run expiry in the sweep", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("samples the stranded gauge after a clean pass, and keeps the last sample when an expiry pass failed", async () => {
+    const setGauge = jest.spyOn(workerMetrics, "setStockRunStranded");
+    const clean = new FakeRepo({ "t-a": [] }, {}, new Set(), {
+      "t-a": { expired: [], strandedIncomplete: 1, strandedComplete: 2 },
+    });
+    await makeProcessor(clean, []).process(STOCK_RUN_SWEEP_JOB_NAME, {});
+    expect(setGauge).toHaveBeenCalledWith({ report_incomplete: 1, report_complete: 2 });
+
+    setGauge.mockClear();
+    const broken: StockRunSweepRepository = {
+      listActiveTenantIds: async () => ["t-a"],
+      listMappedStoreIds: async () => [],
+      sweepStore: async () => ({ outcome: "created", runId: "r" }),
+      expireStaleRuns: async () => {
+        throw new Error("down");
+      },
+    };
+    await expect(makeProcessor(broken, []).process(STOCK_RUN_SWEEP_JOB_NAME, {})).rejects.toBeInstanceOf(
+      StockRunSweepIncompleteError,
+    );
+    expect(setGauge).not.toHaveBeenCalled();
+  });
+
+  it("the run TTL is 2 hours (RT-187 D5)", () => {
+    expect(STOCK_RUN_TTL_MS).toBe(7_200_000);
+  });
+
+  it("expires each tenant before its stores, counts and logs every expiry", async () => {
+    const repo = new FakeRepo({ "t-a": ["s-1"], "t-b": ["s-2"], "t-c": [] }, {}, new Set(), {
+      "t-a": { expired: ["run-x", "run-y"], strandedIncomplete: 0, strandedComplete: 1 },
+      "t-c": { expired: [], strandedIncomplete: 1, strandedComplete: 2 },
+    });
+    const order: string[] = [];
+    const ordered: StockRunSweepRepository = {
+      listActiveTenantIds: () => repo.listActiveTenantIds(),
+      listMappedStoreIds: (t) => repo.listMappedStoreIds(t),
+      sweepStore: async (input) => {
+        order.push(`store:${input.target.storeId}`);
+        return repo.sweepStore(input);
+      },
+      expireStaleRuns: async (t, now) => {
+        order.push(`expire:${t}`);
+        return repo.expireStaleRuns(t, now);
+      },
+    };
+    const lines: StockRunSweepLogLine[] = [];
+    const result = await makeProcessor(ordered, lines).process(STOCK_RUN_SWEEP_JOB_NAME, {});
+
+    expect(order).toEqual(["expire:t-a", "store:s-1", "expire:t-b", "store:s-2", "expire:t-c"]);
+    // The TTL is measured from the tick's time.
+    expect(repo.expiryCalls.map((c) => c.now)).toEqual([NOW, NOW, NOW]);
+    expect(result).toMatchObject({
+      expired: 2,
+      strandedIncomplete: 1,
+      strandedComplete: 3,
+      failedExpiries: 0,
+      created: 2,
+    });
+    expect(lines.filter((l) => l["message"] === "run_expired")).toEqual([
+      {
+        level: "warn",
+        component: "erpnext-reconciliation.stock-run-sweep",
+        message: "run_expired",
+        reason: "bin_view_not_completed",
+        tenant_id: "t-a",
+        run_id: "run-x",
+      },
+      {
+        level: "warn",
+        component: "erpnext-reconciliation.stock-run-sweep",
+        message: "run_expired",
+        reason: "bin_view_not_completed",
+        tenant_id: "t-a",
+        run_id: "run-y",
+      },
+    ]);
+    expect(lines.find((l) => l["message"] === "sweep_complete")).toMatchObject({
+      level: "info",
+      expired: 2,
+      stranded_incomplete: 1,
+      stranded_complete: 3,
+      failed_expiries: 0,
+    });
+  });
+
+  it("an expiry failure is logged without its message, the tenant's stores still run, and the job fails", async () => {
+    const real = new FakeRepo({ "t-a": ["s-1"], "t-b": ["s-2"] });
+    const repo: StockRunSweepRepository = {
+      listActiveTenantIds: () => real.listActiveTenantIds(),
+      listMappedStoreIds: (t) => real.listMappedStoreIds(t),
+      sweepStore: (input) => real.sweepStore(input),
+      expireStaleRuns: async (t, now) => {
+        if (t === "t-a") {
+          throw Object.assign(new Error("lock timeout on row ('secret')"), {
+            name: "error",
+            code: "55P03",
+          });
+        }
+        return real.expireStaleRuns(t, now);
+      },
+    };
+    const lines: StockRunSweepLogLine[] = [];
+    let thrown: unknown;
+    try {
+      await makeProcessor(repo, lines).process(STOCK_RUN_SWEEP_JOB_NAME, {});
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(StockRunSweepIncompleteError);
+    expect((thrown as Error).message).toBe(
+      "stock run sweep incomplete: 0 tenant(s) and 0 store(s) failed; 1 expiry pass(es) failed",
+    );
+    expect(real.calls.map((c) => c.target.storeId)).toEqual(["s-1", "s-2"]);
+    expect(lines.find((l) => l["message"] === "tenant_expiry_failed")).toEqual({
+      level: "error",
+      component: "erpnext-reconciliation.stock-run-sweep",
+      message: "tenant_expiry_failed",
+      tenant_id: "t-a",
+      errorName: "error",
+      errorCode: "55P03",
+    });
+    expect(JSON.stringify(lines)).not.toContain("secret");
+    expect(lines.find((l) => l["message"] === "sweep_complete")).toMatchObject({
+      level: "warn",
+      failed_expiries: 1,
+    });
   });
 });
 

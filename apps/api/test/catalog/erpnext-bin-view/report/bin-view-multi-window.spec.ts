@@ -24,7 +24,6 @@
  *
  * Docker policy: HARD failure unless MIGRATION_TEST_ALLOW_SKIP=1.
  */
-import { deterministicId } from "@data-pulse-2/shared";
 
 import {
   applyAllUpAndCreateAppRole,
@@ -36,6 +35,7 @@ import {
   BinViewConflictError,
   BinViewNotFoundError,
   BinViewWindowSequenceConflictError,
+  binViewRequestRef,
   ErpnextBinViewService,
 } from "../../../../src/catalog/erpnext-bin-view/erpnext-bin-view.service";
 import {
@@ -50,7 +50,6 @@ import { seedReconciliationFixture } from "../../erpnext-reconciliation/__suppor
 let env: PgTestEnv | null = null;
 let skip = false;
 
-const BIN_VIEW_REQUEST_NS = "0190b1de-0000-7000-8000-0000000be019";
 const ERP_ITEM_REF = "ERP-ITEM-175MAP";
 const READ_AT = "2026-10-04T08:00:00.000Z";
 const OTHER_READ_AT = "2026-10-04T08:00:05.000Z";
@@ -114,7 +113,10 @@ type ReportBody = {
   readAt: string;
 };
 
-const refOf = ({ runId }: RunKey): string => deterministicId(BIN_VIEW_REQUEST_NS, `${runId}:0`);
+// RT-688: every run here is on STORE_A_X, so all refs bind to its one active
+// stock map (id read back in beforeAll).
+let storeMapId = "";
+const refOf = ({ runId }: RunKey): string => binViewRequestRef(runId, storeMapId);
 
 beforeAll(async () => {
   try {
@@ -139,6 +141,12 @@ beforeAll(async () => {
        ON CONFLICT DO NOTHING`,
       [TENANT_A, PRODUCT_A_ACTIVE, ERP_ITEM_REF, ACTOR_A],
     );
+    const map = await a.query<{ id: string }>(
+      `SELECT id FROM erpnext_warehouse_map
+        WHERE store_id = $1 AND purpose = 'stock' AND retired_at IS NULL`,
+      [STORE_A_X],
+    );
+    storeMapId = map.rows[0]!.id;
   } catch (err) {
     if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
       skip = true;

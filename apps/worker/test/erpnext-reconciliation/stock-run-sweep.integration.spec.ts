@@ -14,6 +14,10 @@
  *   AC4  a returns-only store is unmapped everywhere: the sweep skips it, the
  *        shared creation path emits for it at once, and the run processor
  *        classes it `unmapped_store`.
+ *   RT-688  run expiry (RT-187 D5): a stock run still `running` 2 h after
+ *        `started_at` without a complete Bin report moves to `failed` with
+ *        `summary.failure` and an audit row; a run with a complete report is
+ *        never expired, only counted as stranded; the pass is tenant-scoped.
  *
  * Docker policy: HARD failure unless MIGRATION_TEST_ALLOW_SKIP=1 (RT-123
  * retention-rls precedent).
@@ -39,7 +43,9 @@ import {
 import { sweepPeriod } from "../../src/erpnext-reconciliation/stock-run-sweep.config";
 import {
   PgStockRunSweepRepository,
+  STOCK_RUN_EXPIRY_ACTOR_LABEL,
   STOCK_RUN_SWEEP_ACTOR_LABEL,
+  STOCK_RUN_TTL_MS,
   type StockRunSweepRepository,
 } from "../../src/erpnext-reconciliation/stock-run-sweep.repository";
 
@@ -253,13 +259,16 @@ describe("RT-179 AC2 — idempotent per store per period", () => {
     expect(await runsFor(A_MAPPED)).toHaveLength(1);
   });
 
-  it("the next period creates a new run for the free store only", async () => {
+  it("the next period creates a new run for the free store, and replaces the abandoned ones", async () => {
     if (skipped()) return;
     const result = await tick(at(DAY));
-    expect(result).toMatchObject({ created: 1, skippedRunning: 2, skippedPeriod: 0 });
+    // RT-688: the two runs still running since T0 never got a Bin report, so
+    // the tick expires them (24 h > the 2 h TTL) and the stores get new runs.
+    expect(result).toMatchObject({ created: 3, skippedRunning: 0, skippedPeriod: 0, expired: 2 });
     const runs = await runsFor(A_MAPPED);
     expect(runs.map((r) => r.status)).toEqual(["completed", "running"]);
     expect(runs[1]!.trigger).toBe("scheduled");
+    expect((await runsFor(A_MAPPED_2)).map((r) => r.status)).toEqual(["failed", "running"]);
   });
 
   it("an on-demand running run also blocks the sweep", async () => {
@@ -277,7 +286,9 @@ describe("RT-179 AC2 — idempotent per store per period", () => {
       }),
     );
     const result = await tick(at(2 * DAY));
-    expect(result.created).toBe(0);
+    // A_MAPPED is skipped (its on-demand run is running and within the TTL);
+    // the other two stores' runs from the previous day are expired and replaced.
+    expect(result).toMatchObject({ created: 2, skippedRunning: 1, expired: 2 });
     expect(await runsFor(A_MAPPED)).toHaveLength(3);
   });
 
@@ -410,6 +421,7 @@ describe("RT-179 retry of an incomplete sweep", () => {
         return real.listMappedStoreIds(tenantId);
       },
       sweepStore: (input) => real.sweepStore(input),
+      expireStaleRuns: (t, now) => real.expireStaleRuns(t, now),
     };
     const attemptAt = (now: Date): Promise<StockRunSweepResult> =>
       new StockRunSweepProcessor(flaky, DAY, () => now, () => undefined).process(
@@ -495,6 +507,7 @@ describe("RT-179 eligibility is atomic with run creation", () => {
         await between(input.target);
         return real.sweepStore(input);
       },
+      expireStaleRuns: (tenantId, now) => real.expireStaleRuns(tenantId, now),
     };
   }
 
@@ -618,6 +631,7 @@ describe("RT-179 one scheduled run per UTC day, whatever the processing delay", 
         (await real.listActiveTenantIds()).filter((t) => t === TENANT_E),
       listMappedStoreIds: (t) => real.listMappedStoreIds(t),
       sweepStore: (input) => real.sweepStore(input),
+      expireStaleRuns: (t, now) => real.expireStaleRuns(t, now),
     };
     return new StockRunSweepProcessor(onlyE, DAY, () => new Date(clockMs), () => undefined);
   }
@@ -682,5 +696,234 @@ describe("RT-179 one scheduled run per UTC day, whatever the processing delay", 
     expect(perDay["2026-12-10"]).toBe(1);
     expect(perDay["2026-12-11"]).toBe(1);
     expect(perDay["2026-12-12"]).toBe(1);
+  });
+});
+
+describe("RT-688 run expiry (RT-187 D5)", () => {
+  const TENANT_F = "0f000000-0000-7000-8000-000000688f01";
+  const TENANT_G = "0f000000-0000-7000-8000-000000688f02";
+  const F_MAPPED = "0f000000-0000-7000-8000-000000688f10";
+  const F_UNMAPPED = "0f000000-0000-7000-8000-000000688f11";
+  const G_MAPPED = "0f000000-0000-7000-8000-000000688f20";
+  const NOW = new Date("2027-01-10T12:00:00.000Z");
+  const ago = (ms: number): Date => new Date(NOW.getTime() - ms);
+  const HOUR = 60 * 60 * 1000;
+
+  const RUN_NO_REPORT = "0f000000-0000-7000-8000-000000688a01";
+  const RUN_PARTIAL = "0f000000-0000-7000-8000-000000688a02";
+  const RUN_COMPLETE = "0f000000-0000-7000-8000-000000688a03";
+  const RUN_LEGACY_REPORT = "0f000000-0000-7000-8000-000000688a04";
+  const RUN_FRESH = "0f000000-0000-7000-8000-000000688a05";
+  const RUN_AT_TTL = "0f000000-0000-7000-8000-000000688a06";
+  const RUN_UNMAPPED = "0f000000-0000-7000-8000-000000688a07";
+  const RUN_G = "0f000000-0000-7000-8000-000000688a08";
+
+  const PARTIAL_REPORT = {
+    requestRef: "req",
+    runRef: RUN_PARTIAL,
+    erpnextWarehouseRef: "WH-F1",
+    attemptRef: "att-1",
+    readAt: "2027-01-10T08:00:00.000Z",
+    recordedAt: "2027-01-10T08:00:05.000Z",
+    complete: false,
+    windowsRecorded: 2,
+    acceptedEntryCount: 3,
+    windows: [],
+    entries: [{ erpnextItemRef: "ITEM-1", tenant_product_ref: null, quantity: "4", stockUom: "Nos" }],
+  };
+
+  beforeAll(async () => {
+    if (!env) return;
+    const a = env.admin;
+    await a.query(
+      `INSERT INTO tenants (id, slug, name, status) VALUES
+         ($1, 'rt688-f', 'F', 'active'), ($2, 'rt688-g', 'G', 'active')`,
+      [TENANT_F, TENANT_G],
+    );
+    await a.query(
+      `INSERT INTO stores (id, tenant_id, code, name) VALUES
+         ($1, $4, 'FM', 'F mapped'), ($2, $4, 'FU', 'F unmapped'), ($3, $5, 'GM', 'G mapped')`,
+      [F_MAPPED, F_UNMAPPED, G_MAPPED, TENANT_F, TENANT_G],
+    );
+    await a.query(
+      `INSERT INTO erpnext_warehouse_map (tenant_id, store_id, purpose, erpnext_warehouse_ref, set_by)
+       VALUES ($1, $2, 'stock', 'WH-F1', $5), ($3, $4, 'stock', 'WH-G1', $5)`,
+      [TENANT_F, F_MAPPED, TENANT_G, G_MAPPED, ACTOR],
+    );
+    const run = (id: string, tenant: string, store: string, startedAt: Date, summary: unknown) =>
+      a.query(
+        `INSERT INTO erpnext_reconciliation_run
+           (id, tenant_id, store_id, kind, trigger, status, started_at, summary)
+         VALUES ($1, $2, $3, 'stock', 'scheduled', 'running', $4, $5::jsonb)`,
+        [id, tenant, store, startedAt, summary === null ? null : JSON.stringify(summary)],
+      );
+    await run(RUN_NO_REPORT, TENANT_F, F_MAPPED, ago(5 * HOUR), null);
+    await run(RUN_PARTIAL, TENANT_F, F_MAPPED, ago(4 * HOUR), { bin_view_report: PARTIAL_REPORT });
+    await run(RUN_COMPLETE, TENANT_F, F_MAPPED, ago(3 * HOUR), {
+      bin_view_report: { ...PARTIAL_REPORT, complete: true },
+    });
+    // A pre-RT-175 report has no `complete` key: it was a whole snapshot.
+    const { complete: _c, windowsRecorded: _w, attemptRef: _a, ...legacy } = PARTIAL_REPORT;
+    await run(RUN_LEGACY_REPORT, TENANT_F, F_MAPPED, ago(3 * HOUR), { bin_view_report: legacy });
+    await run(RUN_FRESH, TENANT_F, F_MAPPED, ago(HOUR), null);
+    await run(RUN_AT_TTL, TENANT_F, F_MAPPED, ago(STOCK_RUN_TTL_MS), null);
+    await run(RUN_UNMAPPED, TENANT_F, F_UNMAPPED, ago(6 * HOUR), null);
+    await run(RUN_G, TENANT_G, G_MAPPED, ago(6 * HOUR), null);
+  });
+
+  interface ExpiredRow {
+    id: string;
+    status: string;
+    finished_at: Date | null;
+    summary: Record<string, unknown> | null;
+  }
+
+  async function run(id: string): Promise<ExpiredRow> {
+    const r = await pg().admin.query<ExpiredRow>(
+      `SELECT id, status, finished_at, summary FROM erpnext_reconciliation_run WHERE id = $1`,
+      [id],
+    );
+    return r.rows[0]!;
+  }
+
+  it("tenant F's pass expires only F's incomplete runs past the TTL and counts the stranded complete ones", async () => {
+    if (skipped()) return;
+    const repo = new PgStockRunSweepRepository(pg().app);
+    const pass = await repo.expireStaleRuns(TENANT_F, NOW);
+
+    expect([...pass.expired].sort()).toEqual([RUN_NO_REPORT, RUN_PARTIAL, RUN_UNMAPPED].sort());
+    expect(pass).toMatchObject({ strandedIncomplete: 0, strandedComplete: 2 });
+
+    for (const id of [RUN_COMPLETE, RUN_LEGACY_REPORT, RUN_FRESH, RUN_AT_TTL]) {
+      expect(await run(id)).toMatchObject({ status: "running", finished_at: null });
+    }
+    // Tenant isolation: G's stale run is untouched by F's pass.
+    expect(await run(RUN_G)).toMatchObject({ status: "running", finished_at: null });
+  });
+
+  it("an expired run is failed with summary.failure; a partial report is kept as evidence", async () => {
+    if (skipped()) return;
+    const none = await run(RUN_NO_REPORT);
+    expect(none.status).toBe("failed");
+    expect(none.finished_at).not.toBeNull();
+    expect(none.summary).toEqual({ failure: { reason: "bin_view_not_completed" } });
+
+    const partial = await run(RUN_PARTIAL);
+    expect(partial.status).toBe("failed");
+    expect(partial.summary).toEqual({
+      bin_view_report: PARTIAL_REPORT,
+      failure: { reason: "bin_view_not_completed", attemptRef: "att-1", windowsRecorded: 2 },
+    });
+  });
+
+  it("each expiry writes one audit row with the expiry system actor", async () => {
+    if (skipped()) return;
+    const audit = await pg().admin.query<{
+      target_id: string;
+      actor_user_id: string | null;
+      actor_label: string | null;
+      tenant_id: string;
+      metadata: Record<string, unknown>;
+    }>(
+      `SELECT target_id, actor_user_id, actor_label, tenant_id, metadata FROM audit_events
+        WHERE action = 'erpnext_reconciliation.run.failed' AND tenant_id = $1
+        ORDER BY target_id`,
+      [TENANT_F],
+    );
+    expect(audit.rows).toEqual(
+      [
+        [RUN_NO_REPORT, F_MAPPED],
+        [RUN_PARTIAL, F_MAPPED],
+        [RUN_UNMAPPED, F_UNMAPPED],
+      ]
+        .sort(([x], [y]) => x!.localeCompare(y!))
+        .map(([target_id, store_id]) => ({
+          target_id,
+          actor_user_id: null,
+          actor_label: STOCK_RUN_EXPIRY_ACTOR_LABEL,
+          tenant_id: TENANT_F,
+          metadata: { store_id, reason: "bin_view_not_completed" },
+        })),
+    );
+  });
+
+  it("a second pass is a no-op", async () => {
+    if (skipped()) return;
+    const pass = await new PgStockRunSweepRepository(pg().app).expireStaleRuns(TENANT_F, NOW);
+    expect(pass).toEqual({ expired: [], strandedIncomplete: 0, strandedComplete: 2 });
+  });
+
+  it("a report completed while the pass was deciding is never expired", async () => {
+    if (skipped()) return;
+    const id = "0f000000-0000-7000-8000-000000688a09";
+    await pg().admin.query(
+      `INSERT INTO erpnext_reconciliation_run
+         (id, tenant_id, store_id, kind, trigger, status, started_at, summary)
+       VALUES ($1, $2, $3, 'stock', 'scheduled', 'running', $4, $5::jsonb)`,
+      [id, TENANT_G, G_MAPPED, ago(7 * HOUR), JSON.stringify({ bin_view_report: PARTIAL_REPORT })],
+    );
+    // Hold the run's row lock as binViewReportSnapshot does, complete the
+    // report, and commit only after the expiry has started waiting on it.
+    const reporter = await pg().admin.connect();
+    try {
+      await reporter.query("BEGIN");
+      await reporter.query(`SELECT id FROM erpnext_reconciliation_run WHERE id = $1 FOR UPDATE`, [id]);
+      await reporter.query(
+        `UPDATE erpnext_reconciliation_run
+            SET summary = jsonb_set(summary, '{bin_view_report,complete}', 'true'::jsonb)
+          WHERE id = $1`,
+        [id],
+      );
+      const pending = new PgStockRunSweepRepository(pg().app).expireStaleRuns(TENANT_G, NOW);
+      await new Promise((r) => setTimeout(r, 500));
+      await reporter.query("COMMIT");
+      const pass = await pending;
+      expect(pass.expired).toEqual([RUN_G]);
+      expect(pass.strandedComplete).toBe(1);
+    } finally {
+      reporter.release();
+    }
+    expect(await run(id)).toMatchObject({ status: "running", finished_at: null });
+  });
+
+  it("the sweep tick expires the abandoned run first, so the store gets its scheduled run in the same tick", async () => {
+    if (skipped()) return;
+    // Tenant F still has RUN_AT_TTL (exactly 2 h old at NOW, so not expired
+    // then) and the two complete ones; a tick an hour later expires RUN_AT_TTL
+    // and RUN_FRESH (now 2 h past start), but the complete runs keep the store
+    // skipped_running.
+    const onlyF: StockRunSweepRepository = (() => {
+      const real = new PgStockRunSweepRepository(pg().app);
+      return {
+        listActiveTenantIds: async () => [TENANT_F],
+        listMappedStoreIds: (t) => real.listMappedStoreIds(t),
+        sweepStore: (input) => real.sweepStore(input),
+        expireStaleRuns: (t, now) => real.expireStaleRuns(t, now),
+      };
+    })();
+    const later = new Date(NOW.getTime() + HOUR + 1);
+    const result = await new StockRunSweepProcessor(onlyF, DAY, () => later, () => undefined).process(
+      STOCK_RUN_SWEEP_JOB_NAME,
+      {},
+    );
+    expect(result).toMatchObject({
+      expired: 2,
+      strandedIncomplete: 0,
+      strandedComplete: 2,
+      skippedRunning: 1,
+      created: 0,
+    });
+    expect(await run(RUN_AT_TTL)).toMatchObject({ status: "failed" });
+
+    // Once the reconciliation worker has finished the complete runs, the next
+    // tick creates the store's scheduled run.
+    await completeRuns(F_MAPPED);
+    const next = await new StockRunSweepProcessor(
+      onlyF,
+      DAY,
+      () => new Date(later.getTime() + DAY),
+      () => undefined,
+    ).process(STOCK_RUN_SWEEP_JOB_NAME, {});
+    expect(next).toMatchObject({ created: 1, expired: 0, strandedComplete: 0 });
   });
 });

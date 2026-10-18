@@ -21,9 +21,13 @@ export {
 } from "./helpers/posting-feed-lock";
 export {
   createStockReconciliationRun,
+  failStockReconciliationRun,
   STOCK_RECONCILIATION_RUN_COLUMNS,
+  stockRunReportCompleteSql,
   type CreateStockReconciliationRunInput,
   type CreateStockReconciliationRunResult,
+  type FailStockReconciliationRunInput,
+  type StockReconciliationRunFailureReason,
   type StockReconciliationRunRow,
   type StockReconciliationRunTrigger,
 } from "./helpers/stock-reconciliation-run";
