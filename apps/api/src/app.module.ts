@@ -8,6 +8,8 @@ import { AuditModule } from "./audit/audit.module";
 import { RootLoggerModule } from "./common/root-logger.module";
 import { AuthModule, PG_POOL } from "./auth/auth.module";
 import { FailClosedAuthGuard } from "./auth/fail-closed-auth.guard";
+import { ConsoleRateLimitGuard } from "./console-rate-limit/console-rate-limit.guard";
+import { ConsoleRateLimitModule } from "./console-rate-limit/console-rate-limit.module";
 import { HealthModule } from "./health/health.module";
 import { ErpnextBinViewModule } from "./catalog/erpnext-bin-view/erpnext-bin-view.module";
 import { ErpnextItemMapModule } from "./catalog/erpnext-item-map/erpnext-item-map.module";
@@ -233,12 +235,18 @@ class ApiDbMigrationStatusGaugeRegistrar implements OnModuleInit, OnModuleDestro
  * pipe are registered in `main.ts`.
  */
 @Module({
-  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, CashierAdmissionsModule, PosAuditEventsModule, PosShiftsModule, ShiftClosesModule, CashVariancePolicyModule, ConsoleSalesModule, DevicesModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, TrackingProfileModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, PayerAccountsModule, ConnectorModule, ConnectorHealthModule, PairingModule, DeviceRotationModule, HealthModule, ConsoleTelemetryModule],
+  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, CashierAdmissionsModule, PosAuditEventsModule, PosShiftsModule, ShiftClosesModule, CashVariancePolicyModule, ConsoleSalesModule, DevicesModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, TrackingProfileModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, PayerAccountsModule, ConnectorModule, ConnectorHealthModule, PairingModule, DeviceRotationModule, HealthModule, ConsoleTelemetryModule, ConsoleRateLimitModule],
   controllers: [],
   providers: [
     ApiDbPoolGaugeRegistrar,
     ApiDbMigrationStatusGaugeRegistrar,
     { provide: APP_GUARD, useClass: FailClosedAuthGuard },
+    // RT-619 (RT-574 D1/L9): MUST stay immediately after FailClosedAuthGuard in
+    // this array, so request.principal is set and the guard runs before every
+    // controller guard and interceptor (a 429 never claims an idempotency key).
+    // Pinned by test/console-rate-limit/console-rate-limit.ratchet.spec.ts.
+    // Default mode off: no Redis call, no behaviour change (owner O3b).
+    { provide: APP_GUARD, useClass: ConsoleRateLimitGuard },
   ],
 })
 export class AppModule {}

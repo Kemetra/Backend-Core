@@ -40,6 +40,7 @@ import type { TenantContextRequest } from "../context/types";
 import { MembershipsService } from "./memberships.service";
 import { MembershipUpdateSchema, type MembershipUpdateDto } from "./dto";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
+import { ConsoleRateLimit } from "../console-rate-limit/console-rate-limit.decorator";
 
 @Controller("api/v1/memberships")
 @UseGuards(DashboardAuthGuard, TenantContextGuard)
@@ -50,6 +51,8 @@ export class MembershipsController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin", { denyAs: 403 })
+  // RT-619 (RT-574 D3): revokeMembership.
+  @ConsoleRateLimit("incidentControl")
   async revoke(
     @Req() request: TenantContextRequest,
     @Param("membership_id", new ParseUUIDPipe()) membershipId: string,

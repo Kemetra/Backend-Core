@@ -8,7 +8,7 @@ import { newId } from "@data-pulse-2/shared";
 import type { Request, Response } from "express";
 import { Observable } from "rxjs";
 
-const REQUEST_ID_HEADER = "x-request-id";
+export const REQUEST_ID_HEADER = "x-request-id";
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -19,6 +19,17 @@ declare global {
       requestId?: string;
     }
   }
+}
+
+/**
+ * The request id for an inbound `X-Request-Id` header value: the value itself
+ * when it is a well-formed UUID (v4 or v7), otherwise a fresh UUIDv7. Shared
+ * with ConsoleRateLimitGuard (RT-619), which must assign the id itself on a
+ * guard-thrown 429 because this interceptor runs after guards.
+ */
+export function resolveRequestId(inbound: string | string[] | undefined): string {
+  const inboundStr = Array.isArray(inbound) ? inbound[0] : inbound;
+  return typeof inboundStr === "string" && UUID_RE.test(inboundStr) ? inboundStr : newId();
 }
 
 /**
@@ -37,12 +48,7 @@ export class RequestIdInterceptor implements NestInterceptor {
     const request = http.getRequest<Request>();
     const response = http.getResponse<Response>();
 
-    const inbound = request.headers[REQUEST_ID_HEADER];
-    const inboundStr = Array.isArray(inbound) ? inbound[0] : inbound;
-    const requestId =
-      typeof inboundStr === "string" && UUID_RE.test(inboundStr)
-        ? inboundStr
-        : newId();
+    const requestId = resolveRequestId(request.headers[REQUEST_ID_HEADER]);
 
     request.requestId = requestId;
     response.setHeader("X-Request-Id", requestId);

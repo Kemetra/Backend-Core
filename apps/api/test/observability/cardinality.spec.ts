@@ -224,6 +224,9 @@ describe("Drift contract: every signal in the catalogue is represented", () => {
     "settlement_receivable_total",
     // POS shift close approver unverified at ingest — RT-17 10955 option A. `reason` (closed set).
     "shift_close_approver_unverified_total",
+    // Console rate limiting — RT-619 (RT-574 D6). `class`, `outcome` (closed sets), `route` (template).
+    "console_rate_limit_total",
+    "console_rate_limit_utilisation",
   ];
 
   for (const name of expectedSignals) {

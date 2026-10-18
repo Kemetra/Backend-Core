@@ -130,6 +130,15 @@ they are not part of the original T444 platform catalogue.
 |---|---|---|---|
 | `shift_close_approver_unverified_total` | counter | `reason` ∈ {`approver_is_closer`, `inactive_membership`, `not_manager`, `no_store_access`, `check_unavailable`} — one increment when a shift close is first recorded (201, never a replay) with a `varianceApprovedByUserId` that is the closer, has no active membership, holds no `owner` / `tenant_admin` / `store_manager` role, has no access to the store, or could not be looked up. The close is recorded regardless (detect, never refuse). Paired with one `shift.close.approver_unverified` warning carrying the same `reason` and no ids | Jira RT-17 comment 10955, option A |
 
+## 1.3 Console rate-limit signals (RT-619)
+
+Emitted by `ConsoleRateLimitGuard` only when `CONSOLE_RATE_LIMIT_MODE` is `report` or `enforce` (default `off`: no emission, no Redis call). Decision record: `docs/decisions/rt-574-console-rate-limiting.md` D6.
+
+| Signal | Type | Labels (low-cardinality only) | Source |
+|---|---|---|---|
+| `console_rate_limit_total` | counter | `class` ∈ {`cheapRead`, `expensiveRead`, `write`, `jobOrPreview`, `onboarding`, `incidentControl`, `exempt`}; `outcome` ∈ {`allowed` (under 50% of budget), `near_limit` (allowed, 50% or more), `would_limit` (over budget, report mode), `limited` (over budget, enforce mode: 429), `fail_open` (limiter error, timeout or open breaker)}; `route` (route template, the same bounded label as `http_error_4xx_total`). One increment per console request the guard evaluates. No user, tenant or IP label | RT-574 D6 / RT-619 |
+| `console_rate_limit_utilisation` | histogram | `class`, `route` as above. Value = count / limit of the caller's bucket at each successful check (above 1 = over budget); buckets 0.1, 0.25, 0.5, 0.75, 0.9, 1, 2 | RT-574 D6 / RT-619 |
+
 ---
 
 ## 2. Database signals (T445)

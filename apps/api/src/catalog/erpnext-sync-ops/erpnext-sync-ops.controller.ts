@@ -55,6 +55,7 @@ import {
   type ReconciliationRunView,
   type SyncOpsSummaryBody,
 } from "./erpnext-sync-ops.read-model.service";
+import { ConsoleRateLimit } from "../../console-rate-limit/console-rate-limit.decorator";
 
 @Controller()
 @UseGuards(DashboardAuthGuard, TenantContextGuard)
@@ -94,6 +95,8 @@ export class ErpnextSyncOpsController {
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
   @Auditable("erpnext_sync_ops.summary.read")
+  // RT-619 (RT-574 D3): consoleGetSyncOpsSummary.
+  @ConsoleRateLimit("expensiveRead")
   async getSummary(
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(SyncOpsSummaryQuerySchema))
@@ -112,6 +115,8 @@ export class ErpnextSyncOpsController {
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
   @Auditable("erpnext_sync_ops.posting_backlog.listed")
+  // RT-619 (RT-574 D3): consoleListPostingBacklog.
+  @ConsoleRateLimit("expensiveRead")
   async listPostingBacklog(
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(SyncOpsListQuerySchema)) query: SyncOpsListQuery,

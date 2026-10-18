@@ -21,6 +21,7 @@
  *
  * Constitution §VII / FR-B-001 / FR-B-006 / FR-B-012.
  */
+import type { ConsoleRateLimitClass } from "../../console-rate-limit/console-rate-limit.config";
 import {
   assertMetricLabels,
   getMeter,
@@ -98,6 +99,25 @@ export const SHIFT_CLOSE_APPROVER_UNVERIFIED_REASONS = [
 ] as const satisfies readonly string[];
 export type ShiftCloseApproverUnverifiedReason = (typeof SHIFT_CLOSE_APPROVER_UNVERIFIED_REASONS)[number];
 
+/**
+ * Bounded outcomes for `console_rate_limit_total` (RT-619, RT-574 D6).
+ * Mutually exclusive per request: `allowed` (utilisation under 50%),
+ * `near_limit` (allowed, 50% or more), `would_limit` (over budget, report
+ * mode), `limited` (over budget, enforce mode: a 429), `fail_open` (limiter
+ * error, timeout or open breaker: allowed unchecked).
+ */
+export const CONSOLE_RATE_LIMIT_OUTCOMES = [
+  "allowed",
+  "near_limit",
+  "would_limit",
+  "limited",
+  "fail_open",
+] as const satisfies readonly string[];
+export type ConsoleRateLimitOutcome = (typeof CONSOLE_RATE_LIMIT_OUTCOMES)[number];
+
+/** Histogram buckets for `console_rate_limit_utilisation` (count / limit; RT-574 D6). */
+export const CONSOLE_RATE_LIMIT_UTILISATION_BUCKETS = [0.1, 0.25, 0.5, 0.75, 0.9, 1, 2] as const;
+
 // ---------------------------------------------------------------------------
 // Module-load label-policy validation
 // ---------------------------------------------------------------------------
@@ -155,6 +175,10 @@ assertMetricLabels("settlement_receivable_total", []);
 // POS shift close approver — RT-17 follow-up (10955 option A). `reason` is the
 // closed SHIFT_CLOSE_APPROVER_UNVERIFIED_REASONS set; no tenant/store/user label.
 assertMetricLabels("shift_close_approver_unverified_total", ["reason"]);
+// Console rate limiting — RT-619 (RT-574 D6). `class` and `outcome` are closed
+// sets; `route` is the bounded route template. No user, tenant or IP label.
+assertMetricLabels("console_rate_limit_total", ["class", "outcome", "route"]);
+assertMetricLabels("console_rate_limit_utilisation", ["class", "route"]);
 
 // ---------------------------------------------------------------------------
 // Instruments
@@ -305,6 +329,17 @@ const _shiftCloseApproverUnverified: Counter = meter.createCounter(
   },
 );
 
+const _consoleRateLimit: Counter = meter.createCounter("console_rate_limit_total", {
+  description:
+    "Console rate-limit decisions (RT-619, RT-574 D6) by cost class, outcome (allowed | near_limit | would_limit | limited | fail_open) and route template. Emitted only when CONSOLE_RATE_LIMIT_MODE is report or enforce. No user, tenant or IP label.",
+});
+
+const _consoleRateLimitUtilisation: Histogram = meter.createHistogram("console_rate_limit_utilisation", {
+  description:
+    "Share of the caller's console budget used at each checked request (count / limit; above 1 is over budget), by cost class and route template (RT-619, RT-574 D6). No user, tenant or IP label.",
+  advice: { explicitBucketBoundaries: [...CONSOLE_RATE_LIMIT_UTILISATION_BUCKETS] },
+});
+
 // ---------------------------------------------------------------------------
 // Attribute types — TypeScript compile-time label enforcement (FR-B-006)
 // ---------------------------------------------------------------------------
@@ -364,6 +399,19 @@ export interface UnknownItemResolvedAttrs {
 /** Attributes for `shift_close_approver_unverified_total`: the closed `reason` only. */
 export interface ShiftCloseApproverUnverifiedAttrs {
   reason: ShiftCloseApproverUnverifiedReason;
+}
+
+/** Attributes for `console_rate_limit_total`: closed class + outcome, bounded route. */
+export interface ConsoleRateLimitAttrs {
+  class: ConsoleRateLimitClass;
+  outcome: ConsoleRateLimitOutcome;
+  route: string;
+}
+
+/** Attributes for `console_rate_limit_utilisation`. */
+export interface ConsoleRateLimitUtilisationAttrs {
+  class: ConsoleRateLimitClass;
+  route: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +660,23 @@ export function recordShiftCloseApproverUnverified(attrs: ShiftCloseApproverUnve
   _shiftCloseApproverUnverified.add(1, attrs as unknown as Attributes);
 }
 
+/**
+ * Increment console_rate_limit_total{class,outcome,route} (RT-619).
+ * Emission site: ConsoleRateLimitGuard, once per console request it evaluates
+ * (report / enforce modes only). A SIGNAL: it never changes the decision.
+ */
+export function recordConsoleRateLimit(attrs: ConsoleRateLimitAttrs): void {
+  _consoleRateLimit.add(1, attrs as unknown as Attributes);
+}
+
+/**
+ * Record console_rate_limit_utilisation{class,route} = count / limit (RT-619).
+ * Emission site: ConsoleRateLimitGuard, once per successful limiter check.
+ */
+export function recordConsoleRateLimitUtilisation(attrs: ConsoleRateLimitUtilisationAttrs, utilisation: number): void {
+  _consoleRateLimitUtilisation.record(utilisation, attrs as unknown as Attributes);
+}
+
 // ---------------------------------------------------------------------------
 // Signal-name registry — used by T460 signal-presence tests
 // ---------------------------------------------------------------------------
@@ -679,3 +744,14 @@ export const POS_SHIFTS_METRIC_NAMES = [
 ] as const satisfies readonly string[];
 
 export type PosShiftsMetricName = (typeof POS_SHIFTS_METRIC_NAMES)[number];
+
+/**
+ * Canonical names of console rate-limit signals (RT-619). Sibling registry of
+ * the per-track lists above; adding here does not perturb API_METRIC_NAMES.
+ */
+export const CONSOLE_RATE_LIMIT_METRIC_NAMES = [
+  "console_rate_limit_total",
+  "console_rate_limit_utilisation",
+] as const satisfies readonly string[];
+
+export type ConsoleRateLimitMetricName = (typeof CONSOLE_RATE_LIMIT_METRIC_NAMES)[number];

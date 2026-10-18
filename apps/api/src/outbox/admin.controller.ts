@@ -70,6 +70,7 @@ import type {
   ListOutboxDeadLettersResponse,
   OutboxDeadLetterDto,
 } from "./admin.dto";
+import { ConsoleRateLimit } from "../console-rate-limit/console-rate-limit.decorator";
 
 @Controller("api/v1/admin/outbox")
 @UseGuards(DashboardAuthGuard, RolesGuard)
@@ -88,6 +89,8 @@ export class OutboxAdminController {
    */
   @Get("dead-letters")
   @PlatformAdminOnly()
+  // RT-619 (RT-574 D3): listOutboxDeadLetters.
+  @ConsoleRateLimit("expensiveRead")
   async list(
     @Query(new ZodValidationPipe(OutboxAdminListQuerySchema))
     query: OutboxAdminListQueryParsed,

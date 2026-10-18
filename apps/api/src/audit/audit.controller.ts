@@ -55,6 +55,7 @@ import {
   type AuditQueryParsed,
 } from "./audit.query.schema";
 import type { ListAuditEventsResponse } from "./audit.dto";
+import { ConsoleRateLimit } from "../console-rate-limit/console-rate-limit.decorator";
 
 @Controller("api/v1/audit")
 @UseGuards(DashboardAuthGuard, TenantContextGuard, RolesGuard)
@@ -66,6 +67,8 @@ export class AuditController {
 
   @Get("events")
   @Roles("owner", "tenant_admin", { denyAs: 403 })
+  // RT-619 (RT-574 D3): listAuditEvents.
+  @ConsoleRateLimit("expensiveRead")
   async listAuditEvents(
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(AuditQuerySchema)) query: AuditQueryParsed,

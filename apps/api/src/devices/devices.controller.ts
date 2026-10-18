@@ -73,6 +73,7 @@ import {
   DeviceStoreNotInScopeError,
   type ScopedInput,
 } from "./devices.service";
+import { ConsoleRateLimit } from "../console-rate-limit/console-rate-limit.decorator";
 
 /**
  * The one 404 body of this surface: the same `{ code, message }` as the
@@ -143,6 +144,8 @@ export class DevicesController {
   @HttpCode(200)
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin", "store_manager")
+  // RT-619 (RT-574 D3): consoleRevokeDevice.
+  @ConsoleRateLimit("incidentControl")
   async revoke(
     @Req() request: TenantContextRequest,
     @Param("deviceId") deviceId: string,
@@ -178,6 +181,8 @@ export class DevicesController {
   @HttpCode(200)
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin", "store_manager")
+  // RT-619 (RT-574 D3): consoleRetireDevice.
+  @ConsoleRateLimit("incidentControl")
   async retire(
     @Req() request: TenantContextRequest,
     @Param("deviceId") deviceId: string,
@@ -203,6 +208,8 @@ export class DevicesController {
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin", "store_manager")
   @Auditable("devices.impact_read")
+  // RT-619 (RT-574 D3): consoleGetDeviceImpact.
+  @ConsoleRateLimit("expensiveRead")
   async impact(
     @Req() request: TenantContextRequest,
     @Param("deviceId") deviceId: string,
