@@ -1016,9 +1016,19 @@ components:
           $ref: "#/components/headers/ConsoleRetryAfter"
         Cache-Control:
           description: Always `no-store` on a 429.
+          required: true
           schema:
             type: string
             enum: [no-store]
+        X-Request-Id:
+          description: >
+            The request id, equal to `error.request_id` in the body: the
+            inbound `X-Request-Id` when it is a well-formed UUID, otherwise a
+            server-minted one.
+          required: true
+          schema:
+            type: string
+            format: uuid
       content:
         application/json:
           schema:

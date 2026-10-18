@@ -406,7 +406,8 @@ This project follows [Semantic Versioning](https://semver.org/).
   the RT-619 `ConsoleRateLimitGuard` can return: 103 operations in 24
   contract files (`auth.openapi.yaml` holds only exempt operations and is
   unchanged). Each file gains a `TooManyRequests` response (code
-  `rate_limited`, the canonical envelope, `Cache-Control: no-store`) and its
+  `rate_limited`, the canonical envelope, required `Cache-Control: no-store`
+  and `X-Request-Id`) and its
   own `ConsoleRetryAfter` header (required integer, 1 to 3600, not the POS
   `RetryAfter`); audit, context, memberships and tenants also gain the
   canonical `Error` schema. No budget number appears in any contract. The
