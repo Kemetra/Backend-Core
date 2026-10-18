@@ -232,7 +232,8 @@ import picks it up. No exception is ever "accepted" into Pricing.
     - Store-level rows use that Store's zone. They fail only for a bound in the later occurrence of a DST fall-back
       hour.
     - Tenant-level rows additionally need all the tenant's Stores to share one zone, because a single local value read
-      in several zones would shift the original instants.
+      in several zones would shift the original instants. A tenant with no Stores round-trips them in its declared
+      reference zone (§4.2, MC-10).
 
   Any other key's history is **not imported**. It is listed in the run report by reason, and its current event starts
   at `T` as in §4.2. Unimported history does not block cutover: historical sold prices are answered from sale facts,
@@ -549,7 +550,7 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 
 - Import mapper: legacy rows → desired events, for every row of §4.2, including overrides with a null price and inactive products.
 - Exception classifier: every class in §4.4, at `numeric(19,4)` edge values (`0.0001`, `12.345`, `12.3400`).
-- `price_history` conversion (MC-3): closed intervals become one contiguous `store_local` timeline per key. A bound in the later occurrence of a DST fall-back hour fails the round-trip check, and its key is skipped.
+- `price_history` conversion (MC-3): closed intervals become one contiguous `store_local` timeline per key. A bound in the later occurrence of a DST fall-back hour fails the round-trip check, and its key is skipped. A Store-less tenant's tenant-level history round-trips in its declared reference zone.
 - Delta matching: an open-ended event with equal value is kept. A bounded event with equal value is superseded by an open replacement.
 - Bounds: a tenant with only inactive Stores uses the westernmost zone among them; a tenant with no Stores uses its declared reference zone. A key with a zero, sub-minor or foreign-currency interval is skipped and reported. A tenant-level key in a multi-zone tenant is skipped and reported.
 - Bound computation (MC-1): single zone; multi-zone tenant; a Store across a DST transition at `T` (Q-2 rules).
