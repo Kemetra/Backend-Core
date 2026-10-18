@@ -18,6 +18,7 @@
  * missing approval needs its own contract code, not a generic 400.
  */
 import { z } from "zod";
+import { hasNoNul, NO_NUL_MESSAGE } from "../../../common/text-validation";
 
 /** A decimal money string, compared exactly in Postgres `numeric`, never as a float. */
 const AMOUNT_RE = /^\d{1,15}(\.\d{1,4})?$/;
@@ -34,7 +35,7 @@ export const VoidApprovalSchema = z
     /** The terminal's approval id (an RT-114 `manager_approvals.approval_id`). */
     approvalId: z.string().uuid(),
     /** The approved action; only `sale.void` binds a void. */
-    action: z.string().min(1).max(100),
+    action: z.string().min(1).max(100).refine(hasNoNul, NO_NUL_MESSAGE),
     /** The sale the approval was bound to: must be the path's sale. */
     saleRef: z.string().uuid(),
     /** The sale total the approval was bound to (exact decimal string). */
@@ -44,7 +45,7 @@ export const VoidApprovalSchema = z
     /** The `users.id` of the manager whose PIN approved it. */
     approverUserId: z.string().uuid(),
     /** The RT-114 policy version the approval was checked against. */
-    policyVersion: z.string().min(1).max(64),
+    policyVersion: z.string().min(1).max(64).refine(hasNoNul, NO_NUL_MESSAGE),
     /** When the terminal recorded the approval (device clock). */
     approvedAt: z.string().datetime({ offset: true }),
   })
@@ -52,8 +53,8 @@ export const VoidApprovalSchema = z
 
 export const RecordVoidRequestSchema = z
   .object({
-    sourceSystem: z.string().min(1).max(100),
-    externalId: z.string().min(1).max(200),
+    sourceSystem: z.string().min(1).max(100).refine(hasNoNul, NO_NUL_MESSAGE),
+    externalId: z.string().min(1).max(200).refine(hasNoNul, NO_NUL_MESSAGE),
     /** The device-side business day of the void; must equal the sale's `business_date`. */
     businessDate: z.string().regex(DATE_RE).refine(isCalendarDay).optional(),
     approval: VoidApprovalSchema.optional(),

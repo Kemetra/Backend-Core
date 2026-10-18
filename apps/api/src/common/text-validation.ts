@@ -11,6 +11,13 @@
 import type { RefinementCtx } from "zod";
 import { z } from "zod";
 
+/** RT-612: Postgres refuses NUL in a text column (22021); reject it as a 400 first. */
+export const NO_NUL_MESSAGE = "must not hold a NUL character";
+
+export function hasNoNul(value: string): boolean {
+  return !value.includes("\u0000");
+}
+
 /** A lone surrogate: with the `u` flag a valid pair is one code point and never matches. */
 const LONE_SURROGATE = /\p{Surrogate}/u;
 
