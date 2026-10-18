@@ -438,7 +438,7 @@ describe("IdempotencyKeyStore", () => {
       await store.findOrCreate(TENANT_A, STORE_1, CLIENT, KEY, FP_A);
       await store.findOrCreate(TENANT_A, STORE_1, CLIENT, KEY, FP_A);
 
-      expect(pgWriter.calls.length).toBe(callsAfterSave); // no new calls
+      expect(pgWriter.calls).toHaveLength(callsAfterSave); // no new calls
     });
 
     it("pgWriter.insert is called with result.status and result.body", async () => {

@@ -4,6 +4,7 @@
  * actor / timestamps / amounts per line are server-owned and rejected.
  */
 import { z } from "zod";
+import { hasNoNul, NO_NUL_MESSAGE } from "../../../common/text-validation";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -32,8 +33,8 @@ export const RefundTenderSchema = z
 
 export const RecordReturnRequestSchema = z
   .object({
-    sourceSystem: z.string().min(1).max(100),
-    externalId: z.string().min(1).max(200),
+    sourceSystem: z.string().min(1).max(100).refine(hasNoNul, NO_NUL_MESSAGE),
+    externalId: z.string().min(1).max(200).refine(hasNoNul, NO_NUL_MESSAGE),
     lines: z
       .array(ReturnLineRequestSchema)
       .min(1)
@@ -42,7 +43,7 @@ export const RecordReturnRequestSchema = z
         "each lineRef may appear at most once",
       ),
     refundTenders: z.array(RefundTenderSchema).min(1),
-    reason: z.string().min(1).max(500).optional(),
+    reason: z.string().min(1).max(500).refine(hasNoNul, NO_NUL_MESSAGE).optional(),
   })
   .strict();
 

@@ -519,24 +519,14 @@ describe("catalog/unknown-items.yaml — Idempotency-Key on reopen + bulk-dismis
 // 7. Reopen authority split: 403 forbidden + non-disclosing 404
 // ===========================================================================
 describe("catalog/unknown-items.yaml — reopen authority responses", () => {
-  it("tenantAdminReopenUnknownItem declares a 403 response (tenant-wide authority required, FR-042)", () => {
+  it.each([
+    [403, "tenant-wide authority required, FR-042"],
+    [404, "non-disclosing, out-of-scope, SI-004"],
+    [409, "already-reconciled when resolved, FR-043"],
+  ])("tenantAdminReopenUnknownItem declares a %i response (%s)", (status) => {
     const reopen = catalogDoc.paths?.[TENANT_ADMIN_REOPEN_PATH]?.["post"];
     expect(
-      (reopen?.responses as Record<string, unknown> | undefined)?.[403],
-    ).toBeDefined();
-  });
-
-  it("tenantAdminReopenUnknownItem declares a 404 non-disclosing response (out-of-scope, SI-004)", () => {
-    const reopen = catalogDoc.paths?.[TENANT_ADMIN_REOPEN_PATH]?.["post"];
-    expect(
-      (reopen?.responses as Record<string, unknown> | undefined)?.[404],
-    ).toBeDefined();
-  });
-
-  it("tenantAdminReopenUnknownItem declares a 409 response (already-reconciled when resolved, FR-043)", () => {
-    const reopen = catalogDoc.paths?.[TENANT_ADMIN_REOPEN_PATH]?.["post"];
-    expect(
-      (reopen?.responses as Record<string, unknown> | undefined)?.[409],
+      (reopen?.responses as Record<string, unknown> | undefined)?.[status],
     ).toBeDefined();
   });
 });

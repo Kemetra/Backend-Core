@@ -25,6 +25,7 @@
  * via `NonNegativeDecimalAmount`.
  */
 import { z } from "zod";
+import { hasNoNul, NO_NUL_MESSAGE } from "../../../common/text-validation";
 
 /**
  * Exact-decimal NON-NEGATIVE money string: up to 15 integer + 4 fractional
@@ -48,13 +49,13 @@ const currencyCode = z.string().regex(/^[A-Z]{3}$/, "must be an ISO-4217 code");
 
 export const CaptureSaleLineSchema = z
   .object({
-    lineName: z.string().min(1).max(500),
+    lineName: z.string().min(1).max(500).refine(hasNoNul, NO_NUL_MESSAGE),
     unitPrice: decimalAmount,
     currencyCode,
     quantity: quantityAmount,
     lineAmount: decimalAmount,
     taxAmount: decimalAmount.optional(),
-    unit: z.string().min(1).max(50),
+    unit: z.string().min(1).max(50).refine(hasNoNul, NO_NUL_MESSAGE),
     tenantProductRef: z.string().uuid().optional(),
   })
   .strict();
@@ -127,18 +128,18 @@ function checkAdmissionCheckAt(
  */
 export const CaptureSaleReceiptSchema = z
   .object({
-    saleNumber: z.string().min(1).max(96),
-    receiptNumber: z.string().min(1).max(96).optional(),
-    terminalLabel: z.string().min(1).max(64),
-    operatorDisplayName: z.string().min(1),
+    saleNumber: z.string().min(1).max(96).refine(hasNoNul, NO_NUL_MESSAGE),
+    receiptNumber: z.string().min(1).max(96).refine(hasNoNul, NO_NUL_MESSAGE).optional(),
+    terminalLabel: z.string().min(1).max(64).refine(hasNoNul, NO_NUL_MESSAGE),
+    operatorDisplayName: z.string().min(1).refine(hasNoNul, NO_NUL_MESSAGE),
     // Year 0000 is not a Postgres timestamptz (22008): a 400, never a 500.
     settledAt: z
       .string()
       .datetime()
       .refine((value) => !value.startsWith("0000"), "must be a representable instant"),
-    branchName: z.string().min(1).max(256),
-    branchAddress: z.string().min(1).max(512),
-    taxRegistrationId: z.string().min(1).max(64),
+    branchName: z.string().min(1).max(256).refine(hasNoNul, NO_NUL_MESSAGE),
+    branchAddress: z.string().min(1).max(512).refine(hasNoNul, NO_NUL_MESSAGE),
+    taxRegistrationId: z.string().min(1).max(64).refine(hasNoNul, NO_NUL_MESSAGE),
     changeGiven: decimalAmount.optional(),
   })
   .strict();
@@ -190,8 +191,8 @@ const responsibilityList = z
  */
 const CaptureSaleRequestObject = z
   .object({
-    sourceSystem: z.string().min(1).max(100),
-    externalId: z.string().min(1).max(200),
+    sourceSystem: z.string().min(1).max(100).refine(hasNoNul, NO_NUL_MESSAGE),
+    externalId: z.string().min(1).max(200).refine(hasNoNul, NO_NUL_MESSAGE),
     currencyCode,
     posTotal: decimalAmount,
     occurredAt: z.string().datetime(),

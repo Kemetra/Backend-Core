@@ -330,45 +330,17 @@ describe("POST /api/pos/v1/operators/sign-out (refusals → 401)", () => {
     expectErrorEnvelope(res.body, "unauthorized");
   });
 
-  it("malformed bearer (wrong scheme) → 401", async () => {
+  it.each([
+    ["malformed bearer (wrong scheme)", "Basic abc", ADMIN_USER_ID],
+    ["verifier rejects (unknown JWT)", "Bearer not-in-stub-map", ADMIN_USER_ID],
+    ["Clerk subject not mapped to a local user", "Bearer jwt-unmapped", ADMIN_USER_ID],
+    ["soft-deleted user", "Bearer jwt-deleted", DELETED_USER_ID],
+  ])("%s → 401", async (_label, authorization, userId) => {
     if (maybeSkip()) return;
-    const sessionId = await seedSession({ userId: ADMIN_USER_ID });
+    const sessionId = await seedSession({ userId });
     const res = await http()
       .post("/api/pos/v1/operators/sign-out")
-      .set("Authorization", "Basic abc")
-      .send({ session_id: sessionId });
-    expect(res.status).toBe(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-  });
-
-  it("verifier rejects (unknown JWT) → 401", async () => {
-    if (maybeSkip()) return;
-    const sessionId = await seedSession({ userId: ADMIN_USER_ID });
-    const res = await http()
-      .post("/api/pos/v1/operators/sign-out")
-      .set("Authorization", "Bearer not-in-stub-map")
-      .send({ session_id: sessionId });
-    expect(res.status).toBe(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-  });
-
-  it("Clerk subject not mapped to a local user → 401", async () => {
-    if (maybeSkip()) return;
-    const sessionId = await seedSession({ userId: ADMIN_USER_ID });
-    const res = await http()
-      .post("/api/pos/v1/operators/sign-out")
-      .set("Authorization", "Bearer jwt-unmapped")
-      .send({ session_id: sessionId });
-    expect(res.status).toBe(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-  });
-
-  it("soft-deleted user → 401", async () => {
-    if (maybeSkip()) return;
-    const sessionId = await seedSession({ userId: DELETED_USER_ID });
-    const res = await http()
-      .post("/api/pos/v1/operators/sign-out")
-      .set("Authorization", "Bearer jwt-deleted")
+      .set("Authorization", authorization)
       .send({ session_id: sessionId });
     expect(res.status).toBe(401);
     expectErrorEnvelope(res.body, "unauthorized");

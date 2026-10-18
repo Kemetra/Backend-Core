@@ -586,7 +586,7 @@ describe("data-pulse-migrate CLI", () => {
     const r = await runCli(["up"], { DATABASE_URL: env.adminUri });
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/no pending migrations/);
-    expect((await ledgerIds()).length).toBe(EXPECTED_MIGRATIONS.length);
+    expect(await ledgerIds()).toHaveLength(EXPECTED_MIGRATIONS.length);
   });
 
   it(`status reports applied=${EXPECTED_MIGRATIONS.length}, pending=0`, async () => {

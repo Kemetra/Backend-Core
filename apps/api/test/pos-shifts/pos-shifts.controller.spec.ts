@@ -317,52 +317,22 @@ describe("GET /api/pos/v1/shifts/stuck", () => {
     expectErrorEnvelope(res.body, "unauthorized");
   });
 
-  it("returns 401 when Authorization is not Bearer form", async () => {
-    if (maybeSkip()) return;
-    const res = await http()
-      .get(`/api/pos/v1/shifts/stuck?branch_id=${STORE_ID}`)
-      .set("Authorization", "Basic dXNlcjpwYXNz")
-      .expect(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-  });
-
-  it("returns 401 when JWT is not recognized by the verifier (verifier throws)", async () => {
-    if (maybeSkip()) return;
+  it.each([
+    ["Authorization is not Bearer form", "Basic dXNlcjpwYXNz"],
     // Token not in the stub map → StubClerkVerifier throws → service try/catch path.
-    const res = await http()
-      .get(`/api/pos/v1/shifts/stuck?branch_id=${STORE_ID}`)
-      .set("Authorization", "Bearer jwt-unknown-not-in-map")
-      .expect(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-  });
-
-  it("returns 401 when JWT subject resolves to no local user (user-lookup miss)", async () => {
-    if (maybeSkip()) return;
+    ["JWT is not recognized by the verifier (verifier throws)", "Bearer jwt-unknown-not-in-map"],
     // jwt-orphan is accepted by the verifier (sub = ORPHAN_CLERK_SUB) but
     // no users row with that clerk_user_id was inserted — exercises the
     // service path at userRow.rows[0] being undefined.
-    const res = await http()
-      .get(`/api/pos/v1/shifts/stuck?branch_id=${STORE_ID}`)
-      .set("Authorization", "Bearer jwt-orphan")
-      .expect(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-  });
-
-  it("returns 401 when user is store_staff (ineligible role)", async () => {
-    if (maybeSkip()) return;
-    const res = await http()
-      .get(`/api/pos/v1/shifts/stuck?branch_id=${STORE_ID}`)
-      .set("Authorization", "Bearer jwt-staff")
-      .expect(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-  });
-
-  it("returns 401 when specific-access manager requests a branch they lack access to", async () => {
-    if (maybeSkip()) return;
+    ["JWT subject resolves to no local user (user-lookup miss)", "Bearer jwt-orphan"],
+    ["user is store_staff (ineligible role)", "Bearer jwt-staff"],
     // SPECIFIC_USER has access to STORE_ID_B only, not STORE_ID
+    ["specific-access manager requests a branch they lack access to", "Bearer jwt-specific"],
+  ])("returns 401 when %s", async (_label, authorization) => {
+    if (maybeSkip()) return;
     const res = await http()
       .get(`/api/pos/v1/shifts/stuck?branch_id=${STORE_ID}`)
-      .set("Authorization", "Bearer jwt-specific")
+      .set("Authorization", authorization)
       .expect(401);
     expectErrorEnvelope(res.body, "unauthorized");
   });
@@ -451,41 +421,21 @@ describe("GET /api/pos/v1/shifts/stuck", () => {
     expect(res.body).toMatchObject({ kind: "ok", shifts: [] });
   });
 
-  it("specific-access manager sees stuck shifts on their allowed branch", async () => {
-    if (maybeSkip()) return;
+  it.each([
     // SPECIFIC_USER has access to STORE_ID_B; no shifts there → empty is fine
-    const res = await http()
-      .get(`/api/pos/v1/shifts/stuck?branch_id=${STORE_ID_B}`)
-      .set("Authorization", "Bearer jwt-specific")
-      .expect(200);
-
-    expect(res.body).toMatchObject({ kind: "ok" });
-    expect(Array.isArray(res.body.shifts)).toBe(true);
-  });
-
-  it("owner role is allowed (positive authorization coverage)", async () => {
+    ["specific-access manager sees stuck shifts on their allowed branch", "Bearer jwt-specific", expect.any(Array)],
+    // STORE_ID_B has no shifts seeded → expect empty ok response. These confirm
+    // the role code is in ELIGIBLE_INTERNAL_ROLES and the request is not
+    // refused for role reasons.
+    ["owner role is allowed (positive authorization coverage)", "Bearer jwt-owner", []],
+    ["tenant_admin role is allowed (positive authorization coverage)", "Bearer jwt-tadmin", []],
+  ])("%s", async (_label, authorization, expectedShifts) => {
     if (maybeSkip()) return;
-    // STORE_ID_B has no shifts seeded → expect empty ok response.
-    // Confirms the 'owner' role code is in ELIGIBLE_INTERNAL_ROLES and
-    // the request is not refused for role reasons.
     const res = await http()
       .get(`/api/pos/v1/shifts/stuck?branch_id=${STORE_ID_B}`)
-      .set("Authorization", "Bearer jwt-owner")
+      .set("Authorization", authorization)
       .expect(200);
 
-    expect(res.body).toMatchObject({ kind: "ok", shifts: [] });
-  });
-
-  it("tenant_admin role is allowed (positive authorization coverage)", async () => {
-    if (maybeSkip()) return;
-    // STORE_ID_B has no shifts seeded → expect empty ok response.
-    // Confirms the 'tenant_admin' role code is in ELIGIBLE_INTERNAL_ROLES and
-    // the request is not refused for role reasons.
-    const res = await http()
-      .get(`/api/pos/v1/shifts/stuck?branch_id=${STORE_ID_B}`)
-      .set("Authorization", "Bearer jwt-tadmin")
-      .expect(200);
-
-    expect(res.body).toMatchObject({ kind: "ok", shifts: [] });
+    expect(res.body).toMatchObject({ kind: "ok", shifts: expectedShifts });
   });
 });
