@@ -222,14 +222,17 @@ describe("T025 — RLS-bypass probe fails closed", () => {
 // --------------------------------------------------------------------------
 
 describe("T025 — reopen / bulk-dismiss isolation (deferred to US7 / US8)", () => {
+  // Skipped on purpose: US7-REOPEN service method (reopenUnknownItem) does not exist yet; tripwire for the owning slice.
   it.skip(
     "reopen of a cross-tenant dismissed row → non-disclosing 404 (owned by 007-US7-REOPEN, Phase 6)",
     () => {},
   );
+  // Skipped on purpose: US7-REOPEN service method (reopenUnknownItem) does not exist yet; tripwire for the owning slice.
   it.skip(
     "reopen by a store-scoped actor of an in-scope dismissed row → 403 forbidden (FR-042; owned by 007-US7-REOPEN)",
     () => {},
   );
+  // Skipped on purpose: US8-BULK-DISMISS service method (bulkDismissUnknownItems) does not exist yet; tripwire for the owning slice.
   it.skip(
     "bulk-dismiss silently drops cross-tenant / out-of-scope ids → per-item not-found, no leak (owned by 007-US8-BULK-DISMISS, Phase 7)",
     () => {},

@@ -356,7 +356,7 @@ describe("0012_sales — RLS enabled + forced + fail-closed on all four tables",
        ORDER BY relname`,
       [SALES_TABLES as unknown as string[]],
     );
-    expect(r.rows.length).toBe(SALES_TABLES.length);
+    expect(r.rows).toHaveLength(SALES_TABLES.length);
     for (const row of r.rows) {
       expect(row.relrowsecurity).toBe(true);
       expect(row.relforcerowsecurity).toBe(true);

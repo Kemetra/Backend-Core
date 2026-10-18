@@ -254,6 +254,7 @@ describe("T521 — cross-tenant: tenant B cannot read tenant A's unknown_items",
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
+  // Skipped on purpose: the list endpoint is owned by T523/LIST; this tripwire marks the isolation case that slice must add.
   it.skip(
     "list pending unknown_items as tenant B → contains only tenant B's rows, never tenant A's (deferred to T523/LIST)",
     () => {},

@@ -303,21 +303,17 @@ describe("AuthGuard — readBearerToken edge cases", () => {
     expect(authTokens.findActiveByRawToken).not.toHaveBeenCalled();
   });
 
-  it("AG12: Authorization header too short (< 'bearer '.length) → no bearer path", async () => {
-    const { guard, authTokens } = buildGuard();
-
+  it.each([
     // "Bearer" (6 chars) is shorter than "bearer " (7 chars)
-    const req = makeRequest({ bearer: "Bearer" });
-    await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(UnauthorizedException);
-
-    expect(authTokens.findActiveByRawToken).not.toHaveBeenCalled();
-  });
-
-  it("AG13: Authorization header prefix is not 'bearer ' (e.g. 'Basic xxx') → no bearer path", async () => {
+    ["AG12: Authorization header too short (< 'bearer '.length) → no bearer path", "Bearer"],
+    // "Basic xyz123" — length > 7, but slice(0,7).toLowerCase() === "basic x" ≠ "bearer "
+    ["AG13: Authorization header prefix is not 'bearer ' (e.g. 'Basic xxx') → no bearer path", "Basic xyz123"],
+    // "bearer " followed only by whitespace — raw.trim() yields ""
+    ["AG15: Bearer token raw value is empty after trim → no bearer path, throws UnauthorizedException", "bearer    "],
+  ])("%s", async (_label, bearer) => {
     const { guard, authTokens } = buildGuard();
 
-    // "Basic xyz123" — length > 7, but slice(0,7).toLowerCase() === "basic x" ≠ "bearer "
-    const req = makeRequest({ bearer: "Basic xyz123" });
+    const req = makeRequest({ bearer });
     await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(UnauthorizedException);
 
     expect(authTokens.findActiveByRawToken).not.toHaveBeenCalled();
@@ -334,16 +330,6 @@ describe("AuthGuard — readBearerToken edge cases", () => {
 
     expect(result).toBe(true);
     expect(authTokens.findActiveByRawToken).toHaveBeenCalledWith("abc123");
-  });
-
-  it("AG15: Bearer token raw value is empty after trim → no bearer path, throws UnauthorizedException", async () => {
-    const { guard, authTokens } = buildGuard();
-
-    // "bearer " followed only by whitespace — raw.trim() yields ""
-    const req = makeRequest({ bearer: "bearer    " });
-    await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(UnauthorizedException);
-
-    expect(authTokens.findActiveByRawToken).not.toHaveBeenCalled();
   });
 });
 

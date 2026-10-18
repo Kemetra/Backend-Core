@@ -198,7 +198,7 @@ describe("DrizzleAuditRepository", () => {
       cursor: null,
       limit: 100,
     });
-    expect(rows.length).toBe(5);
+    expect(rows).toHaveLength(5);
     for (const r of rows) {
       expect(r.tenantId).toBe(TENANT_A);
     }
@@ -227,7 +227,7 @@ describe("DrizzleAuditRepository", () => {
       cursor: null,
       limit: 100,
     });
-    expect(rows.length).toBe(5);
+    expect(rows).toHaveLength(5);
     for (const r of rows) {
       expect(r.tenantId).toBe(TENANT_A);
     }
@@ -254,7 +254,7 @@ describe("DrizzleAuditRepository", () => {
       cursor: null,
       limit: 3,
     });
-    expect(page1.length).toBe(3);
+    expect(page1).toHaveLength(3);
 
     const last = page1[page1.length - 1]!;
     const page2 = await repo.listPage({
@@ -264,7 +264,7 @@ describe("DrizzleAuditRepository", () => {
       limit: 3,
     });
     // 5 rows total, page1 took 3 → page2 should have 2.
-    expect(page2.length).toBe(2);
+    expect(page2).toHaveLength(2);
 
     const ids1 = page1.map((r) => r.id);
     const ids2 = page2.map((r) => r.id);
@@ -296,7 +296,7 @@ describe("DrizzleAuditRepository", () => {
       cursor: null,
       limit: 100,
     });
-    expect(rows.length).toBe(1);
+    expect(rows).toHaveLength(1);
     expect(rows[0]?.action).toBe("auth.signin.failed");
   });
 
@@ -309,7 +309,7 @@ describe("DrizzleAuditRepository", () => {
       cursor: null,
       limit: 100,
     });
-    expect(rows.length).toBe(1);
+    expect(rows).toHaveLength(1);
     expect(rows[0]?.action).toBe("context.switch.tenant");
   });
 
@@ -324,7 +324,7 @@ describe("DrizzleAuditRepository", () => {
       limit: 100,
     });
     // AT(20), AT(30), AT(40) → 3 rows.
-    expect(rows.length).toBe(3);
+    expect(rows).toHaveLength(3);
     for (const r of rows) {
       const t = r.occurredAt.getTime();
       expect(t).toBeGreaterThanOrEqual(new Date(AT(20)).getTime());
@@ -350,7 +350,7 @@ describe("DrizzleAuditRepository", () => {
       cursor: { occurredAt: r1.occurredAt, id: r1.id },
       limit: 1,
     });
-    expect(page2.length).toBe(1);
+    expect(page2).toHaveLength(1);
     expect(page2[0]?.id).not.toBe(r1.id);
     expect(page2[0]!.occurredAt.getTime()).toBeLessThanOrEqual(r1.occurredAt.getTime());
   });
@@ -360,8 +360,8 @@ describe("DrizzleAuditRepository", () => {
       repo.listPage({ tenantId: TENANT_C, isPlatformAdmin: false, cursor: null, limit: 100, ...extra });
 
     it("the tenant C seed has both kinds (the filter tests are not vacuous)", () => {
-      expect(C_READS.length).toBe(4);
-      expect(C_CHANGES.length).toBe(8);
+      expect(C_READS).toHaveLength(4);
+      expect(C_CHANGES).toHaveLength(8);
     });
 
     it("kind=change returns every change row (incl. an unregistered code, D-2) and no read row, newest first", async () => {
@@ -416,7 +416,7 @@ describe("DrizzleAuditRepository", () => {
         const reads = await repo.listPage({ tenantId: TENANT_A, isPlatformAdmin, kind: "read", cursor: null, limit: 100 });
         expect(reads).toEqual([]);
         const changes = await repo.listPage({ tenantId: TENANT_A, isPlatformAdmin, kind: "change", cursor: null, limit: 100 });
-        expect(changes.length).toBe(5);
+        expect(changes).toHaveLength(5);
         for (const r of changes) expect(r.tenantId).toBe(TENANT_A);
       }
     });

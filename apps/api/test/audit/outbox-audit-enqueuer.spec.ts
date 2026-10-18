@@ -419,27 +419,14 @@ describe("outboxOrLegacyAuditJobEnqueuerFactory — pool-aware DI matrix (T583)"
     expect(loggerWarns).toHaveLength(0);
   });
 
-  it("OUTBOX_AUDIT_ENABLED='true' + pool present → OutboxAuditEnqueuer (case-insensitive)", () => {
-    process.env["OUTBOX_AUDIT_ENABLED"] = "TRUE";
-
-    const pool = makeFakePool();
-    const enqueuer = outboxOrLegacyAuditJobEnqueuerFactory(pool);
-
-    expect(enqueuer).toBeInstanceOf(OutboxAuditEnqueuer);
-  });
-
-  it("OUTBOX_AUDIT_ENABLED='yes' + pool present → OutboxAuditEnqueuer", () => {
-    process.env["OUTBOX_AUDIT_ENABLED"] = "yes";
-
-    const pool = makeFakePool();
-    const enqueuer = outboxOrLegacyAuditJobEnqueuerFactory(pool);
-
-    expect(enqueuer).toBeInstanceOf(OutboxAuditEnqueuer);
-  });
-
-  it("OUTBOX_AUDIT_ENABLED=' true ' (whitespace) + pool present → OutboxAuditEnqueuer", () => {
-    // Pairs with the trim-before-parse fix in isOutboxAuditEnabled().
-    process.env["OUTBOX_AUDIT_ENABLED"] = " true ";
+  // "true" is case-insensitive, "yes" is accepted, and surrounding whitespace is
+  // trimmed (pairs with the trim-before-parse fix in isOutboxAuditEnabled()).
+  it.each([
+    { label: "'true' (case-insensitive)", value: "TRUE" },
+    { label: "'yes'", value: "yes" },
+    { label: "' true ' (whitespace)", value: " true " },
+  ])("OUTBOX_AUDIT_ENABLED=$label + pool present → OutboxAuditEnqueuer", ({ value }) => {
+    process.env["OUTBOX_AUDIT_ENABLED"] = value;
 
     const pool = makeFakePool();
     const enqueuer = outboxOrLegacyAuditJobEnqueuerFactory(pool);

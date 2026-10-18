@@ -218,7 +218,7 @@ describe("0000_initial migration", () => {
       WHERE relname = ANY($1) AND relkind = 'r'
       ORDER BY relname
     `, [RLS_TABLES]);
-      expect(r.rows.length).toBe(RLS_TABLES.length);
+      expect(r.rows).toHaveLength(RLS_TABLES.length);
       for (const row of r.rows) {
         expect(row.relrowsecurity).toBe(true);
         expect(row.relforcerowsecurity).toBe(true);

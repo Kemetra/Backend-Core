@@ -108,20 +108,14 @@ describe("T464 — cross_tenant_rejection_total: signal policy", () => {
     expect(err).toMatchObject({ label: "store_id" });
   });
 
-  it("rejects user_id — forbidden_label (FR-B-006: PII-adjacent)", () => {
-    const err = validateMetricLabels("cross_tenant_rejection_total", ["user_id"]);
-    expect(err?.kind).toBe("forbidden_label");
-  });
-
-  it("rejects path — forbidden_label (rendered URL carries tenant IDs)", () => {
+  it.each([
+    ["user_id", "FR-B-006: PII-adjacent"],
     // `path` is in FORBIDDEN_METRIC_LABELS: rendered URLs contain tenant/store
     // UUIDs (e.g., /api/v1/tenants/uuid/members) — use `route` template instead.
-    const err = validateMetricLabels("cross_tenant_rejection_total", ["path"]);
-    expect(err?.kind).toBe("forbidden_label");
-  });
-
-  it("rejects url — forbidden_label (same rationale as path)", () => {
-    const err = validateMetricLabels("cross_tenant_rejection_total", ["url"]);
+    ["path", "rendered URL carries tenant IDs"],
+    ["url", "same rationale as path"],
+  ])("rejects %s — forbidden_label (%s)", (label) => {
+    const err = validateMetricLabels("cross_tenant_rejection_total", [label]);
     expect(err?.kind).toBe("forbidden_label");
   });
 

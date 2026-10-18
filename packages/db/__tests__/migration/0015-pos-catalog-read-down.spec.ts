@@ -380,7 +380,7 @@ describe("0015_pos_catalog_read_down — population triggers fire under tenant G
       );
     });
     const rows = await logRows(env, TENANT_A);
-    expect(rows.length).toBe(before + 1);
+    expect(rows).toHaveLength(before + 1);
     const last = rows[rows.length - 1];
     expect(last?.store_id).toBeNull();
     expect(last?.op).toBe("upsert");
@@ -440,7 +440,7 @@ describe("0015_pos_catalog_read_down — population triggers fire under tenant G
       );
     });
     const after = await logRows(env, TENANT_A);
-    expect(after.length).toBe(beforeCount + 1);
+    expect(after).toHaveLength(beforeCount + 1);
     const last = after[after.length - 1];
     expect(last?.store_id).toBe(STORE_AX); // store-scoped, no fan-out
     expect(last?.product_id).toBe("66666666-6666-6666-6666-666666666666");
@@ -462,7 +462,7 @@ describe("0015_pos_catalog_read_down — population triggers fire under tenant G
       );
     });
     const after = await logRows(env, TENANT_A);
-    expect(after.length).toBe(beforeCount + 1);
+    expect(after).toHaveLength(beforeCount + 1);
     const last = after[after.length - 1];
     expect(last?.store_id).toBe(STORE_AX);
     expect(last?.product_id).toBe("66666666-6666-6666-6666-666666666666");
@@ -506,7 +506,7 @@ describe("0015_pos_catalog_read_down — FK ON DELETE CASCADE (derived projectio
        ORDER BY conname`,
     );
     // confdeltype 'c' = CASCADE (vs 'r' = RESTRICT, 'a' = NO ACTION).
-    expect(r.rows.length).toBe(3);
+    expect(r.rows).toHaveLength(3);
     for (const row of r.rows) {
       expect(row.confdeltype).toBe("c");
     }

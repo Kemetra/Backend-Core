@@ -107,7 +107,7 @@ describe("LoggingInterceptor", () => {
     );
 
     const infoCalls = cap.calls.filter((c) => c.level === "info");
-    expect(infoCalls.length).toBe(1);
+    expect(infoCalls).toHaveLength(1);
     expect(infoCalls[0]?.msg).toBe("request completed");
     const obj = infoCalls[0]?.obj as Record<string, unknown>;
     expect(obj.method).toBe("GET");
@@ -135,7 +135,7 @@ describe("LoggingInterceptor", () => {
     ).rejects.toThrow(/kaboom/);
 
     const errorCalls = cap.calls.filter((c) => c.level === "error");
-    expect(errorCalls.length).toBe(1);
+    expect(errorCalls).toHaveLength(1);
     expect(errorCalls[0]?.msg).toBe("request errored");
   });
 
@@ -149,7 +149,7 @@ describe("LoggingInterceptor", () => {
         handle: () => of(undefined),
       }),
     );
-    expect(cap.calls.length).toBe(1);
+    expect(cap.calls).toHaveLength(1);
     // The interceptor stamps "unknown" when requestId is missing; we can't
     // observe the child's bindings via the spy directly, but we can confirm
     // the interceptor didn't throw.
