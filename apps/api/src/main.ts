@@ -10,6 +10,7 @@ import helmet from "helmet";
 
 import { AppModule } from "./app.module";
 import { GlobalExceptionFilter } from "./common/exception.filter";
+import { checkTrustProxyConfig, resolveTrustProxySetting } from "./common/trust-proxy";
 import { LoggingInterceptor } from "./common/logging.interceptor";
 import { getRootLogger } from "./common/root-logger.module";
 import { RequestIdInterceptor } from "./common/request-id.interceptor";
@@ -50,10 +51,12 @@ async function bootstrap(): Promise<void> {
   // Do not trust forwarded headers unless the deployment explicitly declares
   // its proxy topology. Direct clients therefore cannot select their own
   // rate-limit bucket with X-Forwarded-For.
-  const trustProxy = process.env["TRUST_PROXY"] ?? "false";
+  // RT-624: warn at boot when a deployed environment leaves TRUST_PROXY unset
+  // (fail-fast only with the explicit TRUST_PROXY_REQUIRED=true opt-in).
+  const trustProxyCheck = checkTrustProxyConfig();
+  if (trustProxyCheck.warn) rootLogger.warn(trustProxyCheck.message);
   const expressApp = app.getHttpAdapter().getInstance() as { set(key: string, value: unknown): void };
-  const parsed = /^\d+$/.test(trustProxy) ? Number(trustProxy) : null;
-  expressApp.set("trust proxy", parsed ?? trustProxy === "true");
+  expressApp.set("trust proxy", resolveTrustProxySetting());
 
   // CORS — explicit allowlist from ALLOWED_ORIGINS (comma-separated).
   // Defaults to disabled (no cross-origin requests allowed). The dashboard
