@@ -111,9 +111,15 @@ export function failedJobTags(
   if (job === undefined) return tags;
   if (DECLARED_JOB_NAMES.has(job.name)) tags["job_name"] = job.name;
   tags["outcome"] = error?.name === UNRECOVERABLE_ERROR ? "unrecoverable" : "exhausted";
-  const requestId = dataField(job.data, "request_id");
+  return { ...tags, ...correlationTags(job.data) };
+}
+
+/** `request_id` and `trace_id` carried by the job, when present. */
+function correlationTags(data: unknown): Record<string, string> {
+  const tags: Record<string, string> = {};
+  const requestId = dataField(data, "request_id");
   if (typeof requestId === "string") tags["request_id"] = requestId;
-  const traceId = carrierTraceId(job.data);
+  const traceId = carrierTraceId(data);
   if (traceId !== undefined) tags["trace_id"] = traceId;
   return tags;
 }
@@ -123,13 +129,23 @@ export function failedJobTags(
  * it, a copy with the name masked (message and stack) is sent instead.
  */
 export function reportableError(job: FailedJobLike | undefined, error: Error): Error {
-  const name = job?.name ?? "";
-  if (name === "" || DECLARED_JOB_NAMES.has(name) || !error.message.includes(name)) return error;
-  const masked = new Error(error.message.split(name).join(MASKED_JOB_NAME));
+  const name = echoedUndeclaredName(job?.name, error.message);
+  if (name === undefined) return error;
+  const masked = new Error(maskJobName(error.message, name));
   masked.name = error.name;
   if (error.stack === undefined) delete masked.stack;
-  else masked.stack = error.stack.split(name).join(MASKED_JOB_NAME);
+  else masked.stack = maskJobName(error.stack, name);
   return masked;
+}
+
+/** The job name when it is undeclared and the message repeats it. */
+function echoedUndeclaredName(name: string | undefined, message: string): string | undefined {
+  if (!name || DECLARED_JOB_NAMES.has(name)) return undefined;
+  return message.includes(name) ? name : undefined;
+}
+
+function maskJobName(text: string, name: string): string {
+  return text.split(name).join(MASKED_JOB_NAME);
 }
 
 /**
