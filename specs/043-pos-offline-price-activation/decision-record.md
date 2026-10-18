@@ -115,7 +115,7 @@ only pricing freshness, and the interim is retired by design.
 
 | Option | Content |
 |---|---|
-| **A (recommended)** | `critical = true` on an **emergency** Change Set (capability `pricing.emergency`), recorded on the revision. Effects: manifest `urgent` → online POS applies before the next scan; open-cart lines for affected keys are flagged and need explicit old/new accept before tender (608); optional per-line `offlinePolicy {deny_if_stale | online_only, maxStaleness?, until}` (until required, default activation + 72 h, max 30 days) applies to those keys only; Health `critical_not_applied` per device; sync findings `sold_before_correction`. Pre-delivered bad prices are removed by superseding, never patched on the device. |
+| **A (recommended)** | `critical = true` on an **emergency** Change Set (capability `pricing.emergency`), recorded on the revision. Effects: manifest `urgent` → online POS applies before the next scan; each snapshot entry carries `lastCriticalRevision`, so open-cart lines for the corrected keys are flagged and need explicit old/new accept before tender (608); optional per-line `offlinePolicy {deny_if_stale | online_only, maxStaleness?, until}` (until required, default activation + 72 h, max 30 days) applies to those keys only; Health `critical_not_applied` per device; sync findings `sold_before_correction`, scoped to the corrected keys and each key's own activation instant. Pre-delivered bad prices are removed by superseding, never patched on the device. |
 | B | A critical revision switches the whole Store to `online_only` until every device acks. Stops all sales at an offline till for one item. |
 | C | No special handling beyond emergency publish. Fails 627. |
 
@@ -157,7 +157,7 @@ Interaction recorded for RT-485 (PR-16b): flip the filter and the manifest `auth
 
 | Option | Content |
 |---|---|
-| **A (recommended)** | Asynchronous, never on the capture path. Recompute `resolve(item, store, pricedAt, pricingRevision)` with the zone of the line's `timeBasisEpoch`; findings `price_mismatch`, `sold_before_correction`, `early_activation` (from device clock incidents, matched retroactively, or a segment start later than BC's receive time), `device_clock_ahead`. A forward-clock sale with no such evidence is stated as undetectable. Findings go to Pricing Health; capture never fails; sale facts are never changed. |
+| **A (recommended)** | Asynchronous, never on the capture path. Recompute `resolve(item, store, pricedAt, pricingRevision)` with the zone of the line's `timeBasisEpoch`; findings `price_mismatch`, `sold_before_correction`, `early_activation` (from device clock incidents matched to lines by `untrustedEpisode`, retroactively when needed, or a segment start later than BC's receive time), `device_clock_ahead`. A forward-clock sale with no such evidence is stated as undetectable. Findings go to Pricing Health; capture never fails; sale facts are never changed. |
 | B | Reject sales whose prices do not revalidate. Contradicts 611 and loses real sales. |
 
 **Selected: A.** Selected — recommended option, chosen by the coordinator under the owner's standing delegation; owner may revisit.

@@ -111,10 +111,12 @@ Within `anchored`, `t_lo` never decreases. A re-anchor after `unverified` can mo
 | `unverified` | after a restart or an OS resume (see "OS suspend" below), before the next anchor, with `wall ≥ hwm_trusted − 5 min` and `wall ≥ wall_seen − 5 min` | by `t_lo` (bounded, §4.1) | by `t_hi`; lines record `clockState = unverified` |
 | `suspect` | `wall < hwm_trusted − 5 min` or `wall < wall_seen − 5 min` (rollback, the P7 rule), **or** `|drift| > 120 s` in this process with no resume event (the wall clock moved against the monotonic clock) | **frozen**: no further activation | **treated as stale** whatever the age (RT-284 P-F: "a clock rollback counts as stale") |
 
-Leaving `suspect` or `unverified` needs a fresh anchor (a successful manifest check). **On that transition only** (never on the routine re-anchors of every poll while `anchored`), POS compares the untrusted time it actually used with the server's. While `unverified` or `suspect` it keeps `t_lo_untrusted_max`, the highest `t_lo` it used, and `untrusted_from`, the `t_lo` when it entered the state:
+Leaving `suspect` or `unverified` needs a fresh anchor (a successful manifest check). **On that transition only** (never on the routine re-anchors of every poll while `anchored`), POS compares the untrusted time it actually used with the server's. Each entry into `unverified` or `suspect` starts a new **untrusted episode** with a POS-local, monotonic `untrustedEpisode` number (sealed with the clock marks). Every line priced during the episode records that number (§9.1). During the episode POS keeps `t_lo_untrusted_max`, the highest `t_lo` it used, and `untrusted_from`, the `t_lo` when the episode began:
 
-- if `t_lo_untrusted_max > t_anch + 120 s`, the device's time **ran ahead** while untrusted. POS records a **clock incident** `{ kind: ran_ahead, byMs: t_lo_untrusted_max − t_anch, from: untrusted_from, to: t_anch }`;
-- a rollback seen while offline (`suspect` from `wall_seen`) is likewise recorded as `{ kind: rolled_back, byMs, from: untrusted_from, to: t_anch }`.
+- if `t_lo_untrusted_max > t_anch + 120 s`, the device's time **ran ahead** while untrusted. POS records a **clock incident** `{ kind: ran_ahead, untrustedEpisode, byMs: t_lo_untrusted_max − t_anch, from: untrusted_from, anchoredAt: t_anch }`;
+- a rollback seen while offline (`suspect` from `wall_seen`) is likewise recorded as `{ kind: rolled_back, untrustedEpisode, byMs, from: untrusted_from, anchoredAt: t_anch }`.
+
+Incidents are matched to lines by **`untrustedEpisode`**, not by time ranges: `from` and the lines' `pricedAt` are device-domain values while `anchoredAt` is server time, so an interval test across the two would miss exactly the lines priced with a clock that ran ahead.
 
 A wall clock that is merely fast but steady while `anchored` raises no incident: `anchored` activation never uses the wall clock. Incidents go to BC on their **own** endpoint immediately after the transition (§9.2), not on a pricing ack, and stay queued until it succeeds.
 
@@ -274,7 +276,7 @@ While online, a stale device is just one that cannot reach BC; the driver checks
 | Device situation | What happens |
 |---|---|
 | online, idle | manifest shows `urgent: true` and the new pair; POS fetches and applies before the next scan |
-| online, cart open | applied between scans. Lines already in the cart whose key is in the critical revision are **flagged**; before tender the cashier sees old / new / difference for each and must accept (608); declining removes the line. A completed sale is never repriced (611) |
+| online, cart open | applied between scans. Lines already in the cart whose key has `lastCriticalRevision` newer than the pair applied before this apply are **flagged** (the per-entry marker of §10.1 identifies the corrected keys even when the device jumps across ordinary and critical revisions at once); before tender the cashier sees old / new / difference for each and must accept (608); declining removes the line. A completed sale is never repriced (611) |
 | offline, already applied the critical revision | the per-line `offlinePolicy` applies to those keys until `until` |
 | offline, has **not** received it | nothing can reach it. It sells at its cached projection, visibly stale once past `maxStaleness`. On reconnect: the critical revision applies first; BC raises a **`critical_not_applied`** Health finding from the publish onward for every device without an `applied` ack, and the sale revalidation (§9.3) lists the sales captured on older pairs after the correction's activation instant as **`sold_before_correction`** findings for follow-up. Sales are never rewritten (611) |
 
@@ -298,7 +300,8 @@ Next to the union, each line also freezes a **`pricingCapture`** object. It is a
   "pricedAt": "2026-11-01T07:02:11Z",  // the t_lo used to select the segment (§6.3)
   "timeBasisEpoch": 3,                 // the epoch of the projection the segment came from
   "stale": false,                      // §7.1, evaluated when this line was priced
-  "clockState": "anchored"             // anchored | unverified | suspect, when this line was priced
+  "clockState": "anchored",            // anchored | unverified | suspect, when this line was priced
+  "untrustedEpisode": null             // the §4.2 episode number when clockState ≠ anchored, else null
 }
 ```
 
@@ -322,7 +325,7 @@ A sale that started fresh and later added a stale line therefore reports `stale 
 
 `POST /api/pos/v1/pricing/acks` (device bearer, idempotent on `(device, pair, status)`): `{ status: received | applied | failed, storeRevision, timeBasisEpoch, failureCode?, deviceAppliedAt (t_lo), clockState }`. BC persists the latest per status per device (PR-05 table). An ack is evidence for Health; BC never trusts it for authority.
 
-`POST /api/pos/v1/pricing/clock-incidents` (device bearer, idempotent on `(device, kind, from)`): `{ incidents: [{ kind: ran_ahead | rolled_back, byMs, from, to }] }`. Sent right after the re-anchor that detects them, independent of acks (an incident usually appears on a plain check with no new pair), and retried from the local queue until it succeeds. BC stores them in `pricing_device_clock_incidents` and runs the §9.3 matching.
+`POST /api/pos/v1/pricing/clock-incidents` (device bearer, idempotent on `(device, kind, untrustedEpisode)`): `{ incidents: [{ kind: ran_ahead | rolled_back, untrustedEpisode, byMs, from, anchoredAt }] }`. Sent right after the re-anchor that detects them, independent of acks (an incident usually appears on a plain check with no new pair), and retried from the local queue until it succeeds. BC stores them in `pricing_device_clock_incidents` and runs the §9.3 matching.
 
 ### 9.3 Revalidation on sale sync
 
@@ -330,9 +333,9 @@ When a sale arrives, BC (asynchronously, never on the capture path) recomputes, 
 
 - equal → nothing;
 - different → `price_mismatch` finding (tampered projection or POS defect). Because the epoch's zone is used, a time-zone change between capture and sync does not cause a false mismatch;
-- `pricedAt` is after a critical revision's first activation instant for that Store and the line's `pricingRevision` is older → `sold_before_correction`;
+- the line's **key** `(product, sellUnit)` was changed for that Store by a critical revision newer than the line's `pricingRevision`, and `pricedAt` is at or after **that key's** activation instant in that revision for that Store → `sold_before_correction`. Keys the critical revision did not touch are never flagged, and each key uses its own activation instant;
 - **early activation**, judged from evidence tied to trusted time, not from the sale's own clock:
-  - the line is `unverified` or `suspect` and falls inside a reported **clock incident** interval of that device: BC re-resolves at **`max(incident.from, pricedAt − byMs)`**, never earlier than the last trusted instant. A different segment → `early_activation`. `byMs` is measured once, at the re-anchor, from the highest untrusted `t_lo` actually used. A line sold before a mid-interval clock change may therefore be shifted by more or less than its own offset, so the finding is a **suspicion for review**, not proof, and it never changes the sale. A `ran_ahead` incident that arrives *after* the sale is matched retroactively when it arrives;
+  - the line is `unverified` or `suspect` and its `untrustedEpisode` matches a reported **clock incident** of that device: BC re-resolves at **`max(incident.from, pricedAt − byMs)`**, never earlier than the last trusted instant. A different segment → `early_activation`. `byMs` is measured once, at the re-anchor, from the highest untrusted `t_lo` actually used. A line sold before a mid-interval clock change may therefore be shifted by more or less than its own offset, so the finding is a **suspicion for review**, not proof, and it never changes the sale. A `ran_ahead` incident that arrives *after* the sale is matched retroactively when it arrives;
   - the selected segment's `from` is later than BC's receive time of the sale → `early_activation` (the price was not in effect even when BC received it);
   - `pricedAt` later than the receive time + 120 s → `device_clock_ahead`.
 
@@ -348,12 +351,12 @@ All are **additive** and belong to later `[GATED]` items. OD-6 evidence: POS val
 
 | Operation | Shape (draft) |
 |---|---|
-| `GET /api/pos/v1/pricing/manifest` | `ETag` over `(storeRevision, timeBasisEpoch, authority, freshness.policyRevisionId)`; `If-None-Match` → 304 with `serverTime` header echo. Body: `authority` (`legacy`\|`pricing`), `storeRevision` (int64 \| null), `timeBasisEpoch` (int), `serverTime` (date-time), `contentHash` (string), `entryCount` (int), `urgent` (bool), `criticalRevisions` (int64[] published since the device's last applied pair; empty when none), `freshness` {`offlineMode`, `maxStalenessSeconds`, `warnAfterSeconds`, `onlineWindowSeconds`, `pollIntervalSeconds`, `policySource`, `policyRevisionId`} |
-| `GET /api/pos/v1/pricing/snapshot?revision&epoch&page_token&limit` | pages of `PricingEntry { productId, sellUnit, segments: PricingSegment[] }`; every page echoes `storeRevision`, `timeBasisEpoch`, `serverTime`; the final page carries `contentHash`, `entryCount`. A pair that is no longer current → 409 `pricing_revision_superseded` (the device re-reads the manifest) |
+| `GET /api/pos/v1/pricing/manifest` | `ETag` over `(storeRevision, timeBasisEpoch, authority, freshness.policyRevisionId)`; `If-None-Match` → 304 with `serverTime` header echo. Body: `authority` (`legacy`\|`pricing`), `storeRevision` (int64 \| null), `timeBasisEpoch` (int), `serverTime` (date-time), `contentHash` (string), `entryCount` (int), `urgent` (bool; true when the pair is newer than the one the device applied, known from its `If-None-Match`, and a critical revision or an imminent activation lies in between; §6.4), `freshness` {`offlineMode`, `maxStalenessSeconds`, `warnAfterSeconds`, `onlineWindowSeconds`, `pollIntervalSeconds`, `policySource`, `policyRevisionId`} |
+| `GET /api/pos/v1/pricing/snapshot?revision&epoch&page_token&limit` | pages of `PricingEntry { productId, sellUnit, lastCriticalRevision (int64 \| null: the newest critical revision that changed this key's timeline for this Store), segments: PricingSegment[] }`; every page echoes `storeRevision`, `timeBasisEpoch`, `serverTime`; the final page carries `contentHash`, `entryCount`. A pair that is no longer current → 409 `pricing_revision_superseded` (the device re-reads the manifest) |
 | `PricingSegment` | `{ from, to \| null, amount (decimal string), currencyCode, taxPriceBasis, provenance (PR-07 union), offlinePolicy? {mode, maxStalenessSeconds?, until} }` |
 | `GET /api/pos/v1/pricing/deltas?fromRevision&fromEpoch` | reserved (§5.3); `snapshot_required` 409 on gap or epoch change |
 | `POST /api/pos/v1/pricing/acks` | §9.2; 202; idempotent on `(device, pair, status)` |
-| `POST /api/pos/v1/pricing/clock-incidents` | §9.2; 202; idempotent on `(device, kind, from)` |
+| `POST /api/pos/v1/pricing/clock-incidents` | §9.2; 202; idempotent on `(device, kind, untrustedEpisode)` |
 | `serverTime` | also on every pricing response header (`X-Server-Time`) |
 
 Error vocabulary: the read-down `Error` envelope plus `pricing_revision_superseded`. Scope comes from the device row only; a foreign revision or epoch is refused non-disclosingly (§II, §XII).
@@ -374,12 +377,12 @@ Also in PR-06 (Console-facing, moved there by RT-282): the **distribution-status
 - `pricing_device_revision_state` (RLS by tenant): `tenant_id`, `store_id`, `device_id` (FK `devices`), `last_received_revision`, `last_received_epoch`, `last_received_at`, `last_applied_revision`, `last_applied_epoch`, `device_applied_at`, `last_applied_ack_at`, `last_failed_revision`, `last_failed_epoch`, `last_failure_code`, `last_failed_at`, `last_clock_state`, `last_check_at` (server time of the latest manifest read by this device). PK `(tenant_id, device_id)`.
 - Store-level state is **derived** from it (worst device), not stored.
 - `store_pricing_time_basis_epochs` (`tenant_id`, `store_id`, `epoch`, `timezone`, `started_at`; PK `(tenant_id, store_id, epoch)`; insert-only): the current epoch is the highest row. A row is inserted under the pricing publish lock on a zone change, and at Store creation (epoch 0). It is the zone history that revalidation needs (§9.3), so it also answers spec 041 Q-3 for pricing revalidation, though not for general historical inquiry.
-- `pricing_device_clock_incidents` (RLS by tenant): `tenant_id`, `device_id`, `kind`, `by_ms`, `from_at`, `to_at`, `reported_at`; unique on `(device_id, kind, from_at)` so a resent incident is idempotent.
+- `pricing_device_clock_incidents` (RLS by tenant): `tenant_id`, `device_id`, `kind`, `untrusted_episode`, `by_ms`, `from_at` (device domain), `anchored_at` (server time), `reported_at`; unique on `(device_id, kind, untrusted_episode)` so a resent incident is idempotent.
 - `pricing_revisions.critical boolean NOT NULL DEFAULT false`; per-line `offline_policy` jsonb on change-set lines and on the published events it produces.
 
 ### 10.4 POS `[GATED local migration]`
 
-`pricing_segments`, `pricing_segments_staging` (both keyed `(tenant_id, product_id, sell_unit, from)`, amount as **decimal string** plus `currency_code`, unlike `products.price_minor`), `pricing_sync_state` (authority, applied pair, hash, `last_check_at_lo`, failure fields), the two sealed clock marks `hwm_trusted` and `wall_seen` (generalising `cashier_offline_clock_hwm`), `t_lo_untrusted_max` / `untrusted_from`, and local queues for acks and clock incidents.
+`pricing_segments`, `pricing_segments_staging` (both keyed `(tenant_id, product_id, sell_unit, from)`, amount as **decimal string** plus `currency_code`, unlike `products.price_minor`), `pricing_sync_state` (authority, applied pair, hash, `last_check_at_lo`, failure fields), the two sealed clock marks `hwm_trusted` and `wall_seen` (generalising `cashier_offline_clock_hwm`), `t_lo_untrusted_max` / `untrusted_from` and the sealed `untrustedEpisode` counter, a per-entry `last_critical_revision`, and local queues for acks and clock incidents.
 
 ## 11. Interactions
 
@@ -399,7 +402,7 @@ Also in PR-06 (Console-facing, moved there by RT-282): the **distribution-status
 | Projection (PR-11) | property: projection at `(R, E)` equals `resolve()` sampled at every segment boundary ± 1 ms; deterministic hash across row order; a revision outside a Store's fan-out leaves its projection and hash unchanged; Book event across two zones → two different absolute `from`s; DST gap and overlap (spec 041 Q-2); zone change → epoch + 1, instants move, hash changes; future-only product appears; paging consistent while a new revision is published mid-walk (`pricing_revision_superseded`) |
 | Auth / isolation | device of store A cannot read store B's pair (non-disclosing 404); cross-tenant; revoked device 401 |
 | Acks / state (PR-05/12) | idempotent replay; out-of-order acks keep the highest pair; `failed` keeps `applied`; health states incl. `missed_pre_delivery` at the exact per-Store instant and `critical_not_applied` |
-| Revalidation | equal → none; tampered price → `price_mismatch`; older revision after critical activation → `sold_before_correction`; segment `from` after receive time → `early_activation`; `ran_ahead` incident covering an `unverified` line, before or after the sale arrives → `early_activation`; `pricedAt` ahead of receive time → `device_clock_ahead`; a time-zone change between capture and sync → no false `price_mismatch` (epoch history used); capture never fails |
+| Revalidation | equal → none; tampered price → `price_mismatch`; line of a corrected key priced on an older revision after that key's activation → `sold_before_correction`, an untouched key in the same window → none; segment `from` after receive time → `early_activation`; `ran_ahead` incident with the line's `untrustedEpisode` (including lines whose device-domain `pricedAt` is later than the server's `anchoredAt`), before or after the sale arrives → `early_activation`; `pricedAt` ahead of receive time → `device_clock_ahead`; a time-zone change between capture and sync → no false `price_mismatch` (epoch history used); capture never fails |
 | Publish lock | zone change vs publish race → either order yields a consistent `(R, E)` |
 
 ### 12.2 POS
