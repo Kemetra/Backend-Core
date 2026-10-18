@@ -197,6 +197,11 @@ describe("deploy-lab workflow", () => {
     expect(at("sha256sum --check --strict")).toBeLessThan(extract);
     expect(at('[[ "$TYPES" =~ ^[-d]+$ ]]')).toBeLessThan(extract);
     expect(at('case "$ENTRY" in "$BUNDLE"/*)')).toBeLessThan(extract);
+    // only the three expected assets, each size-checked from metadata, are ever downloaded
+    const download = at('gh release download "$BACKEND_RELEASE"');
+    expect(at("--json tagName,targetCommitish,isDraft,isPrerelease,isImmutable,assets")).toBeLessThan(download);
+    expect(at("release assets are not exactly")).toBeLessThan(download);
+    expect(at('--pattern "$BUNDLE.tar.gz" --pattern release-manifest.json --pattern SHA256SUMS')).toBeGreaterThan(download);
     // a gzip bomb is stopped by a bounded decompress before any tar call reads the archive
     const bounded = at('gzip -dc "$TARBALL" | head -c "$((MAX_BUNDLE_BYTES + 1))" | wc -c');
     expect(bounded).toBeLessThan(at("tar -tvzf"));

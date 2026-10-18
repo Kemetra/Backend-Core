@@ -119,7 +119,7 @@ jobs:
           trap 'echo "stopped at line $LINENO: $BASH_COMMAND" >> "$EVIDENCE/collect-error.txt"' ERR
 
           gh release view "$BACKEND_RELEASE" --repo "$REPO" \
-            --json tagName,targetCommitish,isDraft,isPrerelease,isImmutable > "$EVIDENCE/release.json"
+            --json tagName,targetCommitish,isDraft,isPrerelease,isImmutable,assets > "$EVIDENCE/release.json"
           SHA="$(jq -r .targetCommitish "$EVIDENCE/release.json")"
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || fail "release target is not a 40-hex commit SHA"
           # The git tag itself must point at that commit; the verifier compares them.
@@ -131,7 +131,15 @@ jobs:
           # absolute paths or `..`.
           BUNDLE="backend-core-release-${SHA:0:12}"
           TARBALL="$EVIDENCE/release/$BUNDLE.tar.gz"
-          gh release download "$BACKEND_RELEASE" --repo "$REPO" --dir "$EVIDENCE/release"
+          # Download only the three expected assets, each size-checked from the
+          # release metadata first, so extra or oversized assets never reach disk.
+          MAX_ASSET_BYTES=$((16 * 1024 * 1024))
+          jq -e --arg tarball "$BUNDLE.tar.gz" --argjson max "$MAX_ASSET_BYTES" '
+            ([.assets[].name] | sort) == ([$tarball, "release-manifest.json", "SHA256SUMS"] | sort)
+            and all(.assets[]; (.size | type) == "number" and .size <= $max)' "$EVIDENCE/release.json" > /dev/null \
+            || fail "release assets are not exactly $BUNDLE.tar.gz, release-manifest.json and SHA256SUMS, each within $MAX_ASSET_BYTES bytes"
+          gh release download "$BACKEND_RELEASE" --repo "$REPO" --dir "$EVIDENCE/release" \
+            --pattern "$BUNDLE.tar.gz" --pattern release-manifest.json --pattern SHA256SUMS
           for ASSET in "$BUNDLE.tar.gz" release-manifest.json; do
             awk -v f="$ASSET" '$2 == f { found = 1 } END { exit !found }' "$EVIDENCE/release/SHA256SUMS" \
               || fail "SHA256SUMS does not cover $ASSET"
