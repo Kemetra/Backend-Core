@@ -14,6 +14,7 @@ import {
   sentryCorrelationTags,
   type SentryEventLike,
 } from "../../src/observability/sentry";
+import goldenVectors from "./obs1-golden-vectors.json";
 
 const VALID_DSN = "https://abc123@o1.ingest.de.sentry.io/42";
 const SERVICE = "backend-api";
@@ -339,6 +340,42 @@ describe("scrubSentryEvent (AC-2)", () => {
     const copy = JSON.parse(JSON.stringify(dirty)) as SentryEventLike;
     scrubSentryEvent(dirty);
     expect(dirty).toEqual(copy);
+  });
+});
+
+describe("OBS-1 §3.5 golden vectors (RT-682: Bearer/Authorization and phones)", () => {
+  const scrubValue = (value: string): string =>
+    scrubSentryEvent({ exception: { values: [{ type: "Error", value }] } })!.exception!.values![0]!.value!;
+
+  it.each(goldenVectors.vectors.map((v) => [v.id, v.input, v.expected] as const))(
+    "%s: masks exactly as the contract vector says",
+    (_id, input, expected) => {
+      expect(scrubValue(input)).toBe(expected);
+    },
+  );
+
+  it.each([
+    ["a national mobile behind a stray +", "call +01012345678 now", "call +[phone] now"],
+    ["a country-code mobile glued to a letter before the +", "x+201000000638 kept", "x+[phone] kept"],
+    ["a trailing Authorization with nothing after it", "missing Authorization:", "missing Authorization:"],
+  ])("follows the §3.2 phone/Authorization text on %s", (_label, input, expected) => {
+    expect(scrubValue(input)).toBe(expected);
+  });
+
+  it("stays linear on the contract's adversarial inputs", () => {
+    const { inputs, maxOutputLength, maxTotalMs } = goldenVectors.linearTime;
+    const started = Date.now();
+    for (const { pattern, repeat } of inputs) {
+      expect(scrubValue(pattern.repeat(repeat)).length).toBeLessThanOrEqual(maxOutputLength);
+    }
+    expect(Date.now() - started).toBeLessThan(maxTotalMs);
+  });
+
+  it("stays linear when the inputs exceed the scan cap many times over", () => {
+    const adversarial = ["Bearer ".repeat(50_000), "1".repeat(100_000), "+1".repeat(50_000), "a:Authorization: ".repeat(10_000)];
+    const started = Date.now();
+    for (const value of adversarial) expect(scrubValue(value).length).toBeLessThanOrEqual(300);
+    expect(Date.now() - started).toBeLessThan(500);
   });
 });
 
