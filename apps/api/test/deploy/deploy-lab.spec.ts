@@ -73,6 +73,11 @@ const workflow = yaml.load(workflowText) as Workflow;
 const jobs = Object.entries(workflow.jobs);
 const allSteps = jobs.flatMap(([, job]) => job.steps);
 const scripts = allSteps.map((s) => s.run ?? "").join("\n");
+function stepIndex(prefix: string): number {
+  const i = allSteps.findIndex((s) => (s.name ?? "").startsWith(prefix));
+  if (i < 0) throw new Error(`workflow step missing: ${prefix}`);
+  return i;
+}
 function stepNamed(prefix: string): Step & { id?: string } {
   const found = allSteps.find((s) => (s.name ?? "").startsWith(prefix));
   if (!found) throw new Error(`workflow step missing: ${prefix}`);
@@ -199,7 +204,7 @@ describe("deploy-lab workflow", () => {
     expect(collect).toMatch(/trap '.*collect-error\.txt"' ERR/);
     expect(collect).toContain('|| fail "release assets do not match SHA256SUMS"');
     expect(stepNamed("Verify evidence").if).toBe(
-      "${{ !cancelled() && steps.guard.outcome == 'success' && steps.checkout.outcome == 'success' }}",
+      "${{ !cancelled() && steps.guard.outcome == 'success' && steps.checkout.outcome == 'success' && steps.logout.outcome == 'success' }}",
     );
     expect(stepNamed("Guard")).toMatchObject({ id: "guard" });
     expect(stepNamed("Checkout main")).toMatchObject({ id: "checkout" });
@@ -212,10 +217,17 @@ describe("deploy-lab workflow", () => {
     expect(collect).not.toContain("ls-tree --name-only");
   });
 
-  it("drops the registry credential before the verifier reads release content", () => {
-    const logout = scripts.indexOf("docker logout ghcr.io");
-    expect(logout).toBeGreaterThan(scripts.lastIndexOf("gh attestation verify"));
-    expect(logout).toBeLessThan(scripts.indexOf("node deploy/lab/verify-release.cjs"));
+  it("logs out of GHCR however collection ended, and verifies only after a successful logout", () => {
+    const order = ["Collect release evidence", "Log out of GHCR", "Verify evidence"].map(stepIndex);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    const logout = stepNamed("Log out of GHCR");
+    expect(logout).toMatchObject({ id: "logout", if: "always()" });
+    expect(logout.run).toContain("docker logout ghcr.io");
+    expect(stepNamed("Verify evidence").if).toContain("steps.logout.outcome == 'success'");
+  });
+
+  it("records the release commit's tree so bundled files can be bound to it", () => {
+    expect(String(stepNamed("Collect release evidence").run)).toContain('git ls-tree -r "$SHA" > "$EVIDENCE/source-tree.txt"');
   });
 
   it("requires the same CI checks as the image release workflow", () => {
@@ -239,6 +251,9 @@ const DIGESTS: Record<string, string> = {
 };
 const ref = (target: string): string => `ghcr.io/kemetra/backend-core-${target}@${DIGESTS[target] ?? ""}`;
 const hash = (text: string | Buffer): string => createHash("sha256").update(text).digest("hex");
+/** git's blob ID for file content, as `git ls-tree` prints it. */
+const gitBlob = (text: string): string =>
+  createHash("sha1").update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest("hex");
 const ctx = (over: Partial<Ctx> = {}): Ctx => ({ release: TAG, jiraKey: "RT-703", target: "lab-01", mode: "dry-run", ...over });
 
 const MIGRATIONS = [
@@ -340,7 +355,16 @@ function writeGoodEvidence(): void {
   );
   for (const t of ["api", "worker", "migrate"]) putJson(`attest-${t}.json`, attestation(t));
   put("migrations-target.txt", lsTree(MIGRATIONS));
+  writeSourceTree(bundleFiles());
   putJson("environment.json", { status: "not-visible", reviewers: 0 });
+}
+
+/** `git ls-tree -r <sha>` of the release commit: every shipped file except the generated release.env. */
+function writeSourceTree(files: Record<string, string>): void {
+  const lines = Object.entries(files)
+    .filter(([name]) => name !== "release.env")
+    .map(([name, content]) => `100644 blob ${gitBlob(content)}\t${name}`);
+  put("source-tree.txt", [...lines, `100644 blob ${"0".repeat(40)}\tunrelated/file.ts`].join("\n"));
 }
 
 function writeCurrent(migrations: string[], blobs: Record<string, string> = {}): void {
@@ -653,6 +677,18 @@ describe("verify-release: review hardening", () => {
     expect(ledger.outcome).toBe("refused");
     expect(ledger.failureBoundary).toBe(refusals[0]);
     expect(helper.renderSummary(ledger)).toContain("evidence collection refused: release assets do not match SHA256SUMS");
+  });
+
+  it("refuses a bundled file that differs from the release commit, even with self-consistent hashes", () => {
+    writeRelease({ ...bundleFiles(), "docker-compose.release.yml": "services: { injected: {} }\n" });
+    expectRefused(/bundled 'docker-compose.release.yml' does not match the release commit/);
+  });
+
+  it("refuses a bundled file that is not in the release commit, or missing source-tree evidence", () => {
+    writeSourceTree({ "docker-compose.release.yml": bundleFiles()["docker-compose.release.yml"] ?? "" });
+    expectRefused(/bundled 'docs\/operations\/sql\/cashier-admissions-domain-grants.sql' is not in the release commit/);
+    rmSync(join(dir, "source-tree.txt"));
+    expectRefused(/release source tree evidence missing/);
   });
 
   it("refuses a duplicate SHA256SUMS entry", () => {

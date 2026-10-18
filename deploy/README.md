@@ -336,7 +336,8 @@ fails, if any of these checks fails:
 - the tarball holds only regular files and directories under one top-level
   directory, with nothing unlisted (checked before and after unpacking);
 - the latest `fast` and `db-integration` runs on that commit succeeded;
-- both levels of `SHA256SUMS` match;
+- both levels of `SHA256SUMS` match, and every bundled file except the
+  generated `release.env` is byte-for-byte the file at the release commit;
 - the manifest is published and has registry digests for that commit;
 - `release.env` matches the manifest;
 - each of the three images has an attestation from `release-images.yml` on

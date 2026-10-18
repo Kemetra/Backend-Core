@@ -14,6 +14,7 @@
 //   check-runs.json         [{name, conclusion, slug, started_at}] on <sha>
 //   attest-<target>.json    gh attestation verify --format json output (absent = not verified)
 //   migrations-target.txt   git ls-tree <sha> packages/db/drizzle/ (blob IDs catch in-place edits)
+//   source-tree.txt         git ls-tree -r <sha>: every bundled file must be the file at that commit
 //   environment.json        {status: present|not-visible|unknown, reviewers}
 //   collect-error.txt       only when collection stopped early: why (each line a refusal)
 //   current-release.json, current-tag-commit.txt, compare-current.json,
@@ -297,6 +298,37 @@ function checkBundle(dir, manifestBuf, manifest, images) {
   return problems;
 }
 
+/** git's blob ID for file content, to compare with `git ls-tree`. */
+const gitBlobId = (buf) => crypto.createHash("sha1").update(`blob ${buf.length}\0`).update(buf).digest("hex");
+
+/** `git ls-tree -r <sha>` of the release commit as path -> blob ID, or null without that evidence. */
+function readSourceTree(file) {
+  const lines = readLines(file);
+  if (lines === null) return null;
+  const tree = new Map();
+  for (const line of lines) {
+    const m = LS_TREE_RE.exec(line);
+    if (m && m[1] === "blob") tree.set(m[3], m[2]);
+  }
+  return tree;
+}
+
+/**
+ * Every shipped file except the generated release.env must be byte-for-byte the
+ * file at the release commit. The manifest's own hashes only prove the bundle
+ * is self-consistent, not that it came from that commit.
+ */
+function checkSourceBinding(bundleDir, files, tree) {
+  if (tree === null || tree.size === 0) return ["release source tree evidence missing (git ls-tree -r <sha>)"];
+  const problems = [];
+  for (const name of files.filter((f) => f !== "release.env")) {
+    const buf = isSafeRelative(name) ? readBuffer(path.join(bundleDir, name)) : null;
+    if (!tree.has(name)) problems.push(`bundled '${name}' is not in the release commit`);
+    else if (buf === null || gitBlobId(buf) !== tree.get(name)) problems.push(`bundled '${name}' does not match the release commit`);
+  }
+  return problems;
+}
+
 /** A verified SLSA attestation binds the image digest to the release commit, built on main by release-images.yml. */
 function checkAttestation(results, target, digest, sha) {
   if (!Array.isArray(results) || results.length === 0) return [`no verified attestation for the ${target} image`];
@@ -396,7 +428,12 @@ function verifyRelease(dir, ctx, sha) {
   const checked = checkManifest(manifest, sha, ctx.release);
   problems.push(...checked.problems);
   if (manifest && manifestBuf) {
-    problems.push(...checkBundle(path.join(dir, "bundle", bundleName(sha)), manifestBuf, manifest, checked.images));
+    const bundleDir = path.join(dir, "bundle", bundleName(sha));
+    const tree = readSourceTree(path.join(dir, "source-tree.txt"));
+    problems.push(
+      ...checkBundle(bundleDir, manifestBuf, manifest, checked.images),
+      ...checkSourceBinding(bundleDir, Object.keys(manifest.files ?? {}), tree),
+    );
   }
   for (const [target, image] of Object.entries(checked.images)) {
     problems.push(...checkAttestation(readJson(path.join(dir, `attest-${target}.json`)), target, image.digest, sha));

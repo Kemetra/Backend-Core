@@ -154,6 +154,8 @@ jobs:
 
           if git cat-file -e "$SHA^{commit}" 2>/dev/null; then
             git ls-tree "$SHA" packages/db/drizzle/ > "$EVIDENCE/migrations-target.txt"
+            # Bundled files must be the files at the release commit, not just self-consistent.
+            git ls-tree -r "$SHA" > "$EVIDENCE/source-tree.txt"
           fi
 
           # A failed verification leaves no file; the verifier refuses on a missing attestation.
@@ -170,8 +172,6 @@ jobs:
               echo "::warning::attestation verification failed for $TARGET"
             fi
           done
-          # Drop the registry credential before anything reads release content.
-          docker logout ghcr.io > /dev/null
 
           # The operator-asserted current release gets the same tag and ancestry evidence.
           if [ -n "$CURRENT_RELEASE" ]; then
@@ -203,10 +203,19 @@ jobs:
             echo '{"status":"unknown","reviewers":0}' > "$EVIDENCE/environment.json"
           fi
 
+      # Drops the registry credential however evidence collection ended, before
+      # the verifier reads any release content.
+      - name: Log out of GHCR
+        id: logout
+        if: always()
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io > /dev/null
+
       # Runs even when evidence collection stopped early, so every refusal ends
-      # up in the ledger; never after a failed guard or checkout.
+      # up in the ledger; never after a failed guard, checkout or logout.
       - name: Verify evidence and write the planned ledger (no deploy)
-        if: ${{ !cancelled() && steps.guard.outcome == 'success' && steps.checkout.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.guard.outcome == 'success' && steps.checkout.outcome == 'success' && steps.logout.outcome == 'success' }}
         env:
           BACKEND_RELEASE: ${{ inputs.backend_release }}
           JIRA_KEY: ${{ inputs.jira_key }}
