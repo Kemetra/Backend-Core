@@ -80,14 +80,19 @@ UNION ALL SELECT 'overrides_priced',          count(*) FROM store_product_overri
 UNION ALL SELECT 'overrides_is_active_only',  count(*) FROM store_product_overrides WHERE retired_at IS NULL AND price IS NULL AND is_active IS NOT NULL
 UNION ALL SELECT 'overrides_tax_only',        count(*) FROM store_product_overrides WHERE retired_at IS NULL AND price IS NULL AND tax_category IS NOT NULL
 UNION ALL SELECT 'stores_active',             count(*) FROM stores WHERE is_active
-UNION ALL SELECT 'sellable_pairs_upper_bound',
+UNION ALL SELECT 'stores_all',                count(*) FROM stores
+UNION ALL SELECT 'sweep_pairs_all_stores',
   (SELECT count(*) FROM stores s JOIN tenant_products tp ON tp.tenant_id = s.tenant_id
-    WHERE s.is_active AND tp.retired_at IS NULL);
+    WHERE tp.retired_at IS NULL);
 
--- 1b. Sellable-pair upper bound per tenant (drives the MC-8 single- vs two-phase choice)
-SELECT s.tenant_id, count(*) AS sellable_pairs_upper_bound
-  FROM stores s JOIN tenant_products tp ON tp.tenant_id = s.tenant_id
- WHERE s.is_active AND tp.retired_at IS NULL
+-- 1b. Sweep-set size per tenant (drives the MC-8 single- vs two-phase choice; matches the §5.1
+--     sweep set: every Store, active or not, x live product, plus one Book-layer check per live product)
+SELECT tp.tenant_id,
+       count(s.id)           AS store_pairs_all_stores,
+       count(DISTINCT tp.id) AS book_layer_checks
+  FROM tenant_products tp
+  LEFT JOIN stores s ON s.tenant_id = tp.tenant_id
+ WHERE tp.retired_at IS NULL
  GROUP BY 1;
 
 -- 2. Exception census (per tenant): every row here blocks that tenant's cutover (§4.4)
@@ -372,7 +377,7 @@ One transaction, run by an operator CLI (no new OpenAPI), recorded in a `pricing
 6. Set `authority = 'pricing'`, `changed_in_revision` = head; write the audit row; `COMMIT`.
 
 `statement_timeout` for the transaction is set from the PR-03E pair count. If the count makes a single transaction
-unreasonable (proposed threshold: more than 500 000 sellable pairs for one tenant), the fallback is a two-phase switch:
+unreasonable (proposed threshold: more than 500 000 sweep-set rows for one tenant, i.e. `store_pairs_all_stores + book_layer_checks` from census query 1b), the fallback is a two-phase switch:
 commit `cutover_in_progress` as its own step, then import and sweep, then flip to `pricing`; an abort explicitly resets
 the row to `legacy`. While it is committed, legacy prices are frozen and read-down still serves the legacy `COALESCE`. For the pilot
 size this is not expected to be needed; PR-03E settles it.
