@@ -37,6 +37,7 @@ import { PgInstrumentation } from "@opentelemetry/instrumentation-pg";
 import { RedisInstrumentation } from "@opentelemetry/instrumentation-redis";
 import { NodeSDK, resources } from "@opentelemetry/sdk-node";
 
+import { createForceSampleSampler } from "./forced-sampling";
 import {
   RedactingSpanExporter,
   createMetricsScrapeFilter,
@@ -174,6 +175,9 @@ export function createOtelSdk(opts: OtelOptions): NodeSDK {
             .merge(resources.resourceFromAttributes({ "service.version": opts.serviceVersion })),
         }
       : {}),
+    // RT-684: the env-configured sampler, except that liveness spans are
+    // always sampled (see ./forced-sampling).
+    sampler: createForceSampleSampler(),
     traceExporter,
     instrumentations,
     ...(metricReaders ? { metricReaders } : {}),
@@ -220,3 +224,4 @@ export async function __resetOtelForTests(): Promise<void> {
 
 export * from "./bullmq-propagation";
 export * from "./suppress-tracing";
+export * from "./forced-sampling";

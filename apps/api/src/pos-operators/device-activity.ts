@@ -45,8 +45,10 @@
  * heartbeat (`device_health.last_seen_at`, RT-327) is a separate source.
  */
 import { runWithTenantContext } from "@data-pulse-2/db";
-import { createLogger, type Logger } from "@data-pulse-2/shared";
+import type { Logger } from "@data-pulse-2/shared";
 import type { Pool } from "pg";
+
+import { createApiLogger } from "../common/api-logger";
 
 /** At most one `last_seen_at` write per device per 5 minutes (RT-138 L7). */
 export const DEVICE_ACTIVITY_INTERVAL_MS = 5 * 60_000;
@@ -70,11 +72,7 @@ const TOUCH_SQL = `UPDATE devices SET last_seen_at = now()
 
 let logger: Logger | null = null;
 function log(): Logger {
-  logger ??= createLogger({
-    service: "backend-api",
-    bindings: { component: "device-activity" },
-    level: process.env["LOG_LEVEL"] ?? "info",
-  });
+  logger ??= createApiLogger("device-activity");
   return logger;
 }
 

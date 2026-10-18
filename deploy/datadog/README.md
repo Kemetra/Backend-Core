@@ -21,7 +21,7 @@ These are the Datadog us5 definitions for the AWS lab (`env:staging`), kept as c
 | `p1-host-down` | P1 | service check `datadog.agent.up`, multi-alert by `host` | agent check CRITICAL on 2 consecutive runs | 5 min |
 | `p1-api-down` | P1 | Synthetics GET `/api/v1/health/ready`, 2 locations, every 5 min, 1 retry | not 200, not JSON, or over 5 s | n/a |
 | `p1-api-no-data` | P1 | `dp2.db_pool_in_use` (api scrape) | no-data only | 10 min |
-| `p1-worker-no-data` | P1 | `trace.postgresql.query.hits{service:backend-worker}` | under 1 sampled span in 1 hour (`default_zero`, so an empty hour alerts) | 120 min |
+| `p1-worker-no-data` | P1 | `trace.worker.heartbeat.hits{service:backend-worker}` (force-sampled liveness span, every 5 min) | no heartbeat in 30 min (`default_zero`, so an empty window alerts) | 60 min |
 | `p2-api-5xx-rate` | P2 | `dp2.http_request_count` 5xx / all, 15 min | warn 2%, alert 5% | 30 min |
 | `p2-api-p95-latency` | P2 | `p95:trace.http.server.request`, 30 min | warn 0.5 s, alert 1 s | 60 min |
 | `p2-api-db-pool-waiters` | P2 | `min(last_10m)` of `dp2.db_pool_waiters` | above 0 for 10 min | 20 min |
@@ -34,8 +34,8 @@ These are the Datadog us5 definitions for the AWS lab (`env:staging`), kept as c
 - **New hosts join `p1-host-down` only when tagged `env:staging`.** This covers lab-02 and lab-03 once OBS-7 (RT-636) runs their agents. Each new host gets a 5-minute grace period (`new_group_delay`) after it first reports.
 - **The worker has no metrics in Datadog.** Its Prometheus listener binds `127.0.0.1:9091`, so the agent cannot scrape it.
   - Queue lag (`queue_lag_seconds`) and the outbox backlog (`outbox_pending_total`) are not monitored.
-  - `p1-worker-no-data` uses the worker's DB spans. Since RT-684 (RT-638 finding F-B) the outbox drainer's idle poll is untraced, so on an idle lab those spans come from the scheduled sweeps (sale re-drive every 5 min) and from outbox events actually processed. That is why the window is 1 hour: the quietest hour on 2026-10-17/18 still had about 8 sampled queries from sweeps and processed outbox events (about 5 from the sale re-drive alone), plus their BEGIN/COMMIT/connect spans. The query uses `default_zero` because the trace metric has no points in an empty hour, which would otherwise read as no data and only fire at the 120-minute no-data backstop.
-  - It now catches a dead worker within about an hour, not 10 minutes. It does not catch a drainer that has stalled while the rest of the worker runs.
+  - `p1-worker-no-data` watches a trace signal instead: the `worker.heartbeat` span (RT-684). Since RT-684 (RT-638 finding F-B) the outbox drainer's idle poll is untraced, so ordinary worker spans stop while the lab is idle. After each successful poll, the drainer records a `worker.heartbeat` root span at most every 5 minutes. It is force-sampled, so it bypasses the 10% ratio. A healthy worker sends about 6 in any 30 minutes, however long it has been idle. A dead worker, a hung poll loop, or a worker that cannot reach its database sends none, and the monitor alerts within about 30–35 minutes.
+  - The query uses `default_zero` because trace metrics have no points in an empty window, which would otherwise read as no data and fire only at the no-data backstop.
 - **p95 comes from 10%-sampled spans.** The OpenMetrics histogram has no percentiles. At lab traffic, the p95 is close to the slowest sampled request.
 - **Trace metrics carry the api container id as `host`, not the lab host name.** Never filter APM widgets or monitors by `host`.
 - **The Connector-stale P1 waits on RT-564** (the Connector heartbeat). It is not defined here.

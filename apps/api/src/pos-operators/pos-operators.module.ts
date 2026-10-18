@@ -20,7 +20,7 @@
  * sign-in specs do not require a real Clerk JWKS endpoint.
  */
 import { Module } from "@nestjs/common";
-import { createLogger, type Logger } from "@data-pulse-2/shared";
+import type { Logger } from "@data-pulse-2/shared";
 import type { Pool } from "pg";
 
 import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../auth/auth.module";
@@ -30,6 +30,7 @@ import {
   type ClerkVerifier,
   clerkVerifierFactory,
 } from "./clerk-verifier";
+import { createApiLogger } from "../common/api-logger";
 import { DeviceRepository } from "./device.repository";
 import { PosOperatorsController } from "./pos-operators.controller";
 import { PosOperatorsService } from "./pos-operators.service";
@@ -47,11 +48,7 @@ export const POS_OPERATORS_LOGGER = "POS_OPERATORS_LOGGER";
     {
       provide: POS_OPERATORS_LOGGER,
       useFactory: (): Logger =>
-        createLogger({
-          service: "backend-api",
-          bindings: { component: "pos-operators" },
-          level: process.env["LOG_LEVEL"] ?? "info",
-        }),
+        createApiLogger("pos-operators"),
     },
     {
       provide: DeviceRepository,

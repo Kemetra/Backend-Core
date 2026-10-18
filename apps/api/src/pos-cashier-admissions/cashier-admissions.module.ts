@@ -24,12 +24,13 @@
  */
 import { Module } from "@nestjs/common";
 import { runWithTenantContext } from "@data-pulse-2/db";
-import { createLogger, type Logger } from "@data-pulse-2/shared";
+import type { Logger } from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
 
 import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../auth/auth.module";
 import { PosDeviceAuthGuard } from "../auth/pos-device-auth.guard";
 import { RateLimiter } from "../auth/rate-limit";
+import { createApiLogger } from "../common/api-logger";
 import { DeviceRepository } from "../pos-operators/device.repository";
 import { AdmissionAuditRepository } from "./cashier-admissions.audit";
 import { readCashierAdmissionPolicy, readTakeoverLimiterTimeoutMs } from "./cashier-admissions.config";
@@ -53,11 +54,7 @@ function tenantTransaction(pool: Pool): TenantTransaction {
     {
       provide: CASHIER_ADMISSIONS_LOGGER,
       useFactory: (): Logger =>
-        createLogger({
-          service: "backend-api",
-          bindings: { component: "pos-cashier-admissions" },
-          level: process.env["LOG_LEVEL"] ?? "info",
-        }),
+        createApiLogger("pos-cashier-admissions"),
     },
     {
       provide: DeviceRepository,

@@ -17,7 +17,7 @@
  * AuthModule is imported so PG_POOL and ROOT_LOGGER are reused.
  */
 import { Module } from "@nestjs/common";
-import { createLogger, type Logger } from "@data-pulse-2/shared";
+import type { Logger } from "@data-pulse-2/shared";
 import type { Pool } from "pg";
 
 import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../auth/auth.module";
@@ -25,6 +25,7 @@ import {
   CLERK_VERIFIER,
   clerkVerifierFactory,
 } from "../pos-operators/clerk-verifier";
+import { createApiLogger } from "../common/api-logger";
 import { DeviceRepository } from "../pos-operators/device.repository";
 import { PosAuditEventsController } from "./pos-audit-events.controller";
 import { PosAuditEventsService } from "./pos-audit-events.service";
@@ -42,11 +43,7 @@ export const POS_AUDIT_EVENTS_LOGGER = "POS_AUDIT_EVENTS_LOGGER";
     {
       provide: POS_AUDIT_EVENTS_LOGGER,
       useFactory: (): Logger =>
-        createLogger({
-          service: "backend-api",
-          bindings: { component: "pos-audit-events" },
-          level: process.env["LOG_LEVEL"] ?? "info",
-        }),
+        createApiLogger("pos-audit-events"),
     },
     {
       provide: DeviceRepository,

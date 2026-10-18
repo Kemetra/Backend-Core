@@ -16,7 +16,7 @@
  * engage.
  */
 import { Module } from "@nestjs/common";
-import { createLogger, type Logger } from "@data-pulse-2/shared";
+import type { Logger } from "@data-pulse-2/shared";
 import type { Pool } from "pg";
 
 import { AuditModule } from "../audit/audit.module";
@@ -34,6 +34,7 @@ import {
   PgOperatorAttributionVerifier,
   type OperatorAttributionVerifier,
 } from "../catalog/sales/operator-attribution";
+import { createApiLogger } from "../common/api-logger";
 import { IdempotencyModule } from "../idempotency/idempotency.module";
 import {
   CLERK_VERIFIER,
@@ -60,11 +61,7 @@ export const POS_SHIFTS_LOGGER = "POS_SHIFTS_LOGGER";
     {
       provide: POS_SHIFTS_LOGGER,
       useFactory: (): Logger =>
-        createLogger({
-          service: "backend-api",
-          bindings: { component: "pos-shifts" },
-          level: process.env["LOG_LEVEL"] ?? "info",
-        }),
+        createApiLogger("pos-shifts"),
     },
     {
       provide: PosShiftsService,

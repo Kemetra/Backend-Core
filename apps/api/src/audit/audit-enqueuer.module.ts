@@ -24,9 +24,10 @@ import { Module, type Provider } from "@nestjs/common";
 import { Queue, type JobsOptions } from "bullmq";
 import type { Pool } from "pg";
 
-import { createLogger, type Logger } from "@data-pulse-2/shared";
+import type { Logger } from "@data-pulse-2/shared";
 import { DEFAULT_JOB_OPTIONS } from "@data-pulse-2/shared/queues/queue-config";
 
+import { createApiLogger } from "../common/api-logger";
 import {
   AUDIT_JOB_ENQUEUER,
   type AuditJobEnqueuer,
@@ -193,7 +194,7 @@ export function outboxOrLegacyAuditJobEnqueuerFactory(
     // module-local `backend-api` one (the warn line carries its own
     // `component: "audit.enqueuer"`) -- mirrors the
     // pos-shifts/pos-operators per-module logger pattern.
-    const log = logger ?? createLogger({ service: "backend-api" });
+    const log = logger ?? createApiLogger();
     log.warn(
       {
         component: "audit.enqueuer",
