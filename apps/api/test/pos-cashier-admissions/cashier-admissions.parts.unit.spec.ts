@@ -202,12 +202,11 @@ describe("TakeoverRateLimit", () => {
   function redis(overrides: Partial<RedisLike> = {}): RedisLike {
     const counts = new Map<string, number>();
     return {
-      incr: async (k) => {
+      incrWindow: async (k) => {
         const n = (counts.get(k) ?? 0) + 1;
         counts.set(k, n);
-        return n;
+        return { count: n, ttlMs: 1000 };
       },
-      pexpireNx: async () => 1,
       pttl: async () => 1000,
       decr: async () => 0,
       del: async () => 1,
@@ -227,7 +226,7 @@ describe("TakeoverRateLimit", () => {
   it("fails open with a warning when the limiter's store is unavailable (ADR 0009 D3)", async () => {
     const warn = jest.fn();
     const limit = new TakeoverRateLimit(
-      new RateLimiter(redis({ incr: async () => Promise.reject(new Error("redis down")) })),
+      new RateLimiter(redis({ incrWindow: async () => Promise.reject(new Error("redis down")) })),
       { warn } as unknown as Logger,
     );
     expect(await limit.allow(DEVICE, bucket)).toBe(true);
@@ -266,7 +265,7 @@ describe("TakeoverRateLimit", () => {
 
   it("fails open without a logger too", async () => {
     const limit = new TakeoverRateLimit(
-      new RateLimiter(redis({ incr: async () => Promise.reject(new Error("redis down")) })),
+      new RateLimiter(redis({ incrWindow: async () => Promise.reject(new Error("redis down")) })),
     );
     expect(await limit.allow(DEVICE, bucket)).toBe(true);
   });

@@ -11,6 +11,7 @@
  *   - `toPayerAccount`: the wire projection. No `tenant_id`, no credit terms.
  */
 import { z } from "zod";
+import { maxCodePoints, wellFormedText } from "../../common/text-validation";
 
 export const PAYER_CATEGORIES = ["credit_customer", "corporate", "insurer"] as const;
 export type PayerCategory = (typeof PAYER_CATEGORIES)[number];
@@ -23,10 +24,13 @@ export const PAYER_PAGE_SIZE_DEFAULT = 50;
  * meaningless, and `display_name` carries a non-blank CHECK).
  */
 const storableText = (max?: number) => {
-  const base = z.string().min(1);
-  return (max === undefined ? base : base.max(max))
+  const checked = z
+    .string()
+    .min(1)
     .regex(/\S/, "must contain a non-whitespace character")
-    .refine((value) => !value.includes("\u0000"), "must not contain a NUL character");
+    .refine((value) => !value.includes("\u0000"), "must not contain a NUL character")
+    .superRefine(wellFormedText);
+  return max === undefined ? checked : checked.superRefine(maxCodePoints(max));
 };
 
 export const PayerAccountCreateSchema = z
@@ -71,8 +75,8 @@ export const PAYER_EXTERNAL_REF_PATTERN = new RegExp(
 export const PayerAccountUpdateSchema = z
   .object({
     expectedVersion: z.number().int().min(0).max(PAYER_VERSION_MAX),
-    displayName: z.string().min(1).max(200).regex(PAYER_DISPLAY_NAME_PATTERN, "must contain a non-whitespace character and no NUL").optional(),
-    externalRef: z.string().min(1).max(140).regex(PAYER_EXTERNAL_REF_PATTERN, "must be an identifier: no surrounding whitespace, control, zero-width or separator characters").optional(),
+    displayName: z.string().min(1).regex(PAYER_DISPLAY_NAME_PATTERN, "must contain a non-whitespace character and no NUL").superRefine(wellFormedText).superRefine(maxCodePoints(200)).optional(),
+    externalRef: z.string().min(1).regex(PAYER_EXTERNAL_REF_PATTERN, "must be an identifier: no surrounding whitespace, control, zero-width or separator characters").superRefine(wellFormedText).superRefine(maxCodePoints(140)).optional(),
     status: z.enum(PAYER_STATUSES).optional(),
   })
   .strict()
