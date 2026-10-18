@@ -80,11 +80,11 @@
           {
             "definition": {
               "type": "toplist",
-              "title": "Disk in use (max device) by host",
+              "title": "Disk in use (max device, loop mounts excluded) by host",
               "requests": [
                 {
                   "response_format": "scalar",
-                  "queries": [{ "data_source": "metrics", "name": "disk", "query": "max:system.disk.in_use{env:staging} by {host}", "aggregator": "last" }],
+                  "queries": [{ "data_source": "metrics", "name": "disk", "query": "max:system.disk.in_use{env:staging,!device:/dev/loop*} by {host}", "aggregator": "last" }],
                   "formulas": [{ "formula": "disk * 100", "alias": "disk used %" }]
                 }
               ]
