@@ -11,6 +11,7 @@
  * exact-decimal STRING (gate A.6 — no float).
  */
 import { z } from "zod";
+import { hasNoNul, NO_NUL_MESSAGE } from "../../../common/text-validation";
 
 // A refund amount is non-negative (the DB enforces `pos_refund_amount >= 0`);
 // reject a leading `-` at the boundary so it fails as a 400 validation error,
@@ -26,8 +27,8 @@ const currencyCode = z.string().regex(/^[A-Z]{3}$/, "must be an ISO-4217 code");
 
 export const RecordRefundRequestSchema = z
   .object({
-    sourceSystem: z.string().min(1).max(100),
-    externalId: z.string().min(1).max(200),
+    sourceSystem: z.string().min(1).max(100).refine(hasNoNul, NO_NUL_MESSAGE),
+    externalId: z.string().min(1).max(200).refine(hasNoNul, NO_NUL_MESSAGE),
     posRefundAmount: decimalAmount,
     currencyCode,
   })

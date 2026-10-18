@@ -34,6 +34,25 @@ builds the list from the contracts, so new operations are covered automatically.
 - Skipped: `signOut` and `refreshSession` (they would end the test session) and
   operations marked `x-runtime-status: contract-only` (no route is shipped).
 
+### Operator-envelope surface (RT-612, phase 1, non-gating)
+
+`run.sh operator` runs `not_a_server_error` on every shipped operation that
+accepts the `operatorAuthorization` envelope (POS sales, sale-history and shift
+routes: `recordVoid`, `recordReturn`, `recordRefund`, `recordCreditSaleReversal`,
+`captureSale`, `openShift`, ...). `stack-up.sh` inserts a store-bound test device
+and a `pos_operator` `auth_tokens` row bound to the seeded owner (the rows
+operator sign-in would write; the identity provider is a dummy here) and writes
+the raw envelope to `$FUZZ_OUT/envelope-operator`.
+
+Phase 1 is **non-gating**: findings go to the job summary and
+`operator-5xx-baseline.json` (empty), and never fail the step; a run that could
+not execute still fails it. Promote it to a gate by making the step required
+once it has been green for a while. Run it locally with
+`bash tools/schemathesis/run.sh operator` after `stack-up.sh`.
+
+A NUL byte in a stored text field is a 400 `validation_error`: the POS sale DTOs
+refuse it, and the global filter maps Postgres 22021 to 400 as a backstop.
+
 Settings: seed 38, 200 examples per operation, phases `examples,coverage,fuzzing`,
 one worker.
 
@@ -47,9 +66,10 @@ semantics.
 | `compose.yml` | Postgres 16, Redis 7 and the API image. The API is published on 127.0.0.1 only |
 | `pg-init/01-roles.sh` | Domain role (NOBYPASSRLS) and auth lookup role (BYPASSRLS), as in `docs/operations/database-roles.md` |
 | `stack-up.sh` | Build, migrate, grant, seed (`bootstrap-pilot`, an owner and a platform admin), sign both in, and switch tenant |
-| `run.sh` | `gate` or `report` pass |
+| `run.sh` | `gate`, `report` or `operator` pass |
 | `ops.py` | Lists the cookieAuth operations per contract file (runs inside the Schemathesis image) |
 | `5xx-baseline.json` | Accepted known 5xx findings |
+| `operator-5xx-baseline.json` | Accepted 5xx findings on the operator-envelope run (RT-612) |
 | `report-baseline.json` | Accepted `positive_data_acceptance` findings that the contract cannot express (RT-66) |
 
 ## Safety

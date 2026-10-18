@@ -3,7 +3,7 @@
 # and mint a throwaway owner session. See tools/schemathesis/README.md.
 #
 # Writes $FUZZ_OUT/cookie-owner and $FUZZ_OUT/cookie-platform (dp2_session
-# values) for run.sh. Never prints them.
+# values) and $FUZZ_OUT/envelope-operator (RT-612) for run.sh. Never prints them.
 # Tear down with: docker compose -p "$FUZZ_PROJECT" -f tools/schemathesis/compose.yml down -v
 set -euo pipefail
 export MSYS_NO_PATHCONV=1 # Git Bash only; no effect on Linux
@@ -90,6 +90,36 @@ INSERT INTO users (id, email, email_verified_at, password_hash, display_name, is
 VALUES (gen_random_uuid(), 'fuzz-platform@example.invalid', now(), :'h', 'Fuzz Platform Admin', true);
 COMMIT;
 SQL
+
+# RT-612: mint a paired test device and an operator-authorization envelope for the
+# operatorAuthorization (POS) operations. The envelope is an opaque pos_operator
+# bearer, normally minted at operator sign-in via the identity provider (a dummy
+# here), so the rows sign-in would write are inserted directly: a store-bound
+# device, and an auth_tokens row bound to that device, the seeded owner and the
+# store. Only the SHA-256 hashes are stored; the raw envelope goes to
+# $FUZZ_OUT/envelope-operator for run.sh. The device token is not needed by the
+# envelope path and is discarded.
+echo "Minting a test device and operator envelope"
+ENVELOPE="$(secret)$(secret)"
+DEVICE_TOKEN="$(secret)$(secret)"
+mask "$ENVELOPE"; mask "$DEVICE_TOKEN"
+psql_owner -v t="$tenant" -v env="$ENVELOPE" -v dev="$DEVICE_TOKEN" >/dev/null <<'SQL'
+BEGIN;
+SELECT set_config('app.current_tenant', :'t', true);
+SELECT set_config('app.is_platform_admin', 'true', true);
+WITH s AS (
+  SELECT id FROM stores WHERE tenant_id = :'t' AND deleted_at IS NULL ORDER BY created_at LIMIT 1),
+d AS (
+  INSERT INTO devices (id, tenant_id, store_id, label, token_hash)
+  SELECT gen_random_uuid(), :'t', s.id, 'fuzz-terminal', sha256(convert_to(:'dev', 'UTF8')) FROM s
+  RETURNING id, store_id)
+INSERT INTO auth_tokens (id, token_hash, tenant_id, user_id, device_id, store_id, scope, expires_at)
+SELECT gen_random_uuid(), sha256(convert_to(:'env', 'UTF8')), :'t', u.id, d.id, d.store_id,
+       'pos_operator', now() + interval '1 day'
+FROM d, users u WHERE u.email = 'fuzz-owner@example.invalid';
+COMMIT;
+SQL
+printf '%s' "$ENVELOPE" >"$FUZZ_OUT/envelope-operator"
 
 echo "Starting the API"
 compose up -d api
