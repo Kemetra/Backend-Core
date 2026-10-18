@@ -1,53 +1,42 @@
 /**
  * RT-567 / RT-687 — action-kind registry and the LIKE escape (unit).
  */
-import {
-  AUDIT_ACTION_KINDS,
-  READ_ACTION_CODES,
-  kindOf,
-} from "../../src/audit/audit-action-kinds";
+import { READ_ACTION_CODES, kindOf } from "../../src/audit/audit-action-kinds";
 import { escapeLike } from "../../src/audit/audit.repository";
 
 describe("kindOf", () => {
-  it("classifies registered read codes as read", () => {
-    expect(kindOf("shift_closes.listed")).toBe("read");
-    expect(kindOf("erpnext.postings.pulled")).toBe("read");
-    expect(kindOf("pos_sales.detail_read")).toBe("read");
+  it.each([
+    // Registered reads, including a machine pull and the RT-689 POS readSale.
+    ["shift_closes.listed", "read"],
+    ["erpnext.postings.pulled", "read"],
+    ["pos_sales.detail_read", "read"],
+    // Known changes.
+    ["sale.voided", "change"],
+    ["auth.signin.failed", "change"],
+    ["context.switch.store", "change"],
+    // Unregistered codes default to change (D-2), even ones that look like reads.
+    ["zz.unregistered.code", "change"],
+    ["something.listed", "change"],
+    ["", "change"],
+    // Exact match, not a prefix match.
+    ["shift_closes.listed.extra", "change"],
+    ["shift_closes.", "change"],
+  ])("kindOf(%j) is %s", (action, kind) => {
+    expect(kindOf(action)).toBe(kind);
   });
 
-  it("classifies known change codes as change", () => {
-    expect(kindOf("sale.voided")).toBe("change");
-    expect(kindOf("auth.signin.failed")).toBe("change");
-    expect(kindOf("context.switch.store")).toBe("change");
-  });
-
-  it("defaults an unregistered code to change (D-2), even one that looks like a read", () => {
-    expect(kindOf("zz.unregistered.code")).toBe("change");
-    expect(kindOf("something.listed")).toBe("change");
-    expect(kindOf("")).toBe("change");
-  });
-
-  it("is an exact match, not a prefix match", () => {
-    expect(kindOf("shift_closes.listed.extra")).toBe("change");
-    expect(kindOf("shift_closes.")).toBe("change");
-  });
-
-  it("returns only declared kinds for every registered code", () => {
-    for (const code of READ_ACTION_CODES) {
-      expect(AUDIT_ACTION_KINDS).toContain(kindOf(code));
-      expect(kindOf(code)).toBe("read");
-    }
+  it("classifies every registered code as read", () => {
+    expect(READ_ACTION_CODES.filter((code) => kindOf(code) !== "read")).toEqual([]);
   });
 });
 
 describe("escapeLike", () => {
-  it("leaves a plain action prefix unchanged", () => {
-    expect(escapeLike("auth.signin.")).toBe("auth.signin.");
-  });
-
-  it("escapes %, _ and backslash", () => {
-    expect(escapeLike("%")).toBe("\\%");
-    expect(escapeLike("auth_%")).toBe("auth\\_\\%");
-    expect(escapeLike("a\\b")).toBe("a\\\\b");
+  it.each([
+    ["auth.signin.", "auth.signin."],
+    ["%", "\\%"],
+    ["auth_%", "auth\\_\\%"],
+    ["a\\b", "a\\\\b"],
+  ])("escapeLike(%j) is %j", (value, escaped) => {
+    expect(escapeLike(value)).toBe(escaped);
   });
 });

@@ -427,29 +427,17 @@ describe("DrizzleAuditRepository", () => {
       (await repo.listPage({ tenantId: TENANT_C, isPlatformAdmin: false, action, cursor: null, limit: 100 }))
         .map((r) => r.action);
 
-    it("action=% matches only codes that literally start with %", async () => {
+    it.each([
+      // `%` and `_` are not wildcards, `\` is not an escape.
+      ["%", ["%pct.literal"]],
+      ["auth_%", ["auth_%.literal"]],
+      ["auth_", ["auth_%.literal"]],
+      ["back\\", ["back\\slash.literal"]],
+      // A plain prefix still matches as before.
+      ["auth.", ["auth.signin.ok"]],
+    ])("action=%j matches only %j", async (action, expected) => {
       if (maybeSkip()) return;
-      expect(await actionsFor("%")).toEqual(["%pct.literal"]);
-    });
-
-    it("action=auth_% matches only codes that literally start with auth_%", async () => {
-      if (maybeSkip()) return;
-      expect(await actionsFor("auth_%")).toEqual(["auth_%.literal"]);
-    });
-
-    it("action=auth_ does not treat _ as a single-character wildcard", async () => {
-      if (maybeSkip()) return;
-      expect(await actionsFor("auth_")).toEqual(["auth_%.literal"]);
-    });
-
-    it("a backslash in the prefix is literal", async () => {
-      if (maybeSkip()) return;
-      expect(await actionsFor("back\\")).toEqual(["back\\slash.literal"]);
-    });
-
-    it("a plain prefix still matches as before", async () => {
-      if (maybeSkip()) return;
-      expect(await actionsFor("auth.")).toEqual(["auth.signin.ok"]);
+      expect(await actionsFor(action)).toEqual(expected);
     });
   });
 
