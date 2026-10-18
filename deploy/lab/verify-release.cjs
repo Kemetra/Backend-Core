@@ -54,7 +54,8 @@ const SUMS_LINE_RE = /^([0-9a-f]{64}) [ *](\S+)$/;
 const LS_TREE_RE = /^\d{6} (blob|tree) ([0-9a-f]{40})\t(.+)$/;
 // The ALLOWLIST=( ... ) array in deploy/release-bundle.sh (the same parse release-images.spec.ts uses).
 const ALLOWLIST_RE = /^ALLOWLIST=\(\r?\n([\s\S]*?)^\)/m;
-const ENV_KEY_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+// One plain assignment of a digest ref to an upper-case key: nothing a shell could expand or run.
+const ENV_LINE_RE = /^([A-Z][A-Z0-9_]{0,63})=(ghcr\.io\/kemetra\/backend-core-(?:api|worker|migrate)@sha256:[0-9a-f]{64})$/;
 const ROLE_ARN_RE = /^arn:aws:iam::\d{12}:role\/[\w+=,.@/-]+$/;
 const SSM_NODE_RE = /^mi-[0-9a-f]{17}$/;
 
@@ -242,22 +243,35 @@ function checkManifest(m, sha, tag) {
   return { problems: [...header, ...problems], images };
 }
 
-/** release.env carries exactly the three image refs from the manifest. Never echoes its raw content. */
+/**
+ * Parses release.env strictly. It is exported on the deploy host, so every
+ * non-comment line must be a plain KEY=<digest ref> assignment (no export,
+ * quotes, spaces, `;`, `$(...)`), and each key may appear once: a later valid
+ * line must never hide an earlier injected one. Never echoes raw content.
+ */
+function parseReleaseEnv(text) {
+  const vars = new Map();
+  const problems = [];
+  text.split(/\r?\n/).forEach((line, i) => {
+    if (line === "" || line.startsWith("#")) return;
+    const m = ENV_LINE_RE.exec(line);
+    if (!m) problems.push(`release.env line ${i + 1} is not a plain KEY=<digest ref> assignment`);
+    else if (vars.has(m[1])) problems.push(`release.env sets ${m[1]} more than once`);
+    else vars.set(m[1], m[2]);
+  });
+  return { vars, problems };
+}
+
+/** release.env carries exactly the three image refs from the manifest, each once. */
 function checkReleaseEnv(text, images) {
   if (text === null) return ["bundle release.env missing or not a regular file"];
-  const problems = [];
-  const vars = new Map();
-  for (const line of text.split(/\r?\n/).filter((l) => l && !l.startsWith("#"))) {
-    const at = line.indexOf("=");
-    vars.set(at > 0 ? line.slice(0, at) : line, at > 0 ? line.slice(at + 1) : "");
-  }
+  const { vars, problems } = parseReleaseEnv(text);
   for (const [target, variable] of Object.entries(ENV_VARS)) {
     const want = images[target]?.ref;
     if (!want || vars.get(variable) !== want) problems.push(`release.env ${variable} does not match the manifest ${target} ref`);
   }
   for (const key of vars.keys()) {
-    if (Object.values(ENV_VARS).includes(key)) continue;
-    problems.push(ENV_KEY_RE.test(key) ? `release.env has an unexpected variable '${key}'` : "release.env has a line that is not an expected KEY=value");
+    if (!Object.values(ENV_VARS).includes(key)) problems.push(`release.env has an unexpected variable '${key}'`);
   }
   return problems;
 }
@@ -421,9 +435,14 @@ function planMigrations(targetLines, currentLines) {
   const added = names(target).filter((n) => !current.has(n));
   const removed = names(current).filter((n) => !target.has(n));
   const changed = names(target).filter((n) => current.has(n) && current.get(n) !== target.get(n));
-  const problems = removed.length
-    ? [`target release lacks ${removed.length} migration(s) the current release has: a schema downgrade is never automatic`]
-    : [];
+  const problems = [];
+  if (removed.length) {
+    problems.push(`target release lacks ${removed.length} migration(s) the current release has: a schema downgrade is never automatic`);
+  }
+  // packages/db/src/cli/migrate.ts tracks applied migrations by id only, so an edited applied migration never re-runs
+  if (changed.length) {
+    problems.push(`target release edits ${changed.length} applied migration(s) in place: the migrator will not re-apply them`);
+  }
   return { problems, plan: { targetCount: target.size, added, removed, changed, rollback: assessRollback(added, removed, changed) } };
 }
 

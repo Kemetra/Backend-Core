@@ -356,7 +356,9 @@ SQL) between the two releases. Even then, the contract still needs a
 compatibility review. Any schema change, an in-place edit included, means no
 automatic database downgrade: go to a restore or forward-fix decision, using
 verified backups and financial and outbox checks. Deploying a release that
-lacks a migration the host already has is refused.
+lacks a migration the host already has, or that edits an applied migration in
+place, is refused: the migrator tracks applied migrations by id only and never
+re-applies an edited one.
 
 A live run is a later, separately approved slice. It needs:
 

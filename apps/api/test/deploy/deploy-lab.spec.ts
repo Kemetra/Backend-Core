@@ -521,10 +521,29 @@ describe("verify-release: refusals", () => {
   });
 
   it("refuses a bundle whose release.env does not match the manifest", () => {
-    const files = { ...bundleFiles(), "release.env": `DP2_MIGRATE_IMAGE=${ref("migrate")}\nDP2_API_IMAGE=${ref("worker")}\nDP2_WORKER_IMAGE=${ref("worker")}\nEXTRA=1\n` };
+    const files = { ...bundleFiles(), "release.env": `DP2_MIGRATE_IMAGE=${ref("migrate")}\nDP2_API_IMAGE=${ref("worker")}\nDP2_WORKER_IMAGE=${ref("worker")}\nDP2_EXTRA_IMAGE=${ref("api")}\n` };
     writeRelease(files);
     expectRefused(/release.env DP2_API_IMAGE does not match/);
-    expectRefused(/unexpected variable 'EXTRA'/);
+    expectRefused(/unexpected variable 'DP2_EXTRA_IMAGE'/);
+  });
+
+  it("refuses a release.env that assigns a key twice, even when the last value is right", () => {
+    const injected = `DP2_API_IMAGE=x; touch /tmp/pwned\n${bundleFiles()["release.env"] ?? ""}`;
+    writeRelease({ ...bundleFiles(), "release.env": injected });
+    expectRefused(/release.env line 1 is not a plain KEY=<digest ref> assignment/);
+    const duplicated = `${bundleFiles()["release.env"] ?? ""}DP2_API_IMAGE=${ref("api")}\n`;
+    writeRelease({ ...bundleFiles(), "release.env": duplicated });
+    expectRefused(/release.env sets DP2_API_IMAGE more than once/);
+  });
+
+  it.each([
+    ["an export prefix", `export DP2_API_IMAGE=${ref("api")}`],
+    ["a quoted value", `DP2_API_IMAGE="${ref("api")}"`],
+    ["a trailing command", `DP2_API_IMAGE=${ref("api")} && id`],
+    ["a command substitution", `DP2_API_IMAGE=$(id)`],
+  ])("refuses a release.env line with %s", (_label, line) => {
+    writeRelease({ ...bundleFiles(), "release.env": `${line}\n${bundleFiles()["release.env"] ?? ""}` });
+    expectRefused(/release.env line 1 is not a plain KEY=<digest ref> assignment/);
   });
 
   it("refuses a bundle file that no longer matches its checksums", () => {
@@ -583,10 +602,11 @@ describe("verify-release: current release, schema and rollback", () => {
     expect(helper.assessRollback(["0002_sales.sql"], [])).toMatchObject({ allowed: false, reason: expect.stringMatching(/restore or forward-fix/) });
   });
 
-  it("refuses an app-only rollback past a migration edited in place (same name, new content)", () => {
+  it("refuses deploying, and rolling back, past a migration edited in place (same name, new content)", () => {
     writeCurrent(MIGRATIONS, { "packages/db/drizzle/0002_sales.sql": "f".repeat(40) });
     const { refusals, ledger } = helper.evaluate(dir, ctx({ currentRelease: OLD_TAG }));
-    expect(refusals).toEqual([]);
+    // migrate.ts tracks applied migrations by id only, so an edited applied migration never re-runs
+    expect(refusals).toEqual(["target release edits 1 applied migration(s) in place: the migrator will not re-apply them"]);
     expect(ledger.plan.migrations).toMatchObject({ added: [], removed: [], changed: ["0002_sales.sql"], rollback: { allowed: false } });
   });
 
@@ -781,7 +801,7 @@ describe("verify-release: review hardening", () => {
     const files = { ...bundleFiles(), "release.env": `${bundleFiles()["release.env"]}{"auths":{"ghcr.io":{"auth":"c2VjcmV0"}}}\n` };
     writeRelease(files);
     const refusals = refusalsOf();
-    expect(refusals).toContain("release.env has a line that is not an expected KEY=value");
+    expect(refusals).toContain("release.env line 5 is not a plain KEY=<digest ref> assignment");
     expect(refusals.join("\n")).not.toContain("c2VjcmV0");
   });
 
