@@ -23,43 +23,46 @@ export const FORCE_SAMPLE_ATTRIBUTE = "rt.force_sample";
 
 const LIVENESS_TRACER = "@data-pulse-2/shared/liveness";
 
+/** `OTEL_TRACES_SAMPLER_ARG` as the SDK reads it: a ratio in [0, 1], else 1. */
+function ratioSampler(arg: string | undefined): tracing.Sampler {
+  const ratio = Number(arg?.trim() || Number.NaN);
+  return new tracing.TraceIdRatioBasedSampler(ratio >= 0 && ratio <= 1 ? ratio : 1);
+}
+
+type SamplerFactory = (ratio: () => tracing.Sampler) => tracing.Sampler;
+
+const parentBased = (root: tracing.Sampler): tracing.Sampler => new tracing.ParentBasedSampler({ root });
+
+// The SDK's `OTEL_TRACES_SAMPLER` values. Anything else falls back to the
+// SDK default, parentbased_always_on.
+const SAMPLER_FACTORIES = new Map<string, SamplerFactory>([
+  ["always_on", () => new tracing.AlwaysOnSampler()],
+  ["always_off", () => new tracing.AlwaysOffSampler()],
+  ["traceidratio", (ratio) => ratio()],
+  ["parentbased_always_on", () => parentBased(new tracing.AlwaysOnSampler())],
+  ["parentbased_always_off", () => parentBased(new tracing.AlwaysOffSampler())],
+  ["parentbased_traceidratio", (ratio) => parentBased(ratio())],
+]);
+
 /** The sampler `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` select, as the SDK reads them. */
 export function samplerFromEnv(env: NodeJS.ProcessEnv = process.env): tracing.Sampler {
-  const ratio = (): tracing.Sampler => {
-    const arg = Number(env["OTEL_TRACES_SAMPLER_ARG"]?.trim() || Number.NaN);
-    return new tracing.TraceIdRatioBasedSampler(arg >= 0 && arg <= 1 ? arg : 1);
-  };
-  switch (env["OTEL_TRACES_SAMPLER"]?.trim().toLowerCase()) {
-    case "always_on":
-      return new tracing.AlwaysOnSampler();
-    case "always_off":
-      return new tracing.AlwaysOffSampler();
-    case "traceidratio":
-      return ratio();
-    case "parentbased_always_off":
-      return new tracing.ParentBasedSampler({ root: new tracing.AlwaysOffSampler() });
-    case "parentbased_traceidratio":
-      return new tracing.ParentBasedSampler({ root: ratio() });
-    default:
-      return new tracing.ParentBasedSampler({ root: new tracing.AlwaysOnSampler() });
-  }
+  const name = env["OTEL_TRACES_SAMPLER"]?.trim().toLowerCase() ?? "";
+  const factory = SAMPLER_FACTORIES.get(name) ?? SAMPLER_FACTORIES.get("parentbased_always_on")!;
+  return factory(() => ratioSampler(env["OTEL_TRACES_SAMPLER_ARG"]));
 }
+
+type ShouldSampleArgs = [Context, string, string, SpanKind, Attributes, Link[]];
 
 class ForceSampleSampler implements tracing.Sampler {
   constructor(private readonly delegate: tracing.Sampler) {}
 
-  shouldSample(
-    context: Context,
-    traceId: string,
-    spanName: string,
-    spanKind: SpanKind,
-    attributes: Attributes,
-    links: Link[],
-  ): tracing.SamplingResult {
-    if (attributes[FORCE_SAMPLE_ATTRIBUTE] === true) {
+  // The OTel `Sampler` signature: (context, traceId, spanName, spanKind,
+  // attributes, links). Only `attributes` is read here.
+  shouldSample(...args: ShouldSampleArgs): tracing.SamplingResult {
+    if (args[4][FORCE_SAMPLE_ATTRIBUTE] === true) {
       return { decision: tracing.SamplingDecision.RECORD_AND_SAMPLED };
     }
-    return this.delegate.shouldSample(context, traceId, spanName, spanKind, attributes, links);
+    return this.delegate.shouldSample(...args);
   }
 
   toString(): string {
