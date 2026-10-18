@@ -259,9 +259,10 @@ class MessageToken {
     if (this.unwrapped() === "bearer") return { text: REDACTED, maskNext: true };
     const url = this.withoutUrl();
     const authorization = url.maskedAuthorization();
-    if (authorization) return authorization;
-    const masked = url.withoutJwt();
-    return { text: masked.isEmailLike() ? "[email]" : new PhoneMasker(masked.text).masked(), maskNext: false };
+    // The rest of the word (the part before `authorization=`) still gets the JWT/email/phone masks.
+    const masked = (authorization ? new MessageToken(authorization.text) : url).withoutJwt();
+    const text = masked.isEmailLike() ? "[email]" : new PhoneMasker(masked.text).masked();
+    return { text, maskNext: authorization?.maskNext ?? false };
   }
 
   /**

@@ -358,6 +358,10 @@ describe("OBS-1 §3.5 golden vectors (RT-682: Bearer/Authorization and phones)",
     ["a national mobile behind a stray +", "call +01012345678 now", "call +[phone] now"],
     ["a country-code mobile glued to a letter before the +", "x+201000000638 kept", "x+[phone] kept"],
     ["a trailing Authorization with nothing after it", "missing Authorization:", "missing Authorization:"],
+    ["a phone before authorization= in one word", '{"phone":"01012345678","authorization":"x"}', '{"phone":"[phone]","authorization":[redacted]'],
+    ["an email before authorization= in one word", "jane@example.invalid,authorization=x", "[email]"],
+    ["a JWT before authorization= in one word", "id_token=eyJa.b.c;authorization=x", "id_token=[jwt]"],
+    ["a phone before an empty Authorization value", "+201000000638;Authorization: Bearer x", "[phone];Authorization: [redacted] [redacted]"],
   ])("follows the §3.2 phone/Authorization text on %s", (_label, input, expected) => {
     expect(scrubValue(input)).toBe(expected);
   });
