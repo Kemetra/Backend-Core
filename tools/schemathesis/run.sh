@@ -145,7 +145,9 @@ for group in "${groups[@]}"; do
 
     # The session must survive every file; a dead cookie would make the rest meaningless.
     if [[ "$group" == "operator" ]]; then
-      [[ "$(envelope_alive "$credential")" != "401" ]] || { echo "operator envelope was rejected after $file" >&2; exit 1; }
+      probe="$(envelope_alive "$credential")"
+      # An answer other than 401 means the envelope is accepted; "dead" (no HTTP answer) is a failure too.
+      [[ "$probe" =~ ^[0-9]{3}$ && "$probe" != "401" ]] || { echo "operator envelope was rejected or the API did not answer ($probe) after $file" >&2; exit 1; }
     else
       [[ "$(session_alive "$credential")" == "200" ]] || { echo "$group session was lost after $file" >&2; exit 1; }
     fi
