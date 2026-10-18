@@ -149,7 +149,7 @@ describe("release-images workflow", () => {
 
   it("keeps every publication step (push, login for push, attest, release) behind publish=true", () => {
     const publication = allSteps.filter(({ step }) => isPublication(step));
-    expect(publication.length).toBe(3 + 3 + 1);
+    expect(publication).toHaveLength(3 + 3 + 1);
     for (const { jobName, job } of publication) {
       expect(jobName).toBe("publish");
       expect(job.if).toBe("inputs.publish == true");

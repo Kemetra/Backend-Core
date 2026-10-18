@@ -169,22 +169,16 @@ describe("T471 — label policy: db_slow_query_total (query_class)", () => {
     expect(validateMetricLabels("db_slow_query_total", [])).toBeNull();
   });
 
-  it("validateMetricLabels rejects tenant_id — forbidden_label (FR-B-006)", () => {
-    const err = validateMetricLabels("db_slow_query_total", ["tenant_id"]);
-    expect(err?.kind).toBe("forbidden_label");
-  });
-
-  it("validateMetricLabels rejects query_text — forbidden_label (raw query is PII-suspect)", () => {
-    // query_text is in FORBIDDEN_METRIC_LABELS — rendered SQL may contain
-    // parameter values which are PII-suspect (redaction matrix §3.3).
-    const err = validateMetricLabels("db_slow_query_total", ["query_text"]);
-    expect(err?.kind).toBe("forbidden_label");
-  });
-
-  it("validateMetricLabels rejects query (raw SQL identifier) — forbidden_label", () => {
-    const err = validateMetricLabels("db_slow_query_total", ["query"]);
-    expect(err?.kind).toBe("forbidden_label");
-  });
+  // tenant_id: FR-B-006. query_text / query: rendered SQL may contain parameter
+  // values which are PII-suspect (redaction matrix §3.3).
+  it.each(["tenant_id", "query_text", "query"])(
+    "validateMetricLabels rejects %s — forbidden_label",
+    (label) => {
+      expect(validateMetricLabels("db_slow_query_total", [label])?.kind).toBe(
+        "forbidden_label",
+      );
+    },
+  );
 
   it("validateMetricLabels rejects region — unallowed_label (not in allowlist)", () => {
     const err = validateMetricLabels("db_slow_query_total", ["region"]);

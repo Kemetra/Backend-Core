@@ -158,30 +158,14 @@ describe("T036 — list pagination / limit (FR-005, reject-not-clamp)", () => {
     await http().get("/api/v1/catalog/unknown-items?limit=200").expect(200);
   });
 
-  it("limit=201 (over max) → 400 validation, NOT clamped to 200", async () => {
+  it.each([
+    ["limit=201 (over max) → 400 validation, NOT clamped to 200", "limit=201"],
+    ["limit=0 (under min) → 400 validation", "limit=0"],
+    ["limit=-5 (negative) → 400 validation", "limit=-5"],
+    ["limit=abc (non-integer) → 400 validation", "limit=abc"],
+    ["an unknown query param is rejected (.strict) → 400", "bogus=1"],
+  ])("%s", async (_label, query) => {
     if (maybeSkip()) return;
-    await http().get("/api/v1/catalog/unknown-items?limit=201").expect(400);
-  });
-
-  it("limit=0 (under min) → 400 validation", async () => {
-    if (maybeSkip()) return;
-    await http().get("/api/v1/catalog/unknown-items?limit=0").expect(400);
-  });
-
-  it("limit=-5 (negative) → 400 validation", async () => {
-    if (maybeSkip()) return;
-    await http().get("/api/v1/catalog/unknown-items?limit=-5").expect(400);
-  });
-
-  it("limit=abc (non-integer) → 400 validation", async () => {
-    if (maybeSkip()) return;
-    await http().get("/api/v1/catalog/unknown-items?limit=abc").expect(400);
-  });
-
-  it("an unknown query param is rejected (.strict) → 400", async () => {
-    if (maybeSkip()) return;
-    await http()
-      .get("/api/v1/catalog/unknown-items?bogus=1")
-      .expect(400);
+    await http().get(`/api/v1/catalog/unknown-items?${query}`).expect(400);
   });
 });

@@ -410,7 +410,7 @@ describe("cross-table regression sweep after migration 0006 (T598)", () => {
       [expectedRlsTables],
     );
 
-    expect(r.rows.length).toBe(expectedRlsTables.length);
+    expect(r.rows).toHaveLength(expectedRlsTables.length);
     for (const row of r.rows) {
       expect({ table: row.relname, rls: row.relrowsecurity }).toMatchObject({
         table: row.relname,

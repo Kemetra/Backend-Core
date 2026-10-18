@@ -81,32 +81,14 @@ describe("POST /api/pos/v1/audit-events", () => {
     expect(fakeClerkVerifier.verify).not.toHaveBeenCalled();
   });
 
-  it("Authorization header too short (B1.0): returns 401", async () => {
+  it.each([
+    ["Authorization header too short (B1.0)", "X"],
+    ["Authorization header with wrong prefix (B2.0)", "Basic dXNlcjpwYXNz"],
+    ["Authorization header with empty token after prefix (B3.0)", "Bearer   "],
+  ])("%s: returns 401", async (_label, authorization) => {
     const res = await http()
       .post("/api/pos/v1/audit-events")
-      .set("Authorization", "X")
-      .send(validBody);
-
-    expect(res.status).toBe(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-    expect(fakeService.syncBatch).not.toHaveBeenCalled();
-  });
-
-  it("Authorization header with wrong prefix (B2.0): returns 401", async () => {
-    const res = await http()
-      .post("/api/pos/v1/audit-events")
-      .set("Authorization", "Basic dXNlcjpwYXNz")
-      .send(validBody);
-
-    expect(res.status).toBe(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-    expect(fakeService.syncBatch).not.toHaveBeenCalled();
-  });
-
-  it("Authorization header with empty token after prefix (B3.0): returns 401", async () => {
-    const res = await http()
-      .post("/api/pos/v1/audit-events")
-      .set("Authorization", "Bearer   ")
+      .set("Authorization", authorization)
       .send(validBody);
 
     expect(res.status).toBe(401);
