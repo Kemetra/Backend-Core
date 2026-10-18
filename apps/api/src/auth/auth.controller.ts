@@ -17,7 +17,9 @@
  *     in production. Tests run with NODE_ENV=test so the cookie is
  *     accepted over HTTP.
  *   - Rate limits are enforced HERE, before any DB work, using the
- *     slice-3b RateLimiter + RATE_LIMIT_BUCKETS.
+ *     slice-3b RateLimiter + RATE_LIMIT_BUCKETS. RT-628 (owner ruling O6):
+ *     on the public routes the limiter call is bounded, and a Redis outage
+ *     fails closed with 503 + `Retry-After` (see `public-auth-limiter.ts`).
  *   - Real email delivery is OUT OF SCOPE: the service calls a NoOp
  *     `EmailJobEnqueuer` by default. T112/T113 swap in BullMQ.
  */
@@ -43,7 +45,17 @@ import { Public } from "./route-auth";
 import {
   RATE_LIMIT_BUCKETS,
   RateLimiter,
+  type RateLimitDecision,
 } from "./rate-limit";
+import {
+  checkWithin,
+  PUBLIC_AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS,
+  PublicAuthLimiterUnavailable,
+  publicAuthUnavailable,
+  readPublicAuthLimiterTimeoutMs,
+  releaseWithin,
+} from "./public-auth-limiter";
+import { createLogger, type Logger } from "@data-pulse-2/shared";
 import {
   EmailVerifyConfirmSchema,
   PasswordResetConfirmSchema,
@@ -90,8 +102,17 @@ const RATE_LIMIT_429: HttpException = new HttpException(
   HttpStatus.TOO_MANY_REQUESTS,
 );
 
+let logger: Logger | null = null;
+function log(): Logger {
+  logger ??= createLogger({ service: "api.auth", level: process.env["LOG_LEVEL"] ?? "info" });
+  return logger;
+}
+
 @Controller("api/v1/auth")
 export class AuthController {
+  /** RT-628: bound on each public-auth limiter call, read once at boot. */
+  private readonly limiterTimeoutMs = readPublicAuthLimiterTimeoutMs();
+
   constructor(
     private readonly authService: AuthService,
     private readonly rateLimiter: RateLimiter,
@@ -118,10 +139,10 @@ export class AuthController {
     // concurrent guesses cannot overrun the limit, and released again
     // unless the attempt fails authentication. The per-IP budget still
     // counts every attempt.
-    await this.guardRateLimit("signin_account", body.email, RATE_LIMIT_BUCKETS.signInPerAccount);
+    await this.guardRateLimit("signin_account", body.email, RATE_LIMIT_BUCKETS.signInPerAccount, res);
     let result: SignInResult;
     try {
-      await this.guardRateLimit("signin_ip", ip, RATE_LIMIT_BUCKETS.signInPerIp);
+      await this.guardRateLimit("signin_ip", ip, RATE_LIMIT_BUCKETS.signInPerIp, res);
       result = await this.authService.signIn(body);
     } catch (err) {
       // Every credential failure (unknown email, wrong password, SSO-only,
@@ -202,9 +223,10 @@ export class AuthController {
     @Body(new ZodValidationPipe(PasswordResetRequestSchema))
     body: PasswordResetRequestInput,
     @Req() req: AuthedRequest,
+    @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
     const ip = readClientIp(req);
-    await this.guardRateLimit("pwreset_ip", ip, RATE_LIMIT_BUCKETS.passwordResetPerIp);
+    await this.guardRateLimit("pwreset_ip", ip, RATE_LIMIT_BUCKETS.passwordResetPerIp, res);
     await this.authService.requestPasswordReset({ email: body.email });
     // Body is empty — contract says 202 with no schema.
   }
@@ -220,9 +242,10 @@ export class AuthController {
     @Body(new ZodValidationPipe(PasswordResetConfirmSchema))
     body: PasswordResetConfirmInput,
     @Req() req: AuthedRequest,
+    @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
     const ip = readClientIp(req);
-    await this.guardRateLimit("pwreset_confirm_ip", ip, RATE_LIMIT_BUCKETS.passwordResetConfirmPerIp);
+    await this.guardRateLimit("pwreset_confirm_ip", ip, RATE_LIMIT_BUCKETS.passwordResetConfirmPerIp, res);
     await this.authService.confirmPasswordReset({
       rawToken: body.token,
       newPassword: body.new_password,
@@ -282,17 +305,36 @@ export class AuthController {
    * authentication (RT-136). Best-effort: if the release itself fails, the
    * hit stays counted — over-counting is the safe direction, and a
    * successful sign-in must not turn into a 500 after its session exists.
+   * RT-628: bounded like the check, so a Redis outage cannot hang the
+   * response here either.
    */
   private async releaseAccountAttempt(email: string): Promise<void> {
-    await this.rateLimiter.release("signin_account", email).catch(() => undefined);
+    await releaseWithin(this.rateLimiter, "signin_account", email, this.limiterTimeoutMs);
   }
 
   private async guardRateLimit(
     bucket: string,
     identifier: string,
     policy: { limit: number; windowMs: number },
+    res: Response,
   ): Promise<void> {
-    const decision = await this.rateLimiter.check(bucket, identifier, policy);
+    let decision: RateLimitDecision;
+    try {
+      decision = await checkWithin(
+        this.rateLimiter,
+        { bucketName: bucket, identifier, bucket: policy },
+        this.limiterTimeoutMs,
+      );
+    } catch (err) {
+      // RT-628, owner ruling O6: fail closed, deliberately. The log names the
+      // bucket only (no email or IP: observability contract, no PII).
+      log().warn(
+        { bucket, reason: err instanceof PublicAuthLimiterUnavailable ? err.reason : "error" },
+        "public-auth rate limiter unavailable; failing closed (503)",
+      );
+      res.setHeader("Retry-After", String(PUBLIC_AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS));
+      throw publicAuthUnavailable();
+    }
     if (!decision.allowed) {
       // T470 — observability: a 429 on a sign-in bucket is a failed auth
       // attempt AND the existing rate-limit detector for rapid-retry
