@@ -346,10 +346,11 @@ of the two-phase fallback), it rejects:
 - any change of `default_price`/`default_currency_code`, or `price`/`currency_code`;
 - an `INSERT` that sets a price;
 - a `DELETE` of an override row whose `price` is set;
-- a change of `retired_at` (retire or reactivate) on an override row whose `price` is set. Legacy read-down joins only
-  non-retired overrides, so retiring one switches the served price to the tenant default without touching `price`;
-- an `UPDATE` that un-retires an override row carrying a price, or an `INSERT` of a non-retired override with a price,
-  for the same reason.
+- a change of `retired_at` (retire or reactivate) on an override row whose `price` is set, **while the tenant is
+  `cutover_in_progress`**. Legacy read-down joins only non-retired overrides, so retiring one would switch the served
+  price between the final import and the flip. Under `pricing` the legacy price is not served, so retiring is allowed:
+  Assortment (still on legacy until RT-281) can retire such rows, and R1's reverse projection rebuilds override rows
+  anyway.
 
 The trigger reads the tenant's authority row with `SELECT … FOR SHARE`. A legacy price write that starts while a
 cutover holds the row `FOR UPDATE` therefore waits, then re-reads the committed value: `pricing` after a successful
@@ -611,7 +612,7 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 
 - Import idempotence: run twice with no legacy change → exactly one revision. Delta: price change, currency change, override add, retire and delete, product retire → one revision each with the right supersede and carried-forward rows.
 - Import refused under `pricing`, and under `cutover_in_progress` unless called by the cutover; allowed there for the cutover's own final import; refused for a multi-currency tenant; refused without MC-10 inputs; a tenant with no priced rows gets a Book from the declared currency and resolves `unpriced(no_price)`.
-- Freeze trigger under the two-phase fallback: with `cutover_in_progress` committed, legacy price writes are rejected. Retiring or reactivating a priced override is rejected too, in every non-legacy state; retiring a price-less override is allowed.
+- Freeze trigger under the two-phase fallback: with `cutover_in_progress` committed, legacy price writes are rejected. Retiring or reactivating a priced override is rejected under `cutover_in_progress` and allowed under `pricing`; retiring a price-less override is always allowed.
 - Freeze trigger: under `pricing`, each legacy writer (seed path, `StoreOverrideService.create`, raw SQL `UPDATE`/`INSERT`/`DELETE`) is rejected; non-price columns still change; the runtime role cannot bypass the freeze, even with `set_config`; only `pricing_reverse_project` can.
 - RLS: the new tables isolate tenants (the isolation-harness pattern); tenant A's cutover does not freeze tenant B.
 - Cutover abort: inject one mismatch → `ROLLBACK`; tenant state, legacy rows and Pricing tables byte-identical to before; run row records the failure.
