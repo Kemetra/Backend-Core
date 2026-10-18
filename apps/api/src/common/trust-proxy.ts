@@ -32,10 +32,14 @@ export function resolveTrustProxySetting(
   return /^\d+$/.test(raw) ? Number(raw) : raw === "true";
 }
 
+function isRecognizedTrustProxy(raw: string): boolean {
+  if (/^\d+$/.test(raw)) return true;
+  return raw === "true" || raw === "false";
+}
+
 function isDeployed(env: NodeJS.ProcessEnv): boolean {
-  return env["NODE_ENV"] === "production" || ["staging", "pilot", "prod"].includes(
-    resolveDeploymentEnvironment(env) ?? "",
-  );
+  if (env["NODE_ENV"] === "production") return true;
+  return ["staging", "pilot", "prod"].includes(resolveDeploymentEnvironment(env) ?? "");
 }
 
 /**
@@ -47,7 +51,7 @@ export function checkTrustProxyConfig(
 ): TrustProxyCheck {
   if (!isDeployed(env)) return { warn: false };
   const raw = env["TRUST_PROXY"] ?? "";
-  if (/^\d+$/.test(raw) || raw === "true" || raw === "false") return { warn: false };
+  if (isRecognizedTrustProxy(raw)) return { warn: false };
   if (env["TRUST_PROXY_REQUIRED"] === "true") {
     throw new Error(
       "TRUST_PROXY must be set to a hop count, true, or false in a deployed environment " +
