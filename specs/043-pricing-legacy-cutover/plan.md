@@ -119,9 +119,13 @@ queries (including 1b). If `price_history` is non-empty, it also records whether
 
 For each tenant, the import first creates (once, idempotently) the v1 structure of spec 041 OD-1:
 
-- one retail **Price Book**: `currency_code` = the tenant's single legacy currency (§4.4 rejects tenants with more
-  than one); `tax_price_basis` = a **declared per-tenant input** (decision MC-10). The import refuses to run without it.
-  Legacy data carries no basis, and Pricing must not guess a Fiscal fact (G3, RT-294);
+- one retail **Price Book**. Both of its declared attributes are **per-tenant inputs** to the import (decision MC-10),
+  and the import refuses to run without them:
+  - `currency_code`. It must equal the tenant's single legacy currency when the tenant has priced rows (§4.4 rejects
+    tenants with more than one). A tenant with **no priced rows at all** still gets its Book from the declared
+    currency, so the resolver answers `unpriced(no_price)`, which §5.2 treats as equivalent to legacy unpriced. It never
+    answers `no_price_book`.
+  - `tax_price_basis`. Legacy data carries no basis, and Pricing must not guess a Fiscal fact (G3, RT-294).
 - its default **Zone** (`is_default = true`, immutable per Q-8). No other Zones and no memberships are created; every
   Store falls back to the default Zone, which reproduces the legacy two-level `Store ⊕ tenant` shape exactly.
 
@@ -210,11 +214,21 @@ import picks it up. No exception is ever "accepted" into Pricing.
 ### 4.5 `price_history` (decision MC-3)
 
 - **Empty** (expected, F2): nothing to do. The table stays as is.
-- **Non-empty:** import closed intervals as historical `legacy_import` events, flagged in the run report, **only if**
-  the open intervals equal the current legacy values and the intervals of each key do not overlap. Otherwise import
-  none of it, and report the inconsistency.
-  - **Same basis as the rest of the key (Q-6).** History events are `store_local` too. Their bounds are converted
-    with the MC-1 rule: the Store's zone for store-level rows, and the westernmost active zone for tenant-level rows.
+- **Non-empty:** import a key's closed intervals as historical `legacy_import` events, flagged in the run report, only
+  when **all** of these hold for that key:
+  - its open interval equals the current legacy value;
+  - its intervals do not overlap;
+  - every interval passes the same value checks as current prices: no zero price, minor-unit exact, and the Book
+    currency (§4.4);
+  - its bounds can be represented exactly as `store_local`. A store-level row always can, using that Store's zone. A
+    tenant-level row can only when all the tenant's active Stores share one zone, because a single local value read
+    in several zones would shift the original instants.
+
+  Any other key's history is **not imported**. It is listed in the run report by reason, and its current event starts
+  at `T` as in §4.2. Unimported history does not block cutover: historical sold prices are answered from sale facts,
+  and `price_history` stays available read-only.
+  - **Same basis as the rest of the key (Q-6).** Imported history events are `store_local`, with bounds converted
+    exactly in the single applicable zone.
   - **Contiguous timeline.** The key's current event then starts at the converted `effective_from` of its open
     `price_history` interval, instead of `T0`.
   - **Result.** One key holds one contiguous `store_local` timeline, with no `absolute` events mixed in.
@@ -294,7 +308,8 @@ Only the cutover (§6.3) and rollback (§8) procedures change the row, under the
 ### 6.2 Freeze mechanism (decision MC-5)
 
 A `BEFORE INSERT OR UPDATE OR DELETE` trigger on `tenant_products` and `store_product_overrides`. When the row's tenant
-has `authority = pricing`, it rejects:
+has `authority` ∈ {`cutover_in_progress`, `pricing`} (any non-`legacy` state, including the committed first phase
+of the two-phase fallback), it rejects:
 
 - any change of `default_price`/`default_currency_code`, or `price`/`currency_code`;
 - an `INSERT` that sets a price;
@@ -507,14 +522,14 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 |---|---|---|---|
 | **MC-1** | Time basis of imported events | `store_local`; Store events at `T` in the Store's zone; Book events at `T` in the tenant's westernmost active zone (§4.2) | `absolute` instants, which needs a Q-6 amendment (a carry rule across bases) and makes the first ordinary edit of an imported key awkward |
 | **MC-2** | Legacy values Pricing rejects (zero, sub-minor, foreign currency) | Not imported; each is a per-tenant **cutover blocker**, fixed on the legacy side (§4.4) | Import them with a waiver flag (breaks Q-4 and spec 041 §6); skip silently (makes overrides fall back to the Book price — a wrong price) |
-| **MC-3** | `price_history` | Import closed intervals only if consistent with current legacy; otherwise report only; table kept read-only (§4.5) | Always ignore it; always import it |
+| **MC-3** | `price_history` | Per key: import closed intervals only if consistent with current legacy, valid as Pricing values, and exactly representable as `store_local`; otherwise report only. Never blocks cutover; table kept read-only (§4.5) | Always ignore it; always import it |
 | **MC-4** | Authority state | One per-tenant row that decides both write authority and read-down source (§6.1) | Two flags (write, serve), which can diverge |
 | **MC-5** | Freeze | DB trigger on the legacy tables, per tenant, plus a transaction-local projection-writer GUC (§6.2) | Application checks only (misses direct SQL and the seed CLI); revoking column privileges (not per tenant) |
 | **MC-6** | Legacy columns after cutover | Frozen snapshot as at cutover; refreshed only by the R1 reverse projection (§6.4) | A maintained write-through projection, which needs an activation-time writer for a column nobody reads |
 | **MC-7** | Evidence threshold | rt9 full rehearsal incl. rollback; pilot ≥ 7 days incl. a weekend with 0 unexplained; 0 mismatches in-transaction (§5.4) | 48 h window; in-transaction sweep only |
 | **MC-8** | Cutover execution | One transaction per tenant; two-phase fallback only above ~500 000 pairs, as settled by PR-03E (§6.3) | Always two-phase |
 | **MC-9** | POS contract under strict validation | Cutover leaves v1 schema-identical; PR-06 ships v-next as a new versioned surface; POS pins it in PR-P1 (§7) | Same-path additive bump in lockstep with a POS release (needs the whole fleet updated first) |
-| **MC-10** | Book `tax_price_basis` for an existing tenant | A declared per-tenant input to the import, recorded with its evidence; no default | Default to `inclusive` (a Fiscal guess, G3) |
+| **MC-10** | Book `tax_price_basis` and `currency_code` for an existing tenant | Declared per-tenant inputs to the import, recorded with their evidence; no default. The currency must match the legacy currency when one exists, and it is still required for a tenant with no priced rows | Default to `inclusive` (a Fiscal guess, G3) |
 | **MC-11** | New tenants | Start on `legacy` until the pilot has passed its rollback window on `pricing`; then start on `pricing` | Start on `pricing` immediately after PR-16b ships |
 | **MC-12** | Rollback window | 14 days per tenant (§8.4) | 7 days; open-ended |
 
@@ -524,7 +539,7 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 
 - Import mapper: legacy rows → desired events, for every row of §4.2, including overrides with a null price and inactive products.
 - Exception classifier: every class in §4.4, at `numeric(19,4)` edge values (`0.0001`, `12.345`, `12.3400`).
-- `price_history` conversion (MC-3): closed intervals become one contiguous `store_local` timeline per key.
+- `price_history` conversion (MC-3): closed intervals become one contiguous `store_local` timeline per key. A key with a zero, sub-minor or foreign-currency interval is skipped and reported. A tenant-level key in a multi-zone tenant is skipped and reported.
 - Bound computation (MC-1): single zone; multi-zone tenant; a Store across a DST transition at `T` (Q-2 rules).
 - Equivalence classifier: each row of §5.2 and each class of §5.3, including decimal formatting (`12.5` vs `12.5000`).
 - Reverse projection planner: book/store split; override insert, clear and retire; `unpriced`.
@@ -532,7 +547,8 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 **Integration (Testcontainers, `db-integration`)**
 
 - Import idempotence: run twice with no legacy change → exactly one revision. Delta: price change, currency change, override add, retire and delete, product retire → one revision each with the right supersede and carried-forward rows.
-- Import refused under `pricing`, and under `cutover_in_progress` unless called by the cutover; allowed there for the cutover's own final import; refused for a multi-currency tenant; refused without MC-10 input.
+- Import refused under `pricing`, and under `cutover_in_progress` unless called by the cutover; allowed there for the cutover's own final import; refused for a multi-currency tenant; refused without MC-10 inputs; a tenant with no priced rows gets a Book from the declared currency and resolves `unpriced(no_price)`.
+- Freeze trigger under the two-phase fallback: with `cutover_in_progress` committed, legacy price writes are rejected.
 - Freeze trigger: under `pricing`, each legacy writer (seed path, `StoreOverrideService.create`, raw SQL `UPDATE`/`INSERT`/`DELETE`) is rejected; non-price columns still change; the GUC bypass works only inside its transaction.
 - RLS: the new tables isolate tenants (the isolation-harness pattern); tenant A's cutover does not freeze tenant B.
 - Cutover abort: inject one mismatch → `ROLLBACK`; tenant state, legacy rows and Pricing tables byte-identical to before; run row records the failure.
