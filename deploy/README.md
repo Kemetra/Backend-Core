@@ -429,9 +429,47 @@ op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml -
 ```
 
 Traces are sampled at 10% by default (`OTEL_TRACES_SAMPLER_ARG`). Not covered yet:
-container logs and host metrics (they need the Docker socket mounted into the
-Agent, which is a separate approval), worker metrics (the worker listener binds
-`127.0.0.1`), and BullMQ failed-job events in Sentry.
+container logs and Docker/container metrics (they need the Docker socket mounted
+into the Agent, which is a separate approval), worker metrics (the worker listener
+binds `127.0.0.1`), and BullMQ failed-job events in Sentry.
+
+**Host network and Redis metrics (optional, RT-636).** Out of the box the Agent
+reports CPU, memory, disk and I/O but no `system.net.*`, because it sits in its own
+network namespace. A private override can add host network metrics without the
+Docker socket or host networking. The Agent stays on the `dp2` network, so OTLP
+and the api scrape keep working. A read-only host `/proc` mount is still a host
+mount, so it needs the same explicit approval:
+
+```yaml
+services:
+  datadog-agent:
+    environment:
+      DD_PROCFS_PATH: /host/proc   # system checks read the host's /proc
+      HOST_PROC: /proc             # keeps the OTLP receiver on the container's own procfs
+      DD_PROCESS_CONFIG_PROCESS_COLLECTION_ENABLED: "false"
+      DD_PROCESS_CONFIG_CONTAINER_COLLECTION_ENABLED: "false"
+      DD_PROCESS_CONFIG_PROCESS_DISCOVERY_ENABLED: "false"
+      DD_DISCOVERY_ENABLED: "false"
+      DD_REMOTE_CONFIGURATION_ENABLED: "false"
+      DD_INVENTORIES_CONFIGURATION_ENABLED: "false"
+    volumes:
+      - /proc:/host/proc:ro
+      - <private>/network.yaml:/etc/datadog-agent/conf.d/network.d/conf.yaml:ro
+      - <private>/redisdb.yaml:/etc/datadog-agent/conf.d/redisdb.d/conf.yaml:ro
+```
+
+- Without `HOST_PROC: /proc`, the Agent's OTLP pipeline fails at start with
+  `failed to register process metrics: process does not exist`. Nothing then
+  listens on 4318, and traces stop.
+- Once host `/proc` is visible, the collectors listed above could read host
+  process command lines, so they are switched off in the same change.
+- In `network.yaml`, set `excluded_interface_re: '^(veth|docker0$)'`. This skips
+  the per-container `veth*` names, which change on every recreate.
+- `redisdb.yaml` points at `host: redis`, `port: 6379`, with the Redis password,
+  `command_stats: false` and `collect_client_metrics: false`. It holds a secret,
+  so keep it root-only (0600).
+- A config-only change does not recreate the Agent. Apply it with
+  `up -d --no-deps --force-recreate datadog-agent`.
 
 **Rollback.** Unset `SENTRY_DSN` and `CONSOLE_SENTRY_DSN` and recreate `api`/`worker` to stop Sentry egress;
 stop the Agent with `docker compose -f docker-compose.prod.yml --profile datadog stop datadog-agent`
