@@ -172,7 +172,7 @@ describe("025-US1 §1 — consolidated summary aggregates posting + reconciliati
     expect(typeof d["reconciliation"]!.headlineCount).toBe("number");
   });
 
-  it("reports 020 connector_health + 021 product_master as not_available (FR-004)", async () => {
+  it("reports 021 product_master as not_available (FR-004); connector_health with no instances too (RT-563)", async () => {
     if (skip()) return;
     const res = await http().get(BASE).expect(200);
     const d = byDomain(res.body);
@@ -261,5 +261,113 @@ describe("025-US1 §4 — §XII strict DTO", () => {
   it("a non-uuid store_id → 400", async () => {
     if (skip()) return;
     await http().get(BASE).query({ store_id: "not-a-uuid" }).expect(400);
+  });
+});
+
+describe("RT-563 — connector_health derived from the 020 read model", () => {
+  const T_STALE = "0c000000-0000-7000-8000-00000e0563a1";
+  const T_NEVER = "0c000000-0000-7000-8000-00000e0563a2";
+  const T_OK = "0c000000-0000-7000-8000-00000e0563a3";
+  const T_DISABLED = "0c000000-0000-7000-8000-00000e0563a4";
+  const REG = (n: number): string =>
+    `0c000000-0000-7000-8000-00000e0563b${n}`;
+
+  const seedTenant = async (
+    tenant: string,
+    slug: string,
+    regs: ReadonlyArray<{
+      id: string;
+      lastSeenSql: string | null; // null = no health row
+      disabled?: boolean;
+    }>,
+  ): Promise<void> => {
+    const a = env!.admin;
+    await a.query(
+      `INSERT INTO tenants (id, slug, name, default_currency_code)
+       VALUES ($1, $2, $2, 'USD') ON CONFLICT (id) DO NOTHING`,
+      [tenant, slug],
+    );
+    for (const r of regs) {
+      await a.query(
+        `INSERT INTO connector_registration
+           (id, tenant_id, display_name, erpnext_site_ref, environment, created_by)
+         VALUES ($1, $2, $3, $4, 'pilot', $5) ON CONFLICT (id) DO NOTHING`,
+        [r.id, tenant, `C ${r.id.slice(-2)}`, `erp-${r.id.slice(-4)}.rt563`, ACTOR_A],
+      );
+      if (r.disabled) {
+        await a.query(
+          `UPDATE connector_registration SET disabled_at = now(), disabled_by = $2
+            WHERE id = $1`,
+          [r.id, ACTOR_A],
+        );
+      }
+      if (r.lastSeenSql !== null) {
+        await a.query(
+          `INSERT INTO connector_health
+             (id, tenant_id, connector_registration_id, last_seen_at)
+           VALUES (gen_random_uuid(), $1, $2, ${r.lastSeenSql})
+           ON CONFLICT (connector_registration_id) DO NOTHING`,
+          [tenant, r.id],
+        );
+      }
+    }
+  };
+
+  const get = async (tenant: string): Promise<DomainSummary> => {
+    contextGuard.tenantId = tenant;
+    const res = await http().get(BASE).expect(200);
+    return byDomain(res.body)["connector_health"]!;
+  };
+
+  it("no instances -> not_available (empty tenant)", async () => {
+    if (skip()) return;
+    const d = await get(TENANT_EMPTY);
+    expect(d.status).toBe("not_available");
+    expect(d.headlineCount).toBeNull();
+  });
+
+  it("all never_seen -> attention, not ok", async () => {
+    if (skip()) return;
+    await seedTenant(T_NEVER, "rt563never", [
+      { id: REG(1), lastSeenSql: null },
+      { id: REG(2), lastSeenSql: null },
+    ]);
+    const d = await get(T_NEVER);
+    expect(d.status).toBe("attention");
+    expect(d.headlineCount).toBe(2);
+  });
+
+  it("mixed healthy + stale -> attention with count 1", async () => {
+    if (skip()) return;
+    await seedTenant(T_STALE, "rt563stale", [
+      { id: REG(3), lastSeenSql: "now()" },
+      { id: REG(4), lastSeenSql: "now() - interval '1 hour'" },
+    ]);
+    const d = await get(T_STALE);
+    expect(d.status).toBe("attention");
+    expect(d.headlineCount).toBe(1);
+  });
+
+  it("all healthy -> ok", async () => {
+    if (skip()) return;
+    await seedTenant(T_OK, "rt563ok", [{ id: REG(5), lastSeenSql: "now()" }]);
+    const d = await get(T_OK);
+    expect(d.status).toBe("ok");
+    expect(d.headlineCount).toBe(0);
+  });
+
+  it("disabled-only -> not_available; disabled never makes a tenant ok", async () => {
+    if (skip()) return;
+    await seedTenant(T_DISABLED, "rt563dis", [
+      { id: REG(6), lastSeenSql: "now()", disabled: true },
+    ]);
+    const d = await get(T_DISABLED);
+    expect(d.status).toBe("not_available");
+  });
+
+  it("tenant isolation: another tenant's instances do not leak", async () => {
+    if (skip()) return;
+    // T_OK has an ok connector; the empty tenant must still see none.
+    expect((await get(TENANT_EMPTY)).status).toBe("not_available");
   });
 });

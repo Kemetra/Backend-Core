@@ -22,6 +22,11 @@ import { MembershipRepository } from "../../context/membership.repository";
 import type { StoreScope } from "../../context/store-scope";
 import type { ResolvedContext } from "../../context/types";
 import {
+  DEFAULT_STALENESS_THRESHOLD_MS,
+  deriveLiveness,
+} from "../../connector-health/connector-health.liveness";
+import { rollupConnectorHealth } from "./connector-health-rollup";
+import {
   callerStoreScope,
   inStoreScope,
   scopeStoreIds,
@@ -139,7 +144,7 @@ export class ErpnextSyncOpsReadModelService {
   /**
    * US1 — the consolidated sync-ops summary. Aggregates 015 posting health
    * (dead-letter backlog count) + 017 reconciliation health (latest run + open
-   * mismatch count); 020/021 are `not_available`. Tenant-scoped via RLS; optional
+   * mismatch count) + 020 connector health (RT-563); 021 is `not_available`. Tenant-scoped via RLS; optional
    * store filter. Compute-on-read — no mirror.
    */
   getSummary(input: SummaryInput): Promise<SyncOpsSummaryBody> {
@@ -191,6 +196,28 @@ export class ErpnextSyncOpsReadModelService {
         );
         const latest = latestRun.rows[0] ?? null;
 
+        // --- connector health: 020 liveness per tenant instance (RT-563) ----
+        // Same join + read-time verdict as ConnectorHealthService.listHealth.
+        // Tenant-level (RLS); connector registrations carry no store scope.
+        const connectors = await client.query<{
+          disabled_at: Date | null;
+          last_seen_at: Date | null;
+        }>(
+          `SELECT r.disabled_at, h.last_seen_at
+             FROM connector_registration r
+             LEFT JOIN connector_health h
+               ON h.connector_registration_id = r.id`,
+        );
+        const now = new Date();
+        const connectorVerdicts = connectors.rows.map((c) =>
+          deriveLiveness(
+            c.last_seen_at,
+            now,
+            DEFAULT_STALENESS_THRESHOLD_MS,
+            c.disabled_at,
+          ),
+        );
+
         const domains: DomainSummary[] = [
           {
             domain: "posting",
@@ -215,13 +242,9 @@ export class ErpnextSyncOpsReadModelService {
               ? `Latest run ${latest.status}`
               : "No reconciliation runs yet",
           },
-          // 020/021 forward-compat stub — not yet built.
-          {
-            domain: "connector_health",
-            status: "not_available",
-            headlineCount: null,
-            detail: "Connector health (020) not yet available",
-          },
+          // 020 connector health (RT-563), derived from the 020 read model.
+          rollupConnectorHealth(connectorVerdicts),
+          // 021 forward-compat stub — not yet built.
           {
             domain: "product_master",
             status: "not_available",
