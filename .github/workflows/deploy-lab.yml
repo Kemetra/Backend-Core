@@ -154,8 +154,11 @@ jobs:
 
           if git cat-file -e "$SHA^{commit}" 2>/dev/null; then
             git ls-tree "$SHA" packages/db/drizzle/ > "$EVIDENCE/migrations-target.txt"
-            # Bundled files must be the files at the release commit, not just self-consistent.
-            git ls-tree -r "$SHA" > "$EVIDENCE/source-tree.txt"
+            # Bundled files must be byte-for-byte the files at the release commit,
+            # not just self-consistent. The archive is this repository's own git
+            # objects, never release content; line endings are never converted.
+            mkdir -p "$EVIDENCE/source"
+            git -c core.autocrlf=false archive --format=tar "$SHA" | tar -x -C "$EVIDENCE/source"
           fi
 
           # A failed verification leaves no file; the verifier refuses on a missing attestation.

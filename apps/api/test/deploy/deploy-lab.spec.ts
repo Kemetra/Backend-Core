@@ -227,7 +227,7 @@ describe("deploy-lab workflow", () => {
   });
 
   it("records the release commit's tree so bundled files can be bound to it", () => {
-    expect(String(stepNamed("Collect release evidence").run)).toContain('git ls-tree -r "$SHA" > "$EVIDENCE/source-tree.txt"');
+    expect(String(stepNamed("Collect release evidence").run)).toContain('git -c core.autocrlf=false archive --format=tar "$SHA" | tar -x -C "$EVIDENCE/source"');
   });
 
   it("requires the same CI checks as the image release workflow", () => {
@@ -251,9 +251,6 @@ const DIGESTS: Record<string, string> = {
 };
 const ref = (target: string): string => `ghcr.io/kemetra/backend-core-${target}@${DIGESTS[target] ?? ""}`;
 const hash = (text: string | Buffer): string => createHash("sha256").update(text).digest("hex");
-/** git's blob ID for file content, as `git ls-tree` prints it. */
-const gitBlob = (text: string): string =>
-  createHash("sha1").update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest("hex");
 const ctx = (over: Partial<Ctx> = {}): Ctx => ({ release: TAG, jiraKey: "RT-703", target: "lab-01", mode: "dry-run", ...over });
 
 const MIGRATIONS = [
@@ -269,7 +266,7 @@ const lsTree = (paths: string[], blobs: Record<string, string> = {}): string =>
   paths
     .map((p) => {
       const type = p.endsWith(".sql") ? "100644 blob" : "040000 tree";
-      const blob = blobs[p] ?? createHash("sha1").update(p).digest("hex");
+      const blob = blobs[p] ?? createHash("sha256").update(p).digest("hex").slice(0, 40);
       return `${type} ${blob}\t${p}`;
     })
     .join("\n");
@@ -355,16 +352,15 @@ function writeGoodEvidence(): void {
   );
   for (const t of ["api", "worker", "migrate"]) putJson(`attest-${t}.json`, attestation(t));
   put("migrations-target.txt", lsTree(MIGRATIONS));
-  writeSourceTree(bundleFiles());
+  writeSource(bundleFiles());
   putJson("environment.json", { status: "not-visible", reviewers: 0 });
 }
 
-/** `git ls-tree -r <sha>` of the release commit: every shipped file except the generated release.env. */
-function writeSourceTree(files: Record<string, string>): void {
-  const lines = Object.entries(files)
-    .filter(([name]) => name !== "release.env")
-    .map(([name, content]) => `100644 blob ${gitBlob(content)}\t${name}`);
-  put("source-tree.txt", [...lines, `100644 blob ${"0".repeat(40)}\tunrelated/file.ts`].join("\n"));
+/** `git archive <sha>` of the release commit: every shipped file except the generated release.env. */
+function writeSource(files: Record<string, string>): void {
+  rmSync(join(dir, "source"), { recursive: true, force: true });
+  for (const [name, content] of Object.entries(files)) if (name !== "release.env") put(`source/${name}`, content);
+  put("source/unrelated/file.ts", "export {};\n");
 }
 
 function writeCurrent(migrations: string[], blobs: Record<string, string> = {}): void {
@@ -684,11 +680,11 @@ describe("verify-release: review hardening", () => {
     expectRefused(/bundled 'docker-compose.release.yml' does not match the release commit/);
   });
 
-  it("refuses a bundled file that is not in the release commit, or missing source-tree evidence", () => {
-    writeSourceTree({ "docker-compose.release.yml": bundleFiles()["docker-compose.release.yml"] ?? "" });
+  it("refuses a bundled file that is not in the release commit, or missing source evidence", () => {
+    writeSource({ "docker-compose.release.yml": bundleFiles()["docker-compose.release.yml"] ?? "" });
     expectRefused(/bundled 'docs\/operations\/sql\/cashier-admissions-domain-grants.sql' is not in the release commit/);
-    rmSync(join(dir, "source-tree.txt"));
-    expectRefused(/release source tree evidence missing/);
+    rmSync(join(dir, "source"), { recursive: true });
+    expectRefused(/release source evidence missing/);
   });
 
   it("refuses a duplicate SHA256SUMS entry", () => {
