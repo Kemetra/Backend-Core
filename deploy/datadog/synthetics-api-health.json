@@ -1,0 +1,31 @@
+{
+  "key": "p1-api-down",
+  "name": "[P1] Lab API /health/ready failing",
+  "type": "api",
+  "subtype": "http",
+  "status": "live",
+  "config": {
+    "request": {
+      "method": "GET",
+      "url": "https://lab.kemetralabs.com/api/v1/health/ready",
+      "timeout": 30
+    },
+    "assertions": [
+      { "type": "statusCode", "operator": "is", "target": 200 },
+      { "type": "header", "property": "content-type", "operator": "contains", "target": "application/json" },
+      { "type": "responseTime", "operator": "lessThan", "target": 5000 }
+    ]
+  },
+  "locations": ["aws:eu-central-1", "aws:us-east-1"],
+  "options": {
+    "tick_every": 300,
+    "min_location_failed": 1,
+    "min_failure_duration": 0,
+    "retry": { "count": 1, "interval": 30000 },
+    "monitor_name": "[P1] Lab API /health/ready failing",
+    "monitor_priority": 1,
+    "monitor_options": { "renotify_interval": 60 }
+  },
+  "message": "{{#is_alert}}https://lab.kemetralabs.com/api/v1/health/ready failed (status, content type or response time). The lab API is down or not ready.{{/is_alert}}\n{{#is_recovery}}The lab API /health/ready check passes again.{{/is_recovery}}\n\nThe content-type assertion catches a Cloudflare HTML page served in place of the API.\nRunbook: deploy/datadog/README.md in Kemetra/Backend-Core (RT-637).\n__ALERT_RECIPIENTS__",
+  "tags": ["env:staging", "service:backend-api", "rt:rt-637", "priority:p1", "managed-by:deploy-datadog"]
+}

@@ -1,0 +1,385 @@
+{
+  "title": "Retail Tower — lab",
+  "description": "RT-637 (OBS-8). Lab hosts, backend-api RED, backend-worker, DB, Connector <-> Backend-Core calls and release versions. env:staging only. Source of truth: deploy/datadog/ in Kemetra/Backend-Core.",
+  "layout_type": "ordered",
+  "reflow_type": "auto",
+  "tags": [],
+  "template_variables": [],
+  "widgets": [
+    {
+      "definition": {
+        "type": "group",
+        "title": "Alerts",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "manage_status",
+              "title": "RT-637 monitors",
+              "query": "tag:\"rt:rt-637\"",
+              "summary_type": "monitors",
+              "display_format": "countsAndList",
+              "color_preference": "text",
+              "hide_zero_counts": true,
+              "show_last_triggered": true,
+              "sort": "status,asc"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Host health",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "check_status",
+              "title": "Agent up, by host",
+              "check": "datadog.agent.up",
+              "grouping": "cluster",
+              "group_by": ["host"],
+              "tags": ["env:staging"]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "CPU used % by host",
+              "show_legend": true,
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [{ "data_source": "metrics", "name": "idle", "query": "avg:system.cpu.idle{env:staging} by {host}" }],
+                  "formulas": [{ "formula": "100 - idle", "alias": "cpu used %" }],
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Memory used % by host",
+              "show_legend": true,
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    { "data_source": "metrics", "name": "usable", "query": "avg:system.mem.usable{env:staging} by {host}" },
+                    { "data_source": "metrics", "name": "total", "query": "avg:system.mem.total{env:staging} by {host}" }
+                  ],
+                  "formulas": [{ "formula": "100 * (1 - usable / total)", "alias": "mem used %" }],
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "toplist",
+              "title": "Disk in use (max device) by host",
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [{ "data_source": "metrics", "name": "disk", "query": "max:system.disk.in_use{env:staging} by {host}", "aggregator": "last" }],
+                  "formulas": [{ "formula": "disk * 100", "alias": "disk used %" }]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Load (normalised, 5 min) by host",
+              "show_legend": true,
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [{ "data_source": "metrics", "name": "load", "query": "avg:system.load.norm.5{env:staging} by {host}" }],
+                  "formulas": [{ "formula": "load" }],
+                  "display_type": "line"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "backend-api: rate, errors, duration",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Requests by status class",
+              "show_legend": true,
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [{ "data_source": "metrics", "name": "req", "query": "sum:dp2.http_request_count.count{env:staging,service:backend-api} by {status_class}.as_count()" }],
+                  "formulas": [{ "formula": "req" }],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "5xx rate, last 15 min (P2 at 5%)",
+              "precision": 2,
+              "autoscale": true,
+              "time": { "live_span": "15m" },
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    { "data_source": "metrics", "name": "e5", "query": "default_zero(sum:dp2.http_request_count.count{env:staging,service:backend-api,status_class:5xx}.as_count())", "aggregator": "sum" },
+                    { "data_source": "metrics", "name": "all", "query": "sum:dp2.http_request_count.count{env:staging,service:backend-api}.as_count()", "aggregator": "sum" }
+                  ],
+                  "formulas": [{ "formula": "100 * e5 / all", "alias": "5xx %" }],
+                  "conditional_formats": [
+                    { "comparator": ">", "value": 5, "palette": "white_on_red" },
+                    { "comparator": ">", "value": 2, "palette": "white_on_yellow" },
+                    { "comparator": "<=", "value": 2, "palette": "white_on_green" }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "4xx and 5xx responses",
+              "show_legend": true,
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    { "data_source": "metrics", "name": "e4", "query": "default_zero(sum:dp2.http_request_count.count{env:staging,service:backend-api,status_class:4xx}.as_count())" },
+                    { "data_source": "metrics", "name": "e5", "query": "default_zero(sum:dp2.http_request_count.count{env:staging,service:backend-api,status_class:5xx}.as_count())" }
+                  ],
+                  "formulas": [{ "formula": "e4", "alias": "4xx" }, { "formula": "e5", "alias": "5xx" }],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Duration: mean (all requests) and p95 (10% sampled spans), seconds",
+              "show_legend": true,
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    { "data_source": "metrics", "name": "dsum", "query": "sum:dp2.http_request_duration_seconds.sum{env:staging,service:backend-api}.as_count()" },
+                    { "data_source": "metrics", "name": "dcount", "query": "sum:dp2.http_request_duration_seconds.count{env:staging,service:backend-api}.as_count()" },
+                    { "data_source": "metrics", "name": "p95", "query": "p95:trace.http.server.request{env:staging,service:backend-api}" }
+                  ],
+                  "formulas": [{ "formula": "dsum / dcount", "alias": "mean" }, { "formula": "p95", "alias": "p95 (sampled)" }],
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "toplist",
+              "title": "Requests by route (last hour)",
+              "time": { "live_span": "1h" },
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [{ "data_source": "metrics", "name": "req", "query": "sum:dp2.http_request_count.count{env:staging,service:backend-api} by {route}.as_count()", "aggregator": "sum" }],
+                  "formulas": [{ "formula": "req", "limit": { "count": 15, "order": "desc" } }]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "backend-worker",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "note",
+              "content": "The worker's Prometheus listener binds 127.0.0.1, so queue lag and the outbox backlog are not in Datadog yet. These widgets use worker trace metrics (10% sampled).",
+              "background_color": "yellow",
+              "font_size": "14",
+              "text_align": "left",
+              "show_tick": false,
+              "has_padding": true
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Worker DB spans (sampled count)",
+              "show_legend": false,
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [{ "data_source": "metrics", "name": "hits", "query": "sum:trace.postgresql.query.hits{env:staging,service:backend-worker}.as_count()" }],
+                  "formulas": [{ "formula": "hits" }],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Worker DB span p95, seconds",
+              "show_legend": false,
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [{ "data_source": "metrics", "name": "p95", "query": "p95:trace.postgresql.query{env:staging,service:backend-worker}" }],
+                  "formulas": [{ "formula": "p95" }],
+                  "display_type": "line"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Database",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "backend-api DB pool: in use and waiters",
+              "show_legend": true,
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    { "data_source": "metrics", "name": "inuse", "query": "max:dp2.db_pool_in_use{env:staging,service:backend-api}" },
+                    { "data_source": "metrics", "name": "waiters", "query": "max:dp2.db_pool_waiters{env:staging,service:backend-api}" }
+                  ],
+                  "formulas": [{ "formula": "inuse", "alias": "in use" }, { "formula": "waiters", "alias": "waiters" }],
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "DB spans p95 by service, seconds",
+              "show_legend": true,
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [{ "data_source": "metrics", "name": "p95", "query": "p95:trace.postgresql.query{env:staging} by {service}" }],
+                  "formulas": [{ "formula": "p95" }],
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "DB spans by service (sampled count)",
+              "show_legend": true,
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [{ "data_source": "metrics", "name": "hits", "query": "sum:trace.postgresql.query.hits{env:staging} by {service}.as_count()" }],
+                  "formulas": [{ "formula": "hits" }],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "ERPNext-Connector <-> Backend-Core",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Connector calls to Backend-Core by route and status class",
+              "show_legend": true,
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [{ "data_source": "metrics", "name": "req", "query": "sum:dp2.http_request_count.count{env:staging,service:backend-api,route:/api/connector/*} by {route,status_class}.as_count()" }],
+                  "formulas": [{ "formula": "req" }],
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "toplist",
+              "title": "Connector route mean duration, last hour (seconds)",
+              "time": { "live_span": "1h" },
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    { "data_source": "metrics", "name": "dsum", "query": "sum:dp2.http_request_duration_seconds.sum{env:staging,service:backend-api,route:/api/connector/*} by {route}.as_count()", "aggregator": "sum" },
+                    { "data_source": "metrics", "name": "dcount", "query": "sum:dp2.http_request_duration_seconds.count{env:staging,service:backend-api,route:/api/connector/*} by {route}.as_count()", "aggregator": "sum" }
+                  ],
+                  "formulas": [{ "formula": "dsum / dcount", "alias": "mean s" }]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Release / version",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "query_table",
+              "title": "Versions seen in traces (last 24 h)",
+              "time": { "live_span": "1d" },
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    { "data_source": "metrics", "name": "api", "query": "sum:trace.http.server.request.hits{env:staging} by {service,version}.as_count()", "aggregator": "sum" },
+                    { "data_source": "metrics", "name": "db", "query": "sum:trace.postgresql.query.hits{env:staging} by {service,version}.as_count()", "aggregator": "sum" }
+                  ],
+                  "formulas": [{ "formula": "api", "alias": "http spans" }, { "formula": "db", "alias": "db spans" }]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
