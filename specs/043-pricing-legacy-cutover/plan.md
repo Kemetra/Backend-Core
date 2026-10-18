@@ -398,8 +398,16 @@ So the bridge (part of PR-11, required before any cutover) writes `catalog_chang
     `unpriced` takes over);
   - a Zone membership's `effective_from` and `effective_to` (a scheduled `move_store_zone`, spec 041 data-model §2.3).
 
-  The job is idempotent on `(row id, boundary, store)`. Its candidate set is the active events and memberships whose
-  boundaries fall in the next scan window, so the job does not depend on how a boundary was created.
+  The job is driven by a **persisted per-tenant watermark** (`last_processed` instant). Each run selects **every**
+  boundary in `(last_processed, now]` from the active events and memberships, emits the change-log rows, and advances
+  the watermark in the same transaction. It does not use a forward-looking scan window, so:
+  - **outage or lag:** boundaries that passed while the worker was down are caught up on the next run;
+  - **late publish:** a revision published after a run but before its own boundary is still picked up, because the
+    boundary lies after the watermark. A boundary at or before publish time is covered by the publish transaction
+    itself (first bullet).
+
+  Emission is idempotent on `(row id, boundary, store)`, so overlap between the publish path, catch-up and re-runs
+  never double-logs.
 
 Without the bridge, a v1 POS would keep the old price after a scheduled change, an expiry or a scheduled Zone
 move, until its next full snapshot.
@@ -483,7 +491,7 @@ authorization on its own issue. Mapping to the RT-282 backlog is shown.
 | **PR-05** | PR-05 `[GATED migration]` | Impl | Pricing tables per spec 041 data-model | PR-03 (this plan) | Already includes `source = legacy_import` and revision `kind = legacy_import`. **Add:** down-migration refuses when tables hold rows (R3) |
 | **PR-16a-1** | PR-16a `[GATED migration]` | Impl | `tenant_pricing_authority`, `pricing_import_runs` (watermarks), `pricing_cutover_runs`; the freeze trigger function on `tenant_products` and `store_product_overrides`, inert while every tenant is `legacy` | PR-05 | Up/down tests, RLS matrix; down refuses per R3 (a non-`legacy` authority row or any run row) and succeeds on seeded all-`legacy` rows; trigger unit tests for every case in §6.2, including the GUC bypass |
 | **PR-16a-2** | PR-16a | Impl | Tenant bootstrap, initial and delta import job (worker + CLI), exception report | PR-16a-1, PR-09 (resolver), PR-03E | §4 behaviour; second run with no legacy change creates no revision; MC-10 input required; exception classes reported; refuses unless `authority = legacy`, or `cutover_in_progress` when called by the cutover |
-| **PR-11** | PR-11 (amended by §7.2) | Impl | Shadow resolver on v1, nightly sweep job, mismatch metric and report; **v1 bridge** (§7.3): change-log rows at publish and from the boundary job (activations, expiries, Zone-membership boundaries) | PR-09, PR-16a-2; the v2 part also needs PR-06 (G4a) | §5.2/§5.3 classification; projection-level check; v1 schema contract test on pricing-sourced output; boundary job idempotent and covers every §7.3 boundary kind |
+| **PR-11** | PR-11 (amended by §7.2) | Impl | Shadow resolver on v1, nightly sweep job, mismatch metric and report; **v1 bridge** (§7.3): change-log rows at publish and from the boundary job (activations, expiries, Zone-membership boundaries) | PR-09, PR-16a-2; the v2 part also needs PR-06 (G4a) | §5.2/§5.3 classification; projection-level check; v1 schema contract test on pricing-sourced output; boundary job watermark-driven (`(last_processed, now]`), idempotent, covers every §7.3 boundary kind, and passes the outage catch-up and late-publish cases |
 | **PR-V1** | PR-V1 | Verification | §5.4 evidence on rt9 and pilot | PR-11, PR-16a-2 | Thresholds of §5.4 met and attached per tenant |
 | **PR-16b** | PR-16b | Impl | Cutover CLI (§6.3) **and** rollback R1 (§8.2) in the same item; app-level guards in seed CLI and `StoreOverrideService`; Pricing authoring gated by `authority`; R2 startup guard | PR-16a-2, PR-11, PR-V1, PR-10 | Abort path leaves the tenant byte-identical; rt9 cutover → Change Set → R1 round trip passes; sale tables checksum unchanged across cutover and rollback |
 | **PR-16c** | new, later `[GATED migration]` | Impl | Retire legacy price columns and `price_history` (archive first); remove the v1 legacy path | Every tenant past its §8.4 window; RT-281 and RT-294 switches for the non-price columns | Not planned in detail here |
@@ -529,7 +537,7 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 - RLS: the new tables isolate tenants (the isolation-harness pattern); tenant A's cutover does not freeze tenant B.
 - Cutover abort: inject one mismatch → `ROLLBACK`; tenant state, legacy rows and Pricing tables byte-identical to before; run row records the failure.
 - Cutover success → read-down v1 output (snapshot and deltas) identical to the pre-cutover output; validated against `read-down.yaml` with `additionalProperties: false`.
-- v1 bridge: an immediate publish produces change-log rows. A future event's activation, an event's expiry (falling back to a lower scope and to `unpriced`), and a scheduled Zone move each produce them at the boundary, exactly once.
+- v1 bridge: an immediate publish produces change-log rows. A future event's activation, an event's expiry (falling back to a lower scope and to `unpriced`), and a scheduled Zone move each produce them at the boundary, exactly once. Outage catch-up: with the worker stopped across two boundaries, the next run emits both. Late publish: an event published after a run, with a boundary before the next run, is emitted.
 - Re-import after R1: a Change-Set-authored Store event, a Zone event and a future event are reconciled (kept, ended or cancelled) with no overlap error; a second run is a no-op.
 - Rollback R1 round trip: cutover → Change Set (Zone price plus a Store override) → R1 → read-down v1 equals the resolver at the rollback instant; future events listed in the report.
 - Sale-fact safety: checksum of `sale_lines` and the posting feed before and after cutover and R1 is identical.
