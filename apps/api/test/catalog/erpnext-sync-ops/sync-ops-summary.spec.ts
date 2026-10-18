@@ -367,7 +367,12 @@ describe("RT-563 — connector_health derived from the 020 read model", () => {
 
   it("tenant isolation: another tenant's instances do not leak", async () => {
     if (skip()) return;
-    // T_OK has an ok connector; the empty tenant must still see none.
+    // Self-contained: seed a foreign tenant's healthy + stale connectors here.
+    await seedTenant(T_STALE, "rt563stale", [
+      { id: REG(3), lastSeenSql: "now()" },
+      { id: REG(4), lastSeenSql: "now() - interval '1 hour'" },
+    ]);
+    expect((await get(T_STALE)).status).toBe("attention");
     expect((await get(TENANT_EMPTY)).status).toBe("not_available");
   });
 });
