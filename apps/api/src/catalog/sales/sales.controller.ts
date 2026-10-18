@@ -17,7 +17,9 @@
  * different Idempotency-Key still resolves to the same sale.
  *
  * Audit: `@Auditable("sale.captured")` is passive metadata read by the global
- * AuditEmitterInterceptor (FR-090).
+ * AuditEmitterInterceptor (FR-090). `readSale` emits one
+ * `pos_sales.detail_read` per authorized 200 (RT-548, OD-534-7), metadata
+ * `{ sale_ref }` only — no sale content.
  *
  * Status: 201 for a fresh capture; 200 with `Idempotent-Replayed: true` for a
  * provenance dedup-hit (deterministic, identical body — FR-100).
@@ -315,6 +317,7 @@ export class SalesController {
 
   @Get("api/pos/v1/sales/:saleRef")
   @UseGuards(PosOperatorAuthGuard, TenantContextGuard)
+  @Auditable("pos_sales.detail_read")
   async readSale(
     @Req() request: TenantContextRequest,
     @Param("saleRef") saleRef: string,
@@ -333,8 +336,9 @@ export class SalesController {
       // invalid uuid would surface as a 500). Treat it as a safe-404.
       throw new NotFoundException("not_found");
     }
+    let projection: SaleProjection;
     try {
-      return await this.salesService.readSaleProjection(
+      projection = await this.salesService.readSaleProjection(
         ctx.tenantId,
         ctx.storeId,
         saleRef,
@@ -347,6 +351,10 @@ export class SalesController {
       }
       throw err;
     }
+    // RT-548: identifiers only (FR-AUDIT-3, §XIV) — never line/tender/payer
+    // content. The interceptor emits only after a successful response.
+    annotateAudit(request, { sale_ref: saleRef });
+    return projection;
   }
 
   @Post("api/pos/v1/sales/:saleRef/void")

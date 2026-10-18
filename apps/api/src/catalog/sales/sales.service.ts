@@ -514,7 +514,12 @@ export class SalesService {
                SELECT COALESCE(SUM(rl.quantity), 0)::numeric(19,6) AS returned
                  FROM sale_return_lines rl WHERE rl.sale_line_id = sl.id
              ) r
-            WHERE sl.sale_id = $1 ORDER BY sl.line_name`,
+            WHERE sl.sale_id = $1
+            -- RT-547: receipt order (capture lines[] order, RT-538) when
+            -- recorded; legacy rows (line_seq NULL) fall back to name, then
+            -- id (= lineRef) as a deterministic tiebreak. Same key as the
+            -- RT-539 sale-history detail.
+            ORDER BY sl.line_seq NULLS LAST, sl.line_name, sl.id`,
           [saleId, row.voided],
         );
         // RT-77: a tender-unknown sale (tender_count 0 — every legacy sale)

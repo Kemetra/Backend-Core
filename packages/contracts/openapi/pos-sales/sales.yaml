@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.11.0-draft"
+  version: "1.12.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -303,6 +303,22 @@ info:
     envelope and does not turn it into a tender, and offers the
     Manager/Admin `recordCreditSaleReversal` once its runtime ships.
 
+    RT-547 / RT-548 (1.12.0-draft; [GATED] owner approval 2026-10-18, Jira
+    RT-689; description and `x-audit-action` only): READSALE LINE ORDER AND
+    READ AUDIT. No schema object, field, parameter or response changes.
+    (a) `readSale` (and the `captureSale` 201 and replay bodies, which share
+    its projection) now lists `Sale.lines` in original receipt order (the
+    capture `lines[]` order recorded since RT-538) when it is recorded; a sale
+    captured before that lists its lines by name, then by `lineRef`. Before
+    this version the lines were in name order only, with no defined order for
+    equal names. One-time effect across the deploy (accepted, RT-547 plan
+    §1.3): a `captureSale` replay of a sale first answered before the deploy
+    may list the same lines in a different array order than the original
+    response; the line set and every line's fields are unchanged, so a client
+    that matches lines by `lineRef` is unaffected. (b) `readSale` emits one
+    `pos_sales.detail_read` audit event per authorized 200 (OD-534-7), with
+    only the sale ref in its metadata.
+
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
     appears on the wire. Timestamps are RFC 3339 / `date-time` in UTC (FR-021).
@@ -495,6 +511,7 @@ paths:
       summary: Read a sale by its stable reference.
       operationId: readSale
       tags: [pos-sales]
+      x-audit-action: pos_sales.detail_read
       security:
         - operatorAuthorization: []
       description: >
@@ -503,6 +520,15 @@ paths:
         Object-level authz: a sale outside the caller's resolved (tenant, store)
         scope returns a non-disclosing 404 with no existence leak via any
         response, error, or conflict shape (FR-063/102, SI-004).
+
+        Line order (RT-547): lines are in their original receipt order
+        (capture `lines[]` order, RT-538) when it is recorded. A sale captured
+        before the order was recorded lists its lines by name, then by
+        `lineRef`: a stable order that is not the receipt order.
+
+        Audit (OD-534-7, RT-548): one `pos_sales.detail_read` event per
+        authorized `200`, with the sale ref in its metadata. No sale content is
+        recorded.
       parameters:
         - $ref: "#/components/parameters/SaleRef"
       responses:
@@ -2106,6 +2132,11 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/SaleLine"
+          description: >
+            Lines are in their original receipt order (capture `lines[]`
+            order, RT-538) when it is recorded. A sale captured before the
+            order was recorded lists its lines by name, then by `lineRef`: a
+            stable order that is not the receipt order (RT-547).
     SaleLine:
       type: object
       additionalProperties: false
