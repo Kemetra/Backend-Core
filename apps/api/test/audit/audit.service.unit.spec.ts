@@ -26,6 +26,7 @@
  * RLS is a DB-layer guarantee tested only with a real Postgres instance.
  */
 
+import { kindOf } from "../../src/audit/audit-action-kinds";
 import { AuditService } from "../../src/audit/audit.service";
 import type {
   AuditEventRecord,
@@ -179,6 +180,14 @@ describe("AS3 — AuditService.list: optional filter forwarding", () => {
     expect(repo.lastInput!.cursor).toEqual(cursor);
   });
 
+  it("forwards kind (RT-567)", async () => {
+    await service.list(makeInput({ kind: "change" }));
+    expect(repo.lastInput!.kind).toBe("change");
+
+    await service.list(makeInput({ kind: undefined }));
+    expect(repo.lastInput!.kind).toBeUndefined();
+  });
+
   it("cursor undefined → repo receives cursor: null", async () => {
     await service.list(makeInput({ cursor: undefined }));
 
@@ -319,6 +328,7 @@ describe("AS6 — AuditService.list: DTO projection to snake_case", () => {
       tenant_id: TENANT_ID,
       store_id: STORE_ID,
       action: "auth.signin.ok",
+      kind: "change",
       target_type: "store",
       target_id: TARGET_ID,
       request_id: REQUEST_ID,
@@ -408,5 +418,30 @@ describe("AS9 — AuditService.list: response envelope always well-formed", () =
 
     expect(Array.isArray(out.items)).toBe(true);
     expect("next_cursor" in out).toBe(true);
+  });
+});
+
+// ===========================================================================
+// AS10 — RT-567: every item carries kind === kindOf(action)
+// ===========================================================================
+
+describe("AS10 — AuditService.list: derived kind", () => {
+  it("sets kind from the registry: read code → read, change and unregistered codes → change", async () => {
+    repo.toReturn = [
+      makeRow({ id: ROW_ID_1, action: "shift_closes.listed" }),
+      makeRow({ id: ROW_ID_2, action: "sale.voided" }),
+      makeRow({ id: ROW_ID_3, action: "zz.unregistered.code" }),
+    ];
+
+    const out = await service.list(makeInput({ limit: 50 }));
+
+    expect(out.items.map((i) => [i.action, i.kind])).toEqual([
+      ["shift_closes.listed", "read"],
+      ["sale.voided", "change"],
+      ["zz.unregistered.code", "change"],
+    ]);
+    for (const item of out.items) {
+      expect(item.kind).toBe(kindOf(item.action));
+    }
   });
 });

@@ -77,6 +77,7 @@ const FAKE_LIST_RESPONSE: ListAuditEventsResponse = {
       tenant_id: TENANT_ID,
       store_id: null,
       action: "context.switch.tenant",
+      kind: "change",
       target_type: null,
       target_id: null,
       request_id: "req-1",
@@ -487,5 +488,29 @@ describe("AuditC16 — listAuditEvents has no @Auditable decorator", () => {
       AuditController.prototype.listAuditEvents,
     );
     expect(meta).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AuditC17 — RT-567 kind filter
+// ---------------------------------------------------------------------------
+
+describe("AuditC17 — kind query param (RT-567)", () => {
+  it.each([{ kind: "read" }, { kind: "change" }, {}])("forwards %j to service.list", async (query) => {
+    const res = await http().get("/api/v1/audit/events").query(query);
+
+    expect(res.status).toBe(200);
+    expect((listMock.mock.calls[0]![0] as { kind?: string }).kind).toBe(query.kind);
+  });
+
+  it.each([
+    { kind: "bogus", rolesMode: "ok", status: 400, code: "validation_error" },
+    { kind: "change", rolesMode: "forbid", status: 403, code: "forbidden" },
+  ] as const)("kind=$kind with roles $rolesMode → $status $code", async ({ kind, rolesMode, status, code }) => {
+    roles.mode = rolesMode;
+    const res = await http().get("/api/v1/audit/events").query({ kind });
+
+    expect({ status: res.status, called: listMock.mock.calls.length }).toEqual({ status, called: 0 });
+    expectErrorEnvelope(res.body, code);
   });
 });

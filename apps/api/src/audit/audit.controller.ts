@@ -81,6 +81,7 @@ export class AuditController {
       tenantId: ctx.tenantId,
       isPlatformAdmin: ctx.isPlatformAdmin,
       action: query.action,
+      kind: query.kind,
       actor_user_id: query.actor_user_id,
       store_id: query.store_id,
       from: query.from,

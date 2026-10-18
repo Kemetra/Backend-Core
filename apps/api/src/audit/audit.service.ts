@@ -23,6 +23,7 @@
  */
 import { Inject, Injectable } from "@nestjs/common";
 
+import { kindOf, type AuditActionKind } from "./audit-action-kinds";
 import { encodeCursor, type AuditCursor } from "./audit.query.schema";
 import {
   AUDIT_REPOSITORY,
@@ -39,6 +40,7 @@ export interface ListAuditEventsInput {
   readonly tenantId: string;
   readonly isPlatformAdmin: boolean;
   readonly action?: string | undefined;
+  readonly kind?: AuditActionKind | undefined;
   readonly actor_user_id?: string | undefined;
   readonly store_id?: string | undefined;
   readonly from?: Date | undefined;
@@ -63,6 +65,7 @@ export class AuditService {
       tenantId: input.tenantId,
       isPlatformAdmin: input.isPlatformAdmin,
       action: input.action,
+      kind: input.kind,
       actorUserId: input.actor_user_id,
       storeId: input.store_id,
       from: input.from,
@@ -87,6 +90,7 @@ export class AuditService {
   }
 }
 
+/** Project a repository record to the wire shape, with `kind` derived from `action`. */
 function toDto(row: AuditEventRecord): AuditEventDto {
   return {
     id: row.id,
@@ -96,6 +100,7 @@ function toDto(row: AuditEventRecord): AuditEventDto {
     tenant_id: row.tenantId,
     store_id: row.storeId,
     action: row.action,
+    kind: kindOf(row.action),
     target_type: row.targetType,
     target_id: row.targetId,
     request_id: row.requestId,
