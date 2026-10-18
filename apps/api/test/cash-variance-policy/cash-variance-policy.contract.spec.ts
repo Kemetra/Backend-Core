@@ -272,9 +272,9 @@ function without<T extends object>(value: T, key: keyof T): Omit<T, typeof key> 
 // 1. Document and operations
 // ===========================================================================
 describe("cash-variance-policy — document and operations", () => {
-  it("is an OpenAPI 3.1 document at version 1.0.0-draft", () => {
+  it("is an OpenAPI 3.1 document at version 1.1.0-draft (RT-620)", () => {
     expect(doc.openapi).toBe("3.1.0");
-    expect(doc.info?.version).toBe("1.0.0-draft");
+    expect(doc.info?.version).toBe("1.1.0-draft");
   });
 
   it("declares exactly the seven operations", () => {
@@ -398,12 +398,12 @@ describe("cash-variance-policy — writes", () => {
 
   const EXPECTED_STATUSES: Record<string, string[]> = {
     posGetCashVariancePolicy: ["200", "304", "400", "401", "500"],
-    consoleGetTenantCashVariancePolicy: ["200", "400", "401", "404", "500"],
-    consoleListTenantCashVariancePolicyRevisions: ["200", "400", "401", "404", "500"],
-    consolePublishTenantCashVariancePolicy: ["201", "400", "401", "403", "404", "409", "422", "425", "500"],
-    consoleGetStoreCashVariancePolicy: ["200", "400", "401", "404", "500"],
-    consoleListStoreCashVariancePolicyRevisions: ["200", "400", "401", "404", "500"],
-    consolePublishStoreCashVariancePolicyOverride: ["201", "400", "401", "403", "404", "409", "422", "425", "500"],
+    consoleGetTenantCashVariancePolicy: ["200", "400", "401", "404", "429", "500"],
+    consoleListTenantCashVariancePolicyRevisions: ["200", "400", "401", "404", "429", "500"],
+    consolePublishTenantCashVariancePolicy: ["201", "400", "401", "403", "404", "409", "422", "425", "429", "500"],
+    consoleGetStoreCashVariancePolicy: ["200", "400", "401", "404", "429", "500"],
+    consoleListStoreCashVariancePolicyRevisions: ["200", "400", "401", "404", "429", "500"],
+    consolePublishStoreCashVariancePolicyOverride: ["201", "400", "401", "403", "404", "409", "422", "425", "429", "500"],
   };
 
   it.each(OPERATIONS)("%s declares exactly its documented statuses", (id, route) => {

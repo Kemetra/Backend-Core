@@ -197,9 +197,9 @@ const LEGACY_DETAIL = {
 // 1. Document + operations
 // ===========================================================================
 describe("console-sales — document and operations", () => {
-  it("is an OpenAPI 3.1 document at version 1.0.0-draft", () => {
+  it("is an OpenAPI 3.1 document at version 1.1.0-draft (RT-620)", () => {
     expect(doc.openapi).toBe("3.1.0");
-    expect(doc.info?.version).toBe("1.0.0-draft");
+    expect(doc.info?.version).toBe("1.1.0-draft");
   });
 
   it("declares exactly the list and detail reads, and nothing else", () => {
@@ -242,9 +242,9 @@ describe("console-sales — auth and read scope", () => {
     });
   });
 
-  it("answers 200 / 400 / 401 / 404 / 500 only: the role or scope refusal is 404, never 403", () => {
+  it("answers 200 / 400 / 401 / 404 / 429 / 500 only: the role or scope refusal is 404, never 403", () => {
     for (const { path } of OPERATIONS) {
-      expect(Object.keys(api.get(path).responses ?? {}).sort()).toEqual(["200", "400", "401", "404", "500"]);
+      expect(Object.keys(api.get(path).responses ?? {}).sort()).toEqual(["200", "400", "401", "404", "429", "500"]);
       expect(api.get(path).responses!["404"]).toEqual({ $ref: "#/components/responses/NotFound" });
     }
   });

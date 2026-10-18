@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Outbox Admin API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     Read-only operator surface for the transactional-outbox dead-letter
     queue. Endpoints are platform-scoped (NOT tenant-scoped) and gated
@@ -21,6 +21,11 @@ info:
 
     Retry / acknowledge actions are deferred to slices 1C-C2 / 1C-C3
     (both gated on a schema change to extend the `delivery_state` enum).
+
+
+    **1.1.0-draft (RT-620, additive).** Every cookieAuth operation may
+    return 429 `rate_limited` (`TooManyRequests`, with `Retry-After`)
+    from the console rate limit (RT-574, RT-619). No other wire change.
 
 servers:
   - url: https://api.example.com
@@ -127,6 +132,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
   /api/v1/admin/outbox/dead-letters/{eventId}:
     get:
@@ -198,6 +205,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
 components:
   securitySchemes:
@@ -338,6 +347,50 @@ components:
               type: string
               format: uuid
               description: Server-assigned correlation id for cross-log tracing.
+  headers:
+    ConsoleRetryAfter:
+      description: >
+        Whole seconds the caller should wait before retrying, sent on every
+        console 429 (RT-574 D5). Its own bound, 1 to 3600; it is not the POS
+        `RetryAfter` header.
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 3600
+  responses:
+    TooManyRequests:
+      description: >
+        429 `rate_limited` (RT-574): the caller's per-user budget for this
+        class of operation is spent. The body is the canonical error
+        envelope with a non-disclosing message (no budget, class or window);
+        its `request_id` equals the `X-Request-Id` response header. Honour
+        `Retry-After`; never auto-retry a mutation. A 429 is not a 401: it
+        never means the session ended. The console limit is
+        server-configured and may not be enforced, so a client must handle a
+        429 but must not expect one.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/ConsoleRetryAfter"
+        Cache-Control:
+          description: Always `no-store` on a 429.
+          required: true
+          schema:
+            type: string
+            enum: [no-store]
+        X-Request-Id:
+          description: >
+            The request id, equal to `error.request_id` in the body: the
+            inbound `X-Request-Id` when it is a well-formed UUID, otherwise a
+            server-minted one.
+          required: true
+          schema:
+            type: string
+            format: uuid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
 
 security:
   - cookieAuth: []

@@ -113,8 +113,8 @@ describe("devices retire contract — operation", () => {
     expect(contract.foreignOperationIds.has("consoleRetireDevice")).toBe(false);
   });
 
-  it("answers exactly 200 / 400 / 401 / 403 / 404 / 409 / 500, scope refusals as the shared 404", () => {
-    expect(Object.keys(responses()).sort()).toEqual(["200", "400", "401", "403", "404", "409", "500"]);
+  it("answers exactly 200 / 400 / 401 / 403 / 404 / 409 / 429 / 500, scope refusals as the shared 404", () => {
+    expect(Object.keys(responses()).sort()).toEqual(["200", "400", "401", "403", "404", "409", "429", "500"]);
     expect(responses()["404"]).toEqual({ $ref: "#/components/responses/NotFound" });
     expect(responses()["403"]).toEqual({ $ref: "#/components/responses/OriginRejected" });
     expect(responses()["409"]).toEqual({ $ref: "#/components/responses/DeviceRetireConflict" });
@@ -173,8 +173,8 @@ describe("devices retire contract — result and 409", () => {
 // 3. Documented rules
 // ===========================================================================
 describe("devices retire contract — rules", () => {
-  it("is 1.3.0-draft and maps the retire verdict one-to-one onto the outcome", () => {
-    expect((contract.document["info"] as JsonObject)["version"]).toBe("1.3.0-draft");
+  it("is 1.4.0-draft and maps the retire verdict one-to-one onto the outcome", () => {
+    expect((contract.document["info"] as JsonObject)["version"]).toBe("1.4.0-draft");
     expect(info()).toMatch(/For `consoleRetireDevice`:\s+`allowed` → 200 `retired`; `blocked` → 409/);
     expect(info()).toMatch(/`no_change` → 200\s+`already_retired`/);
   });

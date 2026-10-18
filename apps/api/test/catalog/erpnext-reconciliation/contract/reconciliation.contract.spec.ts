@@ -378,10 +378,10 @@ describe("reconciliation.yaml — RT-177 negative on-hand operations", () => {
     }
   });
 
-  it("declares 200 + 400 + 401 + non-disclosing 404", () => {
+  it("declares 200 + 400 + 401 + non-disclosing 404 + the console 429", () => {
     for (const [id, spec] of Object.entries(NEGATIVE_ON_HAND_OPS)) {
       const responses = findOp(id)?.responses ?? {};
-      expect(Object.keys(responses).sort()).toEqual(["200", "400", "401", "404"]);
+      expect(Object.keys(responses).sort()).toEqual(["200", "400", "401", "404", "429"]);
       expect(responses["404"]).toEqual({ $ref: "#/components/responses/NotFound" });
       expect(JSON.stringify(responses["200"])).toContain(`#/components/schemas/${spec.page}`);
     }

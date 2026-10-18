@@ -230,9 +230,9 @@ function without<T extends object>(value: T, key: keyof T): Omit<T, typeof key> 
 // 1. Document + operations
 // ===========================================================================
 describe("shift-closes — document and operations", () => {
-  it("is an OpenAPI 3.1 document at version 1.1.0-draft (RT-384)", () => {
+  it("is an OpenAPI 3.1 document at version 1.2.0-draft (RT-620, on RT-384)", () => {
     expect(doc.openapi).toBe("3.1.0");
-    expect(doc.info?.version).toBe("1.1.0-draft");
+    expect(doc.info?.version).toBe("1.2.0-draft");
   });
 
   it("carries an RT-384 note: additive, [GATED], non-breaking for Admin-Console RT-18", () => {
@@ -285,7 +285,7 @@ describe("shift-closes — auth and scope", () => {
 
   it("answers 200 / 400 / 401 / 404 / 500 and refuses role or scope as 404, never 403", () => {
     for (const path of [LIST_PATH, DETAIL_PATH]) {
-      expect(Object.keys(op(path).responses ?? {}).sort()).toEqual(["200", "400", "401", "404", "500"]);
+      expect(Object.keys(op(path).responses ?? {}).sort()).toEqual(["200", "400", "401", "404", "429", "500"]);
     }
   });
 

@@ -154,9 +154,9 @@ const omit = (value: Record<string, unknown>, key: string): Record<string, unkno
 // 1. Operations
 // ===========================================================================
 describe("devices contract — operations", () => {
-  it("is OpenAPI 3.1.0 at 1.3.0-draft with the RT-365 operations, the RT-366 preview, the RT-367 pairing codes and the RT-368 retire", () => {
+  it("is OpenAPI 3.1.0 at 1.4.0-draft (RT-620 429) with the RT-365 operations, the RT-366 preview, the RT-367 pairing codes and the RT-368 retire", () => {
     expect(contract.document["openapi"]).toBe("3.1.0");
-    expect((contract.document["info"] as JsonObject)["version"]).toBe("1.3.0-draft");
+    expect((contract.document["info"] as JsonObject)["version"]).toBe("1.4.0-draft");
     const declared = Object.entries(contract.document["paths"] as Record<string, JsonObject>).flatMap(([path, item]) =>
       Object.keys(item).map((method) => `${method} ${path}`),
     );
@@ -203,9 +203,9 @@ describe("devices contract — auth and refusals", () => {
   });
 
   it.each([
-    ["get", LIST_PATH, ["200", "400", "401", "404", "500"]],
-    ["get", DETAIL_PATH, ["200", "400", "401", "404", "500"]],
-    ["post", REVOKE_PATH, ["200", "400", "401", "403", "404", "409", "422", "500"]],
+    ["get", LIST_PATH, ["200", "400", "401", "404", "429", "500"]],
+    ["get", DETAIL_PATH, ["200", "400", "401", "404", "429", "500"]],
+    ["post", REVOKE_PATH, ["200", "400", "401", "403", "404", "409", "422", "429", "500"]],
   ] as const)("%s %s answers exactly %j (scope refusals are 404)", (method, path, statuses) => {
     expect(Object.keys(contract.operation(method, path)["responses"] as JsonObject).sort()).toEqual([...statuses].sort());
   });
