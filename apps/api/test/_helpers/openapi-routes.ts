@@ -44,10 +44,22 @@ export function yamlFiles(dir: string): string[] {
   });
 }
 
+/** Every `{name}` in a segment becomes `{param}` (no regex: linear scan). */
+function replaceBraceParams(segment: string): string {
+  let out = "";
+  let from = 0;
+  for (;;) {
+    const open = segment.indexOf("{", from);
+    const close = open < 0 ? -1 : segment.indexOf("}", open);
+    if (close < 0) return out + segment.slice(from);
+    out += `${segment.slice(from, open)}{param}`;
+    from = close + 1;
+  }
+}
+
 function normalizeSegment(segment: string): string {
   const colon = segment.indexOf(":");
-  const express = colon >= 0 ? `${segment.slice(0, colon)}{param}` : segment;
-  return express.replace(/\{[^/}]*\}/g, "{param}");
+  return replaceBraceParams(colon >= 0 ? `${segment.slice(0, colon)}{param}` : segment);
 }
 
 /** `/a/:id/` and `/a/{id}` both become `/a/{param}`. */
