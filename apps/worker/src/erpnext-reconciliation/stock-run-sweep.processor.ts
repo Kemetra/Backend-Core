@@ -30,7 +30,8 @@
  * is never expired; it is counted in the `erpnext_stock_run_stranded` gauge
  * (`report_complete`), sampled once per tick, and expiries are counted in
  * `erpnext_stock_run_expired_total`. An expiry failure is logged, does not stop
- * the tenant's store sweep, and fails the job like a store failure.
+ * the tenant's store sweep, fails the job like a store failure, and leaves the
+ * gauge at its last complete sample.
  *
  * Stores without a stock map (none, or a `returns`-only map) are never listed,
  * so the sweep creates no run for them — the unmapped case stays the operator's
@@ -214,10 +215,15 @@ export class StockRunSweepProcessor {
     }
 
     const result = tally.result();
-    setStockRunStranded({
-      report_incomplete: result.strandedIncomplete,
-      report_complete: result.strandedComplete,
-    });
+    // A failed expiry pass contributes no counts, so its sample would undercount
+    // (all zeros when every pass failed, which reads as healthy). Keep the last
+    // complete sample instead; the failure itself is logged and fails the job.
+    if (result.failedExpiries === 0) {
+      setStockRunStranded({
+        report_incomplete: result.strandedIncomplete,
+        report_complete: result.strandedComplete,
+      });
+    }
     this.logSummary(result);
     if (isIncomplete(result)) throw new StockRunSweepIncompleteError(result);
     return result;

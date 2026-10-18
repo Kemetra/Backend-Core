@@ -48,6 +48,7 @@ import {
   StockRunSweepWorker,
 } from "../../src/erpnext-reconciliation/stock-run-sweep.worker";
 import type { JobLike, WorkerFactory, WorkerLike } from "../../src/email/email.worker";
+import * as workerMetrics from "../../src/observability/metrics/worker.metrics";
 import {
   AuditDbPool,
   WorkerModule,
@@ -423,6 +424,33 @@ describe("RT-179 NoOpStockRunSweepRepository", () => {
 });
 
 describe("RT-688 stock run expiry in the sweep", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("samples the stranded gauge after a clean pass, and keeps the last sample when an expiry pass failed", async () => {
+    const setGauge = jest.spyOn(workerMetrics, "setStockRunStranded");
+    const clean = new FakeRepo({ "t-a": [] }, {}, new Set(), {
+      "t-a": { expired: [], strandedIncomplete: 1, strandedComplete: 2 },
+    });
+    await makeProcessor(clean, []).process(STOCK_RUN_SWEEP_JOB_NAME, {});
+    expect(setGauge).toHaveBeenCalledWith({ report_incomplete: 1, report_complete: 2 });
+
+    setGauge.mockClear();
+    const broken: StockRunSweepRepository = {
+      listActiveTenantIds: async () => ["t-a"],
+      listMappedStoreIds: async () => [],
+      sweepStore: async () => ({ outcome: "created", runId: "r" }),
+      expireStaleRuns: async () => {
+        throw new Error("down");
+      },
+    };
+    await expect(makeProcessor(broken, []).process(STOCK_RUN_SWEEP_JOB_NAME, {})).rejects.toBeInstanceOf(
+      StockRunSweepIncompleteError,
+    );
+    expect(setGauge).not.toHaveBeenCalled();
+  });
+
   it("the run TTL is 2 hours (RT-187 D5)", () => {
     expect(STOCK_RUN_TTL_MS).toBe(7_200_000);
   });
