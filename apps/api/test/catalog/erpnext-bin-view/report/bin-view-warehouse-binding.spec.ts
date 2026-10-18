@@ -84,31 +84,57 @@ afterAll(async () => {
   if (env) await stopPgEnv(env);
 }, 60_000);
 
+/** One seeded reconciliation run. */
+interface RunKey {
+  readonly runId: string;
+}
+
+/** A store's warehouse map to set. */
+interface MapSpec {
+  readonly storeId: string;
+  readonly erpnextWarehouseRef: string;
+}
+
+/** A warehouse map row to retire (optimistic version), as a given tenant. */
+interface RetireSpec {
+  readonly map: { readonly id: string; readonly version: number };
+  readonly tenantId?: string;
+}
+
+/** One `reportSnapshot` call under a requestRef. */
+interface ReportSpec {
+  readonly requestRef: string;
+  readonly body: object;
+}
+
+/** A one-item report window: item `${prefix}-1`. */
+interface WindowSpec {
+  readonly prefix: string;
+  readonly seq: number;
+  readonly isFinal: boolean;
+  readonly attemptRef?: string;
+}
+
 const bins = () => new ErpnextBinViewService(env!.app);
 const maps = () => new ErpnextWarehouseMapService(env!.app);
 
-async function setMap(storeId: string, ref: string): Promise<{ id: string; version: number }> {
-  const r = await maps().set({
-    tenantId: TENANT_A,
-    storeId,
-    erpnextWarehouseRef: ref,
-    actorUserId: ACTOR_A,
-  });
+async function setMap({ storeId, erpnextWarehouseRef }: MapSpec): Promise<{ id: string; version: number }> {
+  const r = await maps().set({ tenantId: TENANT_A, storeId, erpnextWarehouseRef, actorUserId: ACTOR_A });
   if (r.kind !== "ok") throw new Error(`set map: ${r.kind}`);
   return { id: r.row.id, version: r.row.version };
 }
 
-async function retire(map: { id: string; version: number }, tenantId = TENANT_A) {
+async function retire({ map, tenantId = TENANT_A }: RetireSpec) {
   return maps().retire({ tenantId, id: map.id, version: map.version, actorUserId: ACTOR_A });
 }
 
-async function feedRef(runId: string): Promise<string | undefined> {
+async function feedRef({ runId }: RunKey): Promise<string | undefined> {
   const page = await bins().pullRequests({ tenantId: TENANT_A, since: null, limit: 500 });
   return page.items.find((i) => i.runRef === runId)?.requestRef;
 }
 
 let keySeq = 0;
-function report(requestRef: string, body: object) {
+function report({ requestRef, body }: ReportSpec) {
   keySeq += 1;
   return bins().reportSnapshot({
     tenantId: TENANT_A,
@@ -118,12 +144,12 @@ function report(requestRef: string, body: object) {
   });
 }
 
-const entries = (prefix: string) => [
+const entries = ({ prefix }: Pick<WindowSpec, "prefix">) => [
   { erpnextItemRef: { doctype: "Item" as const, name: `${prefix}-1` }, quantity: "1.000000", stockUom: "Nos" },
 ];
-const win = (prefix: string, windowSeq: number, isFinal: boolean, attemptRef = ATTEMPT) => ({
-  entries: entries(prefix),
-  window: { attemptRef, windowSeq, isFinal },
+const win = ({ prefix, seq, isFinal, attemptRef = ATTEMPT }: WindowSpec) => ({
+  entries: entries({ prefix }),
+  window: { attemptRef, windowSeq: seq, isFinal },
   readAt: READ_AT,
 });
 
@@ -133,7 +159,7 @@ interface RunRow {
   summary: Record<string, unknown> | null;
 }
 
-async function runRow(runId: string): Promise<RunRow> {
+async function runRow({ runId }: RunKey): Promise<RunRow> {
   const r = await env!.admin.query<RunRow>(
     `SELECT status, finished_at, summary FROM erpnext_reconciliation_run WHERE id = $1`,
     [runId],
@@ -141,7 +167,7 @@ async function runRow(runId: string): Promise<RunRow> {
   return r.rows[0]!;
 }
 
-async function failedAudits(runId: string) {
+async function failedAudits({ runId }: RunKey) {
   const r = await env!.admin.query<{
     actor_user_id: string | null;
     actor_label: string | null;
@@ -155,7 +181,7 @@ async function failedAudits(runId: string) {
   return r.rows;
 }
 
-async function requestedEvents(runId: string): Promise<number> {
+async function requestedEvents({ runId }: RunKey): Promise<number> {
   const r = await env!.admin.query<{ n: string }>(
     `SELECT count(*)::text AS n FROM outbox_events
       WHERE event_type = 'erpnext.reconciliation.requested' AND payload->>'run_id' = $1`,
@@ -170,23 +196,23 @@ describe("RT-688 §1/§2 — a remap between windows ends the attempt and the ru
 
   it("the feed's requestRef is derived from the run and its active stock map", async () => {
     if (skip) return;
-    oldMap = await setMap(STORE_REMAP, "WH-688-OLD");
-    oldRef = (await feedRef(RUN_REMAP))!;
+    oldMap = await setMap({ storeId: STORE_REMAP, erpnextWarehouseRef: "WH-688-OLD" });
+    oldRef = (await feedRef({ runId: RUN_REMAP }))!;
     expect(oldRef).toBe(binViewRequestRef(RUN_REMAP, oldMap.id));
   });
 
   it("window 0 is recorded under the old mapping", async () => {
     if (skip) return;
-    const w0 = await report(oldRef, win("OLD", 0, false));
+    const w0 = await report({ requestRef: oldRef, body: win({ prefix: "OLD", seq: 0, isFinal: false }) });
     expect(w0.view).toMatchObject({ windowSeq: 0, complete: false, erpnextWarehouseRef: "WH-688-OLD" });
   });
 
   it("the retire fails the in-flight run with warehouse_remapped and an operator audit row", async () => {
     if (skip) return;
-    const retired = await retire(oldMap);
+    const retired = await retire({ map: oldMap });
     expect(retired.kind).toBe("ok");
 
-    const run = await runRow(RUN_REMAP);
+    const run = await runRow({ runId: RUN_REMAP });
     expect(run.status).toBe("failed");
     expect(run.finished_at).not.toBeNull();
     expect(run.summary?.["failure"]).toEqual({
@@ -196,7 +222,7 @@ describe("RT-688 §1/§2 — a remap between windows ends the attempt and the ru
     });
     // The partial report stays as evidence.
     expect(run.summary?.["bin_view_report"]).toMatchObject({ attemptRef: ATTEMPT, complete: false });
-    expect(await failedAudits(RUN_REMAP)).toEqual([
+    expect(await failedAudits({ runId: RUN_REMAP })).toEqual([
       {
         actor_user_id: ACTOR_A,
         actor_label: null,
@@ -208,25 +234,28 @@ describe("RT-688 §1/§2 — a remap between windows ends the attempt and the ru
 
   it("after the new map is set, the old requestRef gets 404 on window k+1 AND on a fresh window 0", async () => {
     if (skip) return;
-    const newMap = await setMap(STORE_REMAP, "WH-688-NEW");
-    await expect(report(oldRef, win("OLD", 1, true))).rejects.toBeInstanceOf(BinViewNotFoundError);
+    const newMap = await setMap({ storeId: STORE_REMAP, erpnextWarehouseRef: "WH-688-NEW" });
+    await expect(report({ requestRef: oldRef, body: win({ prefix: "OLD", seq: 1, isFinal: true }) })).rejects.toBeInstanceOf(BinViewNotFoundError);
     await expect(
-      report(oldRef, win("OLD", 0, true, "0a000000-0000-4000-8000-000000688d02")),
+      report({ requestRef: oldRef, body: win({ prefix: "OLD", seq: 0, isFinal: true, attemptRef: "0a000000-0000-4000-8000-000000688d02" }) }),
     ).rejects.toBeInstanceOf(BinViewNotFoundError);
     // The run is terminal, so the new mapping's ref resolves to nothing either.
     await expect(
-      report(binViewRequestRef(RUN_REMAP, newMap.id), win("NEW", 0, true)),
+      report({
+        requestRef: binViewRequestRef(RUN_REMAP, newMap.id),
+        body: win({ prefix: "NEW", seq: 0, isFinal: true }),
+      }),
     ).rejects.toBeInstanceOf(BinViewNotFoundError);
 
     // Nothing was recorded under the new mapping, nothing was emitted, and the
     // feed no longer offers the run.
-    const run = await runRow(RUN_REMAP);
+    const run = await runRow({ runId: RUN_REMAP });
     expect(run.summary?.["bin_view_report"]).toMatchObject({
       erpnextWarehouseRef: "WH-688-OLD",
       windowsRecorded: 1,
     });
-    expect(await requestedEvents(RUN_REMAP)).toBe(0);
-    expect(await feedRef(RUN_REMAP)).toBeUndefined();
+    expect(await requestedEvents({ runId: RUN_REMAP })).toBe(0);
+    expect(await feedRef({ runId: RUN_REMAP })).toBeUndefined();
   });
 });
 
@@ -235,34 +264,34 @@ describe("RT-688 §3 — a run with a complete report survives the retire, bound
 
   it("a complete report under the old mapping emits once; the retire leaves the run running", async () => {
     if (skip) return;
-    const oldMap = await setMap(STORE_COMPLETE, "WH-688-C-OLD");
-    oldRef = (await feedRef(RUN_COMPLETE))!;
-    await report(oldRef, win("C", 0, true));
-    expect(await requestedEvents(RUN_COMPLETE)).toBe(1);
+    const oldMap = await setMap({ storeId: STORE_COMPLETE, erpnextWarehouseRef: "WH-688-C-OLD" });
+    oldRef = (await feedRef({ runId: RUN_COMPLETE }))!;
+    await report({ requestRef: oldRef, body: win({ prefix: "C", seq: 0, isFinal: true }) });
+    expect(await requestedEvents({ runId: RUN_COMPLETE })).toBe(1);
 
-    expect((await retire(oldMap)).kind).toBe("ok");
-    const run = await runRow(RUN_COMPLETE);
+    expect((await retire({ map: oldMap })).kind).toBe("ok");
+    const run = await runRow({ runId: RUN_COMPLETE });
     expect(run).toMatchObject({ status: "running", finished_at: null });
     expect(run.summary?.["failure"]).toBeUndefined();
-    expect(await failedAudits(RUN_COMPLETE)).toEqual([]);
+    expect(await failedAudits({ runId: RUN_COMPLETE })).toEqual([]);
   });
 
   it("the old requestRef gets 404; the new mapping's ref is a conflict, never a second snapshot", async () => {
     if (skip) return;
-    await setMap(STORE_COMPLETE, "WH-688-C-NEW");
-    await expect(report(oldRef, win("C", 0, true))).rejects.toBeInstanceOf(BinViewNotFoundError);
+    await setMap({ storeId: STORE_COMPLETE, erpnextWarehouseRef: "WH-688-C-NEW" });
+    await expect(report({ requestRef: oldRef, body: win({ prefix: "C", seq: 0, isFinal: true }) })).rejects.toBeInstanceOf(BinViewNotFoundError);
 
-    const newRef = (await feedRef(RUN_COMPLETE))!;
+    const newRef = (await feedRef({ runId: RUN_COMPLETE }))!;
     expect(newRef).not.toBe(oldRef);
-    await expect(report(newRef, win("C2", 0, true, "0a000000-0000-4000-8000-000000688d03"))).rejects.toBeInstanceOf(
+    await expect(report({ requestRef: newRef, body: win({ prefix: "C2", seq: 0, isFinal: true, attemptRef: "0a000000-0000-4000-8000-000000688d03" }) })).rejects.toBeInstanceOf(
       BinViewWindowSequenceConflictError,
     );
     await expect(
-      report(newRef, { entries: entries("C3"), readAt: READ_AT }),
+      report({ requestRef: newRef, body: { entries: entries({ prefix: "C3" }), readAt: READ_AT } }),
     ).rejects.toBeInstanceOf(BinViewWindowSequenceConflictError);
 
-    expect(await requestedEvents(RUN_COMPLETE)).toBe(1);
-    expect((await runRow(RUN_COMPLETE)).summary?.["bin_view_report"]).toMatchObject({
+    expect(await requestedEvents({ runId: RUN_COMPLETE })).toBe(1);
+    expect((await runRow({ runId: RUN_COMPLETE })).summary?.["bin_view_report"]).toMatchObject({
       erpnextWarehouseRef: "WH-688-C-OLD",
       complete: true,
     });
@@ -279,16 +308,16 @@ describe("RT-688 §4 — retires that must not fail a run", () => {
        RETURNING id, version`,
       [TENANT_A, STORE_RETURNS, ACTOR_A],
     );
-    expect((await retire(r.rows[0]!)).kind).toBe("ok");
-    expect(await runRow(RUN_RETURNS)).toMatchObject({ status: "running", finished_at: null });
-    expect(await failedAudits(RUN_RETURNS)).toEqual([]);
+    expect((await retire({ map: r.rows[0]! })).kind).toBe("ok");
+    expect(await runRow({ runId: RUN_RETURNS })).toMatchObject({ status: "running", finished_at: null });
+    expect(await failedAudits({ runId: RUN_RETURNS })).toEqual([]);
   });
 
   it("another tenant cannot retire the map, and the run stays running", async () => {
     if (skip) return;
-    const map = await setMap(STORE_RETURNS, "WH-688-STOCK");
-    expect((await retire(map, TENANT_B)).kind).toBe("not_found");
-    expect(await runRow(RUN_RETURNS)).toMatchObject({ status: "running", finished_at: null });
-    expect(await failedAudits(RUN_RETURNS)).toEqual([]);
+    const map = await setMap({ storeId: STORE_RETURNS, erpnextWarehouseRef: "WH-688-STOCK" });
+    expect((await retire({ map: map, tenantId: TENANT_B })).kind).toBe("not_found");
+    expect(await runRow({ runId: RUN_RETURNS })).toMatchObject({ status: "running", finished_at: null });
+    expect(await failedAudits({ runId: RUN_RETURNS })).toEqual([]);
   });
 });
