@@ -13,7 +13,7 @@
 //   compare.json            {status, ahead_by, behind_by, merge_base} for <sha>...main
 //   check-runs.json         [{name, conclusion, slug, started_at}] on <sha>
 //   attest-<target>.json    gh attestation verify --format json output (absent = not verified)
-//   migrations-target.txt   git ls-tree --name-only <sha> packages/db/drizzle/
+//   migrations-target.txt   git ls-tree <sha> packages/db/drizzle/ (blob IDs catch in-place edits)
 //   environment.json        {status: present|not-visible|unknown, reviewers}
 //   collect-error.txt       only when collection stopped early: why (each line a refusal)
 //   current-release.json, current-tag-commit.txt, compare-current.json,
@@ -50,6 +50,7 @@ const TAG_RE = /^backend-core-[0-9a-f]{12}$/;
 const JIRA_RE = /^RT-[1-9]\d*$/;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const SUMS_LINE_RE = /^([0-9a-f]{64}) [ *](\S+)$/;
+const LS_TREE_RE = /^\d{6} (blob|tree) ([0-9a-f]{40})\t(.+)$/;
 const ENV_KEY_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const ROLE_ARN_RE = /^arn:aws:iam::\d{12}:role\/[\w+=,.@/-]+$/;
 const SSM_NODE_RE = /^mi-[0-9a-f]{17}$/;
@@ -315,39 +316,56 @@ function checkAttestation(results, target, digest, sha) {
   return ok ? [] : [`${target} attestation does not bind ${digest} to ${sha} built by release-images.yml on main`];
 }
 
-/** Forward (up) migration names; the *.down.sql companions are not separate migrations. */
-const upMigrations = (lines) =>
-  lines
-    .filter((l) => l.endsWith(".sql") && !l.endsWith(".down.sql"))
-    .map((l) => path.posix.basename(l))
-    .sort(byText);
+/**
+ * Forward (up) migrations from `git ls-tree` output, as name -> blob ID, so an
+ * in-place edit shows up as a change. The *.down.sql companions are not
+ * separate migrations. Null when any line is not ls-tree output.
+ */
+function upMigrations(lines) {
+  const blobs = new Map();
+  for (const line of lines) {
+    const m = LS_TREE_RE.exec(line);
+    if (!m) return null;
+    const [, type, blob, file] = m;
+    if (type === "blob" && file.endsWith(".sql") && !file.endsWith(".down.sql")) blobs.set(path.posix.basename(file), blob);
+  }
+  return blobs;
+}
 
-/** Redeploying older application digests is safe only when the schema did not change between the releases. */
-function assessRollback(added, removed) {
-  if (added.length === 0 && removed.length === 0) {
+/** Redeploying older application digests is safe only when no migration was added, removed or edited between the releases. */
+function assessRollback(added, removed, changed = []) {
+  if (added.length === 0 && removed.length === 0 && changed.length === 0) {
     return { allowed: true, reason: "no schema change; app-only rollback still needs a contract-compatibility review" };
   }
   return { allowed: false, reason: "schema changed: no automatic database downgrade; restore or forward-fix decision" };
 }
 
+const unknownPlan = (targetCount, reason) => ({
+  targetCount,
+  added: null,
+  removed: null,
+  changed: null,
+  rollback: { allowed: false, reason },
+});
+
 function planMigrations(targetLines, currentLines) {
-  if (targetLines === null || upMigrations(targetLines).length === 0) {
-    return { problems: ["target migration list missing or empty"], plan: null };
+  const target = targetLines === null ? null : upMigrations(targetLines);
+  if (!target || target.size === 0) {
+    return { problems: ["target migration list missing, empty or not git ls-tree output"], plan: null };
   }
-  const target = upMigrations(targetLines);
-  if (currentLines === null) {
-    return {
-      problems: [],
-      plan: { targetCount: target.length, added: null, removed: null, rollback: { allowed: false, reason: "unknown: no verified current release" } },
-    };
-  }
+  if (currentLines === null) return { problems: [], plan: unknownPlan(target.size, "unknown: no verified current release") };
   const current = upMigrations(currentLines);
-  const added = target.filter((m) => !current.includes(m));
-  const removed = current.filter((m) => !target.includes(m));
+  if (!current) {
+    return { problems: ["current release migration list is not git ls-tree output"], plan: unknownPlan(target.size, "unknown: unreadable current migrations") };
+  }
+  const names = (m) => [...m.keys()].sort(byText);
+  const added = names(target).filter((n) => !current.has(n));
+  const removed = names(current).filter((n) => !target.has(n));
+  const changed = names(target).filter((n) => current.has(n) && current.get(n) !== target.get(n));
   const problems = removed.length
     ? [`target release lacks ${removed.length} migration(s) the current release has: a schema downgrade is never automatic`]
     : [];
-  return { problems, plan: { targetCount: target.length, added, removed, rollback: assessRollback(added, removed) } };
+  return { problems, plan: { targetCount: target.size, added, removed, changed, rollback: assessRollback(added, removed, changed) } };
 }
 
 /** Deployment identity for a live run. Never root, never a user key, always a reviewed environment. */
@@ -497,7 +515,7 @@ function renderSummary(ledger) {
   if (mig) {
     // added is null when no current release was given or its evidence did not verify
     const since = Array.isArray(mig.added)
-      ? `${mig.added.length} added since ${md(ledger.current?.tag)} (${ledger.current?.source})`
+      ? `${mig.added.length} added and ${mig.changed.length} edited in place since ${md(ledger.current?.tag)} (${ledger.current?.source})`
       : "no verified current release";
     lines.push("", "### Schema", "", `${mig.targetCount} migrations in the release; ${since}. Rollback to the current release: ${mig.rollback.reason}.`);
   }

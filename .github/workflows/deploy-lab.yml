@@ -153,7 +153,7 @@ jobs:
             --jq '.check_runs[] | {name, conclusion, slug: .app.slug, started_at}' | jq -s . > "$EVIDENCE/check-runs.json"
 
           if git cat-file -e "$SHA^{commit}" 2>/dev/null; then
-            git ls-tree --name-only "$SHA" packages/db/drizzle/ > "$EVIDENCE/migrations-target.txt"
+            git ls-tree "$SHA" packages/db/drizzle/ > "$EVIDENCE/migrations-target.txt"
           fi
 
           # A failed verification leaves no file; the verifier refuses on a missing attestation.
@@ -184,7 +184,7 @@ jobs:
                   --jq '{status, ahead_by, behind_by, merge_base: .merge_base_commit.sha}' > "$EVIDENCE/compare-current.json" \
                   || rm -f "$EVIDENCE/compare-current.json"
                 if git cat-file -e "$CURRENT_SHA^{commit}" 2>/dev/null; then
-                  git ls-tree --name-only "$CURRENT_SHA" packages/db/drizzle/ > "$EVIDENCE/migrations-current.txt"
+                  git ls-tree "$CURRENT_SHA" packages/db/drizzle/ > "$EVIDENCE/migrations-current.txt"
                 fi
               fi
             else

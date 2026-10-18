@@ -31,7 +31,13 @@ type Ledger = {
     steps: { step: string; status: string }[];
     grants: string[];
     catchups: string[];
-    migrations: { targetCount: number; added: string[] | null; removed: string[] | null; rollback: { allowed: boolean } } | null;
+    migrations: {
+      targetCount: number;
+      added: string[] | null;
+      removed: string[] | null;
+      changed: string[] | null;
+      rollback: { allowed: boolean };
+    } | null;
   };
   gates: { environment: { status: string }; transport: { status: string } };
   pendingApprovals: string[];
@@ -67,6 +73,11 @@ const workflow = yaml.load(workflowText) as Workflow;
 const jobs = Object.entries(workflow.jobs);
 const allSteps = jobs.flatMap(([, job]) => job.steps);
 const scripts = allSteps.map((s) => s.run ?? "").join("\n");
+function stepNamed(prefix: string): Step & { id?: string } {
+  const found = allSteps.find((s) => (s.name ?? "").startsWith(prefix));
+  if (!found) throw new Error(`workflow step missing: ${prefix}`);
+  return found;
+}
 
 describe("deploy-lab workflow", () => {
   it("is manual only, with release, Jira key, lab-01 target and a dry run that defaults on", () => {
@@ -183,15 +194,22 @@ describe("deploy-lab workflow", () => {
   });
 
   it("records early collection stops as evidence and still runs the verifier, but never after a failed guard", () => {
-    const steps = jobs[0]?.[1].steps ?? [];
-    const collect = steps.find((s) => s.name?.startsWith("Collect release evidence"));
-    expect(collect?.run).toContain('echo "$*" >> "$EVIDENCE/collect-error.txt"; exit 1; }');
-    expect(collect?.run).toMatch(/trap '.*collect-error\.txt"' ERR/);
-    expect(collect?.run).toContain('|| fail "release assets do not match SHA256SUMS"');
-    const verify = steps.find((s) => s.name?.startsWith("Verify evidence"));
-    expect(verify?.if).toBe("${{ !cancelled() && steps.guard.outcome == 'success' && steps.checkout.outcome == 'success' }}");
-    expect(steps.find((s) => s.name?.startsWith("Guard"))).toMatchObject({ id: "guard" });
-    expect(steps.find((s) => s.uses?.startsWith("actions/checkout@"))).toMatchObject({ id: "checkout" });
+    const collect = String(stepNamed("Collect release evidence").run);
+    expect(collect).toContain('echo "$*" >> "$EVIDENCE/collect-error.txt"; exit 1; }');
+    expect(collect).toMatch(/trap '.*collect-error\.txt"' ERR/);
+    expect(collect).toContain('|| fail "release assets do not match SHA256SUMS"');
+    expect(stepNamed("Verify evidence").if).toBe(
+      "${{ !cancelled() && steps.guard.outcome == 'success' && steps.checkout.outcome == 'success' }}",
+    );
+    expect(stepNamed("Guard")).toMatchObject({ id: "guard" });
+    expect(stepNamed("Checkout main")).toMatchObject({ id: "checkout" });
+  });
+
+  it("records migration blob IDs, not only names, for the target and current releases", () => {
+    const collect = String(stepNamed("Collect release evidence").run);
+    expect(collect).toContain('git ls-tree "$SHA" packages/db/drizzle/ > "$EVIDENCE/migrations-target.txt"');
+    expect(collect).toContain('git ls-tree "$CURRENT_SHA" packages/db/drizzle/ > "$EVIDENCE/migrations-current.txt"');
+    expect(collect).not.toContain("ls-tree --name-only");
   });
 
   it("drops the registry credential before the verifier reads release content", () => {
@@ -231,6 +249,15 @@ const MIGRATIONS = [
   "packages/db/drizzle/meta",
 ];
 const UP = MIGRATIONS.filter((m) => m.endsWith(".sql") && !m.endsWith(".down.sql"));
+/** `git ls-tree <sha> packages/db/drizzle/` output; a blob ID is derived from the path unless overridden. */
+const lsTree = (paths: string[], blobs: Record<string, string> = {}): string =>
+  paths
+    .map((p) => {
+      const type = p.endsWith(".sql") ? "100644 blob" : "040000 tree";
+      const blob = blobs[p] ?? createHash("sha1").update(p).digest("hex");
+      return `${type} ${blob}\t${p}`;
+    })
+    .join("\n");
 
 let dir: string;
 
@@ -312,15 +339,15 @@ function writeGoodEvidence(): void {
     helper.REQUIRED_CHECKS.map((name) => ({ name, conclusion: "success", slug: "github-actions", started_at: "2026-10-18T10:00:00Z" })),
   );
   for (const t of ["api", "worker", "migrate"]) putJson(`attest-${t}.json`, attestation(t));
-  put("migrations-target.txt", MIGRATIONS.join("\n"));
+  put("migrations-target.txt", lsTree(MIGRATIONS));
   putJson("environment.json", { status: "not-visible", reviewers: 0 });
 }
 
-function writeCurrent(migrations: string[]): void {
+function writeCurrent(migrations: string[], blobs: Record<string, string> = {}): void {
   putJson("current-release.json", { tagName: OLD_TAG, targetCommitish: OLD_SHA, isDraft: false, isPrerelease: false, isImmutable: true });
   put("current-tag-commit.txt", `${OLD_SHA}\n`);
   putJson("compare-current.json", { status: "ahead", ahead_by: 9, behind_by: 0, merge_base: OLD_SHA });
-  put("migrations-current.txt", migrations.join("\n"));
+  put("migrations-current.txt", lsTree(migrations, blobs));
 }
 
 const refusalsOf = (c: Ctx = ctx()): string[] => helper.evaluate(dir, c).refusals;
@@ -529,6 +556,18 @@ describe("verify-release: current release, schema and rollback", () => {
     expect(helper.assessRollback(["0002_sales.sql"], [])).toMatchObject({ allowed: false, reason: expect.stringMatching(/restore or forward-fix/) });
   });
 
+  it("refuses an app-only rollback past a migration edited in place (same name, new content)", () => {
+    writeCurrent(MIGRATIONS, { "packages/db/drizzle/0002_sales.sql": "f".repeat(40) });
+    const { refusals, ledger } = helper.evaluate(dir, ctx({ currentRelease: OLD_TAG }));
+    expect(refusals).toEqual([]);
+    expect(ledger.plan.migrations).toMatchObject({ added: [], removed: [], changed: ["0002_sales.sql"], rollback: { allowed: false } });
+  });
+
+  it("refuses a migration list that is not git ls-tree output with blob IDs", () => {
+    put("migrations-target.txt", MIGRATIONS.join("\n"));
+    expectRefused(/target migration list missing, empty or not git ls-tree output/);
+  });
+
   it("refuses deploying a release that lacks a migration the host already has", () => {
     writeCurrent([...MIGRATIONS, "packages/db/drizzle/0003_newer.sql"]);
     expectRefused(/schema downgrade is never automatic/, ctx({ currentRelease: OLD_TAG }));
@@ -551,7 +590,7 @@ describe("verify-release: current release, schema and rollback", () => {
   it("summarises the schema plan against a verified current release", () => {
     writeCurrent(UP.slice(0, 1));
     const { ledger } = helper.evaluate(dir, ctx({ currentRelease: OLD_TAG }));
-    expect(helper.renderSummary(ledger)).toContain(`1 added since ${OLD_TAG} (operator-asserted, not host-verified)`);
+    expect(helper.renderSummary(ledger)).toContain(`1 added and 0 edited in place since ${OLD_TAG} (operator-asserted, not host-verified)`);
   });
 });
 
