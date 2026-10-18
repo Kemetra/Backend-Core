@@ -92,6 +92,7 @@ interface OpenApiDocument {
     schemas?: Record<string, SchemaObject>;
     securitySchemes?: Record<string, Record<string, unknown>>;
     responses?: Record<string, unknown>;
+    headers?: Record<string, unknown>;
     parameters?: Record<string, unknown>;
   };
   security?: Array<Record<string, unknown>>;
@@ -151,8 +152,8 @@ describe("settlement.yaml — loadability and version", () => {
     expect(doc.openapi).toBe("3.1.0");
   });
 
-  it("is the RT-572 2.1.0 additive minor on the RT-417 2.0.0 major, citing the [GATED] approval", () => {
-    expect(doc.info?.version).toBe("2.1.0");
+  it("is the RT-620 2.2.0 additive minor (on RT-572 2.1.0 and the RT-417 2.0.0 major), citing the [GATED] approval", () => {
+    expect(doc.info?.version).toBe("2.2.0");
     const info = doc.info?.description ?? "";
     expect(info).toContain("RT-417 (2.0.0; [GATED] approval Jira RT-417 comment 11671");
     expect(info).toContain("replacing the stale `1.0.0-draft`");
@@ -250,7 +251,11 @@ describe("settlement.yaml — retired operations (RT-417 → RT-422)", () => {
     for (const name of RETIRED_SCHEMAS) {
       expect(schema(name)).toBeUndefined();
     }
-    expect(doc.components?.responses?.["TooManyRequests"]).toBeUndefined();
+    // The POS 429 and its max-300 header are gone; the only 429 is the console one (RT-620).
+    expect(doc.components?.headers?.["RetryAfter"]).toBeUndefined();
+    expect(doc.components?.responses?.["TooManyRequests"]).toMatchObject({
+      headers: { "Retry-After": { $ref: "#/components/headers/ConsoleRetryAfter" } },
+    });
     for (const name of ["ReceivableRef", "ClaimRef", "ReceivableCursor", "ReceivableStateQuery"]) {
       expect(doc.components?.parameters?.[name]).toBeUndefined();
     }
@@ -377,9 +382,9 @@ describe("settlement.yaml — consoleUpdatePayerAccount (RT-572)", () => {
     expect(ok?.content?.["application/json"]?.schema?.$ref).toBe("#/components/schemas/PayerAccount");
   });
 
-  it("declares 400/401/403/404/409/500 and no 201", () => {
+  it("declares 400/401/403/404/409/429/500 and no 201", () => {
     const codes = Object.keys(update()?.responses ?? {}).sort();
-    expect(codes).toEqual(["200", "400", "401", "403", "404", "409", "500"]);
+    expect(codes).toEqual(["200", "400", "401", "403", "404", "409", "429", "500"]);
     const refs = update()?.responses as Record<string, { $ref?: string }>;
     expect(refs["403"]?.$ref).toBe("#/components/responses/ForbiddenOrOriginRejected");
     expect(refs["404"]?.$ref).toBe("#/components/responses/PayerNotFound");

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — Console Sync-Ops Read-Model API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     Spec 025 — a READ-ONLY consolidation surface for the Retail Tower Console (a
     sibling SPA repo). It aggregates the ERPNext sync-ops state a human operator
@@ -39,8 +39,8 @@ info:
     Error envelope: the canonical `{ error: { code, message, request_id } }`,
     identical to the shared shape (`auth` / `outbox` / `pos-sales` /
     `erpnext-reconciliation`). Status mapping: 400 validation, 401 unauthenticated,
-    403 insufficient-role, 404 not-found / cross-tenant (non-disclosing), 500
-    internal.
+    403 insufficient-role, 404 not-found / cross-tenant (non-disclosing),
+    429 `rate_limited` (console rate limit; honour `Retry-After`), 500 internal.
 
     Consumed by `apps/api/test/catalog/erpnext-sync-ops/erpnext-sync-ops.contract.spec.ts`,
     loaded with an explicit `dir` (the production `loadOpenApiContracts` helper is
@@ -49,6 +49,11 @@ info:
     SCOPE (025-CONTRACT): authors ONLY this YAML + its conformance spec. The
     read-model service + controller routes land in the US1/US2/US3 slices. No
     `packages/db` change (SC-007), no migration, no worker, no write.
+
+
+    **1.1.0-draft (RT-620, additive).** Every cookieAuth operation may
+    return 429 `rate_limited` (`TooManyRequests`, with `Retry-After`)
+    from the console rate limit (RT-574, RT-619). No other wire change.
 
 servers:
   - url: https://api.example.com
@@ -90,6 +95,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/SystemFailure"
 
@@ -122,6 +129,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/SystemFailure"
 
@@ -154,6 +163,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/SystemFailure"
 
@@ -434,3 +445,36 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: >
+        429 `rate_limited` (RT-574): the caller's per-user budget for this
+        class of operation is spent. The body is the canonical error
+        envelope with a non-disclosing message (no budget, class or window);
+        its `request_id` equals the `X-Request-Id` response header. Honour
+        `Retry-After`; never auto-retry a mutation. A 429 is not a 401: it
+        never means the session ended. The console limit is
+        server-configured and may not be enforced, so a client must handle a
+        429 but must not expect one.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/ConsoleRetryAfter"
+        Cache-Control:
+          description: Always `no-store` on a 429.
+          schema:
+            type: string
+            enum: [no-store]
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  headers:
+    ConsoleRetryAfter:
+      description: >
+        Whole seconds the caller should wait before retrying, sent on every
+        console 429 (RT-574 D5). Its own bound, 1 to 3600; it is not the POS
+        `RetryAfter` header.
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 3600

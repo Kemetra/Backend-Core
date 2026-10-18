@@ -145,9 +145,9 @@ describe("pairing codes contract — operations", () => {
   });
 
   it.each([
-    ["post", CODES_PATH, ["201", "400", "401", "403", "404", "409", "425", "500"]],
-    ["get", CODES_PATH, ["200", "400", "401", "404", "500"]],
-    ["post", CANCEL_PATH, ["200", "400", "401", "403", "404", "409", "500"]],
+    ["post", CODES_PATH, ["201", "400", "401", "403", "404", "409", "425", "429", "500"]],
+    ["get", CODES_PATH, ["200", "400", "401", "404", "429", "500"]],
+    ["post", CANCEL_PATH, ["200", "400", "401", "403", "404", "409", "429", "500"]],
   ] as const)("%s %s answers exactly %j (scope refusals are the shared 404)", (m, p, statuses) => {
     const responses = responsesOf(m, p);
     expect(Object.keys(responses).sort()).toEqual([...statuses].sort());

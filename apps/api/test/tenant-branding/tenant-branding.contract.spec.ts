@@ -170,9 +170,9 @@ function logo() {
 }
 
 describe("tenant-branding — document and operations", () => {
-  it("is an OpenAPI 3.1 document at version 1.0.0-draft", () => {
+  it("is an OpenAPI 3.1 document at version 1.1.0-draft (RT-620)", () => {
     expect(doc.openapi).toBe("3.1.0");
-    expect(doc.info?.version).toBe("1.0.0-draft");
+    expect(doc.info?.version).toBe("1.1.0-draft");
   });
 
   it("declares exactly the five branding operations", () => {
@@ -283,11 +283,11 @@ describe("tenant-branding — Console surface", () => {
   it("maps the write responses, with 409 and 413 outside the 422 set", () => {
     const keys = (path: string, method: string) => Object.keys(op(path, method).responses ?? {}).sort();
     expect(keys(LOGO_PATH, "put")).toEqual(
-      ["200", "400", "401", "403", "404", "409", "413", "422", "500"].sort(),
+      ["200", "400", "401", "403", "404", "409", "413", "422", "429", "500"].sort(),
     );
-    expect(keys(PREVIEW_PATH, "post")).toEqual(["200", "400", "401", "403", "404", "413", "422", "500"].sort());
-    expect(keys(LOGO_PATH, "delete")).toEqual(["200", "400", "401", "403", "404", "409", "500"].sort());
-    expect(keys(LOGO_PATH, "get")).toEqual(["200", "400", "401", "404", "500"].sort());
+    expect(keys(PREVIEW_PATH, "post")).toEqual(["200", "400", "401", "403", "404", "413", "422", "429", "500"].sort());
+    expect(keys(LOGO_PATH, "delete")).toEqual(["200", "400", "401", "403", "404", "409", "429", "500"].sort());
+    expect(keys(LOGO_PATH, "get")).toEqual(["200", "400", "401", "404", "429", "500"].sort());
   });
 });
 

@@ -144,7 +144,7 @@ describe("devices impact contract — operation", () => {
   it("inherits the cookie-only scheme and answers like the reads (scope refusals are 404)", () => {
     const operation = contract.operation("get", IMPACT_PATH);
     expect(operation["security"]).toBeUndefined();
-    expect(Object.keys(operation["responses"] as JsonObject).sort()).toEqual(["200", "400", "401", "404", "500"]);
+    expect(Object.keys(operation["responses"] as JsonObject).sort()).toEqual(["200", "400", "401", "404", "429", "500"]);
     const responses = operation["responses"] as Record<string, JsonObject>;
     expect(responses["404"]).toEqual({ $ref: "#/components/responses/NotFound" });
     expect(responses["200"]).toMatchObject({
