@@ -146,7 +146,7 @@ describe("price_history Drizzle schema (T323)", () => {
       // returning "char(3)". Assert both length and char-ness.
       expect(colType).toContain("char");
       const col = cc as unknown as { length?: number };
-      expect(col.length).toBe(3); // Q2: ISO 4217 fixed width
+      expect(col).toHaveLength(3); // Q2: ISO 4217 fixed width
     });
 
     it("effective_from is timestamptz NOT NULL — Q9", () => {

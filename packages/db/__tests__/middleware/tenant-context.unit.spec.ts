@@ -81,12 +81,14 @@ describe("runWithTenantContext — input validation", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("TC-U5: accepts valid UUID tenantId", async () => {
+  it.each([
+    ["TC-U5: accepts valid UUID tenantId", { tenantId: TENANT_A, isPlatformAdmin: false }],
+    ["TC-U7: accepts isPlatformAdmin true", { tenantId: TENANT_A, isPlatformAdmin: true }],
+    ["TC-U8: accepts isPlatformAdmin false", { tenantId: TENANT_A, isPlatformAdmin: false }],
+  ])("%s", async (_label, ctx) => {
     const { client: c } = makeClient();
     const p = makePool(c);
-    await expect(
-      runWithTenantContext(p, { tenantId: TENANT_A, isPlatformAdmin: false }, async () => undefined),
-    ).resolves.toBeUndefined();
+    await expect(runWithTenantContext(p, ctx, async () => undefined)).resolves.toBeUndefined();
   });
 
   it("TC-U6: rejects non-boolean isPlatformAdmin before pool.connect()", async () => {
@@ -99,22 +101,6 @@ describe("runWithTenantContext — input validation", () => {
       ),
     ).rejects.toThrow(/boolean/i);
     expect((pool.connect as jest.Mock)).not.toHaveBeenCalled();
-  });
-
-  it("TC-U7: accepts isPlatformAdmin true", async () => {
-    const { client: c } = makeClient();
-    const p = makePool(c);
-    await expect(
-      runWithTenantContext(p, { tenantId: TENANT_A, isPlatformAdmin: true }, async () => undefined),
-    ).resolves.toBeUndefined();
-  });
-
-  it("TC-U8: accepts isPlatformAdmin false", async () => {
-    const { client: c } = makeClient();
-    const p = makePool(c);
-    await expect(
-      runWithTenantContext(p, { tenantId: TENANT_A, isPlatformAdmin: false }, async () => undefined),
-    ).resolves.toBeUndefined();
   });
 });
 

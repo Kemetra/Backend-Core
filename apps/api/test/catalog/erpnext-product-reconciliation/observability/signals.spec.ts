@@ -92,8 +92,8 @@ describe("021 §XIV data-class guard — owned schema (T039)", () => {
   it("the migration ENABLEs + FORCEs RLS on all three owned tables", () => {
     const enables = migrationSrc.match(/ENABLE ROW LEVEL SECURITY/g) ?? [];
     const forces = migrationSrc.match(/FORCE  ROW LEVEL SECURITY/g) ?? [];
-    expect(enables.length).toBe(3);
-    expect(forces.length).toBe(3);
+    expect(enables).toHaveLength(3);
+    expect(forces).toHaveLength(3);
   });
 
   it("the migration uses the empty-GUC CASE guard (fail-closed RLS)", () => {

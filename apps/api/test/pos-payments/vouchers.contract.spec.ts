@@ -370,28 +370,16 @@ describe("pos-payments/vouchers.yaml — schema closedness", () => {
     },
   );
 
-  it("PosValidateVoucherResponse.kind is the closed enum {validated}", () => {
-    const schema = vouchersDoc.components?.schemas?.["PosValidateVoucherResponse"];
+  it.each([
+    ["PosValidateVoucherResponse", "validated"],
+    ["PosRedeemVoucherResponse", "redeemed"],
+    ["PosReverseVoucherResponse", "reversed"],
+  ])("%s.kind is the closed enum {%s}", (schemaName, kind) => {
+    const schema = vouchersDoc.components?.schemas?.[schemaName];
     const props = schema?.["properties"] as
       | Record<string, { enum?: string[] }>
       | undefined;
-    expect(props?.["kind"]?.enum).toEqual(["validated"]);
-  });
-
-  it("PosRedeemVoucherResponse.kind is the closed enum {redeemed}", () => {
-    const schema = vouchersDoc.components?.schemas?.["PosRedeemVoucherResponse"];
-    const props = schema?.["properties"] as
-      | Record<string, { enum?: string[] }>
-      | undefined;
-    expect(props?.["kind"]?.enum).toEqual(["redeemed"]);
-  });
-
-  it("PosReverseVoucherResponse.kind is the closed enum {reversed}", () => {
-    const schema = vouchersDoc.components?.schemas?.["PosReverseVoucherResponse"];
-    const props = schema?.["properties"] as
-      | Record<string, { enum?: string[] }>
-      | undefined;
-    expect(props?.["kind"]?.enum).toEqual(["reversed"]);
+    expect(props?.["kind"]?.enum).toEqual([kind]);
   });
 
   it("Error envelope shape matches the outbox.openapi.yaml convention (error.code + error.message)", () => {
