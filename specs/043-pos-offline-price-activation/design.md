@@ -111,10 +111,12 @@ Within `anchored`, `t_lo` never decreases. A re-anchor after `unverified` can mo
 | `unverified` | after a restart or an OS resume (see "OS suspend" below), before the next anchor, with `wall ≥ hwm_trusted − 5 min` and `wall ≥ wall_seen − 5 min` | by `t_lo` (bounded, §4.1) | by `t_hi`; lines record `clockState = unverified` |
 | `suspect` | `wall < hwm_trusted − 5 min` or `wall < wall_seen − 5 min` (rollback, the P7 rule), **or** `|drift| > 120 s` in this process with no resume event (the wall clock moved against the monotonic clock) | **frozen**: no further activation | **treated as stale** whatever the age (RT-284 P-F: "a clock rollback counts as stale") |
 
-Leaving `suspect` or `unverified` needs a fresh anchor (a successful manifest check). At every re-anchor, POS compares the untrusted time it used with the server's:
+Leaving `suspect` or `unverified` needs a fresh anchor (a successful manifest check). **On that transition only** (never on the routine re-anchors of every poll while `anchored`), POS compares the untrusted time it actually used with the server's. While `unverified` or `suspect` it keeps `t_lo_untrusted_max`, the highest `t_lo` it used, and `untrusted_from`, the `t_lo` when it entered the state:
 
-- if `wall_seen > t_anch + 120 s`, the device's clock **ran ahead** while untrusted. POS records a **clock incident** `{ kind: ran_ahead, byMs: wall_seen − t_anch, from: first unverified instant, to: t_anch }`, resets `wall_seen` to `wall_now`, and reports it on the next ack (§9.2);
-- a rollback seen while offline (`suspect` from `wall_seen`) is likewise recorded as `{ kind: rolled_back, … }`.
+- if `t_lo_untrusted_max > t_anch + 120 s`, the device's time **ran ahead** while untrusted. POS records a **clock incident** `{ kind: ran_ahead, byMs: t_lo_untrusted_max − t_anch, from: untrusted_from, to: t_anch }`;
+- a rollback seen while offline (`suspect` from `wall_seen`) is likewise recorded as `{ kind: rolled_back, byMs, from: untrusted_from, to: t_anch }`.
+
+A wall clock that is merely fast but steady while `anchored` raises no incident: `anchored` activation never uses the wall clock. Incidents go to BC on their **own** endpoint immediately after the transition (§9.2), not on a pricing ack, and stay queued until it succeeds.
 
 **OS suspend.** Whether the monotonic clock advances across sleep depends on the platform, so the design does not rely on it. On Electron's `powerMonitor` `resume` event, POS **drops the anchor** and moves to `unverified`, exactly as after a restart. A store PC that sleeps overnight offline therefore activates the morning's scheduled prices from its wall clock (within the §4.1 bound), rather than freezing in `suspect`. A drift seen *without* a resume event is still `suspect`.
 
@@ -125,7 +127,7 @@ The 120 s drift budget matches the existing future-dating tolerance on the void 
 - **Forward tampering while unverified.** After a restart with no network, the POS cannot tell a correct wall clock from one set forward. A forward-set clock activates future segments early. Bounds and evidence:
   - activation can run ahead of the last trusted instant by at most `maxStaleness` (§4.1), and staleness uses `t_hi`, so under `deny_if_stale` the device stops selling at cached prices at the same point;
   - every line records `clockState = unverified` and its `pricedAt` (§9.1);
-  - **detection is through clock incidents, not the sale's own times.** If the device re-anchors while its clock is still ahead, the `ran_ahead` incident (with its interval and size) reaches BC on the next ack, and BC re-checks that device's `unverified` lines in the interval (§9.3). If someone sets the clock back before reconnecting, `wall_seen` turns that into a `rolled_back` incident, which is reported the same way;
+  - **detection is through clock incidents, not the sale's own times.** If the device re-anchors while its clock is still ahead, the `ran_ahead` incident (with its interval and size) is sent to BC right after the re-anchor (§9.2), and BC re-checks that device's `unverified` lines in the interval (§9.3). If someone sets the clock back before reconnecting, `wall_seen` turns that into a `rolled_back` incident, which is reported the same way;
   - **undetectable case, stated plainly:** a device that stays offline, with its clock ahead, until real time overtakes the forged time leaves no discrepancy at re-anchor, and its sales look like ordinary `unverified` sales. Its exposure is bounded only by the `maxStaleness` limit above. A tenant that cannot accept this uses `deny_if_stale` with a short `maxStaleness`;
   - `hwm_trusted` and `wall_seen` prevent the reverse attack (rolling back to keep an old price).
 - **Same-Windows-user edits of the sealed marks** are the accepted P7 residual risk (OD11); unchanged here.
@@ -318,7 +320,9 @@ A sale that started fresh and later added a stale line therefore reports `stale 
 
 ### 9.2 Acks
 
-`POST /api/pos/v1/pricing/acks` (device bearer, idempotent on `(device, pair, status)`): `{ status: received | applied | failed, storeRevision, timeBasisEpoch, failureCode?, deviceAppliedAt (t_lo), clockState, clockIncidents?: [{ kind: ran_ahead | rolled_back, byMs, from, to }] }`. BC persists the latest per status per device (PR-05 table) and every clock incident (`pricing_device_clock_incidents`). An ack is evidence for Health; BC never trusts it for authority. An incident is resent until an ack carrying it succeeds.
+`POST /api/pos/v1/pricing/acks` (device bearer, idempotent on `(device, pair, status)`): `{ status: received | applied | failed, storeRevision, timeBasisEpoch, failureCode?, deviceAppliedAt (t_lo), clockState }`. BC persists the latest per status per device (PR-05 table). An ack is evidence for Health; BC never trusts it for authority.
+
+`POST /api/pos/v1/pricing/clock-incidents` (device bearer, idempotent on `(device, kind, from)`): `{ incidents: [{ kind: ran_ahead | rolled_back, byMs, from, to }] }`. Sent right after the re-anchor that detects them, independent of acks (an incident usually appears on a plain check with no new pair), and retried from the local queue until it succeeds. BC stores them in `pricing_device_clock_incidents` and runs the §9.3 matching.
 
 ### 9.3 Revalidation on sale sync
 
@@ -348,7 +352,8 @@ All are **additive** and belong to later `[GATED]` items. OD-6 evidence: POS val
 | `GET /api/pos/v1/pricing/snapshot?revision&epoch&page_token&limit` | pages of `PricingEntry { productId, sellUnit, segments: PricingSegment[] }`; every page echoes `storeRevision`, `timeBasisEpoch`, `serverTime`; the final page carries `contentHash`, `entryCount`. A pair that is no longer current → 409 `pricing_revision_superseded` (the device re-reads the manifest) |
 | `PricingSegment` | `{ from, to \| null, amount (decimal string), currencyCode, taxPriceBasis, provenance (PR-07 union), offlinePolicy? {mode, maxStalenessSeconds?, until} }` |
 | `GET /api/pos/v1/pricing/deltas?fromRevision&fromEpoch` | reserved (§5.3); `snapshot_required` 409 on gap or epoch change |
-| `POST /api/pos/v1/pricing/acks` | §9.2 (including `clockIncidents`); 202; idempotent |
+| `POST /api/pos/v1/pricing/acks` | §9.2; 202; idempotent on `(device, pair, status)` |
+| `POST /api/pos/v1/pricing/clock-incidents` | §9.2; 202; idempotent on `(device, kind, from)` |
 | `serverTime` | also on every pricing response header (`X-Server-Time`) |
 
 Error vocabulary: the read-down `Error` envelope plus `pricing_revision_superseded`. Scope comes from the device row only; a foreign revision or epoch is refused non-disclosingly (§II, §XII).
@@ -374,7 +379,7 @@ Also in PR-06 (Console-facing, moved there by RT-282): the **distribution-status
 
 ### 10.4 POS `[GATED local migration]`
 
-`pricing_segments`, `pricing_segments_staging` (both keyed `(tenant_id, product_id, sell_unit, from)`, amount as **decimal string** plus `currency_code`, unlike `products.price_minor`), `pricing_sync_state` (authority, applied pair, hash, `last_check_at_lo`, failure fields), the two sealed clock marks `hwm_trusted` and `wall_seen` (generalising `cashier_offline_clock_hwm`), and a local queue for acks and clock incidents.
+`pricing_segments`, `pricing_segments_staging` (both keyed `(tenant_id, product_id, sell_unit, from)`, amount as **decimal string** plus `currency_code`, unlike `products.price_minor`), `pricing_sync_state` (authority, applied pair, hash, `last_check_at_lo`, failure fields), the two sealed clock marks `hwm_trusted` and `wall_seen` (generalising `cashier_offline_clock_hwm`), `t_lo_untrusted_max` / `untrusted_from`, and local queues for acks and clock incidents.
 
 ## 11. Interactions
 
@@ -401,7 +406,7 @@ Also in PR-06 (Console-facing, moved there by RT-282): the **distribution-status
 
 | Area | Tests |
 |---|---|
-| Clock | matrix `{anchored, unverified, suspect} × {wall correct, forward 1 h, forward > maxStaleness, back 10 min, back 2 min, suspend 8 h}`: `t_lo` never decreases while anchored, activation never early in `anchored`, `unverified` activation capped at `hwm_trusted + maxStaleness`, `suspect` freezes activation and forces stale; `hwm_trusted` never raised from wall time (offline restart with clock +1 day, then re-anchor → correct activation and a `ran_ahead` incident); set-forward-then-back offline → `rolled_back` incident; anchor rejected when RTT > 5 s; both marks sealed and restored after restart |
+| Clock | matrix `{anchored, unverified, suspect} × {wall correct, forward 1 h, forward > maxStaleness, back 10 min, back 2 min, suspend 8 h}`: `t_lo` never decreases while anchored, activation never early in `anchored`, `unverified` activation capped at `hwm_trusted + maxStaleness`, `suspect` freezes activation and forces stale; `hwm_trusted` never raised from wall time (offline restart with clock +1 day, then re-anchor → correct activation and a `ran_ahead` incident); set-forward-then-back offline → `rolled_back` incident; a steadily fast wall clock while `anchored` → no incident across many polls; incidents sent on their own endpoint right after the transition and retried until accepted, a resend is idempotent; anchor rejected when RTT > 5 s; both marks sealed and restored after restart |
 | Apply | promote atomicity (throw inside the transaction keeps previous pair and rows); hash mismatch, count mismatch, page pair mismatch, downgrade → previous kept, ack `failed` with the code; never a mix of two pairs (rows of one pair only, checked after every failure injection) |
 | Activation | boundary inclusive/exclusive at `from` ± 1 ms; a line scanned before the boundary keeps its price; resume diff after the boundary; gap → not sellable |
 | Staleness | per mode × {fresh, ageing, stale, never applied, clock suspect}; 304 (ETag of the applied pair) refreshes the check, a failed fetch or a failed apply of a newer pair does not; clamps incl. `onlineWindow ≥ poll + 60`; `online_only` on-demand check at scan (success → sellable, timeout → refused) |
