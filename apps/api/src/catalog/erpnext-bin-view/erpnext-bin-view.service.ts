@@ -31,10 +31,20 @@
  * connector (separate repo) CALLS them. Tenant scope comes from the connector
  * principal only (§XII); RLS scopes every read/write to `app.current_tenant`.
  *
- * `requestRef` is DERIVED deterministically (`deterministicId(NS, runId:windowSeq)`)
- * so a pulled request is stable across re-pulls + bindable on the report WITHOUT a
+ * `requestRef` is DERIVED deterministically
+ * (`deterministicId(NS, runId:warehouseMapId:windowSeq)`, `binViewRequestRef`) so a
+ * pulled request is stable across re-pulls + bindable on the report WITHOUT a
  * request table (Option B — zero `packages/db` surface, FR-009). There is still
- * one request per run, so the report resolves `runId:0`.
+ * one request per run, so the report resolves windowSeq 0.
+ *
+ * RT-688 (RT-187 §5.1) — the ref is bound to the store's ACTIVE `stock` warehouse
+ * map as well as the run. The report re-derives it from the map active NOW, so
+ * after a remap (old map retired, new one active) a request pulled under the old
+ * map no longer resolves: every window, window 0 included, gets the
+ * non-disclosing 404, and no old-warehouse rows are ever labelled with the new
+ * warehouse. The retire itself fails the store's in-flight run
+ * (`warehouse_remapped`, `ErpnextWarehouseMapService.retire`); this binding also
+ * covers the run whose report was already complete when the map was retired.
  */
 import { Inject, Injectable } from "@nestjs/common";
 import { emit, OUTBOX_EVENT_TYPES, runWithTenantContext } from "@data-pulse-2/db";
@@ -64,6 +74,15 @@ const SUPERSEDED_ATTEMPTS_KEPT = 20;
 /** UUID shape guard for the opaque feed cursor (malformed → from-start, not 500). */
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The opaque `requestRef` of a run's bin-view request under one warehouse map
+ * (RT-688): stable across re-pulls while the map stays active, different after
+ * a remap.
+ */
+export function binViewRequestRef(runId: string, warehouseMapId: string): string {
+  return deterministicId(BIN_VIEW_REQUEST_NS, `${runId}:${warehouseMapId}:0`);
+}
 
 /** Raised when a `requestRef` does not resolve to a running run in the tenant. */
 export class BinViewNotFoundError extends Error {
@@ -135,6 +154,7 @@ export interface PullRequestsResult {
 interface RunRow {
   run_id: string;
   store_id: string;
+  warehouse_map_id: string;
   erpnext_warehouse_ref: string;
   started_at: string;
 }
@@ -307,6 +327,7 @@ export class ErpnextBinViewService {
         const rows = await client.query<RunRow>(
           `SELECT run.id AS run_id,
                   run.store_id,
+                  whm.id AS warehouse_map_id,
                   whm.erpnext_warehouse_ref,
                   run.started_at::text AS started_at
              FROM erpnext_reconciliation_run run
@@ -324,12 +345,8 @@ export class ErpnextBinViewService {
 
         const items: BinViewRequest[] = rows.rows.map((row) => {
           const windowSeq = 0;
-          const requestRef = deterministicId(
-            BIN_VIEW_REQUEST_NS,
-            `${row.run_id}:${windowSeq}`,
-          );
           return {
-            requestRef,
+            requestRef: binViewRequestRef(row.run_id, row.warehouse_map_id),
             storeId: row.store_id,
             erpnextWarehouseRef: row.erpnext_warehouse_ref,
             runRef: row.run_id,
@@ -417,18 +434,21 @@ export class ErpnextBinViewService {
 
   /**
    * Resolve `requestRef` → its running stock run on a mapped store and lock
-   * ONLY that run row. (a) The requestRef is derived from (run, window=0) — one
-   * request per run (v1.2 windows are report windows, not requests) — so it is
-   * re-derived over the tenant's running stock runs: ids only, no summary, NO
-   * lock. RLS scopes to the tenant, so a cross-tenant ref reads nothing →
-   * non-disclosing not-found. (b) `FOR UPDATE` on the target row re-checks it
-   * is still running (it may have completed since (a) → the same not-found).
-   * Every window of one run serializes on this lock; windows of different runs
-   * never block each other.
+   * ONLY that run row. (a) The requestRef is derived from (run, ACTIVE stock
+   * map, window=0) — one request per run (v1.2 windows are report windows, not
+   * requests) — so it is re-derived over the tenant's running stock runs and
+   * their stores' active maps: ids only, no summary, NO lock. RLS scopes to the
+   * tenant, so a cross-tenant ref reads nothing → non-disclosing not-found; a
+   * ref pulled under a since-retired map derives from no active map → the same
+   * not-found (RT-688). (b) `FOR UPDATE` on the target row re-checks it is
+   * still running under that same map (it may have completed or been failed
+   * since (a), or the map retired → the same not-found). Every window of one
+   * run serializes on this lock; windows of different runs never block each
+   * other.
    */
   private async lockRun(client: PoolClient, requestRef: string): Promise<LockedRun> {
-    const candidates = await client.query<{ run_id: string }>(
-      `SELECT run.id AS run_id
+    const candidates = await client.query<{ run_id: string; warehouse_map_id: string }>(
+      `SELECT run.id AS run_id, whm.id AS warehouse_map_id
          FROM erpnext_reconciliation_run run
          JOIN erpnext_warehouse_map whm
            ON whm.store_id = run.store_id
@@ -437,10 +457,10 @@ export class ErpnextBinViewService {
         WHERE run.kind = 'stock'
           AND run.status = 'running'`,
     );
-    const runId = candidates.rows.find(
-      (r) => deterministicId(BIN_VIEW_REQUEST_NS, `${r.run_id}:0`) === requestRef,
-    )?.run_id;
-    if (runId === undefined) throw new BinViewNotFoundError();
+    const match = candidates.rows.find(
+      (r) => binViewRequestRef(r.run_id, r.warehouse_map_id) === requestRef,
+    );
+    if (match === undefined) throw new BinViewNotFoundError();
 
     const locked = await client.query<LockedRun>(
       `SELECT run.id AS run_id,
@@ -453,10 +473,11 @@ export class ErpnextBinViewService {
           AND whm.purpose = 'stock'
           AND whm.retired_at IS NULL
         WHERE run.id = $1
+          AND whm.id = $2
           AND run.kind = 'stock'
           AND run.status = 'running'
         FOR UPDATE OF run`,
-      [runId],
+      [match.run_id, match.warehouse_map_id],
     );
     const run = locked.rows[0];
     if (!run) throw new BinViewNotFoundError();
@@ -594,11 +615,22 @@ function incomingWindow(body: SnapshotReportBody): IncomingWindow {
   };
 }
 
-/** The run's recorded report for this request (normalized), if any. */
+/**
+ * The run's recorded report for this request (normalized), if any. A COMPLETE
+ * report recorded under another `requestRef` of the same run (the store was
+ * remapped after the report completed, RT-688) still closes the run to new
+ * reports: the run already emitted `erpnext.reconciliation.requested`, so a
+ * report under the new mapping is a misfit (409 `window_sequence_conflict`),
+ * never a second snapshot and a second emit.
+ */
 function existingReport(run: LockedRun, requestRef: string): StoredBinViewReport | null {
   const raw = (run.summary as { bin_view_report?: RawStoredBinViewReport } | null)
     ?.bin_view_report;
-  return raw?.requestRef === requestRef ? normalizeStored(raw) : null;
+  if (!raw) return null;
+  const stored = normalizeStored(raw);
+  if (raw.requestRef === requestRef) return stored;
+  if (stored.complete) throw new BinViewWindowSequenceConflictError();
+  return null;
 }
 
 /**

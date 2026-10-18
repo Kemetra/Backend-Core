@@ -196,6 +196,8 @@ none of which is a consumed queue.
 | `worker_job_duration_seconds` | histogram | `job_name` (bounded set; one per declared job type) | FR-B-003, spec §7.5 |
 | `worker_processing_failure_total` | counter | `job_name`, `error_class` — RT-457: every failed `sale-processing` attempt counts under `job_name="sale-processing"` | FR-B-003, spec §7.5 |
 | `erpnext_stock_reconciliation_sweep_total` | counter | `outcome` (`created` / `skipped_running` / `skipped_period` / `skipped_ineligible`) — one increment per store the scheduled stock reconciliation sweep considers; the tenant and store are in the sweep log, never a label | RT-179 |
+| `erpnext_stock_run_stranded` | gauge | `outcome` (`report_incomplete` / `report_complete`) — `kind='stock'` runs still `running` 2 h after `started_at`, sampled once per scheduled sweep tick after the expiry pass. `report_incomplete` is what the sweep expires, so it reads zero after a healthy sweep; `report_complete` is never expired and means the reconciliation worker has not processed a completed report | RT-688 |
+| `erpnext_stock_run_expired_total` | counter | none — stock runs the sweep moved `running → failed` past the 2 h TTL without a complete Bin report (`summary.failure.reason = bin_view_not_completed`, one `erpnext_reconciliation.run.failed` audit row each); the tenant, store and run are in the sweep log | RT-688 |
 
 ### 3.4 Track C outbox (future, emitted after P7)
 

@@ -31,6 +31,9 @@
  *
  * The caller owns the store-existence check (the api maps a missing store to
  * 404; the sweep only selects stores it can see).
+ *
+ * RT-688: `failStockReconciliationRun` is likewise the ONE early-failure path,
+ * shared by the worker run-expiry pass and the api warehouse-map retire.
  */
 import type { PoolClient } from "pg";
 
@@ -140,4 +143,99 @@ export async function createStockReconciliationRun(
   }
 
   return { run: inserted.rows[0]!, emitted };
+}
+
+/**
+ * RT-688 — SQL predicate: the run's connector Bin report is complete. `alias`
+ * is the `erpnext_reconciliation_run` alias in the caller's query.
+ *
+ * Matches the bin-view service's reading of a stored report: a report without
+ * `complete` (pre-RT-175, one final window) counts as complete, so only an
+ * explicit `complete: false` (an attempt still in progress) or no report at
+ * all is incomplete.
+ */
+export function stockRunReportCompleteSql(alias: string): string {
+  // COALESCE: a NULL summary must read as incomplete, never as NULL (which
+  // would make `NOT <predicate>` drop the row too).
+  return `COALESCE(jsonb_typeof(${alias}.summary->'bin_view_report') = 'object'
+       AND (${alias}.summary->'bin_view_report'->'complete') IS DISTINCT FROM 'false'::jsonb, false)`;
+}
+
+/** Why a stock run was failed before its report completed (RT-688). */
+export type StockReconciliationRunFailureReason =
+  /** Still `running` past the run TTL without a complete report (D5). */
+  | "bin_view_not_completed"
+  /** The store's stock warehouse map was retired mid-run (§5.1). */
+  | "warehouse_remapped";
+
+export interface FailStockReconciliationRunInput {
+  readonly runId: string;
+  /** Caller-minted id for the audit row (written only when the run fails). */
+  readonly auditEventId: string;
+  readonly tenantId: string;
+  readonly reason: StockReconciliationRunFailureReason;
+  /** The operator who caused it (a map retire); `null` for the expiry sweep. */
+  readonly actorUserId: string | null;
+  /** `audit_events.actor_label` when there is no human actor. */
+  readonly actorLabel: string | null;
+}
+
+/**
+ * RT-688 — move a `running` stock run whose Bin report is NOT complete to
+ * `failed`. Runs on the caller's tenant-scoped transaction client.
+ *
+ * The UPDATE locks the run row and re-checks `status = 'running'` and the
+ * incomplete report on the newest row version (READ COMMITTED re-check), so it
+ * never races `binViewReportSnapshot`, which holds the same row lock while it
+ * records a window: a report that completed first wins and the run is left
+ * alone (its `erpnext.reconciliation.requested` is already emitted, and
+ * failing it would strand the processor).
+ *
+ * `summary.failure` records the reason plus, when present, the attempt id and
+ * windows recorded so far: ids and counts only, no quantities or PII. The
+ * partial `bin_view_report` is left in place as evidence. One `audit_events`
+ * row (`erpnext_reconciliation.run.failed`) is written in the same transaction.
+ *
+ * Returns the store id of the failed run, or null when the run was not failed
+ * (not running, report complete, or invisible under the tenant GUC).
+ */
+export async function failStockReconciliationRun(
+  client: PoolClient,
+  input: FailStockReconciliationRunInput,
+): Promise<{ storeId: string } | null> {
+  const updated = await client.query<{ store_id: string }>(
+    `UPDATE erpnext_reconciliation_run run
+        SET status      = 'failed',
+            finished_at = now(),
+            updated_at  = now(),
+            summary     = COALESCE(run.summary, '{}'::jsonb) || jsonb_build_object(
+              'failure', jsonb_strip_nulls(jsonb_build_object(
+                'reason', $2::text,
+                'attemptRef', run.summary #> '{bin_view_report,attemptRef}',
+                'windowsRecorded', run.summary #> '{bin_view_report,windowsRecorded}')))
+      WHERE run.id = $1
+        AND run.kind = 'stock'
+        AND run.status = 'running'
+        AND NOT ${stockRunReportCompleteSql("run")}
+      RETURNING run.store_id`,
+    [input.runId, input.reason],
+  );
+  const row = updated.rows[0];
+  if (!row) return null;
+
+  await client.query(
+    `INSERT INTO audit_events
+       (id, actor_user_id, actor_label, tenant_id, action, target_type, target_id, metadata)
+     VALUES ($1, $2, $3, $4, 'erpnext_reconciliation.run.failed',
+             'erpnext_reconciliation_run', $5, $6::jsonb)`,
+    [
+      input.auditEventId,
+      input.actorUserId,
+      input.actorLabel,
+      input.tenantId,
+      input.runId,
+      JSON.stringify({ store_id: row.store_id, reason: input.reason }),
+    ],
+  );
+  return { storeId: row.store_id };
 }

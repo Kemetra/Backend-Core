@@ -98,6 +98,9 @@ describe("T465 — signal presence: every worker metric is in ALLOWED_METRIC_LAB
       "erpnext_posting_reconciliation_total",
       // RT-179: scheduled stock reconciliation sweep outcomes.
       "erpnext_stock_reconciliation_sweep_total",
+      // RT-688: stranded stock runs and stock run expiries.
+      "erpnext_stock_run_stranded",
+      "erpnext_stock_run_expired_total",
       // RT-207: a reversal dead-lettered while still awaiting its sale_post.
       "erpnext_posting_reversal_deferred_dead_letter_total",
       // RT-457: sale re-drive sweep, by reason.

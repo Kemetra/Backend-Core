@@ -33,7 +33,6 @@ import request from "supertest";
 
 import { generateRawToken } from "@data-pulse-2/auth";
 import {
-  deterministicId,
   IdempotencyKeyStore,
   newId,
   type RedisLike,
@@ -46,7 +45,10 @@ import { AuthTokenRepository } from "../../../../src/auth/auth-token.repository"
 import { ConnectorAuthGuard } from "../../../../src/auth/connector-auth.guard";
 import { SessionRepository } from "../../../../src/auth/session.repository";
 import { ErpnextBinViewController } from "../../../../src/catalog/erpnext-bin-view/erpnext-bin-view.controller";
-import { ErpnextBinViewService } from "../../../../src/catalog/erpnext-bin-view/erpnext-bin-view.service";
+import {
+  binViewRequestRef,
+  ErpnextBinViewService,
+} from "../../../../src/catalog/erpnext-bin-view/erpnext-bin-view.service";
 import {
   IDEMPOTENCY_KEY_STORE,
   IdempotencyInterceptor,
@@ -66,7 +68,6 @@ import { seedReconciliationFixture } from "../../erpnext-reconciliation/__suppor
 
 const FEED_PATH = "/api/connector/v1/erpnext/bin-view-requests";
 const ACTOR_USER = "01900000-0000-7000-8000-0000000be175";
-const BIN_VIEW_REQUEST_NS = "0190b1de-0000-7000-8000-0000000be019";
 const RUN_SEQ = { runId: "0a000000-0000-7000-8000-00000e1751a1" };
 const RUN_IDEM = { runId: "0a000000-0000-7000-8000-00000e1751a2" };
 const RUN_XT = { runId: "0a000000-0000-7000-8000-00000e1751a3" };
@@ -129,8 +130,11 @@ const OPEN_MARKER = {
   del: async (): Promise<void> => undefined,
 };
 
+// RT-688: every run here is on STORE_A_X, so all refs bind to its one active
+// stock map (id read back in seed()).
+let storeMapId = "";
 const snapshotPath = ({ runId }: RunKey): string =>
-  `${FEED_PATH}/${deterministicId(BIN_VIEW_REQUEST_NS, `${runId}:0`)}/snapshot`;
+  `${FEED_PATH}/${binViewRequestRef(runId, storeMapId)}/snapshot`;
 
 let connectorToken = "";
 let connectorTokenB = "";
@@ -177,6 +181,12 @@ async function seed(e: PgTestEnv): Promise<void> {
       [runId, TENANT_A, STORE_A_X, ACTOR_A],
     );
   }
+  const map = await a.query<{ id: string }>(
+    `SELECT id FROM erpnext_warehouse_map
+      WHERE store_id = $1 AND purpose = 'stock' AND retired_at IS NULL`,
+    [STORE_A_X],
+  );
+  storeMapId = map.rows[0]!.id;
   const grants = [
     { tenantId: TENANT_A, registrationId: "01900000-0000-7000-8000-0000000be17a" },
     { tenantId: TENANT_B, registrationId: "01900000-0000-7000-8000-0000000be17b" },

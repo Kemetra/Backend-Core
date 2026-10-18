@@ -40,13 +40,15 @@ import {
   TENANT_A,
 } from "../../__support__/isolation-harness";
 import { seedReconciliationFixture } from "../../erpnext-reconciliation/__support__/seed-reconciliation";
+import { requestRefFor } from "../__support__/request-ref";
 
 let env: PgTestEnv | null = null;
 let skip = false;
 
 const RUN_A_RUNNING = "0a000000-0000-7000-8000-00000e7041a1";
 const BIN_VIEW_REQUEST_NS = "0190b1de-0000-7000-8000-0000000be019";
-const REQUEST_REF = deterministicId(BIN_VIEW_REQUEST_NS, `${RUN_A_RUNNING}:0`);
+// RT-688: bound to the run AND its store's active stock map (read back in beforeAll).
+let REQUEST_REF = "";
 
 /** A confirmed 013 item map for PRODUCT_A_ACTIVE → the reverse-resolve target. */
 const ERP_ITEM_REF = "ERP-ITEM-7041A";
@@ -73,6 +75,7 @@ beforeAll(async () => {
        ON CONFLICT DO NOTHING`,
       [TENANT_A, PRODUCT_A_ACTIVE, ERP_ITEM_REF, ACTOR_A],
     );
+    REQUEST_REF = await requestRefFor(a, RUN_A_RUNNING);
   } catch (err) {
     if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
       skip = true;
@@ -202,7 +205,7 @@ describe("ErpnextBinViewService.reportSnapshot — 019 bin-view report", () => {
        ON CONFLICT (id) DO NOTHING`,
       [RUN_UNMAPPED, TENANT_A, STORE_A_X, ACTOR_A],
     );
-    const reqRef = deterministicId(BIN_VIEW_REQUEST_NS, `${RUN_UNMAPPED}:0`);
+    const reqRef = await requestRefFor(env!.admin, RUN_UNMAPPED);
     const service = new ErpnextBinViewService(env!.app);
     const recorded = await service.reportSnapshot({
       tenantId: TENANT_A,

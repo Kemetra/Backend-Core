@@ -32,7 +32,7 @@ export function newId(): string {
 /**
  * Deterministic UUIDv5 — the same `(namespace, name)` always yields the same id.
  * Used where an id must be DERIVABLE/idempotent without a persisted row (e.g. the
- * 019 bin-view `requestRef = deterministicId(NS, `${runId}:${windowSeq}`)`, so a
+ * 019 bin-view `requestRef = deterministicId(NS, `${runId}:${warehouseMapId}:0`)`, so a
  * pulled request is stable across re-pulls + bindable on the report without a
  * request table). `namespace` MUST itself be a UUID string.
  */

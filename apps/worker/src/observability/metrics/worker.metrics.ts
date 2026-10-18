@@ -212,6 +212,11 @@ assertMetricLabels("erpnext_posting_reconciliation_total", []);
 // the scheduled sweep considers; `outcome` is a closed four-value set.
 assertMetricLabels("erpnext_stock_reconciliation_sweep_total", ["outcome"]);
 
+// ERPNext stock run expiry — RT-688. The stranded gauge's `outcome` is a closed
+// two-value set; the expiry counter is unlabeled.
+assertMetricLabels("erpnext_stock_run_stranded", ["outcome"]);
+assertMetricLabels("erpnext_stock_run_expired_total", []);
+
 // ERPNext posting reversal dead-letter — RT-207. UNLABELED: the tenant, sale and
 // outbox event are fields of the structured error log, never labels.
 assertMetricLabels("erpnext_posting_reversal_deferred_dead_letter_total", []);
@@ -359,6 +364,42 @@ const _erpnextStockReconciliationSweep: Counter = meter.createCounter(
       "suspended or the store / stock map retired before creation). The " +
       "(tenant, store) is on the run row " +
       "and the sweep log, never a label.",
+  },
+);
+
+// ERPNext stock run expiry — RT-688 (RT-187 D4/D5). The sweep samples the
+// stranded counts once per tick (`setStockRunStranded`); the gauge callback
+// reports the latest sample, so a scrape never queries the database.
+const _erpnextStockRunStranded: ObservableGauge = meter.createObservableGauge(
+  "erpnext_stock_run_stranded",
+  {
+    description:
+      "ERPNext stock reconciliation runs still running past the run TTL (2 h " +
+      "from started_at), as of the last scheduled sweep, by outcome: " +
+      "report_incomplete (no complete connector Bin report; the sweep expires " +
+      "these, so the series is zero after a healthy sweep) or report_complete " +
+      "(the report completed but the reconciliation worker has not processed " +
+      "the run; never expired). No tenant or store label.",
+  },
+);
+let stockRunStrandedSample: Readonly<Record<StockRunStrandedOutcome, number>> | null = null;
+_erpnextStockRunStranded.addCallback((result) => {
+  const sample = stockRunStrandedSample;
+  if (sample === null) return;
+  for (const outcome of STOCK_RUN_STRANDED_OUTCOMES) {
+    result.observe(sample[outcome], { outcome });
+  }
+});
+
+const _erpnextStockRunExpired: Counter = meter.createCounter(
+  "erpnext_stock_run_expired_total",
+  {
+    description:
+      "ERPNext stock reconciliation runs the scheduled sweep moved running → " +
+      "failed because they passed the run TTL without a complete connector Bin " +
+      "report (summary.failure.reason = bin_view_not_completed). The (tenant, " +
+      "store, run) is on the run row, its audit row and the sweep log, never a " +
+      "label.",
   },
 );
 
@@ -631,6 +672,32 @@ export function recordStockReconciliationSweep(
   outcome: StockReconciliationSweepOutcome,
 ): void {
   _erpnextStockReconciliationSweep.add(1, { outcome });
+}
+
+/** Closed `outcome` label set for erpnext_stock_run_stranded (RT-688). */
+export const STOCK_RUN_STRANDED_OUTCOMES = [
+  "report_incomplete",
+  "report_complete",
+] as const satisfies readonly string[];
+export type StockRunStrandedOutcome = (typeof STOCK_RUN_STRANDED_OUTCOMES)[number];
+
+/**
+ * Replace the erpnext_stock_run_stranded sample (RT-688). Emission site:
+ * StockRunSweepProcessor, once per tick, after the expiry pass. A SIGNAL:
+ * emission MUST NOT alter the sweep.
+ */
+export function setStockRunStranded(
+  counts: Readonly<Record<StockRunStrandedOutcome, number>>,
+): void {
+  stockRunStrandedSample = { ...counts };
+}
+
+/**
+ * Add `count` to erpnext_stock_run_expired_total (RT-688). Emission site:
+ * StockRunSweepProcessor, once per tenant expiry pass. A SIGNAL.
+ */
+export function recordStockRunExpired(count: number): void {
+  if (count > 0) _erpnextStockRunExpired.add(count);
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,6 +1097,10 @@ export const WORKER_METRIC_NAMES = [
   // RT-179: scheduled stock reconciliation sweep outcomes, emitted by
   // StockRunSweepProcessor.
   "erpnext_stock_reconciliation_sweep_total",
+  // RT-688: stranded stock runs (gauge sampled by the sweep) and expiries,
+  // emitted by StockRunSweepProcessor.
+  "erpnext_stock_run_stranded",
+  "erpnext_stock_run_expired_total",
   // RT-207: reversal dead-lettered while awaiting its sale_post, emitted by
   // PostingRequestedConsumer on the final outbox attempt.
   "erpnext_posting_reversal_deferred_dead_letter_total",

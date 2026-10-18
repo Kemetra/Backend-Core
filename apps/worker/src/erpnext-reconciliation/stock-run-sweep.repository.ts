@@ -25,8 +25,25 @@
  * UPDATE privilege; the domain runtime role (DATABASE_URL) already updates all
  * three tables (tenant status, store lifecycle, map retirement), and the
  * tables' UPDATE policies admit the tenant's own rows under its GUC.
+ *
+ * RT-688 (RT-187 D5) — run expiry. `expireStaleRuns` runs once per tenant per
+ * tick, before the store sweep, in its own transaction under that tenant's
+ * GUC. It moves every `kind='stock'` run still `running` `STOCK_RUN_TTL_MS`
+ * after `started_at` whose Bin report is NOT complete to `failed` through the
+ * shared `failStockReconciliationRun` (row lock + re-check, `summary.failure`,
+ * audit row). It covers every store of the tenant, mapped or not, so a run
+ * abandoned before a remap or a deactivation is expired too. A run whose
+ * report IS complete is never expired: it waits for the reconciliation worker
+ * and is only counted (`strandedComplete`). The TTL is measured from the
+ * tick's time (the same instant a scheduled run's `started_at` is stamped
+ * with), so a delayed or retried job only expires later, never earlier.
  */
-import { createStockReconciliationRun, runWithTenantContext } from "@data-pulse-2/db";
+import {
+  createStockReconciliationRun,
+  failStockReconciliationRun,
+  runWithTenantContext,
+  stockRunReportCompleteSql,
+} from "@data-pulse-2/db";
 import { newId } from "@data-pulse-2/shared";
 import type { Pool } from "pg";
 
@@ -35,6 +52,27 @@ import type { SweepPeriod } from "./stock-run-sweep.config";
 
 /** `audit_events.actor_label` on a scheduled run's audit row (no human actor). */
 export const STOCK_RUN_SWEEP_ACTOR_LABEL = "system:erpnext-stock-reconciliation-sweep";
+
+/** `audit_events.actor_label` on an expired run's audit row (RT-688). */
+export const STOCK_RUN_EXPIRY_ACTOR_LABEL = "system:erpnext-stock-run-expiry";
+
+/**
+ * RT-688 (RT-187 D5) — run TTL: a stock run still `running` this long after
+ * `started_at` without a complete Bin report is expired. Four times the
+ * connector's ~25 min retry horizon plus margin, far shorter than the sweep
+ * period.
+ */
+export const STOCK_RUN_TTL_MS = 2 * 60 * 60 * 1000;
+
+/** One tenant's expiry pass (RT-688). */
+export interface ExpireStaleRunsResult {
+  /** Runs moved `running → failed` by this pass. */
+  readonly expired: readonly string[];
+  /** Runs still `running` past the TTL with an incomplete report (a lost race). */
+  readonly strandedIncomplete: number;
+  /** Runs still `running` past the TTL with a complete report (never expired). */
+  readonly strandedComplete: number;
+}
 
 /** One store of one tenant, as the sweep addresses it. */
 export interface StoreSweepTarget {
@@ -59,6 +97,11 @@ export interface StockRunSweepRepository {
   /** Active, non-deleted stores of `tenantId` with an active `stock` warehouse map. */
   listMappedStoreIds(tenantId: string): Promise<string[]>;
   sweepStore(input: SweepStoreInput): Promise<SweepStoreResult>;
+  /**
+   * RT-688: expire `tenantId`'s incomplete stock runs started more than
+   * `STOCK_RUN_TTL_MS` before `now`, then count the stranded ones.
+   */
+  expireStaleRuns(tenantId: string, now: Date): Promise<ExpireStaleRunsResult>;
 }
 
 export class PgStockRunSweepRepository implements StockRunSweepRepository {
@@ -178,6 +221,57 @@ export class PgStockRunSweepRepository implements StockRunSweepRepository {
       },
     );
   }
+
+  expireStaleRuns(tenantId: string, now: Date): Promise<ExpireStaleRunsResult> {
+    const cutoff = new Date(now.getTime() - STOCK_RUN_TTL_MS);
+    return runWithTenantContext(
+      this.pool,
+      { tenantId, isPlatformAdmin: false },
+      async (client): Promise<ExpireStaleRunsResult> => {
+        const stale = await client.query<{ id: string }>(
+          `SELECT run.id FROM erpnext_reconciliation_run run
+            WHERE run.tenant_id = $1
+              AND run.kind = 'stock' AND run.status = 'running'
+              AND run.started_at < $2
+              AND NOT ${stockRunReportCompleteSql("run")}
+            ORDER BY run.started_at, run.id`,
+          [tenantId, cutoff],
+        );
+
+        // Each failure re-checks under the row lock, so a report that completed
+        // since the read above is left running (and counted below).
+        const expired: string[] = [];
+        for (const { id } of stale.rows) {
+          const failed = await failStockReconciliationRun(client, {
+            runId: id,
+            auditEventId: newId(),
+            tenantId,
+            reason: "bin_view_not_completed",
+            actorUserId: null,
+            actorLabel: STOCK_RUN_EXPIRY_ACTOR_LABEL,
+          });
+          if (failed) expired.push(id);
+        }
+
+        const stranded = await client.query<{ complete: string; incomplete: string }>(
+          `SELECT count(*) FILTER (WHERE ${stockRunReportCompleteSql("run")})::text AS complete,
+                  count(*) FILTER (WHERE NOT ${stockRunReportCompleteSql("run")})::text AS incomplete
+             FROM erpnext_reconciliation_run run
+            WHERE run.tenant_id = $1
+              AND run.kind = 'stock' AND run.status = 'running'
+              AND run.started_at < $2`,
+          [tenantId, cutoff],
+        );
+        // An aggregate without GROUP BY always returns one row.
+        const counts = stranded.rows[0]!;
+        return {
+          expired,
+          strandedIncomplete: Number(counts.incomplete),
+          strandedComplete: Number(counts.complete),
+        };
+      },
+    );
+  }
 }
 
 /** No-DB path (dev / CI without DATABASE_URL): nothing to sweep. */
@@ -192,5 +286,9 @@ export class NoOpStockRunSweepRepository implements StockRunSweepRepository {
 
   async sweepStore(_input: SweepStoreInput): Promise<SweepStoreResult> {
     throw new Error("NoOpStockRunSweepRepository.sweepStore: no database configured");
+  }
+
+  async expireStaleRuns(_tenantId: string, _now: Date): Promise<ExpireStaleRunsResult> {
+    throw new Error("NoOpStockRunSweepRepository.expireStaleRuns: no database configured");
   }
 }

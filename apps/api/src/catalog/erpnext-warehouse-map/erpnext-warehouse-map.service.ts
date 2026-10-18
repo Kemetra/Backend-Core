@@ -27,15 +27,25 @@
  *   - NO ERPNext Bin/quantity is fetched or stored (OQ-1) — the reconciliation
  *     run is 017.
  *
+ * RT-688 (RT-187 §5.1) — retiring a `stock` map ends the store's in-flight
+ * stock reconciliation run in the same transaction: a bin-view request pulled
+ * under the retired map can no longer be reported (its `requestRef` is bound to
+ * the map), so the run could never complete and would block the scheduled
+ * sweep (`skipped_running`) until the 2 h expiry. The run moves to `failed`
+ * (`summary.failure.reason = warehouse_remapped`, one
+ * `erpnext_reconciliation.run.failed` audit row) unless its Bin report is
+ * already complete (it then waits for the reconciliation worker). The next
+ * scheduled or on-demand run starts under the new mapping.
+ *
  * 014 adds NO outbox event (the §8 carve, T002): the happy-path audit subjects
  * (`erpnext_warehouse_map.set` / `.retired`) are emitted by the `@Auditable`
  * decorator + AuditEmitterInterceptor on the controller routes (success-gated,
  * so effectively transaction-gated).
  */
 import { Inject, Injectable, Optional } from "@nestjs/common";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
-import { runWithTenantContext } from "@data-pulse-2/db";
+import { failStockReconciliationRun, runWithTenantContext } from "@data-pulse-2/db";
 import { newId } from "@data-pulse-2/shared";
 import type { Logger } from "@data-pulse-2/shared";
 
@@ -191,11 +201,17 @@ export class ErpnextWarehouseMapService {
    * `WHERE id = $1 AND version = $2 AND retired_at IS NULL`, version++. A
    * 0-row result is a conflict (stale version / already retired) or
    * not_found (RLS-filtered / fabricated id).
+   *
+   * Retiring a `stock` map also fails the store's in-flight stock run whose
+   * report is not complete (RT-688, see the module doc), attributed to
+   * `actorUserId` on its audit row.
    */
   retire(input: {
     readonly tenantId: string;
     readonly id: string;
     readonly version: number;
+    /** The operator retiring the map (audit actor of a failed run). */
+    readonly actorUserId?: string | null;
   }): Promise<RetireResult> {
     return runWithTenantContext(
       this.pool,
@@ -214,6 +230,9 @@ export class ErpnextWarehouseMapService {
         );
         if (updated.rows[0]) {
           const row = toRow(updated.rows[0]);
+          if (row.purpose === "stock") {
+            await this.failInFlightStockRuns(client, input.tenantId, row, input.actorUserId ?? null);
+          }
           this.logger?.info(
             {
               tenant_id: input.tenantId,
@@ -233,6 +252,48 @@ export class ErpnextWarehouseMapService {
         return exists.rows[0] ? { kind: "conflict" } : { kind: "not_found" };
       },
     );
+  }
+
+  /**
+   * RT-688: fail the store's `running` stock runs whose report is not complete
+   * (`warehouse_remapped`). Each run is re-checked under its row lock by
+   * `failStockReconciliationRun`, so a report completing concurrently wins.
+   */
+  private async failInFlightStockRuns(
+    client: PoolClient,
+    tenantId: string,
+    map: ErpnextWarehouseMapRow,
+    actorUserId: string | null,
+  ): Promise<void> {
+    const running = await client.query<{ id: string }>(
+      `SELECT id FROM erpnext_reconciliation_run
+        WHERE store_id = $1 AND kind = 'stock' AND status = 'running'
+        ORDER BY started_at, id`,
+      [map.storeId],
+    );
+    for (const { id } of running.rows) {
+      const failed = await failStockReconciliationRun(client, {
+        runId: id,
+        auditEventId: newId(),
+        tenantId,
+        reason: "warehouse_remapped",
+        actorUserId,
+        actorLabel: null,
+      });
+      if (failed) {
+        this.logger?.info(
+          {
+            tenant_id: tenantId,
+            mapping_id: map.id,
+            store_id: map.storeId,
+            run_id: id,
+            action: "erpnext_reconciliation.run.failed",
+            reason: "warehouse_remapped",
+          },
+          "erpnext-warehouse-map: in-flight stock run failed on retire",
+        );
+      }
+    }
   }
 
   /** List the tenant's ACTIVE mappings. */

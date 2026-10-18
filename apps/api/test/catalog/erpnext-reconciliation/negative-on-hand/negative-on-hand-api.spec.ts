@@ -38,7 +38,6 @@ import Ajv2020, { type ValidateFunction } from "ajv/dist/2020";
 import addFormats from "ajv-formats";
 import request from "supertest";
 
-import { deterministicId } from "@data-pulse-2/shared";
 
 import { AUDIT_JOB_ENQUEUER } from "../../../../src/audit/audit-job.enqueuer";
 import { PG_POOL } from "../../../../src/auth/auth.module";
@@ -57,8 +56,8 @@ import {
   type PgTestEnv,
 } from "../../../_helpers/postgres-container";
 import { PRODUCT_A_ACTIVE, STORE_B_X, TENANT_A } from "../../__support__/isolation-harness";
+import { requestRefFor } from "../../erpnext-bin-view/__support__/request-ref";
 import {
-  BIN_VIEW_REQUEST_NS,
   HeaderSessionAuthGuard,
   ITEM_A,
   ITEM_B,
@@ -286,7 +285,8 @@ interface ReportedEntry {
 async function report(r: { runId: string; readAt: string; entries: readonly ReportedEntry[] }): Promise<void> {
   await binView.reportSnapshot({
     tenantId: TENANT_A,
-    requestRef: deterministicId(BIN_VIEW_REQUEST_NS, `${r.runId}:0`),
+    // RT-688: the ref is bound to the run AND its store's active stock map.
+    requestRef: await requestRefFor(env!.admin, r.runId),
     body: {
       readAt: r.readAt,
       entries: r.entries.map((e) => ({

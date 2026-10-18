@@ -204,6 +204,18 @@ export const ALLOWED_METRIC_LABELS: Readonly<Record<string, readonly string[]>> 
   // the run row + the sweep's structured log, NOT a metric label.
   erpnext_stock_reconciliation_sweep_total: ["outcome"],
 
+  // ---- ERPNext stock run expiry — RT-688 (RT-187 D4/D5) ----
+  // Gauge: `kind='stock'` runs still `running` past the 2 h run TTL, sampled
+  // by the scheduled sweep. `outcome` is the closed set {report_incomplete,
+  // report_complete}: the first is what the expiry fails (so it reads zero
+  // after a healthy sweep); the second is never expired and points at a
+  // reconciliation worker that did not process a completed report.
+  erpnext_stock_run_stranded: ["outcome"],
+  // Counter: stock runs the sweep moved `running → failed` past the TTL.
+  // UNLABELED — the (tenant, store, run) lives on the run row, its audit row
+  // and the sweep log, NOT metric labels.
+  erpnext_stock_run_expired_total: [],
+
   // ---- ERPNext posting reversal dead-letter — RT-207 ----
   // Increments once when an `erpnext.posting.requested` reversal dead-letters in
   // the outbox while still awaiting its sale's `sale_post` posting row (the

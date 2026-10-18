@@ -21,6 +21,17 @@
  * So a re-delivered or second tick within a period creates nothing, and a
  * store whose last run never completed is not stacked with more runs.
  *
+ * RT-688 (RT-187 D5) — before its stores, each tenant gets an expiry pass
+ * (`expireStaleRuns`): a stock run still `running` 2 h after `started_at`
+ * (measured from the tick's time)
+ * without a complete Bin report moves to `failed`, so an abandoned bin-view
+ * request no longer makes the store `skipped_running` forever. In the same
+ * tick the store then gets its new scheduled run. A run with a complete report
+ * is never expired; it is counted in the `erpnext_stock_run_stranded` gauge
+ * (`report_complete`), sampled once per tick, and expiries are counted in
+ * `erpnext_stock_run_expired_total`. An expiry failure is logged, does not stop
+ * the tenant's store sweep, and fails the job like a store failure.
+ *
  * Stores without a stock map (none, or a `returns`-only map) are never listed,
  * so the sweep creates no run for them — the unmapped case stays the operator's
  * on-demand trigger, which completes as `unmapped_store`.
@@ -40,10 +51,13 @@ import { z } from "zod";
 
 import {
   recordStockReconciliationSweep,
+  recordStockRunExpired,
+  setStockRunStranded,
   type StockReconciliationSweepOutcome,
 } from "../observability/metrics/worker.metrics";
 import { sweepPeriod, type SweepPeriod } from "./stock-run-sweep.config";
 import type {
+  ExpireStaleRunsResult,
   StockRunSweepRepository,
   StoreSweepTarget,
   SweepStoreResult,
@@ -86,6 +100,11 @@ export interface StockRunSweepResult {
   readonly skippedIneligible: number;
   readonly failedTenants: number;
   readonly failedStores: number;
+  /** RT-688: runs expired this tick, and runs still stranded past the TTL. */
+  readonly expired: number;
+  readonly strandedIncomplete: number;
+  readonly strandedComplete: number;
+  readonly failedExpiries: number;
 }
 
 export class UnknownStockRunSweepJobError extends Error {
@@ -106,7 +125,8 @@ export class StockRunSweepIncompleteError extends Error {
   constructor(result: StockRunSweepResult) {
     super(
       `stock run sweep incomplete: ${result.failedTenants} tenant(s) and ` +
-        `${result.failedStores} store(s) failed`,
+        `${result.failedStores} store(s) failed` +
+        (result.failedExpiries > 0 ? `; ${result.failedExpiries} expiry pass(es) failed` : ""),
     );
     this.name = "StockRunSweepIncompleteError";
   }
@@ -123,6 +143,10 @@ class SweepTally {
   private tenants = 0;
   private failedTenants = 0;
   private failedStores = 0;
+  private expired = 0;
+  private strandedIncomplete = 0;
+  private strandedComplete = 0;
+  private failedExpiries = 0;
 
   constructor(private readonly period: SweepPeriod) {}
 
@@ -139,6 +163,16 @@ class SweepTally {
     this.failedStores += 1;
   }
 
+  expiryDone(pass: ExpireStaleRunsResult): void {
+    this.expired += pass.expired.length;
+    this.strandedIncomplete += pass.strandedIncomplete;
+    this.strandedComplete += pass.strandedComplete;
+  }
+
+  expiryFailed(): void {
+    this.failedExpiries += 1;
+  }
+
   result(): StockRunSweepResult {
     return {
       periodStart: this.period.start.toISOString(),
@@ -149,6 +183,10 @@ class SweepTally {
       skippedIneligible: this.counts.skipped_ineligible,
       failedTenants: this.failedTenants,
       failedStores: this.failedStores,
+      expired: this.expired,
+      strandedIncomplete: this.strandedIncomplete,
+      strandedComplete: this.strandedComplete,
+      failedExpiries: this.failedExpiries,
     };
   }
 }
@@ -176,6 +214,10 @@ export class StockRunSweepProcessor {
     }
 
     const result = tally.result();
+    setStockRunStranded({
+      report_incomplete: result.strandedIncomplete,
+      report_complete: result.strandedComplete,
+    });
     this.logSummary(result);
     if (isIncomplete(result)) throw new StockRunSweepIncompleteError(result);
     return result;
@@ -207,8 +249,43 @@ export class StockRunSweepProcessor {
     period: SweepPeriod,
     tally: SweepTally,
   ): Promise<void> {
+    await this.expireTenantSafely(tenant, period, tally);
     for (const storeId of await this.repo.listMappedStoreIds(tenant.tenantId)) {
       await this.sweepStoreSafely({ tenantId: tenant.tenantId, storeId }, period, tally);
+    }
+  }
+
+  /** RT-688: expire the tenant's stale runs. A failure is logged and counted; its stores still run. */
+  private async expireTenantSafely(
+    tenant: TenantSweepTarget,
+    period: SweepPeriod,
+    tally: SweepTally,
+  ): Promise<void> {
+    let pass: ExpireStaleRunsResult;
+    try {
+      pass = await this.repo.expireStaleRuns(tenant.tenantId, period.now);
+    } catch (err) {
+      tally.expiryFailed();
+      this.log({
+        level: "error",
+        component: COMPONENT,
+        message: "tenant_expiry_failed",
+        tenant_id: tenant.tenantId,
+        ...errorFields(err),
+      });
+      return;
+    }
+    tally.expiryDone(pass);
+    recordStockRunExpired(pass.expired.length);
+    for (const runId of pass.expired) {
+      this.log({
+        level: "warn",
+        component: COMPONENT,
+        message: "run_expired",
+        reason: "bin_view_not_completed",
+        tenant_id: tenant.tenantId,
+        run_id: runId,
+      });
     }
   }
 
@@ -261,12 +338,16 @@ export class StockRunSweepProcessor {
       skipped_ineligible: result.skippedIneligible,
       failed_tenants: result.failedTenants,
       failed_stores: result.failedStores,
+      expired: result.expired,
+      stranded_incomplete: result.strandedIncomplete,
+      stranded_complete: result.strandedComplete,
+      failed_expiries: result.failedExpiries,
     });
   }
 }
 
 function isIncomplete(result: StockRunSweepResult): boolean {
-  return result.failedTenants > 0 || result.failedStores > 0;
+  return result.failedTenants > 0 || result.failedStores > 0 || result.failedExpiries > 0;
 }
 
 /** Rejects a job that is not the sweep, or whose payload is not an object. */

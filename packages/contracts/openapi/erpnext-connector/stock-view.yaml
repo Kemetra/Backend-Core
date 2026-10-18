@@ -331,7 +331,12 @@ components:
         The opaque, server-issued reference from a pulled
         `BinViewRequest.requestRef`. Resolves only within the connector
         principal's tenant scope — out-of-scope refs are non-disclosing 404s
-        (§II/§XII). A path param so it cannot be body-forged.
+        (§II/§XII). A path param so it cannot be body-forged. It identifies the
+        run AND the store warehouse mapping the request was pulled under
+        (RT-688): once that mapping is retired (the store is remapped), the ref
+        no longer resolves and every report window under it, window 0
+        included, gets the same non-disclosing 404. It also stops resolving
+        once the run leaves `running` (see `NotFound`).
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -416,7 +421,11 @@ components:
           format: uuid
           description: >
             Stable, opaque, scope-bound reference. Echoed (as a path param) on the
-            report to bind the snapshot to this request.
+            report to bind the snapshot to this request. Bound to the run AND
+            the store's warehouse mapping at pull time (RT-688): it stays the
+            same across re-pulls while that mapping is active, and changes if
+            the store is remapped, so a request pulled under the old mapping can
+            never report rows under the new warehouse.
         storeId:
           type: string
           format: uuid
@@ -849,7 +858,15 @@ components:
         `not_found` — non-disclosing 404-class for a cross-tenant / out-of-scope
         `requestRef` or a foreign-scope cursor. Identical for cross-tenant,
         out-of-scope, and genuinely-absent refs, with NO existence leak via any
-        response or error shape (§II/§XII).
+        response or error shape (§II/§XII). A once-valid `requestRef` is also
+        `not_found`, terminally, when its run is no longer `running`
+        (completed, or failed: DP2's scheduled stock-run sweep fails a run
+        still `running` more than 2 hours after it started whose report is
+        not complete, and retiring a store's warehouse mapping fails that
+        store's run whose report is not complete), or when the
+        warehouse mapping it was pulled under is no longer active (RT-688).
+        Such a 404 is terminal for that request; the store's next run is
+        offered on the feed with a new `requestRef`.
       content:
         application/json:
           schema:
