@@ -371,6 +371,19 @@ describe("OBS-1 §3.5 golden vectors (RT-682, RT-694: Bearer/Authorization and p
     expect(scrubValue(input)).toBe(expected);
   });
 
+  // A word masked because of the word before it (`[Bearer] <word>`) or read as a
+  // separator value (`Authorization :<word>`) still passes on its own Bearer /
+  // Authorization signal, so RT-694 never masks less than the RT-682 baseline.
+  it.each([
+    ["a separator value that ends in its own empty Authorization", "Authorization :a,Authorization: S1", "Authorization :[redacted] [redacted]"],
+    ["a separator value that ends in its own scheme value", "Authorization =x,Proxy-Authorization:Bearer S1", "Authorization =[redacted] [redacted]"],
+    ["a wrapped Bearer before an empty Authorization", "[Bearer] Authorization: S1", "[redacted] [redacted] [redacted]"],
+    ["a wrapped Bearer before an empty authorization=", "(Bearer) ?authorization= S1", "[redacted] [redacted] [redacted]"],
+    ["a wrapped scheme value before an empty Authorization", "Authorization: (Bearer) Authorization: S1", "Authorization: [redacted] [redacted] [redacted]"],
+  ])("keeps the next-word signal of a masked word on %s", (_label, input, expected) => {
+    expect(scrubValue(input)).toBe(expected);
+  });
+
   it("stays linear on the contract's adversarial inputs", () => {
     const { inputs, maxOutputLength, maxTotalMs } = goldenVectors.linearTime;
     const started = Date.now();

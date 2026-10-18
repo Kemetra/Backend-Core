@@ -380,10 +380,23 @@ class MessageToken {
   }
 }
 
-/** One word, scrubbed as the word before it asks (`next`). */
+const NEXT_WORD_RANK: Readonly<Record<NextWord, number>> = { scrub: 0, authorizationSeparator: 1, mask: 2 };
+
+/** The stricter of two next-word states (mask, then separator, then scrub). */
+function stricter(a: NextWord, b: NextWord): NextWord {
+  return NEXT_WORD_RANK[a] >= NEXT_WORD_RANK[b] ? a : b;
+}
+
+/**
+ * One word, scrubbed as the word before it asks (`next`). A word masked or read
+ * as a separator value still passes on its own signal (`[Bearer] Authorization: x`,
+ * `Authorization :a,authorization= x`), so nothing is masked less than before.
+ */
 function scrubWord(token: MessageToken, next: NextWord): ScrubbedWord {
-  if (next === "mask") return { text: REDACTED, next: token.isAuthScheme() ? "mask" : "scrub" };
-  return (next === "authorizationSeparator" ? token.separatedValue() : null) ?? token.scrubbed();
+  if (next === "mask") return { text: REDACTED, next: token.isAuthScheme() ? "mask" : token.scrubbed().next };
+  const separated = next === "authorizationSeparator" ? token.separatedValue() : null;
+  if (separated === null) return token.scrubbed();
+  return { text: separated.text, next: stricter(separated.next, token.scrubbed().next) };
 }
 
 /**
