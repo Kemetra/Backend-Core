@@ -55,6 +55,9 @@ type Helper = {
 };
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const helper = require(resolve(repoRoot, "deploy/lab/verify-release.cjs")) as Helper;
+// the same CommonJS fs object the verifier uses, so a spy on it reaches the verifier
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const nodeFs = require("node:fs") as typeof import("node:fs");
 
 // ---------------------------------------------------------------- workflow
 
@@ -357,10 +360,14 @@ function writeGoodEvidence(): void {
 }
 
 /** `git archive <sha>` of the release commit: every shipped file except the generated release.env. */
-function writeSource(files: Record<string, string>): void {
+function writeSource(files: Record<string, string>, allowlist?: string[]): void {
   rmSync(join(dir, "source"), { recursive: true, force: true });
-  for (const [name, content] of Object.entries(files)) if (name !== "release.env") put(`source/${name}`, content);
+  const shipped = Object.keys(files).filter((name) => name !== "release.env");
+  for (const name of shipped) put(`source/${name}`, files[name] ?? "");
   put("source/unrelated/file.ts", "export {};\n");
+  // the release commit's own bundle allowlist, in release-bundle.sh's format
+  const entries = (allowlist ?? shipped).map((f) => `  ${f}`).join("\n");
+  put("source/deploy/release-bundle.sh", `#!/usr/bin/env bash\n# Files shipped in the bundle.\nALLOWLIST=(\n${entries}\n)\n`);
 }
 
 function writeCurrent(migrations: string[], blobs: Record<string, string> = {}): void {
@@ -685,6 +692,35 @@ describe("verify-release: review hardening", () => {
     expectRefused(/bundled 'docs\/operations\/sql\/cashier-admissions-domain-grants.sql' is not in the release commit/);
     rmSync(join(dir, "source"), { recursive: true });
     expectRefused(/release source evidence missing/);
+  });
+
+  it("refuses a bundle that leaves out a file the release commit's allowlist requires", () => {
+    const files = bundleFiles();
+    writeSource(files, [...Object.keys(files).filter((f) => f !== "release.env"), "Caddyfile"]);
+    put("source/Caddyfile", ":443 {}\n");
+    expectRefused(/release bundle lacks 'Caddyfile', which the release commit's allowlist requires/);
+  });
+
+  it("refuses a bundled file that is not in the release commit's allowlist", () => {
+    writeSource(bundleFiles(), ["docker-compose.release.yml", "docs/operations/sql/erpnext-posting-resolution-catchup.sql"]);
+    expectRefused(/bundled 'docs\/operations\/sql\/cashier-admissions-domain-grants.sql' is not in the release allowlist/);
+  });
+
+  it("refuses when the release commit has no release allowlist to check against", () => {
+    rmSync(join(dir, "source/deploy/release-bundle.sh"));
+    expectRefused(/release allowlist missing or unreadable at the release commit/);
+  });
+
+  it("refuses, and still writes the ledger, when a bundle directory cannot be read", () => {
+    const realReaddir = nodeFs.readdirSync;
+    jest.spyOn(nodeFs, "readdirSync").mockImplementation(((p: string, opts: unknown) => {
+      if (String(p).includes(join("bundle", BUNDLE, "docs"))) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      return (realReaddir as (p: string, o: unknown) => unknown)(p, opts);
+    }) as typeof nodeFs.readdirSync);
+    const out = join(dir, "out");
+    expect(helper.main(["--evidence", dir, "--out", out, "--release", TAG, "--jira-key", "RT-703", "--target", "lab-01", "--mode", "dry-run"])).toBe(1);
+    const ledger = JSON.parse(readFileSync(join(out, "ledger.json"), "utf8")) as Ledger;
+    expect(ledger.refusals).toContain("bundle directory 'docs' cannot be read (EACCES)");
   });
 
   it("refuses a duplicate SHA256SUMS entry", () => {

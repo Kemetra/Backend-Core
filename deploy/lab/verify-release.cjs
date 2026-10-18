@@ -52,6 +52,8 @@ const JIRA_RE = /^RT-[1-9]\d*$/;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const SUMS_LINE_RE = /^([0-9a-f]{64}) [ *](\S+)$/;
 const LS_TREE_RE = /^\d{6} (blob|tree) ([0-9a-f]{40})\t(.+)$/;
+// The ALLOWLIST=( ... ) array in deploy/release-bundle.sh (the same parse release-images.spec.ts uses).
+const ALLOWLIST_RE = /^ALLOWLIST=\(\r?\n([\s\S]*?)^\)/m;
 const ENV_KEY_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const ROLE_ARN_RE = /^arn:aws:iam::\d{12}:role\/[\w+=,.@/-]+$/;
 const SSM_NODE_RE = /^mi-[0-9a-f]{17}$/;
@@ -264,7 +266,14 @@ function checkReleaseEnv(text, images) {
 function walkBundle(dir, rel = "") {
   const files = [];
   const problems = [];
-  for (const entry of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
+  let entries;
+  try {
+    entries = fs.readdirSync(path.join(dir, rel), { withFileTypes: true });
+  } catch (err) {
+    // e.g. a mode-000 directory: a refusal in the ledger, never a crash before it is written
+    return { files, problems: [`bundle directory '${rel || "."}' cannot be read (${err.code ?? "error"})`] };
+  }
+  for (const entry of entries) {
     const name = rel ? `${rel}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
       const sub = walkBundle(dir, name);
@@ -298,6 +307,34 @@ function checkBundle(dir, manifestBuf, manifest, images) {
   return problems;
 }
 
+/** The bundle allowlist that deploy/release-bundle.sh had at the release commit, or null. */
+function readAllowlist(sourceDir) {
+  const script = readText(path.join(sourceDir, "deploy", "release-bundle.sh"));
+  const body = script === null ? null : ALLOWLIST_RE.exec(script)?.[1];
+  if (!body) return null;
+  const files = body
+    .split(/\r?\n/)
+    .map((l) => l.replace(/#.*/, "").trim())
+    .filter(Boolean);
+  return files.length ? files : null;
+}
+
+/**
+ * The manifest must ship exactly the release commit's own allowlist plus the
+ * generated release.env: nothing left out (a grant or catch-up script, the
+ * Caddyfile), nothing extra. The allowlist varies by release, so it is read
+ * from that commit, never hardcoded here.
+ */
+function checkCompleteness(files, sourceDir) {
+  const allowlist = readAllowlist(sourceDir);
+  if (allowlist === null) return ["release allowlist missing or unreadable at the release commit (deploy/release-bundle.sh)"];
+  const shipped = files.filter((f) => f !== "release.env");
+  return [
+    ...allowlist.filter((f) => !shipped.includes(f)).map((f) => `release bundle lacks '${f}', which the release commit's allowlist requires`),
+    ...shipped.filter((f) => !allowlist.includes(f)).map((f) => `bundled '${f}' is not in the release allowlist`),
+  ];
+}
+
 /**
  * Every shipped file except the generated release.env must be byte-for-byte the
  * file at the release commit (sourceDir is `git archive <sha>`). The manifest's
@@ -308,7 +345,7 @@ function checkSourceBinding(bundleDir, files, sourceDir) {
   if (!fs.existsSync(sourceDir) || !fs.lstatSync(sourceDir).isDirectory()) {
     return ["release source evidence missing (git archive <sha>)"];
   }
-  const problems = [];
+  const problems = checkCompleteness(files, sourceDir);
   for (const name of files.filter((f) => f !== "release.env")) {
     const safe = isSafeRelative(name);
     const source = safe ? readBuffer(path.join(sourceDir, name)) : null;
