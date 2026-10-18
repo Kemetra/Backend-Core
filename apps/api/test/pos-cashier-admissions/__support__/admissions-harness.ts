@@ -138,13 +138,10 @@ export const endPath = (admissionId: Uuid): string =>
 // ---------------------------------------------------------------------------
 export class MemoryRedis implements RedisLike {
   private readonly counts = new Map<string, number>();
-  async incr(key: RedisKey): Promise<number> {
+  async incrWindow(key: RedisKey): Promise<{ count: number; ttlMs: number }> {
     const next = (this.counts.get(key) ?? 0) + 1;
     this.counts.set(key, next);
-    return next;
-  }
-  async pexpireNx(): Promise<number> {
-    return 1;
+    return { count: next, ttlMs: 60_000 };
   }
   async pttl(key: RedisKey): Promise<number> {
     return this.counts.has(key) ? 60_000 : -2;

@@ -31,13 +31,10 @@ const EVENT_ID = "0123456789abcdef0123456789abcdef";
 
 class MapRedis implements RedisLike {
   readonly store = new Map<string, number>();
-  async incr(key: string): Promise<number> {
+  async incrWindow(key: string): Promise<{ count: number; ttlMs: number }> {
     const next = (this.store.get(key) ?? 0) + 1;
     this.store.set(key, next);
-    return next;
-  }
-  async pexpireNx(): Promise<number> {
-    return 1;
+    return { count: next, ttlMs: 42_000 };
   }
   async pttl(): Promise<number> {
     return 42_000;
@@ -53,7 +50,7 @@ class MapRedis implements RedisLike {
 }
 
 class BrokenRedis extends MapRedis {
-  override async incr(): Promise<number> {
+  override async incrWindow(): Promise<{ count: number; ttlMs: number }> {
     throw new Error("redis down");
   }
 }

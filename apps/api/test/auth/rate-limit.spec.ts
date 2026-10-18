@@ -8,8 +8,9 @@
  *
  * The fake's behaviour mirrors the parts of Redis the helper relies on:
  *
- *   - INCR creates the key on first call with value 1 and no TTL.
- *   - PEXPIRE NX sets the TTL only when none exists.
+ *   - `incrWindow` mirrors the RT-618 Lua script, as one atomic step:
+ *     INCR (creating the key with value 1 and no TTL), then PTTL, then
+ *     PEXPIRE when the key has no TTL; it returns the count and the TTL.
  *   - PTTL returns -2 for a missing key, -1 for no-TTL, otherwise ms.
  *   - Expiry is checked lazily on every operation against a virtual
  *     clock the test controls.
@@ -21,10 +22,13 @@
  *     share counters
  *   - per-IP 100 / day password-reset: 100 allowed, 101st blocked
  *     (reuses the same primitive — proves the helper is generic)
- *   - PTTL is read after INCR so callers can surface `resetMs`
- *   - PEXPIRE is only seeded on the first hit of a window
+ *   - the TTL is returned with the count so callers can surface `resetMs`
+ *   - the TTL is seeded once per window and never refreshed
+ *   - RT-618: a key left without a TTL (process died between the old
+ *     INCR and PEXPIRE) is given one on the next check (no permanent lock)
  */
 import {
+  POS_WRITE_RATE_LIMIT_BUCKETS,
   RATE_LIMIT_BUCKETS,
   RateLimiter,
   type RedisLike,
@@ -48,10 +52,8 @@ interface FakeEntry {
 
 class FakeRedis implements RedisLike {
   private readonly store = new Map<string, FakeEntry>();
-  /** How many PEXPIRE NX attempts succeeded — proves first-hit seeding. */
-  pexpireNxApplied = 0;
-  /** How many PEXPIRE NX attempts no-oped — proves we don't refresh TTLs. */
-  pexpireNxRejected = 0;
+  /** How many times a TTL was seeded — proves first-hit seeding and self-heal. */
+  ttlSeeded = 0;
 
   constructor(private readonly clock: VirtualClock) {}
 
@@ -65,26 +67,23 @@ class FakeRedis implements RedisLike {
     return entry;
   }
 
-  async incr(key: string): Promise<number> {
-    const live = this.gc(key);
+  async incrWindow(key: string, ttlMs: number): Promise<{ count: number; ttlMs: number }> {
+    let live = this.gc(key);
     if (!live) {
-      this.store.set(key, { value: 1, expiresAt: null });
-      return 1;
+      live = { value: 0, expiresAt: null };
+      this.store.set(key, live);
     }
     live.value += 1;
-    return live.value;
+    if (live.expiresAt === null) {
+      live.expiresAt = this.clock.read() + ttlMs;
+      this.ttlSeeded += 1;
+    }
+    return { count: live.value, ttlMs: live.expiresAt - this.clock.read() };
   }
 
-  async pexpireNx(key: string, ttlMs: number): Promise<number> {
-    const live = this.gc(key);
-    if (!live) return 0;
-    if (live.expiresAt !== null) {
-      this.pexpireNxRejected += 1;
-      return 0;
-    }
-    live.expiresAt = this.clock.read() + ttlMs;
-    this.pexpireNxApplied += 1;
-    return 1;
+  /** Test seam: a counter left with no TTL, as a crash between the old INCR and PEXPIRE would. */
+  plantWithoutTtl(key: string, value: number): void {
+    this.store.set(key, { value, expiresAt: null });
   }
 
   async pttl(key: string): Promise<number> {
@@ -140,12 +139,13 @@ describe("RateLimiter — per-account sign-in (5 / 15 min)", () => {
     expect(blocked.remaining).toBe(0);
   });
 
-  it("seeds PEXPIRE only on the first hit and never refreshes it on subsequent hits", async () => {
+  it("seeds the TTL only on the first hit and never refreshes it on subsequent hits", async () => {
     await limiter.check("signin_account", account, bucket);
+    clock.advance(1_000);
     await limiter.check("signin_account", account, bucket);
-    await limiter.check("signin_account", account, bucket);
-    expect(redis.pexpireNxApplied).toBe(1);
-    expect(redis.pexpireNxRejected).toBe(0); // only seeded on first hit; no further attempts
+    const third = await limiter.check("signin_account", account, bucket);
+    expect(redis.ttlSeeded).toBe(1);
+    expect(third.resetMs).toBe(bucket.windowMs - 1_000); // not refreshed by later hits
   });
 
   it("exposes resetMs that decreases as time advances", async () => {
@@ -271,5 +271,36 @@ describe("RateLimiter — release (RT-136)", () => {
     const fresh = await limiter.check("signin_account", account, bucket);
     expect(fresh.count).toBe(1);
     expect(fresh.resetMs).toBe(bucket.windowMs);
+  });
+});
+
+describe("RateLimiter — TTL self-heal (RT-618)", () => {
+  const bucket = RATE_LIMIT_BUCKETS.signInPerAccount;
+  const key = "rl:signin_account:user-alice";
+
+  it("gives a TTL-less counter a TTL on the next check instead of locking it forever", async () => {
+    redis.plantWithoutTtl(key, bucket.limit + 3); // locked, and would never roll
+    const blocked = await limiter.check("signin_account", "user-alice", bucket);
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.resetMs).toBe(bucket.windowMs);
+    expect(await redis.pttl(key)).toBe(bucket.windowMs);
+
+    clock.advance(bucket.windowMs);
+    const fresh = await limiter.check("signin_account", "user-alice", bucket);
+    expect(fresh.allowed).toBe(true);
+    expect(fresh.count).toBe(1);
+  });
+
+  it("returns the same decision fields for every existing bucket on a fresh window", async () => {
+    const all = { ...RATE_LIMIT_BUCKETS, ...POS_WRITE_RATE_LIMIT_BUCKETS };
+    for (const [name, policy] of Object.entries(all)) {
+      const decision = await limiter.check(name, "same-id", policy);
+      expect(decision).toEqual({
+        allowed: true,
+        count: 1,
+        remaining: policy.limit - 1,
+        resetMs: policy.windowMs,
+      });
+    }
   });
 });

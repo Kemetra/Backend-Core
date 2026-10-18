@@ -59,7 +59,7 @@ import { SAME_ORIGIN } from "../_helpers/same-origin";
  * Test stub for the REDIS_CLIENT provider.
  *
  * Must satisfy three surfaces consumed by the production module graph:
- *   1. RateLimiter (`incr`, `pexpireNx`, `pttl`) — original surface.
+ *   1. RateLimiter (`incrWindow`, RT-618; `pttl`) — original surface.
  *   2. IdempotencyKeyStore (`get`, `set` with `{ px }`) — replay storage.
  *   3. InProgressMarker (`set` with `{ nx, ex }`, `del`) — in-flight marker.
  *
@@ -79,8 +79,7 @@ import { SAME_ORIGIN } from "../_helpers/same-origin";
  * exercise the route's domain behaviour, not the idempotency replay layer.
  */
 class AlwaysAllowRedis implements RedisLike {
-  async incr(): Promise<number> { return 1; }
-  async pexpireNx(): Promise<number> { return 1; }
+  async incrWindow(): Promise<{ count: number; ttlMs: number }> { return { count: 1, ttlMs: -1 }; }
   async pttl(): Promise<number> { return -1; }
   async decr(): Promise<number> { return 0; }
   async get(_key: string): Promise<string | null> { return null; }

@@ -75,7 +75,7 @@ import {
 } from "./email-job.enqueuer";
 import { EmailQueueProducer } from "./email-queue.producer";
 import { IoredisIdempotencyAdapter } from "./ioredis-idempotency-adapter";
-import { RateLimiter, type RedisLike } from "./rate-limit";
+import { RateLimiter, type RedisLike, type WindowHit } from "./rate-limit";
 import { SessionRepository } from "./session.repository";
 import { signInMembershipsReader } from "./signin-memberships";
 import { QUEUE_NAMES } from "@data-pulse-2/shared";
@@ -94,8 +94,8 @@ export const EMAIL_QUEUE_NAME = QUEUE_NAMES.email;
  *     limits never trigger; idempotency storage disabled).
  *   - `REDIS_URL` set → wrap a real ioredis client in
  *     `IoredisIdempotencyAdapter` so that the options-object set() calls
- *     used by IdempotencyModule and the pexpireNx() call used by
- *     RateLimiter are translated to ioredis's variadic-string form.
+ *     used by IdempotencyModule are translated to ioredis's variadic-string
+ *     form and RateLimiter's incrWindow() runs as one atomic script.
  */
 export function redisClientFactory(): RedisLike {
   const url = process.env["REDIS_URL"];
@@ -109,8 +109,9 @@ export function redisClientFactory(): RedisLike {
     return new AlwaysAllowRedis();
   }
   // Wrap the real ioredis client in IoredisIdempotencyAdapter, which
-  // translates the options-object set() and pexpireNx() calls used by
-  // IdempotencyModule and RateLimiter into ioredis's variadic-string form.
+  // translates the options-object set() used by IdempotencyModule into
+  // ioredis's variadic-string form and runs RateLimiter's incrWindow() as
+  // one atomic script (RT-618).
   const client = new Redis(url);
   return new IoredisIdempotencyAdapter(client);
 }
@@ -173,7 +174,8 @@ export function emailJobEnqueuerFactory(): EmailJobEnqueuer {
 /**
  * Stub Redis used when `REDIS_URL` is absent (local dev / CI without Redis).
  *
- * Rate-limit surface: `incr` always returns 1 so limits never trigger.
+ * Rate-limit surface: `incrWindow` always returns count 1 (and keeps no TTL,
+ * so `resetMs` is -1), so limits never trigger.
  *
  * Idempotency surface: `get` always returns null (no stored replay), `set`
  * returns "OK" for NX calls (in-progress marker succeeds — the request
@@ -185,11 +187,8 @@ export function emailJobEnqueuerFactory(): EmailJobEnqueuer {
  * intentionally loud.
  */
 export class AlwaysAllowRedis implements RedisLike {
-  async incr(_key: string): Promise<number> {
-    return 1;
-  }
-  async pexpireNx(_key: string, _ttlMs: number): Promise<number> {
-    return 1;
+  async incrWindow(_key: string, _ttlMs: number): Promise<WindowHit> {
+    return { count: 1, ttlMs: -1 };
   }
   async pttl(_key: string): Promise<number> {
     return -1;

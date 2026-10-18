@@ -31,9 +31,8 @@ function makeMockClient() {
     get: jest.fn<Promise<string | null>, [string]>().mockResolvedValue(null),
     set: jest.fn<Promise<"OK" | null>, unknown[]>().mockResolvedValue("OK"),
     del: jest.fn<Promise<number>, [string]>().mockResolvedValue(1),
-    incr: jest.fn<Promise<number>, [string]>().mockResolvedValue(1),
+    eval: jest.fn<Promise<unknown>, unknown[]>().mockResolvedValue([1, 900_000]),
     decr: jest.fn<Promise<number>, [string]>().mockResolvedValue(0),
-    pexpire: jest.fn<Promise<number>, unknown[]>().mockResolvedValue(1),
     pttl: jest.fn<Promise<number>, [string]>().mockResolvedValue(900_000),
   };
 }
@@ -131,20 +130,44 @@ describe("IoredisIdempotencyAdapter — del() delegation", () => {
 });
 
 // ===========================================================================
-// incr() — direct delegation (rate-limit surface)
+// incrWindow() — RT-618: one atomic EVAL (INCR + TTL seed/self-heal + PTTL)
 // ===========================================================================
 
-describe("IoredisIdempotencyAdapter — incr() delegation", () => {
-  it("ADAPTER-7: incr(key) delegates to client.incr(key) and passes result through", async () => {
+describe("IoredisIdempotencyAdapter — incrWindow() atomic script (RT-618)", () => {
+  it("ADAPTER-7: incrWindow(key, ttlMs) is one client.eval with 1 key and the window as ARGV", async () => {
     const client = makeMockClient();
-    client.incr.mockResolvedValue(3);
+    client.eval.mockResolvedValue([3, 543_210]);
     const adapter = new IoredisIdempotencyAdapter(client as never);
 
-    const result = await adapter.incr("rl:signin_account:alice");
+    const result = await adapter.incrWindow("rl:signin_account:alice", 900_000);
 
-    expect(client.incr).toHaveBeenCalledTimes(1);
-    expect(client.incr).toHaveBeenCalledWith("rl:signin_account:alice");
-    expect(result).toBe(3);
+    expect(client.eval).toHaveBeenCalledTimes(1);
+    const [script, numKeys, key, ttl] = client.eval.mock.calls[0] as [string, number, string, string];
+    expect(numKeys).toBe(1);
+    expect(key).toBe("rl:signin_account:alice");
+    expect(ttl).toBe("900000");
+    expect(script).toContain("INCR");
+    expect(script).toContain("PTTL");
+    expect(script).toContain("PEXPIRE");
+    expect(result).toEqual({ count: 3, ttlMs: 543_210 });
+  });
+
+  it("ADAPTER-7a: rejects a malformed script reply instead of guessing a decision", async () => {
+    const client = makeMockClient();
+    const adapter = new IoredisIdempotencyAdapter(client as never);
+
+    for (const bad of [null, "3", [3], [3, "x"], ["3", 1], [1.5, 1]]) {
+      client.eval.mockResolvedValueOnce(bad);
+      await expect(adapter.incrWindow("rl:k", 1000)).rejects.toThrow(/unexpected reply/);
+    }
+  });
+
+  it("ADAPTER-7c: a client error propagates (the caller owns the fail posture)", async () => {
+    const client = makeMockClient();
+    client.eval.mockRejectedValueOnce(new Error("NOSCRIPT or connection lost"));
+    const adapter = new IoredisIdempotencyAdapter(client as never);
+
+    await expect(adapter.incrWindow("rl:k", 1000)).rejects.toThrow("connection lost");
   });
 });
 
@@ -159,34 +182,6 @@ describe("IoredisIdempotencyAdapter — decr() delegation (RT-136)", () => {
     expect(client.decr).toHaveBeenCalledTimes(1);
     expect(client.decr).toHaveBeenCalledWith("rl:signin_account:alice");
     expect(result).toBe(2);
-  });
-});
-
-// ===========================================================================
-// pexpireNx() — translated to pexpire(key, ms, "NX") (rate-limit surface)
-// ===========================================================================
-
-describe("IoredisIdempotencyAdapter — pexpireNx() translation", () => {
-  it("ADAPTER-8: pexpireNx(key, ttlMs) calls client.pexpire(key, ttlMs, 'NX')", async () => {
-    const client = makeMockClient();
-    client.pexpire.mockResolvedValue(1);
-    const adapter = new IoredisIdempotencyAdapter(client as never);
-
-    const result = await adapter.pexpireNx("rl:signin_account:alice", 900_000);
-
-    expect(client.pexpire).toHaveBeenCalledTimes(1);
-    expect(client.pexpire).toHaveBeenCalledWith("rl:signin_account:alice", 900_000, "NX");
-    expect(result).toBe(1);
-  });
-
-  it("ADAPTER-8b: pexpireNx returns 0 when key already has a TTL (NX condition not met)", async () => {
-    const client = makeMockClient();
-    client.pexpire.mockResolvedValue(0);
-    const adapter = new IoredisIdempotencyAdapter(client as never);
-
-    const result = await adapter.pexpireNx("rl:signin_account:alice", 900_000);
-
-    expect(result).toBe(0);
   });
 });
 
@@ -220,16 +215,14 @@ describe("IoredisIdempotencyAdapter — single client instance", () => {
     await adapter.get("k1");
     await adapter.set("k2", "v", { px: 100 });
     await adapter.del("k3");
-    await adapter.incr("k4");
-    await adapter.pexpireNx("k5", 1000);
+    await adapter.incrWindow("k4", 1000);
     await adapter.pttl("k6");
 
     // All calls went to the same mock client
     expect(client.get).toHaveBeenCalledTimes(1);
     expect(client.set).toHaveBeenCalledTimes(1);
     expect(client.del).toHaveBeenCalledTimes(1);
-    expect(client.incr).toHaveBeenCalledTimes(1);
-    expect(client.pexpire).toHaveBeenCalledTimes(1);
+    expect(client.eval).toHaveBeenCalledTimes(1);
     expect(client.pttl).toHaveBeenCalledTimes(1);
   });
 });
@@ -249,8 +242,7 @@ jest.mock("ioredis", () => {
       get: jest.fn(),
       set: jest.fn(),
       del: jest.fn(),
-      incr: jest.fn(),
-      pexpire: jest.fn(),
+      eval: jest.fn(),
       pttl: jest.fn(),
     };
   });

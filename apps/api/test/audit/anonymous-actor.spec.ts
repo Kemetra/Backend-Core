@@ -70,7 +70,8 @@ import {
 } from "../../src/common/logging.interceptor";
 import { RequestIdInterceptor } from "../../src/common/request-id.interceptor";
 import { ZodValidationPipe } from "../../src/common/zod-validation.pipe";
-import type { RedisLike } from "../../src/auth/rate-limit";
+import type { RedisLike, WindowHit } from "../../src/auth/rate-limit";
+import { fixedWindowHit } from "../_helpers/fixed-window-hit";
 import {
   applyAllUpAndCreateAppRole,
   startPgEnv,
@@ -102,21 +103,8 @@ class FakeRedis implements RedisLike {
     }
     return entry;
   }
-  async incr(key: string): Promise<number> {
-    const live = this.gc(key);
-    if (!live) {
-      this.store.set(key, { value: 1, expiresAt: null });
-      return 1;
-    }
-    live.value += 1;
-    return live.value;
-  }
-  async pexpireNx(key: string, ttlMs: number): Promise<number> {
-    const live = this.gc(key);
-    if (!live) return 0;
-    if (live.expiresAt !== null) return 0;
-    live.expiresAt = Date.now() + ttlMs;
-    return 1;
+  async incrWindow(key: string, ttlMs: number): Promise<WindowHit> {
+    return fixedWindowHit(this.store, key, ttlMs, Date.now());
   }
   async pttl(key: string): Promise<number> {
     const live = this.gc(key);
