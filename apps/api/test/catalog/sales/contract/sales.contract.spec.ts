@@ -1611,8 +1611,8 @@ describe("pos-sales/sales.yaml — RT-577 credit-sale reversal", () => {
     findOp("recordCreditSaleReversal") as (OperationObject & Record<string, unknown>) | undefined;
   const reversalText = (): string => described(reversalOp());
 
-  it("bumps the version to 1.11.0-draft with an RT-577 note citing the owner decision of 2026-10-17", () => {
-    expect(salesDoc.info?.version).toBe("1.11.0-draft");
+  it("carries the 1.11.0-draft RT-577 note citing the owner decision of 2026-10-17", () => {
+    // The version itself moved to 1.12.0-draft with RT-547/RT-548 (below).
     expect(info()).toContain("RT-577 (1.11.0-draft; [GATED] owner-approved V1 decision, Jira RT-577, 2026-10-17");
   });
 
@@ -2034,5 +2034,49 @@ describe("pos-sales/sales.yaml — RT-577 owner rulings (D6, D8, N1)", () => {
   it("N1: a null mismatch_flag is allocation_unavailable, never a pass", () => {
     expect(reversalText()).toContain("its stored `mismatch_flag` is true or null");
     expect(response("CreditReversalUnprocessable")).toContain("its stored `mismatch_flag` is true or null");
+  });
+});
+
+// ===========================================================================
+// RT-547 + RT-548 (1.12.0-draft; [GATED] owner approval 2026-10-18, Jira
+// RT-689): readSale line order and its read audit. Description and
+// `x-audit-action` only — no schema change.
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-547/RT-548 readSale line order + read audit", () => {
+  const flat = (t: unknown): string => (typeof t === "string" ? t : "").replace(/\s+/g, " ");
+  const readOp = (): (OperationObject & Record<string, unknown>) | undefined =>
+    findOp("readSale") as (OperationObject & Record<string, unknown>) | undefined;
+  const ORDER_TEXT =
+    "A sale captured before the order was recorded lists its lines by name, then by `lineRef`: a stable order that is not the receipt order";
+
+  it("bumps the version to 1.12.0-draft with an RT-547/RT-548 note citing the owner approval", () => {
+    expect(salesDoc.info?.version).toBe("1.12.0-draft");
+    expect(flat(salesDoc.info?.description)).toContain(
+      "RT-547 / RT-548 (1.12.0-draft; [GATED] owner approval 2026-10-18, Jira RT-689",
+    );
+  });
+
+  it("names its audit action (OD-534-7, OD-548-1)", () => {
+    expect(readOp()?.["x-audit-action"]).toBe("pos_sales.detail_read");
+    expect(flat(readOp()?.description)).toContain(
+      "one `pos_sales.detail_read` event per authorized `200`, with the sale ref in its metadata. No sale content is recorded.",
+    );
+  });
+
+  it("documents the line order on readSale and on Sale.lines (OD-547-1/2)", () => {
+    expect(flat(readOp()?.description)).toContain(ORDER_TEXT);
+    const sale = salesDoc.components?.schemas?.["Sale"] as SchemaObject | undefined;
+    const lines = (sale?.properties ?? {})["lines"] as { description?: string } | undefined;
+    expect(flat(lines?.description)).toContain("original receipt order (capture `lines[]` order, RT-538)");
+    expect(flat(lines?.description)).toContain(ORDER_TEXT);
+  });
+
+  it("adds no response field: Sale and SaleLine stay closed with their prior properties", () => {
+    const sale = salesDoc.components?.schemas?.["Sale"] as SchemaObject | undefined;
+    const saleLine = salesDoc.components?.schemas?.["SaleLine"] as SchemaObject | undefined;
+    expect(sale?.additionalProperties).toBe(false);
+    expect(saleLine?.additionalProperties).toBe(false);
+    expect(Object.keys(sale?.properties ?? {})).not.toContain("lineOrder");
+    expect(Object.keys(saleLine?.properties ?? {})).not.toContain("sequence");
   });
 });
