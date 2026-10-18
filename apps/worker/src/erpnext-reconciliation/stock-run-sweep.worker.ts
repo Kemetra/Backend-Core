@@ -38,7 +38,7 @@ export const STOCK_RUN_SWEEP_WORKER_LOGGER = "STOCK_RUN_SWEEP_WORKER_LOGGER";
 export type StockRunSweepWorkerLogger = Pick<Logger, "error">;
 
 function defaultLogger(): StockRunSweepWorkerLogger {
-  return createLogger({ service: "worker", bindings: { component: COMPONENT } });
+  return createLogger({ service: "backend-worker", bindings: { component: COMPONENT } });
 }
 
 @Injectable()

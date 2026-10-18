@@ -177,7 +177,7 @@ export class SwitchRateLimiter {
 export class LogCapture {
   readonly lines: string[] = [];
   readonly logger: Logger = createLogger({
-    service: "api",
+    service: "backend-api",
     level: "trace",
     destination: { write: (line: string) => void this.lines.push(line) },
   });

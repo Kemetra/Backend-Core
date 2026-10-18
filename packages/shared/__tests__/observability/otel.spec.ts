@@ -79,6 +79,8 @@ function incoming(url: string, localPort: number): IncomingMessage {
 type SdkNodeModule = typeof import("@opentelemetry/sdk-node");
 jest.requireMock<SdkNodeModule>("@opentelemetry/sdk-node").resources =
   jest.requireActual<SdkNodeModule>("@opentelemetry/sdk-node").resources;
+jest.requireMock<SdkNodeModule>("@opentelemetry/sdk-node").tracing =
+  jest.requireActual<SdkNodeModule>("@opentelemetry/sdk-node").tracing;
 
 // ---------------------------------------------------------------------------
 // createOtelSdk
@@ -115,6 +117,14 @@ describe("createOtelSdk", () => {
     const [ctorArg] = MockNodeSDK.mock.calls[0] as [Record<string, unknown>];
     expect(ctorArg).not.toHaveProperty("serviceVersion");
     expect(ctorArg).not.toHaveProperty("resource");
+  });
+
+  // RT-684: liveness spans bypass ratio sampling; everything else keeps the
+  // env-configured sampler (see forced-sampling.spec.ts).
+  it("passes the force-sample sampler to NodeSDK", () => {
+    createOtelSdk({ serviceName: "svc" });
+    const [ctorArg] = MockNodeSDK.mock.calls[0] as [Record<string, unknown>];
+    expect(String(ctorArg["sampler"])).toMatch(/^ForceSampleSampler{/);
   });
 
   it("passes an OTLP exporter to NodeSDK", () => {

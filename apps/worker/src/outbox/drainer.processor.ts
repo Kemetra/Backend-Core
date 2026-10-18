@@ -54,7 +54,7 @@ import {
   MAX_ATTEMPTS,
   type ClaimedOutboxEvent,
 } from "@data-pulse-2/db";
-import type { OutboxConsumer } from "@data-pulse-2/shared";
+import { recordLivenessSpan, withTracingSuppressed, type OutboxConsumer } from "@data-pulse-2/shared";
 import type { OutboxConsumerRegistry } from "./registry";
 import {
   OUTBOX_DRAINER_QUEUE_LABEL,
@@ -79,6 +79,17 @@ const DRAINER_QUEUE_LABEL = OUTBOX_DRAINER_QUEUE_LABEL;
 export const DEFAULT_POLL_INTERVAL_MS = 1_000;
 export const DEFAULT_BATCH_SIZE = 50;
 export const DEFAULT_CLAIM_LEASE_MS = 60_000;
+
+/**
+ * RT-684: the worker's liveness span. With the idle poll untraced, an idle
+ * worker would send no spans at all, so after a successful poll the drainer
+ * records this force-sampled root span at most once per interval. The
+ * Datadog no-data monitor (`deploy/datadog`, `p1-worker-no-data`) watches
+ * `trace.worker.heartbeat.hits`, which stops when the worker dies or its
+ * poll loop hangs.
+ */
+export const LIVENESS_OPERATION = "worker.heartbeat";
+export const LIVENESS_INTERVAL_MS = 5 * 60_000;
 
 /**
  * The drainer's dead-letter rule: a consumer throw on the claim whose
@@ -119,6 +130,12 @@ export interface DrainerDependencies {
    * Production callers omit this; the default is `claimBatch` from `@data-pulse-2/db`.
    */
   readonly claimFn?: (pool: Pool, batchSize: number) => Promise<ClaimedOutboxEvent[]>;
+  /**
+   * Monotonic clock (ms) for the liveness interval. Default: `performance.now`,
+   * so a wall-clock step back cannot hold the heartbeat off and page a healthy
+   * worker.
+   */
+  readonly now?: () => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +156,8 @@ export class DrainerProcessor {
   private readonly claimLimit: number;
   private readonly claimLeaseMs: number;
   private readonly claimFn: (pool: Pool, batchSize: number) => Promise<ClaimedOutboxEvent[]>;
+  private readonly now: () => number;
+  private lastLivenessAt = Number.NEGATIVE_INFINITY;
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
   /**
@@ -166,6 +185,7 @@ export class DrainerProcessor {
     );
     this.claimLeaseMs = deps.options?.claimLeaseMs ?? DEFAULT_CLAIM_LEASE_MS;
     this.claimFn = deps.claimFn ?? claimBatch;
+    this.now = deps.now ?? (() => performance.now());
 
     // Fail loud at construction rather than spinning a poll loop with a
     // nonsensical interval (which silently breaks throughput) or claim size
@@ -229,8 +249,16 @@ export class DrainerProcessor {
    * without the setInterval timer.
    */
   async tick(): Promise<void> {
-    const recovered = await reclaimStaleClaims(this.pool, this.claimLeaseMs, this.batchSize).catch((err: unknown) => {
+    // RT-684 (OBS-9 F-B): the two poll queries run every second whether or
+    // not there is work, so they are untraced. An idle drainer exports no
+    // spans. Each claimed row is processed below, outside the suppression,
+    // so its consumer, transition and lease-heartbeat spans are unchanged.
+    let polled = true;
+    const recovered = await withTracingSuppressed(() =>
+      reclaimStaleClaims(this.pool, this.claimLeaseMs, this.batchSize),
+    ).catch((err: unknown) => {
       this.logError("drainer.reclaimStaleClaims failed", err);
+      polled = false;
       return { reclaimed: 0, deadLetteredEventTypes: [] as readonly string[] };
     });
     if (recovered.reclaimed > 0) {
@@ -240,14 +268,24 @@ export class DrainerProcessor {
       recordQueueDeadLetter({ queue: DRAINER_QUEUE_LABEL });
       recordOutboxDeadLetter({ event_type: eventType });
     }
-    const batch = await this.claimFn(this.pool, this.claimLimit).catch((err: unknown) => {
+    const batch = await withTracingSuppressed(() => this.claimFn(this.pool, this.claimLimit)).catch((err: unknown) => {
       this.logError("drainer.claimBatch failed", err);
+      polled = false;
       return [] as ClaimedOutboxEvent[];
     });
+    if (polled) this.recordLiveness();
 
     // Process rows concurrently within the batch. Each row gets its own
     // per-tenant context — they are independent and must not share a client.
     await Promise.all(batch.map((row) => this.processRow(row)));
+  }
+
+  /** Record the liveness span if the last one is at least an interval old. */
+  private recordLiveness(): void {
+    const now = this.now();
+    if (now - this.lastLivenessAt < LIVENESS_INTERVAL_MS) return;
+    this.lastLivenessAt = now;
+    recordLivenessSpan(LIVENESS_OPERATION);
   }
 
   // ---------------------------------------------------------------------------

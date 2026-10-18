@@ -124,7 +124,7 @@ const FROZEN_PAYER_LINK_SQL = `(SELECT p.external_ref FROM sale_responsibilities
 export type PostingRequestedLogger = Pick<Logger, "warn" | "error">;
 
 function defaultLogger(): PostingRequestedLogger {
-  return createLogger({ service: "worker", bindings: { component: POSTING_REQUESTED_CONSUMER_ID } });
+  return createLogger({ service: "backend-worker", bindings: { component: POSTING_REQUESTED_CONSUMER_ID } });
 }
 
 export class PostingRequestedConsumer

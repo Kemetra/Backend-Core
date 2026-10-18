@@ -36,7 +36,6 @@ import { Module, type Provider } from "@nestjs/common";
 import { APP_INTERCEPTOR, Reflector } from "@nestjs/core";
 
 import {
-  createLogger,
   IdempotencyKeyStore,
   type Logger,
   type RedisLike as StoreRedisLike,
@@ -47,6 +46,7 @@ import type { Pool } from "pg";
 import { AUDIT_JOB_ENQUEUER, type AuditJobEnqueuer } from "../audit/audit-job.enqueuer";
 import { OutboxAuditEnqueuerModule } from "../audit/outbox-audit-enqueuer.module";
 import { AuthModule, PG_POOL, REDIS_CLIENT } from "../auth/auth.module";
+import { createApiLogger } from "../common/api-logger";
 import { ROOT_LOGGER } from "../common/logging.interceptor";
 import { INFLIGHT_REDIS, InProgressMarker, type InflightRedis } from "./in-progress-marker";
 import {
@@ -112,10 +112,7 @@ const idempotencyInterceptorProvider: Provider = {
   providers: [
     {
       provide: ROOT_LOGGER,
-      useFactory: (): Logger => createLogger({
-        service: "api.idempotency",
-        level: process.env["LOG_LEVEL"] ?? "info",
-      }),
+      useFactory: (): Logger => createApiLogger("idempotency"),
     },
     inflightRedisProvider,
     idempotencyKeyStoreProvider,

@@ -45,7 +45,8 @@ jest.mock("@opentelemetry/sdk-node", () => {
     start: mockStart,
     shutdown: mockShutdown,
   }));
-  return { NodeSDK: MockNodeSDK };
+  // RT-684: createOtelSdk builds its sampler from the real `tracing` namespace.
+  return { NodeSDK: MockNodeSDK, tracing: jest.requireActual("@opentelemetry/sdk-node").tracing };
 });
 
 jest.mock("@opentelemetry/exporter-trace-otlp-http", () => ({

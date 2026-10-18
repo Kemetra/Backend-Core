@@ -3,7 +3,8 @@
  *
  * Default-inert and errors-only, same posture as the API. Once initialised the
  * SDK's default global-handler integrations report uncaught exceptions and
- * unhandled rejections. BullMQ `failed` job events are not forwarded yet.
+ * unhandled rejections. A BullMQ job's final failure is captured by the
+ * Worker `failed` listener in `failed-job.ts` (RT-698).
  */
 import * as Sentry from "@sentry/node";
 import { initSentry, type SentryInitResult } from "@data-pulse-2/shared";

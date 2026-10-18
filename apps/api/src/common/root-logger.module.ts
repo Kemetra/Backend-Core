@@ -14,17 +14,15 @@
  * gives the global LoggingInterceptor.
  */
 import { Global, Module } from "@nestjs/common";
-import { createLogger, type Logger } from "@data-pulse-2/shared";
+import type { Logger } from "@data-pulse-2/shared";
 
+import { createApiLogger } from "./api-logger";
 import { ROOT_LOGGER } from "./logging.interceptor";
 
 let rootLogger: Logger | null = null;
 
 export function getRootLogger(): Logger {
-  rootLogger ??= createLogger({
-    service: "api",
-    level: process.env["LOG_LEVEL"] ?? "info",
-  });
+  rootLogger ??= createApiLogger();
   return rootLogger;
 }
 

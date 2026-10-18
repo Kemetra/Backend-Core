@@ -343,7 +343,7 @@ describe("scrubSentryEvent (AC-2)", () => {
   });
 });
 
-describe("OBS-1 §3.5 golden vectors (RT-682: Bearer/Authorization and phones)", () => {
+describe("OBS-1 §3.5 golden vectors (RT-682, RT-694: Bearer/Authorization and phones)", () => {
   const scrubValue = (value: string): string =>
     scrubSentryEvent({ exception: { values: [{ type: "Error", value }] } })!.exception!.values![0]!.value!;
 
@@ -362,7 +362,25 @@ describe("OBS-1 §3.5 golden vectors (RT-682: Bearer/Authorization and phones)",
     ["an email before authorization= in one word", "jane@example.invalid,authorization=x", "[email]"],
     ["a JWT before authorization= in one word", "id_token=eyJa.b.c;authorization=x", "id_token=[jwt]"],
     ["a phone before an empty Authorization value", "+201000000638;Authorization: Bearer x", "[phone];Authorization: [redacted] [redacted]"],
+    ["a separator word across newlines", "Authorization\n:\nBearer x y", "Authorization\n:\n[redacted] [redacted] y"],
+    ["a quoted key before a separator word", "headers={'Authorization' : 'Bearer x'} y", "headers={'Authorization' : [redacted] [redacted] y"],
+    ["a bare Authorization key with no separator word", "missing Authorization", "missing Authorization"],
+    ["a key not directly before the separator word (known gap)", "Authorization ok : x", "Authorization ok : x"],
+    ["a value that is only a separator (known gap)", "Authorization : : x y", "Authorization : [redacted] x y"],
   ])("follows the §3.2 phone/Authorization text on %s", (_label, input, expected) => {
+    expect(scrubValue(input)).toBe(expected);
+  });
+
+  // A word masked because of the word before it (`[Bearer] <word>`) or read as a
+  // separator value (`Authorization :<word>`) still passes on its own Bearer /
+  // Authorization signal, so RT-694 never masks less than the RT-682 baseline.
+  it.each([
+    ["a separator value that ends in its own empty Authorization", "Authorization :a,Authorization: S1", "Authorization :[redacted] [redacted]"],
+    ["a separator value that ends in its own scheme value", "Authorization =x,Proxy-Authorization:Bearer S1", "Authorization =[redacted] [redacted]"],
+    ["a wrapped Bearer before an empty Authorization", "[Bearer] Authorization: S1", "[redacted] [redacted] [redacted]"],
+    ["a wrapped Bearer before an empty authorization=", "(Bearer) ?authorization= S1", "[redacted] [redacted] [redacted]"],
+    ["a wrapped scheme value before an empty Authorization", "Authorization: (Bearer) Authorization: S1", "Authorization: [redacted] [redacted] [redacted]"],
+  ])("keeps the next-word signal of a masked word on %s", (_label, input, expected) => {
     expect(scrubValue(input)).toBe(expected);
   });
 
@@ -376,7 +394,7 @@ describe("OBS-1 §3.5 golden vectors (RT-682: Bearer/Authorization and phones)",
   });
 
   it("stays linear when the inputs exceed the scan cap many times over", () => {
-    const adversarial = ["Bearer ".repeat(50_000), "1".repeat(100_000), "+1".repeat(50_000), "a:Authorization: ".repeat(10_000)];
+    const adversarial = ["Bearer ".repeat(50_000), "1".repeat(100_000), "+1".repeat(50_000), "a:Authorization: ".repeat(10_000), "Authorization : ".repeat(50_000)];
     const started = Date.now();
     for (const value of adversarial) expect(scrubValue(value).length).toBeLessThanOrEqual(300);
     expect(Date.now() - started).toBeLessThan(500);
