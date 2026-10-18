@@ -134,8 +134,14 @@ async function main() {
   }
   if (!process.env.DD_API_KEY || !process.env.DD_APP_KEY) fail("DD_API_KEY and DD_APP_KEY are required");
 
-  const results = await Promise.all(monitors.map(upsertMonitor));
-  monitors.forEach((m, i) => ok(`[OK] ${m.key}: ${results[i]}`));
+  // Log each monitor as soon as it is applied, so a later failure still leaves
+  // a record of what already changed in Datadog.
+  await Promise.all(
+    monitors.map(async (m) => {
+      const result = await upsertMonitor(m);
+      ok(`[OK] ${m.key}: ${result}`);
+    }),
+  );
   ok(`[OK] ${synthetic.key}: ${await upsertSynthetic(synthetic)}`);
   ok(`[OK] dashboard: ${await upsertDashboard(dashboard)}`);
 }
