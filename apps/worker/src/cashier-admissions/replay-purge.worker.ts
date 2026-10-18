@@ -35,7 +35,7 @@ export const REPLAY_PURGE_WORKER_LOGGER = "REPLAY_PURGE_WORKER_LOGGER";
 export type ReplayPurgeWorkerLogger = Pick<Logger, "error">;
 
 function defaultLogger(): ReplayPurgeWorkerLogger {
-  return createLogger({ service: "worker", bindings: { component: COMPONENT } });
+  return createLogger({ service: "backend-worker", bindings: { component: COMPONENT } });
 }
 
 @Injectable()

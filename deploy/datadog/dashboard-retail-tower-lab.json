@@ -216,12 +216,27 @@
           {
             "definition": {
               "type": "note",
-              "content": "The worker's Prometheus listener binds 127.0.0.1, so queue lag and the outbox backlog are not in Datadog yet. These widgets use worker trace metrics (10% sampled).",
+              "content": "The worker's Prometheus listener binds 127.0.0.1, so queue lag and the outbox backlog are not in Datadog yet. Liveness is the force-sampled worker.heartbeat span (about one per 5 minutes; RT-684). The DB widgets use 10%-sampled worker spans; the idle outbox poll is untraced, so they drop toward zero on an idle lab.",
               "background_color": "yellow",
               "font_size": "14",
               "text_align": "left",
               "show_tick": false,
               "has_padding": true
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Worker heartbeats (liveness, ~12/hour)",
+              "show_legend": false,
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [{ "data_source": "metrics", "name": "beats", "query": "sum:trace.worker.heartbeat.hits{env:staging,service:backend-worker}.as_count()" }],
+                  "formulas": [{ "formula": "beats" }],
+                  "display_type": "bars"
+                }
+              ]
             }
           },
           {
