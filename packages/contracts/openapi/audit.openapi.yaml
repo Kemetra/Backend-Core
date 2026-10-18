@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Audit API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     Read-only access to audit events for the active tenant.
     Tenant-admin or platform-admin scope. Per spec FR-AUDIT-1/2/3.
@@ -12,13 +12,32 @@ paths:
     get:
       summary: Query audit events for the active tenant.
       operationId: listAuditEvents
+      description: >
+        Items are ordered newest first: `occurred_at` descending, then `id`
+        descending as the tie-breaker. `next_cursor` continues that order and is
+        stable under concurrent inserts. A cursor is valid only with the same
+        filters (including `kind`) it was issued under.
       parameters:
         - in: query
           name: action
           schema:
             type: string
             minLength: 1
-          description: Filter by action code (prefix match supported, e.g., "auth.").
+          description: >
+            Filter by a literal action-code prefix (e.g. `auth.`). `%`, `_` and
+            `\` are matched literally, not as patterns.
+        - in: query
+          name: kind
+          schema:
+            type: string
+            enum: [read, change]
+          description: >
+            Return only events of this action kind. `change` excludes read-only
+            actions (list/read/pull requests that changed no state); `read` returns
+            only those. Omitted: all events, as before. Read-only actions are still
+            recorded; this filter changes what the list returns, not what is audited.
+            Combines with every other filter (AND). An unknown value is a 400
+            `validation_error`.
         - in: query
           name: actor_user_id
           schema: { type: string, format: uuid }
@@ -63,6 +82,7 @@ components:
   schemas:
     AuditEvent:
       type: object
+      required: [kind]
       properties:
         id: { type: string, format: uuid }
         occurred_at: { type: string, format: date-time }
@@ -71,6 +91,12 @@ components:
         tenant_id: { type: string, format: uuid }
         store_id: { type: string, format: uuid, nullable: true }
         action: { type: string }
+        kind:
+          type: string
+          description: >
+            Action kind derived by the server from `action` (not stored). Known
+            values: `read`, `change`. More values may be added; treat an unknown
+            value as `change`. An action the server has not classified is `change`.
         target_type: { type: string, nullable: true }
         target_id: { type: string, format: uuid, nullable: true }
         request_id: { type: string, format: uuid, nullable: true }

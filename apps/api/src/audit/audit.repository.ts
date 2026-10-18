@@ -55,12 +55,13 @@
 import { Inject, Injectable, Optional } from "@nestjs/common";
 import type { Pool, PoolClient } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { and, desc, eq, gte, lte, like, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, notInArray, sql, type SQL } from "drizzle-orm";
 import { alias, type BuildAliasTable } from "drizzle-orm/pg-core";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import { auditEvents } from "@data-pulse-2/db/schema";
 
 import { PG_POOL } from "../auth/auth.module";
+import { READ_ACTION_CODES, type AuditActionKind } from "./audit-action-kinds";
 import type { AuditCursor } from "./audit.query.schema";
 
 /** Internal record shape returned by the repository (camelCase). */
@@ -82,6 +83,8 @@ export interface ListPageInput {
   readonly tenantId: string;
   readonly isPlatformAdmin: boolean;
   readonly action?: string | undefined;
+  /** RT-567: only events of this action kind (`audit-action-kinds.ts`). */
+  readonly kind?: AuditActionKind | undefined;
   readonly actorUserId?: string | undefined;
   readonly storeId?: string | undefined;
   readonly from?: Date | undefined;
@@ -219,10 +222,18 @@ function filterPredicates(
     eq(table.tenantId, input.tenantId),
   ];
   if (input.action !== undefined) {
-    // Prefix match. `like` is safe — `action` is an internal-controlled
-    // enum-ish string (e.g., `auth.signin.ok`); Drizzle parameterises
-    // the value, and the `%` is server-appended (not user-supplied).
-    predicates.push(like(table.action, `${input.action}%`));
+    // Literal prefix match (RT-567 F2b): `\`, `%` and `_` in the value are
+    // escaped, so `action=%` matches only codes that start with `%`. Drizzle
+    // parameterises the value; the trailing `%` is server-appended.
+    predicates.push(
+      sql`${table.action} LIKE ${`${escapeLike(input.action)}%`} ESCAPE '\\'`,
+    );
+  }
+  if (input.kind === "read") {
+    predicates.push(inArray(table.action, [...READ_ACTION_CODES]));
+  } else if (input.kind === "change") {
+    // Everything not registered as `read`, including unregistered codes (D-2).
+    predicates.push(notInArray(table.action, [...READ_ACTION_CODES]));
   }
   if (input.actorUserId !== undefined) {
     predicates.push(eq(table.actorUserId, input.actorUserId));
@@ -237,4 +248,9 @@ function filterPredicates(
     predicates.push(lte(table.occurredAt, input.to));
   }
   return predicates;
+}
+
+/** Escape `LIKE` metacharacters so `value` matches literally (ESCAPE '\'). */
+export function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }

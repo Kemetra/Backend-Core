@@ -4,14 +4,16 @@
  * Mirrors `packages/contracts/openapi/audit.openapi.yaml`:
  *
  *   AuditEvent: { id, occurred_at, actor_user_id?, actor_label?,
- *                 tenant_id, store_id?, action, target_type?, target_id?,
- *                 request_id?, metadata }
+ *                 tenant_id, store_id?, action, kind, target_type?,
+ *                 target_id?, request_id?, metadata }
  *   ListAuditEventsResponse: { items: AuditEvent[], next_cursor: string|null }
  *
  * Snake_case field names match the OpenAPI YAML — the controller hands
  * this back verbatim, no further mapping. ISO 8601 string for
  * `occurred_at` (not `Date`) so JSON serialization is stable.
  */
+import type { AuditActionKind } from "./audit-action-kinds";
+
 export interface AuditEventDto {
   readonly id: string;
   readonly occurred_at: string;
@@ -20,6 +22,8 @@ export interface AuditEventDto {
   readonly tenant_id: string;
   readonly store_id: string | null;
   readonly action: string;
+  /** RT-567: derived from `action` by `kindOf` (not stored). */
+  readonly kind: AuditActionKind;
   readonly target_type: string | null;
   readonly target_id: string | null;
   readonly request_id: string | null;

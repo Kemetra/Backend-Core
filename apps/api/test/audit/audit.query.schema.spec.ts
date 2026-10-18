@@ -10,6 +10,7 @@
  *   - `from`, `to` reject non-ISO-8601 date-time strings.
  *   - `cursor` rejects non-base64 / structurally invalid input.
  *   - `action` accepts arbitrary non-empty string (prefix match — no regex).
+ *   - `kind` accepts `read` / `change` and rejects anything else (RT-567).
  *   - All filter fields are optional.
  */
 import {
@@ -127,6 +128,20 @@ describe("AuditQuerySchema", () => {
 
     it("rejects empty string", () => {
       expect(() => AuditQuerySchema.parse({ action: "" })).toThrow();
+    });
+  });
+
+  describe("kind (RT-567)", () => {
+    it.each(["read", "change"])("accepts %s", (kind) => {
+      expect(AuditQuerySchema.parse({ kind }).kind).toBe(kind);
+    });
+
+    it("is optional", () => {
+      expect(AuditQuerySchema.parse({}).kind).toBeUndefined();
+    });
+
+    it.each(["bogus", "", "READ", "reads"])("rejects %j", (kind) => {
+      expect(AuditQuerySchema.safeParse({ kind }).success).toBe(false);
     });
   });
 

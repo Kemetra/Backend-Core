@@ -77,6 +77,7 @@ const FAKE_LIST_RESPONSE: ListAuditEventsResponse = {
       tenant_id: TENANT_ID,
       store_id: null,
       action: "context.switch.tenant",
+      kind: "change",
       target_type: null,
       target_id: null,
       request_id: "req-1",
@@ -487,5 +488,43 @@ describe("AuditC16 — listAuditEvents has no @Auditable decorator", () => {
       AuditController.prototype.listAuditEvents,
     );
     expect(meta).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AuditC17 — RT-567 kind filter
+// ---------------------------------------------------------------------------
+
+describe("AuditC17 — kind query param (RT-567)", () => {
+  it.each(["read", "change"])("forwards kind=%s to service.list", async (kind) => {
+    const res = await http().get("/api/v1/audit/events").query({ kind });
+
+    expect(res.status).toBe(200);
+    const arg = listMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(arg.kind).toBe(kind);
+  });
+
+  it("omitted kind reaches service.list as undefined", async () => {
+    await http().get("/api/v1/audit/events");
+
+    const arg = listMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(arg.kind).toBeUndefined();
+  });
+
+  it("returns 400 validation_error for kind=bogus", async () => {
+    const res = await http().get("/api/v1/audit/events").query({ kind: "bogus" });
+
+    expect(res.status).toBe(400);
+    expectErrorEnvelope(res.body, "validation_error");
+    expect(listMock).not.toHaveBeenCalled();
+  });
+
+  it("still returns 403 for an insufficient role with kind set", async () => {
+    roles.mode = "forbid";
+    const res = await http().get("/api/v1/audit/events").query({ kind: "change" });
+
+    expect(res.status).toBe(403);
+    expectErrorEnvelope(res.body, "forbidden");
+    expect(listMock).not.toHaveBeenCalled();
   });
 });

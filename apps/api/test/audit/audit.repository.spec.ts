@@ -16,7 +16,11 @@
  *      overlap and no gaps.
  *   5. action prefix filter.
  *   6. actor_user_id / store_id / from / to filters.
- *   7. Canary: bypassing `runWithTenantContext` (running on the plain
+ *   7. RT-567 `kind` filter (tenant C): `change` / `read` / omitted,
+ *      unregistered code counted as `change` (D-2), cursor walk under
+ *      `kind=change`, tenant isolation with `kind` set.
+ *   8. RT-567 F2b: the `action` prefix is literal (`%`, `_`, `\`).
+ *   9. Canary: bypassing `runWithTenantContext` (running on the plain
  *      app_test pool with no GUCs set) blows up with the expected
  *      `invalid input syntax for type uuid: ""` error from the RLS cast,
  *      proving the repo's RLS posture is necessary.
@@ -32,6 +36,7 @@ import "reflect-metadata";
 
 import { Pool } from "pg";
 
+import { kindOf } from "../../src/audit/audit-action-kinds";
 import { DrizzleAuditRepository } from "../../src/audit/audit.repository";
 import {
   applyAllUpAndCreateAppRole,
@@ -44,6 +49,7 @@ import {
 
 const TENANT_A = "0a000000-0000-7000-8000-0000000000a1";
 const TENANT_B = "0b000000-0000-7000-8000-0000000000b1";
+const TENANT_C = "0c000000-0000-7000-8000-0000000000c1";
 const ACTOR_1 = "0a000000-0000-7000-8000-00000000aa01";
 const ACTOR_2 = "0a000000-0000-7000-8000-00000000aa02";
 const STORE_1 = "0a000000-0000-7000-8000-0000000000c1";
@@ -59,6 +65,28 @@ let dockerSkipped = false;
 // non-factor for the cursor scheme.
 const AT = (sec: number): string =>
   `2026-05-01T12:00:${sec.toString().padStart(2, "0")}.000Z`;
+const AT_C = (sec: number): string =>
+  `2026-05-01T13:00:${sec.toString().padStart(2, "0")}.000Z`;
+
+// RT-567 — tenant C: reads interleaved between changes, an unregistered code
+// (D-2), and codes that only match `auth_%` / `%` / `\` as LIKE patterns.
+// Newest first.
+const TENANT_C_ROWS: ReadonlyArray<{ id: string; action: string; occurredAt: string }> = [
+  { id: "0c000000-0000-7000-8000-000000000401", action: "shift_closes.listed",           occurredAt: AT_C(59) },
+  { id: "0c000000-0000-7000-8000-000000000402", action: "sale.voided",                   occurredAt: AT_C(55) },
+  { id: "0c000000-0000-7000-8000-000000000403", action: "erpnext_sync_ops.summary.read", occurredAt: AT_C(50) },
+  { id: "0c000000-0000-7000-8000-000000000404", action: "pos_sales.detail_read",         occurredAt: AT_C(45) },
+  { id: "0c000000-0000-7000-8000-000000000405", action: "zz.unregistered.code",          occurredAt: AT_C(40) },
+  { id: "0c000000-0000-7000-8000-000000000406", action: "devices.listed",                occurredAt: AT_C(35) },
+  { id: "0c000000-0000-7000-8000-000000000407", action: "auth.signin.ok",                occurredAt: AT_C(30) },
+  { id: "0c000000-0000-7000-8000-000000000408", action: "auth_%.literal",                occurredAt: AT_C(25) },
+  { id: "0c000000-0000-7000-8000-000000000409", action: "authXsignin",                   occurredAt: AT_C(20) },
+  { id: "0c000000-0000-7000-8000-000000000410", action: "%pct.literal",                  occurredAt: AT_C(15) },
+  { id: "0c000000-0000-7000-8000-000000000411", action: "back\\slash.literal",           occurredAt: AT_C(10) },
+  { id: "0c000000-0000-7000-8000-000000000412", action: "backXslash.other",              occurredAt: AT_C(5) },
+];
+const C_READS = TENANT_C_ROWS.filter((r) => kindOf(r.action) === "read").map((r) => r.id);
+const C_CHANGES = TENANT_C_ROWS.filter((r) => kindOf(r.action) === "change").map((r) => r.id);
 
 beforeAll(async () => {
   try {
@@ -84,8 +112,9 @@ beforeAll(async () => {
     await env.admin.query(
       `INSERT INTO tenants (id, slug, name) VALUES
          ($1, 'aud-a', 'Aud A'),
-         ($2, 'aud-b', 'Aud B')`,
-      [TENANT_A, TENANT_B],
+         ($2, 'aud-b', 'Aud B'),
+         ($3, 'aud-c', 'Aud C')`,
+      [TENANT_A, TENANT_B, TENANT_C],
     );
     await env.admin.query(
       `INSERT INTO stores (id, tenant_id, code, name) VALUES
@@ -120,6 +149,14 @@ beforeAll(async () => {
         `INSERT INTO audit_events (id, occurred_at, actor_user_id, tenant_id, store_id, action, metadata)
          VALUES ($1, $2::timestamptz, $3, $4, $5, $6, '{}'::jsonb)`,
         [r.id, r.occurredAt, r.actor, r.tenant, r.store, r.action],
+      );
+    }
+
+    for (const r of TENANT_C_ROWS) {
+      await env.admin.query(
+        `INSERT INTO audit_events (id, occurred_at, tenant_id, action, metadata)
+         VALUES ($1, $2::timestamptz, $3, $4, '{}'::jsonb)`,
+        [r.id, r.occurredAt, TENANT_C, r.action],
       );
     }
 
@@ -316,6 +353,104 @@ describe("DrizzleAuditRepository", () => {
     expect(page2.length).toBe(1);
     expect(page2[0]?.id).not.toBe(r1.id);
     expect(page2[0]!.occurredAt.getTime()).toBeLessThanOrEqual(r1.occurredAt.getTime());
+  });
+
+  describe("RT-567 kind filter", () => {
+    const listC = (extra: { kind?: "read" | "change"; action?: string } = {}) =>
+      repo.listPage({ tenantId: TENANT_C, isPlatformAdmin: false, cursor: null, limit: 100, ...extra });
+
+    it("the tenant C seed has both kinds (the filter tests are not vacuous)", () => {
+      expect(C_READS.length).toBe(4);
+      expect(C_CHANGES.length).toBe(8);
+    });
+
+    it("kind=change returns every change row (incl. an unregistered code, D-2) and no read row, newest first", async () => {
+      if (maybeSkip()) return;
+      const rows = await listC({ kind: "change" });
+      expect(rows.map((r) => r.id)).toEqual(C_CHANGES);
+      expect(rows.map((r) => r.action)).toContain("zz.unregistered.code");
+    });
+
+    it("kind=read returns only read rows, newest first", async () => {
+      if (maybeSkip()) return;
+      const rows = await listC({ kind: "read" });
+      expect(rows.map((r) => r.id)).toEqual(C_READS);
+      expect(rows.map((r) => r.action)).toContain("pos_sales.detail_read");
+    });
+
+    it("omitted kind returns both kinds (no behaviour change)", async () => {
+      if (maybeSkip()) return;
+      const rows = await listC();
+      expect(rows.map((r) => r.id)).toEqual(TENANT_C_ROWS.map((r) => r.id));
+    });
+
+    it("walking the cursor with kind=change and limit=1 yields every change row exactly once (RT-211 anchor)", async () => {
+      if (maybeSkip()) return;
+      const seen: string[] = [];
+      let cursor: { occurredAt: Date; id: string } | null = null;
+      for (let i = 0; i < TENANT_C_ROWS.length + 2; i++) {
+        const page = await repo.listPage({
+          tenantId: TENANT_C,
+          isPlatformAdmin: false,
+          kind: "change",
+          cursor,
+          limit: 1,
+        });
+        if (page.length === 0) break;
+        const row = page[0]!;
+        seen.push(row.id);
+        cursor = { occurredAt: row.occurredAt, id: row.id };
+      }
+      expect(seen).toEqual(C_CHANGES);
+    });
+
+    it("kind combines with action (AND)", async () => {
+      if (maybeSkip()) return;
+      const rows = await listC({ kind: "read", action: "devices." });
+      expect(rows.map((r) => r.action)).toEqual(["devices.listed"]);
+    });
+
+    it("kind never crosses tenants: tenant A sees none of tenant C's rows", async () => {
+      if (maybeSkip()) return;
+      for (const isPlatformAdmin of [false, true]) {
+        const reads = await repo.listPage({ tenantId: TENANT_A, isPlatformAdmin, kind: "read", cursor: null, limit: 100 });
+        expect(reads).toEqual([]);
+        const changes = await repo.listPage({ tenantId: TENANT_A, isPlatformAdmin, kind: "change", cursor: null, limit: 100 });
+        expect(changes.length).toBe(5);
+        for (const r of changes) expect(r.tenantId).toBe(TENANT_A);
+      }
+    });
+  });
+
+  describe("RT-567 F2b literal action prefix", () => {
+    const actionsFor = async (action: string) =>
+      (await repo.listPage({ tenantId: TENANT_C, isPlatformAdmin: false, action, cursor: null, limit: 100 }))
+        .map((r) => r.action);
+
+    it("action=% matches only codes that literally start with %", async () => {
+      if (maybeSkip()) return;
+      expect(await actionsFor("%")).toEqual(["%pct.literal"]);
+    });
+
+    it("action=auth_% matches only codes that literally start with auth_%", async () => {
+      if (maybeSkip()) return;
+      expect(await actionsFor("auth_%")).toEqual(["auth_%.literal"]);
+    });
+
+    it("action=auth_ does not treat _ as a single-character wildcard", async () => {
+      if (maybeSkip()) return;
+      expect(await actionsFor("auth_")).toEqual(["auth_%.literal"]);
+    });
+
+    it("a backslash in the prefix is literal", async () => {
+      if (maybeSkip()) return;
+      expect(await actionsFor("back\\")).toEqual(["back\\slash.literal"]);
+    });
+
+    it("a plain prefix still matches as before", async () => {
+      if (maybeSkip()) return;
+      expect(await actionsFor("auth.")).toEqual(["auth.signin.ok"]);
+    });
   });
 
   it("CANARY: a bare app-pool query without runWithTenantContext fails with the RLS uuid-cast error", async () => {

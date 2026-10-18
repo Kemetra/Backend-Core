@@ -145,6 +145,7 @@ describe("AuditService", () => {
             tenant_id: TENANT_A,
             store_id: null,
             action: "auth.signin.ok",
+            kind: "change",
             target_type: "store",
             target_id: TARGET,
             request_id: REQ,

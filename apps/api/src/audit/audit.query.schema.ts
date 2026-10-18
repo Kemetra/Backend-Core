@@ -30,6 +30,8 @@
  */
 import { z } from "zod";
 
+import { AUDIT_ACTION_KINDS } from "./audit-action-kinds";
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -133,7 +135,8 @@ const limitField = z
  * Zod schema for the GET /api/v1/audit/events query string.
  *
  * Output shape (post-transform):
- *   - `action`         optional string (≥1 char) — prefix match.
+ *   - `action`         optional string (≥1 char) — literal prefix match.
+ *   - `kind`           optional `read` | `change` (RT-567).
  *   - `actor_user_id`  optional UUID string.
  *   - `store_id`       optional UUID string.
  *   - `from`           optional Date (parsed from ISO 8601).
@@ -147,6 +150,7 @@ const limitField = z
 export const AuditQuerySchema = z
   .object({
     action: z.string().min(1).optional(),
+    kind: z.enum(AUDIT_ACTION_KINDS).optional(),
     actor_user_id: z
       .string()
       .regex(UUID_RE, "must be a UUID")
