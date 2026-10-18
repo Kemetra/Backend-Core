@@ -197,6 +197,17 @@ The import is a worker/CLI job, re-runnable at any time while the tenant's autho
    source, a matching event is kept; it is never duplicated or overlapped. An event with the same value but a bounded
    end (for example one authored `[F, E)` during an earlier cutover period) does **not** match. It is superseded at `T`
    by an open replacement with the same value, so it cannot expire at `E` while the legacy value stays current.
+
+   **Time basis of new and replacement events (Q-6).** A key never ends up with mixed bases among its active rows:
+   - **Key already has active events:** the new or replacement event uses that key's existing basis. For example, a
+     key holding an authored `absolute` event gets an `absolute` replacement from the instant `T`. Its carried-forward
+     head keeps the same basis.
+   - **Key has no active events:** the new event uses the MC-1 `store_local` rule (§4.2).
+   - **Mixed bases already present** (which validation should have prevented): the import ends every active row of
+     that key at `T` and writes one open replacement in the MC-1 basis, with no carried-forward head. History before
+     `T` stays visible at earlier revisions.
+
+   So the `legacy_import` publication, and the R1 transaction that runs it, never fails on the mixed-basis rule.
 4. If the diff is empty, **no revision is created** (a repeat run is a no-op). Otherwise publish one `legacy_import`
    revision with its fan-out (spec 041 data-model §2.6).
 5. Store the watermark row `(tenant_id, run_id, T, change_log_sequence, revision_no or null, counts by outcome)`.
@@ -585,7 +596,7 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 - Import mapper: legacy rows → desired events, for every row of §4.2, including overrides with a null price and inactive products.
 - Exception classifier: every class in §4.4, at `numeric(19,4)` edge values (`0.0001`, `12.345`, `12.3400`).
 - `price_history` conversion (MC-3): closed intervals become one contiguous `store_local` timeline per key. A bound in the later occurrence of a DST fall-back hour fails the round-trip check, and its key is skipped. A Store-less tenant's tenant-level history round-trips in its declared reference zone.
-- Delta matching: an open-ended event with equal value is kept. A bounded event with equal value is superseded by an open replacement.
+- Delta matching: an open-ended event with equal value is kept. A bounded event with equal value is superseded by an open replacement. A bounded `absolute` event is replaced by an `absolute` replacement, so the key keeps one basis and R1 does not abort.
 - Bounds: a tenant with only inactive Stores uses the westernmost zone among them; a tenant with no Stores uses its declared reference zone. A key with a zero, sub-minor or foreign-currency interval is skipped and reported. A tenant-level key in a multi-zone tenant is skipped and reported.
 - Bound computation (MC-1): single zone; multi-zone tenant; a Store across a DST transition at `T` (Q-2 rules).
 - Equivalence classifier: each row of §5.2 and each class of §5.3, including decimal formatting (`12.5` vs `12.5000`).
