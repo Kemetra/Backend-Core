@@ -26,6 +26,12 @@ import { PUBLIC_AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS } from "../../src/auth/publ
 import { RateLimiter, type RateLimitDecision } from "../../src/auth/rate-limit";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
 import { ZodValidationPipe } from "../../src/common/zod-validation.pipe";
+import { captureServerError } from "../../src/observability/sentry/sentry";
+
+jest.mock("../../src/observability/sentry/sentry", () => ({
+  ...jest.requireActual("../../src/observability/sentry/sentry"),
+  captureServerError: jest.fn(),
+}));
 
 const TIMEOUT_MS = 200;
 /** Generous CI slack on top of the timeout; a hang would be ~10 s (ioredis retries). */
@@ -195,6 +201,22 @@ describe("RT-628 — partial outage and errors", () => {
     expect(res.status).toBe(200);
     expect(Date.now() - started).toBeLessThan(LATENCY_BOUND_MS);
     expect(svc.calls).toEqual(["signIn"]);
+  });
+
+  it("sends ONE Sentry event per outage window, not one per refused attempt", async () => {
+    const post = () => request(app.getHttpServer()).post(ROUTES[0].path).send(ROUTES[0].body);
+    expect((await post()).status).toBe(200); // healthy: any earlier window is closed
+    (captureServerError as jest.Mock).mockClear();
+
+    limiter.mode = { signin_account: "throw" };
+    expect([(await post()).status, (await post()).status, (await post()).status]).toEqual([503, 503, 503]);
+    expect(captureServerError).toHaveBeenCalledTimes(1);
+
+    limiter.mode = {}; // Redis back: the window closes
+    expect((await post()).status).toBe(200);
+    limiter.mode = { signin_account: "throw" }; // a new outage opens a new window
+    expect([(await post()).status, (await post()).status]).toEqual([503, 503]);
+    expect(captureServerError).toHaveBeenCalledTimes(2);
   });
 
   it("a healthy limiter is unaffected: 200 / 202 / 204", async () => {

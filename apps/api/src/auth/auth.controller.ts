@@ -50,8 +50,9 @@ import {
 import {
   checkWithin,
   PUBLIC_AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS,
+  OutageCaptureGate,
   PublicAuthLimiterUnavailable,
-  publicAuthUnavailable,
+  PublicAuthUnavailableException,
   readPublicAuthLimiterTimeoutMs,
   releaseWithin,
 } from "./public-auth-limiter";
@@ -112,6 +113,8 @@ function log(): Logger {
 export class AuthController {
   /** RT-628: bound on each public-auth limiter call, read once at boot. */
   private readonly limiterTimeoutMs = readPublicAuthLimiterTimeoutMs();
+  /** RT-628: one Sentry event per outage window, not one per refused attempt. */
+  private readonly outageCapture = new OutageCaptureGate();
 
   constructor(
     private readonly authService: AuthService,
@@ -333,8 +336,9 @@ export class AuthController {
         "public-auth rate limiter unavailable; failing closed (503)",
       );
       res.setHeader("Retry-After", String(PUBLIC_AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS));
-      throw publicAuthUnavailable();
+      throw new PublicAuthUnavailableException(!this.outageCapture.shouldCapture());
     }
+    this.outageCapture.recovered();
     if (!decision.allowed) {
       // T470 — observability: a 429 on a sign-in bucket is a failed auth
       // attempt AND the existing rate-limit detector for rapid-retry

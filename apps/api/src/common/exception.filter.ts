@@ -143,7 +143,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       const code = userCode ?? statusToCode(status);
       if (status >= 500) {
         recordHttp5xxError({ route, status: String(status) });
-        captureServerError(exception, requestId);
+        if (!skipsServerErrorCapture(exception)) captureServerError(exception, requestId);
       } else if (status >= 400) {
         recordHttp4xxError({ route, status: String(status) });
       }
@@ -180,6 +180,16 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     });
     response.status(HttpStatus.INTERNAL_SERVER_ERROR).json(envelope);
   }
+}
+
+/**
+ * RT-628: a deliberate 5xx can opt out of Sentry capture by carrying
+ * `skipServerErrorCapture: true` (it is still counted in
+ * `http_error_5xx_total`). Used to send one event per Redis outage window
+ * instead of one per refused public-auth attempt.
+ */
+function skipsServerErrorCapture(exception: HttpException): boolean {
+  return (exception as { skipServerErrorCapture?: unknown }).skipServerErrorCapture === true;
 }
 
 function statusDefaultMessage(status: number): string {

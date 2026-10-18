@@ -14,6 +14,7 @@ import {
 } from "@nestjs/common";
 import { z } from "zod";
 
+import { PublicAuthUnavailableException } from "../../src/auth/public-auth-limiter";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
 import { captureServerError } from "../../src/observability/sentry/sentry";
 
@@ -49,6 +50,26 @@ describe("GlobalExceptionFilter -> Sentry", () => {
 
   it("captures an HttpException with status >= 500", () => {
     const err = new HttpException("down", 503);
+    filter.catch(err, makeHost());
+    expect(captureServerError).toHaveBeenCalledWith(err, REQUEST_ID);
+  });
+
+  it("RT-628: does not capture a 5xx that opts out (skipServerErrorCapture), but still answers it", () => {
+    const sent: { status?: number } = {};
+    const res = { status: (status: number) => ({ json: () => { sent.status = status; } }) };
+    const host = {
+      switchToHttp: () => ({
+        getRequest: <T>() => ({ requestId: REQUEST_ID }) as unknown as T,
+        getResponse: <T>() => res as unknown as T,
+      }),
+    } as unknown as ArgumentsHost;
+    filter.catch(new PublicAuthUnavailableException(true), host);
+    expect(captureServerError).not.toHaveBeenCalled();
+    expect(sent.status).toBe(503);
+  });
+
+  it("RT-628: captures the opting-in first refusal of an outage window", () => {
+    const err = new PublicAuthUnavailableException(false);
     filter.catch(err, makeHost());
     expect(captureServerError).toHaveBeenCalledWith(err, REQUEST_ID);
   });

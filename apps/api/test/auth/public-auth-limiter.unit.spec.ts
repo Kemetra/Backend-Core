@@ -7,6 +7,7 @@
 import {
   checkWithin,
   DEFAULT_PUBLIC_AUTH_LIMITER_TIMEOUT_MS,
+  OutageCaptureGate,
   PublicAuthLimiterUnavailable,
   readPublicAuthLimiterTimeoutMs,
   releaseWithin,
@@ -67,36 +68,20 @@ describe("checkWithin", () => {
     expect(fake.release).not.toHaveBeenCalled();
   });
 
-  it("gives back a hit that lands after the timeout (the request was refused before authentication)", async () => {
-    const late = deferred<RateLimitDecision>();
-    const { asLimiter, fake } = limiter(() => late.promise);
-    await expect(checkWithin(asLimiter, hit("signin_account", "a@x.test"), 20)).rejects.toBeInstanceOf(
-      PublicAuthLimiterUnavailable,
-    );
-    expect(fake.release).not.toHaveBeenCalled();
-
-    late.resolve(ALLOWED); // e.g. the ioredis offline queue replays the INCR once Redis is back
-    await flush();
-    expect(fake.release).toHaveBeenCalledTimes(1);
-    expect(fake.release).toHaveBeenCalledWith("signin_account", "a@x.test");
-  });
-
-  it.each([
-    { late: "rejects (no hit was taken)", settle: "reject", releases: 0 },
-    { late: "resolves, and the compensating release fails", settle: "resolve", releases: 1 },
-  ] as const)("a late call that $late never throws unhandled", async ({ settle, releases }) => {
-    const late = deferred<RateLimitDecision>();
-    const { asLimiter, fake } = limiter(() => late.promise, async () => {
-      throw new Error("still down");
-    });
-    await expect(checkWithin(asLimiter, hit("signin_ip", "x"), 20)).rejects.toBeInstanceOf(
-      PublicAuthLimiterUnavailable,
-    );
-    if (settle === "reject") late.reject(new Error("MaxRetriesPerRequestError"));
-    else late.resolve(ALLOWED);
-    await flush();
-    expect(fake.release).toHaveBeenCalledTimes(releases);
-  });
+  it.each(["resolve", "reject"] as const)(
+    "an abandoned call that settles late (%s) is not released and never throws unhandled",
+    async (settle) => {
+      const late = deferred<RateLimitDecision>();
+      const { asLimiter, fake } = limiter(() => late.promise);
+      await expect(checkWithin(asLimiter, hit("signin_ip", "x"), 20)).rejects.toBeInstanceOf(
+        PublicAuthLimiterUnavailable,
+      );
+      if (settle === "reject") late.reject(new Error("MaxRetriesPerRequestError"));
+      else late.resolve(ALLOWED);
+      await flush();
+      expect(fake.release).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("releaseWithin", () => {
@@ -134,5 +119,21 @@ describe("readPublicAuthLimiterTimeoutMs", () => {
     for (const raw of ["", "0", "10001", "-5", "1.5", "abc", "1e3"]) {
       expect(readPublicAuthLimiterTimeoutMs({ PUBLIC_AUTH_LIMITER_TIMEOUT_MS: raw })).toBe(1_000);
     }
+  });
+});
+
+describe("OutageCaptureGate (one Sentry event per outage window)", () => {
+  it("captures the first refusal, suppresses the rest until the limiter answers again", () => {
+    const gate = new OutageCaptureGate();
+    expect([gate.shouldCapture(), gate.shouldCapture(), gate.shouldCapture()]).toEqual([true, false, false]);
+    gate.recovered();
+    expect([gate.shouldCapture(), gate.shouldCapture()]).toEqual([true, false]);
+  });
+
+  it("a healthy call without an outage changes nothing", () => {
+    const gate = new OutageCaptureGate();
+    gate.recovered();
+    gate.recovered();
+    expect(gate.shouldCapture()).toBe(true);
   });
 });

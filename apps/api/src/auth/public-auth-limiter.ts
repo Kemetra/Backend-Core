@@ -78,19 +78,13 @@ export interface LimiterHit {
 /**
  * `limiter.check` bounded by `timeoutMs`. Throws `PublicAuthLimiterUnavailable`
  * on a timeout or an error; a refusal (`allowed: false`) is returned as is.
- *
- * On a timeout the hit can still land later (the ioredis offline queue
- * replays the command once Redis is back). The request was refused before
- * any authentication, so that late hit is given back; otherwise retries
- * during an outage would turn into a lockout after recovery.
  */
 export async function checkWithin(
   limiter: RateLimiter,
   hit: LimiterHit,
   timeoutMs: number,
 ): Promise<RateLimitDecision> {
-  const { bucketName, identifier, bucket } = hit;
-  const pending = limiter.check(bucketName, identifier, bucket);
+  const pending = limiter.check(hit.bucketName, hit.identifier, hit.bucket);
   const t = timer(timeoutMs);
   let outcome: RateLimitDecision | typeof TIMED_OUT;
   try {
@@ -101,10 +95,8 @@ export async function checkWithin(
     t.cancel();
   }
   if (outcome === TIMED_OUT) {
-    pending.then(
-      () => limiter.release(bucketName, identifier).catch(() => undefined),
-      () => undefined,
-    );
+    // The abandoned call may still settle later; never leave it unhandled.
+    pending.catch(() => undefined);
     throw new PublicAuthLimiterUnavailable("timeout");
   }
   return outcome;
@@ -129,13 +121,43 @@ export async function releaseWithin(
   }
 }
 
-/** The O6 outage answer. The caller sets `Retry-After` on the response. */
-export function publicAuthUnavailable(): HttpException {
-  return new HttpException(
-    {
-      code: PUBLIC_AUTH_UNAVAILABLE_CODE,
-      message: "Temporarily unavailable. Retry later.",
-    },
-    HttpStatus.SERVICE_UNAVAILABLE,
-  );
+/**
+ * The O6 outage answer. The caller sets `Retry-After` on the response.
+ *
+ * `skipServerErrorCapture` is read by the global exception filter: the 503 is
+ * still counted (`http_error_5xx_total`) and logged, but only the first
+ * refusal of an outage window goes to Sentry (see {@link OutageCaptureGate}).
+ */
+export class PublicAuthUnavailableException extends HttpException {
+  constructor(readonly skipServerErrorCapture: boolean) {
+    super(
+      {
+        code: PUBLIC_AUTH_UNAVAILABLE_CODE,
+        message: "Temporarily unavailable. Retry later.",
+      },
+      HttpStatus.SERVICE_UNAVAILABLE,
+    );
+  }
+}
+
+/**
+ * At most ONE Sentry event per outage window (owner decision on RT-628). The
+ * first refusal after a healthy period is captured; later refusals are
+ * suppressed until a limiter call answers again, which closes the window.
+ * Per process: with N API instances an outage yields at most N events.
+ */
+export class OutageCaptureGate {
+  private inOutage = false;
+
+  /** A refusal: true only for the first one of the current outage window. */
+  shouldCapture(): boolean {
+    if (this.inOutage) return false;
+    this.inOutage = true;
+    return true;
+  }
+
+  /** The limiter answered: Redis is back, the next refusal opens a new window. */
+  recovered(): void {
+    this.inOutage = false;
+  }
 }
