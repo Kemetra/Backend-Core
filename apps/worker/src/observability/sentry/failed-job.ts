@@ -26,6 +26,11 @@
  * Why not the active span's trace id (as the api does): BullMQ emits `failed`
  * after the processor's `context.with(...)` has unwound, so whatever span is
  * active then (a Redis call, an idle poll) belongs to another trace.
+ *
+ * Not covered: a job failed by the stalled-job checker (over `maxStalledCount`)
+ * fires only `stalled` on the Worker; a subclass of `UnrecoverableError` (none
+ * exist) would read as retryable; an error `cause` chain is scrubbed but not
+ * job-name-masked (no Unknown*JobError sets a cause).
  */
 import * as Sentry from "@sentry/node";
 import {
@@ -55,7 +60,12 @@ export interface FailedJobLike {
 /** Same name check BullMQ uses to skip retries (`Job.shouldRetryJob`). */
 const UNRECOVERABLE_ERROR = "UnrecoverableError";
 
-/** The job names the worker's producers and schedulers use, one queue each. */
+/**
+ * The job names the worker's producers and schedulers use (the email queue
+ * has three). These are BullMQ job names, so they differ from the metrics'
+ * coarser `WORKER_JOB_NAMES` labels (`auth.password-reset` vs `email`). A
+ * queue added without a name here fails safe: no `job_name` tag.
+ */
 export const DECLARED_JOB_NAMES: ReadonlySet<string> = new Set([
   ...Object.values(EMAIL_JOB_NAMES),
   AUDIT_FANOUT_JOB_NAME,
@@ -108,12 +118,18 @@ export function failedJobTags(
 ): Record<string, string> {
   const tags: Record<string, string> = {
     queue: queueName,
-    error_class: sanitizeErrorClass(error?.constructor.name),
+    error_class: sanitizeErrorClass(constructorName(error)),
   };
   if (job === undefined) return tags;
   if (DECLARED_JOB_NAMES.has(job.name)) tags["job_name"] = job.name;
   tags["outcome"] = error?.name === UNRECOVERABLE_ERROR ? "unrecoverable" : "exhausted";
   return { ...tags, ...correlationTags(job.data) };
+}
+
+/** The thrown value's class name; undefined when it has no constructor. */
+function constructorName(error: unknown): string | undefined {
+  const ctor = (error as { constructor?: unknown } | undefined)?.constructor;
+  return typeof ctor === "function" ? ctor.name : undefined;
 }
 
 /** `request_id` and `trace_id` carried by the job, when present. */

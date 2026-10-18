@@ -288,6 +288,14 @@ describe("captureFinalJobFailure", () => {
     });
   });
 
+  it("still captures when the thrown value has no prototype", () => {
+    const bare = Object.create(null) as Error;
+    captureFinalJobFailure(QUEUE)(job(), bare);
+    expect(capture).toHaveBeenCalledWith(bare, {
+      tags: { queue: QUEUE, error_class: "UnknownError", job_name: "audit-fanout", outcome: "exhausted" },
+    });
+  });
+
   it("never throws when the SDK throws", () => {
     capture.mockImplementationOnce(() => {
       throw new Error("sdk down");
