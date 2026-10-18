@@ -17,6 +17,11 @@ export const TRUST_PROXY_UNSET_WARNING =
   "reverse proxy all clients share one IP rate-limit bucket. Set TRUST_PROXY to the proxy hop " +
   "count (for example 1 behind a single Caddy), or to false explicitly for a direct deployment.";
 
+export const TRUST_PROXY_UNRECOGNIZED_WARNING =
+  "TRUST_PROXY has an unrecognized value in a deployed environment and resolves to false: only a " +
+  "hop count (digits), true, or false (exactly, no whitespace) is understood. Behind a reverse " +
+  "proxy all clients then share one IP rate-limit bucket.";
+
 export type TrustProxyCheck = { warn: false } | { warn: true; message: string };
 
 /** The value for Express `trust proxy`; identical to the pre-RT-624 inline logic. */
@@ -41,12 +46,16 @@ export function checkTrustProxyConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): TrustProxyCheck {
   if (!isDeployed(env)) return { warn: false };
-  if ((env["TRUST_PROXY"] ?? "").trim() !== "") return { warn: false };
+  const raw = env["TRUST_PROXY"] ?? "";
+  if (/^\d+$/.test(raw) || raw === "true" || raw === "false") return { warn: false };
   if (env["TRUST_PROXY_REQUIRED"] === "true") {
     throw new Error(
-      "TRUST_PROXY must be set (hop count, true, or false) in a deployed environment " +
+      "TRUST_PROXY must be set to a hop count, true, or false in a deployed environment " +
         "when TRUST_PROXY_REQUIRED=true",
     );
   }
-  return { warn: true, message: TRUST_PROXY_UNSET_WARNING };
+  return {
+    warn: true,
+    message: raw.trim() === "" ? TRUST_PROXY_UNSET_WARNING : TRUST_PROXY_UNRECOGNIZED_WARNING,
+  };
 }

@@ -6,6 +6,7 @@
 import {
   checkTrustProxyConfig,
   resolveTrustProxySetting,
+  TRUST_PROXY_UNRECOGNIZED_WARNING,
   TRUST_PROXY_UNSET_WARNING,
 } from "../../src/common/trust-proxy";
 
@@ -49,6 +50,13 @@ describe("checkTrustProxyConfig", () => {
       });
     });
 
+    it.each([" 1", "1 ", "yes", "TRUE", "loopback"])("unrecognized %p warns", (raw) => {
+      expect(checkTrustProxyConfig({ ...base, TRUST_PROXY: raw })).toEqual({
+        warn: true,
+        message: TRUST_PROXY_UNRECOGNIZED_WARNING,
+      });
+    });
+
     it.each(["false", "1", "2", "true"])("explicit %p is silent", (raw) => {
       expect(checkTrustProxyConfig({ ...base, TRUST_PROXY: raw })).toEqual({ warn: false });
     });
@@ -72,6 +80,15 @@ describe("checkTrustProxyConfig", () => {
     it("throws when deployed and TRUST_PROXY is unset", () => {
       expect(() =>
         checkTrustProxyConfig({ NODE_ENV: "production", TRUST_PROXY_REQUIRED: "true" }),
+      ).toThrow(/TRUST_PROXY/);
+    });
+    it("throws on an unrecognized value", () => {
+      expect(() =>
+        checkTrustProxyConfig({
+          NODE_ENV: "production",
+          TRUST_PROXY: "yes",
+          TRUST_PROXY_REQUIRED: "true",
+        }),
       ).toThrow(/TRUST_PROXY/);
     });
     it("does not throw when TRUST_PROXY is explicit", () => {
