@@ -74,6 +74,11 @@ paths:
                   next_cursor:
                     type: string
                     nullable: true
+        "400":
+          description: >
+            `validation_error`: a query parameter is invalid (for example an
+            unknown `kind`, a malformed `cursor`, an out-of-range `limit`, a
+            non-UUID id, or a malformed date-time).
         "401":
           description: No active tenant.
         "403":

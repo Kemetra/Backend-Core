@@ -90,6 +90,7 @@ export class AuditService {
   }
 }
 
+/** Project a repository record to the wire shape, with `kind` derived from `action`. */
 function toDto(row: AuditEventRecord): AuditEventDto {
   return {
     id: row.id,

@@ -32,6 +32,7 @@ interface AuditableRoute {
   readonly action: string;
 }
 
+/** The `@Auditable` handlers of `controller`, with whether each is a `GET`. */
 function auditableRoutes(controller: Type<unknown>): AuditableRoute[] {
   const proto = controller.prototype as Record<string, object>;
   const routes: AuditableRoute[] = [];
