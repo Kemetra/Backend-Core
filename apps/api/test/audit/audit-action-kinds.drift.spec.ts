@@ -55,21 +55,16 @@ export function driftProblems(
 ): string[] {
   const reads = new Set(readCodes);
   const liveGetCodes = new Set(routes.filter((r) => r.isGet).map((r) => r.action));
-  const problems: string[] = [];
-  for (const r of routes) {
-    if (r.isGet && !reads.has(r.action)) {
-      problems.push(`GET ${r.id} code "${r.action}" is not registered as read`);
-    }
-    if (!r.isGet && reads.has(r.action)) {
-      problems.push(`non-GET ${r.id} code "${r.action}" is registered as read`);
-    }
-  }
-  for (const code of readCodes) {
-    if (!liveGetCodes.has(code) && !retiredReadCodes.includes(code)) {
-      problems.push(`read code "${code}" is neither a live GET @Auditable code nor retired`);
-    }
-  }
-  return problems;
+  const unregisteredGets = routes
+    .filter((r) => r.isGet && !reads.has(r.action))
+    .map((r) => `GET ${r.id} code "${r.action}" is not registered as read`);
+  const nonGetReads = routes
+    .filter((r) => !r.isGet && reads.has(r.action))
+    .map((r) => `non-GET ${r.id} code "${r.action}" is registered as read`);
+  const strayReads = readCodes
+    .filter((code) => !liveGetCodes.has(code) && !retiredReadCodes.includes(code))
+    .map((code) => `read code "${code}" is neither a live GET @Auditable code nor retired`);
+  return [...unregisteredGets, ...nonGetReads, ...strayReads];
 }
 
 describe("audit action-kind registry drift guard (RT-567 §4.3)", () => {
