@@ -17,6 +17,12 @@
  * OBS-1 §1/§2 key set here too, so a Console tag such as `user_id` or `ip`
  * never leaves even where the shared scrubber only drops redacted keys.
  *
+ * The event's identity is the server's, not the browser's (RT-683, OBS-9
+ * F-C): `server_name` is dropped, the `service` tag is stamped
+ * `admin-console`, and `release` and the `version` tag survive only as a
+ * SHA12. OBS-1 §1 makes them the same value, so both are dropped when they
+ * disagree.
+ *
  * Errors carry a fixed message: `JSON.parse` messages quote the input, so
  * they are never passed on or logged.
  */
@@ -44,6 +50,10 @@ const ALLOWED_TAG_KEYS: ReadonlySet<string> = new Set([
   "request_id",
 ]);
 const MAX_TAG_VALUE_LENGTH = 200;
+/** The OBS-1 §1 `service` for every tunnelled event. */
+const CONSOLE_SERVICE = "admin-console";
+/** OBS-1 §1 release SHA12: exactly 12 lowercase hex chars (no 40-char SHA). */
+const SHA12 = /^[0-9a-f]{12}$/;
 const NEWLINE = 0x0a;
 
 export class EnvelopeMalformedError extends Error {
@@ -157,12 +167,40 @@ function rebuildSdk(inbound: unknown): JsonObject {
   };
 }
 
-function allowedTags(tags: SentryEventLike["tags"]): Record<string, unknown> | undefined {
+function allowedTags(tags: SentryEventLike["tags"]): Record<string, unknown> {
   const kept = Object.entries(tags ?? {}).filter(
     ([key, value]) =>
       ALLOWED_TAG_KEYS.has(key) && typeof value === "string" && value.length <= MAX_TAG_VALUE_LENGTH,
   );
-  return kept.length > 0 ? Object.fromEntries(kept) : undefined;
+  return Object.fromEntries(kept);
+}
+
+function sha12(value: unknown): string | undefined {
+  return typeof value === "string" && SHA12.test(value) ? value : undefined;
+}
+
+/** `release` and `version` as SHA12s; both dropped when they disagree. */
+function releaseAndVersion(release: unknown, version: unknown): { release?: string; version?: string } {
+  const r = sha12(release);
+  const v = sha12(version);
+  if (r !== undefined && v !== undefined && r !== v) return {};
+  return { ...(r === undefined ? {} : { release: r }), ...(v === undefined ? {} : { version: v }) };
+}
+
+/** Drops `server_name` and stamps the server-owned `service`, `release` and `version`. */
+function stampIdentity(scrubbed: SentryEventLike): JsonObject {
+  const { tags, release, server_name: _serverName, ...rest } = scrubbed;
+  const { version, service: _service, ...otherTags } = allowedTags(tags);
+  const stamped = releaseAndVersion(release, version);
+  return {
+    ...rest,
+    ...(stamped.release === undefined ? {} : { release: stamped.release }),
+    tags: {
+      ...otherTags,
+      service: CONSOLE_SERVICE,
+      ...(stamped.version === undefined ? {} : { version: stamped.version }),
+    },
+  };
 }
 
 function rebuildHeader(inbound: JsonObject, event: SentryEventLike): JsonObject {
@@ -189,9 +227,7 @@ export function buildForwardEnvelope(body: Buffer, environment: string): Buffer 
   const scrubbed = scrubSentryEvent(inbound as SentryEventLike);
   if (scrubbed === null) return null;
 
-  const { tags, ...rest } = scrubbed;
-  const kept = allowedTags(tags);
-  const event = { ...rest, ...(kept ? { tags: kept } : {}), environment, sdk: rebuildSdk(inbound["sdk"]) };
+  const event = { ...stampIdentity(scrubbed), environment, sdk: rebuildSdk(inbound["sdk"]) };
   const payload = Buffer.from(JSON.stringify(event), "utf8");
   return Buffer.concat([
     Buffer.from(`${JSON.stringify(rebuildHeader(header, scrubbed))}\n`, "utf8"),

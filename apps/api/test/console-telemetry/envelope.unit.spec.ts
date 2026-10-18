@@ -162,9 +162,73 @@ describe("buildForwardEnvelope", () => {
     });
   });
 
-  it("omits tags when none survive", () => {
+  it("stamps service=admin-console when no Console tag survives (RT-683)", () => {
     const { event } = decode(build(envelope({}, [eventItem(errorEvent({ tags: { user_id: "u1" } }))]))!);
-    expect(event).not.toHaveProperty("tags");
+    expect(event["tags"]).toEqual({ service: "admin-console" });
+  });
+
+  describe("server-owned identity fields (RT-683, OBS-9 F-C)", () => {
+    const SHA12 = "0123456789ab";
+    const forward = (overrides: Record<string, unknown>): Record<string, unknown> =>
+      decode(build(envelope({}, [eventItem(errorEvent(overrides))]))!).event;
+    const tagsOf = (event: Record<string, unknown>): Record<string, unknown> =>
+      event["tags"] as Record<string, unknown>;
+
+    it("drops a client server_name", () => {
+      const out = build(envelope({}, [eventItem(errorEvent({ server_name: "owner@example.com laptop" }))]))!;
+      expect(decode(out).event).not.toHaveProperty("server_name");
+      expect(out.toString("utf8")).not.toContain("laptop");
+    });
+
+    it.each([
+      ["a forged service", { service: "backend-api" }],
+      ["a missing service", {}],
+      ["a non-string service", { service: 42 }],
+    ])("stamps service=admin-console over %s", (_name, tags) => {
+      expect(tagsOf(forward({ tags }))["service"]).toBe("admin-console");
+    });
+
+    it("passes a valid SHA12 release and version through", () => {
+      const event = forward({ release: SHA12, tags: { version: SHA12 } });
+      expect(event["release"]).toBe(SHA12);
+      expect(tagsOf(event)["version"]).toBe(SHA12);
+    });
+
+    it.each([
+      ["a semver", "1.2.3"],
+      ["a 40-char SHA", "0123456789abcdef0123456789abcdef01234567"],
+      ["uppercase hex", "0123456789AB"],
+      ["11 chars", "0123456789a"],
+      ["13 chars", "0123456789abc"],
+      ["free text of 12 chars", "owner@ex.com"],
+      ["a number", 123456789012],
+    ])("drops %s as release and version", (_name, value) => {
+      const event = forward({ release: value, tags: { version: value } });
+      expect(event).not.toHaveProperty("release");
+      expect(tagsOf(event)).not.toHaveProperty("version");
+    });
+
+    it("keeps a valid release when version is absent, and a valid version when release is absent", () => {
+      const releaseOnly = forward({ release: SHA12, tags: {} });
+      expect(releaseOnly["release"]).toBe(SHA12);
+      expect(tagsOf(releaseOnly)).not.toHaveProperty("version");
+
+      const versionOnly = forward({ release: undefined, tags: { version: SHA12 } });
+      expect(versionOnly).not.toHaveProperty("release");
+      expect(tagsOf(versionOnly)["version"]).toBe(SHA12);
+    });
+
+    it("drops both when release and version are valid but differ (OBS-1 §1: same value)", () => {
+      const event = forward({ release: SHA12, tags: { version: "ba9876543210" } });
+      expect(event).not.toHaveProperty("release");
+      expect(tagsOf(event)).not.toHaveProperty("version");
+    });
+
+    it("keeps the valid one when the other is malformed", () => {
+      const event = forward({ release: "not-a-sha", tags: { version: SHA12 } });
+      expect(event).not.toHaveProperty("release");
+      expect(tagsOf(event)["version"]).toBe(SHA12);
+    });
   });
 
   it("drops user and IP data the envelope carries", () => {
