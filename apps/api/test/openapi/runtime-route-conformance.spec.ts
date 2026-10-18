@@ -4,10 +4,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { type INestApplication } from "@nestjs/common";
-import { NestFactory } from "@nestjs/core";
 import { load as parseYaml } from "js-yaml";
 
-import { AppModule } from "../../src/app.module";
+import { bootDbLessApp, type DbLessApp } from "../_helpers/db-less-app";
 
 type Operation = {
   operationId?: string;
@@ -75,29 +74,16 @@ function contractRoutes(dir: string): ContractRoute[] {
 }
 
 describe("OpenAPI operations map to registered Nest routes", () => {
+  let booted: DbLessApp;
   let app: INestApplication;
-  const originalEnv = {
-    NODE_ENV: process.env["NODE_ENV"],
-    DATABASE_URL: process.env["DATABASE_URL"],
-    AUTH_LOOKUP_DATABASE_URL: process.env["AUTH_LOOKUP_DATABASE_URL"],
-    REDIS_URL: process.env["REDIS_URL"],
-  };
 
   beforeAll(async () => {
-    process.env["NODE_ENV"] = "test";
-    process.env["DATABASE_URL"] = "postgres://route-check:route-check@127.0.0.1:1/route-check";
-    delete process.env["AUTH_LOOKUP_DATABASE_URL"];
-    delete process.env["REDIS_URL"];
-    app = await NestFactory.create(AppModule, { logger: false });
-    await app.init();
+    booted = await bootDbLessApp("route-check");
+    app = booted.app;
   });
 
   afterAll(async () => {
-    await app.close();
-    for (const [key, value] of Object.entries(originalEnv)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    await booted.close();
   });
 
   it("has a real registered method/path for every production operationId", () => {

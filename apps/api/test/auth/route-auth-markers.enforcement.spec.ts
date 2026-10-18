@@ -12,10 +12,9 @@ import "reflect-metadata";
 
 import { Controller, Get, UseGuards, type INestApplication, type Type } from "@nestjs/common";
 import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
-import { NestFactory, ModulesContainer } from "@nestjs/core";
 import request from "supertest";
 
-import { AppModule } from "../../src/app.module";
+import { appControllers, bootDbLessApp, type DbLessApp } from "../_helpers/db-less-app";
 import { PosDeviceAuthGuard } from "../../src/auth/pos-device-auth.guard";
 import { SaleCaptureAuthGuard } from "../../src/catalog/sales/sale-capture-auth.guard";
 import { SaleHistoryAuthGuard } from "../../src/catalog/sales/history/sale-history-auth.guard";
@@ -123,38 +122,23 @@ function missingDeviceGuard(routes: MarkedRoute[]): string[] {
 }
 
 describe("route auth markers are enforced at the route (RT-129 / A9)", () => {
+  let booted: DbLessApp;
   let app: INestApplication;
   let deviceBearer: MarkedRoute[] = [];
   let deviceAttested: MarkedRoute[] = [];
-  const originalEnv = {
-    NODE_ENV: process.env["NODE_ENV"],
-    DATABASE_URL: process.env["DATABASE_URL"],
-    AUTH_LOOKUP_DATABASE_URL: process.env["AUTH_LOOKUP_DATABASE_URL"],
-    REDIS_URL: process.env["REDIS_URL"],
-  };
 
   beforeAll(async () => {
-    process.env["NODE_ENV"] = "test";
-    // Unreachable on purpose: every assertion below must hold without a DB.
-    process.env["DATABASE_URL"] = "postgres://marker-check:marker-check@127.0.0.1:1/marker-check";
-    delete process.env["AUTH_LOOKUP_DATABASE_URL"];
-    delete process.env["REDIS_URL"];
-    app = await NestFactory.create(AppModule, { logger: false });
-    await app.init();
+    // Unreachable DB on purpose: every assertion below must hold without one.
+    booted = await bootDbLessApp("marker-check");
+    app = booted.app;
 
-    const controllers = [...app.get(ModulesContainer).values()].flatMap((mod) =>
-      [...mod.controllers.values()].map((wrapper) => wrapper.metatype as Type<unknown>),
-    );
+    const controllers = appControllers(app);
     deviceBearer = controllers.flatMap((c) => markedRoutes(c, DEVICE_BEARER_KEY));
     deviceAttested = controllers.flatMap((c) => markedRoutes(c, DEVICE_ATTESTED_KEY));
   });
 
   afterAll(async () => {
-    await app.close();
-    for (const [key, value] of Object.entries(originalEnv)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    await booted.close();
   });
 
   it("finds the marked routes (the sweep is not vacuous)", () => {

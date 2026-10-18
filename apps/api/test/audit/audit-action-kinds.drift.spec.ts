@@ -15,18 +15,16 @@
  */
 import "reflect-metadata";
 
-import type { INestApplication, Type } from "@nestjs/common";
+import { RequestMethod, type Type } from "@nestjs/common";
 import { METHOD_METADATA } from "@nestjs/common/constants";
-import { RequestMethod } from "@nestjs/common";
-import { NestFactory, ModulesContainer } from "@nestjs/core";
 
-import { AppModule } from "../../src/app.module";
 import {
   READ_ACTION_CODES,
   RETIRED_READ_CODES,
   kindOf,
 } from "../../src/audit/audit-action-kinds";
 import { AUDITABLE_KEY } from "../../src/audit/auditable.decorator";
+import { appControllers, bootDbLessApp, type DbLessApp } from "../_helpers/db-less-app";
 
 interface AuditableRoute {
   readonly id: string;
@@ -35,16 +33,16 @@ interface AuditableRoute {
 }
 
 function auditableRoutes(controller: Type<unknown>): AuditableRoute[] {
-  const proto = controller.prototype as Record<string, unknown>;
-  return Object.getOwnPropertyNames(proto)
-    .filter((name) => name !== "constructor" && typeof proto[name] === "function")
-    .flatMap((name) => {
-      const handler = proto[name] as object;
-      const verb = Reflect.getMetadata(METHOD_METADATA, handler) as RequestMethod | undefined;
-      const action = Reflect.getMetadata(AUDITABLE_KEY, handler) as string | undefined;
-      if (verb === undefined || action === undefined) return [];
-      return [{ id: `${controller.name}.${name}`, isGet: verb === RequestMethod.GET, action }];
-    });
+  const proto = controller.prototype as Record<string, object>;
+  const routes: AuditableRoute[] = [];
+  for (const name of Object.getOwnPropertyNames(proto)) {
+    const action = name === "constructor" ? undefined : Reflect.getMetadata(AUDITABLE_KEY, proto[name]!);
+    const verb = action === undefined ? undefined : Reflect.getMetadata(METHOD_METADATA, proto[name]!);
+    if (typeof action === "string" && verb !== undefined) {
+      routes.push({ id: `${controller.name}.${name}`, isGet: verb === RequestMethod.GET, action });
+    }
+  }
+  return routes;
 }
 
 /** Registry problems for `routes`; empty when the registry is in sync. */
@@ -68,37 +66,17 @@ export function driftProblems(
 }
 
 describe("audit action-kind registry drift guard (RT-567 §4.3)", () => {
-  let app: INestApplication;
+  let booted: DbLessApp;
   let routes: AuditableRoute[] = [];
-  const originalEnv = {
-    NODE_ENV: process.env["NODE_ENV"],
-    DATABASE_URL: process.env["DATABASE_URL"],
-    AUTH_LOOKUP_DATABASE_URL: process.env["AUTH_LOOKUP_DATABASE_URL"],
-    REDIS_URL: process.env["REDIS_URL"],
-  };
 
   beforeAll(async () => {
-    process.env["NODE_ENV"] = "test";
-    // Unreachable on purpose: the sweep reads decorator metadata only.
-    process.env["DATABASE_URL"] = "postgres://drift-check:drift-check@127.0.0.1:1/drift-check";
-    delete process.env["AUTH_LOOKUP_DATABASE_URL"];
-    delete process.env["REDIS_URL"];
-    app = await NestFactory.create(AppModule, { logger: false });
-    await app.init();
-
-    routes = [...app.get(ModulesContainer).values()].flatMap((mod) =>
-      [...mod.controllers.values()].flatMap((wrapper) =>
-        auditableRoutes(wrapper.metatype as Type<unknown>),
-      ),
-    );
+    // The sweep reads decorator metadata only.
+    booted = await bootDbLessApp("drift-check");
+    routes = appControllers(booted.app).flatMap(auditableRoutes);
   });
 
   afterAll(async () => {
-    await app.close();
-    for (const [key, value] of Object.entries(originalEnv)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    await booted.close();
   });
 
   it("finds the @Auditable routes (the sweep is not vacuous)", () => {
