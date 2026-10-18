@@ -1366,7 +1366,8 @@ components:
                 `idempotency_in_progress` marker on 425; see the per-op 425
                 response and the recorded contract/runtime body-shape finding).
                 Request-shape failures use the platform-wide runtime code
-                `validation_error` (`ErrorCodes.VALIDATION`).
+                `validation_error` (`ErrorCodes.VALIDATION`). The console 429 code
+                `rate_limited` is likewise outside the business-failure set.
             message:
               type: string
               description: Human-readable summary; no sensitive data.

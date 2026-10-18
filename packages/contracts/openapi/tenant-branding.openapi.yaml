@@ -715,6 +715,29 @@ components:
               items:
                 type: object
 
+    RateLimitedError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >
+        The console 429 envelope (RT-620). Same shape as `Error`, whose closed
+        code set does not include the console rate limit's `rate_limited`.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+              enum: [rate_limited]
+            message:
+              type: string
+              description: Non-disclosing summary (no budget, class or window).
+            request_id:
+              type: string
+              format: uuid
+
     LogoRejectedError:
       type: object
       additionalProperties: false
@@ -918,4 +941,4 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/Error"
+            $ref: "#/components/schemas/RateLimitedError"

@@ -399,7 +399,8 @@ components:
               type: string
               description: >
                 Stable machine-readable code. Closed set: validation_error |
-                unauthorized | forbidden | not_found | system_failure.
+                unauthorized | forbidden | not_found | system_failure |
+                rate_limited (the console 429).
             message:
               type: string
               description: Human-readable summary. No sensitive data, no cause enumeration.

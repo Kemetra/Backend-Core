@@ -1205,7 +1205,8 @@ components:
               description: >
                 Stable machine-readable error code. Closed set on this surface:
                 validation_error | not_found | idempotency_key_conflict |
-                not_re_resolvable | system_failure (plus the generic 401 refusal).
+                not_re_resolvable | system_failure (plus the generic 401 refusal
+                and the console 429 `rate_limited`).
             message:
               type: string
               description: Human-readable summary. No sensitive data, no cause enumeration.

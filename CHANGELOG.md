@@ -410,7 +410,9 @@ This project follows [Semantic Versioning](https://semver.org/).
   and `X-Request-Id`) and its
   own `ConsoleRetryAfter` header (required integer, 1 to 3600, not the POS
   `RetryAfter`); audit, context, memberships and tenants also gain the
-  canonical `Error` schema. No budget number appears in any contract. The
+  canonical `Error` schema; tenant-branding, whose `Error` code enum is
+  closed, gets a `RateLimitedError` for its 429; the text-only closed code
+  sets name `rate_limited`. No budget number appears in any contract. The
   console-sales "no 429" sentence is gone and the status mappings name the
   429. Each changed file takes an additive minor version. A new contract
   sweep imports the runtime exemption list. No runtime or migration change.

@@ -250,7 +250,7 @@ components:
                 Stable machine-readable error code. Closed set on this surface:
                 validation_error | not_found | tracking_activation_pending |
                 tracking_profile_locked | origin_rejected | system_failure
-                (plus the generic 401 refusal).
+                (plus the generic 401 refusal and the console 429 `rate_limited`).
             message:
               type: string
               description: Human-readable summary. No sensitive data, no cause enumeration.
