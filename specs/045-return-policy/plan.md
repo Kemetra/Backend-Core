@@ -76,7 +76,10 @@ RT-284 PE-ABS absorbs it into the engine's tenant-wide `policy_version` later, w
 1. **On the sale, by the server (1037).** At sale insert, Backend-Core stamps `sales.return_policy_revision_id`: the tenant revision effective at the sale's completion instant, `LEAST(occurred_at, received_at)`.
    - The clamp stops a fast POS clock from picking a revision published after the server received the sale.
    - An offline sale synced after a policy change gets the revision that was in force when it was sold (1038).
-   - `NULL` means the System default applied, either because no tenant revision existed or because the sale predates the migration. **No backfill.** Because revisions are immutable, an as-of lookup at return time gives the same answer. The stamp exists so the fact says so itself (RT-284 P-E), not for correctness.
+   - `NULL` means the System default applied. Either no committed tenant revision was effective at the stamp, or the sale predates the migration. Before the migration no revision could exist, because the table is created in the same migration, so both cases mean the System default. **No backfill.**
+   - **The stamp is the authoritative fact. A return never re-derives it by an as-of lookup.** Re-deriving is unsafe under concurrency (Codex P1 on #850). `now()` is fixed at transaction start, so a revision being published while a sale is captured can carry an `effective_from` earlier than the sale's instant while still invisible to the capture transaction. That sale is stamped with the predecessor. A later as-of lookup would pick the new revision instead.
+   - V1 therefore defines a revision as applying to sales stamped **after its publish commits**. A sale captured in the same moment keeps the predecessor, which is exact under that definition and costs at most a few milliseconds. No advisory lock on the hot sale-capture path is added.
+   - The as-of resolution is used for one purpose only: computing the stamp at insert. A sale replay never re-stamps.
    - The stamp is server-derived and outside the sale's `payload_hash`, so sale replays are unchanged.
 2. **On the return (1038, 1046).** `sale_returns` records the revision it was judged under (the sale's stamp), its `policySource` (`system` | `tenant`), the computed `windowEndsOn`, and the legal floor that applied. The response echoes these values.
 3. **Not retroactive.** A later revision never changes the verdict for an earlier sale. The only exception is the legal floor (1039), which applies at evaluation time.
@@ -179,6 +182,7 @@ The C7 envelope widens per 1046. It binds the sale ref, each `(lineRef, quantity
 3. **The store-midnight boundary.** The window compares store-days in the store's timezone (RT-401). A return at 23:59 and at 00:01 on the deadline must differ by exactly one day. RP-3 adds a unit test with a non-UTC store.
 4. **Strict responses on the POS.** Adding `returnPolicy` to the `SaleReturn` response is additive for oasdiff, but RP-1 must confirm the POS return client does not reject unknown response properties (spec 040 Δ2).
 5. **Category drift.** A product's category changed or deleted (`SET NULL`) after the sale changes the verdict under OD-272-7. The eligibility read and the slip should show `category_unknown` plainly, not a generic error.
+6. **Publish racing a sale capture.** A revision committed while a sale is captured must not change that sale's verdict later. RP-3 adds an integration test with two concurrent transactions: the sale keeps the predecessor stamp, and its return and eligibility read are judged by the stamp, never by an as-of recomputation.
 
 ## 10. Risks and gaps
 
