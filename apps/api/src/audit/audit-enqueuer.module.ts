@@ -190,9 +190,10 @@ export function outboxOrLegacyAuditJobEnqueuerFactory(
     //
     // The structured boundary is `@data-pulse-2/shared` createLogger.
     // When the caller did not pass an explicit logger we build a
-    // module-local one bound to `api.audit.enqueuer` -- mirrors the
+    // module-local `backend-api` one (the warn line carries its own
+    // `component: "audit.enqueuer"`) -- mirrors the
     // pos-shifts/pos-operators per-module logger pattern.
-    const log = logger ?? createLogger({ service: "api.audit.enqueuer" });
+    const log = logger ?? createLogger({ service: "backend-api" });
     log.warn(
       {
         component: "audit.enqueuer",

@@ -70,7 +70,11 @@ const TOUCH_SQL = `UPDATE devices SET last_seen_at = now()
 
 let logger: Logger | null = null;
 function log(): Logger {
-  logger ??= createLogger({ service: "api.device-activity", level: process.env["LOG_LEVEL"] ?? "info" });
+  logger ??= createLogger({
+    service: "backend-api",
+    bindings: { component: "device-activity" },
+    level: process.env["LOG_LEVEL"] ?? "info",
+  });
   return logger;
 }
 

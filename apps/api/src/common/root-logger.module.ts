@@ -22,7 +22,7 @@ let rootLogger: Logger | null = null;
 
 export function getRootLogger(): Logger {
   rootLogger ??= createLogger({
-    service: "api",
+    service: "backend-api",
     level: process.env["LOG_LEVEL"] ?? "info",
   });
   return rootLogger;

@@ -39,7 +39,7 @@ export class SaleRedriveWorker implements OnModuleDestroy {
     @Inject(SALE_REDRIVE_WORKER_LOGGER)
     logger?: SaleRedriveWorkerLogger,
   ) {
-    this.logger = logger ?? createLogger({ service: "worker", bindings: { component: COMPONENT } });
+    this.logger = logger ?? createLogger({ service: "backend-worker", bindings: { component: COMPONENT } });
   }
 
   start(): void {

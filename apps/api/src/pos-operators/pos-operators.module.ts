@@ -48,7 +48,8 @@ export const POS_OPERATORS_LOGGER = "POS_OPERATORS_LOGGER";
       provide: POS_OPERATORS_LOGGER,
       useFactory: (): Logger =>
         createLogger({
-          service: "api.pos-operators",
+          service: "backend-api",
+          bindings: { component: "pos-operators" },
           level: process.env["LOG_LEVEL"] ?? "info",
         }),
     },

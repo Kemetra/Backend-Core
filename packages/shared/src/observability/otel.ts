@@ -219,3 +219,4 @@ export async function __resetOtelForTests(): Promise<void> {
 }
 
 export * from "./bullmq-propagation";
+export * from "./suppress-tracing";

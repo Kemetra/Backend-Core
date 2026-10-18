@@ -404,7 +404,7 @@ export function saleProcessingProcessorProviderFactory(
   // logger; before RT-457 it was built without one, so failures left no trace.
   return new SaleProcessingProcessor(
     wrapper.pool as Pool,
-    createLogger({ service: "worker", bindings: { component: "sales.sale-processing" } }),
+    createLogger({ service: "backend-worker", bindings: { component: "sales.sale-processing" } }),
   );
 }
 

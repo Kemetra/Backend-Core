@@ -113,7 +113,8 @@ const idempotencyInterceptorProvider: Provider = {
     {
       provide: ROOT_LOGGER,
       useFactory: (): Logger => createLogger({
-        service: "api.idempotency",
+        service: "backend-api",
+        bindings: { component: "idempotency" },
         level: process.env["LOG_LEVEL"] ?? "info",
       }),
     },

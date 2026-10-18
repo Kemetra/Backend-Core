@@ -43,7 +43,8 @@ export const POS_AUDIT_EVENTS_LOGGER = "POS_AUDIT_EVENTS_LOGGER";
       provide: POS_AUDIT_EVENTS_LOGGER,
       useFactory: (): Logger =>
         createLogger({
-          service: "api.pos-audit-events",
+          service: "backend-api",
+          bindings: { component: "pos-audit-events" },
           level: process.env["LOG_LEVEL"] ?? "info",
         }),
     },

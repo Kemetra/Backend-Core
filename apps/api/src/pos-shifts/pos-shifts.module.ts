@@ -61,7 +61,8 @@ export const POS_SHIFTS_LOGGER = "POS_SHIFTS_LOGGER";
       provide: POS_SHIFTS_LOGGER,
       useFactory: (): Logger =>
         createLogger({
-          service: "api.pos-shifts",
+          service: "backend-api",
+          bindings: { component: "pos-shifts" },
           level: process.env["LOG_LEVEL"] ?? "info",
         }),
     },

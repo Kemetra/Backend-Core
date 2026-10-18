@@ -54,7 +54,8 @@ function tenantTransaction(pool: Pool): TenantTransaction {
       provide: CASHIER_ADMISSIONS_LOGGER,
       useFactory: (): Logger =>
         createLogger({
-          service: "api.pos-cashier-admissions",
+          service: "backend-api",
+          bindings: { component: "pos-cashier-admissions" },
           level: process.env["LOG_LEVEL"] ?? "info",
         }),
     },

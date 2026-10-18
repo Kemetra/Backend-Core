@@ -54,7 +54,7 @@ import {
   MAX_ATTEMPTS,
   type ClaimedOutboxEvent,
 } from "@data-pulse-2/db";
-import type { OutboxConsumer } from "@data-pulse-2/shared";
+import { withTracingSuppressed, type OutboxConsumer } from "@data-pulse-2/shared";
 import type { OutboxConsumerRegistry } from "./registry";
 import {
   OUTBOX_DRAINER_QUEUE_LABEL,
@@ -229,7 +229,13 @@ export class DrainerProcessor {
    * without the setInterval timer.
    */
   async tick(): Promise<void> {
-    const recovered = await reclaimStaleClaims(this.pool, this.claimLeaseMs, this.batchSize).catch((err: unknown) => {
+    // RT-684 (OBS-9 F-B): the two poll queries run every second whether or
+    // not there is work, so they are untraced. An idle drainer exports no
+    // spans. Each claimed row is processed below, outside the suppression,
+    // so its consumer, transition and lease-heartbeat spans are unchanged.
+    const recovered = await withTracingSuppressed(() =>
+      reclaimStaleClaims(this.pool, this.claimLeaseMs, this.batchSize),
+    ).catch((err: unknown) => {
       this.logError("drainer.reclaimStaleClaims failed", err);
       return { reclaimed: 0, deadLetteredEventTypes: [] as readonly string[] };
     });
@@ -240,7 +246,7 @@ export class DrainerProcessor {
       recordQueueDeadLetter({ queue: DRAINER_QUEUE_LABEL });
       recordOutboxDeadLetter({ event_type: eventType });
     }
-    const batch = await this.claimFn(this.pool, this.claimLimit).catch((err: unknown) => {
+    const batch = await withTracingSuppressed(() => this.claimFn(this.pool, this.claimLimit)).catch((err: unknown) => {
       this.logError("drainer.claimBatch failed", err);
       return [] as ClaimedOutboxEvent[];
     });
