@@ -10,6 +10,7 @@
  * lower case (the contract's "case insensitive").
  */
 import { z } from "zod";
+import { maxCodePoints, wellFormedText } from "../common/text-validation";
 
 import { LIFECYCLE_ACTIONS } from "./device-lifecycle.evaluator";
 import { REVOKE_REASONS, TRUST_STATES } from "./devices.projections";
@@ -48,9 +49,10 @@ export const DeviceIdParamSchema = UuidSchema;
 const RevokeNoteSchema = z
   .string()
   .min(1)
-  .max(500)
   .regex(/\S/, "note must not be blank")
-  .refine((note) => !note.includes("\u0000"), "note must not contain a NUL character");
+  .refine((note) => !note.includes("\u0000"), "note must not contain a NUL character")
+  .superRefine(wellFormedText)
+  .superRefine(maxCodePoints(500));
 
 export const DeviceRevokeBodySchema = z
   .object({
@@ -75,9 +77,10 @@ export const DeviceRetireBodySchema = z
     retireReason: z
       .string()
       .min(1)
-      .max(500)
       .regex(/\S/, "retireReason must not be blank")
-      .refine((reason) => !reason.includes("\u0000"), "retireReason must not contain a NUL character"),
+      .refine((reason) => !reason.includes("\u0000"), "retireReason must not contain a NUL character")
+      .superRefine(wellFormedText)
+      .superRefine(maxCodePoints(500)),
   })
   .strict();
 
