@@ -139,7 +139,7 @@ describe("AuditController — HTTP surface (metadata inspection, no app instanti
     ).filter((name) => name !== "constructor");
 
     expect(controllerMethods).toContain("listAuditEvents");
-    expect(controllerMethods.length).toBe(1);
+    expect(controllerMethods).toHaveLength(1);
   });
 
   it("listAuditEvents carries HTTP method = GET (RequestMethod.GET = 0)", () => {

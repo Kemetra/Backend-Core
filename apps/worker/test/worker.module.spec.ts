@@ -141,7 +141,7 @@ describe("BullMqWorkerFactory — interface shape", () => {
   it("create() takes (queueName, handler, options)", () => {
     const f = new BullMqWorkerFactory("redis://localhost:6379");
     expect(typeof f.create).toBe("function");
-    expect(f.create.length).toBe(3);
+    expect(f.create).toHaveLength(3);
   });
 });
 

@@ -179,7 +179,7 @@ describe("T483 — createOtelSdk passes metrics option to NodeSDK", () => {
     createOtelSdk({ serviceName: "svc-metrics", metrics: { port: 9999, host: "127.0.0.1" } });
     const [ctorArg] = MockNodeSDK.mock.calls[0] as [Record<string, unknown>];
     expect(Array.isArray(ctorArg["metricReaders"])).toBe(true);
-    expect((ctorArg["metricReaders"] as unknown[]).length).toBe(1);
+    expect(ctorArg["metricReaders"] as unknown[]).toHaveLength(1);
   });
 
   it("does NOT pass metricReaders to NodeSDK when metrics option is false", () => {
