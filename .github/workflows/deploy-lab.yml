@@ -140,10 +140,15 @@ jobs:
             || fail "release assets are not exactly $BUNDLE.tar.gz, release-manifest.json and SHA256SUMS, each within $MAX_ASSET_BYTES bytes"
           gh release download "$BACKEND_RELEASE" --repo "$REPO" --dir "$EVIDENCE/release" \
             --pattern "$BUNDLE.tar.gz" --pattern release-manifest.json --pattern SHA256SUMS
-          for ASSET in "$BUNDLE.tar.gz" release-manifest.json; do
-            awk -v f="$ASSET" '$2 == f { found = 1 } END { exit !found }' "$EVIDENCE/release/SHA256SUMS" \
-              || fail "SHA256SUMS does not cover $ASSET"
-          done
+          # SHA256SUMS must name exactly the two assets, so sha256sum never opens
+          # anything else (an extra entry such as /dev/zero would hang the check).
+          awk -v t="$BUNDLE.tar.gz" '
+            { h = substr($0, 1, 64); n = substr($0, 67) }
+            length($0) < 67 || h !~ /^[0-9a-f]+$/ || substr($0, 65, 2) != "  " { bad = 1 }
+            { seen[n]++; lines++ }
+            END { exit !(!bad && lines == 2 && seen[t] == 1 && seen["release-manifest.json"] == 1) }' \
+            "$EVIDENCE/release/SHA256SUMS" \
+            || fail "SHA256SUMS must list exactly $BUNDLE.tar.gz and release-manifest.json"
           (cd "$EVIDENCE/release" && sha256sum --check --strict SHA256SUMS) \
             || fail "release assets do not match SHA256SUMS"
           # Bound the bundle before any tar call decompresses it: a real bundle is
@@ -154,8 +159,13 @@ jobs:
           EXPANDED="$(gzip -dc "$TARBALL" | head -c "$((MAX_BUNDLE_BYTES + 1))" | wc -c)" || true
           [[ "$EXPANDED" =~ ^[0-9]+$ ]] || fail "could not measure the expanded bundle size"
           [ "$EXPANDED" -le "$MAX_BUNDLE_BYTES" ] || fail "bundle expands beyond $MAX_BUNDLE_BYTES bytes"
-          TYPES="$(tar -tvzf "$TARBALL" | cut -c1 | sort -u | tr -d '\n')"
+          # Numeric owners keep the size in column 3 whatever the owner names say.
+          LISTED="$(tar -tvzf "$TARBALL" --numeric-owner)"
+          TYPES="$(cut -c1 <<<"$LISTED" | sort -u | tr -d '\n')"
           [[ "$TYPES" =~ ^[-d]+$ ]] || fail "bundle holds an entry that is not a regular file or directory"
+          # A sparse member compresses to almost nothing, so cap the sizes tar reports too.
+          LOGICAL="$(awk '{ s += $3 } END { printf "%d", s }' <<<"$LISTED")"
+          [ "$LOGICAL" -le "$MAX_BUNDLE_BYTES" ] || fail "bundle members total more than $MAX_BUNDLE_BYTES bytes"
           ENTRIES="$(tar -tzf "$TARBALL")"
           [ "$(wc -l <<<"$ENTRIES")" -le "$MAX_BUNDLE_ENTRIES" ] || fail "bundle has more than $MAX_BUNDLE_ENTRIES entries"
           while IFS= read -r ENTRY; do

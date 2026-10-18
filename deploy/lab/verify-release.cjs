@@ -43,6 +43,8 @@ const REQUIRED_CHECKS = [
   "db-integration (Testcontainers + RLS + migrations)",
 ];
 const REQUIRED_FILES = ["docker-compose.release.yml", "release.env"];
+// No evidence file is ever read past this size (the workflow caps the bundle the same way).
+const MAX_FILE_BYTES = 16 * 1024 * 1024;
 const SIGNER_WORKFLOW = `https://github.com/${REPO}/.github/workflows/release-images.yml@refs/heads/main`;
 const SLSA_PROVENANCE = "https://slsa.dev/provenance/v1";
 const ENV_VARS = { api: "DP2_API_IMAGE", worker: "DP2_WORKER_IMAGE", migrate: "DP2_MIGRATE_IMAGE" };
@@ -81,9 +83,19 @@ const hasReviewer = (count) => typeof count === "number" && count >= 1;
 /** Reads a regular file only: never follows a symlink, and never reads a FIFO or device. */
 function readBuffer(file) {
   try {
-    return fs.lstatSync(file).isFile() ? fs.readFileSync(file) : null;
+    const st = fs.lstatSync(file);
+    // a size cap too: a sparse tar member can extract to a huge apparent size
+    return st.isFile() && st.size <= MAX_FILE_BYTES ? fs.readFileSync(file) : null;
   } catch {
     return null;
+  }
+}
+
+function sizeOf(file) {
+  try {
+    return fs.lstatSync(file).size;
+  } catch {
+    return -1;
   }
 }
 
@@ -293,7 +305,11 @@ function walkBundle(dir, rel = "") {
       const sub = walkBundle(dir, name);
       files.push(...sub.files);
       problems.push(...sub.problems);
-    } else if (entry.isFile()) files.push(name);
+    } else if (entry.isFile()) {
+      files.push(name);
+      const size = sizeOf(path.join(dir, name));
+      if (size < 0 || size > MAX_FILE_BYTES) problems.push(`bundle entry '${name}' is larger than ${MAX_FILE_BYTES} bytes or unreadable`);
+    }
     else problems.push(`bundle entry '${name}' is not a regular file or directory`);
   }
   return { files, problems };

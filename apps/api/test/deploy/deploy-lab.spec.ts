@@ -193,7 +193,7 @@ describe("deploy-lab workflow", () => {
       return i;
     };
     const extract = at("tar -xzf");
-    expect(at("SHA256SUMS does not cover")).toBeLessThan(extract);
+    expect(at("SHA256SUMS must list exactly")).toBeLessThan(extract);
     expect(at("sha256sum --check --strict")).toBeLessThan(extract);
     expect(at('[[ "$TYPES" =~ ^[-d]+$ ]]')).toBeLessThan(extract);
     expect(at('case "$ENTRY" in "$BUNDLE"/*)')).toBeLessThan(extract);
@@ -202,6 +202,11 @@ describe("deploy-lab workflow", () => {
     expect(at("--json tagName,targetCommitish,isDraft,isPrerelease,isImmutable,assets")).toBeLessThan(download);
     expect(at("release assets are not exactly")).toBeLessThan(download);
     expect(at('--pattern "$BUNDLE.tar.gz" --pattern release-manifest.json --pattern SHA256SUMS')).toBeGreaterThan(download);
+    // SHA256SUMS must name exactly the two assets, so sha256sum never opens anything else (e.g. /dev/zero)
+    expect(at("SHA256SUMS must list exactly")).toBeLessThan(at("sha256sum --check --strict"));
+    // sparse members: the logical sizes tar reports are capped too, with numeric owners so columns cannot shift
+    expect(at('tar -tvzf "$TARBALL" --numeric-owner')).toBeLessThan(extract);
+    expect(at('[ "$LOGICAL" -le "$MAX_BUNDLE_BYTES" ] || fail')).toBeLessThan(extract);
     // a gzip bomb is stopped by a bounded decompress before any tar call reads the archive
     const bounded = at('gzip -dc "$TARBALL" | head -c "$((MAX_BUNDLE_BYTES + 1))" | wc -c');
     expect(bounded).toBeLessThan(at("tar -tvzf"));
@@ -751,6 +756,14 @@ describe("verify-release: review hardening", () => {
     expect(helper.main(["--evidence", dir, "--out", out, "--release", TAG, "--jira-key", "RT-703", "--target", "lab-01", "--mode", "dry-run"])).toBe(1);
     const ledger = JSON.parse(readFileSync(join(out, "ledger.json"), "utf8")) as Ledger;
     expect(ledger.refusals).toContain("bundle directory 'docs' cannot be read (EACCES)");
+  });
+
+  it("refuses, and never reads, a bundled file over the size limit (e.g. a sparse member)", () => {
+    const file = join(dir, `bundle/${BUNDLE}/release.env`);
+    nodeFs.truncateSync(file, 17 * 1024 * 1024);
+    const readSpy = jest.spyOn(nodeFs, "readFileSync");
+    expectRefused(/bundle entry 'release.env' is larger than 16777216 bytes/);
+    expect(readSpy.mock.calls.some(([p]) => String(p) === file)).toBe(false);
   });
 
   it("refuses a duplicate SHA256SUMS entry", () => {
