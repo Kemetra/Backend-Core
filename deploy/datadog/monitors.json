@@ -1,0 +1,158 @@
+[
+  {
+    "key": "p1-host-down",
+    "name": "Lab host not reporting: {{host.name}}",
+    "type": "service check",
+    "query": "\"datadog.agent.up\".over(\"env:staging\").by(\"host\").last(2).count_by_status()",
+    "message": "{{#is_alert}}Host {{host.name}} (env:staging): the Datadog Agent check is CRITICAL. The host or its agent is down.{{/is_alert}}\n{{#is_no_data}}No Datadog Agent heartbeat from {{host.name}} for 5 minutes. No telemetry is not healthy: check the host.{{/is_no_data}}\n{{#is_recovery}}{{host.name}} is reporting to Datadog again.{{/is_recovery}}\n\nRunbook: deploy/datadog/README.md in Kemetra/Backend-Core (RT-637).\n__ALERT_RECIPIENTS__",
+    "tags": ["env:staging", "rt:rt-637", "priority:p1", "managed-by:deploy-datadog"],
+    "priority": 1,
+    "options": {
+      "thresholds": { "ok": 1, "critical": 1 },
+      "notify_no_data": true,
+      "no_data_timeframe": 5,
+      "new_group_delay": 300,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "include_tags": false
+    }
+  },
+  {
+    "key": "p1-api-no-data",
+    "name": "backend-api sends no metrics (lab)",
+    "type": "query alert",
+    "query": "avg(last_5m):max:dp2.db_pool_in_use{env:staging,service:backend-api} < -1",
+    "message": "{{#is_no_data}}Datadog has received no backend-api metrics (dp2.db_pool_in_use, scraped from the api :9464 listener) for 10 minutes. Either the api container is down or the agent cannot scrape it. No telemetry is not healthy.{{/is_no_data}}\n{{#is_recovery}}backend-api metrics are arriving again.{{/is_recovery}}\n\nThis monitor alerts on missing data only; the threshold can never be crossed.\nRunbook: deploy/datadog/README.md in Kemetra/Backend-Core (RT-637).\n__ALERT_RECIPIENTS__",
+    "tags": ["env:staging", "service:backend-api", "rt:rt-637", "priority:p1", "managed-by:deploy-datadog"],
+    "priority": 1,
+    "options": {
+      "thresholds": { "critical": -1 },
+      "notify_no_data": true,
+      "no_data_timeframe": 10,
+      "require_full_window": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "include_tags": false
+    }
+  },
+  {
+    "key": "p1-worker-no-data",
+    "name": "backend-worker sends no traces (lab)",
+    "type": "query alert",
+    "query": "sum(last_10m):sum:trace.postgresql.query.hits{env:staging,service:backend-worker}.as_count() < 1",
+    "message": "{{#is_alert}}backend-worker sent no postgresql.query spans in 10 minutes. The worker poll loop has stopped.{{/is_alert}}\n{{#is_no_data}}Datadog has received no backend-worker traces for 20 minutes. Either the worker is down or the agent's OTLP receiver is down. No telemetry is not healthy.{{/is_no_data}}\n{{#is_recovery}}backend-worker traces are arriving again.{{/is_recovery}}\n\nThe worker's metrics listener binds 127.0.0.1 and is not scraped, so this monitor uses the worker's idle-poll DB spans (10% sampled). If those spans are suppressed (RT-638 finding F-B), replace this signal first.\nRunbook: deploy/datadog/README.md in Kemetra/Backend-Core (RT-637).\n__ALERT_RECIPIENTS__",
+    "tags": ["env:staging", "service:backend-worker", "rt:rt-637", "priority:p1", "managed-by:deploy-datadog"],
+    "priority": 1,
+    "options": {
+      "thresholds": { "critical": 1 },
+      "notify_no_data": true,
+      "no_data_timeframe": 20,
+      "require_full_window": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "include_tags": false
+    }
+  },
+  {
+    "key": "p2-api-5xx-rate",
+    "name": "backend-api 5xx rate high (lab)",
+    "type": "query alert",
+    "query": "sum(last_15m):default_zero(sum:dp2.http_request_count.count{env:staging,service:backend-api,status_class:5xx}.as_count()) / sum:dp2.http_request_count.count{env:staging,service:backend-api}.as_count() > 0.05",
+    "message": "{{#is_warning}}backend-api 5xx responses are {{value}} of all requests over 15 minutes (warning at 2%).{{/is_warning}}\n{{#is_alert}}backend-api 5xx responses are {{value}} of all requests over 15 minutes (alert at 5%).{{/is_alert}}\n{{#is_no_data}}No backend-api request counts for 30 minutes, so the 5xx rate cannot be computed. No telemetry is not healthy.{{/is_no_data}}\n{{#is_recovery}}backend-api 5xx rate is back under 2%.{{/is_recovery}}\n\nTriage: Sentry project backend-core, then the RT lab dashboard.\nRunbook: deploy/datadog/README.md in Kemetra/Backend-Core (RT-637).\n__ALERT_RECIPIENTS__",
+    "tags": ["env:staging", "service:backend-api", "rt:rt-637", "priority:p2", "managed-by:deploy-datadog"],
+    "priority": 2,
+    "options": {
+      "thresholds": { "critical": 0.05, "warning": 0.02 },
+      "notify_no_data": true,
+      "no_data_timeframe": 30,
+      "require_full_window": false,
+      "notify_audit": false,
+      "include_tags": false
+    }
+  },
+  {
+    "key": "p2-api-p95-latency",
+    "name": "backend-api p95 latency high (lab)",
+    "type": "query alert",
+    "query": "percentile(last_30m):p95:trace.http.server.request{env:staging,service:backend-api} > 1",
+    "message": "{{#is_warning}}backend-api p95 request latency is {{value}}s over 30 minutes (warning at 0.5s).{{/is_warning}}\n{{#is_alert}}backend-api p95 request latency is {{value}}s over 30 minutes (alert at 1s).{{/is_alert}}\n{{#is_no_data}}No backend-api request spans for 60 minutes. No telemetry is not healthy.{{/is_no_data}}\n{{#is_recovery}}backend-api p95 latency is back under 0.5s.{{/is_recovery}}\n\nComputed from 10%-sampled http.server.request spans, so at lab traffic p95 is close to the slowest sampled request.\nRunbook: deploy/datadog/README.md in Kemetra/Backend-Core (RT-637).\n__ALERT_RECIPIENTS__",
+    "tags": ["env:staging", "service:backend-api", "rt:rt-637", "priority:p2", "managed-by:deploy-datadog"],
+    "priority": 2,
+    "options": {
+      "thresholds": { "critical": 1, "warning": 0.5 },
+      "notify_no_data": true,
+      "no_data_timeframe": 60,
+      "require_full_window": false,
+      "notify_audit": false,
+      "include_tags": false
+    }
+  },
+  {
+    "key": "p2-api-db-pool-waiters",
+    "name": "backend-api DB pool has waiters (lab)",
+    "type": "query alert",
+    "query": "min(last_10m):max:dp2.db_pool_waiters{env:staging,service:backend-api} > 0",
+    "message": "{{#is_alert}}backend-api requests have waited for a database connection for 10 minutes straight (min waiters {{value}}). The pool is exhausted.{{/is_alert}}\n{{#is_no_data}}No backend-api DB pool metrics for 20 minutes. No telemetry is not healthy.{{/is_no_data}}\n{{#is_recovery}}backend-api DB pool waiters are back to 0.{{/is_recovery}}\n\nRunbook: deploy/datadog/README.md in Kemetra/Backend-Core (RT-637).\n__ALERT_RECIPIENTS__",
+    "tags": ["env:staging", "service:backend-api", "rt:rt-637", "priority:p2", "managed-by:deploy-datadog"],
+    "priority": 2,
+    "options": {
+      "thresholds": { "critical": 0 },
+      "notify_no_data": true,
+      "no_data_timeframe": 20,
+      "require_full_window": false,
+      "notify_audit": false,
+      "include_tags": false
+    }
+  },
+  {
+    "key": "p2-lab02-postgres",
+    "name": "lab-02 Postgres connections high or unreachable",
+    "type": "query alert",
+    "query": "avg(last_10m):max:postgresql.percent_usage_connections{env:staging,host:retail-tower-lab-02} > 0.8",
+    "message": "{{#is_warning}}lab-02 Postgres is using {{value}} of max_connections (warning at 70%).{{/is_warning}}\n{{#is_alert}}lab-02 Postgres is using {{value}} of max_connections (alert at 80%).{{/is_alert}}\n{{#is_no_data}}No Postgres metrics from lab-02 for 10 minutes: Postgres or its agent check is down. No telemetry is not healthy.{{/is_no_data}}\n{{#is_recovery}}lab-02 Postgres connections are back to normal.{{/is_recovery}}\n\nRunbook: deploy/datadog/README.md in Kemetra/Backend-Core (RT-637).\n__ALERT_RECIPIENTS__",
+    "tags": ["env:staging", "role:db", "rt:rt-637", "priority:p2", "managed-by:deploy-datadog"],
+    "priority": 2,
+    "options": {
+      "thresholds": { "critical": 0.8, "warning": 0.7 },
+      "notify_no_data": true,
+      "no_data_timeframe": 10,
+      "require_full_window": false,
+      "notify_audit": false,
+      "include_tags": false
+    }
+  },
+  {
+    "key": "p2-lab03-mariadb",
+    "name": "lab-03 MariaDB connections high or unreachable",
+    "type": "query alert",
+    "query": "avg(last_10m):max:mysql.performance.threads_connected{env:staging,host:retail-tower-lab-03} > 120",
+    "message": "{{#is_warning}}lab-03 MariaDB has {{value}} connected threads (warning at 100 of 151).{{/is_warning}}\n{{#is_alert}}lab-03 MariaDB has {{value}} connected threads (alert at 120 of 151).{{/is_alert}}\n{{#is_no_data}}No MariaDB metrics from lab-03 for 10 minutes: MariaDB or its agent check is down. No telemetry is not healthy.{{/is_no_data}}\n{{#is_recovery}}lab-03 MariaDB is back to normal.{{/is_recovery}}\n\nScoped to host:retail-tower-lab-03 so the old phantom MariaDB host (container IP) is excluded.\nRunbook: deploy/datadog/README.md in Kemetra/Backend-Core (RT-637).\n__ALERT_RECIPIENTS__",
+    "tags": ["env:staging", "role:erp", "rt:rt-637", "priority:p2", "managed-by:deploy-datadog"],
+    "priority": 2,
+    "options": {
+      "thresholds": { "critical": 120, "warning": 100 },
+      "notify_no_data": true,
+      "no_data_timeframe": 10,
+      "require_full_window": false,
+      "notify_audit": false,
+      "include_tags": false
+    }
+  },
+  {
+    "key": "p2-lab03-redis",
+    "name": "lab-03 Redis instance down",
+    "type": "query alert",
+    "query": "avg(last_10m):count_not_null(max:redis.net.clients{env:staging,host:retail-tower-lab-03} by {redis_host}) < 1.5",
+    "message": "{{#is_alert}}Fewer than 2 Redis instances (redis-cache, redis-queue) are reporting on lab-03 (average {{value}} over 10 minutes).{{/is_alert}}\n{{#is_no_data}}No Redis metrics from lab-03 for 10 minutes: both Redis instances or the agent check are down. No telemetry is not healthy.{{/is_no_data}}\n{{#is_recovery}}Both lab-03 Redis instances are reporting again.{{/is_recovery}}\n\nRunbook: deploy/datadog/README.md in Kemetra/Backend-Core (RT-637).\n__ALERT_RECIPIENTS__",
+    "tags": ["env:staging", "role:erp", "rt:rt-637", "priority:p2", "managed-by:deploy-datadog"],
+    "priority": 2,
+    "options": {
+      "thresholds": { "critical": 1.5 },
+      "notify_no_data": true,
+      "no_data_timeframe": 10,
+      "require_full_window": false,
+      "notify_audit": false,
+      "include_tags": false
+    }
+  }
+]
