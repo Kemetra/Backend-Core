@@ -343,7 +343,8 @@ fails, if any of these checks fails:
   `main` for that commit.
 
 The ledger is uploaded as the `deploy-lab-ledger-<run id>` artifact and shown in
-the run summary. Record it on the Jira issue. It covers the source SHA, the
+the run summary. That includes a run where evidence collection stopped early,
+for example on a checksum mismatch: the reason is the ledger's first refusal. Record it on the Jira issue. It covers the source SHA, the
 digests, the grant and catch-up scripts, the migrations added since
 `current_release`, the planned live sequence and the pending approvals.
 

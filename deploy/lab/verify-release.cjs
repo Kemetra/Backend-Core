@@ -15,6 +15,7 @@
 //   attest-<target>.json    gh attestation verify --format json output (absent = not verified)
 //   migrations-target.txt   git ls-tree --name-only <sha> packages/db/drizzle/
 //   environment.json        {status: present|not-visible|unknown, reviewers}
+//   collect-error.txt       only when collection stopped early: why (each line a refusal)
 //   current-release.json, current-tag-commit.txt, compare-current.json,
 //   migrations-current.txt  only with --current-release
 //
@@ -454,7 +455,9 @@ function buildLedger({ ctx, sha, images, files, migrations, current, environment
 
 /** Check everything, collect every refusal, and build the ledger. Never throws on bad evidence. */
 function evaluate(dir, ctx) {
-  const refusals = [...checkInputs(ctx)];
+  // Why evidence collection stopped early, if it did: the first and most specific refusal.
+  const collectErrors = readLines(path.join(dir, "collect-error.txt")) ?? [];
+  const refusals = [...collectErrors.map((e) => `evidence collection refused: ${e}`), ...checkInputs(ctx)];
   const meta = readJson(path.join(dir, "release.json"));
   refusals.push(...checkReleaseMeta(meta, ctx.release, "release"));
   const sha = SHA_RE.test(meta?.targetCommitish ?? "") ? meta.targetCommitish : null;

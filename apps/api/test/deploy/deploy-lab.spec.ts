@@ -182,6 +182,18 @@ describe("deploy-lab workflow", () => {
     expect(at('refs/tags/$BACKEND_RELEASE^{commit}')).toBeGreaterThan(-1);
   });
 
+  it("records early collection stops as evidence and still runs the verifier, but never after a failed guard", () => {
+    const steps = jobs[0]?.[1].steps ?? [];
+    const collect = steps.find((s) => s.name?.startsWith("Collect release evidence"));
+    expect(collect?.run).toContain('echo "$*" >> "$EVIDENCE/collect-error.txt"; exit 1; }');
+    expect(collect?.run).toMatch(/trap '.*collect-error\.txt"' ERR/);
+    expect(collect?.run).toContain('|| fail "release assets do not match SHA256SUMS"');
+    const verify = steps.find((s) => s.name?.startsWith("Verify evidence"));
+    expect(verify?.if).toBe("${{ !cancelled() && steps.guard.outcome == 'success' && steps.checkout.outcome == 'success' }}");
+    expect(steps.find((s) => s.name?.startsWith("Guard"))).toMatchObject({ id: "guard" });
+    expect(steps.find((s) => s.uses?.startsWith("actions/checkout@"))).toMatchObject({ id: "checkout" });
+  });
+
   it("drops the registry credential before the verifier reads release content", () => {
     const logout = scripts.indexOf("docker logout ghcr.io");
     expect(logout).toBeGreaterThan(scripts.lastIndexOf("gh attestation verify"));
@@ -415,7 +427,7 @@ describe("verify-release: refusals", () => {
       { name: fast, conclusion: "failure", slug: "github-actions", started_at: "2026-10-18T10:00:00Z" },
       { name: db, conclusion: "success", slug: "some-other-app", started_at: "2026-10-18T10:00:00Z" },
     ]);
-    expectRefused(new RegExp(`'${fast?.replace(/[()+]/g, "\\$&")}' is 'failure'`));
+    expect(refusalsOf()).toContain(`required check '${fast ?? ""}' is 'failure' on the release SHA`);
     expectRefused(/db-integration .* is 'missing'/);
   });
 
@@ -592,6 +604,16 @@ describe("verify-release: review hardening", () => {
     ]);
     putJson("check-runs.json", runs);
     expect(refusalsOf()).toEqual([]);
+  });
+
+  it("puts an early collection stop first in the ledger, so a checksum refusal is still recorded", () => {
+    put("collect-error.txt", "release assets do not match SHA256SUMS\n");
+    rmSync(join(dir, "bundle"), { recursive: true });
+    const { refusals, ledger } = helper.evaluate(dir, ctx());
+    expect(refusals[0]).toBe("evidence collection refused: release assets do not match SHA256SUMS");
+    expect(ledger.outcome).toBe("refused");
+    expect(ledger.failureBoundary).toBe(refusals[0]);
+    expect(helper.renderSummary(ledger)).toContain("evidence collection refused: release assets do not match SHA256SUMS");
   });
 
   it("refuses a duplicate SHA256SUMS entry", () => {
