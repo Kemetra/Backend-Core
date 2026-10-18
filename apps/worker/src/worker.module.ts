@@ -166,6 +166,7 @@ import {
 import { ReplayPurgeScheduler } from "./cashier-admissions/replay-purge.scheduler";
 import { ReplayPurgeWorker } from "./cashier-admissions/replay-purge.worker";
 import { verifyAuditRetentionRole, verifyWorkerDatabaseRole } from "./database-role-verifier";
+import { captureFinalJobFailure } from "./observability/sentry/failed-job";
 
 /**
  * Real BullMQ-backed factory. Constructs a `bullmq.Worker` that
@@ -193,6 +194,8 @@ export class BullMqWorkerFactory implements WorkerFactory {
       async (job) => handler({ name: job.name, data: job.data, id: job.id }),
       { connection: client, ...options },
     );
+    // RT-698: a job's last failure goes to Sentry (retried attempts do not).
+    worker.on("failed", captureFinalJobFailure(queueName));
     return {
       on(event: "error", listener: (err: Error) => void): unknown {
         return worker.on(event, listener);
