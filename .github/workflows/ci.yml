@@ -153,6 +153,9 @@ jobs:
       - name: ESLint rule smoke test
         run: node --test tools/eslint-rules/__tests__/no-unscoped-tenant-query.spec.js
 
+      - name: oasdiff consumer-impact spec
+        run: node --test tools/oasdiff/__tests__/consumer-impact.spec.mjs
+
       - name: Test @data-pulse-2/worker (Docker-free suites)
         # The Testcontainers-backed outbox suites
         # (retry-budget / idempotent-consumer / tenant-context) are excluded

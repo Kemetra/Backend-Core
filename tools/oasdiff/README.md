@@ -15,6 +15,8 @@ The configuration comes from the RT-37 history backtest (Jira RT-37, RT-52).
 | `check.sh` | The gate. `bash tools/oasdiff/check.sh <base-ref>` |
 | `severity-levels.txt` | Overrides of oasdiff's default check levels |
 | `breaking-ignore.txt` | Acknowledged breaks, honoured only for the PR that adds them |
+| `consumers.txt` | Consumers that pin Backend-Core contracts: `<NAME> <raw PIN URL>` |
+| `consumer-impact.mjs` | Checks that each new acknowledgement names the consumers it affects (RT-674) |
 
 ## Why fail on WARN
 
@@ -46,10 +48,39 @@ can tell the two apart, so each rename needs a reviewed, per-PR acknowledgement.
    RT-123 intentional: POST /api/v1/example added the new required request header 'X-Example'
    ```
 
-4. The line is part of the PR diff, so the reviewer approves the break with the rest of the change.
+4. Add a `consumer:<NAME>` tag to the line (see below).
+5. The line is part of the PR diff, so the reviewer approves the break with the rest of the change.
 
 An entry matches one finding: the method and path (or `components`) plus the finding
 text. Other findings in the same PR still fail.
+
+### Consumer tag (RT-674)
+
+Every new line must say which consumers the break affects, with one or more
+`consumer:<NAME>` tags (`<NAME>` as in `consumers.txt`, currently `POS`) or
+`consumer:none`. Put the tags in the line's free-text **prefix, before** the
+`in API …` / `<METHOD> <path>` text, not after the trailing `[check-id].`:
+
+```
+RT-367 consumer:POS C2 intentional (owner-approved; POS maps the code in RT-591): in API POST /api/pos/v1/terminals/pair added the new `REPLACEMENT_BLOCKED` enum value … [response-property-enum-value-added].
+```
+
+`consumer-impact.mjs` reads each consumer's public PIN file and builds the
+consumer's set of API paths from the pinned files **at the consumer's own PIN
+commit** (what it built against, so a path the PR removes still counts). Then:
+
+- If a consumer pins the line's API path, the line must carry that consumer's tag
+  and a Jira key (`RT-<n>`). `consumer:none` on such a path is a violation.
+- A tag must be a name from `consumers.txt` or `none`; a misspelled tag is a violation.
+- A line with no API path (a `components` finding) still needs a tag, but the tag
+  is not verified ("impact not computable").
+- A consumer PIN that cannot be read (3 attempts) or resolved is reported, never
+  treated as "no consumers".
+
+`CONSUMER_IMPACT_MODE` selects the behaviour: `report` (the default) prints
+`::warning::` annotations and never fails the job; `enforce` (RT-680) prints
+`::error::` and fails. Run its spec with
+`node --test tools/oasdiff/__tests__/consumer-impact.spec.mjs`.
 
 ### Lifecycle
 

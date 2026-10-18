@@ -1,0 +1,5 @@
+# Consumers that pin Backend-Core contracts (RT-674). One per line:
+#   <NAME> <raw PIN URL>
+# <NAME> is the value acknowledged breaks use in `consumer:<NAME>` tags
+# (see tools/oasdiff/README.md). The admin consumer is added in RT-680.
+POS https://raw.githubusercontent.com/Kemetra/POS/main/contracts/backend-core/PIN
