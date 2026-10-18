@@ -71,6 +71,7 @@ import {
   type RecordedReResolution,
 } from "./posting-re-resolution.service";
 import type { PostingBacklogItem } from "./reconciliation-report.projection";
+import { ConsoleRateLimit } from "../../console-rate-limit/console-rate-limit.decorator";
 
 interface PostingBacklogPageResponse {
   readonly items: readonly PostingBacklogItem[];
@@ -112,6 +113,8 @@ export class ErpnextReconciliationController {
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
   @Auditable("erpnext_reconciliation.backlog.listed")
+  // RT-619 (RT-574 D3): listPostingBacklog.
+  @ConsoleRateLimit("expensiveRead")
   async listPostingBacklog(
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(ListBacklogQuerySchema))
@@ -208,6 +211,8 @@ export class ErpnextReconciliationController {
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
   @HttpCode(201)
+  // RT-619 (RT-574 D3): triggerReconciliationRun.
+  @ConsoleRateLimit("jobOrPreview")
   async triggerRun(
     @Req() request: TenantContextRequest,
     @Body(new ZodValidationPipe(TriggerRunBodySchema)) body: TriggerRunBody,
@@ -251,6 +256,8 @@ export class ErpnextReconciliationController {
   @Get("api/v1/catalog/erpnext-reconciliation/runs/:runId/results")
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
+  // RT-619 (RT-574 D3): listReconciliationResults.
+  @ConsoleRateLimit("expensiveRead")
   async listResults(
     @Req() request: TenantContextRequest,
     @Param("runId", new ParseUUIDPipe()) runId: string,

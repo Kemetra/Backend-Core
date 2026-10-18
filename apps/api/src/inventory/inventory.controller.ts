@@ -64,6 +64,7 @@ import {
   type StockCountResultBody,
   type StockLocationListBody,
 } from './inventory.service';
+import { ConsoleRateLimit } from "../console-rate-limit/console-rate-limit.decorator";
 
 const UuidSchema = z.string().uuid();
 const LimitSchema = z.coerce.number().int().min(1).max(200).optional();
@@ -192,6 +193,8 @@ export class InventoryController {
    * product; omitted ⇒ ad-hoc (NULL-product) movements only (contract).
    */
   @Get('api/inventory/v1/stores/:storeId/movements')
+  // RT-619 (RT-574 D3): listStockMovements.
+  @ConsoleRateLimit("expensiveRead")
   async listStockMovements(
     @Req() request: TenantContextRequest,
     @Param('storeId', new ZodValidationPipe(UuidSchema)) storeId: string,

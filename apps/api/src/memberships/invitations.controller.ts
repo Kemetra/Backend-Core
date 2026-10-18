@@ -17,6 +17,7 @@ import { InvitationsService } from "./invitations.service";
 import { InvitationCreateSchema, type InvitationCreateDto } from "./invitation.dto";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { Idempotent } from "../idempotency/idempotent.decorator";
+import { ConsoleRateLimit } from "../console-rate-limit/console-rate-limit.decorator";
 
 @Controller("api/v1/memberships")
 @UseGuards(DashboardAuthGuard, TenantContextGuard)
@@ -28,6 +29,8 @@ export class InvitationsController {
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin", { denyAs: 403 })
   @Idempotent("required")
+  // RT-619 (RT-574 D3): createInvitation.
+  @ConsoleRateLimit("onboarding")
   async invite(
     @Req() request: TenantContextRequest,
     @Body(new ZodValidationPipe(InvitationCreateSchema)) dto: InvitationCreateDto,

@@ -95,6 +95,7 @@ import {
   type TimezoneChange,
   type TimezoneChangePreview,
 } from "./stores.service";
+import { ConsoleRateLimit } from "../console-rate-limit/console-rate-limit.decorator";
 
 /** Snake-case wire-shape matching the OpenAPI `Store` schema. */
 interface StoreBody {
@@ -232,6 +233,8 @@ export class StoresController {
   @Get(":store_id/timezone-change-preview")
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
+  // RT-619 (RT-574 D3): previewStoreTimezoneChange.
+  @ConsoleRateLimit("jobOrPreview")
   async previewTimezoneChange(
     @Req() request: TenantContextRequest,
     @Param("store_id", new ParseUUIDPipe()) storeId: string,

@@ -46,6 +46,7 @@ import {
   type RegisterConnectorInstanceRequestDto,
 } from "./dto/register-connector.dto";
 import { ConnectorRegistrationService } from "./connector-registration.service";
+import { ConsoleRateLimit } from "../console-rate-limit/console-rate-limit.decorator";
 
 @Controller()
 @UseGuards(SessionOnlyAdminGuard, TenantContextGuard)
@@ -80,6 +81,8 @@ export class ConnectorRegistrationController {
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
+  // RT-619 (RT-574 D3): tenantAdminRegisterConnectorInstance.
+  @ConsoleRateLimit("onboarding")
   async register(
     @Req() request: TenantContextRequest,
     @Body(new ZodValidationPipe(RegisterConnectorInstanceRequestSchema))
@@ -107,6 +110,8 @@ export class ConnectorRegistrationController {
   @Header("Cache-Control", "no-store")
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
+  // RT-619 (RT-574 D3): tenantAdminIssueConnectorCredential.
+  @ConsoleRateLimit("onboarding")
   async issue(
     @Req() request: TenantContextRequest,
     @Param("id", new ZodValidationPipe(z.string().uuid())) id: string,
@@ -139,6 +144,8 @@ export class ConnectorRegistrationController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
+  // RT-619 (RT-574 D3): tenantAdminDisableConnectorInstance.
+  @ConsoleRateLimit("incidentControl")
   async disable(
     @Req() request: TenantContextRequest,
     @Param("id", new ZodValidationPipe(z.string().uuid())) id: string,
@@ -162,6 +169,8 @@ export class ConnectorRegistrationController {
   // RT-82 K3: the body carries the raw secret, so it is never stored or
   // replayed; only `credential_id` is kept. A same-key retry answers 409.
   @Idempotent("required", { replay: "forbid", replayMarkerFields: ["credential_id"] })
+  // RT-619 (RT-574 D3): tenantAdminRotateConnectorCredential.
+  @ConsoleRateLimit("incidentControl")
   async rotate(
     @Req() request: TenantContextRequest,
     @Param("id", new ZodValidationPipe(z.string().uuid())) id: string,
@@ -182,6 +191,8 @@ export class ConnectorRegistrationController {
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
   @Idempotent("required")
+  // RT-619 (RT-574 D3): tenantAdminRevokeConnectorCredential.
+  @ConsoleRateLimit("incidentControl")
   async revoke(
     @Req() request: TenantContextRequest,
     @Param("credentialId", new ZodValidationPipe(z.string().uuid()))

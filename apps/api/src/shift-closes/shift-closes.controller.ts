@@ -54,6 +54,7 @@ import {
   StoreNotInScopeError,
   type ScopedReadInput,
 } from "./shift-closes.service";
+import { ConsoleRateLimit } from "../console-rate-limit/console-rate-limit.decorator";
 
 /**
  * The one 404 body of this surface: the same `{ code, message }` as the
@@ -72,6 +73,8 @@ export class ShiftClosesController {
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin", "store_manager")
   @Auditable("shift_closes.listed")
+  // RT-619 (RT-574 D3): consoleListShiftCloses.
+  @ConsoleRateLimit("expensiveRead")
   async list(
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(ShiftCloseListQuerySchema)) query: ShiftCloseListQuery,

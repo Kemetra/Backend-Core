@@ -64,6 +64,7 @@ import {
   PairingCodesService,
   PairingCodeUsedError,
 } from "./pairing-codes.service";
+import { ConsoleRateLimit } from "../console-rate-limit/console-rate-limit.decorator";
 
 /** The one 404 body of the registry (the `RolesGuard` role refusal's), FR-ISO-4. */
 const NOT_FOUND = { code: "not_found", message: "Not Found" } as const;
@@ -94,6 +95,8 @@ export class PairingCodesController {
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin", "store_manager")
   @Idempotent("required", { replay: "forbid", replayMarkerFields: ["pairingCodeId"] })
+  // RT-619 (RT-574 D3): consoleIssuePairingCode.
+  @ConsoleRateLimit("onboarding")
   async issue(
     @Req() request: TenantContextRequest,
     @Body(new ZodValidationPipe(PairingCodeIssueBodySchema)) body: PairingCodeIssueBody,
@@ -144,6 +147,8 @@ export class PairingCodesController {
   @HttpCode(200)
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin", "store_manager")
+  // RT-619 (RT-574 D3): consoleCancelPairingCode.
+  @ConsoleRateLimit("incidentControl")
   async cancel(
     @Req() request: TenantContextRequest,
     @Param("pairingCodeId") pairingCodeId: string,

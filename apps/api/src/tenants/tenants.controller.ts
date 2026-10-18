@@ -80,6 +80,7 @@ import {
 import { TenantsService } from "./tenants.service";
 import type { TenantRecord } from "./tenants.repository";
 import type { MembershipDetail } from "../context/membership.repository";
+import { ConsoleRateLimit } from "../console-rate-limit/console-rate-limit.decorator";
 
 /**
  * Wire-shape for a single membership. Matches `MembershipDetail` from
@@ -167,6 +168,8 @@ export class TenantsController {
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(RolesGuard)
   @PlatformAdminOnly()
+  // RT-619 (RT-574 D3): createTenant.
+  @ConsoleRateLimit("onboarding")
   async create(
     @Req() request: AuthedRequest,
     @Body(new ZodValidationPipe(TenantCreateSchema)) body: TenantCreateInput,

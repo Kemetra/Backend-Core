@@ -107,6 +107,7 @@ import {
   type BulkDismissOutcome,
   type CapturedUnknownItemRow,
 } from "./unknown-items.service";
+import { ConsoleRateLimit } from "../../console-rate-limit/console-rate-limit.decorator";
 
 /**
  * 007 US8 (T058): Zod schema for `tenantAdminBulkDismissUnknownItems` request
@@ -370,6 +371,8 @@ export class UnknownItemsController {
   @Get("api/v1/catalog/unknown-items")
   @UseGuards(DashboardAuthGuard, TenantContextGuard, RolesGuard)
   @Roles("owner", "tenant_admin", "store_manager", { denyAs: 403 })
+  // RT-619 (RT-574 D3): tenantAdminListUnknownItems.
+  @ConsoleRateLimit("expensiveRead")
   async tenantAdminListUnknownItems(
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(ListUnknownItemsQuerySchema))
@@ -587,6 +590,8 @@ export class UnknownItemsController {
   @UseGuards(DashboardAuthGuard, TenantContextGuard, RolesGuard)
   @Roles("owner", "tenant_admin", "store_manager", { denyAs: 403 })
   @Idempotent("required")
+  // RT-619 (RT-574 D3): tenantAdminBulkDismissUnknownItems.
+  @ConsoleRateLimit("jobOrPreview")
   async tenantAdminBulkDismissUnknownItems(
     @Req() request: TenantContextRequest,
     @Body(new ZodValidationPipe(BulkDismissUnknownItemsRequestSchema))

@@ -60,6 +60,7 @@ import {
   StoreNotInScopeError,
   type ScopedReadInput,
 } from "./console-sales.service";
+import { ConsoleRateLimit } from "../console-rate-limit/console-rate-limit.decorator";
 
 /**
  * The one 404 body of this surface: the `RolesGuard` role refusal's, so a role,
@@ -100,6 +101,8 @@ export class ConsoleSalesController {
   @Roles("owner", "tenant_admin", "store_manager")
   @Auditable("console_sales.listed")
   @Header("Cache-Control", "no-store")
+  // RT-619 (RT-574 D3): consoleListSales.
+  @ConsoleRateLimit("expensiveRead")
   async list(
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(ConsoleSaleListQuerySchema)) query: ConsoleSaleListQuery,

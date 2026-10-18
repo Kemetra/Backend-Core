@@ -66,6 +66,7 @@ import {
   type SaleSyncStatusBody,
   type ScopedReadInput,
 } from "./sale-sync-ops.read-model.service";
+import { ConsoleRateLimit } from "../../console-rate-limit/console-rate-limit.decorator";
 
 /**
  * Canonical UUID shape — a saleRef that fails this never hits the DB.
@@ -141,6 +142,8 @@ export class SaleSyncOpsController {
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
   @Auditable("sale_sync_ops.needs_repair.listed")
+  // RT-619 (RT-574 D3): consoleListNeedsRepair.
+  @ConsoleRateLimit("expensiveRead")
   async listNeedsRepair(
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(NeedsRepairListQuerySchema))
@@ -161,6 +164,8 @@ export class SaleSyncOpsController {
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
   @Auditable("sale_sync_ops.audit_timeline.read")
+  // RT-619 (RT-574 D3): consoleGetSaleAuditTimeline.
+  @ConsoleRateLimit("expensiveRead")
   async getAuditTimeline(
     @Req() request: TenantContextRequest,
     @Param("saleRef") saleRef: string,

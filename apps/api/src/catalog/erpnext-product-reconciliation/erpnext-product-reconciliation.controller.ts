@@ -69,6 +69,7 @@ import type {
   ProductReconciliationRunBody,
   RecordedProductRepair,
 } from "./product-reconciliation.projection";
+import { ConsoleRateLimit } from "../../console-rate-limit/console-rate-limit.decorator";
 
 @Controller()
 @UseGuards(DashboardAuthGuard, TenantContextGuard)
@@ -100,6 +101,8 @@ export class ErpnextProductReconciliationController {
   @Get("api/v1/catalog/erpnext-product-reconciliation/backlog")
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
+  // RT-619 (RT-574 D3): listProductReconciliationBacklog.
+  @ConsoleRateLimit("expensiveRead")
   async listBacklog(
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(ListQuerySchema)) query: ListQuery,
@@ -163,6 +166,8 @@ export class ErpnextProductReconciliationController {
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
   @HttpCode(201)
+  // RT-619 (RT-574 D3): triggerProductReconciliationRun.
+  @ConsoleRateLimit("jobOrPreview")
   async triggerRun(
     @Req() request: TenantContextRequest,
     @Body(new ZodValidationPipe(TriggerProductRunBodySchema))
@@ -192,6 +197,8 @@ export class ErpnextProductReconciliationController {
   @Get("api/v1/catalog/erpnext-product-reconciliation/runs/:runId/results")
   @UseGuards(RolesGuard)
   @Roles("owner", "tenant_admin")
+  // RT-619 (RT-574 D3): getProductReconciliationRunResults.
+  @ConsoleRateLimit("expensiveRead")
   async listResults(
     @Req() request: TenantContextRequest,
     @Param("runId", new ParseUUIDPipe()) runId: string,

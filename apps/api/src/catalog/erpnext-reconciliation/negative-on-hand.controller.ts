@@ -50,6 +50,7 @@ import {
   NegativeOnHandService,
   NegativeOnHandStoreNotFoundError,
 } from "./negative-on-hand.service";
+import { ConsoleRateLimit } from "../../console-rate-limit/console-rate-limit.decorator";
 
 const DEFAULT_LIMIT = 100;
 
@@ -61,6 +62,8 @@ export class NegativeOnHandController {
   /** GET — per-store ERPNext negative on-hand summaries (RT-177). */
   @Get("api/v1/catalog/erpnext-reconciliation/negative-on-hand/stores")
   @Roles("owner", "tenant_admin", "store_manager")
+  // RT-619 (RT-574 D3): listErpnextNegativeOnHandStores.
+  @ConsoleRateLimit("expensiveRead")
   async listErpnextNegativeOnHandStores(
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(NegativeOnHandQuerySchema)) query: NegativeOnHandQuery,
@@ -79,6 +82,8 @@ export class NegativeOnHandController {
   /** GET — one store's ERPNext items with negative on-hand (RT-177). */
   @Get("api/v1/catalog/erpnext-reconciliation/stores/:storeId/negative-on-hand")
   @Roles("owner", "tenant_admin", "store_manager")
+  // RT-619 (RT-574 D3): listErpnextNegativeOnHand.
+  @ConsoleRateLimit("expensiveRead")
   async listErpnextNegativeOnHand(
     @Req() request: TenantContextRequest,
     @Param("storeId", new ZodValidationPipe(StoreIdParamSchema)) storeId: string,

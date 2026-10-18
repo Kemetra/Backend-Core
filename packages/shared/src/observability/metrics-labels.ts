@@ -275,6 +275,16 @@ export const ALLOWED_METRIC_LABELS: Readonly<Record<string, readonly string[]>> 
   // {approver_is_closer, inactive_membership, not_manager, no_store_access,
   // check_unavailable}. The tenant, store, shift and users are never labels.
   shift_close_approver_unverified_total: ["reason"],
+
+  // ---- Console rate limiting — RT-619 (RT-574 D6) ----
+  // One count per console request the guard evaluates (report / enforce only).
+  // `class` ∈ {cheapRead, expensiveRead, write, jobOrPreview, onboarding,
+  // incidentControl, exempt}; `outcome` ∈ {allowed, near_limit, would_limit,
+  // limited, fail_open}; `route` is the bounded route template (same label as
+  // http_error_4xx_total). Never a user, tenant or IP value.
+  console_rate_limit_total: ["class", "outcome", "route"],
+  // Histogram of count / limit per check; same bounded labels minus outcome.
+  console_rate_limit_utilisation: ["class", "route"],
 };
 
 /**
