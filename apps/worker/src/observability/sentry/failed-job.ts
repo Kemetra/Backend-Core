@@ -142,7 +142,9 @@ class JobNameMask {
   static forFailure(job: FailedJobLike | undefined, error: Error): JobNameMask | undefined {
     const name = job?.name;
     if (!name || DECLARED_JOB_NAMES.has(name)) return undefined;
-    return error.message.includes(name) ? new JobNameMask(name) : undefined;
+    // A thrown non-Error has no message to mask (the scrubber drops it anyway).
+    const message = error instanceof Error ? error.message : "";
+    return message.includes(name) ? new JobNameMask(name) : undefined;
   }
 
   applyTo(error: Error): Error {

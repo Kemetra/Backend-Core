@@ -280,6 +280,14 @@ describe("captureFinalJobFailure", () => {
     });
   });
 
+  it("still captures when the processor threw a non-Error value", () => {
+    captureFinalJobFailure(QUEUE)(job({ name: "jane-01012345678" }), "boom" as unknown as Error);
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledWith("boom", {
+      tags: { queue: QUEUE, error_class: "UnknownError", outcome: "exhausted" },
+    });
+  });
+
   it("never throws when the SDK throws", () => {
     capture.mockImplementationOnce(() => {
       throw new Error("sdk down");
