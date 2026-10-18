@@ -67,11 +67,8 @@ import { SAME_ORIGIN } from "../_helpers/same-origin";
 // ---- Fakes ---------------------------------------------------------------
 
 class AlwaysAllowRedis implements RedisLike {
-  async incr(): Promise<number> {
-    return 1;
-  }
-  async pexpireNx(): Promise<number> {
-    return 1;
+  async incrWindow(): Promise<{ count: number; ttlMs: number }> {
+    return { count: 1, ttlMs: -1 };
   }
   async pttl(): Promise<number> {
     return -1;

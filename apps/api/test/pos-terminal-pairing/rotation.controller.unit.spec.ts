@@ -113,13 +113,10 @@ describe("RT-369 — rotate route wiring", () => {
 /** An in-memory Redis for the real RateLimiter. */
 class CountingRedis {
   private readonly counts = new Map<string, number>();
-  incr(key: string): Promise<number> {
+  incrWindow(key: string): Promise<{ count: number; ttlMs: number }> {
     const n = (this.counts.get(key) ?? 0) + 1;
     this.counts.set(key, n);
-    return Promise.resolve(n);
-  }
-  pexpireNx(): Promise<number> {
-    return Promise.resolve(1);
+    return Promise.resolve({ count: n, ttlMs: 30_000 });
   }
   pttl(): Promise<number> {
     return Promise.resolve(30_000);

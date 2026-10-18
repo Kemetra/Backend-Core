@@ -102,21 +102,16 @@ class FakeRedis implements RedisLike {
     }
     return entry;
   }
-  async incr(key: string): Promise<number> {
-    const live = this.gc(key);
+  /** Mirrors the RT-618 script: INCR, seed the TTL if none, return count + TTL. */
+  async incrWindow(key: string, ttlMs: number): Promise<{ count: number; ttlMs: number }> {
+    let live = this.gc(key);
     if (!live) {
-      this.store.set(key, { value: 1, expiresAt: null });
-      return 1;
+      live = { value: 0, expiresAt: null };
+      this.store.set(key, live);
     }
     live.value += 1;
-    return live.value;
-  }
-  async pexpireNx(key: string, ttlMs: number): Promise<number> {
-    const live = this.gc(key);
-    if (!live) return 0;
-    if (live.expiresAt !== null) return 0;
-    live.expiresAt = Date.now() + ttlMs;
-    return 1;
+    if (live.expiresAt === null) live.expiresAt = Date.now() + ttlMs;
+    return { count: live.value, ttlMs: Math.max(0, live.expiresAt - Date.now()) };
   }
   async pttl(key: string): Promise<number> {
     const live = this.gc(key);
