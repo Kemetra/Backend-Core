@@ -32,7 +32,7 @@ jest.mock("@data-pulse-2/db", () => {
 });
 
 import type { Pool } from "pg";
-import type { ClaimedOutboxEvent } from "@data-pulse-2/db";
+import { reclaimStaleClaims, type ClaimedOutboxEvent } from "@data-pulse-2/db";
 import {
   createTestTracerProvider,
   trace,
@@ -143,6 +143,39 @@ describe("DrainerProcessor tracing (RT-684)", () => {
     clock.now += 1;
     await d.tick();
     expect(heartbeats()).toBe(2);
+  });
+
+  it("keeps the liveness interval when the wall clock steps backward", async () => {
+    jest.useFakeTimers({ now: new Date("2026-10-18T12:00:00Z") });
+    try {
+      // Default clock: no `now` injected.
+      const d = new DrainerProcessor({
+        pool: { options: { max: 10 } } as unknown as Pool,
+        registry: new OutboxConsumerRegistry(),
+        claimFn: async () => [],
+      });
+      await d.tick();
+      jest.setSystemTime(new Date("2026-10-18T11:00:00Z")); // NTP step back 1h
+      jest.advanceTimersByTime(LIVENESS_INTERVAL_MS);
+      await d.tick();
+    } finally {
+      jest.useRealTimers();
+    }
+
+    expect(exportedNames()).toEqual([LIVENESS_OPERATION, LIVENESS_OPERATION]);
+  });
+
+  it("records no liveness span when stale-claim recovery fails", async () => {
+    jest.mocked(reclaimStaleClaims).mockRejectedValueOnce(new Error("db down"));
+    const stderr = jest.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await drainer([]).tick();
+    } finally {
+      stderr.mockRestore();
+    }
+    emit("control");
+
+    expect(exportedNames()).toEqual(["control"]);
   });
 
   it("records no liveness span when the poll fails", async () => {

@@ -130,7 +130,11 @@ export interface DrainerDependencies {
    * Production callers omit this; the default is `claimBatch` from `@data-pulse-2/db`.
    */
   readonly claimFn?: (pool: Pool, batchSize: number) => Promise<ClaimedOutboxEvent[]>;
-  /** Clock for the liveness interval. Default: `Date.now`. */
+  /**
+   * Monotonic clock (ms) for the liveness interval. Default: `performance.now`,
+   * so a wall-clock step back cannot hold the heartbeat off and page a healthy
+   * worker.
+   */
   readonly now?: () => number;
 }
 
@@ -181,7 +185,7 @@ export class DrainerProcessor {
     );
     this.claimLeaseMs = deps.options?.claimLeaseMs ?? DEFAULT_CLAIM_LEASE_MS;
     this.claimFn = deps.claimFn ?? claimBatch;
-    this.now = deps.now ?? Date.now;
+    this.now = deps.now ?? (() => performance.now());
 
     // Fail loud at construction rather than spinning a poll loop with a
     // nonsensical interval (which silently breaks throughput) or claim size

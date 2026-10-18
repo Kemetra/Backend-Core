@@ -56,13 +56,29 @@ describe("createForceSampleSampler", () => {
     );
   });
 
+  it("samples a marked span and drops an unmarked one in a real tracer provider", async () => {
+    const provider = new tracing.BasicTracerProvider({ sampler: createForceSampleSampler(dropEverything) });
+    try {
+      const tracer = provider.getTracer("rt-684-test");
+      const marked = tracer.startSpan("marked", { root: true, attributes: { [FORCE_SAMPLE_ATTRIBUTE]: true } });
+      const unmarked = tracer.startSpan("unmarked", { root: true });
+
+      expect(marked.isRecording()).toBe(true);
+      expect(unmarked.isRecording()).toBe(false);
+      marked.end();
+      unmarked.end();
+    } finally {
+      await provider.shutdown();
+    }
+  });
+
   it("ignores a force-sample attribute that is not exactly true", () => {
     expect(decide(createForceSampleSampler(dropEverything), { [FORCE_SAMPLE_ATTRIBUTE]: "true" })).toBe(NOT_RECORD);
   });
 });
 
 describe("recordLivenessSpan", () => {
-  it("exports one root span named after the operation, marked for Datadog and forced sampling", () => {
+  it("exports one root span named after the operation, marked for Datadog and forced sampling", async () => {
     const handle = createTestTracerProvider();
     try {
       const parent = trace.getTracer("rt-684-test").startSpan("parent");
@@ -79,7 +95,7 @@ describe("recordLivenessSpan", () => {
       expect(heartbeat?.parentSpanContext).toBeUndefined();
       expect(heartbeat?.spanContext().traceId).not.toBe(parent.spanContext().traceId);
     } finally {
-      void handle.teardown();
+      await handle.teardown();
     }
   });
 });

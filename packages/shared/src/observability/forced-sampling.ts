@@ -7,7 +7,8 @@
  * watches that. It has to arrive every time, so it bypasses ratio sampling:
  *
  *   - `createForceSampleSampler` wraps the sampler the env asks for
- *     (`OTEL_TRACES_SAMPLER` / `_ARG`, same names and defaults as the SDK) and
+ *     (`OTEL_TRACES_SAMPLER` / `_ARG`: the SDK's names, defaults and ratio
+ *     rules; see `samplerFromEnv`) and
  *     samples any span carrying `FORCE_SAMPLE_ATTRIBUTE: true`. Every other
  *     span gets the env sampler's decision, unchanged.
  *   - `recordLivenessSpan` starts and ends such a span as a new root. The
@@ -44,7 +45,12 @@ const SAMPLER_FACTORIES = new Map<string, SamplerFactory>([
   ["parentbased_traceidratio", (ratio) => parentBased(ratio())],
 ]);
 
-/** The sampler `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` select, as the SDK reads them. */
+/**
+ * The sampler `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` select: the
+ * SDK's names, its parentbased_always_on fallback and its ratio rules. Unlike
+ * the SDK it trims and lowercases the name (the OTel spec's case-insensitive
+ * reading) and does not log a diag error for an unknown name or bad ratio.
+ */
 export function samplerFromEnv(env: NodeJS.ProcessEnv = process.env): tracing.Sampler {
   const name = env["OTEL_TRACES_SAMPLER"]?.trim().toLowerCase() ?? "";
   const factory = SAMPLER_FACTORIES.get(name) ?? SAMPLER_FACTORIES.get("parentbased_always_on")!;
