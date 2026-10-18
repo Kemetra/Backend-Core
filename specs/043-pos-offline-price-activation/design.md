@@ -154,7 +154,7 @@ Consequences:
 
 ### 5.3 Fetch and apply on POS
 
-1. **Check.** `GET /pricing/manifest` with `If-None-Match`. A `304` is still a successful **check** (it refreshes freshness, §7.1, and re-anchors the clock).
+1. **Check.** `GET /pricing/manifest` with `If-None-Match` carrying the ETag of the manifest whose pair it **applied** (not of the last manifest seen). A `200` with the same pair (for example a freshness-policy change) also counts as a check. A `304` therefore always means "the applied pair is current": it re-anchors the clock and refreshes freshness (§7.1). After a failed apply of a newer pair, the next check returns `200` with the newer pair, so a till stuck on an older revision is never counted as fresh.
 2. **Fetch.** If the manifest pair is higher than the applied pair, page `GET /pricing/snapshot?revision=R&epoch=E` to the end. Every page must echo the same `(R, E)` (the P1 rule, reused). Any bad page fails the fetch.
 3. **Stage** into `pricing_segments_staging` (one transaction).
 4. **Verify** before promote: `entryCount` and `contentHash` from the final page and the manifest match the staged rows (canonical hash: rows sorted by `productId, sellUnit, from`, fields in a fixed order, decimals as the wire strings). Every segment has `currencyCode` equal to the Book currency, a representable amount, `from < to` when `to` is set, and no overlap within a key.
@@ -240,10 +240,10 @@ Freshness is policy (624) and configurable (626). The values, per tenant with an
 | `offlineMode` | `allow_cached` \| `deny_if_stale` \| `online_only` (RT-284 P-F semantics) | `allow_cached` (G4-7) |
 | `maxStalenessSeconds` | the stale threshold | 86 400 (24 h) |
 | `warnAfterSeconds` | visible "pricing ageing" indicator before stale | 43 200 (12 h) |
-| `onlineWindowSeconds` | how recent a successful check must be to count as "online" for `online_only` | 120 |
+| `onlineWindowSeconds` | how recent a successful check must be to count as "online" for `online_only` | 360 (poll + 60) |
 | `pollIntervalSeconds` | manifest check cadence while online | 300 (min 60) |
 
-POS **clamps**: `maxStalenessSeconds ≤ 72 h` (the existing P7 ceiling), `onlineWindowSeconds ≤ 600`, `pollIntervalSeconds ∈ [60, 3600]`. A value outside the clamp is clamped, never rejected.
+POS **clamps**: `maxStalenessSeconds ≤ 72 h` (the existing P7 ceiling), `pollIntervalSeconds ∈ [60, 3600]`, and `onlineWindowSeconds ≥ pollIntervalSeconds + 60`, so a connected till that polls on schedule is always inside the window. A value outside the clamp is clamped, never rejected. In addition, whenever `online_only` applies (the tenant mode or a per-line `offlinePolicy`) and a scan finds the window lapsed, POS first runs an **on-demand manifest check** (5 s timeout) and refuses the item only if that check fails.
 
 **Delivery (G4-8).** Until the RT-284 device policy bundle exists (PE-BC4 / PE-POS1), these values travel on the **pricing manifest** as `freshness { …, policySource, policyRevisionId }`, the spec 040 interim pattern. RT-284 P-F rejected carrying *policy* on the **catalogue** read-down; the pricing manifest is a pricing surface and carries only pricing freshness. When the bundle ships, the bundle becomes the source, `policySource` says so, and the manifest field is removed in a later contract version. Never-fetched POS (no manifest yet): defaults above, clamped.
 
@@ -253,7 +253,7 @@ POS **clamps**: `maxStalenessSeconds ≤ 72 h` (the existing P7 ceiling), `onlin
 |---|---|---|---|
 | `allow_cached` | normal | non-blocking "prices last checked N h ago" indicator on the sale screen | persistent **stale banner** on the sale screen and the receipt preview; selling continues at the cached projection; every line and the sale record `stale = true` |
 | `deny_if_stale` | normal | indicator | items cannot be added at a cached price: scan shows "pricing out of date — reconnect"; lines already in the cart stay (they were priced while fresh) and the sale can complete; a manager override is **not** offered in v1 |
-| `online_only` | allowed only while `now − lastCheckAt ≤ onlineWindow` | — | items cannot be added; same message |
+| `online_only` | allowed while `now − lastCheckAt ≤ onlineWindow`; outside it, one on-demand check (5 s) at scan | — | items cannot be added if the on-demand check fails; same message |
 
 Stale is **never hidden** (625): the banner cannot be dismissed while the condition holds, the diagnostics screen shows the applied pair, `lastCheckAt`, `clockState`, the mode and the last failure, and BC's Pricing Health shows the device as stale from its acks (§10.3).
 
@@ -404,7 +404,7 @@ Also in PR-06 (Console-facing, moved there by RT-282): the **distribution-status
 | Clock | matrix `{anchored, unverified, suspect} × {wall correct, forward 1 h, forward > maxStaleness, back 10 min, back 2 min, suspend 8 h}`: `t_lo` never decreases while anchored, activation never early in `anchored`, `unverified` activation capped at `hwm_trusted + maxStaleness`, `suspect` freezes activation and forces stale; `hwm_trusted` never raised from wall time (offline restart with clock +1 day, then re-anchor → correct activation and a `ran_ahead` incident); set-forward-then-back offline → `rolled_back` incident; anchor rejected when RTT > 5 s; both marks sealed and restored after restart |
 | Apply | promote atomicity (throw inside the transaction keeps previous pair and rows); hash mismatch, count mismatch, page pair mismatch, downgrade → previous kept, ack `failed` with the code; never a mix of two pairs (rows of one pair only, checked after every failure injection) |
 | Activation | boundary inclusive/exclusive at `from` ± 1 ms; a line scanned before the boundary keeps its price; resume diff after the boundary; gap → not sellable |
-| Staleness | per mode × {fresh, ageing, stale, never applied, clock suspect}; 304 refreshes the check, a failed fetch does not; clamps |
+| Staleness | per mode × {fresh, ageing, stale, never applied, clock suspect}; 304 (ETag of the applied pair) refreshes the check, a failed fetch or a failed apply of a newer pair does not; clamps incl. `onlineWindow ≥ poll + 60`; `online_only` on-demand check at scan (success → sellable, timeout → refused) |
 | Critical | urgent fetch before next scan; open-cart flagged lines require explicit accept; per-line `offlinePolicy` until `until` |
 | Sale | provenance verbatim; per-line `pricingCapture` frozen; a cart that turns stale or `suspect` mid-way has the later lines `stale` / `suspect` and the sale aggregate `stale = true`; mid-cart apply gives lines with two revisions or epochs, each explicit |
 | Authority | `legacy` → catalogue price used, pricing snapshot not fetched; `pricing` → catalogue price ignored |

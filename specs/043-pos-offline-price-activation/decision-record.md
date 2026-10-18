@@ -91,7 +91,7 @@ Why: matches RT-284 P-F ("a clock rollback counts as stale") and lets the tenant
 
 | Option | Content |
 |---|---|
-| **A (recommended)** | `age = t_hi − lastCheckAt` where a **check** is a successful manifest read with the applied pair current (a 304 counts; a failed apply does not). Defaults: `offlineMode = allow_cached`, `maxStaleness = 24 h`, `warnAfter = 12 h`, `onlineWindow = 120 s`, `poll = 300 s`. POS clamps `maxStaleness ≤ 72 h`. `allow_cached` sells with a non-dismissable stale banner; `deny_if_stale` refuses new lines at a cached price; `online_only` requires a check within `onlineWindow`. |
+| **A (recommended)** | `age = t_hi − lastCheckAt` where a **check** is a successful manifest read with the applied pair current (`If-None-Match` carries the applied pair's ETag, so a 304 counts; a failed apply does not). Defaults: `offlineMode = allow_cached`, `maxStaleness = 24 h`, `warnAfter = 12 h`, `poll = 300 s`, `onlineWindow = 360 s`. POS clamps `maxStaleness ≤ 72 h` and `onlineWindow ≥ poll + 60`; under `online_only` a lapsed window triggers one on-demand check at scan before refusing. `allow_cached` sells with a non-dismissable stale banner; `deny_if_stale` refuses new lines at a cached price; `online_only` requires a check within `onlineWindow`. |
 | B | Same, default `deny_if_stale` with 24 h. Blocks a store's sales after one day of outage. |
 | C | Age from the last *apply* rather than the last check. A store with no price changes would go stale while fully connected. |
 
