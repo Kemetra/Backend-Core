@@ -3,9 +3,9 @@
  *
  * Reads 015 `erpnext_posting_status` + 017 `erpnext_reconciliation_run`/`_result`
  * in place (READ-NOT-MIRROR), tenant-scoped under `runWithTenantContext`
- * (RLS fail-closed). No write, no new table. The 020 connector_health + 021
- * product_master domains are reported `not_available` (forward-compat stub) until
- * those specs ship. The 015/017 source tables carry NO money/valuation column, so
+ * (RLS fail-closed). No write, no new table. The 020 connector_health domain is
+ * derived from the 020 read model (RT-563); 021 product_master is reported
+ * `not_available` (forward-compat stub) until that spec ships. The 015/017 source tables carry NO money/valuation column, so
  * this read-model surfaces none.
  *
  * RT-192: every read is bound to the caller's membership store scope (the 017
