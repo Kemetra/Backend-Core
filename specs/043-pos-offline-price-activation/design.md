@@ -81,46 +81,54 @@ Four ideas carry the design:
 
 ### 4.1 Clock model
 
-POS keeps one **pricing clock** service in the main process. It reuses and generalises the P7 high-water mark (one sealed mark for the whole device, not one per feature).
+POS keeps one **pricing clock** service in the main process. It reuses and generalises the P7 high-water mark machinery, but splits it into **two sealed marks** so that untrusted time can never become trusted (G4-5).
 
 | Input | Source | Trust |
 |---|---|---|
 | `anchor = (serverTime, mono_at_receipt, wall_at_receipt)` | `serverTime` on every pricing manifest response (and any other BC response that carries one, e.g. cashier admission `server_time`). Accepted only when the request's round trip is ≤ 5 s; the anchor error is then ≤ RTT. | trusted while the process lives |
 | `mono` | `performance.now()` / `process.hrtime` | monotonic within one process; **reset by restart**; may or may not advance across OS suspend, so it is never assumed to |
 | `wall` | `Date.now()` | untrusted |
-| `hwm` | sealed high-water mark, raised to the current lower bound every 60 s, at every apply, and at every sale | floor; only rises |
+| `hwm_trusted` | sealed mark raised **only from `t_anch`** (anchored time), every 60 s, at every apply and at every sale while `anchored` | trusted floor; only rises; never fed by the wall clock |
+| `wall_seen` | sealed mark raised from `wall` every 60 s and at every sale, in any state | **rollback detector only**; never used as a time value for activation |
 
 Derived values:
 
 - **Anchored estimate** (same process, anchor present): `t_anch = serverTime + (mono_now − mono_at_receipt)`.
 - **Drift** = `(wall_now − t_anch) − (wall_at_receipt − serverTime)`, the change of the wall-minus-server offset since the anchor.
 - **Lower bound `t_lo`** (used for **activation**):
-  - `anchored`: `max(hwm, t_anch)`;
-  - `unverified` (no anchor since process start): `max(hwm, wall_now)`;
-  - `suspect`: `hwm` (frozen; see §4.2).
+  - `anchored`: `max(hwm_trusted, t_anch)`;
+  - `unverified` (no anchor since process start or OS resume): `max(hwm_trusted, min(wall_now, hwm_trusted + maxStaleness))`. Untrusted time can advance activation at most `maxStaleness` past the last trusted instant; beyond that the device is stale anyway (§7);
+  - `suspect`: frozen at the `t_lo` it had when it became suspect (§4.2).
 - **Upper bound `t_hi`** (used for **staleness**): `max(t_lo, wall_now)`. A forward-set wall clock can only make pricing look *older*, never fresher.
+
+Within `anchored`, `t_lo` never decreases. A re-anchor after `unverified` can move `t_lo` **back** to true time if the wall clock had been ahead; that is a correction of untrusted time, not a rollback, and it is recorded (§4.3). Because `hwm_trusted` is only ever fed by anchored time, a forward-set clock cannot poison the floor that later trusted time is compared against.
 
 ### 4.2 Clock states
 
 | State | Entered when | Activation | Staleness |
 |---|---|---|---|
 | `anchored` | an anchor was taken in this process and `|drift| ≤ 120 s` | by `t_lo` | by `t_hi` |
-| `unverified` | after a restart or an OS resume (see "OS suspend" below), before the next anchor, with `wall ≥ hwm − 5 min` | by `t_lo = max(hwm, wall)` | by `t_hi`; the sale records `clockState = unverified` |
-| `suspect` | `wall < hwm − 5 min` (rollback, the P7 rule), **or** `|drift| > 120 s` in this process (wall clock moved against the monotonic clock: tamper, manual change, or a suspend the monotonic clock did not see) | **frozen at `hwm`**: no further activation, no un-activation | **treated as stale** whatever the age (RT-284 P-F: "a clock rollback counts as stale") |
+| `unverified` | after a restart or an OS resume (see "OS suspend" below), before the next anchor, with `wall ≥ hwm_trusted − 5 min` and `wall ≥ wall_seen − 5 min` | by `t_lo` (bounded, §4.1) | by `t_hi`; lines record `clockState = unverified` |
+| `suspect` | `wall < hwm_trusted − 5 min` or `wall < wall_seen − 5 min` (rollback, the P7 rule), **or** `|drift| > 120 s` in this process with no resume event (the wall clock moved against the monotonic clock) | **frozen**: no further activation | **treated as stale** whatever the age (RT-284 P-F: "a clock rollback counts as stale") |
 
-Leaving `suspect` needs a fresh anchor (a successful manifest check).
+Leaving `suspect` or `unverified` needs a fresh anchor (a successful manifest check). At every re-anchor, POS compares the untrusted time it used with the server's:
 
-**OS suspend.** Whether the monotonic clock advances across sleep depends on the platform, so the design does not rely on it. On Electron's `powerMonitor` `resume` event, POS **drops the anchor** and moves to `unverified`, exactly as after a restart. A store PC that sleeps overnight offline therefore activates the morning's scheduled prices from `max(hwm, wall)`, rather than freezing in `suspect`. A drift seen *without* a resume event is still `suspect`.
+- if `wall_seen > t_anch + 120 s`, the device's clock **ran ahead** while untrusted. POS records a **clock incident** `{ kind: ran_ahead, byMs: wall_seen − t_anch, from: first unverified instant, to: t_anch }`, resets `wall_seen` to `wall_now`, and reports it on the next ack (§9.2);
+- a rollback seen while offline (`suspect` from `wall_seen`) is likewise recorded as `{ kind: rolled_back, … }`.
+
+**OS suspend.** Whether the monotonic clock advances across sleep depends on the platform, so the design does not rely on it. On Electron's `powerMonitor` `resume` event, POS **drops the anchor** and moves to `unverified`, exactly as after a restart. A store PC that sleeps overnight offline therefore activates the morning's scheduled prices from its wall clock (within the §4.1 bound), rather than freezing in `suspect`. A drift seen *without* a resume event is still `suspect`.
 
 The 120 s drift budget matches the existing future-dating tolerance on the void approval path (RT-530) and is a constant on POS, not server policy. The 5 min rollback tolerance is the existing P7 constant.
 
 ### 4.3 What the clock does not protect against (stated residual risk)
 
-- **Forward tampering while unverified.** After a restart with no network, the POS cannot tell a correct wall clock from one set forward. A forward-set clock activates future segments early. Bounds on this:
-  - it also makes the device stale sooner (staleness uses `t_hi`), so under `deny_if_stale` the window closes at `maxStaleness`;
-  - every sale captured carries `clockState = unverified` and each line's `pricedAt`, and BC revalidates on sync (§9.3), so early activation is **detected and reported** once the sale reaches BC before the true activation instant (and `device_clock_ahead` flags the clock regardless);
-  - the `hwm` prevents the reverse attack (rolling back to keep an old price).
-- **Same-Windows-user edits of the sealed mark** are the accepted P7 residual risk (OD11); unchanged here.
+- **Forward tampering while unverified.** After a restart with no network, the POS cannot tell a correct wall clock from one set forward. A forward-set clock activates future segments early. Bounds and evidence:
+  - activation can run ahead of the last trusted instant by at most `maxStaleness` (§4.1), and staleness uses `t_hi`, so under `deny_if_stale` the device stops selling at cached prices at the same point;
+  - every line records `clockState = unverified` and its `pricedAt` (§9.1);
+  - **detection is through clock incidents, not the sale's own times.** If the device re-anchors while its clock is still ahead, the `ran_ahead` incident (with its interval and size) reaches BC on the next ack, and BC re-checks that device's `unverified` lines in the interval (§9.3). If someone sets the clock back before reconnecting, `wall_seen` turns that into a `rolled_back` incident, which is reported the same way;
+  - **undetectable case, stated plainly:** a device that stays offline, with its clock ahead, until real time overtakes the forged time leaves no discrepancy at re-anchor, and its sales look like ordinary `unverified` sales. Its exposure is bounded only by the `maxStaleness` limit above. A tenant that cannot accept this uses `deny_if_stale` with a short `maxStaleness`;
+  - `hwm_trusted` and `wall_seen` prevent the reverse attack (rolling back to keep an old price).
+- **Same-Windows-user edits of the sealed marks** are the accepted P7 residual risk (OD11); unchanged here.
 - **No signed manifest in v1** (RT-284 Q7 precedent): integrity is TLS, sealed local state, a monotonic `(revision, epoch)` that rejects downgrades, the content hash, and server revalidation on sync.
 
 ## 5. Coherent revision apply (628, 629)
@@ -193,7 +201,7 @@ segment = the one segment of (product, sellUnit) with from ≤ t_lo < (to ?? +�
 ```
 
 - No job, timer or write is involved. Activation happens at the first scan whose `t_lo` crosses `from`.
-- `t_lo` never decreases (it is floored by `hwm`), so once a segment is in effect it cannot revert to an earlier one by clock changes.
+- While `anchored`, `t_lo` never decreases (it is floored by `hwm_trusted`), so a segment in effect cannot revert through clock changes. The only backward move is the §4.1 correction of untrusted time at re-anchor, which is recorded as a clock incident.
 - The boundary is inclusive at `from`, exclusive at `to`, the same as the resolver.
 - A line scanned before the boundary keeps its frozen price (603). Lines scanned after it use the new price. A park/resume after the boundary uses the existing resume diff (P5), which now compares against the segment at `t_lo`.
 - Held-cart Price Lock TTL and business-day revalidation (605–607) are cart decisions, not G4. They read the same `t_lo`.
@@ -281,35 +289,50 @@ On the line (PR-07's `pricingProvenance` union, unchanged in shape):
 
 POS stores the segment's provenance **verbatim** and sends it unchanged; it never recomputes it.
 
-Next to the union, each line also freezes **`pricedAt`**: the `t_lo` the POS used to select the segment (§6.3). It is a sibling optional field, not part of the union, so PR-06 and PR-07 still share one union shape. It makes revalidation (§9.3) evaluate the same instant the device evaluated, whatever the sale's own capture timestamp says.
-
-New, on the **sale** (one object per sale, additive to PR-07, G4-11):
+Next to the union, each line also freezes a **`pricingCapture`** object. It is a sibling optional field, not part of the union, so PR-06 and PR-07 still share one union shape:
 
 ```jsonc
-"pricingContext": {
-  "appliedRevision": 418,          // null under legacy authority
-  "timeBasisEpoch": 3,
-  "stale": false,                  // as evaluated when the first line was added
-  "offlineMode": "allow_cached",
-  "lastPricingCheckAt": "2026-11-01T06:58:10Z",   // t_lo of the last successful check
-  "clockState": "anchored"         // anchored | unverified | suspect
+"pricingCapture": {
+  "pricedAt": "2026-11-01T07:02:11Z",  // the t_lo used to select the segment (§6.3)
+  "timeBasisEpoch": 3,                 // the epoch of the projection the segment came from
+  "stale": false,                      // §7.1, evaluated when this line was priced
+  "clockState": "anchored"             // anchored | unverified | suspect, when this line was priced
 }
 ```
 
-Lines keep their own provenance; the sale-level object records the conditions they were captured under. A line added after a mid-cart apply carries the newer `pricingRevision` in its own provenance, so the mix is explicit, not hidden.
+Freezing these **per line** matters because they can change inside one open cart: a line can be added after the staleness threshold is crossed, after the clock turns `suspect`, or after a mid-cart apply of a new revision or epoch. `pricedAt` and `timeBasisEpoch` let revalidation (§9.3) evaluate exactly what the device evaluated.
+
+On the **sale** (one object per sale, additive to PR-07, G4-11), an **aggregate** of its lines plus the device's freshness settings:
+
+```jsonc
+"pricingContext": {
+  "appliedRevision": 418,          // highest pricingRevision among the lines; null under legacy authority
+  "stale": true,                   // true if ANY line was priced stale
+  "clockState": "unverified",      // the worst line state: suspect > unverified > anchored
+  "offlineMode": "allow_cached",
+  "lastPricingCheckAt": "2026-11-01T06:58:10Z"   // t_lo of the last successful check when the sale was finalized
+}
+```
+
+A sale that started fresh and later added a stale line therefore reports `stale = true`, and the stale line is identifiable. A line added after a mid-cart apply carries the newer `pricingRevision` in its own provenance and the newer epoch in its `pricingCapture`, so the mix is explicit, not hidden.
 
 ### 9.2 Acks
 
-`POST /api/pos/v1/pricing/acks` (device bearer, idempotent on `(device, pair, status)`): `{ status: received | applied | failed, storeRevision, timeBasisEpoch, failureCode?, deviceAppliedAt (t_lo), clockState }`. BC persists the latest per status per device (PR-05 table). An ack is evidence for Health; BC never trusts it for authority.
+`POST /api/pos/v1/pricing/acks` (device bearer, idempotent on `(device, pair, status)`): `{ status: received | applied | failed, storeRevision, timeBasisEpoch, failureCode?, deviceAppliedAt (t_lo), clockState, clockIncidents?: [{ kind: ran_ahead | rolled_back, byMs, from, to }] }`. BC persists the latest per status per device (PR-05 table) and every clock incident (`pricing_device_clock_incidents`). An ack is evidence for Health; BC never trusts it for authority. An incident is resent until an ack carrying it succeeds.
 
 ### 9.3 Revalidation on sale sync
 
-When a sale arrives, BC (asynchronously, never on the capture path) recomputes `resolve(item, sellUnit, store, line.pricedAt, line.pricingRevision)` and compares it with the line's unit price and provenance:
+When a sale arrives, BC (asynchronously, never on the capture path) recomputes, for each line, `resolve(item, sellUnit, store, pricedAt, pricingRevision)` **using the Store time zone that was in force at the line's `timeBasisEpoch`** (from the epoch history, §10.3), not the Store's current zone. It compares the result with the line's unit price and provenance:
 
 - equal → nothing;
-- different → `price_mismatch` finding (tampered projection or POS defect);
-- `line.pricedAt` is after a critical revision's first activation instant for that Store and `line.pricingRevision` is older → `sold_before_correction`;
-- the selected segment's `from` is **later than the server's receive time of the sale** (the price was not in effect yet even when BC received the sale) → `early_activation`; and `line.pricedAt` later than the receive time + 120 s → `device_clock_ahead`. Both can only come from a forward clock, so they are the §4.3 detection.
+- different → `price_mismatch` finding (tampered projection or POS defect). Because the epoch's zone is used, a time-zone change between capture and sync does not cause a false mismatch;
+- `pricedAt` is after a critical revision's first activation instant for that Store and the line's `pricingRevision` is older → `sold_before_correction`;
+- **early activation**, judged from evidence tied to trusted time, not from the sale's own clock:
+  - the line is `unverified` or `suspect` and falls inside a reported **clock incident** interval of that device: BC shifts `pricedAt` back by the incident's `byMs` and re-resolves. A different segment → `early_activation`. A `ran_ahead` incident that arrives *after* the sale is matched retroactively when it arrives;
+  - the selected segment's `from` is later than BC's receive time of the sale → `early_activation` (the price was not in effect even when BC received it);
+  - `pricedAt` later than the receive time + 120 s → `device_clock_ahead`.
+
+A forward-clock sale that leaves none of this evidence is the undetectable case stated in §4.3. Revalidation does not claim to catch it.
 
 Findings feed Pricing Health (PR-12). Capture never fails because of them, and sale facts are never changed (611, 612–617).
 
@@ -325,7 +348,7 @@ All are **additive** and belong to later `[GATED]` items. OD-6 evidence: POS val
 | `GET /api/pos/v1/pricing/snapshot?revision&epoch&page_token&limit` | pages of `PricingEntry { productId, sellUnit, segments: PricingSegment[] }`; every page echoes `storeRevision`, `timeBasisEpoch`, `serverTime`; the final page carries `contentHash`, `entryCount`. A pair that is no longer current → 409 `pricing_revision_superseded` (the device re-reads the manifest) |
 | `PricingSegment` | `{ from, to \| null, amount (decimal string), currencyCode, taxPriceBasis, provenance (PR-07 union), offlinePolicy? {mode, maxStalenessSeconds?, until} }` |
 | `GET /api/pos/v1/pricing/deltas?fromRevision&fromEpoch` | reserved (§5.3); `snapshot_required` 409 on gap or epoch change |
-| `POST /api/pos/v1/pricing/acks` | §9.2; 202; idempotent |
+| `POST /api/pos/v1/pricing/acks` | §9.2 (including `clockIncidents`); 202; idempotent |
 | `serverTime` | also on every pricing response header (`X-Server-Time`) |
 
 Error vocabulary: the read-down `Error` envelope plus `pricing_revision_superseded`. Scope comes from the device row only; a foreign revision or epoch is refused non-disclosingly (§II, §XII).
@@ -336,7 +359,7 @@ Also in PR-06 (Console-facing, moved there by RT-282): the **distribution-status
 
 | Item | Addition |
 |---|---|
-| PR-07 `[GATED]` sales | sale-level `pricingContext` and line-level `pricedAt` (§9.1), optional and additive, frozen on capture. The line union is unchanged |
+| PR-07 `[GATED]` sales | line-level `pricingCapture` and sale-level aggregate `pricingContext` (§9.1), optional and additive, frozen on capture. The line union is unchanged |
 | PR-11 / PR-16b catalogue read-down | under `pricing` authority the snapshot includes active products **without** a current price (§5.2). Rows keep `price` as a compatibility field. Legacy rows gain the `origin: "legacy"` provenance (already planned in PR-11) |
 | PR-04 change-set contract (spec 042) | `critical` on emergency sets; per-line `offlinePolicy` |
 | Tenant settings (interim, retired into RT-284) | `pricing.offline` (the §7.2 values) and `pricing.preDeliveryWarnLead` |
@@ -345,12 +368,13 @@ Also in PR-06 (Console-facing, moved there by RT-282): the **distribution-status
 
 - `pricing_device_revision_state` (RLS by tenant): `tenant_id`, `store_id`, `device_id` (FK `devices`), `last_received_revision`, `last_received_epoch`, `last_received_at`, `last_applied_revision`, `last_applied_epoch`, `device_applied_at`, `last_applied_ack_at`, `last_failed_revision`, `last_failed_epoch`, `last_failure_code`, `last_failed_at`, `last_clock_state`, `last_check_at` (server time of the latest manifest read by this device). PK `(tenant_id, device_id)`.
 - Store-level state is **derived** from it (worst device), not stored.
-- `stores.pricing_time_basis_epoch` `int NOT NULL DEFAULT 0` (or a 1:1 side table if `stores` must stay untouched), incremented under the pricing publish lock on a zone change.
+- `store_pricing_time_basis_epochs` (`tenant_id`, `store_id`, `epoch`, `timezone`, `started_at`; PK `(tenant_id, store_id, epoch)`; insert-only): the current epoch is the highest row. A row is inserted under the pricing publish lock on a zone change, and at Store creation (epoch 0). It is the zone history that revalidation needs (§9.3), so it also answers spec 041 Q-3 for pricing revalidation, though not for general historical inquiry.
+- `pricing_device_clock_incidents` (RLS by tenant): `tenant_id`, `device_id`, `kind`, `by_ms`, `from_at`, `to_at`, `reported_at`; unique on `(device_id, kind, from_at)` so a resent incident is idempotent.
 - `pricing_revisions.critical boolean NOT NULL DEFAULT false`; per-line `offline_policy` jsonb on change-set lines and on the published events it produces.
 
 ### 10.4 POS `[GATED local migration]`
 
-`pricing_segments`, `pricing_segments_staging` (both keyed `(tenant_id, product_id, sell_unit, from)`, amount as **decimal string** plus `currency_code`, unlike `products.price_minor`), `pricing_sync_state` (authority, applied pair, hash, `last_check_at_lo`, failure fields), and the shared sealed clock mark (generalising `cashier_offline_clock_hwm`). Local queue for acks.
+`pricing_segments`, `pricing_segments_staging` (both keyed `(tenant_id, product_id, sell_unit, from)`, amount as **decimal string** plus `currency_code`, unlike `products.price_minor`), `pricing_sync_state` (authority, applied pair, hash, `last_check_at_lo`, failure fields), the two sealed clock marks `hwm_trusted` and `wall_seen` (generalising `cashier_offline_clock_hwm`), and a local queue for acks and clock incidents.
 
 ## 11. Interactions
 
@@ -370,19 +394,19 @@ Also in PR-06 (Console-facing, moved there by RT-282): the **distribution-status
 | Projection (PR-11) | property: projection at `(R, E)` equals `resolve()` sampled at every segment boundary ± 1 ms; deterministic hash across row order; a revision outside a Store's fan-out leaves its projection and hash unchanged; Book event across two zones → two different absolute `from`s; DST gap and overlap (spec 041 Q-2); zone change → epoch + 1, instants move, hash changes; future-only product appears; paging consistent while a new revision is published mid-walk (`pricing_revision_superseded`) |
 | Auth / isolation | device of store A cannot read store B's pair (non-disclosing 404); cross-tenant; revoked device 401 |
 | Acks / state (PR-05/12) | idempotent replay; out-of-order acks keep the highest pair; `failed` keeps `applied`; health states incl. `missed_pre_delivery` at the exact per-Store instant and `critical_not_applied` |
-| Revalidation | equal → none; tampered price → `price_mismatch`; older revision after critical activation → `sold_before_correction`; segment `from` after receive time → `early_activation`; `pricedAt` ahead of receive time → `device_clock_ahead`; capture never fails |
+| Revalidation | equal → none; tampered price → `price_mismatch`; older revision after critical activation → `sold_before_correction`; segment `from` after receive time → `early_activation`; `ran_ahead` incident covering an `unverified` line, before or after the sale arrives → `early_activation`; `pricedAt` ahead of receive time → `device_clock_ahead`; a time-zone change between capture and sync → no false `price_mismatch` (epoch history used); capture never fails |
 | Publish lock | zone change vs publish race → either order yields a consistent `(R, E)` |
 
 ### 12.2 POS
 
 | Area | Tests |
 |---|---|
-| Clock | matrix `{anchored, unverified, suspect} × {wall correct, forward 1 h, back 10 min, back 2 min, suspend 8 h}`: `t_lo` never decreases, activation never early in `anchored`, `suspect` freezes activation and forces stale; anchor rejected when RTT > 5 s; HWM sealed and restored after restart |
+| Clock | matrix `{anchored, unverified, suspect} × {wall correct, forward 1 h, forward > maxStaleness, back 10 min, back 2 min, suspend 8 h}`: `t_lo` never decreases while anchored, activation never early in `anchored`, `unverified` activation capped at `hwm_trusted + maxStaleness`, `suspect` freezes activation and forces stale; `hwm_trusted` never raised from wall time (offline restart with clock +1 day, then re-anchor → correct activation and a `ran_ahead` incident); set-forward-then-back offline → `rolled_back` incident; anchor rejected when RTT > 5 s; both marks sealed and restored after restart |
 | Apply | promote atomicity (throw inside the transaction keeps previous pair and rows); hash mismatch, count mismatch, page pair mismatch, downgrade → previous kept, ack `failed` with the code; never a mix of two pairs (rows of one pair only, checked after every failure injection) |
 | Activation | boundary inclusive/exclusive at `from` ± 1 ms; a line scanned before the boundary keeps its price; resume diff after the boundary; gap → not sellable |
 | Staleness | per mode × {fresh, ageing, stale, never applied, clock suspect}; 304 refreshes the check, a failed fetch does not; clamps |
 | Critical | urgent fetch before next scan; open-cart flagged lines require explicit accept; per-line `offlinePolicy` until `until` |
-| Sale | provenance verbatim; `pricingContext` frozen; mid-cart apply gives lines with two revisions, each explicit |
+| Sale | provenance verbatim; per-line `pricingCapture` frozen; a cart that turns stale or `suspect` mid-way has the later lines `stale` / `suspect` and the sale aggregate `stale = true`; mid-cart apply gives lines with two revisions or epochs, each explicit |
 | Authority | `legacy` → catalogue price used, pricing snapshot not fetched; `pricing` → catalogue price ignored |
 
 ### 12.3 PR-V2 end-to-end (rt9, produces G4b)
@@ -404,7 +428,7 @@ Ratifying this design (G4a) unlocks these. `[GATED]` items need their own owner 
 | Slice | Content | Gate / depends on |
 |---|---|---|
 | **BC-G4-1** (part of PR-06) `[GATED OpenAPI]` | `pos-pricing` document (§10.1), distribution/health read models | G4a; PR-07 union; OD-6 re-pin note to POS |
-| **BC-G4-2** (part of PR-07) `[GATED]` | sale `pricingContext`, line `pricedAt` | with PR-07 |
+| **BC-G4-2** (part of PR-07) `[GATED]` | line `pricingCapture`, sale `pricingContext` | with PR-07 |
 | **BC-G4-3** (PR-05 second migration) `[GATED migration]` | §10.3 tables and columns | G4a; PR-05 core tables |
 | **BC-G4-4** (part of PR-04/PR-10) | `critical` flag and per-line `offlinePolicy` in the change-set contract and publish | PR-04, PR-10 |
 | **BC-G4-5** (PR-11) | projection builder, manifest, snapshot, hash, `serverTime`, acks endpoint; serves `authority: legacy` until cutover | BC-G4-1, BC-G4-3, PR-08 |
@@ -416,11 +440,11 @@ Ratifying this design (G4a) unlocks these. `[GATED]` items need their own owner 
 
 | Slice | Content | Depends on |
 |---|---|---|
-| **POS-G4-1** | pricing clock service: anchor, `t_lo` / `t_hi`, states, shared sealed HWM (generalise P7) | none (can start after G4a) |
+| **POS-G4-1** | pricing clock service: anchor, `t_lo` / `t_hi`, states, the two sealed marks (generalise P7), clock incidents | none (can start after G4a) |
 | **POS-G4-2** `[GATED local migration]` | §10.4 tables | BC-G4-1 contract |
 | **POS-G4-3** | manifest / snapshot client and driver (poll cadence, backoff, urgent), stage → verify → promote, acks queue, contract re-pin | POS-G4-1, POS-G4-2, BC-G4-5 |
 | **POS-G4-4** | scan-time evaluation, sellability under `pricing` authority, mode enforcement, ageing/stale banner, diagnostics | POS-G4-3 |
-| **POS-G4-5** (PR-P2) | line provenance verbatim + `pricedAt` + sale `pricingContext`; critical flagged-line accept before tender | POS-G4-4, BC-G4-2 |
+| **POS-G4-5** (PR-P2) | line provenance verbatim + `pricingCapture` + sale `pricingContext`; critical flagged-line accept before tender | POS-G4-4, BC-G4-2 |
 
 PR-V2 (§12.3) closes G4b once BC-G4-5…7 and POS-G4-1…5 are on rt9.
 

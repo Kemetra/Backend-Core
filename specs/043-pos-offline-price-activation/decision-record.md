@@ -41,7 +41,7 @@ sellable filter and the manifest `authority` flip together per tenant (§5.2, §
 
 | Option | Content |
 |---|---|
-| **A (recommended)** | The pair **`(storeRevision, timeBasisEpoch)`**, ordered lexicographically. `timeBasisEpoch` rises when the Store's zone changes (under the pricing publish lock). A lower pair is a downgrade and is refused. |
+| **A (recommended)** | The pair **`(storeRevision, timeBasisEpoch)`**, ordered lexicographically. `timeBasisEpoch` rises when the Store's zone changes (under the pricing publish lock), and BC keeps an insert-only epoch → zone history so sales priced under an old epoch revalidate with the zone that was in force. A lower pair is a downgrade and is refused. |
 | B | `storeRevision` only; a zone change publishes a synthetic pricing revision fanned out to the Store. Needs a revision kind without a Change Set. |
 | C | `storeRevision` only; ignore zone changes until the next revision. Leaves wrong instants on devices. |
 
@@ -64,13 +64,15 @@ A window is a later optimisation if size metrics require it.
 
 | Option | Content |
 |---|---|
-| **A (recommended)** | **Server-anchored monotonic clock + sealed high-water mark** (generalising the offline-grant mark). Anchor = `serverTime` from any manifest with RTT ≤ 5 s; `t_lo = max(hwm, serverTime + Δmono)`; after restart or OS resume `t_lo = max(hwm, wall)` (`unverified`). **Activation uses the lower bound `t_lo`; staleness uses the upper bound `t_hi = max(t_lo, wall)`.** Drift budget 120 s; rollback tolerance 5 min. |
+| **A (recommended)** | **Server-anchored monotonic clock + two sealed marks** (generalising the offline-grant mark): `hwm_trusted`, raised **only from anchored time**, and `wall_seen`, raised from the wall clock and used **only to detect rollback**. Anchor = `serverTime` from any manifest with RTT ≤ 5 s; `t_lo = max(hwm_trusted, serverTime + Δmono)`; after restart or OS resume (`unverified`) `t_lo = max(hwm_trusted, min(wall, hwm_trusted + maxStaleness))`. **Activation uses the lower bound `t_lo`; staleness uses the upper bound `t_hi = max(t_lo, wall)`.** At re-anchor, a wall clock that ran ahead or was rolled back produces a reported **clock incident**. Drift budget 120 s; rollback tolerance 5 min. |
 | B | Wall clock with skew detection only. Easy to roll back to keep an old price. |
 | C | Server-signed activation tokens per revision. Needs signing keys and still needs local time to know *when* to use them. |
 
 **Selected: A.** Selected — recommended option, chosen by the coordinator under the owner's standing delegation; owner may revisit.
-Why: it reuses machinery the POS already has, closes rollback, biases activation late and staleness early, and makes the
-remaining risk (forward tampering after an offline restart) detectable on sync (G4-13). A signed manifest stays optional
+Why: it reuses machinery the POS already has, closes rollback, biases activation late and staleness early, and keeps
+untrusted wall time out of the trusted floor, so a re-anchor always restores correct activation. The remaining risk
+(forward tampering after an offline restart) is bounded by `maxStaleness` and detected through clock incidents (G4-13),
+except when the device stays offline until real time overtakes the forged time. That case is stated as undetectable. A signed manifest stays optional
 hardening (RT-284 Q7 precedent).
 
 ## G4-6 — Behaviour when time cannot be trusted
@@ -135,11 +137,11 @@ bounds that exposure.
 
 | Option | Content |
 |---|---|
-| **A (recommended)** | Line: PR-07 provenance union verbatim, with `pricingRevision` = the **store revision the device applied** (the `asOfRevision` that reproduces its belief), plus a sibling `pricedAt` (`t_lo` at scan). Sale: `pricingContext {appliedRevision, timeBasisEpoch, stale, offlineMode, lastPricingCheckAt, clockState}`. |
+| **A (recommended)** | Line: PR-07 provenance union verbatim, with `pricingRevision` = the **store revision the device applied** (the `asOfRevision` that reproduces its belief), plus a sibling **`pricingCapture {pricedAt, timeBasisEpoch, stale, clockState}`** frozen per line (these can change inside one open cart). Sale: an **aggregate** `pricingContext {appliedRevision (max), stale (any line), clockState (worst line), offlineMode, lastPricingCheckAt}`. |
 | B | `pricingRevision` = the revision that published the event. Does not reproduce what the device saw when a later revision changed nothing for that key but did for others. |
 
 **Selected: A.** Selected — recommended option, chosen by the coordinator under the owner's standing delegation; owner may revisit.
-Consequence: PR-07 gains `pricedAt` and `pricingContext` (additive). The union shape shared by PR-06 and PR-07 is unchanged.
+Consequence: PR-07 gains `pricingCapture` and `pricingContext` (additive). The union shape shared by PR-06 and PR-07 is unchanged.
 
 ## G4-12 — Sellability after cutover
 
@@ -155,7 +157,7 @@ Interaction recorded for RT-485 (PR-16b): flip the filter and the manifest `auth
 
 | Option | Content |
 |---|---|
-| **A (recommended)** | Asynchronous, never on the capture path. Recompute `resolve(item, store, pricedAt, pricingRevision)`; findings `price_mismatch`, `sold_before_correction`, `early_activation` (segment start later than BC's receive time), `device_clock_ahead`. Findings go to Pricing Health; capture never fails; sale facts are never changed. |
+| **A (recommended)** | Asynchronous, never on the capture path. Recompute `resolve(item, store, pricedAt, pricingRevision)` with the zone of the line's `timeBasisEpoch`; findings `price_mismatch`, `sold_before_correction`, `early_activation` (from device clock incidents, matched retroactively, or a segment start later than BC's receive time), `device_clock_ahead`. A forward-clock sale with no such evidence is stated as undetectable. Findings go to Pricing Health; capture never fails; sale facts are never changed. |
 | B | Reject sales whose prices do not revalidate. Contradicts 611 and loses real sales. |
 
 **Selected: A.** Selected — recommended option, chosen by the coordinator under the owner's standing delegation; owner may revisit.
