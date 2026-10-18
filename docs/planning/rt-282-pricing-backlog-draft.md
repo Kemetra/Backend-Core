@@ -101,6 +101,7 @@ Conventions:
 
 #### PR-03 → **RT-485** — BC — Pricing migration and authority-cutover plan
 - **Work Mode:** Planning
+- **Planned in:** [`specs/043-pricing-legacy-cutover/plan.md`](../../specs/043-pricing-legacy-cutover/plan.md). That plan amends the PR-11 row below: under strict POS validation (OD-6), PR-06's shape ships as a new versioned read-down surface, and read-down v1 stays schema-identical across the cutover (spec 043 §7). It also splits PR-16a into PR-16a-1/16a-2 and adds PR-03E (row-count census) and PR-16c (legacy retirement).
 - **Decisions:** 709–718
 - **Gate:** none
 - **Depends on:** PR-01, OD-5
