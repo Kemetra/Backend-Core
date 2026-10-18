@@ -320,7 +320,11 @@ export class AuthController {
   ): Promise<void> {
     let decision: RateLimitDecision;
     try {
-      decision = await checkWithin(this.rateLimiter, bucket, identifier, policy, this.limiterTimeoutMs);
+      decision = await checkWithin(
+        this.rateLimiter,
+        { bucketName: bucket, identifier, bucket: policy },
+        this.limiterTimeoutMs,
+      );
     } catch (err) {
       // RT-628, owner ruling O6: fail closed, deliberately. The log names the
       // bucket only (no email or IP: observability contract, no PII).

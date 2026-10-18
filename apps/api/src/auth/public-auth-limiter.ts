@@ -68,6 +68,13 @@ function timer(ms: number): { done: Promise<typeof TIMED_OUT>; cancel: () => voi
   return { done, cancel: () => clearTimeout(handle) };
 }
 
+/** One limiter hit: which bucket, for whom, under which policy. */
+export interface LimiterHit {
+  readonly bucketName: string;
+  readonly identifier: string;
+  readonly bucket: RateLimitBucket;
+}
+
 /**
  * `limiter.check` bounded by `timeoutMs`. Throws `PublicAuthLimiterUnavailable`
  * on a timeout or an error; a refusal (`allowed: false`) is returned as is.
@@ -79,11 +86,10 @@ function timer(ms: number): { done: Promise<typeof TIMED_OUT>; cancel: () => voi
  */
 export async function checkWithin(
   limiter: RateLimiter,
-  bucketName: string,
-  identifier: string,
-  bucket: RateLimitBucket,
+  hit: LimiterHit,
   timeoutMs: number,
 ): Promise<RateLimitDecision> {
+  const { bucketName, identifier, bucket } = hit;
   const pending = limiter.check(bucketName, identifier, bucket);
   const t = timer(timeoutMs);
   let outcome: RateLimitDecision | typeof TIMED_OUT;

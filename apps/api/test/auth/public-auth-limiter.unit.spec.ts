@@ -32,11 +32,12 @@ function deferred<T>() {
 }
 
 const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
+const hit = (bucketName: string, identifier: string) => ({ bucketName, identifier, bucket: POLICY });
 
 describe("checkWithin", () => {
   it("returns the limiter's decision when it answers in time", async () => {
     const { asLimiter, fake } = limiter(async () => ALLOWED);
-    await expect(checkWithin(asLimiter, "signin_ip", "1.2.3.4", POLICY, 1_000)).resolves.toEqual(ALLOWED);
+    await expect(checkWithin(asLimiter, hit("signin_ip", "1.2.3.4"), 1_000)).resolves.toEqual(ALLOWED);
     expect(fake.check).toHaveBeenCalledWith("signin_ip", "1.2.3.4", POLICY);
     expect(fake.release).not.toHaveBeenCalled();
   });
@@ -44,13 +45,13 @@ describe("checkWithin", () => {
   it("returns a refusal unchanged (a 429 decision is not an outage)", async () => {
     const refused = { allowed: false, count: 6, remaining: 0, resetMs: 1_000 };
     const { asLimiter } = limiter(async () => refused);
-    await expect(checkWithin(asLimiter, "signin_ip", "x", POLICY, 1_000)).resolves.toEqual(refused);
+    await expect(checkWithin(asLimiter, hit("signin_ip", "x"), 1_000)).resolves.toEqual(refused);
   });
 
   it("rejects with reason 'timeout' within the bound when the limiter never answers", async () => {
     const { asLimiter } = limiter(() => new Promise<never>(() => undefined));
     const started = Date.now();
-    const err = await checkWithin(asLimiter, "signin_ip", "x", POLICY, 50).catch((e: unknown) => e);
+    const err = await checkWithin(asLimiter, hit("signin_ip", "x"), 50).catch((e: unknown) => e);
     expect(Date.now() - started).toBeLessThan(1_000);
     expect(err).toBeInstanceOf(PublicAuthLimiterUnavailable);
     expect((err as PublicAuthLimiterUnavailable).reason).toBe("timeout");
@@ -60,7 +61,7 @@ describe("checkWithin", () => {
     const { asLimiter, fake } = limiter(async () => {
       throw new Error("connection refused");
     });
-    const err = await checkWithin(asLimiter, "signin_ip", "x", POLICY, 1_000).catch((e: unknown) => e);
+    const err = await checkWithin(asLimiter, hit("signin_ip", "x"), 1_000).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PublicAuthLimiterUnavailable);
     expect((err as PublicAuthLimiterUnavailable).reason).toBe("error");
     expect(fake.release).not.toHaveBeenCalled();
@@ -69,7 +70,7 @@ describe("checkWithin", () => {
   it("gives back a hit that lands after the timeout (the request was refused before authentication)", async () => {
     const late = deferred<RateLimitDecision>();
     const { asLimiter, fake } = limiter(() => late.promise);
-    await expect(checkWithin(asLimiter, "signin_account", "a@x.test", POLICY, 20)).rejects.toBeInstanceOf(
+    await expect(checkWithin(asLimiter, hit("signin_account", "a@x.test"), 20)).rejects.toBeInstanceOf(
       PublicAuthLimiterUnavailable,
     );
     expect(fake.release).not.toHaveBeenCalled();
@@ -80,30 +81,21 @@ describe("checkWithin", () => {
     expect(fake.release).toHaveBeenCalledWith("signin_account", "a@x.test");
   });
 
-  it("does not release when the late call fails (no hit was taken), and never throws unhandled", async () => {
+  it.each([
+    { late: "rejects (no hit was taken)", settle: "reject", releases: 0 },
+    { late: "resolves, and the compensating release fails", settle: "resolve", releases: 1 },
+  ] as const)("a late call that $late never throws unhandled", async ({ settle, releases }) => {
     const late = deferred<RateLimitDecision>();
     const { asLimiter, fake } = limiter(() => late.promise, async () => {
       throw new Error("still down");
     });
-    await expect(checkWithin(asLimiter, "signin_ip", "x", POLICY, 20)).rejects.toBeInstanceOf(
+    await expect(checkWithin(asLimiter, hit("signin_ip", "x"), 20)).rejects.toBeInstanceOf(
       PublicAuthLimiterUnavailable,
     );
-    late.reject(new Error("MaxRetriesPerRequestError"));
+    if (settle === "reject") late.reject(new Error("MaxRetriesPerRequestError"));
+    else late.resolve(ALLOWED);
     await flush();
-    expect(fake.release).not.toHaveBeenCalled();
-  });
-
-  it("swallows a failing compensating release", async () => {
-    const late = deferred<RateLimitDecision>();
-    const { asLimiter, fake } = limiter(() => late.promise, async () => {
-      throw new Error("still down");
-    });
-    await expect(checkWithin(asLimiter, "signin_ip", "x", POLICY, 20)).rejects.toBeInstanceOf(
-      PublicAuthLimiterUnavailable,
-    );
-    late.resolve(ALLOWED);
-    await flush();
-    expect(fake.release).toHaveBeenCalledTimes(1);
+    expect(fake.release).toHaveBeenCalledTimes(releases);
   });
 });
 
