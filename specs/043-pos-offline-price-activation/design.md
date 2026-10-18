@@ -332,7 +332,7 @@ When a sale arrives, BC (asynchronously, never on the capture path) recomputes, 
 - different → `price_mismatch` finding (tampered projection or POS defect). Because the epoch's zone is used, a time-zone change between capture and sync does not cause a false mismatch;
 - `pricedAt` is after a critical revision's first activation instant for that Store and the line's `pricingRevision` is older → `sold_before_correction`;
 - **early activation**, judged from evidence tied to trusted time, not from the sale's own clock:
-  - the line is `unverified` or `suspect` and falls inside a reported **clock incident** interval of that device: BC shifts `pricedAt` back by the incident's `byMs` and re-resolves. A different segment → `early_activation`. A `ran_ahead` incident that arrives *after* the sale is matched retroactively when it arrives;
+  - the line is `unverified` or `suspect` and falls inside a reported **clock incident** interval of that device: BC re-resolves at **`max(incident.from, pricedAt − byMs)`**, never earlier than the last trusted instant. A different segment → `early_activation`. `byMs` is measured once, at the re-anchor, from the highest untrusted `t_lo` actually used. A line sold before a mid-interval clock change may therefore be shifted by more or less than its own offset, so the finding is a **suspicion for review**, not proof, and it never changes the sale. A `ran_ahead` incident that arrives *after* the sale is matched retroactively when it arrives;
   - the selected segment's `from` is later than BC's receive time of the sale → `early_activation` (the price was not in effect even when BC received it);
   - `pricedAt` later than the receive time + 120 s → `device_clock_ahead`.
 
