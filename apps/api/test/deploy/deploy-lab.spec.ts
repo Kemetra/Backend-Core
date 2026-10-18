@@ -197,6 +197,11 @@ describe("deploy-lab workflow", () => {
     expect(at("sha256sum --check --strict")).toBeLessThan(extract);
     expect(at('[[ "$TYPES" =~ ^[-d]+$ ]]')).toBeLessThan(extract);
     expect(at('case "$ENTRY" in "$BUNDLE"/*)')).toBeLessThan(extract);
+    // a gzip bomb is stopped by a bounded decompress before any tar call reads the archive
+    const bounded = at('gzip -dc "$TARBALL" | head -c "$((MAX_BUNDLE_BYTES + 1))" | wc -c');
+    expect(bounded).toBeLessThan(at("tar -tvzf"));
+    expect(at('[ "$EXPANDED" -le "$MAX_BUNDLE_BYTES" ] || fail')).toBeLessThan(at("tar -tvzf"));
+    expect(at('[ "$(wc -l <<<"$ENTRIES")" -le "$MAX_BUNDLE_ENTRIES" ] || fail')).toBeLessThan(extract);
     expect(at("unsafe bundle entry path")).toBeLessThan(extract);
     expect(at('refs/tags/$BACKEND_RELEASE^{commit}')).toBeGreaterThan(-1);
   });

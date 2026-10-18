@@ -138,9 +138,18 @@ jobs:
           done
           (cd "$EVIDENCE/release" && sha256sum --check --strict SHA256SUMS) \
             || fail "release assets do not match SHA256SUMS"
+          # Bound the bundle before any tar call decompresses it: a real bundle is
+          # well under 1 MiB expanded, so a gzip bomb stops here, reading at most
+          # MAX_BUNDLE_BYTES + 1 bytes and writing nothing to disk.
+          MAX_BUNDLE_BYTES=$((16 * 1024 * 1024))
+          MAX_BUNDLE_ENTRIES=500
+          EXPANDED="$(gzip -dc "$TARBALL" | head -c "$((MAX_BUNDLE_BYTES + 1))" | wc -c)" || true
+          [[ "$EXPANDED" =~ ^[0-9]+$ ]] || fail "could not measure the expanded bundle size"
+          [ "$EXPANDED" -le "$MAX_BUNDLE_BYTES" ] || fail "bundle expands beyond $MAX_BUNDLE_BYTES bytes"
           TYPES="$(tar -tvzf "$TARBALL" | cut -c1 | sort -u | tr -d '\n')"
           [[ "$TYPES" =~ ^[-d]+$ ]] || fail "bundle holds an entry that is not a regular file or directory"
           ENTRIES="$(tar -tzf "$TARBALL")"
+          [ "$(wc -l <<<"$ENTRIES")" -le "$MAX_BUNDLE_ENTRIES" ] || fail "bundle has more than $MAX_BUNDLE_ENTRIES entries"
           while IFS= read -r ENTRY; do
             case "$ENTRY" in "$BUNDLE"/*) ;; *) fail "bundle entry outside $BUNDLE/" ;; esac
             case "$ENTRY" in /* | *..* | *\\*) fail "unsafe bundle entry path" ;; *) ;; esac
