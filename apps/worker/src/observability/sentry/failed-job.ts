@@ -68,6 +68,8 @@ export const DECLARED_JOB_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 const MASKED_JOB_NAME = "[job_name]";
+// Start of the first V8 stack frame line.
+const STACK_FRAME_LINE = "\n    at ";
 
 /**
  * True when BullMQ will not retry this failure. In bullmq 5.76 `failed` fires
@@ -125,27 +127,46 @@ function correlationTags(data: unknown): Record<string, string> {
 }
 
 /**
- * The error to report. When the job name is undeclared and the message echoes
- * it, a copy with the name masked (message and stack) is sent instead.
+ * Masks one undeclared job name that an error message echoes, in the message
+ * and the stack header only. Stack frames are code locations and stay as they
+ * are, so a short name (`at`, `/`) cannot break Sentry's frame parsing.
  */
+class JobNameMask {
+  private readonly name: string;
+
+  private constructor(name: string) {
+    this.name = name;
+  }
+
+  /** A mask when the job name is undeclared and the message repeats it. */
+  static forFailure(job: FailedJobLike | undefined, error: Error): JobNameMask | undefined {
+    const name = job?.name;
+    if (!name || DECLARED_JOB_NAMES.has(name)) return undefined;
+    return error.message.includes(name) ? new JobNameMask(name) : undefined;
+  }
+
+  applyTo(error: Error): Error {
+    const masked = new Error(this.masked(error.message));
+    masked.name = error.name;
+    if (error.stack === undefined) delete masked.stack;
+    else masked.stack = this.maskedStackHeader(error.stack);
+    return masked;
+  }
+
+  private maskedStackHeader(stack: string): string {
+    const firstFrame = stack.indexOf(STACK_FRAME_LINE);
+    if (firstFrame === -1) return this.masked(stack);
+    return this.masked(stack.slice(0, firstFrame)) + stack.slice(firstFrame);
+  }
+
+  private masked(text: string): string {
+    return text.split(this.name).join(MASKED_JOB_NAME);
+  }
+}
+
+/** The error to report: a masked copy when it echoes an undeclared job name. */
 export function reportableError(job: FailedJobLike | undefined, error: Error): Error {
-  const name = echoedUndeclaredName(job?.name, error.message);
-  if (name === undefined) return error;
-  const masked = new Error(maskJobName(error.message, name));
-  masked.name = error.name;
-  if (error.stack === undefined) delete masked.stack;
-  else masked.stack = maskJobName(error.stack, name);
-  return masked;
-}
-
-/** The job name when it is undeclared and the message repeats it. */
-function echoedUndeclaredName(name: string | undefined, message: string): string | undefined {
-  if (!name || DECLARED_JOB_NAMES.has(name)) return undefined;
-  return message.includes(name) ? name : undefined;
-}
-
-function maskJobName(text: string, name: string): string {
-  return text.split(name).join(MASKED_JOB_NAME);
+  return JobNameMask.forFailure(job, error)?.applyTo(error) ?? error;
 }
 
 /**

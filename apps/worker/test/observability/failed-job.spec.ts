@@ -188,6 +188,21 @@ describe("reportableError", () => {
     expect(reportableError(job(), err)).toBe(err);
   });
 
+  it("masks only the stack header, so a short name like `at` leaves the frames intact", () => {
+    const err = new Error("Unknown job name: 'at'");
+    const frames = "\n    at Worker.run (/app/dist/worker.js:10:5)\n    at next (/app/x.js:1:1)";
+    err.stack = `Error: Unknown job name: 'at'${frames}`;
+    const out = reportableError(job({ name: "at" }), err);
+    expect(out.message).toBe("Unknown job name: '[job_name]'");
+    expect(out.stack).toBe(`Error: Unknown job name: '[job_name]'${frames}`);
+  });
+
+  it("masks a stack that has no frame lines", () => {
+    const err = new Error("bad sku-1");
+    err.stack = "Error: bad sku-1";
+    expect(reportableError(job({ name: "sku-1" }), err).stack).toBe("Error: bad [job_name]");
+  });
+
   it("masks the message even when the error has no stack", () => {
     const err = new Error(`bad ${RAW}`);
     delete err.stack;
