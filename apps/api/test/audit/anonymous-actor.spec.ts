@@ -70,7 +70,8 @@ import {
 } from "../../src/common/logging.interceptor";
 import { RequestIdInterceptor } from "../../src/common/request-id.interceptor";
 import { ZodValidationPipe } from "../../src/common/zod-validation.pipe";
-import type { RedisLike } from "../../src/auth/rate-limit";
+import type { RedisLike, WindowHit } from "../../src/auth/rate-limit";
+import { fixedWindowHit } from "../_helpers/fixed-window-hit";
 import {
   applyAllUpAndCreateAppRole,
   startPgEnv,
@@ -102,16 +103,8 @@ class FakeRedis implements RedisLike {
     }
     return entry;
   }
-  /** Mirrors the RT-618 script: INCR, seed the TTL if none, return count + TTL. */
-  async incrWindow(key: string, ttlMs: number): Promise<{ count: number; ttlMs: number }> {
-    let live = this.gc(key);
-    if (!live) {
-      live = { value: 0, expiresAt: null };
-      this.store.set(key, live);
-    }
-    live.value += 1;
-    if (live.expiresAt === null) live.expiresAt = Date.now() + ttlMs;
-    return { count: live.value, ttlMs: Math.max(0, live.expiresAt - Date.now()) };
+  async incrWindow(key: string, ttlMs: number): Promise<WindowHit> {
+    return fixedWindowHit(this.store, key, this.gc(key), ttlMs, Date.now());
   }
   async pttl(key: string): Promise<number> {
     const live = this.gc(key);
