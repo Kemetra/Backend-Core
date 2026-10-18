@@ -74,12 +74,20 @@ describe("failedJobTags", () => {
     tracer = undefined;
   });
 
-  it("tags queue, job name and outcome", () => {
+  it("tags queue, job name, outcome and a bounded error_class", () => {
     expect(failedJobTags(QUEUE, job(), new Error("x"))).toEqual({
       queue: QUEUE,
+      error_class: "UnknownError",
       job_name: "audit.write",
       outcome: "exhausted",
     });
+  });
+
+  it("keeps a known error_class from the worker metrics' closed set", () => {
+    class TenantContextMissingError extends Error {}
+    expect(failedJobTags(QUEUE, job(), new TenantContextMissingError("x"))["error_class"]).toBe(
+      "TenantContextMissingError",
+    );
   });
 
   it("marks an UnrecoverableError as outcome unrecoverable", () => {
@@ -87,7 +95,7 @@ describe("failedJobTags", () => {
   });
 
   it("keeps only the queue when BullMQ passes no job", () => {
-    expect(failedJobTags(QUEUE, undefined, new Error("x"))).toEqual({ queue: QUEUE });
+    expect(failedJobTags(QUEUE, undefined, new Error("x"))).toEqual({ queue: QUEUE, error_class: "UnknownError" });
   });
 
   it("carries the job's request_id", () => {
@@ -137,7 +145,13 @@ describe("captureFinalJobFailure", () => {
     captureFinalJobFailure(QUEUE)(job({ data: { request_id: REQUEST_ID } }), err);
     expect(capture).toHaveBeenCalledTimes(1);
     expect(capture).toHaveBeenCalledWith(err, {
-      tags: { queue: QUEUE, job_name: "audit.write", outcome: "exhausted", request_id: REQUEST_ID },
+      tags: {
+        queue: QUEUE,
+        error_class: "UnknownError",
+        job_name: "audit.write",
+        outcome: "exhausted",
+        request_id: REQUEST_ID,
+      },
     });
   });
 
@@ -157,7 +171,7 @@ describe("captureFinalJobFailure", () => {
   it("captures with the queue tag when BullMQ passes no job", () => {
     const err = new Error("orphan");
     captureFinalJobFailure(QUEUE)(undefined, err);
-    expect(capture).toHaveBeenCalledWith(err, { tags: { queue: QUEUE } });
+    expect(capture).toHaveBeenCalledWith(err, { tags: { queue: QUEUE, error_class: "UnknownError" } });
   });
 
   it("never sends job data, and the scrubber drops a malformed request_id", () => {
@@ -178,7 +192,12 @@ describe("captureFinalJobFailure", () => {
     expect(wire).not.toContain("jane@example.invalid");
     expect(wire).not.toContain("rt698-secret-token");
     expect(wire).not.toContain("SKU-1");
-    expect(sent?.tags).toEqual({ queue: QUEUE, job_name: "audit.write", outcome: "exhausted" });
+    expect(sent?.tags).toEqual({
+      queue: QUEUE,
+      error_class: "UnknownError",
+      job_name: "audit.write",
+      outcome: "exhausted",
+    });
   });
 
   it("never throws when the SDK throws", () => {

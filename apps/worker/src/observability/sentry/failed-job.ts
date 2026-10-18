@@ -15,6 +15,8 @@
  *   queue      - the BullMQ queue name
  *   job_name   - the job name (a constant per producer)
  *   outcome    - `exhausted` (attempts used up) or `unrecoverable`
+ *   error_class - the error's class from the worker metrics' closed set
+ *                 (`sanitizeErrorClass`); anything else is `UnknownError`
  *   request_id - `job.data.request_id`, when the producer stamped one
  *   trace_id   - the producer's trace, from `job.data.traceContext`
  *
@@ -28,6 +30,8 @@ import {
   trace,
   type TraceCarrier,
 } from "@data-pulse-2/shared/observability/otel";
+
+import { sanitizeErrorClass } from "../metrics/worker.metrics";
 
 /** The parts of a BullMQ `Job` this listener reads. A real `Job` satisfies it. */
 export interface FailedJobLike {
@@ -75,7 +79,10 @@ export function failedJobTags(
   job: FailedJobLike | undefined,
   error: Error | undefined,
 ): Record<string, string> {
-  const tags: Record<string, string> = { queue: queueName };
+  const tags: Record<string, string> = {
+    queue: queueName,
+    error_class: sanitizeErrorClass(error?.constructor.name),
+  };
   if (job === undefined) return tags;
   tags["job_name"] = job.name;
   tags["outcome"] = error?.name === UNRECOVERABLE_ERROR ? "unrecoverable" : "exhausted";
