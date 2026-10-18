@@ -103,5 +103,56 @@
       "notify_audit": false,
       "include_tags": false
     }
+  },
+  {
+    "key": "p2-lab02-postgres",
+    "name": "lab-02 Postgres connections high or unreachable",
+    "type": "query alert",
+    "query": "avg(last_10m):max:postgresql.percent_usage_connections{env:staging,host:retail-tower-lab-02} > 0.8",
+    "message": "{{#is_warning}}lab-02 Postgres is using {{value}} of max_connections (warning at 70%).{{/is_warning}}\n{{#is_alert}}lab-02 Postgres is using {{value}} of max_connections (alert at 80%).{{/is_alert}}\n{{#is_no_data}}No Postgres metrics from lab-02 for 10 minutes: Postgres or its agent check is down. No telemetry is not healthy.{{/is_no_data}}\n{{#is_recovery}}lab-02 Postgres connections are back to normal.{{/is_recovery}}\n\nRunbook: deploy/datadog/README.md in Kemetra/Backend-Core (RT-637).\n__ALERT_RECIPIENTS__",
+    "tags": ["env:staging", "role:db", "rt:rt-637", "priority:p2", "managed-by:deploy-datadog"],
+    "priority": 2,
+    "options": {
+      "thresholds": { "critical": 0.8, "warning": 0.7 },
+      "notify_no_data": true,
+      "no_data_timeframe": 10,
+      "require_full_window": false,
+      "notify_audit": false,
+      "include_tags": false
+    }
+  },
+  {
+    "key": "p2-lab03-mariadb",
+    "name": "lab-03 MariaDB connections high or unreachable",
+    "type": "query alert",
+    "query": "avg(last_10m):max:mysql.performance.threads_connected{env:staging,host:retail-tower-lab-03} > 120",
+    "message": "{{#is_warning}}lab-03 MariaDB has {{value}} connected threads (warning at 100 of 151).{{/is_warning}}\n{{#is_alert}}lab-03 MariaDB has {{value}} connected threads (alert at 120 of 151).{{/is_alert}}\n{{#is_no_data}}No MariaDB metrics from lab-03 for 10 minutes: MariaDB or its agent check is down. No telemetry is not healthy.{{/is_no_data}}\n{{#is_recovery}}lab-03 MariaDB is back to normal.{{/is_recovery}}\n\nScoped to host:retail-tower-lab-03 so the old phantom MariaDB host (container IP) is excluded.\nRunbook: deploy/datadog/README.md in Kemetra/Backend-Core (RT-637).\n__ALERT_RECIPIENTS__",
+    "tags": ["env:staging", "role:erp", "rt:rt-637", "priority:p2", "managed-by:deploy-datadog"],
+    "priority": 2,
+    "options": {
+      "thresholds": { "critical": 120, "warning": 100 },
+      "notify_no_data": true,
+      "no_data_timeframe": 10,
+      "require_full_window": false,
+      "notify_audit": false,
+      "include_tags": false
+    }
+  },
+  {
+    "key": "p2-lab03-redis",
+    "name": "lab-03 Redis instance down",
+    "type": "query alert",
+    "query": "avg(last_10m):count_not_null(max:redis.net.clients{env:staging,host:retail-tower-lab-03} by {redis_host}) < 1.5",
+    "message": "{{#is_alert}}Fewer than 2 Redis instances (redis-cache, redis-queue) are reporting on lab-03 (average {{value}} over 10 minutes).{{/is_alert}}\n{{#is_no_data}}No Redis metrics from lab-03 for 10 minutes: both Redis instances or the agent check are down. No telemetry is not healthy.{{/is_no_data}}\n{{#is_recovery}}Both lab-03 Redis instances are reporting again.{{/is_recovery}}\n\nRunbook: deploy/datadog/README.md in Kemetra/Backend-Core (RT-637).\n__ALERT_RECIPIENTS__",
+    "tags": ["env:staging", "role:erp", "rt:rt-637", "priority:p2", "managed-by:deploy-datadog"],
+    "priority": 2,
+    "options": {
+      "thresholds": { "critical": 1.5 },
+      "notify_no_data": true,
+      "no_data_timeframe": 10,
+      "require_full_window": false,
+      "notify_audit": false,
+      "include_tags": false
+    }
   }
 ]
