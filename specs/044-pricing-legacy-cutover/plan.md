@@ -8,7 +8,7 @@
 | **Baseline** | `origin/main` @ `c6635b8` (2026-10-18). The ticket names `ddae78a7`; every anchor below was re-checked on `c6635b8` |
 | **Decisions honoured** | Confluence RETAIL 23855106 §W, decisions 709–718 (mapped per the backlog: 709–711/713 import, 712 single writable authority, 713–715/717 dual read and compatibility, 716 override split, 718 rollback). Spec 041 OD-1–OD-6 and Q-1–Q-8; spec 042 §8 |
 | **Depends on** | Spec 041 (model, OD-5, OD-6, Q-4, Q-6), spec 042 (Change Set, rollback, publish lock), spec 043 (RT-487, POS offline price activation: G4-2 pricing stream, G4-12 sellability, design §5.2 and §11). RT-281 (Assortment) and RT-294 (Fiscal) for the non-price halves of OD-5 |
-| **Revision** | Merged as spec 043 in #827. Renumbered to 044, because RT-487 also took 043. §7 was revised to align with RT-487 / spec 043 (pricing stream G4-2, sellability G4-12, staged device switch, every-Store fan-out; MC-9 revised, MC-13 and MC-14 added) |
+| **Revision** | Merged as spec 043 in #827. Renumbered to 044, because RT-487 also took 043. §7 was revised to align with RT-487 / spec 043 (pricing stream G4-2, sellability G4-12, staged device switch, every-Store fan-out; MC-9 revised; MC-13, MC-14 and MC-15 added) |
 | **Status** | PLANNED. The decisions in §11 are selected under the owner's standing delegation; the owner may revisit. OD-1–OD-6 themselves are still awaiting owner ratification on RT-483 (comment 12557); this plan rests on the selected options |
 
 Everything below is a **proposal**. Tables, triggers, endpoints and jobs named here are created only by the
@@ -326,7 +326,7 @@ PR-V1 attaches, per tenant, before PR-16b may run:
 One per-tenant row decides **both** who may write prices and which source read-down serves, so the two can never
 diverge (decision MC-4):
 
-`tenant_pricing_authority(tenant_id PK, authority ∈ {legacy, cutover_in_progress, pricing}, changed_at, changed_by, changed_in_revision, run_id, reason)`
+`tenant_pricing_authority(tenant_id PK, authority ∈ {legacy, cutover_in_progress, pricing}, changed_at, changed_by, changed_in_revision, authority_flip_sequence, run_id, reason)`
 — RLS by tenant; every change also writes an `audit_events` row. `cutover_in_progress` is the frozen state of a
 cutover that is running (§6.3). In the single-transaction path it is never committed; in the two-phase fallback it is
 committed between phases, and an abort explicitly resets it to `legacy`. The migration that creates the table inserts a `legacy` row for
@@ -401,8 +401,11 @@ One transaction, run by an operator CLI (no new OpenAPI), recorded in a `pricing
    - set `authority = 'pricing'` and `changed_in_revision` = that revision. The catalogue `pricingAuthority`, the
      catalogue sellable filter and the pricing manifest `authority` all read this one row, so they flip together
      (spec 043 §11, item 1);
-   - write one `catalog_change_log` `upsert` per live product with `store_id NULL`, so every device re-snapshots the
-     catalogue and can complete its staged switch (§7.3);
+   - record the tenant's current `catalog_change_log` sequence on the authority row as `authority_flip_sequence`.
+     From then on, catalogue deltas answer `snapshot_required` (409) to any cursor below it (§7.3), so every device
+     has to re-snapshot;
+   - **re-check device readiness** (§7.3) inside the transaction. In the two-phase path, time can pass between
+     step 1 and the flip. A device that failed readiness in the meantime aborts the flip;
    - write the audit row and `COMMIT`.
 
 `statement_timeout` for the transaction is set from the PR-03E pair count. If the count makes a single transaction
@@ -464,19 +467,34 @@ are today, so the bump is safe to ship before any cutover.
 
 ### 7.3 Device readiness and the staged switch
 
-- **Readiness, a cutover precondition (§6.3 step 1).** Every active device of the tenant must be on a POS build that
+- **Readiness, checked at cutover (§6.3 step 1, re-checked in step 6).** Every active device of the tenant must be on a POS build that
   implements PR-P1: pricing stream, staged switch and the re-pinned catalogue contract. The evidence is BC's
   `pricing_device_revision_state.last_check_at` (spec 043 §10.3): each active device has read the pricing manifest
   within the last 24 h (proposed). A device that has never read the manifest, or that runs an older build, blocks the
   cutover. An older build would treat a price-less catalogue row as unsellable or malformed.
+- **Readiness kept after cutover (an ongoing gate).** A device enrolled, re-provisioned or downgraded after the flip
+  must not get a `pricing` catalogue it cannot handle. For a tenant on `pricing`, the catalogue read-down (snapshot and
+  deltas) requires the device to declare the pricing capability. This is a request header
+  `X-Pos-Pricing-Capable: 1`, sent by PR-P1 builds and part of the same gated PR-11 contract bump. A device without it
+  gets `409 pos_upgrade_required` and so cannot sync the price-less rows. It keeps its last catalogue, which was
+  produced under `legacy` before the flip, and its manifest shows `pricing`. Under spec 043's staged switch it
+  therefore keeps selling on legacy prices until upgraded. That residual risk is bounded and visible: Pricing Health
+  flags the device, and the same header is checked on the pricing stream.
 - **Staged switch on the device** (spec 043 §5.2).
   - When the manifest authority changes, the device keeps selling under its current authority and refreshes the
     catalogue.
   - It switches to `pricing` only after it has promoted a catalogue snapshot carrying `pricingAuthority: pricing` and
     has applied a pricing projection.
   - It switches back to `legacy` only after it has promoted a snapshot carrying `pricingAuthority: legacy`.
-  - So the cutover and R1 must each make every device re-snapshot the catalogue: §6.3 step 6 and R1 write a
-    tenant-wide catalogue change marker, one `catalog_change_log` `upsert` per live product with `store_id NULL`.
+  - So after the cutover and after R1, every device must promote a **snapshot**: deltas alone never carry
+    `pricingAuthority`, so a device that only reads deltas never completes the switch. Two mechanisms guarantee it
+    (decision MC-15):
+    - **device side:** spec 043 §5.2 already has the device fetch a full catalogue snapshot when the manifest
+      authority differs from its own;
+    - **server side, as enforcement:** each flip records `authority_flip_sequence` (§6.3 step 6, R1). Catalogue
+      deltas then answer the existing `snapshot_required` (409) to any `since` cursor below it. A device that missed
+      the manifest change is still forced onto a fresh snapshot. This changes server behaviour only; the 409 already
+      exists in the contract.
 - **Every Store needs a projection to apply** (spec 043 §11, item 2). At the flip, §6.3 step 6 publishes a revision
   that fans out to **every** Store of the tenant, using bootstrap rows at head (spec 041 data-model §2.6). So every
   device has a pair to apply before it can sell under `pricing`. Until a device applies one, it is `never_applied`
@@ -485,15 +503,15 @@ are today, so the bump is safe to ship before any cutover.
 ### 7.4 Sales and other surfaces
 
 - PR-07 adds an optional sale-line `pricingCapture` and a sale-level `pricingContext` (spec 043 §9.1). They are request
-  fields, so older builds keep working; the readiness rule makes all devices send them after cutover. They are not
+  fields, so older builds keep working. The ongoing readiness gate (§7.3) means devices syncing a `pricing` catalogue run a build that sends them. They are not
   echoed in POS-facing responses until a re-pinned POS release accepts them.
 - Admin-Console and the Connector need no change for the cutover (§2.3).
 
 ### 7.5 Change-log bridge — dropped (decision MC-13)
 
 An earlier draft of this plan kept the catalogue `price` current after cutover by writing change-log rows at every
-pricing boundary. Under §7.1 POS no longer sells from the catalogue price under `pricing`, and readiness (§7.3) rules
-out devices that would. So that bridge and its state tables (watermark, emission dedup) are **not built**. The
+pricing boundary. Under §7.1 POS no longer sells from the catalogue price under `pricing`. The ongoing readiness gate (§7.3) keeps
+older builds from syncing a `pricing` catalogue, and a device left on a pre-flip catalogue is flagged in Pricing Health. So that bridge and its state tables (watermark, emission dedup) are **not built**. The
 catalogue `price` compatibility field is resolved at read time, at `now`, and may lag between catalogue snapshots.
 Timed activation, expiry and Zone moves reach POS through the pricing stream, with pre-delivery and trusted-time
 activation (spec 043 §6).
@@ -514,7 +532,7 @@ activation (spec 043 §6).
 | Level | When | Procedure |
 |---|---|---|
 | **R0 — before cutover** | Import or shadow is wrong | Stop the import job. If needed, publish a `legacy_import` revision that ends the tenant's imported events from now (a cancel, not a delete). Legacy was authoritative throughout, so serving never changed |
-| **R1 — tenant authority back to legacy** | After cutover; any reason | One transaction under the publish lock: (1) set `authority = legacy` (Pricing authoring now rejected); (2) **reverse projection** through the privileged `pricing_reverse_project` function (§6.2): for each `(store, live product)` over **every** Store of the tenant, active or not (a Store deactivated after a Store- or Zone-scoped change must keep its price for reactivation), resolve at `(now, head)`; independently of the Store loop, for **every live product** write its Book-layer price at `now` into `tenant_products.default_price` (currency from the Book). `store_local` Book events are evaluated in the MC-1 zone: the westernmost Store zone, or the declared reference zone for a tenant with no Stores. So a Store-less tenant's defaults are still refreshed, and a Store created after the rollback serves the current price; where a Store's resolved price differs from it, set the override price (insert a price-only override row if none exists); where it equals it, clear the override price, or retire the override row if price was its only content; for `unpriced`, clear the price (same rule); (3) run the §4.3 delta import in the same transaction (authority is now `legacy`): it ends Zone events and cancels future events, so the Pricing timeline from now on equals the projected legacy state and the shadow stays at 0 mismatches as time passes; (4) full §5.2 sweep over the §5.1 sweep set (all Stores plus the Book-layer check), legacy vs Pricing at `now`, must be 0 mismatches or the transaction aborts and the tenant stays on `pricing`; (5) because the authority row is now `legacy`, the catalogue `pricingAuthority`, the sellable filter and the pricing manifest `authority` all flip back together. Write one `store_id NULL` change-log row per live product, so every device re-snapshots the catalogue. A device returns to the catalogue row price only after it has promoted a snapshot marked `pricingAuthority: legacy` (spec 043 §5.2, staged switch); (6) audit; commit |
+| **R1 — tenant authority back to legacy** | After cutover; any reason | One transaction under the publish lock: (1) set `authority = legacy` (Pricing authoring now rejected); (2) **reverse projection** through the privileged `pricing_reverse_project` function (§6.2): for each `(store, live product)` over **every** Store of the tenant, active or not (a Store deactivated after a Store- or Zone-scoped change must keep its price for reactivation), resolve at `(now, head)`; independently of the Store loop, for **every live product** write its Book-layer price at `now` into `tenant_products.default_price` (currency from the Book). `store_local` Book events are evaluated in the MC-1 zone: the westernmost Store zone, or the declared reference zone for a tenant with no Stores. So a Store-less tenant's defaults are still refreshed, and a Store created after the rollback serves the current price; where a Store's resolved price differs from it, set the override price (insert a price-only override row if none exists); where it equals it, clear the override price, or retire the override row if price was its only content; for `unpriced`, clear the price (same rule); (3) run the §4.3 delta import in the same transaction (authority is now `legacy`): it ends Zone events and cancels future events, so the Pricing timeline from now on equals the projected legacy state and the shadow stays at 0 mismatches as time passes; (4) full §5.2 sweep over the §5.1 sweep set (all Stores plus the Book-layer check), legacy vs Pricing at `now`, must be 0 mismatches or the transaction aborts and the tenant stays on `pricing`; (5) because the authority row is now `legacy`, the catalogue `pricingAuthority`, the sellable filter and the pricing manifest `authority` all flip back together. Record a new `authority_flip_sequence`, so catalogue deltas force every device onto a fresh snapshot (§7.3). A device returns to the catalogue row price only after it has promoted a snapshot marked `pricingAuthority: legacy` (spec 043 §5.2, staged switch); (6) audit; commit |
 | **R2 — code rollback** | A deploy must go back past PR-16b | **Not allowed while any tenant is on `pricing`**: older code would serve the frozen snapshot. R1 every such tenant first. The deploy checklist (PR-16b AC) states this, and the API refuses to start if the code version does not know the `authority` table but the table has a `pricing` row (a startup guard shipped one release ahead) |
 | **R3 — schema rollback** | A Pricing migration must go down | Down-migrations of the Pricing tables (PR-05) **refuse to run** when they hold rows. The authority/freeze migration (PR-16a-1) refuses when any `tenant_pricing_authority` row is not `legacy`, or when `pricing_import_runs` / `pricing_cutover_runs` hold rows; the seeded all-`legacy` rows alone do not block it. Down never drops data |
 
@@ -569,9 +587,9 @@ authorization on its own issue. Mapping to the RT-282 backlog is shown.
 | **PR-05** | PR-05 `[GATED migration]` | Impl | Pricing tables per spec 041 data-model | PR-03 (this plan) | Already includes `source = legacy_import` and revision `kind = legacy_import`. **Add:** down-migration refuses when tables hold rows (R3) |
 | **PR-16a-1** | PR-16a `[GATED migration]` | Impl | `tenant_pricing_authority`, `pricing_import_runs` (import watermarks), `pricing_cutover_runs`; the freeze trigger function on `tenant_products` and `store_product_overrides`, inert while every tenant is `legacy` | PR-05 | Up/down tests, RLS matrix; down refuses per R3 (a non-`legacy` authority row or any run row) and succeeds on seeded all-`legacy` rows; trigger unit tests for every case in §6.2, including the privileged bypass: a frozen write succeeds only through `pricing_reverse_project` as `pricing_projection_writer`, and is rejected for the runtime role even if it sets any session variable |
 | **PR-16a-2** | PR-16a | Impl | Tenant bootstrap, initial and delta import job (worker + CLI), exception report | PR-16a-1, PR-09 (resolver), PR-03E | §4 behaviour; second run with no legacy change creates no revision; MC-10 input required; exception classes reported; refuses unless `authority = legacy`, or `cutover_in_progress` when called by the cutover |
-| **PR-11** | PR-11 (amended by §7) | Impl `[GATED OpenAPI]` for the catalogue bump | Shadow resolver on read-down, nightly sweep job, mismatch metric and report. Catalogue read-down additions (§7.2): `pricingAuthority`, and price-less active rows under `pricing` | PR-09, PR-16a-2; PR-06 (spec 043 pricing stream, G4a) | §5.2/§5.3 classification; projection-level check; contract tests for the catalogue under both authorities; POS re-pin noted |
+| **PR-11** | PR-11 (amended by §7) | Impl `[GATED OpenAPI]` for the catalogue bump | Shadow resolver on read-down, nightly sweep job, mismatch metric and report. Catalogue read-down additions (§7.2): `pricingAuthority`, and price-less active rows under `pricing`. The ongoing readiness gate: `X-Pos-Pricing-Capable` header and `409 pos_upgrade_required`. Delta `snapshot_required` for cursors below `authority_flip_sequence` (§7.3) | PR-09, PR-16a-2; PR-06 (spec 043 pricing stream, G4a) | §5.2/§5.3 classification; projection-level check; contract tests for the catalogue under both authorities; POS re-pin noted |
 | **PR-V1** | PR-V1 | Verification | §5.4 evidence on rt9 and pilot | PR-11, PR-16a-2 | Thresholds of §5.4 met and attached per tenant |
-| **PR-16b** | PR-16b | Impl | Cutover CLI (§6.3, including the every-Store fan-out revision, the catalogue re-snapshot marker and the device-readiness check) **and** rollback R1 (§8.2) in the same item; app-level guards in seed CLI and `StoreOverrideService`; Pricing authoring gated by `authority`; R2 startup guard | PR-16a-2, PR-11, PR-V1, PR-10, PR-06 and POS PR-P1 rolled out to every device of the tenant | Abort path leaves the tenant byte-identical; rt9 cutover → Change Set → R1 round trip passes; sale tables checksum unchanged across cutover and rollback |
+| **PR-16b** | PR-16b | Impl | Cutover CLI (§6.3, including the every-Store fan-out revision, `authority_flip_sequence` with the delta 409 rule, and the device-readiness check before and inside the flip) **and** rollback R1 (§8.2) in the same item; app-level guards in seed CLI and `StoreOverrideService`; Pricing authoring gated by `authority`; R2 startup guard | PR-16a-2, PR-11, PR-V1, PR-10, PR-06 and POS PR-P1 rolled out to every device of the tenant | Abort path leaves the tenant byte-identical; rt9 cutover → Change Set → R1 round trip passes; sale tables checksum unchanged across cutover and rollback |
 | **PR-16c** | new, later `[GATED migration]` | Impl | Retire legacy price columns and `price_history` (archive first); remove the v1 legacy path | Every tenant past its §8.4 window; RT-281 and RT-294 switches for the non-price columns | Not planned in detail here |
 
 PR-16b may not ship without its rollback half: a cutover with no tested way back would break §8.
@@ -593,7 +611,8 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 | **MC-8** | Cutover execution | One transaction per tenant; two-phase fallback only above ~500 000 pairs, as settled by PR-03E (§6.3) | Always two-phase |
 | **MC-9** | How pricing reaches POS, and the contract pins | Follow spec 043 G4-2: a separate pricing stream (PR-06). The catalogue read-down gains `pricingAuthority`, and under `pricing` it lists active products without a current price. Each bump ships with a POS re-pin, and cutover requires every active device to be ready (§7.3). *Revised after RT-487; the first version proposed a read-down v2* | A read-down v-next surface (superseded by G4-2); a cutover with no device-readiness gate (unready builds would mis-sell price-less rows) |
 | **MC-13** | Catalogue change-log bridge after cutover | **Dropped**: POS sells from the pricing stream under `pricing`, and readiness excludes builds that would not. The catalogue `price` compatibility field is resolved at read time (§7.5) | Build the boundary bridge and its watermark and dedup tables (only needed if a v1 price reader stays in service after cutover) |
-| **MC-14** | Device readiness evidence | Every active device of the tenant has read the pricing manifest within 24 h (`pricing_device_revision_state.last_check_at`); otherwise cutover is blocked (§7.3) | Rely on release dates or fleet version reports |
+| **MC-14** | Device readiness | At cutover, and again inside the flip: every active device of the tenant has read the pricing manifest within 24 h (`pricing_device_revision_state.last_check_at`). After cutover, an ongoing gate applies: catalogue reads for a `pricing` tenant require the `X-Pos-Pricing-Capable` header, otherwise `409 pos_upgrade_required` (§7.3) | Check readiness only at cutover (misses devices enrolled or downgraded later); rely on release dates or fleet version reports |
+| **MC-15** | Making devices re-snapshot after an authority flip | Device-initiated snapshot on manifest authority change (spec 043 §5.2), enforced on the server by `authority_flip_sequence`: deltas answer `snapshot_required` to older cursors (§7.3) | A change-log row per product (devices read it as deltas and never see `pricingAuthority`); adding `pricingAuthority` to delta pages |
 | **MC-10** | Book `tax_price_basis` and `currency_code` for an existing tenant | Declared per-tenant inputs to the import, recorded with their evidence; no default. A tenant with no Stores also declares a reference zone for Book-scope bounds (§4.2). The currency must match the legacy currency when one exists, and it is still required for a tenant with no priced rows | Default to `inclusive` (a Fiscal guess, G3) |
 | **MC-11** | New tenants | Start on `legacy` until the pilot has passed its rollback window on `pricing`. After that, start on `pricing`, with the Book and default Zone created atomically from the MC-10 inputs in the tenant-creation transaction; without those inputs, start on `legacy` | Start on `pricing` immediately after PR-16b ships |
 | **MC-12** | Rollback window | 14 days per tenant (§8.4) | 7 days; open-ended |
@@ -622,10 +641,11 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 - Cutover success:
   - the catalogue snapshot carries `pricingAuthority: pricing` and lists active products without a current price;
   - the pricing manifest says `authority: pricing`, at the fan-out revision, for **every** Store;
-  - one `store_id NULL` change-log row exists per live product;
+  - `authority_flip_sequence` is recorded, and a delta request with an older cursor gets `snapshot_required` (409);
   - for every pair legacy served, the projection segment at `now` equals the legacy price.
-- Cutover blocked when one active device has no `last_check_at` in the readiness window.
-- R1: the manifest and catalogue flip back to `legacy` together, and a re-snapshot marker is written.
+- Cutover blocked when one active device has no `last_check_at` in the readiness window, including when it lapses between step 1 and the flip (two-phase path).
+- Ongoing gate: under `pricing`, a catalogue read without `X-Pos-Pricing-Capable` gets `409 pos_upgrade_required`; under `legacy` it is served as today.
+- R1: the manifest and catalogue flip back to `legacy` together, and a new `authority_flip_sequence` forces delta cursors onto a snapshot.
 - Re-import after R1: a Change-Set-authored Store event, a Zone event and a future event are reconciled (kept, ended or cancelled) with no overlap error; a second run is a no-op.
 - R1 for a tenant with no Stores after a Book price change: `default_price` is refreshed from the Book layer.
 - Sweep coverage: a tenant with only inactive Stores, and one with no Stores, still gets a full comparison, with the Book-layer check catching a wrong imported `default_price`.
