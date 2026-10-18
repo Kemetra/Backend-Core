@@ -374,7 +374,7 @@ None depends on the console limiter (issues 1-4). Each is its own issue with its
   - **Answer:** on a timeout or a limiter error, the route returns 503, `Retry-After: 30`, and envelope code `service_unavailable`. It never hangs and never returns 500. A warn log names the bucket and reason only (no email or IP).
   - **Releases:** the sign-in release (RT-136) is bounded the same way.
   - **Sentry:** at most one event per outage window, per API process. The first refusal after a healthy period is captured; later refusals are suppressed until a limiter call answers again. Every refusal is still counted in `http_error_5xx_total` and logged.
-  - **Late hits:** a hit that lands after the timeout (ioredis offline-queue replay once Redis is back) still counts. Releasing it is a separate follow-up PR, pending owner review.
+  - **Late hits (RT-628 follow-up, pending owner review):** a hit that lands after the timeout (ioredis offline-queue replay once Redis is back) is released again, because the request was refused before authentication. Retries during an outage therefore do not become a lockout after recovery.
   - **Not affected:** already signed-in sessions do not pass through these buckets. `POST /auth/email/verify/request` (signed-in, answers 202) still calls `check` unbounded. That route and pairing are outside 5e.
   - **Contract:** the 503 is not yet documented in `auth.openapi.yaml`. That wording is a GATED contract follow-up and fits naturally with 5a.
   - **Behaviour change:** none while Redis is healthy. On an outage, the response changes from a hang or a 500 to a bounded 503. There is no flag.

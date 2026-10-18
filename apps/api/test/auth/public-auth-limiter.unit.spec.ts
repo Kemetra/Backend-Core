@@ -68,20 +68,36 @@ describe("checkWithin", () => {
     expect(fake.release).not.toHaveBeenCalled();
   });
 
-  it.each(["resolve", "reject"] as const)(
-    "an abandoned call that settles late (%s) is not released and never throws unhandled",
-    async (settle) => {
-      const late = deferred<RateLimitDecision>();
-      const { asLimiter, fake } = limiter(() => late.promise);
-      await expect(checkWithin(asLimiter, hit("signin_ip", "x"), 20)).rejects.toBeInstanceOf(
-        PublicAuthLimiterUnavailable,
-      );
-      if (settle === "reject") late.reject(new Error("MaxRetriesPerRequestError"));
-      else late.resolve(ALLOWED);
-      await flush();
-      expect(fake.release).not.toHaveBeenCalled();
-    },
-  );
+  it("RT-628 follow-up: gives back a hit that lands after the timeout (refused before authentication)", async () => {
+    const late = deferred<RateLimitDecision>();
+    const { asLimiter, fake } = limiter(() => late.promise);
+    await expect(checkWithin(asLimiter, hit("signin_account", "a@x.test"), 20)).rejects.toBeInstanceOf(
+      PublicAuthLimiterUnavailable,
+    );
+    expect(fake.release).not.toHaveBeenCalled();
+
+    late.resolve(ALLOWED); // e.g. the ioredis offline queue replays the INCR once Redis is back
+    await flush();
+    expect(fake.release).toHaveBeenCalledTimes(1);
+    expect(fake.release).toHaveBeenCalledWith("signin_account", "a@x.test");
+  });
+
+  it.each([
+    { late: "rejects (no hit was taken)", settle: "reject", releases: 0 },
+    { late: "resolves, and the compensating release fails", settle: "resolve", releases: 1 },
+  ] as const)("a late call that $late never throws unhandled", async ({ settle, releases }) => {
+    const late = deferred<RateLimitDecision>();
+    const { asLimiter, fake } = limiter(() => late.promise, async () => {
+      throw new Error("still down");
+    });
+    await expect(checkWithin(asLimiter, hit("signin_ip", "x"), 20)).rejects.toBeInstanceOf(
+      PublicAuthLimiterUnavailable,
+    );
+    if (settle === "reject") late.reject(new Error("MaxRetriesPerRequestError"));
+    else late.resolve(ALLOWED);
+    await flush();
+    expect(fake.release).toHaveBeenCalledTimes(releases);
+  });
 });
 
 describe("releaseWithin", () => {

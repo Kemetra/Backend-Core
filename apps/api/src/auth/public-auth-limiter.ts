@@ -78,6 +78,12 @@ export interface LimiterHit {
 /**
  * `limiter.check` bounded by `timeoutMs`. Throws `PublicAuthLimiterUnavailable`
  * on a timeout or an error; a refusal (`allowed: false`) is returned as is.
+ *
+ * RT-628 follow-up (pending owner review): on a timeout the hit can still
+ * land later (the ioredis offline queue replays the command once Redis is
+ * back). The request was refused before any authentication, so that late hit
+ * is given back; otherwise retries during an outage would turn into a
+ * lockout (e.g. `signin_account`, 5 / 15 min) after recovery.
  */
 export async function checkWithin(
   limiter: RateLimiter,
@@ -95,8 +101,11 @@ export async function checkWithin(
     t.cancel();
   }
   if (outcome === TIMED_OUT) {
-    // The abandoned call may still settle later; never leave it unhandled.
-    pending.catch(() => undefined);
+    // Give back a late hit; a late failure took no hit. Never unhandled.
+    pending.then(
+      () => limiter.release(hit.bucketName, hit.identifier).catch(() => undefined),
+      () => undefined,
+    );
     throw new PublicAuthLimiterUnavailable("timeout");
   }
   return outcome;
