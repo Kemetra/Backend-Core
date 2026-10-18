@@ -165,13 +165,22 @@ The import is a worker/CLI job, re-runnable at any time while the tenant's autho
 
 1. Take the per-tenant pricing publish lock (spec 042 §8).
 2. Record the watermark: `max(catalog_change_log.sequence)` for the tenant, plus the instant `T`.
-3. Compute the desired event set from legacy (§4.2) and diff it against the **active `legacy_import` events**:
+3. Compute the desired event set from legacy (§4.2) and diff it against **every active event of the tenant's Book,
+   whatever its `source` and scope**, current or future-dated. Before the first cutover only `legacy_import` events
+   exist, because Pricing authoring is rejected under `legacy` (§6.1). After an R1 rollback (§8.2), events authored
+   during the cutover period can still be active, so the diff reconciles them too:
    - **unchanged** → nothing;
    - **new** (price appeared, override added) → new event from `T`;
    - **changed** (price or currency differs) → supersede the old event and add a new one from `T`, with a carried-forward
      head `[old from, T)` (the supersede-and-replace rule of spec 041 §3.1);
    - **gone** (price set to null, override retired or deleted, product retired) → end the event at `T`, also by
-     supersede plus carried-forward head.
+     supersede plus carried-forward head;
+   - **not representable in legacy**: every active `zone`-scope event, and every event that starts after `T` → ended at
+     `T` (a current one) or `cancelled` (a future one). Legacy has no Zones and no time dimension, so after this step the
+     Pricing timeline from `T` onward is exactly the legacy state.
+
+   A key's desired event matches an existing active event only when scope, store, price and currency are equal **and**
+   the event covers `T`. Whatever its source, a matching event is kept; it is never duplicated or overlapped.
 4. If the diff is empty, **no revision is created** (a repeat run is a no-op). Otherwise publish one `legacy_import`
    revision with its fan-out (spec 041 data-model §2.6).
 5. Store the watermark row `(tenant_id, run_id, T, change_log_sequence, revision_no or null, counts by outcome)`.
@@ -201,9 +210,14 @@ import picks it up. No exception is ever "accepted" into Pricing.
 ### 4.5 `price_history` (decision MC-3)
 
 - **Empty** (expected, F2): nothing to do. The table stays as is.
-- **Non-empty:** import closed intervals as historical `legacy_import` events (`absolute`, their own bounds, flagged in
-  the run report) **only if** the open intervals equal the current legacy values and no interval overlaps a
-  current-state event. Otherwise import none of it, and report the inconsistency.
+- **Non-empty:** import closed intervals as historical `legacy_import` events, flagged in the run report, **only if**
+  the open intervals equal the current legacy values and the intervals of each key do not overlap. Otherwise import
+  none of it, and report the inconsistency.
+  - **Same basis as the rest of the key (Q-6).** History events are `store_local` too. Their bounds are converted
+    with the MC-1 rule: the Store's zone for store-level rows, and the westernmost active zone for tenant-level rows.
+  - **Contiguous timeline.** The key's current event then starts at the converted `effective_from` of its open
+    `price_history` interval, instead of `T0`.
+  - **Result.** One key holds one contiguous `store_local` timeline, with no `absolute` events mixed in.
 - In every case `price_history` is kept, read-only, until the retirement item (PR-16c). It is never rewritten.
 
 ## 5. Dual read and the evidence threshold (PR-11, PR-V1)
@@ -378,9 +392,17 @@ So the bridge (part of PR-11, required before any cutover) writes `catalog_chang
 `(store, product)` whose resolved v1 row changes:
 
 - in the publish transaction, for events effective immediately (from the revision fan-out);
-- from an **activation job** (worker) at each activation instant of a future event, idempotent on `(event id, store)`.
+- from a **boundary job** (worker) at **every instant where resolution can change without a write**, per affected
+  Store, computed with the Store's zone for `store_local` bounds:
+  - a price event's `effective_from` (activation) and its `effective_to` (expiry, after which a lower scope or
+    `unpriced` takes over);
+  - a Zone membership's `effective_from` and `effective_to` (a scheduled `move_store_zone`, spec 041 data-model §2.3).
 
-Without the bridge, a strict v1 POS would keep the old price after a scheduled change until its next full snapshot.
+  The job is idempotent on `(row id, boundary, store)`. Its candidate set is the active events and memberships whose
+  boundaries fall in the next scan window, so the job does not depend on how a boundary was created.
+
+Without the bridge, a v1 POS would keep the old price after a scheduled change, an expiry or a scheduled Zone
+move, until its next full snapshot.
 The bridge gives v1 clients online, delta-based correctness only. Offline pre-delivery of future prices remains a v2
 and G4 concern (RT-487).
 
@@ -407,24 +429,25 @@ and G4 concern (RT-487).
 | Level | When | Procedure |
 |---|---|---|
 | **R0 — before cutover** | Import or shadow is wrong | Stop the import job. If needed, publish a `legacy_import` revision that ends the tenant's imported events from now (a cancel, not a delete). Legacy was authoritative throughout, so serving never changed |
-| **R1 — tenant authority back to legacy** | After cutover; any reason | One transaction under the publish lock: (1) set `authority = legacy` (Pricing authoring now rejected); (2) **reverse projection** with the projection-writer GUC: for each `(active store, live product)`, resolve at `(now, head)`; write the Book-scope price into `tenant_products.default_price` (currency from the Book); where a Store's resolved price differs from it, set the override price (insert a price-only override row if none exists); where it equals it, clear the override price, or retire the override row if price was its only content; for `unpriced`, clear the price (same rule); (3) full §5.2 sweep, now legacy vs Pricing at `now`, must be 0 mismatches or the transaction aborts and the tenant stays on `pricing`; (4) audit; commit |
+| **R1 — tenant authority back to legacy** | After cutover; any reason | One transaction under the publish lock: (1) set `authority = legacy` (Pricing authoring now rejected); (2) **reverse projection** with the projection-writer GUC: for each `(active store, live product)`, resolve at `(now, head)`; write the Book-scope price into `tenant_products.default_price` (currency from the Book); where a Store's resolved price differs from it, set the override price (insert a price-only override row if none exists); where it equals it, clear the override price, or retire the override row if price was its only content; for `unpriced`, clear the price (same rule); (3) run the §4.3 delta import in the same transaction (authority is now `legacy`): it ends Zone events and cancels future events, so the Pricing timeline from now on equals the projected legacy state and the shadow stays at 0 mismatches as time passes; (4) full §5.2 sweep, legacy vs Pricing at `now`, must be 0 mismatches or the transaction aborts and the tenant stays on `pricing`; (5) audit; commit |
 | **R2 — code rollback** | A deploy must go back past PR-16b | **Not allowed while any tenant is on `pricing`**: older code would serve the frozen snapshot. R1 every such tenant first. The deploy checklist (PR-16b AC) states this, and the API refuses to start if the code version does not know the `authority` table but the table has a `pricing` row (a startup guard shipped one release ahead) |
-| **R3 — schema rollback** | A Pricing migration must go down | Down-migrations of the Pricing tables (PR-05) **refuse to run** when they hold rows. The authority/freeze migration (PR-16a-1) refuses when any
-`tenant_pricing_authority` row is not `legacy`, or when `pricing_import_runs` / `pricing_cutover_runs` hold rows; the
-seeded all-`legacy` rows alone do not block it. Down never drops data |
+| **R3 — schema rollback** | A Pricing migration must go down | Down-migrations of the Pricing tables (PR-05) **refuse to run** when they hold rows. The authority/freeze migration (PR-16a-1) refuses when any `tenant_pricing_authority` row is not `legacy`, or when `pricing_import_runs` / `pricing_cutover_runs` hold rows; the seeded all-`legacy` rows alone do not block it. Down never drops data |
 
 What R1 does **not** carry back to legacy, and how that is handled:
 
-- **Future-scheduled Pricing events** cannot be represented in legacy (no time dimension). They stay in Pricing, inert,
-  and are listed in the rollback report so an operator can re-apply them by hand on legacy if needed.
+- **Future-scheduled Pricing events** cannot be represented in legacy (no time dimension). Step 3 cancels them (a
+  state change, not a delete), and the rollback report lists them so an operator can re-apply them by hand on legacy
+  if needed. Leaving them active would make the shadow diverge when they activate.
 - **Zones** are flattened: the reverse projection writes per-Store resolved prices as overrides, so current behaviour is
   preserved exactly.
 - **History** remains in Pricing and stays queryable.
 
 ### 8.3 Re-cutover after a rollback
 
-It follows §6.3 again. The delta import treats the reverse-projected legacy values as ordinary legacy changes; events
-authored in Pricing during the first cutover period stay as history, superseded where the import changes them.
+It follows §6.3 again. R1 step 3 already reconciled Pricing to the projected legacy state, so the re-cutover's delta
+import only picks up legacy changes made since the rollback. It reconciles against every active event, not only
+`legacy_import` ones (§4.3). Events authored in Pricing during the first cutover period stay as history: they are
+superseded, ended or cancelled, never deleted.
 
 ### 8.4 Rollback window
 
@@ -460,7 +483,7 @@ authorization on its own issue. Mapping to the RT-282 backlog is shown.
 | **PR-05** | PR-05 `[GATED migration]` | Impl | Pricing tables per spec 041 data-model | PR-03 (this plan) | Already includes `source = legacy_import` and revision `kind = legacy_import`. **Add:** down-migration refuses when tables hold rows (R3) |
 | **PR-16a-1** | PR-16a `[GATED migration]` | Impl | `tenant_pricing_authority`, `pricing_import_runs` (watermarks), `pricing_cutover_runs`; the freeze trigger function on `tenant_products` and `store_product_overrides`, inert while every tenant is `legacy` | PR-05 | Up/down tests, RLS matrix; down refuses per R3 (a non-`legacy` authority row or any run row) and succeeds on seeded all-`legacy` rows; trigger unit tests for every case in §6.2, including the GUC bypass |
 | **PR-16a-2** | PR-16a | Impl | Tenant bootstrap, initial and delta import job (worker + CLI), exception report | PR-16a-1, PR-09 (resolver), PR-03E | §4 behaviour; second run with no legacy change creates no revision; MC-10 input required; exception classes reported; refuses unless `authority = legacy`, or `cutover_in_progress` when called by the cutover |
-| **PR-11** | PR-11 (amended by §7.2) | Impl | Shadow resolver on v1, nightly sweep job, mismatch metric and report; **v1 bridge** (§7.3): change-log rows at publish and from the activation job | PR-09, PR-16a-2; the v2 part also needs PR-06 (G4a) | §5.2/§5.3 classification; projection-level check; v1 schema contract test on pricing-sourced output; activation job idempotent |
+| **PR-11** | PR-11 (amended by §7.2) | Impl | Shadow resolver on v1, nightly sweep job, mismatch metric and report; **v1 bridge** (§7.3): change-log rows at publish and from the boundary job (activations, expiries, Zone-membership boundaries) | PR-09, PR-16a-2; the v2 part also needs PR-06 (G4a) | §5.2/§5.3 classification; projection-level check; v1 schema contract test on pricing-sourced output; boundary job idempotent and covers every §7.3 boundary kind |
 | **PR-V1** | PR-V1 | Verification | §5.4 evidence on rt9 and pilot | PR-11, PR-16a-2 | Thresholds of §5.4 met and attached per tenant |
 | **PR-16b** | PR-16b | Impl | Cutover CLI (§6.3) **and** rollback R1 (§8.2) in the same item; app-level guards in seed CLI and `StoreOverrideService`; Pricing authoring gated by `authority`; R2 startup guard | PR-16a-2, PR-11, PR-V1, PR-10 | Abort path leaves the tenant byte-identical; rt9 cutover → Change Set → R1 round trip passes; sale tables checksum unchanged across cutover and rollback |
 | **PR-16c** | new, later `[GATED migration]` | Impl | Retire legacy price columns and `price_history` (archive first); remove the v1 legacy path | Every tenant past its §8.4 window; RT-281 and RT-294 switches for the non-price columns | Not planned in detail here |
@@ -493,6 +516,7 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 
 - Import mapper: legacy rows → desired events, for every row of §4.2, including overrides with a null price and inactive products.
 - Exception classifier: every class in §4.4, at `numeric(19,4)` edge values (`0.0001`, `12.345`, `12.3400`).
+- `price_history` conversion (MC-3): closed intervals become one contiguous `store_local` timeline per key.
 - Bound computation (MC-1): single zone; multi-zone tenant; a Store across a DST transition at `T` (Q-2 rules).
 - Equivalence classifier: each row of §5.2 and each class of §5.3, including decimal formatting (`12.5` vs `12.5000`).
 - Reverse projection planner: book/store split; override insert, clear and retire; `unpriced`.
@@ -505,7 +529,8 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 - RLS: the new tables isolate tenants (the isolation-harness pattern); tenant A's cutover does not freeze tenant B.
 - Cutover abort: inject one mismatch → `ROLLBACK`; tenant state, legacy rows and Pricing tables byte-identical to before; run row records the failure.
 - Cutover success → read-down v1 output (snapshot and deltas) identical to the pre-cutover output; validated against `read-down.yaml` with `additionalProperties: false`.
-- v1 bridge: an immediate publish produces change-log rows; a future event produces them at activation, once.
+- v1 bridge: an immediate publish produces change-log rows. A future event's activation, an event's expiry (falling back to a lower scope and to `unpriced`), and a scheduled Zone move each produce them at the boundary, exactly once.
+- Re-import after R1: a Change-Set-authored Store event, a Zone event and a future event are reconciled (kept, ended or cancelled) with no overlap error; a second run is a no-op.
 - Rollback R1 round trip: cutover → Change Set (Zone price plus a Store override) → R1 → read-down v1 equals the resolver at the rollback instant; future events listed in the report.
 - Sale-fact safety: checksum of `sale_lines` and the posting feed before and after cutover and R1 is identical.
 - Migrations: up/down for PR-16a-1; down succeeds with only seeded `legacy` rows and refuses with a `pricing` row or a run row (R3).
