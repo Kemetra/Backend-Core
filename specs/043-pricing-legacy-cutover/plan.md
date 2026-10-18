@@ -251,8 +251,13 @@ import picks it up. No exception is ever "accepted" into Pricing.
 
 While a tenant's authority is `legacy`, read-down keeps serving the legacy `COALESCE`. For every row it serves, it also
 runs the spec 041 resolver at `(now, head revision)` and compares, **without serving the result**. A nightly sweep
-job does the same over every `(active Store × live product)` pair of every tenant that has been imported, so stores
-that never call read-down are covered.
+job does the same for every tenant that has been imported. Its **sweep set**, used by every sweep in this plan
+(nightly, cutover and R1), is:
+- every `(Store × live product)` pair over **all** the tenant's Stores, active or not. Stores that never call
+  read-down, and inactive Stores whose overrides would come back on reactivation, are both covered;
+- a **Book-layer check** for every live product: legacy `default_price`/currency against the Book-scope resolution at
+  `now`, evaluated in the MC-1 zone, which is the declared reference zone for a tenant with no Stores. This runs even
+  when the tenant has no Stores, so the price a future Store would inherit is always compared.
 
 ### 5.2 Equivalence definition
 
@@ -292,7 +297,7 @@ PR-V1 attaches, per tenant, before PR-16b may run:
 2. **Pilot tenant:** a shadow window of at least **7 consecutive days, including a weekend**. Every nightly sweep reports
    0 `unexplained`. Every active Store has at least one online shadow comparison of a full snapshot. Any `import_lag`
    pairs are cleared by the next import. The exception census is 0 on the last day.
-3. **At cutover** (inside the switch transaction, §6.3): a full sweep over every pair with **0 mismatches** of every
+3. **At cutover** (inside the switch transaction, §6.3): a full sweep over the §5.1 sweep set, all Stores plus the Book-layer check, with **0 mismatches** of every
    class except `reason_only`.
 
 ## 6. Authority switch (PR-16b)
@@ -375,8 +380,12 @@ size this is not expected to be needed; PR-03E settles it.
 Order: rt9 lab tenant first (PR-V2 needs it cut over), then the pilot tenant. One tenant at a time.
 
 **New tenants (decision MC-11).** Until the pilot tenant has been on `pricing` for a full rollback window (§8.4) without a
-rollback, new tenants start on `legacy`. After that, tenant creation inserts `authority = pricing` and no legacy price is
-ever written for them.
+rollback, new tenants start on `legacy`.
+
+After that, tenant creation takes the MC-10 inputs (Book currency, tax-price basis, reference zone). In the same
+transaction it creates the tenant's Price Book and default Zone, the §4.1 bootstrap without an import, and only then
+inserts `authority = pricing`. A tenant created without those inputs starts on `legacy`, so no tenant can be on
+`pricing` without a Book (`no_price_book`). No legacy price is ever written for a tenant born on `pricing`.
 
 ### 6.4 What legacy columns mean after cutover (decision MC-6, 714)
 
@@ -483,7 +492,7 @@ and G4 concern (RT-487).
 | Level | When | Procedure |
 |---|---|---|
 | **R0 — before cutover** | Import or shadow is wrong | Stop the import job. If needed, publish a `legacy_import` revision that ends the tenant's imported events from now (a cancel, not a delete). Legacy was authoritative throughout, so serving never changed |
-| **R1 — tenant authority back to legacy** | After cutover; any reason | One transaction under the publish lock: (1) set `authority = legacy` (Pricing authoring now rejected); (2) **reverse projection** through the privileged `pricing_reverse_project` function (§6.2): for each `(store, live product)` over **every** Store of the tenant, active or not (a Store deactivated after a Store- or Zone-scoped change must keep its price for reactivation), resolve at `(now, head)`; independently of the Store loop, for **every live product** write its Book-layer price at `now` into `tenant_products.default_price` (currency from the Book). `store_local` Book events are evaluated in the MC-1 zone: the westernmost Store zone, or the declared reference zone for a tenant with no Stores. So a Store-less tenant's defaults are still refreshed, and a Store created after the rollback serves the current price; where a Store's resolved price differs from it, set the override price (insert a price-only override row if none exists); where it equals it, clear the override price, or retire the override row if price was its only content; for `unpriced`, clear the price (same rule); (3) run the §4.3 delta import in the same transaction (authority is now `legacy`): it ends Zone events and cancels future events, so the Pricing timeline from now on equals the projected legacy state and the shadow stays at 0 mismatches as time passes; (4) full §5.2 sweep over the same all-Store pair set, legacy vs Pricing at `now`, must be 0 mismatches or the transaction aborts and the tenant stays on `pricing`; (5) audit; commit |
+| **R1 — tenant authority back to legacy** | After cutover; any reason | One transaction under the publish lock: (1) set `authority = legacy` (Pricing authoring now rejected); (2) **reverse projection** through the privileged `pricing_reverse_project` function (§6.2): for each `(store, live product)` over **every** Store of the tenant, active or not (a Store deactivated after a Store- or Zone-scoped change must keep its price for reactivation), resolve at `(now, head)`; independently of the Store loop, for **every live product** write its Book-layer price at `now` into `tenant_products.default_price` (currency from the Book). `store_local` Book events are evaluated in the MC-1 zone: the westernmost Store zone, or the declared reference zone for a tenant with no Stores. So a Store-less tenant's defaults are still refreshed, and a Store created after the rollback serves the current price; where a Store's resolved price differs from it, set the override price (insert a price-only override row if none exists); where it equals it, clear the override price, or retire the override row if price was its only content; for `unpriced`, clear the price (same rule); (3) run the §4.3 delta import in the same transaction (authority is now `legacy`): it ends Zone events and cancels future events, so the Pricing timeline from now on equals the projected legacy state and the shadow stays at 0 mismatches as time passes; (4) full §5.2 sweep over the §5.1 sweep set (all Stores plus the Book-layer check), legacy vs Pricing at `now`, must be 0 mismatches or the transaction aborts and the tenant stays on `pricing`; (5) audit; commit |
 | **R2 — code rollback** | A deploy must go back past PR-16b | **Not allowed while any tenant is on `pricing`**: older code would serve the frozen snapshot. R1 every such tenant first. The deploy checklist (PR-16b AC) states this, and the API refuses to start if the code version does not know the `authority` table but the table has a `pricing` row (a startup guard shipped one release ahead) |
 | **R3 — schema rollback** | A Pricing migration must go down | Down-migrations of the Pricing tables (PR-05) **refuse to run** when they hold rows. The authority/freeze migration (PR-16a-1) refuses when any `tenant_pricing_authority` row is not `legacy`, or when `pricing_import_runs` / `pricing_cutover_runs` hold rows; the seeded all-`legacy` rows alone do not block it. Down never drops data |
 
@@ -561,7 +570,7 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 | **MC-8** | Cutover execution | One transaction per tenant; two-phase fallback only above ~500 000 pairs, as settled by PR-03E (§6.3) | Always two-phase |
 | **MC-9** | POS contract under strict validation | Cutover leaves v1 schema-identical; PR-06 ships v-next as a new versioned surface; POS pins it in PR-P1 (§7) | Same-path additive bump in lockstep with a POS release (needs the whole fleet updated first) |
 | **MC-10** | Book `tax_price_basis` and `currency_code` for an existing tenant | Declared per-tenant inputs to the import, recorded with their evidence; no default. A tenant with no Stores also declares a reference zone for Book-scope bounds (§4.2). The currency must match the legacy currency when one exists, and it is still required for a tenant with no priced rows | Default to `inclusive` (a Fiscal guess, G3) |
-| **MC-11** | New tenants | Start on `legacy` until the pilot has passed its rollback window on `pricing`; then start on `pricing` | Start on `pricing` immediately after PR-16b ships |
+| **MC-11** | New tenants | Start on `legacy` until the pilot has passed its rollback window on `pricing`. After that, start on `pricing`, with the Book and default Zone created atomically from the MC-10 inputs in the tenant-creation transaction; without those inputs, start on `legacy` | Start on `pricing` immediately after PR-16b ships |
 | **MC-12** | Rollback window | 14 days per tenant (§8.4) | 7 days; open-ended |
 
 ## 12. Test plan
@@ -589,6 +598,8 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 - v1 bridge: an immediate publish produces change-log rows. A future event's activation, an event's expiry (falling back to a lower scope and to `unpriced`), and a scheduled Zone move each produce them at the boundary, exactly once. Outage catch-up: with the worker stopped across two boundaries, the next run emits both. Late publish: an event published after a run, with a boundary before the next run, is emitted.
 - Re-import after R1: a Change-Set-authored Store event, a Zone event and a future event are reconciled (kept, ended or cancelled) with no overlap error; a second run is a no-op.
 - R1 for a tenant with no Stores after a Book price change: `default_price` is refreshed from the Book layer.
+- Sweep coverage: a tenant with only inactive Stores, and one with no Stores, still gets a full comparison, with the Book-layer check catching a wrong imported `default_price`.
+- New tenant on `pricing`: created with MC-10 inputs, it has a Book and default Zone in the same transaction. Created without them, it starts on `legacy`.
 - Adjacent segments: event A expiring at the instant event B activates, for the same Store/product, produces exactly one change-log row.
 - Boundary job restart: a re-run over an already-emitted boundary inserts nothing into `pricing_boundary_emissions` and logs nothing.
 - R1 with an inactive Store that holds a Store-scoped Pricing price: the price is projected into its legacy override and survives reactivation.
