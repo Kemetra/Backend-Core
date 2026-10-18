@@ -13,7 +13,10 @@
  * job carrier only and the scrubber re-checks their exact format.
  *
  *   queue      - the BullMQ queue name
- *   job_name   - the job name (a constant per producer)
+ *   job_name   - the job name, only when it is one the worker declares; a
+ *                producer can set any string, so an undeclared name is left
+ *                out and masked inside the error message (Unknown*JobError
+ *                messages echo it)
  *   outcome    - `exhausted` (attempts used up) or `unrecoverable`
  *   error_class - the error's class from the worker metrics' closed set
  *                 (`sanitizeErrorClass`); anything else is `UnknownError`
@@ -31,6 +34,14 @@ import {
   type TraceCarrier,
 } from "@data-pulse-2/shared/observability/otel";
 
+import { AUDIT_FANOUT_JOB_NAME } from "../../audit/audit-fanout.processor";
+import { AUDIT_RETENTION_JOB_NAME } from "../../audit/audit-retention.processor";
+import { REPLAY_PURGE_JOB_NAME } from "../../cashier-admissions/replay-purge.processor";
+import { EMAIL_JOB_NAMES } from "../../email/email.processor";
+import { STOCK_RUN_SWEEP_JOB_NAME } from "../../erpnext-reconciliation/stock-run-sweep.processor";
+import { OUTBOX_SALE_PROCESSING_JOB_NAME } from "../../outbox/consumers/sale-captured.consumer";
+import { OUTBOX_RETENTION_JOB_NAME } from "../../outbox/retention.processor";
+import { SALE_REDRIVE_JOB_NAME } from "../../sales/sale-redrive.processor";
 import { sanitizeErrorClass } from "../metrics/worker.metrics";
 
 /** The parts of a BullMQ `Job` this listener reads. A real `Job` satisfies it. */
@@ -43,6 +54,20 @@ export interface FailedJobLike {
 
 /** Same name check BullMQ uses to skip retries (`Job.shouldRetryJob`). */
 const UNRECOVERABLE_ERROR = "UnrecoverableError";
+
+/** The job names the worker's producers and schedulers use, one queue each. */
+export const DECLARED_JOB_NAMES: ReadonlySet<string> = new Set([
+  ...Object.values(EMAIL_JOB_NAMES),
+  AUDIT_FANOUT_JOB_NAME,
+  AUDIT_RETENTION_JOB_NAME,
+  OUTBOX_SALE_PROCESSING_JOB_NAME,
+  OUTBOX_RETENTION_JOB_NAME,
+  STOCK_RUN_SWEEP_JOB_NAME,
+  REPLAY_PURGE_JOB_NAME,
+  SALE_REDRIVE_JOB_NAME,
+]);
+
+const MASKED_JOB_NAME = "[job_name]";
 
 /**
  * True when BullMQ will not retry this failure. In bullmq 5.76 `failed` fires
@@ -84,13 +109,27 @@ export function failedJobTags(
     error_class: sanitizeErrorClass(error?.constructor.name),
   };
   if (job === undefined) return tags;
-  tags["job_name"] = job.name;
+  if (DECLARED_JOB_NAMES.has(job.name)) tags["job_name"] = job.name;
   tags["outcome"] = error?.name === UNRECOVERABLE_ERROR ? "unrecoverable" : "exhausted";
   const requestId = dataField(job.data, "request_id");
   if (typeof requestId === "string") tags["request_id"] = requestId;
   const traceId = carrierTraceId(job.data);
   if (traceId !== undefined) tags["trace_id"] = traceId;
   return tags;
+}
+
+/**
+ * The error to report. When the job name is undeclared and the message echoes
+ * it, a copy with the name masked (message and stack) is sent instead.
+ */
+export function reportableError(job: FailedJobLike | undefined, error: Error): Error {
+  const name = job?.name ?? "";
+  if (name === "" || DECLARED_JOB_NAMES.has(name) || !error.message.includes(name)) return error;
+  const masked = new Error(error.message.split(name).join(MASKED_JOB_NAME));
+  masked.name = error.name;
+  if (error.stack === undefined) delete masked.stack;
+  else masked.stack = error.stack.split(name).join(MASKED_JOB_NAME);
+  return masked;
 }
 
 /**
@@ -104,7 +143,9 @@ export function captureFinalJobFailure(
   return (job, error) => {
     try {
       if (job !== undefined && !isFinalFailure(job, error)) return;
-      Sentry.captureException(error, { tags: failedJobTags(queueName, job, error) });
+      Sentry.captureException(reportableError(job, error), {
+        tags: failedJobTags(queueName, job, error),
+      });
     } catch {
       // Telemetry must never break job processing.
     }

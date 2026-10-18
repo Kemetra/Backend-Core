@@ -14,8 +14,10 @@ import { Worker } from "bullmq";
 
 import {
   captureFinalJobFailure,
+  DECLARED_JOB_NAMES,
   failedJobTags,
   isFinalFailure,
+  reportableError,
   type FailedJobLike,
 } from "../../src/observability/sentry/failed-job";
 import { BullMqWorkerFactory } from "../../src/worker.module";
@@ -39,7 +41,7 @@ const QUEUE = "audit-fanout";
 const REQUEST_ID = "018f3b1d-7c2a-7e3a-9bcd-0123456789ab";
 
 function job(overrides: Partial<FailedJobLike> = {}): FailedJobLike {
-  return { name: "audit.write", data: {}, attemptsMade: 5, opts: { attempts: 5 }, ...overrides };
+  return { name: "audit-fanout", data: {}, attemptsMade: 5, opts: { attempts: 5 }, ...overrides };
 }
 
 function unrecoverable(message: string): Error {
@@ -78,7 +80,7 @@ describe("failedJobTags", () => {
     expect(failedJobTags(QUEUE, job(), new Error("x"))).toEqual({
       queue: QUEUE,
       error_class: "UnknownError",
-      job_name: "audit.write",
+      job_name: "audit-fanout",
       outcome: "exhausted",
     });
   });
@@ -92,6 +94,27 @@ describe("failedJobTags", () => {
 
   it("marks an UnrecoverableError as outcome unrecoverable", () => {
     expect(failedJobTags(QUEUE, job(), unrecoverable("stop"))["outcome"]).toBe("unrecoverable");
+  });
+
+  it("leaves out a job name the worker does not declare", () => {
+    const tags = failedJobTags(QUEUE, job({ name: "customer-jane-01012345678" }), new Error("x"));
+    expect(tags).not.toHaveProperty("job_name");
+    expect(tags["outcome"]).toBe("exhausted");
+  });
+
+  it("declares the job name of every queue the worker consumes", () => {
+    expect([...DECLARED_JOB_NAMES].sort()).toEqual([
+      "audit-fanout",
+      "audit-retention-sweep",
+      "auth.email-verify",
+      "auth.password-reset",
+      "cashier-admission-replay-purge",
+      "erpnext-stock-reconciliation-sweep",
+      "memberships.invitation",
+      "outbox-retention-sweep",
+      "sale-processing",
+      "sale-redrive",
+    ]);
   });
 
   it("keeps only the queue when BullMQ passes no job", () => {
@@ -139,7 +162,49 @@ describe("failedJobTags", () => {
   });
 });
 
+describe("reportableError", () => {
+  const RAW = "sku-4711-jane";
+
+  it("masks an undeclared job name in the message and stack, keeping the name", () => {
+    const err = new Error(`Unknown email job name: '${RAW}'`);
+    err.name = "UnknownEmailJobError";
+    const out = reportableError(job({ name: RAW }), err);
+    expect(out).not.toBe(err);
+    expect(out.message).toBe("Unknown email job name: '[job_name]'");
+    expect(out.name).toBe("UnknownEmailJobError");
+    expect(out.stack).not.toContain(RAW);
+  });
+
+  it("returns the error as is when there is nothing to mask", () => {
+    const err = new Error("db exploded");
+    expect(reportableError(job(), err)).toBe(err);
+    expect(reportableError(job({ name: RAW }), err)).toBe(err);
+    expect(reportableError(job({ name: "" }), err)).toBe(err);
+    expect(reportableError(undefined, err)).toBe(err);
+  });
+
+  it("keeps a declared job name in the message", () => {
+    const err = new Error("Malformed audit job 'audit-fanout': event_id: Invalid uuid");
+    expect(reportableError(job(), err)).toBe(err);
+  });
+
+  it("masks the message even when the error has no stack", () => {
+    const err = new Error(`bad ${RAW}`);
+    delete err.stack;
+    const out = reportableError(job({ name: RAW }), err);
+    expect(out.message).toBe("bad [job_name]");
+    expect(out.stack).toBeUndefined();
+  });
+});
+
 describe("captureFinalJobFailure", () => {
+  it("sends the masked copy for an undeclared job name", () => {
+    captureFinalJobFailure(QUEUE)(job({ name: "jane-01012345678" }), new Error("Unknown job 'jane-01012345678'"));
+    const [sent, hint] = capture.mock.calls[0] as [Error, { tags: Record<string, string> }];
+    expect(sent.message).toBe("Unknown job '[job_name]'");
+    expect(hint.tags).not.toHaveProperty("job_name");
+  });
+
   it("captures a final failure once, with tags only", () => {
     const err = new Error("db exploded");
     captureFinalJobFailure(QUEUE)(job({ data: { request_id: REQUEST_ID } }), err);
@@ -148,7 +213,7 @@ describe("captureFinalJobFailure", () => {
       tags: {
         queue: QUEUE,
         error_class: "UnknownError",
-        job_name: "audit.write",
+        job_name: "audit-fanout",
         outcome: "exhausted",
         request_id: REQUEST_ID,
       },
@@ -195,7 +260,7 @@ describe("captureFinalJobFailure", () => {
     expect(sent?.tags).toEqual({
       queue: QUEUE,
       error_class: "UnknownError",
-      job_name: "audit.write",
+      job_name: "audit-fanout",
       outcome: "exhausted",
     });
   });
