@@ -311,6 +311,61 @@ the seven domain-grant scripts, `api`/`worker` up, and the catch-up scripts, as
 in [Deploy](#deploy). Drop `--build`
 from those commands, since the images are pulled, not built.
 
+## Lab deploy workflow (RT-703, preflight only)
+
+The manual `Deploy lab` workflow (`.github/workflows/deploy-lab.yml`) checks
+that a published release is safe to deploy to the AWS lab, and writes a planned
+deployment ledger. **It deploys nothing.** It has no AWS, SSH or SSM step,
+uses only the read-only `GITHUB_TOKEN`, and refuses `dry_run: false`.
+
+Run it from `main` with:
+
+- `backend_release`: a release tag `backend-core-<sha12>`. Any release
+  reachable from `main` is accepted, not only the tip.
+- `jira_key`: the issue that authorizes the run.
+- `target`: `lab-01`.
+- optionally `current_release`: the release the host is believed to run. This
+  is operator-asserted, not host-verified. It is used for the schema and
+  rollback plan.
+
+`deploy/lab/verify-release.cjs` makes the decision. It refuses, and the run
+fails, if any of these checks fails:
+
+- the release is immutable and not a draft, and its git tag points at its commit;
+- its commit is reachable from `main` (`compare` status `ahead` or `identical`);
+- the tarball holds only regular files and directories under one top-level
+  directory, with nothing unlisted (checked before and after unpacking);
+- the latest `fast` and `db-integration` runs on that commit succeeded;
+- both levels of `SHA256SUMS` match;
+- the manifest is published and has registry digests for that commit;
+- `release.env` matches the manifest;
+- each of the three images has an attestation from `release-images.yml` on
+  `main` for that commit.
+
+The ledger is uploaded as the `deploy-lab-ledger-<run id>` artifact and shown in
+the run summary. Record it on the Jira issue. It covers the source SHA, the
+digests, the grant and catch-up scripts, the migrations added since
+`current_release`, the planned live sequence and the pending approvals.
+
+**Recovery rule.** Redeploying earlier application digests is planned only when
+no migration was added or removed between the two releases. Even then, the
+contract still needs a compatibility review. Any schema change means no
+automatic database downgrade: go to a restore or forward-fix decision, using
+verified backups and financial and outbox checks. Deploying a release that
+lacks a migration the host already has is refused.
+
+A live run is a later, separately approved slice. It needs:
+
+- the owner-provisioned `aws-lab` environment with a required reviewer;
+- an approved GitHub OIDC -> least-privilege IAM role -> SSM transport for
+  `lab-01`;
+- trusted evidence of what the host runs;
+- an independent, restorable backup.
+
+Do not add `environment: aws-lab` to the workflow before that environment
+exists. GitHub creates a missing environment with no protection rules the first
+time a job names it.
+
 ## Operations
 
 ```bash

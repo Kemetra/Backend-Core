@@ -1,0 +1,231 @@
+# RT-703: manual, approval-gated AWS lab deploy for Backend-Core, slice 1.
+#
+# THIS SLICE IS A PREFLIGHT / DRY RUN ONLY. It verifies an already published,
+# immutable Backend-Core release (see release-images.yml) and writes a planned
+# deployment ledger as a workflow artifact. It deploys nothing: no AWS, no SSH,
+# no SSM, no host access, no secrets beyond the read-only GITHUB_TOKEN.
+#
+# No job references a GitHub Environment on purpose. GitHub creates a missing
+# environment, with no protection rules, the first time a job names it, which
+# would silently create an unprotected `aws-lab` gate. A live path needs the
+# owner-provisioned `aws-lab` environment with a required reviewer and an
+# approved OIDC -> IAM role -> SSM transport first (separate owner gates), so
+# `dry_run: false` is refused by the guard below.
+#
+# Fails closed: any guard or evidence that cannot be evaluated is a refusal.
+name: Deploy lab
+
+"on":
+  workflow_dispatch:
+    inputs:
+      backend_release:
+        description: Published release tag backend-core-<sha12> (any release reachable from main)
+        required: true
+        type: string
+      jira_key:
+        description: Jira issue authorizing this run (RT-<number>)
+        required: true
+        type: string
+      target:
+        description: Lab host (Backend-Core only)
+        required: true
+        type: choice
+        options:
+          - lab-01
+        default: lab-01
+      current_release:
+        description: Optional release tag the host is believed to run (operator-asserted, used for the migration/rollback plan)
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: Preflight only. Must stay true; live deploy is not enabled in this slice
+        required: true
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: deploy-aws-lab
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: preflight (verify release, planned ledger, no deploy)
+    # No job-level `if` on purpose: a dispatch from any other ref must FAIL in
+    # the first step below, not be silently skipped as a green run.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # checkout, release assets, compare
+      checks: read # check runs on the release commit
+      packages: read # GHCR login for attestation verification
+      attestations: read # gh attestation verify
+      actions: read # read (never create) the aws-lab environment
+    steps:
+      - name: Guard (main only, validated inputs, dry run only)
+        env:
+          RUN_REF: ${{ github.ref }}
+          BACKEND_RELEASE: ${{ inputs.backend_release }}
+          JIRA_KEY: ${{ inputs.jira_key }}
+          TARGET: ${{ inputs.target }}
+          CURRENT_RELEASE: ${{ inputs.current_release }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+
+          [ "$RUN_REF" = "refs/heads/main" ] || fail "must be dispatched from refs/heads/main"
+          [[ "$BACKEND_RELEASE" =~ ^backend-core-[0-9a-f]{12}$ ]] || fail "backend_release must be backend-core-<12 hex>"
+          [[ "$JIRA_KEY" =~ ^RT-[1-9][0-9]*$ ]] || fail "jira_key must be RT-<number>"
+          [ "$TARGET" = "lab-01" ] || fail "target must be lab-01"
+          if [ -n "$CURRENT_RELEASE" ]; then
+            [[ "$CURRENT_RELEASE" =~ ^backend-core-[0-9a-f]{12}$ ]] || fail "current_release must be empty or backend-core-<12 hex>"
+          fi
+          [ "$DRY_RUN" = "true" ] || fail "live deploy not enabled: RT-703 slice 1 is dry run only; a live run needs the aws-lab environment, a required reviewer and an approved transport (separate owner gate)"
+
+      # No `ref:` on purpose: the verifier runs from the dispatched main commit,
+      # never from the release under test. Full history and tags so `git ls-tree`
+      # and `git rev-parse` can read any release reachable from main.
+      - name: Checkout main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Log in to GHCR (read-only, for attestation verification)
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Collect release evidence (read-only GitHub API)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BACKEND_RELEASE: ${{ inputs.backend_release }}
+          CURRENT_RELEASE: ${{ inputs.current_release }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          EVIDENCE="$RUNNER_TEMP/evidence"
+          mkdir -p "$EVIDENCE/release" "$EVIDENCE/bundle"
+
+          gh release view "$BACKEND_RELEASE" --repo "$REPO" \
+            --json tagName,targetCommitish,isDraft,isPrerelease,isImmutable > "$EVIDENCE/release.json"
+          SHA="$(jq -r .targetCommitish "$EVIDENCE/release.json")"
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || fail "release target is not a 40-hex commit SHA"
+          # The git tag itself must point at that commit; the verifier compares them.
+          git rev-parse --verify --quiet "refs/tags/$BACKEND_RELEASE^{commit}" > "$EVIDENCE/tag-commit.txt" || true
+
+          # Verify the asset checksums before unpacking anything. SHA256SUMS must
+          # cover both assets, and the tarball may hold only regular files and
+          # directories under its one top-level directory: no links, devices,
+          # absolute paths or `..`.
+          BUNDLE="backend-core-release-${SHA:0:12}"
+          TARBALL="$EVIDENCE/release/$BUNDLE.tar.gz"
+          gh release download "$BACKEND_RELEASE" --repo "$REPO" --dir "$EVIDENCE/release"
+          for ASSET in "$BUNDLE.tar.gz" release-manifest.json; do
+            awk -v f="$ASSET" '$2 == f { found = 1 } END { exit !found }' "$EVIDENCE/release/SHA256SUMS" \
+              || fail "SHA256SUMS does not cover $ASSET"
+          done
+          (cd "$EVIDENCE/release" && sha256sum --check --strict SHA256SUMS)
+          TYPES="$(tar -tvzf "$TARBALL" | cut -c1 | sort -u | tr -d '\n')"
+          [[ "$TYPES" =~ ^[-d]+$ ]] || fail "bundle holds an entry that is not a regular file or directory"
+          ENTRIES="$(tar -tzf "$TARBALL")"
+          while IFS= read -r ENTRY; do
+            case "$ENTRY" in "$BUNDLE"/*) ;; *) fail "bundle entry outside $BUNDLE/" ;; esac
+            case "$ENTRY" in /* | *..* | *\\*) fail "unsafe bundle entry path" ;; *) ;; esac
+          done <<<"$ENTRIES"
+          tar -xzf "$TARBALL" -C "$EVIDENCE/bundle" --no-same-owner --no-same-permissions
+
+          gh api "repos/$REPO/compare/$SHA...main" \
+            --jq '{status, ahead_by, behind_by, merge_base: .merge_base_commit.sha}' > "$EVIDENCE/compare.json"
+          gh api --paginate "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+            --jq '.check_runs[] | {name, conclusion, slug: .app.slug, started_at}' | jq -s . > "$EVIDENCE/check-runs.json"
+
+          if git cat-file -e "$SHA^{commit}" 2>/dev/null; then
+            git ls-tree --name-only "$SHA" packages/db/drizzle/ > "$EVIDENCE/migrations-target.txt"
+          fi
+
+          # A failed verification leaves no file; the verifier refuses on a missing attestation.
+          for TARGET in api worker migrate; do
+            DIGEST="$(jq -r --arg t "$TARGET" '.images[$t].digest // ""' "$EVIDENCE/release/release-manifest.json")"
+            [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::warning::no valid $TARGET digest in the manifest"; continue; }
+            if ! gh attestation verify "oci://ghcr.io/kemetra/backend-core-$TARGET@$DIGEST" \
+              --repo "$REPO" \
+              --signer-workflow "$REPO/.github/workflows/release-images.yml" \
+              --source-digest "$SHA" \
+              --source-ref refs/heads/main \
+              --format json > "$EVIDENCE/attest-$TARGET.json"; then
+              rm -f "$EVIDENCE/attest-$TARGET.json"
+              echo "::warning::attestation verification failed for $TARGET"
+            fi
+          done
+          # Drop the registry credential before anything reads release content.
+          docker logout ghcr.io > /dev/null
+
+          # The operator-asserted current release gets the same tag and ancestry evidence.
+          if [ -n "$CURRENT_RELEASE" ]; then
+            if gh release view "$CURRENT_RELEASE" --repo "$REPO" \
+              --json tagName,targetCommitish,isDraft,isPrerelease,isImmutable > "$EVIDENCE/current-release.json"; then
+              CURRENT_SHA="$(jq -r .targetCommitish "$EVIDENCE/current-release.json")"
+              if [[ "$CURRENT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+                git rev-parse --verify --quiet "refs/tags/$CURRENT_RELEASE^{commit}" > "$EVIDENCE/current-tag-commit.txt" || true
+                gh api "repos/$REPO/compare/$CURRENT_SHA...main" \
+                  --jq '{status, ahead_by, behind_by, merge_base: .merge_base_commit.sha}' > "$EVIDENCE/compare-current.json" \
+                  || rm -f "$EVIDENCE/compare-current.json"
+                if git cat-file -e "$CURRENT_SHA^{commit}" 2>/dev/null; then
+                  git ls-tree --name-only "$CURRENT_SHA" packages/db/drizzle/ > "$EVIDENCE/migrations-current.txt"
+                fi
+              fi
+            else
+              rm -f "$EVIDENCE/current-release.json"
+            fi
+          fi
+
+          # Report the approval gate; never create it. The token may not be allowed
+          # to see environments, so a 404 is "not-visible", not proof it is missing.
+          if OUT="$(gh api "repos/$REPO/environments/aws-lab" 2>&1)"; then
+            jq '{status: "present", reviewers: ([.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?] | length)}' \
+              <<<"$OUT" > "$EVIDENCE/environment.json"
+          elif grep -q "Not Found" <<<"$OUT"; then
+            echo '{"status":"not-visible","reviewers":0}' > "$EVIDENCE/environment.json"
+          else
+            echo '{"status":"unknown","reviewers":0}' > "$EVIDENCE/environment.json"
+          fi
+
+      - name: Verify evidence and write the planned ledger (no deploy)
+        env:
+          BACKEND_RELEASE: ${{ inputs.backend_release }}
+          JIRA_KEY: ${{ inputs.jira_key }}
+          TARGET: ${{ inputs.target }}
+          CURRENT_RELEASE: ${{ inputs.current_release }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          node deploy/lab/verify-release.cjs \
+            --evidence "$RUNNER_TEMP/evidence" --out "$RUNNER_TEMP/ledger" \
+            --release "$BACKEND_RELEASE" --jira-key "$JIRA_KEY" --target "$TARGET" \
+            --current-release "$CURRENT_RELEASE" \
+            --actor "$ACTOR" --run-url "$RUN_URL" \
+            --mode dry-run
+
+      - name: Add the ledger to the run summary
+        if: always()
+        run: |
+          set -euo pipefail
+          SUMMARY="$RUNNER_TEMP/ledger/summary.md"
+          if [ -f "$SUMMARY" ]; then cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload the planned ledger
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: deploy-lab-ledger-${{ github.run_id }}
+          path: ${{ runner.temp }}/ledger/
+          if-no-files-found: warn
+          retention-days: 30
