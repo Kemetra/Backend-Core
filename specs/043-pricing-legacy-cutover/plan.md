@@ -84,6 +84,12 @@ UNION ALL SELECT 'sellable_pairs_upper_bound',
   (SELECT count(*) FROM stores s JOIN tenant_products tp ON tp.tenant_id = s.tenant_id
     WHERE s.is_active AND tp.retired_at IS NULL);
 
+-- 1b. Sellable-pair upper bound per tenant (drives the MC-8 single- vs two-phase choice)
+SELECT s.tenant_id, count(*) AS sellable_pairs_upper_bound
+  FROM stores s JOIN tenant_products tp ON tp.tenant_id = s.tenant_id
+ WHERE s.is_active AND tp.retired_at IS NULL
+ GROUP BY 1;
+
 -- 2. Exception census (per tenant): every row here blocks that tenant's cutover (§4.4)
 SELECT tenant_id, 'zero_price' AS cls, count(*) FROM tenant_products
   WHERE retired_at IS NULL AND default_price = 0 GROUP BY 1
@@ -105,7 +111,7 @@ SELECT tenant_id, timezone, count(*) FROM stores WHERE is_active GROUP BY 1, 2;
 ```
 
 The PR-03E record must state, per database: the `origin/main` deploy SHA, the run time, and the results of all four
-queries. If `price_history` is non-empty, it also records whether every open interval equals the current legacy value.
+queries (including 1b). If `price_history` is non-empty, it also records whether every open interval equals the current legacy value.
 
 ## 4. Backfill into the new model (PR-16a)
 
@@ -171,7 +177,8 @@ The import is a worker/CLI job, re-runnable at any time while the tenant's autho
 5. Store the watermark row `(tenant_id, run_id, T, change_log_sequence, revision_no or null, counts by outcome)`.
 
 The import never reads or writes anything except legacy price columns (read), Pricing tables and its own run table.
-It refuses to run when the tenant's authority is not `legacy` (§6).
+It refuses to run unless the tenant's authority is `legacy`, or `cutover_in_progress` when it is invoked by the
+cutover procedure itself (§6.3 step 4). A scheduled or operator run sees `cutover_in_progress` as "refused".
 
 Cadence before cutover: on demand, plus a scheduled run (recommended every 15 minutes, worker job) so shadow
 mismatches from import lag stay small. Legacy writes are rare today (F3), so most runs are no-ops.
@@ -257,13 +264,15 @@ One per-tenant row decides **both** who may write prices and which source read-d
 diverge (decision MC-4):
 
 `tenant_pricing_authority(tenant_id PK, authority ∈ {legacy, cutover_in_progress, pricing}, changed_at, changed_by, changed_in_revision, run_id, reason)`
-— RLS by tenant; every change also writes an `audit_events` row. `cutover_in_progress` exists only inside the
-cutover transaction (§6.3) and is never committed. The migration that creates the table inserts a `legacy` row for
+— RLS by tenant; every change also writes an `audit_events` row. `cutover_in_progress` is the frozen state of a
+cutover that is running (§6.3). In the single-transaction path it is never committed; in the two-phase fallback it is
+committed between phases, and an abort explicitly resets it to `legacy`. The migration that creates the table inserts a `legacy` row for
 every existing tenant, and tenant creation inserts one, so the row **always exists** (the freeze in §6.2 relies on it).
 
 | `authority` | Legacy price columns | Pricing authoring (spec 042 PR-10 API) | `legacy_import` job | Read-down v1 price source |
 |---|---|---|---|---|
 | `legacy` (default) | writable | **rejected** (`409 pricing_authority_legacy`) | allowed | legacy `COALESCE` (+ shadow) |
+| `cutover_in_progress` | **frozen** (§6.2) | **rejected** | allowed **only** for the cutover's own final import; scheduled and operator runs refused | legacy `COALESCE` (+ shadow) |
 | `pricing` | **frozen** (§6.2) | allowed | **refused** | Pricing resolver |
 
 Only the cutover (§6.3) and rollback (§8) procedures change the row, under the pricing publish lock.
@@ -299,8 +308,8 @@ One transaction, run by an operator CLI (no new OpenAPI), recorded in a `pricing
    (§8) deployed.
 2. `BEGIN`; take the pricing publish lock; `SELECT … FOR UPDATE` the authority row. From here every concurrent legacy
    price write for the tenant waits on this row (§6.2).
-3. Freeze legacy for the tenant: set `authority = 'cutover_in_progress'`, a transient value that the trigger treats as
-   frozen and the import treats as allowed. It never commits.
+3. Freeze legacy for the tenant: set `authority = 'cutover_in_progress'`, which the trigger treats as frozen and which
+   the cutover's own import (step 4) is allowed to run under (§4.3). It is not committed in this path.
 4. Final delta import (§4.3) inside the same transaction.
 5. Full sweep (§5.4 item 3). Any mismatch other than `reason_only` → `ROLLBACK`. Nothing is changed: legacy stays
    writable and authoritative, no import revision from step 4 survives, and the run row (written in a separate
@@ -309,7 +318,8 @@ One transaction, run by an operator CLI (no new OpenAPI), recorded in a `pricing
 
 `statement_timeout` for the transaction is set from the PR-03E pair count. If the count makes a single transaction
 unreasonable (proposed threshold: more than 500 000 sellable pairs for one tenant), the fallback is a two-phase switch:
-commit the freeze as its own state, then import and sweep, then flip; an abort then explicitly unfreezes. For the pilot
+commit `cutover_in_progress` as its own step, then import and sweep, then flip to `pricing`; an abort explicitly resets
+the row to `legacy`. While it is committed, legacy prices are frozen and read-down still serves the legacy `COALESCE`. For the pilot
 size this is not expected to be needed; PR-03E settles it.
 
 Order: rt9 lab tenant first (PR-V2 needs it cut over), then the pilot tenant. One tenant at a time.
@@ -399,7 +409,9 @@ and G4 concern (RT-487).
 | **R0 — before cutover** | Import or shadow is wrong | Stop the import job. If needed, publish a `legacy_import` revision that ends the tenant's imported events from now (a cancel, not a delete). Legacy was authoritative throughout, so serving never changed |
 | **R1 — tenant authority back to legacy** | After cutover; any reason | One transaction under the publish lock: (1) set `authority = legacy` (Pricing authoring now rejected); (2) **reverse projection** with the projection-writer GUC: for each `(active store, live product)`, resolve at `(now, head)`; write the Book-scope price into `tenant_products.default_price` (currency from the Book); where a Store's resolved price differs from it, set the override price (insert a price-only override row if none exists); where it equals it, clear the override price, or retire the override row if price was its only content; for `unpriced`, clear the price (same rule); (3) full §5.2 sweep, now legacy vs Pricing at `now`, must be 0 mismatches or the transaction aborts and the tenant stays on `pricing`; (4) audit; commit |
 | **R2 — code rollback** | A deploy must go back past PR-16b | **Not allowed while any tenant is on `pricing`**: older code would serve the frozen snapshot. R1 every such tenant first. The deploy checklist (PR-16b AC) states this, and the API refuses to start if the code version does not know the `authority` table but the table has a `pricing` row (a startup guard shipped one release ahead) |
-| **R3 — schema rollback** | A Pricing migration must go down | Down-migrations of the Pricing tables (PR-05) and of the authority/freeze migration (PR-16a) **refuse to run** when they hold rows. Down never drops data |
+| **R3 — schema rollback** | A Pricing migration must go down | Down-migrations of the Pricing tables (PR-05) **refuse to run** when they hold rows. The authority/freeze migration (PR-16a-1) refuses when any
+`tenant_pricing_authority` row is not `legacy`, or when `pricing_import_runs` / `pricing_cutover_runs` hold rows; the
+seeded all-`legacy` rows alone do not block it. Down never drops data |
 
 What R1 does **not** carry back to legacy, and how that is handled:
 
@@ -446,8 +458,8 @@ authorization on its own issue. Mapping to the RT-282 backlog is shown.
 |---|---|---|---|---|---|
 | **PR-03E** | new (from this plan) | Verification | Run the §3 census on pilot and rt9 (read-only) | DB access for the operator | Results of all four queries per DB, with deploy SHA and time, attached to RT-485. Confirms or refutes F2 on real data; fixes the MC-8 single-vs-two-phase choice |
 | **PR-05** | PR-05 `[GATED migration]` | Impl | Pricing tables per spec 041 data-model | PR-03 (this plan) | Already includes `source = legacy_import` and revision `kind = legacy_import`. **Add:** down-migration refuses when tables hold rows (R3) |
-| **PR-16a-1** | PR-16a `[GATED migration]` | Impl | `tenant_pricing_authority`, `pricing_import_runs` (watermarks), `pricing_cutover_runs`; the freeze trigger function on `tenant_products` and `store_product_overrides`, inert while every tenant is `legacy` | PR-05 | Up/down tests, RLS matrix, down refuses when rows exist; trigger unit tests for every case in §6.2, including the GUC bypass |
-| **PR-16a-2** | PR-16a | Impl | Tenant bootstrap, initial and delta import job (worker + CLI), exception report | PR-16a-1, PR-09 (resolver), PR-03E | §4 behaviour; second run with no legacy change creates no revision; MC-10 input required; exception classes reported; refuses when `authority ≠ legacy` |
+| **PR-16a-1** | PR-16a `[GATED migration]` | Impl | `tenant_pricing_authority`, `pricing_import_runs` (watermarks), `pricing_cutover_runs`; the freeze trigger function on `tenant_products` and `store_product_overrides`, inert while every tenant is `legacy` | PR-05 | Up/down tests, RLS matrix; down refuses per R3 (a non-`legacy` authority row or any run row) and succeeds on seeded all-`legacy` rows; trigger unit tests for every case in §6.2, including the GUC bypass |
+| **PR-16a-2** | PR-16a | Impl | Tenant bootstrap, initial and delta import job (worker + CLI), exception report | PR-16a-1, PR-09 (resolver), PR-03E | §4 behaviour; second run with no legacy change creates no revision; MC-10 input required; exception classes reported; refuses unless `authority = legacy`, or `cutover_in_progress` when called by the cutover |
 | **PR-11** | PR-11 (amended by §7.2) | Impl | Shadow resolver on v1, nightly sweep job, mismatch metric and report; **v1 bridge** (§7.3): change-log rows at publish and from the activation job | PR-09, PR-16a-2; the v2 part also needs PR-06 (G4a) | §5.2/§5.3 classification; projection-level check; v1 schema contract test on pricing-sourced output; activation job idempotent |
 | **PR-V1** | PR-V1 | Verification | §5.4 evidence on rt9 and pilot | PR-11, PR-16a-2 | Thresholds of §5.4 met and attached per tenant |
 | **PR-16b** | PR-16b | Impl | Cutover CLI (§6.3) **and** rollback R1 (§8.2) in the same item; app-level guards in seed CLI and `StoreOverrideService`; Pricing authoring gated by `authority`; R2 startup guard | PR-16a-2, PR-11, PR-V1, PR-10 | Abort path leaves the tenant byte-identical; rt9 cutover → Change Set → R1 round trip passes; sale tables checksum unchanged across cutover and rollback |
@@ -488,7 +500,7 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 **Integration (Testcontainers, `db-integration`)**
 
 - Import idempotence: run twice with no legacy change → exactly one revision. Delta: price change, currency change, override add, retire and delete, product retire → one revision each with the right supersede and carried-forward rows.
-- Import refused when `authority ≠ legacy`; refused for a multi-currency tenant; refused without MC-10 input.
+- Import refused under `pricing`, and under `cutover_in_progress` unless called by the cutover; allowed there for the cutover's own final import; refused for a multi-currency tenant; refused without MC-10 input.
 - Freeze trigger: under `pricing`, each legacy writer (seed path, `StoreOverrideService.create`, raw SQL `UPDATE`/`INSERT`/`DELETE`) is rejected; non-price columns still change; the GUC bypass works only inside its transaction.
 - RLS: the new tables isolate tenants (the isolation-harness pattern); tenant A's cutover does not freeze tenant B.
 - Cutover abort: inject one mismatch → `ROLLBACK`; tenant state, legacy rows and Pricing tables byte-identical to before; run row records the failure.
@@ -496,7 +508,7 @@ revisit.** Nothing here is in OpenAPI, a migration or code, so a reversal before
 - v1 bridge: an immediate publish produces change-log rows; a future event produces them at activation, once.
 - Rollback R1 round trip: cutover → Change Set (Zone price plus a Store override) → R1 → read-down v1 equals the resolver at the rollback instant; future events listed in the report.
 - Sale-fact safety: checksum of `sale_lines` and the posting feed before and after cutover and R1 is identical.
-- Migrations: up/down for PR-16a-1; down refuses with rows present (R3).
+- Migrations: up/down for PR-16a-1; down succeeds with only seeded `legacy` rows and refuses with a `pricing` row or a run row (R3).
 - Scale: the sweep over a seeded tenant at the PR-03E pair count fits the MC-8 timeout.
 
 **Runtime (rt9, then pilot)**
