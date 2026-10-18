@@ -183,7 +183,8 @@ function sha12(value: unknown): string | undefined {
 function releaseAndVersion(release: unknown, version: unknown): { release?: string; version?: string } {
   const r = sha12(release);
   const v = sha12(version);
-  if (r !== undefined && v !== undefined && r !== v) return {};
+  const disagree = r !== undefined && v !== undefined && r !== v;
+  if (disagree) return {};
   return { ...(r === undefined ? {} : { release: r }), ...(v === undefined ? {} : { version: v }) };
 }
 
