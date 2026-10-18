@@ -9,10 +9,15 @@
  *   - per-IP failed sign-ins:      30 / hour
  *   - per-IP password-reset:       100 / day  (wired by slice 3c)
  *
- * Each bucket is one Redis key. The first hit in a window does
- * `INCR` + `PEXPIRE`; subsequent hits in the same window only `INCR`.
- * `PTTL` is read alongside so callers can surface `resetAt` to the
- * client (HTTP `Retry-After`-equivalent).
+ * Each bucket is one Redis key. RT-618: every hit is ONE atomic round
+ * trip (`RedisLike.incrWindow`, a Lua script in the ioredis adapter) that
+ * does `INCR`, seeds the window TTL when the key has none, and returns
+ * the count with the remaining TTL so callers can surface `resetAt` to
+ * the client (HTTP `Retry-After`-equivalent). Seeding "when the key has
+ * no TTL" rather than "when count === 1" is the self-heal: a counter that
+ * was ever left without a TTL (a crash between the former separate
+ * `INCR` and `PEXPIRE`, a manual `SET`) gets one on its next hit instead
+ * of locking the bucket forever.
  *
  * The implementation depends on a narrow `RedisLike` interface, NOT on
  * `ioredis` directly, so:
@@ -22,11 +27,9 @@
  *     production Redis client is wired in a later slice the same way
  *     `SessionCache` is — adapter on the edge, algorithm in the core.
  *
- * The atomic guarantees we actually need on Redis (`INCR` is atomic,
- * `PEXPIRE` is best-effort idempotent on first set) are weaker than
- * "exactly-N-in-the-window"; that's deliberate. A fixed-window counter
- * with a small over-count under contention is the standard contract for
- * sign-in rate limits. See research.md §PQ-4.
+ * A fixed-window counter can admit up to twice the limit across a window
+ * boundary; that's deliberate and the standard contract for sign-in rate
+ * limits. See research.md §PQ-4.
  */
 import { Injectable } from "@nestjs/common";
 
@@ -36,21 +39,28 @@ import { Injectable } from "@nestjs/common";
  * this shape.
  */
 export interface RedisLike {
-  /** Atomically increment `key` and return the new value. */
-  incr(key: string): Promise<number>;
   /**
-   * Set the key's TTL (in milliseconds) only if the key has no TTL yet.
-   * Implementations should map this to `PEXPIRE … NX` for ioredis or the
-   * equivalent option for node-redis. Returns `1` if the TTL was applied,
-   * `0` otherwise.
+   * RT-618: ONE atomic round trip for a fixed-window hit. Increments `key`,
+   * gives it a TTL of `ttlMs` if it has none (the first hit of a window, or
+   * a counter that lost its TTL), and returns the new count with the key's
+   * remaining TTL in milliseconds. The ioredis adapter runs this as a Lua
+   * script, so no other command can interleave between the steps.
    */
-  pexpireNx(key: string, ttlMs: number): Promise<number>;
+  incrWindow(key: string, ttlMs: number): Promise<WindowHit>;
   /** Milliseconds until expiry. -1 = no TTL set, -2 = key missing. */
   pttl(key: string): Promise<number>;
   /** Atomically decrement `key` and return the new value. */
   decr(key: string): Promise<number>;
   /** Delete `key`; returns the number of keys removed. */
   del(key: string): Promise<number>;
+}
+
+/** Result of {@link RedisLike.incrWindow}. */
+export interface WindowHit {
+  /** The counter's value after this hit. */
+  count: number;
+  /** Remaining TTL in ms; negative only from a stub that keeps no TTL. */
+  ttlMs: number;
 }
 
 /**
@@ -119,8 +129,8 @@ export interface RateLimitDecision {
   /** Hits remaining before the bucket locks (never negative). */
   remaining: number;
   /**
-   * Wall-clock ms until the window resets. -1 only on the unusual path
-   * where Redis reports no TTL; callers should treat that as "now".
+   * Wall-clock ms until the window resets. -1 only from a stub client that
+   * keeps no TTL (`AlwaysAllowRedis`); callers should treat that as "now".
    */
   resetMs: number;
 }
@@ -141,9 +151,10 @@ export class RateLimiter {
    * name namespaces the policy (e.g. `signin_account`), identifier is
    * the per-caller dimension (account id, IP, …).
    *
-   * The first hit in a fresh window seeds the TTL; subsequent hits in
-   * the same window keep counting until `limit` is reached, after which
-   * `allowed === false` until the window rolls.
+   * One Redis round trip (RT-618). The first hit in a fresh window seeds
+   * the TTL; subsequent hits in the same window keep counting until
+   * `limit` is reached, after which `allowed === false` until the window
+   * rolls. A key found without a TTL is given one (self-heal).
    */
   async check(
     bucketName: string,
@@ -151,13 +162,8 @@ export class RateLimiter {
     bucket: RateLimitBucket,
   ): Promise<RateLimitDecision> {
     const key = buildKey(bucketName, identifier);
-    const count = await this.redis.incr(key);
-    if (count === 1) {
-      await this.redis.pexpireNx(key, bucket.windowMs);
-    }
-
-    const ttl = await this.redis.pttl(key);
-    const resetMs = ttl < 0 ? -1 : ttl;
+    const { count, ttlMs } = await this.redis.incrWindow(key, bucket.windowMs);
+    const resetMs = ttlMs < 0 ? -1 : ttlMs;
     const remaining = Math.max(0, bucket.limit - count);
     const allowed = count <= bucket.limit;
 

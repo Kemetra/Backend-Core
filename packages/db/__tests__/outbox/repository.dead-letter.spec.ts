@@ -518,7 +518,7 @@ describe("listDeadLettered (DL-3) — filters", () => {
       eventType: "manual.outbox.test",
       limit: 100,
     });
-    expect(rows.length).toBe(1);
+    expect(rows).toHaveLength(1);
     expect(rows[0]!.event_id).toBe(EVENT_A_DEAD_OTHER_TYPE);
   });
 
@@ -572,7 +572,7 @@ describe("listDeadLettered (DL-4) — pagination", () => {
       eventType: "audit.event.created",
       limit: 2,
     });
-    expect(page1.length).toBe(2);
+    expect(page1).toHaveLength(2);
 
     const cursor = {
       occurredAtText: page1[1]!.occurred_at_text,
@@ -592,7 +592,7 @@ describe("listDeadLettered (DL-4) — pagination", () => {
   it("limit caps the row count", async () => {
     if (maybeSkip()) return;
     const rows = await listDeadLettered(env!.app, { limit: 1 });
-    expect(rows.length).toBe(1);
+    expect(rows).toHaveLength(1);
   });
 
   it("rejects non-positive limit", async () => {

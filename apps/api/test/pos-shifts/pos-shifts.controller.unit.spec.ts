@@ -67,28 +67,14 @@ describe("PosShiftsController — extractBearer branches", () => {
     expect(fakePosShiftsService.getStuck).not.toHaveBeenCalled();
   });
 
-  it("B1.0: empty string authorization header → 401 (too short)", async () => {
+  it.each([
+    ["B1.0: empty string authorization header → 401 (too short)", ""],
+    ["B2.0: 'Basic somethingelse' authorization header → 401 (wrong prefix)", "Basic somethingelse"],
+    ["B3.0: 'Bearer ' (just prefix, empty token) → 401 (empty token)", "Bearer "],
+  ])("%s", async (_label, authorization) => {
     const res = await http()
       .get(`/api/pos/v1/shifts/stuck?branch_id=${BRANCH_ID}`)
-      .set("Authorization", "")
-      .expect(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-    expect(fakePosShiftsService.getStuck).not.toHaveBeenCalled();
-  });
-
-  it("B2.0: 'Basic somethingelse' authorization header → 401 (wrong prefix)", async () => {
-    const res = await http()
-      .get(`/api/pos/v1/shifts/stuck?branch_id=${BRANCH_ID}`)
-      .set("Authorization", "Basic somethingelse")
-      .expect(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-    expect(fakePosShiftsService.getStuck).not.toHaveBeenCalled();
-  });
-
-  it("B3.0: 'Bearer ' (just prefix, empty token) → 401 (empty token)", async () => {
-    const res = await http()
-      .get(`/api/pos/v1/shifts/stuck?branch_id=${BRANCH_ID}`)
-      .set("Authorization", "Bearer ")
+      .set("Authorization", authorization)
       .expect(401);
     expectErrorEnvelope(res.body, "unauthorized");
     expect(fakePosShiftsService.getStuck).not.toHaveBeenCalled();

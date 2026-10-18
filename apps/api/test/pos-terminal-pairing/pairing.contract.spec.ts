@@ -510,35 +510,24 @@ describe("pos-terminal-pairing.yaml — TerminalPairResponse shape", () => {
 // 8. New fields from POS-Pulse Slice 1 closeout-gap audit (2026-05-28)
 // ===========================================================================
 describe("pos-terminal-pairing.yaml — Slice 1 closeout-gap fields (branch + tax detail)", () => {
-  it("branch_name is a bounded-length non-empty string", () => {
+  // tenant_tax_registration_id is stored as string (not integer) for forward
+  // compatibility with other jurisdictions and ETA spec evolution. Egyptian ETA
+  // format is 9-digit numeric, but the contract is intentionally permissive at
+  // the string level.
+  it.each([
+    ["branch_name", "is a bounded-length non-empty string"],
+    ["branch_address", "is a bounded-length non-empty string"],
+    [
+      "tenant_tax_registration_id",
+      "is a bounded-length string (Egyptian Tax Authority + forward-compat)",
+    ],
+  ])("%s %s", (field) => {
     const schema = pairingDoc.components?.schemas?.["TerminalPairResponse"];
     const props = schema?.["properties"] as
       | Record<string, { type?: string; minLength?: number }>
       | undefined;
-    expect(props?.["branch_name"]?.type).toBe("string");
-    expect(props?.["branch_name"]?.minLength).toBeGreaterThanOrEqual(1);
-  });
-
-  it("branch_address is a bounded-length non-empty string", () => {
-    const schema = pairingDoc.components?.schemas?.["TerminalPairResponse"];
-    const props = schema?.["properties"] as
-      | Record<string, { type?: string; minLength?: number }>
-      | undefined;
-    expect(props?.["branch_address"]?.type).toBe("string");
-    expect(props?.["branch_address"]?.minLength).toBeGreaterThanOrEqual(1);
-  });
-
-  it("tenant_tax_registration_id is a bounded-length string (Egyptian Tax Authority + forward-compat)", () => {
-    // Stored as string (not integer) for forward compatibility with
-    // other jurisdictions and ETA spec evolution. Egyptian ETA format
-    // is 9-digit numeric, but the contract is intentionally permissive
-    // at the string level.
-    const schema = pairingDoc.components?.schemas?.["TerminalPairResponse"];
-    const props = schema?.["properties"] as
-      | Record<string, { type?: string; minLength?: number }>
-      | undefined;
-    expect(props?.["tenant_tax_registration_id"]?.type).toBe("string");
-    expect(props?.["tenant_tax_registration_id"]?.minLength).toBeGreaterThanOrEqual(1);
+    expect(props?.[field]?.type).toBe("string");
+    expect(props?.[field]?.minLength).toBeGreaterThanOrEqual(1);
   });
 });
 

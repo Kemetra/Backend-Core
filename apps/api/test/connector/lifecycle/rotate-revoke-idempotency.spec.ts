@@ -225,7 +225,7 @@ describe("RT-155 — rotate is keyed per instance and never replayed", () => {
     expect(onB.headers["idempotent-replayed"]).toBeUndefined();
     expect(onB.body.instance_id).toBe(b.id);
     expect(onB.body.credential_id).not.toBe(onA.body.credential_id);
-    expect(onB.body.secret === onA.body.secret).toBe(false);
+    expect(onB.body.secret).not.toBe(onA.body.secret);
     expect(await isRevoked(b.credentialId)).toBe(true);
     expect(await isRevoked(onB.body.credential_id as string)).toBe(false);
   });

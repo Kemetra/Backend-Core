@@ -164,7 +164,7 @@ describe("T517 — observability signals: counters increment in the right paths"
       .set("Idempotency-Key", KEY_REPLAY)
       .send(BODY);
 
-    expect(spy.mock.calls.length).toBe(before + 1);
+    expect(spy.mock.calls).toHaveLength(before + 1);
     expect(spy.mock.calls[spy.mock.calls.length - 1]![0]).toMatchObject({ route: expect.stringContaining("invite") });
     spy.mockRestore();
   });
@@ -185,7 +185,7 @@ describe("T517 — observability signals: counters increment in the right paths"
       .set("Idempotency-Key", KEY_CONFLICT)
       .send({ email: "bob@example.com", role_code: "tenant_admin", store_access_kind: "all" });
 
-    expect(spy.mock.calls.length).toBe(before + 1);
+    expect(spy.mock.calls).toHaveLength(before + 1);
     spy.mockRestore();
   });
 
@@ -201,7 +201,7 @@ describe("T517 — observability signals: counters increment in the right paths"
       .set("Idempotency-Key", KEY_PROGRESS)
       .send(BODY);
 
-    expect(spy.mock.calls.length).toBe(before + 1);
+    expect(spy.mock.calls).toHaveLength(before + 1);
     spy.mockRestore();
   });
 

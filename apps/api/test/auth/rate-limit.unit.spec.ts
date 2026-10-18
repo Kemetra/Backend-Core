@@ -9,11 +9,15 @@
  * The integration spec (rate-limit.spec.ts) covers the full fixed-window
  * logic with a VirtualClock fake. This spec pins the RateLimiter class's
  * own responsibilities using jest mocks:
- *   - INCR called with correct key (`rl:<bucketName>:<identifier>`)
- *   - PEXPIRE NX called only on first hit (count === 1)
- *   - PEXPIRE NX NOT called on subsequent hits
- *   - resetMs maps to pttl result when ttl >= 0
- *   - resetMs is -1 when pttl returns negative (no-TTL / missing-key path)
+ *   - RT-618: `check` is ONE port call (`incrWindow`) with the correct key
+ *     (`rl:<bucketName>:<identifier>`) and the bucket's windowMs. The
+ *     INCR / TTL seed / PTTL sequence lives inside that one atomic call
+ *     (a Lua script in the ioredis adapter), so the old per-command
+ *     assertions (INCR, then PEXPIRE NX only on the first hit, then PTTL)
+ *     are replaced by single-call assertions.
+ *   - resetMs maps to the returned ttlMs when ttlMs >= 0
+ *   - resetMs is -1 when the port reports a negative ttlMs (a stub such as
+ *     AlwaysAllowRedis; a real Redis always seeds the TTL)
  *   - allowed is true when count <= bucket.limit
  *   - allowed is false when count > bucket.limit
  *   - remaining is max(0, limit - count) — never negative
@@ -25,6 +29,7 @@ import {
   RateLimiter,
   type RedisLike,
   type RateLimitDecision,
+  type WindowHit,
 } from "../../src/auth/rate-limit";
 
 // ---------------------------------------------------------------------------
@@ -33,13 +38,13 @@ import {
 
 function makeMockRedis(overrides: Partial<{
   incrResult: number;
-  pexpireNxResult: number;
   pttlResult: number;
 }> = {}): jest.Mocked<RedisLike> {
   return {
-    incr: jest.fn<Promise<number>, [string]>().mockResolvedValue(overrides.incrResult ?? 1),
-    pexpireNx: jest.fn<Promise<number>, [string, number]>().mockResolvedValue(overrides.pexpireNxResult ?? 1),
-    pttl: jest.fn<Promise<number>, [string]>().mockResolvedValue(overrides.pttlResult ?? 900_000),
+    incrWindow: jest
+      .fn<Promise<WindowHit>, [string, number]>()
+      .mockResolvedValue({ count: overrides.incrResult ?? 1, ttlMs: overrides.pttlResult ?? 900_000 }),
+    pttl: jest.fn<Promise<number>, [string]>().mockResolvedValue(900_000),
     decr: jest.fn<Promise<number>, [string]>().mockResolvedValue(0),
     del: jest.fn<Promise<number>, [string]>().mockResolvedValue(1),
   };
@@ -58,13 +63,13 @@ const BUCKET_RESET   = RATE_LIMIT_BUCKETS.passwordResetPerIp; // limit: 100, win
 // ===========================================================================
 
 describe("RateLimiter — key construction", () => {
-  it("RL-U1: builds key as `rl:<bucketName>:<identifier>` and calls incr with it", async () => {
+  it("RL-U1: builds key as `rl:<bucketName>:<identifier>` and calls incrWindow with it", async () => {
     const redis = makeMockRedis();
     const limiter = new RateLimiter(redis);
 
     await limiter.check("signin_account", "user-alice", BUCKET_ACCOUNT);
 
-    expect(redis.incr).toHaveBeenCalledWith("rl:signin_account:user-alice");
+    expect(redis.incrWindow).toHaveBeenCalledWith("rl:signin_account:user-alice", BUCKET_ACCOUNT.windowMs);
   });
 
   it("RL-U2: different bucket names produce different keys for the same identifier", async () => {
@@ -74,7 +79,7 @@ describe("RateLimiter — key construction", () => {
     await limiter.check("signin_account", "user-alice", BUCKET_ACCOUNT);
     await limiter.check("signin_ip", "user-alice", BUCKET_IP);
 
-    const keys = (redis.incr as jest.Mock).mock.calls.map((c: unknown[]) => c[0] as string);
+    const keys = (redis.incrWindow as jest.Mock).mock.calls.map((c: unknown[]) => c[0] as string);
     expect(keys[0]).toBe("rl:signin_account:user-alice");
     expect(keys[1]).toBe("rl:signin_ip:user-alice");
     expect(keys[0]).not.toBe(keys[1]);
@@ -87,54 +92,53 @@ describe("RateLimiter — key construction", () => {
     await limiter.check("signin_account", "alice", BUCKET_ACCOUNT);
     await limiter.check("signin_account", "bob", BUCKET_ACCOUNT);
 
-    const keys = (redis.incr as jest.Mock).mock.calls.map((c: unknown[]) => c[0] as string);
+    const keys = (redis.incrWindow as jest.Mock).mock.calls.map((c: unknown[]) => c[0] as string);
     expect(keys[0]).toBe("rl:signin_account:alice");
     expect(keys[1]).toBe("rl:signin_account:bob");
   });
 });
 
 // ===========================================================================
-// PEXPIRE NX seeding behaviour
+// RT-618 — one atomic round trip per check
 // ===========================================================================
 
-describe("RateLimiter — PEXPIRE NX seeding", () => {
-  it("RL-U4: calls pexpireNx on first hit (count === 1) with key and bucket.windowMs", async () => {
+describe("RateLimiter — one atomic round trip (RT-618)", () => {
+  it("RL-U4: check makes exactly one port call and no other Redis command", async () => {
     const redis = makeMockRedis({ incrResult: 1 });
     const limiter = new RateLimiter(redis);
 
     await limiter.check("signin_account", "user-alice", BUCKET_ACCOUNT);
 
-    expect(redis.pexpireNx).toHaveBeenCalledTimes(1);
-    expect(redis.pexpireNx).toHaveBeenCalledWith(
-      "rl:signin_account:user-alice",
-      BUCKET_ACCOUNT.windowMs,
-    );
+    expect(redis.incrWindow).toHaveBeenCalledTimes(1);
+    expect(redis.pttl).not.toHaveBeenCalled();
+    expect(redis.decr).not.toHaveBeenCalled();
+    expect(redis.del).not.toHaveBeenCalled();
   });
 
-  it("RL-U5: does NOT call pexpireNx when count > 1 (window already seeded)", async () => {
+  it("RL-U5: the window is passed on every hit, not only the first (TTL self-heal lives in the atomic call)", async () => {
     const redis = makeMockRedis({ incrResult: 2 });
     const limiter = new RateLimiter(redis);
 
     await limiter.check("signin_account", "user-alice", BUCKET_ACCOUNT);
 
-    expect(redis.pexpireNx).not.toHaveBeenCalled();
+    expect(redis.incrWindow).toHaveBeenCalledWith("rl:signin_account:user-alice", BUCKET_ACCOUNT.windowMs);
   });
 
-  it("RL-U6: does NOT call pexpireNx when count equals bucket.limit (not first hit)", async () => {
+  it("RL-U6: a hit at the limit is still one call", async () => {
     const redis = makeMockRedis({ incrResult: BUCKET_ACCOUNT.limit });
     const limiter = new RateLimiter(redis);
 
     await limiter.check("signin_account", "user-alice", BUCKET_ACCOUNT);
 
-    expect(redis.pexpireNx).not.toHaveBeenCalled();
+    expect(redis.incrWindow).toHaveBeenCalledTimes(1);
   });
 
-  it("RL-U7: pexpireNx receives correct windowMs for each bucket type", async () => {
+  it("RL-U7: incrWindow receives correct windowMs for each bucket type", async () => {
     async function checkWindowMs(bucketName: string, bucket: typeof BUCKET_ACCOUNT | typeof BUCKET_IP | typeof BUCKET_RESET): Promise<void> {
       const redis = makeMockRedis({ incrResult: 1 });
       const limiter = new RateLimiter(redis);
       await limiter.check(bucketName, "192.0.2.1", bucket);
-      expect(redis.pexpireNx).toHaveBeenCalledWith(
+      expect(redis.incrWindow).toHaveBeenCalledWith(
         `rl:${bucketName}:192.0.2.1`,
         bucket.windowMs,
       );
@@ -143,6 +147,14 @@ describe("RateLimiter — PEXPIRE NX seeding", () => {
     await checkWindowMs("signin_account", BUCKET_ACCOUNT);
     await checkWindowMs("signin_ip", BUCKET_IP);
     await checkWindowMs("pwreset_ip", BUCKET_RESET);
+  });
+
+  it("RL-U7b: a port error propagates unchanged (callers own the fail posture)", async () => {
+    const redis = makeMockRedis();
+    redis.incrWindow.mockRejectedValueOnce(new Error("redis down"));
+    const limiter = new RateLimiter(redis);
+
+    await expect(limiter.check("signin_account", "alice", BUCKET_ACCOUNT)).rejects.toThrow("redis down");
   });
 });
 
@@ -173,7 +185,7 @@ describe("RateLimiter — decision fields (allowed path)", () => {
     expect(decision.remaining).toBe(0);
   });
 
-  it("RL-U10: resetMs equals pttl return value when pttl >= 0", async () => {
+  it("RL-U10: resetMs equals the returned ttlMs when ttlMs >= 0", async () => {
     const redis = makeMockRedis({ incrResult: 1, pttlResult: 543_210 });
     const limiter = new RateLimiter(redis);
 
@@ -207,11 +219,11 @@ describe("RateLimiter — decision fields (blocked path)", () => {
 });
 
 // ===========================================================================
-// PTTL negative paths (no-TTL / missing-key edge cases)
+// Negative ttlMs from the port (stubs only; a real Redis always seeds the TTL)
 // ===========================================================================
 
 describe("RateLimiter — resetMs from negative pttl values", () => {
-  it("RL-U13: resetMs is -1 when pttl returns -1 (key has no TTL)", async () => {
+  it("RL-U13: resetMs is -1 when the port reports ttlMs -1 (stub such as AlwaysAllowRedis)", async () => {
     const redis = makeMockRedis({ incrResult: 2, pttlResult: -1 });
     const limiter = new RateLimiter(redis);
 
@@ -220,7 +232,7 @@ describe("RateLimiter — resetMs from negative pttl values", () => {
     expect(decision.resetMs).toBe(-1);
   });
 
-  it("RL-U14: resetMs is -1 when pttl returns -2 (key does not exist)", async () => {
+  it("RL-U14: resetMs is -1 when the port reports ttlMs -2", async () => {
     const redis = makeMockRedis({ incrResult: 2, pttlResult: -2 });
     const limiter = new RateLimiter(redis);
 
@@ -229,7 +241,7 @@ describe("RateLimiter — resetMs from negative pttl values", () => {
     expect(decision.resetMs).toBe(-1);
   });
 
-  it("RL-U15: resetMs is 0 when pttl returns 0 (key is expiring now)", async () => {
+  it("RL-U15: resetMs is 0 when ttlMs is 0 (key is expiring now)", async () => {
     const redis = makeMockRedis({ incrResult: 2, pttlResult: 0 });
     const limiter = new RateLimiter(redis);
 

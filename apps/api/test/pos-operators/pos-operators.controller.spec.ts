@@ -652,49 +652,24 @@ describe("GET /api/pos/v1/operators/roster", () => {
     expect(flat).not.toMatch(/email|pin|password|token|clerk_session/i);
   });
 
-  it("401 when requester belongs to a different tenant than the branch (cross-tenant isolation)", async () => {
-    if (maybeSkip()) return;
+  // RT-150 (RT-132 D7 / A11): roster requires an eligible internal role.
+  it.each([
     // TENANT_B manager requests STORE_ID_A which belongs to TENANT_ID.
     // findActiveMembershipByStore JOINs stores ON stores.tenant_id = memberships.tenant_id,
     // so no row is found → refused → 401.
-    const res = await http()
-      .get(`/api/pos/v1/operators/roster?branch_id=${STORE_ID_A}`)
-      .set("Authorization", "Bearer jwt-tenant-b-mgr");
-
-    expect(res.status).toBe(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-  });
-
-  it("401 when requester has specific store access but requests a branch outside their grant", async () => {
-    if (maybeSkip()) return;
+    ["requester belongs to a different tenant than the branch (cross-tenant isolation)", "Bearer jwt-tenant-b-mgr"],
     // SPECIFIC_USER is granted access to STORE_ID_B only.
     // Requesting STORE_ID_A must be refused.
-    const res = await http()
-      .get(`/api/pos/v1/operators/roster?branch_id=${STORE_ID_A}`)
-      .set("Authorization", "Bearer jwt-specific");
-
-    expect(res.status).toBe(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-  });
-
-  it("401 when requester membership is revoked", async () => {
-    if (maybeSkip()) return;
+    ["requester has specific store access but requests a branch outside their grant", "Bearer jwt-specific"],
     // REVOKED_MBR_USER has a membership with revoked_at set.
     // findActiveMembershipByStore filters WHERE m.revoked_at IS NULL, so no row found → refused.
-    const res = await http()
-      .get(`/api/pos/v1/operators/roster?branch_id=${STORE_ID_A}`)
-      .set("Authorization", "Bearer jwt-revoked-mbr");
-
-    expect(res.status).toBe(401);
-    expectErrorEnvelope(res.body, "unauthorized");
-  });
-
-  // RT-150 (RT-132 D7 / A11): roster requires an eligible internal role.
-  it("401 when requester is store_staff (role ineligible)", async () => {
+    ["requester membership is revoked", "Bearer jwt-revoked-mbr"],
+    ["requester is store_staff (role ineligible)", "Bearer jwt-staff"],
+  ])("401 when %s", async (_label, authorization) => {
     if (maybeSkip()) return;
     const res = await http()
       .get(`/api/pos/v1/operators/roster?branch_id=${STORE_ID_A}`)
-      .set("Authorization", "Bearer jwt-staff");
+      .set("Authorization", authorization);
 
     expect(res.status).toBe(401);
     expectErrorEnvelope(res.body, "unauthorized");
