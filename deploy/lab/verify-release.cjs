@@ -46,11 +46,11 @@ const SLSA_PROVENANCE = "https://slsa.dev/provenance/v1";
 const ENV_VARS = { api: "DP2_API_IMAGE", worker: "DP2_WORKER_IMAGE", migrate: "DP2_MIGRATE_IMAGE" };
 const SHA_RE = /^[0-9a-f]{40}$/;
 const TAG_RE = /^backend-core-[0-9a-f]{12}$/;
-const JIRA_RE = /^RT-[1-9][0-9]*$/;
+const JIRA_RE = /^RT-[1-9]\d*$/;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const SUMS_LINE_RE = /^([0-9a-f]{64}) [ *](\S+)$/;
 const ENV_KEY_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
-const ROLE_ARN_RE = /^arn:aws:iam::[0-9]{12}:role\/[\w+=,.@/-]+$/;
+const ROLE_ARN_RE = /^arn:aws:iam::\d{12}:role\/[\w+=,.@/-]+$/;
 const SSM_NODE_RE = /^mi-[0-9a-f]{17}$/;
 
 const LIVE_STEPS = [
@@ -67,6 +67,10 @@ const LIVE_STEPS = [
 const imageRef = (target, digest) => `ghcr.io/kemetra/backend-core-${target}@${digest}`;
 const bundleName = (sha) => `backend-core-release-${sha.slice(0, 12)}`;
 const isSafeRelative = (p) => !path.isAbsolute(p) && !p.startsWith("/") && !p.split(/[\\/]/).includes("..");
+// Deterministic order for file and migration names (explicit, not the default coercing sort).
+const byText = (a, b) => a.localeCompare(b, "en");
+// A missing, non-numeric or zero reviewer count never counts as a reviewer.
+const hasReviewer = (count) => typeof count === "number" && count >= 1;
 
 /** Reads a regular file only: never follows a symlink, and never reads a FIFO or device. */
 function readBuffer(file) {
@@ -150,7 +154,7 @@ function checkCiRuns(runs) {
   if (!Array.isArray(runs)) return ["CI check-run evidence missing or not a list"];
   return REQUIRED_CHECKS.flatMap((name) => {
     const latest = runs
-      .filter((r) => r && r.name === name && r.slug === "github-actions")
+      .filter((r) => r?.name === name && r.slug === "github-actions")
       .sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)))
       .at(-1);
     const result = latest?.conclusion ?? "missing";
@@ -179,8 +183,8 @@ function parseSums(text, label) {
 function checkSums(dir, text, expected, label) {
   if (text === null) return [`${label} missing`];
   const { sums, problems } = parseSums(text, label);
-  const listed = [...sums.keys()].sort();
-  const wanted = [...expected].sort();
+  const listed = [...sums.keys()].sort(byText);
+  const wanted = [...expected].sort(byText);
   if (JSON.stringify(listed) !== JSON.stringify(wanted)) {
     problems.push(`${label} lists [${listed.join(", ")}], expected [${wanted.join(", ")}]`);
   }
@@ -315,7 +319,7 @@ const upMigrations = (lines) =>
   lines
     .filter((l) => l.endsWith(".sql") && !l.endsWith(".down.sql"))
     .map((l) => path.posix.basename(l))
-    .sort();
+    .sort(byText);
 
 /** Redeploying older application digests is safe only when the schema did not change between the releases. */
 function assessRollback(added, removed) {
@@ -355,14 +359,16 @@ function checkTransport(identity) {
     problems.push("deployment identity must be an IAM role ARN assumed through OIDC (never root or an access key)");
   }
   if (!SSM_NODE_RE.test(identity.ssmNodeId ?? "")) problems.push("target must be a registered SSM managed node (mi-...)");
-  if (!(identity.environmentReviewers >= 1)) problems.push("the aws-lab environment must require at least one reviewer");
+  if (!hasReviewer(identity.environmentReviewers)) problems.push("the aws-lab environment must require at least one reviewer");
   return problems;
 }
 
 function verifyRelease(dir, ctx, sha) {
-  const problems = [...checkTagCommit(readText(path.join(dir, "tag-commit.txt")), sha, "release")];
-  problems.push(...checkCompare(readJson(path.join(dir, "compare.json")), sha));
-  problems.push(...checkCiRuns(readJson(path.join(dir, "check-runs.json"))));
+  const problems = [
+    ...checkTagCommit(readText(path.join(dir, "tag-commit.txt")), sha, "release"),
+    ...checkCompare(readJson(path.join(dir, "compare.json")), sha),
+    ...checkCiRuns(readJson(path.join(dir, "check-runs.json"))),
+  ];
   const releaseDir = path.join(dir, "release");
   const outerSums = readText(path.join(releaseDir, "SHA256SUMS"));
   problems.push(...checkSums(releaseDir, outerSums, [`${bundleName(sha)}.tar.gz`, "release-manifest.json"], "release SHA256SUMS"));
@@ -386,8 +392,10 @@ function readCurrent(dir, ctx) {
   const problems = checkReleaseMeta(meta, ctx.currentRelease, "current release");
   const sha = SHA_RE.test(meta?.targetCommitish ?? "") ? meta.targetCommitish : null;
   if (sha) {
-    problems.push(...checkTagCommit(readText(path.join(dir, "current-tag-commit.txt")), sha, "current release"));
-    problems.push(...checkCompare(readJson(path.join(dir, "compare-current.json")), sha, "current release"));
+    problems.push(
+      ...checkTagCommit(readText(path.join(dir, "current-tag-commit.txt")), sha, "current release"),
+      ...checkCompare(readJson(path.join(dir, "compare-current.json")), sha, "current release"),
+    );
   }
   const lines = readLines(path.join(dir, "migrations-current.txt"));
   if (lines === null) problems.push("current release migration list missing");
@@ -397,15 +405,17 @@ function readCurrent(dir, ctx) {
 
 function pendingApprovals(ctx, environment, transportProblems) {
   const pending = [];
-  if (environment?.status !== "present" || !(environment.reviewers >= 1)) {
+  if (environment?.status !== "present" || !hasReviewer(environment.reviewers)) {
     pending.push("Owner: create the aws-lab environment with a required reviewer and a main-only branch policy");
   }
   if (transportProblems.length) {
     pending.push("Owner: approve and provision GitHub OIDC -> least-privilege IAM role -> SSM on lab-01 (after cost and access review)");
   }
-  pending.push("Operator: prove the release lab-01 runs from trusted host evidence");
-  pending.push("Operator: confirm an independent, restorable backup");
-  pending.push(`Owner: approve the live lab deploy of ${ctx.release} under ${ctx.jiraKey}`);
+  pending.push(
+    "Operator: prove the release lab-01 runs from trusted host evidence",
+    "Operator: confirm an independent, restorable backup",
+    `Owner: approve the live lab deploy of ${ctx.release} under ${ctx.jiraKey}`,
+  );
   return pending;
 }
 
@@ -425,8 +435,8 @@ function buildLedger({ ctx, sha, images, files, migrations, current, environment
     images,
     plan: {
       steps: LIVE_STEPS.map((step) => ({ step, status: "not-run (dry run)" })),
-      grants: files.filter((f) => /^docs\/operations\/sql\/[\w-]+-domain-grants\.sql$/.test(f)).sort(),
-      catchups: files.filter((f) => /^docs\/operations\/sql\/[\w-]+-catchup\.sql$/.test(f)).sort(),
+      grants: files.filter((f) => /^docs\/operations\/sql\/[\w-]+-domain-grants\.sql$/.test(f)).sort(byText),
+      catchups: files.filter((f) => /^docs\/operations\/sql\/[\w-]+-catchup\.sql$/.test(f)).sort(byText),
       migrations,
     },
     gates: {
@@ -467,7 +477,7 @@ function evaluate(dir, ctx) {
 const md = (value) =>
   String(value)
     .replace(/[\r\n]+/g, " ")
-    .replace(/[\\`*_{}[\]()#+!|<>~]/g, "\\$&")
+    .replace(/[\\`*_{}[\]()#+!|<>~]/g, String.raw`\$&`)
     .slice(0, 300);
 
 function renderSummary(ledger) {
@@ -488,8 +498,17 @@ function renderSummary(ledger) {
       : "no verified current release";
     lines.push("", "### Schema", "", `${mig.targetCount} migrations in the release; ${since}. Rollback to the current release: ${mig.rollback.reason}.`);
   }
-  lines.push("", "### Planned steps (not run)", "", ...ledger.plan.steps.map((s, i) => `${i + 1}. ${s.step}`));
-  lines.push("", "### Pending approvals", "", ...ledger.pendingApprovals.map((p) => `- ${md(p)}`), "");
+  lines.push(
+    "",
+    "### Planned steps (not run)",
+    "",
+    ...ledger.plan.steps.map((s, i) => `${i + 1}. ${s.step}`),
+    "",
+    "### Pending approvals",
+    "",
+    ...ledger.pendingApprovals.map((p) => `- ${md(p)}`),
+    "",
+  );
   return lines.join("\n");
 }
 
