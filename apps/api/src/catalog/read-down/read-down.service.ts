@@ -10,10 +10,10 @@
  * READ-ONLY. The platform stays the catalogue authority (§IX); there is no
  * write surface. The advisory-op DELTA derivation is US2's job — NOT here.
  *
- * Resolver (built fresh — no prior Tenant ⊕ Override read service existed):
- * LEFT JOIN store_product_overrides on (tenant_id, store_id, product_id) and
- * COALESCE each overrideable field (price, currency, is_active, tax_category)
- * over the tenant base. Sellable filter (R5): resolved active AND not retired
+ * Resolver (`store-resolution/store-product-resolution.ts`, shared with the
+ * console catalog `storeView`, RT-730): LEFT JOIN store_product_overrides on
+ * (tenant_id, store_id, product_id) and COALESCE each overrideable field
+ * (price, currency, is_active, tax_category) over the tenant base. Sellable filter (R5): resolved active AND not retired
  * AND price present AND currency present AND representable in the currency's
  * minor unit. Excluded rows emit the unpriced-issue signal + are absent from
  * the page.
@@ -34,6 +34,11 @@ import type { Pool, PoolClient } from "pg";
 import { PG_POOL } from "../../auth/auth.module";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import { recordCatalogUnpricedIssue } from "../../observability/metrics/api.metrics";
+import {
+  pinOverrideStore,
+  RESOLVED_STORE_COLUMNS_SQL,
+  storeOverrideJoinSql,
+} from "../store-resolution/store-product-resolution";
 import {
   encodeCursor,
   decodeCursor,
@@ -131,9 +136,7 @@ export class ReadDownService {
         // StoreOverrideService — the legitimate way to read store-scoped rows
         // under the device principal's resolved store (NOT a SECURITY-DEFINER /
         // platform-admin bypass, which would break §II store isolation).
-        await client.query("SELECT set_config('app.current_store', $1, true)", [
-          storeId,
-        ]);
+        await pinOverrideStore(client, storeId);
 
         // Pin the snapshot cursor: reuse the caller's pinned head if continuing
         // a page set, else read the current change-log head sequence (FR-011).
@@ -227,9 +230,7 @@ export class ReadDownService {
       this.pool,
       { tenantId, isPlatformAdmin: false },
       async (client): Promise<DeltaResult> => {
-        await client.query("SELECT set_config('app.current_store', $1, true)", [
-          storeId,
-        ]);
+        await pinOverrideStore(client, storeId);
 
         // snapshot_required: a `since` strictly below the retained horizon (the
         // min sequence still in the log) cannot be served — the consumer missed
@@ -352,10 +353,7 @@ export class ReadDownService {
       SELECT
         tp.id AS product_id,
         tp.name AS name,
-        COALESCE(spo.price, tp.default_price)::text AS resolved_price,
-        COALESCE(spo.currency_code, tp.default_currency_code) AS resolved_currency,
-        COALESCE(spo.tax_category, tp.tax_category) AS resolved_tax_category,
-        COALESCE(spo.is_active, tp.is_active) AS resolved_active,
+        ${RESOLVED_STORE_COLUMNS_SQL},
         tp.retired_at AS retired_at,
         (
           SELECT pa.value FROM product_aliases pa
@@ -377,11 +375,7 @@ export class ReadDownService {
             AND ccl.sequence <= $3::bigint
         ) AS row_sequence
       FROM tenant_products tp
-      LEFT JOIN store_product_overrides spo
-        ON spo.tenant_id = tp.tenant_id
-       AND spo.store_id = $2
-       AND spo.product_id = tp.id
-       AND spo.retired_at IS NULL
+      ${storeOverrideJoinSql("$2")}
       WHERE tp.tenant_id = $1
         AND (
           ($4::uuid[] IS NOT NULL AND tp.id = ANY($4::uuid[]))         -- targeted
