@@ -612,9 +612,8 @@ function requireTaxRole(roleCode: string | null): void {
 
 /** An override must keep at least one overridden field (the price counts, though it is never written here). */
 function requireNotEmpty(fields: OverrideFields, hasPrice: boolean): void {
-  if (fields.isActive === null && fields.taxCategory === null && !hasPrice) {
-    throw new CatalogWriteRefusedError("override_empty");
-  }
+  const overridden = [fields.isActive !== null, fields.taxCategory !== null, hasPrice].filter(Boolean).length;
+  if (overridden === 0) throw new CatalogWriteRefusedError("override_empty");
 }
 
 /** Pins `app.current_store` to the one store an override write touches. */
