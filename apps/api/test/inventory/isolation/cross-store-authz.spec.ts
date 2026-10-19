@@ -56,13 +56,16 @@ const PRODUCT_REF = '0a000000-0000-7000-8000-0000000000f1';
  */
 class FakeInventoryService {
   public touched = false;
+  /** RT-731: the last listStockMovements input, to check what reaches the service. */
+  public lastListInput: unknown = undefined;
 
   async getOnHand(): Promise<unknown> {
     this.touched = true;
     return { storeId: STORE_FOREIGN, tenantProductRef: PRODUCT_REF, onHand: '0.0000' };
   }
-  async listStockMovements(): Promise<unknown> {
+  async listStockMovements(input: unknown): Promise<unknown> {
     this.touched = true;
+    this.lastListInput = input;
     return { items: [], nextCursor: null };
   }
   async createStockMovement(): Promise<unknown> {
@@ -124,6 +127,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   fake.touched = false;
+  fake.lastListInput = undefined;
 });
 
 function http() {
@@ -277,5 +281,40 @@ describe('inventory cross-store authorization — a store-scoped principal keeps
       .get(`/api/inventory/v1/on-hand/${STORE_FOREIGN}/${PRODUCT_REF}`)
       .expect(404);
     expect(fake.touched).toBe(false);
+  });
+});
+
+describe('listStockMovements request rules (RT-731, inventory.yaml 1.5.0-draft)', () => {
+  const url = `/api/inventory/v1/stores/${STORE_GRANTED}/movements`;
+
+  it.each([
+    ['scope together with productId', `?productId=${PRODUCT_REF}&scope=all`],
+    ['an unknown scope', '?scope=everything'],
+    ['a scope in the wrong case', '?scope=ALL'],
+    ['an empty scope', '?scope='],
+    ['an empty cursor', '?cursor='],
+    ['an over-long cursor', `?cursor=${'a'.repeat(1025)}`],
+  ])('%s is a 400 validation_error, before the service runs', async (_label, query) => {
+    contextGuard.context = nullStoreCtx();
+    const res = await http().get(`${url}${query}`).expect(400);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(fake.touched).toBe(false);
+  });
+
+  it.each([
+    [
+      'scope, limit and cursor',
+      '?scope=all&limit=25&cursor=abc_-1',
+      { productId: null, scope: 'all', limit: 25, cursor: 'abc_-1' },
+    ],
+    [
+      'no filter (the service applies the adhoc default)',
+      '',
+      { productId: null, scope: undefined, limit: undefined, cursor: undefined },
+    ],
+  ])('passes %s to the service unchanged', async (_label, query, expected) => {
+    contextGuard.context = nullStoreCtx();
+    await http().get(`${url}${query}`).expect(200);
+    expect(fake.lastListInput).toEqual({ tenantId: TENANT_A, storeId: STORE_GRANTED, ...expected });
   });
 });

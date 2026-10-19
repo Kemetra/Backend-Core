@@ -5,8 +5,8 @@
  *   - getOnHand          — the derived (compute-on-read) signed SUM of a
  *                          (tenant, store, product)'s movements (FR-003). NO
  *                          materialized balance (R1/plan §10).
- *   - listStockMovements — the movements behind a balance, in a stable order
- *                          (FR-004).
+ *   - listStockMovements — a store's movements, newest first in keyset pages
+ *                          (FR-004, RT-731).
  *
  * Tenant isolation: every query runs inside `runWithTenantContext` (sets
  * `app.current_tenant` in a transaction so RLS is active and fail-closed) —
@@ -72,6 +72,15 @@ import type { Pool, PoolClient } from 'pg';
 import { PG_POOL } from '../auth/auth.module';
 import { recordInventoryNegativeBalance } from '../observability/metrics/api.metrics';
 import { formatQuantity, parseQuantity } from './decimal-quantity';
+import {
+  MOVEMENT_OCCURRED_AT_KEY_SQL,
+  StockMovementCursorError,
+  decodeStockMovementCursor,
+  encodeStockMovementCursor,
+  type StockMovementCursorBinding,
+  type StockMovementKeyset,
+  type StockMovementScope,
+} from './movement-list.cursor';
 import {
   encodeTrackingIdentityCursor,
   type TrackingIdentityCursor,
@@ -455,6 +464,15 @@ const MOVEMENT_COLUMNS_WITH_INTEGRATION = [
   'p.id AS primary_location_id',
 ].join(', ');
 
+/**
+ * RT-731: the listStockMovements predicate for a listing without productId.
+ * `$2` is the (null) productId, referenced so every variant binds it.
+ */
+const MOVEMENT_SCOPE_PREDICATES: Readonly<Record<StockMovementScope, string>> = {
+  adhoc: '($2::uuid IS NULL AND m.tenant_product_ref IS NULL)',
+  all: '($2::uuid IS NULL)',
+};
+
 /** RT-432 (G4-5): the store's primary location, for reading legacy positions. */
 const MOVEMENT_POSITION_JOIN =
   "LEFT JOIN stock_locations p ON p.store_id = m.store_id AND p.kind = 'primary'";
@@ -605,48 +623,77 @@ export class InventoryService {
   }
 
   /**
-   * List movements for a (tenant, store) in stable order (occurred_at, id).
-   * `productId` set ⇒ that product; omitted ⇒ ad-hoc (NULL-product) movements
-   * only (per the contract — ad-hoc entries are listable but roll up to no
-   * product on-hand, SC-001 / data-model Entity 2).
+   * List movements for a (tenant, store) newest first (occurred_at DESC, id
+   * DESC) in keyset pages (RT-731). `productId` set ⇒ that product; omitted ⇒
+   * `scope` decides: `adhoc` (the default) lists the ad-hoc (NULL-product)
+   * movements, which roll up to no product on-hand (SC-001 / data-model
+   * Entity 2), and `all` lists every movement of the store. `cursor` is the
+   * opaque `nextCursor` of the previous page; one not issued for this tenant,
+   * store and filters is a 400, refused before any read.
    */
   async listStockMovements(input: {
     readonly tenantId: string;
     readonly storeId: string;
     readonly productId?: string | null | undefined;
+    readonly scope?: StockMovementScope | undefined;
     readonly limit?: number | undefined;
+    readonly cursor?: string | undefined;
   }): Promise<StockMovementListBody> {
     const limit = Math.min(Math.max(input.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
+    const productId = input.productId ?? null;
+    const binding: StockMovementCursorBinding = {
+      tenantId: input.tenantId,
+      storeId: input.storeId,
+      productId,
+      scope: productId === null ? (input.scope ?? 'adhoc') : null,
+    };
+    let after: StockMovementKeyset | null = null;
+    if (input.cursor !== undefined) {
+      try {
+        after = decodeStockMovementCursor(binding, input.cursor);
+      } catch (err: unknown) {
+        if (err instanceof StockMovementCursorError) {
+          throw new BadRequestException(err.message);
+        }
+        throw err;
+      }
+    }
     return runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<StockMovementListBody> => {
         await this.assertReferencesInTenant(client, { storeIds: [input.storeId] });
-        // productId present → that product; absent → ad-hoc (NULL) movements.
-        const hasProduct =
-          input.productId !== null && input.productId !== undefined;
-        const productPredicate = hasProduct
-          ? 'm.tenant_product_ref = $2'
-          : 'm.tenant_product_ref IS NULL';
-        const params: unknown[] = hasProduct
-          ? [input.storeId, input.productId, limit]
-          : [input.storeId, limit];
-        const limitParam = hasProduct ? '$3' : '$2';
+        // productId → that product; else scope: adhoc → NULL product, all → any.
+        const productPredicate =
+          binding.scope === null
+            ? 'm.tenant_product_ref = $2::uuid'
+            : MOVEMENT_SCOPE_PREDICATES[binding.scope];
         // RT-425: each effect carries its integration state (LEFT JOIN: an
-        // effect without an integration record projects null).
-        const r = await client.query<MovementRow>(
-          `SELECT ${MOVEMENT_COLUMNS_WITH_INTEGRATION}
+        // effect without an integration record projects null). One extra row
+        // tells whether another page exists.
+        const r = await client.query<MovementRow & { occurred_at_key: string }>(
+          `SELECT ${MOVEMENT_COLUMNS_WITH_INTEGRATION},
+                  ${MOVEMENT_OCCURRED_AT_KEY_SQL} AS occurred_at_key
              FROM stock_movements m
              LEFT JOIN inventory_effect_integration i ON i.effect_id = m.id
              ${MOVEMENT_POSITION_JOIN}
             WHERE m.store_id = $1 AND ${productPredicate}
-            ORDER BY m.occurred_at ASC, m.id ASC
-            LIMIT ${limitParam}`,
-          params,
+              AND ($3::timestamptz IS NULL OR (m.occurred_at, m.id) < ($3::timestamptz, $4::uuid))
+            ORDER BY m.occurred_at DESC, m.id DESC
+            LIMIT $5`,
+          [input.storeId, productId, after?.occurredAtKey ?? null, after?.id ?? null, limit + 1],
         );
+        const page = r.rows.slice(0, limit);
+        const last = page[page.length - 1];
         return {
-          items: r.rows.map(toMovementBody),
-          nextCursor: null,
+          items: page.map(toMovementBody),
+          nextCursor:
+            r.rows.length > limit && last
+              ? encodeStockMovementCursor(binding, {
+                  occurredAtKey: last.occurred_at_key,
+                  id: last.id,
+                })
+              : null,
         };
       },
     );
