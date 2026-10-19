@@ -109,12 +109,21 @@ export class ReservationSweepProcessor {
       this.log({ level: "info", component: COMPONENT, message: "sweep_skipped_not_provisioned" });
       return { ...tally, durationMs: Date.now() - startedAt };
     }
+    await this.sweepTenants(tally);
+    const result: ReservationSweepResult = { ...tally, durationMs: Date.now() - startedAt };
+    this.logSummary(result);
+    if (result.failedTenants > 0) throw new ReservationSweepIncompleteError(result);
+    return result;
+  }
+
+  private async sweepTenants(tally: Tally): Promise<void> {
     for (const tenantId of await this.repo.listTenantIds()) {
       tally.tenants += 1;
       await this.sweepTenantSafely(tenantId, tally);
     }
+  }
 
-    const result: ReservationSweepResult = { ...tally, durationMs: Date.now() - startedAt };
+  private logSummary(result: ReservationSweepResult): void {
     this.log({
       level: result.failedTenants > 0 ? "warn" : "info",
       component: COMPONENT,
@@ -125,8 +134,6 @@ export class ReservationSweepProcessor {
       failed_tenants: result.failedTenants,
       duration_ms: result.durationMs,
     });
-    if (result.failedTenants > 0) throw new ReservationSweepIncompleteError(result);
-    return result;
   }
 
   private async sweepTenantSafely(tenantId: string, tally: Tally): Promise<void> {

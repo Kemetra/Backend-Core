@@ -64,6 +64,28 @@ export interface TenantEntitlementSnapshot {
   readonly planFeatures: ReadonlyMap<string, readonly CatalogMeter[]>;
 }
 
+/** Where a feature's meters are read: the tenant, its live stores, the transaction. */
+interface MeterScopeInput {
+  readonly client: PoolClient;
+  readonly tenantId: string;
+  readonly stores: readonly string[];
+}
+
+/** The revision facts of the full view; state `none` has no effective dates. */
+function revisionFacts(snap: TenantEntitlementSnapshot): Omit<FullViewBody, "view" | "evaluatedAt" | "features"> {
+  const revision = snap.revision;
+  const facts = { entitlementVersion: revision?.version ?? 0, optOutVersion: snap.optOuts.version };
+  if (revision === null || revision.state === "none") {
+    return { ...facts, state: "none", effectiveFrom: null, effectiveUntil: null };
+  }
+  return {
+    ...facts,
+    state: revision.state,
+    effectiveFrom: revision.effectiveFrom.toISOString(),
+    effectiveUntil: revision.effectiveUntil?.toISOString() ?? null,
+  };
+}
+
 export class EntitlementViewBuilder {
   constructor(
     private readonly entitlements: EntitlementRepository = new EntitlementRepository(),
@@ -88,32 +110,29 @@ export class EntitlementViewBuilder {
   }
 
   async full(client: PoolClient, tenantId: string, snap: TenantEntitlementSnapshot, systemEnabled: boolean): Promise<FullViewBody> {
-    const stores = await this.liveStores(client, tenantId);
+    const scope: MeterScopeInput = { client, tenantId, stores: await this.liveStores(client, tenantId) };
     const features: FeatureEntitlementBody[] = [];
     for (const featureId of snap.knownFeatures) {
-      const res = this.resolve(snap, featureId);
-      const optOut = snap.optOuts.byFeature.get(featureId) ?? NO_OPT_OUT;
-      const available = systemEnabled && res.verdict.allow;
-      features.push({
-        featureId,
-        availability: available ? "available" : "unavailable",
-        unavailableReason: res.verdict.allow ? null : res.verdict.reason,
-        entitled: res.entitled,
-        optOut: { optedOut: optOut.optedOut, changedAt: optOut.changedAt?.toISOString() ?? null },
-        meters: res.entitled ? await this.meters(client, tenantId, res.meters, stores) : [],
-      });
+      features.push(await this.featureBody(snap, featureId, { scope, systemEnabled }));
     }
-    const revision = snap.revision;
-    const state = revision?.state ?? "none";
+    return { view: "full", ...revisionFacts(snap), evaluatedAt: snap.now.toISOString(), features };
+  }
+
+  private async featureBody(
+    snap: TenantEntitlementSnapshot,
+    featureId: string,
+    run: { readonly scope: MeterScopeInput; readonly systemEnabled: boolean },
+  ): Promise<FeatureEntitlementBody> {
+    const res = this.resolve(snap, featureId);
+    const optOut = snap.optOuts.byFeature.get(featureId) ?? NO_OPT_OUT;
+    const available = run.systemEnabled && res.verdict.allow;
     return {
-      view: "full",
-      entitlementVersion: revision?.version ?? 0,
-      optOutVersion: snap.optOuts.version,
-      state,
-      effectiveFrom: state === "none" ? null : (revision?.effectiveFrom.toISOString() ?? null),
-      effectiveUntil: state === "none" ? null : (revision?.effectiveUntil?.toISOString() ?? null),
-      evaluatedAt: snap.now.toISOString(),
-      features,
+      featureId,
+      availability: available ? "available" : "unavailable",
+      unavailableReason: res.verdict.allow ? null : res.verdict.reason,
+      entitled: res.entitled,
+      optOut: { optedOut: optOut.optedOut, changedAt: optOut.changedAt?.toISOString() ?? null },
+      meters: res.entitled ? await this.meters(run.scope, res.meters) : [],
     };
   }
 
@@ -146,12 +165,8 @@ export class EntitlementViewBuilder {
     return r.rows.map((row) => row.id);
   }
 
-  private async meters(
-    client: PoolClient,
-    tenantId: string,
-    meters: readonly CatalogMeter[],
-    stores: readonly string[],
-  ): Promise<RequestMeterBody[]> {
+  private async meters(scope: MeterScopeInput, meters: readonly CatalogMeter[]): Promise<RequestMeterBody[]> {
+    const { client, tenantId, stores } = scope;
     const out: RequestMeterBody[] = [];
     for (const m of meters) {
       for (const storeRef of m.scope === "store" ? stores : [null]) {

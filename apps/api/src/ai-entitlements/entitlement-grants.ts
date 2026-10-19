@@ -25,6 +25,8 @@
  * with different keys cannot over-credit. The credit lowers the committed
  * row's counter `used`. A retried key with the same body is the same
  * adjustment (`replayed: true`); with another body it is refused.
+ *
+ * The validation rules live in `revision-rules.ts`.
  */
 import { Inject, Injectable } from "@nestjs/common";
 import { runWithTenantContext } from "@data-pulse-2/db";
@@ -35,9 +37,17 @@ import { PG_POOL } from "../auth/auth.module";
 import { MembershipRepository } from "../context/membership.repository";
 import { insertAiAudit, REVISION_PUBLISHED_ACTION, USAGE_ADJUSTED_ACTION } from "./ai-entitlements-audit";
 import { ChainConflictError, EntitlementRepository } from "./entitlement.repository";
-import { AI_ENTITLEMENT_STATES, type AiEntitlementState } from "./entitlement.types";
-import { canonicalInstant, revisionContentHash, toOverrideJson, type OverrideInput } from "./revision-content";
-import { UsageRepository } from "./usage.repository";
+import { canonicalInstant, revisionContentHash, toOverrideJson, type RevisionContent } from "./revision-content";
+import {
+  adjustmentFailure,
+  overridesCatalogFailure,
+  revisionShapeFailure,
+  type AdjustmentInput,
+  type RevisionInput,
+} from "./revision-rules";
+import { UsageRepository, type CommittedEntry } from "./usage.repository";
+
+export type { AdjustmentInput, RevisionInput } from "./revision-rules";
 
 export class NotPlatformAdminError extends Error {
   constructor() {
@@ -72,66 +82,56 @@ export interface PlatformActor {
   readonly requestId: string | null;
 }
 
-export interface RevisionInput {
-  /** The current chain head (0 when the tenant has no revision). */
-  readonly expectedVersion: number;
-  readonly state: AiEntitlementState;
-  readonly planCode: string | null;
-  readonly catalogVersion: number | null;
-  /** RFC 3339; defaults to the transaction's now(). */
-  readonly effectiveFrom?: string;
-  readonly effectiveUntil?: string | null;
-  readonly overrides?: readonly OverrideInput[];
-  readonly reason: string;
-}
-
-export interface AdjustmentInput {
-  readonly committedEntryId: string;
-  readonly units: number;
-  readonly reason: string;
-  readonly idempotencyKey: string;
-}
-
 /** The slice of `MembershipRepository` the service needs. */
 export interface PlatformAdminLookup {
   isPlatformAdmin(userId: string): Promise<boolean>;
 }
 
-const KEY_PATTERN = /^[\x21-\x7E]{16,128}$/;
-const MAX_OVERRIDES = 100;
-
-function validReason(reason: string): boolean {
-  return reason.length >= 1 && reason.length <= 500;
+/** One platform write: who, in which tenant, on which transaction. */
+interface PlatformWrite {
+  readonly client: PoolClient;
+  readonly tenantId: string;
+  readonly actor: PlatformActor;
 }
 
-function invalid(detail: string): never {
-  throw new InvalidEntitlementRevisionError(detail);
+function refuseRevision(failure: string | null): void {
+  if (failure !== null) throw new InvalidEntitlementRevisionError(failure);
 }
 
-function validInstant(value: string | undefined | null): boolean {
-  return value === undefined || value === null || !Number.isNaN(Date.parse(value));
+function refuseAdjustment(failure: string | null): void {
+  if (failure !== null) throw new AdjustmentRefusedError(failure);
 }
 
-/** The shape rules that need no database. */
-function checkShape(input: RevisionInput): void {
-  if (!validReason(input.reason)) invalid("reason must be 1-500 characters");
-  if (!AI_ENTITLEMENT_STATES.includes(input.state)) invalid("unknown state");
-  const hasPlan = input.planCode !== null && input.catalogVersion !== null;
-  if ((input.state === "none") === hasPlan || (input.planCode === null) !== (input.catalogVersion === null)) {
-    invalid("state none names no plan; every other state names a plan version");
-  }
-  if (input.state === "trial" && (input.effectiveUntil ?? null) === null) invalid("a trial needs effectiveUntil");
-  if (!validInstant(input.effectiveFrom) || !validInstant(input.effectiveUntil)) invalid("malformed instant");
-  if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 0) invalid("expectedVersion must be >= 0");
-  const overrides = input.overrides ?? [];
-  if (overrides.length > MAX_OVERRIDES) invalid("too many overrides");
-  for (const o of overrides) {
-    if (!validReason(o.reason) || !validInstant(o.expiresAt)) invalid("override reason or expiresAt is invalid");
-    if (o.action === "disable" && (o.meter !== undefined || o.meterLimitDelta !== undefined)) invalid("a disable override has no meter");
-    if (o.meterLimitDelta !== undefined && (!Number.isSafeInteger(o.meterLimitDelta) || o.meter === undefined)) {
-      invalid("meterLimitDelta needs a meter and a whole number");
-    }
-  }
+const KEY_REUSED = "idempotency key reused with another adjustment";
+
+function isUniqueViolation(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === "23505";
+}
+
+/** A prior adjustment under the same key is a replay only when its body is the same. */
+function samePriorAdjustment(
+  prior: { readonly adjustsEntryId: string; readonly units: number; readonly reason: string },
+  committed: CommittedEntry,
+  input: AdjustmentInput,
+): boolean {
+  const sameTarget = prior.adjustsEntryId === committed.id;
+  return sameTarget && prior.units === input.units && prior.reason === input.reason;
+}
+
+function revisionMetadata(version: number, content: RevisionContent, contentHash: Buffer): Record<string, unknown> {
+  return {
+    entitlement_version: version,
+    base_version: version === 1 ? null : version - 1,
+    state: content.state,
+    plan_code: content.planCode,
+    catalog_version: content.catalogVersion,
+    effective_from: content.effectiveFrom,
+    effective_until: content.effectiveUntil,
+    override_count: content.overrides.length,
+    source: "manual_platform",
+    reason: content.reason,
+    content_hash: contentHash.toString("hex"),
+  };
 }
 
 @Injectable()
@@ -147,27 +147,16 @@ export class AiEntitlementGrants {
   /** Publish the tenant's next immutable entitlement revision. */
   async publishRevision(actor: PlatformActor, tenantId: string, input: RevisionInput): Promise<{ entitlementVersion: number }> {
     await this.requirePlatformAdmin(actor);
-    checkShape(input);
+    refuseRevision(revisionShapeFailure(input));
     return this.asPlatform(tenantId, async (client) => {
+      const write: PlatformWrite = { client, tenantId, actor };
       await this.entitlements.lockChain(client, "entitlement", tenantId);
-      await this.requireTenant(client, tenantId);
+      await this.requireTenant(write);
       await this.checkCatalog(client, input);
-      const head = await this.entitlements.headVersion(client, tenantId);
-      if (head !== input.expectedVersion) throw new EntitlementRevisionConflictError();
-      const version = head + 1;
-      const effectiveFrom = canonicalInstant(input.effectiveFrom ?? (await this.entitlements.now(client)));
-      const until = input.effectiveUntil ?? null;
-      const effectiveUntil = until === null ? null : canonicalInstant(until);
-      if (effectiveUntil !== null && effectiveUntil <= effectiveFrom) invalid("effectiveUntil must be after effectiveFrom");
-      const overrides = (input.overrides ?? []).map(toOverrideJson);
-      const content = { state: input.state, planCode: input.planCode, catalogVersion: input.catalogVersion, effectiveFrom, effectiveUntil, overrides, reason: input.reason };
+      const version = await this.nextVersion(write, input.expectedVersion);
+      const content = await this.revisionContent(client, input);
       const contentHash = revisionContentHash(content);
-      const id = newId();
-      try {
-        await this.entitlements.insertRevision(client, { id, tenantId, version, ...content, createdByUserId: actor.actorUserId, contentHash });
-      } catch (err) {
-        throw err instanceof ChainConflictError ? new EntitlementRevisionConflictError() : err;
-      }
+      const id = await this.insertRevision(write, { version, content, contentHash });
       await insertAiAudit(client, {
         tenantId,
         actorUserId: actor.actorUserId,
@@ -175,19 +164,7 @@ export class AiEntitlementGrants {
         action: REVISION_PUBLISHED_ACTION,
         targetType: "tenant_ai_entitlement",
         targetId: id,
-        metadata: {
-          entitlement_version: version,
-          base_version: version === 1 ? null : version - 1,
-          state: input.state,
-          plan_code: input.planCode,
-          catalog_version: input.catalogVersion,
-          effective_from: effectiveFrom,
-          effective_until: effectiveUntil,
-          override_count: overrides.length,
-          source: "manual_platform",
-          reason: input.reason,
-          content_hash: contentHash.toString("hex"),
-        },
+        metadata: revisionMetadata(version, content, contentHash),
       });
       return { entitlementVersion: version };
     });
@@ -196,37 +173,17 @@ export class AiEntitlementGrants {
   /** Credit a committed request with a compensating `adjusted` row (T20). */
   async adjustUsage(actor: PlatformActor, tenantId: string, input: AdjustmentInput): Promise<{ adjustmentId: string; replayed: boolean }> {
     await this.requirePlatformAdmin(actor);
-    if (!Number.isSafeInteger(input.units) || input.units < 1) throw new AdjustmentRefusedError("units must be a positive whole number");
-    if (!validReason(input.reason)) throw new AdjustmentRefusedError("reason must be 1-500 characters");
-    if (!KEY_PATTERN.test(input.idempotencyKey)) throw new AdjustmentRefusedError("malformed idempotency key");
+    refuseAdjustment(adjustmentFailure(input));
     return this.asPlatform(tenantId, async (client) => {
-      await this.usage.lockCommittedEntry(client, input.committedEntryId);
-      const committed = await this.usage.findCommitted(client, tenantId, input.committedEntryId);
+      const write: PlatformWrite = { client, tenantId, actor };
+      const entry = { tenantId, entryId: input.committedEntryId };
+      await this.usage.lockCommittedEntry(client, entry);
+      const committed = await this.usage.findCommitted(client, entry);
       if (committed === null) throw new AdjustmentRefusedError("no such committed entry in the tenant");
-      const prior = await this.usage.findAdjustmentByKey(client, tenantId, committed.featureId, input.idempotencyKey);
-      if (prior !== null) {
-        const same = prior.adjustsEntryId === committed.id && prior.units === input.units && prior.reason === input.reason;
-        if (!same) throw new AdjustmentRefusedError("idempotency key reused with another adjustment");
-        return { adjustmentId: prior.id, replayed: true };
-      }
-      const already = await this.usage.adjustedUnits(client, tenantId, committed.id);
-      if (already + input.units > committed.units) throw new AdjustmentRefusedError("adjustments would exceed the committed units");
-      const id = newId();
-      try {
-        await this.usage.insertAdjustment(client, { id, tenantId, committed, units: input.units, idempotencyKey: input.idempotencyKey, actorUserId: actor.actorUserId, reason: input.reason, requestId: actor.requestId });
-      } catch (err) {
-        if ((err as { code?: unknown }).code === "23505") throw new AdjustmentRefusedError("idempotency key reused with another adjustment");
-        throw err;
-      }
-      await insertAiAudit(client, {
-        tenantId,
-        actorUserId: actor.actorUserId,
-        requestId: actor.requestId,
-        action: USAGE_ADJUSTED_ACTION,
-        targetType: "ai_usage_ledger_entry",
-        targetId: id,
-        metadata: { adjusts_entry_id: committed.id, feature_id: committed.featureId, units: input.units, reason: input.reason },
-      });
+      const replayed = await this.replayedAdjustment(write, committed, input);
+      if (replayed !== null) return { adjustmentId: replayed, replayed: true };
+      await this.requireWithinCap(write, committed, input.units);
+      const id = await this.insertAdjustment(write, committed, input);
       return { adjustmentId: id, replayed: false };
     });
   }
@@ -239,26 +196,112 @@ export class AiEntitlementGrants {
     return runWithTenantContext(this.pool, { tenantId, isPlatformAdmin: true }, work);
   }
 
-  private async requireTenant(client: PoolClient, tenantId: string): Promise<void> {
-    const r = await client.query(`SELECT 1 FROM tenants WHERE id = $1::uuid AND deleted_at IS NULL`, [tenantId]);
-    if (r.rows.length === 0) invalid("unknown tenant");
+  private async requireTenant(write: PlatformWrite): Promise<void> {
+    const r = await write.client.query(`SELECT 1 FROM tenants WHERE id = $1::uuid AND deleted_at IS NULL`, [write.tenantId]);
+    if (r.rows.length === 0) throw new InvalidEntitlementRevisionError("unknown tenant");
   }
 
-  /** The plan version exists; every override names a catalogue feature, and an enable / meter one a plan feature and meter. */
+  /** The plan version exists, and every override fits the catalogue (state `none` carries none). */
   private async checkCatalog(client: PoolClient, input: RevisionInput): Promise<void> {
     const overrides = input.overrides ?? [];
-    if (input.planCode === null || input.catalogVersion === null) {
-      if (overrides.length > 0) invalid("state none carries no override");
+    const { planCode, catalogVersion } = input;
+    if (planCode === null || catalogVersion === null) {
+      refuseRevision(overrides.length > 0 ? "state none carries no override" : null);
       return;
     }
-    if (!(await this.entitlements.catalogVersionExists(client, input.planCode, input.catalogVersion))) invalid("unknown plan version");
+    const exists = await this.entitlements.catalogVersionExists(client, planCode, catalogVersion);
+    refuseRevision(exists ? null : "unknown plan version");
     const known = new Set(await this.entitlements.knownFeatures(client));
-    const plan = await this.entitlements.planFeatures(client, input.planCode, input.catalogVersion);
-    for (const o of overrides) {
-      if (!known.has(o.featureId)) invalid("override names an unknown feature");
-      const meters = plan.get(o.featureId);
-      if (o.action === "enable" && meters === undefined) invalid("an enable override needs a plan feature");
-      if (o.meter !== undefined && !(meters ?? []).some((m) => m.meter === o.meter)) invalid("override names an unknown meter");
+    const plan = await this.entitlements.planFeatures(client, planCode, catalogVersion);
+    refuseRevision(overridesCatalogFailure(overrides, { known, plan }));
+  }
+
+  private async nextVersion(write: PlatformWrite, expectedVersion: number): Promise<number> {
+    const head = await this.entitlements.headVersion(write.client, write.tenantId);
+    if (head !== expectedVersion) throw new EntitlementRevisionConflictError();
+    return head + 1;
+  }
+
+  /** The canonical content (instants as stored and hashed). */
+  private async revisionContent(client: PoolClient, input: RevisionInput): Promise<RevisionContent> {
+    const effectiveFrom = canonicalInstant(input.effectiveFrom ?? (await this.entitlements.now(client)));
+    const until = input.effectiveUntil ?? null;
+    const effectiveUntil = until === null ? null : canonicalInstant(until);
+    refuseRevision(effectiveUntil !== null && effectiveUntil <= effectiveFrom ? "effectiveUntil must be after effectiveFrom" : null);
+    return {
+      state: input.state,
+      planCode: input.planCode,
+      catalogVersion: input.catalogVersion,
+      effectiveFrom,
+      effectiveUntil,
+      overrides: (input.overrides ?? []).map(toOverrideJson),
+      reason: input.reason,
+    };
+  }
+
+  private async insertRevision(
+    write: PlatformWrite,
+    revision: { readonly version: number; readonly content: RevisionContent; readonly contentHash: Buffer },
+  ): Promise<string> {
+    const id = newId();
+    try {
+      await this.entitlements.insertRevision(write.client, {
+        id,
+        tenantId: write.tenantId,
+        version: revision.version,
+        ...revision.content,
+        state: revision.content.state as RevisionInput["state"],
+        createdByUserId: write.actor.actorUserId,
+        contentHash: revision.contentHash,
+      });
+    } catch (err) {
+      throw err instanceof ChainConflictError ? new EntitlementRevisionConflictError() : err;
     }
+    return id;
+  }
+
+  /** The id of a same-key adjustment with the same body (a replay), or null; another body is refused. */
+  private async replayedAdjustment(write: PlatformWrite, committed: CommittedEntry, input: AdjustmentInput): Promise<string | null> {
+    const prior = await this.usage.findAdjustmentByKey(write.client, {
+      tenantId: write.tenantId,
+      featureId: committed.featureId,
+      key: input.idempotencyKey,
+    });
+    if (prior === null) return null;
+    refuseAdjustment(samePriorAdjustment(prior, committed, input) ? null : KEY_REUSED);
+    return prior.id;
+  }
+
+  private async requireWithinCap(write: PlatformWrite, committed: CommittedEntry, units: number): Promise<void> {
+    const already = await this.usage.adjustedUnits(write.client, { tenantId: write.tenantId, entryId: committed.id });
+    refuseAdjustment(already + units > committed.units ? "adjustments would exceed the committed units" : null);
+  }
+
+  private async insertAdjustment(write: PlatformWrite, committed: CommittedEntry, input: AdjustmentInput): Promise<string> {
+    const id = newId();
+    try {
+      await this.usage.insertAdjustment(write.client, {
+        id,
+        tenantId: write.tenantId,
+        committed,
+        units: input.units,
+        idempotencyKey: input.idempotencyKey,
+        actorUserId: write.actor.actorUserId,
+        reason: input.reason,
+        requestId: write.actor.requestId,
+      });
+    } catch (err) {
+      throw isUniqueViolation(err) ? new AdjustmentRefusedError(KEY_REUSED) : err;
+    }
+    await insertAiAudit(write.client, {
+      tenantId: write.tenantId,
+      actorUserId: write.actor.actorUserId,
+      requestId: write.actor.requestId,
+      action: USAGE_ADJUSTED_ACTION,
+      targetType: "ai_usage_ledger_entry",
+      targetId: id,
+      metadata: { adjusts_entry_id: committed.id, feature_id: committed.featureId, units: input.units, reason: input.reason },
+    });
+    return id;
   }
 }

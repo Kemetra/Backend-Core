@@ -111,13 +111,19 @@ export class AiEntitlementsService {
         await this.entitlements.lockChain(client, "opt_out", write.tenantId);
         return this.views.snapshot(client, write.tenantId);
       });
-      if (snap.optOuts.version !== write.expectedOptOutVersion) throw new OptOutConflictError();
-      if (!write.optedOut && !this.views.entitled(snap, write.featureId)) throw new OptInExceedsPlanError();
+      this.requireWritable(snap, write);
       const current = (snap.optOuts.byFeature.get(write.featureId) ?? NO_OPT_OUT).optedOut;
       if (current === write.optedOut) return this.fullView(client, write.tenantId, snap);
       await this.writeOptOut(client, write, current, snap.optOuts.version + 1);
       return this.fullView(client, write.tenantId, await this.readable(() => this.views.snapshot(client, write.tenantId)));
     });
+  }
+
+  /** Steps 6 and 7: the version is current, and an opt-in never exceeds the plan (D-5). */
+  private requireWritable(snap: TenantEntitlementSnapshot, write: OptOutWrite): void {
+    if (snap.optOuts.version !== write.expectedOptOutVersion) throw new OptOutConflictError();
+    const optIn = !write.optedOut;
+    if (optIn && !this.views.entitled(snap, write.featureId)) throw new OptInExceedsPlanError();
   }
 
   private async writeOptOut(client: PoolClient, write: OptOutWrite, oldOptedOut: boolean, version: number): Promise<void> {

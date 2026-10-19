@@ -39,7 +39,7 @@ import type { ResolvedContext } from "../context/types";
 import { resolveFeature, type CatalogMeter, type FeatureResolution } from "./entitlement-resolution";
 import { EntitlementRepository, NO_OPT_OUT } from "./entitlement.repository";
 import type { AiCheckDenyReason } from "./entitlement.types";
-import { UsageRepository, type CounterRef, type CounterState } from "./usage.repository";
+import { UsageRepository, type CounterRef, type CounterState, type ReservedEntry } from "./usage.repository";
 
 export const AI_FEATURE_ID_PATTERN = /^ai\.[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/;
 
@@ -119,15 +119,35 @@ export interface AiEntitlementCheckerOptions {
   readonly onUnavailable?: (err: unknown) => void;
 }
 
+
 interface Principal {
   readonly tenantId: string;
   readonly userId: string;
 }
 
+/** The versions a decision reports (null when the refusal came before that source was read). */
+interface Versions {
+  readonly entitlementVersion: number | null;
+  readonly optOutVersion: number | null;
+}
+
+const NO_VERSIONS: Versions = { entitlementVersion: null, optOutVersion: null };
+
 interface Layer6 {
   readonly entitlementVersion: number;
   readonly optOutVersion: number;
   readonly resolution: FeatureResolution;
+}
+
+/** Everything one reservation attempt works on, inside its transaction. */
+interface ReserveStep {
+  readonly client: PoolClient;
+  readonly principal: Principal;
+  readonly input: AiEntitlementCheckInput;
+  readonly meter: CatalogMeter;
+  readonly ref: CounterRef;
+  readonly layer6: Layer6;
+  readonly at: string;
 }
 
 function snapshot(meter: CatalogMeter, state: CounterState): MeterSnapshot {
@@ -142,13 +162,51 @@ function snapshot(meter: CatalogMeter, state: CounterState): MeterSnapshot {
   };
 }
 
+function denyBody(reasonCode: AiCheckDenyReason, versions: Versions, at: string, meter?: MeterSnapshot): DenyBody {
+  return { decision: "deny", reasonCode, ...versions, ...(meter === undefined ? {} : { meter }), evaluatedAt: at };
+}
+
+function versionsOf(layer6: Layer6): Versions {
+  return { entitlementVersion: layer6.entitlementVersion, optOutVersion: layer6.optOutVersion };
+}
+
+/** A human session member (a platform admin never consumes tenant AI features, D-6). */
+function humanSession(ctx: ResolvedContext): boolean {
+  return ctx.source === "session" && !ctx.isPlatformAdmin;
+}
+
+function sessionPrincipal(ctx: ResolvedContext): Principal | null {
+  if (!humanSession(ctx)) return null;
+  const { userId, tenantId } = ctx;
+  return userId === null || tenantId === null ? null : { tenantId, userId };
+}
+
+/** D-4: every target store inside the scope; an empty request needs tenant-wide access. */
+function coversStores(ctx: ResolvedContext, targetStores: readonly string[]): boolean {
+  const scope = resolveStoreScope(ctx);
+  if (scope.kind === "tenant") return true;
+  return targetStores.length > 0 && targetStores.every((id) => scope.storeIds.includes(id));
+}
+
 /** Layers 2-4 that a resolved context proves. */
 function principalOf(ctx: ResolvedContext, targetStores: readonly string[]): Principal | null {
-  if (ctx.source !== "session" || ctx.isPlatformAdmin || ctx.userId === null || ctx.tenantId === null) return null;
-  const scope = resolveStoreScope(ctx);
-  if (scope.kind === "tenant") return { tenantId: ctx.tenantId, userId: ctx.userId };
-  if (targetStores.length === 0) return null;
-  return targetStores.every((id) => scope.storeIds.includes(id)) ? { tenantId: ctx.tenantId, userId: ctx.userId } : null;
+  const principal = sessionPrincipal(ctx);
+  return principal !== null && coversStores(ctx, targetStores) ? principal : null;
+}
+
+/** v1: a per-store meter needs exactly one target store. */
+function meterFits(meter: CatalogMeter, input: AiEntitlementCheckInput): boolean {
+  return meter.scope !== "store" || input.targetStores.length === 1;
+}
+
+function counterRefOf(tenantId: string, meter: CatalogMeter, input: AiEntitlementCheckInput): CounterRef {
+  return { tenantId, storeId: meter.scope === "store" ? input.targetStores[0]! : null, meter: meter.meter, window: meter.window };
+}
+
+/** A replay is the same reservation only for the same user, units and counter. */
+function sameReplay(existing: ReservedEntry, step: ReserveStep): boolean {
+  const sameBody = existing.units === step.input.unitsEstimate && existing.storeId === step.ref.storeId;
+  return sameBody && existing.actorUserId === step.principal.userId;
 }
 
 class Denied extends Error {
@@ -180,15 +238,7 @@ export class AiEntitlementChecker {
     const principal = principalOf(ctx, targetStores);
     if (principal === null || !AI_FEATURE_ID_PATTERN.test(featureId)) return { allowed: false, reason: "not_authorized" };
     try {
-      return await this.inTenant(principal.tenantId, async (client) => {
-        if (!(await this.entitlements.tenantActive(client, principal.tenantId))) return { allowed: false, reason: "tenant_inactive" };
-        if (!(await this.entitlements.storesLive(client, principal.tenantId, targetStores))) return { allowed: false, reason: "not_authorized" };
-        const layer6 = await this.layer6(client, principal.tenantId, featureId);
-        const verdict = layer6.resolution.verdict;
-        return verdict.allow
-          ? { allowed: true, entitlementVersion: layer6.entitlementVersion, optOutVersion: layer6.optOutVersion }
-          : { allowed: false, reason: verdict.reason };
-      });
+      return await this.inTenant(principal.tenantId, (client) => this.evaluateIn(client, { principal, featureId, targetStores }));
     } catch (err) {
       this.unavailable(err);
       return { allowed: false, reason: "entitlement_unavailable" };
@@ -199,16 +249,13 @@ export class AiEntitlementChecker {
   async check(ctx: ResolvedContext, rawInput: AiEntitlementCheckInput, meta: CheckMeta = {}): Promise<CheckOutcome> {
     const evaluatedAt = new Date().toISOString();
     const parsed = AiEntitlementCheckInputSchema.safeParse(rawInput);
-    if (!parsed.success) return { decision: this.deny("entitlement_unavailable", null, null, evaluatedAt), replay: null };
-    const input = parsed.data;
-    const principal = principalOf(ctx, input.targetStores);
-    if (principal === null) return { decision: this.deny("not_authorized", null, null, evaluatedAt), replay: null };
+    if (!parsed.success) return { decision: denyBody("entitlement_unavailable", NO_VERSIONS, evaluatedAt), replay: null };
+    const principal = principalOf(ctx, parsed.data.targetStores);
+    if (principal === null) return { decision: denyBody("not_authorized", NO_VERSIONS, evaluatedAt), replay: null };
     try {
-      return await this.inTenant(principal.tenantId, (client) => this.reserve(client, principal, input, meta));
+      return await this.inTenant(principal.tenantId, (client) => this.reserve(client, principal, parsed.data, meta));
     } catch (err) {
-      if (err instanceof Denied) return { decision: err.body, replay: null };
-      this.unavailable(err);
-      return { decision: this.deny("entitlement_unavailable", null, null, evaluatedAt), replay: null };
+      return { decision: this.refusal(err, evaluatedAt), replay: null };
     }
   }
 
@@ -229,6 +276,13 @@ export class AiEntitlementChecker {
     return runWithTenantContext(this.pool, { tenantId, isPlatformAdmin: false }, work);
   }
 
+  /** A documented refusal, or the fail-closed `entitlement_unavailable` for anything else. */
+  private refusal(err: unknown, evaluatedAt: string): DenyBody {
+    if (err instanceof Denied) return err.body;
+    this.unavailable(err);
+    return denyBody("entitlement_unavailable", NO_VERSIONS, evaluatedAt);
+  }
+
   private unavailable(err: unknown): void {
     try {
       this.options.onUnavailable?.(err);
@@ -237,14 +291,23 @@ export class AiEntitlementChecker {
     }
   }
 
-  private deny(
-    reasonCode: AiCheckDenyReason,
-    entitlementVersion: number | null,
-    optOutVersion: number | null,
-    evaluatedAt: string,
-    meter?: MeterSnapshot,
-  ): DenyBody {
-    return { decision: "deny", reasonCode, entitlementVersion, optOutVersion, ...(meter === undefined ? {} : { meter }), evaluatedAt };
+  private async evaluateIn(
+    client: PoolClient,
+    q: { readonly principal: Principal; readonly featureId: string; readonly targetStores: readonly string[] },
+  ): Promise<EvaluateOutcome> {
+    const reachable = await this.reachability(client, q.principal, q.targetStores);
+    if (reachable !== null) return { allowed: false, reason: reachable };
+    const layer6 = await this.layer6(client, q.principal.tenantId, q.featureId);
+    const verdict = layer6.resolution.verdict;
+    if (!verdict.allow) return { allowed: false, reason: verdict.reason };
+    return { allowed: true, entitlementVersion: layer6.entitlementVersion, optOutVersion: layer6.optOutVersion };
+  }
+
+  /** Layers 1 and 4 against the database: the tenant is active and every target store is its own, live. */
+  private async reachability(client: PoolClient, principal: Principal, targetStores: readonly string[]): Promise<AiCheckDenyReason | null> {
+    if (!(await this.entitlements.tenantActive(client, principal.tenantId))) return "tenant_inactive";
+    const live = await this.entitlements.storesLive(client, principal.tenantId, targetStores);
+    return live ? null : "not_authorized";
   }
 
   private async layer6(client: PoolClient, tenantId: string, featureId: string): Promise<Layer6> {
@@ -262,47 +325,51 @@ export class AiEntitlementChecker {
   }
 
   private async reserve(client: PoolClient, principal: Principal, input: AiEntitlementCheckInput, meta: CheckMeta): Promise<CheckOutcome> {
-    const now = await this.entitlements.now(client);
-    const at = now.toISOString();
-    if (!(await this.entitlements.tenantActive(client, principal.tenantId))) throw new Denied(this.deny("tenant_inactive", null, null, at));
-    if (!(await this.entitlements.storesLive(client, principal.tenantId, input.targetStores))) {
-      throw new Denied(this.deny("not_authorized", null, null, at));
-    }
+    const at = (await this.entitlements.now(client)).toISOString();
+    const reachable = await this.reachability(client, principal, input.targetStores);
+    if (reachable !== null) throw new Denied(denyBody(reachable, NO_VERSIONS, at));
     const layer6 = await this.layer6(client, principal.tenantId, input.featureId);
-    const { entitlementVersion, optOutVersion, resolution } = layer6;
-    if (!resolution.verdict.allow) throw new Denied(this.deny(resolution.verdict.reason, entitlementVersion, optOutVersion, at));
+    const verdict = layer6.resolution.verdict;
+    if (!verdict.allow) throw new Denied(denyBody(verdict.reason, versionsOf(layer6), at));
+    const meter = this.singleMeter(layer6, input, at);
+    const step: ReserveStep = { client, principal, input, meter, ref: counterRefOf(principal.tenantId, meter, input), layer6, at };
+    const key = { tenantId: principal.tenantId, featureId: input.featureId, key: input.idempotencyKey };
+    await this.usage.lockReservationKey(client, key);
+    const existing = await this.usage.findReservation(client, key);
+    return existing === null ? this.reserveNew(step, meta) : this.replay(step, existing);
+  }
 
-    const meter = this.singleMeter(resolution, input, layer6, at);
-    const ref: CounterRef = {
-      tenantId: principal.tenantId,
-      storeId: meter.scope === "store" ? input.targetStores[0]! : null,
-      meter: meter.meter,
-      window: meter.window,
+  /** v1: exactly one meter, and a per-store meter needs exactly one target store. */
+  private singleMeter(layer6: Layer6, input: AiEntitlementCheckInput, at: string): CatalogMeter {
+    const meters = layer6.resolution.meters;
+    const meter = meters.length === 1 ? meters[0]! : null;
+    if (meter === null || !meterFits(meter, input)) throw new Denied(denyBody("entitlement_unavailable", versionsOf(layer6), at));
+    return meter;
+  }
+
+  /** A replay of the key: the same reservation, never a second one; another user or body is refused. */
+  private async replay(step: ReserveStep, existing: ReservedEntry): Promise<CheckOutcome> {
+    if (!sameReplay(existing, step)) throw new Denied(denyBody("entitlement_unavailable", versionsOf(step.layer6), step.at));
+    const state = await this.usage.counter(step.client, step.ref);
+    const body: AllowBody = {
+      decision: "allow",
+      entitlementVersion: existing.entitlementVersion,
+      optOutVersion: existing.optOutVersion ?? 0,
+      meter: snapshot(step.meter, state),
+      reservationId: existing.id,
+      evaluatedAt: step.at,
     };
-    await this.usage.lockReservationKey(client, principal.tenantId, input.featureId, input.idempotencyKey);
-    const existing = await this.usage.findReservation(client, principal.tenantId, input.featureId, input.idempotencyKey);
-    if (existing !== null) {
-      const sameBody = existing.units === input.unitsEstimate && existing.storeId === ref.storeId;
-      if (!sameBody || existing.actorUserId !== principal.userId) {
-        throw new Denied(this.deny("entitlement_unavailable", entitlementVersion, optOutVersion, at));
-      }
-      const state = await this.usage.counter(client, ref);
-      const body: AllowBody = {
-        decision: "allow",
-        entitlementVersion: existing.entitlementVersion,
-        optOutVersion: existing.optOutVersion ?? 0,
-        meter: snapshot(meter, state),
-        reservationId: existing.id,
-        evaluatedAt: at,
-      };
-      return { decision: body, replay: { open: existing.open } };
-    }
+    return { decision: body, replay: { open: existing.open } };
+  }
 
+  /** The conditional reserve (exactly the units that fit, T3) and the `reserved` ledger row. */
+  private async reserveNew(step: ReserveStep, meta: CheckMeta): Promise<CheckOutcome> {
+    const { client, ref, meter, input, principal, layer6 } = step;
     await this.usage.ensureCounter(client, ref, newId());
-    const counterId = await this.usage.tryReserve(client, ref, input.unitsEstimate, meter.limit);
+    const counterId = await this.usage.tryReserve(client, { ref, units: input.unitsEstimate, limit: meter.limit });
     if (counterId === null) {
       const state = await this.usage.counter(client, ref);
-      throw new Denied(this.deny("quota_exhausted", entitlementVersion, optOutVersion, at, snapshot(meter, state)));
+      throw new Denied(denyBody("quota_exhausted", versionsOf(layer6), step.at, snapshot(meter, state)));
     }
     const reservationId = newId();
     await this.usage.insertReservation(client, {
@@ -311,24 +378,22 @@ export class AiEntitlementChecker {
       featureId: input.featureId,
       counterId,
       units: input.unitsEstimate,
-      entitlementVersion,
-      optOutVersion: optOutVersion === 0 ? null : optOutVersion,
+      entitlementVersion: layer6.entitlementVersion,
+      optOutVersion: layer6.optOutVersion === 0 ? null : layer6.optOutVersion,
       idempotencyKey: input.idempotencyKey,
       ttlSeconds: this.options.reservationTtlSeconds,
       actorUserId: principal.userId,
       requestId: meta.requestId ?? null,
     });
     const state = await this.usage.counter(client, ref);
-    const body: AllowBody = { decision: "allow", entitlementVersion, optOutVersion, meter: snapshot(meter, state), reservationId, evaluatedAt: at };
+    const body: AllowBody = {
+      decision: "allow",
+      entitlementVersion: layer6.entitlementVersion,
+      optOutVersion: layer6.optOutVersion,
+      meter: snapshot(meter, state),
+      reservationId,
+      evaluatedAt: step.at,
+    };
     return { decision: body, replay: null };
-  }
-
-  /** v1: exactly one meter, and a per-store meter needs exactly one target store. */
-  private singleMeter(resolution: FeatureResolution, input: AiEntitlementCheckInput, layer6: Layer6, at: string): CatalogMeter {
-    const meter = resolution.meters.length === 1 ? resolution.meters[0]! : null;
-    if (meter === null || (meter.scope === "store" && input.targetStores.length !== 1)) {
-      throw new Denied(this.deny("entitlement_unavailable", layer6.entitlementVersion, layer6.optOutVersion, at));
-    }
-    return meter;
   }
 }

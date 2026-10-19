@@ -31,6 +31,26 @@ export interface CounterRef {
   readonly window: MeterWindow;
 }
 
+/** One idempotency key of one feature in one tenant (a reservation's or an adjustment's). */
+export interface ReservationKey {
+  readonly tenantId: string;
+  readonly featureId: string;
+  readonly key: string;
+}
+
+/** One ledger row of one tenant. */
+export interface LedgerEntryRef {
+  readonly tenantId: string;
+  readonly entryId: string;
+}
+
+/** A conditional reserve of `units` on a counter capped at `limit`. */
+export interface ReserveRequest {
+  readonly ref: CounterRef;
+  readonly units: number;
+  readonly limit: number;
+}
+
 export interface CounterState {
   readonly id: string | null;
   readonly used: number;
@@ -102,23 +122,37 @@ function counterParams(ref: CounterRef): unknown[] {
   return [ref.tenantId, ref.storeId, ref.meter, ref.window];
 }
 
-async function lock(client: PoolClient, name: string): Promise<void> {
-  await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [name]);
+async function lock(client: PoolClient, parts: readonly string[]): Promise<void> {
+  await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [parts.join(":")]);
+}
+
+interface AdjustmentRow {
+  id: string;
+  adjusts_entry_id: string;
+  units: number;
+  adjustment_reason: string;
+}
+
+export interface PriorAdjustment {
+  readonly id: string;
+  readonly adjustsEntryId: string;
+  readonly units: number;
+  readonly reason: string;
 }
 
 export class UsageRepository {
   /** Serialises every reservation attempt of one (tenant, feature, key). */
-  lockReservationKey(client: PoolClient, tenantId: string, featureId: string, key: string): Promise<void> {
-    return lock(client, `ai_usage_reserve:${tenantId}:${featureId}:${key}`);
+  lockReservationKey(client: PoolClient, k: ReservationKey): Promise<void> {
+    return lock(client, ["ai_usage_reserve", k.tenantId, k.featureId, k.key]);
   }
 
   /** Serialises every adjustment of one committed entry (the cap is checked under it). */
-  lockCommittedEntry(client: PoolClient, entryId: string): Promise<void> {
-    return lock(client, `ai_usage_adjust:${entryId}`);
+  lockCommittedEntry(client: PoolClient, ref: LedgerEntryRef): Promise<void> {
+    return lock(client, ["ai_usage_adjust", ref.entryId]);
   }
 
   /** The reservation a key already took, with its store and whether it is still open. */
-  async findReservation(client: PoolClient, tenantId: string, featureId: string, key: string): Promise<ReservedEntry | null> {
+  async findReservation(client: PoolClient, k: ReservationKey): Promise<ReservedEntry | null> {
     const r = await client.query<{
       id: string;
       counter_id: string;
@@ -135,7 +169,7 @@ export class UsageRepository {
          FROM ai_usage_ledger l
          JOIN ai_usage_counters c ON c.id = l.counter_id AND c.tenant_id = l.tenant_id
         WHERE l.tenant_id = $1::uuid AND l.feature_id = $2 AND l.entry_kind = 'reserved' AND l.idempotency_key = $3`,
-      [tenantId, featureId, key],
+      [k.tenantId, k.featureId, k.key],
     );
     const row = r.rows[0];
     if (row === undefined) return null;
@@ -175,14 +209,14 @@ export class UsageRepository {
   }
 
   /** The conditional reserve; null when `used + reserved + units` would exceed `limit`. */
-  async tryReserve(client: PoolClient, ref: CounterRef, units: number, limit: number): Promise<string | null> {
+  async tryReserve(client: PoolClient, req: ReserveRequest): Promise<string | null> {
     const r = await client.query<{ id: string }>(
       `UPDATE ai_usage_counters
           SET reserved = reserved + $5
-        WHERE ${counterPredicate(ref)}
+        WHERE ${counterPredicate(req.ref)}
           AND used + reserved + $5 <= $6
         RETURNING id`,
-      [...counterParams(ref), units, limit],
+      [...counterParams(req.ref), req.units, req.limit],
     );
     return r.rows[0]?.id ?? null;
   }
@@ -209,11 +243,11 @@ export class UsageRepository {
     );
   }
 
-  async findCommitted(client: PoolClient, tenantId: string, entryId: string): Promise<CommittedEntry | null> {
+  async findCommitted(client: PoolClient, ref: LedgerEntryRef): Promise<CommittedEntry | null> {
     const r = await client.query<{ id: string; feature_id: string; counter_id: string; units: number; entitlement_version: number }>(
       `SELECT id, feature_id, counter_id, units, entitlement_version
          FROM ai_usage_ledger WHERE id = $1::uuid AND tenant_id = $2::uuid AND entry_kind = 'committed'`,
-      [entryId, tenantId],
+      [ref.entryId, ref.tenantId],
     );
     const row = r.rows[0];
     return row === undefined
@@ -221,26 +255,21 @@ export class UsageRepository {
       : { id: row.id, featureId: row.feature_id, counterId: row.counter_id, units: row.units, entitlementVersion: row.entitlement_version };
   }
 
-  async findAdjustmentByKey(
-    client: PoolClient,
-    tenantId: string,
-    featureId: string,
-    key: string,
-  ): Promise<{ id: string; adjustsEntryId: string; units: number; reason: string } | null> {
-    const r = await client.query<{ id: string; adjusts_entry_id: string; units: number; adjustment_reason: string }>(
+  async findAdjustmentByKey(client: PoolClient, k: ReservationKey): Promise<PriorAdjustment | null> {
+    const r = await client.query<AdjustmentRow>(
       `SELECT id, adjusts_entry_id, units, adjustment_reason FROM ai_usage_ledger
         WHERE tenant_id = $1::uuid AND feature_id = $2 AND entry_kind = 'adjusted' AND idempotency_key = $3`,
-      [tenantId, featureId, key],
+      [k.tenantId, k.featureId, k.key],
     );
     const row = r.rows[0];
     return row === undefined ? null : { id: row.id, adjustsEntryId: row.adjusts_entry_id, units: row.units, reason: row.adjustment_reason };
   }
 
-  async adjustedUnits(client: PoolClient, tenantId: string, entryId: string): Promise<number> {
+  async adjustedUnits(client: PoolClient, ref: LedgerEntryRef): Promise<number> {
     const r = await client.query<{ n: string }>(
       `SELECT COALESCE(sum(units), 0)::text AS n FROM ai_usage_ledger
         WHERE adjusts_entry_id = $1::uuid AND tenant_id = $2::uuid AND entry_kind = 'adjusted'`,
-      [entryId, tenantId],
+      [ref.entryId, ref.tenantId],
     );
     return Number(r.rows[0]!.n);
   }

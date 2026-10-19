@@ -188,25 +188,19 @@ describe("settlement on the ledger", () => {
     ]);
   });
 
-  it("T13: a retry of the same key after the response was lost does not call the provider again", async () => {
-    if (skip()) return;
-    const t = await newTenant(env!.admin);
-    await entitled(t);
-    const { gw, provider } = gateway();
-    const k = key();
-    expect((await run(gw, t, k)).kind).toBe("ok");
-    expect(await run(gw, t, k)).toMatchObject({ kind: "fallback", reason: "entitlement_unavailable" });
-    expect(provider.calls).toHaveLength(1);
-    expect(await counter(env!.admin, t.tenantId, "ask_requests")).toEqual({ used: 1, reserved: 0 });
-  });
+  type SameKeyRuns = (gw: AiGateway, t: AiTenant, k: string) => Promise<Array<{ kind: string }>>;
+  const sequential: SameKeyRuns = async (gw, t, k) => [await run(gw, t, k), await run(gw, t, k)];
+  const concurrent: SameKeyRuns = (gw, t, k) => Promise.all(Array.from({ length: 6 }, () => run(gw, t, k)));
 
-  it("concurrent runs with one key make ONE provider call and charge once", async () => {
+  it.each([
+    ["T13: a retry after the response was lost", sequential],
+    ["concurrent runs", concurrent],
+  ] as const)("%s with one key make ONE provider call and charge once", async (_name, runs) => {
     if (skip()) return;
     const t = await newTenant(env!.admin);
     await entitled(t);
     const { gw, provider } = gateway();
-    const k = key();
-    const results = await Promise.all(Array.from({ length: 6 }, () => run(gw, t, k)));
+    const results = await runs(gw, t, key());
     expect(results.filter((r) => r.kind === "ok")).toHaveLength(1);
     expect(provider.calls).toHaveLength(1);
     expect(await counter(env!.admin, t.tenantId, "ask_requests")).toEqual({ used: 1, reserved: 0 });

@@ -89,29 +89,33 @@ async function existingTerminal(client: Queryable, input: SettleAiReservationInp
   return r.rows[0]?.entry_kind ?? null;
 }
 
+/** The terminal row's telemetry columns, in INSERT order ($12 onwards). */
+const TELEMETRY_COLUMNS = [
+  "requestId",
+  "routeKey",
+  "promptTemplateId",
+  "promptTemplateVersion",
+  "outputSchemaId",
+  "outputSchemaVersion",
+  "providerKey",
+  "modelId",
+  "evidenceRefIds",
+  "inputTokens",
+  "outputTokens",
+  "cachedInputTokens",
+  "tokenCountSource",
+  "providerRequestId",
+] as const satisfies ReadonlyArray<keyof AiUsageTelemetry>;
+
 function telemetryParams(t: AiUsageTelemetry | undefined): unknown[] {
-  return [
-    t?.requestId ?? null,
-    t?.routeKey ?? null,
-    t?.promptTemplateId ?? null,
-    t?.promptTemplateVersion ?? null,
-    t?.outputSchemaId ?? null,
-    t?.outputSchemaVersion ?? null,
-    t?.providerKey ?? null,
-    t?.modelId ?? null,
-    t?.evidenceRefIds === undefined || t.evidenceRefIds === null ? null : [...t.evidenceRefIds],
-    t?.inputTokens ?? null,
-    t?.outputTokens ?? null,
-    t?.cachedInputTokens ?? null,
-    t?.tokenCountSource ?? null,
-    t?.providerRequestId ?? null,
-  ];
+  const row: AiUsageTelemetry = t ?? {};
+  return TELEMETRY_COLUMNS.map((column) => row[column] ?? null);
 }
 
 /** A token source only when at least one count is present (0055 `ai_usage_ledger_tokens_sourced`). */
 function normalizedTelemetry(t: AiUsageTelemetry | undefined): AiUsageTelemetry | undefined {
   if (t === undefined) return undefined;
-  const counted = [t.inputTokens, t.outputTokens, t.cachedInputTokens].some((n) => n !== undefined && n !== null);
+  const counted = [t.inputTokens, t.outputTokens, t.cachedInputTokens].some((n) => (n ?? null) !== null);
   return counted ? { ...t, tokenCountSource: t.tokenCountSource ?? "estimated" } : { ...t, tokenCountSource: null };
 }
 

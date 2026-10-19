@@ -102,21 +102,29 @@ function lapsed(revision: EntitlementRevision, now: Date): EntitlementDenyReason
   return null;
 }
 
+/** The revision that names a plan (null for no revision or state `none`). */
+function planRevision(revision: EntitlementRevision | null): EntitlementRevision | null {
+  return revision === null || revision.state === "none" ? null : revision;
+}
+
+/** Why an entitled feature still refuses new generation, or null to allow. */
+function refusalOf(revision: EntitlementRevision, ended: EntitlementDenyReason | null, optOut: OptOutState): EntitlementDenyReason | null {
+  if (ended === "trial_expired") return "trial_expired";
+  if (revision.state === "grace") return "grace_read_only";
+  return optOut.optedOut ? "feature_disabled_tenant" : null;
+}
+
 export function resolveFeature(input: FeatureResolutionInput): FeatureResolution {
-  const { revision, featureId, now } = input;
-  if (revision === null || revision.state === "none") return NOT_ENTITLED;
-  const planMeters = input.planFeatures.get(featureId);
-  if (planMeters === undefined) return NOT_ENTITLED;
+  const { featureId, now } = input;
+  const revision = planRevision(input.revision);
+  const planMeters = revision === null ? undefined : input.planFeatures.get(featureId);
+  if (revision === null || planMeters === undefined) return NOT_ENTITLED;
   const overrides = liveOverrides(revision, featureId, now);
   if (overrides.some((o) => o.action === "disable")) return NOT_ENTITLED;
 
   const ended = lapsed(revision, now);
   if (ended === "not_entitled") return NOT_ENTITLED;
   const meters = effectiveMeters(planMeters, overrides);
-  if (ended === "trial_expired") return { entitled: true, verdict: { allow: false, reason: "trial_expired" }, meters };
-  if (revision.state === "grace") return { entitled: true, verdict: { allow: false, reason: "grace_read_only" }, meters };
-  if (input.optOut.optedOut) {
-    return { entitled: true, verdict: { allow: false, reason: "feature_disabled_tenant" }, meters };
-  }
-  return { entitled: true, verdict: { allow: true }, meters };
+  const reason = refusalOf(revision, ended, input.optOut);
+  return { entitled: true, verdict: reason === null ? { allow: true } : { allow: false, reason }, meters };
 }

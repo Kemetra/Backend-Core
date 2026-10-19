@@ -113,6 +113,28 @@ export interface NewOptOut {
 
 export type { OverrideJson };
 
+interface MeterRow {
+  meter: string | null;
+  window_kind: "day" | "month" | null;
+  meter_scope: "tenant" | "store" | null;
+  limit_value: string | null;
+}
+
+/** A catalogue meter, or null for the LEFT JOIN row of a feature with no meter. */
+function toMeter(row: MeterRow): CatalogMeter | null {
+  const { meter, window_kind: window, meter_scope: scope, limit_value: limit } = row;
+  if (meter === null || limit === null) return null;
+  if (window === null || scope === null) return null;
+  return { meter, unit: "request", window, scope, limit: Number(limit) };
+}
+
+/** The plan version a revision names, or null (no revision, or state `none`). */
+function planOf(revision: EntitlementRevision | null): { planCode: string; catalogVersion: number } | null {
+  if (revision === null) return null;
+  const { planCode, catalogVersion } = revision;
+  return planCode === null || catalogVersion === null ? null : { planCode, catalogVersion };
+}
+
 export class EntitlementRepository {
   /** The transaction's clock (`now()` is fixed per transaction). */
   async now(client: PoolClient): Promise<Date> {
@@ -196,9 +218,8 @@ export class EntitlementRepository {
     const features = new Map<string, CatalogMeter[]>();
     for (const row of r.rows) {
       const meters = features.get(row.feature_id) ?? [];
-      if (row.meter !== null && row.window_kind !== null && row.meter_scope !== null && row.limit_value !== null) {
-        meters.push({ meter: row.meter, unit: "request", window: row.window_kind, scope: row.meter_scope, limit: Number(row.limit_value) });
-      }
+      const meter = toMeter(row);
+      if (meter !== null) meters.push(meter);
       features.set(row.feature_id, meters);
     }
     return features;
@@ -206,8 +227,8 @@ export class EntitlementRepository {
 
   /** The plan features of a revision (none for no revision or state `none`). */
   async planFeaturesOf(client: PoolClient, revision: EntitlementRevision | null): Promise<Map<string, CatalogMeter[]>> {
-    if (revision === null || revision.planCode === null || revision.catalogVersion === null) return new Map();
-    return this.planFeatures(client, revision.planCode, revision.catalogVersion);
+    const plan = planOf(revision);
+    return plan === null ? new Map() : this.planFeatures(client, plan.planCode, plan.catalogVersion);
   }
 
   /** Every feature any catalogue version knows, ordered (the view's feature list; unknown ids are denied). */

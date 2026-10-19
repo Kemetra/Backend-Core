@@ -75,10 +75,16 @@ function validation(message: string): BadRequestException {
   return new BadRequestException({ code: "validation_error", message });
 }
 
-function sessionOf(request: TenantContextRequest): ResolvedContext & { tenantId: string; userId: string } {
+type SessionContext = ResolvedContext & { tenantId: string; userId: string };
+
+function hasIds(ctx: ResolvedContext): ctx is SessionContext {
+  return ctx.tenantId !== null && ctx.userId !== null;
+}
+
+function sessionOf(request: TenantContextRequest): SessionContext {
   const ctx = request.context;
-  if (!ctx || ctx.tenantId === null || ctx.userId === null) throw new UnauthorizedException("Unauthorized");
-  return ctx as ResolvedContext & { tenantId: string; userId: string };
+  if (ctx === undefined || !hasIds(ctx)) throw new UnauthorizedException("Unauthorized");
+  return ctx;
 }
 
 /** `{tenant_id}` must be the session's tenant: malformed → 400, any other tenant → the 404. */

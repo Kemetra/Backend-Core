@@ -30,20 +30,42 @@ export const MIN_RESERVATION_SWEEP_LOOKBACK_SECONDS = 3600;
 /** Reservations released per transaction, so each one stays short. */
 export const DEFAULT_RESERVATION_SWEEP_BATCH_SIZE = 200;
 
-function resolveWhole(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number, unit: string): number {
-  const raw = (env[name] ?? "").trim();
-  if (raw === "") return fallback;
+/** One whole-number setting: its variable, default, minimum and unit (for the refusal). */
+interface WholeSetting {
+  readonly name: string;
+  readonly fallback: number;
+  readonly min: number;
+  readonly unit: string;
+}
+
+const INTERVAL: WholeSetting = {
+  name: RESERVATION_SWEEP_INTERVAL_ENV,
+  fallback: DEFAULT_RESERVATION_SWEEP_INTERVAL_MS,
+  min: MIN_RESERVATION_SWEEP_INTERVAL_MS,
+  unit: "milliseconds",
+};
+
+const LOOKBACK: WholeSetting = {
+  name: RESERVATION_SWEEP_LOOKBACK_ENV,
+  fallback: DEFAULT_RESERVATION_SWEEP_LOOKBACK_SECONDS,
+  min: MIN_RESERVATION_SWEEP_LOOKBACK_SECONDS,
+  unit: "seconds",
+};
+
+function resolveWhole(env: NodeJS.ProcessEnv, setting: WholeSetting): number {
+  const raw = (env[setting.name] ?? "").trim();
+  if (raw === "") return setting.fallback;
   const value = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
-  if (!Number.isSafeInteger(value) || value < min) {
-    throw new Error(`${name} must be a whole number of ${unit} >= ${min}`);
+  if (!Number.isSafeInteger(value) || value < setting.min) {
+    throw new Error(`${setting.name} must be a whole number of ${setting.unit} >= ${setting.min}`);
   }
   return value;
 }
 
 export function resolveReservationSweepIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
-  return resolveWhole(env, RESERVATION_SWEEP_INTERVAL_ENV, DEFAULT_RESERVATION_SWEEP_INTERVAL_MS, MIN_RESERVATION_SWEEP_INTERVAL_MS, "milliseconds");
+  return resolveWhole(env, INTERVAL);
 }
 
 export function resolveReservationSweepLookbackSeconds(env: NodeJS.ProcessEnv = process.env): number {
-  return resolveWhole(env, RESERVATION_SWEEP_LOOKBACK_ENV, DEFAULT_RESERVATION_SWEEP_LOOKBACK_SECONDS, MIN_RESERVATION_SWEEP_LOOKBACK_SECONDS, "seconds");
+  return resolveWhole(env, LOOKBACK);
 }
