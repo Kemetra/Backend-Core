@@ -162,8 +162,12 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
  */
 const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
   consoleDeleteTenantLogo: "write",
+  // RT-662: one tenant's entitlement snapshot, no aggregate.
+  consoleGetTenantAiEntitlements: "cheapRead",
   consoleGetTenantLogo: "cheapRead",
   consolePreviewTenantLogo: "jobOrPreview",
+  // RT-662: the owner's idempotent per-feature opt-out write.
+  consolePutTenantAiFeatureOptOut: "write",
   consolePutTenantLogo: "jobOrPreview",
   endSupportSession: "incidentControl",
   getCurrentSupportSession: "cheapRead",
