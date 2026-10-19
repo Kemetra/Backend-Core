@@ -188,11 +188,6 @@ paths:
     get:
       summary: Read the tenant's AI entitlements (full or minimal view by role).
       operationId: consoleGetTenantAiEntitlements
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-662 contract PR; the runtime (the `ai-entitlements` module and its
-        evaluator) ships in RT-664 after the RT-663 `[GATED]` migration, which
-        removes this marker.
       tags: [ai-entitlements-console]
       security:
         - cookieAuth: []
@@ -235,11 +230,6 @@ paths:
     put:
       summary: Opt one AI feature out of the tenant, or back in up to the plan (owner only).
       operationId: consolePutTenantAiFeatureOptOut
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-662 contract PR; the runtime ships in RT-664 after the RT-663
-        `[GATED]` migration (the opt-out source and its `opt_out_version`),
-        which removes this marker.
       x-idempotency: required
       x-audit-action: ai_entitlement.opt_out_changed
       tags: [ai-entitlements-console]

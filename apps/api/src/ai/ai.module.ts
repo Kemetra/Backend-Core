@@ -2,7 +2,9 @@
  * AiModule — RT-655. Provides the AI gateway with SAFE DEFAULTS:
  *
  *   - no registered features and an EMPTY route allowlist
- *   - deny-all entitlement (RT-664 replaces it), fail-closed budget (RT-663)
+ *   - the real entitlement port (RT-664 `AiEntitlementsModule`: layers 1, 6
+ *     and the Option A quota reservation on the RT-663 usage ledger), and a
+ *     fail-closed budget (no spend cap or credit pool is sized yet, RT-645)
  *   - empty evidence builder (RT-647 supplies real ones)
  *   - the disabled provider (never the fake) and the kill switch off
  *
@@ -13,6 +15,8 @@
  */
 import { Module } from "@nestjs/common";
 
+import { AiEntitlementsModule } from "../ai-entitlements/ai-entitlements.module";
+import { AiGatewayEntitlementPort } from "../ai-entitlements/gateway-entitlement.port";
 import { ROOT_LOGGER } from "../common/logging.interceptor";
 import { DisabledModelProvider } from "./adapters/disabled/disabled-model-provider";
 import {
@@ -28,11 +32,7 @@ import {
   AI_ROUTE_ALLOWLIST,
   AI_ROUTING,
 } from "./ai.tokens";
-import {
-  DenyAllAiEntitlement,
-  EmptyEvidencePackBuilder,
-  FailClosedAiBudget,
-} from "./gateway/ai-gateway.defaults";
+import { EmptyEvidencePackBuilder, FailClosedAiBudget } from "./gateway/ai-gateway.defaults";
 import { aiGatewayMetrics } from "./gateway/ai-gateway.metrics";
 import { readAiGatewayRuntime } from "./gateway/ai-gateway.runtime";
 import { AiGateway } from "./gateway/ai-gateway.service";
@@ -42,9 +42,10 @@ type PolicyPorts = Pick<AiGatewayDeps, "entitlement" | "budget" | "evidence">;
 type Routing = Pick<AiGatewayDeps, "routes" | "providers">;
 
 @Module({
+  imports: [AiEntitlementsModule],
   providers: [
     { provide: AI_FEATURES, useValue: [] },
-    { provide: AI_ENTITLEMENT, useClass: DenyAllAiEntitlement },
+    { provide: AI_ENTITLEMENT, useExisting: AiGatewayEntitlementPort },
     { provide: AI_BUDGET, useClass: FailClosedAiBudget },
     { provide: AI_EVIDENCE_BUILDER, useClass: EmptyEvidencePackBuilder },
     { provide: AI_ROUTE_ALLOWLIST, useValue: [] },

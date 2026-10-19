@@ -158,6 +158,11 @@ import {
 } from "./outbox/drizzle-outbox-retention.repository";
 import { OutboxRetentionWorker } from "./outbox/retention.worker";
 import { OutboxRetentionScheduler } from "./outbox/retention.scheduler";
+import { ReservationSweepProcessor } from "./ai-usage/reservation-sweep.processor";
+import { NoOpReservationSweepRepository, PgReservationSweepRepository } from "./ai-usage/reservation-sweep.repository";
+import { ReservationSweepScheduler } from "./ai-usage/reservation-sweep.scheduler";
+import { ReservationSweepWorker } from "./ai-usage/reservation-sweep.worker";
+import { resolveReservationSweepLookbackSeconds } from "./ai-usage/reservation-sweep.config";
 import { ReplayPurgeProcessor } from "./cashier-admissions/replay-purge.processor";
 import {
   NoOpReplayPurgeRepository,
@@ -515,6 +520,20 @@ export function replayPurgeProcessorProviderFactory(wrapper: AuditDbPool): Repla
       ? new NoOpReplayPurgeRepository()
       : new PgReplayPurgeRepository(wrapper.pool);
   return new ReplayPurgeProcessor(repo);
+}
+
+/**
+ * Factory for the `ReservationSweepProcessor` provider (RT-664, T17).
+ *
+ * Reuses the shared `AuditDbPool` wrapper (no second pool). On the no-DB path
+ * the NoOp repository lists no tenants, so a sweep is an empty pass.
+ */
+export function reservationSweepProcessorProviderFactory(wrapper: AuditDbPool): ReservationSweepProcessor {
+  const repo =
+    wrapper.pool === null
+      ? new NoOpReservationSweepRepository()
+      : new PgReservationSweepRepository(wrapper.pool);
+  return new ReservationSweepProcessor(repo, { lookbackSeconds: resolveReservationSweepLookbackSeconds() });
 }
 
 /** DI token for the `AuditDbPool` Nest-managed wrapper. */
@@ -939,6 +958,19 @@ export class AuditRetentionRoleVerifier implements OnModuleInit {
     ReplayPurgeWorker,
     ReplayPurgeScheduler,
 
+    // ── AI usage reservation sweep (RT-664, T17) ─────────────────────
+    //
+    // A repeatable job (default every 5 minutes) that releases every
+    // tenant's AI usage reservations still open past their TTL (a crash
+    // between reserve and commit), never charged. Same quartet shape.
+    {
+      provide: ReservationSweepProcessor,
+      useFactory: reservationSweepProcessorProviderFactory,
+      inject: [AuditDbPool],
+    },
+    ReservationSweepWorker,
+    ReservationSweepScheduler,
+
     // ── Outbox drainer pipeline (T581) ────────────────────────────────
     //
     // The OUTBOX_DRAINER + OutboxDrainerRunner providers live here (not in
@@ -997,6 +1029,8 @@ export class AuditRetentionRoleVerifier implements OnModuleInit {
     SaleRedriveProcessor,
     ReplayPurgeWorker,
     ReplayPurgeProcessor,
+    ReservationSweepWorker,
+    ReservationSweepProcessor,
     OUTBOX_DRAINER,
     OutboxDrainerRunner,
     WorkerDbPoolGaugeRegistrar,

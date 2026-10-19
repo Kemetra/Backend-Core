@@ -20,7 +20,10 @@ import type {
   AiGatewayLogger,
   AiGatewayMetrics,
   AiGatewayRuntime,
+  AiReservation,
+  AiReserveInput,
   AiRunScope,
+  AiUsageSettlement,
 } from "../../../src/ai/gateway/ai-gateway.types";
 import type {
   EvidencePack,
@@ -89,12 +92,17 @@ export function scope(overrides: Partial<AiRunScope> = {}): AiRunScope {
     ctx: sessionCtx(),
     storeIds: [STORE_A],
     correlationId: "corr-1",
+    idempotencyKey: "rt664-harness-key-0001",
     ...overrides,
   };
 }
 
 export interface HarnessOptions {
   readonly entitlement?: AiEntitlementDecision | (() => Promise<AiEntitlementDecision>);
+  readonly reservation?: AiReservation | (() => Promise<AiReservation>);
+  /** A settle that throws, to prove the run result is unaffected. */
+  readonly settleFails?: boolean;
+  readonly reservationTtlMs?: number;
   readonly budget?: AiBudgetDecision | (() => Promise<AiBudgetDecision>);
   readonly enabled?: boolean | (() => boolean);
   readonly production?: boolean;
@@ -110,7 +118,9 @@ export interface HarnessOptions {
 export interface Harness {
   readonly gateway: AiGateway;
   readonly provider: FakeModelProvider;
-  readonly calls: { entitlement: number; budget: number; evidence: number };
+  readonly calls: { entitlement: number; budget: number; evidence: number; reserve: number };
+  readonly reserves: AiReserveInput[];
+  readonly settlements: AiUsageSettlement[];
   readonly runMetrics: { feature: string; outcome: string }[];
   readonly providerMetrics: { provider: string; route: string; outcome: string }[];
   readonly logs: { obj: Record<string, unknown>; msg: string }[];
@@ -122,7 +132,9 @@ async function resolveValue<T>(value: T | (() => Promise<T>)): Promise<T> {
 
 /** Everything allowed, AI enabled, fake route allowlisted, valid output. */
 export function buildHarness(options: HarnessOptions = {}): Harness {
-  const calls = { entitlement: 0, budget: 0, evidence: 0 };
+  const calls = { entitlement: 0, budget: 0, evidence: 0, reserve: 0 };
+  const reserves: AiReserveInput[] = [];
+  const settlements: AiUsageSettlement[] = [];
   const runMetrics: Harness["runMetrics"] = [];
   const providerMetrics: Harness["providerMetrics"] = [];
   const logs: Harness["logs"] = [];
@@ -137,6 +149,18 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
       calls.entitlement += 1;
       return resolveValue(options.entitlement ?? { allowed: true });
     },
+    async reserve(input) {
+      calls.reserve += 1;
+      reserves.push(input);
+      return resolveValue(
+        options.reservation ?? { allowed: true, reservationId: "0191a000-0000-7000-8000-0000000000c1", entitlementVersion: 1, runnable: true },
+      );
+    },
+    async settle(settlement) {
+      settlements.push(settlement);
+      if (options.settleFails === true) throw new Error("ledger unreachable");
+    },
+    reservationTtlMs: options.reservationTtlMs ?? 900_000,
   };
   const budget: AiBudgetPort = {
     async check() {
@@ -186,5 +210,5 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
     logger,
   });
 
-  return { gateway, provider, calls, runMetrics, providerMetrics, logs };
+  return { gateway, provider, calls, reserves, settlements, runMetrics, providerMetrics, logs };
 }

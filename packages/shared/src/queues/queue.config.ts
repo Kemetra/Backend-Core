@@ -152,6 +152,8 @@ export const QUEUE_NAMES = deepFreeze({
   cashierAdmissionReplayPurge: "cashier-admission-replay-purge",
   // RT-457: the scheduled re-drive of sales stranded before their posting intent.
   saleRedrive: "sale-redrive",
+  // RT-664: the TTL sweep of AI usage reservations left open by a crash.
+  aiUsageReservationSweep: "ai-usage-reservation-sweep",
 } as const);
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];

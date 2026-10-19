@@ -20,6 +20,16 @@ export {
   POSTING_FEED_LOCK_NAMESPACE,
 } from "./helpers/posting-feed-lock";
 export {
+  AI_USAGE_RESERVATION_LOCK_NAMESPACE,
+  listExpiredAiReservations,
+  settleAiReservation,
+  type AiUsageTelemetry,
+  type AiUsageTerminalKind,
+  type ExpiredAiReservationQuery,
+  type SettleAiReservationInput,
+  type SettleAiReservationResult,
+} from "./helpers/ai-usage-settle";
+export {
   createStockReconciliationRun,
   failStockReconciliationRun,
   STOCK_RECONCILIATION_RUN_COLUMNS,

@@ -200,7 +200,8 @@ only after the Track C first slice (P7) ships.
 consumes, taken from the shared `QUEUE_NAMES`: `email`, `audit`,
 `audit-retention`, `sale-processing`, `outbox-retention`,
 `erpnext-stock-reconciliation-sweep` (RT-179),
-`cashier-admission-replay-purge` (RT-209), `sale-redrive` (RT-457). The three delivery
+`cashier-admission-replay-purge` (RT-209), `sale-redrive` (RT-457),
+`ai-usage-reservation-sweep` (RT-664). The three delivery
 counters also carry `outbox-drainer`, which is the outbox drainer's own
 retries and dead-letters. The drainer is not a BullMQ queue, so it has no lag.
 Before RT-125, the drainer reported as `audit-fanout`, which is a job name,
