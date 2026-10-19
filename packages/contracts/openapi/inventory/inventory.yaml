@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Inventory — Stock Movement Ledger API
-  version: "1.4.0-draft"
+  version: "1.5.0-draft"
   description: >
     Spec 009 Inventory & Stock Movement Ledger contract surface. Defines the
     Inventory source-of-truth domain the SaaS owns: an append-only
@@ -41,9 +41,10 @@ info:
          SUM of its movements (FR-003). The projection carries a
          `negative_balance` flag (FR-024). Empty key ⇒ deterministic zero
          (FR-005).
-      3. `listStockMovements` — list the movements behind a balance in a stable
-         order (FR-004). Ad-hoc (null-product) movements are listable
-         (scoped to store, no product filter) but roll up to no product on-hand.
+      3. `listStockMovements` — list a store's movements newest first in
+         keyset pages (FR-004, RT-731): one product's, the ad-hoc
+         (null-product) ones, which roll up to no product on-hand, or all of
+         them (`scope=all`).
       4. `createStockTransfer` — an intra-tenant transfer as LINKED movements
          (a `transfer_out` at source + `transfer_in` at destination sharing a
          transfer group); mutually discoverable (FR-020). Same-store / zero-qty
@@ -116,6 +117,14 @@ info:
     return 429 `rate_limited` (`TooManyRequests`, with `Retry-After`)
     from the console rate limit (RT-574, RT-619). No other wire change.
 
+
+    **1.5.0-draft (RT-731, additive).** `listStockMovements` gains the
+    optional `scope` query parameter (`adhoc` default | `all`: every movement
+    of the store, across every product), documents its order as newest first
+    (`occurredAt DESC, id DESC`) and its `cursor` as an opaque keyset cursor
+    bound to the operation, the tenant, the store and the filters. The
+    request without `scope` selects the same movements as before.
+
 servers:
   - url: https://api.datapulse.example
     description: Placeholder; the dashboard/back-office surface is same-origin.
@@ -181,14 +190,29 @@ paths:
     get:
       operationId: listStockMovements
       tags: [inventory]
-      summary: List the movements behind a balance, in a stable order.
+      summary: List the movements of a store, newest first, in keyset pages.
       description: >
-        List stock movements for the path-scoped store (and optional product) in
-        a stable order (FR-004). `productId` MAY be omitted to list ad-hoc
-        (null-product) movements scoped to the store — those are auditable
-        ledger entries that roll up to no product's on-hand (SC-001). Each entry
-        is a `toBody` projection carrying type, signed quantity, timestamps,
-        acting principal (`createdBy`), reason, and provenance / linkage refs.
+        List stock movements for the path-scoped store (FR-004). Which
+        movements: `productId` set ⇒ that product's movements; `productId`
+        omitted ⇒ `scope` decides — `adhoc` (the default) lists the ad-hoc
+        (null-product) movements, which are auditable ledger entries that roll
+        up to no product's on-hand (SC-001), and `all` lists every movement of
+        the store, across every product and ad-hoc. Sending `scope` together
+        with `productId` is a 400 `validation_error`. Each entry is a `toBody`
+        projection carrying type, signed quantity, timestamps, acting principal
+        (`createdBy`), reason, and provenance / linkage refs.
+
+
+        **Ordering and paging (RT-731).** Newest first: `occurredAt DESC, id
+        DESC`, a total, stable order on values fixed when the movement is
+        written. Keyset pagination with an opaque `cursor` bound to this
+        operation, the tenant, the store and the filters (`productId`,
+        `scope`). Walking the pages with the same filters returns no movement
+        twice and reaches every movement that existed when the walk started.
+        The walk is not a snapshot: a movement written during a walk is
+        returned by that walk only if it sorts after the walk's current
+        position (a backdated `occurredAt`). Only `nextCursor: null` ends the
+        walk.
       security:
         - cookieAuth: []
       parameters:
@@ -196,11 +220,34 @@ paths:
         - name: productId
           in: query
           required: false
-          description: Tenant Catalog product id; omit to list ad-hoc (null-product) movements.
+          description: >
+            Tenant Catalog product id; lists that product's movements. Omit it
+            to list by `scope`.
           schema: { type: string, format: uuid }
+        - name: scope
+          in: query
+          required: false
+          description: >
+            RT-731. Only when `productId` is omitted: `adhoc` (the default) lists
+            the store's ad-hoc (null-product) movements; `all` lists every
+            movement of the store, across every product and ad-hoc. Sending it
+            with `productId` is a 400 `validation_error`.
+          schema: { type: string, enum: [adhoc, all] }
         - name: cursor
           in: query
           required: false
+          description: >
+            Opaque keyset cursor from a prior page's `nextCursor`, bound to the
+            operation, the tenant, the store and the filters (`productId`,
+            `scope`). Do not decode or construct it; omit it for the first page.
+            A value the server did not issue, cannot decode, or that is reused
+            with another store or other filters is 400 `validation_error`. The
+            caller's store scope is checked on every request and is never
+            carried by the cursor. The cursor carries only a keyset position
+            and a digest of the filters; its position is ANDed with the tenant,
+            the store and the filters and never replaces them, so a hand-built
+            cursor can only reposition the walk inside rows the caller may
+            already read.
           schema: { type: string }
         - name: limit
           in: query
@@ -208,7 +255,7 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
       responses:
         "200":
-          description: A page of movements in stable order.
+          description: A page of movements, newest first.
           content:
             application/json:
               schema:
@@ -729,7 +776,9 @@ components:
             $ref: "#/components/schemas/StockMovement"
         nextCursor:
           type: [string, "null"]
-          description: Opaque cursor for the next page; null when exhausted.
+          description: >
+            Opaque cursor for the next page, bound to the request's store and
+            filters; null when exhausted. Absent is read as null.
     OnHand:
       type: object
       required: [storeId, productId, quantity, negativeBalance, sellableQuantity, statusQuantities]
