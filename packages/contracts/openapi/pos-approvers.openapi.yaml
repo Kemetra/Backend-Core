@@ -256,6 +256,15 @@ components:
         Minimum-disclosure result for one user. An ineligible user (including
         an unknown or cross-tenant id) carries only `user_id` and
         `eligible: false`.
+      # `action_kinds` is only ever present on an eligible result, so a
+      # contradictory result (ineligible but with approvable kinds) fails
+      # response validation instead of reaching a client.
+      if:
+        required: [action_kinds]
+      then:
+        properties:
+          eligible:
+            const: true
       properties:
         user_id:
           $ref: "#/components/schemas/ApproverUserId"

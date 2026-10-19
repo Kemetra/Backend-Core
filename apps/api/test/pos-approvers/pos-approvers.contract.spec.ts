@@ -178,6 +178,12 @@ describe("pos-approvers — request bound and result shape", () => {
     expect(typeof items["pattern"]).toBe("string");
   });
 
+  it("ties action_kinds to eligible: true in the schema, not only in prose", () => {
+    const result = doc.components!.schemas!["PosApproverEligibilityResult"]!;
+    expect(result["if"]).toEqual({ required: ["action_kinds"] });
+    expect(result["then"]).toEqual({ properties: { eligible: { const: true } } });
+  });
+
   it("carries no role, name, contact, membership, store or secret field anywhere", () => {
     const schemas = JSON.stringify(doc.components!.schemas);
     for (const field of ["role", "display_name", "email", "phone", "membership", "store_id", "tenant_id", "pin", "token"]) {
@@ -256,6 +262,7 @@ describe("pos-approvers — AJV fixtures", () => {
     ["a cause", { user_id: USER_A, eligible: false, reason: "cross_tenant" }],
     ["a display name", { user_id: USER_A, eligible: true, display_name: "Mona" }],
     ["no eligible flag", { user_id: USER_A }],
+    ["action_kinds on an ineligible user", { user_id: USER_A, eligible: false, action_kinds: ["sale.void"] }],
     ["an empty action_kinds", { user_id: USER_A, eligible: true, action_kinds: [] }],
     ["a malformed action kind", { user_id: USER_A, eligible: true, action_kinds: ["Cart Cancel"] }],
   ])("rejects a result with %s", (_label, result) => {
