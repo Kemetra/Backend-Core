@@ -193,6 +193,30 @@ export const DEFAULT_REDACT_PATHS: readonly string[] = [
   "*.comment",
   "*.description",
   "*.feedback",
+  // ---- AI prompt / completion content + provider credential (RT-655, matrix §3.3 / §3.1) ----
+  // Added BEFORE any model adapter exists (AD-AI-PROV-001 E-5). Prompt, system
+  // instructions, the evidence pack and raw model output are dropped wholesale
+  // (no field-by-field enumeration: `*` matches one segment only, so the
+  // top-level key and its one-segment-nested form are the contract; the
+  // gateway additionally never passes these to the logger by design).
+  "prompt",
+  "completion",
+  "system",
+  "evidencePack",
+  "evidence_pack",
+  "rawOutput",
+  "raw_output",
+  "provider_api_key",
+  "providerApiKey",
+  "*.prompt",
+  "*.completion",
+  "*.system",
+  "*.evidencePack",
+  "*.evidence_pack",
+  "*.rawOutput",
+  "*.raw_output",
+  "*.provider_api_key",
+  "*.providerApiKey",
 ];
 
 export interface CreateLoggerOptions {
