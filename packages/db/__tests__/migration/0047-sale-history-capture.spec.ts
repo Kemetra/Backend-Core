@@ -36,6 +36,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { sqlStatements, withTenant } from "../_helpers/migration-sql";
 
 const DRIZZLE_DIR = resolve(__dirname, "..", "..", "drizzle");
 const UP_0047_NAME = "0047_sale_history_capture.sql";
@@ -199,17 +200,8 @@ async function insertReprint(client: Pick<PoolClient, "query">, seed: ReprintSee
 }
 
 /** Runs `fn` as the non-superuser app role inside one tenant's context, then rolls back. */
-async function asTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await pg().app.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query("SELECT set_config('app.current_tenant', $1, true)", [tenantId]);
-    await client.query("SELECT set_config('app.is_platform_admin', 'false', true)");
-    return await fn(client);
-  } finally {
-    await client.query("ROLLBACK");
-    client.release();
-  }
+function asTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  return withTenant(pg().app, tenantId, fn);
 }
 
 async function count(sql: string, params: unknown[] = []): Promise<string> {
@@ -563,11 +555,7 @@ describe("0047_sale_history_capture - sale_reprints", () => {
 describe("0048_sales_store_business_date_idx - the history list index", () => {
   it("is a single statement with no transaction control, so the runner never wraps CONCURRENTLY", () => {
     for (const path of [UP_0048, DOWN_0048]) {
-      const statements = read(path)
-        .replace(/--[^\n]*/g, "")
-        .split(";")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
+      const statements = sqlStatements(path);
       expect(statements).toHaveLength(1);
       expect(statements[0]).toMatch(/\bCONCURRENTLY\b/);
       expect(statements[0]).not.toMatch(/\b(BEGIN|COMMIT)\b/i);

@@ -17,19 +17,11 @@
  */
 import "reflect-metadata";
 
-import type { INestApplication } from "@nestjs/common";
 import request from "supertest";
 
 import { ErpnextSyncOpsModule } from "../../../src/catalog/erpnext-sync-ops/erpnext-sync-ops.module";
-import {
-  applyAllUpAndCreateAppRole,
-  startPgEnv,
-  stopPgEnv,
-  type PgTestEnv,
-} from "../../_helpers/postgres-container";
 import { STORE_A_X, STORE_A_Y, STORE_B_X } from "../__support__/isolation-harness";
 import {
-  bootScopedApp,
   countDeadletters,
   DL_DEL,
   DL_X1,
@@ -47,7 +39,7 @@ import {
   SES_OWNER_ALL_ACTIVE,
   SES_OWNER_SPEC,
   SPECIFIC_SESSIONS,
-  seedReadStoreScope,
+  useScopedApp,
 } from "../erpnext-reconciliation/__support__/read-store-scope";
 
 const BASE = "/api/v1/catalog/erpnext-sync-ops";
@@ -55,44 +47,12 @@ const SUMMARY = `${BASE}/summary`;
 const BACKLOG = `${BASE}/posting-backlog`;
 const RUNS = `${BASE}/reconciliation-runs`;
 
-let env: PgTestEnv | null = null;
-let dockerSkipped = false;
-let app: INestApplication | null = null;
+const scoped = useScopedApp("RT-192 sync-ops-store-scope", ErpnextSyncOpsModule);
 
-beforeAll(async () => {
-  try {
-    env = await startPgEnv();
-    await applyAllUpAndCreateAppRole(env);
-    await seedReadStoreScope(env);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
-      dockerSkipped = true;
-      // eslint-disable-next-line no-console
-      console.warn(`\n[RT-192 sync-ops-store-scope] Docker NOT AVAILABLE: ${msg}\n`);
-      return;
-    }
-    throw new Error(`Container start failed: ${msg}`);
-  }
-  app = await bootScopedApp(env, ErpnextSyncOpsModule);
-}, 180_000);
-
-afterAll(async () => {
-  if (app) await app.close();
-  if (env) await stopPgEnv(env);
-}, 60_000);
-
-function skip(): boolean {
-  if (dockerSkipped) {
-    // eslint-disable-next-line no-console
-    console.warn("[RT-192 sync-ops-store-scope] skipping — Docker unavailable");
-    return true;
-  }
-  return false;
-}
+const skip = (): boolean => scoped.skip();
 
 function get(path: string, session: string, query: Record<string, string | number> = {}) {
-  return request(app!.getHttpServer()).get(path).set("x-test-session", session).query(query);
+  return request(scoped.app().getHttpServer()).get(path).set("x-test-session", session).query(query);
 }
 
 /** Walk a sync-ops list to its end at `page_size`; the ids `key` picks, in order. */
@@ -139,7 +99,7 @@ const OUT_OF_SCOPE_STORES = [STORE_A_Y, S_DELETED, STORE_B_X, NON_EXISTENT];
 describe("RT-192 sync-ops summary — membership store scope", () => {
   it.each(SPECIFIC_SESSIONS)("a specific-membership %s counts only the granted store", async (_role, session) => {
     if (skip()) return;
-    expect(await postingHeadline(session)).toBe(await countDeadletters(env!.admin, [STORE_A_X]));
+    expect(await postingHeadline(session)).toBe(await countDeadletters(scoped.env().admin, [STORE_A_X]));
     // RUN_A carries the fixture's RESULT_A + RESULT_A2 (open); RUN_Y / RUN_DEL are out of scope.
     expect(await reconciliationHeadline(session)).toBe(2);
   });
@@ -149,7 +109,7 @@ describe("RT-192 sync-ops summary — membership store scope", () => {
     ["an active store", SES_OWNER_ALL_ACTIVE],
   ])("an all-membership owner with %s counts every store of the tenant", async (_label, session) => {
     if (skip()) return;
-    expect(await postingHeadline(session)).toBe(await countDeadletters(env!.admin, null));
+    expect(await postingHeadline(session)).toBe(await countDeadletters(scoped.env().admin, null));
     expect(await reconciliationHeadline(session)).toBe(4);
   });
 
@@ -157,7 +117,7 @@ describe("RT-192 sync-ops summary — membership store scope", () => {
     if (skip()) return;
     expect(await postingHeadline(SES_OWNER_ALL, { store_id: STORE_A_Y })).toBe(2);
     expect(await postingHeadline(SES_OWNER_SPEC, { store_id: STORE_A_X })).toBe(
-      await countDeadletters(env!.admin, [STORE_A_X]),
+      await countDeadletters(scoped.env().admin, [STORE_A_X]),
     );
   });
 
@@ -189,7 +149,7 @@ describe("RT-192 sync-ops posting-backlog — membership store scope", () => {
     if (skip()) return;
     const ids = await walk(BACKLOG, "postingStatusId", SES_OWNER_ALL_ACTIVE, 2);
     expect(ids).toEqual(expect.arrayContaining([DL_X1, DL_Y1, DL_X2, DL_Y2, DL_X3, DL_DEL]));
-    expect(ids).toHaveLength(await countDeadletters(env!.admin, null));
+    expect(ids).toHaveLength(await countDeadletters(scoped.env().admin, null));
     expect(await walk(BACKLOG, "postingStatusId", SES_OWNER_ALL_ACTIVE, 100, { store_id: STORE_A_Y })).toEqual([
       DL_Y1,
       DL_Y2,

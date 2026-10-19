@@ -33,7 +33,6 @@ import { resolve } from "node:path";
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
 
-import type { INestApplication } from "@nestjs/common";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import request from "supertest";
 
@@ -45,64 +44,32 @@ import {
   freshnessStores,
   readPostingFreshness,
 } from "../../../src/catalog/erpnext-sync-ops/posting-freshness.read";
-import {
-  applyAllUpAndCreateAppRole,
-  startPgEnv,
-  stopPgEnv,
-  type PgTestEnv,
-} from "../../_helpers/postgres-container";
 import { STORE_A_X, STORE_A_Y, STORE_B_X, TENANT_A, TENANT_B } from "../__support__/isolation-harness";
 import {
-  bootScopedApp,
   NON_EXISTENT,
   SES_ADMIN_SPEC,
   SES_OWNER_ALL,
   SES_OWNER_SPEC,
   SPECIFIC_SESSIONS,
-  seedReadStoreScope,
+  useScopedApp,
 } from "../erpnext-reconciliation/__support__/read-store-scope";
 import { SALE_A_X, SALE_A_Y, SALE_B_X, SALES_SOURCE_SYSTEM } from "../sales/__support__/seed-sales";
 
 const SUMMARY = "/api/v1/catalog/erpnext-sync-ops/summary";
 
-let env: PgTestEnv | null = null;
-let dockerSkipped = false;
-let app: INestApplication | null = null;
-
-beforeAll(async () => {
-  try {
-    env = await startPgEnv();
-    await applyAllUpAndCreateAppRole(env);
-    await seedReadStoreScope(env);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
-      dockerSkipped = true;
-      // eslint-disable-next-line no-console
-      console.warn(`\n[RT-565 posting-freshness] Docker NOT AVAILABLE: ${msg}\n`);
-      return;
-    }
-    throw new Error(`Container start failed: ${msg}`);
-  }
-  app = await bootScopedApp(env, ErpnextSyncOpsModule);
-}, 180_000);
-
-afterAll(async () => {
-  if (app) await app.close();
-  if (env) await stopPgEnv(env);
-}, 60_000);
+const scoped = useScopedApp("RT-565 posting-freshness", ErpnextSyncOpsModule);
+const skip = (): boolean => scoped.skip();
 
 beforeEach(async () => {
-  if (dockerSkipped) return;
+  if (skip()) return;
   // Every test owns tenant A's and tenant B's non-dead-letter rows.
-  await env!.admin.query(
+  await scoped.env().admin.query(
     `DELETE FROM erpnext_posting_status
       WHERE tenant_id = ANY($1::uuid[]) AND status IN ('pending', 'posted')`,
     [[TENANT_A, TENANT_B]],
   );
 });
 
-const skip = (): boolean => dockerSkipped;
 
 interface Freshness {
   lastPosted: { state: string; at: string | null };
@@ -117,7 +84,7 @@ interface SummaryBody {
 }
 
 function get(session: string, query: Record<string, string> = {}): request.Test {
-  return request(app!.getHttpServer()).get(SUMMARY).set("x-test-session", session).query(query);
+  return request(scoped.app().getHttpServer()).get(SUMMARY).set("x-test-session", session).query(query);
 }
 
 // Every 200 body is validated against the contract's SyncOpsSummary
@@ -150,7 +117,7 @@ async function intent(
 ): Promise<string> {
   const { tenantId, saleId } = SALE_OF[storeId]!;
   const id = randomUUID();
-  await env!.admin.query(
+  await scoped.env().admin.query(
     `INSERT INTO erpnext_posting_status
        (id, tenant_id, store_id, sale_id, kind, source_ref_id, source_system,
         external_id, payload_hash, status, document_ref, posted_at, created_at)
@@ -175,7 +142,7 @@ async function intent(
 }
 
 async function dbInstant(sql: string, params: unknown[] = []): Promise<string> {
-  const r = await env!.admin.query<{ t: Date }>(sql, params);
+  const r = await scoped.env().admin.query<{ t: Date }>(sql, params);
   return r.rows[0]!.t.toISOString();
 }
 
@@ -238,7 +205,7 @@ describe("RT-565 §2 — pending count and oldest pending (D2)", () => {
   it("a retried / re-headed row keeps its created_at age (updated_at and retry_count do not move it)", async () => {
     if (skip()) return;
     const id = await intent(STORE_A_X, "pending", { createdAgo: "3 hours" });
-    await env!.admin.query(
+    await scoped.env().admin.query(
       `UPDATE erpnext_posting_status SET retry_count = retry_count + 5, updated_at = now() WHERE id = $1`,
       [id],
     );
@@ -248,7 +215,7 @@ describe("RT-565 §2 — pending count and oldest pending (D2)", () => {
 
   it("a repaired dead letter (permanently_rejected → pending) re-enters with its original age", async () => {
     if (skip()) return;
-    const r = await env!.admin.query<{ id: string }>(
+    const r = await scoped.env().admin.query<{ id: string }>(
       `UPDATE erpnext_posting_status
           SET status = 'pending', rejection_category = NULL, updated_at = now(),
               created_at = now() - interval '1 day'
@@ -263,7 +230,7 @@ describe("RT-565 §2 — pending count and oldest pending (D2)", () => {
       expect(f.pendingCount).toBe(1);
       expect(f.oldestPendingAgeSeconds).toBeGreaterThanOrEqual(86_400);
     } finally {
-      await env!.admin.query(
+      await scoped.env().admin.query(
         `UPDATE erpnext_posting_status SET status = 'permanently_rejected', rejection_category = 'unmapped_item'
           WHERE id = $1`,
         [r.rows[0]!.id],
@@ -383,13 +350,13 @@ describe("RT-565 §5 — one statement, one snapshot, asOf after it (D6)", () =>
       const posted = await intent(STORE_A_X, "pending", { createdAgo: "1 hour" });
       // The summary's transaction starts first: its now() predates the writes below.
       const read = await runWithTenantContext(
-        env!.app,
+        scoped.env().app,
         { tenantId: TENANT_A, isPlatformAdmin: false },
         async (client) => {
           const txNow = (await client.query<{ t: Date }>(`SELECT now() AS t`)).rows[0]!.t;
           await new Promise((r) => setTimeout(r, 50));
           // Concurrent writers commit between BEGIN and the freshness statement.
-          await env!.admin.query(
+          await scoped.env().admin.query(
             `UPDATE erpnext_posting_status
                 SET status = 'posted', document_ref = 'SINV-rt565', posted_at = now(), updated_at = now()
               WHERE id = $1`,
@@ -429,7 +396,7 @@ describe("RT-565 §6 — roles and auth unchanged (D4)", () => {
   // dashboard guard's own specs.
   it("no session is rejected before any freshness is read", async () => {
     if (skip()) return;
-    const res = await request(app!.getHttpServer()).get(SUMMARY).expect(401);
+    const res = await request(scoped.app().getHttpServer()).get(SUMMARY).expect(401);
     expect(res.body).not.toHaveProperty("postingFreshness");
   });
 });

@@ -22,14 +22,13 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import type { PoolClient } from "pg";
-
 import {
   ensureAppRole,
   startPgEnv,
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { sqlStatements, withTenant } from "../_helpers/migration-sql";
 
 const DRIZZLE_DIR = resolve(__dirname, "..", "..", "drizzle");
 const FIRST_NAME = "0057_posting_status_posted_at_tenant_idx.sql";
@@ -130,21 +129,8 @@ async function seedPostings(
   );
 }
 
-async function asTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await pg().app.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query("SELECT set_config('app.current_tenant', $1, true)", [tenantId]);
-    await client.query("SELECT set_config('app.is_platform_admin', 'false', true)");
-    return await fn(client);
-  } finally {
-    await client.query("ROLLBACK");
-    client.release();
-  }
-}
-
 async function planOf(sql: string, params: unknown[] = []): Promise<string> {
-  return asTenant(TENANT, async (c) => {
+  return withTenant(pg().app, TENANT, async (c) => {
     await c.query("SET LOCAL enable_seqscan = off");
     const r = await c.query<{ "QUERY PLAN": unknown }>(`EXPLAIN (FORMAT JSON) ${sql}`, params);
     return JSON.stringify(r.rows[0]?.["QUERY PLAN"]);
@@ -214,11 +200,7 @@ describe("0057-0061 — single CONCURRENTLY statements", () => {
     "%s up and down are one statement with no transaction control",
     (id) => {
       for (const path of [up(id), down(id)]) {
-        const statements = read(path)
-          .replace(/--[^\n]*/g, "")
-          .split(";")
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0);
+        const statements = sqlStatements(path);
         expect(statements).toHaveLength(1);
         expect(statements[0]).toMatch(/\bCONCURRENTLY\b/);
         expect(statements[0]).not.toMatch(/\b(BEGIN|COMMIT)\b/i);
