@@ -200,7 +200,7 @@ the spec (below).
 | Option | |
 | --- | --- |
 | **(i) Conform the runtime to FR-051; the picker uses the default `status=active` (Recommended)** | Keeps the spec as written and fails closed. The picker needs no contract change: the list default `active` is exactly the set of valid targets. The runtime fix (add `is_active` to the target check in `reconciliation.service.ts:364-377`, mapping an inactive target to `target_unavailable`) is a **separate Implementation follow-up** (F6 = **RT-745**), outside RT-743. The server still answers `target_unavailable` if a product is retired or deactivated between pick and link. |
-| (ii) Amend FR-050(a) / FR-051 to allow inactive targets | Makes today's runtime correct. The picker would then need inactive products too: either `status=any` with retired rows disabled client-side, or a new `status=not_retired` filter (an additive `[GATED]` contract change). It changes link semantics, which needs explicit owner authorization (RT §9). |
+| (ii) Amend FR-050(a) / FR-051 to allow inactive targets (**not selected**) | Makes today's runtime correct. The picker would then need inactive products too: either `status=any` with retired rows disabled client-side, or a new `status=not_retired` filter (an additive `[GATED]` contract change). It changes link semantics, which needs explicit owner authorization (RT §9). |
 
 **Selected: (i), owner-approved 2026-10-19** (RT-743 Jira comment 12996). The runtime is conformed to FR-051 via
 follow-up **F6 = RT-745**; FR-050/051 are not amended. The picker uses the default `status=active` and does not offer inactive
@@ -265,13 +265,13 @@ GET /api/v1/catalog/products/{productId}
 **Only if the owner picks one of the additive options**, the delta is one `[GATED]` minor bump
 (`1.1.0-draft` → `1.2.0-draft`), non-breaking for the generated client:
 
-* D6 (ii) only: `ProductStatusFilter.enum += not_retired` (`retired_at IS NULL`, either `is_active`). It is a cursor-digest input like
-  every other filter value.
 * D4-B: `view` query parameter, `enum [full, compact]`, default `full`; `compact` omits `defaultPrice` and `storeView.effectivePrice`.
   Not recommended.
 * D3c-ii: `supplier_code` added to the identifier match list (description-only change plus runtime).
 
-No contract clarification about link-target status is proposed until the owner resolves the D6 spec/runtime conflict.
+No contract clarification about link-target status is needed. D6 is resolved (Selected (i)): the link's existing
+`target_unavailable` contract already describes a non-active target, and the picker uses the list's default
+`status=active`. The `not_retired` filter that option (ii) would have needed is dropped. The runtime work is RT-745.
 
 ## 5. Test plan
 
@@ -284,15 +284,14 @@ evidence, with no fix.
 Admin-Console picker (follow-up F1) must test:
 * identifier exact hit ranked first; leading-zero value matches only exactly;
 * Arabic name substring returns the expected product (and documents that hamza and ta-marbuta variants do **not** match, per D3d-i);
-* the picker offers only the targets the owner's D6 decision allows (`status=active` under D6 (i)); a `target_unavailable` race (product retired or deactivated after the pick) shows the contract copy;
+* the picker offers only active products (`status=active`, D6 Selected (i)); a `target_unavailable` race (product retired or deactivated after the pick) shows the contract copy;
 * paging follows `nextCursor` until `null`; a 400 on a stale cursor restarts the search;
 * 429 honours `Retry-After`; debounce keeps a normal typing burst under the budget;
 * 404 on get-one after a pick → "not available"; `store_staff` never sees the picker;
 * a platform-admin session (`is_platform_admin`) with no tenant membership role, or any role, sees the picker and the actions the API allows.
 
-**If an additive option is chosen** (D6 (ii) `not_retired` / D3c-ii): contract conformance for the new enum value or match type;
-a cursor-digest test (a cursor from `status=active` is a 400 under `not_retired`); isolation and scope tests repeated
-for the new filter; unit tests for the SQL predicate.
+**If an additive option is chosen** (D3c-ii `supplier_code`): contract conformance for the new match type; isolation and
+scope tests repeated for it; unit tests for the SQL predicate.
 
 **F6 / RT-745 (D6 (i), selected):** a link to an inactive product returns 409 `target_unavailable` and leaves the item `pending`; a link to an active product still succeeds; a retired product is still `target_unavailable`.
 
@@ -321,10 +320,10 @@ for the new filter; unit tests for the SQL predicate.
 
 | # | Proposed item | Mode | Repo | Gate | Depends on |
 | --- | --- | --- | --- | --- | --- |
-| F1 | Admin-Console: repin to `console-catalog.yaml` `1.1.0-draft` (if not already), build the product picker, deliver the `tenantAdminLinkUnknownItem` action and wire the RT-725 suggest action from the picker | Implementation | Admin-Console | PIN bump per its rules | Owner approval of D1/D6/D8 |
+| F1 | Admin-Console: repin to `console-catalog.yaml` `1.1.0-draft` (if not already), build the product picker, deliver the `tenantAdminLinkUnknownItem` action and wire the RT-725 suggest action from the picker | Implementation | Admin-Console | PIN bump per its rules | Owner approval of D1/D8 (D6 approved 2026-10-19) |
 | F2 | Backend-Core: Arabic-aware catalog name search (D3d ii/iii), covering the folding rules, contract text and any index | Planning | Backend-Core | later `[GATED]` contract (+ migration if iii) | Owner wants it |
 | F3 | Backend-Core: measure the console catalog list on a seeded large tenant **without throttling** (the limiter fails open), including concurrent scans; propose I-1/I-2 or a statement timeout if the unthrottled cost is not acceptable | Verification → Planning | Backend-Core | later `[GATED]` migration | none |
-| F4 | Backend-Core: `status=not_retired` (only under D6 (ii)) and/or `supplier_code` search (D3c-ii) | Implementation | Backend-Core | `[GATED]` contract | Only if the owner picks them |
+| F4 | Backend-Core: `supplier_code` search (D3c-ii) | Implementation | Backend-Core | `[GATED]` contract | Only if the owner picks it |
 | F5 | Admin-Console: RF-3 catalog screens on the existing reads + RT-738 writes | Implementation | Admin-Console | none beyond PIN | F1 (shared client) |
 | F6 = **RT-745** | Backend-Core: conform `tenantAdminLinkUnknownItem` to FR-051. An inactive target becomes 409 `target_unavailable` (`reconciliation.service.ts:364-377`) | Implementation | Backend-Core | none expected (no contract or migration change: `target_unavailable` already exists) | D6 (i) owner-approved 2026-10-19; created as RT-745 |
 
