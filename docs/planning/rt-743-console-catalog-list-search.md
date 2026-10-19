@@ -1,7 +1,7 @@
 # RT-743 — Console catalog list / search / get-one: decision record and contract proposal
 
 > **Status:** decision record (Work Mode: **Planning**, contract-first). Every decision below is
-> **Proposed, awaiting owner**. None is self-selected.
+> **Proposed, awaiting owner**, except **D6, Selected: (i), owner-approved 2026-10-19**. None is self-selected.
 > **Jira holds the live status.** This file records the 2026-10-19 planning pass and is not a status tracker.
 >
 > No production code, OpenAPI, migration, package or CI change. Any contract change in §4 is a **proposal**.
@@ -102,7 +102,9 @@ The name path is a scan of the tenant's products that pass the other filters, fo
 The list is classed `expensiveRead` (RT-619 / RT-574 D3), but that budget is **not yet a live control**:
 `CONSOLE_RATE_LIMIT_MODE` defaults to `off` when unset (`console-rate-limit.config.ts:14`, `:50-51`), and `report`
 mode lets over-budget requests through. Only `enforce` throttles, and switching any environment to it is RT-622
-(owner). Until then, nothing bounds how often the un-indexed name scan runs.
+(owner). Until then, nothing bounds how often the un-indexed name scan runs. Even in `enforce` the guard **fails
+open**: a limiter error, a limiter call over its timeout (250 ms default) or an open circuit breaker allows the request
+(`console-rate-limit.guard.ts:22-25`, `:186-210`). So the budget is never a hard database-side bound.
 
 ### 1.6 What the consumers need from it
 
@@ -112,7 +114,7 @@ mode lets over-budget requests through. Only `enforce` throttles, and switching 
   deleted "or any other non-active" target must fail closed with `target_unavailable`. Spec 007 (`spec.md:171`) and
   the controller docstring ("existing, active tenant product", `reconciliation.controller.ts:161`) say the same. The
   runtime checks only `retired_at` (`reconciliation/reconciliation.service.ts:364-377`), so it **accepts an inactive
-  target today**, against the spec. D6 depends on how the owner resolves this.
+  target today**, against the spec. The owner resolved this on 2026-10-19 (D6, **Selected: (i)**).
 * **ERPNext suggest** (`tenantAdminSuggestErpnextItemMapping`, RT-725). Roles owner / tenant_admin only
   (`erpnext-item-map.controller.ts:89`, `:105`).
 * **RF-3 catalog screens:** list, detail and the RT-738 write forms (the writes need `summary.updatedAt` and
@@ -122,7 +124,7 @@ mode lets over-budget requests through. Only `enforce` throttles, and switching 
 
 ## 2. Decisions
 
-Each decision lists the options and marks one **Recommended**. **Every decision is Proposed, awaiting owner.**
+Each decision lists the options and marks one **Recommended**. **Every decision is Proposed, awaiting owner, except D6 (Selected: (i), owner-approved 2026-10-19).**
 
 ### D1 — Surface: new operation(s) or the existing reads?
 
@@ -185,16 +187,18 @@ Roles: **mirror the existing reads**: `owner`, `tenant_admin`, `store_manager`; 
 The RT-725 suggest action is owner/tenant_admin; a store_manager can list but the console hides that action.
 That is console gating, not a contract change.
 
-Picker eligibility depends on a **spec/runtime conflict** (§1.6). The spec (FR-050(a) / FR-051) allows only an
-**active** target. The runtime refuses only **retired** targets and so accepts inactive ones. The owner decides which
-one is right; the picker filter follows from that.
+Picker eligibility depended on a **spec/runtime conflict** (§1.6). The spec (FR-050(a) / FR-051) allows only an
+**active** target. The runtime refuses only **retired** targets and so accepts inactive ones. The owner ruled for
+the spec (below).
 
 | Option | |
 | --- | --- |
 | **(i) Conform the runtime to FR-051; the picker uses the default `status=active` (Recommended)** | Keeps the spec as written and fails closed. The picker needs no contract change: the list default `active` is exactly the set of valid targets. The runtime fix (add `is_active` to the target check in `reconciliation.service.ts:364-377`, mapping an inactive target to `target_unavailable`) is a **separate Implementation follow-up** (F6), outside RT-743. The server still answers `target_unavailable` if a product is retired or deactivated between pick and link. |
 | (ii) Amend FR-050(a) / FR-051 to allow inactive targets | Makes today's runtime correct. The picker would then need inactive products too: either `status=any` with retired rows disabled client-side, or a new `status=not_retired` filter (an additive `[GATED]` contract change). It changes link semantics, which needs explicit owner authorization (RT §9). |
 
-**Proposed, awaiting owner.** Until the owner decides, F1 must not offer inactive products as link targets.
+**Selected: (i), owner-approved 2026-10-19** (RT-743 Jira comment 12996). The runtime is conformed to FR-051 via
+follow-up **F6**; FR-050/051 are not amended. The picker uses the default `status=active` and does not offer inactive
+products. The role part of D6 (mirror the existing reads) is unchanged and was covered by the same approval.
 
 ### D7 — Tenant isolation, RLS, non-disclosing 404
 
@@ -214,7 +218,7 @@ that fires per keystroke can spend that budget in well under a minute.
 
 | Option | |
 | --- | --- |
-| **A. Console-side: debounce (≥ 300 ms), cancel in-flight requests, start a name search at ≥ 2 characters (an identifier scan may search at 1), and handle 429 + `Retry-After` (Recommended)** | No server change. The 429 contract already exists (`TooManyRequests`, contract `:1415-1440`). This is client discipline only. The server budget protects nothing until `CONSOLE_RATE_LIMIT_MODE=enforce` is set (§1.5). Enforcement (RT-622) is therefore a **prerequisite** for relying on the no-index path in production, not an existing control. |
+| **A. Console-side: debounce (≥ 300 ms), cancel in-flight requests, start a name search at ≥ 2 characters (an identifier scan may search at 1), and handle 429 + `Retry-After` (Recommended)** | No server change. The 429 contract already exists (`TooManyRequests`, contract `:1415-1440`). This is client discipline only. The server budget protects nothing until `CONSOLE_RATE_LIMIT_MODE=enforce` is set (§1.5), and even then it fails open on a limiter error, timeout or open breaker. Enforcement (RT-622) is therefore **necessary but not sufficient**: relying on the no-index path in production also needs F3 to show the measured query stays acceptable **unthrottled** (e.g. with concurrent scans during a limiter outage), or a database-side bound (an I-1 / I-2 index, or a statement timeout on this read). |
 | B. Re-class the list to `cheapRead` | Drops the scan's budget class, the intended control for the un-indexed name scan (O-8) once enforcement is on. Not before D8 indexes exist. |
 | C. A separate picker budget class | Server config change for one consumer; premature. |
 
@@ -225,7 +229,8 @@ that fires per keystroke can spend that budget in well under a minute.
 | I-1 | `CREATE EXTENSION pg_trgm` + `GIN (name gin_trgm_ops)` on `tenant_products` (tenant-leading via a composite `btree_gin`, or a partial per status) | name substring `ILIKE '%q%'` | Only if `EXPLAIN (ANALYZE)` on a seeded large tenant shows the scan is too slow. Extension creation is an infra/ops decision as well as a migration. If D3d (ii)/(iii) is chosen, the index must be on the **normalized** expression or column instead. |
 | I-2 | `btree (tenant_id, name, id) WHERE retired_at IS NULL` | the no-`q` list path `ORDER BY name, id` with keyset | Only if the unfiltered list is measured as slow; `match_rank` is constant 0 without `q`, so this index can serve the keyset seek. |
 
-**Recommended:** no index in RT-743. Record I-1 and I-2 as candidates gated on measurement (F3). Volume is NOT VERIFIED.
+**Recommended:** no index in RT-743. Record I-1 and I-2 as candidates gated on measurement (F3). F3 measures the scan
+as if unthrottled, because the limiter fails open (§1.5). Volume is NOT VERIFIED.
 **Proposed, awaiting owner.**
 
 ---
@@ -294,7 +299,8 @@ for the new filter; unit tests for the SQL predicate.
 * **Link target status: spec/runtime conflict (D6).** FR-050(a) / FR-051 require an active target, but the runtime accepts an
   inactive one (`reconciliation.service.ts:364-377` checks only `retired_at`). Owner decision required; see D6 and F6.
 * **Name search is an un-indexed scan (O-8)**, and it is unthrottled today: the `expensiveRead` budget only applies once
-  `CONSOLE_RATE_LIMIT_MODE=enforce` (default `off`; RT-622). Volume is NOT VERIFIED.
+  `CONSOLE_RATE_LIMIT_MODE=enforce` (default `off`; RT-622), and even then it fails open when the limiter is unavailable
+  (`console-rate-limit.guard.ts:22-25`, `:186-210`). There is no database-side bound. Volume is NOT VERIFIED.
 * **No "products this store sells" filter (D5-B).** `store_id` annotates rows; it does not filter them.
 * **`supplier_code` is not searchable.**
 * **Admin-Console not inspected:** whether its `contracts/backend-core/PIN` already includes `console-catalog.yaml`
@@ -308,15 +314,15 @@ for the new filter; unit tests for the SQL predicate.
 | --- | --- | --- | --- | --- | --- |
 | F1 | Admin-Console: repin to `console-catalog.yaml` `1.1.0-draft` (if not already), build the product picker, deliver the `tenantAdminLinkUnknownItem` action and wire the RT-725 suggest action from the picker | Implementation | Admin-Console | PIN bump per its rules | Owner approval of D1/D6/D8 |
 | F2 | Backend-Core: Arabic-aware catalog name search (D3d ii/iii), covering the folding rules, contract text and any index | Planning | Backend-Core | later `[GATED]` contract (+ migration if iii) | Owner wants it |
-| F3 | Backend-Core: measure the console catalog list on a seeded large tenant; propose I-1/I-2 only if needed | Verification → Planning | Backend-Core | later `[GATED]` migration | none |
+| F3 | Backend-Core: measure the console catalog list on a seeded large tenant **without throttling** (the limiter fails open), including concurrent scans; propose I-1/I-2 or a statement timeout if the unthrottled cost is not acceptable | Verification → Planning | Backend-Core | later `[GATED]` migration | none |
 | F4 | Backend-Core: `status=not_retired` (only under D6 (ii)) and/or `supplier_code` search (D3c-ii) | Implementation | Backend-Core | `[GATED]` contract | Only if the owner picks them |
 | F5 | Admin-Console: RF-3 catalog screens on the existing reads + RT-738 writes | Implementation | Admin-Console | none beyond PIN | F1 (shared client) |
-| F6 | Backend-Core: conform `tenantAdminLinkUnknownItem` to FR-051. An inactive target becomes 409 `target_unavailable` (`reconciliation.service.ts:364-377`) | Implementation | Backend-Core | none expected (no contract or migration change: `target_unavailable` already exists) | Owner picks D6 (i) |
+| F6 | Backend-Core: conform `tenantAdminLinkUnknownItem` to FR-051. An inactive target becomes 409 `target_unavailable` (`reconciliation.service.ts:364-377`) | Implementation | Backend-Core | none expected (no contract or migration change: `target_unavailable` already exists) | D6 (i) owner-approved 2026-10-19; not yet created |
 
 RT-744 (sidebar ungate) is independent of this record. The link action itself is F1.
 
 ## 8. Next safe action
 
-The owner reviews D1–D8, confirms **D1-A (no new contract)**, and resolves the **D6 spec/runtime conflict**: (i) conform the
-runtime to FR-051 (F6) or (ii) amend FR-050/051.
+D6 is settled (Selected: (i), 2026-10-19). The owner reviews the remaining decisions (D1–D5, D7, D8) and confirms
+**D1-A (no new contract)**. The coordinator creates F6 (runtime conformance to FR-051).
 On D1-A, RT-743 needs no `[GATED]` contract PR, and the next work item is F1 in Admin-Console.
