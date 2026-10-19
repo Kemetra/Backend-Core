@@ -116,10 +116,12 @@ describe("021-US1 — unmapped-product backlog read-projection", () => {
     const suggested = page.items.find((i) => i.tenantProductId === PRODUCT_A_SUGGESTED);
     expect(suggested?.mismatchClass).toBe("suggestion_unconfirmed");
     expect(suggested?.suggestionMappingId).toBe(MAP_A_SUGGESTED);
+    expect(suggested?.suggestionMappingVersion).toBe(1);
     // the no-mapping product IS, classified unmapped_dp2_product.
     const unmapped = page.items.find((i) => i.tenantProductId === PRODUCT_A_UNMAPPED);
     expect(unmapped?.mismatchClass).toBe("unmapped_dp2_product");
     expect(unmapped?.suggestionMappingId).toBeNull();
+    expect(unmapped?.suggestionMappingVersion).toBeNull();
   });
 
   it("is cross-tenant non-disclosing (tenant B never sees tenant A products)", async () => {
@@ -419,5 +421,125 @@ describe("021-US2 — repair via the 013 lifecycle", () => {
         resultId: "0f000000-0000-7000-8000-0000000000a1",
       }),
     ).rejects.toThrow();
+  });
+});
+
+describe("RT-733 — the current 013 mapping version is exposed for confirm / re_point", () => {
+  const PROD_V = "0a000000-0000-7000-8000-00000d0733a1";
+  const MAP_V = "0a000000-0000-7000-8000-00000d0733a2";
+  const PROD_N = "0a000000-0000-7000-8000-00000d0733a3";
+  const RUN_V = "0a000000-0000-7000-8000-00000d0733a4";
+  const RES_V = "0a000000-0000-7000-8000-00000d0733a5";
+  const RES_N = "0a000000-0000-7000-8000-00000d0733a6";
+  const RES_E = "0a000000-0000-7000-8000-00000d0733a7";
+
+  beforeAll(async () => {
+    if (skip) return;
+    await env!.admin.query(
+      `INSERT INTO tenant_products (id, tenant_id, name, tax_category, created_by, updated_by)
+       VALUES ($1, $2, 'RT-733 Versioned', 'standard', $3, $3),
+              ($4, $2, 'RT-733 No Mapping', 'standard', $3, $3)
+       ON CONFLICT DO NOTHING`,
+      [PROD_V, TENANT_A, ACTOR_A, PROD_N],
+    );
+    // A suggested mapping already past version 1, so the exposed value is the
+    // row's real version, not a default.
+    await env!.admin.query(
+      `INSERT INTO erpnext_item_map
+         (id, tenant_id, tenant_product_id, erpnext_item_ref, state, suggestion_source, suggested_by, version)
+       VALUES ($1, $2, $3, 'ERP-733-V', 'suggested', 'manual', $4, 3) ON CONFLICT DO NOTHING`,
+      [MAP_V, TENANT_A, PROD_V, ACTOR_A],
+    );
+    await env!.admin.query(
+      `INSERT INTO erpnext_product_reconciliation_run
+         (id, tenant_id, trigger, status, erpnext_view_status, finished_at, actor_user_id)
+       VALUES ($1, $2, 'on_demand', 'completed', 'available', now(), $3) ON CONFLICT DO NOTHING`,
+      [RUN_V, TENANT_A, ACTOR_A],
+    );
+    await env!.admin.query(
+      `INSERT INTO erpnext_product_reconciliation_result
+         (id, run_id, tenant_id, mismatch_class, tenant_product_id, erpnext_item_ref, result_state)
+       VALUES ($1, $4, $5, 'suggestion_unconfirmed', $6, NULL, 'open'),
+              ($2, $4, $5, 'unmapped_dp2_product', $7, NULL, 'open'),
+              ($3, $4, $5, 'unmapped_erpnext_item', NULL, 'ERP-733-ONLY', 'open')
+       ON CONFLICT DO NOTHING`,
+      [RES_V, RES_N, RES_E, RUN_V, TENANT_A, PROD_V, PROD_N],
+    );
+  });
+
+  async function exposedBacklogVersion(): Promise<number | null | undefined> {
+    const page = await svc.listBacklog({ tenantId: TENANT_A, cursor: null, limit: 500 });
+    return page.items.find((i) => i.tenantProductId === PROD_V)?.suggestionMappingVersion;
+  }
+
+  it("the backlog carries the suggestion row's current version; null without a mapping", async () => {
+    if (skip) return;
+    const page = await svc.listBacklog({ tenantId: TENANT_A, cursor: null, limit: 500 });
+    const v = page.items.find((i) => i.tenantProductId === PROD_V);
+    expect(v?.suggestionMappingId).toBe(MAP_V);
+    expect(v?.suggestionMappingVersion).toBe(3);
+    const n = page.items.find((i) => i.tenantProductId === PROD_N);
+    expect(n?.suggestionMappingId).toBeNull();
+    expect(n?.suggestionMappingVersion).toBeNull();
+  });
+
+  it("run results carry the active mapping id + version; null without a mapping or product", async () => {
+    if (skip) return;
+    const page = await svc.listResults({ tenantId: TENANT_A, runId: RUN_V, cursor: null, limit: 100 });
+    const byId = new Map(page.items.map((i) => [i.id, i]));
+    expect(byId.get(RES_V)).toMatchObject({ mappingId: MAP_V, mappingVersion: 3 });
+    expect(byId.get(RES_N)).toMatchObject({ mappingId: null, mappingVersion: null });
+    expect(byId.get(RES_E)).toMatchObject({ mappingId: null, mappingVersion: null });
+  });
+
+  it("an exposed version that went stale is still a conflict; the fresh one maps", async () => {
+    if (skip) return;
+    const stale = await exposedBacklogVersion();
+    expect(stale).toBe(3);
+    // A concurrent 013 write moves the version after the client read it.
+    await env!.admin.query(
+      `UPDATE erpnext_item_map SET version = version + 1 WHERE id = $1`,
+      [MAP_V],
+    );
+    await expect(
+      svc.repairBacklogItem({
+        tenantId: TENANT_A,
+        actorUserId: ACTOR_A,
+        repairKind: "confirm",
+        tenantProductId: PROD_V,
+        mappingId: MAP_V,
+        version: stale!,
+      }),
+    ).rejects.toBeInstanceOf(RepairConflictError);
+
+    const fresh = await exposedBacklogVersion();
+    expect(fresh).toBe(4);
+    const ok = await svc.repairBacklogItem({
+      tenantId: TENANT_A,
+      actorUserId: ACTOR_A,
+      repairKind: "confirm",
+      tenantProductId: PROD_V,
+      mappingId: MAP_V,
+      version: fresh!,
+    });
+    expect(ok.repair.outcome).toBe("mapped");
+    expect(ok.repair.resolvedItemMapId).toBe(MAP_V);
+
+    // The result read follows the live 013 row: the confirm bumped the version.
+    const page = await svc.listResults({ tenantId: TENANT_A, runId: RUN_V, cursor: null, limit: 100 });
+    expect(page.items.find((i) => i.id === RES_V)).toMatchObject({ mappingId: MAP_V, mappingVersion: 5 });
+
+    // FR-011 is unchanged: once the row is confirmed-and-active, a confirm with
+    // an older version is the idempotent no_op_echo, not a conflict.
+    const echo = await svc.repairBacklogItem({
+      tenantId: TENANT_A,
+      actorUserId: ACTOR_A,
+      repairKind: "confirm",
+      tenantProductId: PROD_V,
+      mappingId: MAP_V,
+      version: stale!,
+    });
+    expect(echo.repair.outcome).toBe("no_op_echo");
+    expect(echo.repair.resolvedItemMapId).toBe(MAP_V);
   });
 });

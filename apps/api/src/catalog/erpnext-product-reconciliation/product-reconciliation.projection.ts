@@ -17,6 +17,8 @@ export interface BacklogItem {
   readonly tenantProductId: string;
   readonly mismatchClass: BacklogMismatchClass;
   readonly suggestionMappingId: string | null;
+  /** RT-733: the suggestion row's current 013 `version` (the repair guard). */
+  readonly suggestionMappingVersion: number | null;
   readonly suggestionSource: string | null;
   readonly suggestedBy: string | null;
   readonly suggestedAt: string | null;
@@ -28,6 +30,7 @@ export interface BacklogItem {
 export interface BacklogDbRow {
   readonly tenant_product_id: string;
   readonly suggestion_mapping_id: string | null;
+  readonly suggestion_mapping_version: number | null;
   readonly suggestion_source: string | null;
   readonly suggested_by: string | null;
   readonly suggested_at: Date | null;
@@ -48,6 +51,7 @@ export function toBacklogItem(r: BacklogDbRow, observedAt: Date): BacklogItem {
     tenantProductId: r.tenant_product_id,
     mismatchClass,
     suggestionMappingId: r.suggestion_mapping_id,
+    suggestionMappingVersion: r.suggestion_mapping_version,
     suggestionSource: r.suggestion_source,
     suggestedBy: r.suggested_by,
     suggestedAt: r.suggested_at ? r.suggested_at.toISOString() : null,
@@ -110,6 +114,9 @@ export interface ProductReconciliationResultBody {
   readonly erpnextItemRef: string | null;
   readonly resultState: "open" | "repaired" | "accepted";
   readonly detail: Record<string, unknown> | null;
+  /** RT-733: the product's current ACTIVE 013 mapping id + `version` (null when none). */
+  readonly mappingId: string | null;
+  readonly mappingVersion: number | null;
 }
 
 export interface ResultDbRow {
@@ -120,9 +127,16 @@ export interface ResultDbRow {
   erpnext_item_ref: string | null;
   result_state: "open" | "repaired" | "accepted";
   detail: Record<string, unknown> | null;
+  mapping_id: string | null;
+  mapping_version: number | null;
 }
 
-export const RESULT_COLS = `id, run_id, mismatch_class, tenant_product_id, erpnext_item_ref, result_state, detail`;
+/**
+ * Result columns, qualified on the `res` alias, plus the product's current
+ * ACTIVE 013 mapping (`m`, at most one per product by the 013 1:1 partial
+ * unique index) — read live in the same query (RT-733, no N+1).
+ */
+export const RESULT_COLS = `res.id, res.run_id, res.mismatch_class, res.tenant_product_id, res.erpnext_item_ref, res.result_state, res.detail, m.id AS mapping_id, m.version AS mapping_version`;
 
 export function toResultBody(r: ResultDbRow): ProductReconciliationResultBody {
   return {
@@ -133,6 +147,8 @@ export function toResultBody(r: ResultDbRow): ProductReconciliationResultBody {
     erpnextItemRef: r.erpnext_item_ref,
     resultState: r.result_state,
     detail: r.detail,
+    mappingId: r.mapping_id,
+    mappingVersion: r.mapping_version,
   };
 }
 

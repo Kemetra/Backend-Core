@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Catalog — ERPNext Product-Master Reconciliation API
-  version: "1.1.0-draft"
+  version: "1.2.0-draft"
   description: >
     Spec 021 (product-master-reconciliation-v1) — the tenant-admin product-master
     reconciliation surface (run → report → repair) over the 013 `erpnext_item_map`
@@ -59,6 +59,17 @@ info:
     **1.1.0-draft (RT-620, additive).** Every cookieAuth operation may
     return 429 `rate_limited` (`TooManyRequests`, with `Retry-After`)
     from the console rate limit (RT-574, RT-619). No other wire change.
+
+
+    **1.2.0-draft (RT-733, additive).** `BacklogItem.suggestionMappingVersion`
+    and `ProductReconciliationResult.mappingId` / `mappingVersion` expose the
+    current 013 mapping `version`, so a client can issue `repairProductMapping`
+    `confirm` / `re_point` with the `mappingId` + `version` it requires. Both are
+    optional and nullable (null when no mapping applies), read live from the 013
+    row on each request. No request or repair-semantics change: a stale
+    `version` is still a `409` `conflict`, except that a confirm / re_point
+    of a mapping that is by then confirmed-and-active stays the idempotent
+    `no_op_echo` (FR-011), whatever `version` was sent.
 
 servers:
   - url: https://api.example.com
@@ -464,6 +475,16 @@ components:
           type: [string, "null"]
           format: uuid
           description: The inert 013 suggestion row id (for `suggestion_unconfirmed`).
+        suggestionMappingVersion:
+          type: [integer, "null"]
+          minimum: 1
+          description: >
+            RT-733 (additive). The current 013 `version` of the
+            `suggestionMappingId` row, read live; null when that id is null. Pass
+            it as `version` on a `confirm` / `re_point` repair. A value that has
+            gone stale by the time of the repair is a `409` `conflict`, unless
+            the row is by then confirmed-and-active, which is the idempotent
+            `no_op_echo` (FR-011).
         suggestionSource:
           type: [string, "null"]
           description: 013 suggestion provenance (`manual` in v1).
@@ -595,6 +616,23 @@ components:
           type: [object, "null"]
           additionalProperties: true
           description: Operator-facing attribute / drift values (never PII/money in labels).
+        mappingId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            RT-733 (additive). The product's current ACTIVE (not retired) 013
+            `erpnext_item_map` row id, suggested or confirmed, read live when the
+            report is fetched (not when the run ran); null when `tenantProductId`
+            is null or the product has no active mapping.
+        mappingVersion:
+          type: [integer, "null"]
+          minimum: 1
+          description: >
+            RT-733 (additive). The current 013 `version` of the `mappingId` row;
+            null when `mappingId` is null. Pass it as `version` on a `confirm` /
+            `re_point` repair. A value that has gone stale by the time of the
+            repair is a `409` `conflict`, unless the row is by then
+            confirmed-and-active, which is the idempotent `no_op_echo` (FR-011).
 
     ResultPage:
       type: object
