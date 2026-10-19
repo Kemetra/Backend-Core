@@ -64,7 +64,7 @@ const MEMBERS = [
 ] as const;
 
 export async function seedAiHttpFixture(env: PgTestEnv): Promise<void> {
-  await restrictAiGrants(env.admin, "app_test");
+  await restrictAiGrants(env.admin);
   await seedCatalog(env.admin);
   await seedPlatformAdmin(env.admin);
   await seedTenants(env.admin);

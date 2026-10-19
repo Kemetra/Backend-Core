@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 
 import type { ResolvedContext, StoreAccess } from "../../../src/context/types";
-import { applyAllUpAndCreateAppRole, startPgEnv, stopPgEnv, type PgTestEnv } from "../../_helpers/postgres-container";
+import { APP_ROLE_NAME, applyAllUpAndCreateAppRole, startPgEnv, stopPgEnv, type PgTestEnv } from "../../_helpers/postgres-container";
 
 export const AI_TABLE_GRANTS: ReadonlyArray<readonly [string, string]> = [
   ["ai_plan_catalog", "SELECT"],
@@ -43,16 +43,18 @@ export const BRIEFING_LIMIT = 3;
 
 export const PLATFORM_ADMIN = "0a000000-0000-7000-8000-0000066400a1";
 
-export async function restrictAiGrants(admin: Pool, role: string): Promise<void> {
+/** Gives the `app_test` runtime role exactly the RT-664 grants on the 0055 tables. */
+export async function restrictAiGrants(admin: Pool): Promise<void> {
   for (const [table, privileges] of AI_TABLE_GRANTS) {
-    await admin.query(`REVOKE ALL ON ${table} FROM ${role}`);
-    await admin.query(`GRANT ${privileges} ON ${table} TO ${role}`);
+    await admin.query(`REVOKE ALL ON ${table} FROM ${APP_ROLE_NAME}`);
+    await admin.query(`GRANT ${privileges} ON ${table} TO ${APP_ROLE_NAME}`);
   }
 }
 
 type Meter = { meter: string; window: "day" | "month"; scope: "tenant" | "store"; limit: number };
 
-async function seedPlan(admin: Pool, planCode: string, features: Record<string, readonly Meter[]>): Promise<void> {
+async function seedPlan(admin: Pool, plan: { readonly planCode: string; readonly features: Record<string, readonly Meter[]> }): Promise<void> {
+  const { planCode, features } = plan;
   const client = await admin.connect();
   try {
     await client.query("BEGIN");
@@ -80,7 +82,7 @@ async function seedPlan(admin: Pool, planCode: string, features: Record<string, 
 export async function seedCatalog(admin: Pool): Promise<void> {
   const briefing: Meter = { meter: "briefings", window: "day", scope: "store", limit: BRIEFING_LIMIT };
   const ask: Meter = { meter: "ask_requests", window: "month", scope: "tenant", limit: ASK_LIMIT };
-  await seedPlan(admin, "ai_assist", {
+  await seedPlan(admin, { planCode: "ai_assist", features: {
     [F_BRIEFING]: [briefing],
     [F_ASK]: [ask],
     [F_TWO_METERS]: [
@@ -88,11 +90,11 @@ export async function seedCatalog(admin: Pool): Promise<void> {
       { meter: "explain_b", window: "day", scope: "tenant", limit: 5 },
     ],
     [F_NO_METER]: [],
-  });
-  await seedPlan(admin, "ai_ops", {
+  } });
+  await seedPlan(admin, { planCode: "ai_ops", features: {
     [F_ASK]: [ask],
     [F_DOCTOR]: [{ meter: "doctor_runs", window: "month", scope: "tenant", limit: 2 }],
-  });
+  } });
 }
 
 export async function seedPlatformAdmin(admin: Pool): Promise<void> {
@@ -149,7 +151,7 @@ export async function startAiDb(label: string): Promise<PgTestEnv | null> {
   try {
     const env = await startPgEnv();
     await applyAllUpAndCreateAppRole(env);
-    await restrictAiGrants(env.admin, "app_test");
+    await restrictAiGrants(env.admin);
     await seedCatalog(env.admin);
     await seedPlatformAdmin(env.admin);
     return env;

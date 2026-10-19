@@ -157,7 +157,7 @@ describe("before the owner-gated grants are applied", () => {
       expect(await run(gw, t)).toMatchObject({ kind: "fallback", reason: "entitlement_unavailable", providerRequested: false });
       expect(provider.calls).toHaveLength(0);
     } finally {
-      await restrictAiGrants(env!.admin, "app_test");
+      await restrictAiGrants(env!.admin);
     }
     expect(await ledgerKinds(env!.admin, t.tenantId)).toEqual([]);
   });

@@ -199,7 +199,7 @@ describe("GET roles and isolation (D-6, T7, T9)", () => {
       expectError(await h.get(view(TENANT_A), SES_OWNER), 503, "entitlement_unavailable");
       expectError(await put(optOut(TENANT_A, F_ASK), SES_OWNER, { expectedOptOutVersion: 0, optedOut: true, reason: "x" }), 503, "entitlement_unavailable");
     } finally {
-      await restrictAiGrants(admin, "app_test");
+      await restrictAiGrants(admin);
     }
     expect(await auditCount()).toBe(0);
   });
