@@ -270,13 +270,20 @@ const LEDGER_COLUMNS = [
   "output_schema_version", "provider_key", "model_id", "evidence_ref_ids", "input_tokens",
   "output_tokens", "cached_input_tokens", "token_count_source", "list_equivalent_cost_micros",
   "cost_currency", "cost_rate_card_version", "outcome", "provider_request_id",
+  "adjusts_entry_id", "adjustment_reason",
 ] as const;
+
+/** An `adjusted` row's defaults: a platform admin's reasoned credit, no telemetry. */
+const ADJUSTED_DEFAULTS: Record<string, unknown> = {
+  actor_user_id: PLATFORM_ADMIN,
+  adjustment_reason: "Dispute 42: duplicate briefing credited back",
+};
 
 async function insertLedger(input: LedgerInput, client: Queryable = pg().admin): Promise<string> {
   const id = randomUUID();
   const kind = input.kind ?? "reserved";
   const reserved = kind === "reserved";
-  const defaults: Record<string, unknown> = reserved
+  const defaults: Record<string, unknown> = kind === "adjusted" ? ADJUSTED_DEFAULTS : reserved
     ? {
         idempotency_key: `idem-${id}`,
         expires_at: "2026-10-19T10:05:00Z",
@@ -709,6 +716,80 @@ describe("0055 — ai_usage_ledger (one append-only usage store, AI-09 run metad
     await expectCode(insertLedger({ counterId: counterA, opt_out_version: 99 }), "23503");
     const counterB = await insertCounter({ tenant: TENANT_B, meter: "ai.b.requests" });
     await expectCode(insertLedger({ counterId: counterB }), "23503");
+  });
+
+  it("records a platform admin's compensating `adjusted` row against a committed row (T20)", async () => {
+    if (skip()) return;
+    const reservation = await insertLedger({ counterId: counterA, units: 3 });
+    const commit = await insertLedger({ kind: "committed", reservationId: reservation, counterId: counterA, units: 3 });
+    await asTenant(TENANT_A, async (c) => {
+      // A partial credit: its own units, the original's feature, counter and version.
+      await insertLedger({ kind: "adjusted", counterId: counterA, units: 1, adjusts_entry_id: commit }, c);
+      await insertLedger({ kind: "adjusted", counterId: counterA, units: 2, adjusts_entry_id: commit }, c);
+    }, true);
+  });
+
+  it("never lets a tenant session write an `adjusted` row (42501)", async () => {
+    if (skip()) return;
+    const reservation = await insertLedger({ counterId: counterA });
+    const commit = await insertLedger({ kind: "committed", reservationId: reservation, counterId: counterA });
+    await asTenant(TENANT_A, async (c) => {
+      await expectCode(
+        insertLedger({ kind: "adjusted", counterId: counterA, adjusts_entry_id: commit, actor_user_id: OWNER_A }, c),
+        "42501",
+      );
+    });
+  });
+
+  it("isolates `adjusted` rows by tenant, the platform-admin GUC included", async () => {
+    if (skip()) return;
+    const counterB = await insertCounter({ tenant: TENANT_B, meter: "ai.b.adjusted" });
+    const reservationB = await insertLedger({ tenant: TENANT_B, counterId: counterB });
+    const commitB = await insertLedger({
+      tenant: TENANT_B, kind: "committed", reservationId: reservationB, counterId: counterB,
+    });
+    const adjustedB = await insertLedger({ tenant: TENANT_B, kind: "adjusted", counterId: counterB, adjusts_entry_id: commitB });
+    await asTenant(TENANT_A, async (c) => {
+      expect((await c.query(`SELECT 1 FROM ${LEDGER} WHERE id = $1`, [adjustedB])).rowCount).toBe(0);
+      // Refused before WITH CHECK: under tenant A's RLS the guard cannot see
+      // tenant B's committed row, so it reads as unknown (non-disclosing 23503).
+      await expectCode(
+        insertLedger({ tenant: TENANT_B, kind: "adjusted", counterId: counterB, adjusts_entry_id: commitB }, c),
+        "23503",
+      );
+    }, true);
+  });
+
+  it("checks the `adjusted` shape and its reference (23514 / 23503)", async () => {
+    if (skip()) return;
+    const reservation = await insertLedger({ counterId: counterA });
+    const commit = await insertLedger({ kind: "committed", reservationId: reservation, counterId: counterA });
+    const adj = { kind: "adjusted", counterId: counterA, adjusts_entry_id: commit };
+    // Only a committed row (a charge) is compensated.
+    await expectCode(insertLedger({ ...adj, adjusts_entry_id: reservation }), "23514");
+    const released = await insertLedger({ counterId: counterA });
+    const release = await insertLedger({ kind: "released", reservationId: released, counterId: counterA });
+    await expectCode(insertLedger({ ...adj, adjusts_entry_id: release }), "23514");
+    await expectCode(insertLedger({ ...adj, adjusts_entry_id: randomUUID() }), "23503");
+    // Pinned to the original's feature, counter and entitlement version.
+    await expectCode(insertLedger({ ...adj, feature: "ai.briefing.daily" }), "23503");
+    await expectCode(insertLedger({ ...adj, counterId: await insertCounter() }), "23503");
+    // A reason and an actor; no outcome, provider usage or cost.
+    await expectCode(insertLedger({ ...adj, adjustment_reason: null }), "23514");
+    await expectCode(insertLedger({ ...adj, adjustment_reason: "" }), "23514");
+    await expectCode(insertLedger({ ...adj, actor_user_id: null }), "23514");
+    await expectCode(insertLedger({ ...adj, outcome: "ok" }), "23514");
+    await expectCode(insertLedger({ ...adj, input_tokens: 1, token_count_source: "reported" }), "23514");
+    await expectCode(
+      insertLedger({ ...adj, list_equivalent_cost_micros: 1, cost_currency: "USD", cost_rate_card_version: "rc" }),
+      "23514",
+    );
+    await expectCode(insertLedger({ ...adj, idempotency_key: "idem-key-adjusted-01" }), "23514");
+    await expectCode(insertLedger({ ...adj, reservationId: reservation }), "23514");
+    // Adjustment fields belong to `adjusted` rows only.
+    await expectCode(insertLedger({ counterId: counterA, adjustment_reason: "x" }), "23514");
+    await expectCode(insertLedger({ counterId: counterA, adjusts_entry_id: commit }), "23514");
+    await insertLedger(adj);
   });
 
   it("is append-only for every role (42501)", async () => {

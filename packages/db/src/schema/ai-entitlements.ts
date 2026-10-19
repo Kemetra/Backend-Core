@@ -19,7 +19,9 @@
  *   window); only `used` / `reserved` move. The limit is not stored here.
  * - `ai_usage_ledger`: THE single append-only AI usage store — `reserved`,
  *   then at most one `committed` (outcome `ok`) or `released` (any other
- *   outcome, never charged) per reservation, with the AI-09 run metadata.
+ *   outcome, never charged) per reservation, with the AI-09 run metadata;
+ *   a platform admin's compensating `adjusted` row against a committed row
+ *   settles a dispute (T20).
  *   No prompt, completion or price column.
  *
  * Every table is RLS-forced. The ledger's text-length CHECK, the policies
@@ -350,9 +352,9 @@ export const aiUsageLedger = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "restrict" }),
-    /** A `reserved` row's own id; a terminal row's reservation. */
+    /** A `reserved` / `adjusted` row's own id; a terminal row's reservation. */
     reservationId: uuid("reservation_id").notNull(),
-    /** `reserved` | `committed` | `released`. */
+    /** `reserved` | `committed` | `released` | `adjusted` (platform-admin compensation). */
     entryKind: text("entry_kind").notNull(),
     featureId: text("feature_id").notNull(),
     counterId: uuid("counter_id").notNull(),
@@ -382,6 +384,9 @@ export const aiUsageLedger = pgTable(
     costRateCardVersion: text("cost_rate_card_version"),
     outcome: text("outcome").$type<AiUsageOutcome>(),
     providerRequestId: text("provider_request_id"),
+    /** `adjusted` rows only: the committed row compensated (T20). */
+    adjustsEntryId: uuid("adjusts_entry_id"),
+    adjustmentReason: text("adjustment_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -393,6 +398,36 @@ export const aiUsageLedger = pgTable(
       t.units,
       t.entitlementVersion,
     ),
+    unique("uq_ai_usage_ledger_adjustment_target").on(
+      t.id,
+      t.tenantId,
+      t.featureId,
+      t.counterId,
+      t.entitlementVersion,
+    ),
+    foreignKey({
+      name: "fk_ai_usage_ledger_adjusts",
+      columns: [t.adjustsEntryId, t.tenantId, t.featureId, t.counterId, t.entitlementVersion],
+      foreignColumns: [t.id, t.tenantId, t.featureId, t.counterId, t.entitlementVersion],
+    }).onDelete("restrict"),
+    check(
+      "ai_usage_ledger_adjustment_shape",
+      sql`(${t.entryKind} = 'adjusted' AND ${t.adjustsEntryId} IS NOT NULL
+          AND ${t.adjustmentReason} IS NOT NULL AND ${t.actorUserId} IS NOT NULL
+          AND ${t.outcome} IS NULL AND ${t.inputTokens} IS NULL AND ${t.outputTokens} IS NULL
+          AND ${t.cachedInputTokens} IS NULL AND ${t.tokenCountSource} IS NULL
+          AND ${t.listEquivalentCostMicros} IS NULL AND ${t.costCurrency} IS NULL
+          AND ${t.costRateCardVersion} IS NULL AND ${t.providerRequestId} IS NULL)
+        OR (${t.entryKind} <> 'adjusted' AND ${t.adjustsEntryId} IS NULL
+          AND ${t.adjustmentReason} IS NULL)`,
+    ),
+    check(
+      "ai_usage_ledger_adjustment_reason_length",
+      sql`${t.adjustmentReason} IS NULL OR char_length(${t.adjustmentReason}) BETWEEN 1 AND 500`,
+    ),
+    index("idx_ai_usage_ledger_adjusts")
+      .on(t.adjustsEntryId)
+      .where(sql`${t.adjustsEntryId} IS NOT NULL`),
     unique("uq_ai_usage_ledger_idempotency").on(t.tenantId, t.featureId, t.idempotencyKey),
     foreignKey({
       name: "fk_ai_usage_ledger_reservation",
@@ -416,15 +451,15 @@ export const aiUsageLedger = pgTable(
     }).onDelete("restrict"),
     check(
       "ai_usage_ledger_entry_kind_valid",
-      sql`${t.entryKind} IN ('reserved', 'committed', 'released')`,
+      sql`${t.entryKind} IN ('reserved', 'committed', 'released', 'adjusted')`,
     ),
     check(
       "ai_usage_ledger_reservation_self",
-      sql`(${t.entryKind} = 'reserved') = (${t.reservationId} = ${t.id})`,
+      sql`(${t.entryKind} IN ('reserved', 'adjusted')) = (${t.reservationId} = ${t.id})`,
     ),
     check(
       "ai_usage_ledger_outcome_by_kind",
-      sql`${t.entryKind} = 'reserved'
+      sql`${t.entryKind} IN ('reserved', 'adjusted')
         OR (${t.entryKind} = 'committed' AND ${t.outcome} IS NOT NULL AND ${t.outcome} = 'ok')
         OR (${t.entryKind} = 'released' AND ${t.outcome} IS NOT NULL AND ${t.outcome} <> 'ok')`,
     ),
@@ -496,7 +531,7 @@ export const aiUsageLedger = pgTable(
     ),
     uniqueIndex("uq_ai_usage_ledger_one_terminal")
       .on(t.reservationId)
-      .where(sql`${t.entryKind} <> 'reserved'`),
+      .where(sql`${t.entryKind} IN ('committed', 'released')`),
     index("idx_ai_usage_ledger_reserved_expiry")
       .on(t.tenantId, t.expiresAt)
       .where(sql`${t.entryKind} = 'reserved'`),

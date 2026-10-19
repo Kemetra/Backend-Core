@@ -57,6 +57,12 @@
 --      tenant, feature, counter, units and entitlement_version by a
 --      composite FK. `committed` exactly for outcome `ok`; every other
 --      outcome is a release and is never charged to the customer (D-8, T10).
+--      A dispute is settled by a compensating `adjusted` row (RT-644 §4.7,
+--      T20): it names the committed row it compensates (same tenant,
+--      feature, counter and entitlement_version, its own units), a reason
+--      and the platform admin who wrote it, and only a platform admin may
+--      insert it. Rows are never edited. What an adjustment does to the
+--      counter is RT-664's rule.
 --      The AI-09 run metadata lives here: route, prompt template and output
 --      schema versions, provider and model, evidence-ref ids, tokens
 --      (reported or estimated), list-price-equivalent cost (integer micros,
@@ -72,8 +78,9 @@
 -- so FORCE RLS applies to it: this migration seeds before forcing RLS, and a
 -- later catalog migration sets the GUC locally (`SELECT set_config(
 -- 'app.is_platform_admin', 'true', true)`) before its INSERTs. Entitlement revisions: tenant SELECT, platform-admin INSERT.
--- Opt-outs and the ledger: tenant SELECT + INSERT. Counters: tenant SELECT +
--- INSERT + UPDATE. Every table refuses DELETE and TRUNCATE for every role,
+-- Opt-outs: tenant SELECT + INSERT (owner-only is a runtime rule, RT-664).
+-- The ledger: tenant SELECT + INSERT, an `adjusted` row only under
+-- app.is_platform_admin. Counters: tenant SELECT + INSERT + UPDATE. Every table refuses DELETE and TRUNCATE for every role,
 -- the owner included (42501, the 0034 precedent); all but the counters also
 -- refuse UPDATE. Store scoping stays in the service layer (as for every
 -- store-keyed table); the composite store FK keeps a store inside its tenant.
@@ -496,16 +503,27 @@ CREATE TABLE ai_usage_ledger (
   cost_rate_card_version       TEXT,
   outcome                      TEXT,
   provider_request_id          TEXT,
+  -- `adjusted` rows only (RT-644 §4.7 / T20): the committed row compensated,
+  -- and the platform admin's reason (the admin is actor_user_id).
+  adjusts_entry_id             UUID,
+  adjustment_reason            TEXT,
   created_at                   TIMESTAMPTZ   NOT NULL DEFAULT now(),
   -- Target of the terminal → reservation FK (the reservation's dimensions).
   CONSTRAINT uq_ai_usage_ledger_reservation_target
     UNIQUE (id, tenant_id, feature_id, counter_id, units, entitlement_version),
+  -- Target of the adjustment FK: an adjustment carries its own units.
+  CONSTRAINT uq_ai_usage_ledger_adjustment_target
+    UNIQUE (id, tenant_id, feature_id, counter_id, entitlement_version),
   -- A replay of the same key is the same reservation (D-3). Terminal rows
   -- carry no key, and NULLs are distinct.
   CONSTRAINT uq_ai_usage_ledger_idempotency UNIQUE (tenant_id, feature_id, idempotency_key),
   CONSTRAINT fk_ai_usage_ledger_reservation
     FOREIGN KEY (reservation_id, tenant_id, feature_id, counter_id, units, entitlement_version)
     REFERENCES ai_usage_ledger (id, tenant_id, feature_id, counter_id, units, entitlement_version)
+    ON DELETE RESTRICT,
+  CONSTRAINT fk_ai_usage_ledger_adjusts
+    FOREIGN KEY (adjusts_entry_id, tenant_id, feature_id, counter_id, entitlement_version)
+    REFERENCES ai_usage_ledger (id, tenant_id, feature_id, counter_id, entitlement_version)
     ON DELETE RESTRICT,
   CONSTRAINT fk_ai_usage_ledger_counter
     FOREIGN KEY (counter_id, tenant_id) REFERENCES ai_usage_counters (id, tenant_id) ON DELETE RESTRICT,
@@ -516,9 +534,24 @@ CREATE TABLE ai_usage_ledger (
     FOREIGN KEY (tenant_id, opt_out_version)
     REFERENCES tenant_ai_feature_opt_outs (tenant_id, opt_out_version) ON DELETE RESTRICT,
   CONSTRAINT ai_usage_ledger_entry_kind_valid
-    CHECK (entry_kind IN ('reserved', 'committed', 'released')),
+    CHECK (entry_kind IN ('reserved', 'committed', 'released', 'adjusted')),
+  -- A reservation and an adjustment are their own reservation_id; a terminal
+  -- row names the reservation it closes.
   CONSTRAINT ai_usage_ledger_reservation_self
-    CHECK ((entry_kind = 'reserved') = (reservation_id = id)),
+    CHECK ((entry_kind IN ('reserved', 'adjusted')) = (reservation_id = id)),
+  -- An adjustment names the committed row it compensates, a reason and its
+  -- platform admin, and carries no outcome, provider usage or cost; the
+  -- adjustment fields belong to `adjusted` rows only.
+  CONSTRAINT ai_usage_ledger_adjustment_shape CHECK (
+    (entry_kind = 'adjusted' AND adjusts_entry_id IS NOT NULL AND adjustment_reason IS NOT NULL
+       AND actor_user_id IS NOT NULL AND outcome IS NULL
+       AND input_tokens IS NULL AND output_tokens IS NULL AND cached_input_tokens IS NULL
+       AND token_count_source IS NULL AND list_equivalent_cost_micros IS NULL
+       AND cost_currency IS NULL AND cost_rate_card_version IS NULL
+       AND provider_request_id IS NULL)
+    OR (entry_kind <> 'adjusted' AND adjusts_entry_id IS NULL AND adjustment_reason IS NULL)),
+  CONSTRAINT ai_usage_ledger_adjustment_reason_length
+    CHECK (adjustment_reason IS NULL OR char_length(adjustment_reason) BETWEEN 1 AND 500),
   CONSTRAINT ai_usage_ledger_feature_id_format
     CHECK (feature_id ~ '^ai(\.[a-z][a-z0-9_]{0,39}){1,4}$'),
   CONSTRAINT ai_usage_ledger_units_positive CHECK (units > 0),
@@ -542,7 +575,7 @@ CREATE TABLE ai_usage_ledger (
       'provider_unavailable', 'input_rejected', 'not_attempted', 'reservation_expired')),
   -- D-8 / T10: only a validated `ok` is charged; everything else is released.
   CONSTRAINT ai_usage_ledger_outcome_by_kind CHECK (
-    entry_kind = 'reserved'
+    entry_kind IN ('reserved', 'adjusted')
     OR (entry_kind = 'committed' AND outcome IS NOT NULL AND outcome = 'ok')
     OR (entry_kind = 'released' AND outcome IS NOT NULL AND outcome <> 'ok')),
   -- Tokens are reported by the provider or estimated, and say which.
@@ -582,10 +615,13 @@ CREATE TABLE ai_usage_ledger (
 );
 
 -- At most one commit or release per reservation. Also the terminal lookup:
--- a query (or ON CONFLICT target) must repeat `entry_kind <> 'reserved'` to
--- use it; a reservation itself is found by its primary key (id).
+-- a query (or ON CONFLICT target) must repeat the predicate to use it; a
+-- reservation itself is found by its primary key (id).
 CREATE UNIQUE INDEX uq_ai_usage_ledger_one_terminal
-  ON ai_usage_ledger (reservation_id) WHERE entry_kind <> 'reserved';
+  ON ai_usage_ledger (reservation_id) WHERE entry_kind IN ('committed', 'released');
+-- The adjustments of a committed row (the FK's child side).
+CREATE INDEX idx_ai_usage_ledger_adjusts
+  ON ai_usage_ledger (adjusts_entry_id) WHERE adjusts_entry_id IS NOT NULL;
 -- The TTL sweeper (T17). The ledger is append-only, so every reservation
 -- ever taken stays in this index: the sweeper runs per tenant (RLS gives no
 -- cross-tenant read here) and bounds its scan with a lookback window,
@@ -603,10 +639,16 @@ CREATE POLICY ai_usage_ledger_tenant_select ON ai_usage_ledger
   FOR SELECT USING (tenant_id = CASE
       WHEN current_setting('app.current_tenant', true) = '' THEN NULL
       ELSE current_setting('app.current_tenant', true)::uuid END);
+-- Reservations and their terminal rows are written in the tenant's context;
+-- a compensating `adjusted` row only by a platform admin (as entitlement
+-- revisions), so a tenant session can never credit its own meter.
 CREATE POLICY ai_usage_ledger_tenant_insert ON ai_usage_ledger
-  FOR INSERT WITH CHECK (tenant_id = CASE
+  FOR INSERT WITH CHECK (
+    tenant_id = CASE
       WHEN current_setting('app.current_tenant', true) = '' THEN NULL
-      ELSE current_setting('app.current_tenant', true)::uuid END);
+      ELSE current_setting('app.current_tenant', true)::uuid END
+    AND (entry_kind <> 'adjusted'
+         OR current_setting('app.is_platform_admin', true) = 'true'));
 
 CREATE TRIGGER ai_usage_ledger_append_only_row
   BEFORE UPDATE OR DELETE ON ai_usage_ledger
@@ -615,31 +657,41 @@ CREATE TRIGGER ai_usage_ledger_append_only_truncate
   BEFORE TRUNCATE ON ai_usage_ledger
   FOR EACH STATEMENT EXECUTE FUNCTION ai_entitlements_append_only();
 
--- A terminal row closes a `reserved` row (23514), never another terminal row:
--- the composite FK alone cannot say which kind it references. An unknown
--- reservation is 23503 here, before the end-of-statement FK, so a multi-row
--- INSERT cannot list a terminal before its reservation.
+-- A terminal row closes a `reserved` row, and an adjustment compensates a
+-- `committed` row (23514 otherwise): the composite FKs alone cannot say which
+-- kind they reference. An unknown target is 23503 here, before the
+-- end-of-statement FK, so a multi-row INSERT cannot list a row before its
+-- target.
 CREATE FUNCTION ai_usage_ledger_terminal_guard() RETURNS trigger
   LANGUAGE plpgsql
   SET search_path = pg_catalog, public
 AS $$
 DECLARE
+  v_target uuid;
+  v_expected text;
   v_kind text;
 BEGIN
   -- An unknown kind is left to the entry_kind CHECK (23514).
-  IF NEW.entry_kind NOT IN ('committed', 'released') THEN
+  IF NEW.entry_kind IN ('committed', 'released') THEN
+    v_target := NEW.reservation_id;
+    v_expected := 'reserved';
+  ELSIF NEW.entry_kind = 'adjusted' AND NEW.adjusts_entry_id IS NOT NULL THEN
+    v_target := NEW.adjusts_entry_id;
+    v_expected := 'committed';
+  ELSE
     RETURN NEW;
   END IF;
   SELECT l.entry_kind INTO v_kind
     FROM public.ai_usage_ledger l
-   WHERE l.id = NEW.reservation_id
+   WHERE l.id = v_target
      AND l.tenant_id = NEW.tenant_id;
   IF NOT FOUND THEN
-    RAISE EXCEPTION 'ledger row % closes an unknown reservation', NEW.id
+    RAISE EXCEPTION 'ledger row % references an unknown ledger row', NEW.id
       USING ERRCODE = 'foreign_key_violation';
   END IF;
-  IF v_kind <> 'reserved' THEN
-    RAISE EXCEPTION 'ledger row % closes a % row, not a reservation', NEW.id, v_kind
+  IF v_kind <> v_expected THEN
+    RAISE EXCEPTION 'ledger row % (%) references a % row, not a % row', NEW.id, NEW.entry_kind,
+        v_kind, v_expected
       USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;

@@ -489,7 +489,8 @@ This project follows [Semantic Versioning](https://semver.org/).
   - `ai_usage_counters` per tenant, store, meter and UTC window;
   - the single append-only `ai_usage_ledger`: `reserved`, then
     `committed` / `released`, unique (tenant, feature, idempotency_key),
-    with the AI-09 run metadata.
+    with the AI-09 run metadata. A dispute is settled by a platform-admin-only
+    compensating `adjusted` row (T20).
 
   Every table forces RLS. There is no price column and no grant.
 
