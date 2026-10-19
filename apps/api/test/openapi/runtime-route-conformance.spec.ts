@@ -65,6 +65,8 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "consoleDeleteTenantLogo",
       // RT-729 (CAT-R1): console catalog read contract; the runtime ships in RT-730.
       "consoleGetCatalogProduct",
+      // RT-649: console sales summary contract; the runtime ships in the RT-649 runtime PR.
+      "consoleGetSalesSummary",
       "consoleGetTenantLogo",
       "consoleListCatalogCategories",
       "consoleListCatalogProducts",
