@@ -162,6 +162,8 @@ const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
   consoleDeleteTenantLogo: "write",
   // RT-649: an aggregate over up to 31 business days of every store in scope.
   consoleGetSalesSummary: "expensiveRead",
+  // RT-662: one tenant's entitlement snapshot, no aggregate.
+  consoleGetTenantAiEntitlements: "cheapRead",
   consoleGetTenantLogo: "cheapRead",
   consolePreviewTenantLogo: "jobOrPreview",
   consolePutTenantLogo: "jobOrPreview",
