@@ -129,7 +129,7 @@ describe('D1 Reason Codes on a status move', () => {
   });
 
   it('refuses a code outside the table, including an object-prototype name', () => {
-    for (const code of ['toString', 'constructor', 'shrinkage']) {
+    for (const code of ['__proto__', 'toString', 'constructor', 'shrinkage']) {
       expect(() =>
         assertStatusMoveAllowed({
           fromStatus: 'sellable',
