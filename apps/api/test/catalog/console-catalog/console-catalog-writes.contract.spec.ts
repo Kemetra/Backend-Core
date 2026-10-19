@@ -208,6 +208,11 @@ describe("console-catalog writes — operations", () => {
     expect(doc.info?.description).toMatch(/until the RT-738\s+runtime serves them/);
   });
 
+  it("drops the read-only claims and keeps the no-ERP boundary", () => {
+    expect(doc.info?.description).not.toMatch(/reads them only|read-only console view/);
+    expect(doc.info?.description).toMatch(/No\s+operation calls ERPNext, Frappe or the connector/);
+  });
+
   it("names one audit action per write (audited per mutation, decision O-6)", () => {
     for (const w of WRITES) expect(op(w)["x-audit-action"]).toBe(w.audit);
     expect(doc.info?.description).toMatch(/in the same\s+transaction as the change/);

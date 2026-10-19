@@ -4,7 +4,7 @@ info:
   version: "1.1.0-draft"
   description: >
     Jira RT-729 (CAT-R1 of the RT-281 decomposition, comment 12887 §1): the
-    read-only console view of the Backend-Core Tenant Catalog that
+    console view of the Backend-Core Tenant Catalog that
     Admin-Console RF-3 (catalog read) and the unknown-item LINK product picker
     (RT-724) consume. Three read operations:
 
@@ -31,8 +31,10 @@ info:
 
     **Authority.** The Backend-Core Tenant Catalog is the retail product
     authority and the Store Override is the store authority for price,
-    availability and tax deviations. This surface reads them only. It never
-    calls ERPNext, Frappe or the connector and exposes no ERP mapping.
+    availability and tax deviations. The reads read them; the interim
+    writes (RT-738, **Writes**) change them directly, never a price. No
+    operation calls ERPNext, Frappe or the connector or exposes an ERP
+    mapping.
 
 
     **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`)
