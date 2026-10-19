@@ -18,9 +18,10 @@ info:
     total by summing list pages (AI-13; spec 009 §6.3 / AC-9).
 
 
-    **Posture.** `1.0.0-draft`, `x-runtime-status: contract-only` until the
-    RT-649 runtime ships. `[GATED]` contract approved by the owner on
-    2026-10-19 (RT-649 upgraded from Planning to contract + runtime).
+    **Posture.** `1.0.0-draft`, implemented. `[GATED]` contract approved by
+    the owner on 2026-10-19 (RT-649 upgraded from Planning to contract +
+    runtime); the RT-649 runtime serves the operation unchanged on the wire,
+    so it carries no `x-runtime-status: contract-only`.
 
 
     **Relation to `console-sales.openapi.yaml` (no duplication).** The
@@ -208,10 +209,6 @@ paths:
     get:
       summary: Deterministic received-sales KPIs per store, business date and currency.
       operationId: consoleGetSalesSummary
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-649 contract PR; the runtime (ConsoleSalesSummary module) ships in
-        the stacked RT-649 runtime PR, which removes this marker.
       x-audit-action: console_sales.summary_read
       tags: [console-sales]
       description: >
