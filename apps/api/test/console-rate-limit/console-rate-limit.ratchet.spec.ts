@@ -153,6 +153,8 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
  */
 const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
   consoleDeleteTenantLogo: "write",
+  // RT-649: an aggregate over up to 31 business days of every store in scope.
+  consoleGetSalesSummary: "expensiveRead",
   consoleGetTenantLogo: "cheapRead",
   consolePreviewTenantLogo: "jobOrPreview",
   consolePutTenantLogo: "jobOrPreview",
