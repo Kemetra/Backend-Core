@@ -53,10 +53,10 @@ export class PgReservationSweepRepository implements ReservationSweepRepository 
 
   async isProvisioned(): Promise<boolean> {
     const r = await this.pool.query<{ ok: boolean | null }>(
-      `SELECT to_regclass('public.ai_usage_ledger') IS NOT NULL
-          AND to_regclass('public.ai_usage_counters') IS NOT NULL
-          AND has_table_privilege('public.ai_usage_ledger', 'SELECT, INSERT')
-          AND has_table_privilege('public.ai_usage_counters', 'SELECT, UPDATE') AS ok`,
+      // The regclass (oid) forms are NULL-safe: a table 0055 has not created
+      // yet is NULL, never an error (AND has no guaranteed evaluation order).
+      `SELECT has_table_privilege(to_regclass('public.ai_usage_ledger'), 'SELECT, INSERT')
+          AND has_table_privilege(to_regclass('public.ai_usage_counters'), 'SELECT, UPDATE') AS ok`,
     );
     return r.rows[0]?.ok === true;
   }
