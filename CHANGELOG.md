@@ -502,6 +502,16 @@ This project follows [Semantic Versioning](https://semver.org/).
   `expensiveRead`. No migration, package, lockfile or CI change. RT-739
   lands the runtime of #861, which had merged into a stacked branch rather
   than `main`.
+- RT-565 `[GATED]`, owner-approved 2026-10-19 (RT-565 comment 12969, D1–D7 of
+  `docs/planning/rt-565-posting-freshness-read.md`):
+  `erpnext-sync-ops/console-sync-ops.yaml` 1.2.0-draft (additive).
+  `consoleGetSyncOpsSummary` gains a required top-level `asOf` and a
+  required `postingFreshness`: `lastPosted` (`state` `known` / `unknown` /
+  `none` and its ERP confirmation time), `pendingCount`, `oldestPendingAt`
+  and `oldestPendingAgeSeconds`. Facts only, no current / behind verdict;
+  the `posting` domain rule, roles, session, RLS, store scope and the
+  out-of-scope 404 are unchanged. No runtime or migration change; the read
+  and its indexes ship in the RT-565 runtime PR.
 - RT-663 `[GATED]` migration `0055_ai_entitlements_usage` (owner-approved
   2026-10-19 for authoring and CI verification only; not applied to any lab
   or live database). It is storage only, for AD-AI-ENT-001 and
