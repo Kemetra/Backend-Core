@@ -139,8 +139,8 @@ export class InvalidConsoleSaleCursorError extends Error {
 }
 
 const OPERATION = "console_sales";
-const LOWER_UUID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
-const KEY_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
+export const LOWER_UUID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+export const KEY_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 
 const CursorPayload = z
   .object({
@@ -161,7 +161,7 @@ type CursorPayload = z.infer<typeof CursorPayload>;
  * rolled-over one, that Postgres can represent (year 0000 is a 22008), so a
  * tampered cursor is refused here, before any read.
  */
-function namesRealInstant(key: string): boolean {
+export function namesRealInstant(key: string): boolean {
   if (key.startsWith("0000")) return false;
   const ms = Date.parse(key);
   return !Number.isNaN(ms) && new Date(ms).toISOString().slice(0, 19) === key.slice(0, 19);
