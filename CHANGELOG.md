@@ -416,6 +416,20 @@ This project follows [Semantic Versioning](https://semver.org/).
   console-sales "no 429" sentence is gone and the status mappings name the
   429. Each changed file takes an additive minor version. A new contract
   sweep imports the runtime exemption list. No runtime or migration change.
+- RT-492 `[GATED]`, pending owner approval (RT-114 MA-BC1; owner decision
+  RT-114 comment 11888, reconciled with RT-284 comment 11887): OpenAPI
+  contract `pos-approvers.openapi.yaml` (1.0.0-draft, contract-only).
+  `posCheckApproverEligibility` (`POST /api/pos/v1/approvers/eligibility`,
+  `device` bearer only, tenant and store from the device row) takes 1 to 50
+  distinct `user_ids` and answers one `{ user_id, eligible }` per id, in
+  request order. V1 eligibility: not deleted, an active membership in the
+  device's tenant, a role in `{owner, tenant_admin, store_manager}` and
+  access to the device's store. Unknown, cross-tenant and every other
+  ineligible user are the same `eligible: false`, with no cause. The
+  optional `action_kinds` is reserved for RT-284 P-A: the server omits it in
+  1.0.0-draft, and clients honour it when present. Read-only, not audited,
+  `Cache-Control: no-store`. The runtime ships in MA-BC2. No runtime or
+  migration change.
 - RT-738 (CAT-W1 + CAT-W2 of RT-281): runtime for the seven interim console
   catalog writes (`ConsoleCatalogWriteController` / `ConsoleCatalogWriteService`
   in `apps/api/src/catalog/console-catalog/`); they lose `x-runtime-status:
@@ -498,6 +512,17 @@ This project follows [Semantic Versioning](https://semver.org/).
   (`x-internal`, no HTTP route). No price, currency, plan name, quota size,
   billing event or grace duration. No runtime or migration change; the
   runtime ships in RT-664.
+- RT-649 / RT-739: runtime for `consoleGetSalesSummary` (`ConsoleSalesSummaryController`
+  and service in `ConsoleSalesModule`); the operation loses
+  `x-runtime-status: contract-only`. One SQL statement (one snapshot) counts
+  and sums every fact per store, business date, currency and state through
+  tenant RLS and the explicit operator store scope; legacy refunds and shift
+  closes are bucketed by the store-local date of their instant (`AT TIME
+  ZONE`, DST-correct); sums are added as exact BigInt decimals. Audited
+  `console_sales.summary_read` (read kind), console rate limit class
+  `expensiveRead`. No migration, package, lockfile or CI change. RT-739
+  lands the runtime of #861, which had merged into a stacked branch rather
+  than `main`.
 
 ### Changed
 - RT-616: successful `GET /api/v1/health/live` probes are no longer logged

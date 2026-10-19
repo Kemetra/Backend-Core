@@ -63,8 +63,6 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "backfillSaleLinkedMovements",
       // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
       "consoleDeleteTenantLogo",
-      // RT-649: console sales summary contract; the runtime ships in the RT-649 runtime PR.
-      "consoleGetSalesSummary",
       // RT-662: AI entitlements read contract; the runtime ships in RT-664.
       "consoleGetTenantAiEntitlements",
       "consoleGetTenantLogo",
@@ -76,6 +74,8 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "endSupportSession",
       "getCurrentSupportSession",
       "openSupportSession",
+      // RT-492 (RT-114 MA-BC1): approver-eligibility contract; the runtime ships in MA-BC2.
+      "posCheckApproverEligibility",
       "posGetTenantBranding",
       "posRedeemVoucher",
       "posReverseVoucher",
