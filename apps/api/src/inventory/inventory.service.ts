@@ -413,7 +413,7 @@ export interface StockMovementListBody {
 }
 
 /** Raw row shape from the explicit-column SELECT. */
-interface MovementRow {
+export interface MovementRow {
   id: string;
   store_id: string;
   movement_type: string;
@@ -449,7 +449,7 @@ const MOVEMENT_COLUMN_NAMES = [
   'stock_location_id', 'inventory_status', 'tracking_identity_id',
 ] as const;
 
-const MOVEMENT_COLUMNS = MOVEMENT_COLUMN_NAMES.join(', ');
+export const MOVEMENT_COLUMNS = MOVEMENT_COLUMN_NAMES.join(', ');
 
 /**
  * RT-425: movement columns qualified by `m`, plus the effect's integration
@@ -489,7 +489,7 @@ interface EffectPosition {
 /** RT-425: the state every Retail effect starts in until an ERP intent exists. */
 const NOT_POSTED = 'not_posted';
 
-function toMovementBody(r: MovementRow): StockMovementBody {
+export function toMovementBody(r: MovementRow): StockMovementBody {
   return {
     id: r.id,
     storeId: r.store_id,

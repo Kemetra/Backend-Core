@@ -56,6 +56,13 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "stock_locations:INSERT",
   // RT-448 (0045): tracking identities (read by the identity list). Read-only.
   "tracking_identities:SELECT",
+  // RT-435 (0056): status-move / relocation event records (append-only) and
+  // the tenant inventory settings (upserted, no DELETE).
+  "inventory_position_events:SELECT",
+  "inventory_position_events:INSERT",
+  "tenant_inventory_settings:SELECT",
+  "tenant_inventory_settings:INSERT",
+  "tenant_inventory_settings:UPDATE",
   // RT-539 (0047): the receipt reprint record (append-only).
   "sale_reprints:SELECT",
   "sale_reprints:INSERT",
@@ -307,6 +314,8 @@ describe("database pool boundary", () => {
       "stock_locations",
       "tracking_identities",
       "erpnext_tracking_map",
+      "inventory_position_events",
+      "tenant_inventory_settings",
       "sale_reprints",
       "sale_responsibilities",
       "sale_credit_reversals",

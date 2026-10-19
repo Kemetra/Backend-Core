@@ -41,8 +41,10 @@ import { getTableConfig } from 'drizzle-orm/pg-core';
 import {
   erpnextTrackingMap,
   inventoryEffectIntegration,
+  inventoryPositionEvents,
   stockCounts,
   stockMovements,
+  tenantInventorySettings,
   trackingIdentities,
 } from '@data-pulse-2/db/schema';
 
@@ -145,6 +147,40 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       'created_at',
       'updated_at',
     ],
+  },
+  {
+    // RT-435 (0056): the event record of a status move / relocation — opaque
+    // ids, codes, an exact quantity and unit, a bounded operator note (no PII
+    // by policy, as stock_movements.reason), a SHA-256 fingerprint (never the
+    // raw Idempotency-Key) and timestamps.
+    name: 'inventory_position_events',
+    table: inventoryPositionEvents,
+    columns: [
+      'id',
+      'tenant_id',
+      'store_id',
+      'kind',
+      'tenant_product_ref',
+      'quantity',
+      'stocking_unit',
+      'from_location_id',
+      'to_location_id',
+      'from_status',
+      'to_status',
+      'reason_code',
+      'note',
+      'tracking_identity_id',
+      'command_fingerprint',
+      'occurred_at',
+      'created_by',
+      'created_at',
+    ],
+  },
+  {
+    // RT-435 (0056): the per-tenant return landing status and its actor.
+    name: 'tenant_inventory_settings',
+    table: tenantInventorySettings,
+    columns: ['tenant_id', 'return_landing_status', 'updated_by', 'created_at', 'updated_at'],
   },
   {
     name: 'stock_counts',

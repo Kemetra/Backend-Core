@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Inventory — Stock Movement Ledger API
-  version: "1.5.0-draft"
+  version: "1.6.0-draft"
   description: >
     Spec 009 Inventory & Stock Movement Ledger contract surface. Defines the
     Inventory source-of-truth domain the SaaS owns: an append-only
@@ -28,7 +28,7 @@ info:
     `store_id`; body-supplied tenant / store / actor / derived-balance fields
     are NEVER accepted (Constitution §III/§XII, FR-052).
 
-    Eight operations:
+    Twelve operations:
 
       1. `createStockMovement` — append an inbound / outbound / adjustment
          movement (write-off = a reason-coded outbound). Exact-decimal quantity
@@ -59,6 +59,12 @@ info:
       7. `listStockLocations` — the stock locations of a store (RT-432).
       8. `listTrackingIdentities` — the batches / serials of a product
          (RT-448).
+      9. `createStatusMove` — move stock between two inventory statuses at one
+         location, as one event with two effects (RT-435).
+     10. `createRelocation` — move stock between two locations of one store,
+         same status, as one event with two effects (RT-435).
+     11. `getReturnLandingPolicy` / 12. `setReturnLandingPolicy` — the
+         tenant's return landing status (RT-435).
 
     Quantity: every quantity is an exact-decimal STRING (`numeric(p,s)` at
     rest); no float appears on the wire. There is NO money / tender / payment
@@ -124,6 +130,29 @@ info:
     (`occurredAt DESC, id DESC`) and its `cursor` as an opaque keyset cursor
     bound to the operation, the tenant, the store and the filters. The
     request without `scope` selects the same movements as before.
+
+
+    **1.6.0-draft (RT-435, additive; owner-approved RT-290 Gate 4 and RT-435
+    decisions D1–D4, comment 12993).** Two position-changing Retail events, each
+    an `adjustment` Business Event with an event record and exactly two
+    effects under it: a status move (`createStatusMove`: `-q` in `fromStatus`
+    and `+q` in `toStatus` at one location, with a governed `reasonCode`) and
+    a relocation (`createRelocation`: `-q` at `fromLocationId` and `+q` at
+    `toLocationId`, same status, both active locations of the path store).
+    Physical on-hand never changes; Sellable On Hand changes by exactly `q`
+    when one side is `sellable`. Under the V1 mapping profile both effects net
+    to zero in the store's one ERP mapping bucket, so they are `erp_neutral`
+    at creation and no ERP posting intent is created; a move whose net is not
+    zero in every bucket is refused (`409 erp_transfer_intent_required`) until
+    Gate 8 defines the transfer intent. `StockMovement.integrationState` can
+    now be `erp_neutral`. A status move out of `damaged`, `expired`,
+    `quality_hold` or `recall_hold` is sensitive: owner or tenant_admin only
+    (`403 sensitive_move_forbidden`). Both moves are owner / tenant_admin /
+    store_manager operations; a store_manager acts only in its store scope.
+    A replay of the same command returns the recorded event and writes
+    nothing. `getReturnLandingPolicy` / `setReturnLandingPolicy` read and set
+    where a tenant's return effects land (`sellable`, the default, or
+    `return_inspection`).
 
 servers:
   - url: https://api.datapulse.example
@@ -450,6 +479,154 @@ paths:
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "5XX": { $ref: "#/components/responses/SystemFailure" }
 
+  /api/inventory/v1/stores/{storeId}/status-moves:
+    post:
+      operationId: createStatusMove
+      tags: [inventory]
+      summary: Move stock between two inventory statuses at one location.
+      description: >
+        RT-435 (RT-290 G4-2, decisions 842–844): one `adjustment` Business
+        Event with exactly two effects at the same location: `-quantity` in
+        `fromStatus` and `+quantity` in `toStatus`. Physical on-hand is
+        unchanged. The `reasonCode` is required and must allow the
+        `(fromStatus, toStatus)` pair (839, D1):
+        `damage` sellable → damaged; `expiry` sellable → expired;
+        `inspection_restock` return_inspection → sellable;
+        `inspection_damage` return_inspection → damaged; `hold_release`
+        quality_hold → sellable; `correction` any pair outside the two hold
+        statuses, with a `note`. `quality_hold` and `recall` are reserved for
+        the tracking-hold workflow and are refused here. The location defaults
+        to the store's primary location; another location must be an active
+        location of the path store. Both effects are `erp_neutral` (V1 mapping
+        profile, M-5); no ERP posting intent is created. Owner, tenant_admin or
+        store_manager (a store_manager only in its store scope); moving stock
+        OUT of `damaged`, `expired`, `quality_hold` or `recall_hold` is
+        sensitive and is owner / tenant_admin only (960, 961, D2). A tracked
+        product is refused until tracked moves exist (G7-4). Idempotent via the
+        `Idempotency-Key` header; a replay of the same command returns the
+        recorded event and writes nothing.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/StoreIdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateStatusMoveCommand"
+      responses:
+        "201":
+          description: Status move recorded as one event with two effects.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryPositionEvent"
+        "400": { $ref: "#/components/responses/ValidationFailure" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ForbiddenOrOriginRejected" }
+        "404": { $ref: "#/components/responses/NotFoundOrCrossTenant" }
+        "409": { $ref: "#/components/responses/PositionEventConflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "5XX": { $ref: "#/components/responses/SystemFailure" }
+
+  /api/inventory/v1/stores/{storeId}/relocations:
+    post:
+      operationId: createRelocation
+      tags: [inventory]
+      summary: Move stock between two locations of one store, same status.
+      description: >
+        RT-435 (decisions 800, 814): one `adjustment` Business Event with
+        exactly two effects in the same status: `-quantity` at
+        `fromLocationId` and `+quantity` at `toLocationId`. A relocation is an
+        internal move, not a shipment Transfer. Both locations must be active
+        locations of the path store and must differ; a location of another
+        store or tenant is a non-disclosing 404, an inactive one a 400. The
+        status defaults to `sellable`. Physical and Sellable On Hand are
+        unchanged. A `reasonCode` is optional (`correction` needs a `note`;
+        the reserved hold codes are refused). Both effects are `erp_neutral`;
+        no ERP posting intent is created. Owner, tenant_admin or store_manager
+        (a store_manager only in its store scope). Idempotent via the
+        `Idempotency-Key` header.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/StoreIdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRelocationCommand"
+      responses:
+        "201":
+          description: Relocation recorded as one event with two effects.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryPositionEvent"
+        "400": { $ref: "#/components/responses/ValidationFailure" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ForbiddenOrOriginRejected" }
+        "404": { $ref: "#/components/responses/NotFoundOrCrossTenant" }
+        "409": { $ref: "#/components/responses/PositionEventConflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "5XX": { $ref: "#/components/responses/SystemFailure" }
+
+  /api/inventory/v1/settings/return-landing:
+    get:
+      operationId: getReturnLandingPolicy
+      tags: [inventory]
+      summary: Read the tenant's return landing policy.
+      description: >
+        RT-435 (RT-290 Q6, decision 849): where the tenant's return effects
+        land: `sellable` (the default; `updatedAt` is null while unset) or
+        `return_inspection`, from which stock leaves by a status move. Owner,
+        tenant_admin or store_manager.
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: The tenant's return landing policy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReturnLandingPolicy"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ForbiddenOrOriginRejected" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "5XX": { $ref: "#/components/responses/SystemFailure" }
+    put:
+      operationId: setReturnLandingPolicy
+      tags: [inventory]
+      summary: Set the tenant's return landing policy.
+      description: >
+        RT-435 (RT-290 Q6): set where the tenant's return effects land. Owner
+        or tenant_admin. Setting the current value again is a no-op change and
+        answers the same body; the change is audited.
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetReturnLandingPolicyCommand"
+      responses:
+        "200":
+          description: The updated return landing policy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReturnLandingPolicy"
+        "400": { $ref: "#/components/responses/ValidationFailure" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ForbiddenOrOriginRejected" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "5XX": { $ref: "#/components/responses/SystemFailure" }
+
   /api/inventory/v1/admin/sale-linked-backfill:
     post:
       operationId: backfillSaleLinkedMovements
@@ -728,12 +905,15 @@ components:
             Every movement written by this API is `retail`.
         integrationState:
           type: [string, "null"]
-          enum: [not_posted, pending, confirmed, rejected, reconciliation_required, external, null]
+          enum: [not_posted, pending, confirmed, rejected, reconciliation_required, external, erp_neutral, null]
           description: >
             RT-425 (RT-289 G2-3): the effect's ERP integration state.
             `not_posted` = no ERP posting intent represents the effect;
             `pending` / `confirmed` / `rejected` / `reconciliation_required`
-            follow its ERP posting intent; `external` = an ERP-origin effect.
+            follow its ERP posting intent; `external` = an ERP-origin effect;
+            `erp_neutral` (RT-435, RT-290 Q10) = an effect of a status move or
+            relocation whose event nets to zero in its ERP mapping bucket, so
+            it needs no ERP representation and never gets an intent.
             A confirmation never adds quantity (decision 771). Null only for a
             movement with no integration record.
         erpConfirmedAt:
@@ -764,6 +944,141 @@ components:
             RT-448 (RT-50 G7-2): the tracking identity (batch / serial) of the
             movement's own product. Null for an untracked product, and for every
             movement written by this version (tracked selling is not active).
+    InventoryReasonCode:
+      type: string
+      enum: [damage, expiry, quality_hold, recall, inspection_restock, inspection_damage, hold_release, correction]
+      description: >
+        RT-435 (decision 839, D1): the governed Reason Code of a status move or
+        relocation. Which `(fromStatus, toStatus)` pair each allows is in
+        `createStatusMove`. `quality_hold` and `recall` are reserved for the
+        tracking-hold workflow (RT-449) and are refused by both operations.
+    CreateStatusMoveCommand:
+      type: object
+      additionalProperties: false
+      required: [tenantProductRef, quantity, stockingUnit, fromStatus, toStatus, reasonCode]
+      description: >
+        Strict command. The store is the PATH parameter; tenant and actor are
+        resolved server-side. No tracking field is accepted yet (RT-451).
+      properties:
+        tenantProductRef: { type: string, format: uuid }
+        quantity:
+          $ref: "#/components/schemas/PositiveDecimalQuantity"
+        stockingUnit:
+          $ref: "#/components/schemas/StockingUnit"
+        stockLocationId:
+          type: string
+          format: uuid
+          description: An active location of the path store; defaults to its primary location.
+        fromStatus:
+          $ref: "#/components/schemas/InventoryStatus"
+        toStatus:
+          $ref: "#/components/schemas/InventoryStatus"
+        reasonCode:
+          $ref: "#/components/schemas/InventoryReasonCode"
+        note:
+          type: string
+          maxLength: 500
+          description: Operator note (no PII). Required with `reasonCode` `correction`.
+    CreateRelocationCommand:
+      type: object
+      additionalProperties: false
+      required: [tenantProductRef, quantity, stockingUnit, fromLocationId, toLocationId]
+      description: >
+        Strict command. The store is the PATH parameter; both locations must be
+        active locations of it. No tracking field is accepted yet (RT-451).
+      properties:
+        tenantProductRef: { type: string, format: uuid }
+        quantity:
+          $ref: "#/components/schemas/PositiveDecimalQuantity"
+        stockingUnit:
+          $ref: "#/components/schemas/StockingUnit"
+        fromLocationId: { type: string, format: uuid }
+        toLocationId: { type: string, format: uuid }
+        inventoryStatus:
+          allOf:
+            - $ref: "#/components/schemas/InventoryStatus"
+          description: The status of the moved stock; defaults to `sellable`.
+        reasonCode:
+          $ref: "#/components/schemas/InventoryReasonCode"
+        note:
+          type: string
+          maxLength: 500
+          description: Operator note (no PII). Required with `reasonCode` `correction`.
+    InventoryPositionEvent:
+      type: object
+      required:
+        [id, kind, storeId, tenantProductRef, quantity, stockingUnit, fromLocationId, toLocationId,
+         fromStatus, toStatus, reasonCode, note, trackingIdentityId, createdBy, occurredAt,
+         fromEffect, toEffect]
+      description: >
+        RT-435: the record of a status move or relocation and its two effects.
+        Each effect is a `StockMovement` with `movementType` `adjustment`.
+        A status move has `fromLocationId` = `toLocationId`; a relocation has
+        `fromStatus` = `toStatus`. The effects sum to zero.
+      properties:
+        id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [status_move, relocation]
+        storeId: { type: string, format: uuid }
+        tenantProductRef: { type: string, format: uuid }
+        quantity:
+          allOf:
+            - $ref: "#/components/schemas/DecimalQuantity"
+          description: The moved quantity (positive).
+        stockingUnit: { type: string }
+        fromLocationId: { type: string, format: uuid }
+        toLocationId: { type: string, format: uuid }
+        fromStatus:
+          $ref: "#/components/schemas/InventoryStatus"
+        toStatus:
+          $ref: "#/components/schemas/InventoryStatus"
+        reasonCode:
+          oneOf:
+            - $ref: "#/components/schemas/InventoryReasonCode"
+            - type: "null"
+        note: { type: [string, "null"] }
+        trackingIdentityId:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            The tracking identity both effects carry (RT-50 G7-2). Null for every
+            event this version records (tracked moves arrive with RT-451).
+        createdBy:
+          type: string
+          format: uuid
+          description: The acting principal's user id (an internal actor reference, not PII).
+        occurredAt: { type: string, format: date-time }
+        fromEffect:
+          allOf:
+            - $ref: "#/components/schemas/StockMovement"
+          description: The `-quantity` effect at (fromLocationId, fromStatus).
+        toEffect:
+          allOf:
+            - $ref: "#/components/schemas/StockMovement"
+          description: The `+quantity` effect at (toLocationId, toStatus).
+    ReturnLandingStatus:
+      type: string
+      enum: [sellable, return_inspection]
+      description: >
+        RT-435 (RT-290 Q6, decision 849): where a tenant's return effects land.
+    ReturnLandingPolicy:
+      type: object
+      required: [returnLandingStatus, updatedAt]
+      properties:
+        returnLandingStatus:
+          $ref: "#/components/schemas/ReturnLandingStatus"
+        updatedAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the policy was last set; null while the tenant runs on the default.
+    SetReturnLandingPolicyCommand:
+      type: object
+      additionalProperties: false
+      required: [returnLandingStatus]
+      properties:
+        returnLandingStatus:
+          $ref: "#/components/schemas/ReturnLandingStatus"
     StockMovementList:
       type: object
       required: [items]
@@ -1034,6 +1349,18 @@ components:
       description: >
         409 — an `Idempotency-Key` replay with a DIFFERENT body (FR-030), or a
         provenance-pair conflict on the backfill path.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PositionEventConflict:
+      description: >
+        409 — RT-435. `idempotency_key_conflict`: the `Idempotency-Key` was
+        already used for a different command. `erp_transfer_intent_required`:
+        the move does not net to zero in every ERP mapping bucket, which needs
+        the Gate 8 transfer intent (never under the V1 profile).
+        `tracking_identity_required`: the product is tracked, and tracked moves
+        are not supported yet. Nothing is written.
       content:
         application/json:
           schema:

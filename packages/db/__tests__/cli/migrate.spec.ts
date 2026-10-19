@@ -224,6 +224,7 @@ describe("data-pulse-migrate CLI", () => {
     "0051_sale_responsibilities",
     "0054_sale_credit_reversals",
     "0055_ai_entitlements_usage",
+    "0056_inventory_position_events",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -429,14 +430,33 @@ describe("data-pulse-migrate CLI", () => {
     ];
   }
 
+  /** The two tables created by 0056_inventory_position_events (RT-435). */
+  const POSITION_EVENT_TABLES = ["inventory_position_events", "tenant_inventory_settings"];
+
   /**
-   * After one `down` from head: 0055's AI entitlement tables and functions are
-   * gone, while 0054's credit reversal tables, approval-use ledger, trigger
-   * and FK-target indexes, 0051's sale_responsibilities, 0050's policy tables
-   * and columns, 0048's store/business-date index and everything older survive.
+   * 0056_inventory_position_events (RT-435): [its two tables, their policies
+   * (events SELECT + INSERT, settings SELECT + INSERT + UPDATE), the settings
+   * updated_at trigger].
+   */
+  async function countPositionEventObjects(): Promise<[string, string, string]> {
+    return [
+      await countPublicTables(POSITION_EVENT_TABLES),
+      await countPolicies(POSITION_EVENT_TABLES),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_trigger
+        WHERE tgname = 'tenant_inventory_settings_set_updated_at'`),
+    ];
+  }
+
+  /**
+   * After one `down` from head: 0056's event-record and settings tables are
+   * gone, while 0055's AI entitlement tables and functions, 0054's credit
+   * reversal tables, approval-use ledger, trigger and FK-target indexes, 0051's
+   * sale_responsibilities, 0050's policy tables and columns, 0048's
+   * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countAiEntitlementObjects()).toEqual(["0", "0", "0", "0"]);
+    expect(await countPositionEventObjects()).toEqual(["0", "0", "0"]);
+    expect(await countAiEntitlementObjects()).toEqual(["7", "15", "4", "1"]);
     expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
     expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
     expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
@@ -497,6 +517,9 @@ describe("data-pulse-migrate CLI", () => {
     // plus the counters' UPDATE), its four trigger functions and the one
     // default-deny catalog seed row (RT-663).
     expect(await countAiEntitlementObjects()).toEqual(["7", "15", "4", "1"]);
+    // 0056's event records (SELECT + INSERT) and tenant inventory settings
+    // (SELECT + INSERT + UPDATE) with its updated_at trigger (RT-435).
+    expect(await countPositionEventObjects()).toEqual(["2", "5", "1"]);
   }
 
   /** The three tables created by 0054_sale_credit_reversals (RT-577). */
@@ -649,7 +672,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0055 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0056 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();

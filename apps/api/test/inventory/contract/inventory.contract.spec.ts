@@ -41,7 +41,7 @@ import "reflect-metadata";
 
 import { resolve } from "node:path";
 
-import { INVENTORY_STATUSES } from "@data-pulse-2/db";
+import { INVENTORY_REASON_CODES, INVENTORY_STATUSES, RETURN_LANDING_STATUSES } from "@data-pulse-2/db";
 
 import { loadOpenApiContracts } from "../../../src/openapi/loader";
 
@@ -60,6 +60,11 @@ const OPERATION_IDS = [
   "backfillSaleLinkedMovements",
   "listStockLocations",
   "listTrackingIdentities",
+  // RT-435: status moves, relocations and the return landing policy.
+  "createStatusMove",
+  "createRelocation",
+  "getReturnLandingPolicy",
+  "setReturnLandingPolicy",
 ] as const;
 
 // Operator-surface ops use cookieAuth; the backfill is platform/admin.
@@ -71,6 +76,10 @@ const OPERATOR_OPERATION_IDS = [
   "recordStockCount",
   "listStockLocations",
   "listTrackingIdentities",
+  "createStatusMove",
+  "createRelocation",
+  "getReturnLandingPolicy",
+  "setReturnLandingPolicy",
 ];
 const ADMIN_OPERATION_IDS = ["backfillSaleLinkedMovements"];
 
@@ -80,12 +89,17 @@ const WRITE_OPERATION_IDS = [
   "createStockTransfer",
   "recordStockCount",
   "backfillSaleLinkedMovements",
+  "createStatusMove",
+  "createRelocation",
 ];
+// setReturnLandingPolicy is a PUT of the whole value: repeating it is
+// naturally idempotent, so it carries no Idempotency-Key (and is in neither list).
 const READ_OPERATION_IDS = [
   "getOnHand",
   "listStockMovements",
   "listStockLocations",
   "listTrackingIdentities",
+  "getReturnLandingPolicy",
 ];
 
 const MOVEMENTS_PATH = "/api/inventory/v1/stores/{storeId}/movements";
@@ -95,6 +109,9 @@ const COUNTS_PATH = "/api/inventory/v1/stores/{storeId}/counts";
 const BACKFILL_PATH = "/api/inventory/v1/admin/sale-linked-backfill";
 const LOCATIONS_PATH = "/api/inventory/v1/stores/{storeId}/locations";
 const TRACKING_IDENTITIES_PATH = "/api/inventory/v1/products/{productId}/tracking-identities";
+const STATUS_MOVES_PATH = "/api/inventory/v1/stores/{storeId}/status-moves";
+const RELOCATIONS_PATH = "/api/inventory/v1/stores/{storeId}/relocations";
+const RETURN_LANDING_PATH = "/api/inventory/v1/settings/return-landing";
 
 // Field-name substrings forbidden anywhere in the contract (§XIV — no PII /
 // money / payment / tender on the inventory ledger in v1).
@@ -267,7 +284,7 @@ describe("inventory/inventory.yaml — loadability", () => {
 // 2. Operations present, uniquely named, correctly secured
 // ===========================================================================
 describe("inventory/inventory.yaml — operations", () => {
-  it("declares exactly the six 009 operationIds, RT-432's listStockLocations and RT-448's listTrackingIdentities", () => {
+  it("declares exactly the six 009 operationIds, RT-432's listStockLocations, RT-448's listTrackingIdentities and RT-435's four", () => {
     const ids = inventoryOperations()
       .map((o) => o.op.operationId)
       .filter((id): id is string => typeof id === "string")
@@ -297,6 +314,14 @@ describe("inventory/inventory.yaml — operations", () => {
     );
     expect(inventoryDoc.paths?.[TRACKING_IDENTITIES_PATH]?.["get"]?.operationId).toBe(
       "listTrackingIdentities",
+    );
+    expect(inventoryDoc.paths?.[STATUS_MOVES_PATH]?.["post"]?.operationId).toBe("createStatusMove");
+    expect(inventoryDoc.paths?.[RELOCATIONS_PATH]?.["post"]?.operationId).toBe("createRelocation");
+    expect(inventoryDoc.paths?.[RETURN_LANDING_PATH]?.["get"]?.operationId).toBe(
+      "getReturnLandingPolicy",
+    );
+    expect(inventoryDoc.paths?.[RETURN_LANDING_PATH]?.["put"]?.operationId).toBe(
+      "setReturnLandingPolicy",
     );
   });
 
@@ -407,6 +432,9 @@ describe("inventory/inventory.yaml — projections + envelope", () => {
       "CreateStockTransferCommand",
       "RecordStockCountCommand",
       "SaleLinkedBackfillCommand",
+      "CreateStatusMoveCommand",
+      "CreateRelocationCommand",
+      "SetReturnLandingPolicyCommand",
     ];
     for (const name of commandSchemas) {
       const schema = inventoryDoc.components?.schemas?.[name];
@@ -453,7 +481,7 @@ describe("inventory/inventory.yaml — RT-425 effect projection", () => {
     expect(inventoryDoc.components?.schemas?.["StockMovement"]?.required).toContain("origin");
   });
 
-  it("projects the nullable integration state with exactly the RT-289 G2-3 states", () => {
+  it("projects the nullable integration state with exactly the RT-289 G2-3 states plus RT-435's erp_neutral", () => {
     expect(props()["integrationState"]?.type).toEqual(["string", "null"]);
     expect(props()["integrationState"]?.enum).toEqual([
       "not_posted",
@@ -462,6 +490,7 @@ describe("inventory/inventory.yaml — RT-425 effect projection", () => {
       "rejected",
       "reconciliation_required",
       "external",
+      "erp_neutral",
       null,
     ]);
   });
@@ -534,8 +563,8 @@ describe("inventory/inventory.yaml — RT-432 position grain", () => {
     expect(schema("StockLocation").properties?.["kind"]?.enum).toEqual(["primary", "storage"]);
   });
 
-  it("does not return erp_neutral yet: nothing assigns it in 1.2.0-draft (RT-435)", () => {
-    expect(schema("StockMovement").properties?.["integrationState"]?.enum).not.toContain(
+  it("returns erp_neutral from 1.6.0-draft, when RT-435 assigns it (Q10)", () => {
+    expect(schema("StockMovement").properties?.["integrationState"]?.enum).toContain(
       "erp_neutral",
     );
   });
@@ -602,5 +631,72 @@ describe("inventory/inventory.yaml — RT-448 tracking foundation", () => {
       n.toLowerCase(),
     );
     expect(names.some((n) => n.includes("erp"))).toBe(false);
+  });
+});
+
+// ===========================================================================
+// 9. RT-435 — status moves, relocations, return landing policy (1.6.0-draft)
+// ===========================================================================
+describe("inventory/inventory.yaml — RT-435 position events", () => {
+  type Prop = { type?: unknown; enum?: unknown[]; format?: string; maxLength?: number; $ref?: string };
+  const schema = (
+    name: string,
+  ): { properties?: Record<string, Prop>; required?: string[]; additionalProperties?: unknown } =>
+    (inventoryDoc.components?.schemas?.[name] ?? {}) as {
+      properties?: Record<string, Prop>;
+      required?: string[];
+      additionalProperties?: unknown;
+    };
+
+  it("declares the governed Reason Codes of D1, matching the schema", () => {
+    expect(schema("InventoryReasonCode") as { enum?: unknown[] }).toMatchObject({
+      enum: [...INVENTORY_REASON_CODES],
+    });
+  });
+
+  it("status move: required statuses and reason code, optional location and note, no tracking field", () => {
+    const cmd = schema("CreateStatusMoveCommand");
+    expect(cmd.required).toEqual(
+      expect.arrayContaining(["tenantProductRef", "quantity", "stockingUnit", "fromStatus", "toStatus", "reasonCode"]),
+    );
+    expect(cmd.required).not.toContain("stockLocationId");
+    expect(cmd.properties?.["quantity"]?.$ref).toBe("#/components/schemas/PositiveDecimalQuantity");
+    expect(cmd.properties?.["note"]?.maxLength).toBe(500);
+    expect(cmd.properties?.["trackingIdentityId"]).toBeUndefined();
+  });
+
+  it("relocation: two required locations, optional status and reason code, no tracking field", () => {
+    const cmd = schema("CreateRelocationCommand");
+    expect(cmd.required).toEqual(
+      expect.arrayContaining(["tenantProductRef", "quantity", "stockingUnit", "fromLocationId", "toLocationId"]),
+    );
+    expect(cmd.required).not.toContain("reasonCode");
+    expect(cmd.properties?.["trackingIdentityId"]).toBeUndefined();
+  });
+
+  it("projects the event with both effects and a nullable tracking identity", () => {
+    const ev = schema("InventoryPositionEvent");
+    expect(ev.properties?.["kind"]?.enum).toEqual(["status_move", "relocation"]);
+    expect(ev.required).toEqual(expect.arrayContaining(["fromEffect", "toEffect", "trackingIdentityId"]));
+    expect(ev.properties?.["trackingIdentityId"]?.type).toEqual(["string", "null"]);
+  });
+
+  it("the return landing policy is sellable | return_inspection, strict on write", () => {
+    expect(schema("ReturnLandingStatus") as { enum?: unknown[] }).toMatchObject({
+      enum: [...RETURN_LANDING_STATUSES],
+    });
+    expect(schema("SetReturnLandingPolicyCommand").additionalProperties).toBe(false);
+  });
+
+  it("documents the 409 conflict codes of a position event", () => {
+    const conflict = inventoryDoc.components?.responses?.["PositionEventConflict"] as
+      | { description?: string }
+      | undefined;
+    for (const code of ["idempotency_key_conflict", "erp_transfer_intent_required", "tracking_identity_required"]) {
+      expect(conflict?.description).toContain(code);
+    }
+    expect(findOp("createStatusMove")?.responses?.["409"]).toEqual({
+      $ref: "#/components/responses/PositionEventConflict",
+    });
   });
 });

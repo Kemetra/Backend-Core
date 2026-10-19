@@ -407,6 +407,21 @@ table the domain role must use needs a matching grant step at deploy time.
   (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold no privilege on
   any of them (`AUTH_LOOKUP_FORBIDDEN_GRANTS`).
 
+- **Migration `0056_inventory_position_events` (RT-435).** Run
+  [`sql/inventory-position-events-domain-grants.sql`](sql/inventory-position-events-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT` and `INSERT` on
+  `inventory_position_events` (a status move or relocation writes its event
+  record; a replay reads it back) and `SELECT`, `INSERT` and `UPDATE` on
+  `tenant_inventory_settings` (the return landing policy is read and
+  upserted). The event record is append-only: never grant `UPDATE`, `DELETE`
+  or `TRUNCATE` on it; never grant `DELETE` or `TRUNCATE` on the settings.
+  Without the grants the API refuses to boot (`DOMAIN_REQUIRED_GRANTS`). The
+  auth lookup role must hold no privilege on either
+  (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). 0056 needs no maintenance window: both
+  tables are new and only the new routes use them.
+
 - **Console device revoke (RT-365, on migration `0040_device_lifecycle`).** Run
   [`sql/device-lifecycle-domain-grants.sql`](sql/device-lifecycle-domain-grants.sql)
   after `migrate up` and before the API starts, in the same step 2 of
