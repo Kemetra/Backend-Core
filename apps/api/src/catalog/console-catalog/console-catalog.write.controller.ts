@@ -199,8 +199,11 @@ function parseId(value: string, name: string): string {
 /** The session tenant, the actor and the request id of a write. */
 function writer(request: TenantContextRequest): CatalogWriteInput {
   const ctx = request.context;
-  if (!ctx || ctx.tenantId === null || ctx.userId === null) throw new UnauthorizedException("Unauthorized");
-  return { tenantId: ctx.tenantId, context: ctx, actorUserId: ctx.userId, requestId: request.requestId ?? null };
+  if (ctx === undefined) throw new UnauthorizedException("Unauthorized");
+  const { tenantId, userId } = ctx;
+  if (tenantId === null) throw new UnauthorizedException("Unauthorized");
+  if (userId === null) throw new UnauthorizedException("Unauthorized");
+  return { tenantId, context: ctx, actorUserId: userId, requestId: request.requestId ?? null };
 }
 
 /** Maps the service's refusals to the contract's 4xx; anything else propagates (500). */

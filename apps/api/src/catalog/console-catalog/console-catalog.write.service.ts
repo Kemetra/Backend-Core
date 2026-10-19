@@ -222,27 +222,20 @@ export class ConsoleCatalogWriteService {
   ): Promise<ConsoleCatalogProductDetail> {
     return this.write(input, async (client) => {
       const current = await this.lockProduct(client, input.tenantId, productId);
-      if (current.retired) throw new CatalogWriteRefusedError("product_retired");
-      if (Number(current.updated_ms) !== body.expectedUpdatedAt) throw new CatalogWriteRefusedError("stale_write");
-      if (body.categoryId !== undefined && body.categoryId !== null) {
-        await this.requireUsableCategory(client, input.tenantId, body.categoryId);
-      }
-      if (!current.can_advance) throw new RerunWrite();
+      requireLiveProduct(current);
+      requireExpected(current.updated_ms, body.expectedUpdatedAt);
+      if (typeof body.categoryId === "string") await this.requireUsableCategory(client, input.tenantId, body.categoryId);
+      requireAdvance(current);
 
-      const before = {
+      const before: ProductFields = {
         name: current.name,
         description: current.description,
         categoryId: current.category_id,
         taxCategory: current.tax_category,
         isActive: current.is_active,
       };
-      const after = {
-        name: body.name ?? before.name,
-        description: body.description !== undefined ? body.description : before.description,
-        categoryId: body.categoryId !== undefined ? body.categoryId : before.categoryId,
-        taxCategory: body.taxCategory ?? before.taxCategory,
-        isActive: body.isActive ?? before.isActive,
-      };
+      const { expectedUpdatedAt: _precondition, ...patch } = body;
+      const after = applyPatch(before, patch);
       await client.query(
         `UPDATE tenant_products
             SET name = $3, description = $4, category_id = $5, tax_category = $6, is_active = $7,
@@ -275,9 +268,9 @@ export class ConsoleCatalogWriteService {
   async retireProduct(input: CatalogWriteInput, productId: string, body: RetireBody): Promise<ConsoleCatalogProductDetail> {
     return this.write(input, async (client) => {
       const current = await this.lockProduct(client, input.tenantId, productId);
-      if (current.retired) throw new CatalogWriteRefusedError("product_retired");
-      if (Number(current.updated_ms) !== body.expectedUpdatedAt) throw new CatalogWriteRefusedError("stale_write");
-      if (!current.can_advance) throw new RerunWrite();
+      requireLiveProduct(current);
+      requireExpected(current.updated_ms, body.expectedUpdatedAt);
+      requireAdvance(current);
       await client.query(
         `UPDATE tenant_products SET retired_at = now(), updated_by = $3, correlation_id = $4
           WHERE tenant_id = $1::uuid AND id = $2::uuid`,
@@ -382,53 +375,20 @@ export class ConsoleCatalogWriteService {
     return this.write(input, async (client) => {
       const product = await this.lockProduct(client, input.tenantId, productId);
       const roleCode = await this.requireStoreInScope(client, input, storeId);
-      if ("taxCategory" in body && !TAX_OVERRIDE_ROLES.has(roleCode ?? "")) {
-        throw new CatalogWriteRefusedError("tax_override_forbidden");
-      }
-      if (product.retired) throw new CatalogWriteRefusedError("product_retired");
+      if ("taxCategory" in body) requireTaxRole(roleCode);
+      requireLiveProduct(product);
 
-      await pinStore(client, storeId);
-      const locked = await client.query<OverrideLockRow>(LOCK_OVERRIDE_SQL, [input.tenantId, productId, storeId]);
-      const current = locked.rows[0] ?? null;
-      const expected = body.expectedUpdatedAt;
-      if (current === null ? expected !== null : expected === null || Number(current.updated_ms) !== expected) {
-        throw new CatalogWriteRefusedError("stale_write");
-      }
+      const current = await this.lockOverride(client, input, productId, storeId);
+      requireOverrideExpected(current, body.expectedUpdatedAt);
+      const before: OverrideFields = { isActive: current?.is_active ?? null, taxCategory: current?.tax_category ?? null };
+      const { expectedUpdatedAt: _precondition, ...patch } = body;
+      const after = applyPatch(before, patch);
+      requireNotEmpty(after, current?.has_price ?? false);
 
-      const before = { isActive: current?.is_active ?? null, taxCategory: current?.tax_category ?? null };
-      const after = {
-        isActive: body.isActive !== undefined ? body.isActive : before.isActive,
-        taxCategory: body.taxCategory !== undefined ? body.taxCategory : before.taxCategory,
-      };
-      if (after.isActive === null && after.taxCategory === null && !(current?.has_price ?? false)) {
-        throw new CatalogWriteRefusedError("override_empty");
-      }
-
-      let overrideId: string;
-      if (current === null) {
-        overrideId = newId();
-        try {
-          await client.query(
-            `INSERT INTO store_product_overrides
-               (id, tenant_id, store_id, product_id, is_active, tax_category, created_by, updated_by, correlation_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)`,
-            [overrideId, input.tenantId, storeId, productId, after.isActive, after.taxCategory, input.actorUserId, input.requestId],
-          );
-        } catch (err) {
-          // A concurrent upsert created the store's active override first.
-          if (isUniqueViolation(err)) throw new CatalogWriteRefusedError("stale_write");
-          throw err;
-        }
-      } else {
-        if (!current.can_advance) throw new RerunWrite();
-        overrideId = current.id;
-        await client.query(
-          `UPDATE store_product_overrides
-              SET is_active = $3, tax_category = $4, updated_by = $5, correlation_id = $6
-            WHERE tenant_id = $1::uuid AND id = $2::uuid`,
-          [input.tenantId, overrideId, after.isActive, after.taxCategory, input.actorUserId, input.requestId],
-        );
-      }
+      const overrideId =
+        current === null
+          ? await this.insertOverride(client, input, { productId, storeId, fields: after })
+          : await this.updateOverride(client, input, current, after);
       await this.audit(client, input, {
         action: "catalog.store_override.upsert",
         targetType: OVERRIDE_TARGET,
@@ -450,15 +410,11 @@ export class ConsoleCatalogWriteService {
     return this.write(input, async (client) => {
       await this.lockProduct(client, input.tenantId, productId);
       const roleCode = await this.requireStoreInScope(client, input, storeId);
-      await pinStore(client, storeId);
-      const locked = await client.query<OverrideLockRow>(LOCK_OVERRIDE_SQL, [input.tenantId, productId, storeId]);
-      const current = locked.rows[0];
-      if (current === undefined) throw new CatalogProductNotFoundError();
-      if (current.tax_category !== null && !TAX_OVERRIDE_ROLES.has(roleCode ?? "")) {
-        throw new CatalogWriteRefusedError("tax_override_forbidden");
-      }
+      const current = await this.lockOverride(client, input, productId, storeId);
+      if (current === null) throw new CatalogProductNotFoundError();
+      if (current.tax_category !== null) requireTaxRole(roleCode);
       if (current.has_price) throw new CatalogWriteRefusedError("price_override_present");
-      if (Number(current.updated_ms) !== body.expectedUpdatedAt) throw new CatalogWriteRefusedError("stale_write");
+      requireExpected(current.updated_ms, body.expectedUpdatedAt);
       await client.query(
         `UPDATE store_product_overrides SET retired_at = now(), updated_by = $3, correlation_id = $4
           WHERE tenant_id = $1::uuid AND id = $2::uuid`,
@@ -477,6 +433,65 @@ export class ConsoleCatalogWriteService {
       });
       return this.reads.detailIn(client, input, productId);
     });
+  }
+
+  /** The store's active override of the product, locked, with `app.current_store` pinned to the store. */
+  private async lockOverride(
+    client: PoolClient,
+    input: CatalogWriteInput,
+    productId: string,
+    storeId: string,
+  ): Promise<OverrideLockRow | null> {
+    await pinStore(client, storeId);
+    const locked = await client.query<OverrideLockRow>(LOCK_OVERRIDE_SQL, [input.tenantId, productId, storeId]);
+    return locked.rows[0] ?? null;
+  }
+
+  /** A new active override; a concurrent upsert that created it first is `stale_write`. */
+  private async insertOverride(
+    client: PoolClient,
+    input: CatalogWriteInput,
+    row: { readonly productId: string; readonly storeId: string; readonly fields: OverrideFields },
+  ): Promise<string> {
+    const overrideId = newId();
+    try {
+      await client.query(
+        `INSERT INTO store_product_overrides
+           (id, tenant_id, store_id, product_id, is_active, tax_category, created_by, updated_by, correlation_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)`,
+        [
+          overrideId,
+          input.tenantId,
+          row.storeId,
+          row.productId,
+          row.fields.isActive,
+          row.fields.taxCategory,
+          input.actorUserId,
+          input.requestId,
+        ],
+      );
+    } catch (err) {
+      if (isUniqueViolation(err)) throw new CatalogWriteRefusedError("stale_write");
+      throw err;
+    }
+    return overrideId;
+  }
+
+  /** Changes the locked override's availability and tax category; its price is untouched. */
+  private async updateOverride(
+    client: PoolClient,
+    input: CatalogWriteInput,
+    current: OverrideLockRow,
+    fields: OverrideFields,
+  ): Promise<string> {
+    requireAdvance(current);
+    await client.query(
+      `UPDATE store_product_overrides
+          SET is_active = $3, tax_category = $4, updated_by = $5, correlation_id = $6
+        WHERE tenant_id = $1::uuid AND id = $2::uuid`,
+      [input.tenantId, current.id, fields.isActive, fields.taxCategory, input.actorUserId, input.requestId],
+    );
+    return current.id;
   }
 
   /** The product row, locked for this write; absent or of another tenant → 404. */
@@ -544,6 +559,61 @@ export class ConsoleCatalogWriteService {
         await sleep(attempt);
       }
     }
+  }
+}
+
+interface ProductFields extends Record<string, unknown> {
+  readonly name: string;
+  readonly description: string | null;
+  readonly categoryId: string | null;
+  readonly taxCategory: string;
+  readonly isActive: boolean;
+}
+
+interface OverrideFields extends Record<string, unknown> {
+  readonly isActive: boolean | null;
+  readonly taxCategory: string | null;
+}
+
+/** `before` with every key the request sent (`null` included) replaced; absent keys keep their value. */
+function applyPatch<T extends Record<string, unknown>>(before: T, patch: { readonly [K in keyof T]?: T[K] | undefined }): T {
+  const after: Record<string, unknown> = { ...before };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value !== undefined) after[key] = value;
+  }
+  return after as T;
+}
+
+function requireLiveProduct(product: ProductLockRow): void {
+  if (product.retired) throw new CatalogWriteRefusedError("product_retired");
+}
+
+/** The precondition: the row's `updated_at` (ms) must be the one the caller read. */
+function requireExpected(updatedMs: string, expected: number): void {
+  if (Number(updatedMs) !== expected) throw new CatalogWriteRefusedError("stale_write");
+}
+
+/** The override precondition: `null` asserts there is no active override. */
+function requireOverrideExpected(current: OverrideLockRow | null, expected: number | null): void {
+  if (current === null && expected === null) return;
+  if (current === null || expected === null) throw new CatalogWriteRefusedError("stale_write");
+  requireExpected(current.updated_ms, expected);
+}
+
+/** Reruns the write when its `now()` is in the row's own `updated_at` millisecond (see the class header). */
+function requireAdvance(row: { readonly can_advance: boolean }): void {
+  if (!row.can_advance) throw new RerunWrite();
+}
+
+/** Only owner / tenant_admin change a store tax override (O-4). */
+function requireTaxRole(roleCode: string | null): void {
+  if (!TAX_OVERRIDE_ROLES.has(roleCode ?? "")) throw new CatalogWriteRefusedError("tax_override_forbidden");
+}
+
+/** An override must keep at least one overridden field (the price counts, though it is never written here). */
+function requireNotEmpty(fields: OverrideFields, hasPrice: boolean): void {
+  if (fields.isActive === null && fields.taxCategory === null && !hasPrice) {
+    throw new CatalogWriteRefusedError("override_empty");
   }
 }
 

@@ -176,11 +176,10 @@ function skip(): boolean {
 
 type Method = "post" | "patch" | "put";
 
-function send(method: Method, path: string, session: string | null, body: unknown, headers: Record<string, string> = {}): request.Test {
-  let req = request(app!.getHttpServer())[method](path).set("Origin", ORIGIN).send(body as object);
-  if (session !== null) req = req.set("x-test-session", session);
-  for (const [k, v] of Object.entries(headers)) req = req.set(k, v);
-  return req;
+/** A write as `session` with a trusted Origin; chain `.set("Idempotency-Key", …)` for the create. */
+function send(method: Method, path: string, session: string | null, body: unknown): request.Test {
+  const req = request(app!.getHttpServer())[method](path).set("Origin", ORIGIN).send(body as object);
+  return session === null ? req : req.set("x-test-session", session);
 }
 
 function expectValid(validate: ValidateFunction, body: unknown): void {
@@ -299,7 +298,7 @@ describe("console catalog writes — auth, origin and roles", () => {
     ];
     for (const session of [SES_MANAGER, SES_STAFF]) {
       for (const [method, path, body] of calls) {
-        const res = await send(method, path, session, body, { "Idempotency-Key": key() });
+        const res = await send(method, path, session, body).set("Idempotency-Key", key());
         expect({ path, status: res.status, body: res.body.error }).toEqual({
           path,
           status: 404,
@@ -327,7 +326,7 @@ describe("console catalog writes — create (consoleCreateCatalogProduct)", () =
     if (skip()) return;
     const k = key();
     const body = { name: "RT738 Created", taxCategory: "standard", description: "d", categoryId: CAT_DRINKS.toUpperCase() };
-    const first = await send("post", PRODUCTS, SES_OWNER_ALL, body, { "Idempotency-Key": k });
+    const first = await send("post", PRODUCTS, SES_OWNER_ALL, body).set("Idempotency-Key", k);
     const created = await ok(first, 201);
     expect(first.headers["idempotent-replayed"]).toBeUndefined();
     expect(created.summary).toMatchObject({
@@ -342,7 +341,7 @@ describe("console catalog writes — create (consoleCreateCatalogProduct)", () =
     expect(created.storeOverrides).toEqual([]);
     const productId = created.summary.productId;
 
-    const replay = await send("post", PRODUCTS, SES_OWNER_ALL, body, { "Idempotency-Key": k });
+    const replay = await send("post", PRODUCTS, SES_OWNER_ALL, body).set("Idempotency-Key", k);
     expect(replay.status).toBe(201);
     expect(replay.headers["idempotent-replayed"]).toBe("true");
     expect((replay.body as Detail).summary.productId).toBe(productId);
@@ -356,7 +355,7 @@ describe("console catalog writes — create (consoleCreateCatalogProduct)", () =
     expect(await changeLogCount(productId)).toBe(0);
 
     refused(
-      await send("post", PRODUCTS, SES_OWNER_ALL, { ...body, name: "RT738 Other" }, { "Idempotency-Key": k }),
+      await send("post", PRODUCTS, SES_OWNER_ALL, { ...body, name: "RT738 Other" }).set("Idempotency-Key", k),
       409,
       "idempotency_key_conflict",
     );
@@ -373,11 +372,11 @@ describe("console catalog writes — create (consoleCreateCatalogProduct)", () =
       { name: "RT738 \ud800 Bad", taxCategory: "s" },
       { name: "RT738 Bad" },
     ]) {
-      refused(await send("post", PRODUCTS, SES_ADMIN_SPEC, body, { "Idempotency-Key": key() }), 400, "validation_error");
+      refused(await send("post", PRODUCTS, SES_ADMIN_SPEC, body).set("Idempotency-Key", key()), 400, "validation_error");
     }
     for (const categoryId of [CAT_OLD, CAT_B, NON_EXISTENT]) {
       refused(
-        await send("post", PRODUCTS, SES_ADMIN_SPEC, { name: "RT738 Bad", taxCategory: "s", categoryId }, { "Idempotency-Key": key() }),
+        await send("post", PRODUCTS, SES_ADMIN_SPEC, { name: "RT738 Bad", taxCategory: "s", categoryId }).set("Idempotency-Key", key()),
         422,
         "category_unavailable",
       );
