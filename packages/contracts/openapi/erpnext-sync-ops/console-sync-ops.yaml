@@ -286,7 +286,25 @@ components:
         yet turned into a posting intent, and reversals deferred before their
         sale's posting row exists, are not visible here. `lastPosted.state =
         none` with `pendingCount = 0` means no posting activity, NOT that
-        posting is current.
+        posting is current. `pendingCount` is 0 exactly when `oldestPendingAt`
+        and `oldestPendingAgeSeconds` are both null (the `if` / `then` /
+        `else` below).
+      if:
+        properties:
+          pendingCount:
+            const: 0
+      then:
+        properties:
+          oldestPendingAt:
+            type: "null"
+          oldestPendingAgeSeconds:
+            type: "null"
+      else:
+        properties:
+          oldestPendingAt:
+            type: string
+          oldestPendingAgeSeconds:
+            type: integer
       properties:
         lastPosted:
           $ref: "#/components/schemas/LastPosted"
@@ -315,7 +333,22 @@ components:
       type: object
       additionalProperties: false
       required: [state, at]
-      description: The latest ERP posting confirmation in scope, or why there is none.
+      description: >
+        The latest ERP posting confirmation in scope, or why there is none.
+        `at` is a date-time exactly when `state` is `known`, and null for
+        `unknown` / `none` (the `if` / `then` / `else` below).
+      if:
+        properties:
+          state:
+            const: known
+      then:
+        properties:
+          at:
+            type: string
+      else:
+        properties:
+          at:
+            type: "null"
       properties:
         state:
           type: string
