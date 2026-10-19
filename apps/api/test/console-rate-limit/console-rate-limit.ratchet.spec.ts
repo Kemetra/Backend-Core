@@ -166,6 +166,8 @@ const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
   consoleGetTenantAiEntitlements: "cheapRead",
   consoleGetTenantLogo: "cheapRead",
   consolePreviewTenantLogo: "jobOrPreview",
+  // RT-662: the owner's idempotent per-feature opt-out write.
+  consolePutTenantAiFeatureOptOut: "write",
   consolePutTenantLogo: "jobOrPreview",
   endSupportSession: "incidentControl",
   getCurrentSupportSession: "cheapRead",

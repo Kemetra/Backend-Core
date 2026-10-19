@@ -29,14 +29,18 @@ import {
   operationIdsExcept,
   type ContractReader,
   type OpenApiDocument,
+  type OperationObject,
 } from "../_helpers/openapi-contract";
 
 const CONTRACT_ID = "ai-entitlements.openapi";
 const PATH = "/api/v1/tenants/{tenant_id}/ai/entitlements";
 const OPERATION_ID = "consoleGetTenantAiEntitlements";
+const OPT_OUT_PATH = "/api/v1/tenants/{tenant_id}/ai/entitlements/opt-outs/{feature_id}";
+const OPT_OUT_OPERATION_ID = "consolePutTenantAiFeatureOptOut";
 
 type SchemaName =
   | "TenantAiEntitlements"
+  | "AiFeatureOptOutRequest"
   | "AiFeatureAvailability"
   | "AiEntitlementCheckInput"
   | "AiEntitlementDecision";
@@ -61,6 +65,18 @@ function validator(name: SchemaName): ValidateFunction {
   return v;
 }
 
+type ParamRef = { $ref: string };
+
+function optOut(): OperationObject {
+  const found = doc.paths?.[OPT_OUT_PATH]?.["put"];
+  if (!found) throw new Error(`PUT ${OPT_OUT_PATH} not declared`);
+  return found;
+}
+
+function refs(list: unknown): string[] {
+  return (list as ParamRef[]).map((p) => p.$ref);
+}
+
 const STORE_REF = "0190f5a2-3b4c-7d8e-9f01-000000000002";
 const RESERVATION_ID = "0190f5a2-3b4c-7d8e-9f01-000000000099";
 const NOW = "2026-10-19T10:00:00Z";
@@ -69,6 +85,7 @@ const KEY = "rt662-idempotency-key-0001";
 const FULL = {
   view: "full",
   entitlementVersion: 3,
+  optOutRevision: 7,
   state: "active",
   effectiveFrom: "2026-10-01T00:00:00Z",
   effectiveUntil: null,
@@ -124,6 +141,7 @@ const CHECK_INPUT = {
 const ALLOW = {
   decision: "allow",
   entitlementVersion: 3,
+  optOutRevision: 7,
   reservationId: RESERVATION_ID,
   evaluatedAt: NOW,
 } as const;
@@ -132,7 +150,14 @@ const DENY = {
   decision: "deny",
   reasonCode: "entitlement_unavailable",
   entitlementVersion: null,
+  optOutRevision: null,
   evaluatedAt: NOW,
+} as const;
+
+const OPT_OUT_BODY = {
+  expectedOptOutRevision: 7,
+  optedOut: true,
+  reason: "Not using AI answers in this tenant yet",
 } as const;
 
 const REASON_CODES = [
@@ -157,21 +182,26 @@ describe("ai-entitlements — document and operation", () => {
     expect(doc.info?.version).toBe("1.0.0-draft");
   });
 
-  it("declares exactly one operation, a GET with no body", () => {
-    expect(Object.keys(doc.paths ?? {})).toEqual([PATH]);
-    const methods = Object.keys(doc.paths![PATH]!).filter((k) => k !== "parameters");
-    expect(methods).toEqual(["get"]);
+  it("declares exactly two operations: the read GET with no body and the opt-out PUT", () => {
+    expect(Object.keys(doc.paths ?? {})).toEqual([PATH, OPT_OUT_PATH]);
+    const methods = (path: string) => Object.keys(doc.paths![path]!).filter((k) => k !== "parameters");
+    expect(methods(PATH)).toEqual(["get"]);
+    expect(methods(OPT_OUT_PATH)).toEqual(["put"]);
     expect(api.get(PATH).operationId).toBe(OPERATION_ID);
     expect(api.get(PATH).requestBody).toBeUndefined();
+    expect(optOut().operationId).toBe(OPT_OUT_OPERATION_ID);
   });
 
   it("is contract-only until the RT-664 runtime ships", () => {
-    expect(api.get(PATH)["x-runtime-status"]).toBe("contract-only");
-    expect(api.get(PATH)["x-runtime-note"]).toMatch(/RT-664/);
+    for (const op of [api.get(PATH), optOut()]) {
+      expect(op["x-runtime-status"]).toBe("contract-only");
+      expect(op["x-runtime-note"]).toMatch(/RT-664/);
+    }
   });
 
   it("collides with no operationId in any other contract", () => {
     expect(otherOperationIds.has(OPERATION_ID)).toBe(false);
+    expect(otherOperationIds.has(OPT_OUT_OPERATION_ID)).toBe(false);
   });
 
   it("states no price, currency, plan name, cost, token or grace duration in any tenant view", () => {
@@ -323,5 +353,81 @@ describe("ai-entitlements — internal check contract (§4.2)", () => {
     expect(v({ ...DENY, reasonCode: "maybe_later" })).toBe(false);
     expect(v({ ...DENY, reservationId: RESERVATION_ID })).toBe(false);
     expect(api.schema("AiEntitlementDeny").description).toMatch(/entitlement_unavailable/);
+  });
+});
+
+describe("ai-entitlements — owner opt-out write (D-5)", () => {
+  it("is owner only, cookieAuth, idempotent and audited", () => {
+    const op = optOut();
+    expect(op.security).toEqual([{ cookieAuth: [] }]);
+    expect((op as Record<string, unknown>)["x-idempotency"]).toBe("required");
+    expect(op["x-audit-action"]).toBe("ai_entitlement.opt_out_changed");
+    expect(String(doc.components!.securitySchemes!["cookieAuth"]!["description"])).toMatch(/@Roles\("owner"\)`\s+on the opt-out write/);
+    expect(api.responseDescription("NotFound")).toMatch(/every role but `owner`\s+on the opt-out write/);
+  });
+
+  it("takes the tenant and feature from the path and requires the Idempotency-Key header", () => {
+    expect(refs(doc.paths![OPT_OUT_PATH]!["parameters"])).toEqual([
+      "#/components/parameters/TenantId",
+      "#/components/parameters/FeatureIdPath",
+    ]);
+    expect(refs(optOut().parameters)).toEqual(["#/components/parameters/IdempotencyKey"]);
+    expect(doc.components!.parameters!["IdempotencyKey"]).toMatchObject({ in: "header", required: true });
+  });
+
+  it("answers 403 only for origin_rejected, 409 for a stale opt-out revision, 422 not_entitled for an opt-in beyond the plan", () => {
+    expect(Object.keys(optOut().responses ?? {}).sort()).toEqual(
+      ["200", "400", "401", "403", "404", "409", "422", "425", "429", "500", "503"],
+    );
+    expect(optOut().responses!["403"]).toEqual({ $ref: "#/components/responses/OriginRejected" });
+    expect(api.responseDescription("OptOutConflict")).toMatch(/ai_opt_out_changed_concurrently/);
+    expect(api.responseDescription("OptInExceedsPlan")).toMatch(/422 `not_entitled`/);
+    expect(REASON_CODES).toContain("not_entitled");
+  });
+
+  it("guards the write with its own optOutRevision, never entitlementVersion", () => {
+    const body = api.schema("AiFeatureOptOutRequest");
+    expect(Object.keys(body.properties!).sort()).toEqual(["expectedOptOutRevision", "optedOut", "reason"]);
+    expect(JSON.stringify(body)).not.toMatch(/entitlementVersion/);
+    expect(api.schema("TenantAiEntitlementsFull").required).toEqual(
+      expect.arrayContaining(["entitlementVersion", "optOutRevision"]),
+    );
+  });
+
+  it("can only subtract: no tenant, feature, limit, plan, state or grant in the body; reason required", () => {
+    const v = validator("AiFeatureOptOutRequest");
+    expect(v(OPT_OUT_BODY)).toBe(true);
+    expect(v({ ...OPT_OUT_BODY, optedOut: false })).toBe(true);
+    for (const extra of [{ tenantId: STORE_REF }, { featureId: "ai.ask" }, { limit: 10 }, { state: "active" }, { grant: true }]) {
+      expect(v({ ...OPT_OUT_BODY, ...extra })).toBe(false);
+    }
+    const { reason: _omit, ...noReason } = OPT_OUT_BODY;
+    expect(v(noReason)).toBe(false);
+    expect(v({ ...OPT_OUT_BODY, reason: "" })).toBe(false);
+    expect(v({ ...OPT_OUT_BODY, expectedOptOutRevision: -1 })).toBe(false);
+  });
+
+  it("answers 200 with the updated full view, no-store, with the replay header", () => {
+    const ok = optOut().responses!["200"] as unknown as {
+      headers: Record<string, { $ref: string }>;
+      content: { "application/json": { schema: { $ref: string } } };
+    };
+    expect(ok.content["application/json"].schema.$ref).toBe("#/components/schemas/TenantAiEntitlementsFull");
+    expect(Object.keys(ok.headers).sort()).toEqual(["Cache-Control", "Idempotent-Replayed"]);
+  });
+});
+
+describe("ai-entitlements — provenance of both sources", () => {
+  it("records entitlementVersion and optOutRevision on every decision", () => {
+    expect(api.schema("AiEntitlementAllow").required).toEqual(
+      expect.arrayContaining(["entitlementVersion", "optOutRevision"]),
+    );
+    expect(api.schema("AiEntitlementDeny").required).toEqual(
+      expect.arrayContaining(["entitlementVersion", "optOutRevision"]),
+    );
+    const v = validator("AiEntitlementDecision");
+    const { optOutRevision: _omit, ...noOptOut } = ALLOW;
+    expect(v(noOptOut)).toBe(false);
+    expect(v({ ...DENY, reasonCode: "feature_disabled_tenant", entitlementVersion: 3, optOutRevision: 7 })).toBe(true);
   });
 });

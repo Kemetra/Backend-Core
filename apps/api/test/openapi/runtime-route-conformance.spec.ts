@@ -69,6 +69,8 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "consoleGetTenantAiEntitlements",
       "consoleGetTenantLogo",
       "consolePreviewTenantLogo",
+      // RT-662: owner AI opt-out write contract; the runtime ships in RT-664.
+      "consolePutTenantAiFeatureOptOut",
       "consolePutTenantLogo",
       // RT-414: platform support-session contract; the runtime ships after owner approval.
       "endSupportSession",
