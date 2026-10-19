@@ -239,61 +239,75 @@ describe("0057-0061 — the five D7 indexes", () => {
     },
   );
 
-  it("serves the tenant-wide last posting from 0057", async () => {
-    if (skip()) return;
-    const plan = await planOf(
-      `SELECT posted_at FROM erpnext_posting_status
-        WHERE posted_at IS NOT NULL ORDER BY posted_at DESC LIMIT 1`,
-    );
-    expect(plan).toContain(`"Index Name":"${MIGRATIONS[0].index}"`);
-    expect(plan).not.toContain(`"Node Type":"Sort"`);
-  });
+  /** One row per D7 probe: the index that must serve it, under tenant RLS, without a Sort. */
+  const PROBES: ReadonlyArray<{
+    migration: (typeof MIGRATIONS)[number];
+    scope: "tenant-wide" | "one store";
+    fact: string;
+    sql: string;
+    params: unknown[];
+    sorted: boolean;
+  }> = [
+    {
+      migration: MIGRATIONS[0],
+      scope: "tenant-wide",
+      fact: "last posting",
+      sql: `SELECT posted_at FROM erpnext_posting_status
+             WHERE posted_at IS NOT NULL ORDER BY posted_at DESC LIMIT 1`,
+      params: [],
+      sorted: true,
+    },
+    {
+      migration: MIGRATIONS[1],
+      scope: "one store",
+      fact: "last posting",
+      sql: `SELECT posted_at FROM erpnext_posting_status
+             WHERE store_id = $1 AND posted_at IS NOT NULL ORDER BY posted_at DESC LIMIT 1`,
+      params: [STORE_QUIET],
+      sorted: true,
+    },
+    {
+      migration: MIGRATIONS[2],
+      scope: "tenant-wide",
+      fact: "oldest pending",
+      sql: `SELECT created_at FROM erpnext_posting_status
+             WHERE status = 'pending' ORDER BY created_at LIMIT 1`,
+      params: [],
+      sorted: true,
+    },
+    {
+      migration: MIGRATIONS[3],
+      scope: "one store",
+      fact: "oldest pending",
+      sql: `SELECT created_at FROM erpnext_posting_status
+             WHERE store_id = $1 AND status = 'pending' ORDER BY created_at LIMIT 1`,
+      params: [STORE_QUIET],
+      sorted: true,
+    },
+    {
+      migration: MIGRATIONS[4],
+      scope: "tenant-wide",
+      fact: "unknown-vs-none probe",
+      sql: `SELECT 1 FROM erpnext_posting_status WHERE status = 'posted' AND posted_at IS NULL LIMIT 1`,
+      params: [],
+      sorted: false,
+    },
+    {
+      migration: MIGRATIONS[4],
+      scope: "one store",
+      fact: "unknown-vs-none probe",
+      sql: `SELECT 1 FROM erpnext_posting_status
+             WHERE status = 'posted' AND posted_at IS NULL AND store_id = $1 LIMIT 1`,
+      params: [STORE_QUIET],
+      sorted: false,
+    },
+  ];
 
-  it("serves one store's last posting from 0058", async () => {
+  it.each(PROBES)("serves the $scope $fact from $migration.id", async ({ migration, sql, params, sorted }) => {
     if (skip()) return;
-    const plan = await planOf(
-      `SELECT posted_at FROM erpnext_posting_status
-        WHERE store_id = $1 AND posted_at IS NOT NULL ORDER BY posted_at DESC LIMIT 1`,
-      [STORE_QUIET],
-    );
-    expect(plan).toContain(`"Index Name":"${MIGRATIONS[1].index}"`);
-    expect(plan).not.toContain(`"Node Type":"Sort"`);
-  });
-
-  it("serves the tenant-wide oldest pending from 0059", async () => {
-    if (skip()) return;
-    const plan = await planOf(
-      `SELECT created_at FROM erpnext_posting_status
-        WHERE status = 'pending' ORDER BY created_at LIMIT 1`,
-    );
-    expect(plan).toContain(`"Index Name":"${MIGRATIONS[2].index}"`);
-    expect(plan).not.toContain(`"Node Type":"Sort"`);
-  });
-
-  it("serves one store's oldest pending from 0060", async () => {
-    if (skip()) return;
-    const plan = await planOf(
-      `SELECT created_at FROM erpnext_posting_status
-        WHERE store_id = $1 AND status = 'pending' ORDER BY created_at LIMIT 1`,
-      [STORE_QUIET],
-    );
-    expect(plan).toContain(`"Index Name":"${MIGRATIONS[3].index}"`);
-    expect(plan).not.toContain(`"Node Type":"Sort"`);
-  });
-
-  it("serves the unknown-vs-none probe from 0061, tenant-wide and per store", async () => {
-    if (skip()) return;
-    for (const [sql, params] of [
-      [`SELECT 1 FROM erpnext_posting_status WHERE status = 'posted' AND posted_at IS NULL LIMIT 1`, []],
-      [
-        `SELECT 1 FROM erpnext_posting_status
-          WHERE status = 'posted' AND posted_at IS NULL AND store_id = $1 LIMIT 1`,
-        [STORE_QUIET],
-      ],
-    ] as const) {
-      const plan = await planOf(sql, [...params]);
-      expect(plan).toContain(`"Index Name":"${MIGRATIONS[4].index}"`);
-    }
+    const plan = await planOf(sql, params);
+    expect(plan).toContain(`"Index Name":"${migration.index}"`);
+    if (sorted) expect(plan).not.toContain(`"Node Type":"Sort"`);
   });
 });
 
