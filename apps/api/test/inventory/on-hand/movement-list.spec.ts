@@ -106,16 +106,16 @@ describe("listStockMovements — product-scoped (FR-004/SC-001)", () => {
     expect(m).not.toHaveProperty("external_id");
   });
 
-  it("returns items in a stable order (occurred_at, then id)", async () => {
+  it("returns items in a stable order, newest first (occurred_at DESC, then id DESC; RT-731)", async () => {
     if (maybeSkip()) return;
     const list = await service.listStockMovements({
       tenantId: TENANT_A,
       storeId: STORE_A_X,
       productId: PRODUCT_A_ACTIVE,
     });
-    const occurred = list.items.map((m) => m.occurredAt);
-    const sorted = [...occurred].sort();
-    expect(occurred).toEqual(sorted);
+    const keys = list.items.map((m) => [m.occurredAt, m.id].join("|"));
+    const sorted = [...keys].sort().reverse();
+    expect(keys).toEqual(sorted);
   });
 });
 
