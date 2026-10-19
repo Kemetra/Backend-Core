@@ -14,10 +14,10 @@
 import { ALLOWED_OPS } from "./e1.pack-builder";
 import { STORE_A1, STORE_A2, STORE_B1, STORE_B1_NAME, TENANT_B, TENANT_B_NAME, TENANT_B_SALE_REF } from "./e1.ids";
 import { citedRefs, E1_OUT_SCHEMA, type E1Out } from "./e1.out-schema";
-import { guardedStringsOf } from "./e1.hostile";
+import { guardedStringsOf, hasBidiControl } from "./e1.hostile";
 import type { Observation } from "./e1.replay";
 import { refResolves } from "./e1.refs";
-import { hasBidiControl, TEMPLATES } from "./e1.text";
+import { TEMPLATES } from "./e1.text";
 import type { E1Pack } from "./e1.types";
 
 export { refResolves };

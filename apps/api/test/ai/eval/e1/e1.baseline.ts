@@ -20,7 +20,7 @@ import { arr, claim, rec, ref, str, text, viewOf, type Track, type View } from "
 import { abstainOut, GAP_ENTRIES, gateAbstain, staleAbstain } from "./e1.baseline.rules";
 import { erpSaleTrack, processingTrack, reversalTrack } from "./e1.baseline.tracks";
 import type { E1Claim, E1Out } from "./e1.out-schema";
-import { matchesActionRequest } from "./e1.text";
+import { matchesActionRequest } from "./e1.question";
 import type { E1Boundary, E1Pack } from "./e1.types";
 
 const UNKNOWN_ORDER = ["erp_sale_state", "rejection_class", "erp_reversal_state", "reversal_class", "refund_reversal_state"] as const;

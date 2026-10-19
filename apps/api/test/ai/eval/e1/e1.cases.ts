@@ -17,7 +17,7 @@ import {
   storeId,
 } from "./e1.ids";
 import { buildPack, worldClient, type PackInput } from "./e1.pack-builder";
-import { RLO } from "./e1.text";
+import { RLO } from "./e1.hostile";
 import { buildWorld, probeSaleRef } from "./e1.world";
 import type {
   E1Boundary,

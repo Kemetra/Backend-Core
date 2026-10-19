@@ -5,7 +5,7 @@
  */
 import { ref, rec, str, text, type Abstain, type View } from "./e1.baseline.base";
 import type { E1Out } from "./e1.out-schema";
-import { matchesHealthQuestion } from "./e1.text";
+import { matchesHealthQuestion } from "./e1.question";
 import type { E1Pack, E1Read } from "./e1.types";
 
 export const SKEW_LIMIT_MS = 30_000;

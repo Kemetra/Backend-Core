@@ -39,23 +39,29 @@ function capturedTrack({ view, saleRef }: Ctx): Track {
   return track("captured", "A2", { claims, runbooks: ["01"] });
 }
 
-function retryableTrack({ view, saleRef }: Ctx): Track {
-  const dead = rec(rec(view.r2?.body)["deadLetter"]);
-  const retries = dead["retryCount"];
-  const params: Params = {
-    reasonCode: str(dead["reasonCode"]),
-    retryCount: typeof retries === "number" ? retries : null,
-    quarantinedAt: str(dead["quarantinedAt"]),
-  };
-  const refs = [ref(STATUS_OP, saleRef, "/deadLetter/reasonCode"), ref(STATUS_OP, saleRef, "/deadLetter/quarantinedAt")];
-  return track("failed-retryable", "A3", { claims: [claim("A3", params, ...refs)], runbooks: ["02"], failed: true });
+interface FailedProcessing {
+  readonly state: string;
+  readonly rule: "A3" | "A4";
+  readonly runbook: string;
+  readonly extra: Params;
 }
 
-function repairTrack({ view, saleRef }: Ctx): Track {
+/** A failed processing track: the open dead letter's reason, plus what only this class reports. */
+function failedProcessingTrack({ view, saleRef }: Ctx, spec: FailedProcessing): Track {
   const dead = rec(rec(view.r2?.body)["deadLetter"]);
-  const params: Params = { reasonCode: str(dead["reasonCode"]), quarantinedAt: str(dead["quarantinedAt"]) };
+  const params: Params = { reasonCode: str(dead["reasonCode"]), quarantinedAt: str(dead["quarantinedAt"]), ...spec.extra };
   const refs = [ref(STATUS_OP, saleRef, "/deadLetter/reasonCode"), ref(STATUS_OP, saleRef, "/deadLetter/quarantinedAt")];
-  return track("failed-needs-repair", "A4", { claims: [claim("A4", params, ...refs)], runbooks: ["03"], failed: true });
+  return track(spec.state, spec.rule, { claims: [claim(spec.rule, params, ...refs)], runbooks: [spec.runbook], failed: true });
+}
+
+function retryableTrack(ctx: Ctx): Track {
+  const retries = rec(rec(ctx.view.r2?.body)["deadLetter"])["retryCount"];
+  const extra: Params = { retryCount: typeof retries === "number" ? retries : null };
+  return failedProcessingTrack(ctx, { state: "failed-retryable", rule: "A3", runbook: "02", extra });
+}
+
+function repairTrack(ctx: Ctx): Track {
+  return failedProcessingTrack(ctx, { state: "failed-needs-repair", rule: "A4", runbook: "03", extra: {} });
 }
 
 const PROCESSING: Readonly<Record<string, (ctx: Ctx) => Track>> = {

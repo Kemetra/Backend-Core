@@ -8,7 +8,9 @@
 import { explain } from "./e1.baseline";
 import { E1_CASES, materialize } from "./e1.cases";
 import { E1_OUT_SCHEMA } from "./e1.out-schema";
-import { hasBidiControl, matchesActionRequest, matchesHealthQuestion, renderText } from "./e1.text";
+import { hasBidiControl } from "./e1.hostile";
+import { matchesActionRequest, matchesHealthQuestion } from "./e1.question";
+import { renderText } from "./e1.text";
 import type { E1Case, E1Pack, E1Read, Lang } from "./e1.types";
 
 const LANGS: readonly Lang[] = ["en", "ar"];
