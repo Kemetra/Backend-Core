@@ -149,6 +149,9 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
  * a non-default class).
  */
 const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
+  // RT-738 (CAT-W1 + CAT-W2): console catalog writes; the runtime ships in the RT-738 runtime change.
+  consoleAddProductIdentifier: "write",
+  consoleCreateCatalogProduct: "write",
   consoleDeleteTenantLogo: "write",
   // RT-729 (CAT-R1): the runtime ships in RT-730. The list is a name scan (O-8, no trigram).
   consoleGetCatalogProduct: "cheapRead",
@@ -157,6 +160,11 @@ const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
   consoleListCatalogProducts: "expensiveRead",
   consolePreviewTenantLogo: "jobOrPreview",
   consolePutTenantLogo: "jobOrPreview",
+  consoleRetireCatalogProduct: "write",
+  consoleRetireProductIdentifier: "write",
+  consoleRetireStoreOverride: "write",
+  consoleUpdateCatalogProduct: "write",
+  consoleUpsertStoreOverride: "write",
   endSupportSession: "incidentControl",
   getCurrentSupportSession: "cheapRead",
   openSupportSession: "onboarding",
