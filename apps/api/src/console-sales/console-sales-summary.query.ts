@@ -18,15 +18,19 @@
  */
 import { z } from "zod";
 
-import { isCalendarDate, MAX_SPAN_DAYS } from "../catalog/sales/history/sale-history.query";
-import { LOWER_UUID } from "./console-sales.query";
+import { isCalendarDate } from "../catalog/sales/history/sale-history.query";
+import {
+  BusinessDateSchema,
+  CursorTokenSchema,
+  LOWER_UUID,
+  pageSizeSchema,
+  refineBusinessRange,
+} from "./console-sales.query";
 
 export const SUMMARY_PAGE_SIZE_DEFAULT = 50;
 export const SUMMARY_PAGE_SIZE_MAX = 50;
 
 const DAY_MS = 86_400_000;
-
-const BusinessDateSchema = z.string().refine(isCalendarDate, "must be a calendar date (YYYY-MM-DD)");
 
 export const ConsoleSalesSummaryQuerySchema = z
   .object({
@@ -37,29 +41,11 @@ export const ConsoleSalesSummaryQuerySchema = z
       .optional(),
     from: BusinessDateSchema,
     to: BusinessDateSchema,
-    cursor: z
-      .string()
-      .min(1)
-      .max(512)
-      .regex(/^[A-Za-z0-9_-]+$/, "cursor must be an opaque continuation token")
-      .optional(),
-    // A digit string, never `z.coerce`: an array (`page_size[]=5`) must not coerce.
-    page_size: z
-      .string()
-      .regex(/^\d{1,3}$/, "page_size must be an integer")
-      .transform(Number)
-      .pipe(z.number().int().min(1).max(SUMMARY_PAGE_SIZE_MAX))
-      .optional(),
+    cursor: CursorTokenSchema.optional(),
+    page_size: pageSizeSchema(SUMMARY_PAGE_SIZE_MAX).optional(),
   })
   .strict()
-  .superRefine((q, ctx) => {
-    const days = (Date.parse(`${q.to}T00:00:00Z`) - Date.parse(`${q.from}T00:00:00Z`)) / DAY_MS;
-    if (days < 0) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["to"], message: "to must not be before from" });
-    } else if (days > MAX_SPAN_DAYS) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["to"], message: "the range is at most 31 business days" });
-    }
-  });
+  .superRefine(refineBusinessRange);
 
 export type ConsoleSalesSummaryQuery = z.infer<typeof ConsoleSalesSummaryQuerySchema>;
 
@@ -122,23 +108,21 @@ export function encodeSalesSummaryCursor(binding: SummaryCursorBinding, afterSto
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
 
+/** The payload of a well-formed token of this operation, or null. */
+function payloadOf(cursor: string): CursorPayload | null {
+  try {
+    const parsed = CursorPayload.safeParse(JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The last store id of the previous page, or InvalidSalesSummaryCursorError when not issued for `binding`. */
 export function decodeSalesSummaryCursor(binding: SummaryCursorBinding, cursor: string): string {
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-  } catch {
-    throw new InvalidSalesSummaryCursorError();
-  }
-  const parsed = CursorPayload.safeParse(decoded);
-  if (!parsed.success) throw new InvalidSalesSummaryCursorError();
-  const p = parsed.data;
-  const boundHere =
-    p.tenant === binding.tenantId.toLowerCase() &&
-    p.store === binding.storeId &&
-    p.from === binding.from &&
-    p.to === binding.to &&
-    p.size === binding.pageSize;
-  if (!boundHere) throw new InvalidSalesSummaryCursorError();
-  return p.after;
+  const payload = payloadOf(cursor);
+  const expected = encodeSalesSummaryCursor(binding, payload?.after ?? "");
+  // Re-encoding the binding with the token's position must give the token's exact payload.
+  if (payload === null || cursor !== expected) throw new InvalidSalesSummaryCursorError();
+  return payload.after;
 }

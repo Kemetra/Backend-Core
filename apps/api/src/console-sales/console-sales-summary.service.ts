@@ -153,15 +153,7 @@ export class ConsoleSalesSummaryService {
     };
     const after = input.cursor === null ? null : decodeSalesSummaryCursor(binding, input.cursor);
     return runWithTenantContext(this.pool, { tenantId: input.tenantId, isPlatformAdmin: false }, async (client) => {
-      const scope = await callerStoreScope(client, this.memberships, input);
-      let storeIds: readonly string[] | null;
-      if (input.storeId !== null) {
-        if (!inStoreScope(scope, input.storeId)) throw new StoreNotInScopeError();
-        storeIds = [input.storeId];
-      } else {
-        storeIds = scopeStoreIds(scope);
-      }
-
+      const storeIds = await this.scopedStoreIds(client, input);
       const raw = await client.query<RawRow>(SUMMARY_SQL, [input.tenantId, storeIds, input.from, input.to]);
       const storeRows = raw.rows.filter((r) => r.kind === "store");
       // A store_id that is not a store of this tenant reads no store row.
@@ -169,13 +161,7 @@ export class ConsoleSalesSummaryService {
       const facts = raw.rows.filter((r) => r.kind !== "store") as SummaryFactRow[];
 
       const asOf = await this.readClock(client);
-      const zones = [...new Set(storeRows.map((r) => r.timezone!))];
-      const today = await this.localDates(client, asOf, zones);
-      const stores: SummaryStoreRow[] = storeRows.map((r) => ({
-        store_id: r.store_id,
-        timezone: r.timezone!,
-        current_business_date: today.get(r.timezone!)!,
-      }));
+      const stores = await this.withLocalDates(client, asOf, storeRows);
 
       const assembled = assembleSummary({
         scope: input.storeId === null ? "all_in_scope" : "store",
@@ -196,15 +182,30 @@ export class ConsoleSalesSummaryService {
     });
   }
 
+  /** The one in-scope `store_id`, else the caller's scoped stores (null = tenant-wide). */
+  private async scopedStoreIds(client: PoolClient, input: SalesSummaryInput): Promise<readonly string[] | null> {
+    const scope = await callerStoreScope(client, this.memberships, input);
+    if (input.storeId === null) return scopeStoreIds(scope);
+    if (!inStoreScope(scope, input.storeId)) throw new StoreNotInScopeError();
+    return [input.storeId];
+  }
+
   /** `asOf`: the server clock after the snapshot was read. */
   private async readClock(client: PoolClient): Promise<Date> {
     const r = await client.query<{ as_of: Date }>(`SELECT clock_timestamp() AS as_of`);
     return r.rows[0]!.as_of;
   }
 
-  private async localDates(client: PoolClient, asOf: Date, zones: readonly string[]): Promise<Map<string, string>> {
-    if (zones.length === 0) return new Map();
+  /** Each scoped store with its local date at `asOf` (`currentBusinessDate`). */
+  private async withLocalDates(client: PoolClient, asOf: Date, storeRows: readonly RawRow[]): Promise<SummaryStoreRow[]> {
+    const zones = [...new Set(storeRows.map((r) => r.timezone!))];
+    if (zones.length === 0) return [];
     const r = await client.query<{ tz: string; local_date: string }>(CURRENT_DATES_SQL, [asOf, zones]);
-    return new Map(r.rows.map((row) => [row.tz, row.local_date]));
+    const today = new Map(r.rows.map((row) => [row.tz, row.local_date]));
+    return storeRows.map((row) => ({
+      store_id: row.store_id,
+      timezone: row.timezone!,
+      current_business_date: today.get(row.timezone!)!,
+    }));
   }
 }

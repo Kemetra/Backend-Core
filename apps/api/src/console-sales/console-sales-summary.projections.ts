@@ -276,31 +276,53 @@ function daysWire(days: Map<string, KpiAcc>): BusinessDateKpis[] {
   return [...days.entries()].map(([businessDate, acc]) => ({ businessDate, kpis: acc.toWire() }));
 }
 
-/** Roll the aggregated groups into the summary page. */
-export function assembleSummary(input: AssembleSummaryInput): AssembledSummary {
-  const perStore = new Map<string, StoreAcc>(
-    input.stores.map((s) => [s.store_id, { days: daysAcc(input.dates), range: new KpiAcc() }]),
-  );
-  const scopeDays = daysAcc(input.dates);
-  const scopeRange = new KpiAcc();
-  for (const row of input.facts) {
-    const store = perStore.get(row.store_id);
-    const day = store?.days.get(row.business_date);
-    const scopeDay = scopeDays.get(row.business_date);
-    // Every group is read through the scoped stores and the range: anything else is a query defect.
-    if (store === undefined || day === undefined || scopeDay === undefined) {
-      throw new Error("sales summary: a fact group falls outside the scoped stores or the range");
-    }
-    day.add(row);
-    store.range.add(row);
-    scopeDay.add(row);
-    scopeRange.add(row);
+/** Every bucket a fact group is added to: its store's day and range, the scope's day and range. */
+class SummaryAcc {
+  private readonly perStore: Map<string, StoreAcc>;
+  readonly scopeDays: Map<string, KpiAcc>;
+  readonly scopeRange = new KpiAcc();
+
+  constructor(stores: readonly SummaryStoreRow[], dates: readonly string[]) {
+    this.perStore = new Map(stores.map((s) => [s.store_id, { days: daysAcc(dates), range: new KpiAcc() }]));
+    this.scopeDays = daysAcc(dates);
   }
 
-  const ordered = [...input.stores].sort((a, b) => compareCodeUnits(a.store_id, b.store_id));
-  const remaining = input.after === null ? ordered : ordered.filter((s) => compareCodeUnits(s.store_id, input.after!) > 0);
-  const page = remaining.slice(0, input.pageSize);
-  const resumeAfter = remaining.length > page.length ? page[page.length - 1]!.store_id : null;
+  add(row: SummaryFactRow): void {
+    const targets = [
+      this.perStore.get(row.store_id)?.days.get(row.business_date),
+      this.perStore.get(row.store_id)?.range,
+      this.scopeDays.get(row.business_date),
+      this.scopeRange,
+    ];
+    // Every group is read through the scoped stores and the range: anything else is a query defect.
+    if (targets.includes(undefined)) {
+      throw new Error("sales summary: a fact group falls outside the scoped stores or the range");
+    }
+    for (const acc of targets) acc!.add(row);
+  }
+
+  store(storeId: string): StoreAcc {
+    return this.perStore.get(storeId)!;
+  }
+}
+
+/** The stores of this page (by id, after `after`) and the last id when more follow. */
+function pageOf(
+  stores: readonly SummaryStoreRow[],
+  after: string | null,
+  pageSize: number,
+): { readonly page: SummaryStoreRow[]; readonly resumeAfter: string | null } {
+  const ordered = [...stores].sort((a, b) => compareCodeUnits(a.store_id, b.store_id));
+  const remaining = after === null ? ordered : ordered.filter((s) => compareCodeUnits(s.store_id, after) > 0);
+  const page = remaining.slice(0, pageSize);
+  return { page, resumeAfter: remaining.length > page.length ? page[page.length - 1]!.store_id : null };
+}
+
+/** Roll the aggregated groups into the summary page. */
+export function assembleSummary(input: AssembleSummaryInput): AssembledSummary {
+  const acc = new SummaryAcc(input.stores, input.dates);
+  for (const row of input.facts) acc.add(row);
+  const { page, resumeAfter } = pageOf(input.stores, input.after, input.pageSize);
 
   return {
     body: {
@@ -310,17 +332,14 @@ export function assembleSummary(input: AssembleSummaryInput): AssembledSummary {
       to: input.to,
       asOf: input.asOf,
       completeness: "received_only",
-      stores: page.map((s) => {
-        const acc = perStore.get(s.store_id)!;
-        return {
-          storeRef: s.store_id,
-          storeTimezone: s.timezone,
-          currentBusinessDate: s.current_business_date,
-          days: daysWire(acc.days),
-          rangeTotals: acc.range.toWire(),
-        };
-      }),
-      scopeTotals: { storeCount: input.stores.length, days: daysWire(scopeDays), rangeTotals: scopeRange.toWire() },
+      stores: page.map((s) => ({
+        storeRef: s.store_id,
+        storeTimezone: s.timezone,
+        currentBusinessDate: s.current_business_date,
+        days: daysWire(acc.store(s.store_id).days),
+        rangeTotals: acc.store(s.store_id).range.toWire(),
+      })),
+      scopeTotals: { storeCount: input.stores.length, days: daysWire(acc.scopeDays), rangeTotals: acc.scopeRange.toWire() },
     },
     resumeAfter,
   };
