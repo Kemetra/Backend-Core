@@ -12,7 +12,7 @@
  *     every effect is `erp_neutral`; any non-zero net needs an ERP transfer
  *     intent that Gate 8 (RT-293) has not defined, so the event fails closed.
  */
-import type { InventoryReasonCode, InventoryStatus } from '@data-pulse-2/db';
+import { INVENTORY_STATUSES, type InventoryReasonCode, type InventoryStatus } from '@data-pulse-2/db';
 
 import { parseQuantity } from '../decimal-quantity';
 
@@ -29,23 +29,35 @@ import { parseQuantity } from '../decimal-quantity';
  *     (RT-449). Holds are records on an identity (G7-6), so a plain status
  *     move never places or lifts one.
  */
-type TransitionRule = (from: InventoryStatus, to: InventoryStatus) => boolean;
-
-// A Map, not an object: a code outside the table finds no rule (never a
-// prototype member), and is refused.
-const REASON_TRANSITIONS: ReadonlyMap<InventoryReasonCode, TransitionRule> = new Map<
-  InventoryReasonCode,
-  TransitionRule
->([
-  ['damage', (from, to) => from === 'sellable' && to === 'damaged'],
-  ['expiry', (from, to) => from === 'sellable' && to === 'expired'],
-  ['inspection_restock', (from, to) => from === 'return_inspection' && to === 'sellable'],
-  ['inspection_damage', (from, to) => from === 'return_inspection' && to === 'damaged'],
-  ['hold_release', (from, to) => from === 'quality_hold' && to === 'sellable'],
-  ['correction', (from, to) => !HOLD_STATUSES.has(from) && !HOLD_STATUSES.has(to)],
-]);
-
 const HOLD_STATUSES: ReadonlySet<InventoryStatus> = new Set(['quality_hold', 'recall_hold']);
+
+/** A `from>to` status pair, the key of the data-only transition table. */
+type StatusPair = `${InventoryStatus}>${InventoryStatus}`;
+
+function pair(from: InventoryStatus, to: InventoryStatus): StatusPair {
+  return `${from}>${to}`;
+}
+
+/** Every pair of different statuses outside the two hold statuses (`correction`). */
+const CORRECTION_PAIRS: readonly StatusPair[] = INVENTORY_STATUSES.filter((s) => !HOLD_STATUSES.has(s)).flatMap(
+  (from) =>
+    INVENTORY_STATUSES.filter((to) => to !== from && !HOLD_STATUSES.has(to)).map((to) => pair(from, to)),
+);
+
+// Data only: a code maps to the set of pairs it allows; no function is looked
+// up by the code. A code outside the table (including the reserved hold codes)
+// allows nothing.
+const REASON_TRANSITIONS: ReadonlyMap<InventoryReasonCode, ReadonlySet<StatusPair>> = new Map<
+  InventoryReasonCode,
+  ReadonlySet<StatusPair>
+>([
+  ['damage', new Set([pair('sellable', 'damaged')])],
+  ['expiry', new Set([pair('sellable', 'expired')])],
+  ['inspection_restock', new Set([pair('return_inspection', 'sellable')])],
+  ['inspection_damage', new Set([pair('return_inspection', 'damaged')])],
+  ['hold_release', new Set([pair('quality_hold', 'sellable')])],
+  ['correction', new Set(CORRECTION_PAIRS)],
+]);
 
 /** Reason Codes no RT-435 command accepts (the RT-449 hold workflow owns them). */
 export const RESERVED_REASON_CODES: ReadonlySet<InventoryReasonCode> = new Set([
@@ -94,8 +106,8 @@ export function assertStatusMoveAllowed(input: {
       `reasonCode '${input.reasonCode}' is reserved for the tracking-hold workflow`,
     );
   }
-  const allows = REASON_TRANSITIONS.get(input.reasonCode);
-  if (allows === undefined || !allows(input.fromStatus, input.toStatus)) {
+  const allowed = REASON_TRANSITIONS.get(input.reasonCode);
+  if (allowed?.has(pair(input.fromStatus, input.toStatus)) !== true) {
     throw new PositionEventRuleError(
       `reasonCode '${input.reasonCode}' does not allow ${input.fromStatus} -> ${input.toStatus}`,
     );
