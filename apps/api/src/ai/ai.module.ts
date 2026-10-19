@@ -1,0 +1,88 @@
+/**
+ * AiModule — RT-655. Provides the AI gateway with SAFE DEFAULTS:
+ *
+ *   - no registered features and an EMPTY route allowlist
+ *   - deny-all entitlement (RT-664 replaces it), fail-closed budget (RT-663)
+ *   - empty evidence builder (RT-647 supplies real ones)
+ *   - the disabled provider (never the fake) and the kill switch off
+ *
+ * It has no controller, so it adds no HTTP route, and it is deliberately NOT
+ * imported by AppModule yet: there is no consumer until a feature route exists
+ * (contract-first, [GATED]). RT-648's offline harness builds the gateway from
+ * these tokens directly.
+ */
+import { Module } from "@nestjs/common";
+
+import { ROOT_LOGGER } from "../common/logging.interceptor";
+import { DisabledModelProvider } from "./adapters/disabled/disabled-model-provider";
+import {
+  AI_BUDGET,
+  AI_ENTITLEMENT,
+  AI_EVIDENCE_BUILDER,
+  AI_FEATURES,
+  AI_GATEWAY_DEPS,
+  AI_GATEWAY_METRICS,
+  AI_GATEWAY_RUNTIME,
+  AI_MODEL_PROVIDERS,
+  AI_ROUTE_ALLOWLIST,
+} from "./ai.tokens";
+import {
+  DenyAllAiEntitlement,
+  EmptyEvidencePackBuilder,
+  FailClosedAiBudget,
+} from "./gateway/ai-gateway.defaults";
+import { aiGatewayMetrics } from "./gateway/ai-gateway.metrics";
+import { readAiGatewayRuntime } from "./gateway/ai-gateway.runtime";
+import { AiGateway } from "./gateway/ai-gateway.service";
+import type { AiGatewayDeps, AiGatewayLogger } from "./gateway/ai-gateway.types";
+
+@Module({
+  providers: [
+    { provide: AI_FEATURES, useValue: [] },
+    { provide: AI_ENTITLEMENT, useClass: DenyAllAiEntitlement },
+    { provide: AI_BUDGET, useClass: FailClosedAiBudget },
+    { provide: AI_EVIDENCE_BUILDER, useClass: EmptyEvidencePackBuilder },
+    { provide: AI_ROUTE_ALLOWLIST, useValue: [] },
+    { provide: AI_MODEL_PROVIDERS, useFactory: () => [new DisabledModelProvider()] },
+    { provide: AI_GATEWAY_RUNTIME, useFactory: () => readAiGatewayRuntime() },
+    { provide: AI_GATEWAY_METRICS, useValue: aiGatewayMetrics },
+    {
+      provide: AI_GATEWAY_DEPS,
+      useFactory: (
+        features: AiGatewayDeps["features"],
+        entitlement: AiGatewayDeps["entitlement"],
+        budget: AiGatewayDeps["budget"],
+        evidence: AiGatewayDeps["evidence"],
+        routes: AiGatewayDeps["routes"],
+        providers: AiGatewayDeps["providers"],
+        runtime: AiGatewayDeps["runtime"],
+        metrics: AiGatewayDeps["metrics"],
+        logger?: AiGatewayLogger,
+      ): AiGatewayDeps => ({
+        features,
+        entitlement,
+        budget,
+        evidence,
+        routes,
+        providers,
+        runtime,
+        metrics,
+        ...(logger === undefined ? {} : { logger }),
+      }),
+      inject: [
+        AI_FEATURES,
+        AI_ENTITLEMENT,
+        AI_BUDGET,
+        AI_EVIDENCE_BUILDER,
+        AI_ROUTE_ALLOWLIST,
+        AI_MODEL_PROVIDERS,
+        AI_GATEWAY_RUNTIME,
+        AI_GATEWAY_METRICS,
+        { token: ROOT_LOGGER, optional: true },
+      ],
+    },
+    AiGateway,
+  ],
+  exports: [AiGateway],
+})
+export class AiModule {}

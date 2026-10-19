@@ -1,0 +1,26 @@
+{
+  "$comment": "RT-655. Vendor model SDKs and gateway frameworks. Importing any of these is forbidden outside apps/*/src/ai/adapters/<vendor>/** (vendor = any directory except fake, recorded, disabled). Read by .eslintrc.cjs (no-restricted-imports) and by apps/api/test/ai/vendor-import-boundary.spec.ts so both gates share one list.",
+  "packages": [
+    "@anthropic-ai/sdk",
+    "@anthropic-ai/bedrock-sdk",
+    "@anthropic-ai/vertex-sdk",
+    "openai",
+    "@azure/openai",
+    "@aws-sdk/client-bedrock",
+    "@aws-sdk/client-bedrock-runtime",
+    "@aws-sdk/client-bedrock-agent-runtime",
+    "@google/generative-ai",
+    "@google/genai",
+    "@google-cloud/vertexai",
+    "@mistralai/mistralai",
+    "cohere-ai",
+    "groq-sdk",
+    "ollama",
+    "replicate",
+    "@huggingface/inference",
+    "langchain",
+    "litellm",
+    "ai"
+  ],
+  "scopes": ["@langchain/", "@ai-sdk/", "@llamaindex/"]
+}

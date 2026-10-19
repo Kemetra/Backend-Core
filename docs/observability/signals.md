@@ -139,6 +139,15 @@ Emitted by `ConsoleRateLimitGuard` only when `CONSOLE_RATE_LIMIT_MODE` is `repor
 | `console_rate_limit_total` | counter | `class` ∈ {`cheapRead`, `expensiveRead`, `write`, `jobOrPreview`, `onboarding`, `incidentControl`, `exempt`}; `outcome` ∈ {`allowed` (under 50% of budget), `near_limit` (allowed, 50% or more), `would_limit` (over budget, report mode), `limited` (over budget, enforce mode: 429), `fail_open` (limiter error, timeout or open breaker)}; `route` (route template, the same bounded label as `http_error_4xx_total`). One increment per console request the guard evaluates. No user, tenant or IP label | RT-574 D6 / RT-619 |
 | `console_rate_limit_utilisation` | histogram | `class`, `route` as above. Value = count / limit of the caller's bucket at each successful check (above 1 = over budget); buckets 0.1, 0.25, 0.5, 0.75, 0.9, 1, 2 | RT-574 D6 / RT-619 |
 
+## 1.4 AI gateway signals (RT-655)
+
+Emitted by `AiGateway.run` (apps/api/src/ai). No vendor adapter exists yet: with the default wiring the gateway denies before any provider request, so `ai_gateway_provider_call_total` stays at zero until an approved route is allowlisted. Per-tenant cost and usage are NOT metrics; they live in the usage ledger owned by RT-663 (AD-AI-PROV-001 D-6).
+
+| Signal | Type | Labels (low-cardinality only) | Source |
+|---|---|---|---|
+| `ai_gateway_run_total` | counter | `feature` (a code-owned feature id; an unregistered id is labelled `unknown`); `outcome` ∈ {`ok`, or a fallback reason from the closed set: `not_authorized`, `store_out_of_scope`, `unknown_feature`, `tenant_inactive`, `not_entitled`, `trial_expired`, `grace_read_only`, `feature_disabled_tenant`, `entitlement_unavailable`, `feature_disabled_system`, `quota_exhausted`, `spend_cap_reached`, `free_credit_exhausted`, `evidence_unavailable`, `route_not_allowlisted`, `unsupported_capability`, `context_too_large`, `provider_timeout`, `provider_unavailable`, `provider_refused`, `provider_truncated`, `provider_rejected_input`, `provider_error`, `output_schema_invalid`, `output_unknown_evidence_ref`}. One increment per run. No tenant, store, user or correlation label | RT-655 / RT-643 §5 |
+| `ai_gateway_provider_call_total` | counter | `provider`, `route` (both from the static route allowlist); `outcome` ∈ {`ok`, `refused`, `truncated`, `rejected_input`, `unavailable_timeout`, `unavailable_rate_limited`, `unavailable_provider_5xx`, `unavailable_network`, `unavailable_auth`, `unavailable_disabled`, `error`}. One increment per provider request actually sent. No model id, token count or cost label | RT-655 / RT-643 §9.1 |
+
 ---
 
 ## 2. Database signals (T445)
