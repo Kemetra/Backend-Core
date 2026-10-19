@@ -61,11 +61,21 @@ describe("OpenAPI operations map to registered Nest routes", () => {
     expect(explicitContractOnly.sort()).toEqual([
       "acceptInvitation",
       "backfillSaleLinkedMovements",
+      // RT-738 (CAT-W1 + CAT-W2): console catalog write contract; the runtime ships in the RT-738 runtime change.
+      "consoleAddProductIdentifier",
+      "consoleCreateCatalogProduct",
       // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
       "consoleDeleteTenantLogo",
+      // RT-649: console sales summary contract; the runtime ships in the RT-649 runtime PR.
+      "consoleGetSalesSummary",
       "consoleGetTenantLogo",
       "consolePreviewTenantLogo",
       "consolePutTenantLogo",
+      "consoleRetireCatalogProduct",
+      "consoleRetireProductIdentifier",
+      "consoleRetireStoreOverride",
+      "consoleUpdateCatalogProduct",
+      "consoleUpsertStoreOverride",
       // RT-414: platform support-session contract; the runtime ships after owner approval.
       "endSupportSession",
       "getCurrentSupportSession",

@@ -1,0 +1,703 @@
+openapi: 3.1.0
+info:
+  title: Data-Pulse-2 — Console Sales Summary Read API
+  version: "1.0.0-draft"
+  description: >
+    Jira RT-649 (BC-009-1, RT-642 D0 follow-up P3): the deterministic sales
+    summary that Admin-Console spec 009 P-6 (Overview sales KPIs, OD-009-1)
+    and a future Daily Briefing read. One read-only aggregate operation:
+
+      `consoleGetSalesSummary` — per store, per business date and per
+      currency: received sales (count and gross total), voids, returns,
+      legacy refunds, shift-close outcomes and sync / ERP-posting attention
+      counts, over an inclusive business-date range, with `asOf` and an
+      explicit completeness statement.
+
+    Every figure is computed by Backend-Core in SQL over recorded facts. A
+    client, and any model, presents the figures as given and never derives a
+    total by summing list pages (AI-13; spec 009 §6.3 / AC-9).
+
+
+    **Posture.** `1.0.0-draft`, `x-runtime-status: contract-only` until the
+    RT-649 runtime ships. `[GATED]` contract approved by the owner on
+    2026-10-19 (RT-649 upgraded from Planning to contract + runtime).
+
+
+    **Relation to `console-sales.openapi.yaml` (no duplication).** The
+    console sales list and detail (`consoleListSales`, `consoleGetSale`,
+    RT-561 / RT-562) return SALES, one page at a time. This operation returns
+    only AGGREGATES and never a sale, a sale ref, a line or a name. It reuses
+    the console-sales vocabulary (`DecimalAmount` semantics, `CurrencyCode`,
+    `SyncStatus`, the `ErpPostingState` mapping) and the same auth, store
+    scope, range bound and error envelope, so a figure here can be drilled
+    into with `consoleListSales` over the same store and range. The path is
+    `/api/v1/sales-summary`, not `/api/v1/sales/summary`, so it can never be
+    read as a `consoleGetSale` `{saleRef}`.
+
+
+    **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`)
+    only, gated `SessionOnlyAdminGuard` → `TenantContextGuard` → `RolesGuard`,
+    exactly as `console-sales`: a machine bearer, a POS `device` token or an
+    `operatorAuthorization` envelope without a session cookie is 401; with a
+    valid session cookie the cookie authenticates the request and any
+    `Authorization` header is ignored. Roles: `owner`, `tenant_admin`,
+    `store_manager`. The tenant comes from the session, never from the
+    request (§II, §XII). The store scope is the operator-surface rule
+    (`operator-store-scope.ts`, RT-51 D6 / RT-131 / RT-193), as on
+    `console-sales`: `owner` and `tenant_admin` see their membership's store
+    authority (tenant-wide for an `all` grant, never narrowed by the active
+    store); `store_manager` sees the standard resolved store scope (its
+    store grants), including active-store narrowing; a platform admin
+    follows the `console-sales` rule (tenant-wide in the session's tenant,
+    narrowed by the active store unless it holds an owner / tenant_admin
+    membership there; never another tenant). The sales, void, return,
+    refund and shift-close RLS policies are tenant-only, so every aggregate
+    carries an explicit store predicate: the one `store_id`, or the caller's
+    scoped store set. A role outside the list (`store_staff`) and a
+    `store_id` outside the caller's scope or of another tenant are the same
+    non-disclosing 404. There is no 403. The guards run before request
+    validation, so a refused role is 404 for any input.
+
+
+    **Scope modes.** With `store_id`: that one store (`scope: store`).
+    Without it: every store in the caller's scope (`scope: all_in_scope`),
+    exactly the store set `consoleListSales` accepts as `store_id`, in pages
+    of stores. A tenant-wide scope (an `all` grant, or a platform admin
+    without an active store) includes inactive and soft-deleted stores of the
+    tenant, whose recorded sales are still facts. A `specific` grant covers
+    only its granted stores that are not soft-deleted
+    (`MembershipRepository.listGrantedStoreIds`): a store deleted after the
+    grant leaves that scope, with its figures, as it does for
+    `consoleListSales`. `scopeTotals` always covers EVERY store of the scope and
+    the whole range, whichever page is read; it is computed by the server, so
+    a client never adds store figures together. A caller whose scope holds no
+    store (a `store_manager` with no grant) gets a 200 with `storeCount: 0`,
+    no stores and zero totals: nothing is disclosed.
+
+
+    **Business date (store timezone, DST).** Every bucket is a store
+    business date, `YYYY-MM-DD` in that store's timezone:
+
+      - Received sales: `sales.business_date`, fixed at capture in the store
+        timezone of that time and never recomputed.
+      - Voids: the void's own business date (`sale_voids.business_date`,
+        fixed when the server recorded it), not the sale's. A sale captured
+        yesterday and voided today is a received sale of yesterday and a
+        void of today.
+      - Returns: the return's own business date (`sale_returns.business_date`).
+      - Legacy refunds and shift closes carry no stored business date. Their
+        instant (`sale_refunds.refunded_at`, the server clock; and
+        `shift_closes.closed_at`, the POS clock at close) is converted to a
+        local date in the store's CURRENT IANA timezone (`stores.timezone`)
+        with the tz database, so a day is exactly local midnight to local
+        midnight: 23 or 25 hours on a DST change day, never a fixed 24-hour
+        UTC window. A close at 23:30Z is the next day in `Africa/Cairo`.
+
+    `stores.timezone` defaults to `UTC` until a store is configured; the
+    summary reports `storeTimezone` so a client can show which zone bucketed
+    the figures. Whether a store's zone is the real one is a data question
+    this read does not answer. `currentBusinessDate` is the store's local
+    date at `asOf`, so a client asking for "today" knows each store's today.
+
+
+    **Grain and bounds.** One bucket per store per business date in the
+    range (dense: a date with no fact is present with zero counts), the
+    store's range totals, and the scope's per-date and range totals. Within
+    every bucket money is split by currency (the console never converts
+    currencies). `from` and `to` are inclusive, `to >= from`, at most 31
+    business days (`to - from <= 30`, the `consoleListSales` bound). A wider
+    range is 400 `validation_error`, never truncated. Stores are paged
+    (`page_size` 1..50, default 50) by `storeRef` ascending with an opaque
+    cursor; nothing inside a store is ever truncated.
+
+
+    **Completeness (always stated).** The summary covers ONLY the facts the
+    server had RECEIVED and committed by `asOf` (`completeness:
+    received_only`). Sales, voids, returns and shift closes still queued on a
+    terminal (offline, or not yet drained) are unknown to the server and are
+    NOT included, so a figure is never "the store's total for the day"; it is
+    "what Backend-Core has received so far". A later read of the same range
+    may be higher. Each read is one consistent database snapshot; `asOf` is
+    the server clock after that snapshot was read.
+
+
+    **Unknown is never zero.** A zero count here is a real zero over received
+    facts ("no received sale on that date"), never a stand-in for an unknown
+    value. Values Backend-Core does not know are counted in explicit
+    `unknown` buckets and never folded into another bucket:
+
+      - `erpPosting.unknown` counts received sales with no ERP posting row (a
+        tenant without ERP, or a sale stranded before its posting intent).
+        It NEVER means "not posted", and `posted + pending + failed` is not
+        "all sales". `pending` includes `failed_transient`. ERP posting is a
+        read-only operational state (OD-534-5), never a tax or fiscal claim.
+      - `shiftCloses.approvalMissing.unknown` counts closes whose shift froze
+        no variance policy (pre-RT-387); it never means "no exception".
+      - `syncStatus` is Backend-Core's own sale-processing drain (spec 032).
+        `synced` NEVER means "posted to ERPNext"; that is `erpPosting`.
+
+    The sync and ERP counts describe the received sales of the bucket by
+    their state at `asOf`, so a re-read can move a sale between states.
+
+
+    **Figures (deterministic computation rules).**
+
+      - `receivedSales`: count of `sales` rows; `total` = SUM(`pos_total`) per
+        currency: the POS gross total as recorded (§III: never rewritten,
+        re-rounded or netted). Voided and returned sales stay counted here.
+        There is no "net sales" figure: voids and returns are reported beside
+        it, on their own dates, and subtracting them is not defined by this
+        contract.
+      - `voids`: count of `sale_voids` rows; `total` = SUM of the voided
+        sales' `pos_total`, in the sale's currency.
+      - `returns`: count of `sale_returns` rows; `total` = SUM(`return_total`).
+      - `legacyRefunds`: count of deprecated amount-only `sale_refunds` rows
+        (`recordRefund`, RT-14 D1); `total` = SUM(`pos_refund_amount`).
+        Reported apart from returns, never merged into them.
+      - `shiftCloses`: count of recorded `shift_closes`, split by close kind,
+        by a non-zero `variance`, and by `approvalMissing`. No cash amount is
+        summed: the POS-reported `cashSalesTotal` is cash only and is NEVER a
+        sales total (RT-642 D0 B12).
+      - No margin, cost or COGS figure: there is no cost data (RT-642 D0 B4).
+
+
+    **Money.** Each total is an exact-decimal string (never a float, never
+    an integer of minor units) at the stored scale, four fractional digits
+    (`numeric(19,4)` at rest; `"150.0000"`), paired with its ISO-4217
+    `currencyCode`. It is the exact SQL sum of the recorded amounts, so it
+    equals the sum of the `posTotal` values `consoleListSales` returns for
+    the same store, range and currency. Formatting to the currency's
+    ISO-4217 minor-unit digits is a presentation step of the client. Within
+    a money breakdown the currencies are ordered by `currencyCode` and only
+    currencies with at least one fact appear; `count` equals the sum of the
+    per-currency counts.
+
+
+    **Audit.** One `console_sales.summary_read` event per authorized read,
+    emitted by the request audit interceptor after a 200 only, with the
+    scope mode, the `store_id` (null for `all_in_scope`), `from`, `to`, the
+    number of stores returned and whether the read continued a cursor in
+    its metadata; never a figure. Refusals (400 / 401 / 404 / 429) are not
+    audited.
+
+
+    **Error envelope.** The canonical `{ error: { code, message, request_id } }`
+    shape. 400 `validation_error` (a malformed or repeated query value, an
+    unknown query key, a missing `from` or `to`, a date that is not a
+    calendar date, `to` before `from`, a range wider than 31 business days,
+    or a cursor the server did not issue for this operation, tenant,
+    `store_id`, range and `page_size`),
+    401 unauthenticated, 404 non-disclosing not-found, 429 `rate_limited`
+    (console rate limit; honour `Retry-After`), 500 internal. Every 200 is
+    `Cache-Control: no-store`.
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: console-sales
+    description: >
+      Console-facing reads of received sales (RT-561) and their deterministic
+      summary (RT-649).
+
+security:
+  - cookieAuth: []
+
+paths:
+  /api/v1/sales-summary:
+    get:
+      summary: Deterministic received-sales KPIs per store, business date and currency.
+      operationId: consoleGetSalesSummary
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-649 contract PR; the runtime (ConsoleSalesSummary module) ships in
+        the stacked RT-649 runtime PR, which removes this marker.
+      x-audit-action: console_sales.summary_read
+      tags: [console-sales]
+      description: >
+        The KPIs of one store (`store_id`) or of every store in the caller's
+        scope, for each business date of an inclusive range of at most 31
+        business days, with each store's range totals and the scope's
+        totals. Read only; computed by the server over the facts it had
+        received by `asOf` (see the API description for every rule). A
+        `store_id` outside the caller's scope is the non-disclosing 404.
+
+        Audit: one `console_sales.summary_read` event per 200, with the scope
+        mode, `store_id`, `from`, `to`, the store count and whether a cursor
+        was used; no figure.
+      parameters:
+        - $ref: "#/components/parameters/StoreIdQuery"
+        - $ref: "#/components/parameters/BusinessDateFrom"
+        - $ref: "#/components/parameters/BusinessDateTo"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: The summary of the requested scope and range.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsoleSalesSummary"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: dp2_session
+      description: >
+        The human dashboard session cookie (httpOnly `dp2_session`), verified
+        by `SessionOnlyAdminGuard`. The only accepted credential on this
+        surface: without a valid session cookie, a machine bearer, a POS
+        `device` token or an `operatorAuthorization` envelope is rejected
+        (401). With a valid session cookie, the cookie authenticates the
+        request and any `Authorization` header is ignored (the repo-wide
+        `AuthGuard` rule). `RolesGuard` +
+        `@Roles("owner", "tenant_admin", "store_manager")` gate the route
+        (default deny → 404). 401 semantics are owned by 028 (G10).
+
+  headers:
+    CacheControlNoStore:
+      description: >
+        `no-store` on every 200: the body carries the tenant's commercial
+        figures, so no shared or browser cache keeps them.
+      schema:
+        type: string
+        const: no-store
+    ConsoleRetryAfter:
+      description: >
+        Whole seconds the caller should wait before retrying, sent on every
+        console 429 (RT-574 D5). Its own bound, 1 to 3600.
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 3600
+
+  parameters:
+    StoreIdQuery:
+      name: store_id
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: >
+        Optional. The one store to summarise (`scope: store`). Validated
+        against the caller's store scope: a store outside it, or of another
+        tenant, is the non-disclosing 404. Case insensitive: the one
+        lower-cased value is scope-checked, cursor-bound and queried.
+        Omitted: every store in the caller's scope (`scope: all_in_scope`).
+        A malformed or repeated value is 400 `validation_error`.
+    BusinessDateFrom:
+      name: from
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date
+      description: First business date of the range, inclusive, in each store's timezone.
+    BusinessDateTo:
+      name: to
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date
+      description: >
+        Last business date of the range, inclusive. `to >= from` and
+        `to - from <= 30` (31 business days), else 400 `validation_error`.
+        Never truncated.
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 512
+        pattern: "^[A-Za-z0-9_-]+$"
+      description: >
+        Opaque cursor from a prior response's `nextCursor`, bound to this
+        operation, the tenant, `store_id` (or its absence), `from`, `to` and
+        `page_size`. It carries only the last returned `storeRef`; the
+        caller's store scope is re-read on every request and is never carried
+        by the cursor, so a hand-built cursor can only skip stores the caller
+        may already read. A value the server did not issue, cannot decode, or
+        that is reused with another store, range or page size is 400
+        `validation_error`. Omit it for the first page.
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 50
+      description: Maximum stores per response. The server returns exactly this many while more remain.
+
+  schemas:
+    DecimalTotal:
+      type: string
+      pattern: '^[0-9]{1,19}\.[0-9]{4}$'
+      description: >
+        Exact-decimal non-negative sum as a string (never a float) at the
+        stored scale of four fractional digits, for example `"150.0000"`.
+    CurrencyCode:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      description: ISO-4217 alphabetic currency code.
+    BusinessDate:
+      type: string
+      format: date
+      description: A store business date, `YYYY-MM-DD` in the store's timezone.
+    Count:
+      type: integer
+      minimum: 0
+      description: An exact count over received facts. Zero is a real zero, never an unknown.
+
+    CurrencyTotal:
+      type: object
+      additionalProperties: false
+      required: [currencyCode, count, total]
+      properties:
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+        count:
+          type: integer
+          minimum: 1
+          description: The facts in this currency (at least one, or the currency is absent).
+        total:
+          $ref: "#/components/schemas/DecimalTotal"
+
+    MoneyFacts:
+      type: object
+      additionalProperties: false
+      required: [count, byCurrency]
+      description: >
+        A counted money fact. `count` is the sum of `byCurrency[].count`;
+        `byCurrency` is ordered by `currencyCode` and empty when `count` is 0.
+        Totals are never added across currencies.
+      properties:
+        count:
+          $ref: "#/components/schemas/Count"
+        byCurrency:
+          type: array
+          items:
+            $ref: "#/components/schemas/CurrencyTotal"
+
+    SyncStatusCounts:
+      type: object
+      additionalProperties: false
+      required: [captured, synced, failedRetryable, failedNeedsRepair]
+      description: >
+        The received sales of the bucket by their spec 032 `syncStatus` at
+        `asOf` (`captured`, `synced`, `failed-retryable`,
+        `failed-needs-repair`); the four add up to `receivedSales.count`.
+        Backend-Core sale processing only: `synced` is NOT "posted to ERPNext".
+      properties:
+        captured:
+          $ref: "#/components/schemas/Count"
+        synced:
+          $ref: "#/components/schemas/Count"
+        failedRetryable:
+          $ref: "#/components/schemas/Count"
+        failedNeedsRepair:
+          $ref: "#/components/schemas/Count"
+
+    ErpPostingCounts:
+      type: object
+      additionalProperties: false
+      required: [posted, pending, failed, unknown]
+      description: >
+        The received sales of the bucket by their projected `erpPostingState`
+        at `asOf` (the `console-sales` mapping: `posted`; `pending` and
+        `failed_transient` → `pending`; `permanently_rejected` → `failed`; no
+        posting row → `unknown`). The four add up to `receivedSales.count`.
+        `unknown` NEVER means "not posted". Operational state only, never a
+        tax or fiscal claim (OD-534-5).
+      properties:
+        posted:
+          $ref: "#/components/schemas/Count"
+        pending:
+          $ref: "#/components/schemas/Count"
+        failed:
+          $ref: "#/components/schemas/Count"
+        unknown:
+          $ref: "#/components/schemas/Count"
+
+    ApprovalMissingCounts:
+      type: object
+      additionalProperties: false
+      required: ["yes", "no", unknown]
+      description: >
+        Closes by their recorded `approvalMissing` tri-state
+        (`shift-closes.openapi.yaml`, RT-384 / RT-387). `unknown` (the shift
+        froze no policy) is never "no exception". The three add up to
+        `shiftCloses.count`.
+      properties:
+        "yes":
+          $ref: "#/components/schemas/Count"
+        "no":
+          $ref: "#/components/schemas/Count"
+        unknown:
+          $ref: "#/components/schemas/Count"
+
+    ShiftCloseOutcomes:
+      type: object
+      additionalProperties: false
+      required: [count, normal, forced, withVariance, approvalMissing]
+      description: >
+        Recorded shift closes bucketed by the store-local date of their
+        `closedAt` (POS clock) in the store's current timezone. `normal +
+        forced = count`. `withVariance` counts closes whose recorded
+        `variance` is not zero. No cash amount is summed here.
+      properties:
+        count:
+          $ref: "#/components/schemas/Count"
+        normal:
+          $ref: "#/components/schemas/Count"
+        forced:
+          $ref: "#/components/schemas/Count"
+        withVariance:
+          $ref: "#/components/schemas/Count"
+        approvalMissing:
+          $ref: "#/components/schemas/ApprovalMissingCounts"
+
+    SalesKpis:
+      type: object
+      additionalProperties: false
+      required:
+        - receivedSales
+        - voids
+        - returns
+        - legacyRefunds
+        - syncStatus
+        - erpPosting
+        - shiftCloses
+      description: The KPIs of one bucket (see the API description for every rule).
+      properties:
+        receivedSales:
+          $ref: "#/components/schemas/MoneyFacts"
+        voids:
+          $ref: "#/components/schemas/MoneyFacts"
+        returns:
+          $ref: "#/components/schemas/MoneyFacts"
+        legacyRefunds:
+          $ref: "#/components/schemas/MoneyFacts"
+        syncStatus:
+          $ref: "#/components/schemas/SyncStatusCounts"
+        erpPosting:
+          $ref: "#/components/schemas/ErpPostingCounts"
+        shiftCloses:
+          $ref: "#/components/schemas/ShiftCloseOutcomes"
+
+    BusinessDateKpis:
+      type: object
+      additionalProperties: false
+      required: [businessDate, kpis]
+      properties:
+        businessDate:
+          $ref: "#/components/schemas/BusinessDate"
+        kpis:
+          $ref: "#/components/schemas/SalesKpis"
+
+    StoreSalesSummary:
+      type: object
+      additionalProperties: false
+      required: [storeRef, storeTimezone, currentBusinessDate, days, rangeTotals]
+      properties:
+        storeRef:
+          type: string
+          format: uuid
+        storeTimezone:
+          type: string
+          minLength: 1
+          description: >
+            The store's current IANA timezone (`stores.timezone`, `UTC` until
+            configured): the zone that bucketed legacy refunds and shift
+            closes, and the zone of `currentBusinessDate`.
+        currentBusinessDate:
+          $ref: "#/components/schemas/BusinessDate"
+        days:
+          type: array
+          minItems: 1
+          maxItems: 31
+          description: One entry per business date from `from` to `to`, ascending, zero-filled.
+          items:
+            $ref: "#/components/schemas/BusinessDateKpis"
+        rangeTotals:
+          $ref: "#/components/schemas/SalesKpis"
+
+    ScopeSalesSummary:
+      type: object
+      additionalProperties: false
+      required: [storeCount, days, rangeTotals]
+      description: >
+        Server totals over EVERY store of the scope (not only the stores of
+        this page). A date's figures add each store's figures for that
+        store-local business date.
+      properties:
+        storeCount:
+          $ref: "#/components/schemas/Count"
+        days:
+          type: array
+          minItems: 1
+          maxItems: 31
+          description: >
+            One entry per business date from `from` to `to`, ascending,
+            zero-filled (also when `storeCount` is 0).
+          items:
+            $ref: "#/components/schemas/BusinessDateKpis"
+        rangeTotals:
+          $ref: "#/components/schemas/SalesKpis"
+
+    ConsoleSalesSummary:
+      type: object
+      additionalProperties: false
+      required: [scope, storeRef, from, to, asOf, completeness, stores, nextCursor, scopeTotals]
+      properties:
+        scope:
+          type: string
+          enum: [store, all_in_scope]
+          description: "`store` with `store_id`; `all_in_scope` without it."
+        storeRef:
+          type: [string, "null"]
+          format: uuid
+          description: "The `store_id` value (lower case) for `scope: store`; null otherwise."
+        from:
+          $ref: "#/components/schemas/BusinessDate"
+        to:
+          $ref: "#/components/schemas/BusinessDate"
+        asOf:
+          type: string
+          format: date-time
+          description: >
+            Server time after the read's snapshot: every figure covers the
+            facts received and committed by then, and no fact still queued on
+            a terminal.
+        completeness:
+          type: string
+          const: received_only
+          description: >
+            Always `received_only`: the figures exclude everything still
+            queued on a terminal, so they are never presented as complete.
+        stores:
+          type: array
+          maxItems: 50
+          description: This page of stores, ordered by `storeRef` ascending.
+          items:
+            $ref: "#/components/schemas/StoreSalesSummary"
+        nextCursor:
+          type: [string, "null"]
+          description: "Cursor for the next page of stores; null on the last page (always null for `scope: store`)."
+        scopeTotals:
+          $ref: "#/components/schemas/ScopeSalesSummary"
+
+    Error:
+      type: object
+      required: [error]
+      description: >
+        Canonical error envelope. Out-of-scope and cross-tenant refusals are
+        non-disclosing (§II, §XII): they never name the cause.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id; the cause is recorded server-side.
+
+  responses:
+    ValidationFailure:
+      description: >
+        validation_error (400): a malformed query value, an unknown query
+        key, a query key given more than once, a missing `from` or `to`, a
+        date that is not a calendar date (`2026-02-30`), `to` before `from`,
+        a range wider than 31 business days, a `page_size` outside 1..50, or
+        a cursor the server did not issue for this operation, tenant,
+        `store_id`, range and page size. Checked after the guards and before
+        any database read.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        Unauthenticated (401): a missing or invalid session cookie, or a
+        non-cookie credential without a valid session cookie.
+        Non-disclosing. Owned by 028 (G10).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >
+        not_found (404), non-disclosing: identical for a role outside
+        `owner` / `tenant_admin` / `store_manager` and a `store_id` outside
+        the caller's scope, of another tenant or absent.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SystemFailure:
+      description: >
+        system_failure (500): unexpected server error; the cause is recorded
+        server-side under `request_id`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: >
+        429 `rate_limited` (RT-574): the caller's per-user budget for this
+        class of operation is spent. The body is the canonical error
+        envelope with a non-disclosing message (no budget, class or window);
+        its `request_id` equals the `X-Request-Id` response header. Honour
+        `Retry-After`. A 429 is not a 401: it never means the session ended.
+        The console limit is server-configured and may not be enforced, so a
+        client must handle a 429 but must not expect one.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/ConsoleRetryAfter"
+        Cache-Control:
+          description: Always `no-store` on a 429.
+          required: true
+          schema:
+            type: string
+            enum: [no-store]
+        X-Request-Id:
+          description: >
+            The request id, equal to `error.request_id` in the body: the
+            inbound `X-Request-Id` when it is a well-formed UUID, otherwise a
+            server-minted one.
+          required: true
+          schema:
+            type: string
+            format: uuid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
