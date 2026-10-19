@@ -13,6 +13,17 @@ by every future feature that emits logs.
 
 ## Changelog
 
+- **2026-10-19** — RT-655 amendment (AI gateway skeleton, before any model
+  adapter exists; AD-AI-PROV-001 E-5). Adds model-provider API keys to §3.1 and
+  four AI content classes to §3.3: the prompt, the system instructions, the
+  evidence pack, and model completion / raw output. All are redacted wholesale
+  at the logger boundary (`prompt`, `system`, `evidencePack`, `rawOutput` and
+  their snake_case / one-segment-nested forms) and the GenAI span attributes
+  that carry them (`gen_ai.prompt*`, `gen_ai.completion*`,
+  `gen_ai.input.messages`, `gen_ai.output.messages`,
+  `gen_ai.system_instructions`) are dropped before OTLP export. The gateway
+  also never passes them to the logger and logs error CLASS only. Add-only per
+  FR-B-005; no existing field reclassified, no redaction rule removed.
 - **2026-10-05** — RT-216 amendment. Classifies four log fields emitted by the
   worker's ERPNext posting-reversal logs (`posting.reversal.deferred`, RT-173;
   `posting.reversal.dead_lettered`, RT-207) as **business** in §3.4: `sale_id`,
@@ -98,6 +109,7 @@ Every field that may be encountered in a log statement falls into one of:
 | Queue credentials (BullMQ Redis URL with password, AMQP DSN if introduced) | credential | Operational secret. |
 | Webhook signing keys (`WEBHOOK_SIGNING_KEY`, HMAC secret) | credential | Forgery key for inbound/outbound webhooks. |
 | `invitation_token`, `password_reset_token`, `email_verification_token` | credential | One-time secrets. |
+| Model-provider API keys / credentials (`provider_api_key`, `providerApiKey`, any vendor key such as `ANTHROPIC_API_KEY`) | credential | Server-only secret readable inside a model adapter only (AD-AI-PROV-001 S-1). Never in logs, spans, Sentry, Datadog, errors, Jira, Confluence or reports (RT-643 T-4). Added by RT-655. |
 | `idempotency_key` (raw client-supplied value) | credential | Client correlator that, combined with payload guesses, allows replay probing — log a fingerprint, never the raw key. |
 
 ### 3.2 PII (MUST NOT log without field-level review)
@@ -122,6 +134,8 @@ Every field that may be encountered in a log statement falls into one of:
 | Full response body | PII-suspect | Same rationale — response bodies often include the user's profile, membership list, etc. |
 | Free-text fields supplied by users (`note`, `comment`, `description`, `feedback`) | PII-suspect | May contain incidental PII; log length / hash only, never raw content, until reclassified. |
 | Outbox event `payload` field (future, Track C) | PII-suspect | Per FR-C-008, payloads may not be logged in full; consumers redact at the logger boundary using this matrix. |
+| AI prompt, system instructions, evidence pack (`prompt`, `system`, `evidencePack` / `evidence_pack`) | PII-suspect | The evidence pack is tenant business data sent to a model provider (the first egress of tenant data, AD-AI-PROV-001 D-4) and its domain text is untrusted. Never logged; log only the template id, evidence-ref count and outcome. Added by RT-655. |
+| AI completion / raw model output (`completion`, `rawOutput` / `raw_output`) | PII-suspect | Model-generated text that may echo evidence. Only the Zod-validated output is ever returned to a caller; the raw output is discarded and never logged. Added by RT-655. |
 | Validation error context (the rejected value) | PII-suspect | "Why this body failed validation" must NOT echo the raw rejected value; log the field path and rule, not the value. |
 
 ### 3.4 Business (safe to log)

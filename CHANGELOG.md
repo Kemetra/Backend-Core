@@ -507,6 +507,27 @@ This project follows [Semantic Versioning](https://semver.org/).
   oasdiff findings, `consumer:none`). Migration `0055_inventory_position_events`
   (+ guarded down) and `docs/operations/sql/inventory-position-events-domain-grants.sql`
   (deploy step 2; boot check). No package or CI change.
+- RT-662 `[GATED]`, owner-approved 2026-10-19 (RT-644 ENT-BC1,
+  AD-AI-ENT-001): OpenAPI contract `ai-entitlements.openapi.yaml`
+  (1.0.0-draft, contract-only). `consoleGetTenantAiEntitlements`
+  (`GET /api/v1/tenants/{tenant_id}/ai/entitlements`) returns the `full`
+  view to owner / tenant_admin (state, effective dates, per-feature
+  availability, tenant opt-outs, UTC request meters) and the `minimal`
+  `available | unavailable` view to store_manager; store_staff, another
+  tenant and an absent tenant get the same non-disclosing 404, decided
+  before any entitlement read; 503 `entitlement_unavailable` fails closed.
+  `consolePutTenantAiFeatureOptOut` (`PUT .../ai/entitlements/opt-outs/
+  {feature_id}`) is the owner-only, subtract-only opt-out write (D-5):
+  required `reason`, `Idempotency-Key`, audited
+  `ai_entitlement.opt_out_changed`, guarded by its own `optOutVersion`
+  (never `entitlementVersion`), 403 `origin_rejected`, 409 on a stale
+  revision, 422 `not_entitled` for an opt-in beyond the plan. The full view
+  and every `check` decision report both `entitlementVersion` and
+  `optOutVersion`. Also the closed AI reason-code set (§4.4 plus `feature_disabled_tenant`)
+  and the server-internal `check` input and decision schemas
+  (`x-internal`, no HTTP route). No price, currency, plan name, quota size,
+  billing event or grace duration. No runtime or migration change; the
+  runtime ships in RT-664.
 - RT-649 / RT-739: runtime for `consoleGetSalesSummary` (`ConsoleSalesSummaryController`
   and service in `ConsoleSalesModule`); the operation loses
   `x-runtime-status: contract-only`. One SQL statement (one snapshot) counts
@@ -518,6 +539,16 @@ This project follows [Semantic Versioning](https://semver.org/).
   `expensiveRead`. No migration, package, lockfile or CI change. RT-739
   lands the runtime of #861, which had merged into a stacked branch rather
   than `main`.
+- RT-565 `[GATED]`, owner-approved 2026-10-19 (RT-565 comment 12969, D1–D7 of
+  `docs/planning/rt-565-posting-freshness-read.md`):
+  `erpnext-sync-ops/console-sync-ops.yaml` 1.2.0-draft (additive).
+  `consoleGetSyncOpsSummary` gains a required top-level `asOf` and a
+  required `postingFreshness`: `lastPosted` (`state` `known` / `unknown` /
+  `none` and its ERP confirmation time), `pendingCount`, `oldestPendingAt`
+  and `oldestPendingAgeSeconds`. Facts only, no current / behind verdict;
+  the `posting` domain rule, roles, session, RLS, store scope and the
+  out-of-scope 404 are unchanged. No runtime or migration change; the read
+  and its indexes ship in the RT-565 runtime PR.
 
 ### Changed
 - RT-616: successful `GET /api/v1/health/live` probes are no longer logged

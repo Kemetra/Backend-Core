@@ -12,6 +12,15 @@ const rulesDirPlugin = require("eslint-plugin-rulesdir");
 
 rulesDirPlugin.RULES_DIR = path.join(__dirname, "tools", "eslint-rules");
 
+// RT-655: vendor model SDKs / gateway frameworks may only be imported under
+// apps/*/src/ai/adapters/<vendor>/** (vendor = any dir except fake, recorded,
+// disabled). One shared list: apps/api/test/ai/vendor-import-boundary.spec.ts
+// reads the same file and additionally covers packages/*/src, import() and require().
+const aiVendorDenylist = require("./tools/ai-vendor-sdk-denylist.json");
+const aiVendorImportMessage =
+  "RT-655: vendor model SDKs may only be imported under apps/*/src/ai/adapters/<vendor>/**. " +
+  "Depend on ModelProviderPort instead.";
+
 module.exports = {
   root: true,
   parser: "@typescript-eslint/parser",
@@ -38,8 +47,24 @@ module.exports = {
     ],
     "no-console": ["warn", { "allow": ["warn", "error"] }],
     "eqeqeq": ["error", "always"],
-    "no-implicit-coercion": "error"
+    "no-implicit-coercion": "error",
+    "no-restricted-imports": [
+      "error",
+      {
+        paths: aiVendorDenylist.packages.map((name) => ({ name, message: aiVendorImportMessage })),
+        patterns: [
+          ...aiVendorDenylist.packages.map((name) => ({ group: [`${name}/*`], message: aiVendorImportMessage })),
+          ...aiVendorDenylist.scopes.map((scope) => ({ group: [`${scope}*`], message: aiVendorImportMessage }))
+        ]
+      }
+    ]
   },
+  overrides: [
+    {
+      files: ["apps/*/src/ai/adapters/!(fake|recorded|disabled)/**/*.ts"],
+      rules: { "no-restricted-imports": "off" }
+    }
+  ],
   ignorePatterns: [
     "node_modules",
     "dist",

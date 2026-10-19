@@ -285,6 +285,18 @@ export const ALLOWED_METRIC_LABELS: Readonly<Record<string, readonly string[]>> 
   console_rate_limit_total: ["class", "outcome", "route"],
   // Histogram of count / limit per check; same bounded labels minus outcome.
   console_rate_limit_utilisation: ["class", "route"],
+
+  // ---- AI gateway — RT-655 (RT-643 F-2, AD-AI-PROV-001 E-5/E-8) ----
+  // One count per `AiGateway.run`. `feature` is a code-owned feature id (an
+  // unregistered id is labelled `unknown`, never echoed); `outcome` is `ok` or
+  // one member of the closed AI_FALLBACK_REASONS set. Per-tenant / per-store /
+  // per-user attribution is NEVER a label (FR-B-006): it belongs to the
+  // persisted usage ledger owned by RT-663, which this signal does not replace.
+  ai_gateway_run_total: ["feature", "outcome"],
+  // One count per provider request actually sent. `provider` and `route` come
+  // from the static route allowlist (code-owned); `outcome` is the ModelResult
+  // kind or `unavailable_<cause>` (closed). No model id, token count or cost.
+  ai_gateway_provider_call_total: ["provider", "route", "outcome"],
 };
 
 /**

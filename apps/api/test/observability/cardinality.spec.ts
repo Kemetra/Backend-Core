@@ -227,6 +227,9 @@ describe("Drift contract: every signal in the catalogue is represented", () => {
     // Console rate limiting — RT-619 (RT-574 D6). `class`, `outcome` (closed sets), `route` (template).
     "console_rate_limit_total",
     "console_rate_limit_utilisation",
+    // AI gateway — RT-655. `feature`, `outcome`, `provider`, `route` (all closed / code-owned sets).
+    "ai_gateway_run_total",
+    "ai_gateway_provider_call_total",
   ];
 
   for (const name of expectedSignals) {
