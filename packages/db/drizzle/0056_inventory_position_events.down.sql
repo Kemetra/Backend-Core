@@ -1,8 +1,8 @@
--- 0055_inventory_position_events.down.sql — reverses
--- 0055_inventory_position_events.sql (RT-435).
+-- 0056_inventory_position_events.down.sql — reverses
+-- 0056_inventory_position_events.sql (RT-435).
 --
 -- Drops tenant_inventory_settings and inventory_position_events. Refuses (the
--- whole down rolls back) when either holds a fact the pre-0055 schema cannot
+-- whole down rolls back) when either holds a fact the pre-0056 schema cannot
 -- represent: a status-move or relocation event record (its effects name it
 -- through event_ref_id, and dropping it would leave them pointing nowhere), or
 -- a tenant whose return landing status is not the default. Those are never
@@ -33,11 +33,11 @@ BEGIN
   END LOOP;
   IF events > 0 THEN
     RAISE EXCEPTION
-      '0055 down refused: % inventory_position_events row(s) own effects', events;
+      '0056 down refused: % inventory_position_events row(s) own effects', events;
   END IF;
   IF policies > 0 THEN
     RAISE EXCEPTION
-      '0055 down refused: % tenant(s) have a non-default return landing status', policies;
+      '0056 down refused: % tenant(s) have a non-default return landing status', policies;
   END IF;
 END
 $$;

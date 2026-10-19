@@ -149,7 +149,7 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
     ],
   },
   {
-    // RT-435 (0055): the event record of a status move / relocation — opaque
+    // RT-435 (0056): the event record of a status move / relocation — opaque
     // ids, codes, an exact quantity and unit, a bounded operator note (no PII
     // by policy, as stock_movements.reason), a SHA-256 fingerprint (never the
     // raw Idempotency-Key) and timestamps.
@@ -177,7 +177,7 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
     ],
   },
   {
-    // RT-435 (0055): the per-tenant return landing status and its actor.
+    // RT-435 (0056): the per-tenant return landing status and its actor.
     name: 'tenant_inventory_settings',
     table: tenantInventorySettings,
     columns: ['tenant_id', 'return_landing_status', 'updated_by', 'created_at', 'updated_at'],

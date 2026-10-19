@@ -1,8 +1,8 @@
 -- Domain-role grants for inventory status moves, relocations and the tenant
--- inventory settings (RT-435, migration 0055).
+-- inventory settings (RT-435, migration 0056).
 -- See docs/operations/database-roles.md.
 --
--- Run ONCE per environment, AFTER `migrate up` has applied 0055, as the
+-- Run ONCE per environment, AFTER `migrate up` has applied 0056, as the
 -- migration owner (or any role allowed to grant on these tables). This file
 -- holds NO credential. Give psql the connection through libpq environment
 -- variables (PGHOST/PGUSER/PGPASSWORD/...; see deploy/grants.env.example),

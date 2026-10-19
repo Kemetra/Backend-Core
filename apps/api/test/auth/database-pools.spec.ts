@@ -56,7 +56,7 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "stock_locations:INSERT",
   // RT-448 (0045): tracking identities (read by the identity list). Read-only.
   "tracking_identities:SELECT",
-  // RT-435 (0055): status-move / relocation event records (append-only) and
+  // RT-435 (0056): status-move / relocation event records (append-only) and
   // the tenant inventory settings (upserted, no DELETE).
   "inventory_position_events:SELECT",
   "inventory_position_events:INSERT",

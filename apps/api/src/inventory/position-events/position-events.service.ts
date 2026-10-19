@@ -3,7 +3,7 @@
  * M-1, M-5, Q2, Q6, Q10; RT-435 owner decisions D1–D4, comment 12993).
  *
  * The two position-changing Retail events, each an `adjustment` Business
- * Event (G2-1, 838) with an `inventory_position_events` record (0055) and
+ * Event (G2-1, 838) with an `inventory_position_events` record (0056) and
  * exactly two effects under it:
  *
  *   - status move (842–844): `-q` at (location, from_status) and `+q` at

@@ -504,7 +504,7 @@ This project follows [Semantic Versioning](https://semver.org/).
   net fails closed. Physical on-hand never changes. Governed Reason Codes
   (D1); moves out of damaged / expired / a hold are owner / tenant_admin only
   (D2). `StockMovement.integrationState` gains `erp_neutral` (5 acknowledged
-  oasdiff findings, `consumer:none`). Migration `0055_inventory_position_events`
+  oasdiff findings, `consumer:none`). Migration `0056_inventory_position_events`
   (+ guarded down) and `docs/operations/sql/inventory-position-events-domain-grants.sql`
   (deploy step 2; boot check). No package or CI change.
 - RT-662 `[GATED]`, owner-approved 2026-10-19 (RT-644 ENT-BC1,
@@ -549,6 +549,22 @@ This project follows [Semantic Versioning](https://semver.org/).
   the `posting` domain rule, roles, session, RLS, store scope and the
   out-of-scope 404 are unchanged. No runtime or migration change; the read
   and its indexes ship in the RT-565 runtime PR.
+- RT-663 `[GATED]` migration `0055_ai_entitlements_usage` (owner-approved
+  2026-10-19 for authoring and CI verification only; not applied to any lab
+  or live database). It is storage only, for AD-AI-ENT-001 and
+  AD-AI-PROV-001 D-6, and has no runtime until RT-664. It adds:
+  - the code-owned, versioned, default-deny AI plan catalog (seed `core@1`
+    grants no feature and no meter);
+  - immutable `tenant_ai_entitlements` revisions on a tenant-wide
+    `entitlement_version` chain, platform-admin INSERT only;
+  - the tenant owner opt-out chain `tenant_ai_feature_opt_outs` (D-5);
+  - `ai_usage_counters` per tenant, store, meter and UTC window;
+  - the single append-only `ai_usage_ledger`: `reserved`, then
+    `committed` / `released`, unique (tenant, feature, kind, idempotency_key),
+    with the AI-09 run metadata. A dispute is settled by a platform-admin-only
+    compensating `adjusted` row (T20).
+
+  Every table forces RLS. There is no price column and no grant.
 
 ### Changed
 - RT-616: successful `GET /api/v1/health/live` probes are no longer logged

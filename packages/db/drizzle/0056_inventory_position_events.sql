@@ -1,4 +1,4 @@
--- 0055_inventory_position_events.sql
+-- 0056_inventory_position_events.sql
 --
 -- Inventory status moves and relocations, additive (Jira RT-435).
 -- [GATED] migration — owner-authorized on RT-435 (comment 12993, 2026-10-19:
@@ -67,7 +67,7 @@
 -- SHARE ROW EXCLUSIVE on tenants, stock_locations, tenant_products and
 -- tracking_identities while the migration commits; the new tables have no
 -- rows to validate. At pilot volume it takes well under a second.
--- Reversible via 0055_inventory_position_events.down.sql.
+-- Reversible via 0056_inventory_position_events.down.sql.
 
 BEGIN;
 

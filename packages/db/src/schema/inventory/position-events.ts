@@ -1,6 +1,6 @@
 /**
  * Inventory position events and tenant inventory settings — Drizzle schema
- * (0055, Jira RT-435).
+ * (0056, Jira RT-435).
  *
  * `inventory_position_events` is the event record of a status move (G4-2,
  * 842–844) or a relocation (800) — both typed `adjustment` Business Events
@@ -21,7 +21,7 @@
  * RLS: ENABLE + FORCE on both. Events: SELECT + INSERT, NO UPDATE / DELETE
  * (append-only). Settings: SELECT + INSERT + UPDATE, NO DELETE. The composite
  * FKs (locations to the event's store and tenant; product and tracking
- * identity to the tenant) and the policies are defined in 0055's SQL.
+ * identity to the tenant) and the policies are defined in 0056's SQL.
  * §XIV: BUSINESS-CLASS — opaque ids, codes, an exact quantity, a bounded note,
  * a SHA-256 fingerprint, timestamps. No PII, no money.
  */

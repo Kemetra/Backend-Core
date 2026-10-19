@@ -1,10 +1,10 @@
 /**
- * 0055 — inventory position events and tenant inventory settings (Jira
+ * 0056 — inventory position events and tenant inventory settings (Jira
  * RT-435; owner decisions D1–D4, RT-435 comment 12993).
  *
- * Applies every migration before 0055 against a real Postgres, seeds two
+ * Applies every migration before 0056 against a real Postgres, seeds two
  * tenants with a store each (the stores trigger gives each a primary location)
- * and a storage location, applies 0055, then proves:
+ * and a storage location, applies 0056, then proves:
  *   - inventory_position_events: kind, positive quantity, statuses in the
  *     closed enum, the status-move shape (same location, different status, a
  *     reason code), the relocation shape (different location, same status), the
@@ -28,9 +28,9 @@ import type { PoolClient } from "pg";
 import { ensureAppRole, startPgEnv, stopPgEnv, type PgTestEnv } from "../_helpers/postgres-container";
 
 const DRIZZLE_DIR = resolve(__dirname, "..", "..", "drizzle");
-const UP_NAME = "0055_inventory_position_events.sql";
+const UP_NAME = "0056_inventory_position_events.sql";
 const UP_PATH = resolve(DRIZZLE_DIR, UP_NAME);
-const DOWN_PATH = resolve(DRIZZLE_DIR, "0055_inventory_position_events.down.sql");
+const DOWN_PATH = resolve(DRIZZLE_DIR, "0056_inventory_position_events.down.sql");
 
 const TENANT = "0a000000-0000-7000-8000-000000043501";
 const TENANT_B = "0b000000-0000-7000-8000-000000043501";
@@ -54,7 +54,7 @@ function pg(): PgTestEnv {
 
 const skip = (): boolean => env === null;
 
-async function applyBefore0055(pgEnv: PgTestEnv): Promise<void> {
+async function applyBefore0056(pgEnv: PgTestEnv): Promise<void> {
   const files = readdirSync(DRIZZLE_DIR)
     .filter((n) => /^\d{4}_.+\.sql$/.test(n) && !n.endsWith(".down.sql"))
     .filter((n) => n.localeCompare(UP_NAME) < 0)
@@ -171,12 +171,12 @@ beforeAll(async () => {
   } catch (err: unknown) {
     if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
       // eslint-disable-next-line no-console
-      console.warn(`\n[0055-inventory-position-events.spec] Docker NOT AVAILABLE — skipping: ${String(err)}\n`);
+      console.warn(`\n[0056-inventory-position-events.spec] Docker NOT AVAILABLE — skipping: ${String(err)}\n`);
       return;
     }
     throw err;
   }
-  await applyBefore0055(env);
+  await applyBefore0056(env);
   const a = env.admin;
   await a.query(`INSERT INTO tenants (id, name, slug) VALUES ($1, 'rt435-a', 'rt435-a'), ($2, 'rt435-b', 'rt435-b')`, [
     TENANT,
@@ -215,7 +215,7 @@ afterAll(async () => {
   if (env) await stopPgEnv(env);
 }, 60_000);
 
-describe("0055 inventory_position_events constraints", () => {
+describe("0056 inventory_position_events constraints", () => {
   it("accepts a status move and a relocation", async () => {
     if (skip()) return;
     expect(await tryEvent({})).toBeNull();
@@ -280,7 +280,7 @@ describe("0055 inventory_position_events constraints", () => {
   });
 });
 
-describe("0055 tenant_inventory_settings constraints", () => {
+describe("0056 tenant_inventory_settings constraints", () => {
   it("defaults to sellable and accepts return_inspection; refuses anything else", async () => {
     if (skip()) return;
     const result = await inRolledBackTx(async (c) => {
@@ -300,7 +300,7 @@ describe("0055 tenant_inventory_settings constraints", () => {
   });
 });
 
-describe("0055 RLS", () => {
+describe("0056 RLS", () => {
   it("enables and forces RLS with SELECT + INSERT on events and SELECT + INSERT + UPDATE on settings", async () => {
     if (skip()) return;
     const r = await pg().admin.query<{ relname: string; on: boolean; forced: boolean; cmds: string }>(
@@ -346,7 +346,7 @@ describe("0055 RLS", () => {
   });
 });
 
-describe("0055 down", () => {
+describe("0056 down", () => {
   async function runDown(role: string | null): Promise<string | null> {
     const client = await pg().admin.connect();
     try {
