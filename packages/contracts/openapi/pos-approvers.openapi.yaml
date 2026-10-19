@@ -128,7 +128,9 @@ paths:
         `200` result with `eligible: false`, never an error.
 
 
-        **Bounds.** 1 to 50 distinct `user_ids` per request. An empty list,
+        **Bounds.** 1 to 50 distinct `user_ids` per request. Distinct means
+        distinct as UUIDs, compared case-insensitively (see `ApproverUserId`).
+        An empty list,
         more than 50 ids, a duplicate id, a malformed UUID or an unknown field
         is a `400` and nothing is evaluated.
       operationId: posCheckApproverEligibility
@@ -235,6 +237,18 @@ components:
         Provider-neutral identity key, `users.id` (028 §16), as the terminal
         holds it on the enrolled manager's credential (RT-114 C1). The server
         resolves it within the device's tenant and store only.
+
+
+        Identity is the UUID value, not its spelling. Two ids are the SAME id
+        when they are equal as UUIDs, compared case-insensitively. The schema
+        keeps `format: uuid` (which a schema validator may read as also
+        admitting a `urn:uuid:` prefix) and `uniqueItems`, which compares raw
+        JSON strings only, so neither catches two spellings of one UUID. The
+        server MAY reject a non-canonical spelling, such as a `urn:uuid:`
+        prefix, as a `400 validation_error`. Either way the server MUST treat
+        two spellings of one UUID as a duplicate and answer
+        `400 validation_error`. A result echoes each `user_id` exactly as it
+        was sent.
     PosApproverEligibilityResponse:
       type: object
       required: [results]

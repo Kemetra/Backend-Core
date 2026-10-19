@@ -238,8 +238,21 @@ describe("pos-approvers — AJV fixtures", () => {
     ["one id", { user_ids: [USER_A] }],
     ["two ids", { user_ids: [USER_A, USER_B] }],
     ["the 50-id maximum", { user_ids: userIds(50) }],
-  ])("accepts a request with %s", (_label, body) => {
+    ["a mixed-case UUID", { user_ids: [USER_A.toUpperCase()] }],
+  ])("schema-validates a request with %s", (_label, body) => {
     expect(validator("PosApproverEligibilityRequest")(body)).toBe(true);
+  });
+
+  it("does not catch two spellings of one UUID with raw uniqueItems: the server must (ApproverUserId)", () => {
+    const request = validator("PosApproverEligibilityRequest");
+    // Schema-valid only: the runtime validator (zod uuid) rejects a `urn:uuid:` prefix, so the
+    // contract does not promise that spelling is accepted, only that no two spellings are distinct.
+    expect(request({ user_ids: [USER_A, USER_A.toUpperCase()] })).toBe(true);
+    expect(request({ user_ids: [USER_A, `urn:uuid:${USER_A}`] })).toBe(true);
+    const text = JSON.stringify(doc.components!.schemas!["ApproverUserId"]);
+    expect(text).toMatch(/compared case-insensitively/);
+    expect(text).toMatch(/MAY reject a non-canonical spelling/);
+    expect(text).toMatch(/MUST treat\s+two spellings of one UUID as a duplicate/);
   });
 
   it.each([
