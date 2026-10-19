@@ -31,12 +31,20 @@ export interface RunInfo {
 
 const LANGS: readonly Lang[] = ["en", "ar"];
 
-/** Replay every evaluation (case × language) and evaluate the automated gates. */
-export async function runDataset(): Promise<EvalRun> {
+/** Key of one evaluation in a recorded set: `<caseId>/<lang>`. */
+export const evaluationKey = (caseId: string, lang: Lang): string => `${caseId}/${lang}`;
+
+/**
+ * Replay every evaluation (case × language) and evaluate the automated gates.
+ * `recorded` maps an evaluation key to the recorded response to replay; an
+ * evaluation without an entry replays the baseline's own snapshot. This is the
+ * seam a later real-provider experiment (RT-657) plugs recorded outputs into.
+ */
+export async function runDataset(recorded: Readonly<Record<string, unknown>> = {}): Promise<EvalRun> {
   const evaluations: EvaluationResult[] = [];
   for (const c of E1_CASES) {
     for (const lang of LANGS) {
-      const obs = await observe(materialize(c, lang));
+      const obs = await observe(materialize(c, lang), recorded[evaluationKey(c.id, lang)]);
       const twinMaterial = materializeTwin(c, lang);
       const twin = twinMaterial === null ? null : await observe(twinMaterial);
       evaluations.push({ obs, twin, gates: evaluateGates(obs, twin) });
