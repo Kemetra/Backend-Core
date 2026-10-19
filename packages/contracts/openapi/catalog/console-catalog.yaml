@@ -21,10 +21,10 @@ info:
     tracking-profile surface are not changed.
 
 
-    **Posture.** `1.0.0-draft`, contract only. `[GATED]` contract approved by
-    the owner on 2026-10-19 (RT-729). Every operation carries
-    `x-runtime-status: contract-only` until the RT-730 (CAT-R2) runtime
-    serves it; no route is shipped by this change.
+    **Posture.** `1.0.0-draft`, implemented. `[GATED]` contract approved by
+    the owner on 2026-10-19 (RT-729); the RT-730 (CAT-R2) runtime serves
+    every operation unchanged on the wire, so none carries
+    `x-runtime-status: contract-only`.
 
 
     **Authority.** The Backend-Core Tenant Catalog is the retail product
@@ -54,11 +54,15 @@ info:
     store); `store_manager` sees the standard resolved store scope, including
     active-store narrowing. Store rows are read with an explicit store
     predicate. Store data outside the scope is omitted, never shown as
-    absent-with-a-reason.
+    absent-with-a-reason. A soft-deleted store is absent on this surface
+    for every scope, tenant-wide included: its `store_id` is the 404, and
+    its overrides and store-scoped identifiers are never shown or matched
+    (owner decision on RT-730; console-sales still lets a tenant-wide owner
+    read a deleted store's sales history).
 
     A role outside the list (`store_staff`), a `store_id` outside the
-    caller's scope or of another tenant, a product of another tenant and an
-    absent product are the same non-disclosing 404 (`RolesGuard` default
+    caller's scope, soft-deleted or of another tenant, a product of another
+    tenant and an absent product are the same non-disclosing 404 (`RolesGuard` default
     `denyAs: 404`, FR-ISO-4). There is no 403 on this surface. The guards
     run before request validation: an unauthenticated request is 401 and a
     role outside the list is 404 for any input, a malformed one included. A
@@ -236,9 +240,6 @@ paths:
     get:
       summary: Search and list the tenant's catalog products (keyset paginated).
       operationId: consoleListCatalogProducts
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-729 (CAT-R1) contract; the runtime ships in RT-730 (CAT-R2).
       tags: [console-catalog]
       description: >
         The products of the session's tenant that match every given filter
@@ -344,9 +345,6 @@ paths:
     get:
       summary: Read one catalog product with its identifiers and store overrides.
       operationId: consoleGetCatalogProduct
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-729 (CAT-R1) contract; the runtime ships in RT-730 (CAT-R2).
       tags: [console-catalog]
       description: >
         One product of the session's tenant, whatever its status (an
@@ -441,9 +439,6 @@ paths:
     get:
       summary: List the tenant's product categories (flat).
       operationId: consoleListCatalogCategories
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-729 (CAT-R1) contract; the runtime ships in RT-730 (CAT-R2).
       tags: [console-catalog]
       description: >
         Every category of the session's tenant that is not retired, ordered
@@ -844,8 +839,8 @@ components:
         identifiers in the `q` match to this store. It does not filter the
         products: a product the store does not sell is listed with
         `storeView.effectiveActive: false`. Validated against the caller's
-        store scope: a store outside it, or of another tenant, is the
-        non-disclosing 404. Case insensitive.
+        store scope: a store outside it, soft-deleted, or of another tenant,
+        is the non-disclosing 404. Case insensitive.
     Cursor:
       name: cursor
       in: query
@@ -1428,8 +1423,8 @@ components:
       description: >
         not_found (404), non-disclosing: identical for a role outside
         `owner` / `tenant_admin` / `store_manager`, a `store_id` outside the
-        caller's scope or of another tenant, a product of another tenant and
-        an absent product.
+        caller's scope, soft-deleted or of another tenant, a product of
+        another tenant and an absent product.
       content:
         application/json:
           schema:
