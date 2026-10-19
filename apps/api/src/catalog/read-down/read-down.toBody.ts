@@ -97,7 +97,7 @@ export function isRepresentable(amount: string, currencyCode: string): boolean {
  * JPY (0 minor): `100.0000`→`100`. Representability is guaranteed by the
  * caller's filter, so no significant digit is ever dropped.
  */
-function normalizeAmount(amount: string, currencyCode: string): string {
+export function normalizeAmount(amount: string, currencyCode: string): string {
   const exp = MINOR_UNIT_EXPONENT[currencyCode] ?? DEFAULT_MINOR_UNIT;
   const neg = amount.startsWith("-");
   const unsigned = neg ? amount.slice(1) : amount;

@@ -426,6 +426,20 @@ This project follows [Semantic Versioning](https://semver.org/).
   store scope) and `consoleListCatalogCategories`. Dashboard session only,
   roles owner / tenant_admin / store_manager, non-disclosing 404, no per-read
   audit. No runtime or migration change; the runtime ships in RT-730.
+- RT-730 (CAT-R2 of RT-281): runtime for the console catalog read
+  (`ConsoleCatalogModule`, `apps/api/src/catalog/console-catalog/`). All three
+  operations ship unchanged on the wire and lose `x-runtime-status:
+  contract-only`. Reads run under the RLS tenant context; store data
+  (`storeView`, store-scoped identifiers, overrides) carries an explicit
+  store predicate from the operator store scope. The Tenant ⊕ Store Override
+  resolver is extracted from the POS read-down into
+  `catalog/store-resolution/store-product-resolution.ts` and shared by both
+  reads (a Testcontainers parity test pins `storeView` to the read-down
+  projection). The keyset cursor is a compact, filter-bound byte layout. A
+  soft-deleted store is absent on this surface for every scope (owner
+  decision): its `store_id` is a 404 and its overrides and store-scoped
+  identifiers are never shown or matched, unlike console-sales. No
+  migration, package or CI change.
 - RT-649 `[GATED]`, owner-approved 2026-10-19 (BC-009-1, RT-642 D0 P3):
   OpenAPI contract `console-sales-summary.openapi.yaml` (1.0.0-draft,
   contract-only). `consoleGetSalesSummary` (`GET /api/v1/sales-summary`) is
