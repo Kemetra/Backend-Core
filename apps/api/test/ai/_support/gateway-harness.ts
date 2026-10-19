@@ -156,9 +156,9 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
         options.reservation ?? { allowed: true, reservationId: "0191a000-0000-7000-8000-0000000000c1", entitlementVersion: 1, runnable: true },
       );
     },
-    async settle(settlement) {
+    settle(settlement) {
       settlements.push(settlement);
-      if (options.settleFails === true) throw new Error("ledger unreachable");
+      return options.settleFails === true ? Promise.reject(new Error("ledger unreachable")) : Promise.resolve();
     },
     reservationTtlMs: options.reservationTtlMs ?? 900_000,
   };

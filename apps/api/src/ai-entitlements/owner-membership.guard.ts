@@ -31,7 +31,7 @@ function refuse(): never {
 
 /** The session's user and tenant, or null for anything but a session member context. */
 function sessionMember(ctx: ResolvedContext | undefined): { userId: string; tenantId: string } | null {
-  if (ctx === undefined || ctx.source !== "session") return null;
+  if (ctx?.source !== "session") return null;
   const { userId, tenantId } = ctx;
   return userId === null || tenantId === null ? null : { userId, tenantId };
 }

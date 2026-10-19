@@ -34,11 +34,21 @@ export interface RevisionContent {
 
 type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 
+/** Code-unit order, as `Array#sort()` would give, without its locale-free default being implicit. */
+function byCodeUnit(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+function canonicalMember(object: { [key: string]: Json }, key: string): string {
+  return JSON.stringify(key) + ":" + canonicalJson(object[key]!);
+}
+
 export function canonicalJson(value: Json): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
   if (value !== null && typeof value === "object") {
-    const keys = Object.keys(value).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k]!)}`).join(",")}}`;
+    const keys = Object.keys(value).sort(byCodeUnit);
+    return "{" + keys.map((key) => canonicalMember(value, key)).join(",") + "}";
   }
   return JSON.stringify(value);
 }

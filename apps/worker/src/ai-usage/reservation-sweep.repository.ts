@@ -91,15 +91,15 @@ export class PgReservationSweepRepository implements ReservationSweepRepository 
 
 /** No-DB path (dev / CI without DATABASE_URL): nothing to sweep. */
 export class NoOpReservationSweepRepository implements ReservationSweepRepository {
-  async isProvisioned(): Promise<boolean> {
-    return false;
+  isProvisioned(): Promise<boolean> {
+    return Promise.resolve(false);
   }
 
-  async listTenantIds(): Promise<string[]> {
-    return [];
+  listTenantIds(): Promise<string[]> {
+    return Promise.resolve([]);
   }
 
-  async releaseExpiredBatch(): Promise<SweepBatchResult> {
-    return { listed: 0, released: 0 };
+  releaseExpiredBatch(): Promise<SweepBatchResult> {
+    return Promise.resolve({ listed: 0, released: 0 });
   }
 }

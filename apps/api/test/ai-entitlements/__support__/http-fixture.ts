@@ -63,6 +63,14 @@ const MEMBERS = [
   { tenantId: TENANT_B, userId: idB("02b1"), n: "b1", roleCode: "owner", stores: "all", session: SES_OWNER_B },
 ] as const;
 
+/** The role id suffix per role code (roles are created once per tenant and code). */
+const ROLE_SUFFIX: Readonly<Record<(typeof MEMBERS)[number]["roleCode"], string>> = {
+  owner: "01",
+  tenant_admin: "02",
+  store_manager: "03",
+  store_staff: "04",
+};
+
 export async function seedAiHttpFixture(env: PgTestEnv): Promise<void> {
   await restrictAiGrants(env.admin);
   await seedCatalog(env.admin);
@@ -75,7 +83,7 @@ export async function seedAiHttpFixture(env: PgTestEnv): Promise<void> {
       userId: m.userId,
       email: `rt664-${m.n}@example.test`,
       membershipId: make(`04${m.n}`),
-      roleId: make(`05${m.roleCode === "owner" ? "01" : m.roleCode === "tenant_admin" ? "02" : m.roleCode === "store_manager" ? "03" : "04"}`),
+      roleId: make(`05${ROLE_SUFFIX[m.roleCode]}`),
       roleCode: m.roleCode,
       stores: m.stores,
       sessions: { [m.session]: null },
