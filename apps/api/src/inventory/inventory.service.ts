@@ -464,6 +464,15 @@ const MOVEMENT_COLUMNS_WITH_INTEGRATION = [
   'p.id AS primary_location_id',
 ].join(', ');
 
+/**
+ * RT-731: the listStockMovements predicate for a listing without productId.
+ * `$2` is the (null) productId, referenced so every variant binds it.
+ */
+const MOVEMENT_SCOPE_PREDICATES: Readonly<Record<StockMovementScope, string>> = {
+  adhoc: '($2::uuid IS NULL AND m.tenant_product_ref IS NULL)',
+  all: '($2::uuid IS NULL)',
+};
+
 /** RT-432 (G4-5): the store's primary location, for reading legacy positions. */
 const MOVEMENT_POSITION_JOIN =
   "LEFT JOIN stock_locations p ON p.store_id = m.store_id AND p.kind = 'primary'";
@@ -656,11 +665,9 @@ export class InventoryService {
         await this.assertReferencesInTenant(client, { storeIds: [input.storeId] });
         // productId → that product; else scope: adhoc → NULL product, all → any.
         const productPredicate =
-          productId !== null
+          binding.scope === null
             ? 'm.tenant_product_ref = $2::uuid'
-            : binding.scope === 'all'
-              ? '($2::uuid IS NULL)'
-              : '($2::uuid IS NULL AND m.tenant_product_ref IS NULL)';
+            : MOVEMENT_SCOPE_PREDICATES[binding.scope];
         // RT-425: each effect carries its integration state (LEFT JOIN: an
         // effect without an integration record projects null). One extra row
         // tells whether another page exists.
