@@ -21,10 +21,10 @@ info:
     tracking-profile surface are not changed.
 
 
-    **Posture.** `1.0.0-draft`, contract only. `[GATED]` contract approved by
-    the owner on 2026-10-19 (RT-729). Every operation carries
-    `x-runtime-status: contract-only` until the RT-730 (CAT-R2) runtime
-    serves it; no route is shipped by this change.
+    **Posture.** `1.0.0-draft`, implemented. `[GATED]` contract approved by
+    the owner on 2026-10-19 (RT-729); the RT-730 (CAT-R2) runtime serves
+    every operation unchanged on the wire, so none carries
+    `x-runtime-status: contract-only`.
 
 
     **Authority.** The Backend-Core Tenant Catalog is the retail product
@@ -139,9 +139,6 @@ paths:
     get:
       summary: Search and list the tenant's catalog products (keyset paginated).
       operationId: consoleListCatalogProducts
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-729 (CAT-R1) contract; the runtime ships in RT-730 (CAT-R2).
       tags: [console-catalog]
       description: >
         The products of the session's tenant that match every given filter
@@ -187,9 +184,6 @@ paths:
     get:
       summary: Read one catalog product with its identifiers and store overrides.
       operationId: consoleGetCatalogProduct
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-729 (CAT-R1) contract; the runtime ships in RT-730 (CAT-R2).
       tags: [console-catalog]
       description: >
         One product of the session's tenant, whatever its status (an
@@ -229,9 +223,6 @@ paths:
     get:
       summary: List the tenant's product categories (flat).
       operationId: consoleListCatalogCategories
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-729 (CAT-R1) contract; the runtime ships in RT-730 (CAT-R2).
       tags: [console-catalog]
       description: >
         Every category of the session's tenant that is not retired, ordered

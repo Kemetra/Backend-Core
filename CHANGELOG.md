@@ -426,6 +426,17 @@ This project follows [Semantic Versioning](https://semver.org/).
   store scope) and `consoleListCatalogCategories`. Dashboard session only,
   roles owner / tenant_admin / store_manager, non-disclosing 404, no per-read
   audit. No runtime or migration change; the runtime ships in RT-730.
+- RT-730 (CAT-R2 of RT-281): runtime for the console catalog read
+  (`ConsoleCatalogModule`, `apps/api/src/catalog/console-catalog/`). All three
+  operations ship unchanged on the wire and lose `x-runtime-status:
+  contract-only`. Reads run under the RLS tenant context; store data
+  (`storeView`, store-scoped identifiers, overrides) carries an explicit
+  store predicate from the operator store scope. The Tenant ⊕ Store Override
+  resolver is extracted from the POS read-down into
+  `catalog/store-resolution/store-product-resolution.ts` and shared by both
+  reads (a Testcontainers parity test pins `storeView` to the read-down
+  projection). The keyset cursor is a compact, filter-bound byte layout. No
+  migration, package or CI change.
 
 ### Changed
 - RT-616: successful `GET /api/v1/health/live` probes are no longer logged
