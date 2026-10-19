@@ -1,0 +1,338 @@
+openapi: 3.1.0
+info:
+  title: Backend-Core — POS Approver Eligibility API
+  version: "1.0.0-draft"
+  description: >
+    RT-492 (MA-BC1 in the RT-114 planning record, Jira RT-114 comment 10764,
+    decisions C4 and C9). The device-authenticated read that lets a paired POS
+    terminal revalidate whether the managers enrolled on it for the Manager
+    Approval PIN are still eligible to approve. The owner approved shipping it
+    on 2026-10-15 (RT-114 comment 11888), reconciled with the ratified RT-284
+    capability model (RT-284 comment 11887, P-A and P-F).
+
+
+    **Posture.** `1.0.0-draft`, contract-only: the operation carries
+    `x-runtime-status: contract-only` until the MA-BC2 runtime ships. `[GATED]`
+    contract; the owner approves the wire shape at PR time. No persistence,
+    migration or dependency change is needed or implied.
+
+
+    **Why this surface exists.** The terminal verifies a manager's approval PIN
+    locally and keeps each credential valid offline for 24 h after its last
+    successful revalidation (RT-114 C4). Until now the only revalidation was
+    that manager's own Clerk sign-in on the till, because Backend-Core had no
+    device-authenticated read of "is this user still a manager-eligible member
+    of this store" (RT-114 M-A7). The terminal calls this operation at app
+    start, every 15 min while online and live before every approval when
+    Backend-Core is reachable (RT-114 MA-3). A user it reports ineligible has
+    their local credential revoked, and the terminal raises the offline review
+    flag for the approvals that user granted offline (RT-114 C9).
+
+
+    **Authentication.** The role-named `device` security scheme only: the
+    paired terminal's opaque device token as `Authorization: Bearer
+    <device_token>`. There is no operator credential on this surface; an
+    operator-identity JWT or a dashboard session does not authenticate it.
+    `tenant_id` and the store (`branch_id`, internally `store_id`) come ONLY
+    from the authenticated, non-revoked `devices` row. No request carries a
+    tenant, store, branch, terminal or device identifier, and the server never
+    takes scope from the client (Constitution §II, §XII).
+
+
+    **V1 eligibility.** A user is `eligible: true` if and only if ALL of the
+    following hold, evaluated by the server at request time against the
+    device's tenant and store:
+
+      1. the user exists and is not deleted;
+      2. the user has an ACTIVE membership in the device's tenant;
+      3. that membership's role is in the manager-eligible set
+         `{owner, tenant_admin, store_manager}` (RT-132), the same set the
+         RT-530 void-approval and RT-17 shift-variance approvers use;
+      4. that membership has access to the device's store: store scope `all`,
+         or store scope `specific` with a `store_access` row for that store.
+
+    Otherwise the user is `eligible: false`. Per RT-284 P-A, eligibility will
+    later mean "holds `<action_kind>:approve` at the device's store". Until the
+    RT-284 evaluator ships (PE-BC3), that is exactly the role set above.
+
+
+    **Minimum disclosure (normative).** A user id that is unknown, belongs to
+    another tenant, is deleted, or fails any predicate above is reported as
+    `eligible: false`, and that result is indistinguishable on the wire from
+    every other ineligible result: same status (`200`), same fields, no cause,
+    no role, no name, no membership or store detail. The server MUST NOT
+    answer a per-user `403` or `404`, and MUST NOT vary the response by which
+    predicate failed. The response carries nothing about a user beyond the
+    echoed `user_id`, `eligible` and, in a later version, `action_kinds`. Any
+    per-user cause is logged server-side only, keyed by `request_id`. The
+    server SHOULD evaluate all requested ids in one tenant-scoped read so that
+    response time does not depend on which predicate failed.
+
+
+    **`action_kinds` (reserved, normative).** The optional `action_kinds`
+    field lets the RT-284 capability model take over without a breaking
+    change. In `1.0.0-draft` the server MUST omit it from every result. A
+    client MUST nevertheless honour it whenever it is present:
+
+      - `eligible: false` never carries `action_kinds`, and the user may
+        approve nothing;
+      - `eligible: true` without `action_kinds` means the user may approve
+        every action kind of the RT-114 catalogue;
+      - `eligible: true` with `action_kinds` means the user may approve
+        exactly the listed kinds at the device's store, and no other; the
+        list is then non-empty;
+      - a kind the client does not know is ignored.
+
+    `action_kinds` lists approvable capabilities only. It never lists
+    `session.self_unlock`, which RT-284 P-A makes a system invariant rather
+    than a grantable capability; a terminal applies its self-unlock rule from
+    `eligible` alone. Values follow the RT-114 `action_kind` spelling and are
+    not an enum here: the catalogue grows by contract (RT-114 §3) and an
+    additive value must not be a breaking change for this read.
+
+
+    **Read-only.** The operation changes no state, records no audit event and
+    takes no idempotency key; any retry is a fresh evaluation. It is a `POST`
+    only so that the user ids travel in a body, not in a URL or access log.
+    Responses MUST NOT be cached by intermediaries.
+
+
+    **Secrets and PII.** No request or response carries a PIN, a PIN hash, a
+    password, a device token, a provider JWT, a name, an email, a phone or a
+    role. The only personal data on the wire is the `user_id` (`users.id`, 028
+    §16) the terminal already holds for its enrolled managers.
+
+
+    Cross-cutting conventions live in
+    `specs/001-foundation-auth-tenant-store/contracts/README.md`.
+servers:
+  - url: https://api.example.com
+tags:
+  - name: pos-approvers
+    description: Device-authenticated manager-approver eligibility (RT-114 MA-BC1).
+paths:
+  /api/pos/v1/approvers/eligibility:
+    post:
+      summary: Check whether users may approve manager actions on this device.
+      description: >
+        Evaluates V1 eligibility (see the document description) for each
+        requested `user_id` against the authenticated device's tenant and
+        store, and returns exactly one result per requested id, in request
+        order, each echoing its `user_id` as sent.
+
+
+        **Outcome order.** `401` (device authentication), then `400`
+        (validation), then `200`. Any well-formed request from an
+        authenticated device is answered `200`, whatever the users are: an
+        unknown, cross-tenant, deleted or otherwise ineligible user is a
+        `200` result with `eligible: false`, never an error.
+
+
+        **Bounds.** 1 to 50 distinct `user_ids` per request. Distinct means
+        distinct as UUIDs, compared case-insensitively (see `ApproverUserId`).
+        An empty list,
+        more than 50 ids, a duplicate id, a malformed UUID or an unknown field
+        is a `400` and nothing is evaluated.
+      operationId: posCheckApproverEligibility
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-492 (MA-BC1) contract PR; the controller and the eligibility read
+        ship in MA-BC2. No migration is needed: the read uses the existing
+        users, memberships, roles and store_access tables.
+      tags: [pos-approvers]
+      security:
+        - device: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PosApproverEligibilityRequest"
+      responses:
+        "200":
+          description: >
+            One result per requested `user_id`, in request order. Minimum
+            disclosure: ineligible results carry no cause.
+          headers:
+            Cache-Control:
+              required: true
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PosApproverEligibilityResponse"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+components:
+  securitySchemes:
+    # The same role-named POS device-credential scheme as catalog/read-down.yaml
+    # and pos-cashier-admissions.openapi.yaml (spec 030 / 028 DOC-1 / DOC-4):
+    # the paired terminal's opaque device token, NOT a JWT, so
+    # `bearerFormat: JWT` is intentionally omitted. Reused, not a new mechanism.
+    device:
+      type: http
+      scheme: bearer
+      description: >
+        Opaque, device-scoped bearer token (spec 030 / 028 §6 CM-2). The POS
+        terminal presents its `devices` PAIRING TOKEN as
+        `Authorization: Bearer <device_token>`, an opaque token (NOT a JWT),
+        with NO operator credential and NO `X-Terminal-Token` header. The token
+        is hashed and matched against an active (non-revoked) `devices` row; the
+        device row supplies the authoritative `(tenant_id, store_id)` scope.
+        Body/query scope is never trusted. Verified at the API edge;
+        fail-closed (any missing / malformed / unknown / revoked token, or a
+        non-device credential, returns a generic 401, non-disclosing).
+        Device-scoped only: it never proves sale ownership alone; an operator
+        identity JWT or dashboard session does NOT authenticate this surface.
+        The token is not propagated past the verifier.
+  responses:
+    ValidationFailure:
+      description: >
+        `validation_error`: a malformed body, an empty `user_ids`, more than
+        50 ids, a duplicate id, a value that is not a UUID, or an unknown
+        field. Nothing is evaluated.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        Generic 401: the device credential is missing, malformed, unknown or
+        revoked, or a non-device credential was presented. The terminal treats
+        it as device-revoked (RT-138 L6), which already revokes every local
+        approval credential (RT-114 C4). Non-disclosing.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    PosApproverEligibilityRequest:
+      type: object
+      required: [user_ids]
+      additionalProperties: false
+      description: >
+        The users to evaluate. There is no `tenant_id`, `branch_id`,
+        `store_id`, `terminal_id` or `device_id` field: scope comes from the
+        device credential.
+      properties:
+        user_ids:
+          type: array
+          minItems: 1
+          maxItems: 50
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/ApproverUserId"
+          description: >
+            1 to 50 distinct user ids. The terminal sends the managers
+            enrolled on it; a terminal with more enrolled managers splits them
+            across requests.
+    ApproverUserId:
+      type: string
+      format: uuid
+      description: >
+        Provider-neutral identity key, `users.id` (028 §16), as the terminal
+        holds it on the enrolled manager's credential (RT-114 C1). The server
+        resolves it within the device's tenant and store only.
+
+
+        Identity is the UUID value, not its spelling. Two ids are the SAME id
+        when they are equal as UUIDs, compared case-insensitively. The schema
+        keeps `format: uuid` (which a schema validator may read as also
+        admitting a `urn:uuid:` prefix) and `uniqueItems`, which compares raw
+        JSON strings only, so neither catches two spellings of one UUID. The
+        server MAY reject a non-canonical spelling, such as a `urn:uuid:`
+        prefix, as a `400 validation_error`. Either way the server MUST treat
+        two spellings of one UUID as a duplicate and answer
+        `400 validation_error`. A result echoes each `user_id` exactly as it
+        was sent.
+    PosApproverEligibilityResponse:
+      type: object
+      required: [results]
+      additionalProperties: false
+      properties:
+        results:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/PosApproverEligibilityResult"
+          description: >
+            Exactly one entry per requested `user_id`, in request order.
+    PosApproverEligibilityResult:
+      type: object
+      required: [user_id, eligible]
+      additionalProperties: false
+      description: >
+        Minimum-disclosure result for one user. An ineligible user (including
+        an unknown or cross-tenant id) carries only `user_id` and
+        `eligible: false`.
+      # `action_kinds` is only ever present on an eligible result, so a
+      # contradictory result (ineligible but with approvable kinds) fails
+      # response validation instead of reaching a client.
+      if:
+        required: [action_kinds]
+      then:
+        properties:
+          eligible:
+            const: true
+      properties:
+        user_id:
+          $ref: "#/components/schemas/ApproverUserId"
+        eligible:
+          type: boolean
+          description: >
+            `true` only when every V1 eligibility predicate holds for the
+            device's tenant and store at request time.
+        action_kinds:
+          type: array
+          minItems: 1
+          maxItems: 64
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 3
+            maxLength: 64
+            pattern: "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+            # `session.self_unlock` is a system invariant (RT-284 P-A), never a
+            # grantable capability, so it can never be listed. The rest of the
+            # namespace stays open so the catalogue can grow by contract.
+            not:
+              const: session.self_unlock
+          description: >
+            RESERVED. The RT-114 action kinds this user may approve at the
+            device's store (RT-284 P-A). The server MUST omit it in
+            `1.0.0-draft`. When present it accompanies only `eligible: true`
+            and the client allows exactly the listed kinds; see the document
+            description for the full rule. It never contains
+            `session.self_unlock`.
+    Error:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              description: >
+                Stable error code: `validation_error` (400), `unauthorized`
+                (401).
+            message:
+              type: string
+              description: Generic human-readable string. Never enumerates causes.
+            request_id:
+              type: string
+              description: >
+                Server-side correlation id. Any per-user cause is logged
+                server-side under this id and is never returned.
+            details:
+              description: >
+                Validation detail, present only on a 400. It never names a
+                user's eligibility or its cause. Never present on a 401.
