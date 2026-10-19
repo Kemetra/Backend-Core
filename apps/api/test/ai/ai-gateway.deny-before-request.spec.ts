@@ -162,36 +162,46 @@ describe("AiGateway — deny before any provider request", () => {
     const unauthorizedCtx = sessionCtx({ userId: null });
     const wrongStoreCtx = sessionCtx({ storeAccess: { kind: "specific", storeIds: [STORE_B] } });
 
-    it.each<[string, HarnessOptions, ResolvedContext, AiFallbackReason, Partial<Harness["calls"]>]>([
-      [
-        "unauthorized beats entitlement, kill switch and budget (no plan/system state leaks)",
-        { enabled: false, entitlement: entitlementDeny, budget: budgetDeny },
-        unauthorizedCtx,
-        "not_authorized",
-        { entitlement: 0, budget: 0, evidence: 0 },
-      ],
-      [
-        "wrong store beats entitlement",
-        { entitlement: entitlementDeny },
-        wrongStoreCtx,
-        "store_out_of_scope",
-        { entitlement: 0 },
-      ],
-      [
-        "entitlement beats kill switch and budget (ticket order)",
-        { enabled: false, entitlement: entitlementDeny, budget: budgetDeny },
-        sessionCtx(),
-        "not_entitled",
-        { budget: 0 },
-      ],
-      [
-        "kill switch beats budget",
-        { enabled: false, budget: budgetDeny },
-        sessionCtx(),
-        "feature_disabled_system",
-        { budget: 0 },
-      ],
-    ])("%s", async (_name, options, ctx, reason, expectedCalls) => {
+    interface PrecedenceCase {
+      readonly name: string;
+      readonly options: HarnessOptions;
+      readonly ctx: ResolvedContext;
+      readonly reason: AiFallbackReason;
+      readonly expectedCalls: Partial<Harness["calls"]>;
+    }
+
+    const cases: readonly PrecedenceCase[] = [
+      {
+        name: "unauthorized beats entitlement, kill switch and budget (no plan/system state leaks)",
+        options: { enabled: false, entitlement: entitlementDeny, budget: budgetDeny },
+        ctx: unauthorizedCtx,
+        reason: "not_authorized",
+        expectedCalls: { entitlement: 0, budget: 0, evidence: 0 },
+      },
+      {
+        name: "wrong store beats entitlement",
+        options: { entitlement: entitlementDeny },
+        ctx: wrongStoreCtx,
+        reason: "store_out_of_scope",
+        expectedCalls: { entitlement: 0 },
+      },
+      {
+        name: "entitlement beats kill switch and budget (ticket order)",
+        options: { enabled: false, entitlement: entitlementDeny, budget: budgetDeny },
+        ctx: sessionCtx(),
+        reason: "not_entitled",
+        expectedCalls: { budget: 0 },
+      },
+      {
+        name: "kill switch beats budget",
+        options: { enabled: false, budget: budgetDeny },
+        ctx: sessionCtx(),
+        reason: "feature_disabled_system",
+        expectedCalls: { budget: 0 },
+      },
+    ];
+
+    it.each(cases)("$name", async ({ options, ctx, reason, expectedCalls }) => {
       const { h, result } = await runDenied(options, ctx);
       expect(result).toMatchObject({ kind: "fallback", reason });
       expect(h.calls).toMatchObject(expectedCalls);

@@ -157,11 +157,13 @@ export class AiGateway {
 
     trace.providerRequested = true;
     const outcome = await this.callProvider(routed, request, trace);
-    this.deps.metrics.recordProviderCall({
-      provider: routed.provider.providerKey,
-      route: routed.route.routeKey,
-      outcome: providerOutcome(outcome),
-    });
+    this.contain(() =>
+      this.deps.metrics.recordProviderCall({
+        provider: routed.provider.providerKey,
+        route: routed.route.routeKey,
+        outcome: providerOutcome(outcome),
+      }),
+    );
     if (outcome === "fault") return fallback("provider_error", true);
     return interpretResult(outcome, feature, routed.route, pack);
   }
@@ -269,18 +271,22 @@ export class AiGateway {
   }
 
   /**
-   * One metric and one log line per run; business-class fields only (E-5).
-   * Observability must never change or fail a run, so a throwing metric sink or
-   * logger is contained here.
+   * Observability must never change or fail a run: a throwing metric sink or
+   * logger is contained, including after a paid provider answer was validated.
    */
-  private report(trace: RunTrace, scope: AiRunScope, result: AiGatewayResult): void {
-    const outcome = result.kind === "ok" ? "ok" : result.reason;
+  private contain(emit: () => void): void {
     try {
-      this.deps.metrics.recordRun({ feature: trace.feature, outcome });
-      this.log(trace, scope, result, outcome);
+      emit();
     } catch {
       // intentionally contained: see the method comment
     }
+  }
+
+  /** One metric and one log line per run; business-class fields only (E-5). */
+  private report(trace: RunTrace, scope: AiRunScope, result: AiGatewayResult): void {
+    const outcome = result.kind === "ok" ? "ok" : result.reason;
+    this.contain(() => this.deps.metrics.recordRun({ feature: trace.feature, outcome }));
+    this.contain(() => this.log(trace, scope, result, outcome));
   }
 
   private log(trace: RunTrace, scope: AiRunScope, result: AiGatewayResult, outcome: string): void {

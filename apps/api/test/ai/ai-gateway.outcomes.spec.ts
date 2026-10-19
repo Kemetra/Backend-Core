@@ -425,7 +425,32 @@ describe("AiGateway — run() never rejects (every failure is a fallback)", () =
     });
   });
 
-  it("a throwing logger or metric sink never changes the result", async () => {
+  it("a throwing provider-call metric never turns a validated answer into internal_error", async () => {
+    const h = buildHarness({
+      metrics: {
+        recordRun: () => undefined,
+        recordProviderCall: () => {
+          throw new Error("metric sink down");
+        },
+      },
+    });
+    await expect(h.gateway.run(FEATURE_ID, scope())).resolves.toMatchObject({ kind: "ok" });
+  });
+
+  it("a throwing run-metric sink does not suppress the log line or change the result", async () => {
+    const h = buildHarness({
+      metrics: {
+        recordRun: () => {
+          throw new Error("metric sink down");
+        },
+        recordProviderCall: () => undefined,
+      },
+    });
+    await expect(h.gateway.run(FEATURE_ID, scope())).resolves.toMatchObject({ kind: "ok" });
+    expect(h.logs).toHaveLength(1);
+  });
+
+  it("a throwing logger never changes the result", async () => {
     const h = buildHarness({
       logger: {
         info: () => {

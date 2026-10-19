@@ -104,6 +104,7 @@ export interface HarnessOptions {
   readonly providers?: AiGatewayDeps["providers"];
   readonly features?: readonly AiFeatureDefinition[];
   readonly logger?: AiGatewayLogger;
+  readonly metrics?: AiGatewayMetrics;
 }
 
 export interface Harness {
@@ -181,7 +182,7 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
     routes: options.routes ?? [FAKE_ROUTE],
     providers: options.providers ?? [provider],
     runtime,
-    metrics,
+    metrics: options.metrics ?? metrics,
     logger,
   });
 

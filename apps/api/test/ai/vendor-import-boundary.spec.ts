@@ -25,6 +25,12 @@ const REPO_ROOT = join(__dirname, "..", "..", "..", "..");
 const NON_VENDOR_ADAPTER_DIRS = new Set(["fake", "recorded", "disabled"]);
 const VENDOR_ADAPTER_PATH = /^apps\/[^/]+\/src\/ai\/adapters\/([^/]+)\/.+/;
 
+/** A source file under scan. The scanners take this, not loose strings. */
+interface SourceFile {
+  readonly path: string;
+  readonly text: string;
+}
+
 function walk(dir: string): string[] {
   return readdirSync(dir)
     .filter((entry) => entry !== "node_modules" && entry !== "dist")
@@ -35,11 +41,16 @@ function walk(dir: string): string[] {
     });
 }
 
-function srcDirsIn(group: string): string[] {
-  const groupDir = join(REPO_ROOT, group);
-  return readdirSync(groupDir)
-    .map((name) => join(groupDir, name, "src"))
-    .filter((src) => existsSync(src) && statSync(src).isDirectory());
+function sourceRoots(): string[] {
+  return ["apps", "packages"].flatMap((group) =>
+    readdirSync(join(REPO_ROOT, group))
+      .map((name) => join(REPO_ROOT, group, name, "src"))
+      .filter((src) => existsSync(src) && statSync(src).isDirectory()),
+  );
+}
+
+function readSources(paths: readonly string[]): SourceFile[] {
+  return paths.map((path) => ({ path, text: readFileSync(path, "utf8") }));
 }
 
 const SPECIFIER_PATTERNS: readonly RegExp[] = [
@@ -49,37 +60,33 @@ const SPECIFIER_PATTERNS: readonly RegExp[] = [
   /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g, // require()
 ];
 
-function importedSpecifiers(source: string): string[] {
+function importedSpecifiers(file: SourceFile): string[] {
   return SPECIFIER_PATTERNS.flatMap((pattern) =>
-    [...source.matchAll(pattern)].map((match) => match[1] as string),
+    [...file.text.matchAll(pattern)].map((match) => match[1] as string),
   );
 }
 
-function isVendorSpecifier(specifier: string): boolean {
-  const bare = specifier.replace(/^node:/, "");
-  const exact = denylist.packages.some((pkg) => bare === pkg || bare.startsWith(`${pkg}/`));
-  return exact || denylist.scopes.some((scope) => bare.startsWith(scope));
+function vendorSpecifiers(specifiers: readonly string[]): string[] {
+  const isVendor = (specifier: string): boolean => {
+    const bare = specifier.replace(/^node:/, "");
+    const exact = denylist.packages.some((pkg) => bare === pkg || bare.startsWith(`${pkg}/`));
+    return exact || denylist.scopes.some((scope) => bare.startsWith(scope));
+  };
+  return specifiers.filter(isVendor);
 }
 
-/** True when `file` lives under apps/<app>/src/ai/adapters/<vendor>/... */
-function isVendorAdapterFile(file: string): boolean {
-  const posixPath = relative(REPO_ROOT, file).split(sep).join("/");
+/** True when the file lives under apps/<app>/src/ai/adapters/<vendor>/... */
+function isVendorAdapterFile(file: SourceFile): boolean {
+  const posixPath = relative(REPO_ROOT, file.path).split(sep).join("/");
   const vendor = VENDOR_ADAPTER_PATH.exec(posixPath)?.[1];
   return vendor !== undefined && !NON_VENDOR_ADAPTER_DIRS.has(vendor);
 }
 
-function violationsInFile(file: string): string[] {
+function violationsIn(file: SourceFile): string[] {
   if (isVendorAdapterFile(file)) return [];
-  return importedSpecifiers(readFileSync(file, "utf8"))
-    .filter(isVendorSpecifier)
-    .map((specifier) => `${relative(REPO_ROOT, file)} imports ${specifier}`);
-}
-
-function findVendorImportViolations(): string[] {
-  return ["apps", "packages"]
-    .flatMap(srcDirsIn)
-    .flatMap((root) => walk(root))
-    .flatMap(violationsInFile);
+  return vendorSpecifiers(importedSpecifiers(file)).map(
+    (specifier) => `${relative(REPO_ROOT, file.path)} imports ${specifier}`,
+  );
 }
 
 const NETWORK_MODULES = new Set([
@@ -103,10 +110,10 @@ const NETWORK_TOKENS: readonly RegExp[] = [
   /\bEventSource\b/,
 ];
 
-/** Removes `//` and block comments so prose that mentions a primitive is not a hit. */
-function stripComments(source: string): string {
+/** The file's code with `//` and block comments removed (prose may name a primitive). */
+function codeOf(file: SourceFile): string {
   let out = "";
-  let rest = source;
+  let rest = file.text;
   for (;;) {
     const open = rest.indexOf("/*");
     if (open === -1) break;
@@ -117,32 +124,37 @@ function stripComments(source: string): string {
   return (out + rest).replace(/\/\/.*$/gm, "");
 }
 
-function findNetworkUse(source: string): string[] {
-  const modules = importedSpecifiers(source)
+function findNetworkUse(file: SourceFile): string[] {
+  const modules = importedSpecifiers(file)
     .map((spec) => spec.replace(/^node:/, ""))
     .filter((spec) => NETWORK_MODULES.has(spec));
-  const code = stripComments(source);
+  const code = codeOf(file);
   const tokens = NETWORK_TOKENS.filter((token) => token.test(code)).map((token) => token.source);
   return [...modules, ...tokens];
 }
 
+const FIXTURE_IMPORTS: SourceFile = {
+  path: "fixture.ts",
+  text: [
+    'import Anthropic from "@anthropic-ai/sdk";',
+    'import type { Foo } from "openai/resources";',
+    'import "@langchain/core";',
+    'export * from "litellm";',
+    'const a = await import("@ai-sdk/openai");',
+    'const b = require("@aws-sdk/client-bedrock-runtime");',
+    'import { ok } from "./fine";',
+    'import { z } from "zod";',
+  ].join("\n"),
+};
+
 describe("vendor SDK import boundary", () => {
   it("no vendor model SDK is imported anywhere outside apps/*/src/ai/adapters/<vendor>/**", () => {
-    expect(findVendorImportViolations()).toEqual([]);
+    const files = readSources(sourceRoots().flatMap((root) => walk(root)));
+    expect(files.flatMap(violationsIn)).toEqual([]);
   });
 
   it("scanner self-test: catches static, type, side-effect, re-export, dynamic and require imports", () => {
-    const fixture = [
-      'import Anthropic from "@anthropic-ai/sdk";',
-      'import type { Foo } from "openai/resources";',
-      'import "@langchain/core";',
-      'export * from "litellm";',
-      'const a = await import("@ai-sdk/openai");',
-      'const b = require("@aws-sdk/client-bedrock-runtime");',
-      'import { ok } from "./fine";',
-      'import { z } from "zod";',
-    ].join("\n");
-    expect(importedSpecifiers(fixture).filter(isVendorSpecifier).sort()).toEqual(
+    expect(vendorSpecifiers(importedSpecifiers(FIXTURE_IMPORTS)).sort()).toEqual(
       [
         "@ai-sdk/openai",
         "@anthropic-ai/sdk",
@@ -154,37 +166,40 @@ describe("vendor SDK import boundary", () => {
     );
   });
 
+  const adapter = (...segments: string[]): SourceFile => ({ path: join(REPO_ROOT, ...segments), text: "" });
+  const adaptersDir = ["apps", "api", "src", "ai", "adapters"];
+
   it.each([
-    [["apps", "api", "src", "ai", "adapters", "anthropic", "client.ts"], true],
-    [["apps", "api", "src", "ai", "adapters", "fake", "x.ts"], false],
-    [["apps", "api", "src", "ai", "adapters", "recorded", "x.ts"], false],
-    [["apps", "api", "src", "ai", "adapters", "disabled", "x.ts"], false],
-    [["apps", "api", "src", "ai", "adapters", "anthropic.ts"], false],
-    [["apps", "api", "src", "ai", "gateway", "x.ts"], false],
-    [["apps", "api", "src", "other", "adapters", "anthropic", "x.ts"], false],
-  ])("the adapter-directory exemption (%j) is %s", (segments, exempt) => {
-    expect(isVendorAdapterFile(join(REPO_ROOT, ...segments))).toBe(exempt);
+    { file: adapter(...adaptersDir, "anthropic", "client.ts"), exempt: true },
+    { file: adapter(...adaptersDir, "fake", "x.ts"), exempt: false },
+    { file: adapter(...adaptersDir, "recorded", "x.ts"), exempt: false },
+    { file: adapter(...adaptersDir, "disabled", "x.ts"), exempt: false },
+    { file: adapter(...adaptersDir, "anthropic.ts"), exempt: false },
+    { file: adapter("apps", "api", "src", "ai", "gateway", "x.ts"), exempt: false },
+    { file: adapter("apps", "api", "src", "other", "adapters", "anthropic", "x.ts"), exempt: false },
+  ])("the adapter-directory exemption for $file.path is $exempt", ({ file, exempt }) => {
+    expect(isVendorAdapterFile(file)).toBe(exempt);
   });
 });
 
 describe("no network egress under apps/api/src/ai", () => {
   it("uses no network module or primitive", () => {
-    const files = walk(join(REPO_ROOT, "apps", "api", "src", "ai")).filter(
+    const files = readSources(walk(join(REPO_ROOT, "apps", "api", "src", "ai"))).filter(
       (file) => !isVendorAdapterFile(file),
     );
     expect(files.length).toBeGreaterThan(0);
     const violations = files.flatMap((file) =>
-      findNetworkUse(readFileSync(file, "utf8")).map((hit) => `${relative(REPO_ROOT, file)}: ${hit}`),
+      findNetworkUse(file).map((hit) => `${relative(REPO_ROOT, file.path)}: ${hit}`),
     );
     expect(violations).toEqual([]);
   });
 
   it.each([
-    ['import https from "node:https";', 1],
-    ['const r = await fetch("http://x");', 1],
-    ['import net from "net"; new WebSocket("ws://x");', 2],
-    ["// never call fetch( here\n/* XMLHttpRequest */ const a = 1;", 0],
-  ])("scanner self-test: %j yields %s hit(s)", (source, hits) => {
-    expect(findNetworkUse(source)).toHaveLength(hits);
+    { text: 'import https from "node:https";', hits: 1 },
+    { text: 'const r = await fetch("http://x");', hits: 1 },
+    { text: 'import net from "net"; new WebSocket("ws://x");', hits: 2 },
+    { text: "// never call fetch( here\n/* XMLHttpRequest */ const a = 1;", hits: 0 },
+  ])("scanner self-test: $text yields $hits hit(s)", ({ text, hits }) => {
+    expect(findNetworkUse({ path: "fixture.ts", text })).toHaveLength(hits);
   });
 });
