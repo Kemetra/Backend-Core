@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — Console Sync-Ops Read-Model API
-  version: "1.1.0-draft"
+  version: "1.2.0-draft"
   description: >
     Spec 025 — a READ-ONLY consolidation surface for the Retail Tower Console (a
     sibling SPA repo). It aggregates the ERPNext sync-ops state a human operator
@@ -10,7 +10,8 @@ info:
       1. `consoleGetSyncOpsSummary` — one tenant-scoped summary across the sync-ops
          domains: 015 posting health + 017 reconciliation health populated;
          **020 connector_health + 021 product_master present as `not_available`**
-         (forward-compat stub, until those specs ship).
+         (forward-compat stub, until those specs ship); plus the posting
+         freshness facts and their `asOf` (1.2.0-draft, RT-565).
       2. `consoleListPostingBacklog` — a paginated read-through of the 015
          `erpnext_posting_status` dead-letter backlog (`permanently_rejected` rows
          only), with class / origin ref / provenance / structured reason /
@@ -55,6 +56,20 @@ info:
     return 429 `rate_limited` (`TooManyRequests`, with `Retry-After`)
     from the console rate limit (RT-574, RT-619). No other wire change.
 
+
+    **1.2.0-draft (RT-565, additive; `[GATED]` contract, owner-approved
+    2026-10-19, RT-565 comment 12969).** `SyncOpsSummary` gains a required
+    top-level `asOf` and a required `postingFreshness` object (D1–D7 of
+    `docs/planning/rt-565-posting-freshness-read.md`): the latest ERP posting
+    confirmation (`lastPosted`, with `state` `known` / `unknown` / `none`),
+    the pending posting-intent count, and the creation instant and whole-second
+    age of the oldest pending intent. Facts only: there is no current / behind
+    verdict, and the `posting` `DomainSummary` rule (dead-letter driven) is
+    unchanged. Roles, session, tenant RLS, the store filter, the operator store
+    scope and the out-of-scope 404 are unchanged; no request parameter changes.
+    The runtime that emits the two new properties ships in the RT-565 runtime
+    PR; until it merges the served summary does not yet carry them.
+
 servers:
   - url: https://api.example.com
 
@@ -78,6 +93,9 @@ paths:
         reconciliation health, with 020 connector_health + 021 product_master
         reported as `not_available` (forward-compat). Optional `store_id` narrows
         to one in-scope store. Tenant resolves server-side from the session.
+        Also carries the posting freshness facts (`postingFreshness`) for the
+        same scope and the instant they were read (`asOf`); facts only, no
+        "posting is current" verdict (1.2.0-draft, RT-565).
       parameters:
         - $ref: "#/components/parameters/StoreIdQuery"
       responses:
@@ -232,10 +250,11 @@ components:
     SyncOpsSummary:
       type: object
       additionalProperties: false
-      required: [domains]
+      required: [domains, asOf, postingFreshness]
       description: >
         The consolidated sync-ops summary for one tenant (optionally one store).
-        One `DomainSummary` per sync-ops domain.
+        One `DomainSummary` per sync-ops domain, plus the posting freshness facts
+        (1.2.0-draft, RT-565) and the instant they were read.
       properties:
         domains:
           type: array
@@ -244,6 +263,74 @@ components:
           description: >
             One entry per sync-ops domain. v1 populates `posting` + `reconciliation`;
             `connector_health` + `product_master` are present as `not_available`.
+        asOf:
+          type: string
+          format: date-time
+          description: >
+            Server instant of the posting-freshness read, taken inside the one
+            statement that reads every `postingFreshness` fact. Every timestamp
+            in `postingFreshness` is at or before it, and every age is measured
+            against it. The other domain counts are read in the same request but
+            by separate statements, so they may be one commit apart from it.
+        postingFreshness:
+          $ref: "#/components/schemas/PostingFreshness"
+
+    PostingFreshness:
+      type: object
+      additionalProperties: false
+      required: [lastPosted, pendingCount, oldestPendingAt, oldestPendingAgeSeconds]
+      description: >
+        Whether ERP posting is keeping up, for the tenant or the filtered store,
+        within the caller's store scope. Facts only: there is no "current" or
+        "behind" verdict. Covers materialized posting intents only: sales not
+        yet turned into a posting intent, and reversals deferred before their
+        sale's posting row exists, are not visible here. `lastPosted.state =
+        none` with `pendingCount = 0` means no posting activity, NOT that
+        posting is current.
+      properties:
+        lastPosted:
+          $ref: "#/components/schemas/LastPosted"
+        pendingCount:
+          type: integer
+          minimum: 0
+          description: >
+            Posting intents in scope that are not yet posted and not
+            dead-lettered, including intents held from the connector feed. Dead
+            letters are the `posting` domain `headlineCount`, not counted here.
+        oldestPendingAt:
+          type: [string, "null"]
+          format: date-time
+          description: >
+            Creation time of the oldest pending posting intent in scope (not its
+            last retry; a repaired dead letter keeps its creation time). Null
+            exactly when `pendingCount` is 0.
+        oldestPendingAgeSeconds:
+          type: [integer, "null"]
+          minimum: 0
+          description: >
+            Whole seconds from `oldestPendingAt` to `asOf`, never negative. Null
+            exactly when `pendingCount` is 0.
+
+    LastPosted:
+      type: object
+      additionalProperties: false
+      required: [state, at]
+      description: The latest ERP posting confirmation in scope, or why there is none.
+      properties:
+        state:
+          type: string
+          enum: [known, unknown, none]
+          description: >
+            `known`: `at` is the latest ERP confirmation (posted-ack) time in
+            scope. `unknown`: postings exist in scope but all predate
+            confirmation-time capture, so the time is not recorded (no other
+            timestamp is substituted). `none`: no posting has succeeded in scope.
+        at:
+          type: [string, "null"]
+          format: date-time
+          description: >
+            Latest ERP confirmation (posted-ack) time in scope, at or before
+            `asOf`. Non-null exactly when `state` is `known`.
 
     DomainSummary:
       type: object

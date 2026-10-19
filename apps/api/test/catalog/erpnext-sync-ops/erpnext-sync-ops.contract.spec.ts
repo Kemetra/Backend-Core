@@ -216,6 +216,82 @@ describe("console-sync-ops.yaml — SyncOpsSummary + DomainSummary (US1, FR-004)
   });
 });
 
+describe("console-sync-ops.yaml — posting freshness (1.2.0-draft, RT-565 D1–D7)", () => {
+  type Prop = { type?: string | string[]; format?: string; enum?: string[]; minimum?: number; $ref?: string };
+  const prop = (schemaName: string, name: string): Prop | undefined =>
+    (schema(schemaName)?.properties ?? {})[name] as Prop | undefined;
+
+  it("bumps the contract to 1.2.0-draft (additive minor)", () => {
+    expect(doc.info?.version).toBe("1.2.0-draft");
+  });
+  it("D1: extends the existing summary — no new operation, no new request parameter", () => {
+    const summary = findOp("consoleGetSyncOpsSummary");
+    expect(summary?.parameters).toEqual([{ $ref: "#/components/parameters/StoreIdQuery" }]);
+    const ref = (
+      summary?.responses?.["200"] as {
+        content?: Record<string, { schema?: { $ref?: string } }>;
+      }
+    )?.content?.["application/json"]?.schema?.$ref;
+    expect(ref).toBe("#/components/schemas/SyncOpsSummary");
+  });
+  it("D6: SyncOpsSummary requires a top-level date-time asOf and postingFreshness", () => {
+    const s = schema("SyncOpsSummary");
+    expect(s?.required?.slice().sort()).toEqual(["asOf", "domains", "postingFreshness"]);
+    expect(prop("SyncOpsSummary", "asOf")).toMatchObject({ type: "string", format: "date-time" });
+    expect(prop("SyncOpsSummary", "postingFreshness")?.$ref).toBe(
+      "#/components/schemas/PostingFreshness",
+    );
+  });
+  it("D2/D3: PostingFreshness is strict and requires every fact (nullable, never omitted)", () => {
+    const f = schema("PostingFreshness");
+    expect(f?.additionalProperties).toBe(false);
+    expect(f?.required?.slice().sort()).toEqual(
+      ["lastPosted", "oldestPendingAgeSeconds", "oldestPendingAt", "pendingCount"].sort(),
+    );
+    expect(Object.keys(f?.properties ?? {}).sort()).toEqual(
+      ["lastPosted", "oldestPendingAgeSeconds", "oldestPendingAt", "pendingCount"].sort(),
+    );
+    expect(prop("PostingFreshness", "lastPosted")?.$ref).toBe("#/components/schemas/LastPosted");
+    expect(prop("PostingFreshness", "pendingCount")).toMatchObject({ type: "integer", minimum: 0 });
+    expect(prop("PostingFreshness", "oldestPendingAt")).toMatchObject({
+      type: ["string", "null"],
+      format: "date-time",
+    });
+    expect(prop("PostingFreshness", "oldestPendingAgeSeconds")).toMatchObject({
+      type: ["integer", "null"],
+      minimum: 0,
+    });
+  });
+  it("D3: LastPosted.state is exactly known | unknown | none, with a nullable date-time at", () => {
+    const l = schema("LastPosted");
+    expect(l?.additionalProperties).toBe(false);
+    expect(l?.required?.slice().sort()).toEqual(["at", "state"]);
+    expect(Object.keys(l?.properties ?? {}).sort()).toEqual(["at", "state"]);
+    expect(prop("LastPosted", "state")?.enum?.slice().sort()).toEqual(["known", "none", "unknown"]);
+    expect(prop("LastPosted", "at")).toMatchObject({ type: ["string", "null"], format: "date-time" });
+  });
+  it("D5: facts only — no verdict / status / threshold field on the freshness shapes", () => {
+    for (const name of ["PostingFreshness", "LastPosted"]) {
+      for (const p of Object.keys(schema(name)?.properties ?? {})) {
+        expect(`${name}.${p}`).not.toMatch(/status|verdict|current|behind|healthy|threshold|lag/i);
+      }
+    }
+  });
+  it("D5: the posting DomainSummary rule is unchanged (status enum and fields)", () => {
+    const d = schema("DomainSummary");
+    expect(Object.keys(d?.properties ?? {}).sort()).toEqual(
+      ["detail", "domain", "headlineCount", "status"].sort(),
+    );
+  });
+  it("D4: the freshness shapes carry no identifier (aggregates and timestamps only)", () => {
+    for (const name of ["PostingFreshness", "LastPosted"]) {
+      for (const p of Object.keys(schema(name)?.properties ?? {})) {
+        expect(`${name}.${p}`).not.toMatch(/id$|Id$|_id|tenant|store|sale|external/i);
+      }
+    }
+  });
+});
+
 describe("console-sync-ops.yaml — list projections + pagination (US2/US3, FR-014)", () => {
   // Per-endpoint page schemas (NOT a shared oneOf envelope) so the Console's
   // openapi-typescript generator produces a homogeneous, fully-typed items array
@@ -287,6 +363,8 @@ describe("console-sync-ops.yaml — error envelope + object safety", () => {
       "ReconciliationRunPage",
       "PostingBacklogItem",
       "ReconciliationRunView",
+      "PostingFreshness",
+      "LastPosted",
     ]) {
       expect(schema(name)?.additionalProperties).toBe(false);
     }
