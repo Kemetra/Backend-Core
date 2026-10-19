@@ -70,13 +70,20 @@ info:
     403. The guards run before request validation and before any
     entitlement read, so a refused caller gets the 404 for any input and the
     plan is never evaluated for it (layer 3 before layer 6). A platform
-    admin reads for support only through an RT-414 support session for the
-    tenant (`platform-support-sessions.openapi.yaml`) and gets the full view;
-    reading consumes no tenant AI feature (D-6, K-6).
+    admin (`users.is_platform_admin`) is admitted to the read by the
+    existing `RolesGuard` platform-admin pass, in the session's tenant, and
+    gets the full view for support; when the RT-414 support session ships
+    (`platform-support-sessions.openapi.yaml`), a platform admin who is not
+    a member of the tenant needs an active support session for it. Reading
+    consumes no tenant AI feature (D-6, K-6).
 
     The opt-out write is `owner` only (D-5): `tenant_admin`, `store_manager`,
     `store_staff` and a platform admin who is not an owner member of the
-    tenant (a support session included) get the same non-disclosing 404. A
+    tenant (a support session included) get the same non-disclosing 404.
+    The `RolesGuard` platform-admin pass must NOT admit this route: the
+    RT-664 runtime requires an active `owner` membership in the tenant,
+    because only the tenant owner may author an opt-out and a platform
+    write path would turn the tenant-authored source into a grant path. A
     write answers 403 only with `origin_rejected` (the RT-430 `Origin` check
     on a cookie-authenticated unsafe request).
 
