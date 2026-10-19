@@ -96,7 +96,7 @@ export function scope(overrides: Partial<AiRunScope> = {}): AiRunScope {
 export interface HarnessOptions {
   readonly entitlement?: AiEntitlementDecision | (() => Promise<AiEntitlementDecision>);
   readonly budget?: AiBudgetDecision | (() => Promise<AiBudgetDecision>);
-  readonly enabled?: boolean;
+  readonly enabled?: boolean | (() => boolean);
   readonly production?: boolean;
   readonly pack?: EvidencePack | (() => Promise<EvidencePack>);
   readonly behavior?: FakeModelBehavior;
@@ -150,16 +150,27 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
     },
   };
   const runtime: AiGatewayRuntime = {
-    isEnabled: () => options.enabled ?? true,
+    isEnabled: () => {
+      const enabled = options.enabled ?? true;
+      return typeof enabled === "function" ? enabled() : enabled;
+    },
     isProduction: () => options.production ?? false,
   };
   const metrics: AiGatewayMetrics = {
-    recordRun: (attrs) => void runMetrics.push({ ...attrs }),
-    recordProviderCall: (attrs) => void providerMetrics.push({ ...attrs }),
+    recordRun: (attrs) => {
+      runMetrics.push({ ...attrs });
+    },
+    recordProviderCall: (attrs) => {
+      providerMetrics.push({ ...attrs });
+    },
   };
   const logger: AiGatewayLogger = options.logger ?? {
-    info: (obj, msg) => void logs.push({ obj, msg }),
-    warn: (obj, msg) => void logs.push({ obj, msg }),
+    info: (obj, msg) => {
+      logs.push({ obj, msg });
+    },
+    warn: (obj, msg) => {
+      logs.push({ obj, msg });
+    },
   };
 
   const gateway = new AiGateway({

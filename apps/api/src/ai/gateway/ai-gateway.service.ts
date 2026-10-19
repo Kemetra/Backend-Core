@@ -17,33 +17,35 @@
  * Steps 1-4 complete before ANY evidence is read or provider request is built
  * ("deny before spend"); the first deny ends the run and later layers are never
  * consulted, so an unauthorized caller learns nothing about plan or system
- * state. An unknown or unavailable state is a deny.
+ * state. An unknown or unavailable state is a deny. The step logic lives in
+ * `ai-gateway.authorize.ts`, `.routing.ts` and `.output.ts`; this class
+ * orchestrates them.
  *
- * Role/capability (`ai.<feature>:perform`, AD-AI-ENT-001 layer 3) is enforced by
- * the HTTP guards of the future route (`@Roles`), which run before this call;
- * the gateway enforces what a resolved context can prove: a human session
- * principal inside the tenant, and the requested store scope.
+ * Every failure ends in a fallback: `run()` never rejects. An unexpected throw
+ * from a feature hook or a dependency becomes `internal_error`.
  *
  * Retries: none. RT-643 §5 allows at most one for idempotent read summaries;
  * RT-655 does not require it, so the gateway makes exactly one attempt.
  *
  * Logging discipline (AD-AI-PROV-001 E-5): only business-class fields are
  * logged. Prompt, system text, evidence, completions, raw output and error
- * MESSAGES never reach the logger; adapter faults log the error class only.
+ * MESSAGES never reach the logger; faults log the error class only.
  */
 import { Inject, Injectable } from "@nestjs/common";
 
-import { resolveStoreScope } from "../../context/store-scope";
 import { estimateInputTokens } from "../token-estimate";
 import type {
   EvidencePack,
-  ModelProviderPort,
   ModelRequest,
   ModelResult,
-  ModelRouteDescriptor,
 } from "../ports/model-provider.port";
+import { isModelResult } from "../ports/model-result-guard";
 import { AI_GATEWAY_DEPS } from "../ai.tokens";
 import { assertStrictOutputSchema, type AiFeatureDefinition } from "./ai-feature";
+import { authorizeScope, type Principal } from "./ai-gateway.authorize";
+import { interpretResult } from "./ai-gateway.output";
+import { errorClass, fallback, providerOutcome, type Fallback } from "./ai-gateway.result";
+import { resolveRoute, type ResolvedRoute } from "./ai-gateway.routing";
 import {
   AI_FALLBACK_REASONS,
   type AiFallbackReason,
@@ -53,47 +55,15 @@ import {
   type AiRunScope,
 } from "./ai-gateway.types";
 
-type Fallback = Extract<AiGatewayResult, { kind: "fallback" }>;
-type Principal = { readonly tenantId: string; readonly userId: string };
-type ResolvedRoute = { readonly route: ModelRouteDescriptor; readonly provider: ModelProviderPort };
-
 /** What a run observed, for the one summary log line and metric. */
 interface RunTrace {
   feature: string;
   routeKey: string | null;
   faultClass: string | null;
+  providerRequested: boolean;
 }
-
-const MODEL_RESULT_KINDS: ReadonlySet<string> = new Set([
-  "ok",
-  "refused",
-  "truncated",
-  "unavailable",
-  "rejected_input",
-]);
 
 const FALLBACK_REASON_SET: ReadonlySet<string> = new Set(AI_FALLBACK_REASONS);
-
-function fallback(reason: AiFallbackReason, providerRequested = false): Fallback {
-  return { kind: "fallback", reason, providerRequested };
-}
-
-function errorClass(error: unknown): string {
-  return error instanceof Error ? error.name : "non_error_throw";
-}
-
-function isModelResult(value: unknown): value is ModelResult {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    MODEL_RESULT_KINDS.has((value as { kind?: unknown }).kind as string)
-  );
-}
-
-function providerOutcome(result: ModelResult | "fault"): string {
-  if (result === "fault") return "error";
-  return result.kind === "unavailable" ? `unavailable_${result.cause}` : result.kind;
-}
 
 @Injectable()
 export class AiGateway {
@@ -112,10 +82,21 @@ export class AiGateway {
   }
 
   async run<T = unknown>(featureId: string, scope: AiRunScope): Promise<AiGatewayResult<T>> {
-    const trace: RunTrace = { feature: "unknown", routeKey: null, faultClass: null };
-    const result = (await this.execute(featureId, scope, trace)) as AiGatewayResult<T>;
+    const trace: RunTrace = {
+      feature: "unknown",
+      routeKey: null,
+      faultClass: null,
+      providerRequested: false,
+    };
+    let result: AiGatewayResult;
+    try {
+      result = await this.execute(featureId, scope, trace);
+    } catch (error) {
+      trace.faultClass = errorClass(error);
+      result = fallback("internal_error", trace.providerRequested);
+    }
     this.report(trace, scope, result);
-    return result;
+    return result as AiGatewayResult<T>;
   }
 
   private async execute(
@@ -123,37 +104,58 @@ export class AiGateway {
     scope: AiRunScope,
     trace: RunTrace,
   ): Promise<AiGatewayResult> {
-    // 1. authorize
-    const principal = this.authorize(scope);
+    const gated = await this.gate(featureId, scope, trace);
+    return gated.kind === "fallback" ? gated : this.generate(gated.feature, scope, trace);
+  }
+
+  /** Steps 1-4: everything that must pass before any evidence is read. */
+  private async gate(
+    featureId: string,
+    scope: AiRunScope,
+    trace: RunTrace,
+  ): Promise<Fallback | { readonly kind: "gated"; readonly feature: AiFeatureDefinition }> {
+    const principal = authorizeScope(scope);
     if ("reason" in principal) return fallback(principal.reason);
     const feature = this.features.get(featureId);
     if (feature === undefined) return fallback("unknown_feature");
     trace.feature = feature.featureId;
 
-    // 2-4. entitlement, kill switch, budget — all before any evidence read
-    const policy: AiPolicyInput = {
+    const denied = await this.denyBeforeSpend(this.policyInput(principal, feature, scope), feature);
+    return denied === null ? { kind: "gated", feature } : fallback(denied);
+  }
+
+  private policyInput(
+    principal: Principal,
+    feature: AiFeatureDefinition,
+    scope: AiRunScope,
+  ): AiPolicyInput {
+    return {
       tenantId: principal.tenantId,
       userId: principal.userId,
       featureId: feature.featureId,
       storeIds: scope.storeIds,
     };
-    const denied = await this.denyBeforeSpend(policy, feature);
-    if (denied !== null) return fallback(denied);
+  }
 
-    // 5. evidence-pack hook
+  /** Steps 5-9: evidence, route, one provider attempt, validation. */
+  private async generate(
+    feature: AiFeatureDefinition,
+    scope: AiRunScope,
+    trace: RunTrace,
+  ): Promise<AiGatewayResult> {
     const pack = await this.buildEvidence(feature, scope);
     if (pack === null) return fallback("evidence_unavailable");
 
-    // 6. route resolution (+ pre-call size guard)
-    const routed = this.resolveRoute(feature);
+    const routed = resolveRoute(feature, this.deps);
     if ("reason" in routed) return fallback(routed.reason);
     trace.routeKey = routed.route.routeKey;
-    const request = this.buildRequest(feature, routed.route, pack, scope);
+
+    const request = this.buildRequest(feature, routed, pack, scope);
     if (estimateInputTokens(request) > routed.route.maxInputTokens) {
       return fallback("context_too_large");
     }
 
-    // 7. port.generate (one attempt)
+    trace.providerRequested = true;
     const outcome = await this.callProvider(routed, request, trace);
     this.deps.metrics.recordProviderCall({
       provider: routed.provider.providerKey,
@@ -161,24 +163,7 @@ export class AiGateway {
       outcome: providerOutcome(outcome),
     });
     if (outcome === "fault") return fallback("provider_error", true);
-
-    // 8-9. validate or fall back
-    return this.interpret(outcome, feature, routed.route, pack);
-  }
-
-  /** Step 1. A resolved human session principal inside the tenant, and a store scope that covers the request. */
-  private authorize(scope: AiRunScope): Principal | { reason: AiFallbackReason } {
-    const { ctx, storeIds } = scope;
-    // AD-AI-ENT-001 D-6: a platform admin reads entitlements for support but does
-    // not consume tenant AI features, so it is denied here even with a tenant set.
-    if (ctx.source !== "session" || ctx.userId === null || ctx.tenantId === null || ctx.isPlatformAdmin) {
-      return { reason: "not_authorized" };
-    }
-    const allowed = resolveStoreScope(ctx);
-    const covered =
-      allowed.kind === "tenant" ||
-      (storeIds.length > 0 && storeIds.every((storeId) => allowed.storeIds.includes(storeId)));
-    return covered ? { tenantId: ctx.tenantId, userId: ctx.userId } : { reason: "store_out_of_scope" };
+    return interpretResult(outcome, feature, routed.route, pack);
   }
 
   /** Steps 2-4. The first deny ends evaluation; a throw or unknown state fails closed. */
@@ -194,8 +179,7 @@ export class AiGateway {
     const budget = await this.settle(() =>
       this.deps.budget.check({ ...policy, routeKey: feature.routeKey }),
     );
-    if (budget?.allowed !== true) return this.denyReason(budget);
-    return null;
+    return budget?.allowed === true ? null : this.denyReason(budget);
   }
 
   /** A throwing port yields null, which the caller reads as `entitlement_unavailable`. */
@@ -232,30 +216,14 @@ export class AiGateway {
     return pack !== null && Array.isArray(pack.items) && pack.items.length > 0 ? pack : null;
   }
 
-  /** Step 6. The route comes from the static allowlist only; the caller never chooses. */
-  private resolveRoute(feature: AiFeatureDefinition): ResolvedRoute | { reason: AiFallbackReason } {
-    const route = this.deps.routes.find((candidate) => candidate.routeKey === feature.routeKey);
-    const provider = route
-      ? this.deps.providers.find((candidate) => candidate.providerKey === route.providerKey)
-      : undefined;
-    if (route === undefined || provider === undefined) return { reason: "route_not_allowlisted" };
-    if (route.syntheticOnly && this.deps.runtime.isProduction()) {
-      return { reason: "route_not_allowlisted" };
-    }
-    if (!feature.requiredCapabilities.every((capability) => route.capabilities.has(capability))) {
-      return { reason: "unsupported_capability" };
-    }
-    return { route, provider };
-  }
-
   private buildRequest(
     feature: AiFeatureDefinition,
-    route: ModelRouteDescriptor,
+    routed: ResolvedRoute,
     pack: EvidencePack,
     scope: AiRunScope,
   ): ModelRequest {
     return {
-      route,
+      route: routed.route,
       promptTemplateId: feature.promptTemplateId,
       promptTemplateVersion: feature.promptTemplateVersion,
       system: feature.renderSystemPrompt(),
@@ -268,9 +236,10 @@ export class AiGateway {
   /**
    * Step 7. The gateway owns the timeout: it races the call against a timer and
    * aborts the signal on expiry, so a hung or signal-ignoring adapter cannot
-   * stall the run. The timer is always cleared, a late settle is ignored, and a
-   * throw or a malformed return is a `fault` (OPTIONAL_DEGRADE covers
-   * programmer errors too). Never retried.
+   * stall the run. The timer is always cleared and a late settle is ignored
+   * (Promise.race subscribes to `call`, so a rejection that arrives after the
+   * timeout already won is handled). A throw or a malformed result is a
+   * `fault` (OPTIONAL_DEGRADE covers programmer errors too). Never retried.
    */
   private async callProvider(
     routed: ResolvedRoute,
@@ -286,10 +255,8 @@ export class AiGateway {
       }, routed.route.timeoutMs);
     });
     const call = Promise.resolve().then(() => routed.provider.generate(request, controller.signal));
-    // Promise.race subscribes to `call`, so a rejection that arrives after the
-    // timeout already won is handled (covered by the late-rejection test).
     try {
-      const result = await Promise.race([call, timeout]);
+      const result: unknown = await Promise.race([call, timeout]);
       if (isModelResult(result)) return result;
       trace.faultClass = "invalid_model_result";
       return "fault";
@@ -301,75 +268,35 @@ export class AiGateway {
     }
   }
 
-  /** Steps 8-9. Only a validated output whose refs all came from the pack is returned. */
-  private interpret(
-    result: ModelResult,
-    feature: AiFeatureDefinition,
-    route: ModelRouteDescriptor,
-    pack: EvidencePack,
-  ): AiGatewayResult {
-    switch (result.kind) {
-      case "refused":
-        return fallback("provider_refused", true);
-      case "truncated":
-        return fallback("provider_truncated", true);
-      case "rejected_input":
-        return fallback("provider_rejected_input", true);
-      case "unavailable":
-        return fallback(
-          result.cause === "timeout" ? "provider_timeout" : "provider_unavailable",
-          true,
-        );
-      case "ok":
-        return this.validate(result, feature, route, pack);
-    }
-  }
-
-  private validate(
-    result: Extract<ModelResult, { kind: "ok" }>,
-    feature: AiFeatureDefinition,
-    route: ModelRouteDescriptor,
-    pack: EvidencePack,
-  ): AiGatewayResult {
-    const parsed = feature.outputSchema.safeParse(result.rawOutput);
-    if (!parsed.success) return fallback("output_schema_invalid", true);
-
-    let refs: readonly string[];
-    try {
-      refs = feature.extractEvidenceRefs(parsed.data);
-    } catch {
-      return fallback("output_schema_invalid", true);
-    }
-    const known = new Set(pack.items.map((item) => item.ref));
-    if (!refs.every((ref) => known.has(ref))) return fallback("output_unknown_evidence_ref", true);
-
-    return {
-      kind: "ok",
-      output: parsed.data,
-      evidenceRefs: refs,
-      routeKey: route.routeKey,
-      usage: result.usage,
-    };
-  }
-
-  /** One metric and one log line per run; business-class fields only (E-5). */
+  /**
+   * One metric and one log line per run; business-class fields only (E-5).
+   * Observability must never change or fail a run, so a throwing metric sink or
+   * logger is contained here.
+   */
   private report(trace: RunTrace, scope: AiRunScope, result: AiGatewayResult): void {
     const outcome = result.kind === "ok" ? "ok" : result.reason;
-    this.deps.metrics.recordRun({ feature: trace.feature, outcome });
+    try {
+      this.deps.metrics.recordRun({ feature: trace.feature, outcome });
+      this.log(trace, scope, result, outcome);
+    } catch {
+      // intentionally contained: see the method comment
+    }
+  }
 
+  private log(trace: RunTrace, scope: AiRunScope, result: AiGatewayResult, outcome: string): void {
     const logger = this.deps.logger;
     if (logger === undefined) return;
     if (trace.faultClass !== null) {
       logger.warn(
         {
           event: "ai.gateway.fault",
-          reason: "provider_error",
+          reason: outcome,
           err_class: trace.faultClass,
           feature: trace.feature,
           route: trace.routeKey,
           correlation_id: scope.correlationId,
         },
-        "ai gateway provider fault",
+        "ai gateway fault",
       );
     }
     logger.info(

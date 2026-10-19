@@ -10,5 +10,8 @@ export const AI_BUDGET = Symbol.for("ai.budget");
 export const AI_EVIDENCE_BUILDER = Symbol.for("ai.evidenceBuilder");
 export const AI_ROUTE_ALLOWLIST = Symbol.for("ai.routeAllowlist");
 export const AI_MODEL_PROVIDERS = Symbol.for("ai.modelProviders");
+/** Groups of the granular tokens above, so the deps factory stays small. */
+export const AI_POLICY_PORTS = Symbol.for("ai.policyPorts");
+export const AI_ROUTING = Symbol.for("ai.routing");
 export const AI_GATEWAY_RUNTIME = Symbol.for("ai.gatewayRuntime");
 export const AI_GATEWAY_METRICS = Symbol.for("ai.gatewayMetrics");

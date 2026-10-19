@@ -17,8 +17,8 @@ import type { EvidencePack } from "../ports/model-provider.port";
  * no tenant is entitled to any AI feature.
  */
 export class DenyAllAiEntitlement implements AiEntitlementPort {
-  async check(): Promise<AiEntitlementDecision> {
-    return { allowed: false, reason: "not_entitled" };
+  check(): Promise<AiEntitlementDecision> {
+    return Promise.resolve({ allowed: false, reason: "not_entitled" });
   }
 }
 
@@ -27,14 +27,14 @@ export class DenyAllAiEntitlement implements AiEntitlementPort {
  * state is unknown, and AD-AI-ENT-001 D-3 says unknown means deny.
  */
 export class FailClosedAiBudget implements AiBudgetPort {
-  async check(): Promise<AiBudgetDecision> {
-    return { allowed: false, reason: "entitlement_unavailable" };
+  check(): Promise<AiBudgetDecision> {
+    return Promise.resolve({ allowed: false, reason: "entitlement_unavailable" });
   }
 }
 
 /** No evidence builder is registered yet (RT-647); an empty pack means no request. */
 export class EmptyEvidencePackBuilder implements AiEvidencePackBuilder {
-  async build(): Promise<EvidencePack> {
-    return { items: [] };
+  build(): Promise<EvidencePack> {
+    return Promise.resolve({ items: [] });
   }
 }

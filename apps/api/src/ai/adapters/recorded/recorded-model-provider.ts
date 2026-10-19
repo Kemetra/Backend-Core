@@ -35,16 +35,16 @@ export class RecordedModelProvider implements ModelProviderPort {
     return this.consultations;
   }
 
-  async generate(request: ModelRequest, signal: AbortSignal): Promise<ModelResult> {
+  generate(request: ModelRequest, signal: AbortSignal): Promise<ModelResult> {
     const rejected = preCallResult(request, signal);
-    if (rejected !== null) return rejected;
+    if (rejected !== null) return Promise.resolve(rejected);
 
     const key = `${request.promptTemplateId}@${request.promptTemplateVersion}`;
     const fixture = this.fixtures[key];
     if (fixture === undefined) {
-      throw new Error(`No recorded fixture for "${key}"`);
+      return Promise.reject(new Error(`No recorded fixture for "${key}"`));
     }
     this.consultations += 1;
-    return fixture;
+    return Promise.resolve(fixture);
   }
 }

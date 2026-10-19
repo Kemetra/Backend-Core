@@ -12,7 +12,7 @@
  *
  * Negative self-tests prove the scanners can actually fail.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -23,31 +23,23 @@ const denylist = require("../../../../tools/ai-vendor-sdk-denylist.json") as {
 
 const REPO_ROOT = join(__dirname, "..", "..", "..", "..");
 const NON_VENDOR_ADAPTER_DIRS = new Set(["fake", "recorded", "disabled"]);
+const VENDOR_ADAPTER_PATH = /^apps\/[^/]+\/src\/ai\/adapters\/([^/]+)\/.+/;
 
-function walk(dir: string, out: string[] = []): string[] {
-  for (const entry of readdirSync(dir)) {
-    if (entry === "node_modules" || entry === "dist") continue;
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) walk(full, out);
-    else if (full.endsWith(".ts") && !full.endsWith(".d.ts")) out.push(full);
-  }
-  return out;
+function walk(dir: string): string[] {
+  return readdirSync(dir)
+    .filter((entry) => entry !== "node_modules" && entry !== "dist")
+    .flatMap((entry) => {
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) return walk(full);
+      return full.endsWith(".ts") && !full.endsWith(".d.ts") ? [full] : [];
+    });
 }
 
-function sourceRoots(): string[] {
-  const roots: string[] = [];
-  for (const group of ["apps", "packages"]) {
-    const groupDir = join(REPO_ROOT, group);
-    for (const name of readdirSync(groupDir)) {
-      const src = join(groupDir, name, "src");
-      try {
-        if (statSync(src).isDirectory()) roots.push(src);
-      } catch {
-        // package without a src directory
-      }
-    }
-  }
-  return roots;
+function srcDirsIn(group: string): string[] {
+  const groupDir = join(REPO_ROOT, group);
+  return readdirSync(groupDir)
+    .map((name) => join(groupDir, name, "src"))
+    .filter((src) => existsSync(src) && statSync(src).isDirectory());
 }
 
 const SPECIFIER_PATTERNS: readonly RegExp[] = [
@@ -58,26 +50,36 @@ const SPECIFIER_PATTERNS: readonly RegExp[] = [
 ];
 
 function importedSpecifiers(source: string): string[] {
-  const found: string[] = [];
-  for (const pattern of SPECIFIER_PATTERNS) {
-    for (const match of source.matchAll(pattern)) found.push(match[1] as string);
-  }
-  return found;
+  return SPECIFIER_PATTERNS.flatMap((pattern) =>
+    [...source.matchAll(pattern)].map((match) => match[1] as string),
+  );
 }
 
 function isVendorSpecifier(specifier: string): boolean {
   const bare = specifier.replace(/^node:/, "");
-  if (denylist.packages.some((pkg) => bare === pkg || bare.startsWith(`${pkg}/`))) return true;
-  return denylist.scopes.some((scope) => bare.startsWith(scope));
+  const exact = denylist.packages.some((pkg) => bare === pkg || bare.startsWith(`${pkg}/`));
+  return exact || denylist.scopes.some((scope) => bare.startsWith(scope));
 }
 
 /** True when `file` lives under apps/<app>/src/ai/adapters/<vendor>/... */
 function isVendorAdapterFile(file: string): boolean {
-  const parts = relative(REPO_ROOT, file).split(sep);
-  const at = parts.indexOf("adapters");
-  if (at < 3 || parts[at - 1] !== "ai" || parts[at - 2] !== "src") return false;
-  const vendor = parts[at + 1];
-  return vendor !== undefined && parts.length > at + 2 && !NON_VENDOR_ADAPTER_DIRS.has(vendor);
+  const posixPath = relative(REPO_ROOT, file).split(sep).join("/");
+  const vendor = VENDOR_ADAPTER_PATH.exec(posixPath)?.[1];
+  return vendor !== undefined && !NON_VENDOR_ADAPTER_DIRS.has(vendor);
+}
+
+function violationsInFile(file: string): string[] {
+  if (isVendorAdapterFile(file)) return [];
+  return importedSpecifiers(readFileSync(file, "utf8"))
+    .filter(isVendorSpecifier)
+    .map((specifier) => `${relative(REPO_ROOT, file)} imports ${specifier}`);
+}
+
+function findVendorImportViolations(): string[] {
+  return ["apps", "packages"]
+    .flatMap(srcDirsIn)
+    .flatMap((root) => walk(root))
+    .flatMap(violationsInFile);
 }
 
 const NETWORK_MODULES = new Set([
@@ -101,29 +103,32 @@ const NETWORK_TOKENS: readonly RegExp[] = [
   /\bEventSource\b/,
 ];
 
+/** Removes `//` and block comments so prose that mentions a primitive is not a hit. */
+function stripComments(source: string): string {
+  let out = "";
+  let rest = source;
+  for (;;) {
+    const open = rest.indexOf("/*");
+    if (open === -1) break;
+    const close = rest.indexOf("*/", open + 2);
+    out += rest.slice(0, open);
+    rest = close === -1 ? "" : rest.slice(close + 2);
+  }
+  return (out + rest).replace(/\/\/.*$/gm, "");
+}
+
 function findNetworkUse(source: string): string[] {
-  const hits = importedSpecifiers(source)
+  const modules = importedSpecifiers(source)
     .map((spec) => spec.replace(/^node:/, ""))
     .filter((spec) => NETWORK_MODULES.has(spec));
-  const stripped = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-  for (const token of NETWORK_TOKENS) if (token.test(stripped)) hits.push(token.source);
-  return hits;
+  const code = stripComments(source);
+  const tokens = NETWORK_TOKENS.filter((token) => token.test(code)).map((token) => token.source);
+  return [...modules, ...tokens];
 }
 
 describe("vendor SDK import boundary", () => {
   it("no vendor model SDK is imported anywhere outside apps/*/src/ai/adapters/<vendor>/**", () => {
-    const violations: string[] = [];
-    for (const root of sourceRoots()) {
-      for (const file of walk(root)) {
-        if (isVendorAdapterFile(file)) continue;
-        for (const specifier of importedSpecifiers(readFileSync(file, "utf8"))) {
-          if (isVendorSpecifier(specifier)) {
-            violations.push(`${relative(REPO_ROOT, file)} imports ${specifier}`);
-          }
-        }
-      }
-    }
-    expect(violations).toEqual([]);
+    expect(findVendorImportViolations()).toEqual([]);
   });
 
   it("scanner self-test: catches static, type, side-effect, re-export, dynamic and require imports", () => {
@@ -149,38 +154,37 @@ describe("vendor SDK import boundary", () => {
     );
   });
 
-  it("the adapter-directory exemption only covers real vendor dirs under apps/<app>/src/ai", () => {
-    const base = ["apps", "api", "src", "ai", "adapters"];
-    expect(isVendorAdapterFile(join(REPO_ROOT, ...base, "anthropic", "client.ts"))).toBe(true);
-    expect(isVendorAdapterFile(join(REPO_ROOT, ...base, "fake", "x.ts"))).toBe(false);
-    expect(isVendorAdapterFile(join(REPO_ROOT, ...base, "recorded", "x.ts"))).toBe(false);
-    expect(isVendorAdapterFile(join(REPO_ROOT, ...base, "disabled", "x.ts"))).toBe(false);
-    expect(isVendorAdapterFile(join(REPO_ROOT, ...base, "anthropic.ts"))).toBe(false);
-    expect(isVendorAdapterFile(join(REPO_ROOT, "apps", "api", "src", "ai", "gateway", "x.ts"))).toBe(false);
-    expect(
-      isVendorAdapterFile(join(REPO_ROOT, "apps", "api", "src", "other", "adapters", "anthropic", "x.ts")),
-    ).toBe(false);
+  it.each([
+    [["apps", "api", "src", "ai", "adapters", "anthropic", "client.ts"], true],
+    [["apps", "api", "src", "ai", "adapters", "fake", "x.ts"], false],
+    [["apps", "api", "src", "ai", "adapters", "recorded", "x.ts"], false],
+    [["apps", "api", "src", "ai", "adapters", "disabled", "x.ts"], false],
+    [["apps", "api", "src", "ai", "adapters", "anthropic.ts"], false],
+    [["apps", "api", "src", "ai", "gateway", "x.ts"], false],
+    [["apps", "api", "src", "other", "adapters", "anthropic", "x.ts"], false],
+  ])("the adapter-directory exemption (%j) is %s", (segments, exempt) => {
+    expect(isVendorAdapterFile(join(REPO_ROOT, ...segments))).toBe(exempt);
   });
 });
 
 describe("no network egress under apps/api/src/ai", () => {
   it("uses no network module or primitive", () => {
-    const aiRoot = join(REPO_ROOT, "apps", "api", "src", "ai");
-    const files = walk(aiRoot).filter((file) => !isVendorAdapterFile(file));
+    const files = walk(join(REPO_ROOT, "apps", "api", "src", "ai")).filter(
+      (file) => !isVendorAdapterFile(file),
+    );
     expect(files.length).toBeGreaterThan(0);
-    const violations: string[] = [];
-    for (const file of files) {
-      for (const hit of findNetworkUse(readFileSync(file, "utf8"))) {
-        violations.push(`${relative(REPO_ROOT, file)}: ${hit}`);
-      }
-    }
+    const violations = files.flatMap((file) =>
+      findNetworkUse(readFileSync(file, "utf8")).map((hit) => `${relative(REPO_ROOT, file)}: ${hit}`),
+    );
     expect(violations).toEqual([]);
   });
 
-  it("scanner self-test: catches network modules and primitives, ignores comments", () => {
-    expect(findNetworkUse('import https from "node:https";')).toEqual(["https"]);
-    expect(findNetworkUse('const r = await fetch("http://x");')).toHaveLength(1);
-    expect(findNetworkUse('import net from "net"; new WebSocket("ws://x");')).toHaveLength(2);
-    expect(findNetworkUse("// never call fetch( here\n/* XMLHttpRequest */ const a = 1;")).toEqual([]);
+  it.each([
+    ['import https from "node:https";', 1],
+    ['const r = await fetch("http://x");', 1],
+    ['import net from "net"; new WebSocket("ws://x");', 2],
+    ["// never call fetch( here\n/* XMLHttpRequest */ const a = 1;", 0],
+  ])("scanner self-test: %j yields %s hit(s)", (source, hits) => {
+    expect(findNetworkUse(source)).toHaveLength(hits);
   });
 });

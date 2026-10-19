@@ -13,7 +13,7 @@ import type {
 export class DisabledModelProvider implements ModelProviderPort {
   readonly providerKey = "disabled";
 
-  async generate(_request: ModelRequest, _signal: AbortSignal): Promise<ModelResult> {
-    return { kind: "unavailable", cause: "disabled" };
+  generate(_request: ModelRequest, _signal: AbortSignal): Promise<ModelResult> {
+    return Promise.resolve({ kind: "unavailable", cause: "disabled" });
   }
 }

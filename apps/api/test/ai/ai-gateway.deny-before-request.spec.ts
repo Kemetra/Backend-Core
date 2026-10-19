@@ -7,6 +7,8 @@
  * budget -> evidence -> route -> provider.
  */
 import { AiGateway } from "../../src/ai/gateway/ai-gateway.service";
+import type { AiFallbackReason } from "../../src/ai/gateway/ai-gateway.types";
+import type { ResolvedContext } from "../../src/context/types";
 import {
   FEATURE_ID,
   STORE_A,
@@ -18,12 +20,25 @@ import {
   scope,
   sessionCtx,
   type Harness,
+  type HarnessOptions,
 } from "./_support/gateway-harness";
 
 function expectNoRequestNoRead(h: Harness): void {
   expect(h.provider.calls).toHaveLength(0);
   expect(h.calls.evidence).toBe(0);
 }
+
+async function runDenied(
+  options: HarnessOptions,
+  ctx: ResolvedContext = sessionCtx(),
+  storeIds: readonly string[] = [STORE_A],
+): Promise<{ h: Harness; result: Awaited<ReturnType<AiGateway["run"]>> }> {
+  const h = buildHarness(options);
+  const result = await h.gateway.run(FEATURE_ID, scope({ ctx, storeIds }));
+  return { h, result };
+}
+
+const throwing = (message: string) => (): Promise<never> => Promise.reject(new Error(message));
 
 describe("AiGateway — deny before any provider request", () => {
   describe("authorize (step 1)", () => {
@@ -33,22 +48,34 @@ describe("AiGateway — deny before any provider request", () => {
       ["a platform admin, even inside a tenant (D-6: support reads only)", { isPlatformAdmin: true }],
       ["a token principal (POS device / connector)", { source: "token" as const }],
     ])("denies %s with not_authorized and touches nothing downstream", async (_name, ctxOver) => {
-      const h = buildHarness();
-      const result = await h.gateway.run(FEATURE_ID, scope({ ctx: sessionCtx(ctxOver) }));
+      const { h, result } = await runDenied({}, sessionCtx(ctxOver));
       expect(result).toMatchObject({
         kind: "fallback",
         reason: "not_authorized",
         providerRequested: false,
       });
-      expect(h.calls.entitlement).toBe(0);
-      expect(h.calls.budget).toBe(0);
-      expectNoRequestNoRead(h);
+      expect(h.calls).toEqual({ entitlement: 0, budget: 0, evidence: 0 });
+      expect(h.provider.calls).toHaveLength(0);
     });
 
-    it("denies a wrong store: a requested store outside the principal's scope (D-4: refuse, never narrow)", async () => {
-      const h = buildHarness();
-      const ctx = sessionCtx({ storeAccess: { kind: "specific", storeIds: [STORE_A] } });
-      const result = await h.gateway.run(FEATURE_ID, scope({ ctx, storeIds: [STORE_A, STORE_B] }));
+    it.each([
+      [
+        "a requested store outside the principal's scope (D-4: refuse, never narrow)",
+        sessionCtx({ storeAccess: { kind: "specific", storeIds: [STORE_A] } }),
+        [STORE_A, STORE_B],
+      ],
+      [
+        "a tenant-wide request from a store-scoped principal",
+        sessionCtx({ storeAccess: { kind: "specific", storeIds: [STORE_A] } }),
+        [],
+      ],
+      [
+        "store access that was never resolved (empty scope, fail closed)",
+        (({ storeAccess: _unresolved, ...rest }) => rest)(sessionCtx()),
+        [STORE_A],
+      ],
+    ])("denies %s with store_out_of_scope", async (_name, ctx, storeIds) => {
+      const { h, result } = await runDenied({}, ctx, storeIds);
       expect(result).toMatchObject({
         kind: "fallback",
         reason: "store_out_of_scope",
@@ -58,33 +85,16 @@ describe("AiGateway — deny before any provider request", () => {
       expectNoRequestNoRead(h);
     });
 
-    it("denies a tenant-wide request from a store-scoped principal", async () => {
-      const h = buildHarness();
-      const ctx = sessionCtx({ storeAccess: { kind: "specific", storeIds: [STORE_A] } });
-      const result = await h.gateway.run(FEATURE_ID, scope({ ctx, storeIds: [] }));
-      expect(result).toMatchObject({ kind: "fallback", reason: "store_out_of_scope" });
-      expectNoRequestNoRead(h);
-    });
-
-    it("fails closed when store access was never resolved (empty scope)", async () => {
-      const h = buildHarness();
-      const { storeAccess: _unresolved, ...ctx } = sessionCtx();
-      const result = await h.gateway.run(FEATURE_ID, scope({ ctx, storeIds: [STORE_A] }));
-      expect(result).toMatchObject({ kind: "fallback", reason: "store_out_of_scope" });
-      expectNoRequestNoRead(h);
-    });
-
     it("allows the active store when the membership grants it", async () => {
-      const h = buildHarness();
       const ctx = sessionCtx({ storeId: STORE_A, storeAccess: { kind: "specific", storeIds: [STORE_A] } });
-      const result = await h.gateway.run(FEATURE_ID, scope({ ctx, storeIds: [STORE_A] }));
+      const { result } = await runDenied({}, ctx);
       expect(result.kind).toBe("ok");
     });
 
     it("reports an unknown feature only after authorization (no feature enumeration)", async () => {
       const h = buildHarness();
-      const denied = await h.gateway.run("nope", scope({ ctx: sessionCtx({ userId: null }) }));
-      expect(denied).toMatchObject({ kind: "fallback", reason: "not_authorized" });
+      const unauthorized = await h.gateway.run("nope", scope({ ctx: sessionCtx({ userId: null }) }));
+      expect(unauthorized).toMatchObject({ kind: "fallback", reason: "not_authorized" });
       const unknown = await h.gateway.run("nope", scope());
       expect(unknown).toMatchObject({
         kind: "fallback",
@@ -104,29 +114,16 @@ describe("AiGateway — deny before any provider request", () => {
       "grace_read_only",
       "feature_disabled_tenant",
     ] as const)("denies with %s", async (reason) => {
-      const h = buildHarness({ entitlement: { allowed: false, reason } });
-      const result = await h.gateway.run(FEATURE_ID, scope());
+      const { h, result } = await runDenied({ entitlement: { allowed: false, reason } });
       expect(result).toMatchObject({ kind: "fallback", reason, providerRequested: false });
       expect(h.calls.budget).toBe(0);
-      expectNoRequestNoRead(h);
-    });
-
-    it("fails closed (entitlement_unavailable) when the entitlement check throws", async () => {
-      const h = buildHarness({
-        entitlement: async () => {
-          throw new Error("store unreachable");
-        },
-      });
-      const result = await h.gateway.run(FEATURE_ID, scope());
-      expect(result).toMatchObject({ kind: "fallback", reason: "entitlement_unavailable" });
       expectNoRequestNoRead(h);
     });
   });
 
   describe("kill switch (step 3)", () => {
     it("denies with feature_disabled_system when the gateway is not enabled", async () => {
-      const h = buildHarness({ enabled: false });
-      const result = await h.gateway.run(FEATURE_ID, scope());
+      const { h, result } = await runDenied({ enabled: false });
       expect(result).toMatchObject({
         kind: "fallback",
         reason: "feature_disabled_system",
@@ -141,64 +138,64 @@ describe("AiGateway — deny before any provider request", () => {
     it.each(["quota_exhausted", "spend_cap_reached", "free_credit_exhausted"] as const)(
       "denies over-budget with %s",
       async (reason) => {
-        const h = buildHarness({ budget: { allowed: false, reason } });
-        const result = await h.gateway.run(FEATURE_ID, scope());
+        const { h, result } = await runDenied({ budget: { allowed: false, reason } });
         expect(result).toMatchObject({ kind: "fallback", reason, providerRequested: false });
         expectNoRequestNoRead(h);
       },
     );
+  });
 
-    it("fails closed (entitlement_unavailable) when the budget check throws", async () => {
-      const h = buildHarness({
-        budget: async () => {
-          throw new Error("ledger unreachable");
-        },
-      });
-      const result = await h.gateway.run(FEATURE_ID, scope());
+  describe("fail closed on unknown state", () => {
+    it.each([
+      ["the entitlement check throws", { entitlement: throwing("store unreachable") }],
+      ["the budget check throws", { budget: throwing("ledger unreachable") }],
+    ])("denies with entitlement_unavailable when %s", async (_name, options) => {
+      const { h, result } = await runDenied(options);
       expect(result).toMatchObject({ kind: "fallback", reason: "entitlement_unavailable" });
       expectNoRequestNoRead(h);
     });
   });
 
   describe("precedence — the first deny wins and later layers are never consulted", () => {
-    it("unauthorized beats entitlement, kill switch and budget (no plan/system state leaks)", async () => {
-      const h = buildHarness({
-        enabled: false,
-        entitlement: { allowed: false, reason: "not_entitled" },
-        budget: { allowed: false, reason: "quota_exhausted" },
-      });
-      const result = await h.gateway.run(FEATURE_ID, scope({ ctx: sessionCtx({ userId: null }) }));
-      expect(result).toMatchObject({ kind: "fallback", reason: "not_authorized" });
-      expect(h.calls).toEqual({ entitlement: 0, budget: 0, evidence: 0 });
-    });
+    const entitlementDeny = { allowed: false, reason: "not_entitled" } as const;
+    const budgetDeny = { allowed: false, reason: "quota_exhausted" } as const;
+    const unauthorizedCtx = sessionCtx({ userId: null });
+    const wrongStoreCtx = sessionCtx({ storeAccess: { kind: "specific", storeIds: [STORE_B] } });
 
-    it("wrong store beats entitlement", async () => {
-      const h = buildHarness({ entitlement: { allowed: false, reason: "not_entitled" } });
-      const ctx = sessionCtx({ storeAccess: { kind: "specific", storeIds: [STORE_B] } });
-      const result = await h.gateway.run(FEATURE_ID, scope({ ctx, storeIds: [STORE_A] }));
-      expect(result).toMatchObject({ kind: "fallback", reason: "store_out_of_scope" });
-      expect(h.calls.entitlement).toBe(0);
-    });
-
-    it("entitlement beats kill switch and budget (ticket order)", async () => {
-      const h = buildHarness({
-        enabled: false,
-        entitlement: { allowed: false, reason: "not_entitled" },
-        budget: { allowed: false, reason: "quota_exhausted" },
-      });
-      const result = await h.gateway.run(FEATURE_ID, scope());
-      expect(result).toMatchObject({ kind: "fallback", reason: "not_entitled" });
-      expect(h.calls.budget).toBe(0);
-    });
-
-    it("kill switch beats budget", async () => {
-      const h = buildHarness({
-        enabled: false,
-        budget: { allowed: false, reason: "quota_exhausted" },
-      });
-      const result = await h.gateway.run(FEATURE_ID, scope());
-      expect(result).toMatchObject({ kind: "fallback", reason: "feature_disabled_system" });
-      expect(h.calls.budget).toBe(0);
+    it.each<[string, HarnessOptions, ResolvedContext, AiFallbackReason, Partial<Harness["calls"]>]>([
+      [
+        "unauthorized beats entitlement, kill switch and budget (no plan/system state leaks)",
+        { enabled: false, entitlement: entitlementDeny, budget: budgetDeny },
+        unauthorizedCtx,
+        "not_authorized",
+        { entitlement: 0, budget: 0, evidence: 0 },
+      ],
+      [
+        "wrong store beats entitlement",
+        { entitlement: entitlementDeny },
+        wrongStoreCtx,
+        "store_out_of_scope",
+        { entitlement: 0 },
+      ],
+      [
+        "entitlement beats kill switch and budget (ticket order)",
+        { enabled: false, entitlement: entitlementDeny, budget: budgetDeny },
+        sessionCtx(),
+        "not_entitled",
+        { budget: 0 },
+      ],
+      [
+        "kill switch beats budget",
+        { enabled: false, budget: budgetDeny },
+        sessionCtx(),
+        "feature_disabled_system",
+        { budget: 0 },
+      ],
+    ])("%s", async (_name, options, ctx, reason, expectedCalls) => {
+      const { h, result } = await runDenied(options, ctx);
+      expect(result).toMatchObject({ kind: "fallback", reason });
+      expect(h.calls).toMatchObject(expectedCalls);
+      expect(h.provider.calls).toHaveLength(0);
     });
   });
 
@@ -207,13 +204,13 @@ describe("AiGateway — deny before any provider request", () => {
     const gateway = new AiGateway({
       features: [TEST_FEATURE as never],
       entitlement: {
-        async check(input) {
+        check(input) {
           seen.push(input);
-          return { allowed: false, reason: "not_entitled" };
+          return Promise.resolve({ allowed: false, reason: "not_entitled" });
         },
       },
-      budget: { check: async () => ({ allowed: true }) },
-      evidence: { build: async () => ({ items: [] }) },
+      budget: { check: () => Promise.resolve({ allowed: true }) },
+      evidence: { build: () => Promise.resolve({ items: [] }) },
       routes: [],
       providers: [],
       runtime: { isEnabled: () => true, isProduction: () => false },

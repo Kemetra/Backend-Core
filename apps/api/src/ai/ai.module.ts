@@ -24,7 +24,9 @@ import {
   AI_GATEWAY_METRICS,
   AI_GATEWAY_RUNTIME,
   AI_MODEL_PROVIDERS,
+  AI_POLICY_PORTS,
   AI_ROUTE_ALLOWLIST,
+  AI_ROUTING,
 } from "./ai.tokens";
 import {
   DenyAllAiEntitlement,
@@ -35,6 +37,9 @@ import { aiGatewayMetrics } from "./gateway/ai-gateway.metrics";
 import { readAiGatewayRuntime } from "./gateway/ai-gateway.runtime";
 import { AiGateway } from "./gateway/ai-gateway.service";
 import type { AiGatewayDeps, AiGatewayLogger } from "./gateway/ai-gateway.types";
+
+type PolicyPorts = Pick<AiGatewayDeps, "entitlement" | "budget" | "evidence">;
+type Routing = Pick<AiGatewayDeps, "routes" | "providers">;
 
 @Module({
   providers: [
@@ -47,35 +52,43 @@ import type { AiGatewayDeps, AiGatewayLogger } from "./gateway/ai-gateway.types"
     { provide: AI_GATEWAY_RUNTIME, useFactory: () => readAiGatewayRuntime() },
     { provide: AI_GATEWAY_METRICS, useValue: aiGatewayMetrics },
     {
-      provide: AI_GATEWAY_DEPS,
+      provide: AI_POLICY_PORTS,
       useFactory: (
-        features: AiGatewayDeps["features"],
         entitlement: AiGatewayDeps["entitlement"],
         budget: AiGatewayDeps["budget"],
         evidence: AiGatewayDeps["evidence"],
+      ): PolicyPorts => ({ entitlement, budget, evidence }),
+      inject: [AI_ENTITLEMENT, AI_BUDGET, AI_EVIDENCE_BUILDER],
+    },
+    {
+      provide: AI_ROUTING,
+      useFactory: (
         routes: AiGatewayDeps["routes"],
         providers: AiGatewayDeps["providers"],
+      ): Routing => ({ routes, providers }),
+      inject: [AI_ROUTE_ALLOWLIST, AI_MODEL_PROVIDERS],
+    },
+    {
+      provide: AI_GATEWAY_DEPS,
+      useFactory: (
+        features: AiGatewayDeps["features"],
+        policy: PolicyPorts,
+        routing: Routing,
         runtime: AiGatewayDeps["runtime"],
         metrics: AiGatewayDeps["metrics"],
         logger?: AiGatewayLogger,
       ): AiGatewayDeps => ({
         features,
-        entitlement,
-        budget,
-        evidence,
-        routes,
-        providers,
+        ...policy,
+        ...routing,
         runtime,
         metrics,
         ...(logger === undefined ? {} : { logger }),
       }),
       inject: [
         AI_FEATURES,
-        AI_ENTITLEMENT,
-        AI_BUDGET,
-        AI_EVIDENCE_BUILDER,
-        AI_ROUTE_ALLOWLIST,
-        AI_MODEL_PROVIDERS,
+        AI_POLICY_PORTS,
+        AI_ROUTING,
         AI_GATEWAY_RUNTIME,
         AI_GATEWAY_METRICS,
         { token: ROOT_LOGGER, optional: true },

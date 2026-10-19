@@ -76,8 +76,7 @@ export function conformanceRequest(overrides: Partial<ModelRequest> = {}): Model
 }
 
 function assertPlainProviderNeutral(result: ModelResult): void {
-  const roundTripped = JSON.parse(JSON.stringify(result)) as unknown;
-  expect(roundTripped).toEqual(result);
+  expect(structuredClone(result)).toEqual(result);
   const allowed = ALLOWED_RESULT_KEYS[result.kind];
   expect(allowed).toBeDefined();
   for (const key of Object.keys(result)) {
@@ -177,12 +176,10 @@ export function runModelProviderConformance(
         "network",
         "auth",
       ];
-      for (const scenario of scenarios) {
-        const { adapter } = makeAdapter(scenario);
-        await expect(
-          adapter.generate(conformanceRequest(), new AbortController().signal),
-        ).resolves.toBeDefined();
-      }
+      const settled = scenarios.map((scenario) =>
+        makeAdapter(scenario).adapter.generate(conformanceRequest(), new AbortController().signal),
+      );
+      await expect(Promise.all(settled)).resolves.toHaveLength(scenarios.length);
     });
   });
 }

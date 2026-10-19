@@ -73,7 +73,9 @@ export class FakeModelProvider implements ModelProviderPort {
   }
 
   private echo(request: ModelRequest): ModelResult {
-    const evidenceRefs = request.evidencePack.items.map((item) => item.ref).sort();
+    const evidenceRefs = request.evidencePack.items
+      .map((item) => item.ref)
+      .sort((a, b) => a.localeCompare(b, "en"));
     return {
       kind: "ok",
       rawOutput: { summary: "fake-summary", evidenceRefs },

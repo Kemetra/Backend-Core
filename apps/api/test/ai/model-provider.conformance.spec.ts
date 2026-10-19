@@ -13,26 +13,19 @@ import {
 
 const OK_OUTPUT = { summary: "recorded summary", evidenceRefs: ["sale:1"] };
 
+const SCENARIO_RESULTS: Readonly<Record<ConformanceScenario, ModelResult>> = {
+  ok: { kind: "ok", rawOutput: OK_OUTPUT, usage: { inputTokens: 10, outputTokens: 5, reported: true } },
+  ok_without_usage: { kind: "ok", rawOutput: OK_OUTPUT, usage: { reported: false } },
+  refused: { kind: "refused", reason: "provider_refusal", usage: { reported: false } },
+  truncated: { kind: "truncated", usage: { inputTokens: 10, outputTokens: 500, reported: true } },
+  rate_limited: { kind: "unavailable", cause: "rate_limited" },
+  provider_5xx: { kind: "unavailable", cause: "provider_5xx" },
+  network: { kind: "unavailable", cause: "network" },
+  auth: { kind: "unavailable", cause: "auth" },
+};
+
 function resultFor(scenario: ConformanceScenario): ModelResult {
-  switch (scenario) {
-    case "ok":
-      return {
-        kind: "ok",
-        rawOutput: OK_OUTPUT,
-        usage: { inputTokens: 10, outputTokens: 5, reported: true },
-      };
-    case "ok_without_usage":
-      return { kind: "ok", rawOutput: OK_OUTPUT, usage: { reported: false } };
-    case "refused":
-      return { kind: "refused", reason: "provider_refusal", usage: { reported: false } };
-    case "truncated":
-      return { kind: "truncated", usage: { inputTokens: 10, outputTokens: 500, reported: true } };
-    case "rate_limited":
-    case "provider_5xx":
-    case "network":
-    case "auth":
-      return { kind: "unavailable", cause: scenario };
-  }
+  return SCENARIO_RESULTS[scenario];
 }
 
 runModelProviderConformance("FakeModelProvider", (scenario) => {

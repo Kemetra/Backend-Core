@@ -55,6 +55,8 @@ export const AI_FALLBACK_REASONS = [
   // output validation
   "output_schema_invalid",
   "output_unknown_evidence_ref",
+  // an unexpected throw from a feature hook or dependency: still a fallback
+  "internal_error",
 ] as const;
 export type AiFallbackReason = (typeof AI_FALLBACK_REASONS)[number];
 

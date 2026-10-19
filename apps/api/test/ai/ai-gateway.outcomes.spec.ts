@@ -356,3 +356,128 @@ describe("AiGateway — metrics and fallback result shape", () => {
     expect(new FakeModelProvider({ providerKey: "fake" }).providerKey).toBe("fake");
   });
 });
+
+describe("AiGateway — run() never rejects (every failure is a fallback)", () => {
+  it.each([
+    [
+      "a feature whose renderSystemPrompt throws",
+      () =>
+        buildHarness({
+          features: [
+            {
+              ...TEST_FEATURE,
+              renderSystemPrompt: () => {
+                throw new Error("template broke");
+              },
+            } as never,
+          ],
+        }),
+    ],
+    [
+      "an evidence pack that cannot be serialized (BigInt)",
+      () => buildHarness({ pack: { items: [{ ref: "sale:1", fields: { total: 10n as never } }] } }),
+    ],
+    [
+      "a runtime kill-switch read that throws",
+      () =>
+        buildHarness({
+          enabled: () => {
+            throw new Error("env read failed");
+          },
+        }),
+    ],
+  ])("%s -> internal_error, no provider request", async (_name, build) => {
+    const h = build();
+    const result = await h.gateway.run(FEATURE_ID, scope());
+    expect(result).toEqual({ kind: "fallback", reason: "internal_error", providerRequested: false });
+    expect(h.provider.calls).toHaveLength(0);
+    expect(h.runMetrics).toEqual([{ feature: FEATURE_ID, outcome: "internal_error" }]);
+    expect(h.logs.some((l) => typeof l.obj["err_class"] === "string")).toBe(true);
+  });
+
+  it("an extractEvidenceRefs that returns a non-array -> output_schema_invalid", async () => {
+    const h = buildHarness({
+      features: [{ ...TEST_FEATURE, extractEvidenceRefs: () => "sale:1" } as never],
+    });
+    const result = await h.gateway.run(FEATURE_ID, scope());
+    expect(result).toMatchObject({ kind: "fallback", reason: "output_schema_invalid" });
+  });
+
+  it("an extractEvidenceRefs that throws or returns non-strings -> output_schema_invalid", async () => {
+    const throwsHook = buildHarness({
+      features: [
+        {
+          ...TEST_FEATURE,
+          extractEvidenceRefs: () => {
+            throw new Error("hook broke");
+          },
+        } as never,
+      ],
+    });
+    const nonStrings = buildHarness({
+      features: [{ ...TEST_FEATURE, extractEvidenceRefs: () => [1, 2] } as never],
+    });
+    await expect(throwsHook.gateway.run(FEATURE_ID, scope())).resolves.toMatchObject({
+      reason: "output_schema_invalid",
+    });
+    await expect(nonStrings.gateway.run(FEATURE_ID, scope())).resolves.toMatchObject({
+      reason: "output_schema_invalid",
+    });
+  });
+
+  it("a throwing logger or metric sink never changes the result", async () => {
+    const h = buildHarness({
+      logger: {
+        info: () => {
+          throw new Error("logger down");
+        },
+        warn: () => {
+          throw new Error("logger down");
+        },
+      },
+    });
+    await expect(h.gateway.run(FEATURE_ID, scope())).resolves.toMatchObject({ kind: "ok" });
+  });
+});
+
+describe("AiGateway — malformed provider results are adapter faults, never trusted", () => {
+  const usage = { reported: true };
+  it.each([
+    ["unavailable with an out-of-set cause", { kind: "unavailable", cause: "attacker-label" }],
+    ["unavailable without a cause", { kind: "unavailable" }],
+    ["ok without usage", { kind: "ok", rawOutput: VALID_OUTPUT }],
+    ["ok with a non-boolean usage.reported", { kind: "ok", rawOutput: VALID_OUTPUT, usage: { reported: "yes" } }],
+    ["ok with a negative token count", { kind: "ok", rawOutput: VALID_OUTPUT, usage: { reported: true, inputTokens: -1 } }],
+    ["ok with a non-string providerRequestId", { kind: "ok", rawOutput: VALID_OUTPUT, usage, providerRequestId: 7 }],
+    ["refused with an out-of-set reason", { kind: "refused", reason: "because" }],
+    ["refused with malformed usage", { kind: "refused", reason: "provider_refusal", usage: "x" }],
+    ["truncated without usage", { kind: "truncated" }],
+    ["rejected_input with an out-of-set cause", { kind: "rejected_input", cause: "nope" }],
+    ["a null result", null],
+    ["a primitive result", "ok"],
+  ])("%s -> provider_error with a bounded metric label", async (_name, bad) => {
+    const rogue: ModelProviderPort = {
+      providerKey: "fake",
+      generate: () => Promise.resolve(bad as unknown as ModelResult),
+    };
+    const h = buildHarness({ providers: [rogue] });
+    const result = await h.gateway.run(FEATURE_ID, scope());
+    expect(result).toEqual({ kind: "fallback", reason: "provider_error", providerRequested: true });
+    expect(h.providerMetrics).toEqual([{ provider: "fake", route: ROUTE_KEY, outcome: "error" }]);
+  });
+
+  it("well-formed variants with every optional field pass the guard", async () => {
+    const h = buildHarness({
+      behavior: {
+        kind: "result",
+        result: {
+          kind: "ok",
+          rawOutput: VALID_OUTPUT,
+          usage: { reported: true, inputTokens: 1, outputTokens: 2, cachedInputTokens: 0 },
+          providerRequestId: "req-1",
+        },
+      },
+    });
+    await expect(h.gateway.run(FEATURE_ID, scope())).resolves.toMatchObject({ kind: "ok" });
+  });
+});
