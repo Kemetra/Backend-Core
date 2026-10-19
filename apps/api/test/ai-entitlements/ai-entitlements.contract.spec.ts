@@ -462,6 +462,18 @@ describe("ai-entitlements — provenance of both sources", () => {
     expect(v({ ...none, features: [FULL.features[1]] })).toBe(false);
   });
 
+  it("gives a not-entitled feature no meter and every revision state a start date", () => {
+    const v = validator("TenantAiEntitlements");
+    const notEntitled = { ...FULL.features[0], unavailableReason: "not_entitled", entitled: false };
+    expect(v({ ...FULL, features: [{ ...notEntitled, meters: FULL.features[1].meters }] })).toBe(false);
+    expect(v({ ...FULL, effectiveFrom: null })).toBe(false);
+  });
+
+  it("carries no meter on a layer 0-5 denial", () => {
+    const meter = { meter: "ask_per_month", window: "month", limit: 10, used: 1, reserved: 0, remaining: 9, resetsAt: "2026-11-01T00:00:00Z" };
+    expect(validator("AiEntitlementDecision")({ ...DENY, reasonCode: "not_authorized", meter })).toBe(false);
+  });
+
   it("gives state none no effective dates", () => {
     const v = validator("TenantAiEntitlements");
     const none = { ...FULL, state: "none", entitlementVersion: 0, effectiveFrom: null, effectiveUntil: null, features: [] };

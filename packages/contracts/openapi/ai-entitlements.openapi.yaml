@@ -648,6 +648,16 @@ components:
                 const: false
         - if:
             properties:
+              entitled:
+                const: false
+            required: [entitled]
+          then:
+            description: A feature outside the effective entitlement has no meter.
+            properties:
+              meters:
+                maxItems: 0
+        - if:
+            properties:
               unavailableReason:
                 const: feature_disabled_tenant
             required: [unavailableReason]
@@ -719,6 +729,11 @@ components:
                   const: unavailable
                 entitled:
                   const: false
+      else:
+        description: Every other state is an effective revision with a start.
+        properties:
+          effectiveFrom:
+            type: string
       properties:
         view:
           type: string
@@ -931,6 +946,11 @@ components:
                 enum: [not_authorized, tenant_inactive, feature_disabled_system, policy_denied]
             required: [reasonCode]
           then:
+            description: >
+              A layer 0 to 5 refusal stops before the entitlement, opt-out
+              and quota are read: no version and no meter.
+            not:
+              required: [meter]
             properties:
               entitlementVersion:
                 type: "null"
