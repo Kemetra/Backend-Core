@@ -528,5 +528,18 @@ describe("RT-733 — the current 013 mapping version is exposed for confirm / re
     // The result read follows the live 013 row: the confirm bumped the version.
     const page = await svc.listResults({ tenantId: TENANT_A, runId: RUN_V, cursor: null, limit: 100 });
     expect(page.items.find((i) => i.id === RES_V)).toMatchObject({ mappingId: MAP_V, mappingVersion: 5 });
+
+    // FR-011 is unchanged: once the row is confirmed-and-active, a confirm with
+    // an older version is the idempotent no_op_echo, not a conflict.
+    const echo = await svc.repairBacklogItem({
+      tenantId: TENANT_A,
+      actorUserId: ACTOR_A,
+      repairKind: "confirm",
+      tenantProductId: PROD_V,
+      mappingId: MAP_V,
+      version: stale!,
+    });
+    expect(echo.repair.outcome).toBe("no_op_echo");
+    expect(echo.repair.resolvedItemMapId).toBe(MAP_V);
   });
 });

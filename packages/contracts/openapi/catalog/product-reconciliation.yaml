@@ -67,7 +67,9 @@ info:
     `confirm` / `re_point` with the `mappingId` + `version` it requires. Both are
     optional and nullable (null when no mapping applies), read live from the 013
     row on each request. No request or repair-semantics change: a stale
-    `version` is still a `409` `conflict`.
+    `version` is still a `409` `conflict`, except that a confirm / re_point
+    of a mapping that is by then confirmed-and-active stays the idempotent
+    `no_op_echo` (FR-011), whatever `version` was sent.
 
 servers:
   - url: https://api.example.com
@@ -480,7 +482,9 @@ components:
             RT-733 (additive). The current 013 `version` of the
             `suggestionMappingId` row, read live; null when that id is null. Pass
             it as `version` on a `confirm` / `re_point` repair. A value that has
-            gone stale by the time of the repair is a `409` `conflict`.
+            gone stale by the time of the repair is a `409` `conflict`, unless
+            the row is by then confirmed-and-active, which is the idempotent
+            `no_op_echo` (FR-011).
         suggestionSource:
           type: [string, "null"]
           description: 013 suggestion provenance (`manual` in v1).
@@ -627,7 +631,8 @@ components:
             RT-733 (additive). The current 013 `version` of the `mappingId` row;
             null when `mappingId` is null. Pass it as `version` on a `confirm` /
             `re_point` repair. A value that has gone stale by the time of the
-            repair is a `409` `conflict`.
+            repair is a `409` `conflict`, unless the row is by then
+            confirmed-and-active, which is the idempotent `no_op_echo` (FR-011).
 
     ResultPage:
       type: object
