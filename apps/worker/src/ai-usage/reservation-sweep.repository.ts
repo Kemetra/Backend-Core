@@ -55,8 +55,12 @@ export class PgReservationSweepRepository implements ReservationSweepRepository 
     const r = await this.pool.query<{ ok: boolean | null }>(
       // The regclass (oid) forms are NULL-safe: a table 0055 has not created
       // yet is NULL, never an error (AND has no guaranteed evaluation order).
-      `SELECT has_table_privilege(to_regclass('public.ai_usage_ledger'), 'SELECT, INSERT')
-          AND has_table_privilege(to_regclass('public.ai_usage_counters'), 'SELECT, UPDATE') AS ok`,
+      // One privilege per call: a comma-separated list is true when ANY of
+      // them is held, so 'SELECT, INSERT' would pass a SELECT-only role.
+      `SELECT has_table_privilege(to_regclass('public.ai_usage_ledger'), 'SELECT')
+          AND has_table_privilege(to_regclass('public.ai_usage_ledger'), 'INSERT')
+          AND has_table_privilege(to_regclass('public.ai_usage_counters'), 'SELECT')
+          AND has_table_privilege(to_regclass('public.ai_usage_counters'), 'UPDATE') AS ok`,
     );
     return r.rows[0]?.ok === true;
   }

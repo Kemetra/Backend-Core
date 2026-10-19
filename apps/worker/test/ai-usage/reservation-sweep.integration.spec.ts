@@ -161,6 +161,11 @@ describe("RT-664 reservation sweep on real Postgres", () => {
     try {
       const repo = new PgReservationSweepRepository(ungranted);
       expect(await repo.isProvisioned()).toBe(false);
+      // SELECT alone (e.g. from default privileges) is not enough: INSERT and UPDATE are each required.
+      await a.query(`GRANT SELECT ON ai_usage_ledger, ai_usage_counters TO rt664_ungranted`);
+      expect(await repo.isProvisioned()).toBe(false);
+      await a.query(`GRANT INSERT ON ai_usage_ledger TO rt664_ungranted`);
+      expect(await repo.isProvisioned()).toBe(false);
       expect(await new PgReservationSweepRepository(probe!).isProvisioned()).toBe(true);
       const result = await new ReservationSweepProcessor(repo, { log: () => undefined }).process(RESERVATION_SWEEP_JOB_NAME, {});
       expect(result).toMatchObject({ tenants: 0, released: 0, failedTenants: 0 });
