@@ -123,15 +123,15 @@ const DETAIL = {
 // 1. Document + operations
 // ===========================================================================
 describe("console-catalog — document and operations", () => {
-  it("is an OpenAPI 3.1 document at version 1.0.0-draft", () => {
+  it("is an OpenAPI 3.1 document at version 1.1.0-draft (RT-738 writes, additive)", () => {
     expect(doc.openapi).toBe("3.1.0");
-    expect(doc.info?.version).toBe("1.0.0-draft");
+    expect(doc.info?.version).toBe("1.1.0-draft");
   });
 
-  it("declares exactly the three reads, and nothing else", () => {
-    expect(Object.keys(doc.paths ?? {}).sort()).toEqual([LIST_PATH, DETAIL_PATH, CATEGORIES_PATH].sort());
+  it("declares the three reads as the only GET operations (the RT-738 writes are pinned in console-catalog-writes.contract.spec.ts)", () => {
+    const gets = Object.entries(doc.paths ?? {}).filter(([, item]) => "get" in item).map(([path]) => path);
+    expect(gets.sort()).toEqual([LIST_PATH, DETAIL_PATH, CATEGORIES_PATH].sort());
     for (const { id, path } of OPERATIONS) {
-      expect(Object.keys(doc.paths![path]!)).toEqual(["get"]);
       expect(api.get(path).operationId).toBe(id);
       expect(api.get(path).requestBody).toBeUndefined();
     }
