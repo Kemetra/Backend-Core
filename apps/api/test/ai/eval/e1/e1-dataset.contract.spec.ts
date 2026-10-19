@@ -9,6 +9,7 @@
 import Ajv, { type ValidateFunction } from "ajv";
 import addFormats from "ajv-formats";
 
+import { compareCodeUnits } from "../../../../src/common/compare-code-units";
 import { allContracts, contractDocument } from "../../../_helpers/openapi-contract";
 import { E1_CASES, E1_DATASET_VERSION, materialize, worldOf } from "./e1.cases";
 import { datasetHash } from "./e1.canonical";
@@ -34,6 +35,19 @@ function validator(op: keyof typeof SCHEMA_SOURCES): ValidateFunction {
   const found = ajv.getSchema(`${id}#/components/schemas/${schema}`);
   if (!found) throw new Error(`ajv cannot resolve ${contract}#${schema}`);
   return found;
+}
+
+type PathItem = Record<string, { operationId?: string } | undefined>;
+
+/** operationId -> HTTP method, across every contract on main. */
+function methodsByOperationId(): Map<string, string> {
+  const pairs = CONTRACTS.flatMap((contract) => {
+    const paths = (contract.document as { paths?: Record<string, PathItem> }).paths ?? {};
+    return Object.values(paths).flatMap((item) =>
+      Object.entries(item).flatMap(([method, op]): [string, string][] => (op?.operationId ? [[op.operationId, method]] : [])),
+    );
+  });
+  return new Map(pairs);
 }
 
 describe("e1-gold/1 dataset", () => {
@@ -72,16 +86,8 @@ describe("e1-gold/1 dataset", () => {
   });
 
   it("only reads the four allowlisted GET operations, each declared as GET in a contract", () => {
-    expect([...ALLOWED_OPS].sort()).toEqual(Object.keys(SCHEMA_SOURCES).sort());
-    const methodOf = new Map<string, string>();
-    for (const contract of CONTRACTS) {
-      const paths = (contract.document as { paths?: Record<string, Record<string, { operationId?: string }>> }).paths;
-      for (const item of Object.values(paths ?? {})) {
-        for (const [method, op] of Object.entries(item)) {
-          if (op?.operationId) methodOf.set(op.operationId, method);
-        }
-      }
-    }
+    expect([...ALLOWED_OPS].sort(compareCodeUnits)).toEqual(Object.keys(SCHEMA_SOURCES).sort(compareCodeUnits));
+    const methodOf = methodsByOperationId();
     for (const op of ALLOWED_OPS) expect(methodOf.get(op)).toBe("get");
   });
 
@@ -111,7 +117,7 @@ describe("e1-gold/1 dataset", () => {
         const { pack } = materialize(c, lang);
         const text = JSON.stringify(pack);
         for (const dropped of DROPPED_PII_STRINGS) expect(text).not.toContain(dropped);
-        expect(Object.keys(pack).sort()).toEqual([
+        expect(Object.keys(pack).sort(compareCodeUnits)).toEqual([
           "assembled_at", "backlog_match", "known_gaps", "max_read_skew_ms", "pack_id", "question",
           "reads", "schema_version", "scope", "untrusted_text",
         ]);

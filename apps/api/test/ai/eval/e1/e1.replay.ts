@@ -16,8 +16,6 @@ import { RecordedModelProvider } from "../../../../src/ai/adapters/recorded/reco
 import type { AiFeatureDefinition } from "../../../../src/ai/gateway/ai-feature";
 import type { AiGatewayResult } from "../../../../src/ai/gateway/ai-gateway.types";
 import type {
-  EvidencePack,
-  EvidenceFieldValue,
   ModelProviderPort,
   ModelRequest,
   ModelResult,
@@ -26,11 +24,12 @@ import type {
 import type { ResolvedContext } from "../../../../src/context/types";
 import { buildHarness } from "../../_support/gateway-harness";
 import { explain } from "./e1.baseline";
+import { toEvidencePack } from "./e1.evidence";
 import { requestedStore, type Materialized } from "./e1.cases";
 import { STORE_A1, STORE_A2, TENANT_A, USER_A } from "./e1.ids";
 import { citedRefs, E1_OUT_SCHEMA, type E1Out } from "./e1.out-schema";
 import { renderText } from "./e1.text";
-import { E1_VERSIONS, type E1Pack, type Json } from "./e1.types";
+import { E1_VERSIONS } from "./e1.types";
 
 export const E1_FEATURE: AiFeatureDefinition<E1Out> = {
   featureId: "sync_doctor.explain_sale",
@@ -73,61 +72,6 @@ class RecordingProvider implements ModelProviderPort {
     this.requests.push(request);
     return this.inner.generate(request, signal);
   }
-}
-
-function escapePointer(key: string): string {
-  return key.replace(/~/g, "~0").replace(/\//g, "~1");
-}
-
-/** Every node of a JSON value becomes one citable item `<prefix>#<json-pointer>`. */
-function flatten(prefix: string, value: Json | undefined, pointer: string, out: { ref: string; fields: Record<string, EvidenceFieldValue> }[]): void {
-  if (value === undefined) return;
-  if (typeof value !== "object" || value === null) {
-    out.push({ ref: `${prefix}#${pointer}`, fields: { value } });
-    return;
-  }
-  out.push({ ref: `${prefix}#${pointer}`, fields: { kind: Array.isArray(value) ? "array" : "object" } });
-  const entries: [string, Json][] = Array.isArray(value)
-    ? (value as readonly Json[]).map((item, i): [string, Json] => [String(i), item])
-    : Object.entries(value as { readonly [key: string]: Json });
-  for (const [key, child] of entries) flatten(prefix, child, `${pointer}/${escapePointer(key)}`, out);
-}
-
-function readId(read: E1Pack["reads"][number]): string | null {
-  const body = read.body;
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
-  const record = body as { readonly [key: string]: Json };
-  const summary = record["summary"];
-  const id = read.op === "consoleGetSale" && typeof summary === "object" && summary !== null && !Array.isArray(summary)
-    ? (summary as { readonly [key: string]: Json })["saleRef"]
-    : record["saleRef"];
-  return typeof id === "string" ? id : null;
-}
-
-/**
- * The evidence the gateway may send. A pack whose deterministic rules already
- * end in an abstention yields NO evidence: the baseline answers and no request
- * is built ("no request is ever sent without evidence").
- */
-export function toEvidencePack(pack: E1Pack): EvidencePack {
-  if (explain(pack).class.startsWith("abstain")) return { items: [] };
-  const items: { ref: string; fields: Record<string, EvidenceFieldValue> }[] = [];
-  for (const read of pack.reads) {
-    if (read.http_status !== 200 || read.body === null) continue;
-    if (read.op === "consoleListPostingBacklog") {
-      const rows = (read.body as { readonly items?: readonly Json[] }).items ?? [];
-      for (const row of rows) {
-        const id = (row as { readonly [key: string]: Json })["postingStatusId"];
-        if (typeof id === "string") flatten(`ev:${read.op}/${id}`, row, "", items);
-      }
-      continue;
-    }
-    const id = readId(read);
-    if (id !== null) flatten(`ev:${read.op}/${id}`, read.body, "", items);
-  }
-  const packLevel = Object.fromEntries(Object.entries(pack).filter(([key]) => key !== "reads"));
-  flatten("ev:pack", packLevel as unknown as Json, "", items);
-  return { items: items.filter((item) => !item.ref.endsWith("#")) };
 }
 
 export function ctxOf(m: Materialized): ResolvedContext {

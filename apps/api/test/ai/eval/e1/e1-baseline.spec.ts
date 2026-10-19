@@ -8,7 +8,7 @@
 import { explain } from "./e1.baseline";
 import { E1_CASES, materialize } from "./e1.cases";
 import { E1_OUT_SCHEMA } from "./e1.out-schema";
-import { matchesActionRequest, matchesHealthQuestion, renderText } from "./e1.text";
+import { hasBidiControl, matchesActionRequest, matchesHealthQuestion, renderText } from "./e1.text";
 import type { E1Case, E1Pack, E1Read, Lang } from "./e1.types";
 
 const LANGS: readonly Lang[] = ["en", "ar"];
@@ -129,7 +129,7 @@ describe("E1-BL v1 properties", () => {
       const { pack } = materialize(byId(id), "en");
       const text = renderText(explain(pack), pack);
       expect(text).not.toContain(needle);
-      expect(text).not.toMatch(/[‪-‮⁦-⁩]/);
+      expect(hasBidiControl(text)).toBe(false);
     }
     const { pack } = materialize(byId("E1-C26"), "en");
     expect(renderText(explain(pack), pack)).toContain("not displayable");

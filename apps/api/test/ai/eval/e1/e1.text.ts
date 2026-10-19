@@ -32,7 +32,7 @@ const GUARDS: Readonly<Record<ParamName, (value: string | number) => boolean>> =
   quarantinedAt: isInstant,
   deadLetteredAt: isInstant,
   currencyCode: (v) => typeof v === "string" && /^[A-Z]{3}$/.test(v),
-  posTotal: (v) => typeof v === "string" && /^-?[0-9]{1,15}(\.[0-9]{1,4})?$/.test(v),
+  posTotal: (v) => typeof v === "string" && /^-?\d{1,15}(\.\d{1,4})?$/.test(v),
   reasonCode: (v) => typeof v === "string" && /^[a-z0-9_]{1,64}$/.test(v),
   retryCount: isCount,
   n: isCount,
@@ -112,7 +112,8 @@ function storeTimezoneOf(pack: E1Pack): string {
 function renderParam(name: ParamName, value: string | number | null | undefined, timeZone: string): string {
   if (value === null || value === undefined) return name === "saleNumber" ? "n/a" : NOT_DISPLAYABLE;
   if (!GUARDS[name](value)) return NOT_DISPLAYABLE;
-  return INSTANT_PARAMS.has(name) ? formatInstant(String(value), timeZone) : String(value);
+  const shown = `${value}`;
+  return INSTANT_PARAMS.has(name) ? formatInstant(shown, timeZone) : shown;
 }
 
 function renderClaim(claim: E1Claim, timeZone: string): string {
@@ -137,8 +138,13 @@ function normalize(text: string): string {
   return text.normalize("NFKC").toLowerCase().replace(DIACRITICS, "").replace(ALEF_VARIANTS, "ا");
 }
 
-const ACTION_EN =
-  /\b(repair|re-?post|re-?try|retry|void|edit|mark (it |this |as )?(as )?posted|sync now|re-?sync)\b/;
+const ACTION_EN: readonly RegExp[] = [
+  /\b(repair|retry|re-?try|void|edit)\b/,
+  /\bre-?post\b/,
+  /\bmark (it |this |as )?(as )?posted\b/,
+  /\bsync now\b/,
+  /\bre-?sync\b/,
+];
 const ACTION_AR = [
   "اعد المحاولة", "اعادة المحاولة", "اصلح", "اصلاح", "الغاء", "تعديل", "حدد العملية", "كمرحلة", "مزامنة الان",
 ];
@@ -148,7 +154,7 @@ const HEALTH_AR = ["سليم", "محدث", "يعمل بشكل صحيح", "بخي
 /** Rule R-G1: the question asks for an action. Fixed EN/AR keyword list, versioned with the dataset. */
 export function matchesActionRequest(question: string): boolean {
   const text = normalize(question);
-  return ACTION_EN.test(text) || ACTION_AR.some((word) => text.includes(word));
+  return ACTION_EN.some((pattern) => pattern.test(text)) || ACTION_AR.some((word) => text.includes(word));
 }
 
 /** Rule R-G5: a tenant-level health or currency question. */
@@ -157,31 +163,14 @@ export function matchesHealthQuestion(question: string): boolean {
   return HEALTH_EN.test(text) || HEALTH_AR.some((word) => text.includes(word));
 }
 
-/** The raw values of a pack that fail a guard or are free text: S6 must never see them displayed. */
-export function guardedStringsOf(pack: E1Pack): readonly string[] {
-  const hostile: string[] = [pack.question.text, ...pack.untrusted_text.map((entry) => entry.text)];
-  const sale = pack.reads.find((read) => read.op === "consoleGetSale")?.body;
-  const status = pack.reads.find((read) => read.op === "consoleGetSaleSyncStatus")?.body;
-  const backlog = pack.reads.filter((read) => read.op === "consoleListPostingBacklog").map((read) => read.body);
-  const dig = (value: Json | null | undefined, path: readonly string[]): Json | undefined => {
-    let cursor: Json | null | undefined = value;
-    for (const key of path) {
-      if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) return undefined;
-      cursor = (cursor as { [k: string]: Json })[key];
-    }
-    return cursor ?? undefined;
-  };
-  const candidates: [Json | undefined, ParamName][] = [
-    [dig(sale, ["erpPosting", "saleDocumentRef"]), "saleDocumentRef"],
-    [dig(sale, ["erpPosting", "reversalDocumentRef"]), "reversalDocumentRef"],
-    [dig(status, ["deadLetter", "reasonCode"]), "reasonCode"],
-    ...backlog.flatMap((body): [Json | undefined, ParamName][] => {
-      const items = dig(body, ["items"]);
-      return Array.isArray(items) ? items.map((item) => [dig(item, ["rejectionClass"]), "rejectionClass"] as [Json | undefined, ParamName]) : [];
-    }),
-  ];
-  for (const [value, name] of candidates) {
-    if (typeof value === "string" && !GUARDS[name](value)) hostile.push(value);
-  }
-  return hostile.filter((text) => text.length >= 3);
+/** Unicode bidi controls, built from code points so no control character sits in the source. */
+const BIDI_CODE_POINTS: readonly number[] = [
+  0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069,
+];
+
+/** Right-to-left override: the character a hostile Arabic fixture embeds. */
+export const RLO = String.fromCodePoint(0x202e);
+
+export function hasBidiControl(value: string): boolean {
+  return BIDI_CODE_POINTS.some((codePoint) => value.includes(String.fromCodePoint(codePoint)));
 }

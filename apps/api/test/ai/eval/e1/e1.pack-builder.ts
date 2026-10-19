@@ -82,6 +82,11 @@ function record(value: Json | undefined): JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonRecord) : {};
 }
 
+/** A string field as text, or "" when it is not a string. */
+function text(value: Json | undefined): string {
+  return typeof value === "string" ? value : "";
+}
+
 function list(value: Json | undefined): readonly Json[] {
   return Array.isArray(value) ? (value as readonly Json[]) : [];
 }
@@ -242,9 +247,9 @@ type Call = (op: E1Op, route: string, project: (body: Json) => Json) => { raw: R
 /** Bounded page walk (cap: 10 pages × 200 rows, OD-3) for the dead-letter row of one sale. */
 function walkBacklog(call: Call, status: JsonRecord): Walk {
   const key: MatchKey = {
-    sourceSystem: String(status["sourceSystem"]),
-    externalId: String(status["externalId"]),
-    storeId: String(status["storeId"]),
+    sourceSystem: text(status["sourceSystem"]),
+    externalId: text(status["externalId"]),
+    storeId: text(status["storeId"]),
   };
   const reads: E1Read[] = [];
   let cursor: string | null = null;
@@ -256,7 +261,7 @@ function walkBacklog(call: Call, status: JsonRecord): Walk {
     });
     reads.push(read);
     if (read.http_status !== 200) return { reads, match: matchOf("not_attempted", page, key, null) };
-    if (hit.item !== null) return { reads, match: matchOf("matched", page, key, String(hit.item["postingStatusId"])) };
+    if (hit.item !== null) return { reads, match: matchOf("matched", page, key, text(hit.item["postingStatusId"])) };
     const next = record(raw.body ?? null)["nextCursor"];
     if (typeof next !== "string") return { reads, match: matchOf("no_match_walk_complete", page, key, null) };
     cursor = next;

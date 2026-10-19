@@ -197,14 +197,20 @@ function backlogPagesOf(s: Scenario): RawRead[] {
   return [ok({ items, nextCursor: null })];
 }
 
+/** The posting-backlog reads: a status override, the walk of a failed sale, or none. */
+function backlogReads(s: Scenario): RawRead[] {
+  const override = statusOf(s, "r4");
+  if (override !== null) return [override];
+  return s.erp === "failed" ? backlogPagesOf(s) : [];
+}
+
 /** Bodies for a scenario. A non-200 override replaces a body with `null`. */
 export function buildWorld(s: Scenario): World {
-  const unreachable = { status: 404, body: null } as const;
   return {
     r1: statusOf(s, "r1") ?? ok(saleDetailOf(s)),
     r2: statusOf(s, "r2") ?? ok(syncStatusOf(s)),
     r3: statusOf(s, "r3") ?? ok(timelineOf(s)),
-    r4: statusOf(s, "r4") !== null ? [statusOf(s, "r4") ?? unreachable] : s.erp === "failed" ? backlogPagesOf(s) : [],
+    r4: backlogReads(s),
   };
 }
 

@@ -5,12 +5,12 @@
 
 ## 1. Run identity
 
-- Run ID: 739b03b1d23a5ea6
+- Run ID: 2a4b366c000b3ac0
 - Run date: fixture
 - Code SHA: fixture
 - RT-647 contract baseline: Kemetra/Backend-Core main 99764580 (E1-EP v1, E1-BL v1, e1-gold/1)
 - Dataset: e1-gold/1, sha256 ba13045784e5d8592ed8ec8a043f6bc9428de66d2fa7585d99b7777dd64adbee
-- Replay set (recorded responses): sha256 07064d265f47fcc30871a22b93a24a3e593443eb2591a683604a142b4a6e5406
+- Replay set (recorded responses): sha256 dab546e801abf9ddb6d952db75f9e74fe433904702d631efb2cef7159aa49726
 - Prompt template: sync_doctor.explain_sale@1
 - Output schema: sync_doctor.explain_sale.output@e1-out/1
 - Provider: recorded (RecordedModelProvider; no network, no credential, no SDK)

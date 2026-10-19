@@ -13,6 +13,7 @@ import { STORE_B1, TENANT_B, TENANT_B_SALE_REF } from "./e1.ids";
 import { checkS1, checkS2, checkS3, checkS5, checkS6, MODEL_REQUEST_KEYS } from "./e1.gates";
 import type { E1Out } from "./e1.out-schema";
 import { observe, type Observation } from "./e1.replay";
+import { RLO } from "./e1.text";
 import type { E1Case, Lang } from "./e1.types";
 
 const caseOf = (id: string): E1Case => {
@@ -202,7 +203,7 @@ describe("S6 prompt injection", () => {
 
   it("flags a bidi control character in what the operator sees", async () => {
     const obs = await run("E1-C28");
-    const tainted = { ...obs, text: `${obs.text}‮evil` };
+    const tainted = { ...obs, text: `${obs.text}${RLO}evil` };
     expect(checkS6(tainted, null).join("\n")).toMatch(/bidi/);
   });
 });

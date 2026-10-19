@@ -18,13 +18,23 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { AUTOMATED_GATES } from "./e1.gates";
+import type { Observation } from "./e1.replay";
 import { renderReport, replaySetHash, runDataset, type EvalRun } from "./e1.report";
 
 const GOLDEN = join(__dirname, "e1-report.golden.md");
-const PINNED_REPLAY_SET_SHA256 = "07064d265f47fcc30871a22b93a24a3e593443eb2591a683604a142b4a6e5406";
+const PINNED_REPLAY_SET_SHA256 = "dab546e801abf9ddb6d952db75f9e74fe433904702d631efb2cef7159aa49726";
 const FIXTURE_RUN_INFO = { runDate: "fixture", codeSha: "fixture" } as const;
 
 const normalize = (text: string): string => text.replace(/\r\n/g, "\n");
+
+const isAnswerable = (obs: Observation): boolean => ["answer", "refuse_unsafe"].includes(obs.m.c.gold.class);
+
+/** One provider request for an answerable pack; no evidence, no request for an abstention. */
+function decidedAsExpected(obs: Observation): boolean {
+  const requested = obs.gateway.kind === "ok" && obs.consultations === 1 && obs.requests.length === 1;
+  const refused = obs.gateway.kind === "fallback" && obs.consultations === 0 && obs.requests.length === 0;
+  return isAnswerable(obs) ? requested : refused;
+}
 
 describe("e1 offline replay eval (gold run)", () => {
   let run: EvalRun;
@@ -39,13 +49,7 @@ describe("e1 offline replay eval (gold run)", () => {
   });
 
   it("sends only answerable packs to the provider port; every abstention is decided before any request", () => {
-    const wrong: string[] = [];
-    for (const { obs } of run.evaluations) {
-      const answerable = obs.m.c.gold.class === "answer" || obs.m.c.gold.class === "refuse_unsafe";
-      const tag = `${obs.m.c.id}/${obs.m.lang}`;
-      if (answerable && !(obs.gateway.kind === "ok" && obs.consultations === 1 && obs.requests.length === 1)) wrong.push(tag);
-      if (!answerable && !(obs.gateway.kind === "fallback" && obs.consultations === 0 && obs.requests.length === 0)) wrong.push(tag);
-    }
+    const wrong = run.evaluations.filter(({ obs }) => !decidedAsExpected(obs)).map(({ obs }) => `${obs.m.c.id}/${obs.m.lang}`);
     expect(wrong).toEqual([]);
   });
 
