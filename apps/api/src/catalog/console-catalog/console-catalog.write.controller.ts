@@ -112,7 +112,7 @@ export class ConsoleCatalogWriteController {
     @Body(new ZodValidationPipe(UpdateCatalogProductBodySchema)) body: UpdateCatalogProductBody,
   ): Promise<ConsoleCatalogProductDetail> {
     const id = parseId(productId, "productId");
-    return mapErrors(() => this.service.updateProduct(writer(request), id, body));
+    return mapErrors(() => this.service.updateProduct(writer(request), { productId: id }, body));
   }
 
   @Post(`${PRODUCT}/retire`)
@@ -126,7 +126,7 @@ export class ConsoleCatalogWriteController {
     @Body(new ZodValidationPipe(RetireBodySchema)) body: RetireBody,
   ): Promise<ConsoleCatalogProductDetail> {
     const id = parseId(productId, "productId");
-    return mapErrors(() => this.service.retireProduct(writer(request), id, body));
+    return mapErrors(() => this.service.retireProduct(writer(request), { productId: id }, body));
   }
 
   @Post(`${PRODUCT}/identifiers`)
@@ -140,7 +140,7 @@ export class ConsoleCatalogWriteController {
     @Body(new ZodValidationPipe(ProductIdentifierKeySchema)) body: ProductIdentifierKeyBody,
   ): Promise<ConsoleCatalogProductDetail> {
     const id = parseId(productId, "productId");
-    return mapErrors(() => this.service.addIdentifier(writer(request), id, body));
+    return mapErrors(() => this.service.addIdentifier(writer(request), { productId: id }, body));
   }
 
   @Post(`${PRODUCT}/identifiers/retire`)
@@ -154,7 +154,7 @@ export class ConsoleCatalogWriteController {
     @Body(new ZodValidationPipe(ProductIdentifierKeySchema)) body: ProductIdentifierKeyBody,
   ): Promise<ConsoleCatalogProductDetail> {
     const id = parseId(productId, "productId");
-    return mapErrors(() => this.service.retireIdentifier(writer(request), id, body));
+    return mapErrors(() => this.service.retireIdentifier(writer(request), { productId: id }, body));
   }
 
   @Put(OVERRIDE)
@@ -169,7 +169,7 @@ export class ConsoleCatalogWriteController {
   ): Promise<ConsoleCatalogProductDetail> {
     const id = parseId(productId, "productId");
     const store = parseId(storeId, "storeId");
-    return mapErrors(() => this.service.upsertOverride(writer(request), id, store, body));
+    return mapErrors(() => this.service.upsertOverride(writer(request), { productId: id, storeId: store }, body));
   }
 
   @Post(`${OVERRIDE}/retire`)
@@ -185,7 +185,7 @@ export class ConsoleCatalogWriteController {
   ): Promise<ConsoleCatalogProductDetail> {
     const id = parseId(productId, "productId");
     const store = parseId(storeId, "storeId");
-    return mapErrors(() => this.service.retireOverride(writer(request), id, store, body));
+    return mapErrors(() => this.service.retireOverride(writer(request), { productId: id, storeId: store }, body));
   }
 }
 

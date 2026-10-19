@@ -57,24 +57,35 @@ import {
 } from "../erpnext-reconciliation/__support__/read-store-scope";
 import { CAT_B, CAT_DRINKS, CAT_OLD, P_B, P_WATER, seedConsoleCatalogFixture } from "./__support__/console-catalog-fixture";
 
+/** Domain names for the ids, sessions and codes the helpers below take. */
+type ProductId = string;
+type StoreId = string;
+type IdTag = string;
+type SessionHeader = string;
+type RequestPath = string;
+type ErrorCode = string;
+type HttpStatus = number;
+type RedisKey = string;
+type SchemaName = string;
+
 const PRODUCTS = "/api/v1/catalog/products";
-const product = (id: string): string => `${PRODUCTS}/${id}`;
-const override = (id: string, storeId: string): string => `${product(id)}/store-overrides/${storeId}`;
+const product = (id: ProductId): RequestPath => `${PRODUCTS}/${id}`;
+const override = (id: ProductId, storeId: StoreId): RequestPath => `${product(id)}/store-overrides/${storeId}`;
 const ORIGIN = "http://127.0.0.1";
 const NOT_FOUND = { code: "not_found", message: "Not Found" };
 const CONTRACT_ID = "console-catalog";
 
-const a = (tag: string): string => `0a000000-0000-7000-8000-${tag.padStart(12, "0")}`;
+const a = (tag: IdTag): string => `0a000000-0000-7000-8000-${tag.padStart(12, "0")}`;
 const ACTOR = a("738e01");
 
 class FakeRedis {
   private readonly s = new Map<string, { value: string; expiresAt: number }>();
-  async get(k: string): Promise<string | null> {
+  async get(k: RedisKey): Promise<string | null> {
     const e = this.s.get(k);
     if (!e || Date.now() > e.expiresAt) return null;
     return e.value;
   }
-  async set(k: string, v: string, o: { px: number }): Promise<unknown> {
+  async set(k: RedisKey, v: string, o: { px: number }): Promise<unknown> {
     this.s.set(k, { value: v, expiresAt: Date.now() + o.px });
     return "OK";
   }
@@ -111,7 +122,7 @@ let errorSchema: ValidateFunction;
 
 beforeAll(async () => {
   ajv.addSchema(contractDocument(allContracts(), CONTRACT_ID) as object, CONTRACT_ID);
-  const compiled = (name: string): ValidateFunction => {
+  const compiled = (name: SchemaName): ValidateFunction => {
     const v = ajv.getSchema(`${CONTRACT_ID}#/components/schemas/${name}`);
     if (!v) throw new Error(`ajv cannot resolve ${name}`);
     return v;
@@ -177,7 +188,7 @@ function skip(): boolean {
 type Method = "post" | "patch" | "put";
 
 /** A write as `session` with a trusted Origin; chain `.set("Idempotency-Key", …)` for the create. */
-function send(method: Method, path: string, session: string | null, body: unknown): request.Test {
+function send(method: Method, path: RequestPath, session: SessionHeader | null, body: unknown): request.Test {
   const req = request(app!.getHttpServer())[method](path).set("Origin", ORIGIN).send(body as object);
   return session === null ? req : req.set("x-test-session", session);
 }
@@ -195,7 +206,7 @@ async function ok(res: request.Response, status: 200 | 201): Promise<Detail> {
 }
 
 /** A refusal: asserts the status and the `{ code, message }` of the error envelope. */
-function refused(res: request.Response, status: number, code: string): { code: string; message: string } {
+function refused(res: request.Response, status: HttpStatus, code: ErrorCode): { code: string; message: string } {
   if (res.status !== status) throw new Error(`expected ${status} ${code}, got ${res.status}: ${JSON.stringify(res.body)}`);
   expectValid(errorSchema, res.body);
   const { code: actual, message } = (res.body as { error: { code: string; message: string } }).error;
@@ -222,7 +233,7 @@ async function seedProduct(opts: { price?: string; retired?: boolean } = {}): Pr
   return id;
 }
 
-async function seedOverride(productId: string, storeId: string, o: { price?: string; active?: boolean; tax?: string }): Promise<void> {
+async function seedOverride(productId: ProductId, storeId: StoreId, o: { price?: string; active?: boolean; tax?: string }): Promise<void> {
   await env!.admin.query(
     `INSERT INTO store_product_overrides
        (tenant_id, store_id, product_id, price, currency_code, is_active, tax_category, created_by, updated_by)
@@ -231,12 +242,12 @@ async function seedOverride(productId: string, storeId: string, o: { price?: str
   );
 }
 
-async function updatedAt(productId: string): Promise<string> {
+async function updatedAt(productId: ProductId): Promise<string> {
   const r = await env!.admin.query<{ updated_at: Date }>(`SELECT updated_at FROM tenant_products WHERE id = $1`, [productId]);
   return r.rows[0]!.updated_at.toISOString();
 }
 
-async function overrideUpdatedAt(productId: string, storeId: string): Promise<string> {
+async function overrideUpdatedAt(productId: ProductId, storeId: StoreId): Promise<string> {
   const r = await env!.admin.query<{ updated_at: Date }>(
     `SELECT updated_at FROM store_product_overrides WHERE product_id = $1 AND store_id = $2 AND retired_at IS NULL`,
     [productId, storeId],
@@ -244,7 +255,7 @@ async function overrideUpdatedAt(productId: string, storeId: string): Promise<st
   return r.rows[0]!.updated_at.toISOString();
 }
 
-async function audits(targetOrProduct: string): Promise<{ action: string; actor_user_id: string; store_id: string | null; metadata: Record<string, unknown> }[]> {
+async function audits(targetOrProduct: ProductId): Promise<{ action: string; actor_user_id: string; store_id: string | null; metadata: Record<string, unknown> }[]> {
   const r = await env!.admin.query(
     `SELECT action, actor_user_id::text, store_id::text, metadata FROM audit_events
       WHERE action LIKE 'catalog.%' AND (target_id = $1::uuid OR metadata->>'product_id' = $1::text)
@@ -254,7 +265,7 @@ async function audits(targetOrProduct: string): Promise<{ action: string; actor_
   return r.rows as { action: string; actor_user_id: string; store_id: string | null; metadata: Record<string, unknown> }[];
 }
 
-async function changeLogCount(productId: string): Promise<number> {
+async function changeLogCount(productId: ProductId): Promise<number> {
   const r = await env!.admin.query<{ n: string }>(`SELECT count(*)::text AS n FROM catalog_change_log WHERE product_id = $1`, [productId]);
   return Number(r.rows[0]!.n);
 }

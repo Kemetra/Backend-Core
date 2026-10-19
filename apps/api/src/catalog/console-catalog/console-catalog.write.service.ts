@@ -93,7 +93,22 @@ export interface CatalogWriteInput extends ScopedCatalogReadInput {
   readonly requestId: string | null;
 }
 
-/** Roles that may change a store tax override (O-4). */
+/** The product a write addresses (path `productId`, already parsed). */
+export interface ProductTarget {
+  readonly productId: string;
+}
+
+/** The product and store a store-override write addresses. */
+export interface OverrideTarget extends ProductTarget {
+  readonly storeId: string;
+}
+
+/** The caller's access to a store in scope: the role code that gates tax overrides (O-4). */
+interface StoreAccess {
+  readonly roleCode: string | null;
+}
+
+/** Roles that may change a store tax override (O-4).
 const TAX_OVERRIDE_ROLES: ReadonlySet<string> = new Set(["owner", "tenant_admin"]);
 
 const PRODUCT_TARGET = "tenant_product";
@@ -162,10 +177,6 @@ function isUniqueViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "23505";
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 @Injectable()
 export class ConsoleCatalogWriteService {
   constructor(
@@ -178,7 +189,7 @@ export class ConsoleCatalogWriteService {
   async createProduct(input: CatalogWriteInput, body: CreateCatalogProductBody): Promise<ConsoleCatalogProductDetail> {
     return this.write(input, async (client) => {
       const categoryId = body.categoryId ?? null;
-      if (categoryId !== null) await this.requireUsableCategory(client, input.tenantId, categoryId);
+      if (categoryId !== null) await this.requireUsableCategory(client, input, { categoryId });
       const productId = newId();
       const fields = {
         name: body.name,
@@ -217,14 +228,17 @@ export class ConsoleCatalogWriteService {
   /** consoleUpdateCatalogProduct — the given simple fields; never price, status or tracking. */
   async updateProduct(
     input: CatalogWriteInput,
-    productId: string,
+    target: ProductTarget,
     body: UpdateCatalogProductBody,
   ): Promise<ConsoleCatalogProductDetail> {
+    const { productId } = target;
     return this.write(input, async (client) => {
-      const current = await this.lockProduct(client, input.tenantId, productId);
+      const current = await this.lockProduct(client, input, target);
       requireLiveProduct(current);
-      requireExpected(current.updated_ms, body.expectedUpdatedAt);
-      if (typeof body.categoryId === "string") await this.requireUsableCategory(client, input.tenantId, body.categoryId);
+      requireExpected(current, body);
+      if (typeof body.categoryId === "string") {
+        await this.requireUsableCategory(client, input, { categoryId: body.categoryId });
+      }
       requireAdvance(current);
 
       const before: ProductFields = {
@@ -265,11 +279,12 @@ export class ConsoleCatalogWriteService {
   }
 
   /** consoleRetireCatalogProduct — sets `retired_at`; identifiers and overrides stay. */
-  async retireProduct(input: CatalogWriteInput, productId: string, body: RetireBody): Promise<ConsoleCatalogProductDetail> {
+  async retireProduct(input: CatalogWriteInput, target: ProductTarget, body: RetireBody): Promise<ConsoleCatalogProductDetail> {
+    const { productId } = target;
     return this.write(input, async (client) => {
-      const current = await this.lockProduct(client, input.tenantId, productId);
+      const current = await this.lockProduct(client, input, target);
       requireLiveProduct(current);
-      requireExpected(current.updated_ms, body.expectedUpdatedAt);
+      requireExpected(current, body);
       requireAdvance(current);
       await client.query(
         `UPDATE tenant_products SET retired_at = now(), updated_by = $3, correlation_id = $4
@@ -290,13 +305,14 @@ export class ConsoleCatalogWriteService {
   /** consoleAddProductIdentifier — a new active identifier; an active duplicate in its scope is `alias_conflict`. */
   async addIdentifier(
     input: CatalogWriteInput,
-    productId: string,
+    target: ProductTarget,
     key: ProductIdentifierKeyBody,
   ): Promise<ConsoleCatalogProductDetail> {
+    const { productId } = target;
     return this.write(input, async (client) => {
-      const current = await this.lockProduct(client, input.tenantId, productId);
+      const current = await this.lockProduct(client, input, target);
       const storeId = key.storeId ?? null;
-      if (storeId !== null) await this.requireStoreInScope(client, input, storeId);
+      if (storeId !== null) await this.requireStoreInScope(client, input, { storeId });
       if (current.retired) throw new CatalogWriteRefusedError("product_retired");
       const identifierId = newId();
       const sourceSystem = key.sourceSystem ?? null;
@@ -328,7 +344,7 @@ export class ConsoleCatalogWriteService {
         targetType: IDENTIFIER_TARGET,
         targetId: identifierId,
         storeId,
-        metadata: identifierMetadata(productId, key),
+        metadata: identifierMetadata(target, key),
       });
       return this.reads.detailIn(client, input, productId);
     });
@@ -337,13 +353,14 @@ export class ConsoleCatalogWriteService {
   /** consoleRetireProductIdentifier — the active identifier of this product with exactly this key. */
   async retireIdentifier(
     input: CatalogWriteInput,
-    productId: string,
+    target: ProductTarget,
     key: ProductIdentifierKeyBody,
   ): Promise<ConsoleCatalogProductDetail> {
+    const { productId } = target;
     return this.write(input, async (client) => {
-      await this.lockProduct(client, input.tenantId, productId);
+      await this.lockProduct(client, input, target);
       const storeId = key.storeId ?? null;
-      if (storeId !== null) await this.requireStoreInScope(client, input, storeId);
+      if (storeId !== null) await this.requireStoreInScope(client, input, { storeId });
       const retired = await client.query<{ id: string }>(
         `UPDATE product_aliases SET retired_at = now()
           WHERE tenant_id = $1::uuid AND product_id = $2::uuid AND identifier_type = $3 AND value = $4
@@ -359,7 +376,7 @@ export class ConsoleCatalogWriteService {
         targetType: IDENTIFIER_TARGET,
         targetId: row.id,
         storeId,
-        metadata: identifierMetadata(productId, key),
+        metadata: identifierMetadata(target, key),
       });
       return this.reads.detailIn(client, input, productId);
     });
@@ -368,22 +385,22 @@ export class ConsoleCatalogWriteService {
   /** consoleUpsertStoreOverride — sets or clears `isActive` / `taxCategory`; the price is kept. */
   async upsertOverride(
     input: CatalogWriteInput,
-    productId: string,
-    storeId: string,
+    target: OverrideTarget,
     body: UpsertStoreOverrideBody,
   ): Promise<ConsoleCatalogProductDetail> {
+    const { productId, storeId } = target;
     return this.write(input, async (client) => {
-      const product = await this.lockProduct(client, input.tenantId, productId);
-      const roleCode = await this.requireStoreInScope(client, input, storeId);
-      if ("taxCategory" in body) requireTaxRole(roleCode);
+      const product = await this.lockProduct(client, input, target);
+      const access = await this.requireStoreInScope(client, input, target);
+      if ("taxCategory" in body) requireTaxRole(access);
       requireLiveProduct(product);
 
-      const current = await this.lockOverride(client, input, productId, storeId);
-      requireOverrideExpected(current, body.expectedUpdatedAt);
+      const current = await this.lockOverride(client, input, target);
+      requireOverrideExpected(current, body);
       const before: OverrideFields = { isActive: current?.is_active ?? null, taxCategory: current?.tax_category ?? null };
       const { expectedUpdatedAt: _precondition, ...patch } = body;
       const after = applyPatch(before, patch);
-      requireNotEmpty(after, current?.has_price ?? false);
+      requireNotEmpty(after, current);
 
       const overrideId =
         current === null
@@ -403,18 +420,18 @@ export class ConsoleCatalogWriteService {
   /** consoleRetireStoreOverride — retires the store's active override, unless it carries a price. */
   async retireOverride(
     input: CatalogWriteInput,
-    productId: string,
-    storeId: string,
+    target: OverrideTarget,
     body: RetireBody,
   ): Promise<ConsoleCatalogProductDetail> {
+    const { productId, storeId } = target;
     return this.write(input, async (client) => {
-      await this.lockProduct(client, input.tenantId, productId);
-      const roleCode = await this.requireStoreInScope(client, input, storeId);
-      const current = await this.lockOverride(client, input, productId, storeId);
+      await this.lockProduct(client, input, target);
+      const access = await this.requireStoreInScope(client, input, target);
+      const current = await this.lockOverride(client, input, target);
       if (current === null) throw new CatalogProductNotFoundError();
-      if (current.tax_category !== null) requireTaxRole(roleCode);
+      if (current.tax_category !== null) requireTaxRole(access);
       if (current.has_price) throw new CatalogWriteRefusedError("price_override_present");
-      requireExpected(current.updated_ms, body.expectedUpdatedAt);
+      requireExpected(current, body);
       await client.query(
         `UPDATE store_product_overrides SET retired_at = now(), updated_by = $3, correlation_id = $4
           WHERE tenant_id = $1::uuid AND id = $2::uuid`,
@@ -439,11 +456,15 @@ export class ConsoleCatalogWriteService {
   private async lockOverride(
     client: PoolClient,
     input: CatalogWriteInput,
-    productId: string,
-    storeId: string,
+    target: OverrideTarget,
   ): Promise<OverrideLockRow | null> {
-    await pinStore(client, storeId);
-    const locked = await client.query<OverrideLockRow>(LOCK_OVERRIDE_SQL, [input.tenantId, productId, storeId]);
+    // Pins `app.current_store` to the one store an override write touches.
+    await client.query("SELECT set_config('app.current_store', $1, true)", [target.storeId]);
+    const locked = await client.query<OverrideLockRow>(LOCK_OVERRIDE_SQL, [
+      input.tenantId,
+      target.productId,
+      target.storeId,
+    ]);
     return locked.rows[0] ?? null;
   }
 
@@ -451,7 +472,7 @@ export class ConsoleCatalogWriteService {
   private async insertOverride(
     client: PoolClient,
     input: CatalogWriteInput,
-    row: { readonly productId: string; readonly storeId: string; readonly fields: OverrideFields },
+    row: OverrideTarget & { readonly fields: OverrideFields },
   ): Promise<string> {
     const overrideId = newId();
     try {
@@ -495,29 +516,37 @@ export class ConsoleCatalogWriteService {
   }
 
   /** The product row, locked for this write; absent or of another tenant → 404. */
-  private async lockProduct(client: PoolClient, tenantId: string, productId: string): Promise<ProductLockRow> {
-    const r = await client.query<ProductLockRow>(LOCK_PRODUCT_SQL, [tenantId, productId]);
+  private async lockProduct(client: PoolClient, input: CatalogWriteInput, target: ProductTarget): Promise<ProductLockRow> {
+    const r = await client.query<ProductLockRow>(LOCK_PRODUCT_SQL, [input.tenantId, target.productId]);
     const row = r.rows[0];
     if (row === undefined) throw new CatalogProductNotFoundError();
     return row;
   }
 
-  private async requireUsableCategory(client: PoolClient, tenantId: string, categoryId: string): Promise<void> {
-    const r = await client.query(CATEGORY_USABLE_SQL, [tenantId, categoryId]);
+  private async requireUsableCategory(
+    client: PoolClient,
+    input: CatalogWriteInput,
+    category: { readonly categoryId: string },
+  ): Promise<void> {
+    const r = await client.query(CATEGORY_USABLE_SQL, [input.tenantId, category.categoryId]);
     if (r.rowCount === 0) throw new CatalogWriteRefusedError("category_unavailable");
   }
 
   /**
    * The store must be live, of the tenant and inside the caller's store scope
-   * (the reads' rule), else the 404. Returns the caller's role code.
+   * (the reads' rule), else the 404. Returns the caller's access to it.
    */
-  private async requireStoreInScope(client: PoolClient, input: CatalogWriteInput, storeId: string): Promise<string | null> {
+  private async requireStoreInScope(
+    client: PoolClient,
+    input: CatalogWriteInput,
+    target: { readonly storeId: string },
+  ): Promise<StoreAccess> {
     const roleCode = await this.memberships.findRoleCodeForUserInTenant(input.actorUserId, input.tenantId, client);
     const scope: StoreScope = readScope({ context: input.context, roleCode });
-    if (!inStoreScope(scope, storeId)) throw new CatalogStoreNotInScopeError();
-    const store = await client.query(LIVE_STORE_SQL, [storeId, input.tenantId]);
+    if (!inStoreScope(scope, target.storeId)) throw new CatalogStoreNotInScopeError();
+    const store = await client.query(LIVE_STORE_SQL, [target.storeId, input.tenantId]);
     if (store.rowCount === 0) throw new CatalogStoreNotInScopeError();
-    return roleCode;
+    return { roleCode };
   }
 
   private async audit(
@@ -556,7 +585,7 @@ export class ConsoleCatalogWriteService {
         return await runWithTenantContext(this.pool, { tenantId: input.tenantId, isPlatformAdmin: false }, work);
       } catch (err) {
         if (!(err instanceof RerunWrite) || attempt >= ADVANCE_ATTEMPTS) throw err;
-        await sleep(attempt);
+        await new Promise((resolve) => setTimeout(resolve, attempt));
       }
     }
   }
@@ -589,15 +618,19 @@ function requireLiveProduct(product: ProductLockRow): void {
 }
 
 /** The precondition: the row's `updated_at` (ms) must be the one the caller read. */
-function requireExpected(updatedMs: string, expected: number): void {
-  if (Number(updatedMs) !== expected) throw new CatalogWriteRefusedError("stale_write");
+function requireExpected(row: { readonly updated_ms: string }, body: { readonly expectedUpdatedAt: number }): void {
+  if (Number(row.updated_ms) !== body.expectedUpdatedAt) throw new CatalogWriteRefusedError("stale_write");
 }
 
 /** The override precondition: `null` asserts there is no active override. */
-function requireOverrideExpected(current: OverrideLockRow | null, expected: number | null): void {
+function requireOverrideExpected(
+  current: OverrideLockRow | null,
+  body: { readonly expectedUpdatedAt: number | null },
+): void {
+  const expected = body.expectedUpdatedAt;
   if (current === null && expected === null) return;
   if (current === null || expected === null) throw new CatalogWriteRefusedError("stale_write");
-  requireExpected(current.updated_ms, expected);
+  requireExpected(current, { expectedUpdatedAt: expected });
 }
 
 /** Reruns the write when its `now()` is in the row's own `updated_at` millisecond (see the class header). */
@@ -606,19 +639,15 @@ function requireAdvance(row: { readonly can_advance: boolean }): void {
 }
 
 /** Only owner / tenant_admin change a store tax override (O-4). */
-function requireTaxRole(roleCode: string | null): void {
-  if (!TAX_OVERRIDE_ROLES.has(roleCode ?? "")) throw new CatalogWriteRefusedError("tax_override_forbidden");
+function requireTaxRole(access: StoreAccess): void {
+  if (!TAX_OVERRIDE_ROLES.has(access.roleCode ?? "")) throw new CatalogWriteRefusedError("tax_override_forbidden");
 }
 
 /** An override must keep at least one overridden field (the price counts, though it is never written here). */
-function requireNotEmpty(fields: OverrideFields, hasPrice: boolean): void {
+function requireNotEmpty(fields: OverrideFields, current: OverrideLockRow | null): void {
+  const hasPrice = current?.has_price ?? false;
   const overridden = [fields.isActive !== null, fields.taxCategory !== null, hasPrice].filter(Boolean).length;
   if (overridden === 0) throw new CatalogWriteRefusedError("override_empty");
-}
-
-/** Pins `app.current_store` to the one store an override write touches. */
-async function pinStore(client: PoolClient, storeId: string): Promise<void> {
-  await client.query("SELECT set_config('app.current_store', $1, true)", [storeId]);
 }
 
 /** The audit `old` / `new` of the fields whose value changed. */
@@ -634,9 +663,9 @@ function changes<T extends Record<string, unknown>>(before: T, after: T): { old:
   return { old, new: next };
 }
 
-function identifierMetadata(productId: string, key: ProductIdentifierKeyBody): Record<string, unknown> {
+function identifierMetadata(target: ProductTarget, key: ProductIdentifierKeyBody): Record<string, unknown> {
   return {
-    product_id: productId,
+    product_id: target.productId,
     identifier_type: key.identifierType,
     value: key.value,
     store_id: key.storeId ?? null,
