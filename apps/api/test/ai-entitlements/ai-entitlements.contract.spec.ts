@@ -416,6 +416,17 @@ describe("ai-entitlements — owner opt-out write (D-5)", () => {
     expect(v({ ...OPT_OUT_BODY, expectedOptOutRevision: -1 })).toBe(false);
   });
 
+  it("declares the IdempotencyInterceptor's flat 425 body, not the Error envelope", () => {
+    const tooEarly = doc.components!.responses!["IdempotencyInProgress"] as unknown as {
+      content: { "application/json": { schema: { $ref: string } } };
+    };
+    expect(tooEarly.content["application/json"].schema.$ref).toBe("#/components/schemas/IdempotencyInProgressBody");
+    expect(api.schema("IdempotencyInProgressBody")).toMatchObject({
+      required: ["error", "retryAfterSec"],
+      properties: { error: { const: "idempotency_in_progress" } },
+    });
+  });
+
   it("answers 200 with the updated full view, no-store, with the replay header", () => {
     const ok = optOut().responses!["200"] as unknown as {
       headers: Record<string, { $ref: string }>;

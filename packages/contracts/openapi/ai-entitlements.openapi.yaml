@@ -914,6 +914,18 @@ components:
               type: string
               format: uuid
               description: Server-side correlation id; the cause is recorded server-side.
+    IdempotencyInProgressBody:
+      type: object
+      additionalProperties: false
+      required: [error, retryAfterSec]
+      description: The shared `IdempotencyInterceptor`'s 425 body (not the `Error` envelope).
+      properties:
+        error:
+          type: string
+          const: idempotency_in_progress
+        retryAfterSec:
+          type: integer
+          minimum: 1
 
   responses:
     ValidationFailure:
@@ -993,7 +1005,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/Error"
+            $ref: "#/components/schemas/IdempotencyInProgressBody"
     SystemFailure:
       description: >
         system_failure (500): unexpected server error; the cause is recorded
