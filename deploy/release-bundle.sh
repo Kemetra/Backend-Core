@@ -35,6 +35,7 @@ ALLOWLIST=(
   docs/operations/sql/sale-responsibilities-domain-grants.sql
   docs/operations/sql/shift-variance-policy-domain-grants.sql
   docs/operations/sql/sale-credit-reversals-domain-grants.sql
+  docs/operations/sql/inventory-position-events-domain-grants.sql
   docs/operations/sql/sale-responsibilities-feed-rehead.sql
   docs/operations/sql/erpnext-posting-resolution-catchup.sql
   docs/operations/sql/inventory-effect-integration-catchup.sql
