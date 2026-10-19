@@ -474,4 +474,39 @@ describe('RT-435 return landing policy (Q6)', () => {
     );
     expect(audits.rows[0]!.n).toBe(2);
   });
+
+  it('a repeat of the current value is a no-op: same updatedAt, no write, no audit row', async () => {
+    if (maybeSkip()) return;
+    const auditCount = async (tenantId: string): Promise<number> =>
+      (
+        await env!.admin.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM audit_events WHERE action = 'inventory.return_landing.update' AND tenant_id = $1`,
+          [tenantId],
+        )
+      ).rows[0]!.n;
+
+    // Tenant B runs on the default: PUT sellable writes no row and no audit.
+    const beforeB = await auditCount(TENANT_B);
+    expect(
+      await service.setReturnLandingPolicy({ tenantId: TENANT_B, userId: ADMIN_A, returnLandingStatus: 'sellable' }),
+    ).toEqual({ returnLandingStatus: 'sellable', updatedAt: null });
+    const rowsB = await env!.admin.query(`SELECT 1 FROM tenant_inventory_settings WHERE tenant_id = $1`, [TENANT_B]);
+    expect(rowsB.rowCount).toBe(0);
+    expect(await auditCount(TENANT_B)).toBe(beforeB);
+
+    // Tenant A: set once, then repeat.
+    const first = await service.setReturnLandingPolicy({
+      tenantId: TENANT_A,
+      userId: ADMIN_A,
+      returnLandingStatus: 'return_inspection',
+    });
+    const beforeA = await auditCount(TENANT_A);
+    const repeat = await service.setReturnLandingPolicy({
+      tenantId: TENANT_A,
+      userId: ADMIN_A,
+      returnLandingStatus: 'return_inspection',
+    });
+    expect(repeat).toEqual(first);
+    expect(await auditCount(TENANT_A)).toBe(beforeA);
+  });
 });

@@ -358,7 +358,22 @@ export class InventoryPositionEventsService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
-        const before = await resolveReturnLandingStatus(client, input.tenantId);
+        // Lock the row so a concurrent PUT cannot change it between this read
+        // and the write (the audit `old` stays exact).
+        const current = await client.query<{ return_landing_status: ReturnLandingStatus; updated_at: Date }>(
+          `SELECT return_landing_status, updated_at FROM tenant_inventory_settings
+            WHERE tenant_id = $1 FOR UPDATE`,
+          [input.tenantId],
+        );
+        const existing = current.rows[0];
+        const before = existing?.return_landing_status ?? DEFAULT_RETURN_LANDING;
+        if (before === input.returnLandingStatus) {
+          // The current value again (the default included): no write, no audit.
+          return {
+            returnLandingStatus: before,
+            updatedAt: existing ? existing.updated_at.toISOString() : null,
+          };
+        }
         const r = await client.query<{ return_landing_status: ReturnLandingStatus; updated_at: Date }>(
           `INSERT INTO tenant_inventory_settings (tenant_id, return_landing_status, updated_by)
            VALUES ($1, $2, $3)
