@@ -4,12 +4,13 @@
  * RT-729 (CAT-R1 of the RT-281 decomposition, comment 12887 §1): the console
  * catalog read contract that Admin-Console RF-3 and the RT-724 link product
  * picker consume. `[GATED]` contract, owner-approved 2026-10-19. The runtime
- * is RT-730 (CAT-R2).
+ * and its HTTP read-scope suite are RT-730 (CAT-R2,
+ * `console-catalog.http.integration.spec.ts`).
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
  * app boot and no HTTP. What this pins:
  *
- *   1. Three GET operations at their paths, contract-only until RT-730, with
+ *   1. Three GET operations at their paths, served (RT-730), with
  *      no audit action (decision O-6) and no operationId collision.
  *   2. Read scope: `cookieAuth` only; 404 (never 403) is the role / scope
  *      refusal; no tenant id from the request.
@@ -136,10 +137,10 @@ describe("console-catalog — document and operations", () => {
     }
   });
 
-  it("marks every operation contract-only until the RT-730 runtime serves it", () => {
+  it("serves every operation: none is marked contract-only (RT-730)", () => {
     for (const { path } of OPERATIONS) {
-      expect(api.get(path)["x-runtime-status"]).toBe("contract-only");
-      expect(api.get(path)["x-runtime-note"]).toMatch(/RT-730/);
+      expect(api.get(path)["x-runtime-status"]).toBeUndefined();
+      expect(api.get(path)["x-runtime-note"]).toBeUndefined();
     }
   });
 
