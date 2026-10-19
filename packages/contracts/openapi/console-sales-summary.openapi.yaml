@@ -61,9 +61,14 @@ info:
 
     **Scope modes.** With `store_id`: that one store (`scope: store`).
     Without it: every store in the caller's scope (`scope: all_in_scope`),
-    including inactive and deleted stores (their recorded sales are still
-    facts; the same store set `consoleListSales` accepts as `store_id`), in
-    pages of stores. `scopeTotals` always covers EVERY store of the scope and
+    exactly the store set `consoleListSales` accepts as `store_id`, in pages
+    of stores. A tenant-wide scope (an `all` grant, or a platform admin
+    without an active store) includes inactive and soft-deleted stores of the
+    tenant, whose recorded sales are still facts. A `specific` grant covers
+    only its granted stores that are not soft-deleted
+    (`MembershipRepository.listGrantedStoreIds`): a store deleted after the
+    grant leaves that scope, with its figures, as it does for
+    `consoleListSales`. `scopeTotals` always covers EVERY store of the scope and
     the whole range, whichever page is read; it is computed by the server, so
     a client never adds store figures together. A caller whose scope holds no
     store (a `store_manager` with no grant) gets a 200 with `storeCount: 0`,
@@ -180,7 +185,8 @@ info:
     shape. 400 `validation_error` (a malformed or repeated query value, an
     unknown query key, a missing `from` or `to`, a date that is not a
     calendar date, `to` before `from`, a range wider than 31 business days,
-    or a cursor the server did not issue for this tenant, store and range),
+    or a cursor the server did not issue for this operation, tenant,
+    `store_id`, range and `page_size`),
     401 unauthenticated, 404 non-disclosing not-found, 429 `rate_limited`
     (console rate limit; honour `Retry-After`), 500 internal. Every 200 is
     `Cache-Control: no-store`.
@@ -552,6 +558,9 @@ components:
           type: array
           minItems: 1
           maxItems: 31
+          description: >
+            One entry per business date from `from` to `to`, ascending,
+            zero-filled (also when `storeCount` is 0).
           items:
             $ref: "#/components/schemas/BusinessDateKpis"
         rangeTotals:

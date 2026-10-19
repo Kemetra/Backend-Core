@@ -177,6 +177,20 @@ describe("console-sales-summary — auth and read scope", () => {
     expect(api.get(PATH).responses!["404"]).toEqual({ $ref: "#/components/responses/NotFound" });
   });
 
+  it("declares the console 429 headers: Retry-After, no-store and X-Request-Id", () => {
+    const tooMany = doc.components!.responses!["TooManyRequests"]!;
+    expect(api.get(PATH).responses!["429"]).toEqual({ $ref: "#/components/responses/TooManyRequests" });
+    expect(tooMany.headers?.["Retry-After"]).toEqual({ $ref: "#/components/headers/ConsoleRetryAfter" });
+    expect(tooMany.headers?.["Cache-Control"]).toMatchObject({ required: true, schema: { type: "string", enum: ["no-store"] } });
+    expect(tooMany.headers?.["X-Request-Id"]).toMatchObject({ required: true, schema: { type: "string", format: "uuid" } });
+  });
+
+  it("names a specific grant's soft-deleted stores out of the scope, as consoleListSales does", () => {
+    const description = doc.info?.description ?? "";
+    expect(description).toContain("listGrantedStoreIds");
+    expect(description).toMatch(/exactly the store set `consoleListSales` accepts/);
+  });
+
   it("takes no tenant id and no POS selector from the request", () => {
     expect(api.params(PATH).filter((p) => /tenant|admission|device|operator/i.test(p.name ?? ""))).toEqual([]);
     expect(api.params(PATH).filter((p) => p.in === "header")).toEqual([]);
@@ -242,8 +256,11 @@ describe("console-sales-summary — range and paging", () => {
     expect(description).toMatch(/never carried\s+by the cursor/);
   });
 
-  it("totals every store of the scope, whichever page is read", () => {
+  it("totals every store of the scope, whichever page is read, densely", () => {
     expect(api.schema("ScopeSalesSummary").description).toMatch(/EVERY store of the scope/);
+    expect(api.schema("ScopeSalesSummary").properties!["days"]!["description"]).toMatch(/zero-filled/);
+    expect(api.responseDescription("ValidationFailure")).toMatch(/operation, tenant,\s+`store_id`, range and page size/);
+    expect(doc.info?.description).toMatch(/operation, tenant,\s+`store_id`, range and `page_size`/);
   });
 });
 
