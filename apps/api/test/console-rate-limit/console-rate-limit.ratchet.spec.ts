@@ -48,6 +48,8 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
   consoleGetDevice: "cheapRead",
   consoleGetDeviceImpact: "expensiveRead",
   consoleGetSale: "cheapRead",
+  // RT-649: an aggregate over up to 31 business days of every store in scope.
+  consoleGetSalesSummary: "expensiveRead",
   consoleGetSaleAuditTimeline: "expensiveRead",
   consoleGetSaleSyncStatus: "cheapRead",
   consoleGetShiftClose: "cheapRead",
@@ -152,8 +154,6 @@ const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
   consoleDeleteTenantLogo: "write",
   // RT-729 (CAT-R1): the runtime ships in RT-730. The list is a name scan (O-8, no trigram).
   consoleGetCatalogProduct: "cheapRead",
-  // RT-649: an aggregate over up to 31 business days of every store in scope.
-  consoleGetSalesSummary: "expensiveRead",
   consoleGetTenantLogo: "cheapRead",
   consoleListCatalogCategories: "cheapRead",
   consoleListCatalogProducts: "expensiveRead",

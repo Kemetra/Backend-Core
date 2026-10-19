@@ -438,6 +438,15 @@ This project follows [Semantic Versioning](https://semver.org/).
   range, store paging and server scope totals. Dashboard session, roles
   owner / tenant_admin / store_manager, non-disclosing 404, audited
   `console_sales.summary_read`. No runtime or migration change.
+- RT-649: runtime for `consoleGetSalesSummary` (`ConsoleSalesSummaryController`
+  and service in `ConsoleSalesModule`); the operation loses
+  `x-runtime-status: contract-only`. One SQL statement (one snapshot) counts
+  and sums every fact per store, business date, currency and state through
+  tenant RLS and the explicit operator store scope; legacy refunds and shift
+  closes are bucketed by the store-local date of their instant (`AT TIME
+  ZONE`, DST-correct); sums are added as exact BigInt decimals. Audited
+  `console_sales.summary_read` (read kind), console rate limit class
+  `expensiveRead`. No migration, package, lockfile or CI change.
 
 ### Changed
 - RT-616: successful `GET /api/v1/health/live` probes are no longer logged

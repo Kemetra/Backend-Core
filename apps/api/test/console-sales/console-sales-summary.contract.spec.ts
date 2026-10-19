@@ -137,8 +137,9 @@ describe("console-sales-summary — document and operation", () => {
     expect(PATH.startsWith("/api/v1/sales/")).toBe(false);
   });
 
-  it("is contract-only until the RT-649 runtime ships", () => {
-    expect(api.get(PATH)["x-runtime-status"]).toBe("contract-only");
+  it("is served: not marked contract-only (RT-649 runtime)", () => {
+    expect(api.get(PATH)["x-runtime-status"]).toBeUndefined();
+    expect(api.get(PATH)["x-runtime-note"]).toBeUndefined();
   });
 
   it("names its audit action", () => {
