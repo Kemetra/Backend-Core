@@ -464,6 +464,28 @@ components:
             out after the reservation; the reservation is released and not
             charged (D-8). An execution outcome, never a `check` result.
 
+    AiCheckDenyReasonCode:
+      x-internal: true
+      type: string
+      enum:
+        - not_authorized
+        - tenant_inactive
+        - feature_disabled_system
+        - policy_denied
+        - not_entitled
+        - trial_expired
+        - grace_read_only
+        - feature_disabled_tenant
+        - quota_exhausted
+        - spend_cap_reached
+        - free_credit_exhausted
+        - entitlement_unavailable
+      description: >
+        SERVER-INTERNAL. The reasons a `check` may deny with: every
+        `AiEntitlementReasonCode` except `provider_unavailable`, which is a
+        layer-8 execution outcome after the reservation and never a `check`
+        result.
+
     AiEntitlementState:
       type: string
       enum: [none, trial, active, grace, expired, cancelled]
@@ -815,16 +837,25 @@ components:
       type: object
       additionalProperties: false
       required: [decision, reasonCode, entitlementVersion, optOutRevision, evaluatedAt]
+      if:
+        properties:
+          reasonCode:
+            const: quota_exhausted
+        required: [reasonCode]
+      then:
+        required: [meter]
       description: >
         SERVER-INTERNAL. The first refusing layer; nothing is reserved and no
         model request is built. Fails closed: when any layer's state is
         unknown or unreadable the decision is deny `entitlement_unavailable`.
+        A `quota_exhausted` deny carries the refusing `meter` (with
+        `resetsAt`).
       properties:
         decision:
           type: string
           const: deny
         reasonCode:
-          $ref: "#/components/schemas/AiEntitlementReasonCode"
+          $ref: "#/components/schemas/AiCheckDenyReasonCode"
         entitlementVersion:
           type: [integer, "null"]
           minimum: 0

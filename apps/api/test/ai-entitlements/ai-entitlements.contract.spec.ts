@@ -354,6 +354,15 @@ describe("ai-entitlements — internal check contract (§4.2)", () => {
     expect(v({ ...DENY, reservationId: RESERVATION_ID })).toBe(false);
     expect(api.schema("AiEntitlementDeny").description).toMatch(/entitlement_unavailable/);
   });
+
+  it("never denies with provider_unavailable, an execution outcome, and states the meter on quota_exhausted", () => {
+    const v = validator("AiEntitlementDecision");
+    expect(api.schema("AiCheckDenyReasonCode")["enum"]).toEqual(REASON_CODES.filter((c) => c !== "provider_unavailable"));
+    expect(v({ ...DENY, reasonCode: "provider_unavailable" })).toBe(false);
+    expect(v({ ...DENY, reasonCode: "quota_exhausted", entitlementVersion: 3, optOutRevision: 7 })).toBe(false);
+    const meter = { meter: "ask_per_month", window: "month", limit: 10, used: 10, reserved: 0, remaining: 0, resetsAt: "2026-11-01T00:00:00Z" };
+    expect(v({ ...DENY, reasonCode: "quota_exhausted", entitlementVersion: 3, optOutRevision: 7, meter })).toBe(true);
+  });
 });
 
 describe("ai-entitlements — owner opt-out write (D-5)", () => {
