@@ -431,7 +431,12 @@ export const aiUsageLedger = pgTable(
     index("idx_ai_usage_ledger_adjusts")
       .on(t.adjustsEntryId)
       .where(sql`${t.adjustsEntryId} IS NOT NULL`),
-    unique("uq_ai_usage_ledger_idempotency").on(t.tenantId, t.featureId, t.idempotencyKey),
+    unique("uq_ai_usage_ledger_idempotency").on(
+      t.tenantId,
+      t.featureId,
+      t.entryKind,
+      t.idempotencyKey,
+    ),
     foreignKey({
       name: "fk_ai_usage_ledger_reservation",
       columns: [t.reservationId, t.tenantId, t.featureId, t.counterId, t.units, t.entitlementVersion],

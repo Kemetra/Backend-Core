@@ -54,8 +54,8 @@
 --   5. ai_usage_ledger — THE single AI usage store (AD-AI-ENT-001 "One
 --      store", AD-AI-PROV-001 D-6): append-only rows `reserved`, then at most
 --      one `committed` or `released` per reservation. Unique (tenant_id,
---      feature_id, idempotency_key) on the reserved row (a replay returns the
---      same reservation). A terminal row is pinned to its reservation's
+--      feature_id, entry_kind, idempotency_key) on the reserved row (a replay
+--      returns the same reservation) and on an adjustment. A terminal row is pinned to its reservation's
 --      tenant, feature, counter, units and entitlement_version by a
 --      composite FK. `committed` exactly for outcome `ok`; every other
 --      outcome is a release and is never charged to the customer (D-8, T10).
@@ -518,7 +518,8 @@ CREATE TABLE ai_usage_ledger (
   -- The revisions the decision was evaluated under.
   entitlement_version          INTEGER       NOT NULL,
   opt_out_version              INTEGER,
-  -- `reserved` rows only: the client Idempotency-Key and the sweeper TTL.
+  -- The request's Idempotency-Key (`reserved` and `adjusted` rows) and the
+  -- sweeper TTL (`reserved` rows only).
   idempotency_key              TEXT,
   expires_at                   TIMESTAMPTZ,
   request_id                   TEXT,
@@ -555,9 +556,12 @@ CREATE TABLE ai_usage_ledger (
   -- Target of the adjustment FK: an adjustment carries its own units.
   CONSTRAINT uq_ai_usage_ledger_adjustment_target
     UNIQUE (id, tenant_id, feature_id, counter_id, entitlement_version),
-  -- A replay of the same key is the same reservation (D-3). Terminal rows
+  -- A replay of the same key is the same reservation (D-3), or the same
+  -- adjustment; entry_kind keeps the two namespaces apart, so a tenant's
+  -- reservation key never collides with an admin's credit key. Terminal rows
   -- carry no key, and NULLs are distinct.
-  CONSTRAINT uq_ai_usage_ledger_idempotency UNIQUE (tenant_id, feature_id, idempotency_key),
+  CONSTRAINT uq_ai_usage_ledger_idempotency
+    UNIQUE (tenant_id, feature_id, entry_kind, idempotency_key),
   CONSTRAINT fk_ai_usage_ledger_reservation
     FOREIGN KEY (reservation_id, tenant_id, feature_id, counter_id, units, entitlement_version)
     REFERENCES ai_usage_ledger (id, tenant_id, feature_id, counter_id, units, entitlement_version)

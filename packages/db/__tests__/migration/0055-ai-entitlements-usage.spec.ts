@@ -854,6 +854,9 @@ describe("0055 — ai_usage_ledger (one append-only usage store, AI-09 run metad
     await expectCode(insertLedger({ ...adj, expires_at: "2026-10-19T10:05:00Z" }), "23514");
     await insertLedger({ ...adj, idempotency_key: "adj-key-dispute-0001" });
     await expectCode(insertLedger({ ...adj, idempotency_key: "adj-key-dispute-0001" }), "23505");
+    // Separate namespaces: a tenant reservation with the same key never
+    // collides with an admin credit (or reads as its replay).
+    await insertLedger({ counterId: counterA, idempotency_key: "adj-key-dispute-0001" });
     await expectCode(insertLedger({ ...adj, reservationId: reservation }), "23514");
     // Adjustment fields belong to `adjusted` rows only.
     await expectCode(insertLedger({ counterId: counterA, adjustment_reason: "x" }), "23514");
