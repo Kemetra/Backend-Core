@@ -46,7 +46,33 @@ const UuidSchema = z
   .uuid()
   .transform((id) => id.toLowerCase());
 
-const BusinessDateSchema = z.string().refine(isCalendarDate, "must be a calendar date (YYYY-MM-DD)");
+export const BusinessDateSchema = z.string().refine(isCalendarDate, "must be a calendar date (YYYY-MM-DD)");
+
+/** An opaque continuation token, as every console list accepts it. */
+export const CursorTokenSchema = z
+  .string()
+  .min(1)
+  .max(512)
+  .regex(/^[A-Za-z0-9_-]+$/, "cursor must be an opaque continuation token");
+
+/** `page_size` as a digit string, never `z.coerce`: an array (`page_size[]=5`) must not coerce. */
+export function pageSizeSchema(max: number) {
+  return z
+    .string()
+    .regex(/^\d{1,3}$/, "page_size must be an integer")
+    .transform(Number)
+    .pipe(z.number().int().min(1).max(max));
+}
+
+/** `to >= from` and at most 31 business days (`to - from <= 30`); never truncated. */
+export function refineBusinessRange(q: { readonly from: string; readonly to: string }, ctx: z.RefinementCtx): void {
+  const days = (Date.parse(`${q.to}T00:00:00Z`) - Date.parse(`${q.from}T00:00:00Z`)) / DAY_MS;
+  if (days < 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["to"], message: "to must not be before from" });
+  } else if (days > MAX_SPAN_DAYS) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["to"], message: "the range is at most 31 business days" });
+  }
+}
 
 const SYNC_STATUSES = SALE_SYNC_STATUS_VALUES as unknown as [SaleSyncStatus, ...SaleSyncStatus[]];
 
@@ -64,29 +90,11 @@ export const ConsoleSaleListQuerySchema = z
       .optional(),
     return_state: z.enum(["none", "partial", "full"]).optional(),
     erp_posting_state: z.enum(["posted", "pending", "failed", "unknown"]).optional(),
-    cursor: z
-      .string()
-      .min(1)
-      .max(512)
-      .regex(/^[A-Za-z0-9_-]+$/, "cursor must be an opaque continuation token")
-      .optional(),
-    // A digit string, never `z.coerce`: an array (`page_size[]=5`) must not coerce.
-    page_size: z
-      .string()
-      .regex(/^\d{1,3}$/, "page_size must be an integer")
-      .transform(Number)
-      .pipe(z.number().int().min(1).max(PAGE_SIZE_MAX))
-      .optional(),
+    cursor: CursorTokenSchema.optional(),
+    page_size: pageSizeSchema(PAGE_SIZE_MAX).optional(),
   })
   .strict()
-  .superRefine((q, ctx) => {
-    const days = (Date.parse(`${q.to}T00:00:00Z`) - Date.parse(`${q.from}T00:00:00Z`)) / DAY_MS;
-    if (days < 0) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["to"], message: "to must not be before from" });
-    } else if (days > MAX_SPAN_DAYS) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["to"], message: "the range is at most 31 business days" });
-    }
-  });
+  .superRefine(refineBusinessRange);
 
 export type ConsoleSaleListQuery = z.infer<typeof ConsoleSaleListQuerySchema>;
 
