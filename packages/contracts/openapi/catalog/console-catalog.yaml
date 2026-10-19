@@ -585,7 +585,11 @@ components:
         fields. No user ids and no ERP mapping.
       properties:
         summary:
-          $ref: "#/components/schemas/ConsoleCatalogProductSummary"
+          description: The product summary; never with a `storeView` (the detail takes no `store_id`).
+          allOf:
+            - $ref: "#/components/schemas/ConsoleCatalogProductSummary"
+            - not:
+                required: [storeView]
         description:
           type: [string, "null"]
         expiryRequired:
