@@ -118,7 +118,7 @@ interface RejectedSpec {
 }
 
 function rejected({ n, rejection, rb, extra, tags = "" }: RejectedSpec): E1Case {
-  const klass = rejection === null ? "unrecognised" : rejection;
+  const klass = rejection ?? "unrecognised";
   const recognised = rejection !== null;
   return define(`E1-C${n.toString().padStart(2, "0")}`, {
     scenario: { n, sync: "synced", erp: "failed", backlogClass: rejection },

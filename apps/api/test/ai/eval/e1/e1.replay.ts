@@ -22,7 +22,7 @@ import type {
   ModelRouteDescriptor,
 } from "../../../../src/ai/ports/model-provider.port";
 import type { ResolvedContext } from "../../../../src/context/types";
-import { buildHarness } from "../../_support/gateway-harness";
+import { buildHarness, scope } from "../../_support/gateway-harness";
 import { explain } from "./e1.baseline";
 import { toEvidencePack } from "./e1.evidence";
 import { requestedStore, type Materialized } from "./e1.cases";
@@ -119,11 +119,8 @@ export async function observe(m: Materialized, recorded?: unknown): Promise<Obse
     providers: [provider],
     pack: () => Promise.resolve(toEvidencePack(m.pack)),
   });
-  const gateway = (await harness.gateway.run(E1_FEATURE.featureId, {
-    ctx: ctxOf(m),
-    storeIds: [requestedStore(m.c)],
-    correlationId: m.pack.pack_id,
-  })) as AiGatewayResult<E1Out>;
+  const runScope = scope({ ctx: ctxOf(m), storeIds: [requestedStore(m.c)], correlationId: m.pack.pack_id });
+  const gateway = (await harness.gateway.run(E1_FEATURE.featureId, runScope)) as AiGatewayResult<E1Out>;
   const displayed = gateway.kind === "ok" ? gateway.output : baseline;
   return {
     m,

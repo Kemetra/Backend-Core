@@ -43,8 +43,7 @@ const unauthorized = (rule: string): Abstain => ({
 });
 
 function deniedAbstain(view: View): Abstain | null {
-  const first = [view.r2, view.r1].some((read) => DENIED.has(read?.http_status));
-  if (first) return unauthorized("R-G2");
+  if (DENIED.has(view.r2?.http_status) || DENIED.has(view.r1?.http_status)) return unauthorized("R-G2");
   const readable = view.r1?.http_status === 200;
   return readable && readsOf(view).some((read) => DENIED.has(read.http_status)) ? unauthorized("R-G3") : null;
 }

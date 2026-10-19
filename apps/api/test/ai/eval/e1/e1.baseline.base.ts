@@ -5,8 +5,7 @@
  * A value that fails its interpolation guard is dropped when a claim is built,
  * so a hostile string never enters an output (RT-647 §5.2, gate S6).
  */
-import type { E1Claim } from "./e1.out-schema";
-import type { ParamName } from "./e1.out-schema";
+import type { E1Claim, ParamName } from "./e1.out-schema";
 import { isDisplayable } from "./e1.text";
 import type { E1Class, E1Op, E1Pack, E1Read, Json } from "./e1.types";
 

@@ -17,8 +17,8 @@ import { abstentionRows, formatProportion, gatewayRows, metricsOf, tagRows } fro
 import { evaluationKey, isBaselineSnapshot, replaySetHash, runDataset, twinKey, type EvalRun, type EvaluationResult } from "./e1.run";
 import { E1_VERSIONS } from "./e1.types";
 
-export { evaluationKey, replaySetHash, runDataset, twinKey };
-export type { EvalRun, EvaluationResult };
+export { evaluationKey, replaySetHash, runDataset, twinKey } from "./e1.run";
+export type { EvalRun, EvaluationResult } from "./e1.run";
 
 export interface RunInfo {
   readonly runDate: string;
