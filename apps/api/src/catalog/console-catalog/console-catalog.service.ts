@@ -296,19 +296,30 @@ export class ConsoleCatalogReadService {
 
   /** One product of the tenant with its in-scope identifiers and overrides; CatalogProductNotFoundError otherwise. */
   async get(input: ScopedCatalogReadInput, productId: string): Promise<ConsoleCatalogProductDetail> {
-    return this.inTenant(input, async (client) => {
-      const product = await client.query<ProductDetailRow>(DETAIL_SQL, [input.tenantId, productId]);
-      const row = product.rows[0];
-      if (row === undefined) throw new CatalogProductNotFoundError();
-      const scope = await callerStoreScope(client, this.memberships, input);
-      const stores = scopeStoreIds(scope);
-      const storeParam = stores === null ? null : [...stores];
-      const identifiers = await client.query<IdentifierRow>(IDENTIFIERS_SQL, [input.tenantId, productId, storeParam]);
-      // Tenant-wide store GUC; the explicit `store_id = ANY(scope)` predicate bounds the rows.
-      await client.query("SELECT set_config('app.current_store', '*', true)");
-      const overrides = await client.query<OverrideRow>(OVERRIDES_SQL, [input.tenantId, productId, storeParam]);
-      return toDetail(row, identifiers.rows, overrides.rows);
-    });
+    return this.inTenant(input, (client) => this.detailIn(client, input, productId));
+  }
+
+  /**
+   * The detail read on a caller's open tenant transaction (the RT-738 writes
+   * answer with it after their change, in the same transaction). Leaves
+   * `app.current_store` at `'*'`.
+   */
+  async detailIn(
+    client: PoolClient,
+    input: ScopedCatalogReadInput,
+    productId: string,
+  ): Promise<ConsoleCatalogProductDetail> {
+    const product = await client.query<ProductDetailRow>(DETAIL_SQL, [input.tenantId, productId]);
+    const row = product.rows[0];
+    if (row === undefined) throw new CatalogProductNotFoundError();
+    const scope = await callerStoreScope(client, this.memberships, input);
+    const stores = scopeStoreIds(scope);
+    const storeParam = stores === null ? null : [...stores];
+    const identifiers = await client.query<IdentifierRow>(IDENTIFIERS_SQL, [input.tenantId, productId, storeParam]);
+    // Tenant-wide store GUC; the explicit `store_id = ANY(scope)` predicate bounds the rows.
+    await client.query("SELECT set_config('app.current_store', '*', true)");
+    const overrides = await client.query<OverrideRow>(OVERRIDES_SQL, [input.tenantId, productId, storeParam]);
+    return toDetail(row, identifiers.rows, overrides.rows);
   }
 
   /** The tenant's active categories, flat, by name. */

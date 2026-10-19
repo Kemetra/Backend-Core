@@ -43,7 +43,9 @@ import {
 /** operationId → resolved class, for every runtime cookieAuth operation. */
 const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
   clearActiveStore: "write",
+  consoleAddProductIdentifier: "write",
   consoleCancelPairingCode: "incidentControl",
+  consoleCreateCatalogProduct: "write",
   consoleCreatePayerAccount: "write",
   consoleGetCatalogProduct: "cheapRead",
   consoleGetDevice: "cheapRead",
@@ -71,9 +73,14 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
   consolePublishStoreCashVariancePolicyOverride: "write",
   consolePublishTenantCashVariancePolicy: "write",
   consoleRepairSaleSync: "write",
+  consoleRetireCatalogProduct: "write",
   consoleRetireDevice: "incidentControl",
+  consoleRetireProductIdentifier: "write",
+  consoleRetireStoreOverride: "write",
   consoleRevokeDevice: "incidentControl",
+  consoleUpdateCatalogProduct: "write",
   consoleUpdatePayerAccount: "write",
+  consoleUpsertStoreOverride: "write",
   createInvitation: "onboarding",
   createStockMovement: "write",
   createStockTransfer: "write",
@@ -152,18 +159,10 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
  * a non-default class).
  */
 const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
-  // RT-738 (CAT-W1 + CAT-W2): console catalog writes; the runtime ships in the RT-738 runtime change.
-  consoleAddProductIdentifier: "write",
-  consoleCreateCatalogProduct: "write",
   consoleDeleteTenantLogo: "write",
   consoleGetTenantLogo: "cheapRead",
   consolePreviewTenantLogo: "jobOrPreview",
   consolePutTenantLogo: "jobOrPreview",
-  consoleRetireCatalogProduct: "write",
-  consoleRetireProductIdentifier: "write",
-  consoleRetireStoreOverride: "write",
-  consoleUpdateCatalogProduct: "write",
-  consoleUpsertStoreOverride: "write",
   endSupportSession: "incidentControl",
   getCurrentSupportSession: "cheapRead",
   openSupportSession: "onboarding",

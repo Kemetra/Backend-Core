@@ -134,8 +134,7 @@ info:
     2026-10-19 (O-1 "Allow interim writes", O-2 "Exclude price for now").
     They are direct, audited writes of the current model and predate
     Catalog Change Sets (decision 400); Change Sets will replace them.
-    Every write carries `x-runtime-status: contract-only` until the RT-738
-    runtime serves it.
+    The RT-738 runtime serves every write unchanged on the wire.
 
       CAT-W1 (roles `owner`, `tenant_admin`):
       4. `consoleCreateCatalogProduct`    — create a product (`Idempotency-Key`).
@@ -284,10 +283,6 @@ paths:
     post:
       summary: Create a catalog product (interim, CAT-W1).
       operationId: consoleCreateCatalogProduct
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-738 (CAT-W1) contract; the runtime ships in the RT-738 runtime
-        change.
       x-idempotency: required
       x-audit-action: catalog.product.create
       tags: [console-catalog]
@@ -383,10 +378,6 @@ paths:
     patch:
       summary: Edit a catalog product's simple fields (interim, CAT-W1).
       operationId: consoleUpdateCatalogProduct
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-738 (CAT-W1) contract; the runtime ships in the RT-738 runtime
-        change.
       x-audit-action: catalog.product.update
       tags: [console-catalog]
       description: >
@@ -472,10 +463,6 @@ paths:
     post:
       summary: Retire a catalog product (interim, CAT-W1).
       operationId: consoleRetireCatalogProduct
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-738 (CAT-W1) contract; the runtime ships in the RT-738 runtime
-        change.
       x-audit-action: catalog.product.retire
       tags: [console-catalog]
       description: >
@@ -524,10 +511,6 @@ paths:
     post:
       summary: Add an identifier to a catalog product (interim, CAT-W1).
       operationId: consoleAddProductIdentifier
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-738 (CAT-W1) contract; the runtime ships in the RT-738 runtime
-        change.
       x-audit-action: catalog.product_identifier.add
       tags: [console-catalog]
       description: >
@@ -579,10 +562,6 @@ paths:
     post:
       summary: Retire one of a catalog product's identifiers (interim, CAT-W1).
       operationId: consoleRetireProductIdentifier
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-738 (CAT-W1) contract; the runtime ships in the RT-738 runtime
-        change.
       x-audit-action: catalog.product_identifier.retire
       tags: [console-catalog]
       description: >
@@ -629,10 +608,6 @@ paths:
     put:
       summary: Set a store's availability / tax category override (interim, CAT-W2).
       operationId: consoleUpsertStoreOverride
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-738 (CAT-W2) contract; the runtime ships in the RT-738 runtime
-        change.
       x-audit-action: catalog.store_override.upsert
       tags: [console-catalog]
       description: >
@@ -692,10 +667,6 @@ paths:
     post:
       summary: Retire a store's override (interim, CAT-W2).
       operationId: consoleRetireStoreOverride
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-738 (CAT-W2) contract; the runtime ships in the RT-738 runtime
-        change.
       x-audit-action: catalog.store_override.retire
       tags: [console-catalog]
       description: >

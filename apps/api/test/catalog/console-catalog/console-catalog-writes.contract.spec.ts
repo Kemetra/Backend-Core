@@ -4,12 +4,13 @@
  * RT-738 (CAT-W1 + CAT-W2 of the RT-281 decomposition, comment 12887 §2): the
  * interim console catalog writes added to `catalog/console-catalog.yaml`.
  * `[GATED]` contract, owner-approved 2026-10-19 (O-1 interim writes, O-2 no
- * price). The runtime ships in the RT-738 runtime change.
+ * price), and served by the RT-738 runtime.
  *
  * Structural / load-only, plus AJV fixtures against the request schemas. No
  * app boot and no HTTP. What this pins:
  *
- *   1. Seven write operations at their paths, contract-only, each with its
+ *   1. Seven write operations at their paths, served by the RT-738 runtime
+ *      (`console-catalog-writes.http.integration.spec.ts`), each with its
  *      audit action, labelled interim, no operationId collision.
  *   2. Write scope: `cookieAuth` only; 403 only `origin_rejected` /
  *      `tax_override_forbidden`; the non-disclosing 404; `Idempotency-Key`
@@ -182,11 +183,12 @@ describe("console-catalog writes — operations", () => {
     expect(methods.sort()).toEqual(WRITES.map((w) => `${w.method} ${w.path}`).sort());
   });
 
-  it("marks every write contract-only until the RT-738 runtime serves it", () => {
+  it("serves every write: none is marked contract-only (RT-738 runtime)", () => {
     for (const w of WRITES) {
-      expect(op(w)["x-runtime-status"]).toBe("contract-only");
-      expect(op(w)["x-runtime-note"]).toMatch(new RegExp(`RT-738 \\(${w.slice}\\)`));
+      expect(op(w)["x-runtime-status"]).toBeUndefined();
+      expect(op(w)["x-runtime-note"]).toBeUndefined();
     }
+    expect(doc.info?.description).toMatch(/The RT-738 runtime serves every write unchanged on the wire/);
   });
 
   it("names one audit action per write (audited per mutation, decision O-6)", () => {

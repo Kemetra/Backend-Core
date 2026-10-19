@@ -1,7 +1,8 @@
 /**
  * ConsoleCatalogModule — RT-730 (CAT-R2): the console read of the Tenant
  * Catalog (`catalog/console-catalog.yaml`, RT-729). Read only, not audited
- * per request (RT-281 O-6).
+ * per request (RT-281 O-6). RT-738 (CAT-W1 + CAT-W2) adds the interim,
+ * audited writes (`ConsoleCatalogWriteController`).
  *
  * Imports:
  *   - `AuthModule`    — `PG_POOL` + the session/token repositories the
@@ -15,10 +16,12 @@ import { AuthModule } from "../../auth/auth.module";
 import { ContextModule } from "../../context/context.module";
 import { ConsoleCatalogController } from "./console-catalog.controller";
 import { ConsoleCatalogReadService } from "./console-catalog.service";
+import { ConsoleCatalogWriteController } from "./console-catalog.write.controller";
+import { ConsoleCatalogWriteService } from "./console-catalog.write.service";
 
 @Module({
   imports: [AuthModule, ContextModule],
-  controllers: [ConsoleCatalogController],
-  providers: [ConsoleCatalogReadService],
+  controllers: [ConsoleCatalogController, ConsoleCatalogWriteController],
+  providers: [ConsoleCatalogReadService, ConsoleCatalogWriteService],
 })
 export class ConsoleCatalogModule {}
