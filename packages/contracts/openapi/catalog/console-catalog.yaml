@@ -353,13 +353,15 @@ components:
       schema:
         type: string
         minLength: 1
-        maxLength: 512
+        maxLength: 4096
         pattern: "^[A-Za-z0-9_-]+$"
       description: >
         Opaque keyset cursor from a prior page's `nextCursor`, bound to the
         operation, the tenant and every filter (`q`, `status`,
         `category_id`, `store_id`). Do not decode or construct it; omit it
-        for the first page. A value the server did not issue, cannot decode,
+        for the first page. Its keyset position includes the last product's
+        name (up to 500 characters), so it can be up to 4096 characters
+        long. A value the server did not issue, cannot decode,
         or that is reused with other filters is 400 `validation_error`. The
         caller's store scope is checked on every request and is never
         carried by the cursor. The cursor carries only a keyset position and
