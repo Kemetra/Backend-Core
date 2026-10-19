@@ -67,8 +67,7 @@ info:
     verdict, and the `posting` `DomainSummary` rule (dead-letter driven) is
     unchanged. Roles, session, tenant RLS, the store filter, the operator store
     scope and the out-of-scope 404 are unchanged; no request parameter changes.
-    The runtime that emits the two new properties ships in the RT-565 runtime
-    PR; until it merges the served summary does not yet carry them.
+    Served by the RT-565 runtime on the 0057-0061 freshness indexes.
 
 servers:
   - url: https://api.example.com

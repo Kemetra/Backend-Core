@@ -27,6 +27,11 @@ import {
 } from "../../connector-health/connector-health.liveness";
 import { rollupConnectorHealth } from "./connector-health-rollup";
 import {
+  freshnessStores,
+  readPostingFreshness,
+  type PostingFreshness,
+} from "./posting-freshness.read";
+import {
   callerStoreScope,
   inStoreScope,
   scopeStoreIds,
@@ -46,6 +51,10 @@ export interface DomainSummary {
 
 export interface SyncOpsSummaryBody {
   readonly domains: readonly DomainSummary[];
+  /** RT-565 D6: the instant of the posting-freshness read. */
+  readonly asOf: string;
+  /** RT-565: posting freshness facts for the same scope (no verdict, D5). */
+  readonly postingFreshness: PostingFreshness;
 }
 
 /** The session context of a read; its store scope bounds the rows (RT-192). */
@@ -145,7 +154,9 @@ export class ErpnextSyncOpsReadModelService {
    * US1 — the consolidated sync-ops summary. Aggregates 015 posting health
    * (dead-letter backlog count) + 017 reconciliation health (latest run + open
    * mismatch count) + 020 connector health (RT-563); 021 is `not_available`. Tenant-scoped via RLS; optional
-   * store filter. Compute-on-read — no mirror.
+   * store filter. Compute-on-read — no mirror. RT-565 adds the posting
+   * freshness facts and their `asOf`, read in one statement with the same store
+   * filter and membership scope as the posting leg (`posting-freshness.read.ts`).
    */
   getSummary(input: SummaryInput): Promise<SyncOpsSummaryBody> {
     return runWithTenantContext(
@@ -165,6 +176,9 @@ export class ErpnextSyncOpsReadModelService {
           [storeId, scoped],
         );
         const postingBacklog = Number(posting.rows[0]?.count ?? "0");
+
+        // --- posting freshness (RT-565): one statement, its own asOf (D6) ---
+        const freshness = await readPostingFreshness(client, freshnessStores(storeId, scoped));
 
         // --- reconciliation health: open mismatch count + latest run (017) --
         // Store-scoped via a JOIN to the run (the result table has no store_id;
@@ -253,7 +267,7 @@ export class ErpnextSyncOpsReadModelService {
           },
         ];
 
-        return { domains };
+        return { domains, ...freshness };
       },
     );
   }
