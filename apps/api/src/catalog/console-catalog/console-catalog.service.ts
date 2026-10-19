@@ -23,6 +23,10 @@
  *       - the detail's overrides are read under the tenant-wide store GUC
  *         (`'*'`, the 0011 carve-out) with `store_id = ANY(scope)`, the
  *         unknown-items list precedent. An empty scope matches no store row.
+ *       - a soft-deleted store is absent for every scope, tenant-wide included:
+ *         its `store_id` is the 404 and its overrides and identifiers never
+ *         show (owner decision on RT-730, an intentional divergence from
+ *         console-sales, where a tenant-wide owner still reads its history).
  *   - Paging: keyset over `(matchRank, name, id)`, over-fetching one row to
  *     detect the next page. No trigram index (O-8): the name match scans the
  *     tenant's products that pass the status and category filters.
@@ -103,6 +107,15 @@ const STATUS_SQL: Readonly<Record<ProductStatusFilter, string>> = {
   any: "TRUE",
 };
 
+/**
+ * The store `column` names is live (not soft-deleted) in tenant `$1`. A
+ * soft-deleted store is absent on this surface for every scope, tenant-wide
+ * included (owner decision on RT-730; console-sales keeps them readable).
+ */
+function liveStoreSql(column: string): string {
+  return `EXISTS (SELECT 1 FROM stores s WHERE s.id = ${column} AND s.tenant_id = $1::uuid AND s.deleted_at IS NULL)`;
+}
+
 /** The oldest active tenant-wide identifier of one type, as the product's primary one. */
 function primaryIdentifierSql(type: "sku" | "barcode"): string {
   return `(
@@ -149,7 +162,8 @@ function listSql(status: ProductStatusFilter, withStore: boolean): string {
          AND pa.identifier_type IN ('barcode', 'sku', 'plu')
          AND pa.value = $2::text
          AND pa.retired_at IS NULL
-         AND (pa.store_id IS NULL OR $3::uuid[] IS NULL OR pa.store_id = ANY($3::uuid[]))
+         AND (pa.store_id IS NULL
+              OR (${liveStoreSql("pa.store_id")} AND ($3::uuid[] IS NULL OR pa.store_id = ANY($3::uuid[]))))
     ),
     candidates AS (
       SELECT tp.id, tp.name,
@@ -191,7 +205,8 @@ const IDENTIFIERS_SQL = `
     SELECT identifier_type, value, store_id::text AS store_id, source_system, created_at
       FROM product_aliases
      WHERE tenant_id = $1::uuid AND product_id = $2::uuid AND retired_at IS NULL
-       AND (store_id IS NULL OR $3::uuid[] IS NULL OR store_id = ANY($3::uuid[]))
+       AND (store_id IS NULL
+            OR (${liveStoreSql("product_aliases.store_id")} AND ($3::uuid[] IS NULL OR store_id = ANY($3::uuid[]))))
      ORDER BY identifier_type, store_id NULLS FIRST, value, source_system, created_at`;
 
 /** $1 tenant, $2 product, $3 scoped store ids (null = tenant-wide). */
@@ -200,6 +215,7 @@ const OVERRIDES_SQL = `
       FROM store_product_overrides
      WHERE tenant_id = $1::uuid AND product_id = $2::uuid AND retired_at IS NULL
        AND ($3::uuid[] IS NULL OR store_id = ANY($3::uuid[]))
+       AND ${liveStoreSql("store_product_overrides.store_id")}
      ORDER BY store_id`;
 
 const CATEGORIES_SQL = `
@@ -208,7 +224,8 @@ const CATEGORIES_SQL = `
      WHERE tenant_id = $1::uuid AND retired_at IS NULL
      ORDER BY name, id`;
 
-const STORE_IN_TENANT_SQL = `SELECT 1 FROM stores WHERE id = $1::uuid AND tenant_id = $2::uuid`;
+/** A live store of the tenant; a soft-deleted one is the non-disclosing 404 (owner decision on RT-730). */
+const STORE_IN_TENANT_SQL = `SELECT 1 FROM stores WHERE id = $1::uuid AND tenant_id = $2::uuid AND deleted_at IS NULL`;
 
 type ListRow = ProductSummaryRow & Partial<ResolvedStoreColumns> & { match_rank: 0 | 1 };
 

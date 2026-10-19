@@ -50,6 +50,7 @@ import { STORE_A_X, STORE_A_Y, STORE_B_X, TENANT_A } from "../__support__/isolat
 import {
   bootScopedApp,
   NON_EXISTENT,
+  S_DELETED,
   SES_ADMIN_SPEC,
   SES_OWNER_ALL,
   SES_OWNER_ALL_ACTIVE,
@@ -242,6 +243,9 @@ describe("RT-730 console catalog — role and scope", () => {
     ["an absent store", SES_OWNER_ALL, NON_EXISTENT],
     ["a store outside a specific grant", SES_ADMIN_SPEC, STORE_A_Y],
     ["a store outside the active-store narrowing", SES_MANAGER_ACTIVE, STORE_A_X],
+    // Owner decision on RT-730: a soft-deleted store is absent here, even tenant-wide
+    // (an intentional divergence from console-sales).
+    ["a soft-deleted store, tenant-wide", SES_OWNER_ALL, S_DELETED],
   ])("%s as store_id is the non-disclosing 404", async (_label, session, storeId) => {
     if (skip()) return;
     await expectNotFound(await get(LIST, session, { ...FIXTURE, store_id: storeId }));
@@ -498,6 +502,15 @@ describe("RT-730 console catalog — detail", () => {
     const stores = (body["storeOverrides"] as Array<{ storeId: string }>).map((o) => o.storeId);
     expect(stores.sort()).toEqual([STORE_A_X, STORE_A_Y].sort());
     expect(body).toMatchObject({ description: null, expiryRequired: false, sourceGlobalProductId: null });
+  });
+
+  it("never shows a soft-deleted store's overrides or identifiers, even tenant-wide", async () => {
+    if (skip()) return;
+    const body = await detail(SES_OWNER_ALL, P_WATER);
+    expect((body["storeOverrides"] as Array<{ storeId: string }>).map((o) => o.storeId)).not.toContain(S_DELETED);
+    expect((body["identifiers"] as Array<{ storeId: string | null }>).map((i) => i.storeId)).not.toContain(S_DELETED);
+    // A deleted store's identifier does not match the search either.
+    expect(await ids(SES_OWNER_ALL, { q: "555000" })).toEqual([]);
   });
 
   it("keeps store identifiers and overrides inside a narrower scope", async () => {

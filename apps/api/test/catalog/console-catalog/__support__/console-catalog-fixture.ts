@@ -10,6 +10,8 @@
  *                retired barcode `999000`, plu `4242` scoped to STORE_A_Y;
  *                overrides X (9.0000 EGP, tax `reduced`) and Y (7.0000 EGP)
  *   P_JUICE      active, barcode `123`; override X deactivates it
+ *   (P_WATER also has an override (6.0000) and a barcode `555000` on the
+ *   soft-deleted S_DELETED: this surface treats a deleted store as absent)
  *   P_LOOKALIKE  active, named after P_WATER's sku (`W-1`), sorts first by name
  *   P_PERCENT    active, `50%` in its name
  *   P_ODD        active, 9.9990 EGP (not representable: off the POS stream)
@@ -27,6 +29,7 @@ import type { Pool } from "pg";
 import type { PgTestEnv } from "../../../_helpers/postgres-container";
 import { seedConsoleSalesFixture } from "../../../console-sales/__support__/console-sales-fixture";
 import { STORE_A_X, STORE_A_Y, TENANT_A, TENANT_B } from "../../__support__/isolation-harness";
+import { S_DELETED } from "../../erpnext-reconciliation/__support__/read-store-scope";
 
 const a = (tag: string): string => `0a000000-0000-7000-8000-${tag.padStart(12, "0")}`;
 const b = (tag: string): string => `0b000000-0000-7000-8000-${tag.padStart(12, "0")}`;
@@ -135,4 +138,7 @@ export async function seedConsoleCatalogFixture(env: PgTestEnv): Promise<void> {
   await seedOverride(admin, P_WATER, STORE_A_X, { price: "9.0000", tax: "reduced" });
   await seedOverride(admin, P_WATER, STORE_A_Y, { price: "7.0000" });
   await seedOverride(admin, P_JUICE, STORE_A_X, { active: false });
+  // A soft-deleted store's leftovers: hidden on this surface (owner decision on RT-730).
+  await seedOverride(admin, P_WATER, S_DELETED, { price: "6.0000" });
+  await seedAlias(admin, { productId: P_WATER, type: "barcode", value: "555000", storeId: S_DELETED });
 }
