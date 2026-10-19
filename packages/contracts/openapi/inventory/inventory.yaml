@@ -243,8 +243,11 @@ paths:
             A value the server did not issue, cannot decode, or that is reused
             with another store or other filters is 400 `validation_error`. The
             caller's store scope is checked on every request and is never
-            carried by the cursor; its position is ANDed with the tenant, the
-            store and the filters and never replaces them.
+            carried by the cursor. The cursor carries only a keyset position
+            and a digest of the filters; its position is ANDed with the tenant,
+            the store and the filters and never replaces them, so a hand-built
+            cursor can only reposition the walk inside rows the caller may
+            already read.
           schema: { type: string }
         - name: limit
           in: query
