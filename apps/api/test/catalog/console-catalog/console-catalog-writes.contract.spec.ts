@@ -154,6 +154,20 @@ function ref(value: unknown): string {
   return String((value as { $ref?: string } | undefined)?.$ref ?? "");
 }
 
+interface ResponseShape {
+  readonly $ref?: string;
+  readonly headers?: Record<string, unknown>;
+  readonly content?: Record<string, { readonly schema?: unknown }>;
+}
+
+function response(w: WriteOp, status: string): ResponseShape {
+  return (op(w).responses?.[status] ?? {}) as ResponseShape;
+}
+
+function statuses(w: WriteOp): string[] {
+  return Object.keys(op(w).responses ?? {}).sort();
+}
+
 function responseDescription(w: WriteOp, status: string): string {
   const name = ref(op(w).responses?.[status]).replace("#/components/responses/", "");
   return String(doc.components?.responses?.[name]?.description ?? "");
@@ -218,18 +232,16 @@ describe("console-catalog writes — auth and scope", () => {
 
   it("answers its success status and exactly its error statuses", () => {
     for (const w of WRITES) {
-      expect({ id: w.id, statuses: Object.keys(op(w).responses ?? {}).sort() }).toEqual({
-        id: w.id,
-        statuses: [w.ok, ...w.responses].sort(),
-      });
-      expect(ref(op(w).responses?.["404"])).toBe("#/components/responses/WriteNotFound");
-      expect(op(w).responses?.[w.ok]?.headers?.["Cache-Control"]).toEqual({
-        $ref: "#/components/headers/CacheControlNoStore",
-      });
-      const ok = op(w).responses?.[w.ok] as { content?: Record<string, { schema?: unknown }> } | undefined;
-      expect(ref(ok?.content?.["application/json"]?.schema)).toBe(
-        "#/components/schemas/ConsoleCatalogProductDetail",
-      );
+      expect({ id: w.id, statuses: statuses(w) }).toEqual({ id: w.id, statuses: [w.ok, ...w.responses].sort() });
+    }
+  });
+
+  it("answers every success with the no-store product detail and every 404 with WriteNotFound", () => {
+    for (const w of WRITES) {
+      const success = response(w, w.ok);
+      expect(ref(response(w, "404"))).toBe("#/components/responses/WriteNotFound");
+      expect(success.headers?.["Cache-Control"]).toEqual({ $ref: "#/components/headers/CacheControlNoStore" });
+      expect(ref(success.content?.["application/json"]?.schema)).toBe("#/components/schemas/ConsoleCatalogProductDetail");
     }
   });
 
