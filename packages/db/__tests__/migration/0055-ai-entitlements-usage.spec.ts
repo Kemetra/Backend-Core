@@ -398,6 +398,9 @@ describe("0055 — the code-owned plan catalog (default-deny seed)", () => {
         await c.query(`INSERT INTO ${CATALOG_METERS}
             (plan_code, catalog_version, feature_id, meter, unit, window_kind, meter_scope, limit_value)
           VALUES ('core', 2, $1, $2, 'request', 'month', 'tenant', 100)`, [FEATURE, METER]);
+        const r = await c.query(`SELECT limit_value::int FROM ${CATALOG_METERS}
+          WHERE plan_code = 'core' AND catalog_version = 2`);
+        expect(r.rows).toEqual([{ limit_value: 100 }]);
       },
       true,
     );
@@ -456,6 +459,8 @@ describe("0055 — tenant_ai_entitlements (immutable revisions, D-2)", () => {
     if (skip()) return;
     await asTenant(TENANT_A, async (c) => {
       await insertEntitlement({ version: 2, state: "grace" }, c);
+      const r = await c.query(`SELECT entitlement_version, state FROM ${ENTITLEMENTS} ORDER BY entitlement_version`);
+      expect(r.rows).toEqual([{ entitlement_version: 1, state: "active" }, { entitlement_version: 2, state: "grace" }]);
     }, true);
   });
 
@@ -530,6 +535,12 @@ describe("0055 — tenant_ai_feature_opt_outs (tenant owner opt-out, D-5)", () =
     await asTenant(TENANT_A, async (c) => {
       await insertOptOut({ version: 2, action: "opt_in" }, c);
       await insertOptOut({ version: 3 }, c);
+      const r = await c.query(`SELECT opt_out_version, action FROM ${OPT_OUTS} ORDER BY opt_out_version`);
+      expect(r.rows).toEqual([
+        { opt_out_version: 1, action: "opt_out" },
+        { opt_out_version: 2, action: "opt_in" },
+        { opt_out_version: 3, action: "opt_out" },
+      ]);
     });
   });
 
@@ -726,6 +737,13 @@ describe("0055 — ai_usage_ledger (one append-only usage store, AI-09 run metad
       // A partial credit: its own units, the original's feature, counter and version.
       await insertLedger({ kind: "adjusted", counterId: counterA, units: 1, adjusts_entry_id: commit }, c);
       await insertLedger({ kind: "adjusted", counterId: counterA, units: 2, adjusts_entry_id: commit }, c);
+      const r = await c.query(
+        `SELECT units, actor_user_id FROM ${LEDGER} WHERE adjusts_entry_id = $1 ORDER BY units`, [commit],
+      );
+      expect(r.rows).toEqual([
+        { units: 1, actor_user_id: PLATFORM_ADMIN },
+        { units: 2, actor_user_id: PLATFORM_ADMIN },
+      ]);
     }, true);
   });
 

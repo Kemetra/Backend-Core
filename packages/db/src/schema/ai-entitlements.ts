@@ -59,6 +59,9 @@ const bytea = customType<{ data: Buffer; default: false }>({
 /** `ai.<segment>[.<segment>…]`, at most four segments. */
 const FEATURE_ID_FORMAT = String.raw`^ai(\.[a-z][a-z0-9_]{0,39}){1,4}$`;
 const METER_FORMAT = String.raw`^[a-z][a-z0-9_]{0,39}(\.[a-z][a-z0-9_]{0,39}){0,5}$`;
+/** The two formats as quoted SQL literals, for the CHECK expressions. */
+const FEATURE_ID_PATTERN = sql.raw("'" + FEATURE_ID_FORMAT + "'");
+const METER_PATTERN = sql.raw("'" + METER_FORMAT + "'");
 
 /** The closed outcome set of a terminal ledger row (`ok` exactly when committed, D-8). */
 export const AI_USAGE_OUTCOMES = [
@@ -110,7 +113,7 @@ export const aiPlanCatalogFeatures = pgTable(
     }).onDelete("restrict"),
     check(
       "ai_plan_catalog_features_feature_id_format",
-      sql`${t.featureId} ~ ${sql.raw(`'${FEATURE_ID_FORMAT}'`)}`,
+      sql`${t.featureId} ~ ${FEATURE_ID_PATTERN}`,
     ),
   ],
 );
@@ -141,7 +144,7 @@ export const aiPlanCatalogMeters = pgTable(
         aiPlanCatalogFeatures.featureId,
       ],
     }).onDelete("restrict"),
-    check("ai_plan_catalog_meters_meter_format", sql`${t.meter} ~ ${sql.raw(`'${METER_FORMAT}'`)}`),
+    check("ai_plan_catalog_meters_meter_format", sql`${t.meter} ~ ${METER_PATTERN}`),
     check("ai_plan_catalog_meters_unit_valid", sql`${t.unit} IN ('request')`),
     check("ai_plan_catalog_meters_window_valid", sql`${t.windowKind} IN ('day', 'month')`),
     check("ai_plan_catalog_meters_scope_valid", sql`${t.meterScope} IN ('tenant', 'store')`),
@@ -281,7 +284,7 @@ export const tenantAiFeatureOptOuts = pgTable(
     ),
     check(
       "tenant_ai_feature_opt_outs_feature_id_format",
-      sql`${t.featureId} ~ ${sql.raw(`'${FEATURE_ID_FORMAT}'`)}`,
+      sql`${t.featureId} ~ ${FEATURE_ID_PATTERN}`,
     ),
     check("tenant_ai_feature_opt_outs_action_valid", sql`${t.action} IN ('opt_out', 'opt_in')`),
     check(
@@ -328,7 +331,7 @@ export const aiUsageCounters = pgTable(
       columns: [t.tenantId, t.storeId],
       foreignColumns: [stores.tenantId, stores.id],
     }).onDelete("restrict"),
-    check("ai_usage_counters_meter_format", sql`${t.meter} ~ ${sql.raw(`'${METER_FORMAT}'`)}`),
+    check("ai_usage_counters_meter_format", sql`${t.meter} ~ ${METER_PATTERN}`),
     check("ai_usage_counters_window_valid", sql`${t.windowKind} IN ('day', 'month')`),
     check(
       "ai_usage_counters_window_utc_aligned",
@@ -465,7 +468,7 @@ export const aiUsageLedger = pgTable(
     ),
     check(
       "ai_usage_ledger_feature_id_format",
-      sql`${t.featureId} ~ ${sql.raw(`'${FEATURE_ID_FORMAT}'`)}`,
+      sql`${t.featureId} ~ ${FEATURE_ID_PATTERN}`,
     ),
     check("ai_usage_ledger_units_positive", sql`${t.units} > 0`),
     check(
