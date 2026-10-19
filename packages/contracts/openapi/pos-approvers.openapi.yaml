@@ -283,12 +283,18 @@ components:
             minLength: 3
             maxLength: 64
             pattern: "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+            # `session.self_unlock` is a system invariant (RT-284 P-A), never a
+            # grantable capability, so it can never be listed. The rest of the
+            # namespace stays open so the catalogue can grow by contract.
+            not:
+              const: session.self_unlock
           description: >
             RESERVED. The RT-114 action kinds this user may approve at the
             device's store (RT-284 P-A). The server MUST omit it in
             `1.0.0-draft`. When present it accompanies only `eligible: true`
             and the client allows exactly the listed kinds; see the document
-            description for the full rule.
+            description for the full rule. It never contains
+            `session.self_unlock`.
     Error:
       type: object
       required: [error]

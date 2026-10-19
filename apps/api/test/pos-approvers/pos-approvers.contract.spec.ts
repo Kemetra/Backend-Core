@@ -178,6 +178,13 @@ describe("pos-approvers — request bound and result shape", () => {
     expect(typeof items["pattern"]).toBe("string");
   });
 
+  it("excludes the non-grantable session.self_unlock from action_kinds but keeps the namespace open", () => {
+    const items = doc.components!.schemas!["PosApproverEligibilityResult"]!.properties!["action_kinds"]!["items"] as Record<string, unknown>;
+    expect(items["not"]).toEqual({ const: "session.self_unlock" });
+    const accepts = validator("PosApproverEligibilityResult");
+    expect(accepts({ user_id: USER_A, eligible: true, action_kinds: ["session.self_unlock_other", "shift.pay_in"] })).toBe(true);
+  });
+
   it("ties action_kinds to eligible: true in the schema, not only in prose", () => {
     const result = doc.components!.schemas!["PosApproverEligibilityResult"]!;
     expect(result["if"]).toEqual({ required: ["action_kinds"] });
@@ -263,6 +270,7 @@ describe("pos-approvers — AJV fixtures", () => {
     ["a display name", { user_id: USER_A, eligible: true, display_name: "Mona" }],
     ["no eligible flag", { user_id: USER_A }],
     ["action_kinds on an ineligible user", { user_id: USER_A, eligible: false, action_kinds: ["sale.void"] }],
+    ["session.self_unlock in action_kinds", { user_id: USER_A, eligible: true, action_kinds: ["sale.void", "session.self_unlock"] }],
     ["an empty action_kinds", { user_id: USER_A, eligible: true, action_kinds: [] }],
     ["a malformed action kind", { user_id: USER_A, eligible: true, action_kinds: ["Cart Cancel"] }],
   ])("rejects a result with %s", (_label, result) => {
