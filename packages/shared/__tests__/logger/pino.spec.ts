@@ -151,6 +151,26 @@ describe("createLogger — redactPaths merging", () => {
     expect(DEFAULT_REDACT_PATHS).toContain("pairing_code");
     expect(DEFAULT_REDACT_PATHS).toContain("device_token");
   });
+
+  it("DEFAULT_REDACT_PATHS covers AI prompt / completion / evidence-pack fields (RT-655)", () => {
+    for (const path of [
+      "prompt",
+      "completion",
+      "system",
+      "evidencePack",
+      "evidence_pack",
+      "rawOutput",
+      "raw_output",
+      "provider_api_key",
+      "providerApiKey",
+      "*.prompt",
+      "*.completion",
+      "*.evidencePack",
+      "*.rawOutput",
+    ]) {
+      expect(DEFAULT_REDACT_PATHS).toContain(path);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

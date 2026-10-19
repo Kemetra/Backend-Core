@@ -277,3 +277,58 @@ describe("RedactingSpanExporter", () => {
     await expect(exporter.forceFlush()).resolves.toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// GenAI prompt / completion attributes (RT-655 acceptance 3)
+// ---------------------------------------------------------------------------
+
+describe("redactSpanAttributes — GenAI prompt and completion content", () => {
+  const PROMPT = "canary-prompt-text-7f3a";
+  const COMPLETION = "canary-completion-text-91bc";
+
+  it("drops prompt, completion, message and system-instruction attributes", () => {
+    const redacted = redactSpanAttributes({
+      "gen_ai.prompt": PROMPT,
+      "gen_ai.prompt.0.content": PROMPT,
+      "gen_ai.completion": COMPLETION,
+      "gen_ai.completion.0.content": COMPLETION,
+      "gen_ai.input.messages": PROMPT,
+      "gen_ai.output.messages": COMPLETION,
+      "gen_ai.system_instructions": PROMPT,
+      "ai.prompt": PROMPT,
+      "ai.completion": COMPLETION,
+      "ai.evidence_pack": PROMPT,
+    });
+    expect(redacted).toEqual({});
+  });
+
+  it("keeps non-content GenAI attributes (model, token counts, output type)", () => {
+    const redacted = redactSpanAttributes({
+      "gen_ai.request.model": "fake-model-2026-01-01",
+      "gen_ai.usage.input_tokens": 12,
+      "gen_ai.output.type": "json",
+      "gen_ai.prompt.0.content": PROMPT,
+    });
+    expect(redacted).toEqual({
+      "gen_ai.request.model": "fake-model-2026-01-01",
+      "gen_ai.usage.input_tokens": 12,
+      "gen_ai.output.type": "json",
+    });
+  });
+
+  it("drops the same content through the exporter wrapper", () => {
+    const memory = new tracing.InMemorySpanExporter();
+    const provider = new tracing.BasicTracerProvider({
+      spanProcessors: [new tracing.SimpleSpanProcessor(new RedactingSpanExporter(memory))],
+    });
+    const span = provider.getTracer("t").startSpan("gen_ai.chat");
+    span.setAttribute("gen_ai.prompt.0.content", PROMPT);
+    span.setAttribute("gen_ai.completion.0.content", COMPLETION);
+    span.setAttribute("gen_ai.request.model", "fake-model-2026-01-01");
+    span.end();
+    const [exported] = memory.getFinishedSpans();
+    expect(JSON.stringify(exported?.attributes)).not.toContain(PROMPT);
+    expect(JSON.stringify(exported?.attributes)).not.toContain(COMPLETION);
+    expect(exported?.attributes["gen_ai.request.model"]).toBe("fake-model-2026-01-01");
+  });
+});

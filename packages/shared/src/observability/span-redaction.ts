@@ -29,6 +29,33 @@ const URL_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set(["http.url", "http.targe
 /** Attributes holding only the query string; removed outright. */
 const QUERY_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set(["url.query"]);
 
+/**
+ * Model prompt / completion content (RT-655, AD-AI-PROV-001 E-5). OTel GenAI
+ * instrumentation records message bodies as span attributes; tenant evidence
+ * and model output must never reach the OTLP exporter. Exact keys plus
+ * prefixes (indexed forms such as `gen_ai.prompt.0.content`). Non-content
+ * GenAI attributes (model, token counts, output type) are kept.
+ */
+const CONTENT_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set([
+  "gen_ai.input.messages",
+  "gen_ai.output.messages",
+  "gen_ai.system_instructions",
+]);
+const CONTENT_ATTRIBUTE_PREFIXES: readonly string[] = [
+  "gen_ai.prompt",
+  "gen_ai.completion",
+  "ai.prompt",
+  "ai.completion",
+  "ai.evidence_pack",
+];
+
+function isContentAttribute(key: string): boolean {
+  return (
+    CONTENT_ATTRIBUTE_KEYS.has(key) ||
+    CONTENT_ATTRIBUTE_PREFIXES.some((prefix) => key.startsWith(prefix))
+  );
+}
+
 /** Cut a relative target (`/path?query#fragment`) at the first `?` or `#`. */
 function pathOnly(target: string): string {
   const cut = [target.indexOf("?"), target.indexOf("#")].filter((at) => at !== -1);
@@ -49,11 +76,14 @@ export function redactUrlValue(value: string): string {
   }
 }
 
-/** Return a copy of `attributes` with URL values redacted and query attributes removed. */
+/**
+ * Return a copy of `attributes` with URL values redacted and query and model
+ * prompt/completion attributes removed.
+ */
 export function redactSpanAttributes(attributes: Attributes): Attributes {
   const out: Attributes = {};
   for (const [key, value] of Object.entries(attributes)) {
-    if (QUERY_ATTRIBUTE_KEYS.has(key)) continue;
+    if (QUERY_ATTRIBUTE_KEYS.has(key) || isContentAttribute(key)) continue;
     out[key] =
       URL_ATTRIBUTE_KEYS.has(key) && typeof value === "string"
         ? redactUrlValue(value)
