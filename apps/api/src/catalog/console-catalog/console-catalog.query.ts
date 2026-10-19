@@ -118,7 +118,7 @@ const NAME_OFFSET = 2 + UUID_BYTES + UUID_BYTES + DIGEST_BYTES;
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 
 function uuidBytes(uuid: string): Buffer {
-  return Buffer.from(uuid.replace(/-/g, ""), "hex");
+  return Buffer.from(uuid.replaceAll("-", ""), "hex");
 }
 
 function uuidOf(bytes: Buffer): string {
@@ -146,18 +146,27 @@ export function encodeCatalogCursor(binding: CatalogCursorBinding, keyset: Catal
   ]).toString("base64url");
 }
 
-/** The keyset position of `cursor`, or InvalidCatalogCursorError when it was not issued for `binding`. */
-export function decodeCatalogCursor(binding: CatalogCursorBinding, cursor: string): CatalogProductKeyset {
+/** The cursor's bytes, if it is a canonical token long enough to hold a name. */
+function cursorBytes(cursor: string): Buffer {
   const bytes = Buffer.from(cursor, "base64url");
   // A canonical token only: base64url decoding ignores stray characters and padding bits.
   if (bytes.length <= NAME_OFFSET || bytes.toString("base64url") !== cursor) throw new InvalidCatalogCursorError();
+  return bytes;
+}
+
+/** True when the header names this version, a valid rank, this tenant and these filters. */
+function isBoundTo(bytes: Buffer, binding: CatalogCursorBinding): boolean {
   const rank = bytes[1];
-  const boundHere =
+  return (
     bytes[0] === VERSION &&
     (rank === 0 || rank === 1) &&
     bytes.subarray(2, 2 + UUID_BYTES).equals(uuidBytes(binding.tenantId.toLowerCase())) &&
-    bytes.subarray(2 + 2 * UUID_BYTES, NAME_OFFSET).equals(digestOf(binding.filters));
-  if (!boundHere) throw new InvalidCatalogCursorError();
+    bytes.subarray(2 + 2 * UUID_BYTES, NAME_OFFSET).equals(digestOf(binding.filters))
+  );
+}
+
+/** The keyset name: strict UTF-8, no NUL, at most 500 code points. */
+function cursorName(bytes: Buffer): string {
   let name: string;
   try {
     name = strictUtf8.decode(bytes.subarray(NAME_OFFSET));
@@ -165,7 +174,18 @@ export function decodeCatalogCursor(binding: CatalogCursorBinding, cursor: strin
     throw new InvalidCatalogCursorError();
   }
   if (!hasNoNul(name) || codePointLength(name) > NAME_MAX) throw new InvalidCatalogCursorError();
-  return { matchRank: rank, name, productId: uuidOf(bytes.subarray(2 + UUID_BYTES, 2 + 2 * UUID_BYTES)) };
+  return name;
+}
+
+/** The keyset position of `cursor`, or InvalidCatalogCursorError when it was not issued for `binding`. */
+export function decodeCatalogCursor(binding: CatalogCursorBinding, cursor: string): CatalogProductKeyset {
+  const bytes = cursorBytes(cursor);
+  if (!isBoundTo(bytes, binding)) throw new InvalidCatalogCursorError();
+  return {
+    matchRank: bytes[1] as 0 | 1,
+    name: cursorName(bytes),
+    productId: uuidOf(bytes.subarray(2 + UUID_BYTES, 2 + 2 * UUID_BYTES)),
+  };
 }
 
 /**
@@ -173,5 +193,6 @@ export function decodeCatalogCursor(binding: CatalogCursorBinding, cursor: strin
  * are literal, so the match is a plain case-insensitive substring.
  */
 export function substringPattern(q: string): string {
-  return `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  const escaped = q.replaceAll(/[\\%_]/g, (c) => "\\" + c);
+  return `%${escaped}%`;
 }

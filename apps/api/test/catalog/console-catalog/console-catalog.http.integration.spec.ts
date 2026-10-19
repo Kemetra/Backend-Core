@@ -451,35 +451,34 @@ describe("RT-730 console catalog — storeView", () => {
     expect(y.get(P_JUICE)).toMatchObject({ effectiveActive: true, hasOverride: false });
   });
 
+  /** A product the read-down leaves off the POS stream: inactive, retired, unpriced or not representable. */
+  function offStream(view: StoreViewBody): boolean {
+    const price = view.effectivePrice;
+    return !view.effectiveActive || price === null || /\.\d{3,}$/.test(price.amount);
+  }
+
   it.each([STORE_A_X, STORE_A_Y])("equals the POS read-down projection for store %s", async (storeId) => {
     if (skip()) return;
     const snapshot = await new ReadDownService(env!.app).getSnapshot(TENANT_A, storeId, { limit: 1000 });
     expect(snapshot.next_page_token).toBeNull();
     const sellable = new Map(snapshot.items.map((row) => [row.product_id, row]));
     const views = await storeViews(SES_OWNER_ALL, storeId);
-    for (const [productId, view] of views) {
-      const row = sellable.get(productId);
-      if (row === undefined) {
-        // Off the POS stream: inactive, retired, unpriced or not representable.
-        const representable = view.effectivePrice === null || !/\.\d{3,}$/.test(view.effectivePrice.amount);
-        expect(!view.effectiveActive || view.effectivePrice === null || !representable).toBe(true);
-        continue;
-      }
-      expect({
-        price: view.effectivePrice,
-        tax: view.effectiveTaxCategory,
-        active: view.effectiveActive,
-      }).toEqual({
+    const published = [...views].filter(([productId]) => sellable.has(productId));
+    const unpublished = [...views].filter(([productId]) => !sellable.has(productId));
+    for (const [productId, view] of published) {
+      const row = sellable.get(productId)!;
+      expect({ price: view.effectivePrice, tax: view.effectiveTaxCategory, active: view.effectiveActive }).toEqual({
         price: { amount: row.price.amount, currencyCode: row.price.currency_code },
         tax: row.tax_category,
         active: row.active,
       });
     }
-    // Every fixture product the read-down publishes for the store is in the console view.
-    for (const productId of ACTIVE_BY_NAME) {
-      if (sellable.has(productId)) expect(views.has(productId)).toBe(true);
-    }
+    expect(unpublished.filter(([, view]) => !offStream(view))).toEqual([]);
+    expect(published.map(([productId]) => productId).sort()).toEqual(
+      ACTIVE_BY_NAME.filter((productId) => sellable.has(productId)).sort(),
+    );
     expect(sellable.has(P_ODD)).toBe(false);
+    expect(published.length).toBeGreaterThan(0);
   });
 });
 

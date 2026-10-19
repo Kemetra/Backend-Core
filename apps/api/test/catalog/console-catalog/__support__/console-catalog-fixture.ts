@@ -84,17 +84,20 @@ async function seedProduct(admin: Pool, p: SeedProduct): Promise<void> {
   );
 }
 
-async function seedAlias(
-  admin: Pool,
-  productId: string,
-  type: string,
-  value: string,
-  opts: { storeId?: string; retired?: boolean; tenantId?: string } = {},
-): Promise<void> {
+interface SeedAlias {
+  readonly productId: string;
+  readonly type: string;
+  readonly value: string;
+  readonly storeId?: string;
+  readonly retired?: boolean;
+  readonly tenantId?: string;
+}
+
+async function seedAlias(admin: Pool, a: SeedAlias): Promise<void> {
   await admin.query(
     `INSERT INTO product_aliases (tenant_id, product_id, identifier_type, value, store_id, retired_at, created_by)
      VALUES ($1, $2, $3, $4, $5, CASE WHEN $6::boolean THEN now() END, $7)`,
-    [opts.tenantId ?? TENANT_A, productId, type, value, opts.storeId ?? null, opts.retired ?? false, ACTOR],
+    [a.tenantId ?? TENANT_A, a.productId, a.type, a.value, a.storeId ?? null, a.retired ?? false, ACTOR],
   );
 }
 
@@ -123,12 +126,12 @@ export async function seedConsoleCatalogFixture(env: PgTestEnv): Promise<void> {
     [CAT_DRINKS, CAT_OLD, CAT_B, TENANT_A, ACTOR, TENANT_B],
   );
   for (const p of PRODUCTS) await seedProduct(admin, p);
-  await seedAlias(admin, P_WATER, "sku", "W-1");
-  await seedAlias(admin, P_WATER, "barcode", "000123");
-  await seedAlias(admin, P_WATER, "barcode", "999000", { retired: true });
-  await seedAlias(admin, P_WATER, "plu", "4242", { storeId: STORE_A_Y });
-  await seedAlias(admin, P_JUICE, "barcode", "123");
-  await seedAlias(admin, P_B, "barcode", "000123", { tenantId: TENANT_B });
+  await seedAlias(admin, { productId: P_WATER, type: "sku", value: "W-1" });
+  await seedAlias(admin, { productId: P_WATER, type: "barcode", value: "000123" });
+  await seedAlias(admin, { productId: P_WATER, type: "barcode", value: "999000", retired: true });
+  await seedAlias(admin, { productId: P_WATER, type: "plu", value: "4242", storeId: STORE_A_Y });
+  await seedAlias(admin, { productId: P_JUICE, type: "barcode", value: "123" });
+  await seedAlias(admin, { productId: P_B, type: "barcode", value: "000123", tenantId: TENANT_B });
   await seedOverride(admin, P_WATER, STORE_A_X, { price: "9.0000", tax: "reduced" });
   await seedOverride(admin, P_WATER, STORE_A_Y, { price: "7.0000" });
   await seedOverride(admin, P_JUICE, STORE_A_X, { active: false });

@@ -168,7 +168,7 @@ function listSql(status: ProductStatusFilter, withStore: boolean): string {
        LIMIT $9
     )
     SELECT page.match_rank,
-           ${PRODUCT_SUMMARY_COLUMNS_SQL}${withStore ? `,${RESOLVED_STORE_COLUMNS_SQL}` : ""}
+           ${PRODUCT_SUMMARY_COLUMNS_SQL}${withStore ? "," + RESOLVED_STORE_COLUMNS_SQL : ""}
       FROM page
       JOIN tenant_products tp ON tp.id = page.id AND tp.tenant_id = $1::uuid
       ${CATEGORY_JOIN_SQL}
@@ -212,6 +212,44 @@ const STORE_IN_TENANT_SQL = `SELECT 1 FROM stores WHERE id = $1::uuid AND tenant
 
 type ListRow = ProductSummaryRow & Partial<ResolvedStoreColumns> & { match_rank: 0 | 1 };
 
+/** The `listSql` parameters, in placeholder order. */
+function listParams(input: ListCatalogProductsInput, scope: StoreScope, keyset: CatalogProductKeyset | null): unknown[] {
+  const { q, categoryId, storeId } = input.filters;
+  // Store-scoped identifiers count only for the `store_id` store, else for the scope (null = every store).
+  const identifierStores = storeId === null ? scopeStoreIds(scope) : [storeId];
+  const params: unknown[] = [
+    input.tenantId,
+    q,
+    identifierStores === null ? null : [...identifierStores],
+    categoryId,
+    q === null ? null : substringPattern(q),
+    keyset?.matchRank ?? null,
+    keyset?.name ?? null,
+    keyset?.productId ?? null,
+    input.limit + 1,
+  ];
+  if (storeId !== null) params.push(storeId);
+  return params;
+}
+
+/** One page from the `limit + 1` over-fetch: the next cursor is the last returned row's keyset. */
+function toPage(rows: readonly ListRow[], input: ListCatalogProductsInput, binding: CatalogCursorBinding): ConsoleCatalogProductPage {
+  const { storeId } = input.filters;
+  const pageRows = rows.slice(0, input.limit);
+  const last = pageRows.at(-1);
+  const hasMore = rows.length > input.limit && last !== undefined;
+  return {
+    items: pageRows.map((row) =>
+      storeId === null
+        ? toSummary(row)
+        : { ...toSummary(row), storeView: toStoreView(storeId, row as ListRow & ResolvedStoreColumns) },
+    ),
+    nextCursor: hasMore
+      ? encodeCatalogCursor(binding, { matchRank: last.match_rank, name: last.name, productId: last.product_id })
+      : null,
+  };
+}
+
 @Injectable()
 export class ConsoleCatalogReadService {
   constructor(
@@ -227,41 +265,15 @@ export class ConsoleCatalogReadService {
   async list(input: ListCatalogProductsInput): Promise<ConsoleCatalogProductPage> {
     const binding: CatalogCursorBinding = { tenantId: input.tenantId, filters: input.filters };
     const keyset = input.cursor === null ? null : decodeCatalogCursor(binding, input.cursor);
-    const { q, status, categoryId, storeId } = input.filters;
+    const { status, storeId } = input.filters;
     return this.inTenant(input, async (client) => {
       const scope = await callerStoreScope(client, this.memberships, input);
-      if (storeId !== null) await this.requireStoreInScope(client, input.tenantId, scope, storeId);
-      const identifierStores = storeId !== null ? [storeId] : scopeStoreIds(scope);
-      const params: unknown[] = [
-        input.tenantId,
-        q,
-        identifierStores === null ? null : [...identifierStores],
-        categoryId,
-        q === null ? null : substringPattern(q),
-        keyset?.matchRank ?? null,
-        keyset?.name ?? null,
-        keyset?.productId ?? null,
-        input.limit + 1,
-      ];
       if (storeId !== null) {
+        await this.requireStoreInScope(client, input.tenantId, scope, storeId);
         await pinOverrideStore(client, storeId);
-        params.push(storeId);
       }
-      const r = await client.query<ListRow>(listSql(status, storeId !== null), params);
-      const rows = r.rows.slice(0, input.limit);
-      const last = rows.at(-1);
-      const next: CatalogProductKeyset | null =
-        r.rows.length > input.limit && last !== undefined
-          ? { matchRank: last.match_rank, name: last.name, productId: last.product_id }
-          : null;
-      return {
-        items: rows.map((row) =>
-          storeId === null
-            ? toSummary(row)
-            : { ...toSummary(row), storeView: toStoreView(storeId, row as ListRow & ResolvedStoreColumns) },
-        ),
-        nextCursor: next === null ? null : encodeCatalogCursor(binding, next),
-      };
+      const r = await client.query<ListRow>(listSql(status, storeId !== null), listParams(input, scope, keyset));
+      return toPage(r.rows, input, binding);
     });
   }
 
