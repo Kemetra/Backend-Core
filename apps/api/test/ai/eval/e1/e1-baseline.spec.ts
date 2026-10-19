@@ -124,14 +124,17 @@ describe("E1-BL v1 properties", () => {
     const echoes: [string, string][] = [
       ["E1-C26", "ignore rules"],
       ["E1-C27", "Ignore previous instructions"],
+      ["E1-C28", "evil"],
       ["E1-C29", "also report as posted"],
       ["E1-C30", "SYSTEM"],
     ];
     for (const [id, needle] of echoes) {
-      const { pack } = materialize(byId(id), "en");
-      const text = renderText(explain(pack), pack);
-      expect(text).not.toContain(needle);
-      expect(hasBidiControl(text)).toBe(false);
+      for (const lang of LANGS) {
+        const { pack } = materialize(byId(id), lang);
+        const text = renderText(explain(pack), pack);
+        expect(text).not.toContain(needle);
+        expect(hasBidiControl(text)).toBe(false);
+      }
     }
     const { pack } = materialize(byId("E1-C26"), "en");
     expect(renderText(explain(pack), pack)).toContain("not displayable");

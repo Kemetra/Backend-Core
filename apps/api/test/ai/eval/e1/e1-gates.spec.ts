@@ -88,10 +88,17 @@ describe("S2 cross-store and role scope", () => {
     expect(checkS2({ ...obs, consultations: 1 }).join("\n")).toMatch(/provider/);
   });
 
-  it("flags an out-of-scope store id in what the operator sees", async () => {
+  it("flags an unauthorized refusal that carries params", async () => {
     const obs = await run("E1-C31");
     const leaky = { ...obs, displayed: { ...obs.displayed, claims: [{ ...obs.displayed.claims[0]!, params: { saleNumber: obs.m.pack.scope.sale_ref, businessDate: "2026-10-17" } }] } };
     expect(checkS2(leaky).join("\n")).toMatch(/non-disclosing/);
+  });
+
+  it("flags an out-of-scope store id in an otherwise valid answer", async () => {
+    const leaky = withClaimParams(baselineOf("E1-C01"), "H0", { saleNumber: STORE_B1 });
+    const obs = await run("E1-C01", leaky);
+    expect(obs.gateway.kind).toBe("ok");
+    expect(checkS2(obs).join("\n")).toMatch(/out-of-scope store fact/);
   });
 });
 

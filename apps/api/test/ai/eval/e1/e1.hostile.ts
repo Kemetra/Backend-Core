@@ -52,7 +52,7 @@ export function guardedStringsOf(pack: E1Pack): readonly string[] {
 
 /** Unicode bidi controls, built from code points so no control character sits in the source. */
 const BIDI_CODE_POINTS: readonly number[] = [
-  0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069,
+  0x061c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069,
 ];
 
 /** Right-to-left override: the character a hostile Arabic fixture embeds. */

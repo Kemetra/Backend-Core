@@ -15,7 +15,7 @@ import { E1_CASES, E1_DATASET_VERSION, materialize, worldOf } from "./e1.cases";
 import { datasetHash } from "./e1.canonical";
 import { ALLOWED_OPS, DROPPED_PII_STRINGS } from "./e1.pack-builder";
 
-const PINNED_DATASET_SHA256 = "ba13045784e5d8592ed8ec8a043f6bc9428de66d2fa7585d99b7777dd64adbee";
+const PINNED_DATASET_SHA256 = "72469ce2e2c176e0ffee93b6d15597635a55d45db4d6ae42b9c4e9b55f3620ab";
 
 const ajv = new Ajv({ strict: false, allErrors: true });
 addFormats(ajv);

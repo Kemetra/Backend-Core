@@ -41,8 +41,24 @@ async function evaluate(c: E1Case, lang: Lang, recorded: RecordedSet): Promise<E
   return { obs, twin, gates: evaluateGates(obs, twin) };
 }
 
+/** Every key a recorded set may carry: one per evaluation, and one per twin of a case that has one. */
+function validKeys(): Set<string> {
+  const keys = E1_CASES.flatMap((c) =>
+    LANGS.flatMap((lang) => (c.twin === undefined ? [evaluationKey(c.id, lang)] : [evaluationKey(c.id, lang), twinKey(c.id, lang)])),
+  );
+  return new Set(keys);
+}
+
+/** A mistyped key would silently replay the baseline and pass every gate, so it is rejected. */
+function assertKnownKeys(recorded: RecordedSet): void {
+  const valid = validKeys();
+  const unknown = Object.keys(recorded).filter((key) => !valid.has(key));
+  if (unknown.length > 0) throw new Error(`Unknown recorded-set key(s): ${unknown.join(", ")}`);
+}
+
 /** Replay every evaluation (case × language) and evaluate the automated gates. */
 export async function runDataset(recorded: RecordedSet = {}): Promise<EvalRun> {
+  assertKnownKeys(recorded);
   const jobs = E1_CASES.flatMap((c) => LANGS.map((lang) => evaluate(c, lang, recorded)));
   return { evaluations: await Promise.all(jobs) };
 }

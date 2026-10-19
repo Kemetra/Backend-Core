@@ -71,6 +71,13 @@ describe("runDataset with a recorded set", () => {
     expect(report).toContain("Harness verdict: PASS");
   });
 
+  it.each(["E1-C27/EN", "E1-c27/en", "E1-C27/en/Twin", "E1-C09/en/twin", "nope"])(
+    "rejects the unknown recorded key %s instead of silently replaying the baseline",
+    async (key) => {
+      await expect(runDataset({ [key]: {} })).rejects.toThrow(/Unknown recorded-set key/);
+    },
+  );
+
   it("words the report by its source: baseline snapshot versus a supplied recorded set", async () => {
     const baselineReport = renderReport(await runDataset(), INFO);
     expect(baselineReport).toContain("identical by construction");
@@ -80,5 +87,13 @@ describe("runDataset with a recorded set", () => {
     expect(recordedReport).toContain("supplied recorded set");
     expect(recordedReport).not.toContain("identical by construction");
     expect(recordedReport).not.toContain("no model was evaluated");
+  });
+
+  it("counts a response whose runbook refs are only reordered as an exact set match (M3)", async () => {
+    const out = explain(materialize(caseOf("E1-C06"), "en").pack);
+    expect(out.runbook_refs.length).toBeGreaterThan(1);
+    const reordered = { ...out, runbook_refs: [...out.runbook_refs].reverse() };
+    const report = renderReport(await runDataset({ [evaluationKey("E1-C06", "en")]: reordered }), INFO);
+    expect(report).toMatch(/\| M3 runbook refs, exact set \| 80\/80 = 1\.000 CI95 \[0\.954, 1\.000\] \| 80\/80 = 1\.000/);
   });
 });

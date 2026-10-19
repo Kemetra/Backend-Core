@@ -34,6 +34,12 @@ export function formatProportion(proportion: Proportion): string {
 }
 
 const outputOf = (e: EvaluationResult, source: Source) => e.obs[source];
+
+/** Order- and duplicate-insensitive equality of two ref lists. */
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+  const canonical = (refs: readonly string[]): string => [...new Set(refs)].sort(compareCodeUnits).join();
+  return canonical(a) === canonical(b);
+}
 const goldOf = (e: EvaluationResult) => e.obs.m.c.gold;
 
 function citesResolvably(e: EvaluationResult, source: Source): { hit: number; all: number } {
@@ -51,7 +57,7 @@ export function metricsOf(run: EvalRun, source: Source): Record<string, Proporti
     "M1 state, ERP sale": count((e) => outputOf(e, source).tracks.erp_sale.state === goldOf(e).erp_sale),
     "M1 state, ERP reversal": count((e) => outputOf(e, source).tracks.erp_reversal.state === goldOf(e).erp_reversal),
     "M2 first failing boundary": count((e) => outputOf(e, source).first_failing_boundary === goldOf(e).boundary),
-    "M3 runbook refs, exact set": count((e) => outputOf(e, source).runbook_refs.join() === goldOf(e).runbooks.join()),
+    "M3 runbook refs, exact set": count((e) => sameSet(outputOf(e, source).runbook_refs, goldOf(e).runbooks)),
     "M4 evidence-backed claims": {
       k: backed.reduce((sum, b) => sum + b.hit, 0),
       n: backed.reduce((sum, b) => sum + b.all, 0),

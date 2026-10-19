@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJson } from "../../../../src/idempotency/canonical-json";
-import { E1_CASES, E1_DATASET_VERSION, materialize } from "./e1.cases";
+import { E1_CASES, E1_DATASET_VERSION, materialize, materializeTwin } from "./e1.cases";
 
 export function sha256Of(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
@@ -26,7 +26,10 @@ export function datasetHash(): string {
       gold: c.gold,
       tags: c.tags,
       gates: c.gates,
+      scenario: c.scenario,
+      twin: c.twin ?? null,
       packs: { en: materialize(c, "en").pack, ar: materialize(c, "ar").pack },
+      twinPacks: { en: materializeTwin(c, "en")?.pack ?? null, ar: materializeTwin(c, "ar")?.pack ?? null },
     })),
   });
 }
