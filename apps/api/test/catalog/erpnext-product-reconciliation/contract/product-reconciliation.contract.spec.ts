@@ -257,3 +257,30 @@ describe("catalog/product-reconciliation.yaml — projections (021 vocab, no mon
     }
   });
 });
+
+describe("catalog/product-reconciliation.yaml — RT-733 mapping version (additive)", () => {
+  type Prop = { type?: string | string[]; minimum?: number; format?: string };
+  const prop = (schemaName: string, name: string): Prop | undefined =>
+    (schema(schemaName)?.properties as Record<string, Prop> | undefined)?.[name];
+
+  it("BacklogItem exposes an optional, nullable suggestionMappingVersion", () => {
+    const p = prop("BacklogItem", "suggestionMappingVersion");
+    expect(p?.type).toEqual(["integer", "null"]);
+    expect(p?.minimum).toBe(1);
+    expect(schema("BacklogItem")?.required).not.toContain("suggestionMappingVersion");
+  });
+
+  it("ProductReconciliationResult exposes optional, nullable mappingId + mappingVersion", () => {
+    expect(prop("ProductReconciliationResult", "mappingId")).toMatchObject({
+      type: ["string", "null"],
+      format: "uuid",
+    });
+    expect(prop("ProductReconciliationResult", "mappingVersion")).toMatchObject({
+      type: ["integer", "null"],
+      minimum: 1,
+    });
+    const required = schema("ProductReconciliationResult")?.required ?? [];
+    expect(required).not.toContain("mappingId");
+    expect(required).not.toContain("mappingVersion");
+  });
+});

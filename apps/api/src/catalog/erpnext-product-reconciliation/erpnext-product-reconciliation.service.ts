@@ -138,6 +138,7 @@ export class ErpnextProductReconciliationService {
         const rows = await client.query<BacklogDbRow>(
           `SELECT tp.id AS tenant_product_id,
                   s.id  AS suggestion_mapping_id,
+                  s.version AS suggestion_mapping_version,
                   s.suggestion_source,
                   s.suggested_by,
                   s.suggested_at,
@@ -148,7 +149,7 @@ export class ErpnextProductReconciliationService {
               AND cm.state = 'confirmed'
               AND cm.retired_at IS NULL
              LEFT JOIN LATERAL (
-               SELECT m.id, m.suggestion_source, m.suggested_by,
+               SELECT m.id, m.version, m.suggestion_source, m.suggested_by,
                       m.suggested_at, m.erpnext_item_ref
                  FROM erpnext_item_map m
                 WHERE m.tenant_product_id = tp.id
@@ -509,11 +510,15 @@ export class ErpnextProductReconciliationService {
 
         const rows = await client.query<ResultDbRow>(
           `SELECT ${RESULT_COLS}
-             FROM erpnext_product_reconciliation_result
-            WHERE run_id = $1
-              AND ($2::uuid IS NULL OR id > $2::uuid)
-              AND ($3::text IS NULL OR mismatch_class = $3::text)
-            ORDER BY id
+             FROM erpnext_product_reconciliation_result res
+             LEFT JOIN erpnext_item_map m
+               ON m.tenant_id = res.tenant_id
+              AND m.tenant_product_id = res.tenant_product_id
+              AND m.retired_at IS NULL
+            WHERE res.run_id = $1
+              AND ($2::uuid IS NULL OR res.id > $2::uuid)
+              AND ($3::text IS NULL OR res.mismatch_class = $3::text)
+            ORDER BY res.id
             LIMIT $4`,
           [input.runId, input.cursor ?? null, input.mismatchClass ?? null, limit],
         );
