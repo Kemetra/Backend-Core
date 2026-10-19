@@ -280,6 +280,7 @@ describe("console-catalog — projections", () => {
     expect(summary({ ...SUMMARY, defaultPrice: { amount: 8.5, currencyCode: "EGP" } })).toBe(false);
     expect(summary({ ...SUMMARY, defaultPrice: { amount: "-1.00", currencyCode: "EGP" } })).toBe(false);
     expect(summary({ ...SUMMARY, status: "deleted" })).toBe(false);
+    expect(summary({ ...SUMMARY, name: "x".repeat(501) })).toBe(false);
     expect(summary({ ...SUMMARY, createdBy: PRODUCT_ID })).toBe(false);
     expect(summary({ ...SUMMARY, storeView: { ...STORE_VIEW, sellable: true } })).toBe(false);
   });

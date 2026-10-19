@@ -36,8 +36,10 @@ info:
     **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`)
     only, gated `SessionOnlyAdminGuard` → `TenantContextGuard` → `RolesGuard`
     (the `console-sales` / `shift-closes` precedent); the session-only guard
-    rejects every bearer (a `dashboard_api` token, a POS `device` token and an
-    `operatorAuthorization` envelope included) with 401. Roles: `owner`,
+    rejects a request authenticated only by a bearer (a `dashboard_api` token,
+    a POS `device` token or an `operatorAuthorization` envelope) with 401. A
+    request with a valid session cookie is authenticated by the cookie and
+    any `Authorization` header is ignored (see `cookieAuth`). Roles: `owner`,
     `tenant_admin`, `store_manager`. The tenant comes from the session, never
     from the request (§II, §XII). Every read runs under the RLS tenant
     context.
@@ -482,6 +484,9 @@ components:
           format: uuid
         name:
           type: string
+          minLength: 1
+          maxLength: 500
+          description: The product name (`tenant_products.name`, 1 to 500 characters).
         status:
           $ref: "#/components/schemas/ProductStatus"
         categoryId:
@@ -689,8 +694,9 @@ components:
             $ref: "#/components/schemas/Error"
     Unauthorized:
       description: >
-        Unauthenticated (401): a missing or invalid session cookie, or a
-        non-cookie credential. Non-disclosing. Owned by 028 (G10).
+        Unauthenticated (401): no valid session cookie, whether or not a
+        non-cookie credential (a bearer or an operator envelope) is sent.
+        Non-disclosing. Owned by 028 (G10).
       content:
         application/json:
           schema:
