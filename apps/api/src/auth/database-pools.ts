@@ -158,6 +158,10 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     // RT-448 (0045): tracking identities and their ERPNext edge map.
     "tracking_identities",
     "erpnext_tracking_map",
+    // RT-435 (0055): status-move / relocation event records and the tenant
+    // inventory settings.
+    "inventory_position_events",
+    "tenant_inventory_settings",
     "audit_events",
     "idempotency_keys",
     "outbox_events",
@@ -233,6 +237,15 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   // neither INSERT nor any erpnext_tracking_map privilege is required. No
   // UPDATE / DELETE policy; never UPDATE, DELETE or TRUNCATE.
   ["tracking_identities", "SELECT"],
+  // RT-435 (0055): a status move or relocation writes its event record, and a
+  // replay reads it back. Append-only (no UPDATE / DELETE policy); never UPDATE,
+  // DELETE or TRUNCATE. The return landing policy is read and upserted. No
+  // DELETE policy; never DELETE or TRUNCATE.
+  ["inventory_position_events", "SELECT"],
+  ["inventory_position_events", "INSERT"],
+  ["tenant_inventory_settings", "SELECT"],
+  ["tenant_inventory_settings", "INSERT"],
+  ["tenant_inventory_settings", "UPDATE"],
   // RT-539 (0047): every reprint authorized or recorded writes one row, and
   // the next server copy number reads them. Append-only (no UPDATE / DELETE
   // policy); never UPDATE, DELETE or TRUNCATE.

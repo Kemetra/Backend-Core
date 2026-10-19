@@ -51,4 +51,5 @@ export * from "./inventory/stock-movements";
 export * from "./inventory/effect-integration";
 export * from "./inventory/stock-locations";
 export * from "./inventory/tracking-identities";
+export * from "./inventory/position-events";
 export * from "./connector-health";

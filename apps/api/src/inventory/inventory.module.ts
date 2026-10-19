@@ -29,6 +29,8 @@ import { ContextModule } from "../context/context.module";
 import { IdempotencyModule } from "../idempotency/idempotency.module";
 import { InventoryController } from "./inventory.controller";
 import { InventoryService } from "./inventory.service";
+import { InventoryPositionEventsController } from "./position-events/position-events.controller";
+import { InventoryPositionEventsService } from "./position-events/position-events.service";
 import { TrackingIdentitiesController } from "./tracking-identities.controller";
 
 /**
@@ -50,8 +52,10 @@ import { TrackingIdentitiesController } from "./tracking-identities.controller";
   // manual replay returns the same movement, a divergent body under the same
   // key 409s. Reuses the existing 001/005 primitive; no new machinery.
   imports: [AuthModule, ContextModule, IdempotencyModule],
-  controllers: [InventoryController, TrackingIdentitiesController],
-  providers: [InventoryService, RolesGuard],
+  // RT-435: status moves, relocations and the return landing policy
+  // (RolesGuard; the service reads the caller's role for sensitive moves).
+  controllers: [InventoryController, TrackingIdentitiesController, InventoryPositionEventsController],
+  providers: [InventoryService, InventoryPositionEventsService, RolesGuard],
   exports: [InventoryService],
 })
 export class InventoryModule {}
