@@ -489,11 +489,11 @@ This project follows [Semantic Versioning](https://semver.org/).
   `consolePutTenantAiFeatureOptOut` (`PUT .../ai/entitlements/opt-outs/
   {feature_id}`) is the owner-only, subtract-only opt-out write (D-5):
   required `reason`, `Idempotency-Key`, audited
-  `ai_entitlement.opt_out_changed`, guarded by its own `optOutRevision`
+  `ai_entitlement.opt_out_changed`, guarded by its own `optOutVersion`
   (never `entitlementVersion`), 403 `origin_rejected`, 409 on a stale
   revision, 422 `not_entitled` for an opt-in beyond the plan. The full view
   and every `check` decision report both `entitlementVersion` and
-  `optOutRevision`. Also the closed AI reason-code set (§4.4 plus `feature_disabled_tenant`)
+  `optOutVersion`. Also the closed AI reason-code set (§4.4 plus `feature_disabled_tenant`)
   and the server-internal `check` input and decision schemas
   (`x-internal`, no HTTP route). No price, currency, plan name, quota size,
   billing event or grace duration. No runtime or migration change; the

@@ -85,7 +85,7 @@ const KEY = "rt662-idempotency-key-0001";
 const FULL = {
   view: "full",
   entitlementVersion: 3,
-  optOutRevision: 7,
+  optOutVersion: 7,
   state: "active",
   effectiveFrom: "2026-10-01T00:00:00Z",
   effectiveUntil: null,
@@ -141,7 +141,7 @@ const CHECK_INPUT = {
 const ALLOW = {
   decision: "allow",
   entitlementVersion: 3,
-  optOutRevision: 7,
+  optOutVersion: 7,
   reservationId: RESERVATION_ID,
   evaluatedAt: NOW,
 } as const;
@@ -150,12 +150,12 @@ const DENY = {
   decision: "deny",
   reasonCode: "entitlement_unavailable",
   entitlementVersion: null,
-  optOutRevision: null,
+  optOutVersion: null,
   evaluatedAt: NOW,
 } as const;
 
 const OPT_OUT_BODY = {
-  expectedOptOutRevision: 7,
+  expectedOptOutVersion: 7,
   optedOut: true,
   reason: "Not using AI answers in this tenant yet",
 } as const;
@@ -359,9 +359,9 @@ describe("ai-entitlements — internal check contract (§4.2)", () => {
     const v = validator("AiEntitlementDecision");
     expect(api.schema("AiCheckDenyReasonCode")["enum"]).toEqual(REASON_CODES.filter((c) => c !== "provider_unavailable"));
     expect(v({ ...DENY, reasonCode: "provider_unavailable" })).toBe(false);
-    expect(v({ ...DENY, reasonCode: "quota_exhausted", entitlementVersion: 3, optOutRevision: 7 })).toBe(false);
+    expect(v({ ...DENY, reasonCode: "quota_exhausted", entitlementVersion: 3, optOutVersion: 7 })).toBe(false);
     const meter = { meter: "ask_per_month", window: "month", limit: 10, used: 10, reserved: 0, remaining: 0, resetsAt: "2026-11-01T00:00:00Z" };
-    expect(v({ ...DENY, reasonCode: "quota_exhausted", entitlementVersion: 3, optOutRevision: 7, meter })).toBe(true);
+    expect(v({ ...DENY, reasonCode: "quota_exhausted", entitlementVersion: 3, optOutVersion: 7, meter })).toBe(true);
   });
 });
 
@@ -384,7 +384,7 @@ describe("ai-entitlements — owner opt-out write (D-5)", () => {
     expect(doc.components!.parameters!["IdempotencyKey"]).toMatchObject({ in: "header", required: true });
   });
 
-  it("answers 403 only for origin_rejected, 409 for a stale opt-out revision, 422 not_entitled for an opt-in beyond the plan", () => {
+  it("answers 403 only for origin_rejected, 409 for a stale opt-out version, 422 not_entitled for an opt-in beyond the plan", () => {
     expect(Object.keys(optOut().responses ?? {}).sort()).toEqual(
       ["200", "400", "401", "403", "404", "409", "422", "425", "429", "500", "503"],
     );
@@ -394,12 +394,12 @@ describe("ai-entitlements — owner opt-out write (D-5)", () => {
     expect(REASON_CODES).toContain("not_entitled");
   });
 
-  it("guards the write with its own optOutRevision, never entitlementVersion", () => {
+  it("guards the write with its own optOutVersion, never entitlementVersion", () => {
     const body = api.schema("AiFeatureOptOutRequest");
-    expect(Object.keys(body.properties!).sort()).toEqual(["expectedOptOutRevision", "optedOut", "reason"]);
+    expect(Object.keys(body.properties!).sort()).toEqual(["expectedOptOutVersion", "optedOut", "reason"]);
     expect(JSON.stringify(body)).not.toMatch(/entitlementVersion/);
     expect(api.schema("TenantAiEntitlementsFull").required).toEqual(
-      expect.arrayContaining(["entitlementVersion", "optOutRevision"]),
+      expect.arrayContaining(["entitlementVersion", "optOutVersion"]),
     );
   });
 
@@ -413,7 +413,7 @@ describe("ai-entitlements — owner opt-out write (D-5)", () => {
     const { reason: _omit, ...noReason } = OPT_OUT_BODY;
     expect(v(noReason)).toBe(false);
     expect(v({ ...OPT_OUT_BODY, reason: "" })).toBe(false);
-    expect(v({ ...OPT_OUT_BODY, expectedOptOutRevision: -1 })).toBe(false);
+    expect(v({ ...OPT_OUT_BODY, expectedOptOutVersion: -1 })).toBe(false);
   });
 
   it("declares the IdempotencyInterceptor's flat 425 body, not the Error envelope", () => {
@@ -438,16 +438,16 @@ describe("ai-entitlements — owner opt-out write (D-5)", () => {
 });
 
 describe("ai-entitlements — provenance of both sources", () => {
-  it("records entitlementVersion and optOutRevision on every decision", () => {
+  it("records entitlementVersion and optOutVersion on every decision", () => {
     expect(api.schema("AiEntitlementAllow").required).toEqual(
-      expect.arrayContaining(["entitlementVersion", "optOutRevision"]),
+      expect.arrayContaining(["entitlementVersion", "optOutVersion"]),
     );
     expect(api.schema("AiEntitlementDeny").required).toEqual(
-      expect.arrayContaining(["entitlementVersion", "optOutRevision"]),
+      expect.arrayContaining(["entitlementVersion", "optOutVersion"]),
     );
     const v = validator("AiEntitlementDecision");
-    const { optOutRevision: _omit, ...noOptOut } = ALLOW;
+    const { optOutVersion: _omit, ...noOptOut } = ALLOW;
     expect(v(noOptOut)).toBe(false);
-    expect(v({ ...DENY, reasonCode: "feature_disabled_tenant", entitlementVersion: 3, optOutRevision: 7 })).toBe(true);
+    expect(v({ ...DENY, reasonCode: "feature_disabled_tenant", entitlementVersion: 3, optOutVersion: 7 })).toBe(true);
   });
 });

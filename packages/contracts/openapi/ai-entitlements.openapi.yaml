@@ -92,12 +92,12 @@ info:
     admin today, a Billing domain later) writes immutable entitlement
     revisions numbered by the tenant-wide monotonic `entitlementVersion`. The
     tenant owner's opt-outs are a separate, tenant-authored source with its
-    own tenant-wide monotonic `optOutRevision` (RT-663 persists it as
-    `opt_out_revision`). An opt-out write never creates an entitlement
+    own tenant-wide monotonic `optOutVersion` (RT-663 persists it as
+    `opt_out_version`). An opt-out write never creates an entitlement
     revision and never changes `entitlementVersion`; a grant never changes
-    `optOutRevision`. The full view and every `check` decision report both,
+    `optOutVersion`. The full view and every `check` decision report both,
     so an evaluation records the provenance of both sources. An opt-out
-    write is guarded by `expectedOptOutRevision`, never by
+    write is guarded by `expectedOptOutVersion`, never by
     `entitlementVersion`.
 
 
@@ -163,7 +163,7 @@ info:
     honour `Retry-After`), 500 internal, 503 `entitlement_unavailable` (the
     entitlement or opt-out store cannot be read; the operation fails closed:
     the read never returns a guessed view and the write writes nothing). The
-    write adds 403 `origin_rejected`, 409 (a stale `expectedOptOutRevision`,
+    write adds 403 `origin_rejected`, 409 (a stale `expectedOptOutVersion`,
     or `idempotency_key_conflict`), 425 (the same key still in flight) and
     422 `not_entitled` (an opt-in beyond the plan). Every 200 is
     `Cache-Control: no-store`.
@@ -235,7 +235,7 @@ paths:
       x-runtime-status: contract-only
       x-runtime-note: >
         RT-662 contract PR; the runtime ships in RT-664 after the RT-663
-        `[GATED]` migration (the opt-out source and its `opt_out_revision`),
+        `[GATED]` migration (the opt-out source and its `opt_out_version`),
         which removes this marker.
       x-idempotency: required
       x-audit-action: ai_entitlement.opt_out_changed
@@ -262,15 +262,15 @@ paths:
         of the plan catalogue, else the non-disclosing `404`; (5) under a
         lock on the tenant's opt-out source, the entitlement and opt-out
         stores must be readable (`503 entitlement_unavailable`, nothing
-        written); (6) `expectedOptOutRevision` must equal the current
-        `optOutRevision` (`409 ai_opt_out_changed_concurrently`); (7) an
+        written); (6) `expectedOptOutVersion` must equal the current
+        `optOutVersion` (`409 ai_opt_out_changed_concurrently`); (7) an
         opt-in (`optedOut: false`) of a feature the effective entitlement
         does not include is `422 not_entitled`: an opt-in can never exceed
         the plan; (8) when the requested state equals the current one,
-        `200` with the current full view, no new revision and no audit row;
-        otherwise write the opt-out, increment `optOutRevision` and write
+        `200` with the current full view, no new opt-out version and no audit row;
+        otherwise write the opt-out, increment `optOutVersion` and write
         one `ai_entitlement.opt_out_changed` audit row (feature, old and new
-        state, `reason`, new `optOutRevision`) in one transaction, and
+        state, `reason`, new `optOutVersion`) in one transaction, and
         answer `200` with the updated full view. An opt-out (`optedOut:
         true`) of a feature that is not entitled is accepted: it only
         subtracts.
@@ -632,7 +632,7 @@ components:
       required:
         - view
         - entitlementVersion
-        - optOutRevision
+        - optOutVersion
         - state
         - effectiveFrom
         - effectiveUntil
@@ -650,13 +650,13 @@ components:
             The tenant-wide monotonic entitlement revision the view was
             evaluated at; 0 when the tenant never had a revision (state
             `none`).
-        optOutRevision:
+        optOutVersion:
           type: integer
           minimum: 0
           description: >
-            The tenant-wide monotonic revision of the owner's opt-out source
+            The tenant-wide monotonic version of the owner's opt-out source
             the view was evaluated at; 0 when the owner never changed an
-            opt-out. Echo it as `expectedOptOutRevision` on the next write.
+            opt-out. Echo it as `expectedOptOutVersion` on the next write.
         state:
           $ref: "#/components/schemas/AiEntitlementState"
         effectiveFrom:
@@ -711,17 +711,17 @@ components:
     AiFeatureOptOutRequest:
       type: object
       additionalProperties: false
-      required: [expectedOptOutRevision, optedOut, reason]
+      required: [expectedOptOutVersion, optedOut, reason]
       description: >
         The owner's opt-out of the path feature (D-5). The tenant comes from
         the path and the session, and the feature from the path, never the
         body. There is no limit, plan, state or grant field: the write can
         only subtract.
       properties:
-        expectedOptOutRevision:
+        expectedOptOutVersion:
           type: integer
           minimum: 0
-          description: The read's `optOutRevision` (`0` when no opt-out was ever changed).
+          description: The read's `optOutVersion` (`0` when no opt-out was ever changed).
         optedOut:
           type: boolean
           description: >
@@ -805,7 +805,7 @@ components:
       x-internal: true
       type: object
       additionalProperties: false
-      required: [decision, entitlementVersion, optOutRevision, reservationId, evaluatedAt]
+      required: [decision, entitlementVersion, optOutVersion, reservationId, evaluatedAt]
       description: SERVER-INTERNAL. Every layer up to 7 allowed and the units are reserved.
       properties:
         decision:
@@ -815,10 +815,10 @@ components:
           type: integer
           minimum: 1
           description: The revision the reservation was made under; in-flight work finishes under it.
-        optOutRevision:
+        optOutVersion:
           type: integer
           minimum: 0
-          description: The owner opt-out revision evaluated (0 when never changed).
+          description: The owner opt-out version evaluated (0 when never changed).
         policyVersion:
           type: integer
           minimum: 1
@@ -836,7 +836,7 @@ components:
       x-internal: true
       type: object
       additionalProperties: false
-      required: [decision, reasonCode, entitlementVersion, optOutRevision, evaluatedAt]
+      required: [decision, reasonCode, entitlementVersion, optOutVersion, evaluatedAt]
       if:
         properties:
           reasonCode:
@@ -862,11 +862,11 @@ components:
           description: >
             The revision evaluated, or null when the refusal came before the
             entitlement was read (layers 0 to 5, or `entitlement_unavailable`).
-        optOutRevision:
+        optOutVersion:
           type: [integer, "null"]
           minimum: 0
           description: >
-            The owner opt-out revision evaluated, or null when the refusal
+            The owner opt-out version evaluated, or null when the refusal
             came before the opt-out source was read.
         policyVersion:
           type: integer
@@ -977,7 +977,7 @@ components:
     OptOutConflict:
       description: >
         409, `error.code` one of: `ai_opt_out_changed_concurrently`
-        (`expectedOptOutRevision` is not the current `optOutRevision`; reload
+        (`expectedOptOutVersion` is not the current `optOutVersion`; reload
         and retry); `idempotency_key_conflict` (the same `Idempotency-Key`
         with a different body). Nothing is written.
       content:
