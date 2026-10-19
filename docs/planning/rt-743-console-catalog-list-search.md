@@ -184,8 +184,14 @@ RT-729 contract that the owner approved on 2026-10-19.
 ### D6 — Roles, and which products the picker offers
 
 Roles: **mirror the existing reads**: `owner`, `tenant_admin`, `store_manager`; `store_staff` → 404. No change.
-The RT-725 suggest action is owner/tenant_admin; a store_manager can list but the console hides that action.
-That is console gating, not a contract change.
+**Platform-admin exception:** a platform admin's human session passes `RolesGuard` before any membership-role match
+(`apps/api/src/auth/roles.guard.ts:165-166`, RT-132 D6 / RT-149), in the session's tenant only, and the catalog
+contract keeps that exception (`console-catalog.yaml:72-75`). The same `RolesGuard` bypass applies to the link and
+suggest actions. Client gating must therefore show the picker (and the actions the API allows) when the session is
+`is_platform_admin`, whatever its membership role. Better still, it can gate on the API's own 403/404 rather than
+copying role codes.
+The RT-725 suggest action is owner/tenant_admin (plus a platform admin); a store_manager can list but the console
+hides that action. That is console gating, not a contract change.
 
 Picker eligibility depended on a **spec/runtime conflict** (§1.6). The spec (FR-050(a) / FR-051) allows only an
 **active** target. The runtime refuses only **retired** targets and so accepts inactive ones. The owner ruled for
@@ -193,11 +199,11 @@ the spec (below).
 
 | Option | |
 | --- | --- |
-| **(i) Conform the runtime to FR-051; the picker uses the default `status=active` (Recommended)** | Keeps the spec as written and fails closed. The picker needs no contract change: the list default `active` is exactly the set of valid targets. The runtime fix (add `is_active` to the target check in `reconciliation.service.ts:364-377`, mapping an inactive target to `target_unavailable`) is a **separate Implementation follow-up** (F6), outside RT-743. The server still answers `target_unavailable` if a product is retired or deactivated between pick and link. |
+| **(i) Conform the runtime to FR-051; the picker uses the default `status=active` (Recommended)** | Keeps the spec as written and fails closed. The picker needs no contract change: the list default `active` is exactly the set of valid targets. The runtime fix (add `is_active` to the target check in `reconciliation.service.ts:364-377`, mapping an inactive target to `target_unavailable`) is a **separate Implementation follow-up** (F6 = **RT-745**), outside RT-743. The server still answers `target_unavailable` if a product is retired or deactivated between pick and link. |
 | (ii) Amend FR-050(a) / FR-051 to allow inactive targets | Makes today's runtime correct. The picker would then need inactive products too: either `status=any` with retired rows disabled client-side, or a new `status=not_retired` filter (an additive `[GATED]` contract change). It changes link semantics, which needs explicit owner authorization (RT §9). |
 
 **Selected: (i), owner-approved 2026-10-19** (RT-743 Jira comment 12996). The runtime is conformed to FR-051 via
-follow-up **F6**; FR-050/051 are not amended. The picker uses the default `status=active` and does not offer inactive
+follow-up **F6 = RT-745**; FR-050/051 are not amended. The picker uses the default `status=active` and does not offer inactive
 products. The role part of D6 (mirror the existing reads) is unchanged and was covered by the same approval.
 
 ### D7 — Tenant isolation, RLS, non-disclosing 404
@@ -281,13 +287,14 @@ Admin-Console picker (follow-up F1) must test:
 * the picker offers only the targets the owner's D6 decision allows (`status=active` under D6 (i)); a `target_unavailable` race (product retired or deactivated after the pick) shows the contract copy;
 * paging follows `nextCursor` until `null`; a 400 on a stale cursor restarts the search;
 * 429 honours `Retry-After`; debounce keeps a normal typing burst under the budget;
-* 404 on get-one after a pick → "not available"; `store_staff` never sees the picker.
+* 404 on get-one after a pick → "not available"; `store_staff` never sees the picker;
+* a platform-admin session (`is_platform_admin`) with no tenant membership role, or any role, sees the picker and the actions the API allows.
 
 **If an additive option is chosen** (D6 (ii) `not_retired` / D3c-ii): contract conformance for the new enum value or match type;
 a cursor-digest test (a cursor from `status=active` is a 400 under `not_retired`); isolation and scope tests repeated
 for the new filter; unit tests for the SQL predicate.
 
-**F6 (if D6 (i) is chosen):** a link to an inactive product returns 409 `target_unavailable` and leaves the item `pending`; a link to an active product still succeeds; a retired product is still `target_unavailable`.
+**F6 / RT-745 (D6 (i), selected):** a link to an inactive product returns 409 `target_unavailable` and leaves the item `pending`; a link to an active product still succeeds; a retired product is still `target_unavailable`.
 
 **If D8 indexes are later proposed (F3):** `EXPLAIN (ANALYZE)` on a seeded large tenant for (a) `q` name substring,
 (b) `q` identifier hit, (c) no-`q` first page and a deep keyset page, each with and without `store_id`.
@@ -296,8 +303,10 @@ for the new filter; unit tests for the SQL predicate.
 
 * **Arabic folding (D3d):** name search does not fold Arabic letter variants, diacritics or tatweel. This is a real gap for an
   Arabic-first console; see F2.
-* **Link target status: spec/runtime conflict (D6).** FR-050(a) / FR-051 require an active target, but the runtime accepts an
-  inactive one (`reconciliation.service.ts:364-377` checks only `retired_at`). Owner decision required; see D6 and F6.
+* **Link target status: runtime not yet conformed (D6).** D6 is **resolved**: Selected (i), owner-approved 2026-10-19.
+  FR-050(a) / FR-051 stand as written. The implementation is **outstanding in RT-745 (F6)**. Until it merges, the runtime
+  still accepts an inactive target (`reconciliation.service.ts:364-377` checks only `retired_at`). The picker uses
+  `status=active` regardless, so it never offers one.
 * **Name search is an un-indexed scan (O-8)**, and it is unthrottled today: the `expensiveRead` budget only applies once
   `CONSOLE_RATE_LIMIT_MODE=enforce` (default `off`; RT-622), and even then it fails open when the limiter is unavailable
   (`console-rate-limit.guard.ts:22-25`, `:186-210`). There is no database-side bound. Volume is NOT VERIFIED.
@@ -317,12 +326,12 @@ for the new filter; unit tests for the SQL predicate.
 | F3 | Backend-Core: measure the console catalog list on a seeded large tenant **without throttling** (the limiter fails open), including concurrent scans; propose I-1/I-2 or a statement timeout if the unthrottled cost is not acceptable | Verification → Planning | Backend-Core | later `[GATED]` migration | none |
 | F4 | Backend-Core: `status=not_retired` (only under D6 (ii)) and/or `supplier_code` search (D3c-ii) | Implementation | Backend-Core | `[GATED]` contract | Only if the owner picks them |
 | F5 | Admin-Console: RF-3 catalog screens on the existing reads + RT-738 writes | Implementation | Admin-Console | none beyond PIN | F1 (shared client) |
-| F6 | Backend-Core: conform `tenantAdminLinkUnknownItem` to FR-051. An inactive target becomes 409 `target_unavailable` (`reconciliation.service.ts:364-377`) | Implementation | Backend-Core | none expected (no contract or migration change: `target_unavailable` already exists) | D6 (i) owner-approved 2026-10-19; not yet created |
+| F6 = **RT-745** | Backend-Core: conform `tenantAdminLinkUnknownItem` to FR-051. An inactive target becomes 409 `target_unavailable` (`reconciliation.service.ts:364-377`) | Implementation | Backend-Core | none expected (no contract or migration change: `target_unavailable` already exists) | D6 (i) owner-approved 2026-10-19; created as RT-745 |
 
 RT-744 (sidebar ungate) is independent of this record. The link action itself is F1.
 
 ## 8. Next safe action
 
 D6 is settled (Selected: (i), 2026-10-19). The owner reviews the remaining decisions (D1–D5, D7, D8) and confirms
-**D1-A (no new contract)**. The coordinator creates F6 (runtime conformance to FR-051).
+**D1-A (no new contract)**. F6 is RT-745 (runtime conformance to FR-051).
 On D1-A, RT-743 needs no `[GATED]` contract PR, and the next work item is F1 in Admin-Console.
