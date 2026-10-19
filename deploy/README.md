@@ -148,13 +148,13 @@ without the env loader any command fails with
 `migrate up` against `<managed-db>` and must exit 0 before `api`/`worker` start
 (compose `service_completed_successfully` gate).
 
-**Owner-gated, not part of step 2:** `docs/operations/sql/ai-entitlements-domain-grants.sql`
-(RT-664, the AI entitlement tables of migration 0055). Run it only when the
-owner has approved it for that environment, with the same `-v domain_role`
-and `deploy/grants.env` as step 2:
-`op run --env-file=deploy/grants.env -- sh -c 'psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/ai-entitlements-domain-grants.sql'`.
-Without it the API still boots; the AI entitlement routes answer 503 and AI
-runs fail closed (see `docs/operations/database-roles.md`).
+**Owner-gated, not part of step 2:** the AI entitlement grants
+(`ai-entitlements-domain-grants.sql`, RT-664, for the tables of migration 0055).
+They are not part of the routine release or of its bundle. Run them only when
+the owner has approved it for that environment; the command and its scope are
+in [`docs/operations/database-roles.md`](../docs/operations/database-roles.md).
+Without them the API still boots: the AI entitlement routes answer 503 and AI
+runs fail closed.
 
 Step 2 must run between the migration and the app start. The API boot check
 verifies the domain role's cashier-admissions table grants (RT-212), its

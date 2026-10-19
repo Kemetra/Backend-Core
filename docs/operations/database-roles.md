@@ -385,7 +385,11 @@ table the domain role must use needs a matching grant step at deploy time.
   `TRUNCATE` on any of them. The worker's reservation sweep uses the same
   grants. Unlike the scripts above, it is NOT part of the routine step 2: running it
   on any lab or live database is a separate owner decision (the owner chose
-  this on 2026-10-20). The tables are NOT in `DOMAIN_REQUIRED_GRANTS`, so the
+  this on 2026-10-20). Once the owner approves an environment, run it from a
+  checkout of the release's commit (it is not in the release bundle), with the
+  same `deploy/grants.env` and `-v domain_role` as step 2:
+  `op run --env-file=deploy/grants.env -- sh -c 'psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/ai-entitlements-domain-grants.sql'`.
+  The tables are NOT in `DOMAIN_REQUIRED_GRANTS`, so the
   API boots without them. Until the script runs, the AI entitlement read and
   opt-out answer 503 `entitlement_unavailable`, and every AI gateway run
   fails closed with `entitlement_unavailable` and no provider call. The auth
