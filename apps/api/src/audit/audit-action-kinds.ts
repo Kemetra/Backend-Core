@@ -39,6 +39,8 @@ const LIVE_READ_CODES = [
   "catalog.snapshot.read",
   "console_sales.detail_read",
   "console_sales.listed",
+  // RT-649: the console sales summary.
+  "console_sales.summary_read",
   "devices.impact_read",
   "devices.listed",
   "devices.read",

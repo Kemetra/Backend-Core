@@ -27,21 +27,15 @@
  */
 import "reflect-metadata";
 
-import type { INestApplication } from "@nestjs/common";
-import Ajv, { type ValidateFunction } from "ajv";
-import addFormats from "ajv-formats";
-import request from "supertest";
+import type { ValidateFunction } from "ajv";
+import type request from "supertest";
 
-import type { AuditJobEnqueuer } from "../../src/audit/audit-job.enqueuer";
 import type { AuditJobPayload } from "../../src/audit/audit-job.types";
 import { encodeSaleHistoryCursor } from "../../src/catalog/sales/history/sale-history.query";
-import { ConsoleSalesModule } from "../../src/console-sales/console-sales.module";
 import { encodeConsoleSaleCursor, SCAN_LIMIT_DEFAULT } from "../../src/console-sales/console-sales.query";
-import { loadOpenApiContracts } from "../../src/openapi/loader";
-import { applyAllUpAndCreateAppRole, startPgEnv, stopPgEnv, type PgTestEnv } from "../_helpers/postgres-container";
+import type { PgTestEnv } from "../_helpers/postgres-container";
 import { STORE_A_X, STORE_A_Y, STORE_B_X, TENANT_A, TENANT_B } from "../catalog/__support__/isolation-harness";
 import {
-  bootScopedApp,
   NON_EXISTENT,
   S_DELETED,
   SES_ADMIN_SPEC,
@@ -92,6 +86,7 @@ import {
   X_VOID,
   Y_OCT02,
 } from "./__support__/console-sales-fixture";
+import { expectValid, useConsoleHttpHarness, type Query } from "./__support__/console-http-harness";
 
 const LIST = "/api/v1/sales";
 const detailPath = (saleRef: string): string => `${LIST}/${saleRef}`;
@@ -100,7 +95,6 @@ const CONTRACT_ID = "console-sales.openapi";
 const OCTOBER = { from: "2026-10-01", to: "2026-10-31" };
 const X_OCT = { store_id: STORE_A_X, ...OCTOBER };
 
-type Query = Record<string, string | number>;
 interface Item {
   saleRef: string;
   storeRef: string;
@@ -113,82 +107,22 @@ interface Page {
   [key: string]: unknown;
 }
 
-class SpyAuditEnqueuer implements AuditJobEnqueuer {
-  readonly payloads: AuditJobPayload[] = [];
-  async enqueue(payload: AuditJobPayload): Promise<void> {
-    this.payloads.push(payload);
-  }
-}
-
-let env: PgTestEnv | null = null;
-let app: INestApplication | null = null;
-let dockerSkipped = false;
-const audit = new SpyAuditEnqueuer();
-
-const ajv = new Ajv({ strict: false, allErrors: true });
-addFormats(ajv);
+const http = useConsoleHttpHarness({ label: "RT-562 console-sales", contractId: CONTRACT_ID, seed: seedConsoleSalesFixture });
+const audit = http.audit;
 let pageSchema: ValidateFunction;
 let detailSchema: ValidateFunction;
 let errorSchema: ValidateFunction;
 
-beforeAll(async () => {
-  const found = loadOpenApiContracts().find((c) => c.id === CONTRACT_ID);
-  if (!found) throw new Error(`${CONTRACT_ID} not found in packages/contracts/openapi/`);
-  ajv.addSchema(found.document as object, CONTRACT_ID);
-  const compiled = (name: string): ValidateFunction => {
-    const v = ajv.getSchema(`${CONTRACT_ID}#/components/schemas/${name}`);
-    if (!v) throw new Error(`ajv cannot resolve ${name}`);
-    return v;
-  };
-  pageSchema = compiled("ConsoleSalePage");
-  detailSchema = compiled("ConsoleSaleDetail");
-  errorSchema = compiled("Error");
+beforeAll(() => {
+  pageSchema = http.schema("ConsoleSalePage");
+  detailSchema = http.schema("ConsoleSaleDetail");
+  errorSchema = http.schema("Error");
+});
 
-  try {
-    env = await startPgEnv();
-    await applyAllUpAndCreateAppRole(env);
-    await seedConsoleSalesFixture(env);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
-      dockerSkipped = true;
-      // eslint-disable-next-line no-console
-      console.warn(`\n[RT-562 console-sales] Docker NOT AVAILABLE: ${msg}\n`);
-      return;
-    }
-    throw new Error(`Container start failed: ${msg}`);
-  }
-  // Bearer tokens resolve on the RLS-exempt pool, as the production auth-lookup role does.
-  app = await bootScopedApp(env, ConsoleSalesModule, audit, { authLookupPool: env.admin });
-}, 240_000);
+const skip = (): boolean => http.skip();
+const E = (): PgTestEnv => http.env();
+const get = (path: string, session: string | null, query: Query | string = {}): request.Test => http.get(path, session, query);
 
-afterAll(async () => {
-  if (app) await app.close();
-  if (env) await stopPgEnv(env);
-}, 60_000);
-
-function skip(): boolean {
-  if (dockerSkipped) {
-    // eslint-disable-next-line no-console
-    console.warn("[RT-562 console-sales] skipping — Docker unavailable");
-    return true;
-  }
-  return false;
-}
-
-function E(): PgTestEnv {
-  if (!env) throw new Error("env not initialized");
-  return env;
-}
-
-function get(path: string, session: string | null, query: Query | string = {}): request.Test {
-  const req = request(app!.getHttpServer()).get(path).query(query);
-  return session === null ? req : req.set("x-test-session", session);
-}
-
-function expectValid(validate: ValidateFunction, body: unknown): void {
-  if (!validate(body)) throw new Error(`contract violation: ${JSON.stringify(validate.errors)}`);
-}
 
 /** One page; asserts 200, no-store and the `ConsoleSalePage` shape. */
 async function page(session: string, query: Query): Promise<Page> {
