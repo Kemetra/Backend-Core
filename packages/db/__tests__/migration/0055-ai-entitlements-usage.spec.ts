@@ -570,6 +570,8 @@ describe("0055 — ai_usage_counters (D-3 Option A, D-9 UTC windows)", () => {
     // Midnight in Cairo is not a UTC day boundary.
     await expectCode(insertCounter({ windowStart: "2026-10-19T00:00:00+03:00" }), "23514");
     await expectCode(insertCounter({ windowKind: "week" }), "23514");
+    // A unit date_trunc itself would reject (22023) is still a CHECK violation.
+    await expectCode(insertCounter({ windowKind: "bogus" }), "23514");
   });
 
   it("checks the counts and the store's tenant (23514 / 23503)", async () => {

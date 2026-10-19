@@ -22,8 +22,8 @@
  *   outcome, never charged) per reservation, with the AI-09 run metadata.
  *   No prompt, completion or price column.
  *
- * Every table is RLS-forced. The ledger's reserved / telemetry shape CHECKs,
- * the partial unique / expiry indexes, the policies and the triggers (append-only, counter identity guard, terminal →
+ * Every table is RLS-forced. The ledger's text-length CHECK, the policies
+ * and the triggers (append-only, counter identity guard, terminal →
  * reservation guard) live in the SQL migration.
  */
 import { sql } from "drizzle-orm";
@@ -41,6 +41,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { stores } from "./stores";
@@ -329,7 +330,9 @@ export const aiUsageCounters = pgTable(
     check("ai_usage_counters_window_valid", sql`${t.windowKind} IN ('day', 'month')`),
     check(
       "ai_usage_counters_window_utc_aligned",
-      sql`date_trunc(${t.windowKind}, ${t.windowStart} AT TIME ZONE 'UTC') = ${t.windowStart} AT TIME ZONE 'UTC'`,
+      sql`CASE WHEN ${t.windowKind} IN ('day', 'month')
+        THEN date_trunc(${t.windowKind}, ${t.windowStart} AT TIME ZONE 'UTC') = ${t.windowStart} AT TIME ZONE 'UTC'
+        ELSE false END`,
     ),
     check("ai_usage_counters_used_non_negative", sql`${t.used} >= 0`),
     check("ai_usage_counters_reserved_non_negative", sql`${t.reserved} >= 0`),
@@ -425,7 +428,78 @@ export const aiUsageLedger = pgTable(
         OR (${t.entryKind} = 'committed' AND ${t.outcome} IS NOT NULL AND ${t.outcome} = 'ok')
         OR (${t.entryKind} = 'released' AND ${t.outcome} IS NOT NULL AND ${t.outcome} <> 'ok')`,
     ),
+    check(
+      "ai_usage_ledger_feature_id_format",
+      sql`${t.featureId} ~ ${sql.raw(`'${FEATURE_ID_FORMAT}'`)}`,
+    ),
     check("ai_usage_ledger_units_positive", sql`${t.units} > 0`),
+    check(
+      "ai_usage_ledger_reserved_shape",
+      sql`(${t.entryKind} = 'reserved' AND ${t.idempotencyKey} IS NOT NULL
+          AND ${t.expiresAt} IS NOT NULL AND ${t.expiresAt} > ${t.createdAt})
+        OR (${t.entryKind} <> 'reserved' AND ${t.idempotencyKey} IS NULL AND ${t.expiresAt} IS NULL)`,
+    ),
+    check(
+      "ai_usage_ledger_idempotency_key_length",
+      sql`${t.idempotencyKey} IS NULL OR char_length(${t.idempotencyKey}) BETWEEN 16 AND 128`,
+    ),
+    check(
+      "ai_usage_ledger_reserved_no_result",
+      sql`${t.entryKind} <> 'reserved'
+        OR (${t.outcome} IS NULL AND ${t.inputTokens} IS NULL AND ${t.outputTokens} IS NULL
+          AND ${t.cachedInputTokens} IS NULL AND ${t.tokenCountSource} IS NULL
+          AND ${t.listEquivalentCostMicros} IS NULL AND ${t.costCurrency} IS NULL
+          AND ${t.costRateCardVersion} IS NULL AND ${t.providerRequestId} IS NULL)`,
+    ),
+    check(
+      "ai_usage_ledger_outcome_valid",
+      sql`${t.outcome} IS NULL OR ${t.outcome} IN ('ok', 'provider_refused', 'output_truncated',
+        'output_invalid', 'provider_unavailable', 'input_rejected', 'not_attempted',
+        'reservation_expired')`,
+    ),
+    check(
+      "ai_usage_ledger_token_source_valid",
+      sql`${t.tokenCountSource} IS NULL OR ${t.tokenCountSource} IN ('reported', 'estimated')`,
+    ),
+    check(
+      "ai_usage_ledger_tokens_sourced",
+      sql`(${t.tokenCountSource} IS NULL)
+        = (${t.inputTokens} IS NULL AND ${t.outputTokens} IS NULL AND ${t.cachedInputTokens} IS NULL)`,
+    ),
+    check(
+      "ai_usage_ledger_tokens_non_negative",
+      sql`(${t.inputTokens} IS NULL OR ${t.inputTokens} >= 0)
+        AND (${t.outputTokens} IS NULL OR ${t.outputTokens} >= 0)
+        AND (${t.cachedInputTokens} IS NULL OR ${t.cachedInputTokens} >= 0)`,
+    ),
+    check(
+      "ai_usage_ledger_cost_all_or_none",
+      sql`(${t.listEquivalentCostMicros} IS NULL AND ${t.costCurrency} IS NULL
+          AND ${t.costRateCardVersion} IS NULL)
+        OR (${t.listEquivalentCostMicros} IS NOT NULL AND ${t.costCurrency} IS NOT NULL
+          AND ${t.costRateCardVersion} IS NOT NULL)`,
+    ),
+    check(
+      "ai_usage_ledger_cost_non_negative",
+      sql`${t.listEquivalentCostMicros} IS NULL OR ${t.listEquivalentCostMicros} >= 0`,
+    ),
+    check(
+      "ai_usage_ledger_cost_currency_format",
+      sql`${t.costCurrency} IS NULL OR ${t.costCurrency} ~ '^[A-Z]{3}$'`,
+    ),
+    check(
+      "ai_usage_ledger_evidence_refs_shape",
+      sql`${t.evidenceRefIds} IS NULL
+        OR (cardinality(${t.evidenceRefIds}) <= 256
+          AND array_position(${t.evidenceRefIds}, NULL) IS NULL
+          AND char_length(array_to_string(${t.evidenceRefIds}, ',')) <= 32768)`,
+    ),
+    uniqueIndex("uq_ai_usage_ledger_one_terminal")
+      .on(t.reservationId)
+      .where(sql`${t.entryKind} <> 'reserved'`),
+    index("idx_ai_usage_ledger_reserved_expiry")
+      .on(t.tenantId, t.expiresAt)
+      .where(sql`${t.entryKind} = 'reserved'`),
     index("idx_ai_usage_ledger_tenant_feature_created").on(t.tenantId, t.featureId, t.createdAt),
     index("idx_ai_usage_ledger_counter").on(t.counterId),
   ],

@@ -10,15 +10,19 @@
 -- opt-out, usage counter and ledger row (with its AI run metadata) is LOST.
 -- Roll back RT-664 first, and take a backup if the usage history matters.
 --
--- Locks: as in the up migration, lock_timeout = 2s and the FK parents locked
--- up front. On a timeout the down rolls back with nothing changed; retry when
--- the blocking transaction has ended.
+-- Lock impact: heavier than the up (the 0047 down precedent). DROP TABLE
+-- takes ACCESS EXCLUSIVE on each dropped table and on every table its FKs
+-- reference (tenants, stores, users), so reads of those three tables, auth
+-- lookups included, wait for this short transaction. The locks are taken up
+-- front at that level, so none is upgraded mid-transaction; lock_timeout
+-- bounds each wait at 2s. On a timeout the down rolls back with nothing
+-- changed; retry when the blocking transaction has ended.
 
 BEGIN;
 
 SET LOCAL lock_timeout = '2s';
 
-LOCK TABLE tenants, stores, users IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE tenants, stores, users IN ACCESS EXCLUSIVE MODE;
 
 DROP TABLE IF EXISTS ai_usage_ledger;
 DROP FUNCTION IF EXISTS ai_usage_ledger_terminal_guard();

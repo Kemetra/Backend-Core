@@ -391,9 +391,13 @@ CREATE TABLE ai_usage_counters (
     CHECK (meter ~ '^[a-z][a-z0-9_]{0,39}(\.[a-z][a-z0-9_]{0,39}){0,5}$'),
   CONSTRAINT ai_usage_counters_window_valid CHECK (window_kind IN ('day', 'month')),
   -- `AT TIME ZONE 'UTC'` pins the boundary to UTC whatever the session
-  -- TimeZone; date_trunc(text, timestamp) is immutable.
+  -- TimeZone; date_trunc(text, timestamp) is immutable. The CASE keeps an
+  -- unknown window_kind a 23514 here, not a date_trunc 22023 (CHECKs run in
+  -- name order, so this one runs before window_valid).
   CONSTRAINT ai_usage_counters_window_utc_aligned CHECK (
-    date_trunc(window_kind, window_start AT TIME ZONE 'UTC') = window_start AT TIME ZONE 'UTC'),
+    CASE WHEN window_kind IN ('day', 'month')
+         THEN date_trunc(window_kind, window_start AT TIME ZONE 'UTC') = window_start AT TIME ZONE 'UTC'
+         ELSE false END),
   CONSTRAINT ai_usage_counters_used_non_negative CHECK (used >= 0),
   CONSTRAINT ai_usage_counters_reserved_non_negative CHECK (reserved >= 0)
 );
@@ -577,12 +581,17 @@ CREATE TABLE ai_usage_ledger (
     AND (provider_request_id IS NULL OR char_length(provider_request_id) BETWEEN 1 AND 256))
 );
 
--- At most one commit or release per reservation.
+-- At most one commit or release per reservation. Also the terminal lookup:
+-- a query (or ON CONFLICT target) must repeat `entry_kind <> 'reserved'` to
+-- use it; a reservation itself is found by its primary key (id).
 CREATE UNIQUE INDEX uq_ai_usage_ledger_one_terminal
   ON ai_usage_ledger (reservation_id) WHERE entry_kind <> 'reserved';
--- The TTL sweeper's scan of open reservations (T17).
+-- The TTL sweeper (T17). The ledger is append-only, so every reservation
+-- ever taken stays in this index: the sweeper runs per tenant (RLS gives no
+-- cross-tenant read here) and bounds its scan with a lookback window,
+-- anti-joining uq_ai_usage_ledger_one_terminal for the ones still open.
 CREATE INDEX idx_ai_usage_ledger_reserved_expiry
-  ON ai_usage_ledger (expires_at) WHERE entry_kind = 'reserved';
+  ON ai_usage_ledger (tenant_id, expires_at) WHERE entry_kind = 'reserved';
 -- Per-tenant, per-feature, per-period reads (usage export, spend cap).
 CREATE INDEX idx_ai_usage_ledger_tenant_feature_created
   ON ai_usage_ledger (tenant_id, feature_id, created_at);
