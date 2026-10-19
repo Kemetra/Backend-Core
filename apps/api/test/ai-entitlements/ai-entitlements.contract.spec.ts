@@ -438,6 +438,25 @@ describe("ai-entitlements — owner opt-out write (D-5)", () => {
 });
 
 describe("ai-entitlements — provenance of both sources", () => {
+  it("requires an available feature to be entitled and not opted out", () => {
+    const v = validator("TenantAiEntitlements");
+    expect(v({ ...FULL, features: [{ ...FULL.features[1], entitled: false }] })).toBe(false);
+    expect(v({ ...FULL, features: [{ ...FULL.features[1], optOut: { optedOut: true, changedAt: NOW } }] })).toBe(false);
+  });
+
+  it("gives state none no effective dates", () => {
+    const v = validator("TenantAiEntitlements");
+    const none = { ...FULL, state: "none", entitlementVersion: 0, effectiveFrom: null, effectiveUntil: null, features: [] };
+    expect(v(none)).toBe(true);
+    expect(v({ ...none, effectiveFrom: "2026-10-01T00:00:00Z" })).toBe(false);
+    expect(v({ ...none, effectiveUntil: "2026-12-01T00:00:00Z" })).toBe(false);
+  });
+
+  it("states the current platform-admin read and the future RT-414 rule on the operation", () => {
+    expect(api.get(PATH).description).toMatch(/existing `RolesGuard` platform-admin pass/);
+    expect(api.get(PATH).description).not.toMatch(/platform admin in a support session get/);
+  });
+
   it("requires a null reason on an available feature", () => {
     const v = validator("TenantAiEntitlements");
     expect(v({ ...FULL, features: [{ ...FULL.features[1], unavailableReason: "not_entitled" }] })).toBe(false);

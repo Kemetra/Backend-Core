@@ -104,8 +104,8 @@ info:
     **Views (D-6).** The response is one of two shapes, chosen by the
     server from the caller's role, never by the request:
 
-      - `full` — `owner`, `tenant_admin` and a platform admin in a support
-        session: the effective entitlement state, effective dates, every
+      - `full` — `owner`, `tenant_admin` and a platform admin (admitted as
+        described under **Auth and scope**): the effective entitlement state, effective dates, every
         catalogue feature with its availability, the tenant opt-outs (D-5)
         and the request meters (limit, used, reserved, remaining, reset time).
       - `minimal` — `store_manager`: each catalogue feature with only
@@ -197,9 +197,12 @@ paths:
       security:
         - cookieAuth: []
       description: >
-        `owner`, `tenant_admin` and a platform admin in a support session get
-        the `full` view; `store_manager` gets the `minimal` view; every other
-        caller gets the non-disclosing 404 (see the API description). Read
+        `owner`, `tenant_admin` and a platform admin get the `full` view;
+        `store_manager` gets the `minimal` view; every other caller gets the
+        non-disclosing 404. A platform admin is admitted today by the
+        existing `RolesGuard` platform-admin pass; once RT-414 ships, a
+        platform admin who is not a member of the tenant also needs an
+        active support session (see the API description). Read
         only: it reserves no quota and writes no audit event. No query
         parameter is accepted.
       responses:
@@ -606,9 +609,18 @@ components:
             const: available
         required: [availability]
       then:
+        description: >
+          `available` means entitled and not opted out, so it carries no
+          reason.
         properties:
           unavailableReason:
             type: "null"
+          entitled:
+            const: true
+          optOut:
+            properties:
+              optedOut:
+                const: false
       properties:
         featureId:
           $ref: "#/components/schemas/AiFeatureId"
@@ -647,7 +659,20 @@ components:
         - effectiveUntil
         - evaluatedAt
         - features
-      description: The owner / tenant_admin view (D-6).
+      description: >
+        The owner / tenant_admin view (D-6). State `none` has no effective
+        revision: `effectiveFrom` and `effectiveUntil` are null.
+      if:
+        properties:
+          state:
+            const: none
+        required: [state]
+      then:
+        properties:
+          effectiveFrom:
+            type: "null"
+          effectiveUntil:
+            type: "null"
       properties:
         view:
           type: string
