@@ -190,9 +190,9 @@ export class InventoryPositionEventsController {
   /** An authenticated, tenant-bound principal. */
   private context(request: TenantContextRequest): ResolvedContext {
     const ctx = request.context;
-    if (!ctx || ctx.tenantId === null || ctx.userId === null) {
-      throw new UnauthorizedException('Unauthorized');
-    }
+    if (!ctx) throw new UnauthorizedException('Unauthorized');
+    if (ctx.tenantId === null) throw new UnauthorizedException('Unauthorized');
+    if (ctx.userId === null) throw new UnauthorizedException('Unauthorized');
     return ctx;
   }
 

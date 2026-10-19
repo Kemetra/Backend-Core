@@ -175,7 +175,8 @@ function maybeSkip(): boolean {
   return false;
 }
 
-function statusMove(overrides: Partial<StatusMoveInput> = {}): StatusMoveInput {
+/** The server-resolved actor, store and product every command here shares. */
+function commandBase() {
   return {
     tenantId: TENANT_A,
     userId: ACTOR_A,
@@ -183,34 +184,20 @@ function statusMove(overrides: Partial<StatusMoveInput> = {}): StatusMoveInput {
     idempotencyKey: key(),
     storeId: STORE_A_X,
     tenantProductRef: PRODUCT_A_ACTIVE,
-    quantity: '3',
     stockingUnit: 'ea',
-    stockLocationId: null,
-    fromStatus: 'sellable',
-    toStatus: 'damaged',
-    reasonCode: 'damage',
+    reasonCode: null,
     note: null,
-    ...overrides,
-  };
+  } as const;
+}
+
+function statusMove(overrides: Partial<StatusMoveInput> = {}): StatusMoveInput {
+  const move = { quantity: '3', stockLocationId: null, fromStatus: 'sellable', toStatus: 'damaged' } as const;
+  return { ...commandBase(), ...move, reasonCode: 'damage', ...overrides };
 }
 
 function relocation(overrides: Partial<RelocationInput> = {}): RelocationInput {
-  return {
-    tenantId: TENANT_A,
-    userId: ACTOR_A,
-    isPlatformAdmin: false,
-    idempotencyKey: key(),
-    storeId: STORE_A_X,
-    tenantProductRef: PRODUCT_A_ACTIVE,
-    quantity: '2',
-    stockingUnit: 'ea',
-    fromLocationId: primaryAX,
-    toLocationId: BACKROOM_A_X,
-    inventoryStatus: null,
-    reasonCode: null,
-    note: null,
-    ...overrides,
-  };
+  const move = { quantity: '2', fromLocationId: primaryAX, toLocationId: BACKROOM_A_X, inventoryStatus: null };
+  return { ...commandBase(), ...move, ...overrides };
 }
 
 async function onHand(): Promise<{ physical: string; sellable: string; byStatus: Record<string, string> }> {

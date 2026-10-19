@@ -29,18 +29,21 @@ import { parseQuantity } from '../decimal-quantity';
  *     (RT-449). Holds are records on an identity (G7-6), so a plain status
  *     move never places or lifts one.
  */
-const REASON_TRANSITIONS: Readonly<
-  Record<InventoryReasonCode, (from: InventoryStatus, to: InventoryStatus) => boolean>
-> = {
-  damage: (from, to) => from === 'sellable' && to === 'damaged',
-  expiry: (from, to) => from === 'sellable' && to === 'expired',
-  inspection_restock: (from, to) => from === 'return_inspection' && to === 'sellable',
-  inspection_damage: (from, to) => from === 'return_inspection' && to === 'damaged',
-  hold_release: (from, to) => from === 'quality_hold' && to === 'sellable',
-  correction: (from, to) => !HOLD_STATUSES.has(from) && !HOLD_STATUSES.has(to),
-  quality_hold: () => false,
-  recall: () => false,
-};
+type TransitionRule = (from: InventoryStatus, to: InventoryStatus) => boolean;
+
+// A Map, not an object: a code outside the table finds no rule (never a
+// prototype member), and is refused.
+const REASON_TRANSITIONS: ReadonlyMap<InventoryReasonCode, TransitionRule> = new Map<
+  InventoryReasonCode,
+  TransitionRule
+>([
+  ['damage', (from, to) => from === 'sellable' && to === 'damaged'],
+  ['expiry', (from, to) => from === 'sellable' && to === 'expired'],
+  ['inspection_restock', (from, to) => from === 'return_inspection' && to === 'sellable'],
+  ['inspection_damage', (from, to) => from === 'return_inspection' && to === 'damaged'],
+  ['hold_release', (from, to) => from === 'quality_hold' && to === 'sellable'],
+  ['correction', (from, to) => !HOLD_STATUSES.has(from) && !HOLD_STATUSES.has(to)],
+]);
 
 const HOLD_STATUSES: ReadonlySet<InventoryStatus> = new Set(['quality_hold', 'recall_hold']);
 
@@ -91,7 +94,8 @@ export function assertStatusMoveAllowed(input: {
       `reasonCode '${input.reasonCode}' is reserved for the tracking-hold workflow`,
     );
   }
-  if (!REASON_TRANSITIONS[input.reasonCode](input.fromStatus, input.toStatus)) {
+  const allows = REASON_TRANSITIONS.get(input.reasonCode);
+  if (allows === undefined || !allows(input.fromStatus, input.toStatus)) {
     throw new PositionEventRuleError(
       `reasonCode '${input.reasonCode}' does not allow ${input.fromStatus} -> ${input.toStatus}`,
     );

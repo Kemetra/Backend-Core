@@ -10,7 +10,12 @@
  *   - D2: the sensitive source statuses and the roles allowed to move out of
  *     them.
  */
-import { INVENTORY_REASON_CODES, INVENTORY_STATUSES, type InventoryStatus } from '@data-pulse-2/db';
+import {
+  INVENTORY_REASON_CODES,
+  INVENTORY_STATUSES,
+  type InventoryReasonCode,
+  type InventoryStatus,
+} from '@data-pulse-2/db';
 
 import {
   PositionEventRuleError,
@@ -76,19 +81,29 @@ describe('D1 Reason Codes on a status move', () => {
     ['hold_release', 'quality_hold', 'sellable'],
   ];
 
-  it('allows exactly the governed pair of each code', () => {
-    for (const code of ['damage', 'expiry', 'inspection_restock', 'inspection_damage', 'hold_release'] as const) {
-      for (const from of INVENTORY_STATUSES) {
-        for (const to of INVENTORY_STATUSES) {
-          if (from === to) continue;
-          const allowed = ALLOWED.some(([c, f, t]) => c === code && f === from && t === to);
-          const run = () => assertStatusMoveAllowed({ fromStatus: from, toStatus: to, reasonCode: code, note: null });
-          if (allowed) expect(run).not.toThrow();
-          else expect(run).toThrow(PositionEventRuleError);
-        }
-      }
+  /** Every ordered pair of different statuses. */
+  const PAIRS = INVENTORY_STATUSES.flatMap((from) =>
+    INVENTORY_STATUSES.filter((to) => to !== from).map((to) => [from, to] as const),
+  );
+
+  /** True when the rule accepts the move. */
+  function accepts(code: InventoryReasonCode, from: InventoryStatus, to: InventoryStatus): boolean {
+    try {
+      assertStatusMoveAllowed({ fromStatus: from, toStatus: to, reasonCode: code, note: null });
+      return true;
+    } catch (err: unknown) {
+      if (err instanceof PositionEventRuleError) return false;
+      throw err;
     }
-  });
+  }
+
+  it.each(['damage', 'expiry', 'inspection_restock', 'inspection_damage', 'hold_release'] as const)(
+    '%s allows exactly its governed pair',
+    (code) => {
+      const accepted = PAIRS.filter(([from, to]) => accepts(code, from, to));
+      expect(accepted).toEqual(ALLOWED.filter(([c]) => c === code).map(([, from, to]) => [from, to]));
+    },
+  );
 
   it('a recall hold is never released by a status move (G7-6)', () => {
     expect(() =>
@@ -109,6 +124,19 @@ describe('D1 Reason Codes on a status move', () => {
       ).toThrow(PositionEventRuleError);
       expect(() =>
         assertStatusMoveAllowed({ fromStatus: hold, toStatus: 'sellable', reasonCode: 'correction', note: 'n' }),
+      ).toThrow(PositionEventRuleError);
+    }
+  });
+
+  it('refuses a code outside the table, including an object-prototype name', () => {
+    for (const code of ['toString', 'constructor', 'shrinkage']) {
+      expect(() =>
+        assertStatusMoveAllowed({
+          fromStatus: 'sellable',
+          toStatus: 'damaged',
+          reasonCode: code as InventoryReasonCode,
+          note: null,
+        }),
       ).toThrow(PositionEventRuleError);
     }
   });

@@ -398,25 +398,27 @@ export class InventoryPositionEventsService {
     const replayed = await this.findReplay(client, cmd);
     if (replayed) return replayed;
 
-    // M-5 under the V1 profile (Q2): both effects map to the store's bucket.
     const fromQuantity = formatQuantity(-parseQuantity(cmd.quantity));
-    const neutral = netsToZeroPerBucket([
-      leg(cmd, v1MappingBucket(cmd.storeId), fromQuantity),
-      leg(cmd, v1MappingBucket(cmd.storeId), cmd.quantity),
-    ]);
-    if (!neutral) {
-      // Gate 8 (RT-293) defines the cross-bucket transfer intent; until then
-      // nothing is written.
-      throw new ConflictException({
-        code: 'erp_transfer_intent_required',
-        message: 'This move crosses ERP mapping buckets, which is not supported yet.',
-      });
-    }
-
+    assertErpNeutral(cmd, fromQuantity);
     await this.assertUntracked(client, cmd.tenantProductRef);
     await this.assertUnitMatchesEstablished(client, cmd);
 
-    const eventId = newId();
+    const event = await this.insertEvent(client, cmd);
+    if (!event) {
+      // A concurrent request with the same command committed first.
+      const raced = await this.findReplay(client, cmd);
+      if (raced) return raced;
+      throw new Error('InventoryPositionEventsService: fingerprint conflict without a recorded event');
+    }
+
+    const fromEffect = await this.insertEffect(client, cmd, event, 'from', fromQuantity);
+    const toEffect = await this.insertEffect(client, cmd, event, 'to', cmd.quantity);
+    await this.recordEffectsWritten(client, cmd, event, [fromEffect.id, toEffect.id]);
+    return toEventBody(event, fromEffect, toEffect);
+  }
+
+  /** Insert the event record; null when the fingerprint already exists (a racing replay). */
+  private async insertEvent(client: PoolClient, cmd: PositionCommand): Promise<EventRow | undefined> {
     const inserted = await client.query<EventRow>(
       `INSERT INTO inventory_position_events
          (id, tenant_id, store_id, kind, tenant_product_ref, quantity, stocking_unit,
@@ -426,7 +428,7 @@ export class InventoryPositionEventsService {
        ON CONFLICT (tenant_id, command_fingerprint) DO NOTHING
        RETURNING ${EVENT_COLUMNS}`,
       [
-        eventId,
+        newId(),
         cmd.tenantId,
         cmd.storeId,
         cmd.kind,
@@ -444,44 +446,44 @@ export class InventoryPositionEventsService {
         cmd.userId,
       ],
     );
-    const event = inserted.rows[0];
-    if (!event) {
-      // A concurrent request with the same command committed first.
-      const raced = await this.findReplay(client, cmd);
-      if (raced) return raced;
-      throw new Error('InventoryPositionEventsService: fingerprint conflict without a recorded event');
-    }
+    return inserted.rows[0];
+  }
 
-    const fromEffect = await this.insertEffect(client, cmd, event, 'from', fromQuantity);
-    const toEffect = await this.insertEffect(client, cmd, event, 'to', cmd.quantity);
+  /**
+   * The effects' `erp_neutral` integration records (Q10), the audit row and
+   * the outbox event, in the event's transaction.
+   */
+  private async recordEffectsWritten(
+    client: PoolClient,
+    cmd: PositionCommand,
+    event: EventRow,
+    effectIds: readonly string[],
+  ): Promise<void> {
     await client.query(
       `INSERT INTO inventory_effect_integration (effect_id, tenant_id, state)
        SELECT effect_id, $1, $3 FROM unnest($2::uuid[]) AS effect_id`,
-      [cmd.tenantId, [fromEffect.id, toEffect.id], ERP_NEUTRAL],
+      [cmd.tenantId, effectIds, ERP_NEUTRAL],
     );
-
     await this.audit(client, {
       tenantId: cmd.tenantId,
       userId: cmd.userId,
       action: AUDIT_ACTION[cmd.kind],
       targetType: AUDIT_TARGET_TYPE_EVENT,
       targetId: event.id,
-      metadata: { storeId: cmd.storeId, effectIds: [fromEffect.id, toEffect.id] },
+      metadata: { storeId: cmd.storeId, effectIds },
     });
     await emit(client, {
       eventType: OUTBOX_EVENT_TYPES.INVENTORY_MOVEMENT_CREATED,
       tenantId: cmd.tenantId,
       storeId: cmd.storeId,
       payload: {
-        movementIds: [fromEffect.id, toEffect.id],
+        movementIds: effectIds,
         movementType: cmd.kind,
         tenantProductRef: cmd.tenantProductRef,
         positionEventId: event.id,
       },
       correlationId: null,
     });
-
-    return toEventBody(event, fromEffect, toEffect);
   }
 
   /**
@@ -700,21 +702,34 @@ function leg(cmd: PositionCommand, bucket: string, quantity: string) {
   };
 }
 
+/**
+ * M-5 under the V1 profile (Q2): both effects map to the store's bucket. A
+ * non-zero net needs the Gate 8 (RT-293) transfer intent; until then nothing
+ * is written.
+ */
+function assertErpNeutral(cmd: PositionCommand, fromQuantity: string): void {
+  const bucket = v1MappingBucket(cmd.storeId);
+  if (!netsToZeroPerBucket([leg(cmd, bucket, fromQuantity), leg(cmd, bucket, cmd.quantity)])) {
+    throw new ConflictException({
+      code: 'erp_transfer_intent_required',
+      message: 'This move crosses ERP mapping buckets, which is not supported yet.',
+    });
+  }
+}
+
 /** True when a recorded event is the same command as `cmd` (replay, not conflict). */
 function sameCommand(e: EventRow, cmd: PositionCommand): boolean {
-  return (
-    e.kind === cmd.kind &&
-    e.store_id === cmd.storeId.toLowerCase() &&
-    e.tenant_product_ref === cmd.tenantProductRef.toLowerCase() &&
-    parseQuantity(e.quantity) === parseQuantity(cmd.quantity) &&
-    e.stocking_unit === cmd.stockingUnit &&
-    e.from_location_id === cmd.fromLocationId &&
-    e.to_location_id === cmd.toLocationId &&
-    e.from_status === cmd.fromStatus &&
-    e.to_status === cmd.toStatus &&
-    e.reason_code === cmd.reasonCode &&
-    e.note === cmd.note
-  );
+  const recorded = [
+    e.kind, e.store_id, e.tenant_product_ref, formatQuantity(parseQuantity(e.quantity)),
+    e.stocking_unit, e.from_location_id, e.to_location_id, e.from_status, e.to_status,
+    e.reason_code, e.note,
+  ];
+  const requested = [
+    cmd.kind, cmd.storeId.toLowerCase(), cmd.tenantProductRef.toLowerCase(), cmd.quantity,
+    cmd.stockingUnit, cmd.fromLocationId, cmd.toLocationId, cmd.fromStatus, cmd.toStatus,
+    cmd.reasonCode, cmd.note,
+  ];
+  return JSON.stringify(recorded) === JSON.stringify(requested);
 }
 
 function toEventBody(
