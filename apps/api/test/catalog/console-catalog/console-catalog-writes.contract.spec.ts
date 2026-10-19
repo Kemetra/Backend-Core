@@ -203,6 +203,11 @@ describe("console-catalog writes — operations", () => {
     }
   });
 
+  it("states the release posture of the writes apart from the reads", () => {
+    expect(doc.info?.description).toMatch(/The seven writes come in `1\.1\.0-draft` \(RT-738/);
+    expect(doc.info?.description).toMatch(/until the RT-738\s+runtime serves them/);
+  });
+
   it("names one audit action per write (audited per mutation, decision O-6)", () => {
     for (const w of WRITES) expect(op(w)["x-audit-action"]).toBe(w.audit);
     expect(doc.info?.description).toMatch(/in the same\s+transaction as the change/);

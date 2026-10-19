@@ -21,10 +21,12 @@ info:
     tracking-profile surface are not changed.
 
 
-    **Posture.** `1.0.0-draft`, contract only. `[GATED]` contract approved by
-    the owner on 2026-10-19 (RT-729). Every operation carries
+    **Posture.** Contract only. The three reads came in `1.0.0-draft`
+    (RT-729, `[GATED]`, owner-approved 2026-10-19) and carry
     `x-runtime-status: contract-only` until the RT-730 (CAT-R2) runtime
-    serves it; no route is shipped by this change.
+    serves them. The seven writes come in `1.1.0-draft` (RT-738, `[GATED]`,
+    owner-approved 2026-10-19; see **Writes**) and carry it until the RT-738
+    runtime serves them. No route is shipped by a contract change.
 
 
     **Authority.** The Backend-Core Tenant Catalog is the retail product
