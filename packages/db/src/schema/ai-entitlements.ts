@@ -475,7 +475,9 @@ export const aiUsageLedger = pgTable(
       "ai_usage_ledger_reserved_shape",
       sql`(${t.entryKind} = 'reserved' AND ${t.idempotencyKey} IS NOT NULL
           AND ${t.expiresAt} IS NOT NULL AND ${t.expiresAt} > ${t.createdAt})
-        OR (${t.entryKind} <> 'reserved' AND ${t.idempotencyKey} IS NULL AND ${t.expiresAt} IS NULL)`,
+        OR (${t.entryKind} = 'adjusted' AND ${t.idempotencyKey} IS NOT NULL AND ${t.expiresAt} IS NULL)
+        OR (${t.entryKind} IN ('committed', 'released') AND ${t.idempotencyKey} IS NULL
+          AND ${t.expiresAt} IS NULL)`,
     ),
     check(
       "ai_usage_ledger_idempotency_key_length",

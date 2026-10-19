@@ -415,7 +415,7 @@ describe("data-pulse-migrate CLI", () => {
 
   /**
    * 0055_ai_entitlements_usage (RT-663): [its seven tables, their policies, its
-   * three trigger functions, the default-deny catalog seed rows].
+   * four trigger functions, the default-deny catalog seed rows].
    */
   async function countAiEntitlementObjects(): Promise<[string, string, string, string]> {
     const tables = await countPublicTables(AI_ENTITLEMENT_TABLES);
@@ -423,8 +423,8 @@ describe("data-pulse-migrate CLI", () => {
       tables,
       await countPolicies(AI_ENTITLEMENT_TABLES),
       await queryCount(`SELECT COUNT(*)::text AS count FROM pg_proc
-        WHERE proname IN ('ai_entitlements_append_only', 'ai_usage_counters_guard',
-                          'ai_usage_ledger_terminal_guard')`),
+        WHERE proname IN ('ai_entitlements_append_only', 'ai_plan_catalog_version_open',
+                          'ai_usage_counters_guard', 'ai_usage_ledger_terminal_guard')`),
       tables === "0" ? "0" : await queryCount(`SELECT COUNT(*)::text AS count FROM ai_plan_catalog`),
     ];
   }
@@ -494,9 +494,9 @@ describe("data-pulse-migrate CLI", () => {
     // sale_voids approval-use trigger and the two FK-target indexes (RT-577).
     expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
     // 0055's seven AI entitlement tables (15 policies: SELECT + INSERT each,
-    // plus the counters' UPDATE), its three trigger functions and the one
+    // plus the counters' UPDATE), its four trigger functions and the one
     // default-deny catalog seed row (RT-663).
-    expect(await countAiEntitlementObjects()).toEqual(["7", "15", "3", "1"]);
+    expect(await countAiEntitlementObjects()).toEqual(["7", "15", "4", "1"]);
   }
 
   /** The three tables created by 0054_sale_credit_reversals (RT-577). */

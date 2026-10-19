@@ -17,8 +17,10 @@
 --   1. ai_plan_catalog, ai_plan_catalog_features, ai_plan_catalog_meters —
 --      the code-owned, versioned plan catalogue (D-2). Platform-scoped, not
 --      tenant-scoped. An unknown feature is denied because it has no row
---      (default-deny). A catalog version is immutable; a change is a new
---      version, written by a migration. Customer meters count requests only
+--      (default-deny). A catalog version is immutable and sealed when the
+--      transaction that created it commits: its features and meters are
+--      written with it, never added later; a change is a new version,
+--      written by a migration. Customer meters count requests only
 --      in v1 (D-3), per tenant or per store (D-4), per UTC day or month
 --      (D-9). The seed is ONE version, core@1, that grants no AI feature and
 --      no meter: plan names, the feature-to-plan matrix and every quota
@@ -229,6 +231,45 @@ CREATE TRIGGER ai_plan_catalog_meters_append_only_row
 CREATE TRIGGER ai_plan_catalog_meters_append_only_truncate
   BEFORE TRUNCATE ON ai_plan_catalog_meters
   FOR EACH STATEMENT EXECUTE FUNCTION ai_entitlements_append_only();
+
+-- A catalog version is sealed when the transaction that created it commits:
+-- its features and meters are written in that same transaction (the parent
+-- row's xmin is the current top-level transaction), never added later, so a
+-- version's grants and quotas cannot change under the entitlements that
+-- reference it (42501). A change is a new catalog version. Write a version
+-- outside a SAVEPOINT (a row written in a subtransaction carries the
+-- subtransaction's xid). An unknown version is 23503 here.
+CREATE FUNCTION ai_plan_catalog_version_open() RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_xmin xid;
+BEGIN
+  SELECT c.xmin INTO v_xmin
+    FROM public.ai_plan_catalog c
+   WHERE c.plan_code = NEW.plan_code
+     AND c.catalog_version = NEW.catalog_version;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'catalog version %@% does not exist', NEW.plan_code, NEW.catalog_version
+      USING ERRCODE = 'foreign_key_violation';
+  END IF;
+  IF v_xmin <> pg_current_xact_id()::xid THEN
+    RAISE EXCEPTION 'catalog version %@% is sealed: % is not permitted', NEW.plan_code,
+        NEW.catalog_version, TG_TABLE_NAME
+      USING ERRCODE = 'insufficient_privilege',
+            HINT = 'Publish a new catalog version with its features and meters in one transaction (RT-663).';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER ai_plan_catalog_features_version_open
+  BEFORE INSERT ON ai_plan_catalog_features
+  FOR EACH ROW EXECUTE FUNCTION ai_plan_catalog_version_open();
+CREATE TRIGGER ai_plan_catalog_meters_version_open
+  BEFORE INSERT ON ai_plan_catalog_meters
+  FOR EACH ROW EXECUTE FUNCTION ai_plan_catalog_version_open();
 
 -- =============================================================================
 -- 2. tenant_ai_entitlements — immutable revisions, one linear chain per tenant
@@ -557,10 +598,13 @@ CREATE TABLE ai_usage_ledger (
   CONSTRAINT ai_usage_ledger_units_positive CHECK (units > 0),
   -- A reservation has its key (the HTTP Idempotency-Key, 16–128 chars) and
   -- a TTL after it was taken; a terminal row has neither.
+  -- An adjustment also carries its request's key, so a retried dispute
+  -- credit is the same row (23505 on uq_ai_usage_ledger_idempotency).
   CONSTRAINT ai_usage_ledger_reserved_shape CHECK (
     (entry_kind = 'reserved' AND idempotency_key IS NOT NULL AND expires_at IS NOT NULL
        AND expires_at > created_at)
-    OR (entry_kind <> 'reserved' AND idempotency_key IS NULL AND expires_at IS NULL)),
+    OR (entry_kind = 'adjusted' AND idempotency_key IS NOT NULL AND expires_at IS NULL)
+    OR (entry_kind IN ('committed', 'released') AND idempotency_key IS NULL AND expires_at IS NULL)),
   CONSTRAINT ai_usage_ledger_idempotency_key_length
     CHECK (idempotency_key IS NULL OR char_length(idempotency_key) BETWEEN 16 AND 128),
   -- A reservation has no outcome and no provider usage yet.

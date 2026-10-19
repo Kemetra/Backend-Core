@@ -36,6 +36,7 @@ DROP TABLE IF EXISTS tenant_ai_entitlements;
 DROP TABLE IF EXISTS ai_plan_catalog_meters;
 DROP TABLE IF EXISTS ai_plan_catalog_features;
 DROP TABLE IF EXISTS ai_plan_catalog;
+DROP FUNCTION IF EXISTS ai_plan_catalog_version_open();
 
 DROP FUNCTION IF EXISTS ai_entitlements_append_only();
 

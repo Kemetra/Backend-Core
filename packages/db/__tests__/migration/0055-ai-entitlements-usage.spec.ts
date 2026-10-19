@@ -135,6 +135,28 @@ async function asTenant<T>(
   }
 }
 
+/** Runs `fn` on one superuser client inside a single transaction, then COMMITs. */
+async function inOneTransaction(fn: (client: PoolClient) => Promise<void>): Promise<void> {
+  const client = await pg().admin.connect();
+  try {
+    await client.query("BEGIN");
+    await fn(client);
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/** Expects `sql` to fail with `code` inside a savepoint, so the transaction goes on. */
+async function attempt(client: PoolClient, sql: string, params: unknown[], code: string): Promise<void> {
+  await client.query("SAVEPOINT attempt");
+  await expectCode(client.query(sql, params), code);
+  await client.query("ROLLBACK TO SAVEPOINT attempt");
+}
+
 async function count(sql: string, params: unknown[] = []): Promise<number> {
   const r = await pg().admin.query<{ n: string }>(sql, params);
   return Number(r.rows[0]?.n ?? "0");
@@ -283,7 +305,9 @@ async function insertLedger(input: LedgerInput, client: Queryable = pg().admin):
   const id = randomUUID();
   const kind = input.kind ?? "reserved";
   const reserved = kind === "reserved";
-  const defaults: Record<string, unknown> = kind === "adjusted" ? ADJUSTED_DEFAULTS : reserved
+  const defaults: Record<string, unknown> = kind === "adjusted"
+    ? { ...ADJUSTED_DEFAULTS, idempotency_key: `adj-${id}` }
+    : reserved
     ? {
         idempotency_key: `idem-${id}`,
         expires_at: "2026-10-19T10:05:00Z",
@@ -415,28 +439,51 @@ describe("0055 — the code-owned plan catalog (default-deny seed)", () => {
       a.query(`INSERT INTO ${CATALOG_FEATURES} (plan_code, catalog_version, feature_id) VALUES ('core', 9, $1)`, [FEATURE]),
       "23503",
     );
-    await a.query(`INSERT INTO ${CATALOG} (plan_code, catalog_version) VALUES ('shape_probe', 1)`);
+    // A version and its children are written in one transaction (sealed at commit).
+    await inOneTransaction(async (c) => {
+      await c.query(`INSERT INTO ${CATALOG} (plan_code, catalog_version) VALUES ('shape_probe', 1)`);
+      await attempt(c, `INSERT INTO ${CATALOG_FEATURES} (plan_code, catalog_version, feature_id)
+        VALUES ('shape_probe', 1, 'explain')`, [], "23514");
+      await c.query(`INSERT INTO ${CATALOG_FEATURES} (plan_code, catalog_version, feature_id)
+        VALUES ('shape_probe', 1, $1)`, [FEATURE]);
+      const meterSql = `INSERT INTO ${CATALOG_METERS}
+          (plan_code, catalog_version, feature_id, meter, unit, window_kind, meter_scope, limit_value)
+        VALUES ('shape_probe', 1, $1, $2, $3, $4, $5, $6)`;
+      // v1 customer meters count requests only (D-3).
+      await attempt(c, meterSql, [FEATURE, METER, "token", "month", "tenant", 1], "23514");
+      await attempt(c, meterSql, [FEATURE, METER, "request", "week", "tenant", 1], "23514");
+      await attempt(c, meterSql, [FEATURE, METER, "request", "month", "global", 1], "23514");
+      await attempt(c, meterSql, [FEATURE, METER, "request", "month", "tenant", -1], "23514");
+      await attempt(c, meterSql, ["ai.other", METER, "request", "month", "tenant", 1], "23503");
+      await c.query(meterSql, [FEATURE, METER, "request", "month", "tenant", 0]);
+    });
+    expect(await count(`SELECT COUNT(*) AS n FROM ${CATALOG_METERS} WHERE plan_code = 'shape_probe'`)).toBe(1);
+  });
+
+  it("seals a committed version: no later feature or meter, even for a platform admin (42501)", async () => {
+    if (skip()) return;
+    const a = pg().admin;
     await expectCode(
-      a.query(`INSERT INTO ${CATALOG_FEATURES} (plan_code, catalog_version, feature_id) VALUES ('shape_probe', 1, 'explain')`),
-      "23514",
+      a.query(`INSERT INTO ${CATALOG_FEATURES} (plan_code, catalog_version, feature_id) VALUES ('core', 1, $1)`, [FEATURE]),
+      "42501",
     );
-    await a.query(`INSERT INTO ${CATALOG_FEATURES} (plan_code, catalog_version, feature_id) VALUES ('shape_probe', 1, $1)`, [FEATURE]);
-    const meter = (unit: string, windowKind: string, scope: string, limit: number): Promise<unknown> =>
+    await expectCode(
+      a.query(`INSERT INTO ${CATALOG_FEATURES} (plan_code, catalog_version, feature_id)
+        VALUES ('shape_probe', 1, 'ai.briefing.daily')`),
+      "42501",
+    );
+    await expectCode(
       a.query(`INSERT INTO ${CATALOG_METERS}
           (plan_code, catalog_version, feature_id, meter, unit, window_kind, meter_scope, limit_value)
-        VALUES ('shape_probe', 1, $1, $2, $3, $4, $5, $6)`, [FEATURE, METER, unit, windowKind, scope, limit]);
-    // v1 customer meters count requests only (D-3).
-    await expectCode(meter("token", "month", "tenant", 1), "23514");
-    await expectCode(meter("request", "week", "tenant", 1), "23514");
-    await expectCode(meter("request", "month", "global", 1), "23514");
-    await expectCode(meter("request", "month", "tenant", -1), "23514");
-    await expectCode(
-      a.query(`INSERT INTO ${CATALOG_METERS}
-          (plan_code, catalog_version, feature_id, meter, unit, window_kind, meter_scope, limit_value)
-        VALUES ('shape_probe', 1, 'ai.other', $1, 'request', 'month', 'tenant', 1)`, [METER]),
-      "23503",
+        VALUES ('shape_probe', 1, $1, 'ai.explain.ops.late', 'request', 'day', 'store', 5)`, [FEATURE]),
+      "42501",
     );
-    await meter("request", "month", "tenant", 0);
+    await asTenant(TENANT_A, async (c) => {
+      await expectCode(
+        c.query(`INSERT INTO ${CATALOG_FEATURES} (plan_code, catalog_version, feature_id) VALUES ('core', 1, $1)`, [FEATURE]),
+        "42501",
+      );
+    }, true);
   });
 
   it.each(GLOBAL_TABLES)("%s is immutable for every role (42501)", async (table) => {
@@ -802,7 +849,11 @@ describe("0055 — ai_usage_ledger (one append-only usage store, AI-09 run metad
       insertLedger({ ...adj, list_equivalent_cost_micros: 1, cost_currency: "USD", cost_rate_card_version: "rc" }),
       "23514",
     );
-    await expectCode(insertLedger({ ...adj, idempotency_key: "idem-key-adjusted-01" }), "23514");
+    // A retried dispute credit is the same row: the key is required and unique.
+    await expectCode(insertLedger({ ...adj, idempotency_key: null }), "23514");
+    await expectCode(insertLedger({ ...adj, expires_at: "2026-10-19T10:05:00Z" }), "23514");
+    await insertLedger({ ...adj, idempotency_key: "adj-key-dispute-0001" });
+    await expectCode(insertLedger({ ...adj, idempotency_key: "adj-key-dispute-0001" }), "23505");
     await expectCode(insertLedger({ ...adj, reservationId: reservation }), "23514");
     // Adjustment fields belong to `adjusted` rows only.
     await expectCode(insertLedger({ counterId: counterA, adjustment_reason: "x" }), "23514");
