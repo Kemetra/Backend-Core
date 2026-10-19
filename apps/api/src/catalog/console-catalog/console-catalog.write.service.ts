@@ -108,7 +108,7 @@ interface StoreAccess {
   readonly roleCode: string | null;
 }
 
-/** Roles that may change a store tax override (O-4).
+/** Roles that may change a store tax override (O-4). */
 const TAX_OVERRIDE_ROLES: ReadonlySet<string> = new Set(["owner", "tenant_admin"]);
 
 const PRODUCT_TARGET = "tenant_product";
