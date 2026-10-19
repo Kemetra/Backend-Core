@@ -591,6 +591,16 @@ components:
       description: >
         The tenant owner's opt-out of one feature (D-5): tenant-wide and
         subtract-only. An opt-out never enables a feature or raises a limit.
+        An active opt-out always has a `changedAt`.
+      if:
+        properties:
+          optedOut:
+            const: true
+        required: [optedOut]
+      then:
+        properties:
+          changedAt:
+            type: string
       properties:
         optedOut:
           type: boolean
@@ -603,24 +613,52 @@ components:
       type: object
       additionalProperties: false
       required: [featureId, availability, unavailableReason, entitled, optOut, meters]
-      if:
-        properties:
-          availability:
-            const: available
-        required: [availability]
-      then:
-        description: >
-          `available` means entitled and not opted out, so it carries no
-          reason.
-        properties:
-          unavailableReason:
-            type: "null"
-          entitled:
-            const: true
-          optOut:
+      description: >
+        One catalogue feature in the full view. The reason names its
+        source: `not_entitled` when the effective entitlement does not
+        include the feature (whatever the opt-out); `feature_disabled_tenant`
+        only when the feature is entitled and the owner opted it out.
+      allOf:
+        - if:
             properties:
-              optedOut:
+              availability:
+                const: available
+            required: [availability]
+          then:
+            description: >
+              `available` means entitled and not opted out, so it carries no
+              reason.
+            properties:
+              unavailableReason:
+                type: "null"
+              entitled:
+                const: true
+              optOut:
+                properties:
+                  optedOut:
+                    const: false
+        - if:
+            properties:
+              unavailableReason:
+                const: not_entitled
+            required: [unavailableReason]
+          then:
+            properties:
+              entitled:
                 const: false
+        - if:
+            properties:
+              unavailableReason:
+                const: feature_disabled_tenant
+            required: [unavailableReason]
+          then:
+            properties:
+              entitled:
+                const: true
+              optOut:
+                properties:
+                  optedOut:
+                    const: true
       properties:
         featureId:
           $ref: "#/components/schemas/AiFeatureId"
@@ -661,7 +699,8 @@ components:
         - features
       description: >
         The owner / tenant_admin view (D-6). State `none` has no effective
-        revision: `effectiveFrom` and `effectiveUntil` are null.
+        revision: `effectiveFrom` and `effectiveUntil` are null, and every
+        feature is unavailable and not entitled.
       if:
         properties:
           state:
@@ -673,6 +712,13 @@ components:
             type: "null"
           effectiveUntil:
             type: "null"
+          features:
+            items:
+              properties:
+                availability:
+                  const: unavailable
+                entitled:
+                  const: false
       properties:
         view:
           type: string

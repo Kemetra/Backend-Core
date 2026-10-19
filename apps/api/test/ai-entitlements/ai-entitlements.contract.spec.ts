@@ -444,6 +444,24 @@ describe("ai-entitlements — provenance of both sources", () => {
     expect(v({ ...FULL, features: [{ ...FULL.features[1], optOut: { optedOut: true, changedAt: NOW } }] })).toBe(false);
   });
 
+  it("ties each tenant-facing reason to its source and dates every active opt-out", () => {
+    const v = validator("TenantAiEntitlements");
+    const off = FULL.features[0];
+    expect(v({ ...FULL, features: [{ ...off, optOut: { optedOut: false, changedAt: null } }] })).toBe(false);
+    expect(v({ ...FULL, features: [{ ...off, entitled: false }] })).toBe(false);
+    expect(v({ ...FULL, features: [{ ...off, unavailableReason: "not_entitled" }] })).toBe(false);
+    expect(v({ ...FULL, features: [{ ...off, unavailableReason: "not_entitled", entitled: false }] })).toBe(true);
+    expect(v({ ...FULL, features: [{ ...off, optOut: { optedOut: true, changedAt: null } }] })).toBe(false);
+  });
+
+  it("makes every feature unavailable and not entitled in state none", () => {
+    const v = validator("TenantAiEntitlements");
+    const none = { ...FULL, state: "none", entitlementVersion: 0, effectiveFrom: null, effectiveUntil: null };
+    const notEntitled = { ...FULL.features[0], unavailableReason: "not_entitled", entitled: false };
+    expect(v({ ...none, features: [notEntitled] })).toBe(true);
+    expect(v({ ...none, features: [FULL.features[1]] })).toBe(false);
+  });
+
   it("gives state none no effective dates", () => {
     const v = validator("TenantAiEntitlements");
     const none = { ...FULL, state: "none", entitlementVersion: 0, effectiveFrom: null, effectiveUntil: null, features: [] };
