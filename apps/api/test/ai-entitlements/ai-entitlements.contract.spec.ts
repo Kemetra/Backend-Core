@@ -438,6 +438,25 @@ describe("ai-entitlements — owner opt-out write (D-5)", () => {
 });
 
 describe("ai-entitlements — provenance of both sources", () => {
+  it("requires a null reason on an available feature", () => {
+    const v = validator("TenantAiEntitlements");
+    expect(v({ ...FULL, features: [{ ...FULL.features[1], unavailableReason: "not_entitled" }] })).toBe(false);
+    expect(v({ ...FULL, features: [{ ...FULL.features[0], unavailableReason: null }] })).toBe(true);
+  });
+
+  it("reports no version on a layer 0-5 denial and both versions on a layer 6-7 denial", () => {
+    const v = validator("AiEntitlementDecision");
+    for (const reasonCode of ["not_authorized", "tenant_inactive", "feature_disabled_system", "policy_denied"]) {
+      expect(v({ ...DENY, reasonCode })).toBe(true);
+      expect(v({ ...DENY, reasonCode, entitlementVersion: 3 })).toBe(false);
+      expect(v({ ...DENY, reasonCode, optOutVersion: 7 })).toBe(false);
+    }
+    for (const reasonCode of ["not_entitled", "feature_disabled_tenant", "spend_cap_reached"]) {
+      expect(v({ ...DENY, reasonCode, entitlementVersion: 3, optOutVersion: 7 })).toBe(true);
+      expect(v({ ...DENY, reasonCode })).toBe(false);
+    }
+  });
+
   it("records entitlementVersion and optOutVersion on every decision", () => {
     expect(api.schema("AiEntitlementAllow").required).toEqual(
       expect.arrayContaining(["entitlementVersion", "optOutVersion"]),

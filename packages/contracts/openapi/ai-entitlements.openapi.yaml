@@ -600,6 +600,15 @@ components:
       type: object
       additionalProperties: false
       required: [featureId, availability, unavailableReason, entitled, optOut, meters]
+      if:
+        properties:
+          availability:
+            const: available
+        required: [availability]
+      then:
+        properties:
+          unavailableReason:
+            type: "null"
       properties:
         featureId:
           $ref: "#/components/schemas/AiFeatureId"
@@ -837,19 +846,55 @@ components:
       type: object
       additionalProperties: false
       required: [decision, reasonCode, entitlementVersion, optOutVersion, evaluatedAt]
-      if:
-        properties:
-          reasonCode:
-            const: quota_exhausted
-        required: [reasonCode]
-      then:
-        required: [meter]
+      allOf:
+        - if:
+            properties:
+              reasonCode:
+                const: quota_exhausted
+            required: [reasonCode]
+          then:
+            required: [meter]
+        - if:
+            properties:
+              reasonCode:
+                enum: [not_authorized, tenant_inactive, feature_disabled_system, policy_denied]
+            required: [reasonCode]
+          then:
+            properties:
+              entitlementVersion:
+                type: "null"
+              optOutVersion:
+                type: "null"
+        - if:
+            properties:
+              reasonCode:
+                enum:
+                  - not_entitled
+                  - trial_expired
+                  - grace_read_only
+                  - feature_disabled_tenant
+                  - quota_exhausted
+                  - spend_cap_reached
+                  - free_credit_exhausted
+            required: [reasonCode]
+          then:
+            properties:
+              entitlementVersion:
+                type: integer
+              optOutVersion:
+                type: integer
       description: >
         SERVER-INTERNAL. The first refusing layer; nothing is reserved and no
         model request is built. Fails closed: when any layer's state is
         unknown or unreadable the decision is deny `entitlement_unavailable`.
         A `quota_exhausted` deny carries the refusing `meter` (with
-        `resetsAt`).
+        `resetsAt`). Provenance follows the layer: a layer 0 to 5 refusal
+        (`not_authorized`, `tenant_inactive`, `feature_disabled_system`,
+        `policy_denied`) stops before either source is read, so both
+        versions are null; a layer 6 or 7 refusal reports the concrete
+        `entitlementVersion` and `optOutVersion` it evaluated;
+        `entitlement_unavailable` reports a version only for a source that
+        was read before the failure.
       properties:
         decision:
           type: string
