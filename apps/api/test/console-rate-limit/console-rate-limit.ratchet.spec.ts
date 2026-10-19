@@ -84,6 +84,8 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
   consoleUpdatePayerAccount: "write",
   consoleUpsertStoreOverride: "write",
   createInvitation: "onboarding",
+  createRelocation: "write",
+  createStatusMove: "write",
   createStockMovement: "write",
   createStockTransfer: "write",
   createStore: "write",
@@ -94,6 +96,7 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
   getOutboxDeadLetter: "cheapRead",
   getProductReconciliationRunResults: "expensiveRead",
   getReconciliationRun: "cheapRead",
+  getReturnLandingPolicy: "cheapRead",
   listAuditEvents: "expensiveRead",
   listConnectorHealth: "cheapRead",
   listErpnextNegativeOnHand: "expensiveRead",
@@ -120,6 +123,7 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
   requestEmailVerification: "exempt",
   reResolvePosting: "write",
   revokeMembership: "incidentControl",
+  setReturnLandingPolicy: "write",
   signOut: "exempt",
   softDeleteStore: "write",
   softDeleteTenant: "write",
@@ -162,8 +166,12 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
  */
 const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
   consoleDeleteTenantLogo: "write",
+  // RT-662: one tenant's entitlement snapshot, no aggregate.
+  consoleGetTenantAiEntitlements: "cheapRead",
   consoleGetTenantLogo: "cheapRead",
   consolePreviewTenantLogo: "jobOrPreview",
+  // RT-662: the owner's idempotent per-feature opt-out write.
+  consolePutTenantAiFeatureOptOut: "write",
   consolePutTenantLogo: "jobOrPreview",
   endSupportSession: "incidentControl",
   getCurrentSupportSession: "cheapRead",

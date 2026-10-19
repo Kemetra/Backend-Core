@@ -393,17 +393,7 @@ export class InventoryController {
    * RLS, which still scopes them to their tenant.
    */
   private authorizeStore(ctx: ResolvedContext, storeId: string): void {
-    // 1. A store-bound principal may only address its own store.
-    if (ctx.storeId !== null && ctx.storeId !== storeId) {
-      throw new NotFoundException('Not Found');
-    }
-    if (ctx.source !== 'session') return;
-
-    // 2. The membership's store access decides the rest.
-    const scope = resolveStoreScope(ctx);
-    if (scope.kind === 'stores' && !scope.storeIds.includes(storeId)) {
-      throw new NotFoundException('Not Found');
-    }
+    authorizeInventoryStore(ctx, storeId);
   }
 
   /**
@@ -418,6 +408,25 @@ export class InventoryController {
     const access = ctx.storeAccess;
     if (access?.kind === 'all') return;
     if (access?.kind === 'specific' && access.storeIds.includes(storeId)) return;
+    throw new NotFoundException('Not Found');
+  }
+}
+
+/**
+ * Object-level store authorization of the store-scoped inventory routes (see
+ * `InventoryController.authorizeStore`); shared with the RT-435 position
+ * event routes. A store outside the caller's scope is a non-disclosing 404.
+ */
+export function authorizeInventoryStore(ctx: ResolvedContext, storeId: string): void {
+  // 1. A store-bound principal may only address its own store.
+  if (ctx.storeId !== null && ctx.storeId !== storeId) {
+    throw new NotFoundException('Not Found');
+  }
+  if (ctx.source !== 'session') return;
+
+  // 2. The membership's store access decides the rest.
+  const scope = resolveStoreScope(ctx);
+  if (scope.kind === 'stores' && !scope.storeIds.includes(storeId)) {
     throw new NotFoundException('Not Found');
   }
 }

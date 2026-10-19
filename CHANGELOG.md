@@ -491,6 +491,43 @@ This project follows [Semantic Versioning](https://semver.org/).
   range, store paging and server scope totals. Dashboard session, roles
   owner / tenant_admin / store_manager, non-disclosing 404, audited
   `console_sales.summary_read`. No runtime or migration change.
+- RT-435 `[GATED: OpenAPI contract + migration]`, owner-approved 2026-10-19
+  (RT-435 comment 12993, D1–D4; RT-290 Gate 4): inventory status moves and
+  relocations. `inventory.yaml` 1.6.0-draft adds `createStatusMove`
+  (`POST /api/inventory/v1/stores/{storeId}/status-moves`),
+  `createRelocation` (`POST .../relocations`) and the tenant return landing
+  policy (`GET`/`PUT /api/inventory/v1/settings/return-landing`, `sellable`
+  default | `return_inspection`). Each move is one `adjustment` event with an
+  `inventory_position_events` record and exactly two effects (`-q` from,
+  `+q` to; DC-1 keys `<kind>:<eventId>:from|to`), `erp_neutral` in the same
+  transaction under the V1 mapping profile (M-5, Q10); a non-zero per-bucket
+  net fails closed. Physical on-hand never changes. Governed Reason Codes
+  (D1); moves out of damaged / expired / a hold are owner / tenant_admin only
+  (D2). `StockMovement.integrationState` gains `erp_neutral` (5 acknowledged
+  oasdiff findings, `consumer:none`). Migration `0056_inventory_position_events`
+  (+ guarded down) and `docs/operations/sql/inventory-position-events-domain-grants.sql`
+  (deploy step 2; boot check). No package or CI change.
+- RT-662 `[GATED]`, owner-approved 2026-10-19 (RT-644 ENT-BC1,
+  AD-AI-ENT-001): OpenAPI contract `ai-entitlements.openapi.yaml`
+  (1.0.0-draft, contract-only). `consoleGetTenantAiEntitlements`
+  (`GET /api/v1/tenants/{tenant_id}/ai/entitlements`) returns the `full`
+  view to owner / tenant_admin (state, effective dates, per-feature
+  availability, tenant opt-outs, UTC request meters) and the `minimal`
+  `available | unavailable` view to store_manager; store_staff, another
+  tenant and an absent tenant get the same non-disclosing 404, decided
+  before any entitlement read; 503 `entitlement_unavailable` fails closed.
+  `consolePutTenantAiFeatureOptOut` (`PUT .../ai/entitlements/opt-outs/
+  {feature_id}`) is the owner-only, subtract-only opt-out write (D-5):
+  required `reason`, `Idempotency-Key`, audited
+  `ai_entitlement.opt_out_changed`, guarded by its own `optOutVersion`
+  (never `entitlementVersion`), 403 `origin_rejected`, 409 on a stale
+  revision, 422 `not_entitled` for an opt-in beyond the plan. The full view
+  and every `check` decision report both `entitlementVersion` and
+  `optOutVersion`. Also the closed AI reason-code set (§4.4 plus `feature_disabled_tenant`)
+  and the server-internal `check` input and decision schemas
+  (`x-internal`, no HTTP route). No price, currency, plan name, quota size,
+  billing event or grace duration. No runtime or migration change; the
+  runtime ships in RT-664.
 - RT-649 / RT-739: runtime for `consoleGetSalesSummary` (`ConsoleSalesSummaryController`
   and service in `ConsoleSalesModule`); the operation loses
   `x-runtime-status: contract-only`. One SQL statement (one snapshot) counts
@@ -512,6 +549,22 @@ This project follows [Semantic Versioning](https://semver.org/).
   the `posting` domain rule, roles, session, RLS, store scope and the
   out-of-scope 404 are unchanged. No runtime or migration change; the read
   and its indexes ship in the RT-565 runtime PR.
+- RT-663 `[GATED]` migration `0055_ai_entitlements_usage` (owner-approved
+  2026-10-19 for authoring and CI verification only; not applied to any lab
+  or live database). It is storage only, for AD-AI-ENT-001 and
+  AD-AI-PROV-001 D-6, and has no runtime until RT-664. It adds:
+  - the code-owned, versioned, default-deny AI plan catalog (seed `core@1`
+    grants no feature and no meter);
+  - immutable `tenant_ai_entitlements` revisions on a tenant-wide
+    `entitlement_version` chain, platform-admin INSERT only;
+  - the tenant owner opt-out chain `tenant_ai_feature_opt_outs` (D-5);
+  - `ai_usage_counters` per tenant, store, meter and UTC window;
+  - the single append-only `ai_usage_ledger`: `reserved`, then
+    `committed` / `released`, unique (tenant, feature, kind, idempotency_key),
+    with the AI-09 run metadata. A dispute is settled by a platform-admin-only
+    compensating `adjusted` row (T20).
+
+  Every table forces RLS. There is no price column and no grant.
 - RT-565 `[GATED]` migrations 0057-0061, owner-approved 2026-10-19 (RT-565
   comment 12969): runtime for the console posting freshness. The sync-ops
   summary now serves `asOf` and `postingFreshness`

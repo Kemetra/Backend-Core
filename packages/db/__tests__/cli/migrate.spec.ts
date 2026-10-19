@@ -223,6 +223,8 @@ describe("data-pulse-migrate CLI", () => {
     "0050_shift_variance_policy",
     "0051_sale_responsibilities",
     "0054_sale_credit_reversals",
+    "0055_ai_entitlements_usage",
+    "0056_inventory_position_events",
     "0057_posting_status_posted_at_tenant_idx",
     "0058_posting_status_posted_at_store_idx",
     "0059_posting_status_pending_created_tenant_idx",
@@ -406,6 +408,50 @@ describe("data-pulse-migrate CLI", () => {
     ];
   }
 
+  /** The seven tables created by 0055_ai_entitlements_usage (RT-663). */
+  const AI_ENTITLEMENT_TABLES = [
+    "ai_plan_catalog",
+    "ai_plan_catalog_features",
+    "ai_plan_catalog_meters",
+    "tenant_ai_entitlements",
+    "tenant_ai_feature_opt_outs",
+    "ai_usage_counters",
+    "ai_usage_ledger",
+  ];
+
+  /**
+   * 0055_ai_entitlements_usage (RT-663): [its seven tables, their policies, its
+   * four trigger functions, the default-deny catalog seed rows].
+   */
+  async function countAiEntitlementObjects(): Promise<[string, string, string, string]> {
+    const tables = await countPublicTables(AI_ENTITLEMENT_TABLES);
+    return [
+      tables,
+      await countPolicies(AI_ENTITLEMENT_TABLES),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_proc
+        WHERE proname IN ('ai_entitlements_append_only', 'ai_plan_catalog_version_open',
+                          'ai_usage_counters_guard', 'ai_usage_ledger_terminal_guard')`),
+      tables === "0" ? "0" : await queryCount(`SELECT COUNT(*)::text AS count FROM ai_plan_catalog`),
+    ];
+  }
+
+  /** The two tables created by 0056_inventory_position_events (RT-435). */
+  const POSITION_EVENT_TABLES = ["inventory_position_events", "tenant_inventory_settings"];
+
+  /**
+   * 0056_inventory_position_events (RT-435): [its two tables, their policies
+   * (events SELECT + INSERT, settings SELECT + INSERT + UPDATE), the settings
+   * updated_at trigger].
+   */
+  async function countPositionEventObjects(): Promise<[string, string, string]> {
+    return [
+      await countPublicTables(POSITION_EVENT_TABLES),
+      await countPolicies(POSITION_EVENT_TABLES),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_trigger
+        WHERE tgname = 'tenant_inventory_settings_set_updated_at'`),
+    ];
+  }
+
   /** The five posting-freshness indexes of 0057-0061 (RT-565 D7), in migration order. */
   const POSTING_FRESHNESS_INDEXES = [
     "idx_erpnext_posting_status_posted_at_tenant",
@@ -428,13 +474,17 @@ describe("data-pulse-migrate CLI", () => {
 
   /**
    * After one `down` from head: 0061's legacy-posted index is gone, while
-   * 0057-0060's freshness indexes, 0054's credit reversal objects, 0051's
+   * 0057-0060's freshness indexes, 0056's event-record and settings tables,
+   * 0055's AI entitlement tables and functions, 0054's credit reversal
+   * tables, approval-use ledger, trigger and FK-target indexes, 0051's
    * sale_responsibilities, 0050's policy tables and columns, 0048's
    * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
     expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES.slice(4))).toBe("0");
     expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES.slice(0, 4))).toBe("4");
+    expect(await countPositionEventObjects()).toEqual(["2", "5", "1"]);
+    expect(await countAiEntitlementObjects()).toEqual(["7", "15", "4", "1"]);
     expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
     expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
     expect(await countShiftVariancePolicyObjects()).toEqual(["2", "4", "6", "2"]);
@@ -491,6 +541,13 @@ describe("data-pulse-migrate CLI", () => {
     // 0054's three credit reversal tables (SELECT + INSERT policies each), the
     // sale_voids approval-use trigger and the two FK-target indexes (RT-577).
     expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
+    // 0055's seven AI entitlement tables (15 policies: SELECT + INSERT each,
+    // plus the counters' UPDATE), its four trigger functions and the one
+    // default-deny catalog seed row (RT-663).
+    expect(await countAiEntitlementObjects()).toEqual(["7", "15", "4", "1"]);
+    // 0056's event records (SELECT + INSERT) and tenant inventory settings
+    // (SELECT + INSERT + UPDATE) with its updated_at trigger (RT-435).
+    expect(await countPositionEventObjects()).toEqual(["2", "5", "1"]);
     // 0057-0061's five posting-freshness indexes, valid after the runner's
     // CONCURRENTLY builds (RT-565 D7).
     expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES)).toBe("5");
