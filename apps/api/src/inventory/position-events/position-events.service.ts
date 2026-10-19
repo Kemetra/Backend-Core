@@ -358,8 +358,14 @@ export class InventoryPositionEventsService {
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client) => {
-        // Lock the row so a concurrent PUT cannot change it between this read
-        // and the write (the audit `old` stays exact).
+        // Serialize writers per tenant, then lock the row: FOR UPDATE alone
+        // cannot lock a row that does not exist yet (a tenant on the default),
+        // so two first PUTs could both read the default. Under the advisory
+        // lock the audit `old` is exact and a repeat is always a no-op.
+        await client.query(
+          `SELECT pg_advisory_xact_lock(hashtextextended('tenant_inventory_settings:' || $1::text, 0))`,
+          [input.tenantId],
+        );
         const current = await client.query<{ return_landing_status: ReturnLandingStatus; updated_at: Date }>(
           `SELECT return_landing_status, updated_at FROM tenant_inventory_settings
             WHERE tenant_id = $1 FOR UPDATE`,

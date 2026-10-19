@@ -509,4 +509,27 @@ describe('RT-435 return landing policy (Q6)', () => {
     expect(repeat).toEqual(first);
     expect(await auditCount(TENANT_A)).toBe(beforeA);
   });
+
+  // Regression check only: a test cannot force the two transactions to
+  // interleave, so the per-tenant advisory lock is what guarantees this.
+  it('two concurrent first PUTs for a tenant on the default write once and audit once', async () => {
+    if (maybeSkip()) return;
+    const audits = async (): Promise<Array<{ metadata: { old: string; new: string } }>> =>
+      (
+        await env!.admin.query<{ metadata: { old: string; new: string } }>(
+          `SELECT metadata FROM audit_events WHERE action = 'inventory.return_landing.update' AND tenant_id = $1`,
+          [TENANT_B],
+        )
+      ).rows;
+    const before = (await audits()).length;
+    const put = () =>
+      service.setReturnLandingPolicy({ tenantId: TENANT_B, userId: ADMIN_A, returnLandingStatus: 'return_inspection' });
+    const [a, b] = await Promise.all([put(), put()]);
+    expect(a).toEqual(b);
+    const after = await audits();
+    expect(after.length - before).toBe(1);
+    expect(after[after.length - 1]!.metadata).toEqual({ old: 'sellable', new: 'return_inspection' });
+    // Leave tenant B on the default for the other tests.
+    await service.setReturnLandingPolicy({ tenantId: TENANT_B, userId: ADMIN_A, returnLandingStatus: 'sellable' });
+  });
 });
