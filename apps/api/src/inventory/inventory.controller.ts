@@ -33,6 +33,7 @@
  * both default server-side to the store's primary location and `sellable`.
  */
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -64,11 +65,16 @@ import {
   type StockCountResultBody,
   type StockLocationListBody,
 } from './inventory.service';
+import type { StockMovementScope } from './movement-list.cursor';
 import { ConsoleRateLimit } from "../console-rate-limit/console-rate-limit.decorator";
 
 const UuidSchema = z.string().uuid();
 const LimitSchema = z.coerce.number().int().min(1).max(200).optional();
 const OptionalUuidSchema = z.string().uuid().optional();
+/** RT-731: listStockMovements without productId — `adhoc` (default) | `all`. */
+const MovementScopeSchema = z.enum(['adhoc', 'all']).optional();
+/** RT-731: an opaque keyset cursor; the service decides whether it was issued here. */
+const CursorSchema = z.string().min(1).max(1024).optional();
 
 /**
  * Strict create-movement command (contract `CreateStockMovementCommand`,
@@ -189,8 +195,11 @@ export class InventoryController {
   /**
    * GET /api/inventory/v1/stores/{storeId}/movements
    *
-   * Movements for a (store) in stable order (FR-004). `productId` set ⇒ that
-   * product; omitted ⇒ ad-hoc (NULL-product) movements only (contract).
+   * A store's movements newest first in keyset pages (FR-004, RT-731).
+   * `productId` set ⇒ that product; omitted ⇒ `scope`: `adhoc` (default) ⇒
+   * ad-hoc (NULL-product) movements only, `all` ⇒ every movement of the
+   * store. `scope` with `productId` is a 400. The cursor is decoded and
+   * checked against the tenant, store and filters by the service.
    */
   @Get('api/inventory/v1/stores/:storeId/movements')
   // RT-619 (RT-574 D3): listStockMovements.
@@ -200,15 +209,23 @@ export class InventoryController {
     @Param('storeId', new ZodValidationPipe(UuidSchema)) storeId: string,
     @Query('productId', new ZodValidationPipe(OptionalUuidSchema))
     productId: string | undefined,
+    @Query('scope', new ZodValidationPipe(MovementScopeSchema))
+    scope: StockMovementScope | undefined,
     @Query('limit', new ZodValidationPipe(LimitSchema)) limit: number | undefined,
+    @Query('cursor', new ZodValidationPipe(CursorSchema)) cursor: string | undefined,
   ): Promise<StockMovementListBody> {
     const ctx = this.requireContext(request);
     this.authorizeStore(ctx, storeId);
+    if (productId !== undefined && scope !== undefined) {
+      throw new BadRequestException('scope applies only when productId is omitted');
+    }
     return this.inventoryService.listStockMovements({
       tenantId: ctx.tenantId as string,
       storeId,
       productId: productId ?? null,
+      scope,
       limit,
+      cursor,
     });
   }
 
