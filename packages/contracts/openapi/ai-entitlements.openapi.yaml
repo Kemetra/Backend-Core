@@ -1,0 +1,1192 @@
+openapi: 3.1.0
+info:
+  title: Backend-Core — AI Entitlements API
+  version: "1.0.0-draft"
+  description: >
+    Jira RT-662 (RT-644 follow-up ENT-BC1, Epic RT-641): the contract for the
+    tenant AI entitlement read, the tenant owner's per-feature opt-out write
+    (D-5), the closed set of AI decision reason codes and the server-internal
+    entitlement `check` decision. Decisions are fixed by
+    AD-AI-ENT-001 (Confluence 42926118; D-1 to D-9 accepted, the numeric D-7
+    grace length deferred to a future Billing policy). Planning source:
+    RT-644 draft (Confluence 42598403) §4.2, §4.4 and §8.
+
+
+    **Posture.** `1.0.0-draft`, `x-runtime-status: contract-only` until the
+    RT-664 evaluator ships. `[GATED]` contract, owner-approved 2026-10-19
+    (RT-662, G2) as a contract-only change. The persistence it reads is the
+    separate `[GATED]` migration RT-663. This contract sets no price, no
+    currency, no billing event, no plan name, no quota size and no grace
+    duration: none of these is decided (AD-AI-ENT-001 "No commercial
+    commitment", D-7).
+
+
+    **What an entitlement is (D-1).** Every AI request is evaluated as an
+    AND-chain; the first deny ends evaluation and no later layer turns a deny
+    into an allow: 0 system / kill switch, 1 tenant lifecycle, 2 identity and
+    membership, 3 role / capability, 4 store scope, 5 domain / data policy,
+    6 entitlement (including the tenant owner opt-out, D-5), 7 quota / spend
+    reservation, 8 provider execution. An entitlement only subtracts: it never
+    grants a role, a store or data that layers 2 to 5 refuse, and a paid plan
+    never elevates a user. Authorization (layers 2 to 5) runs before
+    entitlement (layers 6 and 7), so a caller who is refused learns nothing
+    about the tenant's plan and a refused call never consumes quota. POS
+    cashier money, stock, tax and offline paths carry no entitlement or quota
+    check.
+
+
+    **Surfaces.**
+
+      1. `consoleGetTenantAiEntitlements` (`GET
+         /api/v1/tenants/{tenant_id}/ai/entitlements`) — the protected read
+         for Admin-Console (RT-665). Two role views (D-6), below.
+      2. `consolePutTenantAiFeatureOptOut` (`PUT
+         /api/v1/tenants/{tenant_id}/ai/entitlements/opt-outs/{feature_id}`)
+         — the tenant owner switches one AI feature off tenant-wide, or back
+         on up to the plan (D-5). Subtract-only, reason required, audited.
+      3. The internal `check` decision (`AiEntitlementCheckInput` →
+         `AiEntitlementDecision`, `x-internal: true`) — a server-side
+         function contract for the RT-664 evaluator and the AI routes that
+         call it. It is NOT an HTTP operation, no path references it and no
+         client can call it.
+      4. `AiFeatureAvailability` — the minimal per-feature `available |
+         unavailable` flag for UI gating. It is the shape of the store_manager
+         view and may later ride on an existing context read. The
+         AD-POL-001 capability engine (PE-BC1) has no contract on `main`
+         yet, so this flag carries no capability code; PE-BC1 alignment
+         means only that `featureId` is the `ai.<feature>` identifier that
+         the `ai.<feature>:read|perform` capability codes will name.
+
+
+    **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly `dp2_session`)
+    only, gated `SessionOnlyAdminGuard` → `TenantContextGuard` → `RolesGuard`,
+    as `cash-variance-policy` and `tenant-branding`: a bearer-only request
+    (`dashboard_api` included), a POS `device` token or an
+    `operatorAuthorization` envelope without a session cookie is 401. Roles:
+    `owner`, `tenant_admin`, `store_manager`. The tenant comes from the
+    session; `{tenant_id}` must equal it. A role outside the list
+    (`store_staff`), a `{tenant_id}` of another tenant and an absent tenant
+    are the same non-disclosing 404, with no plan information. There is no
+    403. The guards run before request validation and before any
+    entitlement read, so a refused caller gets the 404 for any input and the
+    plan is never evaluated for it (layer 3 before layer 6). A platform
+    admin (`users.is_platform_admin`) is admitted to the read by the
+    existing `RolesGuard` platform-admin pass, in the session's tenant, and
+    gets the full view for support; when the RT-414 support session ships
+    (`platform-support-sessions.openapi.yaml`), a platform admin who is not
+    a member of the tenant needs an active support session for it. Reading
+    consumes no tenant AI feature (D-6, K-6).
+
+    The opt-out write is `owner` only (D-5): `tenant_admin`, `store_manager`,
+    `store_staff` and a platform admin who is not an owner member of the
+    tenant (a support session included) get the same non-disclosing 404.
+    The `RolesGuard` platform-admin pass must NOT admit this route: the
+    RT-664 runtime requires an active `owner` membership in the tenant,
+    because only the tenant owner may author an opt-out and a platform
+    write path would turn the tenant-authored source into a grant path. A
+    write answers 403 only with `origin_rejected` (the RT-430 `Origin` check
+    on a cookie-authenticated unsafe request).
+
+
+    **Two sources, two versions (D-2, D-5).** The grant source (platform
+    admin today, a Billing domain later) writes immutable entitlement
+    revisions numbered by the tenant-wide monotonic `entitlementVersion`. The
+    tenant owner's opt-outs are a separate, tenant-authored source with its
+    own tenant-wide monotonic `optOutVersion` (RT-663 persists it as
+    `opt_out_version`). An opt-out write never creates an entitlement
+    revision and never changes `entitlementVersion`; a grant never changes
+    `optOutVersion`. The full view and every `check` decision report both,
+    so an evaluation records the provenance of both sources. An opt-out
+    write is guarded by `expectedOptOutVersion`, never by
+    `entitlementVersion`.
+
+
+    **Views (D-6).** The response is one of two shapes, chosen by the
+    server from the caller's role, never by the request:
+
+      - `full` — `owner`, `tenant_admin` and a platform admin (admitted as
+        described under **Auth and scope**): the effective entitlement state, effective dates, every
+        catalogue feature with its availability, the tenant opt-outs (D-5)
+        and the request meters (limit, used, reserved, remaining, reset time).
+      - `minimal` — `store_manager`: each catalogue feature with only
+        `available` or `unavailable`. No plan state, no reason, no meter, no
+        opt-out and no commercial detail. The client shows "Not available,
+        ask your account owner" for `unavailable`.
+
+    `store_staff` gets no route (the 404 above). No view carries a price, a
+    currency, a plan name, a provider token cost, a spend cap or a credit
+    balance (§4.7).
+
+
+    **Availability.** A feature is `available` when layers 0 and 6 allow it
+    for the tenant at `evaluatedAt`: the system has it enabled, the tenant's
+    effective entitlement includes it and the owner has not opted it out.
+    The read is a snapshot: it reserves nothing, and an `available` feature
+    can still be refused at request time (by role, store scope, policy,
+    quota, spend cap or the provider). Entitlement and opt-out are
+    tenant-wide in v1 (D-5: no per-store opt-out), so availability is the
+    same for every store of the tenant. Meter exhaustion is reported only
+    in the full view, as the meter; it does not make a feature
+    `unavailable` here. Unknown features are never listed and are always
+    denied (default deny, D-2).
+
+
+    **Lifecycle (RT-644 §4.3, D-7).** `state` is `none` (the default for
+    every tenant), `trial`, `active`, `grace`, `expired` or `cancelled`. In
+    `grace` new AI generation is denied with `grace_read_only` and saved AI
+    outputs stay readable (D-7 semantics). The grace length is not decided:
+    this contract carries no grace duration, and `effectiveUntil` is only
+    the end the current revision states, or null. Until a Billing policy
+    exists, a `grace` state is a manual platform-admin revision. This read
+    does not report `tenants.status`; a suspended tenant is refused at layer
+    1 by the AI routes themselves (RT-667 verifies the dashboard path).
+
+
+    **Meters (D-3, D-9).** In v1 every customer meter counts requests
+    (`unit: request`); tokens and provider cost are internal telemetry and
+    never appear here. Windows are a UTC day or a UTC month (D-9): a window
+    starts at 00:00:00Z of the day, or of the first day of the month, and
+    `resetsAt` is the next such boundary. `remaining = max(0, limit - used -
+    reserved)`, never negative, also after a downgrade. Limits come from the
+    effective entitlement; no number is set by this contract.
+
+
+    **Reason codes (§4.4 + D-5).** `AiEntitlementReasonCode` is the closed
+    set of AI decision reasons. Adding a value is a contract change. Store
+    scope refusals (D-4) and role refusals are `not_authorized`, which is
+    never shown as plan information.
+
+
+    **Error envelope.** The canonical `{ error: { code, message, request_id
+    } }` shape: 400 `validation_error`, 401 unauthenticated, 404
+    non-disclosing not-found, 429 `rate_limited` (console rate limit;
+    honour `Retry-After`), 500 internal, 503 `entitlement_unavailable` (the
+    entitlement or opt-out store cannot be read; the operation fails closed:
+    the read never returns a guessed view and the write writes nothing). The
+    write adds 403 `origin_rejected`, 409 (a stale `expectedOptOutVersion`,
+    or `idempotency_key_conflict`), 425 (the same key still in flight) and
+    422 `not_entitled` (an opt-in beyond the plan). Every 200 is
+    `Cache-Control: no-store`.
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: ai-entitlements-console
+    description: >
+      Protected Admin-Console read of the tenant's AI entitlement state and
+      the owner's opt-out write (RT-662 contract, RT-664 runtime, RT-665
+      panel).
+
+security:
+  - cookieAuth: []
+
+paths:
+  /api/v1/tenants/{tenant_id}/ai/entitlements:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+    get:
+      summary: Read the tenant's AI entitlements (full or minimal view by role).
+      operationId: consoleGetTenantAiEntitlements
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-662 contract PR; the runtime (the `ai-entitlements` module and its
+        evaluator) ships in RT-664 after the RT-663 `[GATED]` migration, which
+        removes this marker.
+      tags: [ai-entitlements-console]
+      security:
+        - cookieAuth: []
+      description: >
+        `owner`, `tenant_admin` and a platform admin get the `full` view;
+        `store_manager` gets the `minimal` view; every other caller gets the
+        non-disclosing 404. A platform admin is admitted today by the
+        existing `RolesGuard` platform-admin pass; once RT-414 ships, a
+        platform admin who is not a member of the tenant also needs an
+        active support session (see the API description). Read
+        only: it reserves no quota and writes no audit event. No query
+        parameter is accepted.
+      responses:
+        "200":
+          description: The caller's view of the tenant's AI entitlements.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantAiEntitlements"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+        "503":
+          $ref: "#/components/responses/EntitlementUnavailable"
+
+  /api/v1/tenants/{tenant_id}/ai/entitlements/opt-outs/{feature_id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+      - $ref: "#/components/parameters/FeatureIdPath"
+    put:
+      summary: Opt one AI feature out of the tenant, or back in up to the plan (owner only).
+      operationId: consolePutTenantAiFeatureOptOut
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-662 contract PR; the runtime ships in RT-664 after the RT-663
+        `[GATED]` migration (the opt-out source and its `opt_out_version`),
+        which removes this marker.
+      x-idempotency: required
+      x-audit-action: ai_entitlement.opt_out_changed
+      tags: [ai-entitlements-console]
+      security:
+        - cookieAuth: []
+      description: >
+        Sets the tenant owner's opt-out of one feature (D-5). `optedOut:
+        true` switches the feature off for the whole tenant; `optedOut:
+        false` switches it back on, only up to what the effective
+        entitlement allows. Subtract-only: an opt-out never enables a
+        feature, raises a limit or acts as a grant, and it never creates an
+        entitlement revision. An opted-out feature is denied with
+        `feature_disabled_tenant`, consumes no quota, and its saved outputs
+        stay readable.
+
+
+        Order of checks, each stopping the call: (1) session, `Origin`,
+        tenant and role (`401` / `403 origin_rejected` / `404`); (2) the
+        `Idempotency-Key` (a same-key retry replays the stored response with
+        `Idempotent-Replayed: true`; the same key with another body is `409
+        idempotency_key_conflict`; a key still in flight is `425`); (3) the
+        body (`400 validation_error`); (4) `{feature_id}` must be a feature
+        of the plan catalogue, else the non-disclosing `404`; (5) under a
+        lock on the tenant's opt-out source, the entitlement and opt-out
+        stores must be readable (`503 entitlement_unavailable`, nothing
+        written); (6) `expectedOptOutVersion` must equal the current
+        `optOutVersion` (`409 ai_opt_out_changed_concurrently`); (7) an
+        opt-in (`optedOut: false`) of a feature the effective entitlement
+        does not include is `422 not_entitled`: an opt-in can never exceed
+        the plan; (8) when the requested state equals the current one,
+        `200` with the current full view, no new opt-out version and no audit row;
+        otherwise write the opt-out, increment `optOutVersion` and write
+        one `ai_entitlement.opt_out_changed` audit row (feature, old and new
+        state, `reason`, new `optOutVersion`) in one transaction, and
+        answer `200` with the updated full view. An opt-out (`optedOut:
+        true`) of a feature that is not entitled is accepted: it only
+        subtracts.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiFeatureOptOutRequest"
+      responses:
+        "200":
+          description: >
+            Written, or already in the requested state: the updated full
+            view. A same-key retry replays this `200` with
+            `Idempotent-Replayed: true`.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantAiEntitlementsFull"
+        "400":
+          $ref: "#/components/responses/WriteValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginRejected"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/OptOutConflict"
+        "422":
+          $ref: "#/components/responses/OptInExceedsPlan"
+        "425":
+          $ref: "#/components/responses/IdempotencyInProgress"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+        "503":
+          $ref: "#/components/responses/EntitlementUnavailable"
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: dp2_session
+      description: >
+        The human dashboard session cookie (httpOnly `dp2_session`), verified
+        by `SessionOnlyAdminGuard`. The only accepted credential on this
+        surface: without a valid session cookie, a machine bearer, a POS
+        `device` token or an `operatorAuthorization` envelope is rejected
+        (401). With a valid session cookie, the cookie authenticates the
+        request and any `Authorization` header is ignored. `RolesGuard`
+        gates each route (default deny → 404): `@Roles("owner",
+        "tenant_admin", "store_manager")` on the read and `@Roles("owner")`
+        on the opt-out write. 401 semantics are owned by 028 (G10).
+
+  headers:
+    CacheControlNoStore:
+      description: >
+        `no-store` on every 200: the body carries the tenant's commercial
+        entitlement state, so no shared or browser cache keeps it.
+      schema:
+        type: string
+        const: no-store
+    ConsoleRetryAfter:
+      description: >
+        Whole seconds the caller should wait before retrying, sent on every
+        console 429 (RT-574 D5). Its own bound, 1 to 3600.
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 3600
+    IdempotentReplayed:
+      description: >
+        Present and `true` on a same-`Idempotency-Key` replay, which carries
+        the stored status (`200`). Absent on a first-time write.
+      schema:
+        type: boolean
+    RetryAfterInProgress:
+      description: Seconds to wait before retrying a 425 with the same `Idempotency-Key` and body.
+      schema:
+        type: integer
+        minimum: 1
+
+  parameters:
+    TenantId:
+      name: tenant_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        Must be the session's tenant; another tenant, an absent tenant, or a
+        role outside the operation's list, is the non-disclosing 404.
+    FeatureIdPath:
+      name: feature_id
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/AiFeatureId"
+      description: >
+        The AI feature to opt out or back in. A well-formed id that the plan
+        catalogue does not know is the non-disclosing 404.
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+        pattern: "^[\\x21-\\x7E]{16,128}$"
+      description: >
+        REQUIRED on every opt-out write (G5): 16 to 128 printable ASCII
+        characters with no whitespace, as the shared `IdempotencyInterceptor`
+        enforces. Keyed on the verified actor. An identical retry replays the
+        stored response with `Idempotent-Replayed: true`; key reuse with a
+        different body is 409 `idempotency_key_conflict`; a key still being
+        processed is 425.
+
+  schemas:
+    AiFeatureId:
+      type: string
+      minLength: 4
+      maxLength: 64
+      pattern: '^ai\.[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$'
+      description: >
+        A feature of the code-owned, versioned AI plan catalogue, for example
+        `ai.briefing.daily`. The catalogue, not this contract, lists the
+        features; the RT-644 §2 identifiers are research hypotheses. An
+        identifier the catalogue does not know is denied (default deny).
+
+    AiEntitlementReasonCode:
+      type: string
+      enum:
+        - not_authorized
+        - tenant_inactive
+        - feature_disabled_system
+        - policy_denied
+        - not_entitled
+        - trial_expired
+        - grace_read_only
+        - feature_disabled_tenant
+        - quota_exhausted
+        - spend_cap_reached
+        - free_credit_exhausted
+        - entitlement_unavailable
+        - provider_unavailable
+      description: >
+        The closed set of AI decision reasons (RT-644 §4.4 plus
+        `feature_disabled_tenant` from AD-AI-ENT-001 D-5), by layer:
+
+          - `not_authorized` (layers 2 to 4): no membership, no capability,
+            or a requested store outside the caller's scope (D-4: refused,
+            never narrowed). Never disclosed as plan information; an HTTP
+            route answers it with its non-disclosing 401 / 404.
+          - `tenant_inactive` (layer 1): the tenant is not `active` or is
+            deleted.
+          - `feature_disabled_system` (layer 0): the system kill switch or an
+            unapproved provider / model.
+          - `policy_denied` (layer 5): the domain / data policy refuses this
+            data class or AI level.
+          - `not_entitled` (layer 6): the effective entitlement does not
+            include the feature (also state `none`, `expired` or
+            `cancelled`).
+          - `trial_expired` (layer 6): state `trial` past `effectiveUntil`.
+          - `grace_read_only` (layer 6): state `grace`; no new generation,
+            saved outputs stay readable (D-7).
+          - `feature_disabled_tenant` (layer 6): the tenant owner opted the
+            feature out (D-5).
+          - `quota_exhausted` (layer 7): the request meter cannot reserve
+            the units.
+          - `spend_cap_reached` (layer 7): the internal spend cap is
+            reached, even with quota left. Never shown to a tenant.
+          - `free_credit_exhausted` (layer 7): the platform experiment credit
+            pool is empty; never a silent switch to paid spend. Never shown
+            to a tenant.
+          - `entitlement_unavailable` (fail closed): the entitlement or
+            usage store cannot be read; no model request is built.
+          - `provider_unavailable` (layer 8): the provider failed or timed
+            out after the reservation; the reservation is released and not
+            charged (D-8). An execution outcome, never a `check` result.
+
+    AiCheckDenyReasonCode:
+      x-internal: true
+      type: string
+      enum:
+        - not_authorized
+        - tenant_inactive
+        - feature_disabled_system
+        - policy_denied
+        - not_entitled
+        - trial_expired
+        - grace_read_only
+        - feature_disabled_tenant
+        - quota_exhausted
+        - spend_cap_reached
+        - free_credit_exhausted
+        - entitlement_unavailable
+      description: >
+        SERVER-INTERNAL. The reasons a `check` may deny with: every
+        `AiEntitlementReasonCode` except `provider_unavailable`, which is a
+        layer-8 execution outcome after the reservation and never a `check`
+        result.
+
+    AiEntitlementState:
+      type: string
+      enum: [none, trial, active, grace, expired, cancelled]
+      description: >
+        The tenant's effective entitlement lifecycle state (RT-644 §4.3).
+        `none` is the default for every tenant. `grace` denies new
+        generation with `grace_read_only` (D-7 semantics; no length is set
+        here).
+
+    AiFeatureAvailabilityValue:
+      type: string
+      enum: [available, unavailable]
+      description: >
+        Whether the feature is usable for the tenant at `evaluatedAt`
+        (layers 0 and 6; see the API description). A snapshot, never a
+        reservation.
+
+    AiFeatureAvailability:
+      type: object
+      additionalProperties: false
+      required: [featureId, availability]
+      description: >
+        The minimal per-feature flag for UI gating (D-6; PE-BC1 shape). No
+        reason, plan, meter or opt-out detail.
+      properties:
+        featureId:
+          $ref: "#/components/schemas/AiFeatureId"
+        availability:
+          $ref: "#/components/schemas/AiFeatureAvailabilityValue"
+
+    AiTenantFacingReasonCode:
+      type: string
+      enum:
+        - not_entitled
+        - trial_expired
+        - grace_read_only
+        - feature_disabled_tenant
+      description: >
+        The subset of `AiEntitlementReasonCode` the full view may state for
+        an `unavailable` feature. Everything else that makes a feature
+        unavailable (the system kill switch, spend cap, free credit) is shown
+        as `null`, "temporarily unavailable", because tenants never see
+        spend or credit state (§4.7, T12).
+
+    AiMeterWindow:
+      type: string
+      enum: [day, month]
+      description: A UTC calendar day or a UTC calendar month (D-9).
+
+    AiRequestMeter:
+      type: object
+      additionalProperties: false
+      required: [meter, unit, window, storeRef, limit, used, reserved, remaining, resetsAt]
+      description: >
+        One request meter in its current UTC window. `remaining = max(0,
+        limit - used - reserved)`. No price, cost or token figure.
+      properties:
+        meter:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z][a-z0-9_.]*$'
+          description: The catalogue's meter identifier for this feature.
+        unit:
+          type: string
+          const: request
+          description: v1 customer meters count requests only (D-3).
+        window:
+          $ref: "#/components/schemas/AiMeterWindow"
+        storeRef:
+          type: [string, "null"]
+          format: uuid
+          description: >
+            The store a per-store meter belongs to (charged to the store being
+            served, D-4); null for a tenant meter, which is charged once per
+            request whatever the number of stores.
+        limit:
+          type: integer
+          minimum: 0
+        used:
+          type: integer
+          minimum: 0
+          description: Committed units in the current window.
+        reserved:
+          type: integer
+          minimum: 0
+          description: Units reserved by in-flight requests, not yet committed or released.
+        remaining:
+          type: integer
+          minimum: 0
+        resetsAt:
+          type: string
+          format: date-time
+          description: The next UTC window boundary.
+
+    AiTenantOptOut:
+      type: object
+      additionalProperties: false
+      required: [optedOut, changedAt]
+      description: >
+        The tenant owner's opt-out of one feature (D-5): tenant-wide and
+        subtract-only. An opt-out never enables a feature or raises a limit.
+        An active opt-out always has a `changedAt`.
+      if:
+        properties:
+          optedOut:
+            const: true
+        required: [optedOut]
+      then:
+        properties:
+          changedAt:
+            type: string
+      properties:
+        optedOut:
+          type: boolean
+        changedAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the owner last changed it; null when never changed.
+
+    AiFeatureEntitlement:
+      type: object
+      additionalProperties: false
+      required: [featureId, availability, unavailableReason, entitled, optOut, meters]
+      description: >
+        One catalogue feature in the full view. The reason names its
+        source: `not_entitled` when the effective entitlement does not
+        include the feature (whatever the opt-out); `feature_disabled_tenant`
+        only when the feature is entitled and the owner opted it out.
+      allOf:
+        - if:
+            properties:
+              availability:
+                const: available
+            required: [availability]
+          then:
+            description: >
+              `available` means entitled and not opted out, so it carries no
+              reason.
+            properties:
+              unavailableReason:
+                type: "null"
+              entitled:
+                const: true
+              optOut:
+                properties:
+                  optedOut:
+                    const: false
+        - if:
+            properties:
+              unavailableReason:
+                const: not_entitled
+            required: [unavailableReason]
+          then:
+            properties:
+              entitled:
+                const: false
+        - if:
+            properties:
+              entitled:
+                const: false
+            required: [entitled]
+          then:
+            description: A feature outside the effective entitlement has no meter.
+            properties:
+              meters:
+                maxItems: 0
+        - if:
+            properties:
+              unavailableReason:
+                const: feature_disabled_tenant
+            required: [unavailableReason]
+          then:
+            properties:
+              entitled:
+                const: true
+              optOut:
+                properties:
+                  optedOut:
+                    const: true
+      properties:
+        featureId:
+          $ref: "#/components/schemas/AiFeatureId"
+        availability:
+          $ref: "#/components/schemas/AiFeatureAvailabilityValue"
+        unavailableReason:
+          description: >
+            Null when `available`. When `unavailable`, the tenant-facing
+            reason, or null for "temporarily unavailable" (see
+            `AiTenantFacingReasonCode`).
+          oneOf:
+            - $ref: "#/components/schemas/AiTenantFacingReasonCode"
+            - type: "null"
+        entitled:
+          type: boolean
+          description: >
+            Whether the effective entitlement includes the feature, before the
+            tenant opt-out is applied.
+        optOut:
+          $ref: "#/components/schemas/AiTenantOptOut"
+        meters:
+          type: array
+          description: The feature's request meters; empty when it has none or is not entitled.
+          items:
+            $ref: "#/components/schemas/AiRequestMeter"
+
+    TenantAiEntitlementsFull:
+      type: object
+      additionalProperties: false
+      required:
+        - view
+        - entitlementVersion
+        - optOutVersion
+        - state
+        - effectiveFrom
+        - effectiveUntil
+        - evaluatedAt
+        - features
+      description: >
+        The owner / tenant_admin view (D-6). State `none` has no effective
+        revision: `effectiveFrom` and `effectiveUntil` are null, and every
+        feature is unavailable and not entitled.
+      if:
+        properties:
+          state:
+            const: none
+        required: [state]
+      then:
+        properties:
+          effectiveFrom:
+            type: "null"
+          effectiveUntil:
+            type: "null"
+          features:
+            items:
+              properties:
+                availability:
+                  const: unavailable
+                entitled:
+                  const: false
+      else:
+        description: Every other state is an effective revision with a start.
+        properties:
+          effectiveFrom:
+            type: string
+      properties:
+        view:
+          type: string
+          const: full
+        entitlementVersion:
+          type: integer
+          minimum: 0
+          description: >
+            The tenant-wide monotonic entitlement revision the view was
+            evaluated at; 0 when the tenant never had a revision (state
+            `none`).
+        optOutVersion:
+          type: integer
+          minimum: 0
+          description: >
+            The tenant-wide monotonic version of the owner's opt-out source
+            the view was evaluated at; 0 when the owner never changed an
+            opt-out. Echo it as `expectedOptOutVersion` on the next write.
+        state:
+          $ref: "#/components/schemas/AiEntitlementState"
+        effectiveFrom:
+          type: [string, "null"]
+          format: date-time
+          description: Start of the effective revision; null for state `none`.
+        effectiveUntil:
+          type: [string, "null"]
+          format: date-time
+          description: >
+            End the effective revision states, or null when it states none.
+            Never a computed grace length (D-7).
+        evaluatedAt:
+          type: string
+          format: date-time
+        features:
+          type: array
+          description: Every catalogue feature, ordered by `featureId`.
+          items:
+            $ref: "#/components/schemas/AiFeatureEntitlement"
+
+    TenantAiEntitlementsMinimal:
+      type: object
+      additionalProperties: false
+      required: [view, evaluatedAt, features]
+      description: >
+        The store_manager view (D-6): only whether each feature is available.
+      properties:
+        view:
+          type: string
+          const: minimal
+        evaluatedAt:
+          type: string
+          format: date-time
+        features:
+          type: array
+          description: Every catalogue feature, ordered by `featureId`.
+          items:
+            $ref: "#/components/schemas/AiFeatureAvailability"
+
+    TenantAiEntitlements:
+      description: The caller's view, chosen by the server from the caller's role.
+      oneOf:
+        - $ref: "#/components/schemas/TenantAiEntitlementsFull"
+        - $ref: "#/components/schemas/TenantAiEntitlementsMinimal"
+      discriminator:
+        propertyName: view
+        mapping:
+          full: "#/components/schemas/TenantAiEntitlementsFull"
+          minimal: "#/components/schemas/TenantAiEntitlementsMinimal"
+
+    AiFeatureOptOutRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedOptOutVersion, optedOut, reason]
+      description: >
+        The owner's opt-out of the path feature (D-5). The tenant comes from
+        the path and the session, and the feature from the path, never the
+        body. There is no limit, plan, state or grant field: the write can
+        only subtract.
+      properties:
+        expectedOptOutVersion:
+          type: integer
+          minimum: 0
+          description: The read's `optOutVersion` (`0` when no opt-out was ever changed).
+        optedOut:
+          type: boolean
+          description: >
+            `true` switches the feature off for the whole tenant; `false`
+            switches it back on, only up to the plan (else 422
+            `not_entitled`).
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Why the owner changed it. Required (D-5); recorded on the audit row.
+
+    AiEntitlementCheckInput:
+      x-internal: true
+      type: object
+      additionalProperties: false
+      required: [featureId, targetStores, unitsEstimate, idempotencyKey]
+      description: >
+        SERVER-INTERNAL, not an HTTP surface: the input of `check(feature_id,
+        target_stores[], units_estimate, idempotency_key)` (RT-644 §4.2).
+        The tenant and the principal come only from the request context, so
+        there is no tenant, user, role or membership property; a caller
+        cannot name them.
+      properties:
+        featureId:
+          $ref: "#/components/schemas/AiFeatureId"
+        targetStores:
+          type: array
+          uniqueItems: true
+          description: >
+            Every store the request touches; empty for a tenant-only request.
+            Any store outside the principal's scope refuses the whole request
+            with `not_authorized` (D-4); it is never narrowed.
+          items:
+            type: string
+            format: uuid
+        unitsEstimate:
+          type: integer
+          minimum: 1
+          description: "The request units to reserve (v1: requests)."
+        idempotencyKey:
+          type: string
+          minLength: 16
+          maxLength: 128
+          pattern: "^[\\x21-\\x7E]{16,128}$"
+          description: >
+            The request's `Idempotency-Key`. The reservation is unique per
+            (tenant, feature, key): a replay returns the same decision and
+            reservation and is counted once (D-3).
+
+    AiEntitlementMeterSnapshot:
+      x-internal: true
+      type: object
+      additionalProperties: false
+      required: [meter, window, limit, used, reserved, remaining, resetsAt]
+      description: SERVER-INTERNAL. The meter a decision reserved against or was refused by.
+      properties:
+        meter:
+          type: string
+          minLength: 1
+          maxLength: 64
+        window:
+          $ref: "#/components/schemas/AiMeterWindow"
+        limit:
+          type: integer
+          minimum: 0
+        used:
+          type: integer
+          minimum: 0
+        reserved:
+          type: integer
+          minimum: 0
+        remaining:
+          type: integer
+          minimum: 0
+        resetsAt:
+          type: string
+          format: date-time
+
+    AiEntitlementAllow:
+      x-internal: true
+      type: object
+      additionalProperties: false
+      required: [decision, entitlementVersion, optOutVersion, reservationId, evaluatedAt]
+      description: SERVER-INTERNAL. Every layer up to 7 allowed and the units are reserved.
+      properties:
+        decision:
+          type: string
+          const: allow
+        entitlementVersion:
+          type: integer
+          minimum: 1
+          description: The revision the reservation was made under; in-flight work finishes under it.
+        optOutVersion:
+          type: integer
+          minimum: 0
+          description: The owner opt-out version evaluated (0 when never changed).
+        policyVersion:
+          type: integer
+          minimum: 1
+          description: The AD-POL-001 policy version, once that engine exists.
+        meter:
+          $ref: "#/components/schemas/AiEntitlementMeterSnapshot"
+        reservationId:
+          type: string
+          format: uuid
+        evaluatedAt:
+          type: string
+          format: date-time
+
+    AiEntitlementDeny:
+      x-internal: true
+      type: object
+      additionalProperties: false
+      required: [decision, reasonCode, entitlementVersion, optOutVersion, evaluatedAt]
+      allOf:
+        - if:
+            properties:
+              reasonCode:
+                const: quota_exhausted
+            required: [reasonCode]
+          then:
+            required: [meter]
+        - if:
+            properties:
+              reasonCode:
+                enum: [not_authorized, tenant_inactive, feature_disabled_system, policy_denied]
+            required: [reasonCode]
+          then:
+            description: >
+              A layer 0 to 5 refusal stops before the entitlement, opt-out
+              and quota are read: no version and no meter.
+            not:
+              required: [meter]
+            properties:
+              entitlementVersion:
+                type: "null"
+              optOutVersion:
+                type: "null"
+        - if:
+            properties:
+              reasonCode:
+                enum:
+                  - not_entitled
+                  - trial_expired
+                  - grace_read_only
+                  - feature_disabled_tenant
+                  - quota_exhausted
+                  - spend_cap_reached
+                  - free_credit_exhausted
+            required: [reasonCode]
+          then:
+            properties:
+              entitlementVersion:
+                type: integer
+              optOutVersion:
+                type: integer
+      description: >
+        SERVER-INTERNAL. The first refusing layer; nothing is reserved and no
+        model request is built. Fails closed: when any layer's state is
+        unknown or unreadable the decision is deny `entitlement_unavailable`.
+        A `quota_exhausted` deny carries the refusing `meter` (with
+        `resetsAt`). Provenance follows the layer: a layer 0 to 5 refusal
+        (`not_authorized`, `tenant_inactive`, `feature_disabled_system`,
+        `policy_denied`) stops before either source is read, so both
+        versions are null; a layer 6 or 7 refusal reports the concrete
+        `entitlementVersion` and `optOutVersion` it evaluated;
+        `entitlement_unavailable` reports a version only for a source that
+        was read before the failure.
+      properties:
+        decision:
+          type: string
+          const: deny
+        reasonCode:
+          $ref: "#/components/schemas/AiCheckDenyReasonCode"
+        entitlementVersion:
+          type: [integer, "null"]
+          minimum: 0
+          description: >
+            The revision evaluated, or null when the refusal came before the
+            entitlement was read (layers 0 to 5, or `entitlement_unavailable`).
+        optOutVersion:
+          type: [integer, "null"]
+          minimum: 0
+          description: >
+            The owner opt-out version evaluated, or null when the refusal
+            came before the opt-out source was read.
+        policyVersion:
+          type: integer
+          minimum: 1
+        meter:
+          $ref: "#/components/schemas/AiEntitlementMeterSnapshot"
+        evaluatedAt:
+          type: string
+          format: date-time
+
+    AiEntitlementDecision:
+      x-internal: true
+      description: >
+        SERVER-INTERNAL, not an HTTP surface: the result of `check` (RT-644
+        §4.2). `allow` carries a reservation and no reason; `deny` carries a
+        reason and no reservation. On `quota_exhausted` the meter states
+        `resetsAt`.
+      oneOf:
+        - $ref: "#/components/schemas/AiEntitlementAllow"
+        - $ref: "#/components/schemas/AiEntitlementDeny"
+      discriminator:
+        propertyName: decision
+        mapping:
+          allow: "#/components/schemas/AiEntitlementAllow"
+          deny: "#/components/schemas/AiEntitlementDeny"
+
+    Error:
+      type: object
+      required: [error]
+      description: >
+        Canonical error envelope. Out-of-scope and cross-tenant refusals are
+        non-disclosing (§II, §XII): they never name the cause.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id; the cause is recorded server-side.
+    IdempotencyInProgressBody:
+      type: object
+      additionalProperties: false
+      required: [error, retryAfterSec]
+      description: The shared `IdempotencyInterceptor`'s 425 body (not the `Error` envelope).
+      properties:
+        error:
+          type: string
+          const: idempotency_in_progress
+        retryAfterSec:
+          type: integer
+          minimum: 1
+
+  responses:
+    ValidationFailure:
+      description: >
+        validation_error (400): a malformed `{tenant_id}` or any query
+        parameter (none is accepted). Checked after the guards.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        Unauthenticated (401): a missing or invalid session cookie, or a
+        non-cookie credential without a valid session cookie.
+        Non-disclosing. Owned by 028 (G10).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >
+        not_found (404), non-disclosing: identical for a role outside the
+        operation's list (`store_staff` on the read; every role but `owner`
+        on the opt-out write), a `{tenant_id}` that is not the session's
+        tenant, an absent tenant, and on the write a `{feature_id}` that the
+        plan catalogue does not know. It never carries plan information.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    WriteValidationFailure:
+      description: >
+        400: `validation_error` (a malformed path id or body, an unknown or
+        missing key, an empty or over-long `reason`), or the
+        `IdempotencyInterceptor`'s `idempotency_key_required` /
+        `idempotency_key_malformed`. Nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    OriginRejected:
+      description: >
+        403 `origin_rejected` (RT-430): a cookie-authenticated write whose
+        `Origin` is missing or not allowed. Nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    OptOutConflict:
+      description: >
+        409, `error.code` one of: `ai_opt_out_changed_concurrently`
+        (`expectedOptOutVersion` is not the current `optOutVersion`; reload
+        and retry); `idempotency_key_conflict` (the same `Idempotency-Key`
+        with a different body). Nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    OptInExceedsPlan:
+      description: >
+        422 `not_entitled` (a closed-set reason code): an opt-in (`optedOut:
+        false`) of a feature the effective entitlement does not include. An
+        opt-in can never exceed the plan (D-5). Nothing is written. Only the
+        owner, who already reads the full view, can receive it.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    IdempotencyInProgress:
+      description: >
+        425 `idempotency_in_progress`: a request with the same
+        `Idempotency-Key` is still being processed. Retry after `Retry-After` seconds with the same key and
+        body.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfterInProgress"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/IdempotencyInProgressBody"
+    SystemFailure:
+      description: >
+        system_failure (500): unexpected server error; the cause is recorded
+        server-side under `request_id`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    EntitlementUnavailable:
+      description: >
+        503 `entitlement_unavailable`: an authorized caller, but the
+        entitlement or opt-out store cannot be read. Fails closed: no guessed
+        view is returned and nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: >
+        429 `rate_limited` (RT-574): the caller's per-user budget for this
+        class of operation is spent. The body is the canonical error
+        envelope with a non-disclosing message (no budget, class or window);
+        its `request_id` equals the `X-Request-Id` response header. Honour
+        `Retry-After`. A 429 is not a 401: it never means the session ended.
+        The console limit is server-configured and may not be enforced, so a
+        client must handle a 429 but must not expect one.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/ConsoleRetryAfter"
+        Cache-Control:
+          description: Always `no-store` on a 429.
+          required: true
+          schema:
+            type: string
+            enum: [no-store]
+        X-Request-Id:
+          description: >
+            The request id, equal to `error.request_id` in the body: the
+            inbound `X-Request-Id` when it is a well-formed UUID, otherwise a
+            server-minted one.
+          required: true
+          schema:
+            type: string
+            format: uuid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
