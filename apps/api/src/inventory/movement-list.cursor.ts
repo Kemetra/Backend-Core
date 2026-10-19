@@ -16,6 +16,9 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+// The keyset-instant / UUID rules are the console-sales cursor's (same wire form).
+import { KEY_INSTANT, LOWER_UUID, namesRealInstant } from "../console-sales/console-sales.query";
+
 export class StockMovementCursorError extends Error {
   constructor() {
     super("cursor is not a valid continuation token for this query");
@@ -41,8 +44,6 @@ export interface StockMovementKeyset {
 }
 
 const OPERATION = "stock_movements";
-const LOWER_UUID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
-const KEY_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 
 /** The SQL that renders `occurred_at` as a cursor key (microsecond, UTC). */
 export const MOVEMENT_OCCURRED_AT_KEY_SQL = `to_char(m.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
@@ -59,17 +60,6 @@ const CursorPayload = z
   .strict();
 
 type CursorPayload = z.infer<typeof CursorPayload>;
-
-/**
- * True when `key` names a real instant, not a rolled-over one, that Postgres
- * can represent (year 0000 is a 22008), so a tampered cursor is refused here,
- * before any read.
- */
-function namesRealInstant(key: string): boolean {
-  if (key.startsWith("0000")) return false;
-  const ms = Date.parse(key);
-  return !Number.isNaN(ms) && new Date(ms).toISOString().slice(0, 19) === key.slice(0, 19);
-}
 
 function digestOf(binding: StockMovementCursorBinding): string {
   const ordered = [binding.productId?.toLowerCase() ?? null, binding.scope];
