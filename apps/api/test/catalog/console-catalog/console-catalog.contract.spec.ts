@@ -289,6 +289,8 @@ describe("console-catalog — projections", () => {
     expect(detail(DETAIL)).toBe(true);
     const { identifiers: _omitted, ...missing } = DETAIL;
     expect(detail(missing)).toBe(false);
+    // The detail takes no store_id, so its summary never carries a storeView.
+    expect(detail({ ...DETAIL, summary: { ...SUMMARY, storeView: STORE_VIEW } })).toBe(false);
     expect(
       detail({ ...DETAIL, identifiers: [{ ...DETAIL.identifiers[0], identifierType: "ean" }] }),
     ).toBe(false);
