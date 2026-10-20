@@ -279,6 +279,17 @@ async function unknownItemStatus(): Promise<string> {
   return r.rows[0]?.resolution_status ?? "missing";
 }
 
+/** Drain pending audit work, then assert no link audit event was emitted. */
+async function expectNoLinkAuditEvent(): Promise<void> {
+  for (let i = 0; i < 50; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const linkEvents = auditSpy.calls.filter(
+    (ev) => ev.action === "unknown_item.resolved.linked",
+  );
+  expect(linkEvents).toHaveLength(0);
+}
+
 /**
  * Link U1 to `productId` and assert the refusal is 409 target_unavailable:
  * U1 stays pending, no alias row is written, no link audit event is emitted.
@@ -296,13 +307,7 @@ async function expectLinkRefusedAsTargetUnavailable(productId: string): Promise<
   expect(await unknownItemStatus()).toBe("pending");
   expect(await aliasCount()).toBe(beforeAliases);
 
-  for (let i = 0; i < 50; i += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  const linkEvents = auditSpy.calls.filter(
-    (ev) => ev.action === "unknown_item.resolved.linked",
-  );
-  expect(linkEvents).toHaveLength(0);
+  await expectNoLinkAuditEvent();
 }
 
 // ---------------------------------------------------------------------------
@@ -361,13 +366,7 @@ describe("T623 / 005-WAVE2-LINK-EDGES — link to retired/cross-tenant/non-exist
       expect(await unknownItemStatus()).toBe("pending");
       expect(await aliasCount()).toBe(beforeAliases);
 
-      for (let i = 0; i < 50; i += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      const linkEvents = auditSpy.calls.filter(
-        (ev) => ev.action === "unknown_item.resolved.linked",
-      );
-      expect(linkEvents).toHaveLength(0);
+      await expectNoLinkAuditEvent();
     },
   );
 
@@ -401,13 +400,7 @@ describe("T623 / 005-WAVE2-LINK-EDGES — link to retired/cross-tenant/non-exist
       expect(await unknownItemStatus()).toBe("pending");
       expect(await aliasCount()).toBe(beforeAliases);
 
-      for (let i = 0; i < 50; i += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      const linkEvents = auditSpy.calls.filter(
-        (ev) => ev.action === "unknown_item.resolved.linked",
-      );
-      expect(linkEvents).toHaveLength(0);
+      await expectNoLinkAuditEvent();
     },
   );
 
