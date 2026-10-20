@@ -238,8 +238,8 @@ export class ReconciliationController {
     }
 
     // SI-001 / FR-092: non-disclosing 404 — does not reveal whether the
-    // unknown item was absent or the product was absent. Retired products
-    // are handled by the `target_unavailable` branch above (409); this
+    // unknown item was absent or the product was absent. Retired or inactive
+    // products are handled by the `target_unavailable` branch above (409); this
     // fallthrough represents truly absent items (RLS-filtered cross-tenant
     // or fabricated UUID).
     throw new NotFoundException("Not Found");

@@ -20,11 +20,15 @@
  *   (e) Link to an inactive (is_active = false) but not retired product in
  *       the SAME tenant → 409 target_unavailable (FR-051, RT-745).
  *
- * Invariants (all three cases):
+ * State invariants (all cases):
  *   - U1.resolution_status stays 'pending'.
  *   - No new product_aliases row inserted (count remains the pre-test
  *     baseline of 0 for the U1 identifier).
- *   - No audit event emitted (auditSpy.calls is empty for the link action).
+ * Audit invariants:
+ *   - No successful-link event in any case.
+ *   - Cases (a) and (e) emit exactly one
+ *     unknown_item.reconciliation_conflict_rejected{reason=target_unavailable}.
+ *   - Cases (b) and (c) emit no rejection event (non-disclosing 404).
  *
  * Harness: ReconciliationController + ReconciliationService against
  * Testcontainers Postgres 16. PG_POOL bound to localEnv.app (RLS-active)
@@ -292,7 +296,8 @@ async function expectNoLinkAuditEvent(): Promise<void> {
 
 /**
  * Link U1 to `productId` and assert the refusal is 409 target_unavailable:
- * U1 stays pending, no alias row is written, no link audit event is emitted.
+ * U1 stays pending, no alias row is written, no successful-link event is
+ * emitted, and exactly one target_unavailable rejection event is audited.
  */
 async function expectLinkRefusedAsTargetUnavailable(productId: string): Promise<void> {
   const beforeAliases = await aliasCount();
@@ -308,6 +313,12 @@ async function expectLinkRefusedAsTargetUnavailable(productId: string): Promise<
   expect(await aliasCount()).toBe(beforeAliases);
 
   await expectNoLinkAuditEvent();
+
+  const rejections = auditSpy.calls.filter(
+    (ev) => ev.action === "unknown_item.reconciliation_conflict_rejected",
+  );
+  expect(rejections).toHaveLength(1);
+  expect(rejections[0]!.metadata).toMatchObject({ reason: "target_unavailable" });
 }
 
 // ---------------------------------------------------------------------------
