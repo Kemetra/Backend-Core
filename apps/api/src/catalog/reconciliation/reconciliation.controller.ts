@@ -167,7 +167,7 @@ export class ReconciliationController {
    *                           non-disclosing, does not distinguish the two)
    *   409 alias_conflict    — product_aliases unique index violated (FR-040)
    *   409 already_reconciled — item already resolved or dismissed (FR-004)
-   *   409 target_unavailable — target product is retired (FR-051)
+   *   409 target_unavailable — target product is retired or inactive (FR-051)
    */
   @Post("api/v1/catalog/unknown-items/:id/link")
   @HttpCode(HttpStatus.OK)
@@ -233,7 +233,7 @@ export class ReconciliationController {
       throw new ConflictException({
         code: "target_unavailable",
         message:
-          "The target product is retired and cannot accept new alias links (FR-051).",
+          "The target product is retired or inactive and cannot accept new alias links (FR-051).",
       });
     }
 
