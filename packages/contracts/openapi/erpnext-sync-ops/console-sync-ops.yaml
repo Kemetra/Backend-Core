@@ -21,8 +21,8 @@ info:
          timestamps, and a per-class mismatch summary.
 
     READ-NOT-MIRROR / compute-on-read: 025 reads the 015/017 rows in place,
-    tenant-scoped under RLS (fail-closed). It owns NO table, NO migration, NO
-    worker, and exposes NO write/repair surface — write/repair stay in 017. It is
+    tenant-scoped under RLS (fail-closed). It owns NO table or migration of its
+    own, NO worker, and exposes NO write/repair surface — write/repair stay in 017. It is
     the read-only consolidation of 017's operator surface for the console.
 
     AUTH (FR-007): the HUMAN `cookieAuth` (httpOnly `dp2_session`) scheme — gated
@@ -48,8 +48,9 @@ info:
     non-recursive, R9).
 
     SCOPE (025-CONTRACT): authors ONLY this YAML + its conformance spec. The
-    read-model service + controller routes land in the US1/US2/US3 slices. No
-    `packages/db` change (SC-007), no migration, no worker, no write.
+    read-model service + controller routes land in the US1/US2/US3 slices. Spec 025
+    owns no table, worker or write path; RT-565 adds five read-only partial indexes
+    (0057-0061) under `packages/db`.
 
 
     **1.1.0-draft (RT-620, additive).** Every cookieAuth operation may

@@ -154,6 +154,22 @@ async function countPostings(): Promise<string> {
   return r.rows[0]!.n;
 }
 
+type SeedArgs = Parameters<typeof seedPostings>;
+
+/**
+ * Rows existing BEFORE the build (the upgrade path): a busy store with every
+ * state, a quiet store with a few, and another tenant.
+ */
+const SEEDS: readonly SeedArgs[] = [
+  [TENANT, STORE_BUSY, "busy-posted", 2000, "posted", "now"],
+  [TENANT, STORE_BUSY, "busy-legacy", 20, "posted", "null"],
+  [TENANT, STORE_BUSY, "busy-pending", 300, "pending", "null"],
+  [TENANT, STORE_BUSY, "busy-dead", 50, "permanently_rejected", "null"],
+  [TENANT, STORE_QUIET, "quiet-posted", 3, "posted", "now"],
+  [TENANT, STORE_QUIET, "quiet-pending", 2, "pending", "null"],
+  [TENANT_2, STORE_T2, "t2-posted", 500, "posted", "now"],
+];
+
 beforeAll(async () => {
   try {
     env = await startPgEnv();
@@ -177,15 +193,7 @@ beforeAll(async () => {
        ($4, $5, 'rt565t2', 'RT-565 T2')`,
     [STORE_BUSY, TENANT, STORE_QUIET, STORE_T2, TENANT_2],
   );
-  // Rows existing BEFORE the build (the upgrade path): a busy store with every
-  // state, a quiet store with a few, and another tenant.
-  await seedPostings(TENANT, STORE_BUSY, "busy-posted", 2000, "posted", "now");
-  await seedPostings(TENANT, STORE_BUSY, "busy-legacy", 20, "posted", "null");
-  await seedPostings(TENANT, STORE_BUSY, "busy-pending", 300, "pending", "null");
-  await seedPostings(TENANT, STORE_BUSY, "busy-dead", 50, "permanently_rejected", "null");
-  await seedPostings(TENANT, STORE_QUIET, "quiet-posted", 3, "posted", "now");
-  await seedPostings(TENANT, STORE_QUIET, "quiet-pending", 2, "pending", "null");
-  await seedPostings(TENANT_2, STORE_T2, "t2-posted", 500, "posted", "now");
+  for (const seed of SEEDS) await seedPostings(...seed);
   // One query() per file, exactly as the runner sends it.
   for (const m of MIGRATIONS) await env.admin.query(read(up(m.id)));
   await env.admin.query("ANALYZE erpnext_posting_status");
@@ -221,69 +229,43 @@ describe("0057-0061 — the five D7 indexes", () => {
     },
   );
 
-  /** One row per D7 probe: the index that must serve it, under tenant RLS, without a Sort. */
-  const PROBES: ReadonlyArray<{
-    migration: (typeof MIGRATIONS)[number];
-    scope: "tenant-wide" | "one store";
-    fact: string;
-    sql: string;
-    params: unknown[];
-    sorted: boolean;
-  }> = [
+  /** The three D7 read facts: probe SQL tail, the [tenant-wide, one-store] index, and whether the index must also spare a Sort. */
+  const FACTS = [
     {
-      migration: MIGRATIONS[0],
-      scope: "tenant-wide",
       fact: "last posting",
-      sql: `SELECT posted_at FROM erpnext_posting_status
-             WHERE posted_at IS NOT NULL ORDER BY posted_at DESC LIMIT 1`,
-      params: [],
+      select: "posted_at",
+      tail: "posted_at IS NOT NULL ORDER BY posted_at DESC",
+      indexes: [MIGRATIONS[0], MIGRATIONS[1]],
       sorted: true,
     },
     {
-      migration: MIGRATIONS[1],
-      scope: "one store",
-      fact: "last posting",
-      sql: `SELECT posted_at FROM erpnext_posting_status
-             WHERE store_id = $1 AND posted_at IS NOT NULL ORDER BY posted_at DESC LIMIT 1`,
-      params: [STORE_QUIET],
-      sorted: true,
-    },
-    {
-      migration: MIGRATIONS[2],
-      scope: "tenant-wide",
       fact: "oldest pending",
-      sql: `SELECT created_at FROM erpnext_posting_status
-             WHERE status = 'pending' ORDER BY created_at LIMIT 1`,
-      params: [],
+      select: "created_at",
+      tail: "status = 'pending' ORDER BY created_at",
+      indexes: [MIGRATIONS[2], MIGRATIONS[3]],
       sorted: true,
     },
     {
-      migration: MIGRATIONS[3],
-      scope: "one store",
-      fact: "oldest pending",
-      sql: `SELECT created_at FROM erpnext_posting_status
-             WHERE store_id = $1 AND status = 'pending' ORDER BY created_at LIMIT 1`,
-      params: [STORE_QUIET],
-      sorted: true,
-    },
-    {
-      migration: MIGRATIONS[4],
-      scope: "tenant-wide",
       fact: "unknown-vs-none probe",
-      sql: `SELECT 1 FROM erpnext_posting_status WHERE status = 'posted' AND posted_at IS NULL LIMIT 1`,
-      params: [],
+      select: "1",
+      tail: "status = 'posted' AND posted_at IS NULL",
+      indexes: [MIGRATIONS[4], MIGRATIONS[4]],
       sorted: false,
     },
-    {
-      migration: MIGRATIONS[4],
-      scope: "one store",
-      fact: "unknown-vs-none probe",
-      sql: `SELECT 1 FROM erpnext_posting_status
-             WHERE status = 'posted' AND posted_at IS NULL AND store_id = $1 LIMIT 1`,
-      params: [STORE_QUIET],
-      sorted: false,
-    },
-  ];
+  ] as const;
+
+  /** One row per D7 probe (fact x scope): the index that must serve it, under tenant RLS. */
+  const PROBES = FACTS.flatMap((f) =>
+    (["tenant-wide", "one store"] as const).map((scope, i) => ({
+      migration: f.indexes[i]!,
+      scope,
+      fact: f.fact,
+      sql: `SELECT ${f.select} FROM erpnext_posting_status
+             WHERE ${i === 1 ? "store_id = $1 AND " : ""}${f.tail} LIMIT 1`,
+      params: i === 1 ? [STORE_QUIET] : [],
+      sorted: f.sorted,
+    })),
+  );
 
   it.each(PROBES)("serves the $scope $fact from $migration.id", async ({ migration, sql, params, sorted }) => {
     if (skip()) return;
