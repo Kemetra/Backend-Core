@@ -144,11 +144,10 @@ export class PlatformSupportSessionsService {
       return record;
     });
 
-    const cleared = await this.sessions.updateActiveContext(caller.sessionId, {
-      activeTenantId: null,
-      activeStoreId: null,
-    });
-    if (!cleared) throw unauthorized();
+    // Clear only the ended session's tenant: a tenant switch that raced in
+    // (another tab) keeps the tenant it selected.
+    const cleared = await this.sessions.clearActiveTenantIf(caller.sessionId, ended.tenantId);
+    if (!cleared && !(await this.sessions.findActiveById(caller.sessionId))) throw unauthorized();
     return toSupportSessionBody(ended);
   }
 

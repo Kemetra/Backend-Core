@@ -569,6 +569,17 @@ describe("RT-414 support sessions — enforcement and audit", () => {
     await post(`${BASE}/current/end`, admin).expect(200);
   });
 
+  it("end clears only its own tenant: a tenant switch that raced in is kept", async () => {
+    if (dockerSkipped) return;
+    const admin = await signIn(ADMIN);
+    await open(admin, ACME).expect(201);
+    // Another tab's switch lands between the support-session commit and the clear.
+    await forceActiveTenant(admin, OTHER);
+    await post(`${BASE}/current/end`, admin).expect(200);
+    const me = body(await get("/api/v1/context/me", admin).expect(200));
+    expect((me["active_tenant"] as { id: string } | null)?.id).toBe(OTHER);
+  });
+
   it("ends the previous session when a new one is opened (replaced)", async () => {
     if (dockerSkipped) return;
     const admin = await signIn(ADMIN);
