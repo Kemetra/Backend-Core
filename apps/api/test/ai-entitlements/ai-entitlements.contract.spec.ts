@@ -8,7 +8,7 @@
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
  * app boot and no HTTP. What this pins:
  *
- *   1. One contract-only GET at `/api/v1/tenants/{tenant_id}/ai/entitlements`.
+ *   1. One GET at `/api/v1/tenants/{tenant_id}/ai/entitlements` (runtime: RT-664).
  *   2. Read scope: `cookieAuth` only; 404 (never 403); guards before
  *      validation, so a refused caller learns nothing about the plan.
  *   3. The two role views (D-6): full for owner / tenant_admin, minimal for
@@ -192,10 +192,10 @@ describe("ai-entitlements — document and operation", () => {
     expect(optOut().operationId).toBe(OPT_OUT_OPERATION_ID);
   });
 
-  it("is contract-only until the RT-664 runtime ships", () => {
+  it("is served by the RT-664 runtime (no contract-only marker)", () => {
     for (const op of [api.get(PATH), optOut()]) {
-      expect(op["x-runtime-status"]).toBe("contract-only");
-      expect(op["x-runtime-note"]).toMatch(/RT-664/);
+      expect(op["x-runtime-status"]).toBeUndefined();
+      expect(op["x-runtime-note"]).toBeUndefined();
     }
   });
 

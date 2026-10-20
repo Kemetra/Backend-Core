@@ -58,6 +58,8 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
   consoleGetShiftClose: "cheapRead",
   consoleGetStoreCashVariancePolicy: "cheapRead",
   consoleGetSyncOpsSummary: "expensiveRead",
+  // RT-664 (RT-662 contract): one tenant's entitlement snapshot, no aggregate.
+  consoleGetTenantAiEntitlements: "cheapRead",
   consoleGetTenantCashVariancePolicy: "cheapRead",
   consoleIssuePairingCode: "onboarding",
   consoleListCatalogCategories: "cheapRead",
@@ -74,6 +76,8 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
   consoleListTenantCashVariancePolicyRevisions: "cheapRead",
   consolePublishStoreCashVariancePolicyOverride: "write",
   consolePublishTenantCashVariancePolicy: "write",
+  // RT-664 (RT-662 contract): the owner's idempotent per-feature opt-out write.
+  consolePutTenantAiFeatureOptOut: "write",
   consoleRepairSaleSync: "write",
   consoleRetireCatalogProduct: "write",
   consoleRetireDevice: "incidentControl",
@@ -166,12 +170,8 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
  */
 const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
   consoleDeleteTenantLogo: "write",
-  // RT-662: one tenant's entitlement snapshot, no aggregate.
-  consoleGetTenantAiEntitlements: "cheapRead",
   consoleGetTenantLogo: "cheapRead",
   consolePreviewTenantLogo: "jobOrPreview",
-  // RT-662: the owner's idempotent per-feature opt-out write.
-  consolePutTenantAiFeatureOptOut: "write",
   consolePutTenantLogo: "jobOrPreview",
   endSupportSession: "incidentControl",
   getCurrentSupportSession: "cheapRead",

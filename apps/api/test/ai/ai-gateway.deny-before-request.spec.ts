@@ -3,8 +3,11 @@
  *
  * Every deny path must end in a deterministic fallback with NO provider request
  * and NO evidence read (AD-AI-ENT-001 D-1: "deny before spend"; RT-643 §5). The
- * gateway order is the ticket's: authorize -> entitlement -> kill switch ->
- * budget -> evidence -> route -> provider.
+ * gateway order is authorize (layers 2-4) -> kill switch (layer 0) ->
+ * entitlement (layers 1, 6) -> budget (layer 7 spend / credit) -> quota
+ * reservation (layer 7) -> evidence -> route -> provider. RT-664 moved the kill
+ * switch ahead of the entitlement check so a disabled system never reads the
+ * entitlement or reserves quota (D-1 numbers it layer 0).
  */
 import { AiGateway } from "../../src/ai/gateway/ai-gateway.service";
 import type { AiFallbackReason } from "../../src/ai/gateway/ai-gateway.types";
@@ -54,7 +57,7 @@ describe("AiGateway — deny before any provider request", () => {
         reason: "not_authorized",
         providerRequested: false,
       });
-      expect(h.calls).toEqual({ entitlement: 0, budget: 0, evidence: 0 });
+      expect(h.calls).toEqual({ entitlement: 0, budget: 0, evidence: 0, reserve: 0 });
       expect(h.provider.calls).toHaveLength(0);
     });
 
@@ -106,7 +109,7 @@ describe("AiGateway — deny before any provider request", () => {
     });
   });
 
-  describe("entitlement (step 2)", () => {
+  describe("entitlement (step 3)", () => {
     it.each([
       "not_entitled",
       "tenant_inactive",
@@ -117,11 +120,12 @@ describe("AiGateway — deny before any provider request", () => {
       const { h, result } = await runDenied({ entitlement: { allowed: false, reason } });
       expect(result).toMatchObject({ kind: "fallback", reason, providerRequested: false });
       expect(h.calls.budget).toBe(0);
+      expect(h.calls.reserve).toBe(0);
       expectNoRequestNoRead(h);
     });
   });
 
-  describe("kill switch (step 3)", () => {
+  describe("kill switch (step 2)", () => {
     it("denies with feature_disabled_system when the gateway is not enabled", async () => {
       const { h, result } = await runDenied({ enabled: false });
       expect(result).toMatchObject({
@@ -129,7 +133,7 @@ describe("AiGateway — deny before any provider request", () => {
         reason: "feature_disabled_system",
         providerRequested: false,
       });
-      expect(h.calls.budget).toBe(0);
+      expect(h.calls).toMatchObject({ entitlement: 0, budget: 0, reserve: 0 });
       expectNoRequestNoRead(h);
     });
   });
@@ -140,6 +144,7 @@ describe("AiGateway — deny before any provider request", () => {
       async (reason) => {
         const { h, result } = await runDenied({ budget: { allowed: false, reason } });
         expect(result).toMatchObject({ kind: "fallback", reason, providerRequested: false });
+        expect(h.calls.reserve).toBe(0);
         expectNoRequestNoRead(h);
       },
     );
@@ -186,18 +191,25 @@ describe("AiGateway — deny before any provider request", () => {
         expectedCalls: { entitlement: 0 },
       },
       {
-        name: "entitlement beats kill switch and budget (ticket order)",
+        name: "kill switch beats entitlement, budget and the reservation (layer 0)",
         options: { enabled: false, entitlement: entitlementDeny, budget: budgetDeny },
         ctx: sessionCtx(),
-        reason: "not_entitled",
-        expectedCalls: { budget: 0 },
+        reason: "feature_disabled_system",
+        expectedCalls: { entitlement: 0, budget: 0, reserve: 0 },
       },
       {
-        name: "kill switch beats budget",
-        options: { enabled: false, budget: budgetDeny },
+        name: "entitlement beats budget and the reservation",
+        options: { entitlement: entitlementDeny, budget: budgetDeny },
         ctx: sessionCtx(),
-        reason: "feature_disabled_system",
-        expectedCalls: { budget: 0 },
+        reason: "not_entitled",
+        expectedCalls: { budget: 0, reserve: 0 },
+      },
+      {
+        name: "budget beats the reservation (nothing reserved for a spend-cap deny)",
+        options: { budget: budgetDeny },
+        ctx: sessionCtx(),
+        reason: "quota_exhausted",
+        expectedCalls: { reserve: 0 },
       },
     ];
 
@@ -218,6 +230,9 @@ describe("AiGateway — deny before any provider request", () => {
           seen.push(input);
           return Promise.resolve({ allowed: false, reason: "not_entitled" });
         },
+        reserve: () => Promise.reject(new Error("never reached")),
+        settle: () => Promise.resolve(),
+        reservationTtlMs: 900_000,
       },
       budget: { check: () => Promise.resolve({ allowed: true }) },
       evidence: { build: () => Promise.resolve({ items: [] }) },
