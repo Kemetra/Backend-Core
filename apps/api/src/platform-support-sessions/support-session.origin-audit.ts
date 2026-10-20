@@ -53,9 +53,9 @@ export async function auditSupportSessionOriginRefusal(
     readOnlyExempt: readOnlyExemptFor(target, input.body),
   };
   if (!(await gate.tenantRowExists(tenantId))) {
-    return gate.refuseUnresolvable(request).catch((refusal: ForbiddenException) => refusal);
+    return gate.refuseUnresolvable(request).catch((error_: ForbiddenException) => error_);
   }
-  if (await gate.isMember(input.userId, tenantId)) return null;
+  if (await gate.isMember({ userId: input.userId, tenantId })) return null;
   return gate.recordOriginRefusal(tenantId, request);
 }
 

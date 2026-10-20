@@ -60,7 +60,7 @@ export class PathTenantSupportSessionGuard implements CanActivate {
     if (!(await this.gate.tenantRowExists(tenantId))) {
       return this.gate.refuseUnresolvable(gateRequest);
     }
-    if (await this.gate.isMember(principal.userId, tenantId)) return true;
+    if (await this.gate.isMember({ userId: principal.userId, tenantId })) return true;
     await this.gate.enforce(tenantId, gateRequest);
     return true;
   }

@@ -49,11 +49,6 @@ const REFUSAL_MESSAGES: Readonly<Record<CrossTenantRefusal, string>> = {
   origin_rejected: "Request origin is not allowed",
 };
 
-/** A tenant id (UUID), or an unvalidated path segment before `tenantRowExists`. */
-type TenantId = string;
-/** A user id (UUID). */
-type UserId = string;
-
 export function supportSessionRefusal(reason: CrossTenantRefusal): ForbiddenException {
   return new ForbiddenException({ code: reason, message: REFUSAL_MESSAGES[reason] });
 }
@@ -71,19 +66,18 @@ export function decideSupportSession(input: {
   readonly method: string;
   readonly readOnlyExempt: boolean;
 }): CrossTenantRefusal | undefined {
-  const { session, tenant } = input;
-  if (!sessionCoversTenant(session, input.tenantId, tenant)) return "support_session_required";
-  if (session.status !== "active") return "support_session_expired";
+  if (!sessionCoversTenant(input)) return "support_session_required";
+  if (input.session.status !== "active") return "support_session_expired";
   if (isReadOnlyRefusal(input)) return "support_session_read_only";
   return undefined;
 }
 
-function sessionCoversTenant(
-  session: SupportSessionRecord | null,
-  tenantId: TenantId,
-  tenant: TenantState,
-): session is SupportSessionRecord {
-  return tenant.exists && session !== null && session.tenantId === tenantId;
+function sessionCoversTenant(input: {
+  readonly session: SupportSessionRecord | null;
+  readonly tenantId: string;
+  readonly tenant: TenantState;
+}): input is typeof input & { readonly session: SupportSessionRecord } {
+  return input.tenant.exists && input.session?.tenantId === input.tenantId;
 }
 
 /** A suspended tenant's support session admits only safe methods, unless exempt. */
@@ -119,7 +113,7 @@ export class SupportSessionGate {
    * Admit or refuse a non-member platform admin in `tenantId`. Returns the
    * admitting support session; throws 403 after recording a refusal.
    */
-  async enforce(tenantId: TenantId, request: GateRequest): Promise<SupportSessionRecord> {
+  async enforce(tenantId: string, request: GateRequest): Promise<SupportSessionRecord> {
     const verdict = await this.withPlatformCtx(async (client) => {
       const decided = await this.decide(client, tenantId, request);
       await recordCrossTenantAccess(client, {
@@ -165,7 +159,7 @@ export class SupportSessionGate {
    * refusal when the session does not admit the request, else `origin_rejected`.
    * Returns the refusal the caller should throw.
    */
-  async recordOriginRefusal(tenantId: TenantId, request: GateRequest): Promise<ForbiddenException> {
+  async recordOriginRefusal(tenantId: string, request: GateRequest): Promise<ForbiddenException> {
     const reason = await this.withPlatformCtx(async (client) => {
       const decided = await this.decide(client, tenantId, request);
       const refusal = decided.reason ?? "origin_rejected";
@@ -184,14 +178,14 @@ export class SupportSessionGate {
   }
 
   /** Whether `userId` has a live membership in `tenantId`, whatever the tenant status. */
-  async isMember(userId: UserId, tenantId: TenantId): Promise<boolean> {
+  async isMember(member: { readonly userId: string; readonly tenantId: string }): Promise<boolean> {
     return this.withPlatformCtx(async (client) => {
       const { rows } = await client.query(
         `SELECT 1 FROM memberships
           WHERE user_id = $1 AND tenant_id = $2
             AND revoked_at IS NULL AND deleted_at IS NULL
           LIMIT 1`,
-        [userId, tenantId],
+        [member.userId, member.tenantId],
       );
       return rows.length > 0;
     });
@@ -202,7 +196,7 @@ export class SupportSessionGate {
    * (the `audit_events.tenant_id` FK target). False means the path tenant is
    * unresolvable and its row must be platform-scoped.
    */
-  async tenantRowExists(tenantId: TenantId): Promise<boolean> {
+  async tenantRowExists(tenantId: string): Promise<boolean> {
     if (!UUID_RE.test(tenantId)) return false;
     return this.withPlatformCtx(async (client) => {
       const { rows } = await client.query(`SELECT 1 FROM tenants WHERE id = $1`, [tenantId]);
@@ -212,7 +206,7 @@ export class SupportSessionGate {
 
   private async decide(
     client: PoolClient,
-    tenantId: TenantId,
+    tenantId: string,
     request: GateRequest,
   ): Promise<GateVerdict> {
     const session = await findLiveSupportSession(client, request.authSessionId);
@@ -234,7 +228,7 @@ export class SupportSessionGate {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-async function readTenant(client: PoolClient, tenantId: TenantId): Promise<TenantState> {
+async function readTenant(client: PoolClient, tenantId: string): Promise<TenantState> {
   if (!UUID_RE.test(tenantId)) return { exists: false, suspended: false };
   const { rows } = await client.query<{ status: string }>(
     `SELECT status FROM tenants WHERE id = $1 AND deleted_at IS NULL`,

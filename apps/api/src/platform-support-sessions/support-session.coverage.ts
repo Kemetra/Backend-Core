@@ -59,7 +59,7 @@ export function readOnlyExemptFor(target: CoveredTarget, body: unknown): boolean
     body !== null &&
     !Array.isArray(body) &&
     Object.keys(body).length === 1 &&
-    Object.prototype.hasOwnProperty.call(body, "status")
+    Object.hasOwn(body, "status")
   );
 }
 

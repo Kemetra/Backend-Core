@@ -40,9 +40,10 @@ export async function endSupportSessions(
 ): Promise<void> {
   await withSupportSessionCtx(pool, async (client) => {
     const ended = await endLiveSupportSessions(client, owner, reason);
-    for (const record of ended) {
-      await recordSupportSessionChange(client, SUPPORT_SESSION_ENDED, record, requestId);
-    }
+    // One client: pg runs these in order; Promise.all only avoids awaiting in a loop.
+    await Promise.all(
+      ended.map((record) => recordSupportSessionChange(client, SUPPORT_SESSION_ENDED, record, requestId)),
+    );
   });
 }
 

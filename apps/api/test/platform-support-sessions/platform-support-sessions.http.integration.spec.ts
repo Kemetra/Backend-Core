@@ -334,11 +334,11 @@ describe("RT-414 support sessions — callers", () => {
 
   it("refuses a bearer token with 401", async () => {
     if (dockerSkipped) return;
-    await http()
+    const res = await http()
       .post(BASE)
       .set("Authorization", `Bearer ${OWNER_TOKEN}`)
-      .send({ tenant_id: ACME, purpose: "incident" })
-      .expect(401);
+      .send({ tenant_id: ACME, purpose: "incident" });
+    expect(res.status).toBe(401);
   });
 
   it("refuses a POST without a trusted Origin (decision 5)", async () => {
@@ -356,13 +356,23 @@ describe("RT-414 support sessions — callers", () => {
   it("validates the body: purpose closed, ticket_ref bounded, no extra keys", async () => {
     if (dockerSkipped) return;
     const admin = await signIn(ADMIN);
-    await post(BASE, admin).send({ tenant_id: ACME }).expect(400);
-    await post(BASE, admin).send({ tenant_id: ACME, purpose: "curiosity" }).expect(400);
-    await open(admin, ACME, { ticket_ref: "someone@example.com" }).expect(400);
-    await open(admin, ACME, { ticket_ref: "has space" }).expect(400);
-    await open(admin, ACME, { ticket_ref: "A".repeat(65) }).expect(400);
-    await open(admin, ACME, { expires_at: "2099-01-01T00:00:00Z" }).expect(400);
-    await post(BASE, admin).send({ tenant_id: "not-a-uuid", purpose: "incident" }).expect(400);
+    const bodies: ReadonlyArray<Record<string, unknown>> = [
+      { tenant_id: ACME },
+      { tenant_id: ACME, purpose: "curiosity" },
+      { tenant_id: ACME, purpose: "customer_support", ticket_ref: "someone@example.com" },
+      { tenant_id: ACME, purpose: "customer_support", ticket_ref: "has space" },
+      { tenant_id: ACME, purpose: "customer_support", ticket_ref: "A".repeat(65) },
+      { tenant_id: ACME, purpose: "customer_support", expires_at: "2099-01-01T00:00:00Z" },
+      { tenant_id: "not-a-uuid", purpose: "incident" },
+    ];
+    for (const payload of bodies) {
+      const res = await post(BASE, admin).send(payload);
+      expect({ payload, status: res.status, code: errorCode(res) }).toEqual({
+        payload,
+        status: 400,
+        code: "validation_error",
+      });
+    }
   });
 
   it("answers an unknown and a deleted tenant with the same 404", async () => {

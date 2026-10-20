@@ -144,11 +144,18 @@ export class PlatformSupportSessionsService {
       return record;
     });
 
-    // Clear only the ended session's tenant: a tenant switch that raced in
-    // (another tab) keeps the tenant it selected.
-    const cleared = await this.sessions.clearActiveTenantIf(caller.sessionId, ended.tenantId);
-    if (!cleared && !(await this.sessions.findActiveById(caller.sessionId))) throw unauthorized();
+    await this.clearEndedTenant(caller, ended.tenantId);
     return toSupportSessionBody(ended);
+  }
+
+  /**
+   * Clear only the ended session's tenant: a tenant switch that raced in
+   * (another tab) keeps the tenant it selected. Nothing cleared on a revoked
+   * auth session is a 401.
+   */
+  private async clearEndedTenant(caller: SessionPrincipal, tenantId: string): Promise<void> {
+    if (await this.sessions.clearActiveTenantIf(caller.sessionId, tenantId)) return;
+    if (!(await this.sessions.findActiveById(caller.sessionId))) throw unauthorized();
   }
 
   // ----- internals ---------------------------------------------------------

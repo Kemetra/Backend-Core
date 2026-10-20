@@ -117,10 +117,7 @@ export interface ContextResponseBody {
 
 const SWITCH_STORE_ROUTE = "/api/v1/context/store";
 
-/** Domain aliases for ids (UUIDs). */
-type UserId = string;
-type TenantId = string;
-type AuthSessionId = string;
+type SessionPrincipal = Extract<Principal, { kind: "session" }>;
 
 @Injectable()
 export class ContextService {
@@ -174,10 +171,10 @@ export class ContextService {
         if (!membership) throw notFound();
       });
     } else {
-      await this.assertPlatformAdminMayEnter(principal.userId, tenantId);
+      await this.assertPlatformAdminMayEnter(principal, tenantId);
     }
 
-    await this.endSupportSessionOnSwitch(principal.sessionId, requestId);
+    await this.endSupportSessionOnSwitch(principal, requestId);
 
     const updated = await this.sessions.updateActiveContext(
       principal.sessionId,
@@ -292,22 +289,30 @@ export class ContextService {
    * admin must be a member: a non-member enters only through a support
    * session.
    */
-  private async assertPlatformAdminMayEnter(userId: UserId, tenantId: TenantId): Promise<void> {
+  private async assertPlatformAdminMayEnter(
+    principal: SessionPrincipal,
+    tenantId: string,
+  ): Promise<void> {
     await this.withBootstrapCtx(async (client) => {
       const tenantSummary = await this.memberships.findTenantSummary(tenantId, client);
       if (!tenantSummary) throw notFound();
-      const member = await this.memberships.hasLiveMembership(userId, tenantId, client);
+      const member = await this.memberships.hasLiveMembership(principal.userId, tenantId, client);
       if (!member) throw supportSessionRefusal("support_session_required");
     });
   }
 
   /** RT-414: a tenant switch ends any live support session of this auth session. */
   private async endSupportSessionOnSwitch(
-    authSessionId: AuthSessionId,
+    principal: SessionPrincipal,
     requestId: string | null,
   ): Promise<void> {
     if (!this.pool) return;
-    await endSupportSessions(this.pool, { authSessionId }, "tenant_switched", requestId);
+    await endSupportSessions(
+      this.pool,
+      { authSessionId: principal.sessionId },
+      "tenant_switched",
+      requestId,
+    );
   }
 
   /**
@@ -316,8 +321,8 @@ export class ContextService {
    * admitted on a suspended tenant (navigation, not a tenant write).
    */
   private async admitPlatformAdminStoreSwitch(
-    principal: Extract<Principal, { kind: "session" }>,
-    tenantId: TenantId,
+    principal: SessionPrincipal,
+    tenantId: string,
     requestId: string | null,
   ): Promise<void> {
     const member = await this.withBootstrapCtx((client) =>
@@ -420,7 +425,7 @@ export class ContextService {
 
     const supportSession =
       user.isPlatformAdmin && authSessionId !== null && activeTenantId !== null
-        ? await this.supportSessionFor(authSessionId, activeTenantId)
+        ? await this.supportSessionFor({ authSessionId, activeTenantId })
         : null;
 
     return {
@@ -444,13 +449,13 @@ export class ContextService {
     };
   }
 
-  private async supportSessionFor(
-    authSessionId: AuthSessionId,
-    activeTenantId: TenantId,
-  ): Promise<SupportSessionSummaryBody | null> {
+  private async supportSessionFor(scope: {
+    readonly authSessionId: string;
+    readonly activeTenantId: string;
+  }): Promise<SupportSessionSummaryBody | null> {
     if (!this.pool) return null;
-    const live = await readLiveSupportSession(this.pool, authSessionId);
-    if (!live || live.tenantId !== activeTenantId) return null;
+    const live = await readLiveSupportSession(this.pool, scope.authSessionId);
+    if (live?.tenantId !== scope.activeTenantId) return null;
     return toSupportSessionSummary(live);
   }
 

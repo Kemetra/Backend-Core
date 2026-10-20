@@ -168,7 +168,7 @@ export class AuthService {
     this.emailJobs = emailJobs ?? new NoOpEmailJobEnqueuer();
     this.auditEnqueuer = opts.auditEnqueuer ?? new NoOpAuditJobEnqueuer();
     this.listMemberships = opts.listMemberships ?? (async () => []);
-    this.endSupportSessions = opts.endSupportSessions ?? (async () => undefined);
+    this.endSupportSessions = opts.endSupportSessions ?? (() => Promise.resolve());
   }
 
   private requireAuthTokens(): AuthTokenRepository {
