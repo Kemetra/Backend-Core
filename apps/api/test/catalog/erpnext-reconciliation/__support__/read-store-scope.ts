@@ -31,7 +31,12 @@ import { DashboardAuthGuard } from "../../../../src/auth/dashboard-auth.guard";
 import { SessionRepository } from "../../../../src/auth/session.repository";
 import { SessionOnlyAdminGuard } from "../../../../src/auth/session-only-admin.guard";
 import { GlobalExceptionFilter } from "../../../../src/common/exception.filter";
-import type { PgTestEnv } from "../../../_helpers/postgres-container";
+import {
+  applyAllUpAndCreateAppRole,
+  startPgEnv,
+  stopPgEnv,
+  type PgTestEnv,
+} from "../../../_helpers/postgres-container";
 import { SALE_A_X, SALE_A_Y, SALE_B_X, SALES_SOURCE_SYSTEM } from "../../sales/__support__/seed-sales";
 import { PRODUCT_A_ACTIVE, STORE_A_X, STORE_A_Y, STORE_B_X, TENANT_A, TENANT_B } from "../../__support__/isolation-harness";
 import { POSTING_DEADLETTER_A, RUN_A, seedReconciliationFixture } from "./seed-reconciliation";
@@ -288,4 +293,70 @@ export async function countDeadletters(admin: Pool, storeIds: readonly string[] 
     [TENANT_A, storeIds],
   );
   return Number(r.rows[0]!.n);
+}
+
+// ---------------------------------------------------------------------------
+// Spec lifecycle
+// ---------------------------------------------------------------------------
+
+/** The running fixture of a store-scope spec (see `useScopedApp`). */
+export interface ScopedAppHandle {
+  /** The Postgres env; throws if the suite skipped. */
+  env(): PgTestEnv;
+  /** The booted app; throws if the suite skipped. */
+  app(): INestApplication;
+  /** True (with a warning) when Docker is unavailable and MIGRATION_TEST_ALLOW_SKIP=1. */
+  skip(): boolean;
+}
+
+/**
+ * Register the suite's beforeAll / afterAll: start Postgres, apply every
+ * migration, seed `seedReadStoreScope`, and boot `module` with `bootScopedApp`.
+ * Docker policy: HARD failure unless MIGRATION_TEST_ALLOW_SKIP=1.
+ */
+export function useScopedApp(label: string, module: Type<unknown> | DynamicModule): ScopedAppHandle {
+  let env: PgTestEnv | null = null;
+  let app: INestApplication | null = null;
+  let dockerSkipped = false;
+
+  beforeAll(async () => {
+    try {
+      env = await startPgEnv();
+      await applyAllUpAndCreateAppRole(env);
+      await seedReadStoreScope(env);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
+        dockerSkipped = true;
+        // eslint-disable-next-line no-console
+        console.warn(`\n[${label}] Docker NOT AVAILABLE: ${msg}\n`);
+        return;
+      }
+      throw new Error(`Container start failed: ${msg}`);
+    }
+    app = await bootScopedApp(env, module);
+  }, 180_000);
+
+  afterAll(async () => {
+    if (app) await app.close();
+    if (env) await stopPgEnv(env);
+  }, 60_000);
+
+  return {
+    env: () => {
+      if (!env) throw new Error(`[${label}] env not initialized`);
+      return env;
+    },
+    app: () => {
+      if (!app) throw new Error(`[${label}] app not initialized`);
+      return app;
+    },
+    skip: () => {
+      if (dockerSkipped) {
+        // eslint-disable-next-line no-console
+        console.warn(`[${label}] skipping — Docker unavailable`);
+      }
+      return dockerSkipped;
+    },
+  };
 }

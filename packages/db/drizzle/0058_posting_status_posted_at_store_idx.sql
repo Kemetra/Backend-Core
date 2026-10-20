@@ -1,0 +1,56 @@
+-- 0058_posting_status_posted_at_store_idx.sql
+--
+-- Posting freshness read for the console, index 2 of 5 (Jira RT-565,
+-- docs/planning/rt-565-posting-freshness-read.md D7). [GATED] migration,
+-- owner-authorized on RT-565 (comment 12969, 2026-10-19). Deploying or running
+-- it in any environment is NOT authorized by that comment.
+--
+-- D7 index (2): the store-filtered last successful posting, one probe per
+-- store (a store_id filter, or one LATERAL ... LIMIT 1 per store of an RT-192
+-- membership scope). A tenant-only index cannot bound a quiet store.
+--
+-- Additive only; read by consoleGetSyncOpsSummary's postingFreshness
+-- (console-sync-ops.yaml 1.2.0-draft, apps/api/src/catalog/erpnext-sync-ops/
+-- posting-freshness.read.ts). The five D7 indexes are five files (0057-0061)
+-- because each is built CONCURRENTLY, which needs a file of its own (below).
+--
+-- ---------------------------------------------------------------------------
+-- WHY THIS FILE IS ONE STATEMENT — DO NOT ADD ANYTHING TO IT
+-- ---------------------------------------------------------------------------
+-- The runner (src/cli/migrate.ts) sends each file as ONE simple-protocol query.
+-- PostgreSQL runs a multi-statement query as one implicit transaction block,
+-- and CREATE INDEX CONCURRENTLY refuses to run inside a transaction block. A
+-- file holding exactly one statement is not wrapped, so the build runs
+-- concurrently with no runner change. Adding any other statement here (BEGIN,
+-- SET, COMMENT ON, a second index) makes this migration fail. The migration
+-- spec checks this. Same rule and recovery as 0048 (RT-538).
+--
+-- Lock impact: SHARE UPDATE EXCLUSIVE on erpnext_posting_status for the build.
+-- Posting-intent inserts, connector acks, the feed, repair and every read
+-- continue throughout; only other DDL on the table and VACUUM wait. No
+-- lock_timeout is needed and none can be set without a second statement.
+--
+-- No timeout. The build waits for every transaction older than it, in any
+-- table of the database, so one session left idle in transaction holds it (and
+-- the deploy's migrate step) indefinitely. Before deploying, check
+-- pg_stat_activity for long-open transactions. Run ONE `migrate up` at a time
+-- while 0057-0061 are pending (see 0048 for the deadlock this avoids).
+--
+-- No IF NOT EXISTS, on purpose: a failed build leaves an INVALID index with
+-- this name and the runner records nothing; a re-run must fail loudly rather
+-- than skip it. To recover:
+--   1. SELECT indisvalid FROM pg_index
+--        WHERE indexrelid = 'idx_erpnext_posting_status_posted_at_store'::regclass;
+--   2. false (an invalid leftover): DROP INDEX CONCURRENTLY IF EXISTS
+--      idx_erpnext_posting_status_posted_at_store; then re-run `migrate up`.
+--   3. true (the build finished but the runner died before recording it):
+--      either drop it as in step 2 and re-run, or record it by hand:
+--        INSERT INTO _drizzle_migrations (id) VALUES ('0058_posting_status_posted_at_store_idx');
+-- While 0058 is unrecorded, `migrate down` rolls back the migration before it,
+-- not 0058: drop a leftover index by hand first, as above.
+--
+-- No data changes. Reversible via 0058_posting_status_posted_at_store_idx.down.sql.
+
+CREATE INDEX CONCURRENTLY idx_erpnext_posting_status_posted_at_store
+  ON erpnext_posting_status (tenant_id, store_id, posted_at DESC)
+  WHERE posted_at IS NOT NULL;

@@ -225,6 +225,11 @@ describe("data-pulse-migrate CLI", () => {
     "0054_sale_credit_reversals",
     "0055_ai_entitlements_usage",
     "0056_inventory_position_events",
+    "0057_posting_status_posted_at_tenant_idx",
+    "0058_posting_status_posted_at_store_idx",
+    "0059_posting_status_pending_created_tenant_idx",
+    "0060_posting_status_pending_created_store_idx",
+    "0061_posting_status_legacy_posted_idx",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -447,15 +452,38 @@ describe("data-pulse-migrate CLI", () => {
     ];
   }
 
+  /** The five posting-freshness indexes of 0057-0061 (RT-565 D7), in migration order. */
+  const POSTING_FRESHNESS_INDEXES = [
+    "idx_erpnext_posting_status_posted_at_tenant",
+    "idx_erpnext_posting_status_posted_at_store",
+    "idx_erpnext_posting_status_pending_created_tenant",
+    "idx_erpnext_posting_status_pending_created_store",
+    "idx_erpnext_posting_status_legacy_posted",
+  ] as const;
+
   /**
-   * After one `down` from head: 0056's event-record and settings tables are
-   * gone, while 0055's AI entitlement tables and functions, 0054's credit
-   * reversal tables, approval-use ledger, trigger and FK-target indexes, 0051's
+   * 0057-0061 (RT-565): how many of `names` exist AND are valid. Each is built
+   * CONCURRENTLY by the runner, so a valid index also proves its single-statement
+   * file ran outside a transaction block.
+   */
+  function countValidIndexes(names: readonly string[]): Promise<string> {
+    return queryCount(`SELECT COUNT(*)::text AS count FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      WHERE c.relname = ANY(ARRAY[${names.map((n) => `'${n}'`).join(", ")}]) AND i.indisvalid`);
+  }
+
+  /**
+   * After one `down` from head: 0061's legacy-posted index is gone, while
+   * 0057-0060's freshness indexes, 0056's event-record and settings tables,
+   * 0055's AI entitlement tables and functions, 0054's credit reversal
+   * tables, approval-use ledger, trigger and FK-target indexes, 0051's
    * sale_responsibilities, 0050's policy tables and columns, 0048's
    * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countPositionEventObjects()).toEqual(["0", "0", "0"]);
+    expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES.slice(4))).toBe("0");
+    expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES.slice(0, 4))).toBe("4");
+    expect(await countPositionEventObjects()).toEqual(["2", "5", "1"]);
     expect(await countAiEntitlementObjects()).toEqual(["7", "15", "4", "1"]);
     expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
     expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
@@ -520,6 +548,9 @@ describe("data-pulse-migrate CLI", () => {
     // 0056's event records (SELECT + INSERT) and tenant inventory settings
     // (SELECT + INSERT + UPDATE) with its updated_at trigger (RT-435).
     expect(await countPositionEventObjects()).toEqual(["2", "5", "1"]);
+    // 0057-0061's five posting-freshness indexes, valid after the runner's
+    // CONCURRENTLY builds (RT-565 D7).
+    expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES)).toBe("5");
   }
 
   /** The three tables created by 0054_sale_credit_reversals (RT-577). */
@@ -672,7 +703,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0056 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0061 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
