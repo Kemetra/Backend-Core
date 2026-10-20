@@ -82,6 +82,8 @@ export const WORKER_QUEUE_NAMES = [
   QUEUE_NAMES.cashierAdmissionReplayPurge,
   // RT-457: scheduled re-drive of sales stranded before their posting intent.
   QUEUE_NAMES.saleRedrive,
+  // RT-664: TTL sweep of AI usage reservations.
+  QUEUE_NAMES.aiUsageReservationSweep,
 ] as const satisfies readonly string[];
 export type WorkerQueueName = (typeof WORKER_QUEUE_NAMES)[number];
 

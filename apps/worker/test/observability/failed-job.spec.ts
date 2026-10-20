@@ -104,6 +104,7 @@ describe("failedJobTags", () => {
 
   it("declares the job name of every queue the worker consumes", () => {
     expect([...DECLARED_JOB_NAMES].sort()).toEqual([
+      "ai-usage-reservation-sweep",
       "audit-fanout",
       "audit-retention-sweep",
       "auth.email-verify",

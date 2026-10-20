@@ -47,6 +47,7 @@ import { SaleWorker } from "./sales/sale.worker";
 import { AuditRetentionWorker } from "./audit/audit-retention.worker";
 import { OutboxRetentionWorker } from "./outbox/retention.worker";
 import { StockRunSweepWorker } from "./erpnext-reconciliation/stock-run-sweep.worker";
+import { ReservationSweepWorker } from "./ai-usage/reservation-sweep.worker";
 import { ReplayPurgeWorker } from "./cashier-admissions/replay-purge.worker";
 import { SaleRedriveWorker } from "./sales/sale-redrive.worker";
 import { WorkerModule } from "./worker.module";
@@ -88,13 +89,15 @@ const logger = new Logger("worker.bootstrap");
  * Bootstraps the worker. Returns the Nest context plus the workers it
  * resolved (`emailWorker`, `auditWorker`, `saleWorker`,
  * `auditRetentionWorker`, `outboxRetentionWorker`, `stockRunSweepWorker`,
- * `replayPurgeWorker`, `saleRedriveWorker`), and a `triggerShutdown`
+ * `replayPurgeWorker`, `saleRedriveWorker`, `reservationSweepWorker`), and a
+ * `triggerShutdown`
  * callable that tests can call to simulate a signal without actually
  * emitting one.
  *
- * All eight workers are started by this function. The two retention workers,
+ * All nine workers are started by this function. The two retention workers,
  * the stock reconciliation sweep worker (RT-179), the cashier-admission
- * replay purge worker (RT-209) and the sale re-drive worker (RT-457) consume
+ * replay purge worker (RT-209), the sale re-drive worker (RT-457) and the AI
+ * usage reservation sweep worker (RT-664) consume
  * the repeatable jobs their schedulers
  * register at module init (RT-123); without a consumer
  * those jobs accumulate unprocessed. Their shutdown is owned
@@ -114,6 +117,7 @@ export async function bootstrap(
   stockRunSweepWorker: StockRunSweepWorker;
   replayPurgeWorker: ReplayPurgeWorker;
   saleRedriveWorker: SaleRedriveWorker;
+  reservationSweepWorker: ReservationSweepWorker;
   /** Test hook: invoke the registered shutdown sequence. */
   triggerShutdown: (signal: "SIGTERM" | "SIGINT") => Promise<void>;
 }> {
@@ -149,6 +153,7 @@ export async function bootstrap(
   const stockRunSweepWorker = app.get(StockRunSweepWorker);
   const replayPurgeWorker = app.get(ReplayPurgeWorker);
   const saleRedriveWorker = app.get(SaleRedriveWorker);
+  const reservationSweepWorker = app.get(ReservationSweepWorker);
   emailWorker.start();
   auditWorker.start();
   saleWorker.start();
@@ -157,6 +162,7 @@ export async function bootstrap(
   stockRunSweepWorker.start();
   replayPurgeWorker.start();
   saleRedriveWorker.start();
+  reservationSweepWorker.start();
 
   writeLine(stderr, {
     level: "info",
@@ -207,6 +213,7 @@ export async function bootstrap(
     stockRunSweepWorker,
     replayPurgeWorker,
     saleRedriveWorker,
+    reservationSweepWorker,
     triggerShutdown: shutdown,
   };
 }

@@ -41,6 +41,7 @@ import {
 
 import { AUDIT_FANOUT_JOB_NAME } from "../../audit/audit-fanout.processor";
 import { AUDIT_RETENTION_JOB_NAME } from "../../audit/audit-retention.processor";
+import { RESERVATION_SWEEP_JOB_NAME } from "../../ai-usage/reservation-sweep.processor";
 import { REPLAY_PURGE_JOB_NAME } from "../../cashier-admissions/replay-purge.processor";
 import { EMAIL_JOB_NAMES } from "../../email/email.processor";
 import { STOCK_RUN_SWEEP_JOB_NAME } from "../../erpnext-reconciliation/stock-run-sweep.processor";
@@ -75,6 +76,7 @@ export const DECLARED_JOB_NAMES: ReadonlySet<string> = new Set([
   STOCK_RUN_SWEEP_JOB_NAME,
   REPLAY_PURGE_JOB_NAME,
   SALE_REDRIVE_JOB_NAME,
+  RESERVATION_SWEEP_JOB_NAME,
 ]);
 
 const MASKED_JOB_NAME = "[job_name]";

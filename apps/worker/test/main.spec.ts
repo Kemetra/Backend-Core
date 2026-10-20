@@ -21,6 +21,7 @@ import { SaleWorker } from "../src/sales/sale.worker";
 import { AuditRetentionWorker } from "../src/audit/audit-retention.worker";
 import { OutboxRetentionWorker } from "../src/outbox/retention.worker";
 import { StockRunSweepWorker } from "../src/erpnext-reconciliation/stock-run-sweep.worker";
+import { ReservationSweepWorker } from "../src/ai-usage/reservation-sweep.worker";
 import { ReplayPurgeWorker } from "../src/cashier-admissions/replay-purge.worker";
 import { SaleRedriveWorker } from "../src/sales/sale-redrive.worker";
 
@@ -83,6 +84,7 @@ class FakeAppContext implements Partial<INestApplicationContext> {
   readonly stockRunSweepWorker = new FakeRetentionWorker();
   readonly replayPurgeWorker = new FakeRetentionWorker();
   readonly saleRedriveWorker = new FakeRetentionWorker();
+  readonly reservationSweepWorker = new FakeRetentionWorker();
   constructor(
     private readonly emailWorker: FakeEmailWorker,
     private readonly auditWorker: FakeAuditWorker,
@@ -117,6 +119,9 @@ class FakeAppContext implements Partial<INestApplicationContext> {
     }
     if ((token as unknown) === SaleRedriveWorker) {
       return this.saleRedriveWorker as unknown as TResult;
+    }
+    if ((token as unknown) === ReservationSweepWorker) {
+      return this.reservationSweepWorker as unknown as TResult;
     }
     throw new Error(
       `FakeAppContext.get: unknown token ${String(token)} — extend the fake.`,
@@ -234,6 +239,7 @@ describe("bootstrap — happy path", () => {
   it("RT-457: starts the sale re-drive worker exactly once", async () => {
     const { ctx } = await setup();
     expect(ctx.saleRedriveWorker.starts).toBe(1);
+    expect(ctx.reservationSweepWorker.starts).toBe(1);
   });
 
   it("registers SIGTERM and SIGINT handlers exactly once", async () => {
@@ -287,6 +293,9 @@ describe("bootstrap — happy path", () => {
     );
     expect(result.saleRedriveWorker).toBe(
       ctx.saleRedriveWorker as unknown as SaleRedriveWorker,
+    );
+    expect(result.reservationSweepWorker).toBe(
+      ctx.reservationSweepWorker as unknown as ReservationSweepWorker,
     );
   });
 });

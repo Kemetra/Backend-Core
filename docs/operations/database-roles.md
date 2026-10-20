@@ -372,6 +372,29 @@ table the domain role must use needs a matching grant step at deploy time.
   and `shift_closes.approval_*` columns live on tables the domain role already
   reads and writes.
 
+- **AI entitlements (RT-664, on migration `0055_ai_entitlements_usage`) —
+  OWNER-GATED.** [`sql/ai-entitlements-domain-grants.sql`](sql/ai-entitlements-domain-grants.sql)
+  grants the domain role `SELECT` on the three code-owned catalogue tables
+  (`ai_plan_catalog`, `ai_plan_catalog_features`, `ai_plan_catalog_meters`;
+  never `INSERT`: a catalogue version is a migration), `SELECT` and `INSERT`
+  on `tenant_ai_entitlements` (platform-admin revisions), on
+  `tenant_ai_feature_opt_outs` (the owner's opt-out chain) and on
+  `ai_usage_ledger` (append-only: never `UPDATE`; the runtime serialises
+  terminal writes and adjustments on advisory locks, not row locks), and
+  `SELECT`, `INSERT` and `UPDATE` on `ai_usage_counters`. Never `DELETE` or
+  `TRUNCATE` on any of them. The worker's reservation sweep uses the same
+  grants. Unlike the scripts above, it is NOT part of the routine step 2: running it
+  on any lab or live database is a separate owner decision (the owner chose
+  this on 2026-10-20). Once the owner approves an environment, run it from a
+  checkout of the release's commit (it is not in the release bundle), with the
+  same `deploy/grants.env` and `-v domain_role` as step 2:
+  `op run --env-file=deploy/grants.env -- sh -c 'psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/ai-entitlements-domain-grants.sql'`.
+  The tables are NOT in `DOMAIN_REQUIRED_GRANTS`, so the
+  API boots without them. Until the script runs, the AI entitlement read and
+  opt-out answer 503 `entitlement_unavailable`, and every AI gateway run
+  fails closed with `entitlement_unavailable` and no provider call. The auth
+  lookup role needs no privilege on any of them.
+
 - **Migration `0054_sale_credit_reversals` (RT-577).** Run
   [`sql/sale-credit-reversals-domain-grants.sql`](sql/sale-credit-reversals-domain-grants.sql)
   after `migrate up` and before the API starts, in the same step 2 of
