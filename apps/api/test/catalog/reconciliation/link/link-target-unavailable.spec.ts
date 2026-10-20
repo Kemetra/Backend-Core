@@ -17,12 +17,18 @@
  *       structurally indistinguishable from case (c).
  *   (c) Link to a fabricated UUID that does not exist anywhere → 404
  *       non-disclosing.
+ *   (e) Link to an inactive (is_active = false) but not retired product in
+ *       the SAME tenant → 409 target_unavailable (FR-051, RT-745).
  *
- * Invariants (all three cases):
+ * State invariants (all cases):
  *   - U1.resolution_status stays 'pending'.
  *   - No new product_aliases row inserted (count remains the pre-test
  *     baseline of 0 for the U1 identifier).
- *   - No audit event emitted (auditSpy.calls is empty for the link action).
+ * Audit invariants:
+ *   - No successful-link event in any case.
+ *   - Cases (a) and (e) emit exactly one
+ *     unknown_item.reconciliation_conflict_rejected{reason=target_unavailable}.
+ *   - Cases (b) and (c) emit no rejection event (non-disclosing 404).
  *
  * Harness: ReconciliationController + ReconciliationService against
  * Testcontainers Postgres 16. PG_POOL bound to localEnv.app (RLS-active)
@@ -83,6 +89,9 @@ const UNK_T623_EDGES_CORR = "0a000000-0000-7000-8000-00000623ec01";
 const UNK_T623_BARCODE_VALUE = "T623-LINK-EDGES-001";
 
 const TENANT_A_ADMIN_USER = "0a000000-0000-7000-8000-000006230001";
+
+/** Same-tenant product that is inactive but not retired, for sub-case (e). */
+const PRODUCT_A_INACTIVE = "0a000000-0000-7000-8000-000006230a02";
 
 /** Non-existent UUID for sub-case (c). */
 const FABRICATED_UUID = "0f000000-0000-7000-8000-000000000fff";
@@ -168,6 +177,16 @@ beforeAll(async () => {
      VALUES ($1, $2, $3, 'barcode', $4, NULL, 'pending', $5)
      ON CONFLICT DO NOTHING`,
     [UNK_T623_EDGES, TENANT_A, STORE_A_X, UNK_T623_BARCODE_VALUE, UNK_T623_EDGES_CORR],
+  );
+
+  // Same-tenant product that is inactive but NOT retired (RT-745).
+  await env.admin.query(
+    `INSERT INTO tenant_products
+       (id, tenant_id, name, tax_category, is_active, retired_at,
+        created_by, updated_by)
+     VALUES ($1, $2, 'T623 Product A-Inactive', 'standard', false, NULL, $3, $3)
+     ON CONFLICT DO NOTHING`,
+    [PRODUCT_A_INACTIVE, TENANT_A, TENANT_A_ADMIN_USER],
   );
 
   const localEnv = env;
@@ -264,6 +283,44 @@ async function unknownItemStatus(): Promise<string> {
   return r.rows[0]?.resolution_status ?? "missing";
 }
 
+/** Drain pending audit work, then assert no link audit event was emitted. */
+async function expectNoLinkAuditEvent(): Promise<void> {
+  for (let i = 0; i < 50; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const linkEvents = auditSpy.calls.filter(
+    (ev) => ev.action === "unknown_item.resolved.linked",
+  );
+  expect(linkEvents).toHaveLength(0);
+}
+
+/**
+ * Link U1 to `productId` and assert the refusal is 409 target_unavailable:
+ * U1 stays pending, no alias row is written, no successful-link event is
+ * emitted, and exactly one target_unavailable rejection event is audited.
+ */
+async function expectLinkRefusedAsTargetUnavailable(productId: string): Promise<void> {
+  const beforeAliases = await aliasCount();
+
+  const res = await http()
+    .post(LINK_URL(UNK_T623_EDGES))
+    .send({ product_id: productId });
+
+  expect(res.status).toBe(409);
+  expect(res.body?.error?.code).toBe("target_unavailable");
+
+  expect(await unknownItemStatus()).toBe("pending");
+  expect(await aliasCount()).toBe(beforeAliases);
+
+  await expectNoLinkAuditEvent();
+
+  const rejections = auditSpy.calls.filter(
+    (ev) => ev.action === "unknown_item.reconciliation_conflict_rejected",
+  );
+  expect(rejections).toHaveLength(1);
+  expect(rejections[0]!.metadata).toMatchObject({ reason: "target_unavailable" });
+}
+
 // ---------------------------------------------------------------------------
 // T623 — link target unavailable [FR-051, FR-092]
 // ---------------------------------------------------------------------------
@@ -285,27 +342,7 @@ describe("T623 / 005-WAVE2-LINK-EDGES — link to retired/cross-tenant/non-exist
       );
       expect(retiredCheck.rows[0]?.retired_at).not.toBeNull();
 
-      const beforeAliases = await aliasCount();
-
-      const res = await http()
-        .post(LINK_URL(UNK_T623_EDGES))
-        .send({ product_id: PRODUCT_A_RETIRED });
-
-      expect(res.status).toBe(409);
-      expect(res.body?.error?.code).toBe("target_unavailable");
-
-      // U1 still pending; no alias row.
-      expect(await unknownItemStatus()).toBe("pending");
-      expect(await aliasCount()).toBe(beforeAliases);
-
-      // No audit event for the link action.
-      for (let i = 0; i < 50; i += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      const linkEvents = auditSpy.calls.filter(
-        (ev) => ev.action === "unknown_item.resolved.linked",
-      );
-      expect(linkEvents).toHaveLength(0);
+      await expectLinkRefusedAsTargetUnavailable(PRODUCT_A_RETIRED);
     },
   );
 
@@ -340,13 +377,7 @@ describe("T623 / 005-WAVE2-LINK-EDGES — link to retired/cross-tenant/non-exist
       expect(await unknownItemStatus()).toBe("pending");
       expect(await aliasCount()).toBe(beforeAliases);
 
-      for (let i = 0; i < 50; i += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      const linkEvents = auditSpy.calls.filter(
-        (ev) => ev.action === "unknown_item.resolved.linked",
-      );
-      expect(linkEvents).toHaveLength(0);
+      await expectNoLinkAuditEvent();
     },
   );
 
@@ -380,13 +411,28 @@ describe("T623 / 005-WAVE2-LINK-EDGES — link to retired/cross-tenant/non-exist
       expect(await unknownItemStatus()).toBe("pending");
       expect(await aliasCount()).toBe(beforeAliases);
 
-      for (let i = 0; i < 50; i += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      const linkEvents = auditSpy.calls.filter(
-        (ev) => ev.action === "unknown_item.resolved.linked",
-      );
-      expect(linkEvents).toHaveLength(0);
+      await expectNoLinkAuditEvent();
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // T623-e — inactive (not retired) product (SAME tenant) → 409 target_unavailable
+  // -------------------------------------------------------------------------
+  it(
+    "(e) returns 409 target_unavailable when linking to an inactive, non-retired product in the same tenant",
+    async () => {
+      if (dockerSkipped) return;
+
+      const inactiveCheck = await env!.admin.query<{
+        is_active: boolean;
+        retired_at: Date | null;
+      }>(`SELECT is_active, retired_at FROM tenant_products WHERE id = $1`, [
+        PRODUCT_A_INACTIVE,
+      ]);
+      expect(inactiveCheck.rows[0]?.is_active).toBe(false);
+      expect(inactiveCheck.rows[0]?.retired_at).toBeNull();
+
+      await expectLinkRefusedAsTargetUnavailable(PRODUCT_A_INACTIVE);
     },
   );
 

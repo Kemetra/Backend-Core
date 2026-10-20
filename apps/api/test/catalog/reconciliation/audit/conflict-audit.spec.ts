@@ -388,6 +388,7 @@ const emptyResult = (): QueryResult => ({
 const activeProductRow = (): Record<string, unknown> => ({
   id: UNIT_PRODUCT,
   retired_at: null,
+  is_active: true,
 });
 
 /**
