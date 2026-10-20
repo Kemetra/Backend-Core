@@ -279,6 +279,32 @@ async function unknownItemStatus(): Promise<string> {
   return r.rows[0]?.resolution_status ?? "missing";
 }
 
+/**
+ * Link U1 to `productId` and assert the refusal is 409 target_unavailable:
+ * U1 stays pending, no alias row is written, no link audit event is emitted.
+ */
+async function expectLinkRefusedAsTargetUnavailable(productId: string): Promise<void> {
+  const beforeAliases = await aliasCount();
+
+  const res = await http()
+    .post(LINK_URL(UNK_T623_EDGES))
+    .send({ product_id: productId });
+
+  expect(res.status).toBe(409);
+  expect(res.body?.error?.code).toBe("target_unavailable");
+
+  expect(await unknownItemStatus()).toBe("pending");
+  expect(await aliasCount()).toBe(beforeAliases);
+
+  for (let i = 0; i < 50; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const linkEvents = auditSpy.calls.filter(
+    (ev) => ev.action === "unknown_item.resolved.linked",
+  );
+  expect(linkEvents).toHaveLength(0);
+}
+
 // ---------------------------------------------------------------------------
 // T623 — link target unavailable [FR-051, FR-092]
 // ---------------------------------------------------------------------------
@@ -300,27 +326,7 @@ describe("T623 / 005-WAVE2-LINK-EDGES — link to retired/cross-tenant/non-exist
       );
       expect(retiredCheck.rows[0]?.retired_at).not.toBeNull();
 
-      const beforeAliases = await aliasCount();
-
-      const res = await http()
-        .post(LINK_URL(UNK_T623_EDGES))
-        .send({ product_id: PRODUCT_A_RETIRED });
-
-      expect(res.status).toBe(409);
-      expect(res.body?.error?.code).toBe("target_unavailable");
-
-      // U1 still pending; no alias row.
-      expect(await unknownItemStatus()).toBe("pending");
-      expect(await aliasCount()).toBe(beforeAliases);
-
-      // No audit event for the link action.
-      for (let i = 0; i < 50; i += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      const linkEvents = auditSpy.calls.filter(
-        (ev) => ev.action === "unknown_item.resolved.linked",
-      );
-      expect(linkEvents).toHaveLength(0);
+      await expectLinkRefusedAsTargetUnavailable(PRODUCT_A_RETIRED);
     },
   );
 
@@ -422,25 +428,7 @@ describe("T623 / 005-WAVE2-LINK-EDGES — link to retired/cross-tenant/non-exist
       expect(inactiveCheck.rows[0]?.is_active).toBe(false);
       expect(inactiveCheck.rows[0]?.retired_at).toBeNull();
 
-      const beforeAliases = await aliasCount();
-
-      const res = await http()
-        .post(LINK_URL(UNK_T623_EDGES))
-        .send({ product_id: PRODUCT_A_INACTIVE });
-
-      expect(res.status).toBe(409);
-      expect(res.body?.error?.code).toBe("target_unavailable");
-
-      expect(await unknownItemStatus()).toBe("pending");
-      expect(await aliasCount()).toBe(beforeAliases);
-
-      for (let i = 0; i < 50; i += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      const linkEvents = auditSpy.calls.filter(
-        (ev) => ev.action === "unknown_item.resolved.linked",
-      );
-      expect(linkEvents).toHaveLength(0);
+      await expectLinkRefusedAsTargetUnavailable(PRODUCT_A_INACTIVE);
     },
   );
 
