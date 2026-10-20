@@ -18,7 +18,7 @@
  *     {kind: "not_found"}           — unknown item or product absent
  *     {kind: "already_reconciled"}  — item is already resolved/dismissed
  *     {kind: "alias_conflict"}      — unique index 23505 violated
- *     {kind: "target_unavailable"}  — target product retired (FR-051)
+ *     {kind: "target_unavailable"}  — target product retired or inactive (FR-051)
  *
  *   CreateResult (createProductFromUnknownItem):
  *     {kind: "ok";                  row: UnknownItemRow; productId: string}
@@ -222,7 +222,8 @@ export class ReconciliationService {
    *   3. SELECT tenant_products WHERE id=$productId
    *      — fetch target and check retired_at: absent (0 rows) → not_found
    *        (RLS-filtered cross-tenant or non-existent UUID); retired
-   *        (retired_at IS NOT NULL) → target_unavailable per FR-051.
+   *        (retired_at IS NOT NULL) or inactive (is_active = false) →
+   *        target_unavailable per FR-051.
    *   4. INSERT product_aliases — catch PG error 23505 → alias_conflict
    *   5. UPDATE unknown_items SET resolution_status='resolved' WHERE
    *      id=$unknownItemId AND resolution_status='pending'
@@ -354,14 +355,16 @@ export class ReconciliationService {
           return { kind: "already_reconciled" };
         }
 
-        // Step 3: confirm target product exists; discriminate retired separately
-        // so the controller can map retired -> 409 target_unavailable (FR-051)
-        // while absent stays 404 non-disclosing (FR-092 / SI-001).
+        // Step 3: confirm target product exists; discriminate non-active
+        // (retired or inactive) separately so the controller can map it ->
+        // 409 target_unavailable (FR-051) while absent stays 404
+        // non-disclosing (FR-092 / SI-001).
         const productCheck = await client.query<{
           id: string;
           retired_at: Date | null;
+          is_active: boolean;
         }>(
-          `SELECT id, retired_at
+          `SELECT id, retired_at, is_active
              FROM tenant_products
             WHERE id         = $1
               AND tenant_id  = $2
@@ -373,7 +376,7 @@ export class ReconciliationService {
         if (!productRow) {
           return { kind: "not_found" };
         }
-        if (productRow.retired_at !== null) {
+        if (productRow.retired_at !== null || !productRow.is_active) {
           return { kind: "target_unavailable" };
         }
 
