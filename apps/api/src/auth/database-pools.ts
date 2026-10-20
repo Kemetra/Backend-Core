@@ -162,6 +162,8 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     // inventory settings.
     "inventory_position_events",
     "tenant_inventory_settings",
+    // RT-414 (0062): platform support sessions (platform-admin RLS only).
+    "platform_support_sessions",
     "audit_events",
     "idempotency_keys",
     "outbox_events",
@@ -301,6 +303,13 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   ["pairing_codes", "SELECT"],
   ["pairing_codes", "INSERT"],
   ["pairing_codes", "UPDATE"],
+  // RT-414 (0062): every platform-admin request into a non-member tenant reads
+  // its support session; open inserts one, renew and end update it (FOR
+  // UPDATE). Never deleted (0062's trigger); never DELETE or TRUNCATE. Apply
+  // with docs/operations/sql/platform-support-sessions-domain-grants.sql.
+  ["platform_support_sessions", "SELECT"],
+  ["platform_support_sessions", "INSERT"],
+  ["platform_support_sessions", "UPDATE"],
 ];
 
 interface GrantRow {

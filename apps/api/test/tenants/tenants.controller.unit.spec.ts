@@ -42,6 +42,7 @@ import request from "supertest";
 import type { Principal } from "../../src/auth/auth.guard";
 import { DashboardAuthGuard } from "../../src/auth/dashboard-auth.guard";
 import { RolesGuard } from "../../src/auth/roles.guard";
+import { PathTenantSupportSessionGuard } from "../../src/platform-support-sessions/path-tenant-support-session.guard";
 import { ZodValidationPipe } from "../../src/common/zod-validation.pipe";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
 
@@ -196,6 +197,7 @@ beforeAll(async () => {
   })
     .overrideGuard(DashboardAuthGuard).useValue(auth)
     .overrideGuard(RolesGuard).useValue(roles)
+    .overrideGuard(PathTenantSupportSessionGuard).useValue({ canActivate: () => true })
     .compile();
 
   app = moduleRef.createNestApplication({ bufferLogs: true });

@@ -180,7 +180,7 @@ export class AuthController {
       // accepted them, but the contract is cookie-only. Treat as 401.
       throw new UnauthorizedException("Unauthorized");
     }
-    await this.authService.signOut(principal.sessionId);
+    await this.authService.signOut(principal.sessionId, req.requestId ?? null);
     res.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
   }
 

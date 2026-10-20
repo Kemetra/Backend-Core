@@ -49,6 +49,7 @@ import { RateLimiter } from "../src/auth/rate-limit";
 import type { SignInResult } from "../src/auth/dto";
 import type { RefreshResult } from "../src/auth/auth.service";
 import { RolesGuard } from "../src/auth/roles.guard";
+import { PathTenantSupportSessionGuard } from "../src/platform-support-sessions/path-tenant-support-session.guard";
 import { TenantContextGuard } from "../src/context/tenant-context.guard";
 import { AuditController } from "../src/audit/audit.controller";
 import { AuditService } from "../src/audit/audit.service";
@@ -1625,6 +1626,7 @@ const EMPTY_CONTEXT_RESPONSE: ContextResponseBody = {
   active_store: null,
   active_role_code: null,
   memberships: [],
+  support_session: null,
 };
 
 const ACTIVE_CONTEXT_RESPONSE: ContextResponseBody = {
@@ -1654,6 +1656,7 @@ const ACTIVE_CONTEXT_RESPONSE: ContextResponseBody = {
       accessible_store_ids: [FAKE_CONTEXT_STORE_ID],
     },
   ],
+  support_session: null,
 };
 
 const SWITCHED_TENANT_RESPONSE: ContextResponseBody = {
@@ -1679,6 +1682,7 @@ const SWITCHED_TENANT_RESPONSE: ContextResponseBody = {
       accessible_store_ids: [FAKE_CONTEXT_STORE_ID],
     },
   ],
+  support_session: null,
 };
 
 const SWITCHED_STORE_RESPONSE: ContextResponseBody = {
@@ -1708,6 +1712,7 @@ const SWITCHED_STORE_RESPONSE: ContextResponseBody = {
       accessible_store_ids: [FAKE_CONTEXT_STORE_ID],
     },
   ],
+  support_session: null,
 };
 
 class FakeContextService {
@@ -2429,6 +2434,7 @@ beforeAll(async () => {
   })
     .overrideGuard(DashboardAuthGuard).useValue(makePrincipalGuard("tenants-session-1", TENANTS_USER_ID))
     .overrideGuard(RolesGuard).useValue(ALLOW_ALL_GUARD)
+    .overrideGuard(PathTenantSupportSessionGuard).useValue(ALLOW_ALL_GUARD)
     .compile();
 
   tenantsApp = moduleRef.createNestApplication({ bufferLogs: true });

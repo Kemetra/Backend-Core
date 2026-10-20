@@ -66,17 +66,12 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "consoleGetTenantLogo",
       "consolePreviewTenantLogo",
       "consolePutTenantLogo",
-      // RT-414: platform support-session contract; the runtime ships after owner approval.
-      "endSupportSession",
-      "getCurrentSupportSession",
-      "openSupportSession",
       // RT-492 (RT-114 MA-BC1): approver-eligibility contract; the runtime ships in MA-BC2.
       "posCheckApproverEligibility",
       "posGetTenantBranding",
       "posRedeemVoucher",
       "posReverseVoucher",
       "posValidateVoucher",
-      "renewSupportSession",
     ]);
     expect(missing).toEqual([]);
   });

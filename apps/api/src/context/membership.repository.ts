@@ -211,6 +211,34 @@ export class MembershipRepository {
   }
 
   /**
+   * RT-414: whether `userId` has a live (not revoked, not deleted) membership
+   * in `tenantId`, WHATEVER the tenant's status. Used only to decide whether a
+   * platform admin is a member (no support session needed) or not; unlike
+   * `findActiveMembership` it ignores RT-669's tenant-status rule, so a member
+   * platform admin of a suspended tenant keeps today's resolution.
+   */
+  async hasLiveMembership(
+    userId: string,
+    tenantId: string,
+    client?: PoolClient,
+  ): Promise<boolean> {
+    const db = client ? drizzle(client) : this.db;
+    const rows = await db
+      .select({ id: memberships.id })
+      .from(memberships)
+      .where(
+        and(
+          eq(memberships.userId, userId),
+          eq(memberships.tenantId, tenantId),
+          isNull(memberships.revokedAt),
+          isNull(memberships.deletedAt),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  /**
    * Returns true iff `storeId` is reachable from `(membershipId, tenantId)`
    * given the supplied access kind:
    *   - `'all'`  → store exists, is not soft-deleted, and belongs to the

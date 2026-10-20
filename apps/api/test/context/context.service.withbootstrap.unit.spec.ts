@@ -40,7 +40,9 @@ describe("ContextService — withBootstrapCtx pool path", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     (runWithTenantContext as jest.Mock).mockImplementation(
-      async (_pool: unknown, _ctx: unknown, fn: (client: unknown) => unknown) => fn({}),
+      // The fake client answers the RT-414 support-session queries with no rows.
+      async (_pool: unknown, _ctx: unknown, fn: (client: unknown) => unknown) =>
+        fn({ query: jest.fn().mockResolvedValue({ rows: [] }) }),
     );
   });
 

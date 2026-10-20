@@ -112,6 +112,15 @@ export interface AuthServiceOptions {
    * then reports no memberships.
    */
   listMemberships?: SignInMembershipsReader;
+  /**
+   * RT-414: ends (and audits, `signed_out`) the live support sessions of a
+   * revoked auth session, or of every session of a user. `AuthModule` wires
+   * it on the domain pool; omitted only by unit specs.
+   */
+  endSupportSessions?: (
+    owner: { readonly authSessionId: string } | { readonly userId: string },
+    requestId: string | null,
+  ) => Promise<void>;
 }
 
 /** Audit action strings emitted from the sign-in flow (per `tasks.md` T230). */
@@ -139,6 +148,7 @@ export class AuthService {
   private readonly emailJobs: EmailJobEnqueuer;
   private readonly auditEnqueuer: AuditJobEnqueuer;
   private readonly listMemberships: SignInMembershipsReader;
+  private readonly endSupportSessions: NonNullable<AuthServiceOptions["endSupportSessions"]>;
 
   constructor(
     private readonly pool: Pool,
@@ -158,6 +168,7 @@ export class AuthService {
     this.emailJobs = emailJobs ?? new NoOpEmailJobEnqueuer();
     this.auditEnqueuer = opts.auditEnqueuer ?? new NoOpAuditJobEnqueuer();
     this.listMemberships = opts.listMemberships ?? (async () => []);
+    this.endSupportSessions = opts.endSupportSessions ?? (async () => undefined);
   }
 
   private requireAuthTokens(): AuthTokenRepository {
@@ -331,8 +342,10 @@ export class AuthService {
    * already verified — via AuthGuard — that the caller owns the cookie
    * being revoked, so no additional ownership check is needed.
    */
-  async signOut(sessionId: string): Promise<SignOutResult> {
+  async signOut(sessionId: string, requestId: string | null = null): Promise<SignOutResult> {
     const revoked = await this.sessions.revoke(sessionId);
+    // RT-414: a support session ends with its auth session.
+    await this.endSupportSessions({ authSessionId: sessionId }, requestId);
     return { revoked };
   }
 
@@ -425,6 +438,7 @@ export class AuthService {
       .where(and(eq(users.id, userId), isNull(users.deletedAt)));
 
     await this.revokeAllSessionsForUser(userId);
+    await this.endSupportSessions({ userId }, null);
   }
 
   // ---------------------------------------------------------------------

@@ -60,6 +60,10 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   // the tenant inventory settings (upserted, no DELETE).
   "inventory_position_events:SELECT",
   "inventory_position_events:INSERT",
+  // RT-414 (0062): platform support sessions (opened, renewed, ended; never deleted).
+  "platform_support_sessions:SELECT",
+  "platform_support_sessions:INSERT",
+  "platform_support_sessions:UPDATE",
   "tenant_inventory_settings:SELECT",
   "tenant_inventory_settings:INSERT",
   "tenant_inventory_settings:UPDATE",
@@ -316,6 +320,7 @@ describe("database pool boundary", () => {
       "erpnext_tracking_map",
       "inventory_position_events",
       "tenant_inventory_settings",
+      "platform_support_sessions",
       "sale_reprints",
       "sale_responsibilities",
       "sale_credit_reversals",

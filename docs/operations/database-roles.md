@@ -426,6 +426,20 @@ table the domain role must use needs a matching grant step at deploy time.
   (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). 0056 needs no maintenance window: both
   tables are new and only the new routes use them.
 
+- **Migration `0062_platform_support_sessions` (RT-414).** Run
+  [`sql/platform-support-sessions-domain-grants.sql`](sql/platform-support-sessions-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT`, `INSERT` and
+  `UPDATE` on `platform_support_sessions`: every platform-admin request into a
+  tenant the admin is not a member of reads the support session, opening one
+  inserts a row, and renewing or ending it updates the row (`FOR UPDATE`).
+  Rows are never deleted: never grant `DELETE` or `TRUNCATE`. The table's only
+  RLS policy admits the platform-admin GUC. Without the grants the API refuses
+  to boot (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold no
+  privilege on it (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). 0062 needs no maintenance
+  window: the table is new.
+
 - **Console device revoke (RT-365, on migration `0040_device_lifecycle`).** Run
   [`sql/device-lifecycle-domain-grants.sql`](sql/device-lifecycle-domain-grants.sql)
   after `migrate up` and before the API starts, in the same step 2 of

@@ -241,7 +241,7 @@ describe("CC4 — POST /api/v1/context/tenant: happy path", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual(FAKE_CONTEXT_RESPONSE);
     expect(switchTenantMock).toHaveBeenCalledTimes(1);
-    expect(switchTenantMock).toHaveBeenCalledWith(guard.principal, TENANT_ID);
+    expect(switchTenantMock).toHaveBeenCalledWith(guard.principal, TENANT_ID, null);
   });
 });
 
@@ -324,7 +324,7 @@ describe("CC9 — POST /api/v1/context/store: happy path", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual(FAKE_CONTEXT_RESPONSE);
     expect(switchStoreMock).toHaveBeenCalledTimes(1);
-    expect(switchStoreMock).toHaveBeenCalledWith(guard.principal, STORE_ID);
+    expect(switchStoreMock).toHaveBeenCalledWith(guard.principal, STORE_ID, null);
   });
 });
 

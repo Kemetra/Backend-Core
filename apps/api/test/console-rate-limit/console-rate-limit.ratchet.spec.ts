@@ -94,8 +94,10 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
   createStockTransfer: "write",
   createStore: "write",
   createTenant: "onboarding",
+  endSupportSession: "incidentControl",
   getActiveContext: "cheapRead",
   getConnectorHealth: "cheapRead",
+  getCurrentSupportSession: "cheapRead",
   getOnHand: "cheapRead",
   getOutboxDeadLetter: "cheapRead",
   getProductReconciliationRunResults: "expensiveRead",
@@ -116,6 +118,7 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
   listStores: "cheapRead",
   listTenants: "cheapRead",
   listTrackingIdentities: "cheapRead",
+  openSupportSession: "onboarding",
   previewStoreTimezoneChange: "jobOrPreview",
   readStore: "cheapRead",
   readTenant: "cheapRead",
@@ -124,6 +127,7 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
   repairPosting: "write",
   repairProductMapping: "write",
   repairStockMismatch: "write",
+  renewSupportSession: "write",
   requestEmailVerification: "exempt",
   reResolvePosting: "write",
   revokeMembership: "incidentControl",
@@ -173,10 +177,6 @@ const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
   consoleGetTenantLogo: "cheapRead",
   consolePreviewTenantLogo: "jobOrPreview",
   consolePutTenantLogo: "jobOrPreview",
-  endSupportSession: "incidentControl",
-  getCurrentSupportSession: "cheapRead",
-  openSupportSession: "onboarding",
-  renewSupportSession: "write",
 };
 
 describe("console rate-limit ratchet (RT-619 / RT-574 D1)", () => {
