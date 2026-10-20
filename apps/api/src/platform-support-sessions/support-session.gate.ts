@@ -30,7 +30,10 @@
  * which this gate does not touch.
  */
 import { ForbiddenException } from "@nestjs/common";
+import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool, PoolClient } from "pg";
+
+import { hasLiveMembership } from "../context/membership.repository";
 
 import { withSupportSessionCtx } from "./support-session.lifecycle";
 import {
@@ -179,16 +182,7 @@ export class SupportSessionGate {
 
   /** Whether `userId` has a live membership in `tenantId`, whatever the tenant status. */
   async isMember(member: { readonly userId: string; readonly tenantId: string }): Promise<boolean> {
-    return this.withPlatformCtx(async (client) => {
-      const { rows } = await client.query(
-        `SELECT 1 FROM memberships
-          WHERE user_id = $1 AND tenant_id = $2
-            AND revoked_at IS NULL AND deleted_at IS NULL
-          LIMIT 1`,
-        [member.userId, member.tenantId],
-      );
-      return rows.length > 0;
-    });
+    return this.withPlatformCtx((client) => hasLiveMembership(drizzle(client), member));
   }
 
   /**

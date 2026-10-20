@@ -27,11 +27,12 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
+import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool, PoolClient } from "pg";
 
 import type { Principal } from "../auth/auth.guard";
 import type { SessionRepository } from "../auth/session.repository";
-import type { MembershipRepository } from "../context/membership.repository";
+import { hasLiveMembership, type MembershipRepository } from "../context/membership.repository";
 import type { OpenSupportSessionInput } from "./dto";
 import { endSupportSessions, withSupportSessionCtx } from "./support-session.lifecycle";
 import {
@@ -199,13 +200,7 @@ async function assertEnterableNonMember(
     [tenantId],
   );
   if (tenant.rows.length === 0) throw new NotFoundException("Not Found");
-  const membership = await client.query(
-    `SELECT 1 FROM memberships
-      WHERE user_id = $1 AND tenant_id = $2 AND revoked_at IS NULL AND deleted_at IS NULL
-      LIMIT 1`,
-    [userId, tenantId],
-  );
-  if (membership.rows.length > 0) {
+  if (await hasLiveMembership(drizzle(client), { userId, tenantId })) {
     throw conflict("already_member", "You are a member of this tenant; switch to it instead");
   }
 }
