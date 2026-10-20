@@ -358,7 +358,10 @@ export class ReconciliationService {
         // Step 3: confirm target product exists; discriminate non-active
         // (retired or inactive) separately so the controller can map it ->
         // 409 target_unavailable (FR-051) while absent stays 404
-        // non-disclosing (FR-092 / SI-001).
+        // non-disclosing (FR-092 / SI-001). FOR SHARE makes this wait for an
+        // in-flight console update/retire (it holds FOR UPDATE on the row) and
+        // re-reads the committed state, so a product deactivated concurrently
+        // is refused instead of linked by the alias insert's FK check.
         const productCheck = await client.query<{
           id: string;
           retired_at: Date | null;
@@ -368,7 +371,8 @@ export class ReconciliationService {
              FROM tenant_products
             WHERE id         = $1
               AND tenant_id  = $2
-            LIMIT 1`,
+            LIMIT 1
+              FOR SHARE`,
           [input.productId, input.tenantId],
         );
 
