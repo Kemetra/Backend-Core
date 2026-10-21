@@ -21,6 +21,17 @@ This project follows [Semantic Versioning](https://semver.org/).
   `eligible: false` with no cause; the cause is logged server-side under the
   request id. `action_kinds` is never emitted; `Cache-Control: no-store`; no
   audit row, no migration.
+- RT-410 `[GATED]` OpenAPI contract, owner authorization 2026-10-21 (RT-410
+  comments 13208 and 13278; AD-POSTING-001 D-1 to D-5), step 1 only:
+  `erpnext-reconciliation/reconciliation.yaml` 1.3.0-draft. Additive.
+  `PostingBacklogItem.reason` (017 `listPostingBacklog`) is the Connector's
+  scrubbed rejection message: nullable, at most 1000 characters, plain text,
+  business data that is PII-suspect free text, not a money field, kept only
+  while the row is `permanently_rejected`, never logged, audited, used as a
+  metric label or sent to Sentry or Datadog, and rendered as plain text only.
+  `rejectionCategory` documents `other`. No migration, no runtime change: until
+  the RT-410 storage migration and write path ship, `reason` still carries the
+  category text. `posting-feed.yaml` is unchanged.
 - RT-735 `[GATED]`, owner authorization 2026-10-21 (RT-735 comments 13234 and
   13280; applying to the lab or a live database is not authorized): the two
   indexes behind `listStockMovements` (RT-731). Migration 0064 builds
@@ -136,6 +147,25 @@ This project follows [Semantic Versioning](https://semver.org/).
   with `tenant_id` always null; an email-shaped `actor_label` is returned masked
   (`a***@example.com`). The read is not itself audited. `listAuditEvents` and
   `AuditEvent` are unchanged. No runtime, migration or Console change.
+- RT-431 `[GATED]` contract-only lift (implementation authorized on RT-431,
+  comment 13277): `listPlatformAuditEvents` runtime.
+  `PlatformAuditController` (`GET /api/v1/platform/audit/events`) is its own
+  class behind `SessionOnlyAdminGuard` then `PlatformAdminGuard`
+  (`users.is_platform_admin`, checked before query validation). It is not
+  behind `TenantContextGuard`, so RT-414 enforcement does not cover it, and it
+  writes no `platform.cross_tenant.accessed` row. The read runs under the
+  platform-admin context with an explicit `tenant_id IS NULL` on the list and
+  on the RT-211 cursor anchor (`DrizzleAuditRepository.listPlatformPage`,
+  shared scope predicate). `actor_label` is masked (D5); there is no
+  self-audit; the console rate-limit class is `expensiveRead`. EXPLAIN
+  (ANALYZE) as `app_test` shows that the existing
+  `audit_events_tenant_time_idx` serves the `tenant_id IS NULL` predicate,
+  but not the keyset order. It has no `id` column, so every page top-N sorts
+  the whole null-tenant bucket (about 1 ms at 4k rows, 58 to 81 ms at 400k,
+  where the planner picks a parallel seq scan). That is the same ordering
+  design as `listAuditEvents`. An ordered index is separate `[GATED]`
+  migration work, and no migration is in this change. The `x-runtime-status`
+  marker and note are removed from `audit.openapi.yaml`.
 - Phase 1 workspace setup: `pnpm-workspace.yaml`, `tsconfig.base.json`,
   `.eslintrc.cjs`, `.prettierrc`, `.nvmrc`, root `package.json`,
   `docker-compose.dev.yml`, Constitution-Check PR template.
@@ -845,6 +875,14 @@ This project follows [Semantic Versioning](https://semver.org/).
   No runtime or migration change.
 
 ### Security
+- RT-762: exported spans no longer carry `db.connection_string`. The pg
+  instrumentation set it to the DSN (DB host, database name, `sslmode`), which
+  reached Datadog. `RedactingSpanExporter` now drops it, plus the DB identity
+  attributes (`db.name`, `db.user`, `db.namespace`, `net.peer.*`,
+  `server.*`) on DB spans, since OBS-1 allows none of them. `db.system`,
+  `db.operation` and trace/request correlation are unchanged. Regression test:
+  no exported attribute value contains both `://` and `?`. Takes effect on the
+  next release; fresh-window evidence on lab-01 is pending.
 - RT-430 `[GATED]`, owner-approved 2026-10-12 (decisions recorded on RT-430):
   CSRF hardening. Every `POST`, `PUT`, `PATCH` or `DELETE` authenticated by
   the `dp2_session` cookie must carry an `Origin` that is the API's own
