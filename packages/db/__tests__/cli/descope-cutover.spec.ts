@@ -226,85 +226,150 @@ describe("descope-cutover rollback", () => {
   });
 });
 
+// --- refusals: each case stages one unexpected state; nothing may be written --
+
+async function unlinkAll(f: Fixture): Promise<void> {
+  await pg().admin.query("DELETE FROM external_identity_links WHERE user_id = $1", [f.userId]);
+}
+
+async function setBridgeColumn(f: Fixture, value: string | null): Promise<void> {
+  await pg().admin.query("UPDATE users SET clerk_user_id = $1 WHERE id = $2", [value, f.userId]);
+}
+
+interface StrayLink {
+  readonly provider: string;
+  readonly issuer: string;
+  readonly subject: string;
+}
+
+/** Give a fresh other user a disabled link (the unique index allows that alongside ours). */
+async function linkToOtherUser(link: StrayLink): Promise<void> {
+  const other = await seedUser();
+  await pg().admin.query(
+    `INSERT INTO external_identity_links (provider_key, issuer, subject, user_id, status, disabled_at)
+     VALUES ($1, $2, $3, $4, 'disabled', now())`,
+    [link.provider, link.issuer, link.subject, other.userId],
+  );
+}
+
+interface RefusalCase {
+  readonly code: string;
+  /** Stage the state on fixture `f`; return the command that must be refused. */
+  readonly arrange: (f: Fixture) => Promise<DescopeCutoverCommand>;
+}
+
+const REFUSALS: Record<string, RefusalCase> = {
+  "an unknown user": {
+    code: "user_not_found",
+    arrange: async (f) => ({ ...apply(f), userId: "0a000000-0000-7000-8000-ffffffffffff" }) as DescopeCutoverCommand,
+  },
+  "only disabled clerk links (not treated as no link)": {
+    code: "no_matching_active_clerk_link",
+    arrange: async (f) => {
+      await pg().admin.query(
+        "UPDATE external_identity_links SET status = 'disabled', disabled_at = now() WHERE user_id = $1",
+        [f.userId],
+      );
+      return apply(f);
+    },
+  },
+  "an active clerk link under another subject than clerk_user_id (several active cannot exist)": {
+    code: "no_matching_active_clerk_link",
+    arrange: async (f) => {
+      await setBridgeColumn(f, `${f.clerkSub}_drift`);
+      return apply(f);
+    },
+  },
+  "a descope subject held by another user's clerk_user_id": {
+    code: "subject_held_by_other_user",
+    arrange: async (f) => ({ ...apply(f), descopeSubject: (await seedUser()).clerkSub }) as DescopeCutoverCommand,
+  },
+  "a descope subject linked to another user": {
+    code: "descope_subject_linked_to_other_user",
+    arrange: async (f) => {
+      await linkToOtherUser({ provider: "descope", issuer: DESCOPE_ISSUER, subject: f.descopeSub });
+      return apply(f);
+    },
+  },
+  "a descope subject linked to another user under a DIFFERENT issuer": {
+    code: "descope_subject_linked_to_other_user",
+    arrange: async (f) => {
+      await linkToOtherUser({ provider: "descope", issuer: "P2cutoverTest01", subject: f.descopeSub });
+      return apply(f);
+    },
+  },
+  "a different descope subject while one is active": {
+    code: "inconsistent_descope_state",
+    arrange: async (f) => {
+      await run(apply(f));
+      return { ...apply(f), descopeSubject: "U2someoneElse" } as DescopeCutoverCommand;
+    },
+  },
+  "no links and clerk_user_id NULL": {
+    code: "no_matching_active_clerk_link",
+    arrange: async (f) => {
+      await unlinkAll(f);
+      await setBridgeColumn(f, null);
+      return apply(f);
+    },
+  },
+  "no links and the clerk subject linked to another user": {
+    code: "clerk_subject_linked_to_other_user",
+    arrange: async (f) => {
+      await unlinkAll(f);
+      await linkToOtherUser({ provider: "clerk", issuer: CLERK_ISSUER, subject: f.clerkSub });
+      return apply(f);
+    },
+  },
+  "no clerk link but another provider's active link": {
+    code: "unexpected_active_link",
+    arrange: async (f) => {
+      await unlinkAll(f);
+      await pg().admin.query(
+        `INSERT INTO external_identity_links (provider_key, issuer, subject, user_id, status)
+         VALUES ('keycloak', 'https://kc.example', $1, $2, 'active')`,
+        [`kc-${f.clerkSub}`, f.userId],
+      );
+      return apply(f);
+    },
+  },
+  "rollback with nothing applied and clerk_user_id NULL": {
+    code: "no_active_descope_link",
+    arrange: async (f) => {
+      await setBridgeColumn(f, null);
+      return rollback(f);
+    },
+  },
+  "rollback with no disabled clerk link to restore": {
+    code: "no_disabled_clerk_link",
+    arrange: async (f) => {
+      await run(apply(f));
+      await pg().admin.query("DELETE FROM external_identity_links WHERE user_id = $1 AND provider_key = 'clerk'", [
+        f.userId,
+      ]);
+      return rollback(f);
+    },
+  },
+  "rollback when another user was linked to the clerk subject after apply": {
+    code: "clerk_subject_linked_to_other_user",
+    arrange: async (f) => {
+      await run(apply(f));
+      await linkToOtherUser({ provider: "clerk", issuer: "https://clerk.other.example", subject: f.clerkSub });
+      return rollback(f);
+    },
+  },
+};
+
 describe("descope-cutover refusals (nothing written)", () => {
-  async function expectRefused(cmd: DescopeCutoverCommand, code: string, userId: string) {
-    const before = await snapshot(userId);
+  it.each(Object.entries(REFUSALS))("%s", async (_name, c) => {
+    if (skip()) return;
+    const f = await seedUser();
+    const cmd = await c.arrange(f);
+    const before = await snapshot(f.userId);
     const err = await run(cmd).then(() => null, (e: unknown) => e);
     expect(err).toBeInstanceOf(CutoverRefusedError);
-    expect((err as CutoverRefusedError).code).toBe(code);
-    expect(await snapshot(userId)).toEqual(before);
-  }
-
-  it("an unknown user", async () => {
-    if (skip()) return;
-    const f = await seedUser();
-    await expectRefused({ ...apply(f), userId: "0a000000-0000-7000-8000-ffffffffffff" } as DescopeCutoverCommand, "user_not_found", f.userId);
-  });
-
-  it("a user with no active clerk link", async () => {
-    if (skip()) return;
-    const f = await seedUser();
-    await pg().admin.query(
-      "UPDATE external_identity_links SET status = 'disabled', disabled_at = now() WHERE user_id = $1",
-      [f.userId],
-    );
-    await expectRefused(apply(f), "no_matching_active_clerk_link", f.userId);
-  });
-
-  it("a descope subject already held by another user's clerk_user_id", async () => {
-    if (skip()) return;
-    const f = await seedUser();
-    const other = await seedUser();
-    await expectRefused({ ...apply(f), descopeSubject: other.clerkSub } as DescopeCutoverCommand, "subject_held_by_other_user", f.userId);
-  });
-
-  it("a descope subject already linked to another user", async () => {
-    if (skip()) return;
-    const f = await seedUser();
-    const other = await seedUser();
-    await pg().admin.query(
-      `INSERT INTO external_identity_links (provider_key, issuer, subject, user_id, status, disabled_at)
-       VALUES ('descope', $1, $2, $3, 'disabled', now())`,
-      [DESCOPE_ISSUER, f.descopeSub, other.userId],
-    );
-    await expectRefused(apply(f), "descope_subject_linked_to_other_user", f.userId);
-  });
-
-  it("apply with a different descope subject while one is active", async () => {
-    if (skip()) return;
-    const f = await seedUser();
-    await run(apply(f));
-    await expectRefused({ ...apply(f), descopeSubject: "U2someoneElse" } as DescopeCutoverCommand, "inconsistent_descope_state", f.userId);
-  });
-
-  it("rollback with no descope link ever applied but clerk link missing", async () => {
-    if (skip()) return;
-    const f = await seedUser();
-    await pg().admin.query("UPDATE users SET clerk_user_id = NULL WHERE id = $1", [f.userId]);
-    await expectRefused(rollback(f), "no_active_descope_link", f.userId);
-  });
-
-  it("a descope subject linked to another user under a DIFFERENT issuer", async () => {
-    if (skip()) return;
-    const f = await seedUser();
-    const other = await seedUser();
-    await pg().admin.query(
-      `INSERT INTO external_identity_links (provider_key, issuer, subject, user_id, status, disabled_at)
-       VALUES ('descope', 'P2cutoverTest01', $1, $2, 'disabled', now())`,
-      [f.descopeSub, other.userId],
-    );
-    await expectRefused(apply(f), "descope_subject_linked_to_other_user", f.userId);
-  });
-
-  it("rollback with no disabled clerk link to restore", async () => {
-    if (skip()) return;
-    const f = await seedUser();
-    await run(apply(f));
-    await pg().admin.query(
-      "DELETE FROM external_identity_links WHERE user_id = $1 AND provider_key = 'clerk'",
-      [f.userId],
-    );
-    await expectRefused(rollback(f), "no_disabled_clerk_link", f.userId);
+    expect((err as CutoverRefusedError).code).toBe(c.code);
+    expect(await snapshot(f.userId)).toEqual(before);
   });
 });
 
@@ -340,11 +405,11 @@ describe("descope-cutover rollback with older clerk history", () => {
 describe("descope-cutover apply for a user with no identity links", () => {
   async function seedUnlinkedUser(): Promise<Fixture> {
     const f = await seedUser();
-    await pg().admin.query("DELETE FROM external_identity_links WHERE user_id = $1", [f.userId]);
+    await unlinkAll(f);
     return f;
   }
 
-  it("creates the disabled clerk link from clerk_user_id, then flips to descope", async () => {
+  it("creates the disabled clerk link from clerk_user_id, flips to descope, and a re-run is a no-op", async () => {
     if (skip()) return;
     const f = await seedUnlinkedUser();
     await expect(run(apply(f))).resolves.toEqual({
@@ -356,13 +421,16 @@ describe("descope-cutover apply for a user with no identity links", () => {
       linksActivated: 1,
       clerkLinksCreated: 1,
     });
-    expect(await snapshot(f.userId)).toEqual({
+    const applied = await snapshot(f.userId);
+    expect(applied).toEqual({
       clerkUserId: f.descopeSub,
       links: [
         { provider_key: "clerk", issuer: CLERK_ISSUER, subject: f.clerkSub, status: "disabled", disabled: true },
         { provider_key: "descope", issuer: DESCOPE_ISSUER, subject: f.descopeSub, status: "active", disabled: false },
       ],
     });
+    await expect(run(apply(f))).resolves.toMatchObject({ alreadyInTargetState: true, clerkLinksCreated: 0 });
+    expect(await snapshot(f.userId)).toEqual(applied);
   });
 
   it("creates the link under the command's clerk issuer (CLERK_JWT_ISSUER at parse time)", async () => {
@@ -387,114 +455,12 @@ describe("descope-cutover apply for a user with no identity links", () => {
     });
   });
 
-  it("is idempotent: a re-run after apply creates nothing", async () => {
-    if (skip()) return;
-    const f = await seedUnlinkedUser();
-    await run(apply(f));
-    const after = await snapshot(f.userId);
-    await expect(run(apply(f))).resolves.toMatchObject({ alreadyInTargetState: true, clerkLinksCreated: 0 });
-    expect(await snapshot(f.userId)).toEqual(after);
-  });
-
   it("--dry-run reports the link it would create and writes nothing", async () => {
     if (skip()) return;
     const f = await seedUnlinkedUser();
     const before = await snapshot(f.userId);
     await expect(run(apply(f, true))).resolves.toMatchObject({ dryRun: true, clerkLinksCreated: 1, usersUpdated: 1 });
     expect(await snapshot(f.userId)).toEqual(before);
-  });
-
-  it("refuses when clerk_user_id is NULL and there is no link", async () => {
-    if (skip()) return;
-    const f = await seedUnlinkedUser();
-    await pg().admin.query("UPDATE users SET clerk_user_id = NULL WHERE id = $1", [f.userId]);
-    const before = await snapshot(f.userId);
-    const err = await run(apply(f)).then(() => null, (e: unknown) => e);
-    expect((err as CutoverRefusedError).code).toBe("no_matching_active_clerk_link");
-    expect(await snapshot(f.userId)).toEqual(before);
-  });
-
-  it("refuses when the clerk subject is already linked to another user", async () => {
-    if (skip()) return;
-    const f = await seedUnlinkedUser();
-    const other = await seedUser();
-    await pg().admin.query(
-      `INSERT INTO external_identity_links (provider_key, issuer, subject, user_id, status, disabled_at)
-       VALUES ('clerk', $1, $2, $3, 'disabled', now())`,
-      [CLERK_ISSUER, f.clerkSub, other.userId],
-    );
-    const before = await snapshot(f.userId);
-    const err = await run(apply(f)).then(() => null, (e: unknown) => e);
-    expect((err as CutoverRefusedError).code).toBe("clerk_subject_linked_to_other_user");
-    expect(await snapshot(f.userId)).toEqual(before);
-  });
-});
-
-describe("descope-cutover rollback re-checks the clerk subject", () => {
-  it("refuses when another user was linked to the clerk subject after apply", async () => {
-    if (skip()) return;
-    const f = await seedUser();
-    const other = await seedUser();
-    await run(apply(f));
-    await pg().admin.query(
-      `INSERT INTO external_identity_links (provider_key, issuer, subject, user_id, status, disabled_at)
-       VALUES ('clerk', 'https://clerk.other.example', $1, $2, 'disabled', now())`,
-      [f.clerkSub, other.userId],
-    );
-    const before = await snapshot(f.userId);
-    const err = await run(rollback(f)).then(() => null, (e: unknown) => e);
-    expect((err as CutoverRefusedError).code).toBe("clerk_subject_linked_to_other_user");
-    expect(await snapshot(f.userId)).toEqual(before);
-  });
-});
-
-describe("descope-cutover apply still refuses unexpected clerk link states", () => {
-  it("no clerk link but another provider's active link → refused with a code, nothing written", async () => {
-    if (skip()) return;
-    const f = await seedUser();
-    await pg().admin.query("DELETE FROM external_identity_links WHERE user_id = $1", [f.userId]);
-    await pg().admin.query(
-      `INSERT INTO external_identity_links (provider_key, issuer, subject, user_id, status)
-       VALUES ('keycloak', 'https://kc.example', $1, $2, 'active')`,
-      [`kc-${f.clerkSub}`, f.userId],
-    );
-    const before = await snapshot(f.userId);
-    const err = await run(apply(f)).then(() => null, (e: unknown) => e);
-    expect((err as CutoverRefusedError).code).toBe("unexpected_active_link");
-    expect(await snapshot(f.userId)).toEqual(before);
-  });
-
-  it("several active clerk links cannot exist (one-active index); an active one under another subject is refused", async () => {
-    if (skip()) return;
-    const f = await seedUser();
-    // The partial unique index forbids a second ACTIVE link per user, so the
-    // only reachable "several" state is several clerk rows — covered as
-    // disabled-only below; here: an active clerk link under another subject.
-    await pg().admin.query("UPDATE external_identity_links SET subject = $1 WHERE user_id = $2", [
-      `${f.clerkSub}_other`,
-      f.userId,
-    ]);
-    const err = await run(apply(f)).then(() => null, (e: unknown) => e);
-    expect((err as CutoverRefusedError).code).toBe("no_matching_active_clerk_link");
-  });
-
-  it("an active clerk link whose subject differs from clerk_user_id", async () => {
-    if (skip()) return;
-    const f = await seedUser();
-    await pg().admin.query("UPDATE users SET clerk_user_id = $1 WHERE id = $2", [`${f.clerkSub}_drift`, f.userId]);
-    const err = await run(apply(f)).then(() => null, (e: unknown) => e);
-    expect((err as CutoverRefusedError).code).toBe("no_matching_active_clerk_link");
-  });
-
-  it("only disabled clerk links (no active one) is not treated as 'no link'", async () => {
-    if (skip()) return;
-    const f = await seedUser();
-    await pg().admin.query(
-      "UPDATE external_identity_links SET status = 'disabled', disabled_at = now() WHERE user_id = $1",
-      [f.userId],
-    );
-    const err = await run(apply(f)).then(() => null, (e: unknown) => e);
-    expect((err as CutoverRefusedError).code).toBe("no_matching_active_clerk_link");
   });
 });
 
