@@ -13,7 +13,12 @@
 #                      files equal `jest --listTests` exactly once each, and the MERGED
 #                      coverage meets apps/api/jest.config.cjs (read from the file).
 #   bc-db-worker     : db migrations + worker Testcontainers suites (db-integration).
-#   bc-schemathesis  : ephemeral stack, 5xx gate, non-gating report.
+#   bc-schemathesis  : split over `fuzz_shards` nodes (RT-806), each with its own ephemeral
+#                      stack and sessions; runs the 5xx gate, then the non-gating report,
+#                      on its contract files (deterministic LPT split, see scripts/).
+#   bc-schemathesis-fanin : fails unless every shard reported, each (group, file) from
+#                      ops.py at this SHA ran exactly once per mode, and every gate passed;
+#                      publishes the merged report.
 # `fast` and `oasdiff` stay on GitHub only (light, no Docker).
 #
 # Public repo: cloned anonymously over HTTPS, pinned to the pipeline commit.
@@ -23,8 +28,9 @@ version: 2.1
 
 parameters:
   run_bc_ci: {type: boolean, default: false}
-  bc_main_sha: {type: string, default: "6bd8a5306458d1eda260a2d6cc40e2067eac22be"}
+  bc_main_sha: {type: string, default: "7a56b5828db9542e07a0ee6edbfccd204152f96b"}
   api_shards: {type: integer, default: 2}
+  fuzz_shards: {type: integer, default: 3}
 
 executors:
   vm:
@@ -86,7 +92,7 @@ jobs:
             echo "nproc=$(nproc) mem=$(free -g | awk '/Mem:/{print $2}')G"
             docker --version && docker compose version
             # Host tools the Schemathesis scripts and jobs call (python runs inside containers).
-            for t in git curl openssl sed awk mktemp timeout sudo; do command -v "$t" >/dev/null || { echo "missing host tool: $t"; exit 1; }; done
+            for t in git curl openssl sed awk mktemp timeout sudo python3; do command -v "$t" >/dev/null || { echo "missing host tool: $t"; exit 1; }; done
             sha="<< pipeline.parameters.bc_main_sha >>"
             [ "${#sha}" = 40 ] || { echo "pin is not a full SHA: $sha"; exit 1; }
             git clone -q https://github.com/Kemetra/Backend-Core.git bc && cd bc
@@ -96,6 +102,8 @@ jobs:
             echo "$changed"
             echo "$changed" | grep -v '^\.circleci/' && { echo "diff vs pinned main is not .circleci-only"; exit 1; } || true
             test -f apps/api/jest.config.cjs && test -f tools/schemathesis/run.sh
+            # Lane-only shard scripts live under .circleci/scripts, so the diff rule above holds.
+            [ << pipeline.parameters.fuzz_shards >> -ge 1 ] || { echo "fuzz_shards must be >= 1"; exit 1; }
 
   bc-api-jest:
     executor: {name: vm, size: large}
@@ -155,15 +163,21 @@ jobs:
 
   bc-schemathesis:
     executor: {name: vm, size: large}
-    environment: {FUZZ_PROJECT: api-fuzz}
+    parallelism: << pipeline.parameters.fuzz_shards >>
+    environment: {FUZZ_PROJECT: api-fuzz, SHARD_WS: /tmp/ws/st}
     steps:
       - clone
+      - run: {name: Shard plan from ops.py + run.sh file filter (lane only), command: bash .circleci/scripts/schemathesis-shard.sh plan}
       # Step caps sized from measured GitHub runs (2026-10-21: stack 1.3, gate 13-14, report 10.6-10.8 min).
       # GitHub caps only the whole job (30 min); CircleCI has no job cap, so each step gets headroom.
-      # Schemathesis emits no JUnit here; its result is the step exit code and log.
+      # Gate and report record their exit code; the verdict step and the fan-in fail on it,
+      # so the manifest and findings are persisted first.
       - run: {name: Start ephemeral stack, no_output_timeout: 8m, command: timeout 8m bash tools/schemathesis/stack-up.sh}
-      - run: {name: "Gate: no 5xx (not_a_server_error)", no_output_timeout: 20m, command: timeout 20m bash tools/schemathesis/run.sh gate}
-      - run: {name: "Report (non-gating findings)", when: always, no_output_timeout: 16m, command: timeout 16m bash tools/schemathesis/run.sh report}
+      - run: {name: "Gate: no 5xx (not_a_server_error), this shard", no_output_timeout: 20m, command: bash .circleci/scripts/schemathesis-shard.sh run gate 20m}
+      - run: {name: "Report (non-gating findings), this shard", when: always, no_output_timeout: 16m, command: bash .circleci/scripts/schemathesis-shard.sh run report 16m}
+      - run: {name: Manifest, findings and secret guard, when: always, command: bash .circleci/scripts/schemathesis-shard.sh collect}
+      - store_artifacts: {path: /tmp/st-artifacts}
+      - persist_to_workspace: {root: /tmp/ws, paths: [st]}
       - run:
           name: Tear down
           when: always
@@ -174,6 +188,24 @@ jobs:
               export API_IMAGE=api-fuzz-api:local
               docker compose -p "$FUZZ_PROJECT" -f tools/schemathesis/compose.yml down -v
             fi
+      - run: {name: Shard verdict, when: always, command: bash .circleci/scripts/schemathesis-shard.sh verdict}
+
+  bc-schemathesis-fanin:
+    executor: {name: vm, size: medium}
+    steps:
+      - clone
+      - attach_workspace: {at: /tmp/ws}
+      - run:
+          name: Coverage + gate fan-in, merged report
+          command: |
+            mkdir -p /tmp/st-merged
+            bash .circleci/scripts/schemathesis-shard.sh inventory /tmp/st-merged/inventory.txt
+            set +e
+            python3 .circleci/scripts/schemathesis-shards.py check /tmp/st-merged/inventory.txt \
+              << pipeline.parameters.fuzz_shards >> .circleci/scripts/schemathesis-timings.json /tmp/ws/st /tmp/st-merged/schemathesis-merged.md
+            echo $? > /tmp/fanin.rc
+      - store_artifacts: {path: /tmp/st-merged}
+      - run: {name: Fan-in verdict, command: 'exit "$(cat /tmp/fanin.rc)"'}
 
 workflows:
   bc-heavy-ci:
@@ -184,3 +216,5 @@ workflows:
       - bc-api-gate: {requires: [bc-api-jest]}
       - bc-db-worker: {requires: [preflight]}
       - bc-schemathesis: {requires: [preflight]}
+      # Runs after a failed shard too, so the merged report shows what went wrong.
+      - bc-schemathesis-fanin: {requires: [{bc-schemathesis: [success, failed]}]}
