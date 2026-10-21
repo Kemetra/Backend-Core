@@ -188,6 +188,36 @@ export async function activateSaleEffects(
   return { kind: "activated", activatedAt: now.toISOString(), stores: anchored };
 }
 
+/** What a store's anchor covers (781): the absorbed movements and the snapshot's Items. */
+interface AnchorCoverage {
+  readonly absorbedMovements: number;
+  readonly lastReceivedAt: string | null;
+  readonly binEntries: number;
+  readonly mappedItems: number;
+  readonly generation: number;
+}
+
+/** Read the coverage and the next generation of one store's anchor. */
+async function readAnchorCoverage(client: Pick<PoolClient, "query">, store: StoreFactsRow): Promise<AnchorCoverage> {
+  const r = await client.query<{ n: number; last_received_at: Date | null; entries: number; mapped: number; g: number }>(
+    `${SNAPSHOT_ITEMS_CTE}
+     SELECT (SELECT count(*)::int FROM stock_movements WHERE store_id = $2) AS n,
+            (SELECT max(received_at) FROM stock_movements WHERE store_id = $2) AS last_received_at,
+            (SELECT count(*)::int FROM entries) AS entries,
+            (SELECT count(*)::int FROM mapped) AS mapped,
+            (SELECT COALESCE(max(generation), 0) + 1 FROM inventory_anchors WHERE store_id = $2) AS g`,
+    [store.run_id, store.store_id],
+  );
+  const row = r.rows[0]!;
+  return {
+    absorbedMovements: row.n,
+    lastReceivedAt: row.last_received_at?.toISOString() ?? null,
+    binEntries: row.entries,
+    mappedItems: row.mapped,
+    generation: row.g,
+  };
+}
+
 /** One store's next-generation anchor and its lines, from its snapshot. */
 async function writeAnchor(
   client: Pick<PoolClient, "query">,
@@ -195,31 +225,12 @@ async function writeAnchor(
   store: StoreFactsRow,
   activatedAt: Date,
 ): Promise<AnchoredStore> {
-  const absorbed = await client.query<{ n: number; last_received_at: Date | null }>(
-    `SELECT count(*)::int AS n, max(received_at) AS last_received_at
-       FROM stock_movements WHERE store_id = $1`,
-    [store.store_id],
-  );
-  const counts = await client.query<{ entries: number; mapped: number }>(
-    `${SNAPSHOT_ITEMS_CTE}
-     SELECT (SELECT count(*)::int FROM entries) AS entries, (SELECT count(*)::int FROM mapped) AS mapped`,
-    [store.run_id],
-  );
-  const { entries, mapped } = counts.rows[0]!;
-  const generation = (
-    await client.query<{ g: number }>(
-      `SELECT COALESCE(max(generation), 0) + 1 AS g FROM inventory_anchors WHERE store_id = $1`,
-      [store.store_id],
-    )
-  ).rows[0]!.g;
+  const c = await readAnchorCoverage(client, store);
   const anchorId = randomUUID();
   const coverage = {
-    preActivationMovements: {
-      count: absorbed.rows[0]!.n,
-      lastReceivedAt: absorbed.rows[0]!.last_received_at?.toISOString() ?? null,
-    },
-    binEntries: entries,
-    unmappedBinItems: entries - mapped,
+    preActivationMovements: { count: c.absorbedMovements, lastReceivedAt: c.lastReceivedAt },
+    binEntries: c.binEntries,
+    unmappedBinItems: c.binEntries - c.mappedItems,
   };
   await client.query(
     `INSERT INTO inventory_anchors
@@ -231,7 +242,7 @@ async function writeAnchor(
       input.tenantId,
       store.store_id,
       store.primary_location_id,
-      generation,
+      c.generation,
       store.run_id,
       store.read_at,
       store.recorded_at,
@@ -252,11 +263,11 @@ async function writeAnchor(
   return {
     storeId: store.store_id,
     anchorId,
-    generation,
+    generation: c.generation,
     sourceRunId: store.run_id!,
-    lines: mapped,
-    unmappedBinItems: entries - mapped,
-    absorbedMovements: absorbed.rows[0]!.n,
+    lines: c.mappedItems,
+    unmappedBinItems: c.binEntries - c.mappedItems,
+    absorbedMovements: c.absorbedMovements,
   };
 }
 

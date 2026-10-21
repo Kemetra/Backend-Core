@@ -54,9 +54,27 @@ function pg(): PgTestEnv {
 }
 const skip = (): boolean => env === null;
 
-function uuid(prefix: string): string {
+function uuid(): string {
   seq += 1;
-  return `${prefix}-0000-7000-8000-${seq.toString(16).padStart(12, "0")}`;
+  return `0c000000-0000-7000-8000-${seq.toString(16).padStart(12, "0")}`;
+}
+
+/** A tenant and the store its sales are captured at. */
+interface Scope {
+  readonly tenantId: string;
+  readonly storeId: string;
+}
+const A: Scope = { tenantId: TENANT, storeId: STORE };
+const B: Scope = { tenantId: TENANT_B, storeId: STORE_B };
+
+interface SeededSale {
+  readonly saleId: string;
+  readonly lineIds: string[];
+}
+
+/** The Business Event whose effects a query reads. */
+interface EventRef {
+  readonly eventRefId: string;
 }
 
 interface Line {
@@ -65,8 +83,8 @@ interface Line {
   readonly unit?: string;
 }
 
-async function seedSale(tenantId: string, storeId: string, lines: readonly Line[]): Promise<{ saleId: string; lineIds: string[] }> {
-  const saleId = uuid("0c000000");
+async function seedSale({ tenantId, storeId }: Scope, lines: readonly Line[]): Promise<SeededSale> {
+  const saleId = uuid();
   await pg().admin.query(
     `INSERT INTO sales (id, tenant_id, store_id, currency_code, pos_total, occurred_at, business_date,
                         source_system, external_id, payload_hash, created_by)
@@ -75,7 +93,7 @@ async function seedSale(tenantId: string, storeId: string, lines: readonly Line[
   );
   const lineIds: string[] = [];
   for (const [i, l] of lines.entries()) {
-    const lineId = uuid("0d000000");
+    const lineId = uuid();
     lineIds.push(lineId);
     await pg().admin.query(
       `INSERT INTO sale_lines (id, sale_id, tenant_id, store_id, line_name, unit_price, currency_code,
@@ -87,8 +105,8 @@ async function seedSale(tenantId: string, storeId: string, lines: readonly Line[
   return { saleId, lineIds };
 }
 
-async function seedVoid(saleId: string): Promise<string> {
-  const voidId = uuid("0e000000");
+async function seedVoid({ saleId }: Pick<SeededSale, "saleId">): Promise<string> {
+  const voidId = uuid();
   await pg().admin.query(
     `INSERT INTO sale_voids (id, sale_id, tenant_id, store_id, business_date, source_system, external_id,
                              payload_hash, created_by)
@@ -98,8 +116,11 @@ async function seedVoid(saleId: string): Promise<string> {
   return voidId;
 }
 
-async function seedReturn(saleId: string, lines: ReadonlyArray<{ saleLineId: string; quantity: string }>): Promise<{ returnId: string; lineIds: string[] }> {
-  const returnId = uuid("0f000000");
+async function seedReturn(
+  { saleId }: Pick<SeededSale, "saleId">,
+  lines: ReadonlyArray<{ saleLineId: string; quantity: string }>,
+): Promise<{ returnId: string; lineIds: string[] }> {
+  const returnId = uuid();
   await pg().admin.query(
     `INSERT INTO sale_returns (id, sale_id, tenant_id, store_id, return_seq, business_date, currency_code,
                                return_total, source_system, external_id, payload_hash, created_by)
@@ -108,7 +129,7 @@ async function seedReturn(saleId: string, lines: ReadonlyArray<{ saleLineId: str
   );
   const lineIds: string[] = [];
   for (const l of lines) {
-    const id = uuid("0f100000");
+    const id = uuid();
     lineIds.push(id);
     await pg().admin.query(
       `INSERT INTO sale_return_lines (id, return_id, sale_line_id, tenant_id, store_id, quantity, line_amount,
@@ -120,7 +141,7 @@ async function seedReturn(saleId: string, lines: ReadonlyArray<{ saleLineId: str
   return { returnId, lineIds };
 }
 
-async function setActivation(tenantId: string, on: boolean): Promise<void> {
+async function setActivation({ tenantId }: Pick<Scope, "tenantId">, on: boolean): Promise<void> {
   await pg().admin.query(
     `INSERT INTO tenant_inventory_settings (tenant_id, updated_by, sale_effects_activated_at, sale_effects_activated_by)
      VALUES ($1, $2, CASE WHEN $3 THEN now() END, CASE WHEN $3 THEN $2::uuid END)
@@ -131,7 +152,7 @@ async function setActivation(tenantId: string, on: boolean): Promise<void> {
   );
 }
 
-function asTenant<T>(tenantId: string, work: (c: PoolClient) => Promise<T>): Promise<T> {
+function asTenant<T>({ tenantId }: Pick<Scope, "tenantId">, work: (c: PoolClient) => Promise<T>): Promise<T> {
   return runWithTenantContext(pg().app, { tenantId, isPlatformAdmin: false }, work);
 }
 
@@ -155,7 +176,7 @@ interface EffectRow {
   posting_status_id: string | null;
 }
 
-async function effectsOf(eventRefId: string): Promise<EffectRow[]> {
+async function effectsOf({ eventRefId }: EventRef): Promise<EffectRow[]> {
   const r = await pg().admin.query<EffectRow>(
     `SELECT m.id, m.movement_type, m.quantity::text AS quantity, m.stocking_unit, m.tenant_product_ref,
             m.external_id, m.source_system, m.event_type, m.event_ref_id, m.sale_line_id, m.terminal_event_ref,
@@ -168,7 +189,7 @@ async function effectsOf(eventRefId: string): Promise<EffectRow[]> {
   return r.rows;
 }
 
-async function movementEvents(eventRefId: string): Promise<number> {
+async function movementEvents({ eventRefId }: EventRef): Promise<number> {
   const r = await pg().admin.query<{ n: number }>(
     `SELECT count(*)::int AS n FROM outbox_events
       WHERE event_type = 'inventory.movement.created' AND payload->>'eventRefId' = $1`,
@@ -177,7 +198,7 @@ async function movementEvents(eventRefId: string): Promise<number> {
   return r.rows[0]!.n;
 }
 
-async function seedPosting(saleId: string, kind: string, sourceRefId: string): Promise<string> {
+async function seedPosting({ saleId, kind, sourceRefId }: { saleId: string; kind: string; sourceRefId: string }): Promise<string> {
   const r = await pg().admin.query<{ id: string }>(
     `INSERT INTO erpnext_posting_status (tenant_id, store_id, sale_id, kind, source_ref_id, source_system,
                                          external_id, payload_hash, status)
@@ -235,10 +256,10 @@ afterAll(async () => {
 describe("flag OFF", () => {
   it("writes nothing for a sale, a void or a return when the tenant has no settings row", async () => {
     if (skip()) return;
-    const { saleId, lineIds } = await seedSale(TENANT, STORE, [{ product: P_EACH, quantity: "2" }]);
-    const voidId = await seedVoid(saleId);
-    const { returnId } = await seedReturn(saleId, [{ saleLineId: lineIds[0]!, quantity: "1" }]);
-    const outcomes = await asTenant(TENANT, async (c) => [
+    const { saleId, lineIds } = await seedSale(A, [{ product: P_EACH, quantity: "2" }]);
+    const voidId = await seedVoid({ saleId });
+    const { returnId } = await seedReturn({ saleId }, [{ saleLineId: lineIds[0]!, quantity: "1" }]);
+    const outcomes = await asTenant(A, async (c) => [
       await writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }),
       await writeVoidEffects(c, { tenantId: TENANT, storeId: STORE, saleId, voidId }),
       await writeReturnEffects(c, { tenantId: TENANT, storeId: STORE, saleId, returnId, landingStatus: "sellable" }),
@@ -248,19 +269,19 @@ describe("flag OFF", () => {
       [0, 0],
       [0, 0],
     ]);
-    expect([...(await effectsOf(saleId)), ...(await effectsOf(voidId)), ...(await effectsOf(returnId))]).toEqual([]);
-    expect(await asTenant(TENANT, (c) => readSaleEffectsActivation(c, TENANT))).toBe(false);
+    expect([...(await effectsOf({ eventRefId: saleId })), ...(await effectsOf({ eventRefId: voidId })), ...(await effectsOf({ eventRefId: returnId }))]).toEqual([]);
+    expect(await asTenant(A, (c) => readSaleEffectsActivation(c, TENANT))).toBe(false);
   });
 });
 
 describe("flag ON", () => {
   beforeAll(async () => {
-    if (env) await setActivation(TENANT, true);
+    if (env) await setActivation(A, true);
   });
 
   it("writes one outbound effect per product line and skips the inexact ones", async () => {
     if (skip()) return;
-    const { saleId, lineIds } = await seedSale(TENANT, STORE, [
+    const { saleId, lineIds } = await seedSale(A, [
       { product: P_EACH, quantity: "2.000000" },
       { product: P_KG, quantity: "1.500000", unit: "kg" },
       { product: null, quantity: "1" },
@@ -269,14 +290,14 @@ describe("flag ON", () => {
       { product: P_KG, quantity: "0.123456", unit: "kg" },
       { product: P_BOXED, quantity: "1", unit: "ea" },
     ]);
-    const outcome = await asTenant(TENANT, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
+    const outcome = await asTenant(A, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
     expect(outcome.written).toHaveLength(2);
     expect(outcome.skipped).toEqual([
       { lineId: lineIds[4], reason: "tracked_product" },
       { lineId: lineIds[5], reason: "quantity_precision" },
       { lineId: lineIds[6], reason: "unit_mismatch" },
     ]);
-    const effects = await effectsOf(saleId);
+    const effects = await effectsOf({ eventRefId: saleId });
     expect(effects.map((e) => [e.external_id, e.movement_type, e.quantity, e.stocking_unit, e.tenant_product_ref])).toEqual(
       [
         [`sale_line:${lineIds[0]}`, "outbound", "-2.0000", "ea", P_EACH],
@@ -297,17 +318,17 @@ describe("flag ON", () => {
         posting_status_id: null,
       });
     }
-    expect(await movementEvents(saleId)).toBe(1);
+    expect(await movementEvents({ eventRefId: saleId })).toBe(1);
   });
 
   it("is a no-op on replay (DC-1)", async () => {
     if (skip()) return;
-    const { saleId } = await seedSale(TENANT, STORE, [{ product: P_EACH, quantity: "1" }]);
-    const first = await asTenant(TENANT, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
-    const again = await asTenant(TENANT, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
+    const { saleId } = await seedSale(A, [{ product: P_EACH, quantity: "1" }]);
+    const first = await asTenant(A, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
+    const again = await asTenant(A, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
     expect([first.written.length, again.written.length]).toEqual([1, 0]);
-    expect(await effectsOf(saleId)).toHaveLength(1);
-    expect(await movementEvents(saleId)).toBe(1);
+    expect(await effectsOf({ eventRefId: saleId })).toHaveLength(1);
+    expect(await movementEvents({ eventRefId: saleId })).toBe(1);
   });
 
   it("establishes the unit within one sale: a second unit for a new product is skipped, not a 23P01", async () => {
@@ -317,32 +338,32 @@ describe("flag ON", () => {
       `INSERT INTO tenant_products (id, tenant_id, name, tax_category, created_by, updated_by) VALUES ($1, $2, 'f', 'standard', $3, $3)`,
       [fresh, TENANT, ACTOR],
     );
-    const { saleId, lineIds } = await seedSale(TENANT, STORE, [
+    const { saleId, lineIds } = await seedSale(A, [
       { product: fresh, quantity: "1", unit: "ea" },
       { product: fresh, quantity: "1", unit: "pack" },
     ]);
-    const outcome = await asTenant(TENANT, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
+    const outcome = await asTenant(A, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
     expect(outcome.written).toHaveLength(1);
     expect(outcome.skipped).toEqual([{ lineId: lineIds[1], reason: "unit_mismatch" }]);
   });
 
   it("void restores each sale effect once at its position, and still does after the flag is turned off", async () => {
     if (skip()) return;
-    const { saleId, lineIds } = await seedSale(TENANT, STORE, [
+    const { saleId, lineIds } = await seedSale(A, [
       { product: P_EACH, quantity: "3" },
       { product: null, quantity: "1" },
     ]);
-    await asTenant(TENANT, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
-    const [saleEffect] = await effectsOf(saleId);
-    await setActivation(TENANT, false);
+    await asTenant(A, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
+    const [saleEffect] = await effectsOf({ eventRefId: saleId });
+    await setActivation(A, false);
     try {
-      const voidId = await seedVoid(saleId);
-      const outcome = await asTenant(TENANT, (c) =>
+      const voidId = await seedVoid({ saleId });
+      const outcome = await asTenant(A, (c) =>
         writeVoidEffects(c, { tenantId: TENANT, storeId: STORE, saleId, voidId }),
       );
-      const replay = await asTenant(TENANT, (c) => writeVoidEffects(c, { tenantId: TENANT, storeId: STORE, saleId, voidId }));
+      const replay = await asTenant(A, (c) => writeVoidEffects(c, { tenantId: TENANT, storeId: STORE, saleId, voidId }));
       expect([outcome.written.length, replay.written.length]).toEqual([1, 0]);
-      const [restore] = await effectsOf(voidId);
+      const [restore] = await effectsOf({ eventRefId: voidId });
       expect(restore).toMatchObject({
         external_id: `void:${voidId}:${lineIds[0]}`,
         movement_type: "inbound",
@@ -356,20 +377,20 @@ describe("flag ON", () => {
         state: "not_posted",
       });
     } finally {
-      await setActivation(TENANT, true);
+      await setActivation(A, true);
     }
   });
 
   it("void of a sale with no effect restores per line while ON, and writes nothing while OFF", async () => {
     if (skip()) return;
-    const { saleId, lineIds } = await seedSale(TENANT, STORE, [{ product: P_EACH, quantity: "2" }]);
-    const voidId = await seedVoid(saleId);
-    await setActivation(TENANT, false);
-    const off = await asTenant(TENANT, (c) => writeVoidEffects(c, { tenantId: TENANT, storeId: STORE, saleId, voidId }));
-    await setActivation(TENANT, true);
-    const on = await asTenant(TENANT, (c) => writeVoidEffects(c, { tenantId: TENANT, storeId: STORE, saleId, voidId }));
+    const { saleId, lineIds } = await seedSale(A, [{ product: P_EACH, quantity: "2" }]);
+    const voidId = await seedVoid({ saleId });
+    await setActivation(A, false);
+    const off = await asTenant(A, (c) => writeVoidEffects(c, { tenantId: TENANT, storeId: STORE, saleId, voidId }));
+    await setActivation(A, true);
+    const on = await asTenant(A, (c) => writeVoidEffects(c, { tenantId: TENANT, storeId: STORE, saleId, voidId }));
     expect([off.written.length, on.written.length]).toEqual([0, 1]);
-    expect(await effectsOf(voidId)).toEqual([
+    expect(await effectsOf({ eventRefId: voidId })).toEqual([
       expect.objectContaining({
         external_id: `void:${voidId}:${lineIds[0]}`,
         quantity: "2.0000",
@@ -382,14 +403,14 @@ describe("flag ON", () => {
 
   it("return lands +q in the tenant's landing status", async () => {
     if (skip()) return;
-    const { saleId, lineIds } = await seedSale(TENANT, STORE, [{ product: P_EACH, quantity: "4" }]);
-    await asTenant(TENANT, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
-    const { returnId, lineIds: returnLines } = await seedReturn(saleId, [{ saleLineId: lineIds[0]!, quantity: "1.5" }]);
-    const outcome = await asTenant(TENANT, (c) =>
+    const { saleId, lineIds } = await seedSale(A, [{ product: P_EACH, quantity: "4" }]);
+    await asTenant(A, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
+    const { returnId, lineIds: returnLines } = await seedReturn({ saleId }, [{ saleLineId: lineIds[0]!, quantity: "1.5" }]);
+    const outcome = await asTenant(A, (c) =>
       writeReturnEffects(c, { tenantId: TENANT, storeId: STORE, saleId, returnId, landingStatus: "return_inspection" }),
     );
     expect(outcome.written).toHaveLength(1);
-    expect(await effectsOf(returnId)).toEqual([
+    expect(await effectsOf({ eventRefId: returnId })).toEqual([
       expect.objectContaining({
         external_id: `return_line:${returnLines[0]}`,
         movement_type: "inbound",
@@ -405,13 +426,13 @@ describe("flag ON", () => {
 
   it("links only the event's own not_posted effects: pending, or rejected with the category", async () => {
     if (skip()) return;
-    const { saleId } = await seedSale(TENANT, STORE, [{ product: P_EACH, quantity: "1" }]);
-    await asTenant(TENANT, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
-    const voidId = await seedVoid(saleId);
-    await asTenant(TENANT, (c) => writeVoidEffects(c, { tenantId: TENANT, storeId: STORE, saleId, voidId }));
-    const salePost = await seedPosting(saleId, "sale_post", saleId);
-    const reversal = await seedPosting(saleId, "reversal", voidId);
-    const linked = await asTenant(TENANT, async (c) => [
+    const { saleId } = await seedSale(A, [{ product: P_EACH, quantity: "1" }]);
+    await asTenant(A, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
+    const voidId = await seedVoid({ saleId });
+    await asTenant(A, (c) => writeVoidEffects(c, { tenantId: TENANT, storeId: STORE, saleId, voidId }));
+    const salePost = await seedPosting({ saleId, kind: "sale_post", sourceRefId: saleId });
+    const reversal = await seedPosting({ saleId, kind: "reversal", sourceRefId: voidId });
+    const linked = await asTenant(A, async (c) => [
       await linkEffectsToPostingIntent(c, {
         tenantId: TENANT,
         kind: "sale_post",
@@ -436,10 +457,10 @@ describe("flag ON", () => {
       }),
     ]);
     expect(linked).toEqual([1, 1, 0]);
-    expect((await effectsOf(saleId)).map((e) => [e.state, e.posting_status_id, e.state_reason])).toEqual([
+    expect((await effectsOf({ eventRefId: saleId })).map((e) => [e.state, e.posting_status_id, e.state_reason])).toEqual([
       ["pending", salePost, null],
     ]);
-    expect((await effectsOf(voidId)).map((e) => [e.state, e.posting_status_id, e.state_reason])).toEqual([
+    expect((await effectsOf({ eventRefId: voidId })).map((e) => [e.state, e.posting_status_id, e.state_reason])).toEqual([
       ["rejected", reversal, "unmapped_item"],
     ]);
   });
@@ -448,22 +469,22 @@ describe("flag ON", () => {
 describe("tenant isolation (RLS)", () => {
   it("a writer in another tenant's context sees no sale and writes nothing", async () => {
     if (skip()) return;
-    await setActivation(TENANT_B, true);
-    const { saleId } = await seedSale(TENANT, STORE, [{ product: P_EACH, quantity: "1" }]);
-    const outcome = await asTenant(TENANT_B, (c) =>
+    await setActivation(B, true);
+    const { saleId } = await seedSale(A, [{ product: P_EACH, quantity: "1" }]);
+    const outcome = await asTenant(B, (c) =>
       writeSaleLineEffects(c, { tenantId: TENANT_B, storeId: STORE, saleId }),
     );
     expect(outcome.written).toEqual([]);
-    expect(await effectsOf(saleId)).toEqual([]);
+    expect(await effectsOf({ eventRefId: saleId })).toEqual([]);
   });
 
   it("tenant B cannot see or link tenant A's effects", async () => {
     if (skip()) return;
-    await setActivation(TENANT, true);
-    const { saleId } = await seedSale(TENANT, STORE, [{ product: P_EACH, quantity: "1" }]);
-    await asTenant(TENANT, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
-    const posting = await seedPosting(saleId, "sale_post", saleId);
-    const seen = await asTenant(TENANT_B, async (c) => {
+    await setActivation(A, true);
+    const { saleId } = await seedSale(A, [{ product: P_EACH, quantity: "1" }]);
+    await asTenant(A, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
+    const posting = await seedPosting({ saleId, kind: "sale_post", sourceRefId: saleId });
+    const seen = await asTenant(B, async (c) => {
       const rows = await c.query(`SELECT 1 FROM stock_movements WHERE event_ref_id = $1`, [saleId]);
       const linked = await linkEffectsToPostingIntent(c, {
         tenantId: TENANT_B,
@@ -475,7 +496,7 @@ describe("tenant isolation (RLS)", () => {
       return [rows.rowCount, linked];
     });
     expect(seen).toEqual([0, 0]);
-    expect((await effectsOf(saleId)).map((e) => e.state)).toEqual(["not_posted"]);
+    expect((await effectsOf({ eventRefId: saleId })).map((e) => e.state)).toEqual(["not_posted"]);
   });
 });
 

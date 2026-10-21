@@ -97,12 +97,19 @@ async function seedTenant(stores: readonly StoreOpts[]): Promise<Fixture> {
         [tenantId, storeId, warehouse, ACTOR],
       );
     }
-    if (s.snapshot !== false) runIds.push(await seedRun(tenantId, storeId, s.snapshotWarehouse ?? warehouse, s));
+    if (s.snapshot !== false) runIds.push(await seedRun({ tenantId, storeId, warehouse: s.snapshotWarehouse ?? warehouse }, s));
   }
   return { tenantId, storeIds, products, runIds };
 }
 
-async function seedRun(tenantId: string, storeId: string, warehouse: string, s: StoreOpts): Promise<string> {
+/** The store (and the warehouse it read) a stock run's Bin snapshot belongs to. */
+interface RunTarget {
+  readonly tenantId: string;
+  readonly storeId: string;
+  readonly warehouse: string;
+}
+
+async function seedRun({ tenantId, storeId, warehouse }: RunTarget, s: StoreOpts): Promise<string> {
   const runId = uuid();
   const readAt = s.readAt ?? new Date().toISOString();
   const entries = (s.entries ?? [
@@ -133,7 +140,7 @@ async function seedRun(tenantId: string, storeId: string, warehouse: string, s: 
   return runId;
 }
 
-async function seedPosting(f: Fixture, status: string, postedAt: string | null): Promise<void> {
+async function seedPosting(f: Fixture, { status, postedAt }: { status: string; postedAt: string | null }): Promise<void> {
   const saleId = uuid();
   const storeId = f.storeIds[0]!;
   await pg().admin.query(
@@ -150,11 +157,11 @@ async function seedPosting(f: Fixture, status: string, postedAt: string | null):
   );
 }
 
-function asTenant<T>(tenantId: string, work: (c: PoolClient) => Promise<T>): Promise<T> {
+function asTenant<T>({ tenantId }: Pick<Fixture, "tenantId">, work: (c: PoolClient) => Promise<T>): Promise<T> {
   return runWithTenantContext(pg().app, { tenantId, isPlatformAdmin: false }, work);
 }
 
-async function counts(tenantId: string): Promise<[number, number, boolean]> {
+async function counts({ tenantId }: Pick<Fixture, "tenantId">): Promise<[number, number, boolean]> {
   const r = await pg().admin.query<{ anchors: number; movements: number; active: boolean }>(
     `SELECT (SELECT count(*)::int FROM inventory_anchors WHERE tenant_id = $1) AS anchors,
             (SELECT count(*)::int FROM stock_movements WHERE tenant_id = $1) AS movements,
@@ -184,35 +191,35 @@ afterAll(async () => {
 }, 60_000);
 
 describe("activation preconditions (decision 3)", () => {
-  it.each<[string, () => Promise<Fixture>, number]>([
-    ["no_stores", () => seedTenant([]), 0],
-    ["store_unmapped", () => seedTenant([{}, { mapped: false, snapshot: false }]), 1],
-    ["no_snapshot", () => seedTenant([{ snapshot: false }]), 0],
-    ["snapshot_remapped", () => seedTenant([{ snapshotWarehouse: "WH-OLD" }]), 0],
-  ])("refuses %s and writes nothing", async (code, seed, failingStore) => {
+  it.each<{ code: string; seed: () => Promise<Fixture>; failingStore: number }>([
+    { code: "no_stores", seed: () => seedTenant([]), failingStore: 0 },
+    { code: "store_unmapped", seed: () => seedTenant([{}, { mapped: false, snapshot: false }]), failingStore: 1 },
+    { code: "no_snapshot", seed: () => seedTenant([{ snapshot: false }]), failingStore: 0 },
+    { code: "snapshot_remapped", seed: () => seedTenant([{ snapshotWarehouse: "WH-OLD" }]), failingStore: 0 },
+  ])("refuses $code and writes nothing", async ({ code, seed, failingStore }) => {
     if (skip()) return;
     const f = await seed();
-    const outcome = await asTenant(f.tenantId, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
+    const outcome = await asTenant(f, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
     expect(outcome).toEqual({
       kind: "refused",
       refusal: { code, storeIds: code === "no_stores" ? [] : [f.storeIds[failingStore]] },
     });
-    expect(await counts(f.tenantId)).toEqual([0, 0, false]);
+    expect(await counts(f)).toEqual([0, 0, false]);
   });
 
   it("refuses postings_in_flight while a posting row is pending", async () => {
     if (skip()) return;
     const f = await seedTenant([{}]);
-    await seedPosting(f, "pending", null);
-    const outcome = await asTenant(f.tenantId, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
+    await seedPosting(f, { status: "pending", postedAt: null });
+    const outcome = await asTenant(f, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
     expect(outcome).toEqual({ kind: "refused", refusal: { code: "postings_in_flight", storeIds: [f.storeIds[0]] } });
   });
 
   it("refuses snapshot_stale when a document posted after the snapshot was read", async () => {
     if (skip()) return;
     const f = await seedTenant([{ readAt: "2026-10-20T10:00:00.000Z" }]);
-    await seedPosting(f, "posted", "2026-10-20T11:00:00.000Z");
-    const outcome = await asTenant(f.tenantId, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
+    await seedPosting(f, { status: "posted", postedAt: "2026-10-20T11:00:00.000Z" });
+    const outcome = await asTenant(f, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
     expect(outcome).toEqual({ kind: "refused", refusal: { code: "snapshot_stale", storeIds: [f.storeIds[0]] } });
   });
 
@@ -224,7 +231,7 @@ describe("activation preconditions (decision 3)", () => {
        VALUES (gen_random_uuid(), $1, $2, 'erpnext.posting.requested', $3::jsonb)`,
       [f.tenantId, f.storeIds[0], JSON.stringify({ source_ref_id: uuid() })],
     );
-    const outcome = await asTenant(f.tenantId, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
+    const outcome = await asTenant(f, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
     expect(outcome).toEqual({ kind: "refused", refusal: { code: "posting_intents_undelivered", storeIds: [] } });
   });
 });
@@ -245,9 +252,9 @@ describe("activation", () => {
        VALUES (gen_random_uuid(), $1, $2, 'inbound', 3, 'Nos', $3, now(), $4, $5, 'sellable')`,
       [f.tenantId, f.storeIds[0], f.products["P1"], ACTOR, primary],
     );
-    await seedPosting(f, "posted", "2020-01-01T00:00:00.000Z");
+    await seedPosting(f, { status: "posted", postedAt: "2020-01-01T00:00:00.000Z" });
 
-    const outcome = await asTenant(f.tenantId, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
+    const outcome = await asTenant(f, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
     expect(outcome.kind).toBe("activated");
     if (outcome.kind !== "activated") return;
     expect(outcome.stores.map((s) => [s.storeId, s.generation, s.sourceRunId, s.lines, s.unmappedBinItems])).toEqual(
@@ -255,7 +262,7 @@ describe("activation", () => {
     );
     expect(outcome.stores.map((s) => s.absorbedMovements)).toEqual([1, 0]);
     // One movement (the manual one), no backfill; two anchors; the flag is ON.
-    expect(await counts(f.tenantId)).toEqual([2, 1, true]);
+    expect(await counts(f)).toEqual([2, 1, true]);
 
     const lines = await pg().admin.query<{ product: string; quantity: string; uom: string; item: string }>(
       `SELECT l.tenant_product_ref AS product, l.quantity::text AS quantity, l.erp_stock_uom AS uom, l.erpnext_item_ref AS item
@@ -279,15 +286,15 @@ describe("activation", () => {
     expect(anchor.rows[0]!.activated_at.toISOString()).toBe(outcome.activatedAt);
     expect(anchor.rows[0]!.created_by).toBe(ACTOR);
 
-    expect(await asTenant(f.tenantId, (c) => readSaleEffectsActivation(c, f.tenantId))).toBe(true);
-    const again = await asTenant(f.tenantId, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
+    expect(await asTenant(f, (c) => readSaleEffectsActivation(c, f.tenantId))).toBe(true);
+    const again = await asTenant(f, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
     expect(again).toEqual({ kind: "refused", refusal: { code: "already_active", storeIds: [] } });
   });
 
   it("compares anchor + effects since activation with the latest Bin", async () => {
     if (skip()) return;
     const f = await seedTenant([{}]);
-    await asTenant(f.tenantId, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
+    await asTenant(f, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
     const storeId = f.storeIds[0]!;
     const primary = (
       await pg().admin.query<{ id: string }>(`SELECT id FROM stock_locations WHERE store_id = $1 AND kind = 'primary'`, [storeId])
@@ -305,11 +312,11 @@ describe("activation", () => {
         [storeId],
       )
     ).rows[0]!.ref;
-    await seedRun(f.tenantId, storeId, mapped, {
+    await seedRun({ tenantId: f.tenantId, storeId, warehouse: mapped }, {
       readAt: new Date(Date.now() + 60_000).toISOString(),
       entries: [{ item: "ITEM-1", quantity: "8.5" }],
     });
-    const rows = await asTenant(f.tenantId, (c) => compareAnchorsToBin(c));
+    const rows = await asTenant(f, (c) => compareAnchorsToBin(c));
     const p1 = rows.find((r) => r.tenantProductRef === f.products["P1"]);
     expect(p1).toMatchObject({
       storeId,
@@ -332,16 +339,16 @@ describe("isolation and locking", () => {
     if (skip()) return;
     const a = await seedTenant([{}]);
     const b = await seedTenant([]);
-    await asTenant(a.tenantId, (c) => activateSaleEffects(c, { tenantId: a.tenantId, actorId: ACTOR }));
-    const seen = await asTenant(b.tenantId, async (c) => [
+    await asTenant(a, (c) => activateSaleEffects(c, { tenantId: a.tenantId, actorId: ACTOR }));
+    const seen = await asTenant(b, async (c) => [
       (await c.query(`SELECT 1 FROM inventory_anchors`)).rowCount,
       (await compareAnchorsToBin(c)).length,
     ]);
     expect(seen).toEqual([0, 0]);
     // Asked for tenant A from B's context: RLS hides A's stores, so nothing is anchored.
-    const outcome = await asTenant(b.tenantId, (c) => activateSaleEffects(c, { tenantId: a.tenantId, actorId: ACTOR }));
+    const outcome = await asTenant(b, (c) => activateSaleEffects(c, { tenantId: a.tenantId, actorId: ACTOR }));
     expect(outcome).toEqual({ kind: "refused", refusal: { code: "no_stores", storeIds: [] } });
-    expect(await counts(a.tenantId)).toEqual([1, 0, true]);
+    expect(await counts(a)).toEqual([1, 0, true]);
   });
 
   it("waits for an in-flight writer's SHARED settings lock", async () => {
@@ -368,6 +375,6 @@ describe("isolation and locking", () => {
       activator.release();
       writer.release();
     }
-    expect(await counts(f.tenantId)).toEqual([0, 0, false]);
+    expect(await counts(f)).toEqual([0, 0, false]);
   });
 });
