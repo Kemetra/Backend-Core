@@ -38,7 +38,7 @@ import { Pool } from "pg";
 import { DeviceRepository } from "../../../../src/pos-operators/device.repository";
 import { PgOperatorContextResolver } from "../../../../src/auth/operator-context-resolver";
 import { ClerkIdentityProviderAdapter } from "../../../../src/auth/clerk-identity-provider.adapter";
-import type { ClerkVerifier } from "../../../../src/pos-operators/clerk-verifier";
+import type { OperatorTokenVerifier } from "../../../../src/auth/operator-token-verifier";
 import { hashToken, generateRawToken } from "@data-pulse-2/auth";
 import {
   applyAllUpAndCreateAppRole,
@@ -71,10 +71,10 @@ const TOKEN_REVOKED_DEV_ID = "0d000000-0000-4000-8000-00000000ff02";
 const TOKEN_STAFF_ID = "0d000000-0000-4000-8000-00000000ff03";
 const TOKEN_SPECIFIC_ID = "0d000000-0000-4000-8000-00000000ff04";
 
-// A throwaway ClerkVerifier — the reverifier path never calls it (reverify is
+// A throwaway OperatorTokenVerifier — the reverifier path never calls it (reverify is
 // ID-keyed), but PgOperatorContextResolver's constructor wants an adapter.
-const NOOP_VERIFIER: ClerkVerifier = {
-  async verify(): Promise<{ sub: string }> {
+const NOOP_VERIFIER: OperatorTokenVerifier = {
+  async verify(): Promise<{ providerKey: string; sub: string }> {
     throw new Error("not used by the reverifier path");
   },
 };

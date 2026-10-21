@@ -44,7 +44,7 @@ import {
   IDENTITY_PROVIDER_PORT,
   type IdentityProviderPort,
 } from "../../auth/identity-provider.port";
-import { clerkIdentityProviderFactory } from "../../auth/clerk-identity-provider.adapter";
+import { identityProviderFactory } from "../../auth/identity-provider.factory";
 import { PosDeviceAuthGuard } from "../../auth/pos-device-auth.guard";
 import { PosOperatorEnvelopeSaleGuard } from "../../auth/pos-operator-envelope-sale.guard";
 import { PosWriteRateLimitGuard } from "../../auth/pos-write-rate-limit.guard";
@@ -95,7 +95,7 @@ import { PosPayersService } from "./payers/pos-payers.service";
     {
       provide: IDENTITY_PROVIDER_PORT,
       useFactory: (pool: Pool): IdentityProviderPort =>
-        clerkIdentityProviderFactory(pool),
+        identityProviderFactory(pool),
       inject: [AUTH_LOOKUP_POOL],
     },
     {

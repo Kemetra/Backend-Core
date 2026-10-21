@@ -13,7 +13,7 @@ import { hashToken } from "@data-pulse-2/auth";
 
 import { PosOperatorsService } from "../../src/pos-operators/pos-operators.service";
 import { DeviceRepository } from "../../src/pos-operators/device.repository";
-import type { ClerkVerifier } from "../../src/pos-operators/clerk-verifier";
+import type { OperatorTokenVerifier } from "../../src/auth/operator-token-verifier";
 
 interface MockPool {
   query: jest.Mock;
@@ -42,11 +42,11 @@ function makePool(): MockPool {
   return { query: queryFn, connect: connectFn };
 }
 
-function makeVerifier(sub: string | Error = "user_test_sub"): ClerkVerifier {
+function makeVerifier(sub: string | Error = "user_test_sub"): OperatorTokenVerifier {
   return {
     verify: jest.fn(async () => {
       if (sub instanceof Error) throw sub;
-      return { sub };
+      return { providerKey: "clerk", sub };
     }),
   };
 }

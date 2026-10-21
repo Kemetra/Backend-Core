@@ -8,7 +8,7 @@ import type { Pool } from "pg";
 import type { Logger } from "@data-pulse-2/shared";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import { PosShiftsService } from "../../src/pos-shifts/pos-shifts.service";
-import type { ClerkVerifier } from "../../src/pos-operators/clerk-verifier";
+import type { OperatorTokenVerifier } from "../../src/auth/operator-token-verifier";
 
 const BRANCH_ID   = "b1000000-0000-4000-8000-000000000001";
 const TENANT_ID   = "b1000000-0000-4000-8000-000000000002";
@@ -35,11 +35,11 @@ function makePool(): jest.Mocked<Pick<Pool, "query">> & Pool {
   return { query: jest.fn() } as unknown as jest.Mocked<Pick<Pool, "query">> & Pool;
 }
 
-function makeVerifier(sub: string | Error = CLERK_SUB): ClerkVerifier {
+function makeVerifier(sub: string | Error = CLERK_SUB): OperatorTokenVerifier {
   return {
     verify: jest.fn(async () => {
       if (sub instanceof Error) throw sub;
-      return { sub };
+      return { providerKey: "clerk", sub };
     }),
   };
 }

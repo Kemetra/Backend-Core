@@ -6,7 +6,7 @@
  *   PosOperatorsController
  *     └─ PosOperatorsService
  *          ├─ Pool                (PG_POOL — shared with AuthModule)
- *          ├─ ClerkVerifier       (CLERK_VERIFIER token — env-driven factory)
+ *          ├─ OperatorTokenVerifier (OPERATOR_TOKEN_VERIFIER token — env-driven factory)
  *          ├─ DeviceRepository
  *          └─ Logger              (ROOT_LOGGER — shared with the rest of api)
  *
@@ -16,8 +16,8 @@
  * untouched (ADR D6, FR-POS-AUTH-9).
  *
  * Tests substitute the verifier seam via
- * `Test.createTestingModule(...).overrideProvider(CLERK_VERIFIER)` so
- * sign-in specs do not require a real Clerk JWKS endpoint.
+ * `Test.createTestingModule(...).overrideProvider(OPERATOR_TOKEN_VERIFIER)` so
+ * sign-in specs do not require a real provider JWKS endpoint.
  */
 import { Module } from "@nestjs/common";
 import type { Logger } from "@data-pulse-2/shared";
@@ -25,11 +25,11 @@ import type { Pool } from "pg";
 
 import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../auth/auth.module";
 
+import { operatorTokenVerifierFactory } from "../auth/identity-provider.factory";
 import {
-  CLERK_VERIFIER,
-  type ClerkVerifier,
-  clerkVerifierFactory,
-} from "./clerk-verifier";
+  OPERATOR_TOKEN_VERIFIER,
+  type OperatorTokenVerifier,
+} from "../auth/operator-token-verifier";
 import { createApiLogger } from "../common/api-logger";
 import { DeviceRepository } from "./device.repository";
 import { PosOperatorsController } from "./pos-operators.controller";
@@ -42,8 +42,8 @@ export const POS_OPERATORS_LOGGER = "POS_OPERATORS_LOGGER";
   controllers: [PosOperatorsController],
   providers: [
     {
-      provide: CLERK_VERIFIER,
-      useFactory: clerkVerifierFactory,
+      provide: OPERATOR_TOKEN_VERIFIER,
+      useFactory: operatorTokenVerifierFactory,
     },
     {
       provide: POS_OPERATORS_LOGGER,
@@ -60,7 +60,7 @@ export const POS_OPERATORS_LOGGER = "POS_OPERATORS_LOGGER";
       provide: PosOperatorsService,
       useFactory: (
         pool: Pool,
-        verifier: ClerkVerifier,
+        verifier: OperatorTokenVerifier,
         devices: DeviceRepository,
         logger: Logger,
         lookupPool: Pool,
@@ -68,7 +68,7 @@ export const POS_OPERATORS_LOGGER = "POS_OPERATORS_LOGGER";
         new PosOperatorsService(pool, verifier, devices, logger, lookupPool),
       inject: [
         PG_POOL,
-        CLERK_VERIFIER,
+        OPERATOR_TOKEN_VERIFIER,
         DeviceRepository,
         POS_OPERATORS_LOGGER,
         AUTH_LOOKUP_POOL,

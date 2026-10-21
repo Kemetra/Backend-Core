@@ -32,9 +32,9 @@ import { Pool } from "pg";
 import request from "supertest";
 
 import {
-  CLERK_VERIFIER,
-  type ClerkVerifier,
-} from "../../src/pos-operators/clerk-verifier";
+  OPERATOR_TOKEN_VERIFIER,
+  type OperatorTokenVerifier,
+} from "../../src/auth/operator-token-verifier";
 import { PosShiftsModule } from "../../src/pos-shifts/pos-shifts.module";
 import { PosShiftsService } from "../../src/pos-shifts/pos-shifts.service";
 import { PG_POOL } from "../../src/auth/auth.module";
@@ -90,12 +90,12 @@ const DEVICE_ATTESTATION = "device-att-shifts-spec";
 const STUCK_SHIFT_ID    = "0c000000-0000-4000-8000-00000000ff01";
 const ACTIVE_SHIFT_ID   = "0c000000-0000-4000-8000-00000000ff02";
 
-class StubClerkVerifier implements ClerkVerifier {
+class StubClerkVerifier implements OperatorTokenVerifier {
   constructor(private readonly map: Map<string, string>) {}
-  async verify(rawJwt: string): Promise<{ sub: string }> {
+  async verify(rawJwt: string): Promise<{ providerKey: string; sub: string }> {
     const sub = this.map.get(rawJwt);
     if (!sub) throw new Error("StubClerkVerifier: unknown jwt");
-    return { sub };
+    return { providerKey: "clerk", sub };
   }
 }
 
@@ -251,7 +251,7 @@ beforeAll(async () => {
     })
       .overrideProvider(PG_POOL)
       .useValue(pool)
-      .overrideProvider(CLERK_VERIFIER)
+      .overrideProvider(OPERATOR_TOKEN_VERIFIER)
       .useValue(new StubClerkVerifier(verifierMap))
       // Override service to use threshold=0 so all open shifts qualify
       .overrideProvider(PosShiftsService)

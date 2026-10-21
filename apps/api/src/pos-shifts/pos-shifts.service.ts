@@ -22,7 +22,7 @@ import type { Logger } from "@data-pulse-2/shared";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool } from "pg";
 
-import type { ClerkVerifier } from "../pos-operators/clerk-verifier";
+import type { OperatorTokenVerifier } from "../auth/operator-token-verifier";
 import type { StuckShiftItem, StuckShiftsResponseBody } from "./dto";
 
 const ELIGIBLE_INTERNAL_ROLES = new Set([
@@ -53,7 +53,7 @@ export type StuckShiftsResult =
 export class PosShiftsService {
   constructor(
     private readonly pool: Pool,
-    private readonly clerkVerifier: ClerkVerifier,
+    private readonly operatorTokenVerifier: OperatorTokenVerifier,
     private readonly logger: Logger,
     private readonly stuckThresholdMinutes: number = 15,
   ) {}
@@ -66,7 +66,7 @@ export class PosShiftsService {
     // 1. Verify Clerk JWT.
     let sub: string;
     try {
-      ({ sub } = await this.clerkVerifier.verify(rawJwt));
+      ({ sub } = await this.operatorTokenVerifier.verify(rawJwt));
     } catch {
       this.logger.warn({ request_id: requestId }, "pos-shifts: clerk jwt invalid");
       return { kind: "refused" };

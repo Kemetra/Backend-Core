@@ -9,7 +9,7 @@
  *          ├─ DeviceRepository
  *          └─ Logger          (ROOT_LOGGER — shared with the rest of api)
  *
- * The ClerkVerifier is injected into the controller (not the service)
+ * The OperatorTokenVerifier is injected into the controller (not the service)
  * because JWT verification is optional here and is a presentation-layer
  * concern: the controller verifies when the header is present and proceeds
  * without it when absent.
@@ -21,10 +21,8 @@ import type { Logger } from "@data-pulse-2/shared";
 import type { Pool } from "pg";
 
 import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../auth/auth.module";
-import {
-  CLERK_VERIFIER,
-  clerkVerifierFactory,
-} from "../pos-operators/clerk-verifier";
+import { operatorTokenVerifierFactory } from "../auth/identity-provider.factory";
+import { OPERATOR_TOKEN_VERIFIER } from "../auth/operator-token-verifier";
 import { createApiLogger } from "../common/api-logger";
 import { DeviceRepository } from "../pos-operators/device.repository";
 import { PosAuditEventsController } from "./pos-audit-events.controller";
@@ -37,8 +35,8 @@ export const POS_AUDIT_EVENTS_LOGGER = "POS_AUDIT_EVENTS_LOGGER";
   controllers: [PosAuditEventsController],
   providers: [
     {
-      provide: CLERK_VERIFIER,
-      useFactory: clerkVerifierFactory,
+      provide: OPERATOR_TOKEN_VERIFIER,
+      useFactory: operatorTokenVerifierFactory,
     },
     {
       provide: POS_AUDIT_EVENTS_LOGGER,

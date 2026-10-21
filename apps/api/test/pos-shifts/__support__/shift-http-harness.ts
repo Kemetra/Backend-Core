@@ -45,7 +45,7 @@ import { RootLoggerModule } from "../../../src/common/root-logger.module";
 import { RequestIdInterceptor } from "../../../src/common/request-id.interceptor";
 import { ZodValidationPipe } from "../../../src/common/zod-validation.pipe";
 import { loadOpenApiContracts } from "../../../src/openapi/loader";
-import { CLERK_VERIFIER, type ClerkVerifier } from "../../../src/pos-operators/clerk-verifier";
+import { OPERATOR_TOKEN_VERIFIER, type OperatorTokenVerifier } from "../../../src/auth/operator-token-verifier";
 import { PosOperatorsModule } from "../../../src/pos-operators/pos-operators.module";
 import { POS_SHIFTS_LOGGER, PosShiftsModule } from "../../../src/pos-shifts/pos-shifts.module";
 import {
@@ -137,10 +137,10 @@ export function atOffset(instant: string, hours: number): string {
 // ---------------------------------------------------------------------------
 // Substitutes
 // ---------------------------------------------------------------------------
-class StubClerkVerifier implements ClerkVerifier {
-  async verify(rawJwt: string): Promise<{ sub: string }> {
+class StubClerkVerifier implements OperatorTokenVerifier {
+  async verify(rawJwt: string): Promise<{ providerKey: string; sub: string }> {
     if (rawJwt !== MANAGER_JWT) throw new Error("StubClerkVerifier: unknown jwt");
-    return { sub: MANAGER_SUB };
+    return { providerKey: "clerk", sub: MANAGER_SUB };
   }
 }
 
@@ -299,7 +299,7 @@ async function buildApp(env: PgTestEnv, doubles: Doubles): Promise<INestApplicat
     .useValue(env.app)
     .overrideProvider(AUTH_LOOKUP_POOL)
     .useValue(env.admin)
-    .overrideProvider(CLERK_VERIFIER)
+    .overrideProvider(OPERATOR_TOKEN_VERIFIER)
     .useValue(new StubClerkVerifier())
     .overrideProvider(AUDIT_JOB_ENQUEUER)
     .useValue(audit)

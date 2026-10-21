@@ -9,7 +9,7 @@ import { CanActivate, type ExecutionContext, Injectable, UnauthorizedException }
 import { readBearerHeader, type CredentialRequest } from "./route-auth";
 
 @Injectable()
-export class ClerkBearerGuard implements CanActivate {
+export class OperatorBearerGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<CredentialRequest>();
     const header = request.headers["authorization"];

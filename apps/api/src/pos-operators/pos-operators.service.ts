@@ -42,7 +42,7 @@ import { generateRawToken, hashToken } from "@data-pulse-2/auth";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool, PoolClient } from "pg";
 
-import type { ClerkVerifier } from "./clerk-verifier";
+import type { OperatorTokenVerifier } from "../auth/operator-token-verifier";
 import { DeviceRepository } from "./device.repository";
 import type {
   PosActiveSessionQueryInput,
@@ -129,7 +129,7 @@ export type SignOutResult =
  * change.
  */
 export type SignOutRefusalReason =
-  | "clerk_jwt_invalid"
+  | "identity_token_invalid"
   | "user_unmapped"
   | "user_disabled"
   | "session_unknown"
@@ -144,7 +144,7 @@ export type RosterResult =
   | { kind: "refused"; reason: RosterRefusalReason };
 
 export type RosterRefusalReason =
-  | "clerk_jwt_invalid"
+  | "identity_token_invalid"
   | "user_unmapped"
   | "user_disabled"
   | "membership_missing"
@@ -158,7 +158,7 @@ export type TakeoverConfirmResult =
   | { kind: "refused"; reason: TakeoverRefusalReason };
 
 export type TakeoverRefusalReason =
-  | "clerk_jwt_invalid"
+  | "identity_token_invalid"
   | "user_unmapped"
   | "user_disabled"
   | "device_invalid"
@@ -175,7 +175,7 @@ export type ActiveSessionResult =
   | { kind: "refused"; reason: ActiveSessionRefusalReason };
 
 export type ActiveSessionRefusalReason =
-  | "clerk_jwt_invalid"
+  | "identity_token_invalid"
   | "user_unmapped"
   | "user_disabled"
   | "membership_missing"
@@ -189,7 +189,7 @@ export type ActiveSessionRefusalReason =
  * contract change.
  */
 export type SignInRefusalReason =
-  | "clerk_jwt_invalid"
+  | "identity_token_invalid"
   | "user_unmapped"
   | "user_disabled"
   | "device_invalid"
@@ -203,7 +203,7 @@ export type SignInRefusalReason =
 export class PosOperatorsService {
   constructor(
     private readonly pool: Pool,
-    private readonly clerkVerifier: ClerkVerifier,
+    private readonly operatorTokenVerifier: OperatorTokenVerifier,
     private readonly deviceRepository: DeviceRepository,
     private readonly logger: Logger,
     private readonly lookupPool: Pool = pool,
@@ -358,7 +358,7 @@ export class PosOperatorsService {
     { kind: "refused"; reason: DeviceAuthzRefusalReason } | ({ kind: "ok" } & DeviceOperatorAuthz)
   > {
     // 2. Map Clerk subject → local user.
-    const userRow = await this.findUserByClerkSubject(sub);
+    const userRow = await this.findUserByOperatorSubject(sub);
     if (!userRow) return { kind: "refused", reason: "user_unmapped" };
     if (userRow.deleted_at !== null) {
       return { kind: "refused", reason: "user_disabled" };
@@ -405,9 +405,9 @@ export class PosOperatorsService {
     // 1. Clerk JWT verification.
     let claims;
     try {
-      claims = await this.clerkVerifier.verify(rawJwt);
+      claims = await this.operatorTokenVerifier.verify(rawJwt);
     } catch {
-      return { kind: "refused", reason: "clerk_jwt_invalid" };
+      return { kind: "refused", reason: "identity_token_invalid" };
     }
 
     // 2–5. Shared device-scoped authorization.
@@ -463,12 +463,12 @@ export class PosOperatorsService {
   ): Promise<RosterResult> {
     let claims;
     try {
-      claims = await this.clerkVerifier.verify(rawJwt);
+      claims = await this.operatorTokenVerifier.verify(rawJwt);
     } catch {
-      return { kind: "refused", reason: "clerk_jwt_invalid" };
+      return { kind: "refused", reason: "identity_token_invalid" };
     }
 
-    const userRow = await this.findUserByClerkSubject(claims.sub);
+    const userRow = await this.findUserByOperatorSubject(claims.sub);
     if (!userRow) return { kind: "refused", reason: "user_unmapped" };
     if (userRow.deleted_at !== null) return { kind: "refused", reason: "user_disabled" };
 
@@ -504,9 +504,9 @@ export class PosOperatorsService {
   ): Promise<TakeoverConfirmResult> {
     let claims;
     try {
-      claims = await this.clerkVerifier.verify(rawJwt);
+      claims = await this.operatorTokenVerifier.verify(rawJwt);
     } catch {
-      return { kind: "refused", reason: "clerk_jwt_invalid" };
+      return { kind: "refused", reason: "identity_token_invalid" };
     }
 
     // JWT sub must match the operator_id in the body (prevents identity substitution).
@@ -676,13 +676,13 @@ export class PosOperatorsService {
   ): Promise<ActiveSessionResult> {
     let claims;
     try {
-      claims = await this.clerkVerifier.verify(rawJwt);
+      claims = await this.operatorTokenVerifier.verify(rawJwt);
     } catch {
-      return { kind: "refused", reason: "clerk_jwt_invalid" };
+      return { kind: "refused", reason: "identity_token_invalid" };
     }
 
     // Gate the requester: they must be a valid, non-deleted user.
-    const requesterRow = await this.findUserByClerkSubject(claims.sub);
+    const requesterRow = await this.findUserByOperatorSubject(claims.sub);
     if (!requesterRow) return { kind: "refused", reason: "user_unmapped" };
     if (requesterRow.deleted_at !== null) return { kind: "refused", reason: "user_disabled" };
 
@@ -706,7 +706,7 @@ export class PosOperatorsService {
     }
 
     // Resolve the target operator AFTER branch authorization succeeds (minimum disclosure).
-    const targetRow = await this.findUserByClerkSubject(query.operator_id);
+    const targetRow = await this.findUserByOperatorSubject(query.operator_id);
     if (targetRow?.deleted_at !== null) {
       // Non-existent or disabled target → "none" (minimum disclosure, not 401).
       return { kind: "none" };
@@ -729,7 +729,7 @@ export class PosOperatorsService {
   // Each query has a single caller in this service.
   // -----------------------------------------------------------------------
 
-  private async findUserByClerkSubject(sub: string): Promise<UserLookupRow | null> {
+  private async findUserByOperatorSubject(sub: string): Promise<UserLookupRow | null> {
     const r = await this.lookupPool.query<UserLookupRow>(
       `SELECT id, email, display_name, clerk_user_id, deleted_at
          FROM users
@@ -831,13 +831,13 @@ export class PosOperatorsService {
     // 1. Clerk JWT verification.
     let claims;
     try {
-      claims = await this.clerkVerifier.verify(rawJwt);
+      claims = await this.operatorTokenVerifier.verify(rawJwt);
     } catch {
-      return { kind: "refused", reason: "clerk_jwt_invalid" };
+      return { kind: "refused", reason: "identity_token_invalid" };
     }
 
     // 2. Map Clerk subject → local user.
-    const userRow = await this.findUserByClerkSubject(claims.sub);
+    const userRow = await this.findUserByOperatorSubject(claims.sub);
     if (!userRow) return { kind: "refused", reason: "user_unmapped" };
     if (userRow.deleted_at !== null) {
       return { kind: "refused", reason: "user_disabled" };

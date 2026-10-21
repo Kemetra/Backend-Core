@@ -65,7 +65,7 @@ import type { IdentityProviderPort } from "./identity-provider.port";
 const ELIGIBLE_INTERNAL_ROLES = new Set(["owner", "tenant_admin", "store_manager"]);
 
 export type ResolveOperatorRefusalReason =
-  | "clerk_jwt_invalid"
+  | "identity_token_invalid"
   | "user_unmapped"
   | "user_disabled"
   | "device_invalid"
@@ -160,7 +160,7 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
         { err: err instanceof Error ? err.message : String(err) },
         "operator-context-resolver: identity token verification failed",
       );
-      return { kind: "refused", reason: "clerk_jwt_invalid" };
+      return { kind: "refused", reason: "identity_token_invalid" };
     }
 
     // 2. Map the provider-neutral verified subject → local user via the ACTIVE

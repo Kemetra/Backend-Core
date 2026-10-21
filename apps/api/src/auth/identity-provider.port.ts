@@ -3,7 +3,7 @@
  *
  * The provider-NEUTRAL seam (028 §16 / DP-2 028 slice §13, named
  * `IdentityProviderPort`) that lifts provider verification + lifecycle one level
- * above the Clerk-concrete `ClerkVerifier`. Operator identity resolution depends
+ * above the Clerk-concrete `OperatorTokenVerifier`. Operator identity resolution depends
  * on THIS port, never on a provider-typed claim, so a future provider switch
  * (Auth0 / Keycloak / OIDC) is a per-adapter change with no rewrite of the
  * resolver or any business rule (G-5 / 028 OQ-7).
@@ -126,5 +126,5 @@ export interface IdentityProviderPort {
   rotateProviderCredential?(): Promise<void>;
 }
 
-/** DI token for the port (mirrors CLERK_VERIFIER). */
+/** DI token for the port (mirrors OPERATOR_TOKEN_VERIFIER). */
 export const IDENTITY_PROVIDER_PORT = "IDENTITY_PROVIDER_PORT";

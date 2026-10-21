@@ -3,7 +3,7 @@
  *
  * Real Postgres (Testcontainers, full schema) and the REAL Descope verifier
  * (`jose` + a remote JWKS served by a local HTTP server — no Descope traffic)
- * bound at the CLERK_VERIFIER seam, exactly where the production factory puts
+ * bound at the OPERATOR_TOKEN_VERIFIER seam, exactly where the production factory puts
  * it with IDENTITY_PROVIDER=descope. After the approach-A cutover
  * `users.clerk_user_id` holds the Descope user id, so sign-in resolves it
  * unchanged and returns it as `operator.id`.
@@ -25,7 +25,7 @@ import { GlobalExceptionFilter } from "../../src/common/exception.filter";
 import { LoggingInterceptor } from "../../src/common/logging.interceptor";
 import { RequestIdInterceptor } from "../../src/common/request-id.interceptor";
 import { ZodValidationPipe } from "../../src/common/zod-validation.pipe";
-import { CLERK_VERIFIER } from "../../src/pos-operators/clerk-verifier";
+import { OPERATOR_TOKEN_VERIFIER } from "../../src/auth/operator-token-verifier";
 import { PosOperatorsModule } from "../../src/pos-operators/pos-operators.module";
 import { startFakeDescopeProject, type FakeDescopeProject } from "../_helpers/descope-jwks";
 import {
@@ -111,7 +111,7 @@ beforeAll(async () => {
     .useValue(env.app)
     .overrideProvider(AUTH_LOOKUP_POOL)
     .useValue(pool)
-    .overrideProvider(CLERK_VERIFIER)
+    .overrideProvider(OPERATOR_TOKEN_VERIFIER)
     .useValue(descope.verifier)
     .compile();
   app = moduleRef.createNestApplication({ bufferLogs: true });

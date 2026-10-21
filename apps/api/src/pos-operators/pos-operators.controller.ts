@@ -25,8 +25,8 @@ import {
   UseGuards,
 } from "@nestjs/common";
 
-import { ClerkBearerGuard } from "../auth/clerk-bearer.guard";
-import { ClerkBearer, requirePosBearer, type CredentialRequest } from "../auth/route-auth";
+import { OperatorBearerGuard } from "../auth/operator-bearer.guard";
+import { OperatorBearer, requirePosBearer, type CredentialRequest } from "../auth/route-auth";
 
 import { PosOperatorsService } from "./pos-operators.service";
 import {
@@ -47,8 +47,8 @@ import {
 } from "./dto";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 
-@ClerkBearer()
-@UseGuards(ClerkBearerGuard)
+@OperatorBearer()
+@UseGuards(OperatorBearerGuard)
 @Controller("api/pos/v1/operators")
 export class PosOperatorsController {
   constructor(private readonly service: PosOperatorsService) {}

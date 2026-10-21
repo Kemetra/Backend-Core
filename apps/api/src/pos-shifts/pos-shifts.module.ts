@@ -22,7 +22,7 @@ import type { Pool } from "pg";
 import { AuditModule } from "../audit/audit.module";
 import { AUTH_LOOKUP_POOL, AuthModule, PG_POOL } from "../auth/auth.module";
 import { AuthTokenRepository } from "../auth/auth-token.repository";
-import { clerkIdentityProviderFactory } from "../auth/clerk-identity-provider.adapter";
+import { identityProviderFactory, operatorTokenVerifierFactory } from "../auth/identity-provider.factory";
 import { IDENTITY_PROVIDER_PORT, type IdentityProviderPort } from "../auth/identity-provider.port";
 import { OPERATOR_CONTEXT_RESOLVER, PgOperatorContextResolver } from "../auth/operator-context-resolver";
 import { PosDeviceAuthGuard } from "../auth/pos-device-auth.guard";
@@ -36,11 +36,7 @@ import {
 } from "../catalog/sales/operator-attribution";
 import { createApiLogger } from "../common/api-logger";
 import { IdempotencyModule } from "../idempotency/idempotency.module";
-import {
-  CLERK_VERIFIER,
-  type ClerkVerifier,
-  clerkVerifierFactory,
-} from "../pos-operators/clerk-verifier";
+import { OPERATOR_TOKEN_VERIFIER, type OperatorTokenVerifier } from "../auth/operator-token-verifier";
 import { DeviceRepository } from "../pos-operators/device.repository";
 import { PosShiftsController } from "./pos-shifts.controller";
 import { PosShiftsService } from "./pos-shifts.service";
@@ -55,8 +51,8 @@ export const POS_SHIFTS_LOGGER = "POS_SHIFTS_LOGGER";
   controllers: [PosShiftsController, ShiftCashUpController],
   providers: [
     {
-      provide: CLERK_VERIFIER,
-      useFactory: clerkVerifierFactory,
+      provide: OPERATOR_TOKEN_VERIFIER,
+      useFactory: operatorTokenVerifierFactory,
     },
     {
       provide: POS_SHIFTS_LOGGER,
@@ -65,9 +61,9 @@ export const POS_SHIFTS_LOGGER = "POS_SHIFTS_LOGGER";
     },
     {
       provide: PosShiftsService,
-      useFactory: (pool: Pool, verifier: ClerkVerifier, logger: Logger): PosShiftsService =>
+      useFactory: (pool: Pool, verifier: OperatorTokenVerifier, logger: Logger): PosShiftsService =>
         new PosShiftsService(pool, verifier, logger),
-      inject: [PG_POOL, CLERK_VERIFIER, POS_SHIFTS_LOGGER],
+      inject: [PG_POOL, OPERATOR_TOKEN_VERIFIER, POS_SHIFTS_LOGGER],
     },
     // RT-17 slice 2b: the cash-up writes. The logger receives the close
     // approver warning (RT-17 comment 10955, option A).
@@ -79,7 +75,7 @@ export const POS_SHIFTS_LOGGER = "POS_SHIFTS_LOGGER";
     },
     {
       provide: IDENTITY_PROVIDER_PORT,
-      useFactory: (pool: Pool): IdentityProviderPort => clerkIdentityProviderFactory(pool),
+      useFactory: (pool: Pool): IdentityProviderPort => identityProviderFactory(pool),
       inject: [AUTH_LOOKUP_POOL],
     },
     {

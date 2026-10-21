@@ -34,9 +34,9 @@ import { Pool } from "pg";
 import request from "supertest";
 
 import {
-  CLERK_VERIFIER,
-  type ClerkVerifier,
-} from "../../src/pos-operators/clerk-verifier";
+  OPERATOR_TOKEN_VERIFIER,
+  type OperatorTokenVerifier,
+} from "../../src/auth/operator-token-verifier";
 import { PosOperatorsModule } from "../../src/pos-operators/pos-operators.module";
 import { AUTH_LOOKUP_POOL, PG_POOL } from "../../src/auth/auth.module";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
@@ -99,12 +99,12 @@ const DEVICE_B_ATTESTATION = "device-b-attestation-token-pr5";
 const DEVICE_REVOKED_ATTESTATION = "device-revoked-attestation-pr5";
 
 // Map raw JWT strings the test sends → Clerk subject the verifier returns.
-class StubClerkVerifier implements ClerkVerifier {
+class StubClerkVerifier implements OperatorTokenVerifier {
   constructor(private readonly map: Map<string, string>) {}
-  async verify(rawJwt: string): Promise<{ sub: string }> {
+  async verify(rawJwt: string): Promise<{ providerKey: string; sub: string }> {
     const sub = this.map.get(rawJwt);
     if (!sub) throw new Error("StubClerkVerifier: unknown jwt");
-    return { sub };
+    return { providerKey: "clerk", sub };
   }
 }
 
@@ -279,7 +279,7 @@ beforeAll(async () => {
       .useValue(env.app)
       .overrideProvider(AUTH_LOOKUP_POOL)
       .useValue(pool)
-      .overrideProvider(CLERK_VERIFIER)
+      .overrideProvider(OPERATOR_TOKEN_VERIFIER)
       .useValue(new StubClerkVerifier(verifierMap))
       .compile();
 

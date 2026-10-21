@@ -12,12 +12,12 @@ import type { Request } from "express";
 import { DeviceRotationHintInterceptor } from "../pos-terminal-pairing/rotation-hint";
 
 export const IS_PUBLIC_KEY = "dp2:public";
-export const CLERK_BEARER_KEY = "dp2:clerkBearer";
+export const OPERATOR_BEARER_KEY = "dp2:operatorBearer";
 export const DEVICE_ATTESTED_KEY = "dp2:deviceAttested";
 export const DEVICE_BEARER_KEY = "dp2:deviceBearer";
 
 export const Public = () => SetMetadata(IS_PUBLIC_KEY, true);
-export const ClerkBearer = () => SetMetadata(CLERK_BEARER_KEY, true);
+export const OperatorBearer = () => SetMetadata(OPERATOR_BEARER_KEY, true);
 export const DeviceAttested = () => SetMetadata(DEVICE_ATTESTED_KEY, true);
 /**
  * Paired-terminal bearer. PosDeviceAuthGuard on the route does the lookup.

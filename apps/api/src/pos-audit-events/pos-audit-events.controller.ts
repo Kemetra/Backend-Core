@@ -30,7 +30,7 @@ import {
 
 import { DeviceAttestedGuard } from "../auth/device-attested.guard";
 import { DeviceAttested, readBearerHeader, type CredentialRequest } from "../auth/route-auth";
-import { CLERK_VERIFIER, type ClerkVerifier } from "../pos-operators/clerk-verifier";
+import { OPERATOR_TOKEN_VERIFIER, type OperatorTokenVerifier } from "../auth/operator-token-verifier";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { PosAuditEventsService } from "./pos-audit-events.service";
 import {
@@ -51,7 +51,7 @@ import {
 export class PosAuditEventsController {
   constructor(
     private readonly service: PosAuditEventsService,
-    @Inject(CLERK_VERIFIER) private readonly clerkVerifier: ClerkVerifier,
+    @Inject(OPERATOR_TOKEN_VERIFIER) private readonly operatorTokenVerifier: OperatorTokenVerifier,
   ) {}
 
   @Post()
@@ -68,7 +68,7 @@ export class PosAuditEventsController {
         throw new UnauthorizedException("Unauthorized");
       }
       try {
-        await this.clerkVerifier.verify(rawJwt);
+        await this.operatorTokenVerifier.verify(rawJwt);
       } catch {
         throw new UnauthorizedException("Unauthorized");
       }

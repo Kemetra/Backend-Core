@@ -32,9 +32,9 @@ import { Pool } from "pg";
 import request from "supertest";
 
 import {
-  CLERK_VERIFIER,
-  type ClerkVerifier,
-} from "../../src/pos-operators/clerk-verifier";
+  OPERATOR_TOKEN_VERIFIER,
+  type OperatorTokenVerifier,
+} from "../../src/auth/operator-token-verifier";
 import { PosAuditEventsModule } from "../../src/pos-audit-events/pos-audit-events.module";
 import { AUTH_LOOKUP_POOL, PG_POOL } from "../../src/auth/auth.module";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
@@ -96,11 +96,11 @@ function makeShiftOpen(eventId: string) {
   };
 }
 
-class StubClerkVerifier implements ClerkVerifier {
+class StubClerkVerifier implements OperatorTokenVerifier {
   constructor(private readonly validTokens: Set<string>) {}
-  async verify(rawJwt: string): Promise<{ sub: string }> {
+  async verify(rawJwt: string): Promise<{ providerKey: string; sub: string }> {
     if (!this.validTokens.has(rawJwt)) throw new Error("StubClerkVerifier: unknown jwt");
-    return { sub: OPERATOR_CLERK_SUB };
+    return { providerKey: "clerk", sub: OPERATOR_CLERK_SUB };
   }
 }
 
@@ -215,7 +215,7 @@ beforeAll(async () => {
       .useValue(env.app)
       .overrideProvider(AUTH_LOOKUP_POOL)
       .useValue(pool)
-      .overrideProvider(CLERK_VERIFIER)
+      .overrideProvider(OPERATOR_TOKEN_VERIFIER)
       .useValue(new StubClerkVerifier(new Set(["jwt-valid"])))
       .compile();
 

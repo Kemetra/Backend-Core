@@ -64,7 +64,7 @@ import { RequestIdInterceptor } from "../../src/common/request-id.interceptor";
 import { ZodValidationPipe } from "../../src/common/zod-validation.pipe";
 import { PosAuditEventsModule } from "../../src/pos-audit-events/pos-audit-events.module";
 import { CashierAdmissionsModule } from "../../src/pos-cashier-admissions/cashier-admissions.module";
-import { CLERK_VERIFIER, type ClerkVerifier } from "../../src/pos-operators/clerk-verifier";
+import { OPERATOR_TOKEN_VERIFIER, type OperatorTokenVerifier } from "../../src/auth/operator-token-verifier";
 import { DeviceActivityRecorder, deviceActivity } from "../../src/pos-operators/device-activity";
 import { PosOperatorsModule } from "../../src/pos-operators/pos-operators.module";
 import {
@@ -152,10 +152,10 @@ const SIGN_IN = "/api/pos/v1/operators/sign-in";
 const AUDIT_EVENTS = "/api/pos/v1/audit-events";
 const SALES = "/api/pos/v1/sales";
 
-class StubClerkVerifier implements ClerkVerifier {
-  async verify(rawJwt: Secret): Promise<{ sub: string }> {
+class StubClerkVerifier implements OperatorTokenVerifier {
+  async verify(rawJwt: Secret): Promise<{ providerKey: string; sub: string }> {
     if (rawJwt !== MANAGER_JWT) throw new Error("StubClerkVerifier: unknown jwt");
-    return { sub: MANAGER_SUB };
+    return { providerKey: "clerk", sub: MANAGER_SUB };
   }
 }
 
@@ -497,7 +497,7 @@ beforeAll(async () => {
     .useValue(env.app)
     .overrideProvider(AUTH_LOOKUP_POOL)
     .useValue(env.admin)
-    .overrideProvider(CLERK_VERIFIER)
+    .overrideProvider(OPERATOR_TOKEN_VERIFIER)
     .useValue(new StubClerkVerifier())
     .overrideProvider(AUDIT_JOB_ENQUEUER)
     .useValue(new NullAuditEnqueuer())

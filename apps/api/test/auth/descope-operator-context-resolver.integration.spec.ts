@@ -134,7 +134,7 @@ describe("RT-791 operator-context resolver with a descope link", () => {
     const forged = await descope!.mint(u.sub, { foreignKey: true });
     await expect(resolver.resolve(forged, DEVICE_ATTESTATION)).resolves.toEqual({
       kind: "refused",
-      reason: "clerk_jwt_invalid",
+      reason: "identity_token_invalid",
     });
   });
 });

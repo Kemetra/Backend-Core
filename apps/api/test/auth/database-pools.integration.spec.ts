@@ -301,7 +301,7 @@ describe("production database pool separation", () => {
 
     const shifts = new PosShiftsService(
       app,
-      { verify: async () => ({ sub: "pool-clerk-user" }) },
+      { verify: async () => ({ providerKey: "clerk", sub: "pool-clerk-user" }) },
       { warn: () => undefined } as unknown as Logger,
     );
     await expect(shifts.getStuck("verified-jwt", STORE_A, null)).resolves.toEqual({
