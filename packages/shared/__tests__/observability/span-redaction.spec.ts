@@ -279,6 +279,48 @@ describe("RedactingSpanExporter", () => {
 });
 
 // ---------------------------------------------------------------------------
+// DB connection string (RT-762)
+// ---------------------------------------------------------------------------
+
+describe("RedactingSpanExporter - db.connection_string (RT-762)", () => {
+  const DSN = "postgresql://app@db.internal.example:5432/dp2_prod?sslmode=require";
+
+  it("exports no span attribute value containing both '://' and '?'", async () => {
+    const memory = new tracing.InMemorySpanExporter();
+    const provider = new tracing.BasicTracerProvider({
+      spanProcessors: [new tracing.SimpleSpanProcessor(new RedactingSpanExporter(memory))],
+    });
+    // Attribute set mirrors what @opentelemetry/instrumentation-pg emits.
+    const span = provider.getTracer("t").startSpan("pg.query:SELECT", {
+      attributes: {
+        "db.system": "postgresql",
+        "db.connection_string": DSN,
+        "http.url": "https://example.test/a?token=abc",
+      },
+    });
+    const { traceId, spanId } = span.spanContext();
+    span.end();
+    await provider.forceFlush();
+
+    const [exported] = memory.getFinishedSpans();
+    const leaking = Object.entries(exported?.attributes ?? {}).filter(
+      ([, value]) => typeof value === "string" && value.includes("://") && value.includes("?"),
+    );
+    expect(leaking).toEqual([]);
+    expect(exported?.attributes).not.toHaveProperty("db.connection_string");
+    expect(exported?.attributes["db.system"]).toBe("postgresql");
+    expect(exported?.spanContext().traceId).toBe(traceId);
+    expect(exported?.spanContext().spanId).toBe(spanId);
+  });
+
+  it("drops db.connection_string in redactSpanAttributes", () => {
+    expect(
+      redactSpanAttributes({ "db.connection_string": DSN, "db.system": "postgresql" }),
+    ).toEqual({ "db.system": "postgresql" });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GenAI prompt / completion attributes (RT-655 acceptance 3)
 // ---------------------------------------------------------------------------
 

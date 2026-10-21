@@ -9,7 +9,8 @@
  *
  *  - `RedactingSpanExporter` wraps the real exporter and rewrites URL
  *    attributes on every span (any instrumentation, old or new semconv) to
- *    scheme + host + path. `url.query` is dropped. The live span is not mutated.
+ *    scheme + host + path. `url.query` and `db.connection_string` are dropped
+ *    (RT-762). The live span is not mutated.
  *  - `isSentryIngestRequest` keeps Sentry's own envelope POSTs out of traces.
  *  - `createMetricsScrapeFilter` keeps Prometheus scrapes of the metrics
  *    listener out of traces.
@@ -28,6 +29,12 @@ const URL_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set(["http.url", "http.targe
 
 /** Attributes holding only the query string; removed outright. */
 const QUERY_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set(["url.query"]);
+
+/**
+ * Attributes removed outright. `db.connection_string` is set by the pg
+ * instrumentation and carries DB host, database name and sslmode (RT-762).
+ */
+const DROPPED_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set(["db.connection_string"]);
 
 /**
  * Model prompt / completion content (RT-655, AD-AI-PROV-001 E-5). OTel GenAI
@@ -53,6 +60,13 @@ function isContentAttribute(key: string): boolean {
   return (
     CONTENT_ATTRIBUTE_KEYS.has(key) ||
     CONTENT_ATTRIBUTE_PREFIXES.some((prefix) => key.startsWith(prefix))
+  );
+}
+
+/** True for attributes removed from exported spans regardless of value. */
+function isDroppedAttribute(key: string): boolean {
+  return (
+    QUERY_ATTRIBUTE_KEYS.has(key) || DROPPED_ATTRIBUTE_KEYS.has(key) || isContentAttribute(key)
   );
 }
 
@@ -83,7 +97,7 @@ export function redactUrlValue(value: string): string {
 export function redactSpanAttributes(attributes: Attributes): Attributes {
   const out: Attributes = {};
   for (const [key, value] of Object.entries(attributes)) {
-    if (QUERY_ATTRIBUTE_KEYS.has(key) || isContentAttribute(key)) continue;
+    if (isDroppedAttribute(key)) continue;
     out[key] =
       URL_ATTRIBUTE_KEYS.has(key) && typeof value === "string"
         ? redactUrlValue(value)
