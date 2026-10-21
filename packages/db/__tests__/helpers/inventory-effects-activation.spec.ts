@@ -314,9 +314,11 @@ describe("activation", () => {
     ).rows[0]!.ref;
     await seedRun({ tenantId: f.tenantId, storeId, warehouse: mapped }, {
       readAt: new Date(Date.now() + 60_000).toISOString(),
-      entries: [{ item: "ITEM-1", quantity: "8.5" }],
+      // A repeated Item: only its first entry counts, as in the anchor.
+      entries: [{ item: "ITEM-1", quantity: "8.5" }, { item: "ITEM-1", quantity: "99" }],
     });
     const rows = await asTenant(f, (c) => compareAnchorsToBin(c));
+    expect(rows.filter((r) => r.tenantProductRef === f.products["P1"])).toHaveLength(1);
     const p1 = rows.find((r) => r.tenantProductRef === f.products["P1"]);
     expect(p1).toMatchObject({
       storeId,

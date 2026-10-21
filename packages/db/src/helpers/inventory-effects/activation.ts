@@ -352,13 +352,16 @@ unique_map AS (
   HAVING count(*) = 1
 ),
 bin AS (
-  SELECT snap.store_id, snap.recorded_at, um.product,
+  -- The first entry per Item, as SNAPSHOT_ITEMS_CTE keeps for the anchor.
+  SELECT DISTINCT ON (snap.store_id, um.item) snap.store_id, snap.recorded_at, um.product,
          (e.value->>'quantity')::numeric AS quantity, e.value->>'stockUom' AS uom
     FROM snap
     JOIN erpnext_reconciliation_run r ON r.id = snap.id
-    CROSS JOIN LATERAL jsonb_array_elements(r.summary->'bin_view_report'->'entries') AS e(value)
+    CROSS JOIN LATERAL jsonb_array_elements(r.summary->'bin_view_report'->'entries')
+         WITH ORDINALITY AS e(value, ordinality)
     JOIN unique_map um
       ON um.item = COALESCE(e.value->'erpnextItemRef'->>'name', e.value->>'erpnextItemRef')
+   ORDER BY snap.store_id, um.item, e.ordinality
 ),
 moves AS (
   SELECT anchor.store_id, mv.tenant_product_ref AS product,
