@@ -23,7 +23,9 @@ import {
 import { applyAllUpAndCreateAppRole, startPgEnv, stopPgEnv, type PgTestEnv } from "../_helpers/postgres-container";
 
 const CLERK_ISSUER = "https://clerk.dp2.local";
-const DESCOPE_ISSUER = "https://api.descope.com/P2cutoverTest01";
+const DESCOPE_ISSUER = "https://api.descope.com/v1/apps/P2cutoverTest01";
+/** The form the first #889 CLI build stored (the rt9 lab has one such active row). */
+const LEGACY_DESCOPE_ISSUER = "https://api.descope.com/P2cutoverTest01";
 
 let env: PgTestEnv | null = null;
 let seq = 0;
@@ -493,9 +495,54 @@ describe("descope issuer lockstep", () => {
       "utf8",
     );
     expect(verifier).toContain('export const DESCOPE_API_BASE = "https://api.descope.com";');
-    expect(verifier).toContain("return `${DESCOPE_API_BASE}/v1/apps/${assertProjectId(projectId)}`;");
+    // Loose on purpose: survives refactors of descopeIssuer(), still fails if the
+    // canonical form stops being the v1/apps path.
+    expect(verifier).toMatch(/function descopeIssuer\([^)]*\)[^{]*\{[^}]*\$\{DESCOPE_API_BASE\}\/v1\/apps\/\$\{/);
     expect(descopeIssuerFromEnv({ DESCOPE_PROJECT_ID: "P2lockstep01" })).toBe(
       "https://api.descope.com/v1/apps/P2lockstep01",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rt9 lab state: an ACTIVE descope link stored under the legacy issuer form
+// (https://api.descope.com/<projectId>) by the first #889 CLI build. Re-apply,
+// rollback and re-apply with the canonical issuer must all still work.
+// ---------------------------------------------------------------------------
+
+describe("descope-cutover with a descope link stored under the legacy issuer", () => {
+  async function seedLabState(): Promise<Fixture> {
+    const f = await seedUser();
+    await run({ ...apply(f), issuer: LEGACY_DESCOPE_ISSUER } as DescopeCutoverCommand);
+    return f;
+  }
+
+  it("re-apply with the canonical issuer is a no-op (matched on subject, not issuer)", async () => {
+    if (skip()) return;
+    const f = await seedLabState();
+    const before = await snapshot(f.userId);
+    await expect(run(apply(f))).resolves.toMatchObject({ alreadyInTargetState: true, usersUpdated: 0 });
+    expect(await snapshot(f.userId)).toEqual(before);
+  });
+
+  it("rollback restores clerk; a later apply re-activates the same legacy row (no second descope row)", async () => {
+    if (skip()) return;
+    const f = await seedLabState();
+    await expect(run(rollback(f))).resolves.toMatchObject({ alreadyInTargetState: false, usersUpdated: 1 });
+    expect(await snapshot(f.userId)).toEqual({
+      clerkUserId: f.clerkSub,
+      links: [
+        { provider_key: "clerk", issuer: CLERK_ISSUER, subject: f.clerkSub, status: "active", disabled: false },
+        { provider_key: "descope", issuer: LEGACY_DESCOPE_ISSUER, subject: f.descopeSub, status: "disabled", disabled: true },
+      ],
+    });
+    await expect(run(apply(f))).resolves.toMatchObject({ alreadyInTargetState: false, linksActivated: 1 });
+    expect(await snapshot(f.userId)).toEqual({
+      clerkUserId: f.descopeSub,
+      links: [
+        { provider_key: "clerk", issuer: CLERK_ISSUER, subject: f.clerkSub, status: "disabled", disabled: true },
+        { provider_key: "descope", issuer: LEGACY_DESCOPE_ISSUER, subject: f.descopeSub, status: "active", disabled: false },
+      ],
+    });
   });
 });

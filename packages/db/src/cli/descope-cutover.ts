@@ -185,7 +185,13 @@ function requireUuid(flags: ParsedFlags): string {
 /** The Descope link issuer from env: the API verifier's canonical (v1/apps) form. */
 export function descopeIssuerFromEnv(env: NodeJS.ProcessEnv): string {
   const override = (env["DESCOPE_JWT_ISSUER"] ?? "").trim();
-  if (override.length > 0) return override;
+  if (override.length > 0) {
+    // Same rule as the API verifier: an https URL or a bare project id.
+    if (!ISSUER_URL_RE.test(override) && !PROJECT_ID_RE.test(override)) {
+      throw new Error("DESCOPE_JWT_ISSUER must be an https URL or a project id");
+    }
+    return override;
+  }
   const projectId = (env["DESCOPE_PROJECT_ID"] ?? "").trim();
   if (!PROJECT_ID_RE.test(projectId)) {
     throw new Error("DESCOPE_PROJECT_ID (alphanumeric) or DESCOPE_JWT_ISSUER is required for apply");
@@ -382,7 +388,21 @@ const FLIPPED: CutoverCounts = {
 /** apply for a user with no clerk link: nothing to disable, one link created. */
 const FLIPPED_WITH_CREATED_CLERK_LINK: CutoverCounts = { ...FLIPPED, linksDisabled: 0, clerkLinksCreated: 1 };
 
-async function upsertActiveDescopeLink(
+/**
+ * Re-activate this user's existing descope link for the subject (any issuer
+ * form — a re-apply after rollback must not add a second row), else insert
+ * one under the command's issuer.
+ */
+async function activateDescopeLink(client: ClientBase, cmd: ApplyCommand, state: UserState): Promise<void> {
+  const existing = state.links.find((l) => l.provider_key === DESCOPE && l.subject === cmd.descopeSubject);
+  if (existing) {
+    await activateLink(client, existing);
+    return;
+  }
+  await insertActiveDescopeLink(client, cmd, state.user.email);
+}
+
+async function insertActiveDescopeLink(
   client: ClientBase,
   cmd: ApplyCommand,
   email: string | null,
@@ -401,11 +421,15 @@ async function upsertActiveDescopeLink(
 
 // --- commands -----------------------------------------------------------------
 
-/** true = already applied; throws on a descope state apply must not touch. */
+/**
+ * true = already applied; throws on a descope state apply must not touch.
+ * Matched on subject only, like the resolver: a link stored under an older
+ * issuer form (the rt9 lab has one) is still this user's applied state.
+ */
 function alreadyApplied(state: UserState, cmd: ApplyCommand): boolean {
   const active = linksOf(state, ACTIVE_DESCOPE);
   if (active.length === 0) return false;
-  const same = active.some((l) => l.subject === cmd.descopeSubject && l.issuer === cmd.issuer);
+  const same = active.some((l) => l.subject === cmd.descopeSubject);
   if (same && state.user.clerk_user_id === cmd.descopeSubject) return true;
   throw new CutoverRefusedError("inconsistent_descope_state");
 }
@@ -454,7 +478,7 @@ async function applyCutover(client: ClientBase, cmd: ApplyCommand): Promise<Cuto
     issuer: cmd.clerkIssuer,
     email: state.user.email,
   });
-  await upsertActiveDescopeLink(client, cmd, state.user.email);
+  await activateDescopeLink(client, cmd, state);
   await setClerkUserId(client, claim);
   return counts;
 }

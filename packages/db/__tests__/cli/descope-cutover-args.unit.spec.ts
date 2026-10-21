@@ -81,6 +81,19 @@ describe("descopeIssuerFromEnv", () => {
     expect(descopeIssuerFromEnv({ ...ENV, DESCOPE_JWT_ISSUER: "P2cutoverArgs01" })).toBe("P2cutoverArgs01");
   });
 
+  it("accepts an https URL or a bare project id as DESCOPE_JWT_ISSUER", () => {
+    expect(descopeIssuerFromEnv({ DESCOPE_JWT_ISSUER: "https://api.descope.com/v1/apps/P2x" })).toBe(
+      "https://api.descope.com/v1/apps/P2x",
+    );
+  });
+
+  it.each(["http://api.descope.com/P2x", "api.descope.com/P2x", "P2 x", "https://has space"])(
+    "refuses a malformed DESCOPE_JWT_ISSUER %p",
+    (bad) => {
+      expect(() => descopeIssuerFromEnv({ ...ENV, DESCOPE_JWT_ISSUER: bad })).toThrow(/DESCOPE_JWT_ISSUER/);
+    },
+  );
+
   it("refuses a malformed project id", () => {
     expect(() => descopeIssuerFromEnv({ DESCOPE_PROJECT_ID: "P2/../x" })).toThrow(/DESCOPE_PROJECT_ID/);
   });

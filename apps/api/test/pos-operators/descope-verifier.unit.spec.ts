@@ -321,6 +321,19 @@ describe("descopeVerifierConfig — the real Descope session token shape", () =>
     });
   });
 
+  it.each(["http://insecure.example", "issuer with spaces", "https://has space", "ftp://x"])(
+    "a malformed DESCOPE_JWT_ISSUER %p fails at config time",
+    (bad) => {
+      process.env["DESCOPE_JWT_ISSUER"] = bad;
+      expect(() => descopeVerifierConfig(PROJECT_ID)).toThrow(/DESCOPE_JWT_ISSUER/);
+    },
+  );
+
+  it("a bare project id is a valid DESCOPE_JWT_ISSUER", () => {
+    process.env["DESCOPE_JWT_ISSUER"] = PROJECT_ID;
+    expect(descopeVerifierConfig(PROJECT_ID).issuer).toEqual([PROJECT_ID]);
+  });
+
   it("DESCOPE_JWT_ISSUER replaces the accepted issuer forms", async () => {
     process.env["DESCOPE_JWT_ISSUER"] = "https://issuer.override.example";
     expect(descopeVerifierConfig(PROJECT_ID).issuer).toEqual(["https://issuer.override.example"]);

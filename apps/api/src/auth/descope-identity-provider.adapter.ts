@@ -9,9 +9,11 @@
  * does for Clerk. `linkExternalIdentity` and the not-wired lifecycle seams come
  * from the shared base, so link semantics are identical across providers.
  *
- * Issuer: `https://api.descope.com/<DESCOPE_PROJECT_ID>` (or `DESCOPE_JWT_ISSUER`).
- * The cutover CLI (`packages/db/src/cli/descope-cutover.ts`) derives the issuer
- * from the same env vars when it writes the link row — keep the two in lockstep.
+ * Issuer recorded on links: the canonical `https://api.descope.com/v1/apps/<DESCOPE_PROJECT_ID>`
+ * (the form real session JWTs carry), or `DESCOPE_JWT_ISSUER` when set. The
+ * cutover CLI (`packages/db/src/cli/descope-cutover.ts`) derives the same value
+ * when it writes the link row; a test pins the two in lockstep. Rows written by
+ * the first #889 CLI build may carry the legacy `https://api.descope.com/<id>`.
  * The resolver keys on (provider_key, subject), so an issuer drift cannot
  * fail-close an operator.
  */

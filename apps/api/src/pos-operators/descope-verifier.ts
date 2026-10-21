@@ -66,10 +66,25 @@ export function descopeJwksUrl(projectId: string): string {
   return `${DESCOPE_API_BASE}/${assertProjectId(projectId)}/.well-known/jwks.json`;
 }
 
+const ISSUER_URL_RE = /^https:\/\/\S{1,500}$/;
+
+/**
+ * `DESCOPE_JWT_ISSUER`, validated (an https URL or a bare project id — the forms
+ * Descope uses), or null when unset. A malformed value fails at boot rather than
+ * silently changing which tokens are accepted. The cutover CLI applies the same rule.
+ */
+function issuerOverride(): string | null {
+  const override = (process.env["DESCOPE_JWT_ISSUER"] ?? "").trim();
+  if (override.length === 0) return null;
+  if (!ISSUER_URL_RE.test(override) && !PROJECT_ID_RE.test(override)) {
+    throw new Error("DESCOPE_JWT_ISSUER must be an https URL or a project id");
+  }
+  return override;
+}
+
 /** The configured issuer: `DESCOPE_JWT_ISSUER` when set, else derived from the project id. */
 export function configuredDescopeIssuer(projectId: string): string {
-  const override = (process.env["DESCOPE_JWT_ISSUER"] ?? "").trim();
-  return override.length > 0 ? override : descopeIssuer(projectId);
+  return issuerOverride() ?? descopeIssuer(projectId);
 }
 
 /**
@@ -79,8 +94,8 @@ export function configuredDescopeIssuer(projectId: string): string {
  * project's JWKS, so a listed form cannot admit another project's token.
  */
 export function acceptedDescopeIssuers(projectId: string): string[] {
-  const override = (process.env["DESCOPE_JWT_ISSUER"] ?? "").trim();
-  if (override.length > 0) return [override];
+  const override = issuerOverride();
+  if (override) return [override];
   return [descopeIssuer(projectId), `${DESCOPE_API_BASE}/${projectId}`, projectId];
 }
 
