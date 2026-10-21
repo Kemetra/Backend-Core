@@ -29,6 +29,25 @@ This project follows [Semantic Versioning](https://semver.org/).
   evidence; Backend-Core accepts before the Connector sends). The POS must not
   call or send any of it before the RT-451 runtime is deployed. No runtime,
   migration, Connector or POS change.
+- RT-719 `[GATED]` OpenAPI contract, owner authorization 2026-10-21 (RT-709 O-8;
+  fleet baseline for the RT-713 POS compatibility matrix): which POS build each
+  paired terminal runs. Additive. `pos-terminal-pairing.openapi.yaml` 1.3.0-draft
+  states the "Build identity report (RT-719)" rule, and the 13 device-token
+  operations (the RT-639 set) document three OPTIONAL request headers,
+  `X-POS-Build-Commit`, `X-POS-App-Version` and `X-POS-Contract-Pin`, each a
+  bounded closed pattern (exactly 40 `[0-9a-f]`; a semver of at most 32
+  characters), no PII, never logged raw or used as a metric label; a terminal
+  that sends none stays valid and reads as unknown, never a default.
+  `devices.openapi.yaml` 1.5.0-draft adds the OPTIONAL, nullable `buildIdentity`
+  key to `DeviceSummary` / `DeviceDetail` (absent and `null` both mean unknown).
+  New `console-device-builds.openapi.yaml` 1.0.0-draft adds
+  `consoleGetFleetBaseline` (the distinct builds on the active devices in scope
+  with a count each and `unknownDeviceCount`, mapped onto the RT-709 C.1
+  `fleet_baseline.installed` entries), `x-runtime-status: contract-only`. The
+  AD-DEVICE-001 D-1 heartbeat (RT-327) stays the canonical reporting channel;
+  `reportedAt` is the server clock and `lastSeenAt` is untouched. Migration
+  proposal and open decisions in `docs/planning/rt-719-pos-build-identity.md`.
+  No runtime, migration or POS change.
 - RT-570 `[GATED]`, owner authorization 2026-10-21 (RT-417 F2): contract-only POS
   payer lookup for the till, new `pos-payers.openapi.yaml` 1.0.0-draft with
   `posListChargeablePayers` (`GET /api/pos/v1/payer-accounts`, operator envelope
@@ -63,6 +82,21 @@ This project follows [Semantic Versioning](https://semver.org/).
   read-only anchor + effects vs latest Bin comparison. The dead
   `InventoryBackfillProcessor` is deleted. Deploy: run
   `docs/operations/sql/inventory-anchors-domain-grants.sql` in step 2.
+- RT-431 `[GATED]`, contract-only (decisions D1 to D5 confirmed 2026-10-21,
+  recorded on RT-431): `audit.openapi.yaml`
+  1.3.0-draft adds `listPlatformAuditEvents` (`GET /api/v1/platform/audit/events`,
+  `x-runtime-status: contract-only`), a platform-admin-only read of the
+  platform-scoped audit rows (`tenant_id` null: `auth.signin.ok`,
+  `auth.signin.failed` and the RT-414 unresolvable-path-tenant
+  `platform.cross_tenant.accessed` rows) that `listAuditEvents` never returns.
+  `cookieAuth` only; a non-platform-admin, tenant owners included, gets 403. It
+  is not tenant-scoped, so RT-414 support-session enforcement does not cover it
+  and it needs no support session. Filters: `action`, `kind`, `actor_user_id`,
+  `from`, `to`, `cursor`, `limit` (no `tenant_id` / `store_id`), with the
+  `listAuditEvents` keyset order (RT-211). New `PlatformAuditEvent` is strict
+  with `tenant_id` always null; an email-shaped `actor_label` is returned masked
+  (`a***@example.com`). The read is not itself audited. `listAuditEvents` and
+  `AuditEvent` are unchanged. No runtime, migration or Console change.
 - Phase 1 workspace setup: `pnpm-workspace.yaml`, `tsconfig.base.json`,
   `.eslintrc.cjs`, `.prettierrc`, `.nvmrc`, root `package.json`,
   `docker-compose.dev.yml`, Constitution-Check PR template.

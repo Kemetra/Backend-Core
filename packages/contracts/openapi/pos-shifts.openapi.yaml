@@ -295,6 +295,9 @@ paths:
         must not send it before the RT-387 runtime is live and past its
         rollback window, or must send it behind a flag it can turn off first.
       parameters:
+        - $ref: "#/components/parameters/PosBuildCommit"
+        - $ref: "#/components/parameters/PosAppVersion"
+        - $ref: "#/components/parameters/PosContractPin"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
@@ -397,6 +400,9 @@ paths:
         Attribution: on the device path the verified `operatorUserId` is the
         movement's actor; on the envelope path the envelope operator is.
       parameters:
+        - $ref: "#/components/parameters/PosBuildCommit"
+        - $ref: "#/components/parameters/PosAppVersion"
+        - $ref: "#/components/parameters/PosContractPin"
         - $ref: "#/components/parameters/ShiftId"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -588,6 +594,9 @@ paths:
         `shift_payload_conflict`. A shift that does not resolve to this device
         is the non-disclosing 404 `shift_not_found`.
       parameters:
+        - $ref: "#/components/parameters/PosBuildCommit"
+        - $ref: "#/components/parameters/PosAppVersion"
+        - $ref: "#/components/parameters/PosContractPin"
         - $ref: "#/components/parameters/ShiftId"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -1612,6 +1621,52 @@ components:
           description: Seconds to wait before retrying (currently always 2).
 
   parameters:
+    PosBuildCommit:
+      name: X-POS-Build-Commit
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 40
+        maxLength: 40
+        pattern: "^[0-9a-f]{40}$"
+      description: >
+        RT-719. The POS git commit the running build was made from: exactly
+        40 characters of `[0-9a-f]` (the full SHA-1). Optional. A request that
+        sends no valid commit records the device's build as unknown; it is
+        never refused or slowed for it. Recorded only from a request to this
+        operation that authenticates with the device token. See "Build identity report
+        (RT-719)" in `pos-terminal-pairing.openapi.yaml`.
+    PosAppVersion:
+      name: X-POS-App-Version
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 5
+        maxLength: 32
+        pattern: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+      description: >
+        RT-719. The POS semantic version: at most 32 characters of
+        `[0-9A-Za-z.-]`, without build metadata. Optional: send it only when the build has a release
+        version (POS has no signed release yet). Ignored without a valid
+        `X-POS-Build-Commit`. See "Build identity report (RT-719)" in
+        `pos-terminal-pairing.openapi.yaml`.
+    PosContractPin:
+      name: X-POS-Contract-Pin
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 40
+        maxLength: 40
+        pattern: "^[0-9a-f]{40}$"
+      description: >
+        RT-719. The Backend-Core commit in the build's
+        `contracts/backend-core/PIN` (the `commit` line): exactly 40
+        characters of `[0-9a-f]`. Optional. Ignored without a valid `X-POS-Build-Commit`.
+        See "Build identity report (RT-719)" in
+        `pos-terminal-pairing.openapi.yaml`.
     IdempotencyKey:
       name: Idempotency-Key
       in: header
