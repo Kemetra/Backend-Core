@@ -49,8 +49,13 @@ function operation(doc: Doc, operationId: string): Operation {
   throw new Error(`operation ${operationId} not found`);
 }
 
+/**
+ * Every response the guard's headers can ride: the 2xx, and the 304 of a
+ * conditional GET (the guard sets them before the controller turns the answer
+ * into a 304: `posGetCashVariancePolicy`).
+ */
 const successResponses = (op: Operation) =>
-  Object.entries(op.responses ?? {}).filter(([status]) => status.startsWith("2"));
+  Object.entries(op.responses ?? {}).filter(([status]) => status.startsWith("2") || status === "304");
 
 describe("rotate-soon hint headers in the contracts (RT-639)", () => {
   describe.each(Object.entries(HINTED_OPERATIONS))("%s", (file, operationIds) => {
@@ -68,7 +73,7 @@ describe("rotate-soon hint headers in the contracts (RT-639)", () => {
       });
     });
 
-    it.each(operationIds)("%s documents both headers on every 2xx response", (operationId) => {
+    it.each(operationIds)("%s documents both headers on every 2xx and 304 response", (operationId) => {
       const responses = successResponses(operation(doc, operationId));
       expect(responses.length).toBeGreaterThan(0);
       for (const [, response] of responses) {
@@ -95,5 +100,12 @@ describe("rotate-soon hint headers in the contracts (RT-639)", () => {
     expect(text).toContain(ROTATE_AFTER_HEADER);
     expect(text).toContain(ROTATE_STAGE_HEADER);
     expect(text).not.toContain("deferred to RT-370");
+  });
+});
+
+describe("the conditional-GET 304 (RT-639)", () => {
+  it("posGetCashVariancePolicy has a 304, and it is covered by the check above", () => {
+    const op = operation(load("cash-variance-policy.openapi.yaml"), "posGetCashVariancePolicy");
+    expect(successResponses(op).map(([status]) => status)).toEqual(["200", "304"]);
   });
 });

@@ -176,6 +176,10 @@ paths:
         "304":
           description: Unchanged since the `If-None-Match` ETag. No body.
           headers:
+            X-Device-Token-Rotate-After:
+              $ref: "#/components/headers/DeviceTokenRotateAfter"
+            X-Device-Token-Rotate-Stage:
+              $ref: "#/components/headers/DeviceTokenRotateStage"
             ETag:
               $ref: "#/components/headers/ETag"
             Cache-Control:
