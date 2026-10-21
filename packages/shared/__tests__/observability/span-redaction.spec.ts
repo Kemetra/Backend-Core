@@ -279,6 +279,79 @@ describe("RedactingSpanExporter", () => {
 });
 
 // ---------------------------------------------------------------------------
+// DB connection string (RT-762)
+// ---------------------------------------------------------------------------
+
+describe("RedactingSpanExporter - db.connection_string (RT-762)", () => {
+  const DSN = "postgresql://app@db.internal.example:5432/dp2_prod?sslmode=require";
+
+  it("exports no span attribute value containing both '://' and '?'", async () => {
+    const memory = new tracing.InMemorySpanExporter();
+    const provider = new tracing.BasicTracerProvider({
+      spanProcessors: [new tracing.SimpleSpanProcessor(new RedactingSpanExporter(memory))],
+    });
+    // Attribute set mirrors what @opentelemetry/instrumentation-pg emits.
+    const span = provider.getTracer("t").startSpan("pg.query:SELECT", {
+      attributes: {
+        "db.system": "postgresql",
+        "db.connection_string": DSN,
+        "http.url": "https://example.test/a?token=abc",
+      },
+    });
+    const { traceId, spanId } = span.spanContext();
+    span.end();
+    await provider.forceFlush();
+
+    const [exported] = memory.getFinishedSpans();
+    const leaking = Object.entries(exported?.attributes ?? {}).filter(
+      ([, value]) => typeof value === "string" && value.includes("://") && value.includes("?"),
+    );
+    expect(leaking).toEqual([]);
+    expect(exported?.attributes).not.toHaveProperty("db.connection_string");
+    expect(exported?.attributes["db.system"]).toBe("postgresql");
+    expect(exported?.spanContext().traceId).toBe(traceId);
+    expect(exported?.spanContext().spanId).toBe(spanId);
+  });
+
+  it("drops DB host, database and user identity from DB spans only", () => {
+    const dbSpan = {
+      "db.system": "postgresql",
+      "db.operation": "SELECT",
+      "db.name": "dp2_prod",
+      "db.user": "app",
+      "db.namespace": "dp2_prod",
+      "net.peer.name": "db.internal.example",
+      "net.peer.port": 5432,
+      "server.address": "db.internal.example",
+      "server.port": 5432,
+    };
+    expect(redactSpanAttributes(dbSpan)).toEqual({
+      "db.system": "postgresql",
+      "db.operation": "SELECT",
+    });
+    const httpSpan = { "net.peer.name": "api.example.test", "server.address": "api.example.test" };
+    expect(redactSpanAttributes(httpSpan)).toEqual(httpSpan);
+  });
+
+  it("recognises DB spans under stable semconv (db.system.name)", () => {
+    expect(
+      redactSpanAttributes({
+        "db.system.name": "postgresql",
+        "db.namespace": "dp2_prod",
+        "server.address": "db.internal.example",
+        "server.port": 5432,
+      }),
+    ).toEqual({ "db.system.name": "postgresql" });
+  });
+
+  it("drops db.connection_string in redactSpanAttributes", () => {
+    expect(
+      redactSpanAttributes({ "db.connection_string": DSN, "db.system": "postgresql" }),
+    ).toEqual({ "db.system": "postgresql" });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GenAI prompt / completion attributes (RT-655 acceptance 3)
 // ---------------------------------------------------------------------------
 

@@ -8,8 +8,18 @@
 set -euo pipefail
 export MSYS_NO_PATHCONV=1 # Git Bash only; no effect on Linux
 
-ROOT="$(git rev-parse --show-toplevel)"
-HERE="$ROOT/tools/schemathesis"
+# The Backend-Core project root, located from this script: the Git root when
+# standalone, services/backend-core/ in the monorepo (RT-801).
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT="$(cd "$HERE/../.." && pwd -P)"
+# Git Bash: docker.exe needs C:/... paths, and MSYS_NO_PATHCONV stops the conversion.
+if command -v cygpath >/dev/null 2>&1; then
+  HERE="$(cygpath -m "$HERE")"
+  ROOT="$(cygpath -m "$ROOT")"
+fi
+for f in "$ROOT/Dockerfile" "$HERE/compose.yml" "$HERE/pg-init/01-roles.sh"; do
+  [[ -f "$f" ]] || { echo "stack-up: missing $f (wrong project root?)" >&2; exit 1; }
+done
 export FUZZ_PROJECT="${FUZZ_PROJECT:-api-fuzz}"
 export API_PORT="${API_PORT:-23000}"
 export API_IMAGE="${API_IMAGE:-api-fuzz-api:local}"
