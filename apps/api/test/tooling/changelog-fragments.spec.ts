@@ -120,6 +120,13 @@ describe("changelog fragments (RT-805)", () => {
       );
     });
 
+    it("puts a ticket's base fragment before its -2 fragment (migration order)", () => {
+      const second = lib.parseFragment("RT-3-added-2.md", fragment("", "Added", "RT-3 second"));
+      const first = lib.parseFragment("RT-3-added.md", fragment("", "Added", "RT-3 first"));
+      expect(lib.renderSections([second, first])).toBe("### Added\n- RT-3 first\n- RT-3 second\n");
+      expect(lib.renderSections([first, second])).toBe("### Added\n- RT-3 first\n- RT-3 second\n");
+    });
+
     it("splitSections inverts renderSections", () => {
       const split = lib.splitSections(lib.renderSections(fragments));
       expect(split.map((s) => s.section)).toEqual(["Added", "Added", "Changed", "Security"]);

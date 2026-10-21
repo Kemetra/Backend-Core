@@ -87,7 +87,7 @@ describe("console rate-limit ratchet (RT-619 / RT-574 D1)", () => {
 
   it("the sweep is not vacuous", () => {
     expect(cookieOps().filter(isRuntime).length).toBeGreaterThanOrEqual(98);
-    expect(Object.keys(declaredClasses()).length).toBe(cookieOps().length);
+    expect(Object.keys(declaredClasses())).toHaveLength(cookieOps().length);
   });
 
   it("the shared exemption list is exactly the operations resolving to exempt", () => {

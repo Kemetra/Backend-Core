@@ -21,7 +21,7 @@ const NON_FRAGMENTS = new Set(["README.md"]);
 
 /** Windows checkouts (core.autocrlf) read as CRLF; everything here works on LF. */
 function lf(text) {
-  return text.replace(/\r\n/g, "\n");
+  return text.replaceAll("\r\n", "\n");
 }
 
 function fail(name, problem) {
@@ -44,7 +44,8 @@ function parseFragment(name, text) {
   const lines = trimBlankEdges(lf(text).split("\n"));
   const heading = /^### (\S+)$/.exec(lines[0] ?? "");
   if (!heading || !SECTIONS.includes(heading[1])) {
-    fail(name, `first line must be a section heading, one of: ${SECTIONS.map((s) => `### ${s}`).join(", ")}`);
+    const headings = SECTIONS.map((s) => "### " + s).join(", ");
+    fail(name, `first line must be a section heading, one of: ${headings}`);
   }
   const bodyLines = trimBlankEdges(lines.slice(1));
   if (!(bodyLines[0] ?? "").startsWith("- ")) fail(name, "the entry must start with a `- ` bullet");
@@ -52,9 +53,13 @@ function parseFragment(name, text) {
   return { name, section: heading[1], body: bodyLines.join("\n") };
 }
 
-/** By file name, numbers compared as numbers (RT-3 before RT-20). */
+/**
+ * By file name without `.md`, numbers compared as numbers: RT-3 before RT-20,
+ * and RT-3-added before RT-3-added-2 (the order `--migrate` found them in).
+ */
 function compareFragments(a, b) {
-  return a.name.localeCompare(b.name, "en", { numeric: true });
+  const key = (f) => f.name.replace(/\.md$/, "");
+  return key(a).localeCompare(key(b), "en", { numeric: true });
 }
 
 function readFragments(dir) {
@@ -132,7 +137,11 @@ function fragmentName(text, section, taken) {
   const key = /^- (RT-\d+)\b/.exec(text)?.[1] ?? "no-ticket";
   const base = `${key}-${section.toLowerCase()}`;
   let name = `${base}.md`;
-  for (let n = 2; taken.has(name); n += 1) name = `${base}-${n}.md`;
+  let n = 2;
+  while (taken.has(name)) {
+    name = `${base}-${n}.md`;
+    n += 1;
+  }
   taken.add(name);
   return name;
 }
