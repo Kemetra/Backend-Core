@@ -152,8 +152,8 @@ info:
     status or `required` list changes; the change adds two `error.code`
     values to the existing 422 and is NOT additive in behaviour once F-3
     enforces it. ROLLOUT ORDER: the F-2 runtime records executions; the POS
-    reports them (F-5) before it sends the close; F-3 enforces the rule only
-    after that. Until F-3 the close behaves as in 1.2.0-draft. OPEN for F-3:
+    reports them (F-5) and holds a shift's close until that shift's
+    executions are acknowledged; F-3 enforces the rule only after that. Until F-3 the close behaves as in 1.2.0-draft. OPEN for F-3:
     a return paid out before the POS reported executions has none, so a
     close that claims it could never pass; F-3 defines that cutover. This
     version does not decide it.
@@ -511,24 +511,34 @@ paths:
         **Refund cross-check** (RT-271 R-9, RT-490; normative from the F-3
         runtime). Only a settled cash refund execution (`pos-sales/sales.yaml`
         `recordRefundExecution`) moves cash out of the drawer for a return;
-        accepting the return does not (R-1). So, after the refund-reference
-        checks above:
-        1. every `cashRefundReturnRefs` entry must have at least one settled
+        accepting the return does not (R-1). The rule covers returns
+        recorded through `recordReturn`. A credit-sale return
+        (`recordCreditSaleReversal`) is outside RT-490: it has no executions,
+        so it is not checked against them, and its cash refund counts at its
+        recorded refund tenders, as before RT-490. So, after the
+        refund-reference checks above:
+        1. every claimed `recordReturn` return must have at least one settled
            cash execution whose `evidence.shiftRef` is this shift's
            `shiftId`, else 422 `refund_ref_unsettled` (one answer for every
            such ref, naming none);
         2. `cashRefundsTotal` must equal, in exact decimal, the sum of the
-           amounts of the settled cash executions of the claimed returns whose
-           `evidence.shiftRef` is this shift, else 422
-           `cash_refunds_total_mismatch`.
+           amounts of the settled cash executions of the claimed
+           `recordReturn` returns whose `evidence.shiftRef` is this shift,
+           plus the recorded cash refund tenders of the claimed credit-sale
+           returns, else 422 `cash_refunds_total_mismatch`.
         A settled execution recorded with this shift's `shiftRef` for a
         return the close does not claim is not counted and does not block
-        the close (a read-side flag, RT-18). Executions are POS facts like the
-        close itself, so the POS MUST report a shift's refund executions
-        before it sends that shift's close. A close that arrives first is
-        refused with `refund_ref_unsettled`, records nothing and is retried
-        unchanged once the executions are recorded. A replay of a close
-        recorded before F-3 is never re-checked.
+        the close (a read-side flag, RT-18). Every execution of one return
+        carries the same `shiftRef` (`recordRefundExecution`), so a return is
+        never split across two closes.
+        ORDERING (normative for the POS, F-5): executions and closes travel
+        on different POS outboxes, so the POS MUST NOT send a shift's close
+        until every refund execution it recorded with that shift's `shiftId`
+        has been acknowledged (201 or a replay). With that rule, both 422s
+        are deterministic, like every other 422 here: they mean the close and
+        the executions disagree, and the POS dead-letters the close for
+        repair instead of retrying it. A replay of a close recorded before
+        F-3 is never re-checked.
 
 
         **Forced close.** `closeKind: forced` closes a shift the cashier could
@@ -1034,11 +1044,13 @@ components:
             must resolve to a return of the caller's tenant and store with a
             cash refund tender not claimed by another shift's close, else 422
             `refund_ref_invalid`; one refunded in another currency is 422
-            `currency_mismatch`. From the F-3 runtime each must also have a
-            settled cash refund execution in this shift (422
-            `refund_ref_unsettled`), and `cashRefundsTotal` must equal the sum
-            of those executions (422 `cash_refunds_total_mismatch`); see
-            `closeShift`, Refund cross-check (R-9).
+            `currency_mismatch`. From the F-3 runtime each `recordReturn`
+            return must also have a settled cash refund execution in this
+            shift (422 `refund_ref_unsettled`), and `cashRefundsTotal` must
+            equal the sum of those executions plus the cash refund tenders of
+            any claimed credit-sale return (422
+            `cash_refunds_total_mismatch`); see `closeShift`, Refund
+            cross-check (R-9).
         varianceApprovedByUserId:
           type: string
           format: uuid
@@ -1823,10 +1835,11 @@ components:
         `cashRefundReturnRefs` entry is not a cash-refunded return of the
         caller's tenant and store, or is already claimed by another shift's
         close; the same answer for each case); from the F-3 runtime (RT-490,
-        R-9) `refund_ref_unsettled` (a `cashRefundReturnRefs` entry has no
+        R-9) `refund_ref_unsettled` (a claimed `recordReturn` return has no
         settled cash refund execution in this shift) and
         `cash_refunds_total_mismatch` (`cashRefundsTotal` is not the sum of
-        the claimed returns' settled cash executions in this shift). Order:
+        the claimed returns' settled cash executions in this shift plus the
+        claimed credit-sale returns' cash refund tenders). Order:
         `shift_cashup_inconsistent`, then `refund_ref_invalid` /
         `currency_mismatch`, then `refund_ref_unsettled`, then
         `cash_refunds_total_mismatch`. Deterministic; nothing is recorded.

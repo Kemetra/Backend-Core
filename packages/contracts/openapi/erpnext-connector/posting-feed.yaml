@@ -251,24 +251,30 @@ info:
     POS had paid anything, so ERPNext recorded the refund as paid while the
     cash could still be in the drawer (Sales & Returns 1059). From the F-2
     runtime, behind a deploy flag:
-    (1) a `return` work item is offered only once the return's refund
+    (1) a `return` accepted while the flag is on, with `allocationRef` on
+    its allocations and a non-zero total, is offered only once its refund
     obligation is SETTLED: its settled cash executions sum to the return's
     total. It is emitted in the transaction of the execution that settles
-    the return, exactly once. A return whose total is 0 is settled at
-    acceptance.
-    (2) its `reversalOf.refundTenders` are projected from the return's
-    settled cash executions, one `{method: cash, amount}` entry per
-    execution in execution order, so they still sum to the returned total,
-    and the Connector posts them exactly as before. For a return whose total
-    is 0 (no execution) they are its recorded zero-amount allocations.
-    (3) a return that is never settled (accepted but not paid out, or sent
-    without `allocationRef` and therefore unsettleable) is never offered. It
-    is a visible exception, not a posting: the ERPNext stock return waits
-    for the payout (the accepted trade-off of R-7). An unpaid credit note
-    with a separate settlement document is deferred to G8 / RT-275.
-    (4) exactly once across the flag flip: a return whose work item was
-    emitted at acceptance while the flag was off is never emitted again at
-    settlement.
+    the return, exactly once, whatever the flag says by then.
+    (2) every other return is emitted at acceptance, as in 1.8.0-draft: one
+    accepted while the flag is off, one whose total is 0, one sent without
+    `allocationRef` (it cannot be settled through executions), and a credit
+    return (`recordCreditSaleReversal`), which is outside RT-490 and keeps
+    the RT-418 hold of responsibility-bearing reversals.
+    (3) for a return emitted under (1), `reversalOf.refundTenders` are
+    projected from its settled cash executions, one `{method: cash, amount}`
+    entry per execution in execution order, so they still sum to the
+    returned total. Under (2) they are its recorded allocations, as before.
+    The Connector posts them exactly as before.
+    (4) a return under (1) that is never settled (accepted but not paid
+    out) is never offered: the ERPNext stock return waits for the payout
+    (the accepted trade-off of R-7), and the return shows as `open` or
+    `partially_settled` on the `pos-sales/sales.yaml` return reads. An
+    unpaid credit note with a separate settlement document is deferred to
+    G8 / RT-275.
+    (5) exactly once across flag flips: a return emitted at acceptance is
+    never emitted again, and a return waiting under (1) is still emitted at
+    its settlement after the flag is turned off.
     ROLLOUT ORDER: this contract, then the F-2 runtime (flag off: returns
     still post at acceptance, as in 1.8.0-draft), then the POS reports its
     settled cash executions and sends `allocationRef` on every return (F-5),
@@ -664,8 +670,8 @@ components:
             (`permanently_rejected` / `validation`) instead of posting a
             full-value credit note. Backend-Core MUST NOT emit `return` before
             the Connector supports it (RT-16) and supports settlement (RT-78),
-            and, with the RT-490 settle-before-post flag on, before the
-            return's refund obligation is settled (R-7).
+            and, for a return accepted with the RT-490 settle-before-post
+            flag on, before the return's refund obligation is settled (R-7).
         recordedAt:
           type: string
           format: date-time
@@ -698,9 +704,10 @@ components:
             $ref: "#/components/schemas/RefundTender"
           description: >
             RT-10 D6 — how a `return` is refunded, summing to the returned
-            total. With the RT-490 settle-before-post flag off, the return's
-            recorded refund allocations (RT-14 D3); with it on, its settled
-            cash executions, one entry per execution (R-7, see RT-490 above).
+            total. For a return emitted at acceptance, its recorded refund
+            allocations (RT-14 D3); for a return emitted at settlement under
+            the RT-490 settle-before-post flag, its settled cash executions,
+            one entry per execution (R-7, see RT-490 above).
             Only on a `return`; absent on other kinds. Optional; emitted only
             once the Connector supports settlement (see ROLLOUT ORDER). A
             `void` carries no refund tenders: it mirrors `sale.tenders`.
@@ -894,8 +901,8 @@ components:
       required: [method, amount]
       description: >
         One refund entry of a `return` (RT-14 D3), in the sale's currency: a
-        recorded refund allocation, or, with the RT-490 settle-before-post
-        flag on, one settled cash execution. The shape is unchanged by RT-490
+        recorded refund allocation, or, for a return emitted at settlement
+        (RT-490), one settled cash execution. The shape is unchanged by RT-490
         (no `allocationRef` or execution field reaches the Connector).
       properties:
         method:

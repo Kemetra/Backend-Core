@@ -946,11 +946,11 @@ describe("erpnext-connector/posting-feed.yaml — RT-490 settle before post (1.9
 
   it("offers a return only once settled, projects refundTenders from settled cash executions, exactly once", () => {
     const text = info();
-    expect(text).toContain("a `return` work item is offered only once the return's refund obligation is SETTLED");
-    expect(text).toContain("its `reversalOf.refundTenders` are projected from the return's settled cash executions");
-    expect(text).toContain("a return that is never settled");
-    expect(text).toContain("is never offered");
-    expect(text).toContain("exactly once across the flag flip");
+    expect(text).toContain("is offered only once its refund obligation is SETTLED");
+    expect(text).toContain("`reversalOf.refundTenders` are projected from its settled cash executions");
+    expect(text).toContain("that is never settled (accepted but not paid out) is never offered");
+    expect(text).toContain("exactly once across flag flips");
+    expect(text).toContain("a return waiting under (1) is still emitted at its settlement after the flag is turned off");
     expect(text).toContain("and only then is the flag turned on");
   });
 
@@ -963,7 +963,14 @@ describe("erpnext-connector/posting-feed.yaml — RT-490 settle before post (1.9
   });
 
   it("the reversal refund tenders and reversalKind describe the flag", () => {
-    expect(fieldText("ReversalRef", "refundTenders")).toContain("with it on, its settled cash executions, one entry per execution (R-7");
+    expect(fieldText("ReversalRef", "refundTenders")).toContain("its settled cash executions, one entry per execution (R-7");
+  });
+
+  it("ref-less, zero-total and credit returns keep posting at acceptance (review findings 1, 3, 4)", () => {
+    const text = info();
+    expect(text).toContain("(2) every other return is emitted at acceptance, as in 1.8.0-draft");
+    expect(text).toContain("one sent without `allocationRef` (it cannot be settled through executions)");
+    expect(text).toContain("a credit return (`recordCreditSaleReversal`), which is outside RT-490");
     expect(fieldText("ReversalRef", "reversalKind")).toContain("before the return's refund obligation is settled (R-7)");
   });
 });

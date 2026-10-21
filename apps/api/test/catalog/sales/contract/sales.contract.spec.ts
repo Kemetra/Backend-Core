@@ -2227,7 +2227,7 @@ describe("pos-sales/sales.yaml — RT-490 refund allocation, execution and retur
     it("R-12: cash-only, all-cash sales only, else 422 refund_instrument_not_allowed", () => {
       const text = opText("recordReturn");
       expect(text).toContain("Allocation rules (RT-490; R-5, R-6, R-12; normative from the F-2 runtime)");
-      expect(text).toContain("A return of a sale that carries any tender whose `method` is not `cash`, or an allocation whose `originalTenderRef` names a non-cash tender, is 422 `refund_instrument_not_allowed`");
+      expect(text).toContain("A return of a sale that carries any tender whose `method` is not `cash` is 422 `refund_instrument_not_allowed`");
     });
 
     it("R-5: the cumulative refundable balance counts allocated amounts under the sales row lock", () => {
@@ -2236,11 +2236,13 @@ describe("pos-sales/sales.yaml — RT-490 refund allocation, execution and retur
       expect(text).toContain("The rule counts ALLOCATED amounts, never settled ones");
       expect(text).toContain("It is checked under the same `sales` row lock as the quantity cap");
       expect(text).toContain("422 `refund_allocation_exceeds_tender`");
+      // Review finding 7: cash already refunded by the legacy route counts too.
+      expect(text).toContain("plus Σ of the sale's legacy `recordRefund` amounts, stays ≤ Σ of the sale's cash tenders");
     });
 
     it("R-6: a tender-unknown sale accepts a cash allocation with no originalTenderRef, capped by the line cap", () => {
       expect(opText("recordReturn")).toContain(
-        "a cash allocation with no `originalTenderRef` is accepted, capped only by the per-line quantity cap",
+        "`tender_count = 0`): rule 3 does not apply. A cash allocation with no `originalTenderRef` is accepted, capped only by the per-line quantity cap",
       );
     });
 
@@ -2267,8 +2269,15 @@ describe("pos-sales/sales.yaml — RT-490 refund allocation, execution and retur
     it("R-7: the return posts once its obligation is settled, behind a deploy flag, exactly once", () => {
       const text = opText("recordReturn");
       expect(text).toContain("Settle before post (R-7, from the F-2 runtime, behind a deploy flag)");
-      expect(text).toContain("its `refundTenders` are the return's settled cash executions");
-      expect(text).toContain("Either way it is emitted exactly once per return");
+      expect(text).toContain("with `refundTenders` projected from the return's settled cash executions");
+      expect(text).toContain("Each return is emitted exactly once, at one of two moments");
+    });
+
+    it("R-7 flag edges: a ref-less or zero-total return posts at acceptance; turning the flag off never strands a waiting return", () => {
+      const text = opText("recordReturn");
+      expect(text).toContain("or when the return cannot be settled through executions (its allocations carry no `allocationRef`), or when its `returnTotal` is 0");
+      expect(text).toContain("so turning the flag off again never strands it");
+      expect(info()).toContain("so it keeps the pre-RT-490 posting (at acceptance) whatever the flag says, and is never silently dropped");
     });
   });
 
@@ -2339,8 +2348,18 @@ describe("pos-sales/sales.yaml — RT-490 refund allocation, execution and retur
 
     it("emits the return's posting from the settling execution exactly once, never again after an acceptance emit", () => {
       const text = opText("recordRefundExecution");
-      expect(text).toContain("emits the return's `reversal` work item in its own transaction, exactly once");
+      expect(text).toContain("emits the return's `reversal` work item in its own transaction, exactly once, whatever the deploy flag says at that moment");
       expect(text).toContain("is never emitted again");
+    });
+
+    it("a credit-sale return is outside RT-490: no execution names it (404) and its posting and close count are unchanged", () => {
+      const text = opText("recordRefundExecution");
+      expect(text).toContain("A return recorded through `recordCreditSaleReversal` is outside RT-490");
+      expect(described(schema("RefundTender"))).toContain("its posting and its shift-close count (its recorded refund tenders) are unchanged");
+    });
+
+    it("V1 pays a return out in one shift, so one close claims all of it (review finding 6)", () => {
+      expect(opText("recordRefundExecution")).toContain("every execution of a return carries the same `evidence.shiftRef`, else 400 `validation_error`");
     });
 
     it("the projection is strict and leaks no DB internals (§IV)", () => {

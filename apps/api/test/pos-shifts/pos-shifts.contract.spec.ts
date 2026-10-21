@@ -1365,9 +1365,19 @@ describe("pos-shifts — RT-490 refund cross-check on close (1.3.0-draft)", () =
   it("states the R-9 rule normatively: a settled cash execution in this shift per ref, and the total equal to their sum", () => {
     const text = closeText();
     expect(text).toContain("**Refund cross-check** (RT-271 R-9, RT-490; normative from the F-3 runtime)");
-    expect(text).toContain("every `cashRefundReturnRefs` entry must have at least one settled cash execution whose `evidence.shiftRef` is this shift's `shiftId`, else 422 `refund_ref_unsettled`");
-    expect(text).toContain("`cashRefundsTotal` must equal, in exact decimal, the sum of the amounts of the settled cash executions of the claimed returns whose `evidence.shiftRef` is this shift, else 422 `cash_refunds_total_mismatch`");
-    expect(text).toContain("the POS MUST report a shift's refund executions before it sends that shift's close");
+    expect(text).toContain("every claimed `recordReturn` return must have at least one settled cash execution whose `evidence.shiftRef` is this shift's `shiftId`, else 422 `refund_ref_unsettled`");
+    expect(text).toContain("`cashRefundsTotal` must equal, in exact decimal, the sum of the amounts of the settled cash executions of the claimed `recordReturn` returns whose `evidence.shiftRef` is this shift, plus the recorded cash refund tenders of the claimed credit-sale returns, else 422 `cash_refunds_total_mismatch`");
+  });
+
+  it("a credit-sale return is outside RT-490 and counts at its recorded refund tenders (review finding 1)", () => {
+    expect(closeText()).toContain("A credit-sale return (`recordCreditSaleReversal`) is outside RT-490: it has no executions, so it is not checked against them");
+  });
+
+  it("the POS holds a close until the shift's executions are acknowledged, so both 422s stay deterministic (review finding 2)", () => {
+    const text = closeText();
+    expect(text).toContain("the POS MUST NOT send a shift's close until every refund execution it recorded with that shift's `shiftId` has been acknowledged");
+    expect(text).toContain("both 422s are deterministic");
+    expect(info()).toContain("holds a shift's close until that shift's executions are acknowledged");
   });
 
   it("no longer says the server never checks cashRefundsTotal", () => {
