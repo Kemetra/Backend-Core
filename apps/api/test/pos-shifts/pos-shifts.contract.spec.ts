@@ -391,9 +391,9 @@ const VALID_CLOSE = {
 // 1. Document, version, and the unchanged stuck-shift surface
 // ===========================================================================
 describe("pos-shifts — document and version", () => {
-  it("is an OpenAPI 3.1 document at version 1.2.0-draft (RT-384)", () => {
+  it("is an OpenAPI 3.1 document at version 1.3.0-draft (RT-490; RT-384 was 1.2.0-draft)", () => {
     expect(doc.openapi).toBe("3.1.0");
-    expect(doc.info?.version).toBe("1.2.0-draft");
+    expect(doc.info?.version).toBe("1.3.0-draft");
   });
 
   it("carries an RT-384 version note: additive, [GATED], AD-CASH-001", () => {
@@ -911,7 +911,14 @@ describe("pos-shifts — errors", () => {
     ["closeShift", CLOSE, "403", ["refused"]],
     ["closeShift", CLOSE, "404", ["shift_not_found"]],
     ["closeShift", CLOSE, "409", ["idempotency_key_conflict", "shift_payload_conflict"]],
-    ["closeShift", CLOSE, "422", ["shift_cashup_inconsistent", "currency_mismatch", "refund_ref_invalid"]],
+    ["closeShift", CLOSE, "422", [
+      "shift_cashup_inconsistent",
+      "currency_mismatch",
+      "refund_ref_invalid",
+      // RT-490 (RT-271 R-9), from the F-3 runtime.
+      "refund_ref_unsettled",
+      "cash_refunds_total_mismatch",
+    ]],
     ...NEW_OPS.map(([id, route]): [string, Route, string, string[]] => [id, route, "425", ["idempotency_in_progress"]]),
   ];
 
@@ -1339,5 +1346,40 @@ describe("pos-shifts — RT-384 shift variance policy", () => {
     for (const name of ["ApproverCheck", "PolicyTriState", "PolicyFlag", "CashVariancePolicyValue", "RecordedFrozenPolicy"]) {
       expect({ name, shape: shape(schema(name)) }).toEqual({ name, shape: shape(shiftCloses.components?.schemas?.[name]) });
     }
+  });
+});
+// ===========================================================================
+// RT-490 (RT-271 R-9) — refund cross-check on close
+// ===========================================================================
+describe("pos-shifts — RT-490 refund cross-check on close (1.3.0-draft)", () => {
+  const flat = (text: string | undefined): string => (text ?? "").replace(/\s+/g, " ");
+  const info = (): string => flat(doc.info?.description);
+  const closeText = (): string => flat(op(CLOSE).description);
+
+  it("carries an RT-490 note citing the [GATED] owner authorization and R-9, enforced from F-3", () => {
+    expect(info()).toContain("RT-490 (1.3.0-draft; [GATED] owner authorization Jira RT-490 comment 13211, 2026-10-21; RT-271 R-9");
+    expect(info()).toContain("F-3 enforces the rule only after that. Until F-3 the close behaves as in 1.2.0-draft.");
+    expect(info()).toContain("OPEN for F-3");
+  });
+
+  it("states the R-9 rule normatively: a settled cash execution in this shift per ref, and the total equal to their sum", () => {
+    const text = closeText();
+    expect(text).toContain("**Refund cross-check** (RT-271 R-9, RT-490; normative from the F-3 runtime)");
+    expect(text).toContain("every `cashRefundReturnRefs` entry must have at least one settled cash execution whose `evidence.shiftRef` is this shift's `shiftId`, else 422 `refund_ref_unsettled`");
+    expect(text).toContain("`cashRefundsTotal` must equal, in exact decimal, the sum of the amounts of the settled cash executions of the claimed returns whose `evidence.shiftRef` is this shift, else 422 `cash_refunds_total_mismatch`");
+    expect(text).toContain("the POS MUST report a shift's refund executions before it sends that shift's close");
+  });
+
+  it("no longer says the server never checks cashRefundsTotal", () => {
+    expect(closeText()).not.toContain("The server does not check `cashSalesTotal`, `cashRefundsTotal`");
+    expect(closeText()).toContain("`cashRefundsTotal` is the exception from the F-3 runtime");
+  });
+
+  it("the close 422 names the two new codes after the existing ones, in order", () => {
+    const text = flat(response(CLOSE, "422").description);
+    const order = ["shift_cashup_inconsistent", "refund_ref_invalid", "refund_ref_unsettled", "cash_refunds_total_mismatch"]
+      .map((code) => text.lastIndexOf(`\`${code}\``));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 });

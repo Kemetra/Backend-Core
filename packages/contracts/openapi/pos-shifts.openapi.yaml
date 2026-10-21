@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Shifts API
-  version: "1.2.0-draft"
+  version: "1.3.0-draft"
   description: >
     POS-Pulse 004 Backend shift-lifecycle surface. Wave 4.1b (stuck-shift
     discovery).
@@ -139,6 +139,24 @@ info:
     is unchanged. No operation, status, required list or existing field
     changes, so a POS that never sends the new fields is unaffected (the POS
     shift sync client reads only the status and `error.code` of an answer).
+
+
+    RT-490 (1.3.0-draft; [GATED] owner authorization Jira RT-490 comment
+    13211, 2026-10-21; RT-271 R-9, ratified in RT-271 comment 11886): REFUND
+    CROSS-CHECK ON CLOSE. From the F-3 runtime, `closeShift` requires a
+    settled cash refund execution (`pos-sales/sales.yaml`
+    `recordRefundExecution`, 1.13.0-draft) in this shift for every
+    `cashRefundReturnRefs` entry, and `cashRefundsTotal` equal to the sum of
+    those executions, else 422 `refund_ref_unsettled` or
+    `cash_refunds_total_mismatch` (see `closeShift`). No request, projection,
+    status or `required` list changes; the change adds two `error.code`
+    values to the existing 422 and is NOT additive in behaviour once F-3
+    enforces it. ROLLOUT ORDER: the F-2 runtime records executions; the POS
+    reports them (F-5) before it sends the close; F-3 enforces the rule only
+    after that. Until F-3 the close behaves as in 1.2.0-draft. OPEN for F-3:
+    a return paid out before the POS reported executions has none, so a
+    close that claims it could never pass; F-3 defines that cutover. This
+    version does not decide it.
 servers:
   - url: https://api.example.com
 tags:
@@ -473,11 +491,12 @@ paths:
         and `variance = countedCash − expectedCash`. `openingFloat` must equal
         the float recorded at open. If any of these does not hold, the answer
         is 422 `shift_cashup_inconsistent` and nothing is recorded. The
-        server does not check `cashSalesTotal`, `cashRefundsTotal`,
-        `payInTotal`, `payOutTotal` or `saleCount` against the sales, returns
-        and movements it has recorded: a movement or a sale can still be on
-        its way, or dead-lettered. That comparison is a read-side flag
-        (RT-18), never a block.
+        server does not check `cashSalesTotal`, `payInTotal`, `payOutTotal`
+        or `saleCount` against the sales and movements it has recorded: a
+        movement or a sale can still be on its way, or dead-lettered. That
+        comparison is a read-side flag (RT-18), never a block.
+        `cashRefundsTotal` is the exception from the F-3 runtime: it is
+        checked against the settled refund executions (see below, R-9).
 
 
         **Refund references.** `cashRefundReturnRefs` names the returns whose
@@ -487,6 +506,29 @@ paths:
         `refund_ref_invalid` (the same answer for an unknown, foreign or
         already-claimed ref). A ref whose refund was paid in a currency other
         than the shift's is 422 `currency_mismatch`.
+
+
+        **Refund cross-check** (RT-271 R-9, RT-490; normative from the F-3
+        runtime). Only a settled cash refund execution (`pos-sales/sales.yaml`
+        `recordRefundExecution`) moves cash out of the drawer for a return;
+        accepting the return does not (R-1). So, after the refund-reference
+        checks above:
+        1. every `cashRefundReturnRefs` entry must have at least one settled
+           cash execution whose `evidence.shiftRef` is this shift's
+           `shiftId`, else 422 `refund_ref_unsettled` (one answer for every
+           such ref, naming none);
+        2. `cashRefundsTotal` must equal, in exact decimal, the sum of the
+           amounts of the settled cash executions of the claimed returns whose
+           `evidence.shiftRef` is this shift, else 422
+           `cash_refunds_total_mismatch`.
+        A settled execution recorded with this shift's `shiftRef` for a
+        return the close does not claim is not counted and does not block
+        the close (a read-side flag, RT-18). Executions are POS facts like the
+        close itself, so the POS MUST report a shift's refund executions
+        before it sends that shift's close. A close that arrives first is
+        refused with `refund_ref_unsettled`, records nothing and is retried
+        unchanged once the executions are recorded. A replay of a close
+        recorded before F-3 is never re-checked.
 
 
         **Forced close.** `closeKind: forced` closes a shift the cashier could
@@ -992,7 +1034,11 @@ components:
             must resolve to a return of the caller's tenant and store with a
             cash refund tender not claimed by another shift's close, else 422
             `refund_ref_invalid`; one refunded in another currency is 422
-            `currency_mismatch`.
+            `currency_mismatch`. From the F-3 runtime each must also have a
+            settled cash refund execution in this shift (422
+            `refund_ref_unsettled`), and `cashRefundsTotal` must equal the sum
+            of those executions (422 `cash_refunds_total_mismatch`); see
+            `closeShift`, Refund cross-check (R-9).
         varianceApprovedByUserId:
           type: string
           format: uuid
@@ -1776,8 +1822,14 @@ components:
         a currency other than the shift's); `refund_ref_invalid` (a
         `cashRefundReturnRefs` entry is not a cash-refunded return of the
         caller's tenant and store, or is already claimed by another shift's
-        close; the same answer for each case). Deterministic; nothing is
-        recorded.
+        close; the same answer for each case); from the F-3 runtime (RT-490,
+        R-9) `refund_ref_unsettled` (a `cashRefundReturnRefs` entry has no
+        settled cash refund execution in this shift) and
+        `cash_refunds_total_mismatch` (`cashRefundsTotal` is not the sum of
+        the claimed returns' settled cash executions in this shift). Order:
+        `shift_cashup_inconsistent`, then `refund_ref_invalid` /
+        `currency_mismatch`, then `refund_ref_unsettled`, then
+        `cash_refunds_total_mismatch`. Deterministic; nothing is recorded.
       content:
         application/json:
           schema:

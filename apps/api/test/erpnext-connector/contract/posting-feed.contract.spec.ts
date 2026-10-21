@@ -836,8 +836,7 @@ describe("erpnext-connector/posting-feed.yaml — RT-417 responsibility lines (1
   const info = (): string => flat(feedDoc.info?.description);
   const listText = (): string => flat(field("Sale", "responsibilities")?.description);
 
-  it("is 1.8.0-draft and its note records RT-417 with the [GATED] approval", () => {
-    expect(feedDoc.info?.version).toBe("1.8.0-draft");
+  it("its note records RT-417 at 1.8.0-draft with the [GATED] approval (version moved on in RT-490)", () => {
     expect(info()).toContain("RT-417 (1.8.0-draft; [GATED] approval Jira RT-417 comment 11671");
   });
 
@@ -923,5 +922,48 @@ describe("erpnext-connector/posting-feed.yaml — RT-417 responsibility lines (1
 
   it("tells strict feed validators to re-pin first", () => {
     expect(info()).toContain("`Sale` is `additionalProperties: false`, so a Connector that validates the feed strictly must re-pin first; RT-417");
+  });
+});
+// ===========================================================================
+// RT-490 (RT-271 R-7) — settle before post for returns
+// ===========================================================================
+describe("erpnext-connector/posting-feed.yaml — RT-490 settle before post (1.9.0-draft)", () => {
+  const flat = (text: string | undefined): string => (text ?? "").replace(/\s+/g, " ");
+  const info = (): string => flat(feedDoc.info?.description);
+  const schema = (name: string): SchemaObject | undefined => feedDoc.components?.schemas?.[name];
+  const fieldText = (schemaName: string, name: string): string =>
+    flat(((schema(schemaName)?.properties ?? {})[name] as { description?: string } | undefined)?.description);
+
+  it("is 1.9.0-draft and its note records RT-490 with the [GATED] owner authorization", () => {
+    expect(feedDoc.info?.version).toBe("1.9.0-draft");
+    expect(info()).toContain("RT-490 (1.9.0-draft; [GATED] owner authorization Jira RT-490 comment 13211, 2026-10-21; RT-271 R-7");
+  });
+
+  it("no longer says a return's refund tenders record cash that left the drawer at acceptance", () => {
+    expect(info()).not.toContain("because they record cash that actually left the drawer");
+    expect(info()).toContain("A return's refund tenders are its refund allocations (how the refund is to be paid) until the settle-before-post flag of RT-490 (below) is on");
+  });
+
+  it("offers a return only once settled, projects refundTenders from settled cash executions, exactly once", () => {
+    const text = info();
+    expect(text).toContain("a `return` work item is offered only once the return's refund obligation is SETTLED");
+    expect(text).toContain("its `reversalOf.refundTenders` are projected from the return's settled cash executions");
+    expect(text).toContain("a return that is never settled");
+    expect(text).toContain("is never offered");
+    expect(text).toContain("exactly once across the flag flip");
+    expect(text).toContain("and only then is the flag turned on");
+  });
+
+  it("keeps the feed schema unchanged for the Connector (R-7: Connector unchanged for the pilot)", () => {
+    const tender = schema("RefundTender");
+    expect(Object.keys(tender?.properties ?? {}).sort()).toEqual(["amount", "method"]);
+    expect(tender?.required?.slice().sort()).toEqual(["amount", "method"]);
+    expect(tender?.additionalProperties).toBe(false);
+    expect(info()).toContain("no schema, field, work-item kind or ack changes, and the Connector is unchanged for the pilot");
+  });
+
+  it("the reversal refund tenders and reversalKind describe the flag", () => {
+    expect(fieldText("ReversalRef", "refundTenders")).toContain("with it on, its settled cash executions, one entry per execution (R-7");
+    expect(fieldText("ReversalRef", "reversalKind")).toContain("before the return's refund obligation is settled (R-7)");
   });
 });
