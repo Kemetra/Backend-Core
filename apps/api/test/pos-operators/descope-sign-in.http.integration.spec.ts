@@ -163,6 +163,7 @@ describe("RT-791 sign-in with a Descope session JWT", () => {
     ["a bad signature", () => descope!.mint(DESCOPE_SUB, { foreignKey: true })],
     ["an expired token", () => descope!.mint(DESCOPE_SUB, { expired: true })],
     ["an unlinked subject", () => descope!.mint("U2rt791NobodyHere")],
+    ["another project's audience", () => descope!.mint(DESCOPE_SUB, { audience: "P2otherProject" })],
   ])("%s → generic 401, no session row", async (_label, make) => {
     if (maybeSkip()) return;
     const res = await signIn(await make());

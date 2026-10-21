@@ -129,7 +129,7 @@ describe("clerkIdentityProviderFactory — provider selection", () => {
     expect(adapter).toBeInstanceOf(DescopeIdentityProviderAdapter);
     expect(DESCOPE_PROVIDER_KEY).toBe("descope");
     expect((adapter as DescopeIdentityProviderAdapter).issuer).toBe(
-      `https://api.descope.com/${PROJECT_ID}`,
+      `https://api.descope.com/v1/apps/${PROJECT_ID}`,
     );
   });
 
