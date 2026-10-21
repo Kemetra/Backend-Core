@@ -92,6 +92,16 @@ describe("RT-740 — the invariant with a manual discount", () => {
   function off(value: string, amount: string = value): PricedLineDiscountInput {
     return { kind: "amount", value, amount };
   }
+  /** A discounted line: unit price, quantity, net, discount, currency (EGP unless named). */
+  function priced(
+    unitPrice: string,
+    quantity: string,
+    lineAmount: string,
+    discount: PricedLineDiscountInput,
+    currencyCode = "EGP",
+  ): PricedLineInput {
+    return { unitPrice, quantity, lineAmount, currencyCode, discount };
+  }
   /** 2 × 45.00 = 90.00 gross (doc 28 §5 receipt example). */
   function gross90(lineAmount: string, discount: PricedLineDiscountInput): PricedLineInput {
     return { unitPrice: "45.00", quantity: "2", lineAmount, currencyCode: "EGP", discount };
@@ -108,41 +118,35 @@ describe("RT-740 — the invariant with a manual discount", () => {
       // Half up on the line gross, once (doc 28 §8): 45 × 10% = 4.5 → 5; 44 × 10% = 4.4 → 4.
       [
         "half up at the boundary: 0.45 at 10% rounds 0.045 up to 0.05",
-        { unitPrice: "0.45", quantity: "1", lineAmount: "0.40", currencyCode: "EGP", discount: pct("10", "0.05") },
+        priced("0.45", "1", "0.40", pct("10", "0.05")),
       ],
       [
         "half up below the boundary: 0.44 at 10% rounds 0.044 down to 0.04",
-        { unitPrice: "0.44", quantity: "1", lineAmount: "0.40", currencyCode: "EGP", discount: pct("10", "0.04") },
+        priced("0.44", "1", "0.40", pct("10", "0.04")),
       ],
       [
         "computed on the line gross, never per unit: 3 × 0.15 at 10% is 0.045 → 0.05",
-        { unitPrice: "0.15", quantity: "3", lineAmount: "0.40", currencyCode: "EGP", discount: pct("10", "0.05") },
+        priced("0.15", "3", "0.40", pct("10", "0.05")),
       ],
       [
         "a percent that rounds to 0 gives amount 0 and the gross: 1% of 0.01",
-        { unitPrice: "0.01", quantity: "1", lineAmount: "0.01", currencyCode: "EGP", discount: pct("1", "0") },
+        priced("0.01", "1", "0.01", pct("1", "0")),
       ],
       [
         "a 0-minor currency rounds to whole units: 15% of JPY 1003 is 150.45 → 150",
-        { unitPrice: "1003", quantity: "1", lineAmount: "853", currencyCode: "JPY", discount: pct("15", "150") },
+        priced("1003", "1", "853", pct("15", "150"), "JPY"),
       ],
       [
         "a 3-minor currency: 10% of KWD 1.125 × 2 is 0.225",
-        { unitPrice: "1.125", quantity: "2", lineAmount: "2.025", currencyCode: "KWD", discount: pct("10", "0.225") },
+        priced("1.125", "2", "2.025", pct("10", "0.225"), "KWD"),
       ],
       [
         "a net that does not divide by quantity is still a valid capture (2.99 over 3)",
-        { unitPrice: "1.00", quantity: "3", lineAmount: "2.99", currencyCode: "EGP", discount: off("0.01") },
+        priced("1.00", "3", "2.99", off("0.01")),
       ],
       [
         "near the column bound: 0.01 × 9999999999999 at 100%",
-        {
-          unitPrice: "0.01",
-          quantity: "9999999999999",
-          lineAmount: "0",
-          currencyCode: "EGP",
-          discount: pct("100", "99999999999.99"),
-        },
+        priced("0.01", "9999999999999", "0", pct("100", "99999999999.99")),
       ],
     ])("%s", (_name, l) => {
       expect(findLinePricingViolation([l])).toBeNull();
@@ -153,24 +157,16 @@ describe("RT-740 — the invariant with a manual discount", () => {
     it.each([
       ["lineAmount is the gross, not the net", gross90("90.00", pct("10", "9.00"))],
       ["lineAmount is not gross − amount", gross90("80.00", pct("10", "9.00"))],
-      ["percent amount rounded down instead of half up", {
-        unitPrice: "0.45", quantity: "1", lineAmount: "0.41", currencyCode: "EGP", discount: pct("10", "0.04"),
-      }],
-      ["percent amount computed per unit (3 × round(0.015) = 0.06)", {
-        unitPrice: "0.15", quantity: "3", lineAmount: "0.39", currencyCode: "EGP", discount: pct("10", "0.06"),
-      }],
+      ["percent amount rounded down instead of half up", priced("0.45", "1", "0.41", pct("10", "0.04"))],
+      ["percent amount computed per unit (3 × round(0.015) = 0.06)", priced("0.15", "3", "0.39", pct("10", "0.06"))],
       ["percent amount that does not match its value", gross90("72.00", pct("10", "18.00"))],
       ["an amount discount whose value differs from its amount", gross90("85.00", off("4.00", "5.00"))],
       ["an amount beyond the minor unit", gross90("84.995", off("5.005"))],
       ["a percent value outside 1–100", gross90("0", pct("101", "90.00"))],
       ["a percent value of 0", gross90("90.00", pct("0", "0"))],
       ["a fractional percent value", gross90("85.50", pct("5.0", "4.50"))],
-      ["a fractional quantity, discount or not", {
-        unitPrice: "2.00", quantity: "0.5", lineAmount: "0.90", currencyCode: "EGP", discount: pct("10", "0.10"),
-      }],
-      ["a currency with no ISO-4217 minor unit", {
-        unitPrice: "3", quantity: "3", lineAmount: "8", currencyCode: "XAU", discount: off("1"),
-      }],
+      ["a fractional quantity, discount or not", priced("2.00", "0.5", "0.90", pct("10", "0.10"))],
+      ["a currency with no ISO-4217 minor unit", priced("3", "3", "8", off("1"), "XAU")],
     ])("%s", (_name, l) => {
       expect(findLinePricingViolation([l as PricedLineInput])).toBe(0);
     });

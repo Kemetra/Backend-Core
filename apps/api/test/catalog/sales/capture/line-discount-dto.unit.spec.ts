@@ -10,14 +10,16 @@
  *   - a body without `discount` hashes exactly as before; a body with it
  *     hashes differently, and so does any change to it.
  */
-import { ZodError } from "zod";
-
-import { CaptureSaleRequestPipe } from "../../../../src/catalog/sales/dto/capture-sale-request.pipe";
 import { DISCOUNT_REASON_CODES } from "../../../../src/catalog/sales/dto/capture-sale-request.dto";
 import { sha256CanonicalHex } from "../../../../src/catalog/sales/payload-hash";
+import {
+  CAPTURE_SCHEMA_VARIANTS,
+  clearTenderFlags,
+  expectCapture400 as expect400,
+  parseCapture as parse,
+  TENDERS_FLAG,
+} from "./__capture-dto-support";
 
-const TENDERS_FLAG = "POS_SALE_TENDERS_ENABLED";
-const SAME_METHOD_FLAG = "POS_SALE_TENDERS_SAME_METHOD_ENABLED";
 const APPROVER = "0a000000-0000-7000-8000-000000000740";
 
 function discount(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -54,26 +56,10 @@ function body(lineDiscount?: Record<string, unknown>, overrides: Record<string, 
   };
 }
 
-const pipe = new CaptureSaleRequestPipe();
-const parse = (value: unknown): Record<string, unknown> =>
-  pipe.transform(value, { type: "body" }) as unknown as Record<string, unknown>;
-
-function expect400(value: unknown): void {
-  expect(() => parse(value)).toThrow(ZodError);
-}
-
-afterEach(() => {
-  delete process.env[TENDERS_FLAG];
-  delete process.env[SAME_METHOD_FLAG];
-});
+afterEach(clearTenderFlags);
 
 describe("RT-740 — a line discount is accepted on every capture schema", () => {
-  const variants: ReadonlyArray<[string, Record<string, string>]> = [
-    ["tenders gate off", {}],
-    ["tenders gate on", { [TENDERS_FLAG]: "true" }],
-    ["same-method gate on", { [TENDERS_FLAG]: "true", [SAME_METHOD_FLAG]: "true" }],
-  ];
-  it.each(variants)("%s: a discounted line parses unchanged", (_name, env) => {
+  it.each(CAPTURE_SCHEMA_VARIANTS)("%s: a discounted line parses unchanged", (_name, env) => {
     Object.assign(process.env, env);
     const parsed = parse(body(discount({ approverUserId: APPROVER })));
     expect((parsed["lines"] as Array<Record<string, unknown>>)[0]!["discount"]).toEqual(
