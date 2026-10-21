@@ -77,6 +77,21 @@ const USABLE_REPORT = `(jsonb_typeof(r.summary->'bin_view_report') = 'object'
        AND jsonb_typeof(r.summary->'bin_view_report'->'recordedAt') = 'string'
        AND (r.summary->'bin_view_report'->'complete') IS DISTINCT FROM 'false'::jsonb)`;
 
+/**
+ * An intent the posting consumer has not turned into a posting row yet. It is
+ * a sub-select of STORE_FACTS_SQL, so it and the `in_flight` posting rows are
+ * read from ONE statement snapshot: a consumer that inserts the posting row and
+ * then marks the event delivered cannot slip between two separate checks.
+ */
+const UNDELIVERED_INTENTS_SQL = `
+SELECT count(*)::int FROM outbox_events o
+ WHERE o.event_type = 'erpnext.posting.requested'
+   AND (o.delivery_state IN ('pending', 'claimed', 'failed')
+        OR (o.delivery_state = 'dead_lettered'
+            AND NOT EXISTS (SELECT 1 FROM erpnext_posting_status p
+                             WHERE p.tenant_id = o.tenant_id
+                               AND p.source_ref_id::text = o.payload->>'source_ref_id')))`;
+
 /** Per live store: its stock map, primary location and newest usable snapshot. */
 const STORE_FACTS_SQL = `
 WITH snap AS (
@@ -95,7 +110,8 @@ SELECT s.id AS store_id,
        (SELECT max(COALESCE(p.posted_at, p.updated_at)) FROM erpnext_posting_status p
          WHERE p.store_id = s.id AND p.status = 'posted') AS last_posted_at,
        EXISTS (SELECT 1 FROM erpnext_posting_status p
-                WHERE p.store_id = s.id AND p.status IN ('pending', 'failed_transient')) AS in_flight
+                WHERE p.store_id = s.id AND p.status IN ('pending', 'failed_transient')) AS in_flight,
+       (${UNDELIVERED_INTENTS_SQL}) AS undelivered
   FROM stores s
   LEFT JOIN erpnext_warehouse_map whm
          ON whm.store_id = s.id AND whm.purpose = 'stock' AND whm.retired_at IS NULL
@@ -114,24 +130,16 @@ interface StoreFactsRow {
   recorded_at: Date | null;
   last_posted_at: Date | null;
   in_flight: boolean;
+  /** Tenant-wide; read in the same statement (one snapshot) as `in_flight`. */
+  undelivered: number;
 }
-
-/** An intent the posting consumer has not turned into a posting row yet. */
-const UNDELIVERED_INTENTS_SQL = `
-SELECT count(*)::int AS n FROM outbox_events o
- WHERE o.event_type = 'erpnext.posting.requested'
-   AND (o.delivery_state IN ('pending', 'claimed', 'failed')
-        OR (o.delivery_state = 'dead_lettered'
-            AND NOT EXISTS (SELECT 1 FROM erpnext_posting_status p
-                             WHERE p.tenant_id = o.tenant_id
-                               AND p.source_ref_id::text = o.payload->>'source_ref_id')))`;
 
 function refused(code: ActivationRefusalCode, storeIds: readonly string[] = []): ActivationOutcome {
   return { kind: "refused", refusal: { code, storeIds } };
 }
 
 /** The first failing precondition, in decision-3 order, or null. */
-function preconditionRefusal(stores: readonly StoreFactsRow[], undelivered: number): ActivationOutcome | null {
+function preconditionRefusal(stores: readonly StoreFactsRow[]): ActivationOutcome | null {
   if (stores.length === 0) return refused("no_stores");
   const failing = (test: (s: StoreFactsRow) => boolean): string[] => stores.filter(test).map((s) => s.store_id);
   const checks: Array<[ActivationRefusalCode, (s: StoreFactsRow) => boolean]> = [
@@ -145,7 +153,7 @@ function preconditionRefusal(stores: readonly StoreFactsRow[], undelivered: numb
     const ids = failing(test);
     if (ids.length > 0) return refused(code, ids);
   }
-  return undelivered > 0 ? refused("posting_intents_undelivered") : null;
+  return stores[0]!.undelivered > 0 ? refused("posting_intents_undelivered") : null;
 }
 
 /**
@@ -168,8 +176,7 @@ export async function activateSaleEffects(
   if (current.rows[0]?.active === true) return refused("already_active");
 
   const stores = (await client.query<StoreFactsRow>(STORE_FACTS_SQL)).rows;
-  const undelivered = (await client.query<{ n: number }>(UNDELIVERED_INTENTS_SQL)).rows[0]!.n;
-  const refusal = preconditionRefusal(stores, undelivered);
+  const refusal = preconditionRefusal(stores);
   if (refusal !== null) return refusal;
 
   const now = (await client.query<{ now: Date }>(`SELECT now() AS now`)).rows[0]!.now;
@@ -274,7 +281,11 @@ async function writeAnchor(
 /**
  * `entries`: the snapshot's Bin entries of run $1 (first entry per Item);
  * `mapped`: those whose Item maps to exactly one confirmed, active Retail
- * product (an ambiguous or unmapped Item has no operational position).
+ * product (an ambiguous or unmapped Item has no operational position), carries
+ * a stock UOM and whose quantity fits `inventory_anchor_lines.quantity`
+ * (NUMERIC(21,6)) exactly. An entry that would be rounded is left out of the
+ * anchor, like an effect line that cannot be written exactly, and counts as
+ * unmapped in the coverage.
  */
 const SNAPSHOT_ITEMS_CTE = `
 WITH entries AS (
@@ -291,6 +302,7 @@ mapped AS (
     FROM entries e
     JOIN erpnext_item_map m
       ON m.erpnext_item_ref = e.item AND m.state = 'confirmed' AND m.retired_at IS NULL
+   WHERE e.uom IS NOT NULL AND e.quantity = round(e.quantity, 6)
    GROUP BY e.item, e.quantity, e.uom
   HAVING count(*) = 1
 )`;
@@ -331,15 +343,22 @@ snap AS (
    WHERE r.kind = 'stock' AND ${USABLE_REPORT}
    ORDER BY r.store_id, (r.summary->'bin_view_report'->>'recordedAt')::timestamptz DESC, r.id DESC
 ),
+unique_map AS (
+  -- The anchor's rule: an Item that maps to more than one product is attributed to none.
+  SELECT m.erpnext_item_ref AS item, min(m.tenant_product_id::text)::uuid AS product
+    FROM erpnext_item_map m
+   WHERE m.state = 'confirmed' AND m.retired_at IS NULL
+   GROUP BY m.erpnext_item_ref
+  HAVING count(*) = 1
+),
 bin AS (
-  SELECT snap.store_id, snap.recorded_at, m.tenant_product_id AS product,
+  SELECT snap.store_id, snap.recorded_at, um.product,
          (e.value->>'quantity')::numeric AS quantity, e.value->>'stockUom' AS uom
     FROM snap
     JOIN erpnext_reconciliation_run r ON r.id = snap.id
     CROSS JOIN LATERAL jsonb_array_elements(r.summary->'bin_view_report'->'entries') AS e(value)
-    JOIN erpnext_item_map m
-      ON m.erpnext_item_ref = COALESCE(e.value->'erpnextItemRef'->>'name', e.value->>'erpnextItemRef')
-     AND m.state = 'confirmed' AND m.retired_at IS NULL
+    JOIN unique_map um
+      ON um.item = COALESCE(e.value->'erpnextItemRef'->>'name', e.value->>'erpnextItemRef')
 ),
 moves AS (
   SELECT anchor.store_id, mv.tenant_product_ref AS product,
@@ -348,7 +367,12 @@ moves AS (
                                     AND i.state IS DISTINCT FROM 'erp_neutral') AS unconfirmed,
          min(mv.stocking_unit) AS unit
     FROM anchor
-    JOIN stock_movements mv ON mv.store_id = anchor.store_id AND mv.received_at >= anchor.activated_at
+    -- Sale, void and return effects exist only once the flag is ON, so they are
+    -- all counted: a writer that began before activation and waited on the
+    -- settings lock writes them with a transaction-start received_at EARLIER
+    -- than activated_at. The watermark only selects the other movements.
+    JOIN stock_movements mv ON mv.store_id = anchor.store_id
+     AND (mv.event_type IN ('sale', 'sale_void', 'sale_return') OR mv.received_at >= anchor.activated_at)
     LEFT JOIN inventory_effect_integration i ON i.effect_id = mv.id
    WHERE mv.tenant_product_ref IS NOT NULL
    GROUP BY anchor.store_id, mv.tenant_product_ref

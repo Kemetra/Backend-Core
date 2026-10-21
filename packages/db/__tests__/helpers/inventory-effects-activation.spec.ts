@@ -332,6 +332,47 @@ describe("activation", () => {
     const p2 = rows.find((r) => r.tenantProductRef === f.products["P2"]);
     expect(p2).toMatchObject({ anchorQuantity: "-1.000000", latestBinQuantity: null, difference: null });
   });
+
+  it("leaves a Bin entry it cannot anchor exactly (over 6 decimals, or no UOM) out of the anchor", async () => {
+    if (skip()) return;
+    const f = await seedTenant([{ entries: [{ item: "ITEM-1", quantity: "1.0000001" }, { item: "ITEM-2", quantity: "2" }] }]);
+    await pg().admin.query(
+      `UPDATE erpnext_reconciliation_run
+          SET summary = jsonb_set(summary, '{bin_view_report,entries,1}', (summary->'bin_view_report'->'entries'->1) - 'stockUom')
+        WHERE id = $1`,
+      [f.runIds[0]],
+    );
+    const outcome = await asTenant(f, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
+    expect(outcome.kind).toBe("activated");
+    if (outcome.kind !== "activated") return;
+    expect(outcome.stores.map((s) => [s.lines, s.unmappedBinItems])).toEqual([[0, 2]]);
+  });
+
+  it("counts a sale effect stamped before activation, and attributes no Bin quantity to an ambiguous Item", async () => {
+    if (skip()) return;
+    const f = await seedTenant([{}]);
+    const outcome = await asTenant(f, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
+    if (outcome.kind !== "activated") throw new Error("not activated");
+    const storeId = f.storeIds[0]!;
+    // A writer that began before activation and waited on the settings lock:
+    // its effect carries a transaction-start received_at before activated_at.
+    await pg().admin.query(
+      `INSERT INTO stock_movements (id, tenant_id, store_id, movement_type, quantity, stocking_unit, tenant_product_ref,
+                                    occurred_at, received_at, created_by, origin, event_type, event_ref_id,
+                                    stock_location_id, inventory_status)
+       VALUES (gen_random_uuid(), $1, $2, 'outbound', -2, 'Nos', $3, now(), $4::timestamptz - interval '1 second', $5,
+               'retail', 'sale', gen_random_uuid(),
+               (SELECT id FROM stock_locations WHERE store_id = $2 AND kind = 'primary'), 'sellable')`,
+      [f.tenantId, storeId, f.products["P1"], outcome.activatedAt, ACTOR],
+    );
+    const rows = await asTenant(f, (c) => compareAnchorsToBin(c));
+    expect(rows.find((r) => r.tenantProductRef === f.products["P1"])).toMatchObject({
+      effectsSinceAnchor: "-2.0000",
+      expectedQuantity: "8.500000",
+    });
+    // P3 and P4 share ITEM-AMB: neither is anchored, and neither gets its Bin quantity.
+    for (const p of ["P3", "P4"]) expect(rows.find((r) => r.tenantProductRef === f.products[p])).toBeUndefined();
+  });
 });
 
 describe("isolation and locking", () => {

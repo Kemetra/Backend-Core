@@ -27,6 +27,8 @@ jest.mock("@data-pulse-2/db", () => ({
     _ctx: unknown,
     fn: (c: { query: jest.Mock }) => unknown,
   ) => fn({ query: clientQuery }),
+  // RT-427: the sales controller imports the position-event rules, which read this at load.
+  INVENTORY_STATUSES: jest.requireActual("@data-pulse-2/db").INVENTORY_STATUSES,
 }));
 
 import {
