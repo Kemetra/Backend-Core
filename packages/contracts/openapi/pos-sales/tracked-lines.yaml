@@ -138,8 +138,9 @@ paths:
         `outcome` `accepted` or `refused`: a refusal is a business answer, not
         an HTTP error, and it is recorded like an acceptance.
 
-        Checks, and the one `reason` a refusal carries when several fail (the
-        first in this order wins): `not_sellable` (the product is known but may
+        Checks, in this order. The FIRST check that fails is the single
+        `reason` returned: a refusal always carries exactly one code, never a
+        list, so the till maps one code per refusal. `not_sellable` (the product is known but may
         not be sold here: retired or inactive, not in the store's sellable
         catalogue, or a `serial` product, which stays fail-closed); then
         `profile_mismatch` (the product's Tracking Profile does not allow lot
@@ -156,8 +157,9 @@ paths:
         `code` with an optional `expiryDate` as scanned. The lot code is unique
         per product and is matched exactly, never fuzzily, so `expiryDate` does
         not select or change the identity and never changes the result: the
-        identity record's expiry governs. A value that differs from the record
-        is kept in the validation record only.
+        identity record's expiry governs. A scanned `expiryDate` that differs
+        from the identity record is recorded for audit and never changes the
+        identity or the result.
 
         Cashier claim. With the `device` scheme `operatorUserId` is REQUIRED,
         and with `operatorAuthorization` it MUST be absent (an envelope request
@@ -526,8 +528,9 @@ components:
             - profile_mismatch
             - not_sellable
           description: >
-            One reason, the first that applies in the order stated on
-            `posValidateTrackedLine`. `unknown_identity`: no such identity in the
+            The single reason returned: the first failing check in the order
+            stated on `posValidateTrackedLine`, so a refusal carries exactly one
+            code. `unknown_identity`: no such identity in the
             tenant. `wrong_product`: the identity belongs to another product.
             `expired`: its expiry is before the store's business date.
             `held`: an active quality hold. `recalled`: an active recall hold.

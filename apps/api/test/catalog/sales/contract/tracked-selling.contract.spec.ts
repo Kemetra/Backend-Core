@@ -195,7 +195,9 @@ describe("pos-sales/tracked-lines.yaml — RT-450 TLV and lot lookup", () => {
 
   it("documents the refusal order, the expiry rule and that a refusal is recorded, not an HTTP error", () => {
     const text = flat(tlv.description as string);
-    expect(text).toContain("the first in this order wins");
+    expect(text).toContain("The FIRST check that fails is the single `reason` returned");
+    expect(text).toContain("a refusal always carries exactly one code, never a list");
+    expect(text).toContain("recorded for audit and never changes the identity or the result");
     expect(text).toContain("`recalled` (an active `recall_hold`); then `held` (an active `quality_hold`)");
     expect(text).toContain("a refusal is a business answer, not an HTTP error, and it is recorded like an acceptance");
     expect(text).toContain("the identity record's expiry governs");
