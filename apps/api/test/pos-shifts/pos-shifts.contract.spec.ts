@@ -1464,6 +1464,7 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
   it("is store-scoped: any device of the store, tenant and store from the envelope only, a non-disclosing 404", () => {
     expectAll(forceText(), [
       "opened on ANY device of that store, including the caller's own",
+      "A legacy shift (no cash-up facts; `GET /shifts/stuck` lists it) is eligible too, so a stuck legacy shift no longer blocks the store",
       "Tenant and store come only from the envelope, never the request",
     ]);
     expect(describeOf("404")).toMatch(/non-disclosing/i);
@@ -1613,6 +1614,12 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
     const v = validator("ForceClosedShift");
     const bad = [{ status: "closed" }, { forcedClose: undefined }, { tenantId: USER_ID }].map((patch) => v({ ...FORCED_EXAMPLE(), ...patch }));
     expect([v(FORCED_EXAMPLE()), ...bad]).toEqual([true, false, false, false]);
+    // A legacy shift (audit-ingest open) has no currency, float or server receipt: present but null, never omitted.
+    const legacy = { ...FORCED_EXAMPLE(), currencyCode: null, openingFloat: null, receivedAt: null };
+    const omitted = { ...legacy, currencyCode: undefined };
+    const badCurrency = { ...FORCED_EXAMPLE(), currencyCode: "egp" };
+    expect([v(legacy), v(omitted), v(badCurrency)]).toEqual([true, false, false]);
+    expectAll(flat(schema("ForceClosedShift").description), ["A LEGACY shift (opened before the cash-up facts, through the audit-ingest `shift.open` event) is eligible and closes the same way"]);
   });
 
   it("the recorded force close names who, when, from which terminal and why, and carries no cash-up field", () => {

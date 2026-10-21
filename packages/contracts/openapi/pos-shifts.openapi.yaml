@@ -788,6 +788,8 @@ paths:
 
         **Scope.** `shift_id` resolves to a shift of the envelope's tenant and
         store, opened on ANY device of that store, including the caller's own.
+        A legacy shift (no cash-up facts; `GET /shifts/stuck` lists it) is
+        eligible too, so a stuck legacy shift no longer blocks the store.
         Another store, another tenant and an unknown id are the same
         non-disclosing 404 `shift_not_found`.
 
@@ -1901,6 +1903,12 @@ components:
         `Shift`: `status` is `force_closed`, never `closed`, and it carries
         `forcedClose` where a closed `Shift` carries a `close` (a `ShiftClose`
         cash-up). Internal ids (tenant, store, device) are never returned.
+        A LEGACY shift (opened before the cash-up facts, through the
+        audit-ingest `shift.open` event) is eligible and closes the same way:
+        it has no currency, no opening float and no server receipt, so
+        `currencyCode`, `openingFloat` and `receivedAt` are `null` for it
+        (always present, never omitted); they are non-null for a cash-up
+        shift.
       properties:
         shiftId:
           type: string
@@ -1909,9 +1917,15 @@ components:
           type: string
           const: force_closed
         currencyCode:
-          $ref: "#/components/schemas/CurrencyCode"
+          anyOf:
+            - $ref: "#/components/schemas/CurrencyCode"
+            - type: "null"
+          description: The shift's currency; `null` for a legacy shift.
         openingFloat:
-          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+          anyOf:
+            - $ref: "#/components/schemas/NonNegativeDecimalAmount"
+            - type: "null"
+          description: The recorded opening float; `null` for a legacy shift.
         openedAt:
           type: string
           format: date-time
@@ -1919,9 +1933,11 @@ components:
           type: string
           format: uuid
         receivedAt:
-          type: string
+          type: [string, "null"]
           format: date-time
-          description: When the server recorded the open (server clock).
+          description: >
+            When the server recorded the open (server clock); `null` for a
+            legacy shift.
         forcedClose:
           $ref: "#/components/schemas/ForcedCloseRecord"
 
