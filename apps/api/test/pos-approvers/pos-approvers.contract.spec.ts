@@ -6,9 +6,10 @@
  * device-authenticated approver-eligibility read. `[GATED]` contract.
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
- * app boot and no HTTP: the runtime ships in MA-BC2. What this pins:
+ * app boot and no HTTP: the runtime (MA-BC2, RT-788) has its own specs. What
+ * this pins:
  *
- *   1. One POST at `/api/pos/v1/approvers/eligibility`, contract-only, no
+ *   1. One POST at `/api/pos/v1/approvers/eligibility`, live since RT-788, no
  *      operationId collision, no idempotency key (a read).
  *   2. Security is the existing role-named `device` scheme only, identical to
  *      the cashier-admissions one; no client-supplied scope anywhere.
@@ -92,9 +93,9 @@ describe("pos-approvers — document and operation", () => {
     expect(operation().operationId).toBe(OPERATION_ID);
   });
 
-  it("is contract-only until MA-BC2, with a runtime note", () => {
-    expect(operation()["x-runtime-status"]).toBe("contract-only");
-    expect(operation()["x-runtime-note"]).toMatch(/MA-BC2/);
+  it("is live since MA-BC2 (RT-788): no contract-only marker", () => {
+    expect(operation()["x-runtime-status"]).toBeUndefined();
+    expect(operation()["x-runtime-note"]).toBeUndefined();
   });
 
   it("is a read: no idempotency key and no audit action", () => {

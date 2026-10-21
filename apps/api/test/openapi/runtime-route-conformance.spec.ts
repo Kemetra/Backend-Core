@@ -74,8 +74,6 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "listPlatformAuditEvents",
       // RT-490 (RT-271 F-1): refund execution and return reads; the runtime ships in F-2.
       "listSaleReturns",
-      // RT-492 (RT-114 MA-BC1): approver-eligibility contract; the runtime ships in MA-BC2.
-      "posCheckApproverEligibility",
       "posGetTenantBranding",
       // RT-570 (RT-417 F2): POS payer lookup contract; the runtime ships in a later issue.
       "posListChargeablePayers",
