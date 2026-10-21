@@ -154,9 +154,9 @@ const omit = (value: Record<string, unknown>, key: string): Record<string, unkno
 // 1. Operations
 // ===========================================================================
 describe("devices contract — operations", () => {
-  it("is OpenAPI 3.1.0 at 1.4.0-draft (RT-620 429) with the RT-365 operations, the RT-366 preview, the RT-367 pairing codes and the RT-368 retire", () => {
+  it("is OpenAPI 3.1.0 at 1.5.0-draft (RT-620 429, RT-719 build identity key) with the RT-365 operations, the RT-366 preview, the RT-367 pairing codes and the RT-368 retire", () => {
     expect(contract.document["openapi"]).toBe("3.1.0");
-    expect((contract.document["info"] as JsonObject)["version"]).toBe("1.4.0-draft");
+    expect((contract.document["info"] as JsonObject)["version"]).toBe("1.5.0-draft");
     const declared = Object.entries(contract.document["paths"] as Record<string, JsonObject>).flatMap(([path, item]) =>
       Object.keys(item).map((method) => `${method} ${path}`),
     );
@@ -284,11 +284,11 @@ describe("devices contract — filters and paging", () => {
 // ===========================================================================
 describe("devices contract — projections", () => {
   it.each<SchemaName>(["DeviceSummary", "DevicePage", "DeviceDetail", "DeviceRevokeResult"])(
-    "%s is closed and requires every key it declares",
+    "%s is closed and requires every key it declares (except the optional buildIdentity, RT-719)",
     (name) => {
       const s = contract.schema(name);
       expect(s["additionalProperties"]).toBe(false);
-      expect([...((s["required"] ?? []) as string[])].sort()).toEqual(keysOf(name));
+      expect([...((s["required"] ?? []) as string[])].sort()).toEqual(keysOf(name).filter((k) => k !== "buildIdentity"));
     },
   );
 
@@ -300,8 +300,8 @@ describe("devices contract — projections", () => {
   });
 
   it("lists the RT-365 fields; the detail adds only the revoke note and retire attribution", () => {
-    expect(keysOf("DeviceSummary")).toEqual(SUMMARY_KEYS);
-    expect(keysOf("DeviceDetail").filter((k) => !SUMMARY_KEYS.includes(k))).toEqual([
+    expect(keysOf("DeviceSummary")).toEqual([...SUMMARY_KEYS, "buildIdentity"].sort());
+    expect(keysOf("DeviceDetail").filter((k) => ![...SUMMARY_KEYS, "buildIdentity"].includes(k))).toEqual([
       "retireReason",
       "retiredByUserId",
       "revokeNote",

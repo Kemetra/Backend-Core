@@ -676,6 +676,8 @@ describe("shift-closes — POS shift contract unchanged", () => {
         "/api/pos/v1/shifts/stuck",
         "/api/pos/v1/shifts/{shift_id}/cash-movements",
         "/api/pos/v1/shifts/{shift_id}/close",
+        // RT-742: the manager's forced close (not counted, so never a recorded cash-up in this read).
+        "/api/pos/v1/shifts/{shift_id}/forced-close",
       ].sort(),
     );
   });

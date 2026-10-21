@@ -67,6 +67,11 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "tenant_inventory_settings:SELECT",
   "tenant_inventory_settings:INSERT",
   "tenant_inventory_settings:UPDATE",
+  // RT-427 (0063): the Inventory Anchors (append-only).
+  "inventory_anchors:SELECT",
+  "inventory_anchors:INSERT",
+  "inventory_anchor_lines:SELECT",
+  "inventory_anchor_lines:INSERT",
   // RT-539 (0047): the receipt reprint record (append-only).
   "sale_reprints:SELECT",
   "sale_reprints:INSERT",
@@ -320,6 +325,8 @@ describe("database pool boundary", () => {
       "erpnext_tracking_map",
       "inventory_position_events",
       "tenant_inventory_settings",
+      "inventory_anchors",
+      "inventory_anchor_lines",
       "platform_support_sessions",
       "sale_reprints",
       "sale_responsibilities",

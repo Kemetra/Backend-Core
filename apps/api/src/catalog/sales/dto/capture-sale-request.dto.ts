@@ -47,6 +47,45 @@ const quantityAmount = z
 /** ISO-4217 alphabetic currency code. */
 const currencyCode = z.string().regex(/^[A-Z]{3}$/, "must be an ISO-4217 code");
 
+/** RT-740 (OD-28-9): the closed manual-discount reason codes. Codes only, never free text. */
+export const DISCOUNT_REASON_CODES = [
+  "promotion",
+  "loyal_or_contract_customer",
+  "near_expiry_or_damaged",
+  "price_correction",
+] as const;
+
+/** RT-740 (OD-28-2): a whole percent 1–100, no leading zero, no fraction. */
+const WHOLE_PERCENT = /^(100|[1-9]\d?)$/;
+
+/** A strictly positive exact-decimal money string (≤ 15 integer, ≤ 4 fractional digits). */
+const POSITIVE_DECIMAL = /^(?!0+(?:\.0+)?$)\d{1,15}(\.\d{1,4})?$/;
+
+/**
+ * RT-740 (contract `CaptureSaleLineDiscount`, RT-699 doc 28 option C-A): a
+ * line's one manual discount. The shape rules are here (400); the arithmetic
+ * needs the line and its currency, so it runs in `findLinePricingViolation`
+ * (422 `sale_line_pricing_invalid`).
+ */
+export const CaptureSaleLineDiscountSchema = z
+  .object({
+    kind: z.enum(["percent", "amount"]),
+    value: decimalAmount,
+    amount: decimalAmount,
+    reasonCode: z.enum(DISCOUNT_REASON_CODES),
+    authoritySource: z.enum(["cashier_approval", "manager_session"]),
+    approverRole: z.enum(["manager", "admin"]),
+    approverUserId: z.string().uuid().optional(),
+  })
+  .strict()
+  .superRefine((d, ctx) => {
+    if (d.kind === "percent" && !WHOLE_PERCENT.test(d.value)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["value"], message: "must be a whole percent from 1 to 100" });
+    } else if (d.kind === "amount" && !POSITIVE_DECIMAL.test(d.value)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["value"], message: "must be a positive exact-decimal amount" });
+    }
+  });
+
 export const CaptureSaleLineSchema = z
   .object({
     lineName: z.string().min(1).max(500).refine(hasNoNul, NO_NUL_MESSAGE),
@@ -57,6 +96,9 @@ export const CaptureSaleLineSchema = z
     taxAmount: decimalAmount.optional(),
     unit: z.string().min(1).max(50).refine(hasNoNul, NO_NUL_MESSAGE),
     tenantProductRef: z.string().uuid().optional(),
+    // RT-740: optional manual discount; when present, lineAmount is the net.
+    // A sale fact (hashed), not stored in this version.
+    discount: CaptureSaleLineDiscountSchema.optional(),
   })
   .strict();
 
@@ -316,5 +358,6 @@ export const CaptureSaleRequestWithSameMethodTendersSchema = CaptureSaleRequestO
 export type CaptureSaleRequestDto = z.infer<typeof CaptureSaleRequestWithTendersSchema>;
 export type SaleTenderDto = z.infer<typeof SaleTenderSchema>;
 export type CaptureSaleLineDto = z.infer<typeof CaptureSaleLineSchema>;
+export type CaptureSaleLineDiscountDto = z.infer<typeof CaptureSaleLineDiscountSchema>;
 export type CaptureSaleReceiptDto = z.infer<typeof CaptureSaleReceiptSchema>;
 export type SaleResponsibilityDto = z.infer<typeof SaleResponsibilitySchema>;

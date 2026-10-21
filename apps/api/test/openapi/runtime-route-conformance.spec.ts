@@ -63,15 +63,28 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "backfillSaleLinkedMovements",
       // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
       "consoleDeleteTenantLogo",
+      // RT-719: POS fleet build baseline (for RT-713); the runtime and migration are separate approvals.
+      "consoleGetFleetBaseline",
       "consoleGetTenantLogo",
       "consolePreviewTenantLogo",
       "consolePutTenantLogo",
+      // RT-742 (RT-554 follow-up): manager forced close from any terminal; the runtime ships in its own ticket.
+      "forceCloseShift",
+      // RT-431: platform-scoped audit read; the runtime ships in the RT-431 runtime change.
+      "listPlatformAuditEvents",
+      // RT-490 (RT-271 F-1): refund execution and return reads; the runtime ships in F-2.
+      "listSaleReturns",
       // RT-492 (RT-114 MA-BC1): approver-eligibility contract; the runtime ships in MA-BC2.
       "posCheckApproverEligibility",
       "posGetTenantBranding",
+      // RT-450 (RT-50 F3): tracked line validation and lot lookup; the runtime ships in RT-451.
+      "posListTrackedLots",
       "posRedeemVoucher",
       "posReverseVoucher",
+      "posValidateTrackedLine",
       "posValidateVoucher",
+      "readReturnByProvenance",
+      "recordRefundExecution",
     ]);
     expect(missing).toEqual([]);
   });

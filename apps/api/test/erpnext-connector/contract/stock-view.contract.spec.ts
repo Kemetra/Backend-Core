@@ -608,8 +608,10 @@ describe("stock-view.yaml — v1.2 connector-paged windows (RT-174)", () => {
     itemCursor: "c1",
   });
 
-  it("is version 1.3.0-draft (1.2 windows + the RT-181 Idempotency-Key declaration)", () => {
-    expect(doc.info?.version).toBe("1.3.0-draft");
+  it("carries the 1.2 windows and the 1.3 RT-181 Idempotency-Key notes (version moved on in RT-450)", () => {
+    const info = (doc.info as { description?: string } | undefined)?.description ?? "";
+    expect(info).toContain("VERSION 1.2 — CONNECTOR-PAGED BIN-VIEW WINDOWS");
+    expect(info).toContain("VERSION 1.3 (RT-181");
   });
 
   // --- Request (feed) --------------------------------------------------------

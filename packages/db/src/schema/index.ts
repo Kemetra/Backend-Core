@@ -52,6 +52,7 @@ export * from "./inventory/effect-integration";
 export * from "./inventory/stock-locations";
 export * from "./inventory/tracking-identities";
 export * from "./inventory/position-events";
+export * from "./inventory/anchors";
 export * from "./connector-health";
 export * from "./ai-entitlements";
 export * from "./platform-support-sessions";

@@ -50,6 +50,13 @@
  * (emitted from RT-387; the RT-17 HTTP harness AJV-checks every response, so
  * they cannot be required yet); the stale "threshold, default 0" prose is
  * replaced. No operation, status, required list or existing field changes.
+ *
+ * RT-742 (1.4.0-draft, `[GATED]`): one NEW contract-only operation,
+ * `forceCloseShift`, a manager's store-scoped force close recorded as not
+ * counted; `closeShift`, the stuck list and every existing schema are
+ * unchanged, and the late close / open replay of the opening terminal get the
+ * distinct 409 `shift_force_closed` (a late movement keeps `shift_closed`);
+ * the last describe block.
  */
 import "reflect-metadata";
 
@@ -73,6 +80,7 @@ const STUCK: Route = { path: "/api/pos/v1/shifts/stuck", method: "get" };
 const OPEN: Route = { path: "/api/pos/v1/shifts", method: "post" };
 const MOVEMENT: Route = { path: "/api/pos/v1/shifts/{shift_id}/cash-movements", method: "post" };
 const CLOSE: Route = { path: "/api/pos/v1/shifts/{shift_id}/close", method: "post" };
+const FORCE_CLOSE: Route = { path: "/api/pos/v1/shifts/{shift_id}/forced-close", method: "post" };
 
 const NEW_OPS = [
   ["openShift", OPEN],
@@ -391,9 +399,9 @@ const VALID_CLOSE = {
 // 1. Document, version, and the unchanged stuck-shift surface
 // ===========================================================================
 describe("pos-shifts — document and version", () => {
-  it("is an OpenAPI 3.1 document at version 1.2.0-draft (RT-384)", () => {
+  it("is an OpenAPI 3.1 document at version 1.4.0-draft (RT-742; RT-490 was 1.3.0-draft)", () => {
     expect(doc.openapi).toBe("3.1.0");
-    expect(doc.info?.version).toBe("1.2.0-draft");
+    expect(doc.info?.version).toBe("1.4.0-draft");
   });
 
   it("carries an RT-384 version note: additive, [GATED], AD-CASH-001", () => {
@@ -486,11 +494,11 @@ describe("pos-shifts — cash-up operations", () => {
     expect(op(route).operationId).toBe(id);
   });
 
-  it("declares exactly the stuck query plus the three cash-up operations", () => {
+  it("declares exactly the stuck query, the three cash-up operations and the RT-742 forced close", () => {
     const ids = operationsOf(doc)
       .map((o) => o.operationId)
       .sort();
-    expect(ids).toEqual(["closeShift", "openShift", "posShiftsGetStuck", "recordCashMovement"]);
+    expect(ids).toEqual(["closeShift", "forceCloseShift", "openShift", "posShiftsGetStuck", "recordCashMovement"]);
   });
 
   it("collides with no operationId in any other contract", () => {
@@ -911,7 +919,14 @@ describe("pos-shifts — errors", () => {
     ["closeShift", CLOSE, "403", ["refused"]],
     ["closeShift", CLOSE, "404", ["shift_not_found"]],
     ["closeShift", CLOSE, "409", ["idempotency_key_conflict", "shift_payload_conflict"]],
-    ["closeShift", CLOSE, "422", ["shift_cashup_inconsistent", "currency_mismatch", "refund_ref_invalid"]],
+    ["closeShift", CLOSE, "422", [
+      "shift_cashup_inconsistent",
+      "currency_mismatch",
+      "refund_ref_invalid",
+      // RT-490 (RT-271 R-9), from the F-3 runtime.
+      "refund_ref_unsettled",
+      "cash_refunds_total_mismatch",
+    ]],
     ...NEW_OPS.map(([id, route]): [string, Route, string, string[]] => [id, route, "425", ["idempotency_in_progress"]]),
   ];
 
@@ -1339,5 +1354,325 @@ describe("pos-shifts — RT-384 shift variance policy", () => {
     for (const name of ["ApproverCheck", "PolicyTriState", "PolicyFlag", "CashVariancePolicyValue", "RecordedFrozenPolicy"]) {
       expect({ name, shape: shape(schema(name)) }).toEqual({ name, shape: shape(shiftCloses.components?.schemas?.[name]) });
     }
+  });
+});
+// ===========================================================================
+// RT-490 (RT-271 R-9) — refund cross-check on close
+// ===========================================================================
+describe("pos-shifts — RT-490 refund cross-check on close (1.3.0-draft)", () => {
+  const flat = (text: string | undefined): string => (text ?? "").replace(/\s+/g, " ");
+  const info = (): string => flat(doc.info?.description);
+  const closeText = (): string => flat(op(CLOSE).description);
+
+  it("carries an RT-490 note citing the [GATED] owner authorization and R-9, enforced from F-3", () => {
+    expect(info()).toContain("RT-490 (1.3.0-draft; [GATED] owner authorization Jira RT-490 comment 13211, 2026-10-21; RT-271 R-9");
+    expect(info()).toContain("F-3 enforces the rule only after that. Until F-3 the close behaves as in 1.2.0-draft.");
+    expect(info()).toContain("OPEN for F-3");
+  });
+
+  it("states the R-9 rule normatively: a settled cash execution in this shift per ref, and the total equal to their sum", () => {
+    const text = closeText();
+    expect(text).toContain("**Refund cross-check** (RT-271 R-9, RT-490; normative from the F-3 runtime)");
+    expect(text).toContain("every claimed `recordReturn` return with a non-zero `returnTotal` must be fully SETTLED in this shift: its settled cash executions whose `evidence.shiftRef` is this shift's `shiftId` sum to its `returnTotal`");
+    // Codex P1 on #879: a partly paid return cannot be claimed, so no later payout is left out of every close.
+    expect(text).toContain("A partly paid return cannot be claimed");
+    expect(text).toContain("a further execution for it is refused (422 `refund_execution_exceeds_allocation`)");
+    expect(text).not.toContain("at least one settled cash execution");
+    // A zero-total return can have no execution (amount is strictly positive), so it is exempt.
+    expect(text).toContain("A zero-total return owes nothing, has no execution and is exempt");
+    expect(text).toContain("`cashRefundsTotal` must equal, in exact decimal, the sum of the amounts of the settled cash executions of the claimed `recordReturn` returns whose `evidence.shiftRef` is this shift, plus the recorded cash refund tenders of the claimed credit-sale returns, else 422 `cash_refunds_total_mismatch`");
+  });
+
+  it("a credit-sale return is outside RT-490 and counts at its recorded refund tenders (review finding 1)", () => {
+    expect(closeText()).toContain("A credit-sale return (`recordCreditSaleReversal`) is outside RT-490: it has no executions, so it is not checked against them");
+  });
+
+  it("the POS holds a close until the shift's executions are acknowledged, so both 422s stay deterministic (review finding 2)", () => {
+    const text = closeText();
+    expect(text).toContain("the POS MUST NOT send a shift's close until every refund execution it recorded with that shift's `shiftId` has been acknowledged");
+    expect(text).toContain("both 422s are deterministic");
+    expect(info()).toContain("holds a shift's close until that shift's executions are acknowledged");
+  });
+
+  it("no longer says the server never checks cashRefundsTotal", () => {
+    expect(closeText()).not.toContain("The server does not check `cashSalesTotal`, `cashRefundsTotal`");
+    expect(closeText()).toContain("`cashRefundsTotal` is the exception from the F-3 runtime");
+  });
+
+  it("the close 422 names the two new codes after the existing ones, in order", () => {
+    const text = flat(response(CLOSE, "422").description);
+    const order = ["shift_cashup_inconsistent", "refund_ref_invalid", "refund_ref_unsettled", "cash_refunds_total_mismatch"]
+      .map((code) => text.lastIndexOf(`\`${code}\``));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+});
+
+// ===========================================================================
+// RT-742 — manager forced close of a stuck shift from any terminal (1.4.0-draft)
+// ===========================================================================
+describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-draft)", () => {
+  const flat = (text: string | undefined): string => (text ?? "").replace(/\s+/g, " ");
+  const info = (): string => flat(doc.info?.description);
+  const forceText = (): string => flat(op(FORCE_CLOSE).description);
+  const describeOf = (status: string): string => flat(response(FORCE_CLOSE, status).description);
+  const componentText = (name: string): string => flat(doc.components?.responses?.[name]?.description);
+  /** Every part is stated in the text (a list of missing parts is the diff on failure). */
+  const expectAll = (text: string, parts: readonly string[]): void => {
+    expect(parts.filter((part) => !text.includes(part))).toEqual([]);
+  };
+  /** None of the fields is declared on any of the schemas. */
+  const declaredAmong = (names: readonly string[], fields: readonly string[]): string[] =>
+    names.flatMap((name) => Object.keys(schema(name).properties ?? {})).filter((f) => fields.includes(f));
+
+  const VALID_FORCE_CLOSE = { forcedReason: "Cashier left without closing; shift opened on till A" };
+  const FORCED_EXAMPLE = (): Record<string, unknown> =>
+    exampleValue({ $ref: "#/components/examples/ForceClosedShiftExample" }) as Record<string, unknown>;
+  const SCOPE_NAMES = ["tenant_id", "store_id", "branch_id", "device_id", "terminal_id"];
+  const CASH_UP_FIELDS = ["countedCash", "expectedCash", "variance", "saleCount", "cashSalesTotal", "cashRefundsTotal"];
+
+  it("carries an RT-742 note: [GATED], strictly additive, not counted, no runtime yet", () => {
+    expectAll(info(), [
+      "RT-742 (1.4.0-draft; [GATED] owner authorization 2026-10-21; RT-554 follow-up, owner decision 2026-10-19): strictly additive",
+      "`cashCount: not_counted`",
+      "no totals, no variance and no `ShiftClose`",
+      "`forceCloseShift` has no runtime route yet",
+      "lists recorded cash-ups only, so a force-closed shift is not listed there",
+    ]);
+  });
+
+  it("declares forceCloseShift at its path, contract-only, tagged pos-shifts, with no operationId collision", () => {
+    const o = op(FORCE_CLOSE);
+    expect([o.operationId, o["x-runtime-status"], o.tags]).toEqual(["forceCloseShift", "contract-only", ["pos-shifts"]]);
+    expect(o["x-runtime-note"]).toContain("RT-742");
+    expect(otherOperationIds.has("forceCloseShift")).toBe(false);
+  });
+
+  it("accepts the manager envelope ONLY; the manager / admin role is the envelope's live re-check, so every failure is the 401 and there is no 403", () => {
+    expect(op(FORCE_CLOSE).security).toEqual([{ operatorAuthorization: [] }]);
+    expectAll(forceText(), [
+      "The `operatorAuthorization` envelope only; the `device` scheme is not accepted (a device token is the generic 401)",
+      "(membership, device, store access, expiry and role: the `operatorAuthorization` scheme) is the generic 401",
+      "only `owner`, `tenant_admin` and `store_manager` pass",
+      "a `store_staff` operator, an operator demoted since sign-in, and a manager whose store access was removed are all the generic 401",
+      "The operation has no 403",
+    ]);
+    expect(op(FORCE_CLOSE).responses?.["403"]).toBeUndefined();
+    expect(doc.components?.responses?.["ForceCloseRefused"]).toBeUndefined();
+  });
+
+  it("is store-scoped: any device of the store, tenant and store from the envelope only, a non-disclosing 404", () => {
+    expectAll(forceText(), [
+      "opened on ANY device of that store, including the caller's own",
+      "A legacy shift (no cash-up facts; `GET /shifts/stuck` lists it) is eligible too, so a stuck legacy shift no longer blocks the store",
+      "Tenant and store come only from the envelope, never the request",
+    ]);
+    expect(describeOf("404")).toMatch(/non-disclosing/i);
+    expectAll(describeOf("404"), ["another store", "another tenant", "unknown id"]);
+    expect(response(FORCE_CLOSE, "404")).not.toBe(response(CLOSE, "404"));
+  });
+
+  it("takes the store-scoped shift_id path parameter and the required Idempotency-Key, and no scope parameter", () => {
+    const o = op(FORCE_CLOSE);
+    expect(o["x-idempotency"]).toBe("required");
+    expect(o.parameters).toEqual([
+      { $ref: "#/components/parameters/StoreShiftId" },
+      { $ref: "#/components/parameters/IdempotencyKey" },
+    ]);
+    const shiftId = parametersOf(FORCE_CLOSE).find((p) => p.name === "shift_id");
+    expect(shiftId).toMatchObject({ in: "path", required: true, schema: { type: "string", format: "uuid" } });
+    expectAll(flat(shiftId?.description), ["opened on ANY device of that store"]);
+    expect(parametersOf(FORCE_CLOSE).filter((p) => SCOPE_NAMES.includes(p.name ?? ""))).toEqual([]);
+  });
+
+  it("declares exactly its documented statuses (no 422: there is no cash-up to be inconsistent)", () => {
+    expect(statusesOf(FORCE_CLOSE)).toEqual(["200", "201", "400", "401", "404", "409", "425", "429", "500"]);
+  });
+
+  it("answers 200 / 201 with ForceClosedShift and Idempotent-Replayed only; every error is the canonical envelope", () => {
+    for (const status of ["200", "201"]) {
+      expect(responseSchema(FORCE_CLOSE, status)).toEqual({ $ref: "#/components/schemas/ForceClosedShift" });
+      expect(response(FORCE_CLOSE, status).headers).toEqual({
+        "Idempotent-Replayed": { $ref: "#/components/headers/IdempotentReplayed" },
+      });
+    }
+    const envelope = ["400", "401", "404", "409", "429", "500"].map((status) => responseSchema(FORCE_CLOSE, status));
+    expect(envelope).toEqual(envelope.map(() => ({ $ref: "#/components/schemas/ApiError" })));
+    expect(op(FORCE_CLOSE).responses?.["425"]).toEqual({ $ref: "#/components/responses/IdempotencyInProgress" });
+    expect(op(FORCE_CLOSE).responses?.["429"]).toEqual({ $ref: "#/components/responses/TooManyRequests" });
+  });
+
+  it("documents the 409 codes: key conflict, not stuck, closed with a cash-up, already force-closed", () => {
+    expectAll(
+      describeOf("409"),
+      ["idempotency_key_conflict", "shift_not_stuck", "shift_closed", "shift_force_closed"].map((code) => `\`${code}\``),
+    );
+    expectAll(describeOf("409"), ["has an active `pos_operator` session on the store other than the caller's own"]);
+  });
+
+  it("requires the shift to be stuck now, so a live drawer is never closed remotely", () => {
+    expectAll(forceText(), [
+      "**Eligibility** (its own predicate, evaluated at the call). The shift is open, was opened longer ago than the staleness threshold, and its opening cashier has no active `pos_operator` session on the store other than the caller's own envelope session",
+      "This is the `GET /shifts/stuck` predicate with ONE difference: that list counts every active session, the caller's included",
+      "That shift is eligible here but not listed: `GET /shifts/stuck` is unchanged and does not surface it, so the manager supplies its `shift_id`",
+      "Widening the list is a separate owner decision",
+      "a manager cannot close a live drawer from another terminal",
+    ]);
+  });
+
+  it("records NOT COUNTED: no cash-up, never a ShiftClose, never computed by the server (§III)", () => {
+    expectAll(forceText(), [
+      "It records NO cash-up: `cashCount` is `not_counted`, and there is no `countedCash`, `expectedCash`, `variance` or other total",
+      "The server never computes or rewrites a POS cash-up (Constitution §III)",
+      "This is not a `ShiftClose`",
+      "close the shift on the terminal that holds it with `closeShift`, `closeKind: forced`",
+    ]);
+  });
+
+  it("states normatively that a not-counted close is never a counted zero and is outside variance flags and the R-9 cross-check", () => {
+    expectAll(forceText(), [
+      "**Not counted** (normative). The recorded fact is not a counted zero: it has no `countedCash`, `expectedCash`, `variance`, total or `saleCount` at all, never `\"0.00\"`",
+      "EXCLUDED from every variance flag (the RT-384 `approvalRequiredByPolicy`, `approvalMissing` and `approverCheck`, which exist only on a `ShiftClose`)",
+      "It is also outside the R-9 cash refund cross-check (`closeShift`, Refund cross-check): no close exists for the shift, so no return is claimed, `cashRefundsTotal` is not checked",
+    ]);
+    expectAll(info(), ["A not-counted close is excluded from every variance flag and from the R-9 cash-refund cross-check, and is never a counted zero"]);
+    const flags = ["cashRefundReturnRefs", "approvalRequiredByPolicy", "approvalMissing", "approverCheck"];
+    expect(declaredAmong(["ForcedCloseRecord", "ForceClosedShift"], [...CASH_UP_FIELDS, ...flags])).toEqual([]);
+  });
+
+  it("states the effect: no longer stuck, no timezone block (RT-544), a new shift may open, nothing edited", () => {
+    expectAll(forceText(), [
+      "`GET /shifts/stuck` stops listing it",
+      "409 `STORE_HAS_OPEN_SHIFT`, RT-544",
+      "its terminal may open a new shift",
+      "Nothing already recorded for it is edited or deleted",
+    ]);
+  });
+
+  it("states the late-facts rule: shift_force_closed only for the opening device's close and another-key open replay; a late movement keeps shift_closed", () => {
+    expectAll(forceText(), [
+      "every later `closeShift` from the device that holds it (any payload) and every `openShift` re-delivery under another `Idempotency-Key` is 409 `shift_force_closed`",
+      "Any other device still gets the non-disclosing 404 `shift_not_found` on `closeShift`, as for any shift outside its device, so the code is no oracle for another terminal",
+      "An `openShift` re-delivered under the SAME key gets the stored open response (the shared interceptor answers it before the handler), not this code",
+      "A later NEW `recordCashMovement` keeps the existing 409 `shift_closed` (a movement recorded BEFORE the force close still replays as `200`)",
+      "The POS treats `shift_force_closed` as final for that shift, not as a transient or a payload conflict (`shift_payload_conflict`)",
+    ]);
+    expectAll(flat(op(CLOSE).description), [
+      "A shift of this device that a manager closed with `forceCloseShift` (RT-742) takes no close: it is 409 `shift_force_closed`",
+      "A shift that does not resolve to this device, force-closed or not, is the non-disclosing 404 `shift_not_found`; the new code never reaches another device",
+    ]);
+    expect(flat(op(CLOSE).description)).not.toContain("from any device: it is 409");
+    expectAll(flat(op(OPEN).description), [
+      "under ANOTHER `Idempotency-Key` is 409 `shift_force_closed`",
+      "The same open under the SAME `Idempotency-Key` is answered by the shared `IdempotencyInterceptor` with the stored open response and status (RT-82 K4, within the replay window) before the handler runs",
+      "never from an open replay",
+    ]);
+    expectAll(flat(op(MOVEMENT).description), ["including one a manager closed with `forceCloseShift` (RT-742), is 409 `shift_closed`"]);
+    expect(flat(op(MOVEMENT).description)).not.toContain("shift_force_closed");
+    expectAll(componentText("OpenShiftConflict"), ["`shift_force_closed`", "under another `Idempotency-Key`"]);
+    expectAll(componentText("CloseShiftConflict"), ["`shift_force_closed`", "a shift of another device is 404 `shift_not_found`, never this code"]);
+    expectAll(componentText("CashMovementConflict"), ["includes a shift a manager closed with `forceCloseShift`"]);
+    expect(componentText("CashMovementConflict")).not.toContain("shift_force_closed");
+  });
+
+  it("states the natural key (shift + forcedReason, never the actor) and the audit event", () => {
+    expectAll(forceText(), [
+      "The natural key is `shift_id` with the payload hash of `forcedReason`, never the actor",
+      "A different `forcedReason` for a shift already force-closed is 409 `shift_force_closed`",
+      "**Order.** Authentication, including the live manager/admin check (401), then scope (404 `shift_not_found`), then the natural-key replay (`200`) or, for a different `forcedReason`, 409 `shift_force_closed`, then 409 `shift_closed`, then the stuck rule (409 `shift_not_stuck`)",
+      "A replay of a recorded force close is never answered `shift_not_stuck`",
+      "partitions a replay by tenant, route, `shift_id`, actor and key, NOT by store",
+      "gets that actor's OWN stored response, not the 404",
+      "every first request is scope-checked",
+      "One audit event records the closing manager, the terminal the request came from, the terminal that opened the shift and the shift",
+      "The reason is stored with the fact and never logged",
+    ]);
+  });
+
+  it("the request is strict: only forcedReason, no actor, time, scope or cash-up field", () => {
+    assertStrictObject("ForceCloseShiftRequest", ["forcedReason"], ["forcedReason"]);
+    expect(requestSchemaRef(FORCE_CLOSE)).toBe("#/components/schemas/ForceCloseShiftRequest");
+    expect(op(FORCE_CLOSE).requestBody?.required).toBe(true);
+    const v = validator("ForceCloseShiftRequest");
+    expect([VALID_FORCE_CLOSE, { forcedReason: "x" }, { forcedReason: "x".repeat(200) }].map((body) => v(body))).toEqual([true, true, true]);
+    const refused = [{}, { forcedReason: "" }, { forcedReason: "x".repeat(201) }].map((body) => v(body));
+    expect(refused).toEqual([false, false, false]);
+    const extras = [
+      { operatorUserId: USER_ID },
+      { closingUserId: USER_ID },
+      { closedAt: "2026-10-06T09:10:00Z" },
+      { countedCash: "100.00" },
+      { tenantId: USER_ID },
+      { storeId: USER_ID },
+      { deviceId: USER_ID },
+    ];
+    expect(extras.map((extra) => v({ ...VALID_FORCE_CLOSE, ...extra }))).toEqual(extras.map(() => false));
+  });
+
+  it("the projection is a closed ForceClosedShift whose status is force_closed, never closed", () => {
+    const fields = ["shiftId", "status", "currencyCode", "openingFloat", "openedAt", "openingUserId", "receivedAt", "forcedClose"];
+    assertStrictObject("ForceClosedShift", fields, fields);
+    expect(prop("ForceClosedShift", "status")).toMatchObject({ type: "string", const: "force_closed" });
+    expect(schema("Shift").properties?.["status"]?.enum).toEqual(["open", "closed"]);
+    const v = validator("ForceClosedShift");
+    const bad = [{ status: "closed" }, { forcedClose: undefined }, { tenantId: USER_ID }].map((patch) => v({ ...FORCED_EXAMPLE(), ...patch }));
+    expect([v(FORCED_EXAMPLE()), ...bad]).toEqual([true, false, false, false]);
+    // A legacy shift (audit-ingest open) has no currency, float or server receipt: present but null, never omitted.
+    const legacy = { ...FORCED_EXAMPLE(), currencyCode: null, openingFloat: null, receivedAt: null };
+    const omitted = { ...legacy, currencyCode: undefined };
+    const badCurrency = { ...FORCED_EXAMPLE(), currencyCode: "egp" };
+    expect([v(legacy), v(omitted), v(badCurrency)]).toEqual([true, false, false]);
+    expectAll(flat(schema("ForceClosedShift").description), ["A LEGACY shift (opened before the cash-up facts, through the audit-ingest `shift.open` event) is eligible and closes the same way"]);
+  });
+
+  it("the recorded force close names who, when, from which terminal and why, and carries no cash-up field", () => {
+    const required = ["closedByUserId", "closedAt", "closedFromTerminalLabel", "openedOnTerminalLabel", "forcedReason", "cashCount"];
+    assertStrictObject("ForcedCloseRecord", required, required);
+    expect(prop("ForcedCloseRecord", "cashCount")).toMatchObject({ type: "string", const: "not_counted" });
+    // A device label is optional (devices.label is nullable): an unlabeled terminal is `null`, never a made-up value.
+    expect(prop("ForcedCloseRecord", "closedFromTerminalLabel").type).toEqual(["string", "null"]);
+    expect(prop("ForcedCloseRecord", "openedOnTerminalLabel").type).toEqual(["string", "null"]);
+    const v = validator("ForcedCloseRecord");
+    const record = FORCED_EXAMPLE()["forcedClose"] as Record<string, unknown>;
+    const bad = [{ cashCount: "counted" }, { countedCash: "100.00" }, { forcedReason: "" }, { openedOnTerminalLabel: undefined }].map((patch) =>
+      v({ ...record, ...patch }),
+    );
+    const unlabeled = v({ ...record, closedFromTerminalLabel: null, openedOnTerminalLabel: null });
+    expect([v(record), unlabeled, ...bad]).toEqual([true, true, false, false, false, false]);
+  });
+
+  it("the request and response examples validate against their schemas", () => {
+    const results = collectExamples(FORCE_CLOSE).map(({ schemaName, value }) => validator(schemaName)(value));
+    // The request example plus the 200 and 201 response examples.
+    expect(results.length).toBeGreaterThanOrEqual(3);
+    expect(results.filter((ok) => !ok)).toEqual([]);
+  });
+
+  it("leaves closeShift, the stuck list and the normal close unchanged (additive)", () => {
+    const body = [
+      "closedAt", "closingUserId", "closeKind", "forcedReason", "openingFloat", "cashSalesTotal", "cashRefundsTotal",
+      "payInTotal", "payOutTotal", "expectedCash", "countedCash", "variance", "saleCount", "cashRefundReturnRefs",
+      "varianceApprovedByUserId", "operatorUserId",
+    ];
+    const required = body.filter((f) => !["forcedReason", "varianceApprovedByUserId", "operatorUserId"].includes(f));
+    assertStrictObject("CloseShiftRequest", body, required);
+    expect(op(CLOSE).security).toEqual([{ operatorAuthorization: [] }, { device: [] }]);
+    expect(statusesOf(CLOSE)).toEqual(["200", "201", "400", "401", "403", "404", "409", "422", "425", "429", "500"]);
+    expect(op(CLOSE)["x-runtime-status"]).toBeUndefined();
+    expectAll(flat(parametersOf(CLOSE).find((p) => p.name === "shift_id")?.description), ["tenant, store and device"]);
+    expect(statusesOf(STUCK)).toEqual(["200", "400", "401"]);
+    expect(schema("Shift").required).toEqual(["shiftId", "status", "currencyCode", "openingFloat", "openedAt", "openingUserId", "receivedAt"]);
+    expectAll(flat(op(CLOSE).description), ["A stuck shift opened on ANOTHER terminal is 404 `shift_not_found` here"]);
+  });
+
+  it("the stuck list gains no field: a listed shift_id is all the force close needs", () => {
+    expect(Object.keys(schema("StuckShift").properties ?? {})).toEqual([
+      "shift_id", "cashier_display_name", "terminal_label", "opened_at", "duration_minutes",
+    ]);
+    expectAll(flat(op(STUCK).description), [
+      "a listed `shift_id` is all a manager needs to clear the shift with `forceCloseShift`",
+      "One eligible shift this list does not show is the caller's own (see `forceCloseShift`, Eligibility)",
+    ]);
+    expect(flat(op(FORCE_CLOSE).description)).not.toContain("by the `GET /shifts/stuck` rule");
   });
 });

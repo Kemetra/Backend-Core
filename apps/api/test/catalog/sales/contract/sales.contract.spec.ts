@@ -46,9 +46,13 @@ import Ajv2020, { type ValidateFunction } from "ajv/dist/2020";
 import addFormats from "ajv-formats";
 
 import {
+  CaptureSaleLineDiscountSchema,
+  CaptureSaleLineSchema,
   CaptureSaleReceiptSchema,
   CaptureSaleRequestWithTendersSchema,
+  DISCOUNT_REASON_CODES,
 } from "../../../../src/catalog/sales/dto/capture-sale-request.dto";
+import { RefundTenderSchema } from "../../../../src/catalog/sales/dto/record-return-request.dto";
 import { loadOpenApiContracts } from "../../../../src/openapi/loader";
 
 // ---------------------------------------------------------------------------
@@ -64,6 +68,10 @@ const OPERATION_IDS = [
   "readSale",
   "recordReturn",
   "recordCreditSaleReversal",
+  // RT-490 (RT-271 F-1): refund execution and the two return reads.
+  "recordRefundExecution",
+  "readReturnByProvenance",
+  "listSaleReturns",
 ] as const;
 
 const WRITE_OPERATION_IDS = [
@@ -72,6 +80,7 @@ const WRITE_OPERATION_IDS = [
   "recordRefund",
   "recordReturn",
   "recordCreditSaleReversal",
+  "recordRefundExecution",
 ];
 
 const CAPTURE_PATH = "/api/pos/v1/sales";
@@ -80,6 +89,8 @@ const VOID_PATH = "/api/pos/v1/sales/{saleRef}/void";
 const REFUND_PATH = "/api/pos/v1/sales/{saleRef}/refund";
 const RETURNS_PATH = "/api/pos/v1/sales/{saleRef}/returns";
 const CREDIT_REVERSALS_PATH = "/api/pos/v1/sales/{saleRef}/credit-reversals";
+const EXECUTIONS_PATH = "/api/pos/v1/sales/{saleRef}/returns/{returnRef}/executions";
+const RETURN_BY_PROVENANCE_PATH = "/api/pos/v1/sales/{saleRef}/returns/by-provenance";
 
 /**
  * The owner-approved tender fields — the only `schema.property` pairs exempt
@@ -102,14 +113,21 @@ const APPROVED_TENDER_FIELDS = [
   // RT-577 D8 (owner ruling 2026-10-17): a credit void refunds by mirroring
   // each collected tender line, addressed by its tenderRef.
   "CreditReversalRefundTender.tenderRef",
+  // RT-490 (RT-271 R-2): a refund allocation names the sale tender it is
+  // refunded against.
+  "RefundTender.originalTenderRef",
 ];
 
 /**
  * Capture fields the contract declares before the server accepts them.
  * RT-539 added the RT-537 `receipt` to the capture DTO; RT-418 added the
- * RT-417 `responsibilities`. None is ahead now.
+ * RT-417 `responsibilities`. RT-450 declares the Inventory Safety Revision
+ * pair ahead of the DTO until the RT-451 runtime (contract-only).
  */
-const CONTRACT_AHEAD_OF_CAPTURE_DTO: readonly string[] = [];
+const CONTRACT_AHEAD_OF_CAPTURE_DTO: readonly string[] = ["safetyRevision", "safetySyncedAt"];
+
+/** `CaptureSaleLine` fields the contract declares before the line DTO accepts them (RT-450, until RT-451). */
+const CONTRACT_AHEAD_OF_CAPTURE_LINE_DTO: readonly string[] = ["tracking"];
 
 /** A property's `maxLength` in a schema; NaN when the schema does not bound it. */
 function maxLengthOf(schemaObject: { properties?: Record<string, unknown> } | undefined, prop: string): number {
@@ -296,7 +314,7 @@ describe("pos-sales/sales.yaml — loadability", () => {
 // 2. Operations present, uniquely named, POS-secured
 // ===========================================================================
 describe("pos-sales/sales.yaml — operations", () => {
-  it("declares exactly the four 008 operationIds plus the RT-72 recordReturn and the RT-577 recordCreditSaleReversal", () => {
+  it("declares the four 008 operationIds, the RT-72 recordReturn, the RT-577 recordCreditSaleReversal and the three RT-490 operations", () => {
     const ids = salesOperations()
       .map((o) => o.op.operationId)
       .filter((id): id is string => typeof id === "string")
@@ -312,6 +330,9 @@ describe("pos-sales/sales.yaml — operations", () => {
     expect(salesDoc.paths?.[REFUND_PATH]?.["post"]?.operationId).toBe("recordRefund");
     expect(salesDoc.paths?.[RETURNS_PATH]?.["post"]?.operationId).toBe("recordReturn");
     expect(salesDoc.paths?.[CREDIT_REVERSALS_PATH]?.["post"]?.operationId).toBe("recordCreditSaleReversal");
+    expect(salesDoc.paths?.[EXECUTIONS_PATH]?.["post"]?.operationId).toBe("recordRefundExecution");
+    expect(salesDoc.paths?.[RETURN_BY_PROVENANCE_PATH]?.["get"]?.operationId).toBe("readReturnByProvenance");
+    expect(salesDoc.paths?.[RETURNS_PATH]?.["get"]?.operationId).toBe("listSaleReturns");
   });
 
   it("does NOT collide with or rename any shipped top-level operationId", () => {
@@ -351,12 +372,14 @@ describe("pos-sales/sales.yaml — idempotency", () => {
     expect(idemParam?.required).toBe(true);
   });
 
-  it("does NOT require an Idempotency-Key on the read", () => {
-    const params = findOp("readSale")?.parameters ?? [];
-    const hasIdempotencyRef = params.some(
-      (p) => p.$ref === "#/components/parameters/IdempotencyKey",
-    );
-    expect(hasIdempotencyRef).toBe(false);
+  it("does NOT require an Idempotency-Key on the reads", () => {
+    for (const id of ["readSale", "readReturnByProvenance", "listSaleReturns"]) {
+      const params = findOp(id)?.parameters ?? [];
+      const hasIdempotencyRef = params.some(
+        (p) => p.$ref === "#/components/parameters/IdempotencyKey",
+      );
+      expect({ id, hasIdempotencyRef }).toEqual({ id, hasIdempotencyRef: false });
+    }
   });
 });
 
@@ -396,7 +419,7 @@ describe("pos-sales/sales.yaml — error vocabulary", () => {
   });
 
   it("declares a documented 200 idempotent-replay (Idempotent-Replayed header) on every write", () => {
-    for (const p of [CAPTURE_PATH, VOID_PATH, REFUND_PATH, RETURNS_PATH, CREDIT_REVERSALS_PATH]) {
+    for (const p of [CAPTURE_PATH, VOID_PATH, REFUND_PATH, RETURNS_PATH, CREDIT_REVERSALS_PATH, EXECUTIONS_PATH]) {
       const post = salesDoc.paths?.[p]?.["post"];
       const ok = (post?.responses ?? {})["200"] as
         | { headers?: Record<string, unknown> }
@@ -409,7 +432,7 @@ describe("pos-sales/sales.yaml — error vocabulary", () => {
   // RT-82 K4: a same-Idempotency-Key replay keeps the stored status (201), so
   // the 201 must document the replay header too; clients key on the header.
   it("declares Idempotent-Replayed on every write's 201 (stored-status replay, RT-82 K4)", () => {
-    for (const p of [CAPTURE_PATH, VOID_PATH, REFUND_PATH, RETURNS_PATH, CREDIT_REVERSALS_PATH]) {
+    for (const p of [CAPTURE_PATH, VOID_PATH, REFUND_PATH, RETURNS_PATH, CREDIT_REVERSALS_PATH, EXECUTIONS_PATH]) {
       const created = (salesDoc.paths?.[p]?.["post"]?.responses ?? {})["201"] as
         | { headers?: Record<string, unknown> }
         | undefined;
@@ -605,7 +628,8 @@ describe("pos-sales/sales.yaml — RT-72 returns contract", () => {
       expect.arrayContaining(["200", "201", "400", "401", "404", "409", "422", "500"]),
     );
     expect(responses["409"]?.$ref).toBe("#/components/responses/ReversalConflict");
-    expect(responses["422"]?.$ref).toBe("#/components/responses/ReturnTenderMismatch");
+    // RT-490 renamed ReturnTenderMismatch: the 422 now carries three codes.
+    expect(responses["422"]?.$ref).toBe("#/components/responses/ReturnUnprocessable");
   });
 
   it("a void conflicting with a return shares the reversal-conflict vocabulary (D2)", () => {
@@ -1243,6 +1267,8 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
         "posTotal",
         "receipt",
         "responsibilities",
+        "safetyRevision",
+        "safetySyncedAt",
         "sourceClockAt",
         "sourceSystem",
         "tenders",
@@ -2049,8 +2075,7 @@ describe("pos-sales/sales.yaml — RT-547/RT-548 readSale line order + read audi
   const ORDER_TEXT =
     "A sale captured before the order was recorded lists its lines by name, then by `lineRef`: a stable order that is not the receipt order";
 
-  it("bumps the version to 1.12.0-draft with an RT-547/RT-548 note citing the owner approval", () => {
-    expect(salesDoc.info?.version).toBe("1.12.0-draft");
+  it("carries the 1.12.0-draft RT-547/RT-548 note citing the owner approval (version moved on in RT-490)", () => {
     expect(flat(salesDoc.info?.description)).toContain(
       "RT-547 / RT-548 (1.12.0-draft; [GATED] owner approval 2026-10-18, Jira RT-689",
     );
@@ -2078,5 +2103,451 @@ describe("pos-sales/sales.yaml — RT-547/RT-548 readSale line order + read audi
     expect(saleLine?.additionalProperties).toBe(false);
     expect(Object.keys(sale?.properties ?? {})).not.toContain("lineOrder");
     expect(Object.keys(saleLine?.properties ?? {})).not.toContain("sequence");
+  });
+});
+// ===========================================================================
+// RT-490 (RT-271 F-1) — refund allocation, refund execution, return reads
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-490 refund allocation, execution and return reads", () => {
+  type Node = {
+    type?: string | string[];
+    format?: string;
+    enum?: string[];
+    $ref?: string;
+    items?: { $ref?: string };
+    anyOf?: Array<{ $ref?: string; type?: string }>;
+    description?: string;
+  };
+  const flat = (t: unknown): string => (typeof t === "string" ? t : "").replace(/\s+/g, " ");
+  const described = (node: unknown): string => flat((node as { description?: string } | undefined)?.description);
+  const schema = (name: string): (SchemaObject & Record<string, unknown>) | undefined =>
+    salesDoc.components?.schemas?.[name] as (SchemaObject & Record<string, unknown>) | undefined;
+  const field = (schemaName: string, name: string): Node | undefined =>
+    (schema(schemaName)?.properties ?? {})[name] as Node | undefined;
+  const opText = (id: string): string => described(findOp(id));
+  const response = (name: string): string => described(salesDoc.components?.responses?.[name]);
+  const responseRef = (operationId: string, status: string): string | undefined =>
+    ((findOp(operationId)?.responses ?? {}) as Record<string, { $ref?: string }>)[status]?.$ref;
+  const info = (): string => flat(salesDoc.info?.description);
+  const NEW_OPS = ["recordRefundExecution", "readReturnByProvenance", "listSaleReturns"];
+
+  function validatorFor(name: string): ValidateFunction {
+    const ajv = new Ajv2020({ strict: false, allErrors: true });
+    addFormats(ajv);
+    ajv.addSchema({ ...(salesDoc as object), $id: "sales" });
+    return ajv.compile({ $ref: `sales#/components/schemas/${name}` });
+  }
+  const UUID = "0190a8a0-0000-7000-8000-000000000001";
+  const UUID2 = "0190a8a0-0000-7000-8000-000000000002";
+  const refLessReturn = {
+    sourceSystem: "pos-pulse",
+    externalId: "ret-1",
+    lines: [{ lineRef: UUID, quantity: "1" }],
+    refundTenders: [{ method: "cash", amount: "10.00" }],
+  };
+  const allocation = { method: "cash", amount: "10.00", allocationRef: UUID, originalTenderRef: UUID2, instrument: "cash" };
+  const execution = {
+    sourceSystem: "pos-pulse",
+    externalId: "exec-1",
+    executionRef: UUID,
+    allocationRef: UUID2,
+    amount: "10.00",
+    outcome: "settled",
+    evidence: { method: "drawer", paidAt: "2026-10-21T10:00:00Z", shiftRef: UUID },
+  };
+
+  it("carries the 1.13.0-draft RT-490 note citing the owner authorization and R-1..R-12 (version moved on in RT-740)", () => {
+    expect(info()).toContain("RT-490 (1.13.0-draft; [GATED] owner authorization Jira RT-490 comment 13211, 2026-10-21");
+    expect(info()).toContain("decisions R-1 to R-12 ratified in RT-271 comments 11872 and 11886");
+  });
+
+  it("states the rollout order: contract, F-2 runtime, F-5 POS reporting; posting on settlement behind a deploy flag", () => {
+    const text = info();
+    expect(text).toContain("ROLLOUT ORDER: (1) this contract; (2) the F-2 runtime");
+    expect(text).toContain("the POS MUST NOT send them before F-2 is deployed");
+    expect(text).toContain("must re-pin this version BEFORE F-2 emits them");
+    expect(text).toContain("(3) F-5, the POS");
+    expect(text).toContain("Posting on settlement (R-7) sits behind a deploy flag");
+    expect(text).toContain("It is turned on only once every till sends `allocationRef` and reports its executions (F-5)");
+  });
+
+  describe("RefundTender becomes a refund allocation (R-2, R-3)", () => {
+    it("keeps method + amount required and adds three OPTIONAL fields", () => {
+      expect(schema("RefundTender")?.additionalProperties).toBe(false);
+      expect(schema("RefundTender")?.required?.slice().sort()).toEqual(["amount", "method"]);
+      expect(Object.keys(schema("RefundTender")?.properties ?? {}).sort()).toEqual(
+        ["allocationRef", "amount", "instrument", "method", "originalTenderRef"],
+      );
+      expect(field("RefundTender", "allocationRef")).toMatchObject({ type: "string", format: "uuid" });
+      expect(field("RefundTender", "originalTenderRef")).toMatchObject({ type: "string", format: "uuid" });
+      expect(field("RefundTender", "instrument")?.enum).toEqual(["cash"]);
+      expect(field("RefundTender", "method")?.enum).toEqual(["cash"]);
+    });
+
+    it("is described as an allocation, not a payout fact", () => {
+      const text = described(schema("RefundTender"));
+      expect(text).toContain("One refund ALLOCATION");
+      expect(text).toContain("it is NOT a payout fact");
+      expect(text).not.toContain("recorded as a fact");
+      expect(opText("recordReturn")).toContain("They are NOT a record that cash left the drawer");
+      expect(opText("recordReturn")).not.toContain("records how the refund was paid out");
+    });
+
+    it("an existing ref-less return body stays valid; a body with allocation refs is valid", () => {
+      const validate = validatorFor("RecordReturnRequest");
+      expect({ ok: validate(refLessReturn), errors: validate.errors }).toMatchObject({ ok: true });
+      const withRefs = { ...refLessReturn, refundTenders: [allocation] };
+      expect({ ok: validate(withRefs), errors: validate.errors }).toMatchObject({ ok: true });
+    });
+
+    it("rejects a non-cash instrument and a malformed ref in the schema", () => {
+      const validate = validatorFor("RecordReturnRequest");
+      expect(validate({ ...refLessReturn, refundTenders: [{ ...allocation, instrument: "card_external" }] })).toBe(false);
+      expect(validate({ ...refLessReturn, refundTenders: [{ ...allocation, allocationRef: "not-a-uuid" }] })).toBe(false);
+    });
+
+    it("a credit-sale return still rejects the allocation fields (its closed tender shape does not declare them)", () => {
+      const validate = validatorFor("CreditSaleReversalRequest");
+      const creditReturn = {
+        sourceSystem: "pos-pulse",
+        externalId: "rev-1",
+        kind: "return",
+        lines: [{ lineRef: UUID, quantity: "1" }],
+        refundTenders: [{ method: "cash", amount: "0.00" }],
+        reason: "customer returned goods",
+      };
+      expect({ ok: validate(creditReturn), errors: validate.errors }).toMatchObject({ ok: true });
+      expect(validate({ ...creditReturn, refundTenders: [{ method: "cash", amount: "0.00", allocationRef: UUID }] })).toBe(false);
+      expect(described(schema("RefundTender"))).toContain("On `recordCreditSaleReversal`");
+    });
+
+    it("the contract is ahead of the return DTO by exactly the three RT-490 fields until F-2", () => {
+      const contractProps = Object.keys(schema("RefundTender")?.properties ?? {});
+      const dtoProps = Object.keys((RefundTenderSchema as unknown as { shape: Record<string, unknown> }).shape);
+      expect(contractProps.filter((p) => !dtoProps.includes(p)).sort()).toEqual(
+        ["allocationRef", "instrument", "originalTenderRef"],
+      );
+      expect(dtoProps.filter((p) => !contractProps.includes(p))).toEqual([]);
+    });
+  });
+
+  describe("recordReturn states R-5, R-6 and R-12 normatively, from the F-2 runtime", () => {
+    it("R-12: cash-only, all-cash sales only, else 422 refund_instrument_not_allowed", () => {
+      const text = opText("recordReturn");
+      expect(text).toContain("Allocation rules (RT-490; R-5, R-6, R-12; normative from the F-2 runtime)");
+      expect(text).toContain("A return of a sale that carries any tender whose `method` is not `cash` is 422 `refund_instrument_not_allowed`");
+    });
+
+    it("R-5: the cumulative refundable balance counts allocated amounts under the sales row lock", () => {
+      const text = opText("recordReturn");
+      expect(text).toContain("`refundable(T) = T.amount − Σ amount of the allocations that reference T`");
+      expect(text).toContain("The rule counts ALLOCATED amounts, never settled ones");
+      expect(text).toContain("It is checked under the same `sales` row lock as the quantity cap");
+      expect(text).toContain("422 `refund_allocation_exceeds_tender`");
+      // Review finding 7: cash already refunded by the legacy route counts too.
+      expect(text).toContain("plus Σ of the sale's legacy `recordRefund` amounts, stays ≤ Σ of the sale's cash tenders");
+    });
+
+    it("R-6: a tender-unknown sale accepts a cash allocation with no originalTenderRef, capped by the line cap", () => {
+      expect(opText("recordReturn")).toContain(
+        "`tender_count = 0`): rule 3 does not apply. A cash allocation with no `originalTenderRef` is accepted, capped only by the per-line quantity cap",
+      );
+    });
+
+    it("the allocation fields enter the payload: a changed replay is 409 conflict, a ref-less one still replays", () => {
+      const text = opText("recordReturn");
+      expect(text).toContain("added, removed or changed is 409 `conflict`");
+      expect(text).toContain("A return recorded without them still replays (200)");
+    });
+
+    it("leaves return pricing and the per-line quantity cap unchanged", () => {
+      expect(opText("recordReturn")).toContain("No return pricing rule changes");
+    });
+
+    it("its 422 names the three codes in order", () => {
+      expect(responseRef("recordReturn", "422")).toBe("#/components/responses/ReturnUnprocessable");
+      const text = response("ReturnUnprocessable");
+      const order = ["return_tender_mismatch", "refund_instrument_not_allowed", "refund_allocation_exceeds_tender"]
+        .map((code) => text.indexOf(`\`${code}\``));
+      expect(order.every((i) => i >= 0)).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
+      expect(salesDoc.components?.responses?.["ReturnTenderMismatch"]).toBeUndefined();
+    });
+
+    it("R-7: the return posts once its obligation is settled, behind a deploy flag, exactly once", () => {
+      const text = opText("recordReturn");
+      expect(text).toContain("Settle before post (R-7, from the F-2 runtime, behind a deploy flag)");
+      expect(text).toContain("with `refundTenders` projected from the return's settled cash executions");
+      expect(text).toContain("Each return is emitted exactly once, at one of two moments");
+    });
+
+    it("R-7 flag edges: a ref-less or zero-total return posts at acceptance; turning the flag off never strands a waiting return", () => {
+      const text = opText("recordReturn");
+      expect(text).toContain("or when the return cannot be settled through executions (its allocations carry no `allocationRef`), or when its `returnTotal` is 0");
+      expect(text).toContain("so turning the flag off again never strands it");
+      expect(info()).toContain("so it keeps the pre-RT-490 posting (at acceptance) whatever the flag says, and is never silently dropped");
+    });
+  });
+
+  describe("the three new operations", () => {
+    it("are contract-only with a runtime note until F-2", () => {
+      for (const id of NEW_OPS) {
+        const op = findOp(id) as (OperationObject & Record<string, unknown>) | undefined;
+        expect({ id, status: op?.["x-runtime-status"] }).toEqual({ id, status: "contract-only" });
+        expect(flat(op?.["x-runtime-note"])).toContain("F-2");
+      }
+    });
+
+    it("use the operator envelope only and the shared sale ref", () => {
+      for (const id of NEW_OPS) {
+        expect(findOp(id)?.security).toEqual([{ operatorAuthorization: [] }]);
+        expect(JSON.stringify(findOp(id)?.parameters)).toContain("#/components/parameters/SaleRef");
+      }
+    });
+
+    it("are not behind POS_RETURNS_ENABLED (a gated 404 would hide recorded facts or strand a payout)", () => {
+      expect(opText("listSaleReturns")).toContain("The read is NOT behind `POS_RETURNS_ENABLED`");
+      expect(opText("readReturnByProvenance")).toContain("Not behind `POS_RETURNS_ENABLED`");
+      expect(opText("recordRefundExecution")).toContain("The route is NOT behind `POS_RETURNS_ENABLED`");
+    });
+  });
+
+  describe("recordRefundExecution (R-1, R-3, R-4)", () => {
+    it("is an idempotent write: Idempotency-Key, replay 200, 201, and its own 409 / 422", () => {
+      const op = findOp("recordRefundExecution") as (OperationObject & Record<string, unknown>) | undefined;
+      expect(op?.["x-idempotency"]).toBe("required");
+      expect(JSON.stringify(op?.parameters)).toContain("#/components/parameters/ReturnRef");
+      expect(Object.keys(op?.responses ?? {})).toEqual(
+        expect.arrayContaining(["200", "201", "400", "401", "404", "409", "422", "500"]),
+      );
+      expect(responseRef("recordRefundExecution", "409")).toBe("#/components/responses/RefundExecutionConflict");
+      expect(responseRef("recordRefundExecution", "422")).toBe("#/components/responses/RefundExecutionUnprocessable");
+      expect(response("RefundExecutionUnprocessable")).toContain("`refund_execution_exceeds_allocation`");
+      expect(response("RefundExecutionConflict")).toContain("`conflict`");
+    });
+
+    it("the body is strict: provenance, executionRef, allocationRef, amount, outcome settled, evidence", () => {
+      for (const name of ["RecordRefundExecutionRequest", "RefundExecutionEvidence"]) {
+        expect(schema(name)?.additionalProperties).toBe(false);
+      }
+      expect(schema("RecordRefundExecutionRequest")?.required?.slice().sort()).toEqual(
+        ["allocationRef", "amount", "evidence", "executionRef", "externalId", "outcome", "sourceSystem"],
+      );
+      expect(field("RecordRefundExecutionRequest", "outcome")?.enum).toEqual(["settled"]);
+      expect(field("RecordRefundExecutionRequest", "amount")?.$ref).toBe("#/components/schemas/PositiveDecimalAmount");
+      expect(schema("RefundExecutionEvidence")?.required?.slice().sort()).toEqual(["method", "paidAt", "shiftRef"]);
+      expect(field("RefundExecutionEvidence", "method")?.enum).toEqual(["drawer", "manual"]);
+      const validate = validatorFor("RecordRefundExecutionRequest");
+      expect({ ok: validate(execution), errors: validate.errors }).toMatchObject({ ok: true });
+      expect(validate({ ...execution, outcome: "failed" })).toBe(false);
+      expect(validate({ ...execution, amount: "0" })).toBe(false);
+      expect(validate({ ...execution, instrument: "cash" })).toBe(false);
+    });
+
+    it("states its check order and that a settled execution is never rolled back", () => {
+      const text = opText("recordRefundExecution");
+      expect(text).toContain("Checks, in this order:");
+      expect(text).toContain("A settled execution is never rolled back or edited (Sales & Returns 1063)");
+      expect(text).toContain("a confirmed but unpaid return reports nothing (R-4)");
+      expect(text).toContain("422 `refund_execution_exceeds_allocation`");
+      expect(text.indexOf("404 `not_found`")).toBeLessThan(text.indexOf("Provenance replay"));
+      expect(text.indexOf("Provenance replay")).toBeLessThan(text.indexOf("`refund_execution_exceeds_allocation`"));
+    });
+
+    it("emits the return's posting from the settling execution exactly once, never again after an acceptance emit", () => {
+      const text = opText("recordRefundExecution");
+      expect(text).toContain("emits the return's `reversal` work item in its own transaction, exactly once, whatever the deploy flag says at that moment");
+      expect(text).toContain("is never emitted again");
+    });
+
+    it("a credit-sale return is outside RT-490: no execution names it (404) and its posting and close count are unchanged", () => {
+      const text = opText("recordRefundExecution");
+      expect(text).toContain("A return recorded through `recordCreditSaleReversal` is outside RT-490");
+      expect(described(schema("RefundTender"))).toContain("its posting and its shift-close count (its recorded refund tenders) are unchanged");
+    });
+
+    it("V1 pays a return out in one shift, so one close claims all of it (review finding 6)", () => {
+      expect(opText("recordRefundExecution")).toContain("every execution of a return carries the same `evidence.shiftRef`, else 400 `validation_error`");
+    });
+
+    it("the projection is strict and leaks no DB internals (§IV)", () => {
+      expect(schema("RefundExecution")?.additionalProperties).toBe(false);
+      const props = schema("RefundExecution")?.properties ?? {};
+      for (const leak of ["tenant_id", "tenantId", "payload_hash", "payloadHash", "created_by", "createdBy"]) {
+        expect(props).not.toHaveProperty(leak);
+      }
+    });
+  });
+
+  describe("readReturnByProvenance and listSaleReturns (R-8, RT-196)", () => {
+    it("read the recorded return with its derived settlement", () => {
+      expect(responseRef("readReturnByProvenance", "404")).toBe("#/components/responses/NotFound");
+      expect(responseRef("listSaleReturns", "404")).toBe("#/components/responses/NotFound");
+      expect(field("ReturnRead", "saleReturn")?.$ref).toBe("#/components/schemas/SaleReturn");
+      expect(field("ReturnRead", "settlement")?.anyOf).toEqual([
+        { $ref: "#/components/schemas/RefundSettlement" },
+        { type: "null" },
+      ]);
+      expect(field("RefundSettlement", "state")?.enum).toEqual(["open", "partially_settled", "settled"]);
+      expect(field("SaleReturnList", "returns")?.items?.$ref).toBe("#/components/schemas/ReturnRead");
+      for (const name of ["ReturnRead", "RefundSettlement", "SaleReturnList"]) {
+        expect(schema(name)?.additionalProperties).toBe(false);
+      }
+    });
+
+    it("the provenance read takes both provenance parts as required query parameters", () => {
+      const params = salesDoc.components?.parameters ?? {};
+      for (const name of ["ReturnSourceSystem", "ReturnExternalId"]) {
+        expect(params[name]).toMatchObject({ in: "query", required: true });
+        expect(JSON.stringify(findOp("readReturnByProvenance")?.parameters)).toContain(`#/components/parameters/${name}`);
+      }
+    });
+
+    it("a 404 is non-disclosing and point-in-time; the read never confirms or clears anything", () => {
+      const text = opText("readReturnByProvenance");
+      expect(text).toContain("A 404 is a point-in-time answer");
+      expect(text).toContain("never confirms, edits or clears anything");
+    });
+  });
+
+  it("R-11: the legacy recordRefund is documented as gated off (404) from F-4, then removed", () => {
+    const op = findOp("recordRefund") as (OperationObject & Record<string, unknown>) | undefined;
+    expect(op?.deprecated).toBe(true);
+    expect(op?.["x-runtime-status"]).toBeUndefined();
+    expect(flat(op?.["x-runtime-note"])).toContain("off → 404 `not_found`");
+    expect(opText("recordRefund")).toContain("GATED OFF (RT-271 R-11, RT-490): from the F-4 runtime the route answers 404 `not_found`");
+    expect(opText("recordRefund")).toContain("A later breaking contract version removes the operation");
+  });
+});
+
+// ===========================================================================
+// RT-740 (1.14.0-draft; [GATED] owner authorization Jira RT-740 comment 13207;
+// RT-699 doc 28 DEP-1 / OD-28-12 option C-A): a per-line manual discount.
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-740 per-line manual discount", () => {
+  type FieldNode = { type?: string; enum?: string[]; pattern?: string; format?: string; $ref?: string };
+  const flat = (t: unknown): string => (typeof t === "string" ? t : "").replace(/\s+/g, " ");
+  const schema = (name: string): SchemaObject | undefined => salesDoc.components?.schemas?.[name];
+  const field = (schemaName: string, name: string): FieldNode | undefined =>
+    (schema(schemaName)?.properties ?? {})[name] as FieldNode | undefined;
+  const described = (node: unknown): string => flat((node as { description?: string } | undefined)?.description);
+
+  function lineValidator(): ValidateFunction {
+    const ajv = new Ajv2020({ strict: false, allErrors: true });
+    addFormats(ajv);
+    ajv.addSchema({ ...(salesDoc as object), $id: "sales" });
+    return ajv.compile({ $ref: "sales#/components/schemas/CaptureSaleLine" });
+  }
+  const discount = {
+    kind: "percent",
+    value: "10",
+    amount: "9.00",
+    reasonCode: "promotion",
+    authoritySource: "cashier_approval",
+    approverRole: "manager",
+  };
+  const line = {
+    lineName: "Panadol Extra 24",
+    unitPrice: "45.00",
+    currencyCode: "EGP",
+    quantity: "2",
+    lineAmount: "81.00",
+    unit: "box",
+    discount,
+  };
+
+  it("carries the 1.14.0-draft RT-740 note citing the owner authorization (version moved on in RT-450)", () => {
+    const info = flat(salesDoc.info?.description);
+    expect(info).toContain("RT-740 (1.14.0-draft; [GATED] owner authorization Jira RT-740 comment 13207");
+    expect(info).toContain(
+      "The POS MUST NOT send `discount` until BOTH RT-740 is deployed AND the ERPNext-Connector posts discounted lines (RT-699 DEP-3",
+    );
+    expect(info).toContain("The server does not hold these sales off the feed in this version");
+    expect(info).toContain("it is NOT stored and NOT returned: `SaleLine` is unchanged");
+  });
+
+  it("CaptureSaleLine gains an OPTIONAL discount; its required list is unchanged", () => {
+    expect(field("CaptureSaleLine", "discount")?.$ref).toBe("#/components/schemas/CaptureSaleLineDiscount");
+    expect(schema("CaptureSaleLine")?.required).toEqual(["lineName", "unitPrice", "currencyCode", "quantity", "lineAmount", "unit"]);
+  });
+
+  it("CaptureSaleLineDiscount is strict, with the C-A fields and closed enums", () => {
+    const d = schema("CaptureSaleLineDiscount");
+    expect(d?.additionalProperties).toBe(false);
+    expect([...(d?.required ?? [])].sort()).toEqual(
+      ["amount", "approverRole", "authoritySource", "kind", "reasonCode", "value"],
+    );
+    expect(field("CaptureSaleLineDiscount", "kind")?.enum).toEqual(["percent", "amount"]);
+    expect(field("CaptureSaleLineDiscount", "authoritySource")?.enum).toEqual(["cashier_approval", "manager_session"]);
+    expect(field("CaptureSaleLineDiscount", "approverRole")?.enum).toEqual(["manager", "admin"]);
+    expect(field("CaptureSaleLineDiscount", "reasonCode")?.enum).toEqual([...DISCOUNT_REASON_CODES]);
+    expect(field("CaptureSaleLineDiscount", "amount")?.$ref).toBe("#/components/schemas/NonNegativeDecimalAmount");
+    expect(field("CaptureSaleLineDiscount", "approverUserId")).toMatchObject({ type: "string", format: "uuid" });
+    for (const claim of ["authoritySource", "approverRole"]) {
+      expect(described(field("CaptureSaleLineDiscount", claim))).toContain("A client claim: the server does not");
+    }
+  });
+
+  it("the DTO mirrors the contract: same keys, same required, strict", () => {
+    const contract = schema("CaptureSaleLineDiscount");
+    const inner = CaptureSaleLineDiscountSchema._def.schema;
+    expect(inner._def.unknownKeys).toBe("strict");
+    const shape = inner.shape as Record<string, z.ZodTypeAny>;
+    expect(Object.keys(shape).sort()).toEqual(Object.keys(contract?.properties ?? {}).sort());
+    expect(Object.keys(shape).filter((k) => !shape[k]!.isOptional()).sort()).toEqual([...(contract?.required ?? [])].sort());
+    const lineShape = CaptureSaleLineSchema.shape as Record<string, z.ZodTypeAny>;
+    expect(Object.keys(lineShape).sort()).toEqual(
+      Object.keys(schema("CaptureSaleLine")?.properties ?? {})
+        .filter((key) => !CONTRACT_AHEAD_OF_CAPTURE_LINE_DTO.includes(key))
+        .sort(),
+    );
+    expect(lineShape["discount"]!.isOptional()).toBe(true);
+  });
+
+  it("validates a discounted line and a plain line, and refuses an unknown discount key or free-text reason", () => {
+    const validate = lineValidator();
+    expect(validate(line)).toBe(true);
+    const { discount: _d, ...plain } = line;
+    expect(validate({ ...plain, lineAmount: "90.00" })).toBe(true);
+    expect(validate({ ...line, discount: { ...discount, reasonNote: "regular" } })).toBe(false);
+    expect(validate({ ...line, discount: { ...discount, reasonCode: "my cousin" } })).toBe(false);
+    expect(validate({ ...line, discount: { ...discount, amount: "-1" } })).toBe(false);
+  });
+
+  it("encodes the kind-specific value rules the DTO enforces (if/then on kind)", () => {
+    const validate = lineValidator();
+    const withValue = (kind: string, value: string) => ({ ...line, discount: { ...discount, kind, value } });
+    for (const value of ["1", "10", "99", "100"]) expect({ value, ok: validate(withValue("percent", value)) }).toEqual({ value, ok: true });
+    for (const value of ["0", "101", "1.5", "010", "10.0"]) {
+      expect({ value, ok: validate(withValue("percent", value)) }).toEqual({ value, ok: false });
+      expect({ value, dto: CaptureSaleLineDiscountSchema.safeParse({ ...discount, value }).success }).toEqual({ value, dto: false });
+    }
+    for (const value of ["0.01", "5", "5.0000"]) expect({ value, ok: validate(withValue("amount", value)) }).toEqual({ value, ok: true });
+    for (const value of ["0", "0.00"]) {
+      expect({ value, ok: validate(withValue("amount", value)) }).toEqual({ value, ok: false });
+      expect({ value, dto: CaptureSaleLineDiscountSchema.safeParse({ ...discount, kind: "amount", value }).success }).toEqual({ value, dto: false });
+    }
+  });
+
+  it("states the net invariant, the percent rule, the zero-total path and the partial-return limit", () => {
+    expect(described(schema("CaptureSaleLine"))).toContain(
+      "`lineAmount = unitPrice × quantity − discount.amount` exactly",
+    );
+    const d = described(schema("CaptureSaleLineDiscount"));
+    expect(d).toContain("rounded half up to the line currency's ISO-4217 minor unit");
+    expect(d).toContain("a sale whose every line is discounted 100% has `posTotal` `0` and is accepted");
+    expect(d).toContain("one `cash` entry of amount `0`");
+    expect(d).toContain("the return sends one `cash` refund tender of amount `0`");
+    expect(d).toContain("Backend-Core cannot join it to the sale line today");
+    expect(d).toContain("a net of 2.99 over 3 units returns one unit as 0.9967");
+    expect(d).toContain("never free text");
+    expect(described(findOp("captureSale"))).toContain("`lineAmount = unitPrice × quantity − discount.amount`");
+    expect(described(salesDoc.components?.responses?.["CaptureUnprocessable"])).toContain("`CaptureSaleLineDiscount`");
+  });
+
+  it("changes no response schema: SaleLine stays closed without a discount field", () => {
+    const saleLine = schema("SaleLine");
+    expect(saleLine?.additionalProperties).toBe(false);
+    expect(Object.keys(saleLine?.properties ?? {})).not.toContain("discount");
   });
 });

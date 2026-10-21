@@ -18,6 +18,12 @@
  *      (FR-071) with a `WHERE processed_at IS NULL` guard so the write is
  *      idempotent and CONVERGES under retry/at-least-once re-delivery: a second
  *      run is a no-op and `processed_at` does not drift (§XI).
+ *   4. RT-427: when the tenant's sale effects are active, writes one Inventory
+ *      Effect per sale line in the SAME transaction as the `sale_post` intent
+ *      (RT-289 DC-1 / DC-2), so the two commit or roll back together. A line
+ *      whose effect cannot be written exactly is skipped, never stalls the
+ *      sale, and is reported after commit (warn log + metric, owner decision
+ *      2). With the flag OFF nothing else changes.
  *
  * Layered architecture (mirrors AuditFanoutProcessor)
  * ---------------------------------------------------
@@ -40,9 +46,16 @@
  * policy is the enforcement boundary.
  */
 import type { Pool } from "pg";
-import { runWithTenantContext, emit, OUTBOX_EVENT_TYPES } from "@data-pulse-2/db";
+import {
+  emit,
+  OUTBOX_EVENT_TYPES,
+  runWithTenantContext,
+  writeSaleLineEffects,
+  type SaleEffectsOutcome,
+} from "@data-pulse-2/db";
 
 import {
+  recordInventorySaleEffectSkipped,
   recordWorkerProcessingFailure,
   sanitizeErrorClass,
 } from "../observability/metrics/worker.metrics";
@@ -82,6 +95,8 @@ export interface SaleProcessingResult {
 /** Minimal log seam so failed-job logging is testable without a real logger. */
 export interface SaleProcessingLogger {
   error(obj: Record<string, unknown>, msg?: string): void;
+  /** RT-427: a skipped sale effect (identifiers only). */
+  warn?(obj: Record<string, unknown>, msg?: string): void;
 }
 
 /** Thrown when the target sale does not resolve within the tenant scope. */
@@ -117,8 +132,10 @@ export class SaleProcessingProcessor {
   async process(job: SaleProcessingJob): Promise<SaleProcessingResult> {
     this.assertJob(job);
 
+    // Filled inside the transaction; reported only after it commits.
+    const written: { effects: SaleEffectsOutcome | null } = { effects: null };
     try {
-      return await runWithTenantContext(
+      const result = await runWithTenantContext(
         this.pool,
         { tenantId: job.tenantId, isPlatformAdmin: false },
         async (client): Promise<SaleProcessingResult> => {
@@ -176,6 +193,14 @@ export class SaleProcessingProcessor {
 
           if (updated.rows[0]) {
             const row = updated.rows[0];
+
+            // RT-427 (DC-1 / DC-2): the sale's Inventory Effects, in this same
+            // transaction as the intent below. A no-op while the tenant is OFF.
+            written.effects = await writeSaleLineEffects(client, {
+              tenantId: job.tenantId,
+              storeId: job.storeId,
+              saleId: job.saleId,
+            });
 
             // 015 posting trigger: the sale just became PROCESSED (first time —
             // this branch only runs when the `processed_at IS NULL` guard matched).
@@ -238,6 +263,9 @@ export class SaleProcessingProcessor {
           };
         },
       );
+      // After COMMIT only, so a rolled-back attempt never reports a skip.
+      if (written.effects !== null) this.reportSkippedEffects(job, written.effects);
+      return result;
     } catch (err: unknown) {
       // RT-457: every failed attempt is counted, so a sale that keeps failing
       // (and would otherwise strand silently) is visible on the metrics.
@@ -259,6 +287,29 @@ export class SaleProcessingProcessor {
         "sale processing failed",
       );
       throw err;
+    }
+  }
+
+  /**
+   * RT-427 owner decision 2: one warn log and one metric per skipped line.
+   * Identifiers and closed codes only — no quantity, unit or product name.
+   */
+  private reportSkippedEffects(job: SaleProcessingJob, outcome: SaleEffectsOutcome): void {
+    for (const line of outcome.skipped) {
+      recordInventorySaleEffectSkipped(outcome.event, line.reason);
+      this.logger?.warn?.(
+        {
+          event: "inventory.sale_effect.skipped",
+          event_type: outcome.event,
+          event_ref_id: job.saleId,
+          reason: line.reason,
+          line_id: line.lineId,
+          tenant_id: job.tenantId,
+          store_id: job.storeId,
+          sale_id: job.saleId,
+        },
+        "sale line written without an inventory effect",
+      );
     }
   }
 

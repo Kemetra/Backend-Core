@@ -22,8 +22,10 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1 # Git Bash only; no effect on Linux
 
 MODE="${1:?usage: run.sh gate|report|operator}"
-ROOT="$(git rev-parse --show-toplevel)"
-HERE="$ROOT/tools/schemathesis"
+# The Backend-Core project root, located from this script: the Git root when
+# standalone, services/backend-core/ in the monorepo (RT-801).
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT="$(cd "$HERE/../.." && pwd -P)"
 FUZZ_PROJECT="${FUZZ_PROJECT:-api-fuzz}"
 FUZZ_OUT="${FUZZ_OUT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/api-fuzz}"
 ST_IMAGE="${ST_IMAGE:-schemathesis/schemathesis:4.28.0@sha256:0a71757c60ccdba270c154a859d9dd3d019625f782f23ab36ad604771e15f78b}"
@@ -68,24 +70,34 @@ session_alive() {
 case "$MODE" in
   gate)
     check=not_a_server_error
-    extra=(--baseline /cfg/5xx-baseline.json)
-    if [[ -n "${BASELINE_UPDATE:-}" ]]; then extra+=(--baseline-update); fi
+    baseline=5xx-baseline.json
     ;;
   report)
     check=positive_data_acceptance
-    extra=(--baseline /cfg/report-baseline.json)
-    if [[ -n "${BASELINE_UPDATE:-}" ]]; then extra+=(--baseline-update); fi
+    baseline=report-baseline.json
     ;;
   operator)
     check=not_a_server_error
-    extra=(--baseline /cfg/operator-5xx-baseline.json)
-    if [[ -n "${BASELINE_UPDATE:-}" ]]; then extra+=(--baseline-update); fi
+    baseline=operator-5xx-baseline.json
     ;;
   *) echo "unknown mode: $MODE" >&2; exit 2 ;;
 esac
+extra=(--baseline "/cfg/$baseline")
+if [[ -n "${BASELINE_UPDATE:-}" ]]; then extra+=(--baseline-update); fi
+
+# Docker bind-mounts a missing source as an empty directory, so a wrong root
+# would select zero operations and pass. Check the mounted inputs on the host.
+if [[ -z "$(find "$ROOT/packages/contracts/openapi" -name '*.yaml' -print -quit 2>/dev/null)" ]]; then
+  echo "::error::no contracts at $ROOT/packages/contracts/openapi" >&2
+  exit 1
+fi
+for f in "$HERE/ops.py" "$HERE/$baseline"; do
+  [[ -f "$f" ]] || { echo "::error::missing $f" >&2; exit 1; }
+done
 
 failed=0
 errored=0
+total_ops=0
 summary="$FUZZ_OUT/$MODE.md"
 : >"$summary"
 
@@ -102,7 +114,9 @@ for group in "${groups[@]}"; do
   fi
   ops="$(st --entrypoint python "$ST_IMAGE" /cfg/ops.py /contracts "$group")"
   [[ -n "$ops" ]] || continue
-  echo "Schemathesis $MODE ($group credential): $(echo "$ops" | wc -l) contract files, $(echo "$ops" | awk '{n += NF - 1} END {print n}') operations"
+  n_ops="$(echo "$ops" | awk '{n += NF - 1} END {print n + 0}')"
+  total_ops=$((total_ops + n_ops))
+  echo "Schemathesis $MODE ($group credential): $(echo "$ops" | wc -l) contract files, $n_ops operations"
 
   while read -r file ids; do
     include=()
@@ -153,6 +167,12 @@ for group in "${groups[@]}"; do
     fi
   done <<<"$ops"
 done
+
+# A run over zero operations proves nothing; never let it pass.
+if [[ "$total_ops" -eq 0 ]]; then
+  echo "::error::Schemathesis $MODE selected no operations from $ROOT/packages/contracts/openapi" >&2
+  exit 1
+fi
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   {

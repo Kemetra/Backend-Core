@@ -440,6 +440,20 @@ table the domain role must use needs a matching grant step at deploy time.
   privilege on it (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). 0062 needs no maintenance
   window: the table is new.
 
+- **Migration `0063_inventory_effects_activation` (RT-427).** Run
+  [`sql/inventory-anchors-domain-grants.sql`](sql/inventory-anchors-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT` and `INSERT` on
+  `inventory_anchors` and `inventory_anchor_lines`: activating sale effects for
+  a tenant writes the Inventory Anchor of every store, and the comparison
+  reads it. Both are append-only: never grant `UPDATE`, `DELETE` or
+  `TRUNCATE`. The activation flag itself is two columns of
+  `tenant_inventory_settings`, already granted by 0056. Without the grants the
+  API refuses to boot (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must
+  hold no privilege on either (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). 0063 needs no
+  maintenance window: the tables are new and every tenant stays OFF.
+
 - **Console device revoke (RT-365, on migration `0040_device_lifecycle`).** Run
   [`sql/device-lifecycle-domain-grants.sql`](sql/device-lifecycle-domain-grants.sql)
   after `migrate up` and before the API starts, in the same step 2 of

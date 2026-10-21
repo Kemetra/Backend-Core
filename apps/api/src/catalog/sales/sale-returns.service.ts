@@ -15,17 +15,22 @@
  *   5. D3: the refund tenders must sum (numerically) to the computed total;
  *   6. insert the return (per-sale `return_seq`, own business date — RT-63
  *      P2), its lines (with the frozen cumulative quantity) and tenders;
- *   7. emit `erpnext.posting.requested` (kind reversal, source_ref_id = the
+ *   7. RT-427: write the return's Inventory Effects (a no-op while the
+ *      tenant's sale effects are OFF), landing in the tenant's return landing
+ *      status;
+ *   8. emit `erpnext.posting.requested` (kind reversal, source_ref_id = the
  *      return) in the same transaction.
  * The response is always re-read from the stored rows, so a replay is
  * byte-identical to the original response.
  */
 import { Inject, Injectable } from "@nestjs/common";
-import { emit, OUTBOX_EVENT_TYPES, runWithTenantContext } from "@data-pulse-2/db";
+import { emit, OUTBOX_EVENT_TYPES, runWithTenantContext, writeReturnEffects } from "@data-pulse-2/db";
 import { newId } from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../../auth/auth.module";
+import { resolveReturnLandingStatus } from "../../inventory/position-events/position-events.service";
+import { SaleEffectsReport } from "../../inventory/sale-effects/sale-effects-report";
 import type { RecordReturnRequestDto } from "./dto/record-return-request.dto";
 import { sha256CanonicalHex } from "./payload-hash";
 import { TerminalEventProvenanceConflictError } from "./sale-errors";
@@ -94,7 +99,9 @@ export class SaleReturnsService {
   async recordReturn(input: RecordReturnInput): Promise<SaleReturnResult> {
     const { tenantId, saleRef, body } = input;
     const payloadHash = sha256CanonicalHex(body);
-    return runWithTenantContext(
+    // RT-427: skipped return effects are reported after COMMIT only.
+    const effects = new SaleEffectsReport();
+    const result = await runWithTenantContext(
       this.pool,
       { tenantId, isPlatformAdmin: false },
       async (client): Promise<SaleReturnResult> => {
@@ -126,6 +133,12 @@ export class SaleReturnsService {
           return replay(client, winner, saleRef, payloadHash);
         }
         await insertLinesAndTenders(client, input, returnId, lines);
+        const scope = { tenantId, storeId: input.storeId, saleId: saleRef };
+        const resolveLandingStatus = (c: PoolClient) => resolveReturnLandingStatus(c, tenantId);
+        effects.add(await writeReturnEffects(client, { ...scope, returnId, resolveLandingStatus }), {
+          ...scope,
+          eventRefId: returnId,
+        });
         await emit(client, {
           eventType: OUTBOX_EVENT_TYPES.ERPNEXT_POSTING_REQUESTED,
           tenantId,
@@ -141,6 +154,8 @@ export class SaleReturnsService {
         return { projection: await loadSaleReturn(client, returnId), created: true };
       },
     );
+    effects.flush();
+    return result;
   }
 }
 

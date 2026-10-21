@@ -231,6 +231,9 @@ describe("data-pulse-migrate CLI", () => {
     "0060_posting_status_pending_created_store_idx",
     "0061_posting_status_legacy_posted_idx",
     "0062_platform_support_sessions",
+    "0063_inventory_effects_activation",
+    "0064_stock_movements_store_occurred_idx",
+    "0065_stock_movements_store_product_occurred_idx",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -473,6 +476,12 @@ describe("data-pulse-migrate CLI", () => {
       WHERE c.relname = ANY(ARRAY[${names.map((n) => `'${n}'`).join(", ")}]) AND i.indisvalid`);
   }
 
+  /** The two stock-movement history indexes of 0064-0065 (RT-735), in migration order. */
+  const STOCK_MOVEMENT_HISTORY_INDEXES = [
+    "idx_stock_movements_tenant_store_occurred",
+    "idx_stock_movements_tenant_store_product_occurred",
+  ] as const;
+
   /**
    * 0062_platform_support_sessions (RT-414): [the table, its one platform-admin
    * policy, its two guard triggers, its guard function].
@@ -488,16 +497,35 @@ describe("data-pulse-migrate CLI", () => {
     ];
   }
 
+  /** The two tables created by 0063_inventory_effects_activation (RT-427). */
+  const ANCHOR_TABLES = ["inventory_anchors", "inventory_anchor_lines"];
+
   /**
-   * After one `down` from head: 0062's support-session table is gone, while
-   * 0057-0061's freshness indexes, 0056's event-record and settings tables,
+   * 0063_inventory_effects_activation (RT-427): [its two tables, their
+   * SELECT + INSERT policies, the two activation columns on
+   * tenant_inventory_settings].
+   */
+  async function countAnchorObjects(): Promise<[string, string, string]> {
+    const columns =
+      Number(await countPublicColumn("tenant_inventory_settings", "sale_effects_activated_at")) +
+      Number(await countPublicColumn("tenant_inventory_settings", "sale_effects_activated_by"));
+    return [await countPublicTables(ANCHOR_TABLES), await countPolicies(ANCHOR_TABLES), String(columns)];
+  }
+
+  /**
+   * After one `down` from head: 0065's per-product stock-movement history
+   * index is gone, while 0064's store history index, 0063's anchor tables and
+   * activation columns, 0062's support-session table, 0057-0061's freshness indexes, 0056's event-record and settings tables,
    * 0055's AI entitlement tables and functions, 0054's credit reversal
    * tables, approval-use ledger, trigger and FK-target indexes, 0051's
    * sale_responsibilities, 0050's policy tables and columns, 0048's
    * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countSupportSessionObjects()).toEqual(["0", "0", "0", "0"]);
+    expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("1");
+    expect(await countValidIndexes([STOCK_MOVEMENT_HISTORY_INDEXES[0]])).toBe("1");
+    expect(await countAnchorObjects()).toEqual(["2", "4", "2"]);
+    expect(await countSupportSessionObjects()).toEqual(["1", "1", "2", "1"]);
     expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES)).toBe("5");
     expect(await countPositionEventObjects()).toEqual(["2", "5", "1"]);
     expect(await countAiEntitlementObjects()).toEqual(["7", "15", "4", "1"]);
@@ -570,6 +598,12 @@ describe("data-pulse-migrate CLI", () => {
     // 0062's support-session table, its platform-admin policy, two guard
     // triggers and guard function (RT-414).
     expect(await countSupportSessionObjects()).toEqual(["1", "1", "2", "1"]);
+    // 0063's anchor tables (SELECT + INSERT policies each) and the two
+    // activation columns on tenant_inventory_settings (RT-427).
+    expect(await countAnchorObjects()).toEqual(["2", "4", "2"]);
+    // 0064-0065's two stock-movement history indexes, valid after the runner's
+    // CONCURRENTLY builds (RT-735).
+    expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("2");
   }
 
   /** The three tables created by 0054_sale_credit_reversals (RT-577). */
@@ -722,7 +756,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0062 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0065 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();

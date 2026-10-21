@@ -14,6 +14,9 @@
 import { Injectable } from "@nestjs/common";
 import { verifyToken } from "@data-pulse-2/auth";
 
+import { identityProviderKind } from "../auth/identity-provider-kind";
+import { descopeVerifierFactory } from "./descope-verifier";
+
 /**
  * Minimum surface POS-Pulse needs from a verified Clerk JWT.
  *   - `sub` is the stable Clerk subject (matches `users.clerk_user_id`).
@@ -73,8 +76,13 @@ export class ClerkBackendVerifier implements ClerkVerifier {
  * Factory used by the module wiring. `NODE_ENV=production` requires a
  * real `CLERK_SECRET_KEY`; non-production allows boot without one but
  * verification will fail closed at request time (no allow-list shortcut).
+ *
+ * RT-791: `IDENTITY_PROVIDER=descope` returns the Descope JWKS verifier instead
+ * (same seam; `DESCOPE_PROJECT_ID` required in production, CLERK_SECRET_KEY
+ * not). Unset keeps Clerk; an unknown value throws at boot.
  */
 export function clerkVerifierFactory(): ClerkVerifier {
+  if (identityProviderKind() === "descope") return descopeVerifierFactory();
   const secret = process.env["CLERK_SECRET_KEY"];
   if (!secret) {
     if (process.env["NODE_ENV"] === "production") {
