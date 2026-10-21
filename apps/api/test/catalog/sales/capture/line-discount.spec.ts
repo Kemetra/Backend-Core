@@ -202,6 +202,21 @@ describe("RT-740 DEP-4 — returns refund the net", () => {
     expect(res.body.returnTotal).toBe("40.5000");
   });
 
+  it("a free (100%) line is returned with one zero cash refund tender; an empty list is a 400", async () => {
+    if (skip()) return;
+    const free = { ...TEN_PERCENT, lineAmount: "0", discount: discount({ value: "100", amount: "90.00" }) };
+    const cap = await post(sale("ld-ret-zero", [free], "0"), "ldretzero");
+    expect(cap.status).toBe(201);
+    const lineRef = cap.body.lines[0].lineRef as string;
+    const lines = [{ lineRef, quantity: "1" }];
+    const empty = await postReturn(h, cap.body.saleRef, { ...returnBody("ld-ret-zero-a", lines, "0"), refundTenders: [] }, "ldretzeroa");
+    expect(empty.status).toBe(400);
+    const zeroCash = await postReturn(h, cap.body.saleRef, returnBody("ld-ret-zero-b", lines, "0"), "ldretzerob");
+    expect(zeroCash.status).toBe(201);
+    expect(zeroCash.body.returnTotal).toBe("0.0000");
+    expect(zeroCash.body.refundTenders).toEqual([{ method: "cash", amount: "0.0000" }]);
+  });
+
   it("KNOWN LIMIT (owner decision pending): a net that does not divide prices a partial return below the minor unit", async () => {
     if (skip()) return;
     const line = { unitPrice: "1.00", quantity: "3", lineAmount: "2.99", discount: discount({ kind: "amount", value: "0.01", amount: "0.01" }) };

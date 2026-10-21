@@ -2182,6 +2182,8 @@ describe("pos-sales/sales.yaml — RT-740 per-line manual discount", () => {
     expect(d).toContain("rounded half up to the line currency's ISO-4217 minor unit");
     expect(d).toContain("a sale whose every line is discounted 100% has `posTotal` `0` and is accepted");
     expect(d).toContain("one `cash` entry of amount `0`");
+    expect(d).toContain("the return sends one `cash` refund tender of amount `0`");
+    expect(d).toContain("Backend-Core cannot join it to the sale line today");
     expect(d).toContain("a net of 2.99 over 3 units returns one unit as 0.9967");
     expect(d).toContain("never free text");
     expect(described(findOp("captureSale"))).toContain("`lineAmount = unitPrice × quantity − discount.amount`");

@@ -343,7 +343,8 @@ info:
     stored sale. The stored net `lineAmount` is the sale fact, and the discount
     amount is `unitPrice × quantity − lineAmount`. The till's
     `cart.discount.manager_authorized` audit event (`pos-audit-events`
-    1.1.0-draft) carries the provenance. ROLLOUT ORDER: the server accepts
+    1.1.0-draft) records the kind and reason, but it cannot be joined to the
+    sale line from Backend-Core today, and its approver is not persisted. ROLLOUT ORDER: the server accepts
     `discount` from the RT-740 deploy. Until then the strict capture DTO rejects
     the unknown field (400). The POS MUST NOT send `discount` until BOTH RT-740
     is deployed AND the ERPNext-Connector posts discounted lines (RT-699 DEP-3,
@@ -1706,7 +1707,10 @@ components:
         line is discounted 100% has `posTotal` `0` and is accepted. Without
         `tenders` it is a tender-unknown sale, as before (RT-10 D8). With
         `tenders`, the list holds one `cash` entry of amount `0`, so the
-        tenders still sum to `posTotal`.
+        tenders still sum to `posTotal`. A free line is returned like any
+        other line: its `returnTotal` is `0`, and the return sends one `cash`
+        refund tender of amount `0`, because an empty `refundTenders` list is
+        400 (`recordReturn` is unchanged).
 
 
         Storage (this version): the object is validated and hashed into the
@@ -1715,8 +1719,11 @@ components:
         `captureSale`), the sale history and detail and the reprint do not
         return it. Only the net `lineAmount` is stored. The discount amount
         can be derived as `unitPrice × quantity − lineAmount`, but its kind,
-        reason and approver are not kept on the sale (the till's
-        `cart.discount.manager_authorized` audit event carries them).
+        reason and approver are not kept on the sale. The till's
+        `cart.discount.manager_authorized` audit event records the kind and
+        reason, but Backend-Core cannot join it to the sale line today
+        (`lineRef` is server-generated and the event names the till's cart
+        line), and the ingest does not persist the event's approver.
 
 
         Returns: `readSale`, the sale history and returns use the net
