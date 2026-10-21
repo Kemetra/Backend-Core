@@ -934,8 +934,7 @@ describe("erpnext-connector/posting-feed.yaml — RT-490 settle before post (1.9
   const fieldText = (schemaName: string, name: string): string =>
     flat(((schema(schemaName)?.properties ?? {})[name] as { description?: string } | undefined)?.description);
 
-  it("is 1.9.0-draft and its note records RT-490 with the [GATED] owner authorization", () => {
-    expect(feedDoc.info?.version).toBe("1.9.0-draft");
+  it("carries the 1.9.0-draft RT-490 note with the [GATED] owner authorization (version moved on in RT-450)", () => {
     expect(info()).toContain("RT-490 (1.9.0-draft; [GATED] owner authorization Jira RT-490 comment 13211, 2026-10-21; RT-271 R-7");
   });
 

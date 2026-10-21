@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Connector Posting-Feed API
-  version: "1.9.0-draft"
+  version: "1.10.0-draft"
   description: >
     Spec 012 ERPNext Connector Contracts surface — the DP2 ↔ connector boundary
     that realises the signed 011 posting + version-pin decisions over a
@@ -282,6 +282,55 @@ info:
     settled cash executions and sends `allocationRef` on every return (F-5),
     and only then is the flag turned on. A void and a sale post are
     unaffected.
+
+    RT-450 (1.10.0-draft; [GATED] owner authorization Jira RT-450 comment
+    13212, 2026-10-21; RT-50 Gate 7 rule G7-11, owner decision RT-50 comment
+    11765): TRACKED LINES, CONTRACT ONLY. `SaleLine` gains an OPTIONAL
+    `erpnextBatchRef` (an `ErpnextBatchRef`, or null) and an OPTIONAL
+    `trackingMode` (`none`, `batch` or `serial`, or null). Source of truth:
+    `erpnextBatchRef` is the ERPNext Batch of the line's tracking identity, read
+    by Backend-Core from the Inventory edge map (the 1:1 identity-to-Batch map,
+    filled only from ERP evidence and never by assuming that the Batch name
+    equals the printed lot code) and FROZEN when the posting intent is created,
+    with the rest of the frozen resolution (`resolutionVersion`, RT-332). It is
+    never recomputed when the work item is offered, so a later edge-map change
+    does not alter an existing work item. The identity itself is Backend-Core
+    Inventory's and its expiry is the identity record's; neither appears on
+    this feed. `trackingMode` is the product's Catalog Tracking Profile at
+    intent time. Both fields are nullable and optional on the wire: Backend-Core
+    omits them on every line, untracked lines included, until the Connector
+    accepts them; afterwards an untracked line carries `trackingMode: none` and
+    `erpnextBatchRef: null` (`trackingMode` null means only that no profile
+    could be determined, never that the line is untracked). A tracked
+    (`batch`) line carries `trackingMode: batch` and a non-null
+    `erpnextBatchRef`: a line with no edge-map row is never offered (its
+    intent is held in Backend-Core, `pos-sales/sales.yaml` G7-9 row 3). Serial
+    lines are never offered in this version (serial selling is fail-closed,
+    RT-50 Q11): `serial` is in the enum so that a later serial release adds no
+    response enum value, and Backend-Core MUST NOT emit `trackingMode: serial`
+    here. The fields appear wherever `SaleLine` appears, including the lines of
+    the original sale on a void or return work item. A return line carries no
+    batch fields: the Connector keeps the mandatory `sales_invoice_item`
+    linkage through `lineRef`, so the original Batch is rebuilt from the
+    original document, and the Connector verifies that the return or void
+    bundle's batch equals the original.
+    Connector obligations the fields exist for (RT-452, G7-11): a batch Item
+    posts only with the supplied Batch, set explicitly, and ERPNext auto-pick
+    is never relied on; an Item whose ERPNext tracking flags disagree with
+    `trackingMode` is `permanently_rejected` / `validation`; ERPNext's own
+    batch refusals (expired, unknown or disabled Batch, a Batch of another
+    Item, negative batch stock) are `permanently_rejected` / `validation` with
+    a scrubbed reason, repaired and re-posted. No ack, work-item kind or
+    status change. ROLLOUT ORDER (Connector first): this contract; then the
+    Connector release that accepts the two fields (RT-452, wire acceptance
+    first, then explicit-batch posting); only then Backend-Core emits them
+    (RT-451, behind a per-tenant flag that is off by default). `SaleLine` is
+    `additionalProperties: false`, so a Connector that validates the feed
+    strictly must re-pin first; the Connector's parser on main ignores unknown
+    keys and fails closed on tracked Items (`UnsupportedTrackedItem`), which
+    is safe. Backend-Core MUST NOT emit a non-null `erpnextBatchRef` or
+    `trackingMode: batch` to a Connector that has not accepted them: ignoring
+    the Batch while posting the line would post it without one.
 
 servers:
   - url: https://api.example.com
@@ -976,6 +1025,33 @@ components:
             - type: string
               format: uuid
             - type: "null"
+        erpnextBatchRef:
+          description: >
+            RT-450 (RT-50 G7-11). The ERPNext Batch to post this line against;
+            null for an untracked line. Optional: omitted until the Connector
+            accepts it (see the 1.10.0-draft note). Source of truth: the
+            Inventory edge map (identity to ERPNext Batch), resolved by
+            Backend-Core and FROZEN at posting-intent creation with the rest of
+            the resolution. The Connector APPLIES it, sets it explicitly on the
+            document and never picks a Batch itself or maps a lot code to a
+            Batch name. Required (non-null) for a `batch` line: a line without
+            an edge-map row is not offered.
+          anyOf:
+            - $ref: "#/components/schemas/ErpnextBatchRef"
+            - type: "null"
+        trackingMode:
+          description: >
+            RT-450 (RT-50 G7-1, G7-11). The product's Catalog Tracking Profile
+            mode at intent time: `none` (an untracked product), `batch` or
+            `serial`. Null means only that no profile could be determined (a
+            line with no tenant product), never that the line is untracked.
+            Optional: omitted until the Connector accepts it. The ERPNext Item never
+            defines it: an Item whose tracking flags disagree with it is a
+            `validation` rejection. Never `serial` in this version.
+          anyOf:
+            - type: string
+              enum: [none, batch, serial]
+            - type: "null"
 
     # -----------------------------------------------------------------------
     # Feed page — cursor-paginated (mirrors 010 delta page)
@@ -1116,6 +1192,31 @@ components:
           description: >
             ERPNext Item code/name (the 013 `erpnext_item_ref` string). Opaque —
             no FK, version-independent (O-6).
+
+    ErpnextBatchRef:
+      type: object
+      additionalProperties: false
+      required: [doctype, name]
+      description: >
+        RT-450. A reference to an ERPNext **Batch** for posting. Mirrors
+        `ErpnextItemRef`'s generic doctype+name addressing (O-6
+        version-independence) with `doctype` fixed to "Batch". `name` is the
+        ERPNext Batch name read from the Inventory edge map, which is filled
+        only from ERP evidence and never assumes that the Batch name equals the
+        printed lot code. Resolved Backend-Core-side and frozen at intent
+        creation; the Connector applies it and never performs the lookup.
+      properties:
+        doctype:
+          type: string
+          const: "Batch"
+          description: Always "Batch" — this ref addresses an ERPNext Batch only.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 140
+          description: >
+            ERPNext Batch name (at most 140 characters). Opaque — no FK,
+            version-independent (O-6).
 
     ErpnextWarehouseRef:
       type: object

@@ -121,9 +121,13 @@ const APPROVED_TENDER_FIELDS = [
 /**
  * Capture fields the contract declares before the server accepts them.
  * RT-539 added the RT-537 `receipt` to the capture DTO; RT-418 added the
- * RT-417 `responsibilities`. None is ahead now.
+ * RT-417 `responsibilities`. RT-450 declares the Inventory Safety Revision
+ * pair ahead of the DTO until the RT-451 runtime (contract-only).
  */
-const CONTRACT_AHEAD_OF_CAPTURE_DTO: readonly string[] = [];
+const CONTRACT_AHEAD_OF_CAPTURE_DTO: readonly string[] = ["safetyRevision", "safetySyncedAt"];
+
+/** `CaptureSaleLine` fields the contract declares before the line DTO accepts them (RT-450, until RT-451). */
+const CONTRACT_AHEAD_OF_CAPTURE_LINE_DTO: readonly string[] = ["tracking"];
 
 /** A property's `maxLength` in a schema; NaN when the schema does not bound it. */
 function maxLengthOf(schemaObject: { properties?: Record<string, unknown> } | undefined, prop: string): number {
@@ -1263,6 +1267,8 @@ describe("pos-sales/sales.yaml — RT-537 receipt snapshot", () => {
         "posTotal",
         "receipt",
         "responsibilities",
+        "safetyRevision",
+        "safetySyncedAt",
         "sourceClockAt",
         "sourceSystem",
         "tenders",
@@ -2450,8 +2456,7 @@ describe("pos-sales/sales.yaml — RT-740 per-line manual discount", () => {
     discount,
   };
 
-  it("bumps the version to 1.14.0-draft with an RT-740 note citing the owner authorization", () => {
-    expect(salesDoc.info?.version).toBe("1.14.0-draft");
+  it("carries the 1.14.0-draft RT-740 note citing the owner authorization (version moved on in RT-450)", () => {
     const info = flat(salesDoc.info?.description);
     expect(info).toContain("RT-740 (1.14.0-draft; [GATED] owner authorization Jira RT-740 comment 13207");
     expect(info).toContain(
@@ -2491,7 +2496,11 @@ describe("pos-sales/sales.yaml — RT-740 per-line manual discount", () => {
     expect(Object.keys(shape).sort()).toEqual(Object.keys(contract?.properties ?? {}).sort());
     expect(Object.keys(shape).filter((k) => !shape[k]!.isOptional()).sort()).toEqual([...(contract?.required ?? [])].sort());
     const lineShape = CaptureSaleLineSchema.shape as Record<string, z.ZodTypeAny>;
-    expect(Object.keys(lineShape).sort()).toEqual(Object.keys(schema("CaptureSaleLine")?.properties ?? {}).sort());
+    expect(Object.keys(lineShape).sort()).toEqual(
+      Object.keys(schema("CaptureSaleLine")?.properties ?? {})
+        .filter((key) => !CONTRACT_AHEAD_OF_CAPTURE_LINE_DTO.includes(key))
+        .sort(),
+    );
     expect(lineShape["discount"]!.isOptional()).toBe(true);
   });
 

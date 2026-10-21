@@ -79,8 +79,11 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "posGetTenantBranding",
       // RT-570 (RT-417 F2): POS payer lookup contract; the runtime ships in a later issue.
       "posListChargeablePayers",
+      // RT-450 (RT-50 F3): tracked line validation and lot lookup; the runtime ships in RT-451.
+      "posListTrackedLots",
       "posRedeemVoucher",
       "posReverseVoucher",
+      "posValidateTrackedLine",
       "posValidateVoucher",
       "readReturnByProvenance",
       "recordRefundExecution",

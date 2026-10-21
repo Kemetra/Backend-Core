@@ -1,0 +1,743 @@
+openapi: 3.1.0
+info:
+  title: Backend-Core POS Tracked Selling — Tracked Line Validation and lot lookup
+  version: "1.0.0-draft"
+  description: >
+    RT-450 ([GATED] owner authorization Jira RT-450 comment 13212, 2026-10-21;
+    RT-50 Gate 7 follow-up F3; rules G7-8 and G7-13 in RT-50 comments 11763 and
+    11764; owner decisions RT-50 comment 11765: Q4, Q5, Q10, Q11 and Q12).
+    CONTRACT ONLY: both operations carry `x-runtime-status: contract-only`
+    until the RT-451 runtime. Nothing here is implemented, and the POS MUST NOT
+    call either operation before RT-451 is deployed and tracked selling is
+    activated for the tenant (a per-tenant flag, default off).
+
+    Two POS-facing operations that let a till sell a lot-tracked product
+    online:
+
+      1. `posValidateTrackedLine` — the Tracked Line Validation (TLV). The
+         server checks one chosen lot of one product against Backend-Core
+         Inventory's current state before the till lets the line complete, and
+         records the check. It answers `accepted` or `refused`, and the
+         `validationId` it returns is what the sale line later cites
+         (`pos-sales/sales.yaml` `CaptureSaleLineTracking.validationId`).
+      2. `posListTrackedLots` — the lot lookup. For one product at the caller's
+         store, the lots the till may offer, with their expiry, the
+         server-computed FEFO rank and the advisory sellable position.
+
+    ONLINE-REQUIRED SELLING (RT-50 Q4, G7-8). A tracked line completes only
+    after a successful TLV. "Online" means the TLV succeeded: the till has no
+    connectivity indicator, so a 200 from `posValidateTrackedLine` is the only
+    signal. A 4xx, a 5xx, a timeout or a network failure all mean the TLV is
+    UNAVAILABLE, and the till then cannot complete its tracked lines and must
+    remove them; lines of untracked products continue offline. The till
+    validates each tracked line when it is added and again at tender start.
+    Backend-Core never reserves stock, and a TLV never refuses on quantity
+    (RT-50 Q12): a validation says the LOT may be sold, not that a quantity is
+    available.
+
+    Authentication. Both operations are POS operations with the two paths of
+    `captureSale` (`pos-sales/sales.yaml`). `posValidateTrackedLine` accepts
+    either the `operatorAuthorization` envelope, or the `device` token together
+    with the cashier claim `operatorUserId` in the body. The tenant, the store
+    and the terminal come ONLY from the credential, never from the body or a
+    parameter, so no request carries a tenant, store or terminal id (§II,
+    §XII, FR-061). `posListTrackedLots` accepts the `operatorAuthorization`
+    envelope or the `device` token alone, as the catalog read-down does: it
+    names no operator and returns no operator-specific data.
+
+    Source of truth, field by field. The tracking identity (`identityId`,
+    `code`, `expiryDate`) is the Backend-Core Inventory tracking identity
+    (`inventory/inventory.yaml` `TrackingIdentity`), and expiry is the
+    identity record's. `safetyRevision` is Inventory's per-tenant Safety
+    Revision. The FEFO rank and suggestion are an Inventory policy computed on
+    the server (G7-13); the till never computes them. `sellablePosition` is
+    read from Inventory positions and is advisory. The ERPNext Batch behind an
+    identity is NOT on this surface: it lives in the Inventory edge map and is
+    frozen into the posting intent (`erpnext-connector/posting-feed.yaml`
+    1.10.0-draft).
+
+    EXPIRY AND THE BUSINESS DATE (G7-5). A lot is sellable through its
+    `expiryDate`, inclusive, at the selling store's business date in the
+    store's time zone, resolved by the SERVER at `validatedAt`. The till's
+    clock is never used. A lot is `expired` from the first business day after
+    its `expiryDate`, with no event required.
+
+    FEFO (RT-50 Q10, G7-13) is suggest-only. The tenant policy is `off` or
+    `suggest`. Where the tenant has set none, the effective policy is
+    `suggest` for a product that requires an expiry (`expiry_required`) and
+    `off` for a product that does not, because FEFO orders by expiry. With the
+    policy `off` there is no suggestion (`fefoSuggestion` is null). The
+    suggestion is the earliest-expiring identity that is not expired, not
+    held (no active quality or recall hold) and has a positive sellable
+    position at the store; ties go to the lowest `code`; if no position is
+    positive, the earliest-expiring identity that is not expired and not held
+    (ties again to the lowest `code`). Choosing another lot needs no approval in V1: the deviation is
+    recorded (the line's `selection` and the validation record) and never
+    refused. An enforce mode would be a later extension.
+
+    THE VALIDATION RECORD. Every call, accepted or refused, stores a validation
+    record: tenant, store, terminal, operator, the identity asked for, the
+    identity the server suggested, the selection, the result, the Safety
+    Revision and the time. It is the server-side audit of what the till was
+    told, because the till's own audit events do not reach Backend-Core. A
+    refusal is recorded too, and its `validationId` is never a valid
+    `validationId` for a sale line.
+
+    IDEMPOTENCY. `posValidateTrackedLine` takes NO `Idempotency-Key`, on
+    purpose. Every call re-evaluates the lot against the current state and
+    creates a new record with a new `validationId`; a retry is a new
+    validation. Replaying a stored answer would let a till hold an `accepted`
+    for a lot that was recalled in between. Nothing is reserved, so repeated
+    calls change no stock.
+
+    SAFETY REVISION. Every response carries the tenant's current
+    `safetyRevision`, which Inventory increments on every hold, recall,
+    expiry correction and tracking-profile change. The till compares it with
+    the revision of its last safety sync; the safety feed itself is a separate
+    contract (RT-50 F2).
+
+    Out of scope: serial selling stays fail-closed (RT-50 Q11: a `serial`
+    product is refused as `not_sellable`); the safety feed, holds, recalls and
+    Tracking Resolution (RT-50 F2 and F4); regulatory semantics; trusted
+    offline tracked allocation.
+
+    ROLLOUT ORDER: (1) this contract; (2) the RT-451 runtime, which serves the
+    two operations behind the default-off per-tenant activation flag; (3) the
+    POS flow (RT-454), which MUST re-pin this contract before relying on it.
+    The responses are `additionalProperties: false`, so a till that validates
+    strictly must re-pin before the server serves them. The operations are
+    additive: they are new, and no existing operation changes.
+
+    This contract is consumed by
+    `apps/api/test/catalog/sales/contract/tracked-selling.contract.spec.ts`,
+    which loads it with an explicit `dir` because the production
+    `loadOpenApiContracts` helper is non-recursive
+    (`apps/api/src/openapi/loader.ts`).
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: pos-tracked-lines
+    description: >
+      POS tracked selling: Tracked Line Validation and lot lookup (RT-450,
+      RT-50 Gate 7).
+
+paths:
+  /api/pos/v1/tracked-line-validations:
+    post:
+      summary: Validate one lot for one line before the till lets it complete (TLV).
+      operationId: posValidateTrackedLine
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-450 is contract-only. The runtime ships in RT-451 (RT-50 F4) behind
+        a default-off per-tenant activation flag.
+      tags: [pos-tracked-lines]
+      security:
+        - operatorAuthorization: []
+        - device: []
+      description: >
+        Checks the lot named by `identity` against the product `productId` at
+        the caller's store and records the check. The answer is a 200 with
+        `outcome` `accepted` or `refused`: a refusal is a business answer, not
+        an HTTP error, and it is recorded like an acceptance.
+
+        Checks, in this order. The FIRST check that fails is the single
+        `reason` returned: a refusal always carries exactly one code, never a
+        list, so the till maps one code per refusal. `not_sellable` (the product is known but may
+        not be sold here: retired or inactive, not in the store's sellable
+        catalogue, or a `serial` product, which stays fail-closed); then
+        `profile_mismatch` (the product's Tracking Profile does not allow lot
+        selling, that is `mode` `none`: a product-level check, made before the
+        identity is looked up); then `unknown_identity` (no identity with this id or
+        code exists in the tenant); then `wrong_product` (the identity belongs
+        to another product of the tenant); then `recalled` (an active
+        `recall_hold`); then `held` (an active `quality_hold`); then
+        `expired` (its `expiryDate` is before the store's business date).
+        Nothing else is checked: a TLV never refuses on quantity and never
+        reserves stock (RT-50 Q12).
+
+        Identity. `identity` names the lot by `identityId`, or by the scanned
+        `code` with an optional `expiryDate` as scanned. The lot code is unique
+        per product and is matched exactly, never fuzzily, so `expiryDate` does
+        not select or change the identity and never changes the result: the
+        identity record's expiry governs. A scanned `expiryDate` that differs
+        from the identity record is recorded for audit and never changes the
+        identity or the result.
+
+        Cashier claim. With the `device` scheme `operatorUserId` is REQUIRED,
+        and with `operatorAuthorization` it MUST be absent. As on `captureSale`,
+        the presence of `operatorUserId` selects the device path and its
+        absence selects the envelope path, so a wrong-path request is the
+        generic 401, never a 400: an envelope request that carries it, and a
+        device token sent without it (the device token never proves an operator
+        alone, so without the claim it is read as an envelope and fails). The server accepts the claim only
+        if a cashier admission of this device and store for that user is live
+        at the server's current time and the cashier is still eligible, the
+        same rules as `captureSale`'s `operatorUserId` without the back-dating
+        window, because a TLV is online. A refused claim from a valid device
+        is the generic 403 `refused`, one body for every cause. A missing,
+        invalid or revoked device token is the generic 401.
+
+        A 200 is the only signal that the TLV succeeded. Any other outcome,
+        including 429 and 5xx, means it is unavailable and the till does not
+        complete a tracked line (see the description of this contract).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidateTrackedLineRequest"
+      responses:
+        "200":
+          description: >
+            The validation was evaluated and recorded. `outcome` `accepted`
+            carries the identity as Inventory knows it and the FEFO suggestion;
+            `refused` carries one `reason`. Both carry `validationId`,
+            `validatedAt` and `safetyRevision`.
+          headers:
+            X-Device-Token-Rotate-After:
+              $ref: "#/components/headers/DeviceTokenRotateAfter"
+            X-Device-Token-Rotate-Stage:
+              $ref: "#/components/headers/DeviceTokenRotateStage"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackedLineValidation"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Refused"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/pos/v1/products/{productId}/tracked-lots:
+    get:
+      summary: List the lots of a product the till may offer at the caller's store.
+      operationId: posListTrackedLots
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-450 is contract-only. The runtime ships in RT-451 (RT-50 F4) behind
+        a default-off per-tenant activation flag.
+      tags: [pos-tracked-lines]
+      security:
+        - operatorAuthorization: []
+        - device: []
+      description: >
+        For `productId` at the caller's store, returns the identities that are
+        sellable and not held: not expired at the store's business date (G7-5),
+        with no active `quality_hold` or `recall_hold`. Each carries its expiry,
+        the server-computed FEFO rank (G7-13) and the advisory sellable
+        position. The list is a hint for choosing a lot; the TLV
+        (`posValidateTrackedLine`) is the check, and a lot offered here can
+        still be refused there, because a hold or recall can land in between.
+
+        Order and rank. When the FEFO policy is `suggest`, `fefoRank` is
+        1-based over the returned lots and the array is in rank order. The
+        full ordering key is: lots with a positive `sellablePosition` first;
+        then all others (a position of zero or below, or null, counts as not
+        positive, so before positions are live every lot is in this group);
+        within each group by `expiryDate` ascending, a lot without one last;
+        then by `code` ascending. Rank 1 is therefore the lot the TLV would
+        suggest: the earliest-expiring lot with a positive sellable position,
+        ties to the lowest `code`; if no position is positive, the earliest
+        non-expired lot (every lot listed here is already non-held). When the policy is `off`,
+        `fefoRank` is null on every lot and the array is ordered by `expiryDate`
+        (a lot without one last), then `code`. A product that is not
+        batch-tracked has no lots: the answer is a 200 with an empty `lots`.
+        A product that is not in the tenant, or not visible to the caller, is
+        a non-disclosing 404.
+
+        `sellablePosition` is the advisory sellable on-hand of the lot at the
+        caller's store, from Inventory positions: it is null until positions
+        are live for the tenant, it can be zero or negative, and it is never a
+        reason to refuse a sale. The list holds at most 500 lots; a product
+        with more sellable lots at one store than that is outside this version.
+      parameters:
+        - $ref: "#/components/parameters/ProductId"
+      responses:
+        "200":
+          description: The lots the till may offer for the product.
+          headers:
+            X-Device-Token-Rotate-After:
+              $ref: "#/components/headers/DeviceTokenRotateAfter"
+            X-Device-Token-Rotate-Stage:
+              $ref: "#/components/headers/DeviceTokenRotateStage"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackedLotList"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+components:
+  securitySchemes:
+    operatorAuthorization:
+      type: http
+      scheme: bearer
+      description: >
+        The operator-authorization ENVELOPE (031 D1+D2), the same scheme as
+        `pos-sales/sales.yaml`: an opaque, revocable `pos_operator` bearer
+        presented as `Authorization: Bearer <envelope>`. The backend
+        re-evaluates membership, device, store access, role and expiry live on
+        every request. Every refusal is the same generic 401.
+    device:
+      type: http
+      scheme: bearer
+      description: >
+        The paired terminal's opaque `devices` pairing token (the RT-224
+        scheme of `pos-sales/sales.yaml`), presented as
+        `Authorization: Bearer <device_token>`. On `posValidateTrackedLine` it
+        is accepted only together with the cashier claim `operatorUserId`: the
+        device token never proves an operator alone. On `posListTrackedLots` it
+        is accepted alone. A missing, invalid or revoked device token is the
+        generic 401; a refused cashier claim from a valid device is the generic
+        403 `refused`.
+
+  parameters:
+    ProductId:
+      name: productId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        The Tenant Catalog product (`tenant_products.id`, the `product_id` of a
+        catalog read-down row and the `tenantProductRef` of a sale line).
+        Resolves only within the caller's tenant; anything else is a
+        non-disclosing 404.
+
+  headers:
+    DeviceTokenRotateAfter:
+      description: >
+        RT-639. Present only when this device credential has 15 days or less
+        left: the ISO-8601 instant `expires_at - 15 days`. The terminal rotates
+        at or after it. Absent while more than 15 days remain. Never carries
+        token material. See `pos-terminal-pairing.openapi.yaml`, "Credential
+        rotation".
+      required: false
+      schema:
+        type: string
+        format: date-time
+    DeviceTokenRotateStage:
+      description: >
+        RT-639. Sent with `X-Device-Token-Rotate-After`: `notice` (15 days or
+        less left), `warning` (10 or less), `urgent` (3 or less, or already past
+        `expires_at`). The server keeps no per-device state, so it sends the
+        stage on every response while it holds.
+      required: false
+      schema:
+        type: string
+        enum: [notice, warning, urgent]
+    RetryAfter:
+      description: >
+        Seconds the caller should wait before retrying, on a 429 (ADR 0009).
+        Clamped to [1, 300]. On these operations a 429 also means the TLV is
+        unavailable (see the description of this contract).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 300
+
+  schemas:
+    DecimalQuantity:
+      type: string
+      pattern: '^-?[0-9]{1,15}(\.[0-9]{1,6})?$'
+      description: >
+        Exact-decimal quantity as a string (never a float): at most 15 integer
+        and 6 fractional digits, negative tolerated.
+
+    TrackingSelection:
+      type: string
+      enum: [scanned, fefo_suggested, operator_selected]
+      description: >
+        How the lot was chosen on the till (RT-50 G7-13): `scanned` (its code
+        was scanned or typed), `fefo_suggested` (the till took the server's FEFO
+        suggestion) or `operator_selected` (the cashier picked another lot).
+        The same vocabulary as `CaptureSaleLineTracking.selection`.
+
+    TrackedLineIdentityRef:
+      type: object
+      additionalProperties: false
+      description: >
+        The lot to validate: by Inventory identity id, or by the scanned lot
+        code. Exactly one of `identityId` and `code` is present, and
+        `expiryDate` is allowed only with `code`. The rules are carried by this
+        new object, not by the request body that contains it.
+      oneOf:
+        - required: [identityId]
+          not:
+            anyOf:
+              - required: [code]
+              - required: [expiryDate]
+        - required: [code]
+          not:
+            required: [identityId]
+      properties:
+        identityId:
+          type: string
+          format: uuid
+          description: >
+            The Inventory tracking identity (`TrackingIdentity.id`), for example
+            from `posListTrackedLots`.
+        code:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: >
+            The lot number as scanned or typed, matched exactly and never
+            fuzzily against the product's identities (at most 128 characters,
+            like `TrackingIdentity.code`).
+        expiryDate:
+          type: string
+          format: date
+          description: >
+            The expiry date as scanned (for example GS1 AI 17). Recorded in the
+            validation record; it never selects or changes the identity or the
+            result.
+
+    ValidateTrackedLineRequest:
+      type: object
+      additionalProperties: false
+      required: [productId, identity, quantity, selection, draftLineRef]
+      description: >
+        The lot to validate for one draft line. `tenant_id`, the store, the
+        terminal and the actor are intentionally absent: they resolve from the
+        credential and are rejected if present (strict boundary, §XII, FR-061).
+      properties:
+        productId:
+          type: string
+          format: uuid
+          description: >
+            The Tenant Catalog product of the line (`tenantProductRef`). An
+            ad-hoc line has none and can never be tracked, so it cannot be
+            validated.
+        identity:
+          $ref: "#/components/schemas/TrackedLineIdentityRef"
+        quantity:
+          type: string
+          pattern: '^(?!0+(?:\.0+)?$)[0-9]{1,13}(\.[0-9]{1,6})?$'
+          description: >
+            The line quantity, strictly positive, as the till holds it. It is
+            kept in the validation record. It never makes the validation refuse
+            and reserves nothing (RT-50 Q12).
+        selection:
+          $ref: "#/components/schemas/TrackingSelection"
+        draftLineRef:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >
+            The till's own reference to the draft line being validated, kept in
+            the validation record to correlate a validation with its line. A
+            till-local identifier, never PII. It is not a sale-line ref: the
+            sale line's `lineRef` exists only after capture.
+        operatorUserId:
+          type: string
+          format: uuid
+          description: >
+            The `users.id` of the cashier at the till. REQUIRED with the
+            `device` scheme and MUST be absent with `operatorAuthorization`,
+            exactly as on `captureSale`. A claim the server verifies against a
+            live cashier admission; it is not a credential.
+
+    TrackedLot:
+      type: object
+      additionalProperties: false
+      required: [identityId, code, expiryDate]
+      description: >
+        A tracking identity as the till needs it to show and cite a lot. Source
+        of truth: the Backend-Core Inventory tracking identity record.
+      properties:
+        identityId:
+          type: string
+          format: uuid
+        code:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: The lot number as recorded on the identity.
+        expiryDate:
+          type: [string, "null"]
+          format: date
+          description: >
+            The identity's calendar expiry date; null for a lot without one.
+            The identity record governs.
+
+    TrackedLineAccepted:
+      type: object
+      additionalProperties: false
+      required:
+        - outcome
+        - validationId
+        - validatedAt
+        - safetyRevision
+        - identity
+        - fefoSuggestion
+      description: >
+        The lot may be sold. The till cites `validationId` on the sale line.
+      properties:
+        outcome:
+          type: string
+          const: accepted
+        validationId:
+          type: string
+          format: uuid
+          description: The stored validation record; cite it as `CaptureSaleLineTracking.validationId`.
+        validatedAt:
+          type: string
+          format: date-time
+          description: The server clock when the validation was evaluated.
+        safetyRevision:
+          type: integer
+          minimum: 0
+          description: The tenant's Inventory Safety Revision at `validatedAt`.
+        identity:
+          $ref: "#/components/schemas/TrackedLot"
+        fefoSuggestion:
+          description: >
+            The lot the server's FEFO policy suggests for this product at the
+            store, which can be the lot asked for. Null when the policy is `off`
+            or no non-expired, non-held lot exists. A suggestion that differs
+            from `identity` is a deviation: it is recorded and never refused.
+          anyOf:
+            - $ref: "#/components/schemas/TrackedLot"
+            - type: "null"
+
+    TrackedLineRefused:
+      type: object
+      additionalProperties: false
+      required: [outcome, reason, validationId, validatedAt, safetyRevision]
+      description: >
+        The lot may not be sold. The validation is recorded; its `validationId`
+        is never valid on a sale line.
+      properties:
+        outcome:
+          type: string
+          const: refused
+        reason:
+          type: string
+          enum:
+            - unknown_identity
+            - wrong_product
+            - expired
+            - held
+            - recalled
+            - profile_mismatch
+            - not_sellable
+          description: >
+            The single reason returned: the first failing check in the order
+            stated on `posValidateTrackedLine`, so a refusal carries exactly one
+            code. `unknown_identity`: no such identity in the
+            tenant. `wrong_product`: the identity belongs to another product.
+            `expired`: its expiry is before the store's business date.
+            `held`: an active quality hold. `recalled`: an active recall hold.
+            `profile_mismatch`: the product's Tracking Profile does not allow
+            lot selling (`mode` `none`), a product-level check.
+            `not_sellable`: the product is retired, inactive, outside the
+            store's sellable catalogue, or a `serial` product. The set is
+            closed in this version.
+        validationId:
+          type: string
+          format: uuid
+          description: The stored validation record of the refusal.
+        validatedAt:
+          type: string
+          format: date-time
+          description: The server clock when the validation was evaluated.
+        safetyRevision:
+          type: integer
+          minimum: 0
+          description: The tenant's Inventory Safety Revision at `validatedAt`.
+
+    TrackedLineValidation:
+      description: >
+        The answer to a TLV, a tagged union on `outcome`. A 200 carrying either
+        member means the TLV succeeded.
+      oneOf:
+        - $ref: "#/components/schemas/TrackedLineAccepted"
+        - $ref: "#/components/schemas/TrackedLineRefused"
+      discriminator:
+        propertyName: outcome
+        mapping:
+          accepted: "#/components/schemas/TrackedLineAccepted"
+          refused: "#/components/schemas/TrackedLineRefused"
+
+    TrackedLotRow:
+      type: object
+      additionalProperties: false
+      required: [identityId, code, expiryDate, fefoRank, sellablePosition]
+      description: >
+        One lot the till may offer: the identity plus the server-computed FEFO
+        rank and the advisory sellable position.
+      properties:
+        identityId:
+          type: string
+          format: uuid
+        code:
+          type: string
+          minLength: 1
+          maxLength: 128
+        expiryDate:
+          type: [string, "null"]
+          format: date
+          description: The identity's calendar expiry date; null for a lot without one.
+        fefoRank:
+          type: [integer, "null"]
+          minimum: 1
+          description: >
+            The 1-based FEFO rank (G7-13), computed by the server; rank 1 is the
+            lot the TLV would suggest. Null when the tenant policy is `off`.
+        sellablePosition:
+          anyOf:
+            - $ref: "#/components/schemas/DecimalQuantity"
+            - type: "null"
+          description: >
+            The lot's advisory sellable on-hand at the caller's store, from
+            Inventory positions, in the product's stocking unit. Null until
+            positions are live for the tenant. Advisory only: never a reason to
+            refuse a sale.
+
+    TrackedLotList:
+      type: object
+      additionalProperties: false
+      required: [productId, businessDate, fefoPolicy, safetyRevision, lots]
+      description: The lots of one product the till may offer at the caller's store.
+      properties:
+        productId:
+          type: string
+          format: uuid
+        businessDate:
+          type: string
+          format: date
+          description: >
+            The store's business date the expiry rule was evaluated at, resolved
+            by the server in the store's time zone.
+        fefoPolicy:
+          type: string
+          enum: [off, suggest]
+          description: >
+            The effective FEFO policy for this product (G7-13): the tenant's
+            setting, or, where it has none, `suggest` for a product that
+            requires an expiry and `off` for one that does not. `enforce` is a
+            later extension.
+        safetyRevision:
+          type: integer
+          minimum: 0
+          description: The tenant's Inventory Safety Revision when the list was read.
+        lots:
+          type: array
+          maxItems: 500
+          items:
+            $ref: "#/components/schemas/TrackedLotRow"
+          description: >
+            Sellable, non-held lots in rank order (or, with the policy `off`, by
+            expiry then code). Empty for a product that is not batch-tracked or
+            has no sellable lot.
+
+    Error:
+      type: object
+      required: [error]
+      description: >
+        Canonical error envelope, identical to the shared shape in
+        `pos-sales/sales.yaml` and `auth.openapi.yaml` (used verbatim). Refusals
+        are non-disclosing (§II/§XII).
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id; the actual cause is recorded server-side.
+
+  responses:
+    ValidationFailure:
+      description: >
+        `validation_error` (400): malformed body or parameter, an unknown key
+        (strict boundary), a body-supplied server-owned field, or a malformed
+        `identity`. A wrong-path `operatorUserId` is never a 400: it is the
+        generic 401. Deterministic; no validation record is created.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        Generic refusal (401). The body does not distinguish an invalid
+        envelope, an invalid, missing or revoked device token, a missing
+        tenant or store binding, or, on `posValidateTrackedLine` only, an
+        envelope request that carries `operatorUserId` or a device token sent
+        without it. On `posListTrackedLots` the device token alone is valid and
+        names no operator. The TLV is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Refused:
+      description: >
+        Generic 403 `refused` (`posValidateTrackedLine`, `device` path only):
+        the device credential is valid but the cashier claim `operatorUserId`
+        is not accepted: no live cashier admission, an ineligible cashier
+        (membership, user, role, store or store access), or an unknown user or
+        a user of another tenant. One body for every cause; it reveals neither
+        existence nor cause and is never a sign that the device was revoked
+        (that is a 401). The TLV is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >
+        `not_found` (404): the product does not resolve within the caller's
+        tenant. Non-disclosing: identical for a cross-tenant, out-of-scope and
+        genuinely absent id (§II/§XII). A refused LOT is never a 404: it is a
+        200 `refused` on `posValidateTrackedLine`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: >
+        Per-device rate limit exceeded (ADR 0009). Non-disclosing `Error` body;
+        the `Retry-After` header carries the back-off in seconds. The TLV is
+        unavailable for now: the till retries after `Retry-After` and does not
+        complete a tracked line meanwhile.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SystemFailure:
+      description: >
+        `system_failure` (500): an unexpected server error. The cause is
+        recorded server-side keyed by `request_id` and never returned. The TLV
+        is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
