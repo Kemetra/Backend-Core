@@ -204,6 +204,8 @@ describe("pos-sales/tracked-lines.yaml — RT-450 TLV and lot lookup", () => {
     expect(text).toContain("a product-level check, made before the identity is looked up");
     expect(text).toContain("so a wrong-path request is the generic 401, never a 400");
     expect(infoOf(doc)).toContain("A lot is sellable through its `expiryDate`, inclusive");
+    expect(infoOf(doc)).toContain("the earliest-expiring identity that is not expired and not held");
+    expect(infoOf(doc)).toContain("`off` for a product that does not, because FEFO orders by expiry");
     expect(infoOf(doc)).toContain("The till's clock is never used");
     expect(infoOf(doc)).toContain("its `validationId` is never a valid `validationId` for a sale line");
   });

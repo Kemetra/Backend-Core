@@ -63,11 +63,15 @@ info:
     its `expiryDate`, with no event required.
 
     FEFO (RT-50 Q10, G7-13) is suggest-only. The tenant policy is `off` or
-    `suggest`; the default is `suggest` for products that require an expiry.
-    The suggestion is the earliest-expiring identity that is not expired, not
-    held and has a positive sellable position at the store; ties go to the
-    lowest `code`; if no position is positive, the earliest non-expired
-    identity. Choosing another lot needs no approval in V1: the deviation is
+    `suggest`. Where the tenant has set none, the effective policy is
+    `suggest` for a product that requires an expiry (`expiry_required`) and
+    `off` for a product that does not, because FEFO orders by expiry. With the
+    policy `off` there is no suggestion (`fefoSuggestion` is null). The
+    suggestion is the earliest-expiring identity that is not expired, not
+    held (no active quality or recall hold) and has a positive sellable
+    position at the store; ties go to the lowest `code`; if no position is
+    positive, the earliest-expiring identity that is not expired and not held
+    (ties again to the lowest `code`). Choosing another lot needs no approval in V1: the deviation is
     recorded (the line's `selection` and the validation record) and never
     refused. An enforce mode would be a later extension.
 
@@ -243,7 +247,7 @@ paths:
         then by `code` ascending. Rank 1 is therefore the lot the TLV would
         suggest: the earliest-expiring lot with a positive sellable position,
         ties to the lowest `code`; if no position is positive, the earliest
-        non-expired lot. When the policy is `off`,
+        non-expired lot (every lot listed here is already non-held). When the policy is `off`,
         `fefoRank` is null on every lot and the array is ordered by `expiryDate`
         (a lot without one last), then `code`. A product that is not
         batch-tracked has no lots: the answer is a 200 with an empty `lots`.
@@ -628,8 +632,10 @@ components:
           type: string
           enum: [off, suggest]
           description: >
-            The tenant's FEFO policy (G7-13). `suggest` is the default for
-            products that require an expiry; `enforce` is a later extension.
+            The effective FEFO policy for this product (G7-13): the tenant's
+            setting, or, where it has none, `suggest` for a product that
+            requires an expiry and `off` for one that does not. `enforce` is a
+            later extension.
         safetyRevision:
           type: integer
           minimum: 0
