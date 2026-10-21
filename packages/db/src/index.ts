@@ -55,6 +55,13 @@ export {
   type AnchoredStore,
 } from "./helpers/inventory-effects/activation";
 export {
+  buildCutoverEquivalenceReport,
+  isStorePendingAware,
+  readPendingAwarePositions,
+  type CutoverEquivalenceRow,
+  type PendingAwarePosition,
+} from "./helpers/inventory-effects/pending-aware";
+export {
   decideEffectLine,
   returnLineEffectKey,
   saleLineEffectKey,

@@ -26,9 +26,12 @@
  * result means another invocation already finished the run → skip result inserts
  * (the 008 `processed_at IS NULL` convergence precedent). No money column anywhere.
  */
-import { runWithTenantContext } from "@data-pulse-2/db";
+import { isStorePendingAware, runWithTenantContext } from "@data-pulse-2/db";
 import { newId } from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
+
+import type { PendingAwareClass } from "./pending-aware-classify";
+import { pendingAwareLines } from "./pending-aware-run";
 
 /**
  * The connector ERPNext-Bin view seam (R3). `tenant_product_ref` → ERPNext Bin
@@ -76,44 +79,25 @@ export const EMPTY_BIN_VIEW: ErpnextBinView = {
   },
 };
 
-/**
- * Canonical decimal-string compare (§III — no float). Two quantity strings are
- * equal iff they denote the same exact value (e.g. "10" == "10.000000" ==
- * "10.0"). Normalizes sign, leading zeros, and trailing fractional zeros without
- * ever constructing a JS number (which would lose precision past 2^53 / introduce
- * binary-float drift). Both inputs are already validated exact-decimal strings.
- */
-export function canonicalDecimal(value: string): string {
-  const neg = value.startsWith("-");
-  const body = neg ? value.slice(1) : value;
-  const [intPartRaw = "0", fracPartRaw = ""] = body.split(".");
-  const intPart = intPartRaw.replace(/^0+(?=\d)/, "");
-  const fracPart = stripTrailingZeros(fracPartRaw);
-  const canon = fracPart ? `${intPart}.${fracPart}` : intPart;
-  // "-0" / "-0.0" → "0"
-  if (canon === "0") return "0";
-  return neg ? `-${canon}` : canon;
-}
-
-/** Drop trailing `0`s with a linear scan (a `/0+$/` regex backtracks quadratically, S8786). */
-function stripTrailingZeros(digits: string): string {
-  let end = digits.length;
-  while (end > 0 && digits[end - 1] === "0") end--;
-  return digits.slice(0, end);
-}
+// Moved to ./canonical-decimal (RT-428 reuses it); re-exported for existing importers.
+export { canonicalDecimal } from "./canonical-decimal";
+import { canonicalDecimal } from "./canonical-decimal";
 
 /** Rows per batched INSERT of unmapped `erpnext_only` results (RT-175). */
 const UNMAPPED_INSERT_BATCH = 1000;
 
-/** 014's mismatch-class vocabulary (014 data-model §6.2). */
-type MismatchClass =
-  | "match"
-  | "quantity_divergence"
-  | "unmapped_store"
-  | "unmapped_item"
-  | "dp2_only"
-  | "erpnext_only"
-  | "negative_balance_flagged";
+/**
+ * 014's mismatch-class vocabulary (014 data-model §6.2), plus the RT-428
+ * pending-aware classes (927–929, UOM) of a store with activated sale effects.
+ */
+type MismatchClass = PendingAwareClass | "unmapped_store" | "erpnext_only";
+
+/** One classified per-product line of a run, before it is persisted. */
+interface ResultLine {
+  readonly mismatchClass: MismatchClass;
+  readonly sourceRefId: string;
+  readonly detail: Record<string, unknown>;
+}
 
 export interface ReconciliationRunResult {
   readonly runId: string;
@@ -175,37 +159,21 @@ export class ReconciliationRunProcessor {
           return { runId: input.runId, status: "completed", counts: { unmapped_store: 1 } };
         }
 
-        // (2) DP2 on-hand per product (009 signed SUM) + whether the product has a
-        // confirmed 013 item map (for unmapped_item classification).
-        const dp2 = await client.query<OnHandRow>(
-          `SELECT sm.tenant_product_ref,
-                  COALESCE(SUM(sm.quantity), 0)::text AS on_hand,
-                  (im.id IS NOT NULL) AS has_confirmed_map
-             FROM stock_movements sm
-             LEFT JOIN erpnext_item_map im
-               ON im.tenant_product_id = sm.tenant_product_ref
-              AND im.state = 'confirmed'
-              AND im.retired_at IS NULL
-            WHERE sm.store_id = $1 AND sm.tenant_product_ref IS NOT NULL
-            GROUP BY sm.tenant_product_ref, im.id`,
-          [storeId],
-        );
-
         const binReport = await this.readBinReport({ ...input, storeId });
         const binView = binReport.mapped;
 
+        // (2) RT-428: a store of a tenant with activated sale effects compares
+        // like with like (DC-7); every other store keeps the legacy compare.
+        const lines = (await isStorePendingAware(client, storeId))
+          ? await pendingAwareLines(client, { runId: input.runId, storeId, binView })
+          : await this.legacyLines(client, storeId, binView);
+
         const counts: Record<string, number> = {};
         const seen = new Set<string>();
-        for (const row of dp2.rows) {
-          seen.add(row.tenant_product_ref);
-          const binQty = binView.get(row.tenant_product_ref);
-          const cls = this.classify(row.on_hand, row.has_confirmed_map, binQty);
-          counts[cls] = (counts[cls] ?? 0) + 1;
-          await this.insertResult(client, input.runId, input.tenantId, {
-            mismatchClass: cls,
-            sourceRefId: row.tenant_product_ref,
-            detail: { dp2_on_hand: row.on_hand, erpnext_bin: binQty ?? null },
-          });
+        for (const line of lines) {
+          seen.add(line.sourceRefId);
+          counts[line.mismatchClass] = (counts[line.mismatchClass] ?? 0) + 1;
+          await this.insertResult(client, input.runId, input.tenantId, line);
         }
         // erpnext_only: in the Bin view but with no DP2 on-hand row at all.
         for (const [productRef, binQty] of binView) {
@@ -224,6 +192,38 @@ export class ReconciliationRunProcessor {
         return { runId: input.runId, status: "completed", counts };
       },
     );
+  }
+
+  /**
+   * The legacy 017 lines: DP2 on-hand per product (009 signed SUM) + whether the
+   * product has a confirmed 013 item map (for unmapped_item classification).
+   */
+  private async legacyLines(
+    client: PoolClient,
+    storeId: string,
+    binView: ReadonlyMap<string, string>,
+  ): Promise<ResultLine[]> {
+    const dp2 = await client.query<OnHandRow>(
+      `SELECT sm.tenant_product_ref,
+              COALESCE(SUM(sm.quantity), 0)::text AS on_hand,
+              (im.id IS NOT NULL) AS has_confirmed_map
+         FROM stock_movements sm
+         LEFT JOIN erpnext_item_map im
+           ON im.tenant_product_id = sm.tenant_product_ref
+          AND im.state = 'confirmed'
+          AND im.retired_at IS NULL
+        WHERE sm.store_id = $1 AND sm.tenant_product_ref IS NOT NULL
+        GROUP BY sm.tenant_product_ref, im.id`,
+      [storeId],
+    );
+    return dp2.rows.map((row) => {
+      const binQty = binView.get(row.tenant_product_ref);
+      return {
+        mismatchClass: this.classify(row.on_hand, row.has_confirmed_map, binQty),
+        sourceRefId: row.tenant_product_ref,
+        detail: { dp2_on_hand: row.on_hand, erpnext_bin: binQty ?? null },
+      };
+    });
   }
 
   /**

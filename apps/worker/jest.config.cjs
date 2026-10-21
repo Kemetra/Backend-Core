@@ -33,6 +33,8 @@ const dockerOutboxSuites = includeDbBackedTests
      "/erpnext-posting/posting-requested-consumer\\.spec\\.ts$",
      // 017-US3 reconciliation-run processor (009 on-hand vs ERPNext-Bin compare).
      "/erpnext-reconciliation/reconciliation-run\\.spec\\.ts$",
+     // RT-428 pending-aware 017 run (activated vs legacy tenant).
+     "/erpnext-reconciliation/pending-aware-run\\.spec\\.ts$",
      // RT-457 sale re-drive sweep against real Postgres.
      "/sales/sale-redrive\\.integration\\.spec\\.ts$",
      // RT-427 sale effects written with the intent and linked by the consumer.
