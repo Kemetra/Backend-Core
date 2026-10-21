@@ -63,7 +63,8 @@ export function classifyApprover(row: ApproverRow | undefined): ApproverVerdict 
   return failed ? { eligible: false, cause: failed[0] } : { eligible: true };
 }
 
-const LIVE_USER = `m.id IS NOT NULL AND u.deleted_at IS NULL`;
+// `u.id IS NOT NULL`: a user row the read cannot see is not live (fail closed).
+const LIVE_USER = `m.id IS NOT NULL AND u.id IS NOT NULL AND u.deleted_at IS NULL`;
 const ROLE_ELIGIBLE = `${LIVE_USER} AND r.code = ANY($4::text[])`;
 const STORE_ACCESSIBLE = `(
   m.store_access_kind = 'all'
