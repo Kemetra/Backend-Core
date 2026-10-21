@@ -159,14 +159,24 @@ async function seedMembership(n: number, grant: { userId: string; roleId: string
 
 async function seedOperatorSession(
   n: number,
-  session: { userId: string; issuedAt: string; expiresAt: string },
+  session: { userId: string; issuedAt: string; expiresAt: string; revokedAt?: string },
 ): Promise<string> {
   const tokenId = id(200 + n);
   await admin!.query(
     `INSERT INTO auth_tokens
-       (id, token_hash, tenant_id, user_id, device_id, store_id, scope, issued_at, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, 'pos_operator', $7, $8)`,
-    [tokenId, hashToken(`rt796-session-${n}`), TENANT_ID, session.userId, DEVICE_ID, STORE_ID, session.issuedAt, session.expiresAt],
+       (id, token_hash, tenant_id, user_id, device_id, store_id, scope, issued_at, expires_at, revoked_at)
+     VALUES ($1, $2, $3, $4, $5, $6, 'pos_operator', $7, $8, $9)`,
+    [
+      tokenId,
+      hashToken(`rt796-session-${n}`),
+      TENANT_ID,
+      session.userId,
+      DEVICE_ID,
+      STORE_ID,
+      session.issuedAt,
+      session.expiresAt,
+      session.revokedAt ?? null,
+    ],
   );
   return tokenId;
 }
@@ -534,5 +544,44 @@ describe("audit ingestion: acting_operator_id matches ANY link of the session's 
     // THAT session has no such link.
     const ev = event({ acting_operator_id: SUB_CUTOVER_OLD, session_id: ghostSession });
     expect(await sync([ev])).toMatchObject({ accepted: [], rejected: [{ category: "invalid_input" }] });
+  });
+  it("the alias works when the event is pinned to the user's own session", async () => {
+    if (skip()) return;
+    const own = await seedOperatorSession(12, { userId: U_CUTOVER, ...WINDOW });
+    await seedOperatorSession(13, { userId: U_DESCOPE, ...WINDOW });
+    const ev = event({ acting_operator_id: SUB_CUTOVER_OLD, session_id: own });
+    expect(await sync([ev])).toMatchObject({ accepted: [ev.event_id], rejected: [] });
+    expect(await actorOf(ev.event_id)).toBe(U_CUTOVER);
+  });
+
+  it("a session revoked BEFORE the event does not authorize the alias; revoked AFTER it still does", async () => {
+    if (skip()) return;
+    await seedOperatorSession(14, { userId: U_CUTOVER, ...WINDOW, revokedAt: "2026-10-21T09:00:00.000Z" });
+    const before = event({ acting_operator_id: SUB_CUTOVER_OLD });
+    expect(await sync([before])).toMatchObject({ accepted: [], rejected: [{ category: "invalid_input" }] });
+    await admin!.query(`DELETE FROM auth_tokens WHERE scope = 'pos_operator'`);
+    await seedOperatorSession(15, { userId: U_CUTOVER, ...WINDOW, revokedAt: "2026-10-21T11:00:00.000Z" });
+    const after = event({ acting_operator_id: SUB_CUTOVER_OLD });
+    expect(await sync([after])).toMatchObject({ accepted: [after.event_id], rejected: [] });
+  });
+
+  it("an ambiguous subject fails closed: two session users hold it under different providers", async () => {
+    if (skip()) return;
+    const shared = "shared-subject-rt796";
+    await seedLink({ userId: U_CUTOVER, providerKey: "provider-one", subject: shared, status: "disabled" });
+    await seedLink({ userId: U_DESCOPE, providerKey: "provider-two", subject: shared, status: "disabled" });
+    await seedOperatorSession(16, { userId: U_CUTOVER, ...WINDOW });
+    await seedOperatorSession(17, { userId: U_DESCOPE, ...WINDOW });
+    const ev = event({ acting_operator_id: shared });
+    expect(await sync([ev])).toMatchObject({
+      accepted: [],
+      rejected: [{ event_id: ev.event_id, category: "invalid_input" }],
+    });
+    expect(await actorOf(ev.event_id)).toBeUndefined();
+    // pinned to one session, the same id is unambiguous and accepted.
+    const pinned = await seedOperatorSession(18, { userId: U_DESCOPE, ...WINDOW });
+    const own = event({ acting_operator_id: shared, session_id: pinned });
+    expect(await sync([own])).toMatchObject({ accepted: [own.event_id] });
+    expect(await actorOf(own.event_id)).toBe(U_DESCOPE);
   });
 });

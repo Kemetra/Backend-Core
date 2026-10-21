@@ -275,7 +275,8 @@ export class PosAuditEventsService {
    * offline under the previous provider's id stays attributable after a cutover
    * disabled that link (RT-796 owner decision, 2026-10-22; no time bound). An id
    * never linked to the session's user matches nothing, so another operator's
-   * valid id cannot be used on this user's session.
+   * valid id cannot be used on this user's session. An id that matches more than
+   * one of the candidate users is refused too (pin `session_id` to resolve it).
    */
   private async resolveActorUserId(
     client: PoolClient,
@@ -300,6 +301,8 @@ export class PosAuditEventsService {
       sessions.rows.map((row) => row.user_id),
       event.acting_operator_id,
     );
-    return linked[0] ?? null;
+    // Fail closed on ambiguity: subjects are unique per (provider, issuer), not
+    // globally, so two session users can hold the same string. Never guess.
+    return linked.length === 1 ? (linked[0] ?? null) : null;
   }
 }
