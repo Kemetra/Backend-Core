@@ -16,7 +16,7 @@ import {
 import type { ClerkVerifier } from "../../src/pos-operators/clerk-verifier";
 
 const SUB = "U2descopeAdapter01";
-const ISSUER = "https://api.descope.com/P2adapterTest";
+const ISSUER = "https://api.descope.com/v1/apps/P2adapterTest";
 const USER_ID = "0a000000-0000-7000-8000-00000000ab01";
 
 function verifier(verify?: () => Promise<{ sub: string }>): ClerkVerifier {

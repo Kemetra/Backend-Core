@@ -1,7 +1,11 @@
 /**
  * RT-791 — the Descope cutover CLI's argument parsing (no database).
  */
-import { descopeIssuerFromEnv, parseDescopeCutoverArgs } from "../../src/cli/descope-cutover";
+import {
+  clerkIssuerFromEnv,
+  descopeIssuerFromEnv,
+  parseDescopeCutoverArgs,
+} from "../../src/cli/descope-cutover";
 
 const U = "0A000000-0000-7000-8000-000000000791";
 const ENV = { DESCOPE_PROJECT_ID: "P2cutoverArgs01" } as NodeJS.ProcessEnv;
@@ -12,7 +16,8 @@ describe("parseDescopeCutoverArgs", () => {
       kind: "apply",
       userId: U.toLowerCase(),
       descopeSubject: "U2abc",
-      issuer: "https://api.descope.com/P2cutoverArgs01",
+      issuer: "https://api.descope.com/v1/apps/P2cutoverArgs01",
+      clerkIssuer: "https://clerk.dp2.local",
       dryRun: false,
     });
   });
@@ -50,10 +55,44 @@ describe("parseDescopeCutoverArgs", () => {
   });
 });
 
+describe("clerkIssuerFromEnv", () => {
+  it("defaults to the 0025 issuer when CLERK_JWT_ISSUER is unset or empty", () => {
+    expect(clerkIssuerFromEnv({})).toBe("https://clerk.dp2.local");
+    expect(clerkIssuerFromEnv({ CLERK_JWT_ISSUER: "" })).toBe("https://clerk.dp2.local");
+  });
+
+  it("uses CLERK_JWT_ISSUER verbatim, as the API adapter does", () => {
+    expect(clerkIssuerFromEnv({ CLERK_JWT_ISSUER: "https://clerk.example.com" })).toBe("https://clerk.example.com");
+  });
+
+  it.each(["clerk.example.com", "http://clerk.example.com", "https://has space", " https://x"])(
+    "refuses a malformed CLERK_JWT_ISSUER %p (exit 3 before any write)",
+    (bad) => {
+      expect(() => clerkIssuerFromEnv({ CLERK_JWT_ISSUER: bad })).toThrow(/CLERK_JWT_ISSUER/);
+      expect(() =>
+        parseDescopeCutoverArgs(["apply", "--user", U, "--descope-subject", "U2abc"], { ...ENV, CLERK_JWT_ISSUER: bad }),
+      ).toThrow(/CLERK_JWT_ISSUER/);
+    },
+  );
+});
+
 describe("descopeIssuerFromEnv", () => {
   it("prefers DESCOPE_JWT_ISSUER", () => {
     expect(descopeIssuerFromEnv({ ...ENV, DESCOPE_JWT_ISSUER: "P2cutoverArgs01" })).toBe("P2cutoverArgs01");
   });
+
+  it("accepts an https URL or a bare project id as DESCOPE_JWT_ISSUER", () => {
+    expect(descopeIssuerFromEnv({ DESCOPE_JWT_ISSUER: "https://api.descope.com/v1/apps/P2x" })).toBe(
+      "https://api.descope.com/v1/apps/P2x",
+    );
+  });
+
+  it.each(["http://api.descope.com/P2x", "api.descope.com/P2x", "P2 x", "https://has space"])(
+    "refuses a malformed DESCOPE_JWT_ISSUER %p",
+    (bad) => {
+      expect(() => descopeIssuerFromEnv({ ...ENV, DESCOPE_JWT_ISSUER: bad })).toThrow(/DESCOPE_JWT_ISSUER/);
+    },
+  );
 
   it("refuses a malformed project id", () => {
     expect(() => descopeIssuerFromEnv({ DESCOPE_PROJECT_ID: "P2/../x" })).toThrow(/DESCOPE_PROJECT_ID/);
