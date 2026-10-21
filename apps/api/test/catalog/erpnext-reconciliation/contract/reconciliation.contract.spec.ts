@@ -301,6 +301,8 @@ describe("reconciliation.yaml — RT-410 PostingBacklogItem.reason", () => {
     expect(text).toContain("NOT a money field");
     expect(text).toContain("permanently_rejected");
     expect(text).toContain("dp2_token");
+    expect(text).toContain("cut to 1000 characters");
+    expect(text).toContain("superseded");
   });
   it("states the handling and rendering rules", () => {
     const text = reasonDescription();

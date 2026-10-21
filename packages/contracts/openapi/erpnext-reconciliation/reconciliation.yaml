@@ -773,8 +773,10 @@ components:
             values (`Bearer …`, and keys such as `token`, `password`, `passwd`,
             `pwd`, `secret`, `api_key` and `authorization`, matched as the end
             of an identifier, for example `dp2_token`) are replaced with
-            `[redacted]`. A message with nothing left after sanitising is
-            stored as null. Sanitising never causes an ack to be rejected.
+            `[redacted]`, and the result is then cut to 1000 characters (a
+            replacement can lengthen the text). A message with nothing left
+            after sanitising is stored as null. Sanitising never causes an
+            ack to be rejected.
 
 
             Content and classification: business data, PII-suspect free text
@@ -793,7 +795,10 @@ components:
 
             Null when: Backend-Core raised the dead-letter itself
             (`retry_budget_exhausted`, the worker's `unmapped_item` /
-            `unmapped_store`); the row was dead-lettered before the RT-410
+            `unmapped_store`); the RT-332 `reconciliation_required` was
+            recorded from a `posted` ack echoing a superseded
+            `resolutionVersion` (a `posted` ack carries no reason); the row
+            was dead-lettered before the RT-410
             storage migration; or nothing was left after sanitising.
 
 
