@@ -16,18 +16,16 @@
 import { activateSaleEffects, runWithTenantContext } from "@data-pulse-2/db";
 
 import {
-  ensureAppRole,
-  startPgEnv,
-  stopPgEnv,
-  type PgTestEnv,
-} from "../../../../packages/db/__tests__/_helpers/postgres-container";
-import { readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+  seedPendingAwareTenant,
+  seedSalePosting,
+  startMigratedEnvOrSkip,
+  type PendingAwareTenant,
+} from "../../../../packages/db/__tests__/_helpers/pending-aware-fixture";
+import { stopPgEnv, type PgTestEnv } from "../../../../packages/db/__tests__/_helpers/postgres-container";
 import { ReconciliationRunProcessor } from "../../src/erpnext-reconciliation/reconciliation-run.processor";
 import { ReportBackedBinView } from "../../src/erpnext-reconciliation/report-backed-bin-view";
 
 const ACTOR = "01900000-0000-7000-8000-0000004280ad";
-const DRIZZLE_DIR = resolve(__dirname, "..", "..", "..", "..", "packages", "db", "drizzle");
 
 let env: PgTestEnv | null = null;
 let skip = false;
@@ -43,53 +41,17 @@ function guard(): PgTestEnv {
   return env;
 }
 
-async function applyAllMigrations(e: PgTestEnv): Promise<void> {
-  const files = readdirSync(DRIZZLE_DIR)
-    .filter((n) => /^\d{4}_.+\.sql$/.test(n) && !n.endsWith(".down.sql"))
-    .sort();
-  for (const name of files) await e.admin.query(readFileSync(resolve(DRIZZLE_DIR, name), "utf8"));
-  await ensureAppRole(e);
-}
-
-interface Fixture {
-  readonly tenantId: string;
-  readonly storeId: string;
-  readonly productId: string;
-  readonly warehouse: string;
-  readonly locationId: string;
-}
+type Fixture = PendingAwareTenant;
 
 /** A tenant, one mapped store, product P (ITEM-1) and a Bin snapshot P = 10. */
 async function seedTenant(): Promise<Fixture> {
-  const a = guard().admin;
-  const tenantId = uuid();
-  const storeId = uuid();
-  const productId = uuid();
-  const warehouse = `WH-428-${seq}`;
-  await a.query(`INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'T')`, [tenantId, `rt428w-${seq}`]);
-  await a.query(`INSERT INTO stores (id, tenant_id, code, name) VALUES ($1, $2, $3, 'S')`, [storeId, tenantId, `S${seq}`]);
-  await a.query(
-    `INSERT INTO users (id, email, password_hash) VALUES ($1, 'rt428@fixture.invalid', NULL) ON CONFLICT (id) DO NOTHING`,
-    [ACTOR],
-  );
-  await a.query(
-    `INSERT INTO tenant_products (id, tenant_id, name, tax_category, created_by, updated_by) VALUES ($1, $2, 'P', 'standard', $3, $3)`,
-    [productId, tenantId, ACTOR],
-  );
-  await a.query(
-    `INSERT INTO erpnext_item_map (id, tenant_id, tenant_product_id, erpnext_item_ref, state, suggestion_source, confirmed_by, confirmed_at)
-     VALUES (gen_random_uuid(), $1, $2, 'ITEM-1', 'confirmed', 'manual', $3, now())`,
-    [tenantId, productId, ACTOR],
-  );
-  await a.query(
-    `INSERT INTO erpnext_warehouse_map (id, tenant_id, store_id, purpose, erpnext_warehouse_ref, set_by, version)
-     VALUES (gen_random_uuid(), $1, $2, 'stock', $3, $4, 1)`,
-    [tenantId, storeId, warehouse, ACTOR],
-  );
-  const locationId = (
-    await a.query<{ id: string }>(`SELECT id FROM stock_locations WHERE store_id = $1 AND kind = 'primary'`, [storeId])
-  ).rows[0]!.id;
-  const f = { tenantId, storeId, productId, warehouse, locationId };
+  const f = await seedPendingAwareTenant(guard().admin, {
+    tenantId: uuid(),
+    storeId: uuid(),
+    productId: uuid(),
+    slug: `rt428w-${seq}`,
+    actorId: ACTOR,
+  });
   await seedRun(f, { status: "completed", quantity: "10", readAt: new Date(Date.now() - 120_000).toISOString() });
   return f;
 }
@@ -120,6 +82,14 @@ async function seedRun(
 
 type EffectState = "pending" | "rejected" | "confirmed" | "not_posted";
 
+/** The posting row status behind a sale effect in each integration state. */
+const POSTING_STATUS: Record<EffectState, string> = {
+  pending: "pending",
+  rejected: "permanently_rejected",
+  confirmed: "posted",
+  not_posted: "pending",
+};
+
 /** One effect at the primary/sellable position with its integration row (and posting row for a sale). */
 async function seedEffect(f: Fixture, quantity: string, state: EffectState, unit = "Nos"): Promise<void> {
   const a = guard().admin;
@@ -132,27 +102,9 @@ async function seedEffect(f: Fixture, quantity: string, state: EffectState, unit
     [effectId, f.tenantId, f.storeId, Number(quantity) < 0 ? "outbound" : "adjustment", quantity, unit, f.productId, ACTOR,
       sale ? "sale" : "adjustment", uuid(), f.locationId],
   );
-  let postingId: string | null = null;
-  if (sale) {
-    const saleId = uuid();
-    await a.query(
-      `INSERT INTO sales (id, tenant_id, store_id, currency_code, pos_total, occurred_at, business_date,
-                          source_system, external_id, payload_hash, created_by)
-       VALUES ($1, $2, $3, 'EGP', 0, now(), current_date, 'pos', $4, $5, $6)`,
-      [saleId, f.tenantId, f.storeId, `x-${saleId}`, "0".repeat(64), ACTOR],
-    );
-    postingId = (
-      await a.query<{ id: string }>(
-        `INSERT INTO erpnext_posting_status (tenant_id, store_id, sale_id, kind, source_ref_id, source_system, external_id,
-                                             payload_hash, status, document_ref, posted_at)
-         VALUES ($1, $2, $3, 'sale_post', $3, 'pos', $4, $5, $6,
-                 CASE WHEN $6 = 'posted' THEN '{"name":"SINV"}' END, CASE WHEN $6 = 'posted' THEN now() END)
-         RETURNING id`,
-        [f.tenantId, f.storeId, saleId, `x-${saleId}`, "0".repeat(64),
-          state === "confirmed" ? "posted" : state === "rejected" ? "permanently_rejected" : "pending"],
-      )
-    ).rows[0]!.id;
-  }
+  const postingId = sale
+    ? await seedSalePosting(a, f, { saleId: uuid(), actorId: ACTOR, status: POSTING_STATUS[state] })
+    : null;
   await a.query(
     `INSERT INTO inventory_effect_integration (effect_id, tenant_id, state, posting_status_id, erp_document_ref, erp_confirmed_at)
      VALUES ($1, $2, $3, $4, CASE WHEN $3 = 'confirmed' THEN '{"name":"SINV"}' END, CASE WHEN $3 = 'confirmed' THEN now() END)`,
@@ -200,18 +152,8 @@ async function activated(): Promise<Fixture> {
 }
 
 beforeAll(async () => {
-  try {
-    env = await startPgEnv();
-    await applyAllMigrations(env);
-  } catch (err) {
-    if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
-      skip = true;
-      // eslint-disable-next-line no-console
-      console.warn(`[pending-aware-run.spec] Docker unavailable: ${String(err)}`);
-      return;
-    }
-    throw err;
-  }
+  env = await startMigratedEnvOrSkip("pending-aware-run.spec");
+  skip = env === null;
 }, 240_000);
 
 afterAll(async () => {

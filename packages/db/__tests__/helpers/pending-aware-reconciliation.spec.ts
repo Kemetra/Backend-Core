@@ -27,7 +27,13 @@ import {
   readPendingAwarePositions,
 } from "../../src/helpers/inventory-effects/pending-aware";
 import { runWithTenantContext } from "../../src/middleware/tenant-context";
-import { applyAllUpAndCreateAppRole, startPgEnv, stopPgEnv, type PgTestEnv } from "../_helpers/postgres-container";
+import {
+  seedPendingAwareTenant,
+  seedSalePosting,
+  startMigratedEnvOrSkip,
+  type PendingAwareTenant,
+} from "../_helpers/pending-aware-fixture";
+import { stopPgEnv, type PgTestEnv } from "../_helpers/postgres-container";
 
 const ACTOR = "0a000000-0000-7000-8000-000000428c00";
 
@@ -45,41 +51,17 @@ function uuid(): string {
   return `0a000000-0000-7000-8000-${(0x428c00000000 + seq).toString(16)}`;
 }
 
-interface Fixture {
-  readonly tenantId: string;
-  readonly storeId: string;
-  readonly productId: string;
-  readonly warehouse: string;
-  readonly locationId: string;
-}
+type Fixture = PendingAwareTenant;
 
 /** A tenant, one mapped store, product P (ITEM-1) and a Bin snapshot P = 10. */
 async function seedTenant(): Promise<Fixture> {
-  const a = pg().admin;
-  const tenantId = uuid();
-  const storeId = uuid();
-  const productId = uuid();
-  const warehouse = `WH-428-${seq}`;
-  await a.query(`INSERT INTO tenants (id, slug, name) VALUES ($1, $2, 'T')`, [tenantId, `rt428-${seq}`]);
-  await a.query(`INSERT INTO stores (id, tenant_id, code, name) VALUES ($1, $2, $3, 'S')`, [storeId, tenantId, `S${seq}`]);
-  await a.query(
-    `INSERT INTO tenant_products (id, tenant_id, name, tax_category, created_by, updated_by) VALUES ($1, $2, 'P', 'standard', $3, $3)`,
-    [productId, tenantId, ACTOR],
-  );
-  await a.query(
-    `INSERT INTO erpnext_item_map (id, tenant_id, tenant_product_id, erpnext_item_ref, state, suggestion_source, confirmed_by, confirmed_at)
-     VALUES (gen_random_uuid(), $1, $2, 'ITEM-1', 'confirmed', 'manual', $3, now())`,
-    [tenantId, productId, ACTOR],
-  );
-  await a.query(
-    `INSERT INTO erpnext_warehouse_map (id, tenant_id, store_id, purpose, erpnext_warehouse_ref, set_by, version)
-     VALUES (gen_random_uuid(), $1, $2, 'stock', $3, $4, 1)`,
-    [tenantId, storeId, warehouse, ACTOR],
-  );
-  const locationId = (
-    await a.query<{ id: string }>(`SELECT id FROM stock_locations WHERE store_id = $1 AND kind = 'primary'`, [storeId])
-  ).rows[0]!.id;
-  const f = { tenantId, storeId, productId, warehouse, locationId };
+  const f = await seedPendingAwareTenant(pg().admin, {
+    tenantId: uuid(),
+    storeId: uuid(),
+    productId: uuid(),
+    slug: `rt428-${seq}`,
+    actorId: ACTOR,
+  });
   await seedSnapshot(f, { quantity: "10", readAt: new Date(Date.now() - 60_000).toISOString() });
   return f;
 }
@@ -102,23 +84,8 @@ async function seedSnapshot(f: Fixture, { quantity, readAt }: { quantity: string
 }
 
 /** A posting row for a fresh sale (the intent a sale effect links to). */
-async function seedPosting(f: Fixture, { posted }: { posted: boolean }): Promise<string> {
-  const saleId = uuid();
-  await pg().admin.query(
-    `INSERT INTO sales (id, tenant_id, store_id, currency_code, pos_total, occurred_at, business_date,
-                        source_system, external_id, payload_hash, created_by)
-     VALUES ($1, $2, $3, 'EGP', 0, now(), current_date, 'pos', $4, $5, $6)`,
-    [saleId, f.tenantId, f.storeId, `x-${saleId}`, "0".repeat(64), ACTOR],
-  );
-  const r = await pg().admin.query<{ id: string }>(
-    `INSERT INTO erpnext_posting_status (tenant_id, store_id, sale_id, kind, source_ref_id, source_system, external_id,
-                                         payload_hash, status, document_ref, posted_at)
-     VALUES ($1, $2, $3, 'sale_post', $3, 'pos', $4, $5, $6,
-             CASE WHEN $6 = 'posted' THEN '{"name":"SINV"}' END, CASE WHEN $6 = 'posted' THEN now() END)
-     RETURNING id`,
-    [f.tenantId, f.storeId, saleId, `x-${saleId}`, "0".repeat(64), posted ? "posted" : "pending"],
-  );
-  return r.rows[0]!.id;
+function seedPosting(f: Fixture, { posted }: { posted: boolean }): Promise<string> {
+  return seedSalePosting(pg().admin, f, { saleId: uuid(), actorId: ACTOR, status: posted ? "posted" : "pending" });
 }
 
 type EffectState = "pending" | "rejected" | "reconciliation_required" | "confirmed" | "not_posted" | "erp_neutral";
@@ -178,17 +145,7 @@ async function positionOf(f: Fixture) {
 }
 
 beforeAll(async () => {
-  try {
-    env = await startPgEnv();
-  } catch (err: unknown) {
-    if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
-      // eslint-disable-next-line no-console
-      console.warn(`\n[pending-aware-reconciliation.spec] Docker NOT AVAILABLE — skipping: ${String(err)}\n`);
-      return;
-    }
-    throw err;
-  }
-  await applyAllUpAndCreateAppRole(env);
+  env = await startMigratedEnvOrSkip("pending-aware-reconciliation.spec");
 }, 240_000);
 
 afterAll(async () => {
