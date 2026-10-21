@@ -26,6 +26,7 @@ import {
   acceptedDescopeIssuers,
   descopeIssuer,
   descopeJwksUrl,
+  descopeVerifierConfig,
 } from "../../src/pos-operators/descope-verifier";
 
 const PROJECT_ID = "P2testProject0001";
@@ -76,7 +77,8 @@ function localVerifier(audience?: string): DescopeJwksVerifier {
 
 describe("descopeIssuer / descopeJwksUrl", () => {
   it("derives the issuer and the JWKS URL from the project id", () => {
-    expect(descopeIssuer(PROJECT_ID)).toBe(`https://api.descope.com/${PROJECT_ID}`);
+    // The form real Descope session JWTs carry (rt9 lab, 2026-10-21).
+    expect(descopeIssuer(PROJECT_ID)).toBe(`https://api.descope.com/v1/apps/${PROJECT_ID}`);
     expect(descopeJwksUrl(PROJECT_ID)).toBe(
       `https://api.descope.com/${PROJECT_ID}/.well-known/jwks.json`,
     );
@@ -100,12 +102,15 @@ describe("DescopeJwksVerifier — accepts", () => {
     await expect(localVerifier(PROJECT_ID).verify(t)).resolves.toEqual({ sub: SUB });
   });
 
-  it("accepts either listed issuer form (URL or bare project id)", async () => {
+  it("accepts every listed issuer form (v1/apps URL, legacy URL, bare project id)", async () => {
     const verifier = new DescopeJwksVerifier({
       issuer: acceptedDescopeIssuers(PROJECT_ID),
       jwks: createLocalJWKSet({ keys: [publicJwk] }),
     });
     await expect(verifier.verify(await token({ issuer: PROJECT_ID }))).resolves.toEqual({ sub: SUB });
+    await expect(
+      verifier.verify(await token({ issuer: `https://api.descope.com/${PROJECT_ID}` })),
+    ).resolves.toEqual({ sub: SUB });
     await expect(verifier.verify(await token())).resolves.toEqual({ sub: SUB });
     await expect(verifier.verify(await token({ issuer: "P2other" }))).rejects.toThrow(
       "descope verifier: token rejected",
@@ -119,7 +124,11 @@ describe("DescopeJwksVerifier — accepts", () => {
     } finally {
       delete process.env["DESCOPE_JWT_ISSUER"];
     }
-    expect(acceptedDescopeIssuers(PROJECT_ID)).toEqual([ISSUER, PROJECT_ID]);
+    expect(acceptedDescopeIssuers(PROJECT_ID)).toEqual([
+      ISSUER,
+      `https://api.descope.com/${PROJECT_ID}`,
+      PROJECT_ID,
+    ]);
   });
 
   it("ignores aud when no audience is configured", async () => {
@@ -246,5 +255,88 @@ describe("DescopeJwksVerifier — remote JWKS over HTTP (local server)", () => {
     failing = fetchFails;
     const verifier = new DescopeJwksVerifier({ issuer: ISSUER, jwks: createRemoteJWKSet(new URL(baseUrl)) });
     await check(verifier.verify(await token()));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RT-791 lab finding: a real Descope session JWT (rt9 lab, shape only) carries
+// iss = https://api.descope.com/v1/apps/<projectId>, aud = <projectId>,
+// drn = DS, a 600 s lifetime, no nbf, and amr / email / rexp claims.
+// ---------------------------------------------------------------------------
+
+describe("descopeVerifierConfig — the real Descope session token shape", () => {
+  const KEYS = ["DESCOPE_JWT_ISSUER", "DESCOPE_JWT_AUDIENCE"];
+  afterEach(() => {
+    for (const k of KEYS) delete process.env[k];
+  });
+
+  async function realShapeToken(overrides: { aud?: string | null; iss?: string } = {}): Promise<string> {
+    const now = Math.floor(Date.now() / 1000);
+    let jwt = new SignJWT({
+      amr: ["pwd"],
+      drn: "DS",
+      email: "manager@example.test",
+      rexp: new Date((now + 2_419_200) * 1000).toISOString(),
+    })
+      .setProtectedHeader({ alg: "RS256", typ: "JWT", kid: KID })
+      .setIssuer(overrides.iss ?? `https://api.descope.com/v1/apps/${PROJECT_ID}`)
+      .setSubject(SUB)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 600);
+    if (overrides.aud !== null) jwt = jwt.setAudience(overrides.aud ?? PROJECT_ID);
+    return jwt.sign(privateKey);
+  }
+
+  function configuredVerifier(): DescopeJwksVerifier {
+    return new DescopeJwksVerifier({
+      ...descopeVerifierConfig(PROJECT_ID),
+      jwks: createLocalJWKSet({ keys: [publicJwk] }),
+    });
+  }
+
+  it("accepts the lab token shape with no env overrides", async () => {
+    await expect(configuredVerifier().verify(await realShapeToken())).resolves.toEqual({ sub: SUB });
+  });
+
+  it("defaults the audience to the project id", () => {
+    expect(descopeVerifierConfig(PROJECT_ID).audience).toBe(PROJECT_ID);
+  });
+
+  it.each<[string, { aud?: string | null; iss?: string }]>([
+    ["another project's audience", { aud: "P2otherProject" }],
+    ["no audience at all", { aud: null }],
+    ["an issuer outside the accepted forms", { iss: "https://api.descope.com/v1/apps/P2otherProject" }],
+  ])("refuses %s", async (_label, overrides) => {
+    await expect(configuredVerifier().verify(await realShapeToken(overrides))).rejects.toThrow(
+      "descope verifier: token rejected",
+    );
+  });
+
+  it("DESCOPE_JWT_AUDIENCE overrides the default audience", async () => {
+    process.env["DESCOPE_JWT_AUDIENCE"] = "custom-aud";
+    expect(descopeVerifierConfig(PROJECT_ID).audience).toBe("custom-aud");
+    await expect(configuredVerifier().verify(await realShapeToken())).rejects.toThrow("token rejected");
+    await expect(configuredVerifier().verify(await realShapeToken({ aud: "custom-aud" }))).resolves.toEqual({
+      sub: SUB,
+    });
+  });
+
+  it.each(["http://insecure.example", "issuer with spaces", "https://has space", "ftp://x"])(
+    "a malformed DESCOPE_JWT_ISSUER %p fails at config time",
+    (bad) => {
+      process.env["DESCOPE_JWT_ISSUER"] = bad;
+      expect(() => descopeVerifierConfig(PROJECT_ID)).toThrow(/DESCOPE_JWT_ISSUER/);
+    },
+  );
+
+  it("a bare project id is a valid DESCOPE_JWT_ISSUER", () => {
+    process.env["DESCOPE_JWT_ISSUER"] = PROJECT_ID;
+    expect(descopeVerifierConfig(PROJECT_ID).issuer).toEqual([PROJECT_ID]);
+  });
+
+  it("DESCOPE_JWT_ISSUER replaces the accepted issuer forms", async () => {
+    process.env["DESCOPE_JWT_ISSUER"] = "https://issuer.override.example";
+    expect(descopeVerifierConfig(PROJECT_ID).issuer).toEqual(["https://issuer.override.example"]);
+    await expect(configuredVerifier().verify(await realShapeToken())).rejects.toThrow("token rejected");
   });
 });
