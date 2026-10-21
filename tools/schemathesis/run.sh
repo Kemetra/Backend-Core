@@ -11,6 +11,16 @@
 #                  are informational: they are written to $FUZZ_OUT/report.md
 #                  (and the job summary) and do not fail the step.
 #
+#   run.sh inventory  RT-809: print "<group> <file> <operationIds...>" for the owner and
+#                  platform groups (ops.py, same image and mounts as a run) and run nothing.
+#                  The shard plan is computed from this, never from a hardcoded list.
+#
+# SHARD_UNITS=<file> (RT-809, gate and report only): run only the contract files listed
+# there, one "<group> <file>" per line, and write a line per file run to
+# $FUZZ_OUT/manifest-<mode>.txt for the fan-in (tools/schemathesis/shards.py). Without it
+# nothing below changes. With it, BASELINE_UPDATE and operator mode are rejected, and so
+# are an empty or malformed file and a unit that ops.py does not list.
+#
 # In both modes, a run that could not execute (schema load, network or tool
 # error) fails the step, so a broken check never looks green.
 #
@@ -21,7 +31,7 @@
 set -euo pipefail
 export MSYS_NO_PATHCONV=1 # Git Bash only; no effect on Linux
 
-MODE="${1:?usage: run.sh gate|report|operator}"
+MODE="${1:?usage: run.sh gate|report|operator|inventory}"
 # The Backend-Core project root, located from this script: the Git root when
 # standalone, services/backend-core/ in the monorepo (RT-801).
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -31,6 +41,7 @@ FUZZ_OUT="${FUZZ_OUT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/api-fuzz}"
 ST_IMAGE="${ST_IMAGE:-schemathesis/schemathesis:4.28.0@sha256:0a71757c60ccdba270c154a859d9dd3d019625f782f23ab36ad604771e15f78b}"
 SEED="${SEED:-38}"
 MAX_EXAMPLES="${MAX_EXAMPLES:-200}"
+SHARD_UNITS="${SHARD_UNITS:-}"
 
 # BASELINE_UPDATE=1 (maintainers only) records this run's failures into the
 # mode's baseline file (5xx-baseline.json or report-baseline.json), so the config
@@ -44,7 +55,10 @@ host_path() {
 }
 
 st() {
-  docker run --rm --network "${FUZZ_PROJECT}_default" \
+  # `inventory` (RT-809) runs before any stack exists and needs no network.
+  local network="${FUZZ_PROJECT}_default"
+  if [[ "$MODE" == "inventory" ]]; then network=none; fi
+  docker run --rm --network "$network" \
     -v "$(host_path "$ROOT/packages/contracts/openapi"):/contracts:ro" \
     -v "$(host_path "$HERE"):/cfg:$CFG_MODE" \
     "$@"
@@ -67,8 +81,21 @@ session_alive() {
   st --entrypoint python "$ST_IMAGE" -c "import urllib.request as u; r=u.Request('http://api:3000/api/v1/context/me', headers={'Cookie': 'dp2_session=$session_cookie'}); print(u.urlopen(r).status)" 2>/dev/null || echo dead
 }
 
+# RT-809: this group's lines of the ops.py output that SHARD_UNITS lists, in ops.py order.
+# A listed unit that ops.py does not report means the plan came from another inventory.
+select_units() {
+  local group="$1" ops="$2" missing
+  missing="$(awk -v g="$group" 'NR == FNR { if ($1 == g) want[$2] = 1; next } { seen[$1] = 1 }
+    END { for (f in want) if (!(f in seen)) print f }' "$SHARD_UNITS" - <<<"$ops")"
+  if [[ -n "$missing" ]]; then
+    echo "::error::SHARD_UNITS lists $group files that ops.py does not report: $(echo "$missing" | tr '\n' ' ')" >&2
+    return 1
+  fi
+  awk -v g="$group" 'NR == FNR { if ($1 == g) want[$2] = 1; next } $1 in want' "$SHARD_UNITS" - <<<"$ops"
+}
+
 case "$MODE" in
-  gate)
+  gate|inventory)
     check=not_a_server_error
     baseline=5xx-baseline.json
     ;;
@@ -82,6 +109,21 @@ case "$MODE" in
     ;;
   *) echo "unknown mode: $MODE" >&2; exit 2 ;;
 esac
+if [[ -n "$SHARD_UNITS" ]]; then
+  if [[ "$MODE" == "operator" || "$MODE" == "inventory" || -n "${BASELINE_UPDATE:-}" ]]; then
+    echo "::error::SHARD_UNITS is only for gate and report runs without BASELINE_UPDATE" >&2
+    exit 1
+  fi
+  if [[ ! -s "$SHARD_UNITS" ]]; then
+    echo "::error::SHARD_UNITS $SHARD_UNITS is missing or empty" >&2
+    exit 1
+  fi
+  if ! awk 'NF != 2 || ($1 != "owner" && $1 != "platform") { bad = 1 } END { exit bad }' "$SHARD_UNITS" ||
+    [[ -n "$(sort "$SHARD_UNITS" | uniq -d)" ]]; then
+    echo "::error::SHARD_UNITS $SHARD_UNITS has a malformed or duplicate line" >&2
+    exit 1
+  fi
+fi
 extra=(--baseline "/cfg/$baseline")
 if [[ -n "${BASELINE_UPDATE:-}" ]]; then extra+=(--baseline-update); fi
 
@@ -95,11 +137,24 @@ for f in "$HERE/ops.py" "$HERE/$baseline"; do
   [[ -f "$f" ]] || { echo "::error::missing $f" >&2; exit 1; }
 done
 
+if [[ "$MODE" == "inventory" ]]; then
+  inventory=""
+  for group in owner platform; do
+    ops="$(st --entrypoint python "$ST_IMAGE" /cfg/ops.py /contracts "$group")"
+    if [[ -n "$ops" ]]; then inventory+="$(sed "s/^/$group /" <<<"$ops")"$'\n'; fi
+  done
+  [[ -n "$inventory" ]] || { echo "::error::no operations in $ROOT/packages/contracts/openapi" >&2; exit 1; }
+  printf '%s' "$inventory"
+  exit 0
+fi
+
 failed=0
 errored=0
 total_ops=0
 summary="$FUZZ_OUT/$MODE.md"
 : >"$summary"
+manifest="$FUZZ_OUT/manifest-$MODE.txt"
+if [[ -n "$SHARD_UNITS" ]]; then : >"$manifest"; fi
 
 groups=(owner platform)
 if [[ "$MODE" == "operator" ]]; then groups=(operator); fi
@@ -113,6 +168,7 @@ for group in "${groups[@]}"; do
     auth_header="Cookie: dp2_session=$credential"
   fi
   ops="$(st --entrypoint python "$ST_IMAGE" /cfg/ops.py /contracts "$group")"
+  if [[ -n "$SHARD_UNITS" ]]; then ops="$(select_units "$group" "$ops")"; fi
   [[ -n "$ops" ]] || continue
   n_ops="$(echo "$ops" | awk '{n += NF - 1} END {print n + 0}')"
   total_ops=$((total_ops + n_ops))
@@ -137,8 +193,10 @@ for group in "${groups[@]}"; do
     echo "$file ($group): exit=$rc ${result}"
 
     # A run that did not execute: Schemathesis errors, a crash, or no summary.
+    file_errored=0
     if grep -qE '^=+ ERRORS =+$|Traceback \(most recent call last\)' "$log" || ! grep -q '^Test cases:' "$log"; then
       errored=1
+      file_errored=1
       echo "::error::Schemathesis could not run $file ($group); see the step log" >&2
       {
         echo "### \`$file\` ($group): run error"
@@ -155,6 +213,12 @@ for group in "${groups[@]}"; do
         sed -n '/= FAILURES =/,/= SUMMARY =/p' "$log" | grep -E '^_{3,} |^- |^\[[0-9]{3}\]|curl -X' | cut -c1-300 || true
         echo '```'
       } >>"$summary"
+    fi
+
+    if [[ -n "$SHARD_UNITS" ]]; then
+      # "<mode> <group> <file> <exit> <errored> <generated> <ids,...>"; -1 = no count in the log.
+      generated="$(sed -n -E 's/^[[:space:]]+([0-9]+) generated.*/\1/p' "$log" | head -n 1)"
+      echo "$MODE $group $file $rc $file_errored ${generated:--1} ${ids// /,}" >>"$manifest"
     fi
 
     # The session must survive every file; a dead cookie would make the rest meaningless.
