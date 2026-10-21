@@ -168,7 +168,7 @@ describe("pos-sales/tracked-lines.yaml — RT-450 TLV and lot lookup", () => {
   it("validates identity by id or by code, and refuses an ambiguous or empty identity", () => {
     const validate = validatorFor(doc, "ValidateTrackedLineRequest");
     expectVerdicts(validate, [request, withIdentity({ code: "LOT-A1" }), withIdentity({ code: "LOT-A1", expiryDate: "2027-03-31" })], true);
-    const bad = [{}, { identityId: UUID, code: "LOT-A1" }, { identityId: UUID, expiryDate: "2027-03-31" }, { code: "" }];
+    const bad = [{}, { identityId: UUID, code: "LOT-A1" }, { identityId: UUID, expiryDate: "2027-03-31" }, { identityId: UUID, code: "LOT-A1", expiryDate: "2027-03-31" }, { code: "" }];
     expectVerdicts(validate, bad.map(withIdentity), false);
   });
 

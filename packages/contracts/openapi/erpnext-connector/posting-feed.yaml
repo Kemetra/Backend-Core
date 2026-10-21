@@ -299,7 +299,9 @@ info:
     this feed. `trackingMode` is the product's Catalog Tracking Profile at
     intent time. Both fields are nullable and optional on the wire: Backend-Core
     omits them on every line, untracked lines included, until the Connector
-    accepts them; afterwards an untracked line carries them as null. A tracked
+    accepts them; afterwards an untracked line carries `trackingMode: none` and
+    `erpnextBatchRef: null` (`trackingMode` null means only that no profile
+    could be determined, never that the line is untracked). A tracked
     (`batch`) line carries `trackingMode: batch` and a non-null
     `erpnextBatchRef`: a line with no edge-map row is never offered (its
     intent is held in Backend-Core, `pos-sales/sales.yaml` G7-9 row 3). Serial
@@ -1040,9 +1042,10 @@ components:
         trackingMode:
           description: >
             RT-450 (RT-50 G7-1, G7-11). The product's Catalog Tracking Profile
-            mode at intent time: `none`, `batch` or `serial`; null when the
-            line is untracked and Backend-Core emits the fields. Optional:
-            omitted until the Connector accepts it. The ERPNext Item never
+            mode at intent time: `none` (an untracked product), `batch` or
+            `serial`. Null means only that no profile could be determined (a
+            line with no tenant product), never that the line is untracked.
+            Optional: omitted until the Connector accepts it. The ERPNext Item never
             defines it: an Item whose tracking flags disagree with it is a
             `validation` rejection. Never `serial` in this version.
           anyOf:

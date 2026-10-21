@@ -603,9 +603,11 @@ paths:
         identity the till sold, chosen after an online validation
         (`posValidateTrackedLine`, `pos-sales/tracked-lines.yaml`). `tracking`
         is frozen on the line, included in the `payload_hash` and echoed by
-        `SaleLine`; a replay with different tracking is the existing conflict
-        (409 `idempotency_key_conflict` under the same key, the provenance
-        divergence rule under another). Capture NEVER rejects a real sale for
+        `SaleLine`; the same `Idempotency-Key` re-sent with different tracking
+        is the existing conflict (409 `idempotency_key_conflict`), and under
+        another key (a provenance replay) the stored sale is returned and its
+        stored tracking is never rewritten, like every other line field.
+        Capture NEVER rejects a real sale for
         tracking reasons: a refusal would only strand the fact in the till's
         dead-letter. The server accepts the sale and classifies each tracked
         line. When several rows match, the lower (more severe) row wins:

@@ -369,6 +369,8 @@ components:
           not:
             required: [expiryDate]
         - required: [code]
+          not:
+            required: [identityId]
       properties:
         identityId:
           type: string
