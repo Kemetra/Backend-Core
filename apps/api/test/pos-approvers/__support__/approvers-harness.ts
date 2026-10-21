@@ -14,25 +14,14 @@ import "reflect-metadata";
 import { randomUUID } from "node:crypto";
 
 import type { INestApplication } from "@nestjs/common";
-import { Test } from "@nestjs/testing";
 import { hashToken } from "@data-pulse-2/auth";
-import Ajv, { type ValidateFunction } from "ajv";
-import addFormats from "ajv-formats";
 import { Pool } from "pg";
 import request from "supertest";
 
-import { AUTH_LOOKUP_POOL, PG_POOL } from "../../../src/auth/auth.module";
-import { GlobalExceptionFilter } from "../../../src/common/exception.filter";
-import { RequestIdInterceptor } from "../../../src/common/request-id.interceptor";
-import { ZodValidationPipe } from "../../../src/common/zod-validation.pipe";
-import { loadOpenApiContracts } from "../../../src/openapi/loader";
 import { PosApproversModule } from "../../../src/pos-approvers/pos-approvers.module";
-import {
-  applyAllUpAndCreateAppRole,
-  startPgEnv,
-  stopPgEnv,
-  type PgTestEnv,
-} from "../../_helpers/postgres-container";
+import { bootDeviceModuleApp, startPgEnvOrSkip } from "../../_helpers/device-module-app";
+import { stopPgEnv, type PgTestEnv } from "../../_helpers/postgres-container";
+import { schemaChecker } from "../../_helpers/scoped-http-harness";
 
 /** A UUID: a user, tenant, store, role, membership, device or request id. */
 export type Uuid = string;
@@ -135,33 +124,11 @@ export function skipped(): boolean {
 }
 
 export async function startHarness(label: SuiteLabel): Promise<void> {
-  let env: PgTestEnv;
-  try {
-    env = await startPgEnv();
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
-      // eslint-disable-next-line no-console
-      console.warn(`\n[${label}] Docker NOT AVAILABLE — skipping: ${msg}\n`);
-      return;
-    }
-    throw new Error(`Container start failed: ${msg}`);
-  }
-  await applyAllUpAndCreateAppRole(env);
+  const env = await startPgEnvOrSkip(label);
+  if (env === null) return;
   const admin = new Pool({ connectionString: env.adminUri });
   await seed(admin);
-
-  const moduleRef = await Test.createTestingModule({ imports: [PosApproversModule] })
-    .overrideProvider(PG_POOL)
-    .useValue(env.app)
-    .overrideProvider(AUTH_LOOKUP_POOL)
-    .useValue(admin)
-    .compile();
-  const app = moduleRef.createNestApplication({ bufferLogs: true, logger: false });
-  app.useGlobalInterceptors(new RequestIdInterceptor());
-  app.useGlobalFilters(new GlobalExceptionFilter());
-  app.useGlobalPipes(new ZodValidationPipe());
-  await app.init();
+  const app = await bootDeviceModuleApp(PosApproversModule, { domain: env.app, lookup: admin });
   harness = { env, admin, app };
 }
 
@@ -313,26 +280,12 @@ export async function auditCountFor(requestId: Uuid): Promise<number> {
 // ---------------------------------------------------------------------------
 // OpenAPI response validation
 // ---------------------------------------------------------------------------
-const CONTRACT_ID = "pos-approvers.openapi";
-let ajv: Ajv | null = null;
-
-function contractAjv(): Ajv {
-  if (ajv) return ajv;
-  const contract = loadOpenApiContracts().find((c) => c.id === CONTRACT_ID);
-  if (!contract) throw new Error(`${CONTRACT_ID} not found`);
-  ajv = new Ajv({ strict: false, allErrors: true });
-  addFormats(ajv);
-  ajv.addSchema(contract.document as object, CONTRACT_ID);
-  return ajv;
-}
-
 export type ContractSchema = "PosApproverEligibilityResponse" | "Error";
 
+let conforms: ((name: string, body: unknown) => void) | null = null;
+
+/** Throws with the AJV errors when `body` does not match the contract schema. */
 export function expectSchema(schema: ContractSchema, body: unknown): void {
-  const v: ValidateFunction | undefined = contractAjv().getSchema(
-    `${CONTRACT_ID}#/components/schemas/${schema}`,
-  );
-  if (!v) throw new Error(`ajv cannot resolve ${schema}`);
-  const ok = v(body);
-  if (!ok) throw new Error(`${schema} mismatch: ${JSON.stringify(v.errors)} for ${JSON.stringify(body)}`);
+  conforms ??= schemaChecker("pos-approvers.openapi");
+  conforms(schema, body);
 }
