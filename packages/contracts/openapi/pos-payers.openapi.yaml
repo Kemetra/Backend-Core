@@ -327,15 +327,17 @@ components:
     Error:
       type: object
       required: [error]
+      additionalProperties: false
       description: >
-        Canonical error envelope, identical to `sales.yaml` /
-        `sale-history.yaml`. Refusals are non-disclosing. The envelope is open
-        so that the standard validation path can add `error.details` (the
-        sanitized validation issues of a 400) without breaking conformance.
+        Canonical error envelope: the `{ error: { code, message, request_id } }`
+        shape shared with `sales.yaml` / `sale-history.yaml`, closed, plus the
+        one optional `error.details` that the standard validation pipe adds to
+        a 400. Refusals are non-disclosing: no other field can appear.
       properties:
         error:
           type: object
           required: [code, message, request_id]
+          additionalProperties: false
           properties:
             code:
               type: string

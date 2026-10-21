@@ -309,12 +309,14 @@ describe("pos-payers — AJV fixtures", () => {
     expect(validator("PosPayerPage")(page)).toBe(false);
   });
 
-  it("validates the error envelope, with the optional 400 validation details", () => {
+  it("validates the error envelope, with the optional 400 validation details, and rejects any other field", () => {
     const error = { error: { code: "sale_responsibility_role_refused", message: "forbidden", request_id: "req-1" } };
     expect(validator("Error")(error)).toBe(true);
     const details = [{ path: ["page_size"], message: "Too big", code: "too_big" }];
     expect(validator("Error")({ error: { ...error.error, code: "validation_error", details } })).toBe(true);
     expect(validator("Error")({ error: { ...error.error, details: "not-an-array" } })).toBe(false);
     expect(validator("Error")({ error: { code: "x", message: "y" } })).toBe(false);
+    expect(validator("Error")({ error: { ...error.error, payerRef: PAYER_A } })).toBe(false);
+    expect(validator("Error")({ ...error, payerRef: PAYER_A })).toBe(false);
   });
 });
