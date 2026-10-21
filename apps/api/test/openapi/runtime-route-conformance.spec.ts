@@ -63,19 +63,27 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "backfillSaleLinkedMovements",
       // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
       "consoleDeleteTenantLogo",
+      // RT-327 step 1: device health reads; the runtime and migration are later RT-327 steps.
+      "consoleGetDeviceHealth",
       // RT-719: POS fleet build baseline (for RT-713); the runtime and migration are separate approvals.
       "consoleGetFleetBaseline",
       "consoleGetTenantLogo",
+      "consoleListDeviceHealth",
       "consolePreviewTenantLogo",
       "consolePutTenantLogo",
       // RT-742 (RT-554 follow-up): manager forced close from any terminal; the runtime ships in its own ticket.
       "forceCloseShift",
       // RT-490 (RT-271 F-1): refund execution and return reads; the runtime ships in F-2.
       "listSaleReturns",
+      // RT-327 step 1: platform POS version policy read and change.
+      "platformGetPosVersionPolicy",
+      "platformSetPosVersionPolicy",
       "posGetTenantBranding",
       // RT-450 (RT-50 F3): tracked line validation and lot lookup; the runtime ships in RT-451.
       "posListTrackedLots",
       "posRedeemVoucher",
+      // RT-327 step 1: POS device heartbeat (AD-DEVICE-001 D-1 to D-3).
+      "posReportDeviceHeartbeat",
       "posReverseVoucher",
       "posValidateTrackedLine",
       "posValidateVoucher",
