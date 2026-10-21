@@ -52,8 +52,8 @@ function magnitudeConsistent(payload: Record<string, unknown>): boolean {
 export function isDiscountAuthorizedPayload(payload: Record<string, unknown>): boolean {
   if (REQUIRED_KEYS.some((key) => payload[key] === undefined)) return false;
   for (const [key, value] of Object.entries(payload)) {
-    const rule = FIELD_RULES.get(key);
-    if (rule === undefined || !rule(value)) return false;
+    // An unknown key has no rule and fails.
+    if (!FIELD_RULES.get(key)?.(value)) return false;
   }
   return magnitudeConsistent(payload);
 }
