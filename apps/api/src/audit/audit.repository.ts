@@ -226,12 +226,13 @@ export class DrizzleAuditRepository implements AuditRepository, PlatformAuditRep
       );
     }
 
-    return db
+    const rows = await db
       .select()
       .from(auditEvents)
       .where(and(...predicates))
       .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
       .limit(input.limit);
+    return rows;
   }
 }
 
