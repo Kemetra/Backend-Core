@@ -1511,8 +1511,10 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
 
   it("requires the shift to be stuck now, so a live drawer is never closed remotely", () => {
     expectAll(forceText(), [
-      "The shift must be stuck now, by the `GET /shifts/stuck` rule: open, opened longer ago than the staleness threshold, and its opening cashier has no active `pos_operator` session on the store, NOT counting the caller's own envelope session",
-      "a manager who opened the shift and signs in on another terminal to clear it holds a fresh session of their own, which must not make their own abandoned drawer live",
+      "**Eligibility** (its own predicate, evaluated at the call). The shift is open, was opened longer ago than the staleness threshold, and its opening cashier has no active `pos_operator` session on the store other than the caller's own envelope session",
+      "This is the `GET /shifts/stuck` predicate with ONE difference: that list counts every active session, the caller's included",
+      "That shift is eligible here but not listed: `GET /shifts/stuck` is unchanged and does not surface it, so the manager supplies its `shift_id`",
+      "Widening the list is a separate owner decision",
       "a manager cannot close a live drawer from another terminal",
     ]);
   });
@@ -1657,6 +1659,10 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
     expect(Object.keys(schema("StuckShift").properties ?? {})).toEqual([
       "shift_id", "cashier_display_name", "terminal_label", "opened_at", "duration_minutes",
     ]);
-    expectAll(flat(op(STUCK).description), ["a listed `shift_id` is all a manager needs to clear the shift with `forceCloseShift`"]);
+    expectAll(flat(op(STUCK).description), [
+      "a listed `shift_id` is all a manager needs to clear the shift with `forceCloseShift`",
+      "One eligible shift this list does not show is the caller's own (see `forceCloseShift`, Eligibility)",
+    ]);
+    expect(flat(op(FORCE_CLOSE).description)).not.toContain("by the `GET /shifts/stuck` rule");
   });
 });

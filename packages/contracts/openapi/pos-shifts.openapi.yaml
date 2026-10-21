@@ -207,7 +207,9 @@ paths:
 
         RT-742: a listed `shift_id` is all a manager needs to clear the shift
         with `forceCloseShift`, from any terminal of the store; the list adds
-        no field for it (that close takes no totals).
+        no field for it (that close takes no totals). One eligible shift this
+        list does not show is the caller's own (see `forceCloseShift`,
+        Eligibility).
       operationId: posShiftsGetStuck
       tags: [pos-shifts]
       security:
@@ -790,15 +792,20 @@ paths:
         non-disclosing 404 `shift_not_found`.
 
 
-        **Eligibility.** The shift must be stuck now, by the `GET /shifts/stuck`
-        rule: open, opened longer ago than the staleness threshold, and its
-        opening cashier has no active `pos_operator` session on the store,
-        NOT counting the caller's own envelope session (a manager who opened
-        the shift and signs in on another terminal to clear it holds a fresh
-        session of their own, which must not make their own abandoned drawer
-        live). Otherwise 409 `shift_not_stuck`: a manager cannot close a live drawer
-        from another terminal. A shift already closed with a cash-up is 409
-        `shift_closed`.
+        **Eligibility** (its own predicate, evaluated at the call). The shift
+        is open, was opened longer ago than the staleness threshold, and its
+        opening cashier has no active `pos_operator` session on the store
+        other than the caller's own envelope session. Otherwise 409
+        `shift_not_stuck`: a manager cannot close a live drawer from another
+        terminal. This is the `GET /shifts/stuck` predicate with ONE
+        difference: that list counts every active session, the caller's
+        included, so it hides a shift whose opening cashier is the manager
+        now signed in on another terminal (their fresh session makes the
+        drawer look live), while this operation does not. That shift is
+        eligible here but not listed: `GET /shifts/stuck` is unchanged and
+        does not surface it, so the manager supplies its `shift_id` (their
+        own shift). Widening the list is a separate owner decision. A shift
+        already closed with a cash-up is 409 `shift_closed`.
 
 
         **What it records.** One immutable fact: the closing manager (the
