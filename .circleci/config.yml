@@ -158,11 +158,12 @@ jobs:
     environment: {FUZZ_PROJECT: api-fuzz}
     steps:
       - clone
-      # Step caps sum to 28 min, about GitHub's whole-job timeout-minutes: 30.
+      # Step caps sized from measured GitHub runs (2026-10-21: stack 1.3, gate 13-14, report 10.6-10.8 min).
+      # GitHub caps only the whole job (30 min); CircleCI has no job cap, so each step gets headroom.
       # Schemathesis emits no JUnit here; its result is the step exit code and log.
       - run: {name: Start ephemeral stack, no_output_timeout: 8m, command: timeout 8m bash tools/schemathesis/stack-up.sh}
-      - run: {name: "Gate: no 5xx (not_a_server_error)", no_output_timeout: 14m, command: timeout 14m bash tools/schemathesis/run.sh gate}
-      - run: {name: "Report (non-gating findings)", when: always, no_output_timeout: 6m, command: timeout 6m bash tools/schemathesis/run.sh report}
+      - run: {name: "Gate: no 5xx (not_a_server_error)", no_output_timeout: 20m, command: timeout 20m bash tools/schemathesis/run.sh gate}
+      - run: {name: "Report (non-gating findings)", when: always, no_output_timeout: 16m, command: timeout 16m bash tools/schemathesis/run.sh report}
       - run:
           name: Tear down
           when: always
