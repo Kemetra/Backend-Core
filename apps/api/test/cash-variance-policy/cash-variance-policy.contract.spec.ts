@@ -328,7 +328,8 @@ describe("cash-variance-policy — auth and scope", () => {
   });
 
   it("the POS read takes no scope parameter; store and tenant come from the device row", () => {
-    expect(params(DEVICE_READ).map((p) => p.name)).toEqual(["If-None-Match"]);
+    // RT-719 adds the optional X-POS-* build identity headers; they carry no scope.
+    expect(params(DEVICE_READ).map((p) => p.name).filter((n) => !n?.startsWith("X-POS-"))).toEqual(["If-None-Match"]);
     expect(flat(op(DEVICE_READ).description)).toContain("device row");
   });
 
