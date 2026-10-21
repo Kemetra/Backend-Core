@@ -353,9 +353,24 @@ export class AuthController {
         recordAuthFailure({ cause: "rate_limited" });
         recordSuspiciousLogin({ reason: "rapid_retry" });
       }
+      res.setHeader("Retry-After", String(retryAfterSeconds(decision.resetMs)));
       throw RATE_LIMIT_429;
     }
   }
+}
+
+/** RT-623: bounds of the `Retry-After` sent with a public-auth 429, in seconds. */
+const RETRY_AFTER_MIN_SECONDS = 1;
+const RETRY_AFTER_MAX_SECONDS = 3_600;
+
+/**
+ * Whole seconds until the bucket resets, rounded up so a client never retries
+ * early, clamped to [1, 3600]. A negative `resetMs` (a stub client that keeps
+ * no TTL) is treated as "now".
+ */
+function retryAfterSeconds(resetMs: number): number {
+  const seconds = Math.ceil(Math.max(0, resetMs) / 1_000);
+  return Math.min(RETRY_AFTER_MAX_SECONDS, Math.max(RETRY_AFTER_MIN_SECONDS, seconds));
 }
 
 function readClientIp(req: AuthedRequest): string {
