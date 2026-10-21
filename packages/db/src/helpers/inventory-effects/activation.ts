@@ -73,7 +73,7 @@ export interface ActivateSaleEffectsInput {
 }
 
 /** A Bin report usable as a snapshot (the RT-177 negative-on-hand rule). */
-const USABLE_REPORT = `(jsonb_typeof(r.summary->'bin_view_report') = 'object'
+export const USABLE_REPORT = `(jsonb_typeof(r.summary->'bin_view_report') = 'object'
        AND jsonb_typeof(r.summary->'bin_view_report'->'recordedAt') = 'string'
        AND (r.summary->'bin_view_report'->'complete') IS DISTINCT FROM 'false'::jsonb)`;
 
@@ -331,20 +331,31 @@ export interface AnchorComparisonRow {
   readonly uomMismatch: boolean;
 }
 
-const COMPARISON_SQL = `
-WITH anchor AS (
-  SELECT DISTINCT ON (a.store_id) a.id, a.store_id, a.generation, a.activated_at
-    FROM inventory_anchors a ORDER BY a.store_id, a.generation DESC
-),
+/**
+ * The movements an anchor does not cover. Sale, void and return effects exist
+ * only once the flag is ON, so they are all counted: a writer that began before
+ * activation and waited on the settings lock writes them with a
+ * transaction-start received_at EARLIER than activated_at. The watermark only
+ * selects the other movements. Expects `mv` (stock_movements) and `anchor`.
+ */
+export const SINCE_ANCHOR = `(mv.event_type IN ('sale', 'sale_void', 'sale_return') OR mv.received_at >= anchor.activated_at)`;
+
+/**
+ * `snap`: each store's latest complete Bin snapshot; `unique_map`: Items that
+ * map to exactly one confirmed product (the anchor's rule: an ambiguous Item is
+ * attributed to none); `bin`: the snapshot's first entry per such Item, as
+ * SNAPSHOT_ITEMS_CTE keeps for the anchor. CTE bodies only (no WITH).
+ */
+export const LATEST_BIN_CTES = `
 snap AS (
   SELECT DISTINCT ON (r.store_id) r.store_id, r.id,
-         (r.summary->'bin_view_report'->>'recordedAt')::timestamptz AS recorded_at
+         (r.summary->'bin_view_report'->>'recordedAt')::timestamptz AS recorded_at,
+         (r.summary->'bin_view_report'->>'readAt')::timestamptz AS read_at
     FROM erpnext_reconciliation_run r
    WHERE r.kind = 'stock' AND ${USABLE_REPORT}
    ORDER BY r.store_id, (r.summary->'bin_view_report'->>'recordedAt')::timestamptz DESC, r.id DESC
 ),
 unique_map AS (
-  -- The anchor's rule: an Item that maps to more than one product is attributed to none.
   SELECT m.erpnext_item_ref AS item, min(m.tenant_product_id::text)::uuid AS product
     FROM erpnext_item_map m
    WHERE m.state = 'confirmed' AND m.retired_at IS NULL
@@ -352,8 +363,7 @@ unique_map AS (
   HAVING count(*) = 1
 ),
 bin AS (
-  -- The first entry per Item, as SNAPSHOT_ITEMS_CTE keeps for the anchor.
-  SELECT DISTINCT ON (snap.store_id, um.item) snap.store_id, snap.recorded_at, um.product,
+  SELECT DISTINCT ON (snap.store_id, um.item) snap.store_id, snap.recorded_at, snap.read_at, um.product,
          (e.value->>'quantity')::numeric AS quantity, e.value->>'stockUom' AS uom
     FROM snap
     JOIN erpnext_reconciliation_run r ON r.id = snap.id
@@ -362,7 +372,14 @@ bin AS (
     JOIN unique_map um
       ON um.item = COALESCE(e.value->'erpnextItemRef'->>'name', e.value->>'erpnextItemRef')
    ORDER BY snap.store_id, um.item, e.ordinality
+)`;
+
+const COMPARISON_SQL = `
+WITH anchor AS (
+  SELECT DISTINCT ON (a.store_id) a.id, a.store_id, a.generation, a.activated_at
+    FROM inventory_anchors a ORDER BY a.store_id, a.generation DESC
 ),
+${LATEST_BIN_CTES},
 moves AS (
   SELECT anchor.store_id, mv.tenant_product_ref AS product,
          sum(mv.quantity) AS total,
@@ -370,12 +387,8 @@ moves AS (
                                     AND i.state IS DISTINCT FROM 'erp_neutral') AS unconfirmed,
          min(mv.stocking_unit) AS unit
     FROM anchor
-    -- Sale, void and return effects exist only once the flag is ON, so they are
-    -- all counted: a writer that began before activation and waited on the
-    -- settings lock writes them with a transaction-start received_at EARLIER
-    -- than activated_at. The watermark only selects the other movements.
-    JOIN stock_movements mv ON mv.store_id = anchor.store_id
-     AND (mv.event_type IN ('sale', 'sale_void', 'sale_return') OR mv.received_at >= anchor.activated_at)
+    -- SINCE_ANCHOR: every sale / void / return effect, other movements from the watermark.
+    JOIN stock_movements mv ON mv.store_id = anchor.store_id AND ${SINCE_ANCHOR}
     LEFT JOIN inventory_effect_integration i ON i.effect_id = mv.id
    WHERE mv.tenant_product_ref IS NOT NULL
    GROUP BY anchor.store_id, mv.tenant_product_ref

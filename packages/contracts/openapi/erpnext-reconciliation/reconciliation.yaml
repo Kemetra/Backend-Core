@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Reconciliation & Repair API
-  version: "1.3.0-draft"
+  version: "1.4.0-draft"
   description: >
     Spec 017 (erpnext-reconciliation-and-repair) — the ERPNext arc's OPERATIONAL
     reconciliation surface (011→017): run → report → repair. The human
@@ -96,6 +96,13 @@ info:
     retention and reader rules stated on the field.
     `PostingBacklogItem.rejectionCategory` documents `other`. No new
     operation, no new required field, no change to `posting-feed.yaml`.
+
+    **1.4.0-draft (RT-428, RT-289 DC-7, additive).**
+    `ReconciliationResult.mismatchClass` adds `expected_pending_erp`,
+    `expected_pending_retail`, `erp_snapshot_stale` and `uom_mismatch`
+    (Reconciliation 926–930), produced only for a tenant with activated
+    sale effects. Every other tenant's results are unchanged. No new
+    operation, no new field.
 
 servers:
   - url: https://api.example.com
@@ -1023,6 +1030,10 @@ components:
             - dp2_only
             - erpnext_only
             - negative_balance_flagged
+            - expected_pending_erp
+            - expected_pending_retail
+            - erp_snapshot_stale
+            - uom_mismatch
           description: >
             014's mismatch-class vocabulary (014 data-model §6.2). 017 owns no
             class. `negative_balance_flagged` is derived from the 009
@@ -1030,6 +1041,24 @@ components:
             is NOT an ERPNext Bin signal and must not be presented as "negative
             ERPNext stock". Negative ERPNext Bin quantities are surfaced by
             `listErpnextNegativeOnHand` / `listErpnextNegativeOnHandStores`.
+            RT-428 (1.4.0-draft, RT-289 DC-7, Reconciliation 926–930): for a
+            tenant with activated sale effects the compared Retail Tower side is
+            the expected ERP book, i.e. the Inventory Anchor plus the effects since it,
+            minus the effects ERPNext has not booked yet. Classes:
+            `match` (926, in sync); `expected_pending_erp` (927, the gap is
+            explained by effects with an ERP intent that ERPNext has not booked
+            as-is: pending, rejected or reconciliation_required);
+            `expected_pending_retail` (928, explained by Retail effects with no
+            ERP intent yet, such as a manual adjustment); `erp_snapshot_stale`
+            (929, the Bin was read before an effect's ERP confirmation);
+            `quantity_divergence` (930, a residual the pending terms do not
+            explain); `uom_mismatch` (the Retail Tower unit differs from the Bin
+            stock UOM, never a quantity divergence). Every other tenant keeps
+            the comparison against the raw 009 SUM and never receives the four
+            RT-428 classes. A class is explanatory: no reconciliation result
+            changes an effect or ERPNext stock. `detail` then also carries
+            `expected_erp_book`, `pending_erp`, `pending_retail` and
+            `legacy_on_hand`.
         sourceRef:
           type: [string, "null"]
           format: uuid

@@ -253,8 +253,9 @@ describe("erpnext-reconciliation/reconciliation.yaml — projections (READ-NOT-M
   it("ReconciliationResult.mismatchClass is 014's vocabulary ONLY (no 015 posting categories)", () => {
     const cls = schema("ReconciliationResult")?.properties?.["mismatchClass"]?.enum ?? [];
     expect(cls.sort()).toEqual([
-      "dp2_only", "erpnext_only", "match", "negative_balance_flagged",
-      "quantity_divergence", "unmapped_item", "unmapped_store",
+      "dp2_only", "erp_snapshot_stale", "erpnext_only", "expected_pending_erp",
+      "expected_pending_retail", "match", "negative_balance_flagged",
+      "quantity_divergence", "unmapped_item", "unmapped_store", "uom_mismatch",
     ]);
     // The 015 posting categories must NOT leak into the 017 result class.
     for (const posting of ["validation", "closed_period", "unmapped_account", "retry_budget_exhausted"]) {
@@ -566,6 +567,15 @@ describe("reconciliation.yaml — RT-177 description-only edits (D3)", () => {
     expect(description).toContain("negative_balance_flagged");
     expect(description).toContain("009");
     expect(description).toMatch(/NOT an ERPNext Bin signal/);
+  });
+
+  it("RT-428: the pending-aware classes are described with the DC-7 expected ERP book, and stay explanatory", () => {
+    const description = String(looseSchema("ReconciliationResult").properties?.["mismatchClass"]?.["description"]);
+    for (const cls of ["expected_pending_erp", "expected_pending_retail", "erp_snapshot_stale", "uom_mismatch"]) {
+      expect(description).toContain(cls);
+    }
+    expect(description).toContain("expected ERP book");
+    expect(description).toMatch(/never a quantity divergence/);
   });
 
   it("the run summary is no longer described as counts only", () => {
