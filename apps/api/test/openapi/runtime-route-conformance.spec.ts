@@ -3,6 +3,7 @@ import "reflect-metadata";
 import { type INestApplication } from "@nestjs/common";
 
 import { bootDbLessApp, type DbLessApp } from "../_helpers/db-less-app";
+import { conformanceViolations } from "../_helpers/openapi-conformance";
 import { CONTRACTS_DIR, contractRoutes, normalizePath } from "../_helpers/openapi-routes";
 
 type ExpressLayer = {
@@ -38,54 +39,13 @@ describe("OpenAPI operations map to registered Nest routes", () => {
     await booted.close();
   });
 
+  // RT-805: the contract-only set comes from the `x-runtime-status` markers
+  // (with their `x-runtime-note`), not from a hand-kept list here, so adding
+  // or lifting an operation touches only its own contract. The rules and
+  // their negative cases live in runtime-route-conformance.rules.spec.ts.
   it("has a real registered method/path for every production operationId", () => {
-    const runtimeRoutes = registeredRoutes(app);
-    const missing: string[] = [];
-    const explicitContractOnly: string[] = [];
-    const operationIds = new Set<string>();
-
-    for (const { path, method, operation } of contractRoutes(CONTRACTS_DIR)) {
-      const operationId = operation.operationId!;
-      expect(operationIds.has(operationId)).toBe(false);
-      operationIds.add(operationId);
-      if (operation["x-runtime-status"] === "contract-only") {
-        expect(operation["x-runtime-note"]?.trim().length).toBeGreaterThan(0);
-        explicitContractOnly.push(operationId);
-        continue;
-      }
-      expect(operation["x-runtime-status"]).toBeUndefined();
-      const route = `${method.toUpperCase()} ${normalizePath(path)}`;
-      if (!runtimeRoutes.has(route)) missing.push(`${operationId}: ${route}`);
-    }
-
-    expect(explicitContractOnly.sort()).toEqual([
-      "acceptInvitation",
-      "backfillSaleLinkedMovements",
-      // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
-      "consoleDeleteTenantLogo",
-      // RT-719: POS fleet build baseline (for RT-713); the runtime and migration are separate approvals.
-      "consoleGetFleetBaseline",
-      "consoleGetTenantLogo",
-      "consolePreviewTenantLogo",
-      "consolePutTenantLogo",
-      // RT-742 (RT-554 follow-up): manager forced close from any terminal; the runtime ships in its own ticket.
-      "forceCloseShift",
-      // RT-431: platform-scoped audit read; the runtime ships in the RT-431 runtime change.
-      "listPlatformAuditEvents",
-      // RT-490 (RT-271 F-1): refund execution and return reads; the runtime ships in F-2.
-      "listSaleReturns",
-      // RT-492 (RT-114 MA-BC1): approver-eligibility contract; the runtime ships in MA-BC2.
-      "posCheckApproverEligibility",
-      "posGetTenantBranding",
-      // RT-450 (RT-50 F3): tracked line validation and lot lookup; the runtime ships in RT-451.
-      "posListTrackedLots",
-      "posRedeemVoucher",
-      "posReverseVoucher",
-      "posValidateTrackedLine",
-      "posValidateVoucher",
-      "readReturnByProvenance",
-      "recordRefundExecution",
-    ]);
-    expect(missing).toEqual([]);
+    const contracts = contractRoutes(CONTRACTS_DIR);
+    expect(contracts.length).toBeGreaterThanOrEqual(150);
+    expect(conformanceViolations(contracts, registeredRoutes(app))).toEqual([]);
   });
 });

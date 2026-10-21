@@ -5,7 +5,7 @@
 import "reflect-metadata";
 
 import { readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 import type { Type } from "@nestjs/common";
 import { METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
@@ -24,6 +24,8 @@ type OpenApiDocument = {
 };
 
 export type ContractRoute = {
+  /** The contract file, relative to the contracts directory, with `/` separators. */
+  file: string;
   path: string;
   method: string;
   operation: Operation;
@@ -70,11 +72,12 @@ export function normalizePath(path: string): string {
 export function contractRoutes(dir: string = CONTRACTS_DIR): ContractRoute[] {
   return yamlFiles(dir).flatMap((file) => {
     const document = parseYaml(readFileSync(file, "utf8")) as OpenApiDocument;
+    const contract = relative(dir, file).split(sep).join("/");
     return Object.entries(document.paths ?? {}).flatMap(([path, item]) =>
       CONTRACT_METHODS.flatMap((method) => {
         const operation = item[method];
         return operation?.operationId
-          ? [{ path, method, operation, security: operation.security ?? document.security ?? [] }]
+          ? [{ file: contract, path, method, operation, security: operation.security ?? document.security ?? [] }]
           : [];
       }),
     );

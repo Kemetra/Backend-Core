@@ -56,6 +56,34 @@ Every PR should include:
 
 Prefer small PRs that map to a specific spec task or reviewable behavior slice.
 
+### Changelog entries and contract-only operations (RT-805)
+
+Parallel PRs must not edit shared lines, so a merge never makes its siblings
+conflict:
+
+- **Changelog.** Do not edit `CHANGELOG.md`. Add one file per entry,
+  `changelog.d/RT-<number>-<slug>.md`, holding one `### Added` / `Changed` /
+  `Deprecated` / `Removed` / `Fixed` / `Security` heading and the entry. See
+  [changelog.d/README.md](changelog.d/README.md). `node tools/changelog/assemble.cjs`
+  validates them, and `--migrate` moves an entry written into `[Unreleased]`
+  by mistake. The release runs `--release <version>`.
+- **Contract-only operations.** Mark the operation `x-runtime-status:
+  contract-only` with an `x-runtime-note` naming the ticket that ships the
+  runtime. That is the whole registration: the route-conformance spec derives
+  the set from the markers. When the runtime ships, delete both keys. The
+  spec fails if a marked operation already has a route, or if an unmarked one
+  has none.
+- **Console rate-limit classes.** Every `cookieAuth` operation, runtime or
+  contract-only, has its class in its contract's own file,
+  `apps/api/test/console-rate-limit/classes/<contract>.rate-limit.yaml`
+  (`audit.openapi.yaml` → `audit.rate-limit.yaml`; subdirectories mirror
+  `packages/contracts/openapi/`). Add the entry with the contract. Shipping
+  the runtime removes only the `x-runtime-status` marker; the class entry
+  stays, and the ratchet then checks that the handler resolves to it. The
+  ratchet fails on an unclassified operation, a class mismatch, a
+  contract-only operation that is routed, or a stale, duplicated or unknown
+  entry.
+
 ### CodeRabbit review
 
 CodeRabbit is the primary AI reviewer, but it is capped at about one review per

@@ -1,0 +1,7 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/tenant-branding.openapi.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+consoleDeleteTenantLogo: write
+consoleGetTenantLogo: cheapRead
+consolePreviewTenantLogo: jobOrPreview
+consolePutTenantLogo: jobOrPreview

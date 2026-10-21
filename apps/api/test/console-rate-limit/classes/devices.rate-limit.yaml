@@ -1,0 +1,11 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/devices.openapi.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+consoleCancelPairingCode: incidentControl
+consoleGetDevice: cheapRead
+consoleGetDeviceImpact: expensiveRead
+consoleIssuePairingCode: onboarding
+consoleListDevices: cheapRead
+consoleListPairingCodes: cheapRead
+consoleRetireDevice: incidentControl
+consoleRevokeDevice: incidentControl

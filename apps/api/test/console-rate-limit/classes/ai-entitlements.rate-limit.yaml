@@ -1,0 +1,7 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/ai-entitlements.openapi.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+# RT-664 (RT-662 contract): one tenant's entitlement snapshot, no aggregate.
+consoleGetTenantAiEntitlements: cheapRead
+# RT-664 (RT-662 contract): the owner's idempotent per-feature opt-out write.
+consolePutTenantAiFeatureOptOut: write

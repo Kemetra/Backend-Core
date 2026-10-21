@@ -1,0 +1,7 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/context.openapi.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+clearActiveStore: write
+getActiveContext: cheapRead
+switchActiveStore: write
+switchActiveTenant: write

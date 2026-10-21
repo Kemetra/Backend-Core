@@ -1,0 +1,8 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/catalog/product-reconciliation.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+getProductReconciliationRunResults: expensiveRead
+listProductReconciliationBacklog: expensiveRead
+listProductReconciliationRuns: cheapRead
+repairProductMapping: write
+triggerProductReconciliationRun: jobOrPreview
