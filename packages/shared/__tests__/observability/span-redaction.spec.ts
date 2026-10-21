@@ -313,6 +313,26 @@ describe("RedactingSpanExporter - db.connection_string (RT-762)", () => {
     expect(exported?.spanContext().spanId).toBe(spanId);
   });
 
+  it("drops DB host, database and user identity from DB spans only", () => {
+    const dbSpan = {
+      "db.system": "postgresql",
+      "db.operation": "SELECT",
+      "db.name": "dp2_prod",
+      "db.user": "app",
+      "db.namespace": "dp2_prod",
+      "net.peer.name": "db.internal.example",
+      "net.peer.port": 5432,
+      "server.address": "db.internal.example",
+      "server.port": 5432,
+    };
+    expect(redactSpanAttributes(dbSpan)).toEqual({
+      "db.system": "postgresql",
+      "db.operation": "SELECT",
+    });
+    const httpSpan = { "net.peer.name": "api.example.test", "server.address": "api.example.test" };
+    expect(redactSpanAttributes(httpSpan)).toEqual(httpSpan);
+  });
+
   it("drops db.connection_string in redactSpanAttributes", () => {
     expect(
       redactSpanAttributes({ "db.connection_string": DSN, "db.system": "postgresql" }),
