@@ -90,6 +90,7 @@ const JWTS: Readonly<Record<string, OperatorTokenClaims>> = {
   "jwt-acme-admin": { providerKey: "acme", sub: SUB_ACME_ADMIN },
   "jwt-cut-admin-old": { providerKey: "clerk", sub: SUB_CUT_ADMIN_OLD },
   "jwt-cut-admin-new": { providerKey: "descope", sub: SUB_CUT_ADMIN_NEW },
+  "jwt-ambiguous": { providerKey: "acme", sub: "acme|ambiguous-rt796" },
   "jwt-ghost": { providerKey: "clerk", sub: SUB_GHOST_ADMIN },
 };
 
@@ -138,6 +139,7 @@ interface SeedLink {
   readonly providerKey: string;
   readonly subject: string;
   readonly status?: "active" | "disabled";
+  readonly issuer?: string;
 }
 
 async function seedLink(link: SeedLink): Promise<void> {
@@ -145,7 +147,7 @@ async function seedLink(link: SeedLink): Promise<void> {
   await admin!.query(
     `INSERT INTO external_identity_links (provider_key, issuer, subject, user_id, status, disabled_at)
      VALUES ($1, $2, $3, $4, $5, CASE WHEN $5 = 'disabled' THEN now() ELSE NULL END)`,
-    [link.providerKey, `https://issuer.test/${link.providerKey}`, link.subject, link.userId, status],
+    [link.providerKey, link.issuer ?? `https://issuer.test/${link.providerKey}`, link.subject, link.userId, status],
   );
 }
 
@@ -308,6 +310,17 @@ describe("operator sign-in resolves the ACTIVE identity link", () => {
   it("a clerk_user_id with no link row does not sign in (the bridge column is off the join path)", async () => {
     if (skip()) return;
     expect(await operators.signIn("jwt-ghost", signInBody, "req-6")).toEqual({ kind: "refused" });
+  });
+
+  it("an ambiguous active (provider, subject) pair fails closed: two users, two issuers", async () => {
+    if (skip()) return;
+    const subject = "acme|ambiguous-rt796";
+    for (const [n, issuer] of [[40, "https://issuer.test/acme-one"], [41, "https://issuer.test/acme-two"]] as const) {
+      await seedUser({ id: id(n), email: `ambiguous${n}@rt796.test`, displayName: `Ambiguous ${n}`, clerkUserId: null });
+      await seedLink({ userId: id(n), providerKey: "acme", subject, issuer });
+      await seedMembership(n, { userId: id(n), roleId: ROLE_ADMIN });
+    }
+    expect(await operators.signIn("jwt-ambiguous", signInBody, "req-amb")).toEqual({ kind: "refused" });
   });
 
   it("sign-out finds the Descope-only user's session through the link", async () => {

@@ -49,8 +49,8 @@ export interface PosOperatorSummaryBody {
   /** The subject of the user's active identity link, NOT `users.id` (ADR D4). */
   id: string;
   /**
-   * Provider-neutral identity key = `users.id` (028 §16). Distinct from `id`
-   * (= `id`, the active link subject). Surfaced so POS can anchor local
+   * Provider-neutral identity key = `users.id` (028 §16). Distinct from `id`,
+   * which is the active link subject. Surfaced so POS can anchor local
    * operator-scoped records on a provider-independent identifier (033 / POS-017).
    */
   user_id: string;
@@ -139,8 +139,8 @@ export interface PosRosterCashierEntry {
   /** The subject of the user's active identity link. */
   id: string;
   /**
-   * Provider-neutral identity key = `users.id` (028 §16). Distinct from `id`
-   * (= `id`, the active link subject). Surfaced so POS can key local
+   * Provider-neutral identity key = `users.id` (028 §16). Distinct from `id`,
+   * which is the active link subject. Surfaced so POS can key local
    * cashier-scoped records (offline-PIN provisioning, POS-019/017) on a
    * provider-independent identifier.
    */

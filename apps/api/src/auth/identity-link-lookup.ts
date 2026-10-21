@@ -11,7 +11,8 @@
  * Two predicates, deliberately separate. Never swap them between call sites:
  *
  *   (a) ACTIVE link by `(provider_key, subject)` — who is signing in /
- *       whom does this wire id name. A disabled link must NOT resolve.
+ *       whom does this wire id name. A disabled link must NOT resolve, and a pair
+ *       that matches more than one active link fails closed.
  *       `findUserByActiveLink`, `activeLinkSubjects`.
  *   (b) ANY link (active or disabled) of a given user — audit alias. An audit
  *       event queued offline under a previous provider's id stays attributable
@@ -55,6 +56,12 @@ export interface LinkedUserRow {
  * Predicate (a): the user whose ACTIVE link is `(providerKey, subject)`, or null
  * when there is none (the caller refuses `user_unmapped`). A soft-deleted user is
  * returned with `deleted_at` set so the caller can tell `user_disabled` apart.
+ *
+ * The lookup ignores `issuer`, and uniqueness is on `(provider_key, issuer,
+ * subject)`: two active links of different users can share the pair when their
+ * issuers differ (a link written by a tool with another issuer string, a bad
+ * backfill). Ambiguity fails closed (null, so `user_unmapped`) rather than
+ * authenticating whichever row the heap returns first.
  */
 export async function findUserByActiveLink(
   db: LinkQueryable,
@@ -67,10 +74,10 @@ export async function findUserByActiveLink(
       WHERE l.provider_key = $1
         AND l.subject = $2
         AND l.status = 'active'
-      LIMIT 1`,
+      LIMIT 2`,
     [ref.providerKey, ref.subject],
   );
-  return r.rows[0] ?? null;
+  return r.rows.length === 1 ? (r.rows[0] ?? null) : null;
 }
 
 /**
