@@ -143,10 +143,10 @@ info:
 
     RT-490 (1.3.0-draft; [GATED] owner authorization Jira RT-490 comment
     13211, 2026-10-21; RT-271 R-9, ratified in RT-271 comment 11886): REFUND
-    CROSS-CHECK ON CLOSE. From the F-3 runtime, `closeShift` requires a
-    settled cash refund execution (`pos-sales/sales.yaml`
-    `recordRefundExecution`, 1.13.0-draft) in this shift for every claimed
-    non-zero `recordReturn` return, and `cashRefundsTotal` equal to the sum
+    CROSS-CHECK ON CLOSE. From the F-3 runtime, `closeShift` requires every
+    claimed non-zero `recordReturn` return to be fully settled in this shift
+    by settled cash refund executions (`pos-sales/sales.yaml`
+    `recordRefundExecution`, 1.13.0-draft), and `cashRefundsTotal` equal to the sum
     of those executions plus the claimed credit-sale returns' cash refund
     tenders, else 422 `refund_ref_unsettled` or
     `cash_refunds_total_mismatch` (see `closeShift`). No request, projection,
@@ -520,11 +520,17 @@ paths:
         recorded refund tenders, as before RT-490. So, after the
         refund-reference checks above:
         1. every claimed `recordReturn` return with a non-zero
-           `returnTotal` must have at least one settled cash execution whose
-           `evidence.shiftRef` is this shift's `shiftId`, else 422
-           `refund_ref_unsettled` (one answer for every such ref, naming
-           none). A zero-total return owes nothing, has no execution and is
-           exempt;
+           `returnTotal` must be fully SETTLED in this shift: its settled
+           cash executions whose `evidence.shiftRef` is this shift's
+           `shiftId` sum to its `returnTotal` (its refund obligation is
+           `settled`), else 422 `refund_ref_unsettled` (one answer for every
+           such ref, naming none). A partly paid return cannot be claimed:
+           because every execution of a return carries the same `shiftRef`,
+           a payout recorded after the close would otherwise be left out of
+           every close. Once claimed, the return is settled, so a further
+           execution for it is refused (422
+           `refund_execution_exceeds_allocation`). A zero-total return owes
+           nothing, has no execution and is exempt;
         2. `cashRefundsTotal` must equal, in exact decimal, the sum of the
            amounts of the settled cash executions of the claimed
            `recordReturn` returns whose `evidence.shiftRef` is this shift,
@@ -1048,9 +1054,9 @@ components:
             must resolve to a return of the caller's tenant and store with a
             cash refund tender not claimed by another shift's close, else 422
             `refund_ref_invalid`; one refunded in another currency is 422
-            `currency_mismatch`. From the F-3 runtime each `recordReturn`
-            return must also have a settled cash refund execution in this
-            shift (422 `refund_ref_unsettled`), and `cashRefundsTotal` must
+            `currency_mismatch`. From the F-3 runtime each non-zero
+            `recordReturn` return must also be fully settled by cash refund
+            executions in this shift (422 `refund_ref_unsettled`), and `cashRefundsTotal` must
             equal the sum of those executions plus the cash refund tenders of
             any claimed credit-sale return (422
             `cash_refunds_total_mismatch`); see `closeShift`, Refund
@@ -1839,8 +1845,9 @@ components:
         `cashRefundReturnRefs` entry is not a cash-refunded return of the
         caller's tenant and store, or is already claimed by another shift's
         close; the same answer for each case); from the F-3 runtime (RT-490,
-        R-9) `refund_ref_unsettled` (a claimed `recordReturn` return has no
-        settled cash refund execution in this shift) and
+        R-9) `refund_ref_unsettled` (a claimed non-zero `recordReturn`
+        return is not fully settled by cash refund executions in this
+        shift) and
         `cash_refunds_total_mismatch` (`cashRefundsTotal` is not the sum of
         the claimed returns' settled cash executions in this shift plus the
         claimed credit-sale returns' cash refund tenders). Order:

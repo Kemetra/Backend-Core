@@ -1365,7 +1365,11 @@ describe("pos-shifts — RT-490 refund cross-check on close (1.3.0-draft)", () =
   it("states the R-9 rule normatively: a settled cash execution in this shift per ref, and the total equal to their sum", () => {
     const text = closeText();
     expect(text).toContain("**Refund cross-check** (RT-271 R-9, RT-490; normative from the F-3 runtime)");
-    expect(text).toContain("every claimed `recordReturn` return with a non-zero `returnTotal` must have at least one settled cash execution whose `evidence.shiftRef` is this shift's `shiftId`, else 422 `refund_ref_unsettled`");
+    expect(text).toContain("every claimed `recordReturn` return with a non-zero `returnTotal` must be fully SETTLED in this shift: its settled cash executions whose `evidence.shiftRef` is this shift's `shiftId` sum to its `returnTotal`");
+    // Codex P1 on #879: a partly paid return cannot be claimed, so no later payout is left out of every close.
+    expect(text).toContain("A partly paid return cannot be claimed");
+    expect(text).toContain("a further execution for it is refused (422 `refund_execution_exceeds_allocation`)");
+    expect(text).not.toContain("at least one settled cash execution");
     // A zero-total return can have no execution (amount is strictly positive), so it is exempt.
     expect(text).toContain("A zero-total return owes nothing, has no execution and is exempt");
     expect(text).toContain("`cashRefundsTotal` must equal, in exact decimal, the sum of the amounts of the settled cash executions of the claimed `recordReturn` returns whose `evidence.shiftRef` is this shift, plus the recorded cash refund tenders of the claimed credit-sale returns, else 422 `cash_refunds_total_mismatch`");
