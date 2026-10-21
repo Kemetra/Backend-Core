@@ -5,9 +5,11 @@
  * 2026-10-21). The POS-facing payer lookup for the till. `[GATED]` contract.
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
- * app boot and no HTTP: the runtime is a later issue. What this pins:
+ * app boot and no HTTP: the RT-802 runtime has its own unit and db-integration
+ * specs (`test/catalog/sales/payers/`). What this pins:
  *
- *   1. One GET at `/api/pos/v1/payer-accounts`, contract-only, no operationId
+ *   1. One GET at `/api/pos/v1/payer-accounts`, served since RT-802 (no
+ *      contract-only marker), no operationId
  *      collision, no idempotency key and no audit action (a read).
  *   2. Security is the existing `operatorAuthorization` envelope scheme only,
  *      identical to `sale-history.yaml`; no client-supplied scope anywhere.
@@ -96,9 +98,10 @@ describe("pos-payers — document and operation", () => {
     expect(operation().operationId).toBe(OPERATION_ID);
   });
 
-  it("is contract-only until its runtime, with a runtime note", () => {
-    expect(operation()["x-runtime-status"]).toBe("contract-only");
-    expect(operation()["x-runtime-note"]).toMatch(/ship with its runtime issue/);
+  it("is served by the RT-802 runtime: no contract-only marker or runtime note", () => {
+    expect(operation()["x-runtime-status"]).toBeUndefined();
+    expect(operation()["x-runtime-note"]).toBeUndefined();
+    expect(doc.info?.description).toMatch(/RT-802 runtime serves it/);
   });
 
   it("is a read and collides with no operationId in any other contract", () => {
