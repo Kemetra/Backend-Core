@@ -23,6 +23,13 @@
  * ACTIVE link per user, so the old link is disabled before the new one is
  * activated. Both commands lock the `users` row first (FOR UPDATE).
  *
+ * A user created after the 0025 backfill (bootstrap-pilot, later user creation)
+ * has `users.clerk_user_id` but NO link row at all. For that state only, apply
+ * first records the Clerk id as a DISABLED `clerk` link (issuer
+ * `CLERK_JWT_ISSUER` or the 0025 default) so rollback has its source, and
+ * reports it as `clerkLinksCreated`. Rollback then leaves that Clerk link
+ * ACTIVE, the state the 0025 backfill would have produced.
+ *
  * Idempotent: re-running a command already in its target state writes nothing
  * and reports zero counts. Any other unexpected state (no active Clerk link, a
  * Descope subject linked to — under any issuer — or held by another user) is
@@ -56,6 +63,24 @@ const PROJECT_ID_RE = /^[A-Za-z0-9]{1,64}$/;
 const DESCOPE_API_BASE = "https://api.descope.com";
 const CLERK = "clerk";
 const DESCOPE = "descope";
+
+/**
+ * The Clerk issuer for a link this CLI creates. SAME derivation as the API's
+ * `clerkIssuer()` (clerk-identity-provider.adapter.ts) and the 0025 backfill
+ * literal — keep the three in lockstep (a test pins both). Run the CLI with the
+ * SAME CLERK_JWT_ISSUER the API runs with.
+ */
+export const DEFAULT_CLERK_ISSUER = "https://clerk.dp2.local";
+
+const ISSUER_URL_RE = /^https:\/\/\S{1,500}$/;
+
+/** Resolved once at parse time (like the Descope issuer); a malformed value is refused. */
+export function clerkIssuerFromEnv(env: NodeJS.ProcessEnv): string {
+  const fromEnv = env["CLERK_JWT_ISSUER"];
+  if (!fromEnv || fromEnv.length === 0) return DEFAULT_CLERK_ISSUER;
+  if (!ISSUER_URL_RE.test(fromEnv)) throw new Error("CLERK_JWT_ISSUER must be an https URL");
+  return fromEnv;
+}
 const USAGE =
   "usage: descope-cutover apply --user <uuid> --descope-subject <id> [--dry-run] | rollback --user <uuid> [--dry-run]";
 
@@ -65,6 +90,8 @@ export type DescopeCutoverCommand =
       readonly userId: string;
       readonly descopeSubject: string;
       readonly issuer: string;
+      /** Issuer for a clerk link apply has to create (users with no link row). */
+      readonly clerkIssuer: string;
       readonly dryRun: boolean;
     }
   | { readonly kind: "rollback"; readonly userId: string; readonly dryRun: boolean };
@@ -78,6 +105,8 @@ export interface CutoverResult {
   readonly usersUpdated: number;
   readonly linksDisabled: number;
   readonly linksActivated: number;
+  /** 1 when apply created the user's missing clerk link from clerk_user_id. */
+  readonly clerkLinksCreated: number;
 }
 
 type CutoverCounts = Omit<CutoverResult, "command" | "dryRun">;
@@ -177,7 +206,10 @@ export function parseDescopeCutoverArgs(
   if (command === "rollback") return { kind: "rollback", userId, dryRun };
   const descopeSubject = flags.values.get("descope-subject");
   if (descopeSubject === undefined) throw new Error("--descope-subject <id> is required");
-  return { kind: "apply", userId, descopeSubject, issuer: descopeIssuerFromEnv(env), dryRun };
+  return { kind: "apply", userId, descopeSubject, issuer: descopeIssuerFromEnv(env),
+    clerkIssuer: clerkIssuerFromEnv(env),
+    dryRun,
+  };
 }
 
 // --- state ----------------------------------------------------------------
@@ -257,16 +289,54 @@ async function assertSubjectFree(client: ClientBase, claim: SubjectClaim): Promi
 }
 
 /**
- * The resolver joins on (provider_key, subject) WITHOUT issuer, so a Descope
- * subject linked to another user under ANY issuer would make sign-in ambiguous.
+ * A provider subject and the refusal code used when another user already holds it.
  */
-async function assertDescopeSubjectUnlinked(client: ClientBase, claim: SubjectClaim): Promise<void> {
+interface SubjectGuard {
+  readonly provider: string;
+  readonly refusal: string;
+}
+
+const DESCOPE_GUARD: SubjectGuard = { provider: DESCOPE, refusal: "descope_subject_linked_to_other_user" };
+const CLERK_GUARD: SubjectGuard = { provider: CLERK, refusal: "clerk_subject_linked_to_other_user" };
+
+/**
+ * The resolver joins on (provider_key, subject) WITHOUT issuer, so a subject
+ * linked to another user under ANY issuer would make sign-in ambiguous.
+ */
+async function assertSubjectUnlinked(
+  client: ClientBase,
+  guard: SubjectGuard,
+  claim: SubjectClaim,
+): Promise<void> {
   const r = await client.query(
     `SELECT 1 FROM external_identity_links
       WHERE provider_key = $1 AND subject = $2 AND user_id <> $3`,
-    [DESCOPE, claim.subject, claim.userId],
+    [guard.provider, claim.subject, claim.userId],
   );
-  if (r.rows.length > 0) throw new CutoverRefusedError("descope_subject_linked_to_other_user");
+  if (r.rows.length > 0) throw new CutoverRefusedError(guard.refusal);
+}
+
+/**
+ * Users created after the 0025 backfill (bootstrap-pilot, later user creation)
+ * carry clerk_user_id but no link row. Record it as a DISABLED clerk link so it
+ * is rollback's source, exactly like a link apply disabled.
+ */
+/** A clerk link apply creates for a user that never had one. */
+interface NewClerkLink {
+  readonly claim: SubjectClaim;
+  readonly issuer: string;
+  readonly email: string | null;
+}
+
+async function insertDisabledClerkLink(client: ClientBase, link: NewClerkLink): Promise<void> {
+  const r = await client.query(
+    `INSERT INTO external_identity_links (provider_key, issuer, subject, user_id, email, status, disabled_at)
+     VALUES ($1, $2, $3, $4, $5, 'disabled', now())
+     ON CONFLICT (provider_key, issuer, subject) DO NOTHING
+     RETURNING id`,
+    [CLERK, link.issuer, link.claim.subject, link.claim.userId, link.email],
+  );
+  if (r.rows.length !== 1) throw new CutoverRefusedError(CLERK_GUARD.refusal);
 }
 
 async function disableLink(client: ClientBase, link: LinkRow): Promise<void> {
@@ -287,8 +357,22 @@ async function setClerkUserId(client: ClientBase, claim: SubjectClaim): Promise<
   await client.query("UPDATE users SET clerk_user_id = $1 WHERE id = $2", [claim.subject, claim.userId]);
 }
 
-const NO_CHANGE: CutoverCounts = { alreadyInTargetState: true, usersUpdated: 0, linksDisabled: 0, linksActivated: 0 };
-const FLIPPED: CutoverCounts = { alreadyInTargetState: false, usersUpdated: 1, linksDisabled: 1, linksActivated: 1 };
+const NO_CHANGE: CutoverCounts = {
+  alreadyInTargetState: true,
+  usersUpdated: 0,
+  linksDisabled: 0,
+  linksActivated: 0,
+  clerkLinksCreated: 0,
+};
+const FLIPPED: CutoverCounts = {
+  alreadyInTargetState: false,
+  usersUpdated: 1,
+  linksDisabled: 1,
+  linksActivated: 1,
+  clerkLinksCreated: 0,
+};
+/** apply for a user with no clerk link: nothing to disable, one link created. */
+const FLIPPED_WITH_CREATED_CLERK_LINK: CutoverCounts = { ...FLIPPED, linksDisabled: 0, clerkLinksCreated: 1 };
 
 async function upsertActiveDescopeLink(
   client: ClientBase,
@@ -318,18 +402,53 @@ function alreadyApplied(state: UserState, cmd: ApplyCommand): boolean {
   throw new CutoverRefusedError("inconsistent_descope_state");
 }
 
+/** What apply retires: the active clerk link, or the bare clerk_user_id of a user with no clerk link. */
+type ClerkSource =
+  | { readonly kind: "link"; readonly link: LinkRow }
+  | { readonly kind: "bridge-column"; readonly claim: SubjectClaim };
+
+function clerkSource(state: UserState): ClerkSource {
+  const link = currentClerkLink(state);
+  if (link) return { kind: "link", link };
+  const subject = state.user.clerk_user_id;
+  const hasClerkLink = state.links.some((l) => l.provider_key === CLERK);
+  // Only the "never linked" state is repaired; any other mismatch is refused.
+  if (!subject || hasClerkLink) throw new CutoverRefusedError("no_matching_active_clerk_link");
+  // One active link per user: another provider's active link would fail the
+  // descope upsert mid-transaction — refuse it with a code instead.
+  if (state.links.some((l) => l.status === "active")) throw new CutoverRefusedError("unexpected_active_link");
+  return { kind: "bridge-column", claim: { userId: state.user.id, subject } };
+}
+
+/** Disable the clerk link, or create it disabled; returns the counts for that path. */
+async function retireClerkSource(
+  client: ClientBase,
+  source: ClerkSource,
+  newLink: Omit<NewClerkLink, "claim">,
+): Promise<CutoverCounts> {
+  if (source.kind === "link") {
+    await disableLink(client, source.link);
+    return FLIPPED;
+  }
+  await assertSubjectUnlinked(client, CLERK_GUARD, source.claim);
+  await insertDisabledClerkLink(client, { ...newLink, claim: source.claim });
+  return FLIPPED_WITH_CREATED_CLERK_LINK;
+}
+
 async function applyCutover(client: ClientBase, cmd: ApplyCommand): Promise<CutoverCounts> {
   const state = await lockUserState(client, cmd.userId);
   if (alreadyApplied(state, cmd)) return NO_CHANGE;
-  const clerkLink = currentClerkLink(state);
-  if (!clerkLink) throw new CutoverRefusedError("no_matching_active_clerk_link");
+  const source = clerkSource(state);
   const claim: SubjectClaim = { userId: cmd.userId, subject: cmd.descopeSubject };
   await assertSubjectFree(client, claim);
-  await assertDescopeSubjectUnlinked(client, claim);
-  await disableLink(client, clerkLink);
+  await assertSubjectUnlinked(client, DESCOPE_GUARD, claim);
+  const counts = await retireClerkSource(client, source, {
+    issuer: cmd.clerkIssuer,
+    email: state.user.email,
+  });
   await upsertActiveDescopeLink(client, cmd, state.user.email);
   await setClerkUserId(client, claim);
-  return FLIPPED;
+  return counts;
 }
 
 /** The active descope link rollback reverses; null when already rolled back. */
@@ -355,6 +474,9 @@ async function rollbackCutover(client: ClientBase, userId: string): Promise<Cuto
   if (!clerkLink) throw new CutoverRefusedError("no_disabled_clerk_link");
   const claim: SubjectClaim = { userId, subject: clerkLink.subject };
   await assertSubjectFree(client, claim);
+  // Re-check at rollback time: another user may have been linked to this clerk
+  // subject since apply, and two active (clerk, subject) rows are ambiguous.
+  await assertSubjectUnlinked(client, CLERK_GUARD, claim);
   await disableLink(client, descopeLink);
   await activateLink(client, clerkLink);
   await setClerkUserId(client, claim);
