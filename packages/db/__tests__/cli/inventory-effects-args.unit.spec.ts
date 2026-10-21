@@ -21,6 +21,13 @@ describe("parseInventoryEffectsArgs", () => {
     expect(parseInventoryEffectsArgs(["compare", "--tenant", T])).toEqual({ kind: "compare", tenantId: T.toLowerCase() });
   });
 
+  it("parses equivalence (RT-428)", () => {
+    expect(parseInventoryEffectsArgs(["equivalence", "--tenant", T])).toEqual({
+      kind: "equivalence",
+      tenantId: T.toLowerCase(),
+    });
+  });
+
   it.each<[string, string[], RegExp]>([
     ["an unknown command", ["deactivate", "--tenant", T], /usage/],
     ["no command", [], /usage/],

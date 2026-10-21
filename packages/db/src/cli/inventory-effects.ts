@@ -15,6 +15,12 @@
  *     the latest complete Bin snapshot (`compareAnchorsToBin`). Not
  *     pending-aware; the full reconciliation is RT-428.
  *
+ *   equivalence --tenant <uuid>
+ *     Read-only dual-read report for the cutover (RT-428; 977, 980): per
+ *     store and product, the legacy raw SUM and the pending-aware expected
+ *     ERP book side by side against the latest complete Bin snapshot
+ *     (`buildCutoverEquivalenceReport`).
+ *
  * There is no deactivate command: turning the flag off is a separate owner
  * decision (981).
  *
@@ -33,12 +39,13 @@
 import { Client } from "pg";
 
 import { activateSaleEffects, compareAnchorsToBin } from "../helpers/inventory-effects/activation";
+import { buildCutoverEquivalenceReport } from "../helpers/inventory-effects/pending-aware";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type InventoryEffectsCommand =
   | { readonly kind: "activate"; readonly tenantId: string; readonly actorId: string; readonly dryRun: boolean }
-  | { readonly kind: "compare"; readonly tenantId: string };
+  | { readonly kind: "compare" | "equivalence"; readonly tenantId: string };
 
 function flag(argv: readonly string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -62,8 +69,10 @@ export function parseInventoryEffectsArgs(argv: readonly string[]): InventoryEff
       dryRun: argv.includes("--dry-run"),
     };
   }
-  if (command === "compare") return { kind: "compare", tenantId: uuidFlag(argv, "tenant") };
-  throw new Error("usage: inventory-effects activate --tenant <uuid> --actor <uuid> [--dry-run] | compare --tenant <uuid>");
+  if (command === "compare" || command === "equivalence") return { kind: command, tenantId: uuidFlag(argv, "tenant") };
+  throw new Error(
+    "usage: inventory-effects activate --tenant <uuid> --actor <uuid> [--dry-run] | compare --tenant <uuid> | equivalence --tenant <uuid>",
+  );
 }
 
 /** Run one command in one tenant-scoped transaction; returns the exit code. */
@@ -72,8 +81,8 @@ async function run(client: Client, cmd: InventoryEffectsCommand): Promise<number
   try {
     await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [cmd.tenantId]);
     await client.query(`SELECT set_config('app.is_platform_admin', 'false', true)`);
-    if (cmd.kind === "compare") {
-      const rows = await compareAnchorsToBin(client);
+    if (cmd.kind !== "activate") {
+      const rows = cmd.kind === "compare" ? await compareAnchorsToBin(client) : await buildCutoverEquivalenceReport(client);
       await client.query("ROLLBACK");
       console.log(JSON.stringify({ tenantId: cmd.tenantId, rows }, null, 2));
       return 0;
