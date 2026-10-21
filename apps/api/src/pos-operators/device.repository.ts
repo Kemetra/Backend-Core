@@ -70,6 +70,25 @@ function db(client: Pool): DrizzleClient {
   return drizzle(client);
 }
 
+/**
+ * The row whose current token hash, or in-window previous hash (RT-369 overlap),
+ * is `rawAttestation`'s.
+ */
+function attestationMatch(rawAttestation: string): SQL {
+  const hash = hashToken(rawAttestation);
+  return or(
+    eq(devices.tokenHash, hash),
+    and(eq(devices.previousTokenHash, hash), gt(devices.previousValidUntil, sql`now()`)),
+  )!;
+}
+
+/** Not revoked; and, with `DEVICE_TOKEN_EXPIRY_ENFORCED` on, not expired (database clock). */
+function liveDevice(): SQL | undefined {
+  return isDeviceTokenExpiryEnforced()
+    ? and(isNull(devices.revokedAt), gt(devices.expiresAt, sql`now()`))
+    : isNull(devices.revokedAt);
+}
+
 /** The device columns the auth lookup reads: all present since 0001, none from 0040. */
 const AUTH_DEVICE_COLUMNS = {
   id: devices.id,
@@ -84,6 +103,9 @@ const AUTH_DEVICE_COLUMNS = {
 
 /** A device as the auth lookup returns it. */
 export type AuthDeviceRow = Pick<DeviceRow, keyof typeof AUTH_DEVICE_COLUMNS>;
+
+/** RT-639: the auth lookup's device plus its credential expiry, for the rotate-soon hint. */
+export type AuthDeviceRowWithExpiry = AuthDeviceRow & Pick<DeviceRow, "expiresAt">;
 
 interface TenantStatusRow {
   status: string;
@@ -137,13 +159,27 @@ export class DeviceRepository {
    */
   async findActiveByAttestation(rawAttestation: string): Promise<AuthDeviceRow | null> {
     if (rawAttestation.length === 0) return null;
-    const hash = hashToken(rawAttestation);
-    return this.findActive(
-      or(
-        eq(devices.tokenHash, hash),
-        and(eq(devices.previousTokenHash, hash), gt(devices.previousValidUntil, sql`now()`)),
-      )!,
-    );
+    return this.findActive(attestationMatch(rawAttestation));
+  }
+
+  /**
+   * RT-639 — `findActiveByAttestation` for the one caller that also needs the
+   * credential's expiry: `PosDeviceAuthGuard`, for the rotate-soon hint. Same
+   * match, same live predicate, same tenant gate and activity record; the only
+   * difference is `expires_at` in the select list, in the same single query.
+   * It is a separate method so every other device lookup keeps its select list
+   * (see "Columns" above) and reads `expires_at` only when the expiry flag is on.
+   */
+  async findActiveByAttestationWithExpiry(
+    rawAttestation: string,
+  ): Promise<AuthDeviceRowWithExpiry | null> {
+    if (rawAttestation.length === 0) return null;
+    const rows = await db(this.pool)
+      .select({ ...AUTH_DEVICE_COLUMNS, expiresAt: devices.expiresAt })
+      .from(devices)
+      .where(and(attestationMatch(rawAttestation), liveDevice()))
+      .limit(1);
+    return this.admit(rows[0]);
   }
 
   /**
@@ -201,15 +237,16 @@ export class DeviceRepository {
   }
 
   private async findActive(match: SQL): Promise<AuthDeviceRow | null> {
-    const live = isDeviceTokenExpiryEnforced()
-      ? and(isNull(devices.revokedAt), gt(devices.expiresAt, sql`now()`))
-      : isNull(devices.revokedAt);
     const rows = await db(this.pool)
       .select(AUTH_DEVICE_COLUMNS)
       .from(devices)
-      .where(and(match, live))
+      .where(and(match, liveDevice()))
       .limit(1);
-    const device = rows[0];
+    return this.admit(rows[0]);
+  }
+
+  /** The tenant gate and the activity record every resolved device goes through. */
+  private async admit<T extends AuthDeviceRow>(device: T | undefined): Promise<T | null> {
     if (!device) return null;
     if (!(await this.tenantIsActive(device.tenantId))) return null;
     this.recordActivity(device);

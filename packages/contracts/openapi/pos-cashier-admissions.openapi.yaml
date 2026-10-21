@@ -212,6 +212,11 @@ paths:
             signal. The body is a tagged union on `kind`. Clients MUST switch
             on `kind` and MUST NOT assume any other field until the variant is
             confirmed.
+          headers:
+            X-Device-Token-Rotate-After:
+              $ref: "#/components/headers/DeviceTokenRotateAfter"
+            X-Device-Token-Rotate-Stage:
+              $ref: "#/components/headers/DeviceTokenRotateStage"
           content:
             application/json:
               schema:
@@ -299,6 +304,11 @@ paths:
         "200":
           description: >
             The admission is not live on this device (any of the cases above).
+          headers:
+            X-Device-Token-Rotate-After:
+              $ref: "#/components/headers/DeviceTokenRotateAfter"
+            X-Device-Token-Rotate-Stage:
+              $ref: "#/components/headers/DeviceTokenRotateStage"
           content:
             application/json:
               schema:
@@ -334,6 +344,11 @@ paths:
       responses:
         "200":
           description: The cashiers of the device's store. May be empty.
+          headers:
+            X-Device-Token-Rotate-After:
+              $ref: "#/components/headers/DeviceTokenRotateAfter"
+            X-Device-Token-Rotate-Stage:
+              $ref: "#/components/headers/DeviceTokenRotateStage"
           content:
             application/json:
               schema:
@@ -341,6 +356,30 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 components:
+  headers:
+    DeviceTokenRotateAfter:
+      description: >
+        RT-639. Present only when this device credential has 15 days or less
+        left: the ISO-8601 instant `expires_at - 15 days` (the same instant as
+        `rotate_after` in the `posRotateTerminalToken` response). The terminal
+        rotates at or after it. Absent while more than 15 days remain. Never
+        carries token material. See `pos-terminal-pairing.openapi.yaml`,
+        "Credential rotation".
+      required: false
+      schema:
+        type: string
+        format: date-time
+    DeviceTokenRotateStage:
+      description: >
+        RT-639. Sent with `X-Device-Token-Rotate-After`: `notice` (15 days or
+        less left), `warning` (10 or less), `urgent` (3 or less, or already
+        past `expires_at`). The server keeps no per-device state, so it sends
+        the stage on every response while it holds; the terminal shows each
+        stage the first time it sees it.
+      required: false
+      schema:
+        type: string
+        enum: [notice, warning, urgent]
   securitySchemes:
     # The same role-named POS device-credential scheme as catalog/read-down.yaml
     # (spec 030 / 028 DOC-1 / DOC-4): the paired terminal's opaque device token,
