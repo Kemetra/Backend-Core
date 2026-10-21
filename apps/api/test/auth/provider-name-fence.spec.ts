@@ -72,21 +72,17 @@ const ALLOW_LIST: readonly AllowEntry[] = [...ADAPTER_FILES, ...LEFTOVERS];
 
 const SKIPPED_DIRS = new Set(["node_modules", "dist"]);
 
-/** Every non-declaration `.ts` file under `dir`, found breadth-first. */
+function isTypescriptSource(fileName: string): boolean {
+  return fileName.endsWith(".ts") && !fileName.endsWith(".d.ts");
+}
+
+/** Every non-declaration `.ts` file under `dir`, skipping dependency and build output. */
 function typescriptFilesUnder(dir: string): string[] {
-  const found: string[] = [];
-  const pending = [dir];
-  for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      const full = join(current, entry.name);
-      if (entry.isDirectory()) {
-        if (!SKIPPED_DIRS.has(entry.name)) pending.push(full);
-      } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) {
-        found.push(full);
-      }
-    }
-  }
-  return found;
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) return SKIPPED_DIRS.has(entry.name) ? [] : typescriptFilesUnder(full);
+    return isTypescriptSource(entry.name) ? [full] : [];
+  });
 }
 
 /** `apps/<app>/src` and `packages/<pkg>/src` directories that exist. */
