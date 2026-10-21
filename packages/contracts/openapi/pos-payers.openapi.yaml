@@ -327,15 +327,15 @@ components:
     Error:
       type: object
       required: [error]
-      additionalProperties: false
       description: >
         Canonical error envelope, identical to `sales.yaml` /
-        `sale-history.yaml`. Refusals are non-disclosing.
+        `sale-history.yaml`. Refusals are non-disclosing. The envelope is open
+        so that the standard validation path can add `error.details` (the
+        sanitized validation issues of a 400) without breaking conformance.
       properties:
         error:
           type: object
           required: [code, message, request_id]
-          additionalProperties: false
           properties:
             code:
               type: string
@@ -349,6 +349,15 @@ components:
             request_id:
               type: string
               description: Server-side correlation id; the actual cause is recorded server-side.
+            details:
+              type: array
+              description: >
+                OPTIONAL. Present on a 400 `validation_error` only: the
+                validation issues the standard validation pipe reports
+                (`path`, `message`, `code`). Never present on a 401, 403, 429
+                or 500, and never carries a payer name or a credential.
+              items:
+                type: object
 
   headers:
     RetryAfter:

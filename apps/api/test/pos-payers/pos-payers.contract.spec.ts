@@ -28,6 +28,7 @@ import addFormats from "ajv-formats";
 import {
   allContracts,
   contractDocument,
+  contractReader,
   operationIdsExcept,
   type OpenApiDocument,
   type OperationObject,
@@ -50,23 +51,19 @@ addFormats(ajv);
 
 beforeAll(() => {
   const contracts = allContracts();
-  doc = contractDocument(contracts, CONTRACT_ID);
-  historyDoc = contractDocument(contracts, HISTORY_ID);
-  settlementDoc = contractDocument(contracts, SETTLEMENT_ID);
+  [doc, historyDoc, settlementDoc] = [CONTRACT_ID, HISTORY_ID, SETTLEMENT_ID].map((id) =>
+    contractDocument(contracts, id),
+  ) as [OpenApiDocument, OpenApiDocument, OpenApiDocument];
   otherOperationIds = operationIdsExcept(contracts, CONTRACT_ID);
   ajv.addSchema(doc as object, CONTRACT_ID);
 });
 
-function operation(): OperationObject & { "x-idempotency"?: string } {
-  const found = doc.paths?.[PATH]?.["get"];
-  if (!found) throw new Error(`GET ${PATH} not declared`);
-  return found;
-}
+const operation = (): OperationObject & { "x-idempotency"?: string } => contractReader(doc).get(PATH);
 
 function validator(name: SchemaName): ValidateFunction {
-  const v = ajv.getSchema(`${CONTRACT_ID}#/components/schemas/${name}`);
-  if (!v) throw new Error(`ajv cannot resolve ${name}`);
-  return v;
+  const compiled = ajv.getSchema(`${CONTRACT_ID}#/components/schemas/${name}`);
+  if (compiled === undefined) throw new Error(`ajv cannot resolve ${name}`);
+  return compiled;
 }
 
 const PAYER_A = "0190f5a2-3b4c-7d8e-9f01-00000000000a";
@@ -92,12 +89,8 @@ const unlinkedPayer = {
 // 1. Document + operation
 // ===========================================================================
 describe("pos-payers — document and operation", () => {
-  it("is an OpenAPI 3.1 document at version 1.0.0-draft", () => {
-    expect(doc.openapi).toBe("3.1.0");
-    expect(doc.info?.version).toBe("1.0.0-draft");
-  });
-
-  it("declares exactly one GET operation", () => {
+  it("is an OpenAPI 3.1 draft document with exactly one GET operation", () => {
+    expect([doc.openapi, doc.info?.version]).toEqual(["3.1.0", "1.0.0-draft"]);
     expect(Object.keys(doc.paths ?? {})).toEqual([PATH]);
     expect(Object.keys(doc.paths![PATH]!)).toEqual(["get"]);
     expect(operation().operationId).toBe(OPERATION_ID);
@@ -108,13 +101,10 @@ describe("pos-payers — document and operation", () => {
     expect(operation()["x-runtime-note"]).toMatch(/ship with its runtime issue/);
   });
 
-  it("is a read: no idempotency key and no audit action", () => {
+  it("is a read and collides with no operationId in any other contract", () => {
     expect(operation()["x-idempotency"]).toBeUndefined();
     expect(operation()["x-audit-action"]).toBeUndefined();
     expect(doc.info?.description).toMatch(/No state change, no audit event, no idempotency key/);
-  });
-
-  it("collides with no operationId in any other contract", () => {
     expect(otherOperationIds.has(OPERATION_ID)).toBe(false);
   });
 });
@@ -319,9 +309,12 @@ describe("pos-payers — AJV fixtures", () => {
     expect(validator("PosPayerPage")(page)).toBe(false);
   });
 
-  it("validates the error envelope and rejects extra fields on it", () => {
+  it("validates the error envelope, with the optional 400 validation details", () => {
     const error = { error: { code: "sale_responsibility_role_refused", message: "forbidden", request_id: "req-1" } };
     expect(validator("Error")(error)).toBe(true);
-    expect(validator("Error")({ error: { ...error.error, payerRef: PAYER_A } })).toBe(false);
+    const details = [{ path: ["page_size"], message: "Too big", code: "too_big" }];
+    expect(validator("Error")({ error: { ...error.error, code: "validation_error", details } })).toBe(true);
+    expect(validator("Error")({ error: { ...error.error, details: "not-an-array" } })).toBe(false);
+    expect(validator("Error")({ error: { code: "x", message: "y" } })).toBe(false);
   });
 });
