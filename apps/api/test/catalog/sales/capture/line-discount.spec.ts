@@ -1,5 +1,5 @@
 /**
- * line-discount.spec.ts — RT-740 (sales.yaml 1.13.0-draft; RT-699 doc 28
+ * line-discount.spec.ts — RT-740 (sales.yaml 1.14.0-draft; RT-699 doc 28
  * DEP-1 / DEP-4, option C-A), against a real RLS-forced Postgres.
  *
  * DEP-1: captureSale accepts a line `discount` whose `lineAmount` is the NET

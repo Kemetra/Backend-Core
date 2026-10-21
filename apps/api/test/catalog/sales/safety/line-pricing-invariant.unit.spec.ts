@@ -80,7 +80,7 @@ describe("RT-105 — sale-line price invariant", () => {
 });
 
 /**
- * RT-740 (sales.yaml 1.13.0-draft, RT-699 doc 28 option C-A): a discounted
+ * RT-740 (sales.yaml 1.14.0-draft, RT-699 doc 28 option C-A): a discounted
  * line carries its NET, `lineAmount = unitPrice × quantity − discount.amount`,
  * and the discount's own arithmetic holds (percent: half up on the line gross,
  * OD-28-3; amount: value = amount). Without `discount` nothing changes.

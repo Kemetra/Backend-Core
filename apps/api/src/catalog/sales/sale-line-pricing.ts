@@ -8,7 +8,7 @@
  * keeps amounts at currency precision. Such a line prices to exactly
  * `unitPrice × q` under the RT-73 round4 return rule.
  *
- * RT-740 (sales.yaml 1.13.0-draft, RT-699 doc 28 option C-A): a line with a
+ * RT-740 (sales.yaml 1.14.0-draft, RT-699 doc 28 option C-A): a line with a
  * manual `discount` carries its NET, so the condition becomes `lineAmount =
  * unitPrice × quantity − discount.amount`, and the discount's own arithmetic
  * must hold (percent: half up on the line gross, OD-28-3; amount: value =

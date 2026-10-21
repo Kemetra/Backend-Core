@@ -1,6 +1,6 @@
 /**
  * RT-740 — the captureSale line `discount` boundary, Docker-free (contract
- * `pos-sales/sales.yaml` 1.13.0-draft `CaptureSaleLineDiscount`, RT-699 doc 28
+ * `pos-sales/sales.yaml` 1.14.0-draft `CaptureSaleLineDiscount`, RT-699 doc 28
  * option C-A).
  *
  *   - accepted on every capture schema (no deploy gate);
