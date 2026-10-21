@@ -1,13 +1,23 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Terminal Pairing API
-  version: "1.3.0-draft"
+  version: "1.4.0-draft"
   description: >
     POS-Pulse 002-terminal-pairing + 008-sale-finalization-and-receipts
     terminal pairing surface. Defines the single unauthenticated
     operation that bootstraps the trust relationship between a POS
     terminal and the backend, and (RT-369) the device-authenticated
     rotation of the credential that pairing issued.
+
+
+    **Posture (RT-327).** `1.4.0-draft` is additive and adds no operation.
+    It names, by operationId, the fixed sets of operations that carry the
+    rotate-soon hint and the build identity headers (the earlier wording
+    "the same operations that carry the hint" went stale when RT-450 added
+    two hinted operations without the headers, RT-719 comment 13271), and
+    adds the RT-327 device heartbeat (`posReportDeviceHeartbeat`,
+    `pos-device-health.openapi.yaml`) to the hinted set only. No wire change
+    to any operation of this contract.
 
 
     **Posture (RT-719).** `1.3.0-draft` is additive and adds no operation:
@@ -165,10 +175,17 @@ info:
     the stage on every successful response while it holds, and the terminal
     shows each stage the first time it sees it. The headers are optional and
     additive; they carry an instant and a stage only, never token material.
-    They are sent on the routes that authenticate with the `device` token
-    alone (the catalogue read-down, the cashier admissions, the shift
-    cash-up writes, the sale history, the cash variance policy, and
-    `captureSale` on its device path), only on a successful response (the
+    They are sent on the routes that authenticate with the `device` token,
+    exactly these operations: `posGetCatalogSnapshot`,
+    `posGetCatalogDeltas` (the catalogue read-down);
+    `posCreateCashierAdmission`, `posEndCashierAdmission`,
+    `posListCashierAdmissionRoster` (the cashier admissions); `openShift`,
+    `recordCashMovement`, `closeShift` (the shift cash-up writes);
+    `listSaleHistory`, `readSaleHistoryDetail`, `recordSaleReprint` (the sale
+    history); `posGetCashVariancePolicy`; `captureSale`,
+    `posValidateTrackedLine` and `posListTrackedLots` on their device path
+    (RT-450); and `posReportDeviceHeartbeat` (RT-327). A new device-token
+    operation joins this set only by naming itself here. They are sent only on a successful response (the
     2xx, and the 304 of a conditional GET, both of which the operations
     document), and never on an error response: a refused token (401) gets
     neither, and neither does a request the route or a later guard
@@ -201,12 +218,18 @@ info:
         `contracts/backend-core/PIN` (its `commit` line), 40 lower-case hex
         characters.
 
-    They are documented as optional header parameters on the same operations
-    that carry the rotate-soon hint (the catalogue read-down, the cashier
-    admissions, the shift cash-up writes, the sale history, the cash variance
-    policy and `captureSale` on its device path), and nowhere else: not on
-    `posPairTerminal`, not on `posRotateTerminalToken`, not on a route that
-    authenticates with an operator credential. The rules:
+    They are documented as optional header parameters on exactly these
+    thirteen operations (the reporting operations), and nowhere else:
+    `posGetCatalogSnapshot`, `posGetCatalogDeltas`,
+    `posCreateCashierAdmission`, `posEndCashierAdmission`,
+    `posListCashierAdmissionRoster`, `openShift`, `recordCashMovement`,
+    `closeShift`, `listSaleHistory`, `readSaleHistoryDetail`,
+    `recordSaleReprint`, `posGetCashVariancePolicy` and `captureSale` on its
+    device path. Not on `posPairTerminal`, not on `posRotateTerminalToken`,
+    not on a route that authenticates with an operator credential, and not on
+    the other hinted operations (`posValidateTrackedLine`,
+    `posListTrackedLots`, `posReportDeviceHeartbeat`): carrying the
+    rotate-soon hint does not make an operation a reporting one. The rules:
 
       - **Additive and optional.** A terminal built before this rule sends
         none and stays valid on every route. A request is never refused,
@@ -259,8 +282,10 @@ info:
         bound as `X-POS-App-Version` (a semantic version, at most 32
         characters, no build metadata), so RT-327 can absorb these headers
         without a breaking change. This rule does not fix the heartbeat's wire
-        shape, and the heartbeat's policy and compliance reply is not part of
-        it.
+        shape: `pos-device-health.openapi.yaml` (RT-327) does, and states how
+        its body relates to these headers. The heartbeat is not a reporting
+        operation, so it neither records nor clears the build identity, and
+        its policy and compliance reply is not part of this rule.
 
     The console reads are the optional, nullable `buildIdentity` key of
     `DeviceSummary` / `DeviceDetail` (`devices.openapi.yaml`) and

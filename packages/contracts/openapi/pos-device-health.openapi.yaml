@@ -1,0 +1,1295 @@
+openapi: 3.1.0
+info:
+  title: Data-Pulse-2 — POS Device Health, Version Policy and Contract Revision API
+  version: "1.0.0-draft"
+  description: >
+    Jira RT-327 step 1 (AD-DEVICE-001, owner-ratified 2026-10-21 with D-5 and
+    D-7 amended, RT-323 comment 13215): per-terminal fleet version truth, a
+    server-held version policy and the runtime compatibility signal. Five
+    operations, three principals, one read-model (`device_health`, one row
+    per device), following the spec 020 connector-health pattern
+    (`erpnext-connector/connector-health.yaml`):
+
+      1. `posReportDeviceHeartbeat` — a paired terminal reports a heartbeat
+         over the `device` bearer (`PosDeviceAuthGuard`). The reply is the
+         `HeartbeatAck`: the version policy of the reported channel,
+         `pos_contract_revision`, `min_supported_grace_until` and the
+         server's `compliance` verdict for this request.
+      2. `consoleListDeviceHealth` / `consoleGetDeviceHealth` — a tenant
+         operator reads the health of the devices in scope over the human
+         `cookieAuth` session, under the devices-surface rules.
+      3. `platformGetPosVersionPolicy` / `platformSetPosVersionPolicy` — a
+         platform admin reads and changes the global per-channel policy.
+
+    It is a new file, not an extension of `devices.openapi.yaml`, for the
+    reason connector-health gives: the operations mix three principals (a
+    device bearer, a tenant session, a platform session), and the devices
+    contract is a tenant-session surface only.
+
+
+    **Posture.** `1.0.0-draft`. Every operation is `x-runtime-status:
+    contract-only`: `[GATED]` contract-first (RT-327 comments 13216, 13232,
+    13279). The runtime and the `device_health` / version-policy migration are
+    separate, separately approved steps. Nothing here changes the wire of a
+    served operation.
+
+
+    **Naming.** The POS-facing schemas (the heartbeat body and the
+    `HeartbeatAck`) use snake_case, as the pairing contract and the
+    AD-DEVICE-001 D-1 field names do (`app_version`, `update_channel`). The
+    console and platform schemas use camelCase, as the devices surface does.
+
+
+    **The heartbeat (D-1).** Identity comes from the guard only: the device,
+    its tenant and its store are the device row the token resolves, never a
+    body field. `last_seen_at` is the Backend-Core server clock at receipt,
+    never a terminal time; `source_clock_at` is kept as provenance for skew
+    diagnosis and is never used for liveness. The body is closed: an unknown
+    key, and any identity or server-owned key (`device_id`, `tenant_id`,
+    `store_id`, `last_seen_at`), is 400 `validation_error` and nothing is
+    stored. Every field is bounded and enumerated or patterned: no free text.
+
+      - **Last write wins, unknown is never a default.** A stored beat
+        replaces every self-reported field of the row: a field the beat omits
+        is stored as `null` (unknown), never kept from an earlier beat, so an
+        older build that sends less is never shown as the newer one.
+      - **Throttled storage, the reply always returned.** Backend-Core stores
+        at most one beat per device per 60 seconds (server clock). A beat
+        inside the window is still validated and still answered with a full
+        `HeartbeatAck`, computed from THIS request's body and the current
+        policy, never from the stored row. A store that fails is counted and
+        swallowed: the reply is still the 200.
+      - **No audit row per beat, one metric counter.** Beats are counted by a
+        metric whose labels are bounded outcomes only (stored, throttled,
+        refused), never a version, channel value, device or tenant id.
+      - **No history.** One row per device; raw telemetry retention is
+        bounded by construction.
+      - **Cadence (POS).** At app start, every 15 minutes, and on every
+        `update_state` change. Repeated or concurrent beats converge to the
+        latest one; there is no `Idempotency-Key`.
+      - **Activity is separate.** The heartbeat is an authenticated request,
+        so the RT-370 activity writer sees it like any other; the heartbeat
+        clock (`device_health.last_seen_at`) and the activity clock
+        (`devices.last_seen_at`) are still two values (D-5, below).
+      - **Additive evolution.** A POS sends a new body field only once the
+        `pos_contract_revision` it last received is at least the revision
+        that added it; an unknown key is otherwise refused (400).
+
+
+    **Heartbeat body and the RT-719 build identity headers.** RT-719 (merged,
+    `pos-terminal-pairing.openapi.yaml` "Build identity report") defines the
+    optional `X-POS-Build-Commit`, `X-POS-App-Version` and `X-POS-Contract-Pin`
+    headers on a fixed set of device-token operations, and the console reads
+    (`buildIdentity` on the devices projections, `consoleGetFleetBaseline`).
+    They relate to this contract as follows:
+
+      - `app_version` in the heartbeat body is the same value, with the same
+        name, bound and pattern as `X-POS-App-Version` (a semantic version, 5
+        to 32 characters, no build metadata). `update_channel` keeps the name
+        and values AD-DEVICE-001 D-1 gives it.
+      - `posReportDeviceHeartbeat` does not document the three headers and
+        is not one of the build identity reporting operations. A terminal
+        that sends them on the heartbeat is not refused, and they are not
+        read: the heartbeat neither records nor clears the build identity.
+      - The body is stored in `device_health` and is the compliance input.
+        The headers are stored as the device's build identity on the
+        reporting operations. Neither path writes into the other in v1, and
+        no fleet baseline is duplicated here: `consoleGetFleetBaseline` stays
+        the one baseline read.
+      - Both are self-reports of the same running build, so they agree in
+        practice. Backend-Core never cross-checks them: a mismatch is not an
+        error, refuses nothing and changes no verdict. Compliance is computed
+        from the body `app_version` only.
+
+
+    **The version policy (D-2).** One global policy per channel (`lab`,
+    `canary`, `stable`): `latest_version`, `recommended_version`,
+    `min_supported_version`, three distinct values with `min_supported_version
+    <= recommended_version <= latest_version` in semantic-version precedence,
+    plus `min_supported_grace_until`. It is platform-level, not
+    tenant-editable and not overridable per tenant. Being behind
+    `latest_version` or `recommended_version` never blocks anything. A
+    channel can have no policy (`null`) until a platform admin sets it.
+
+
+    **The compliance verdict.** `ok`, `below_minimum` or `unknown`, computed
+    by the server against the CURRENT policy, at reply time for the heartbeat
+    and at read time for the console (never stored):
+
+      - `unknown` when the version is absent or not a valid semantic version,
+        the channel is absent, or the channel has no policy. Never `ok` on
+        missing data.
+      - `below_minimum` when the version is lower than `min_supported_version`
+        in semantic-version precedence (a pre-release is lower than its
+        release: `1.4.0-rc.1` < `1.4.0`).
+      - `ok` otherwise.
+
+    The below-minimum behaviour is the POS's (D-6, RT-328): a banner at once,
+    and after `min_supported_grace_until` a block on opening a NEW shift,
+    with an audited manager override (`pos.compliance.override`), never while
+    the terminal's own update is failing, and never a trust revoke. This
+    contract only carries the verdict and the grace instant; it blocks
+    nothing on the server.
+
+
+    **`pos_contract_revision` (D-3).** A single integer, at least 1, that
+    Backend-Core increments whenever it ships a POS-facing API change a POS
+    release may depend on. The value is a constant in the Backend-Core
+    runtime, incremented in the same pull request as the OpenAPI change that
+    adds the capability; it never decreases. This contract fixes its meaning,
+    not its current value. The POS CompatGate (RT-322) installs an update
+    only when its latest `HeartbeatAck` is fresh (received at most 24 hours
+    ago, measured by the terminal from when it received the reply) and
+    `pos_contract_revision` is at least the release's
+    `requires_pos_contract_revision`; a lower revision is `compat_blocked`,
+    and no reply or a stale one leaves the update `update_pending`.
+
+
+    **Liveness (D-4), derived when read.** From the heartbeat clock only, on
+    the server clock: `online` within 30 minutes (2 × the cadence), `stale`
+    within 24 hours, `offline` beyond, and `unknown` when the device has no
+    `device_health` row. The thresholds are server configuration, not
+    contract. Version, update state, compliance and liveness are separate
+    dimensions, never one health bit, and `unknown` is never Healthy.
+
+
+    **Last seen (D-5, as amended).** The activity-based `devices.last_seen_at`
+    (RT-370) and the heartbeat clock coexist as separate values. The console
+    row carries both (`heartbeatAt`, `activityLastSeenAt`) and the more recent
+    of the two as `lastSeenAt`, labelled by `lastSeenSource` (`heartbeat` or
+    `activity`), so the Devices page (RT-371, D-7 as amended) can show one
+    "last seen" with its source. `lastSeenAt` never drives `liveness`. The
+    devices contract (`lastSeenAt` / `lastSeenSource` on `DeviceSummary`) is
+    unchanged by this contract.
+
+
+    **Auth and scope.**
+
+      - Heartbeat: the `device` bearer only (`PosDeviceAuthGuard`). A
+        missing, malformed, unknown, revoked or otherwise refused token is the
+        generic 401 and stores nothing. A successful reply carries the RT-639
+        rotate-soon hint like the other device-token routes.
+      - Console reads: the HUMAN `cookieAuth` session, gated
+        `SessionOnlyAdminGuard` → `TenantContextGuard` → `RolesGuard`, exactly
+        as `devices.openapi.yaml`. Roles `owner`, `tenant_admin`,
+        `store_manager`; the store scope is the devices-surface rule
+        (`operator-store-scope.ts`). A role outside the list, another
+        tenant's device or store, a store outside the caller's scope and an
+        absent id are the same non-disclosing 404; there is no 403. Tenant
+        isolation is RLS on `device_health` (§II); the store scope has no
+        database backstop, so the store predicate is applied in the query.
+      - Platform policy: the `cookieAuth` session of a platform admin
+        (`users.is_platform_admin`, server-authenticated, RT-132 D6), as
+        `listPlatformAuditEvents` (RT-431). A bearer token, POS device token
+        or operator envelope is 401; every other signed-in user, including a
+        tenant `owner`, is 403 `forbidden` (the route exists, so no 404).
+        These routes are platform-scope: they do not use the active tenant,
+        do not sit behind `TenantContextGuard`, need no support session and
+        write no `platform.cross_tenant.accessed` row. The change also needs
+        a trusted `Origin` (RT-430, 403 `origin_rejected`).
+
+
+    **Audit (RT-135).** No row per heartbeat and no row per console or
+    platform read. Every effective policy change writes one
+    `pos.release_policy.changed` row in the same transaction as the change:
+    platform-scoped (`tenant_id` null, readable through
+    `listPlatformAuditEvents`), actor the platform admin, metadata the
+    allowlist `channel`, `old` (the previous policy values and revision, or
+    null when none existed) and `new` (the new values and revision). No
+    email, token, cookie or request body. A change that sets the values
+    already stored writes nothing and no row.
+
+
+    **No PII, no secret, no new egress.** Versions, enumerations, a migration
+    name pattern and timestamps. No user, cashier, sale, hostname, machine
+    id, IP, path or credential is carried, stored or returned by the
+    heartbeat. Nothing leaves Backend-Core.
+
+
+    **Error envelope.** The canonical `{ error: { code, message, request_id } }`
+    shape. Closed codes per operation are listed on each response.
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: pos-device-health
+    description: >
+      POS device heartbeat and its compatibility reply (RT-327, AD-DEVICE-001
+      D-1 to D-3).
+  - name: device-health
+    description: >
+      Console reads of per-terminal version, update state, compliance and
+      liveness (AD-DEVICE-001 D-4, D-5, D-7).
+  - name: pos-version-policy
+    description: >
+      Platform read and change of the global per-channel POS version policy
+      (AD-DEVICE-001 D-2).
+
+paths:
+  /api/pos/v1/terminals/heartbeat:
+    post:
+      summary: Report a POS device heartbeat and receive the version policy and compatibility signal.
+      operationId: posReportDeviceHeartbeat
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-327 step 1 contract. The runtime and the `device_health` /
+        version-policy migration are later, separately approved steps of
+        RT-327. Route behind `PosDeviceAuthGuard`; no `Idempotency-Key`.
+      tags: [pos-device-health]
+      security:
+        - device: []
+      description: >
+        A paired terminal reports its installed version, channel, update
+        state, pending version, local schema head and its own clock. The
+        device, tenant and store come from the guard; `last_seen_at` is the
+        server clock. The body is closed (unknown and identity keys are 400).
+        Backend-Core stores at most one beat per device per 60 seconds and
+        always answers with a `HeartbeatAck` computed from this request and
+        the current policy. Not one of the RT-719 build identity reporting
+        operations: the `X-POS-*` headers are not read here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceHeartbeatReport"
+      responses:
+        "200":
+          description: >
+            The heartbeat was accepted (stored, or inside the 60-second
+            throttle window). The reply is the same either way.
+          headers:
+            X-Device-Token-Rotate-After:
+              $ref: "#/components/headers/DeviceTokenRotateAfter"
+            X-Device-Token-Rotate-Stage:
+              $ref: "#/components/headers/DeviceTokenRotateStage"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatAck"
+        "400":
+          $ref: "#/components/responses/HeartbeatValidationFailure"
+        "401":
+          $ref: "#/components/responses/DeviceUnauthorized"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/device-health:
+    get:
+      summary: List the health of the devices in the caller's scope.
+      operationId: consoleListDeviceHealth
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-327 step 1 contract. The runtime and the migration are later,
+        separately approved steps. Guards as `consoleListDevices`
+        (`SessionOnlyAdminGuard` → `TenantContextGuard` → `RolesGuard`).
+      tags: [device-health]
+      security:
+        - cookieAuth: []
+      description: >
+        One row per device in the caller's tenant and store scope, including
+        devices that never sent a heartbeat (`liveness: unknown`,
+        `compliance: unknown`). Ordered by `deviceId` ascending, keyset
+        paginated. Every filter is optional and they combine with AND; the
+        `liveness` and `compliance` filters apply to the values derived at
+        this read. With no `trust_state`, retired devices are not listed, as
+        on `consoleListDevices`. An empty page (`items: []`,
+        `nextCursor: null`) is a 200. No aggregate: the build baseline is
+        `consoleGetFleetBaseline`.
+      parameters:
+        - $ref: "#/components/parameters/StoreIdQuery"
+        - $ref: "#/components/parameters/TrustStateQuery"
+        - $ref: "#/components/parameters/AppVersionQuery"
+        - $ref: "#/components/parameters/UpdateChannelQuery"
+        - $ref: "#/components/parameters/ComplianceQuery"
+        - $ref: "#/components/parameters/LivenessQuery"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of device health rows.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceHealthPage"
+        "400":
+          $ref: "#/components/responses/ReadValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/device-health/{deviceId}:
+    get:
+      summary: Read one device's health.
+      operationId: consoleGetDeviceHealth
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-327 step 1 contract. The runtime and the migration are later,
+        separately approved steps. Guards as `consoleGetDevice`.
+      tags: [device-health]
+      security:
+        - cookieAuth: []
+      description: >
+        The health row of one device in the caller's tenant and store scope,
+        whatever its trust state. A device that never sent a heartbeat is a
+        200 with `liveness: unknown`. Another tenant's device, a device
+        outside the caller's store scope, a role outside the list and an
+        absent id are the same non-disclosing 404.
+      parameters:
+        - $ref: "#/components/parameters/DeviceIdPath"
+      responses:
+        "200":
+          description: The device's health row.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceHealthView"
+        "400":
+          $ref: "#/components/responses/ReadValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/platform/pos-version-policy:
+    get:
+      summary: Read the POS version policy of every channel (platform admins only).
+      operationId: platformGetPosVersionPolicy
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-327 step 1 contract. The runtime and the version-policy migration
+        are later, separately approved steps. The controller must NOT use
+        `TenantContextGuard` (support-session enforcement matches it by name)
+        and writes no audit row.
+      tags: [pos-version-policy]
+      security:
+        - cookieAuth: []
+      description: >
+        The policy of each channel, always all three channels in the order
+        `lab`, `canary`, `stable`, each with its policy or `null` when none
+        has been set. Platform admins only; any other signed-in user is 403
+        `forbidden`. A platform admin with no active tenant gets 200.
+      responses:
+        "200":
+          description: The per-channel policy.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PosVersionPolicySet"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PlatformReadForbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/platform/pos-version-policy/{channel}:
+    put:
+      summary: Set the POS version policy of one channel (platform admins only).
+      operationId: platformSetPosVersionPolicy
+      x-audit-action: pos.release_policy.changed
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-327 step 1 contract. The runtime and the version-policy migration
+        are later, separately approved steps. The controller must NOT use
+        `TenantContextGuard`; the audit row is platform-scoped (`tenant_id`
+        null) and written in the change's transaction.
+      tags: [pos-version-policy]
+      security:
+        - cookieAuth: []
+      description: >
+        Replaces the channel's policy with the body's values (a full
+        replacement, no partial update). Compare-and-set on `expectedRevision`:
+        `null` to create the first policy of the channel, otherwise the
+        revision last read. A body whose values equal the stored ones is a 200
+        that changes nothing and writes no audit row, whatever
+        `expectedRevision` says, so a retry after a lost response is safe.
+        Otherwise a stale `expectedRevision` is 409
+        `policy_revision_conflict` and nothing is written. Values out of order
+        (`minSupportedVersion <= recommendedVersion <= latestVersion` fails in
+        semantic-version precedence) are 422 `version_order_invalid`. An
+        effective change bumps `revision`, sets `updatedAt` (server clock) and
+        `updatedByUserId`, and writes `pos.release_policy.changed` with the
+        old and new values. A `minSupportedGraceUntil` already in the past
+        makes the new minimum enforceable at once on the POS (D-6); that is
+        the platform admin's choice and is not refused.
+      parameters:
+        - $ref: "#/components/parameters/ChannelPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PosVersionPolicyChange"
+      responses:
+        "200":
+          description: The channel's policy after the request.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PosVersionPolicyEntry"
+        "400":
+          $ref: "#/components/responses/WriteValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PlatformWriteForbidden"
+        "409":
+          $ref: "#/components/responses/PolicyRevisionConflict"
+        "422":
+          $ref: "#/components/responses/VersionOrderInvalid"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+components:
+  securitySchemes:
+    device:
+      type: http
+      scheme: bearer
+      description: >
+        The paired terminal's opaque `devices` token, presented as
+        `Authorization: Bearer <device_token>` (`PosDeviceAuthGuard`; NOT a
+        JWT). The device row supplies the authoritative device, tenant and
+        store; nothing in the request is trusted as identity or scope. A
+        missing, malformed, unknown, revoked or otherwise refused token is the
+        generic, non-disclosing 401.
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: dp2_session
+      description: >
+        The human dashboard session cookie (httpOnly `dp2_session`). On the
+        console reads it is verified by `SessionOnlyAdminGuard` with
+        `RolesGuard` + `@Roles("owner", "tenant_admin", "store_manager")`
+        (default deny → 404). On the platform policy routes the session user
+        must be a platform admin (`users.is_platform_admin`). A machine
+        bearer, a POS `device` token or an `operatorAuthorization` envelope
+        is 401 on both. 401 semantics are owned by 028 (G10).
+
+  headers:
+    DeviceTokenRotateAfter:
+      description: >
+        RT-639. Present only when this device credential has 15 days or less
+        left: the ISO-8601 instant `expires_at - 15 days` (the same instant as
+        `rotate_after` in the `posRotateTerminalToken` response). The terminal
+        rotates at or after it. Absent while more than 15 days remain. Never
+        carries token material. See `pos-terminal-pairing.openapi.yaml`,
+        "Credential rotation".
+      required: false
+      schema:
+        type: string
+        format: date-time
+    DeviceTokenRotateStage:
+      description: >
+        RT-639. Sent with `X-Device-Token-Rotate-After`: `notice` (15 days or
+        less left), `warning` (10 or less), `urgent` (3 or less, or already
+        past `expires_at`). The server keeps no per-device state, so it sends
+        the stage on every response while it holds; the terminal shows each
+        stage the first time it sees it.
+      required: false
+      schema:
+        type: string
+        enum: [notice, warning, urgent]
+    CacheControlNoStore:
+      description: >
+        `no-store` on every 200: the body is per-device state or the live
+        policy, so no shared or browser cache keeps it.
+      schema:
+        type: string
+        const: no-store
+    ConsoleRetryAfter:
+      description: >
+        Whole seconds the caller should wait before retrying, sent on every
+        console 429 (RT-574 D5). Its own bound, 1 to 3600; it is not the POS
+        `RetryAfter` header.
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 3600
+
+  parameters:
+    DeviceIdPath:
+      name: deviceId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        The device id (`devices.id`, the paired `terminal_id`). Case
+        insensitive: normalised to lower case before the lookup. A value that
+        is not a UUID is 400 `validation_error` and never reaches the
+        database.
+    StoreIdQuery:
+      name: store_id
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: >
+        Only devices of this store. Validated against the caller's store
+        scope: a store outside it, or of another tenant, is the
+        non-disclosing 404. Omitted: every store in the caller's scope.
+    TrustStateQuery:
+      name: trust_state
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/TrustState"
+      description: >
+        Only devices in this trust state, as on `consoleListDevices`.
+        Omitted: `active` and `revoked` devices, never `retired` ones.
+    AppVersionQuery:
+      name: app_version
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/AppVersion"
+      description: >
+        Only devices whose last stored heartbeat reported exactly this
+        version. A device with no reported version never matches.
+    UpdateChannelQuery:
+      name: update_channel
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/UpdateChannel"
+      description: Only devices whose last stored heartbeat reported this channel.
+    ComplianceQuery:
+      name: compliance
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/Compliance"
+      description: Only devices with this compliance verdict, derived at this read.
+    LivenessQuery:
+      name: liveness
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/Liveness"
+      description: Only devices with this liveness verdict, derived at this read.
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 512
+        pattern: "^[A-Za-z0-9_-]+$"
+      description: >
+        Opaque keyset cursor from a prior page's `nextCursor`. Do not decode
+        or construct it; omit it for the first page. Reuse it only with the
+        same filters. A value the server did not issue, or cannot decode, is
+        400 `validation_error`.
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+      description: Maximum items per page (bounded). The server MAY return fewer.
+    ChannelPath:
+      name: channel
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/UpdateChannel"
+      description: The channel whose policy is set. Any other value is 400 `validation_error`.
+
+  schemas:
+    # -----------------------------------------------------------------------
+    # Vocabularies
+    # -----------------------------------------------------------------------
+    AppVersion:
+      type: string
+      minLength: 5
+      maxLength: 32
+      pattern: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+      description: >
+        A semantic version without build metadata, at most 32 characters
+        (`1.4.0`, `1.4.0-rc.1`). The same schema as the RT-719
+        `X-POS-App-Version` header and `appVersion` in the build identity.
+    UpdateChannel:
+      type: string
+      enum: [lab, canary, stable]
+      description: >
+        The terminal's update channel (ADR-0006 §10). A new value is a
+        contract change.
+    UpdateState:
+      type: string
+      enum:
+        - idle
+        - checking
+        - downloading
+        - downloaded
+        - verify_failed
+        - verify_unavailable
+        - compat_blocked
+        - update_pending
+        - installing
+        - error
+      description: >
+        The POS updater state (ADR-0006 §9, RT-322). A new value is a contract
+        change.
+    SchemaHead:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+      description: >
+        The name of the newest applied local POS migration (RT-320
+        SchemaAheadGuard diagnosis): letters, digits, `_`, `.`, `-`; never a
+        path or free text.
+    Compliance:
+      type: string
+      enum: [ok, below_minimum, unknown]
+      description: >
+        The server's verdict against the current policy (see "The compliance
+        verdict"). `unknown` whenever the version, the channel or the policy
+        is missing; never `ok` on missing data.
+    Liveness:
+      type: string
+      enum: [online, stale, offline, unknown]
+      description: >
+        Derived at read from the heartbeat clock (D-4): `online` within 30
+        minutes, `stale` within 24 hours, `offline` beyond, `unknown` with no
+        heartbeat row. The thresholds are server configuration. `unknown` is
+        never Healthy.
+    TrustState:
+      type: string
+      enum: [active, revoked, retired]
+      description: >
+        The device's trust state, as on `devices.openapi.yaml`. Health never
+        changes it; below minimum never revokes (G10).
+    PosContractRevision:
+      type: integer
+      minimum: 1
+      maximum: 2147483647
+      description: >
+        Backend-Core's POS contract revision (D-3): incremented with every
+        POS-facing API change a POS release may depend on; never decreases.
+
+    # -----------------------------------------------------------------------
+    # POS heartbeat (snake_case)
+    # -----------------------------------------------------------------------
+    DeviceHeartbeatReport:
+      type: object
+      additionalProperties: false
+      description: >
+        A heartbeat's self-reported fields (AD-DEVICE-001 D-1). All optional:
+        an empty object is a valid heartbeat (it records liveness, and every
+        field as unknown). A stored beat replaces every field; an omitted one
+        is stored as `null`. NO `device_id`, `tenant_id`, `store_id` or
+        `last_seen_at`: identity and the last-seen clock are Backend-Core's.
+        An unknown key is 400 `validation_error`. `null` is accepted where a
+        field is nullable and means the same as omitting it.
+      properties:
+        app_version:
+          description: >
+            The installed POS version. Absent or `null` while the build has no
+            release version (compliance is then `unknown`). The same value and
+            bound as `X-POS-App-Version`.
+          oneOf:
+            - $ref: "#/components/schemas/AppVersion"
+            - type: "null"
+        update_channel:
+          description: The terminal's update channel. Absent or `null`, compliance is `unknown`.
+          oneOf:
+            - $ref: "#/components/schemas/UpdateChannel"
+            - type: "null"
+        update_state:
+          description: The POS updater state at the time of the beat.
+          oneOf:
+            - $ref: "#/components/schemas/UpdateState"
+            - type: "null"
+        pending_version:
+          description: A version downloaded and waiting for a safe point; `null` when none.
+          oneOf:
+            - $ref: "#/components/schemas/AppVersion"
+            - type: "null"
+        schema_head:
+          description: The newest applied local migration; `null` when unknown.
+          oneOf:
+            - $ref: "#/components/schemas/SchemaHead"
+            - type: "null"
+        source_clock_at:
+          description: >
+            The terminal clock at beat time. Provenance for skew diagnosis
+            only; never `last_seen_at` and never used for liveness.
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+
+    HeartbeatPolicy:
+      type: object
+      additionalProperties: false
+      required:
+        - channel
+        - latest_version
+        - recommended_version
+        - min_supported_version
+        - policy_revision
+      description: >
+        The version policy of the channel the heartbeat reported (D-2). Being
+        behind `latest_version` or `recommended_version` never blocks.
+      properties:
+        channel:
+          $ref: "#/components/schemas/UpdateChannel"
+        latest_version:
+          $ref: "#/components/schemas/AppVersion"
+        recommended_version:
+          $ref: "#/components/schemas/AppVersion"
+        min_supported_version:
+          $ref: "#/components/schemas/AppVersion"
+        policy_revision:
+          type: integer
+          minimum: 1
+          description: The policy's revision, as `revision` on the platform read.
+
+    HeartbeatAck:
+      type: object
+      additionalProperties: false
+      required:
+        - acknowledged_at
+        - pos_contract_revision
+        - policy
+        - min_supported_grace_until
+        - compliance
+      allOf:
+        - if:
+            properties:
+              policy:
+                type: "null"
+            required: [policy]
+          then:
+            properties:
+              min_supported_grace_until:
+                type: "null"
+              compliance:
+                const: unknown
+          else:
+            properties:
+              min_supported_grace_until:
+                type: string
+      description: >
+        The reply to every accepted heartbeat, computed from this request's
+        body and the current policy (D-2, D-3), stored or throttled alike.
+        With no policy for the reported channel (or no channel reported),
+        `policy` and `min_supported_grace_until` are `null` and `compliance`
+        is `unknown`.
+      properties:
+        acknowledged_at:
+          type: string
+          format: date-time
+          description: >
+            The Backend-Core server clock when the heartbeat was accepted.
+            For skew diagnosis; the terminal measures the reply's freshness
+            from when it received it.
+        pos_contract_revision:
+          $ref: "#/components/schemas/PosContractRevision"
+        policy:
+          description: The reported channel's policy; `null` when none applies.
+          oneOf:
+            - $ref: "#/components/schemas/HeartbeatPolicy"
+            - type: "null"
+        min_supported_grace_until:
+          description: >
+            The server-set instant after which a below-minimum terminal blocks
+            opening a new shift (D-6); `null` when no policy applies.
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        compliance:
+          $ref: "#/components/schemas/Compliance"
+
+    # -----------------------------------------------------------------------
+    # Console reads (camelCase)
+    # -----------------------------------------------------------------------
+    DeviceHealthView:
+      type: object
+      additionalProperties: false
+      required:
+        - deviceId
+        - storeId
+        - label
+        - trustState
+        - appVersion
+        - updateChannel
+        - updateState
+        - pendingVersion
+        - schemaHead
+        - sourceClockAt
+        - heartbeatAt
+        - secondsSinceHeartbeat
+        - liveness
+        - compliance
+        - minSupportedVersion
+        - minSupportedGraceUntil
+        - activityLastSeenAt
+        - lastSeenAt
+        - lastSeenSource
+      allOf:
+        - if:
+            properties:
+              heartbeatAt:
+                type: "null"
+            required: [heartbeatAt]
+          then:
+            properties:
+              liveness:
+                const: unknown
+              secondsSinceHeartbeat:
+                type: "null"
+              compliance:
+                const: unknown
+          else:
+            properties:
+              liveness:
+                enum: [online, stale, offline]
+              secondsSinceHeartbeat:
+                type: integer
+        - if:
+            properties:
+              lastSeenAt:
+                type: "null"
+            required: [lastSeenAt]
+          then:
+            properties:
+              lastSeenSource:
+                type: "null"
+          else:
+            properties:
+              lastSeenSource:
+                type: string
+        # Never `ok` on missing data: an unknown version, channel or policy
+        # minimum makes the verdict `unknown`.
+        - if:
+            properties:
+              appVersion:
+                type: "null"
+            required: [appVersion]
+          then:
+            properties:
+              compliance:
+                const: unknown
+        - if:
+            properties:
+              updateChannel:
+                type: "null"
+            required: [updateChannel]
+          then:
+            properties:
+              compliance:
+                const: unknown
+        - if:
+            properties:
+              minSupportedVersion:
+                type: "null"
+            required: [minSupportedVersion]
+          then:
+            properties:
+              compliance:
+                const: unknown
+      description: >
+        One device's health. Identity, label and trust state come from the
+        device row; the self-reported fields are the last STORED heartbeat
+        (`null` until the first, and `null` for a field that beat omitted);
+        `liveness` and `compliance` are derived at this read. No tenant id,
+        no health-row id, no secret.
+      properties:
+        deviceId:
+          type: string
+          format: uuid
+          description: The device id (`devices.id`).
+        storeId:
+          type: string
+          format: uuid
+          description: The device's store.
+        label:
+          type: [string, "null"]
+          description: The terminal label given at pairing; `null` when none.
+        trustState:
+          $ref: "#/components/schemas/TrustState"
+        appVersion:
+          description: The last stored `app_version`; `null` when unknown.
+          oneOf:
+            - $ref: "#/components/schemas/AppVersion"
+            - type: "null"
+        updateChannel:
+          description: The last stored `update_channel`; `null` when unknown.
+          oneOf:
+            - $ref: "#/components/schemas/UpdateChannel"
+            - type: "null"
+        updateState:
+          description: The last stored `update_state`; `null` when unknown.
+          oneOf:
+            - $ref: "#/components/schemas/UpdateState"
+            - type: "null"
+        pendingVersion:
+          description: The last stored `pending_version`; `null` when none or unknown.
+          oneOf:
+            - $ref: "#/components/schemas/AppVersion"
+            - type: "null"
+        schemaHead:
+          description: The last stored `schema_head`; `null` when unknown.
+          oneOf:
+            - $ref: "#/components/schemas/SchemaHead"
+            - type: "null"
+        sourceClockAt:
+          type: [string, "null"]
+          format: date-time
+          description: The terminal clock of the last stored beat (provenance only).
+        heartbeatAt:
+          type: [string, "null"]
+          format: date-time
+          description: >
+            `device_health.last_seen_at`: the server clock of the last stored
+            heartbeat; `null` when the device never sent one.
+        secondsSinceHeartbeat:
+          type: [integer, "null"]
+          minimum: 0
+          description: Whole seconds since `heartbeatAt` (floored); `null` with it.
+        liveness:
+          $ref: "#/components/schemas/Liveness"
+        compliance:
+          $ref: "#/components/schemas/Compliance"
+        minSupportedVersion:
+          description: >
+            The current `minSupportedVersion` of the device's stored channel;
+            `null` when the channel is unknown or has no policy.
+          oneOf:
+            - $ref: "#/components/schemas/AppVersion"
+            - type: "null"
+        minSupportedGraceUntil:
+          type: [string, "null"]
+          format: date-time
+          description: The grace instant of that policy; `null` with it.
+        activityLastSeenAt:
+          type: [string, "null"]
+          format: date-time
+          description: >
+            `devices.last_seen_at`, the activity clock (RT-370), the same value
+            as `lastSeenAt` on `DeviceSummary` while that is activity-sourced;
+            `null` until written.
+        lastSeenAt:
+          type: [string, "null"]
+          format: date-time
+          description: >
+            The more recent of `heartbeatAt` and `activityLastSeenAt` (D-5 as
+            amended); `null` when both are. Display only: never drives
+            `liveness`.
+        lastSeenSource:
+          description: >
+            Which clock `lastSeenAt` is: `heartbeat` or `activity` (on a tie,
+            `heartbeat`); `null` exactly when `lastSeenAt` is.
+          oneOf:
+            - type: string
+              enum: [heartbeat, activity]
+            - type: "null"
+
+    DeviceHealthPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      description: A keyset page of device health rows, by `deviceId` ascending.
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/DeviceHealthView"
+        nextCursor:
+          type: [string, "null"]
+          description: The cursor for the next page; `null` on the last page.
+
+    # -----------------------------------------------------------------------
+    # Platform policy (camelCase)
+    # -----------------------------------------------------------------------
+    PosVersionPolicy:
+      type: object
+      additionalProperties: false
+      required:
+        - latestVersion
+        - recommendedVersion
+        - minSupportedVersion
+        - minSupportedGraceUntil
+        - revision
+        - updatedAt
+        - updatedByUserId
+      description: >
+        One channel's stored policy. `minSupportedVersion <=
+        recommendedVersion <= latestVersion` in semantic-version precedence.
+      properties:
+        latestVersion:
+          $ref: "#/components/schemas/AppVersion"
+        recommendedVersion:
+          $ref: "#/components/schemas/AppVersion"
+        minSupportedVersion:
+          $ref: "#/components/schemas/AppVersion"
+        minSupportedGraceUntil:
+          type: string
+          format: date-time
+          description: The instant after which a below-minimum terminal blocks opening a new shift (D-6).
+        revision:
+          type: integer
+          minimum: 1
+          description: Bumped by every effective change; the `expectedRevision` of the next change.
+        updatedAt:
+          type: string
+          format: date-time
+          description: Server clock of the last effective change.
+        updatedByUserId:
+          type: string
+          format: uuid
+          description: The platform admin who made the last effective change (a user id, never an email).
+
+    PosVersionPolicyEntry:
+      type: object
+      additionalProperties: false
+      required: [channel, policy]
+      description: One channel and its policy, `null` when none has been set.
+      properties:
+        channel:
+          $ref: "#/components/schemas/UpdateChannel"
+        policy:
+          oneOf:
+            - $ref: "#/components/schemas/PosVersionPolicy"
+            - type: "null"
+
+    PosVersionPolicySet:
+      type: object
+      additionalProperties: false
+      required: [items]
+      description: Every channel, in the order `lab`, `canary`, `stable`.
+      properties:
+        items:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/PosVersionPolicyEntry"
+
+    PosVersionPolicyChange:
+      type: object
+      additionalProperties: false
+      required:
+        - latestVersion
+        - recommendedVersion
+        - minSupportedVersion
+        - minSupportedGraceUntil
+        - expectedRevision
+      description: >
+        The full new policy of the channel and the revision it replaces. No
+        free text: the audit row records the old and new values.
+      properties:
+        latestVersion:
+          $ref: "#/components/schemas/AppVersion"
+        recommendedVersion:
+          $ref: "#/components/schemas/AppVersion"
+        minSupportedVersion:
+          $ref: "#/components/schemas/AppVersion"
+        minSupportedGraceUntil:
+          type: string
+          format: date-time
+        expectedRevision:
+          type: [integer, "null"]
+          minimum: 1
+          description: >
+            The `revision` last read; `null` when the channel has no policy
+            yet. A mismatch is 409 `policy_revision_conflict`, unless the body
+            equals the stored values (then a no-op 200).
+
+    # -----------------------------------------------------------------------
+    # Canonical error envelope
+    # -----------------------------------------------------------------------
+    Error:
+      type: object
+      required: [error]
+      description: >
+        Canonical error envelope. Out-of-scope and cross-tenant refusals are
+        non-disclosing (§II, §XII): they never name the cause.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id; the cause is recorded server-side.
+
+  responses:
+    HeartbeatValidationFailure:
+      description: >
+        validation_error (400): a body that is not a JSON object, an unknown
+        key, an identity or server-owned key (`device_id`, `tenant_id`,
+        `store_id`, `last_seen_at`), or a value outside its bound, enum or
+        pattern. Nothing is stored and no reply policy is computed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    DeviceUnauthorized:
+      description: >
+        401 `unauthorized`: a missing, invalid, revoked or otherwise refused
+        device token, or a non-device credential. Non-disclosing; nothing is
+        stored.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ReadValidationFailure:
+      description: >
+        validation_error (400): a malformed path id, an unknown, repeated or
+        malformed query value, or a cursor the server cannot decode. Checked
+        after the guards and before any database read.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    WriteValidationFailure:
+      description: >
+        validation_error (400): an unknown channel, a body that is not a JSON
+        object, an unknown or missing key, or a value outside its pattern.
+        Nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        Unauthenticated (401): a missing or invalid session cookie, or a
+        non-cookie credential. Non-disclosing. Owned by 028 (G10).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >
+        not_found (404), non-disclosing: identical for a role outside
+        `owner` / `tenant_admin` / `store_manager`, another tenant's device or
+        store, a store outside the caller's scope and an absent id.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PlatformReadForbidden:
+      description: >
+        forbidden (403): a signed-in user who is not a platform admin
+        (`users.is_platform_admin` false), including a tenant `owner`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PlatformWriteForbidden:
+      description: >
+        403, `error.code` one of: `forbidden` (a signed-in user who is not a
+        platform admin) or `origin_rejected` (RT-430: the `Origin` header is
+        missing, or is neither the API's own origin nor listed in
+        `ALLOWED_ORIGINS`). Nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PolicyRevisionConflict:
+      description: >
+        policy_revision_conflict (409): `expectedRevision` is not the stored
+        revision (or is `null` while a policy exists, or set while none
+        exists) and the body differs from the stored values. Nothing is
+        written; read the policy again and retry.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    VersionOrderInvalid:
+      description: >
+        version_order_invalid (422): the versions are well-formed but not
+        `minSupportedVersion <= recommendedVersion <= latestVersion` in
+        semantic-version precedence. Nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SystemFailure:
+      description: >
+        system_failure (500): unexpected server error; the cause is recorded
+        server-side under `request_id`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: >
+        429 `rate_limited` (RT-574): the caller's per-user budget for this
+        class of operation is spent. The body is the canonical error
+        envelope with a non-disclosing message (no budget, class or window);
+        its `request_id` equals the `X-Request-Id` response header. Honour
+        `Retry-After`; never auto-retry a mutation. A 429 is not a 401: it
+        never means the session ended. The console limit is
+        server-configured and may not be enforced, so a client must handle a
+        429 but must not expect one.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/ConsoleRetryAfter"
+        Cache-Control:
+          description: Always `no-store` on a 429.
+          required: true
+          schema:
+            type: string
+            enum: [no-store]
+        X-Request-Id:
+          description: >
+            The request id, equal to `error.request_id` in the body: the
+            inbound `X-Request-Id` when it is a well-formed UUID, otherwise a
+            server-minted one.
+          required: true
+          schema:
+            type: string
+            format: uuid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
