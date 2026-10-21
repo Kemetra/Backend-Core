@@ -83,8 +83,6 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       // RT-492 (RT-114 MA-BC1): approver-eligibility contract; the runtime ships in MA-BC2.
       "posCheckApproverEligibility",
       "posGetTenantBranding",
-      // RT-570 (RT-417 F2): POS payer lookup contract; the runtime ships in a later issue.
-      "posListChargeablePayers",
       // RT-450 (RT-50 F3): tracked line validation and lot lookup; the runtime ships in RT-451.
       "posListTrackedLots",
       "posRedeemVoucher",
