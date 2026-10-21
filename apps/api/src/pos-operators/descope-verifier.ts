@@ -61,11 +61,6 @@ export function descopeIssuer(projectId: string): string {
   return `${DESCOPE_API_BASE}/v1/apps/${assertProjectId(projectId)}`;
 }
 
-/** Older issuer forms still accepted on verification (never written to links). */
-function legacyDescopeIssuers(projectId: string): string[] {
-  return [`${DESCOPE_API_BASE}/${assertProjectId(projectId)}`, projectId];
-}
-
 /** The project JWKS endpoint. */
 export function descopeJwksUrl(projectId: string): string {
   return `${DESCOPE_API_BASE}/${assertProjectId(projectId)}/.well-known/jwks.json`;
@@ -79,23 +74,26 @@ export function configuredDescopeIssuer(projectId: string): string {
 
 /**
  * The `iss` values the verifier accepts. Without an override: the canonical
- * form plus the legacy ones. Either way the signature is checked against THIS
+ * form plus the legacy `https://api.descope.com/<projectId>` and bare
+ * `<projectId>` forms (accepted on verification, never written to links). Either way the signature is checked against THIS
  * project's JWKS, so a listed form cannot admit another project's token.
  */
 export function acceptedDescopeIssuers(projectId: string): string[] {
   const override = (process.env["DESCOPE_JWT_ISSUER"] ?? "").trim();
-  return override.length > 0 ? [override] : [descopeIssuer(projectId), ...legacyDescopeIssuers(projectId)];
+  if (override.length > 0) return [override];
+  return [descopeIssuer(projectId), `${DESCOPE_API_BASE}/${projectId}`, projectId];
 }
 
-/** Expected `aud`: `DESCOPE_JWT_AUDIENCE` when set, else the project id. */
-export function descopeAudience(projectId: string): string {
-  const override = (process.env["DESCOPE_JWT_AUDIENCE"] ?? "").trim();
-  return override.length > 0 ? override : assertProjectId(projectId);
-}
-
-/** Issuer + audience the production verifier enforces (the JWKS is added by the factory). */
+/**
+ * Issuer + audience the production verifier enforces (the JWKS is added by the
+ * factory). `aud` is `DESCOPE_JWT_AUDIENCE` when set, else the project id.
+ */
 export function descopeVerifierConfig(projectId: string): Pick<DescopeVerifierOptions, "issuer" | "audience"> {
-  return { issuer: acceptedDescopeIssuers(projectId), audience: descopeAudience(projectId) };
+  const audienceOverride = (process.env["DESCOPE_JWT_AUDIENCE"] ?? "").trim();
+  return {
+    issuer: acceptedDescopeIssuers(projectId),
+    audience: audienceOverride.length > 0 ? audienceOverride : projectId,
+  };
 }
 
 /** jose error codes are fixed `ERR_*` identifiers — safe to log; messages and payloads are not. */
