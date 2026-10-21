@@ -14,10 +14,10 @@ info:
     only; the till holds an operator envelope, not a cookie.
 
 
-    **Posture.** `1.0.0-draft`, contract-only: the operation carries
-    `x-runtime-status: contract-only` until its runtime ships. No migration, no
-    persistence change and no dependency change is implied: the read uses the
-    existing `payer_account` table. No Connector or POS change is part of this
+    **Posture.** `1.0.0-draft`. The RT-802 runtime serves it (no migration, no
+    persistence change and no dependency change: the read uses the existing
+    `payer_account` table and the shared capture payer predicate), so it
+    carries no `x-runtime-status`. No Connector or POS change is part of this
     contract; POS RT-420 consumes it.
 
 
@@ -140,11 +140,6 @@ paths:
     get:
       summary: List the payers the operator may charge at the envelope's store.
       operationId: posListChargeablePayers
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-570 contract PR; the controller and the read ship with its runtime
-        issue. No migration is needed: the read uses the existing
-        `payer_account` table and the shared capture payer predicate.
       tags: [pos-payers]
       security:
         - operatorAuthorization: []
