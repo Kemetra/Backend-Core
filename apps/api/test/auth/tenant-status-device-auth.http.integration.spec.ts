@@ -43,6 +43,7 @@
  * MIGRATION_TEST_ALLOW_SKIP). Locally without Docker this suite skips when
  * MIGRATION_TEST_ALLOW_SKIP=1.
  */
+import { linkClerkUsers } from "../_helpers/identity-links";
 import "reflect-metadata";
 
 import { randomUUID } from "node:crypto";
@@ -554,6 +555,7 @@ async function seed(e: PgTestEnv): Promise<void> {
        ($3, 'control@rt213.example', 'Control', 'user_rt213_control')`,
     [MANAGER, CASHIER, CONTROL_CASHIER, MANAGER_SUB],
   );
+  await linkClerkUsers(a);
   await a.query(
     `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES
        ($1, $4, $5, $6, 'all'),

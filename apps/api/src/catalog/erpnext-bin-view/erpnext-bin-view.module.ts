@@ -9,7 +9,7 @@
  * outbound HTTP (§IX).
  *
  * Auth is the **machine** `connectorBearer` scheme (opaque-revocable, tenant-scoped)
- * via `ConnectorAuthGuard` — NOT the human `cookieAuth` and NOT the POS `clerkJwt`.
+ * via `ConnectorAuthGuard` — NOT the human `cookieAuth` and NOT the POS operator-identity scheme.
  * Mirrors `ErpnextPostingModule` (015): imports `AuthModule` (PG_POOL + the base
  * guard the connector guard extends), `AuditModule` (the `@Auditable` interceptor),
  * `ContextModule` (`TenantContextGuard`).

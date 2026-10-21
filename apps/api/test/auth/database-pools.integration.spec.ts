@@ -1,3 +1,4 @@
+import { linkClerkUsers } from "../_helpers/identity-links";
 import { hashToken } from "@data-pulse-2/auth";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Logger } from "@data-pulse-2/shared";
@@ -66,6 +67,7 @@ beforeAll(async () => {
       `INSERT INTO users (id, email, clerk_user_id) VALUES ($1, 'pool-user@example.test', 'pool-clerk-user')`,
       [USER_A],
     );
+    await linkClerkUsers(env.admin);
     await env.admin.query(
       `INSERT INTO roles (id, tenant_id, code, name) VALUES ($1, $2, 'store_manager', 'Store Manager')`,
       [ROLE_A, TENANT_A],

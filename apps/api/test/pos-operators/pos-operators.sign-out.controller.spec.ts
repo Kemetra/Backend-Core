@@ -23,6 +23,7 @@
  *     `device_token_attestation`).
  *   - PR-5 sign-in remains unchanged.
  */
+import { linkClerkUsers } from "../_helpers/identity-links";
 import "reflect-metadata";
 
 import { INestApplication } from "@nestjs/common";
@@ -188,11 +189,13 @@ beforeAll(async () => {
         OTHER_USER_ID, OTHER_CLERK_SUB,
       ],
     );
+    await linkClerkUsers(pool);
     await pool.query(
       `INSERT INTO users (id, email, display_name, clerk_user_id, deleted_at)
          VALUES ($1, 'deleted@pr6.example', 'Deleted', $2, now())`,
       [DELETED_USER_ID, DELETED_CLERK_SUB],
     );
+    await linkClerkUsers(pool);
     await pool.query(
       `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES
          ($1, $2, $3, $4, 'all'),

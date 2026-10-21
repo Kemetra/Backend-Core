@@ -8,8 +8,10 @@
  *      a. Structural validation (Zod already ran; this catches action_category
  *         and payload forbidden-field violations).
  *      b. Tenant/branch scope check against the device-resolved scope.
- *      c. Resolve `acting_operator_id` (Clerk subject) → `users.id` (strict —
- *         reject as `invalid_input` on unmapped).
+ *      c. Resolve `acting_operator_id` → `users.id` (strict — reject as
+ *         `invalid_input` on unmapped): the user bound to the event's POS
+ *         session must hold an identity link, active OR disabled, whose subject
+ *         is that id (see `resolveActorUserId`).
  *      d. Idempotent INSERT via `ON CONFLICT (id) DO NOTHING RETURNING id`.
  *         Conflict → `duplicates`; fresh insert → `accepted`.
  *   3. Return `{ accepted, duplicates, rejected }`.
@@ -28,6 +30,7 @@ import type { Logger } from "@data-pulse-2/shared";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool, PoolClient } from "pg";
 
+import { userIdsLinkedToSubject } from "../auth/identity-link-lookup";
 import { lockDeviceLifecycle } from "../devices/device-lifecycle-lock";
 import { DeviceRepository } from "../pos-operators/device.repository";
 import { isDiscountAuthorizedPayload } from "./discount-audit-payload";
@@ -94,6 +97,8 @@ export class PosAuditEventsService {
     private readonly pool: Pool,
     private readonly deviceRepository: DeviceRepository,
     private readonly logger: Logger,
+    /** Reads `external_identity_links`; the lookup role is the one documented to. */
+    private readonly lookupPool: Pool = pool,
   ) {}
 
   async syncBatch(
@@ -255,37 +260,46 @@ export class PosAuditEventsService {
     );
   }
 
+  /**
+   * The user an event is attributed to, or null (`invalid_actor`).
+   *
+   * Authorization is the session at event time: only users bound to a POS
+   * session of this device and store that was live at `created_at` (and is the
+   * pinned `session_id`, when the event names one) are candidates. The bound
+   * POS session proves it; current membership, role, and store grants may have
+   * changed while the event was queued offline, and using them here would
+   * discard a valid historical audit.
+   *
+   * Among those users, `acting_operator_id` must be a subject of ANY of the
+   * user's identity links, ACTIVE or DISABLED, of any provider: an event queued
+   * offline under the previous provider's id stays attributable after a cutover
+   * disabled that link (RT-796 owner decision, 2026-10-22; no time bound). An id
+   * never linked to the session's user matches nothing, so another operator's
+   * valid id cannot be used on this user's session.
+   */
   private async resolveActorUserId(
     client: PoolClient,
     event: AuditEventItemInput,
     deviceId: string,
   ): Promise<string | null> {
-    // The bound POS session proves authorization at event time. Current
-    // membership, role, and store grants may have changed while the event was
-    // queued offline; using them here would discard a valid historical audit.
-    const r = await client.query<{ id: string }>(
-      `SELECT u.id
+    const sessions = await client.query<{ user_id: string }>(
+      `SELECT DISTINCT token.user_id
        FROM auth_tokens token
-       JOIN users u ON u.id = token.user_id
-       WHERE u.clerk_user_id = $1
-         AND token.tenant_id = $2
+       WHERE token.tenant_id = $1
          AND token.scope = 'pos_operator'
-         AND token.device_id = $4
-         AND token.store_id = $3
-         AND ($5::uuid IS NULL OR token.id = $5::uuid)
-         AND token.issued_at <= $6::timestamptz
-         AND token.expires_at > $6::timestamptz
-         AND (token.revoked_at IS NULL OR token.revoked_at >= $6::timestamptz)
-       LIMIT 1`,
-      [
-        event.acting_operator_id,
-        event.tenant_id,
-        event.branch_id,
-        deviceId,
-        event.session_id ?? null,
-        event.created_at,
-      ],
+         AND token.device_id = $3
+         AND token.store_id = $2
+         AND ($4::uuid IS NULL OR token.id = $4::uuid)
+         AND token.issued_at <= $5::timestamptz
+         AND token.expires_at > $5::timestamptz
+         AND (token.revoked_at IS NULL OR token.revoked_at >= $5::timestamptz)`,
+      [event.tenant_id, event.branch_id, deviceId, event.session_id ?? null, event.created_at],
     );
-    return r.rows[0]?.id ?? null;
+    const linked = await userIdsLinkedToSubject(
+      this.lookupPool,
+      sessions.rows.map((row) => row.user_id),
+      event.acting_operator_id,
+    );
+    return linked[0] ?? null;
   }
 }

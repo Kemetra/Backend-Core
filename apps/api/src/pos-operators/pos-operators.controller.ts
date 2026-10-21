@@ -3,13 +3,13 @@
  *
  * Implements the full `pos-operators.openapi.yaml` surface.
  *
- *   - All endpoints carry the Clerk JWT as `Authorization: Bearer <jwt>`.
+ *   - All endpoints carry the identity token as `Authorization: Bearer <jwt>`.
  *   - Bodies are validated by Zod (strict schemas); malformed bodies are
  *     rejected by `ZodValidationPipe` and rendered as 400 by the global filter.
  *   - Every refusal returns the same generic 401 envelope; the actual cause is
  *     logged server-side keyed by `request_id` and is not enumerated in the
  *     response body.
- *   - Wave 3 GET endpoints (`roster`, `active-session`) gate via Clerk JWT
+ *   - Wave 3 GET endpoints (`roster`, `active-session`) gate via the identity token
  *     only — no device attestation parameter is present in the GET schema.
  */
 import {

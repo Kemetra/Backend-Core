@@ -44,6 +44,7 @@
  * MIGRATION_TEST_ALLOW_SKIP). Locally without Docker this suite skips when
  * MIGRATION_TEST_ALLOW_SKIP=1.
  */
+import { linkClerkUsers } from "../../../_helpers/identity-links";
 import "reflect-metadata";
 
 import { randomUUID } from "node:crypto";
@@ -302,6 +303,7 @@ beforeAll(async () => {
        VALUES ($1, 'operator@env560.example', 'Env Operator', $2)`,
     [OPERATOR_USER_ID, OPERATOR_CLERK_SUB],
   );
+  await linkClerkUsers(admin);
   // 'specific' access with an explicit grant for the device store, so the
   // store-access axis of G-4 is revocable (DELETE the grant).
   await admin.query(

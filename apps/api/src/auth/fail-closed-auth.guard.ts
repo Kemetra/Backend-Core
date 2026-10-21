@@ -2,9 +2,9 @@
  * Global fail-closed guard (#615).
  *
  * No marker means "authenticate with AuthGuard" (cookie or opaque bearer).
- * `@Public()` is the only way to skip authentication. Clerk and
+ * `@Public()` is the only way to skip authentication. Operator-token and
  * device-attested routes declare their credential and do not fall through
- * to the opaque-token lookup, which would reject a Clerk JWT.
+ * to the opaque-token lookup, which would reject an identity-provider JWT.
  */
 import { CanActivate, type ExecutionContext, Injectable } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
@@ -21,7 +21,7 @@ import {
 
 @Injectable()
 export class FailClosedAuthGuard implements CanActivate {
-  private readonly clerkBearer = new OperatorBearerGuard();
+  private readonly operatorBearer = new OperatorBearerGuard();
   private readonly deviceAttested = new DeviceAttestedGuard();
 
   constructor(
@@ -35,7 +35,7 @@ export class FailClosedAuthGuard implements CanActivate {
       return true;
     }
     if (this.reflector.getAllAndOverride<boolean>(OPERATOR_BEARER_KEY, targets) === true) {
-      return this.clerkBearer.canActivate(context);
+      return this.operatorBearer.canActivate(context);
     }
     if (this.reflector.getAllAndOverride<boolean>(DEVICE_ATTESTED_KEY, targets) === true) {
       return this.deviceAttested.canActivate();

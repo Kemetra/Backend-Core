@@ -108,7 +108,7 @@ const VALID_USER_ROW = {
   id: USER_ID,
   email: "u@example.com",
   display_name: "Test User",
-  clerk_user_id: OPERATOR_CLERK_SUB,
+  operator_id: OPERATOR_CLERK_SUB,
   deleted_at: null,
 };
 
@@ -193,16 +193,13 @@ describe("PosOperatorsService.roster", () => {
       [VALID_USER_ROW],
       [{ ...MANAGER_MEMBERSHIP_ROW, store_access_kind: "all" }],
       [
-        {
-          id: "0195b400-0000-7000-8000-0000000a0001",
-          clerk_user_id: "user_staff_1",
-          display_name: "Alice",
-        },
-        {
-          id: "0195b400-0000-7000-8000-0000000a0002",
-          clerk_user_id: "user_staff_2",
-          display_name: "Bob",
-        },
+        { id: "0195b400-0000-7000-8000-0000000a0001", display_name: "Alice" },
+        { id: "0195b400-0000-7000-8000-0000000a0002", display_name: "Bob" },
+      ],
+      // active identity links of those users (read on the lookup pool)
+      [
+        { user_id: "0195b400-0000-7000-8000-0000000a0001", subject: "user_staff_1" },
+        { user_id: "0195b400-0000-7000-8000-0000000a0002", subject: "user_staff_2" },
       ],
     ]);
     const svc = new PosOperatorsService(
@@ -214,7 +211,7 @@ describe("PosOperatorsService.roster", () => {
 
     const r = await svc.roster("jwt", { branch_id: STORE_ID }, "rid-5");
     // 034: each entry carries the provider-neutral user_id (= users.id),
-    // distinct from id (= clerk_user_id, the v1 bridge).
+    // distinct from id (= the active link subject).
     expect(r).toEqual({
       cashiers: [
         {
@@ -302,7 +299,8 @@ describe("PosOperatorsService.roster", () => {
       programPoolQueries(pool, [
         [VALID_USER_ROW],
         [{ ...MANAGER_MEMBERSHIP_ROW, role_code: roleCode }],
-        [{ id: "0195b400-0000-7000-8000-0000000a0001", clerk_user_id: "user_staff_1", display_name: "Alice" }],
+        [{ id: "0195b400-0000-7000-8000-0000000a0001", display_name: "Alice" }],
+        [{ user_id: "0195b400-0000-7000-8000-0000000a0001", subject: "user_staff_1" }],
       ]);
       const svc = new PosOperatorsService(
         pool as unknown as Pool,

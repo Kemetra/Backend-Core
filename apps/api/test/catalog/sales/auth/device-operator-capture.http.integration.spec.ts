@@ -36,6 +36,7 @@
  * NOTE: CI runs Testcontainers (ci.yml db-integration). Locally without
  * Docker this suite skips when MIGRATION_TEST_ALLOW_SKIP=1.
  */
+import { linkClerkUsers } from "../../../_helpers/identity-links";
 import "reflect-metadata";
 
 import { randomUUID } from "node:crypto";
@@ -330,6 +331,7 @@ beforeAll(async () => {
        ($4, 'cashierx@rt224.example',  'Other Cashier', 'user_clerk_rt224_cx')`,
     [CASHIER, CASHIER_2, MANAGER, CASHIER_OTHER, MANAGER_SUB],
   );
+  await linkClerkUsers(a);
   // CASHIER: 'specific' access to STORE only (so store access is revocable).
   // CASHIER_2: 'all' stores. MANAGER: 'specific' access to STORE.
   await a.query(

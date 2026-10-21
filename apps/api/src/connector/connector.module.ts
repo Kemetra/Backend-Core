@@ -6,7 +6,7 @@
  * reach the 012 posting-feed contract. The connector authenticates with the
  * **machine** `connectorBearer` scheme (opaque-revocable, tenant-scoped) — NOT
  * the human `cookieAuth`/`DashboardAuthGuard` (013/014) and NOT the POS
- * `clerkJwt`/device scheme (010). This module owns that connector-identity
+ * operator-identity/device scheme (010). This module owns that connector-identity
  * surface; it is auth/identity and therefore lives at the api root, NOT under
  * `catalog/`.
  *

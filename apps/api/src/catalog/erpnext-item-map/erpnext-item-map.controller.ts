@@ -4,7 +4,7 @@
  * Tenant-admin ERPNext Item-mapping suggest/confirm/retire review surface
  * (packages/contracts/openapi/catalog/erpnext-item-map.yaml). Authenticated by
  * the HUMAN Tenant-Admin cookie session (`cookieAuth` → `DashboardAuthGuard`),
- * NOT the 012 `connectorBearer` machine scheme nor the POS `clerkJwt` device
+ * NOT the 012 `connectorBearer` machine scheme nor the POS operator-identity device
  * scheme. `TenantContextGuard` publishes `request.context`; per-method
  * `RolesGuard` + `@Roles` gate writes (default denyAs: 404 — a wrong-role caller
  * cannot distinguish "exists but forbidden" from "absent", §II/§XII).

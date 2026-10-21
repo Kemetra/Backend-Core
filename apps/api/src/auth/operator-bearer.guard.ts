@@ -1,7 +1,7 @@
 /**
  * Requires `Authorization: Bearer <jwt>` and stashes the raw token on the
  * request. JWT verification stays in the POS service, which already refuses
- * an invalid Clerk token with the same 401. This guard only removes the
+ * an invalid identity token with the same 401. This guard only removes the
  * "new method is public until someone remembers the header check" default.
  */
 import { CanActivate, type ExecutionContext, Injectable, UnauthorizedException } from "@nestjs/common";

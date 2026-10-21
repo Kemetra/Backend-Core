@@ -93,7 +93,7 @@ describe("PosShiftsService.getStuck — membership lookup failure", () => {
     const service = new PosShiftsService(pool, verifier, mockLogger);
 
     (pool.query as jest.Mock)
-      .mockResolvedValueOnce({ rows: [{ id: USER_ID }] })
+      .mockResolvedValueOnce({ rows: [{ id: USER_ID, deleted_at: null }] })
       .mockResolvedValueOnce({ rows: [] });
 
     const result = await service.getStuck(RAW_JWT, BRANCH_ID, null);
@@ -110,7 +110,7 @@ describe("PosShiftsService.getStuck — ineligible role", () => {
     const service = new PosShiftsService(pool, verifier, mockLogger);
 
     (pool.query as jest.Mock)
-      .mockResolvedValueOnce({ rows: [{ id: USER_ID }] })
+      .mockResolvedValueOnce({ rows: [{ id: USER_ID, deleted_at: null }] })
       .mockResolvedValueOnce({
         rows: [
           {
@@ -136,7 +136,7 @@ describe("PosShiftsService.getStuck — specific store access failure", () => {
     const service = new PosShiftsService(pool, verifier, mockLogger);
 
     (pool.query as jest.Mock)
-      .mockResolvedValueOnce({ rows: [{ id: USER_ID }] })
+      .mockResolvedValueOnce({ rows: [{ id: USER_ID, deleted_at: null }] })
       .mockResolvedValueOnce({
         rows: [
           {
@@ -163,7 +163,7 @@ describe("PosShiftsService.getStuck — happy path (all-access)", () => {
     const service = new PosShiftsService(pool, verifier, mockLogger);
 
     (pool.query as jest.Mock)
-      .mockResolvedValueOnce({ rows: [{ id: USER_ID }] })
+      .mockResolvedValueOnce({ rows: [{ id: USER_ID, deleted_at: null }] })
       .mockResolvedValueOnce({ rows: [MEMBERSHIP_ROW] });
 
     (pool.query as jest.Mock).mockResolvedValueOnce({ rows: [SHIFT_ROW] });
@@ -196,7 +196,7 @@ describe("PosShiftsService.getStuck — happy path (all-access)", () => {
     const service = new PosShiftsService(pool, verifier, mockLogger);
 
     (pool.query as jest.Mock)
-      .mockResolvedValueOnce({ rows: [{ id: USER_ID }] })
+      .mockResolvedValueOnce({ rows: [{ id: USER_ID, deleted_at: null }] })
       .mockResolvedValueOnce({ rows: [MEMBERSHIP_ROW] });
 
     (pool.query as jest.Mock).mockResolvedValueOnce({ rows: [] });
@@ -216,7 +216,7 @@ describe("PosShiftsService.getStuck — specific-access happy path", () => {
     const service = new PosShiftsService(pool, verifier, mockLogger);
 
     (pool.query as jest.Mock)
-      .mockResolvedValueOnce({ rows: [{ id: USER_ID }] })
+      .mockResolvedValueOnce({ rows: [{ id: USER_ID, deleted_at: null }] })
       .mockResolvedValueOnce({
         rows: [
           {
@@ -256,7 +256,7 @@ describe("PosShiftsService.getStuck — eligible roles", () => {
       const service = new PosShiftsService(pool, verifier, mockLogger);
 
       (pool.query as jest.Mock)
-        .mockResolvedValueOnce({ rows: [{ id: USER_ID }] })
+        .mockResolvedValueOnce({ rows: [{ id: USER_ID, deleted_at: null }] })
         .mockResolvedValueOnce({
           rows: [
             {

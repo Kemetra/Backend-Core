@@ -19,6 +19,7 @@
  *
  * Response bodies are checked against `pos-shifts.openapi.yaml` with AJV.
  */
+import { linkClerkUsers } from "../../_helpers/identity-links";
 import "reflect-metadata";
 
 import { randomUUID } from "node:crypto";
@@ -251,6 +252,7 @@ async function seedPeople(a: Pool): Promise<void> {
       `INSERT INTO users (id, email, display_name, clerk_user_id) VALUES ($1, $2, $3, $4)`,
       [user.id, `${label}@rt17-s2b.example`, label, clerk],
     );
+    await linkClerkUsers(a);
     await a.query(
       `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES ($1, $2, $3, $4, $5)`,
       [user.membership, user.tenant, user.id, role, access],

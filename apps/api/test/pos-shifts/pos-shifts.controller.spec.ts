@@ -21,6 +21,7 @@
  *   - 200 allowed for owner role (positive authorization coverage).
  *   - 200 allowed for tenant_admin role (positive authorization coverage).
  */
+import { linkClerkUsers } from "../_helpers/identity-links";
 import "reflect-metadata";
 
 import { INestApplication } from "@nestjs/common";
@@ -176,11 +177,13 @@ beforeAll(async () => {
         TADMIN_USER_ID,   TADMIN_CLERK_SUB,
       ],
     );
+    await linkClerkUsers(pool);
     // Give the cashier a clerk_user_id so shift display_name is not null
     await pool.query(
       `UPDATE users SET clerk_user_id = 'user_clerk_cashier_shifts' WHERE id = $1`,
       [CASHIER_USER_ID],
     );
+    await linkClerkUsers(pool);
 
     // ---- memberships ----
     await pool.query(

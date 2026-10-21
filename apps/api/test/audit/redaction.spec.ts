@@ -35,6 +35,7 @@
  * The worker (`apps/worker/src/audit/`) is out of scope per the approved
  * slice boundaries. Worker-side persistence redaction is a separate concern.
  */
+import { linkClerkUsers } from "../_helpers/identity-links";
 import "reflect-metadata";
 
 import { hasForbiddenField } from "../../src/pos-audit-events/dto";
@@ -286,6 +287,7 @@ beforeAll(async () => {
       `INSERT INTO users (id, email, clerk_user_id) VALUES ($1, 'op@redact.example', $2)`,
       [OPERATOR_ID, OPERATOR_CLERK],
     );
+    await linkClerkUsers(pool);
     // Active membership required by the tenant-scoped actor lookup (CODX-POS-2).
     await pool.query(
       `INSERT INTO roles (id, tenant_id, code, name) VALUES ($1, $2, 'store_manager', 'Store Manager T236')`,

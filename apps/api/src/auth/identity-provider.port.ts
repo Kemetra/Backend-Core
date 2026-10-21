@@ -3,7 +3,7 @@
  *
  * The provider-NEUTRAL seam (028 §16 / DP-2 028 slice §13, named
  * `IdentityProviderPort`) that lifts provider verification + lifecycle one level
- * above the Clerk-concrete `OperatorTokenVerifier`. Operator identity resolution depends
+ * above the provider-concrete `OperatorTokenVerifier`. Operator identity resolution depends
  * on THIS port, never on a provider-typed claim, so a future provider switch
  * (Auth0 / Keycloak / OIDC) is a per-adapter change with no rewrite of the
  * resolver or any business rule (G-5 / 028 OQ-7).
@@ -30,11 +30,11 @@
  * are the provider's `iss`/`sub` as plain strings.
  */
 export interface VerifiedSubject {
-  /** Which provider verified the token — 'clerk' in v1. */
+  /** Which provider verified the token. */
   readonly providerKey: string;
   /** The provider's configured issuer (`iss`). */
   readonly issuer: string;
-  /** The provider's stable subject (`sub`) — the value clerk_user_id holds today. */
+  /** The provider's stable subject (`sub`). */
   readonly subject: string;
 }
 
@@ -70,7 +70,7 @@ export interface InviteUserInput {
 /**
  * IdentityProviderPort — the 028 §16 operation set. The resolver and the
  * backfill/provisioning flows depend on this interface; production wires a
- * single v1 Clerk adapter (`ClerkIdentityProviderAdapter`); tests inject a fake.
+ * adapter of the configured provider (`identity-provider.factory.ts`); tests inject a fake.
  */
 export interface IdentityProviderPort {
   // --- wired live in D3 ------------------------------------------------------

@@ -30,6 +30,7 @@
  * NOTE: CI runs Testcontainers (ci.yml db-integration). Locally without
  * Docker this suite skips when MIGRATION_TEST_ALLOW_SKIP=1.
  */
+import { linkClerkUsers } from "../../../_helpers/identity-links";
 import "reflect-metadata";
 
 import { randomUUID } from "node:crypto";
@@ -424,6 +425,7 @@ beforeAll(async () => {
        ($4, 'cashierx@rt539.example', 'Other Cashier', 'user_clerk_rt539_cx')`,
     [CASHIER, CASHIER_2, MANAGER, CASHIER_OTHER, MANAGER_SUB],
   );
+  await linkClerkUsers(a);
   await a.query(
     `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES
        ($1, $5, $6, $9, 'all'), ($2, $5, $7, $9, 'all'), ($3, $5, $8, $10, 'specific'), ($4, $11, $12, $13, 'all')`,

@@ -11,7 +11,7 @@
  *     the device-token claim. Including it would be an additional property
  *     and rejected by `additionalProperties: false`.
  *
- * Wave 3 GET endpoints gate via Clerk JWT only; the contract preamble references
+ * Wave 3 GET endpoints gate via the identity token only; the contract preamble references
  * the device-token header inherited from 001/002 boilerplate, but the GET
  * parameter schemas carry no device attestation surface.
  *
@@ -46,11 +46,11 @@ export type PosOperatorRole = "manager" | "admin";
 
 /** Conforms to OpenAPI `PosOperatorSummary`. */
 export interface PosOperatorSummaryBody {
-  /** `users.clerk_user_id` (Clerk subject), NOT `users.id` (ADR D4). v1 bridge. */
+  /** The subject of the user's active identity link, NOT `users.id` (ADR D4). */
   id: string;
   /**
    * Provider-neutral identity key = `users.id` (028 §16). Distinct from `id`
-   * (= `clerk_user_id`, the v1 bridge). Surfaced so POS can anchor local
+   * (= `id`, the active link subject). Surfaced so POS can anchor local
    * operator-scoped records on a provider-independent identifier (033 / POS-017).
    */
   user_id: string;
@@ -98,7 +98,7 @@ export type PosOperatorSignInResponseBody =
  * Sign-out request body. Source of truth:
  * `PosOperatorSignOutRequest` in `pos-operators.openapi.yaml`.
  *
- * The Clerk JWT is carried in `Authorization: Bearer <jwt>`, NOT in the
+ * The identity token is carried in `Authorization: Bearer <jwt>`, NOT in the
  * body. Forbidden fields (`password`, `pin`, `cashier`,
  * `clerk_session_token`, `device_token_attestation`, `branch_id`) are
  * rejected by `.strict()` (= OpenAPI `additionalProperties: false`).
@@ -136,11 +136,11 @@ export type PosRosterQueryInput = z.infer<typeof PosRosterQuerySchema>;
 
 /** Conforms to OpenAPI `PosRosterCashierEntry`. */
 export interface PosRosterCashierEntry {
-  /** `users.clerk_user_id` (Clerk subject), the v1 bridge identifier. */
+  /** The subject of the user's active identity link. */
   id: string;
   /**
    * Provider-neutral identity key = `users.id` (028 §16). Distinct from `id`
-   * (= `clerk_user_id`, the v1 bridge). Surfaced so POS can key local
+   * (= `id`, the active link subject). Surfaced so POS can key local
    * cashier-scoped records (offline-PIN provisioning, POS-019/017) on a
    * provider-independent identifier.
    */
@@ -178,7 +178,7 @@ export type PosTakeoverConfirmInput = z.infer<typeof PosTakeoverConfirmSchema>;
 // ---------------------------------------------------------------------------
 
 /**
- * Query params for GET /active-session. `operator_id` is the Clerk subject
+ * Query params for GET /active-session. `operator_id` is the active link subject
  * of the operator to check.
  */
 export const PosActiveSessionQuerySchema = z

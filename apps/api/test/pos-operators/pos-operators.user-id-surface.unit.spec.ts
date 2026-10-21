@@ -97,7 +97,7 @@ const VALID_USER_ROW = {
   id: USER_ID,
   email: "u@example.com",
   display_name: "Test User",
-  clerk_user_id: OPERATOR_CLERK_SUB,
+  operator_id: OPERATOR_CLERK_SUB,
   deleted_at: null,
 };
 

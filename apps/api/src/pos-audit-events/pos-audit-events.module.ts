@@ -55,8 +55,9 @@ export const POS_AUDIT_EVENTS_LOGGER = "POS_AUDIT_EVENTS_LOGGER";
         pool: Pool,
         devices: DeviceRepository,
         logger: Logger,
-      ): PosAuditEventsService => new PosAuditEventsService(pool, devices, logger),
-      inject: [PG_POOL, DeviceRepository, POS_AUDIT_EVENTS_LOGGER],
+        lookupPool: Pool,
+      ): PosAuditEventsService => new PosAuditEventsService(pool, devices, logger, lookupPool),
+      inject: [PG_POOL, DeviceRepository, POS_AUDIT_EVENTS_LOGGER, AUTH_LOOKUP_POOL],
     },
   ],
 })

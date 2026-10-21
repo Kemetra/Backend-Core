@@ -37,6 +37,7 @@ import {
 import { createApiLogger } from "../common/api-logger";
 import { IdempotencyModule } from "../idempotency/idempotency.module";
 import { OPERATOR_TOKEN_VERIFIER, type OperatorTokenVerifier } from "../auth/operator-token-verifier";
+import { CashierEligibilityRepository } from "../pos-cashier-admissions/cashier-eligibility";
 import { DeviceRepository } from "../pos-operators/device.repository";
 import { PosShiftsController } from "./pos-shifts.controller";
 import { PosShiftsService } from "./pos-shifts.service";
@@ -61,9 +62,13 @@ export const POS_SHIFTS_LOGGER = "POS_SHIFTS_LOGGER";
     },
     {
       provide: PosShiftsService,
-      useFactory: (pool: Pool, verifier: OperatorTokenVerifier, logger: Logger): PosShiftsService =>
-        new PosShiftsService(pool, verifier, logger),
-      inject: [PG_POOL, OPERATOR_TOKEN_VERIFIER, POS_SHIFTS_LOGGER],
+      useFactory: (
+        pool: Pool,
+        verifier: OperatorTokenVerifier,
+        logger: Logger,
+        lookupPool: Pool,
+      ): PosShiftsService => new PosShiftsService(pool, verifier, logger, undefined, lookupPool),
+      inject: [PG_POOL, OPERATOR_TOKEN_VERIFIER, POS_SHIFTS_LOGGER, AUTH_LOOKUP_POOL],
     },
     // RT-17 slice 2b: the cash-up writes. The logger receives the close
     // approver warning (RT-17 comment 10955, option A).
@@ -107,8 +112,9 @@ export const POS_SHIFTS_LOGGER = "POS_SHIFTS_LOGGER";
     PosDeviceAuthGuard,
     {
       provide: OPERATOR_ATTRIBUTION_VERIFIER,
-      useFactory: (pool: Pool): OperatorAttributionVerifier => new PgOperatorAttributionVerifier(pool),
-      inject: [PG_POOL],
+      useFactory: (pool: Pool, lookupPool: Pool): OperatorAttributionVerifier =>
+        new PgOperatorAttributionVerifier(pool, new CashierEligibilityRepository(lookupPool)),
+      inject: [PG_POOL, AUTH_LOOKUP_POOL],
     },
     // Class-referenced in @UseGuards, so reflection-instantiated from the
     // tokens above (no factory), like PosWriteRateLimitGuard (ADR 0009).

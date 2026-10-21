@@ -21,7 +21,7 @@
  * PLUS live per-request operator re-verification (G-4). The reverifier is the
  * shared `PgOperatorContextResolver` (it implements both OperatorContextResolver
  * and OperatorReverifier), constructed against the shared PG_POOL with the v1
- * Clerk identity adapter behind `IdentityProviderPort`.
+ * identity adapter of the configured provider behind `IdentityProviderPort`.
  */
 import { Module } from "@nestjs/common";
 import type { Pool } from "pg";

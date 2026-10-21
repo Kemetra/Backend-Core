@@ -4,9 +4,9 @@
  * Implements `POST /api/pos/v1/audit-events` per
  * `packages/contracts/openapi/pos-audit-events.openapi.yaml`.
  *
- *   - The Clerk JWT (`Authorization: Bearer`) is OPTIONAL. Events emitted
+ *   - The identity token (`Authorization: Bearer`) is OPTIONAL. Events emitted
  *     during sign-out, takeover confirmation, or mid-session account-disable
- *     paths may arrive without a current Clerk JWT.
+ *     paths may arrive without a current identity token.
  *   - When the header is present, the JWT MUST be valid (signature + exp +
  *     nbf + iss); fail-closed on JWKS error or signature mismatch.
  *   - Device authentication is via `device_token_attestation` in the body
@@ -40,7 +40,7 @@ import {
 } from "./dto";
 
 /**
- * Clerk JWT stays optional: sign-out and takeover events are accepted with
+ * The identity token stays optional: sign-out and takeover events are accepted with
  * only the device attestation. When a bearer is present it is verified.
  * `@DeviceAttested` is what stops a new method on this controller from
  * shipping as a public route.

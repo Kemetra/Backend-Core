@@ -2,7 +2,7 @@
  * Route-auth markers for the fail-closed global guard (#615).
  *
  * A route with none of these markers must present a dashboard cookie or an
- * opaque bearer token. `@Public()` is the only opt-out. Clerk POS routes
+ * opaque bearer token. `@Public()` is the only opt-out. Operator-token POS routes
  * and device-attested audit ingestion declare their own credential instead
  * of becoming public.
  */
