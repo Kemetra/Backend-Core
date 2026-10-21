@@ -8,6 +8,12 @@
  * keeps amounts at currency precision. Such a line prices to exactly
  * `unitPrice × q` under the RT-73 round4 return rule.
  *
+ * RT-740 (sales.yaml 1.13.0-draft, RT-699 doc 28 option C-A): a line with a
+ * manual `discount` carries its NET, so the condition becomes `lineAmount =
+ * unitPrice × quantity − discount.amount`, and the discount's own arithmetic
+ * must hold (percent: half up on the line gross, OD-28-3; amount: value =
+ * amount). Without `discount` the rule is unchanged.
+ *
  * Exact decimal only (gate A.6): values are compared as scaled `bigint`, never
  * JS numbers. The DTO already bounds the inputs (money ≤ 4 fractional digits,
  * quantity ≤ 6), so the scales below are fixed. The minor unit is the line
@@ -16,15 +22,23 @@
  */
 import { minorUnitExponent } from "./iso4217-minor-units";
 
+export interface PricedLineDiscountInput {
+  readonly kind: "percent" | "amount";
+  readonly value: string;
+  readonly amount: string;
+}
+
 export interface PricedLineInput {
   readonly unitPrice: string;
   readonly quantity: string;
   readonly lineAmount: string;
   readonly currencyCode: string;
+  readonly discount?: PricedLineDiscountInput | undefined;
 }
 
 const MONEY_SCALE = 4;
 const QUANTITY_SCALE = 6;
+const WHOLE_PERCENT = /^(100|[1-9]\d?)$/;
 
 /** A non-negative exact-decimal string as an integer scaled by 10^scale. */
 function toScaled(value: string, scale: number): bigint {
@@ -41,6 +55,20 @@ function fitsMinorUnit(amount: string, exponent: number): boolean {
   return toScaled(amount, MONEY_SCALE) % 10n ** BigInt(MONEY_SCALE - exponent) === 0n;
 }
 
+/**
+ * RT-740: the discount amount follows from its kind. `gross` is the line gross
+ * at MONEY_SCALE (exact: the quantity is whole). Percent rounds half up to the
+ * minor unit, once, on the line gross (OD-28-3).
+ */
+function discountAmountHolds(discount: PricedLineDiscountInput, gross: bigint, exponent: number): boolean {
+  const amount = toScaled(discount.amount, MONEY_SCALE);
+  if (discount.kind === "amount") return toScaled(discount.value, MONEY_SCALE) === amount;
+  if (!WHOLE_PERCENT.test(discount.value)) return false;
+  const minorUnit = 10n ** BigInt(MONEY_SCALE - exponent);
+  const grossMinor = gross / minorUnit;
+  return ((grossMinor * BigInt(discount.value) + 50n) / 100n) * minorUnit === amount;
+}
+
 function conforms(line: PricedLineInput): boolean {
   const exponent = minorUnitExponent(line.currencyCode);
   if (exponent === null) return false;
@@ -48,7 +76,14 @@ function conforms(line: PricedLineInput): boolean {
   if (!fitsMinorUnit(line.lineAmount, exponent)) return false;
   if (!isWhole(line.quantity)) return false;
   const product = toScaled(line.unitPrice, MONEY_SCALE) * toScaled(line.quantity, QUANTITY_SCALE);
-  return product === toScaled(line.lineAmount, MONEY_SCALE) * 10n ** BigInt(QUANTITY_SCALE);
+  const { discount } = line;
+  if (discount === undefined) {
+    return product === toScaled(line.lineAmount, MONEY_SCALE) * 10n ** BigInt(QUANTITY_SCALE);
+  }
+  if (!fitsMinorUnit(discount.amount, exponent)) return false;
+  const gross = product / 10n ** BigInt(QUANTITY_SCALE);
+  const net = toScaled(line.lineAmount, MONEY_SCALE) + toScaled(discount.amount, MONEY_SCALE);
+  return net === gross && discountAmountHolds(discount, gross, exponent);
 }
 
 /** Index of the first line that breaks the invariant, or null when all conform. */

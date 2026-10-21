@@ -46,8 +46,11 @@ import Ajv2020, { type ValidateFunction } from "ajv/dist/2020";
 import addFormats from "ajv-formats";
 
 import {
+  CaptureSaleLineDiscountSchema,
+  CaptureSaleLineSchema,
   CaptureSaleReceiptSchema,
   CaptureSaleRequestWithTendersSchema,
+  DISCOUNT_REASON_CODES,
 } from "../../../../src/catalog/sales/dto/capture-sale-request.dto";
 import { loadOpenApiContracts } from "../../../../src/openapi/loader";
 
@@ -2049,8 +2052,7 @@ describe("pos-sales/sales.yaml — RT-547/RT-548 readSale line order + read audi
   const ORDER_TEXT =
     "A sale captured before the order was recorded lists its lines by name, then by `lineRef`: a stable order that is not the receipt order";
 
-  it("bumps the version to 1.12.0-draft with an RT-547/RT-548 note citing the owner approval", () => {
-    expect(salesDoc.info?.version).toBe("1.12.0-draft");
+  it("carries the 1.12.0-draft RT-547/RT-548 note citing the owner approval (version moved on in RT-740)", () => {
     expect(flat(salesDoc.info?.description)).toContain(
       "RT-547 / RT-548 (1.12.0-draft; [GATED] owner approval 2026-10-18, Jira RT-689",
     );
@@ -2078,5 +2080,111 @@ describe("pos-sales/sales.yaml — RT-547/RT-548 readSale line order + read audi
     expect(saleLine?.additionalProperties).toBe(false);
     expect(Object.keys(sale?.properties ?? {})).not.toContain("lineOrder");
     expect(Object.keys(saleLine?.properties ?? {})).not.toContain("sequence");
+  });
+});
+
+// ===========================================================================
+// RT-740 (1.13.0-draft; [GATED] owner authorization Jira RT-740 comment 13207;
+// RT-699 doc 28 DEP-1 / OD-28-12 option C-A): a per-line manual discount.
+// ===========================================================================
+describe("pos-sales/sales.yaml — RT-740 per-line manual discount", () => {
+  type FieldNode = { type?: string; enum?: string[]; pattern?: string; format?: string; $ref?: string };
+  const flat = (t: unknown): string => (typeof t === "string" ? t : "").replace(/\s+/g, " ");
+  const schema = (name: string): SchemaObject | undefined => salesDoc.components?.schemas?.[name];
+  const field = (schemaName: string, name: string): FieldNode | undefined =>
+    (schema(schemaName)?.properties ?? {})[name] as FieldNode | undefined;
+  const described = (node: unknown): string => flat((node as { description?: string } | undefined)?.description);
+
+  function lineValidator(): ValidateFunction {
+    const ajv = new Ajv2020({ strict: false, allErrors: true });
+    addFormats(ajv);
+    ajv.addSchema({ ...(salesDoc as object), $id: "sales" });
+    return ajv.compile({ $ref: "sales#/components/schemas/CaptureSaleLine" });
+  }
+  const discount = {
+    kind: "percent",
+    value: "10",
+    amount: "9.00",
+    reasonCode: "promotion",
+    authoritySource: "cashier_approval",
+    approverRole: "manager",
+  };
+  const line = {
+    lineName: "Panadol Extra 24",
+    unitPrice: "45.00",
+    currencyCode: "EGP",
+    quantity: "2",
+    lineAmount: "81.00",
+    unit: "box",
+    discount,
+  };
+
+  it("bumps the version to 1.13.0-draft with an RT-740 note citing the owner authorization", () => {
+    expect(salesDoc.info?.version).toBe("1.13.0-draft");
+    const info = flat(salesDoc.info?.description);
+    expect(info).toContain("RT-740 (1.13.0-draft; [GATED] owner authorization Jira RT-740 comment 13207");
+    expect(info).toContain("the POS MUST NOT send it before RT-740 is deployed");
+    expect(info).toContain("it is NOT stored and NOT returned: `SaleLine` is unchanged");
+  });
+
+  it("CaptureSaleLine gains an OPTIONAL discount; its required list is unchanged", () => {
+    expect(field("CaptureSaleLine", "discount")?.$ref).toBe("#/components/schemas/CaptureSaleLineDiscount");
+    expect(schema("CaptureSaleLine")?.required).toEqual(["lineName", "unitPrice", "currencyCode", "quantity", "lineAmount", "unit"]);
+  });
+
+  it("CaptureSaleLineDiscount is strict, with the C-A fields and closed enums", () => {
+    const d = schema("CaptureSaleLineDiscount");
+    expect(d?.additionalProperties).toBe(false);
+    expect([...(d?.required ?? [])].sort()).toEqual(
+      ["amount", "approverRole", "authoritySource", "kind", "reasonCode", "value"],
+    );
+    expect(field("CaptureSaleLineDiscount", "kind")?.enum).toEqual(["percent", "amount"]);
+    expect(field("CaptureSaleLineDiscount", "authoritySource")?.enum).toEqual(["cashier_approval", "manager_session"]);
+    expect(field("CaptureSaleLineDiscount", "approverRole")?.enum).toEqual(["manager", "admin"]);
+    expect(field("CaptureSaleLineDiscount", "reasonCode")?.enum).toEqual([...DISCOUNT_REASON_CODES]);
+    expect(field("CaptureSaleLineDiscount", "amount")?.$ref).toBe("#/components/schemas/NonNegativeDecimalAmount");
+    expect(field("CaptureSaleLineDiscount", "approverUserId")).toMatchObject({ type: "string", format: "uuid" });
+  });
+
+  it("the DTO mirrors the contract: same keys, same required, strict", () => {
+    const contract = schema("CaptureSaleLineDiscount");
+    const inner = CaptureSaleLineDiscountSchema._def.schema;
+    expect(inner._def.unknownKeys).toBe("strict");
+    const shape = inner.shape as Record<string, z.ZodTypeAny>;
+    expect(Object.keys(shape).sort()).toEqual(Object.keys(contract?.properties ?? {}).sort());
+    expect(Object.keys(shape).filter((k) => !shape[k]!.isOptional()).sort()).toEqual([...(contract?.required ?? [])].sort());
+    const lineShape = CaptureSaleLineSchema.shape as Record<string, z.ZodTypeAny>;
+    expect(Object.keys(lineShape).sort()).toEqual(Object.keys(schema("CaptureSaleLine")?.properties ?? {}).sort());
+    expect(lineShape["discount"]!.isOptional()).toBe(true);
+  });
+
+  it("validates a discounted line and a plain line, and refuses an unknown discount key or free-text reason", () => {
+    const validate = lineValidator();
+    expect(validate(line)).toBe(true);
+    const { discount: _d, ...plain } = line;
+    expect(validate({ ...plain, lineAmount: "90.00" })).toBe(true);
+    expect(validate({ ...line, discount: { ...discount, reasonNote: "regular" } })).toBe(false);
+    expect(validate({ ...line, discount: { ...discount, reasonCode: "my cousin" } })).toBe(false);
+    expect(validate({ ...line, discount: { ...discount, amount: "-1" } })).toBe(false);
+  });
+
+  it("states the net invariant, the percent rule, the zero-total path and the partial-return limit", () => {
+    expect(described(schema("CaptureSaleLine"))).toContain(
+      "`lineAmount = unitPrice × quantity − discount.amount` exactly",
+    );
+    const d = described(schema("CaptureSaleLineDiscount"));
+    expect(d).toContain("rounded half up to the line currency's ISO-4217 minor unit");
+    expect(d).toContain("a sale whose every line is discounted 100% has `posTotal` `0` and is accepted");
+    expect(d).toContain("one `cash` entry of amount `0`");
+    expect(d).toContain("a net of 2.99 over 3 units returns one unit as 0.9967");
+    expect(d).toContain("never free text");
+    expect(described(findOp("captureSale"))).toContain("`lineAmount = unitPrice × quantity − discount.amount`");
+    expect(described(salesDoc.components?.responses?.["CaptureUnprocessable"])).toContain("`CaptureSaleLineDiscount`");
+  });
+
+  it("changes no response schema: SaleLine stays closed without a discount field", () => {
+    const saleLine = schema("SaleLine");
+    expect(saleLine?.additionalProperties).toBe(false);
+    expect(Object.keys(saleLine?.properties ?? {})).not.toContain("discount");
   });
 });
