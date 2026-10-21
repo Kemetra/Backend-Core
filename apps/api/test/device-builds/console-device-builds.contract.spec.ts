@@ -262,9 +262,11 @@ describe("console device builds contract — baseline", () => {
     expect(contract.accepts("FleetBaseline", { ...BASELINE, basis: "attested" })).toBe(false);
   });
 
-  it("scopes the baseline to one store or to every store in scope", () => {
+  it("scopes the baseline to one store or to every store in scope, with storeRef set exactly for one store", () => {
     expect(contract.accepts("FleetBaseline", { ...BASELINE, scope: "store", storeRef: STORE_ID })).toBe(true);
     expect(contract.accepts("FleetBaseline", { ...BASELINE, scope: "tenant" })).toBe(false);
+    expect(contract.accepts("FleetBaseline", { ...BASELINE, scope: "store", storeRef: null })).toBe(false);
+    expect(contract.accepts("FleetBaseline", { ...BASELINE, scope: "all_in_scope", storeRef: STORE_ID })).toBe(false);
   });
 
   it("declares a closed envelope that requires every key it declares", () => {

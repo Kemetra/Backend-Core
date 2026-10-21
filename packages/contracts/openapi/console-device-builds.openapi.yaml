@@ -319,10 +319,24 @@ components:
         - reportingDeviceCount
         - unknownDeviceCount
         - installed
+      allOf:
+        - if:
+            properties:
+              scope:
+                const: store
+            required: [scope]
+          then:
+            properties:
+              storeRef:
+                type: string
+          else:
+            properties:
+              storeRef:
+                type: "null"
       description: >
         The distinct POS builds installed on the active devices in scope, with
         an explicit count of devices whose build is unknown. Read from one
-        database snapshot.
+        database snapshot. `storeRef` is set exactly when `scope` is `store`.
       properties:
         scope:
           type: string

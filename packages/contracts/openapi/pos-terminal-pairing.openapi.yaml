@@ -245,11 +245,13 @@ info:
         identity is an inventory signal only: it never changes trust state,
         rotation, an expiry, a grant or any refusal, and below any version it
         blocks nothing.
-      - **Throttled like the last-seen write.** The server MAY skip the store
-        when the identity equals the stored one within the RT-370 throttle
-        window, so `reportedAt` is the server clock of the last store, not of
-        the last request. A failure to store is counted and swallowed: it
-        never reaches the response.
+      - **Throttled like the last-seen write.** The identity is stored by the
+        same best-effort, throttled write as `lastSeenAt` (RT-370: at most
+        once per throttle window per device). The server MAY defer any store,
+        a changed or a cleared identity included, to the next write window, so
+        a change can show up to one window late, and `reportedAt` is the
+        server clock of the last store, not of the last request. A failure to
+        store is counted and swallowed: it never reaches the response.
       - **The heartbeat stays canonical.** The AD-DEVICE-001 D-1 heartbeat
         (RT-327) remains the canonical reporting channel. Its body fields
         `app_version` and `update_channel` keep the names and formats
