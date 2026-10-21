@@ -252,12 +252,12 @@ async function seedPeople(a: Pool): Promise<void> {
       `INSERT INTO users (id, email, display_name, clerk_user_id) VALUES ($1, $2, $3, $4)`,
       [user.id, `${label}@rt17-s2b.example`, label, clerk],
     );
-    await linkClerkUsers(a);
     await a.query(
       `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES ($1, $2, $3, $4, $5)`,
       [user.membership, user.tenant, user.id, role, access],
     );
   }
+  await linkClerkUsers(a);
   await a.query(
     `INSERT INTO store_access (membership_id, store_id, tenant_id) VALUES ($1, $3, $5), ($2, $4, $5)`,
     [MANAGER.membership, CASHIER_A2_ONLY.membership, STORE_A1, STORE_A2, TENANT_A],

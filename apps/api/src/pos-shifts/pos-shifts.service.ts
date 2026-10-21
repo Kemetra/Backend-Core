@@ -174,7 +174,7 @@ export class PosShiftsService {
       providerKey: claims.providerKey,
       subject: claims.sub,
     });
-    if (!user || user.deleted_at !== null) {
+    if (user?.deleted_at !== null) {
       this.logger.warn({ request_id: requestId }, "pos-shifts: user unmapped");
       return null;
     }
