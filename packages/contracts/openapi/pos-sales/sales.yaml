@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.14.0-draft"
+  version: "1.15.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -422,6 +422,45 @@ info:
     feed in this version, and because `discount` is not stored, it can tell a
     discounted line only by `lineAmount ≠ unitPrice × quantity`.
 
+    RT-450 (1.15.0-draft; [GATED] owner authorization Jira RT-450 comment
+    13212, 2026-10-21; RT-50 Gate 7 follow-up F3, rules G7-7 to G7-9 and G7-13
+    in RT-50 comments 11763 and 11764, owner decision RT-50 comment 11765, Q4,
+    Q5 and Q10): TRACKED SELLING, CONTRACT ONLY. `CaptureSaleLine` gains an
+    OPTIONAL `tracking` (`CaptureSaleLineTracking`: `identityId`, `code`,
+    `expiryDate`, `selection`, `validationId`). `CaptureSaleRequest` gains the
+    OPTIONAL `safetyRevision` and `safetySyncedAt`: the Inventory Safety
+    Revision the till held and when it last synced it. `SaleLine` echoes the
+    line's tracking (`SaleLineTracking`) and `Sale` echoes the two safety
+    fields, all optional. The validation a line points at comes from the new
+    `posValidateTrackedLine` operation, defined with the lot lookup in
+    `pos-sales/tracked-lines.yaml` 1.0.0-draft; both are contract-only. Source
+    of truth: the identity (`identityId`, `code`, `expiryDate`) is the
+    Backend-Core Inventory tracking identity (`inventory/inventory.yaml`
+    `TrackingIdentity`), and the till only echoes what the validation
+    returned. The ERPNext Batch behind it is NOT on this surface: it is
+    resolved from the Inventory edge map and frozen when the posting intent is
+    created (`erpnext-connector/posting-feed.yaml` 1.10.0-draft).
+    Additive: no existing field, pattern or `required` list changes, and a
+    body without `tracking`, `safetyRevision` and `safetySyncedAt` hashes and
+    behaves exactly as before. `tracking` is part of the sale `payload_hash`
+    and of the `Idempotency-Key` fingerprint; `safetyRevision` and
+    `safetySyncedAt` are not part of the `payload_hash` (provenance of the
+    till's state, not a sale fact) but are part of the fingerprint. Capture
+    NEVER rejects a real sale for tracking reasons: the G7-9 classification
+    is stated on `captureSale`. ROLLOUT ORDER: (1) this contract; (2) the
+    RT-451 runtime, which accepts the three request fields. Until it is
+    deployed the strict capture DTO rejects them as unknown fields (400), so
+    the POS MUST NOT send them before RT-451 is deployed and tracked selling
+    is activated for the tenant (a per-tenant flag, default off); (3) the POS
+    flow (RT-454). Because `SaleLine` and `Sale` are `additionalProperties:
+    false`, a client that validates responses strictly must re-pin this
+    version BEFORE the server emits the echoes (the RT-76 order). Tracked
+    selling is also not activated for a tenant before the ERPNext-Connector
+    accepts the batch fields of `posting-feed.yaml` 1.10.0-draft (RT-452) and
+    the other RT-50 Q13 preconditions hold; the activation flag is the
+    deploy-order control, not this contract. No runtime, migration,
+    Connector or POS change.
+
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
     appears on the wire. Timestamps are RFC 3339 / `date-time` in UTC (FR-021).
@@ -558,6 +597,53 @@ paths:
         (see `CaptureSaleReceipt`). The server stores it first-write-wins and
         keeps it out of the `payload_hash`. From RT-539 the order of `lines`
         is stored as the receipt line order.
+
+        Tracked lines (RT-450, from RT-451; RT-50 G7-9, Q5): a line of a
+        tracked product carries `tracking` (`CaptureSaleLineTracking`), the
+        identity the till sold, chosen after an online validation
+        (`posValidateTrackedLine`, `pos-sales/tracked-lines.yaml`). `tracking`
+        is frozen on the line, included in the `payload_hash` and echoed by
+        `SaleLine`; a replay with different tracking is the existing conflict
+        (409 `idempotency_key_conflict` under the same key, the provenance
+        divergence rule under another). Capture NEVER rejects a real sale for
+        tracking reasons: a refusal would only strand the fact in the till's
+        dead-letter. The server accepts the sale and classifies each tracked
+        line. When several rows match, the lower (more severe) row wins:
+
+          1. Valid: a known identity of this product, a `validationId` that
+             matches an accepted validation of that identity (same tenant,
+             store and identity), and not expired at the business date. The
+             sale is accepted; its Inventory effect is at the identity and
+             the ERP Batch ref is frozen with the posting intent. No finding.
+          2. Exact identity, but no `validationId` or one that does not match,
+             or held or recalled at `occurredAt`. Accepted; the effect is
+             normal (the goods left). Critical finding: "tracked line without
+             online validation" or "sold under hold".
+          3. Exact identity, but expired at the business date, or with no ERP
+             edge-map row. Accepted; the effect is at the identity and the
+             ERP posting intent is held, never sent. Critical finding; an
+             edge map is repaired and re-posted, an expired lot goes to the
+             owner (RT-50 B1).
+          4. Unrepresentable: a tracked product's line without `tracking`, an
+             unknown `identityId`, or another product's identity. Accepted;
+             the whole sale is `tracking_unresolved`: no Inventory effect and
+             no ERP posting intent. Critical finding; resolved only by a
+             governed Tracking Resolution (high sensitivity, audited) that
+             binds an existing identity and then commits the effects and the
+             intent together (RT-50 DC-2). Tracking Resolution is a later
+             contract.
+
+        The response is the same `Sale` projection whatever the
+        classification: this version adds no status code, no error code and no
+        classification field to capture. The findings surface through
+        Inventory Health and the Tracking Resolution queue (later issues).
+        Known gap: an ad-hoc line (no `tenantProductRef`) can never be
+        tracked, so the till MUST NOT sell a tracked product as an ad-hoc
+        line. `safetyRevision` and `safetySyncedAt` record the Inventory
+        Safety Revision the till held and when it last synced it (RT-50 G7-7),
+        which lets the server tell a line sold under a hold the till had not
+        yet seen. Tracked lines are never completed offline: they need a
+        successful `posValidateTrackedLine`.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -1957,6 +2043,33 @@ components:
             changed is a 409 `idempotency_key_conflict`.
         receipt:
           $ref: "#/components/schemas/CaptureSaleReceipt"
+        safetyRevision:
+          type: integer
+          minimum: 0
+          description: >
+            OPTIONAL (RT-450; RT-50 G7-7). The tenant's Inventory Safety
+            Revision in the last safety data the till synced, as the till held
+            it when it finalized the sale. Source of truth: Backend-Core
+            Inventory, which increments the per-tenant revision on every hold,
+            recall, expiry correction and tracking-profile change; the till
+            only echoes the value it received. It is a provenance claim, never
+            a credential and never used for authorization. Send it together
+            with `safetySyncedAt` when the till holds safety data; each is
+            recorded as sent, and an absent value is recorded as unknown. Not
+            part of the sale `payload_hash`; part of the idempotency
+            fingerprint. A provenance replay never rewrites the stored value.
+            Accepted from RT-451; do not send before then (see the versioning
+            note).
+        safetySyncedAt:
+          type: string
+          format: date-time
+          description: >
+            OPTIONAL (RT-450; RT-50 G7-7). The till's instant of its last
+            successful safety sync. Like `sourceClockAt` it is preserved as
+            provenance and NEVER consulted for a security, TTL or expiry
+            decision (FR-022): the server compares its own clocks. Not part of
+            the sale `payload_hash`; part of the idempotency fingerprint.
+            Accepted from RT-451; do not send before then.
     CaptureSaleReceipt:
       type: object
       additionalProperties: false
@@ -2073,6 +2186,11 @@ components:
         conditions are unchanged, and `discount.amount` must fit the minor unit
         too. Without `discount` the condition is `lineAmount = unitPrice ×
         quantity`, exactly as before.
+
+        Tracking (RT-450): a line of a batch-tracked product also carries
+        `tracking` (`CaptureSaleLineTracking`). It does not change the price
+        invariant or any other rule of the line; how it is classified is
+        stated on `captureSale`.
       properties:
         lineName:
           type: string
@@ -2105,6 +2223,8 @@ components:
           description: Optional lineage to a tenant product (FR-003). Never the live source of values.
         discount:
           $ref: "#/components/schemas/CaptureSaleLineDiscount"
+        tracking:
+          $ref: "#/components/schemas/CaptureSaleLineTracking"
     CaptureSaleLineDiscount:
       type: object
       additionalProperties: false
@@ -2246,6 +2366,75 @@ components:
             never used for authorization or attribution. The sale's
             attribution stays the authenticated operator (or, on the `device`
             path, the RT-224 cashier).
+    CaptureSaleLineTracking:
+      type: object
+      additionalProperties: false
+      required: [identityId, code, selection]
+      description: >
+        RT-450 (RT-50 G7-9, G7-13; contract-only until RT-451): the tracking
+        identity a line of a batch-tracked product sold. One identity per line:
+        a quantity from two lots is two lines (G7-4). Absent on a line of an
+        untracked product. The line freezes this snapshot at capture (437), and
+        it is included in the sale `payload_hash`.
+
+        Source of truth, field by field: `identityId`, `code` and `expiryDate`
+        are the Backend-Core Inventory tracking identity record (G7-2), as the
+        till received them from the validation; they are never defined by the
+        till and never taken from the ERPNext Batch. The ERP Batch ref is not
+        here: it comes from the Inventory edge map and is frozen with the
+        posting intent. `selection` and `validationId` are the till's account
+        of how the lot was chosen and which online validation covered it.
+
+        `validationId` and `expiryDate` are optional on purpose, so that no
+        row of the G7-9 classification table (see `captureSale`) needs a 400:
+        a line sent without `validationId` is classified as a tracked line
+        without online validation, never refused. A malformed object (an
+        unknown key, a `selection` outside the enum, a non-UUID id) is a 400
+        `validation_error`, as for any body field; a well-formed `tracking`
+        that names an unknown or wrong identity is accepted and classified.
+      properties:
+        identityId:
+          type: string
+          format: uuid
+          description: >
+            The Inventory tracking identity (`TrackingIdentity.id`) sold on
+            this line, as returned by `posValidateTrackedLine` or
+            `posListTrackedLots`. Backend-Core Inventory is its source of
+            truth.
+        code:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: >
+            The lot number exactly as recorded on the identity
+            (`TrackingIdentity.code`, at most 128 characters), matched
+            exactly, never fuzzily. A snapshot: it is not re-read from the
+            identity later.
+        expiryDate:
+          type: string
+          format: date
+          description: >
+            The identity's calendar expiry date as the validation returned it.
+            Omit it for a lot without an expiry. The identity record is the
+            source of truth: a value that differs from it is recorded as sent
+            and never changes the classification.
+        selection:
+          type: string
+          enum: [scanned, fefo_suggested, operator_selected]
+          description: >
+            How the lot was chosen on the till (RT-50 G7-13): `scanned` (its
+            code was scanned or typed), `fefo_suggested` (the till took the
+            server's FEFO suggestion) or `operator_selected` (the cashier
+            picked another lot). FEFO is suggest-only: choosing another lot
+            needs no approval in V1 and is recorded, never refused.
+        validationId:
+          type: string
+          format: uuid
+          description: >
+            The `validationId` of the accepted `posValidateTrackedLine` that
+            covered this line. Optional: its absence, or a value that does not
+            match an accepted validation of this identity in this tenant and
+            store, is classified (G7-9 row 2), not rejected.
 
     # -----------------------------------------------------------------------
     # Terminal-event requests (void / refund) — strict
@@ -2829,6 +3018,22 @@ components:
             a sale captured without them; at most one in this version, matching
             the capture request and the posting feed. Emitted from RT-418; optional until
             then.
+        safetyRevision:
+          type: [integer, "null"]
+          minimum: 0
+          description: >
+            RT-450 (RT-50 G7-7): the Inventory Safety Revision the till
+            reported at capture (`CaptureSaleRequest.safetyRevision`), echoed
+            as recorded. Null when the sale was captured without it; absent
+            from a Backend-Core that predates RT-451. Optional.
+        safetySyncedAt:
+          type: [string, "null"]
+          format: date-time
+          description: >
+            RT-450 (RT-50 G7-7): the till's reported last safety sync time
+            (`CaptureSaleRequest.safetySyncedAt`), echoed as recorded. Null
+            when absent at capture; absent from a Backend-Core that predates
+            RT-451. Provenance only, never a security clock. Optional.
         lines:
           type: array
           items:
@@ -2892,6 +3097,39 @@ components:
           description: >
             Quantity still returnable: `quantity` − `returnedQuantity`, and "0"
             when the sale is voided.
+        tracking:
+          $ref: "#/components/schemas/SaleLineTracking"
+    SaleLineTracking:
+      type: object
+      additionalProperties: false
+      required: [identityId, code, selection]
+      description: >
+        RT-450 (RT-50 G7-9): the tracking snapshot a line was captured with,
+        echoed as recorded (`CaptureSaleLineTracking`). Absent on a line
+        captured without it and from a Backend-Core that predates RT-451;
+        optional, never in `SaleLine.required`. The identity fields are the
+        Backend-Core Inventory tracking identity as the till reported it: the
+        line freezes the snapshot, and a later change of the identity record
+        does not rewrite it. A return takes the identity from this line
+        through `lineRef`; a client never supplies it (G7-10).
+      properties:
+        identityId:
+          type: string
+          format: uuid
+        code:
+          type: string
+          minLength: 1
+          maxLength: 128
+        expiryDate:
+          type: [string, "null"]
+          format: date
+        selection:
+          type: string
+          enum: [scanned, fefo_suggested, operator_selected]
+        validationId:
+          type: [string, "null"]
+          format: uuid
+          description: Null when the line was captured without a `validationId`.
     SaleReturn:
       type: object
       additionalProperties: false

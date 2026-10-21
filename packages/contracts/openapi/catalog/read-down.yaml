@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Catalog — POS Read-Down Sync API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     Spec 010 POS Catalogue Read-Down Sync contract surface. The platform-side,
     READ-ONLY publication of the Resolved Sellable Store Catalogue (003 §6.4) to
@@ -73,6 +73,26 @@ info:
     loads it with an explicit `dir` because the production `loadOpenApiContracts`
     helper is non-recursive (`apps/api/src/openapi/loader.ts` — `readdirSync` with
     no recursive flag), exactly as `catalog/unknown-items.yaml` is loaded.
+
+    **1.1.0-draft (RT-450; [GATED] owner authorization Jira RT-450 comment
+    13212, 2026-10-21; RT-50 Gate 7 rule G7-1, owner decision RT-50 comment
+    11765).** `SellableCatalogRow` gains an OPTIONAL `tracking`
+    (`{ mode, expiry_required }`): the product's Tracking Profile, so the POS
+    can tell, before it adds the line, that a product is sold by lot and
+    needs `posValidateTrackedLine` (`pos-sales/tracked-lines.yaml`). Source of
+    truth: Catalog (`catalog/tracking-profile.yaml`, `tracking_mode` and
+    `expiry_required`). The ERPNext Item never defines the profile. The field
+    names follow this file's snake_case row convention. Additive: the object
+    is optional, no existing field or `required` list changes, and no
+    parameter or status code changes. The wire is NOT yet populated: the
+    server emits the field from the RT-451 runtime. Until then, and for any
+    row without it, `tracking` is absent and the product is untracked
+    (`mode: none`), which is every product today because the profile setter
+    accepts only `none` until tracked selling is activated. Because
+    `SellableCatalogRow` is `additionalProperties: false`, a POS that
+    validates rows strictly MUST re-pin this version BEFORE the server emits
+    the field, and MUST NOT rely on it earlier. Like every row field it
+    travels on snapshot rows and on `upsert` deltas.
 
 servers:
   - url: https://api.example.com
@@ -364,6 +384,39 @@ components:
           description: >
             Opaque per-row change cursor (≤ the response cursor). Clients MUST
             treat as opaque. The canonical per-row token name (locks I2/R-5).
+        tracking:
+          $ref: "#/components/schemas/SellableRowTracking"
+
+    # -----------------------------------------------------------------------
+    # Tracking Profile of a sellable row (RT-450, RT-50 G7-1) — optional
+    # -----------------------------------------------------------------------
+    SellableRowTracking:
+      type: object
+      additionalProperties: false
+      required: [mode, expiry_required]
+      description: >
+        RT-450 (RT-50 G7-1): the product's Tracking Profile, projected from
+        Catalog (`catalog/tracking-profile.yaml`, the source of truth). Absent
+        means untracked (`mode: none`). The POS MUST NOT infer a profile from
+        an ERPNext flag. Not yet emitted: see the 1.1.0-draft note.
+      properties:
+        mode:
+          type: string
+          enum: [none, batch, serial]
+          description: >
+            `none` = untracked; `batch` = every unit belongs to a lot and a
+            sale needs `posValidateTrackedLine`; `serial` = every unit has its
+            own serial number. The enum already carries `serial`, so a later
+            serial release adds no response enum value. Serial selling stays
+            refused (fail closed) until a separate serial issue (RT-50 Q11):
+            the till MUST NOT sell a `serial` product, and
+            `posValidateTrackedLine` refuses it as `not_sellable`.
+        expiry_required:
+          type: boolean
+          description: >
+            True only with `mode: batch`: the product's batches carry an
+            expiry date, so the till expects `expiryDate` on the lots it is
+            offered (386).
 
     # -----------------------------------------------------------------------
     # Snapshot page — cursor-paginated, one consistent cursor point
