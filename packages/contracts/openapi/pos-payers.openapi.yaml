@@ -1,0 +1,409 @@
+openapi: 3.1.0
+info:
+  title: Backend-Core — POS Payer Lookup API
+  version: "1.0.0-draft"
+  description: >
+    RT-570 (RT-417 follow-up F2; `[GATED]` owner authorization Jira RT-570
+    comment 13213, 2026-10-21; decision record
+    `docs/planning/rt-570-pos-payer-lookup.md`). The POS-facing read that gives
+    the till the payers it may charge, so that a manager or admin can pick a
+    valid `payerRef` for `responsibilities[]` on `captureSale`
+    (`pos-sales/sales.yaml`, RT-417 option A, owner decision 2026-10-16).
+    Until now the only payer read was `consoleListPayerAccounts`
+    (`settlement/settlement.yaml`), which accepts the human dashboard cookie
+    only; the till holds an operator envelope, not a cookie.
+
+
+    **Posture.** `1.0.0-draft`, contract-only: the operation carries
+    `x-runtime-status: contract-only` until its runtime ships. No migration, no
+    persistence change and no dependency change is implied: the read uses the
+    existing `payer_account` table. No Connector or POS change is part of this
+    contract; POS RT-420 consumes it.
+
+
+    **Authentication.** The `operatorAuthorization` scheme only: the
+    operator-authorization ENVELOPE (031 D1+D2), the same scheme as
+    `pos-sales/sales.yaml`. There is no device scheme on this surface:
+    option A makes credit an online, manager / admin action, so a cashier on
+    the RT-224 device path never needs this read. A device token, a
+    dashboard cookie or any other credential is the generic 401. `tenant_id`
+    and the store come ONLY from the verified envelope (its device and store
+    binding); no request carries a tenant, store, branch, terminal or device
+    identifier, and the server never takes scope from the client
+    (Constitution §II, §XII).
+
+
+    **Role (normative).** Only an operator who is, NOW, an active `owner`,
+    `tenant_admin` or `store_manager` of the envelope's tenant with access to
+    the envelope's store may read it: the same standing `captureSale` demands
+    for `responsibilities[]` (RT-417, RT-530 set). The server re-evaluates it
+    live on every request. The server can issue an envelope to a cashier
+    (RT-417 / RT-530), so an envelope whose operator fails that standing is
+    refused 403 `sale_responsibility_role_refused`, the SAME code and the
+    same single body `captureSale` uses, so the POS keeps one mapping for
+    "this operator may not charge a payer". One body for every cause (a role
+    outside the set, a lapsed membership, no access to the store); the cause
+    is never disclosed.
+
+
+    **What it returns (normative).** The payers the operator may charge at the
+    envelope's store, as a keyset-paginated list: payers of the envelope's
+    tenant whose status is `active` and that are either scoped to the
+    envelope's store or tenant-wide (`storeId` null). A payer that is
+    suspended, belongs to another tenant, or is scoped to another store is
+    ABSENT: there is no 404, no `suspended` marker and no placeholder for it,
+    so the read cannot be used to probe other stores, other tenants or the
+    existence of a payer. Each item carries only what the picker needs:
+    `payerRef`, `displayName`, `category`, `erpCustomerLinked`, `chargeable`.
+    It never carries the ERPNext Customer identifier (`externalRef`), the
+    payer's `storeId`, `status`, `version`, any credit limit, balance or
+    payment term, any contact detail, or `tenant_id` (minimum disclosure,
+    §XIV). `displayName` can name a private person (`credit_customer`); it is
+    business-class data and is returned to this role only.
+
+
+    **Credit decision (normative, v1).** `chargeable` is the server's
+    structural eligibility decision for one payer, nothing more. It is
+    EXACTLY the payer predicate `captureSale` applies (refusal 4 of
+    `responsibilities[]`, `sale_responsibility_payer_invalid`): the payer is
+    `active`, of this tenant, scoped to this store or tenant-wide, and has a
+    non-blank ERPNext Customer link. The runtime MUST evaluate the read and the
+    capture check with ONE shared implementation so they cannot drift apart.
+    In v1 every returned payer is already active and in scope, so
+    `chargeable` equals `erpCustomerLinked`; the flag exists so a future
+    predicate (for example an operator-set credit hold) can change the
+    decision without a breaking change. `erpCustomerLinked: false` implies
+    `chargeable: false` (enforced by the schema). `chargeable` is NOT a credit
+    limit, balance, terms or collections decision: ERPNext owns those
+    (Payment & Receivables baseline, Confluence RETAIL 23560196) and
+    Backend-Core holds none of that data. Option "return a real credit
+    decision" was rejected for that reason (decision record §2). The till
+    offers `chargeable: true` payers; it may list an unlinked payer greyed
+    out ("not linked to ERPNext; an admin must link it in the Console"), and
+    MUST NOT submit it.
+
+
+    **Advisory, not a reservation (normative).** The read changes no state and
+    holds nothing. A payer can be suspended, unlinked or moved between the
+    read and the capture, so `captureSale` re-checks every payer under lock
+    and stays the only authority: a stale read surfaces as 422
+    `sale_responsibility_payer_invalid` at capture, before the sale is
+    finalized (RT-417). `asOf` tells the till how fresh the page is. The
+    till MUST NOT treat `chargeable: true` as a guarantee.
+
+
+    **Offline (normative, v1).** Option A forbids offline credit: a body with
+    `responsibilities` on the RT-224 device path is 422
+    `sale_responsibility_offline_refused`. This read is therefore an ONLINE
+    call made at the moment a manager / admin attaches payers, and v1 defines
+    NO offline freshness, expiry, cache-validity or staleness rule. The till
+    MUST NOT persist the result for use while offline and MUST NOT offer a
+    cached payer when the read cannot be made. A later offline-credit mode
+    needs its own decision and a new contract version that defines freshness
+    (RT-413 R-1); nothing here pre-empts it.
+
+
+    **Ordering and paging.** `payerRef` descending (a stable total order; with
+    UUIDv7 ids this is newest-first in practice, not a guarantee), keyset
+    paginated. The cursor encodes only the last `payerRef` and is bound to
+    the tenant, the store, the operation and the `category` filter, so it
+    never carries a payer name. There is deliberately NO free-text search
+    parameter in v1: a name typed into a query string would be a payer
+    (possibly a person) in a URL; the till filters the page on the device.
+    A `q` search can be added additively later without a breaking change.
+
+
+    **Read-only.** No state change, no audit event, no idempotency key; any
+    retry is a fresh evaluation. A charge is audited by the sale it is on.
+    The 200 is `Cache-Control: no-store`.
+
+
+    **Errors** use the canonical `Error` envelope shared with `sales.yaml`,
+    `sale-history.yaml` and `auth.openapi.yaml`. Outcome order: 401 (envelope
+    authentication), then 403 `sale_responsibility_role_refused`, then 400
+    (validation), then 200; a 429 is decided by the rate limit before the
+    handler runs. 500 is an unexpected failure.
+
+
+    Cross-cutting conventions live in
+    `specs/001-foundation-auth-tenant-store/contracts/README.md`.
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: pos-payers
+    description: Envelope-authenticated payer lookup for the till (RT-570).
+
+paths:
+  /api/pos/v1/payer-accounts:
+    get:
+      summary: List the payers the operator may charge at the envelope's store.
+      operationId: posListChargeablePayers
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-570 contract PR; the controller and the read ship with its runtime
+        issue. No migration is needed: the read uses the existing
+        `payer_account` table and the shared capture payer predicate.
+      tags: [pos-payers]
+      security:
+        - operatorAuthorization: []
+      description: >
+        Returns one page of the payers of the envelope's tenant that are
+        `active` and either scoped to the envelope's store or tenant-wide, in
+        `payerRef` descending order, each with the server's structural
+        `chargeable` decision (see the document description). An empty page
+        (`items: []`, `nextCursor: null`) is a 200: a store with no payers, or
+        a `category` with none.
+
+
+        `category` filters by payer category. Any other query key, a malformed
+        `category`, a `page_size` outside 1..200, or a `cursor` the server did
+        not issue, cannot decode, or that is reused with a different
+        `category` is 400 `validation_error`.
+
+
+        Scope is the envelope's: there is no store, tenant or device
+        parameter. The operator's standing is re-evaluated live (see Role).
+      parameters:
+        - $ref: "#/components/parameters/PayerCategoryQuery"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: >
+            One page of chargeable-or-not payers of the envelope's store scope.
+            Minimum disclosure: no externalRef, storeId, status, version,
+            credit data or tenant.
+          headers:
+            Cache-Control:
+              required: true
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PosPayerPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/RoleRefused"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+components:
+  securitySchemes:
+    operatorAuthorization:
+      type: http
+      scheme: bearer
+      description: >
+        The operator-authorization ENVELOPE (031 D1+D2), the same scheme as
+        `pos-sales/sales.yaml` and `pos-sales/sale-history.yaml`: an opaque,
+        revocable `pos_operator` bearer. The backend re-evaluates membership,
+        device, store access, role and expiry live on every request. A missing,
+        invalid, revoked or expired envelope, or a non-envelope credential, is
+        the generic 401. On THIS surface the role standing is a separate 403
+        (see `RoleRefused`), because the server can issue an envelope to an
+        operator who may not charge a payer (RT-417 / RT-530).
+
+  parameters:
+    PayerCategoryQuery:
+      name: category
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/PayerCategory"
+      description: Optional payer-category filter. Part of what the cursor is bound to.
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 512
+        pattern: "^[A-Za-z0-9_-]+$"
+      description: >
+        Opaque keyset cursor from a prior page's `nextCursor`, bound to the
+        tenant, the store, the operation and the `category` filter. It encodes
+        only the last `payerRef`, never a name. Do not decode or construct it;
+        omit it for the first page. A value the server did not issue, cannot
+        decode, or that is reused with a different `category` is 400
+        `validation_error`.
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+      description: Maximum items per page. The server MAY return fewer.
+
+  schemas:
+    PayerCategory:
+      type: string
+      enum: [credit_customer, corporate, insurer]
+      description: >
+        Third-party payer category, the same vocabulary as
+        `settlement/settlement.yaml` `PayerCategory`. Extensible: a client MUST
+        tolerate (and may display generically) a value it does not know only
+        after a contract version adds one; v1 is exactly these three.
+    PosPayerPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor, asOf]
+      description: One page of `posListChargeablePayers`.
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/PosPayer"
+        nextCursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page; null on the last page.
+        asOf:
+          type: string
+          format: date-time
+          description: >
+            The server time (UTC) at which this page was read. The till uses it
+            to show how fresh the picker is; the capture check, not this value,
+            decides.
+    PosPayer:
+      type: object
+      additionalProperties: false
+      required: [payerRef, displayName, category, erpCustomerLinked, chargeable]
+      # `chargeable` can only be true for a linked payer, so a contradictory
+      # item fails response validation instead of reaching the till.
+      if:
+        properties:
+          erpCustomerLinked:
+            const: false
+        required: [erpCustomerLinked]
+      then:
+        properties:
+          chargeable:
+            const: false
+      description: >
+        Minimum-disclosure projection of one payer for the till's picker. No
+        `externalRef`, `storeId`, `status`, `version`, credit data or tenant.
+      properties:
+        payerRef:
+          type: string
+          format: uuid
+          description: >
+            The payer's stable reference. This is the value a sale names in
+            `SaleResponsibility.payerRef` (`pos-sales/sales.yaml`).
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: The payer's display name (can name a private person; business-class data).
+        category:
+          $ref: "#/components/schemas/PayerCategory"
+        erpCustomerLinked:
+          type: boolean
+          description: >
+            True when the payer has a non-blank ERPNext Customer link
+            (`externalRef`). The identifier itself is never returned. An
+            unlinked payer fails every credit sale with 422
+            `sale_responsibility_payer_invalid` until an owner / tenant_admin
+            links it in the Console (`consoleUpdatePayerAccount`).
+        chargeable:
+          type: boolean
+          description: >
+            The server's structural eligibility decision at `asOf`: exactly
+            the `captureSale` payer predicate (active, this tenant, this store
+            or tenant-wide, linked). Not a credit-limit or balance decision.
+            See the document description.
+
+    Error:
+      type: object
+      required: [error]
+      additionalProperties: false
+      description: >
+        Canonical error envelope, identical to `sales.yaml` /
+        `sale-history.yaml`. Refusals are non-disclosing.
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              description: >
+                Stable machine-readable error code: `validation_error` (400),
+                `unauthorized` (401), `sale_responsibility_role_refused` (403),
+                `rate_limited` (429).
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              description: Server-side correlation id; the actual cause is recorded server-side.
+
+  headers:
+    RetryAfter:
+      description: Seconds the caller should wait before retrying, on a 429 (ADR 0009).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 300
+
+  responses:
+    ValidationFailure:
+      description: >
+        400 `validation_error`: an unknown query key, a malformed `category`,
+        a `page_size` outside 1..200, or a cursor the server did not issue or
+        that is reused with a different `category`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        Generic 401: a missing, invalid, revoked or expired envelope, or a
+        non-envelope credential (a device token, a dashboard cookie). The body
+        never distinguishes the cause.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RoleRefused:
+      description: >
+        403 `sale_responsibility_role_refused` (the code and body `captureSale`
+        uses): the envelope is valid, but its operator is not NOW an active
+        owner, tenant_admin or store_manager with access to the envelope's
+        store. One body for every cause; never reveals which.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: >
+        Per-principal rate limit exceeded (ADR 0009). Non-disclosing body; the
+        `Retry-After` header carries the back-off. A client treats it as
+        transient.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SystemFailure:
+      description: >
+        500: an unexpected server error. The cause is recorded server-side
+        keyed by `request_id` and is never returned.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
