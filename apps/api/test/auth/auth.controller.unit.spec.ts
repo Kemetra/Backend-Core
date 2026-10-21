@@ -139,6 +139,8 @@ class FakeRateLimiter {
   private blockedBuckets = new Set<string>();
   /** Ordered record of bucket names that check() was actually called with. */
   calledBuckets: string[] = [];
+  /** `resetMs` reported by a blocked bucket (RT-623: drives `Retry-After`). */
+  blockedResetMs = 60_000;
 
   blockBucket(bucketName: string): void {
     this.blockedBuckets.add(bucketName);
@@ -155,7 +157,12 @@ class FakeRateLimiter {
   ): Promise<RateLimitDecision> {
     this.calledBuckets.push(bucketName);
     const allowed = !this.blockedBuckets.has(bucketName);
-    return { allowed, count: allowed ? 1 : 100, remaining: allowed ? 99 : 0, resetMs: 60_000 };
+    return {
+      allowed,
+      count: allowed ? 1 : 100,
+      remaining: allowed ? 99 : 0,
+      resetMs: allowed ? 60_000 : this.blockedResetMs,
+    };
   }
 
   /** Ordered record of bucket names that release() was called with (RT-136). */
@@ -879,5 +886,85 @@ describe("POST /api/v1/auth/email/verify/request — !principal defensive branch
     expect(res.status).toBe(401);
     expectErrorEnvelope(res.body, "unauthorized");
     expect(svc.lastRequestEmailVerificationArgs).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RT-623 — Retry-After on every public-auth 429
+// ---------------------------------------------------------------------------
+
+describe("public-auth 429 carries Retry-After (RT-623)", () => {
+  const signIn = (): Promise<request.Response> =>
+    http().post("/api/v1/auth/signin").send({ email: "user@example.com", password: "p" });
+
+  afterEach(() => {
+    rl.blockedResetMs = 60_000;
+  });
+
+  it("signin_account 429: Retry-After is the bucket's seconds until reset", async () => {
+    rl.blockBucket("signin_account");
+    rl.blockedResetMs = 42_000;
+    const res = await signIn();
+
+    expect(res.status).toBe(429);
+    expect(res.headers["retry-after"]).toBe("42");
+    expectErrorEnvelope(res.body, "rate_limited");
+  });
+
+  it("signin_ip 429 carries Retry-After", async () => {
+    rl.blockBucket("signin_ip");
+    rl.blockedResetMs = 90_000;
+    const res = await signIn();
+
+    expect(res.status).toBe(429);
+    expect(res.headers["retry-after"]).toBe("90");
+  });
+
+  it("password-reset/request 429 carries Retry-After", async () => {
+    rl.blockBucket("pwreset_ip");
+    rl.blockedResetMs = 30_000;
+    const res = await http()
+      .post("/api/v1/auth/password-reset/request")
+      .send({ email: "user@example.com" });
+
+    expect(res.status).toBe(429);
+    expect(res.headers["retry-after"]).toBe("30");
+  });
+
+  it("password-reset/confirm 429 carries Retry-After", async () => {
+    rl.blockBucket("pwreset_confirm_ip");
+    rl.blockedResetMs = 120_000;
+    const res = await http()
+      .post("/api/v1/auth/password-reset/confirm")
+      .send({ token: "tok", new_password: "newpassword12345" });
+
+    expect(res.status).toBe(429);
+    expect(res.headers["retry-after"]).toBe("120");
+  });
+
+  it("rounds a partial second up, so a client never retries too early", async () => {
+    rl.blockBucket("signin_account");
+    rl.blockedResetMs = 1_500;
+
+    expect((await signIn()).headers["retry-after"]).toBe("2");
+  });
+
+  it.each([
+    ["an already-elapsed window (0 ms)", 0, "1"],
+    ["a stub client that keeps no TTL (-1)", -1, "1"],
+    ["a sub-second remainder", 200, "1"],
+    ["a window longer than the cap", 86_400_000, "3600"],
+  ])("clamps to [1, 3600]: %s", async (_label, resetMs, expected) => {
+    rl.blockBucket("signin_account");
+    rl.blockedResetMs = resetMs;
+
+    expect((await signIn()).headers["retry-after"]).toBe(expected);
+  });
+
+  it("an allowed request carries no Retry-After", async () => {
+    const res = await signIn();
+
+    expect(res.status).toBe(200);
+    expect(res.headers["retry-after"]).toBeUndefined();
   });
 });
