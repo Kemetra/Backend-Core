@@ -166,6 +166,18 @@ describe("RT-740 — idempotency", () => {
     expect(second.body.error.code).toBe("idempotency_key_conflict");
     expect(await salesRecorded("ld-idem")).toBe(1);
   });
+
+  it("a provenance replay under another key is not compared: 200 with the stored sale and its net", async () => {
+    if (skip()) return;
+    const first = await post(sale("ld-prov", [TEN_PERCENT], "81.00"), "ldprov1");
+    expect(first.status).toBe(201);
+    const changed = { ...TEN_PERCENT, discount: discount({ reasonCode: "price_correction", approverRole: "admin" }) };
+    const replay = await post(sale("ld-prov", [changed], "81.00"), "ldprov2");
+    expect(replay.status).toBe(200);
+    expect(replay.body.saleRef).toBe(first.body.saleRef);
+    expect(replay.body.lines[0].lineAmount).toBe("81.0000");
+    expect(await salesRecorded("ld-prov")).toBe(1);
+  });
 });
 
 describe("RT-740 DEP-4 — returns refund the net", () => {

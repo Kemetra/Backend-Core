@@ -66,6 +66,8 @@ describe("RT-740 DEP-2 — accepted payloads", () => {
     ["a 100% payload", i1({ value: 100, amount_minor: 9000 })],
     ["a percent that rounds to nothing", i1({ value: 1, amount_minor: 0 })],
     ["an admin approver", i1({ approver_role: "admin" })],
+    ["ids with the bridge alphabet plus : and .", rt608({ placeholder_id: "pos-pulse:a_b-c.1" })],
+    ["an amount discount without amount_minor", rt608({ kind: "amount", value: 500 })],
   ])("%s", (_name, payload) => {
     expect(isDiscountAuthorizedPayload(payload)).toBe(true);
   });
@@ -97,6 +99,10 @@ describe("RT-740 DEP-2 — refused payloads (schema_violation)", () => {
     ["an empty id", rt608({ cart_id: "" })],
     ["an over-long id", rt608({ placeholder_id: "x".repeat(129) })],
     ["a non-string id", rt608({ cart_line_id: 7 })],
+    ["an id carrying text with spaces", rt608({ placeholder_id: "customer Mona 0100" })],
+    ["an id carrying non-ASCII text", rt608({ cart_id: "عميل-دائم" })],
+    ["a value without kind", rt608({ value: 10, amount_minor: 900 })],
+    ["an amount discount whose value is not its amount", i1({ kind: "amount", value: 500, amount_minor: 400 })],
   ])("%s", (_name, payload) => {
     expect(isDiscountAuthorizedPayload(payload as Record<string, unknown>)).toBe(false);
   });

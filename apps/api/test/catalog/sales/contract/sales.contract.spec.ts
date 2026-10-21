@@ -2123,7 +2123,10 @@ describe("pos-sales/sales.yaml — RT-740 per-line manual discount", () => {
     expect(salesDoc.info?.version).toBe("1.13.0-draft");
     const info = flat(salesDoc.info?.description);
     expect(info).toContain("RT-740 (1.13.0-draft; [GATED] owner authorization Jira RT-740 comment 13207");
-    expect(info).toContain("the POS MUST NOT send it before RT-740 is deployed");
+    expect(info).toContain(
+      "The POS MUST NOT send `discount` until BOTH RT-740 is deployed AND the ERPNext-Connector posts discounted lines (RT-699 DEP-3",
+    );
+    expect(info).toContain("The server does not hold these sales off the feed in this version");
     expect(info).toContain("it is NOT stored and NOT returned: `SaleLine` is unchanged");
   });
 
@@ -2144,6 +2147,9 @@ describe("pos-sales/sales.yaml — RT-740 per-line manual discount", () => {
     expect(field("CaptureSaleLineDiscount", "reasonCode")?.enum).toEqual([...DISCOUNT_REASON_CODES]);
     expect(field("CaptureSaleLineDiscount", "amount")?.$ref).toBe("#/components/schemas/NonNegativeDecimalAmount");
     expect(field("CaptureSaleLineDiscount", "approverUserId")).toMatchObject({ type: "string", format: "uuid" });
+    for (const claim of ["authoritySource", "approverRole"]) {
+      expect(described(field("CaptureSaleLineDiscount", claim))).toContain("A client claim: the server does not");
+    }
   });
 
   it("the DTO mirrors the contract: same keys, same required, strict", () => {

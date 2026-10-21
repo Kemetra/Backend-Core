@@ -4,7 +4,8 @@
  * manual line discount. Contract: `pos-audit-events.openapi.yaml` 1.1.0-draft.
  *
  * The key set is closed so no free text (a reason note, a name) can ride along:
- * the reason is a code from the RT-740 closed list only. The magnitude fields
+ * the reason is a code from the RT-740 closed list only, and ids keep to the
+ * POS bridge id alphabet. The magnitude fields
  * (`kind`, `value`, `amount_minor`) and `approver_role` are optional, because
  * events written before POS I1 (RT-608) do not carry them; when present they
  * must be well formed. Money here is the till's integer minor units.
@@ -15,7 +16,9 @@ const REASON_CODES = new Set<string>(DISCOUNT_REASON_CODES);
 
 type FieldRule = (value: unknown) => boolean;
 
-const isNonEmptyId: FieldRule = (v) => typeof v === "string" && v.length > 0 && v.length <= 128;
+/** The POS bridge id alphabet (`[A-Za-z0-9_-]`, plus `:` and `.`): no spaces, no letters outside ASCII. */
+const ID_RE = /^[A-Za-z0-9_:.-]{1,128}$/;
+const isNonEmptyId: FieldRule = (v) => typeof v === "string" && ID_RE.test(v);
 const isMinorUnits: FieldRule = (v) => Number.isSafeInteger(v) && (v as number) >= 0;
 
 /** Every key the payload may hold, with its rule (a Map: no prototype keys). */
@@ -33,9 +36,16 @@ const FIELD_RULES: ReadonlyMap<string, FieldRule> = new Map<string, FieldRule>([
 
 const REQUIRED_KEYS = ["cart_id", "cart_line_id", "placeholder_id"] as const;
 
-/** A percent `value` is a whole percent 1–100 (OD-28-2). */
-function percentInRange(payload: Record<string, unknown>): boolean {
-  return payload["kind"] !== "percent" || payload["value"] === undefined || (payload["value"] as number) <= 100;
+/**
+ * The magnitude fields agree: a `value` needs its `kind`; a percent is a whole
+ * 1–100 (OD-28-2); an amount discount's `value` is its `amount_minor`.
+ */
+function magnitudeConsistent(payload: Record<string, unknown>): boolean {
+  const { kind, value, amount_minor: amountMinor } = payload;
+  if (value === undefined) return true;
+  if (kind === "percent") return (value as number) <= 100;
+  if (kind === "amount") return amountMinor === undefined || value === amountMinor;
+  return false;
 }
 
 /** True when `payload` is a well-formed `cart.discount.manager_authorized` payload. */
@@ -45,5 +55,5 @@ export function isDiscountAuthorizedPayload(payload: Record<string, unknown>): b
     const rule = FIELD_RULES.get(key);
     if (rule === undefined || !rule(value)) return false;
   }
-  return percentInRange(payload);
+  return magnitudeConsistent(payload);
 }

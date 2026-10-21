@@ -327,9 +327,9 @@ info:
     `approverUserId`). A discounted line's `lineAmount` is its NET, and the
     RT-105 invariant becomes `lineAmount = unitPrice × quantity −
     discount.amount` when `discount` is present; without it the invariant is
-    unchanged. `posTotal` = Σ `lineAmount` still holds, so `readSale`, the sale
-    history, returns and credit reversals all work from the net with no change
-    to their shape. A zero-total sale (every line discounted 100%) is
+    unchanged. `posTotal` = Σ `lineAmount` still holds, so in Backend-Core
+    `readSale`, the sale history, returns and credit reversals all work from
+    the net with no change to their shape. A zero-total sale (every line discounted 100%) is
     accepted. Additive: no field, pattern or `required` list of an existing
     schema changes, and a body without `discount` hashes exactly as before.
     In this version the `discount` object is validated and is part of the
@@ -345,11 +345,19 @@ info:
     `cart.discount.manager_authorized` audit event (`pos-audit-events`
     1.1.0-draft) carries the provenance. ROLLOUT ORDER: the server accepts
     `discount` from the RT-740 deploy. Until then the strict capture DTO rejects
-    the unknown field (400), so the POS MUST NOT send it before RT-740 is
-    deployed (the POS holds discounted sales, RT-699 doc 28 DEP-1). The ERPNext
-    posting of a discounted line (RT-699 DEP-3, OD-28-13) is not defined here:
-    the posting feed carries `unitPrice`, `quantity` and the net `lineAmount`
-    as it always has.
+    the unknown field (400). The POS MUST NOT send `discount` until BOTH RT-740
+    is deployed AND the ERPNext-Connector posts discounted lines (RT-699 DEP-3,
+    OD-28-13); until then the POS holds discounted sales (RT-699 doc 28
+    DEP-1). The reason: the posting feed carries `unitPrice`, `quantity` and the
+    net `lineAmount` as it always has, so a discounted line is the first feed
+    line since RT-105 whose `lineAmount` is not `unitPrice × quantity`. The
+    Connector today posts `rate` = `unitPrice` with no discount field, checks
+    the ERPNext amount against `lineAmount` exactly, and refuses a return line
+    whose amount is not `unitPrice × q`. It would therefore reject such a sale,
+    and any return of it, as a validation failure: fail closed, never a wrong
+    ledger entry, but unposted. The server does not hold these sales off the
+    feed in this version, and because `discount` is not stored, it can tell a
+    discounted line only by `lineAmount ≠ unitPrice × quantity`.
 
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
@@ -1758,17 +1766,20 @@ components:
           type: string
           enum: [cashier_approval, manager_session]
           description: >
-            How the discount was authorized (RT-608 / RT-114): `cashier_approval`
-            means a cashier's add consumed a manager approval, and
-            `manager_session` means a manager or admin session applied it
-            directly (D2).
+            How the discount was authorized on the till (RT-608 / RT-114):
+            `cashier_approval` means a cashier's add consumed a manager
+            approval, and `manager_session` means a manager or admin session
+            applied it directly (D2). A client claim: the server does not check
+            it against the operator envelope or the device path, and does not
+            store it.
         approverRole:
           type: string
           enum: [manager, admin]
           description: >
             The approver's POS operator role (the `PosOperatorSummary.role`
-            vocabulary). Every manual discount is authorized by a manager or an
-            admin (RT-608).
+            vocabulary). On the till every manual discount is authorized by a
+            manager or an admin (RT-608). A client claim: the server does not
+            verify or store it.
         approverUserId:
           type: string
           format: uuid

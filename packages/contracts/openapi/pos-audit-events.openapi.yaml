@@ -304,15 +304,18 @@ components:
 
             `cart.discount.manager_authorized` (RT-740 DEP-2): the key set
             is CLOSED, and any other key is rejected with `schema_violation`.
-            `cart_id`, `cart_line_id` and `placeholder_id` are required
-            non-empty ids of at most 128 characters. `approval_id` is the
+            `cart_id`, `cart_line_id` and `placeholder_id` are required ids;
+            every id is 1–128 characters of `[A-Za-z0-9_:.-]` (no spaces,
+            nothing outside ASCII). `approval_id` is the
             consumed `cart.discount.manual` approval, present on the cashier
             path. `reason_code` is one of `promotion`,
             `loyal_or_contract_customer`, `near_expiry_or_damaged`,
             `price_correction` (the `sales.yaml` `CaptureSaleLineDiscount`
             list), and is never free text. `kind` is `percent` or `amount`.
             `value` is an integer: a whole percent 1–100 for `percent`, or
-            the amount off in minor units (at least 1) for `amount`.
+            the amount off in minor units (at least 1) for `amount`, equal to
+            `amount_minor` when both are present; a `value` without `kind` is
+            refused.
             `amount_minor` is the computed discount in minor units, an
             integer of at least 0. `approver_role` is `manager` or `admin`.
             The magnitude fields and `approver_role` are optional, because

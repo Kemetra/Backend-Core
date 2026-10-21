@@ -12,7 +12,11 @@
  * manual `discount` carries its NET, so the condition becomes `lineAmount =
  * unitPrice × quantity − discount.amount`, and the discount's own arithmetic
  * must hold (percent: half up on the line gross, OD-28-3; amount: value =
- * amount). Without `discount` the rule is unchanged.
+ * amount). Without `discount` the rule is unchanged. Such a line no longer has
+ * `lineAmount = unitPrice × quantity`, so the "returned exactly" guarantee above
+ * holds only for undiscounted lines: the Connector cannot post a discounted line
+ * until RT-699 DEP-3, and a partial return of a net that does not divide by the
+ * quantity prices below the minor unit (an open owner decision).
  *
  * Exact decimal only (gate A.6): values are compared as scaled `bigint`, never
  * JS numbers. The DTO already bounds the inputs (money ≤ 4 fractional digits,
