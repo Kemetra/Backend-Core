@@ -1,0 +1,185 @@
+# Backend-Core heavy-CI measurement run (RT-613, scoped to Backend-Core only).
+# Not a migration, not a gate, no cutover. GitHub Actions stays the only CI of record.
+#
+# Manual-only: the only workflow runs when `run_bc_ci` is true (default false),
+# so push-created pipelines have no jobs and spend no credits. Launch with:
+#   circleci pipeline run --project gh/Kemetra/Backend-Core \
+#     --definition-id <id> --branch <this-branch> --param run_bc_ci=true
+#
+# Mirrors the heavy parts of .github/workflows/ci.yml at the pinned main SHA:
+#   bc-api-jest      : `pnpm --filter @data-pulse-2/api test -- --coverage --forceExit`,
+#                      split over N nodes, per-shard threshold off.
+#   bc-api-gate      : fan-in. Fails unless every shard reported, the executed spec
+#                      files equal `jest --listTests` exactly once each, and the MERGED
+#                      coverage meets apps/api/jest.config.cjs (read from the file).
+#   bc-db-worker     : db migrations + worker Testcontainers suites (db-integration).
+#   bc-schemathesis  : ephemeral stack, 5xx gate, non-gating report.
+# `fast` and `oasdiff` stay on GitHub only (light, no Docker).
+#
+# Public repo: cloned anonymously over HTTPS, pinned to the pipeline commit.
+# No secrets, no Codecov. Every long command is wrapped in `timeout`.
+
+version: 2.1
+
+parameters:
+  run_bc_ci: {type: boolean, default: false}
+  bc_main_sha: {type: string, default: "6bd8a5306458d1eda260a2d6cc40e2067eac22be"}
+  api_shards: {type: integer, default: 2}
+
+executors:
+  vm:
+    parameters:
+      size: {type: string, default: large}
+    machine:
+      image: ubuntu-2404:2025.09.1
+    resource_class: << parameters.size >>
+
+commands:
+  clone:
+    steps:
+      - run:
+          name: Clone Backend-Core over HTTPS, pinned to the pipeline commit
+          command: |
+            git clone https://github.com/Kemetra/Backend-Core.git .
+            git checkout --detach "$CIRCLE_SHA1"
+            test "$(git rev-parse HEAD)" = "$(git rev-parse "$CIRCLE_SHA1^{commit}")"
+            git log -1 --oneline
+  node:
+    steps:
+      - run:
+          name: Node 22 + pnpm 9.15.0 on PATH for every step
+          command: |
+            nvm install 22
+            echo "export PATH=\"$(dirname "$(nvm which 22)"):\$PATH\"" >> "$BASH_ENV"
+            echo "nproc=$(nproc) mem=$(free -g | awk '/Mem:/{print $2}')G"
+      - run:
+          name: pnpm 9.15.0 (same pin as ci.yml)
+          command: |
+            corepack enable
+            corepack prepare pnpm@9.15.0 --activate
+      - run:
+          name: Check tools persist into a fresh step
+          command: node --version && pnpm --version
+  bc-setup:
+    steps:
+      - clone
+      - node
+      - run: {name: Install dependencies, command: pnpm install --frozen-lockfile --ignore-scripts}
+  bc-build:
+    steps:
+      - run:
+          name: Build workspaces required by api/db/worker tests
+          command: >-
+            pnpm --filter @data-pulse-2/shared --filter @data-pulse-2/auth
+            --filter @data-pulse-2/db --filter @data-pulse-2/worker run build
+      - run: {name: Pre-pull postgres:16-alpine, command: docker pull postgres:16-alpine}
+
+jobs:
+  # Fails fast on a bad pin, a non-config diff, Docker/Compose or missing host tools.
+  preflight:
+    executor: {name: vm, size: medium}
+    steps:
+      - run:
+          name: Verify pinned SHA, diff scope and runner prerequisites
+          command: |
+            set -e
+            echo "nproc=$(nproc) mem=$(free -g | awk '/Mem:/{print $2}')G"
+            docker --version && docker compose version
+            # Host tools the Schemathesis scripts and jobs call (python runs inside containers).
+            for t in git curl openssl sed awk mktemp timeout sudo; do command -v "$t" >/dev/null || { echo "missing host tool: $t"; exit 1; }; done
+            sha="<< pipeline.parameters.bc_main_sha >>"
+            [ "${#sha}" = 40 ] || { echo "pin is not a full SHA: $sha"; exit 1; }
+            git clone -q https://github.com/Kemetra/Backend-Core.git bc && cd bc
+            echo "remote main: $(git rev-parse origin/main)"
+            git checkout -q --detach "$CIRCLE_SHA1"
+            changed=$(git diff --name-only "$sha" "$CIRCLE_SHA1")
+            echo "$changed"
+            echo "$changed" | grep -v '^\.circleci/' && { echo "diff vs pinned main is not .circleci-only"; exit 1; } || true
+            test -f apps/api/jest.config.cjs && test -f tools/schemathesis/run.sh
+
+  bc-api-jest:
+    executor: {name: vm, size: large}
+    parallelism: << pipeline.parameters.api_shards >>
+    steps:
+      - bc-setup
+      - bc-build
+      - run:
+          name: API Jest shard (threshold enforced once, in bc-api-gate)
+          working_directory: ~/project/apps/api
+          no_output_timeout: 15m
+          command: |
+            OUT="/tmp/ws/api/node-$CIRCLE_NODE_INDEX"; mkdir -p "$OUT"
+            pnpm exec jest --listTests | sed "s#^$PWD/##" | sort > "$OUT/all-tests.txt"
+            test -s "$OUT/all-tests.txt"
+            timeout 15m circleci tests run --verbose --split-by=timings --timings-type=filename \
+              --command="tee $OUT/shard-files.txt | xargs -r pnpm exec jest --runTestsByPath --coverage --coverageThreshold='{}' --coverageReporters=json --coverageDirectory=$OUT --forceExit --json --outputFile=$OUT/jest.json" \
+              < "$OUT/all-tests.txt"
+            test -s "$OUT/shard-files.txt"
+      - run:
+          name: Shard JUnit
+          when: always
+          command: node .circleci/scripts/jest-json-to-junit.cjs "/tmp/ws/api/node-$CIRCLE_NODE_INDEX/jest.json" /tmp/junit/bc-api.xml "$PWD/apps/api"
+      - store_test_results: {path: /tmp/junit}
+      - persist_to_workspace: {root: /tmp/ws, paths: [api]}
+
+  bc-api-gate:
+    executor: {name: vm, size: medium}
+    steps:
+      - bc-setup
+      - attach_workspace: {at: /tmp/ws}
+      - run:
+          name: Inventory + merged coverage gate
+          command: node .circleci/scripts/coverage-gate.cjs apps/api /tmp/ws/api << pipeline.parameters.api_shards >>
+
+  bc-db-worker:
+    executor: {name: vm, size: large}
+    steps:
+      - bc-setup
+      - bc-build
+      - run:
+          name: "@data-pulse-2/db (migrations + Testcontainers)"
+          no_output_timeout: 15m
+          command: mkdir -p /tmp/ws/dbw && timeout 15m pnpm --filter @data-pulse-2/db test -- --json --outputFile=/tmp/ws/dbw/db.json
+      - run:
+          name: "@data-pulse-2/worker (Testcontainers outbox suites)"
+          no_output_timeout: 10m
+          environment: {WORKER_INCLUDE_DB_TESTS: "1"}
+          command: timeout 10m pnpm --filter @data-pulse-2/worker test -- --json --outputFile=/tmp/ws/dbw/worker.json
+      - run:
+          name: JUnit for db and worker (reporting only)
+          when: always
+          command: |
+            node .circleci/scripts/jest-json-to-junit.cjs /tmp/ws/dbw/db.json /tmp/junit/bc-db.xml "$PWD/packages/db" || true
+            node .circleci/scripts/jest-json-to-junit.cjs /tmp/ws/dbw/worker.json /tmp/junit/bc-worker.xml "$PWD/apps/worker" || true
+      - store_test_results: {path: /tmp/junit}
+
+  bc-schemathesis:
+    executor: {name: vm, size: large}
+    environment: {FUZZ_PROJECT: api-fuzz}
+    steps:
+      - clone
+      # Step caps sum to 28 min, about GitHub's whole-job timeout-minutes: 30.
+      # Schemathesis emits no JUnit here; its result is the step exit code and log.
+      - run: {name: Start ephemeral stack, no_output_timeout: 8m, command: timeout 8m bash tools/schemathesis/stack-up.sh}
+      - run: {name: "Gate: no 5xx (not_a_server_error)", no_output_timeout: 14m, command: timeout 14m bash tools/schemathesis/run.sh gate}
+      - run: {name: "Report (non-gating findings)", when: always, no_output_timeout: 6m, command: timeout 6m bash tools/schemathesis/run.sh report}
+      - run:
+          name: Tear down
+          when: always
+          command: |
+            out="${TMPDIR:-/tmp}/api-fuzz"
+            if [ -f "$out/stack.env" ]; then
+              set -a; . "$out/stack.env"; set +a
+              export API_IMAGE=api-fuzz-api:local
+              docker compose -p "$FUZZ_PROJECT" -f tools/schemathesis/compose.yml down -v
+            fi
+
+workflows:
+  bc-heavy-ci:
+    when: << pipeline.parameters.run_bc_ci >>
+    jobs:
+      - preflight
+      - bc-api-jest: {requires: [preflight]}
+      - bc-api-gate: {requires: [bc-api-jest]}
+      - bc-db-worker: {requires: [preflight]}
+      - bc-schemathesis: {requires: [preflight]}
