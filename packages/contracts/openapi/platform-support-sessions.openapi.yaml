@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — Platform Support Session API
-  version: "1.1.0-draft"
+  version: "1.2.0-draft"
   description: >
     Jira RT-414 (RT-391 P0-a, owner decision D2): a platform operator enters a
     tenant they are not a member of ONLY through a support session. Four
@@ -17,11 +17,10 @@ info:
     per auth session.
 
 
-    **Posture.** `1.0.0-draft`, contract-only: every operation carries
-    `x-runtime-status: contract-only` until the RT-414 implementation ships.
-    `[GATED]` contract, owner-approved 2026-10-12 with decisions 1–5 recorded on
-    RT-414. The persistence it needs is a separate `[GATED]` migration; the
-    runtime ships after that migration is approved.
+    **Posture.** `[GATED]` contract, owner-approved 2026-10-12 with decisions
+    1–5 recorded on RT-414. The four operations and the enforcement are
+    implemented (RT-414, `1.2.0-draft`) on the `[GATED]` migration
+    `0062_platform_support_sessions`.
 
 
     **Who needs a support session.** A user whose `users.is_platform_admin` is
@@ -57,6 +56,8 @@ info:
         for another tenant;
       - `support_session_expired`  — the support session exists for this tenant
         but `expires_at` has passed;
+      - `support_session_read_only` — the tenant is suspended, so the support
+        session admits only `GET` and `HEAD` (see **Tenant state**);
       - `origin_rejected`          — the support session admits the request,
         but it uses an unsafe method (`POST`, `PUT`, `PATCH`, `DELETE`) and its
         `Origin` fails the check under **Cross-site requests** below.
@@ -70,6 +71,18 @@ info:
     services still run with `isPlatformAdmin: false` inside the tenant.
     Read-only pass-through and break-glass writes (D1) are P0-b, not this
     contract.
+
+
+    **Tenant state (owner decision 2026-10-12, RT-414 comment 11737).** An
+    active or pending tenant opens a support session with the rules above. A
+    **suspended** tenant opens a **read-only** support session: it admits
+    `GET` and `HEAD`, and refuses any other method with 403
+    `support_session_read_only`, except `updateTenant` with a body that
+    changes nothing but `status` (so the platform can reactivate the tenant;
+    any other field is refused) and `switchActiveStore` (navigation, not a
+    tenant write). Break-glass write access (RT-391 P0-b) is refused on a suspended
+    tenant. A deleted, unknown or forbidden tenant is the one non-disclosing
+    404 (`TenantNotFound`).
 
 
     **Expiry and renewal.** `expires_at` is set by the server: the earlier of
@@ -94,7 +107,7 @@ info:
 
       - `platform.support_session.opened`, `platform.support_session.renewed`
         and `platform.support_session.ended` — one row each, written in the
-        same transaction as the state change;
+        same transaction as the support-session state change;
       - `platform.cross_tenant.accessed` — exactly one row per request to a
         covered route by a platform admin in a non-member tenant, admitted
         (`outcome: succeeded`) or refused (`outcome: rejected`). A route's own
@@ -145,6 +158,15 @@ info:
     **1.1.0-draft (RT-620, additive).** Every cookieAuth operation may
     return 429 `rate_limited` (`TooManyRequests`, with `Retry-After`)
     from the console rate limit (RT-574, RT-619). No other wire change.
+
+
+    **1.2.0-draft (RT-414 implementation).** The `contract-only` markers are
+    lifted. Additive: the suspended-tenant read-only rule and its refusal
+    code `support_session_read_only`, and `TenantNotFound` narrowed to a
+    deleted, unknown or forbidden tenant. The auth session's active tenant is
+    written after the support-session state commits, not in the same
+    transaction (the `sessions` table belongs to the auth lookup role,
+    RT-143); either partial outcome admits nothing.
 x-support-session-enforcement:
   response: "#/components/responses/SupportSessionRefused"
   guarded-routes: TenantContextGuard
@@ -167,17 +189,14 @@ paths:
     post:
       summary: Open a support session and enter a tenant.
       operationId: openSupportSession
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-414 contract PR; the controller ships in the RT-414 implementation
-        after the owner approves this contract and its migration.
       tags: [platform-support-sessions]
       description: >
-        Opens a support session for `tenant_id` and makes that tenant the
-        auth session's active tenant (the active store is cleared), in one
-        transaction. Any current support session of this auth session is
-        ended first (`end_reason: replaced`). Writes
-        `platform.support_session.opened`.
+        Opens a support session for `tenant_id`, then makes that tenant the
+        auth session's active tenant (the active store is cleared). Any
+        current support session of this auth session is ended first
+        (`end_reason: replaced`), in the same transaction as the open. A
+        suspended tenant opens a read-only session (see **Tenant state**).
+        Writes `platform.support_session.opened`.
       requestBody:
         required: true
         content:
@@ -221,10 +240,6 @@ paths:
     get:
       summary: Read the caller's current support session.
       operationId: getCurrentSupportSession
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-414 contract PR; the controller ships in the RT-414 implementation
-        after the owner approves this contract and its migration.
       tags: [platform-support-sessions]
       description: >
         The support session of the caller's auth session, `active` or
@@ -250,10 +265,6 @@ paths:
     post:
       summary: Renew the caller's current support session.
       operationId: renewSupportSession
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-414 contract PR; the controller ships in the RT-414 implementation
-        after the owner approves this contract and its migration.
       tags: [platform-support-sessions]
       description: >
         Explicit renewal of an `active` support session (RT-414 decision 2: an
@@ -298,15 +309,11 @@ paths:
     post:
       summary: End the caller's current support session and leave the tenant.
       operationId: endSupportSession
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-414 contract PR; the controller ships in the RT-414 implementation
-        after the owner approves this contract and its migration.
       tags: [platform-support-sessions]
       description: >
-        Ends the support session (`end_reason: operator`) and clears the auth
-        session's active tenant and store, in one transaction. Allowed on an
-        `active` or `expired` session. Writes `platform.support_session.ended`.
+        Ends the support session (`end_reason: operator`), then clears the
+        auth session's active tenant and store. Allowed on an `active` or
+        `expired` session. Writes `platform.support_session.ended`.
       responses:
         "200":
           description: Ended.
@@ -535,8 +542,9 @@ components:
         route is the template (for example `/api/v1/sales/:saleId`), never the
         concrete path, query string or body. A `succeeded` row has a support
         session and no `reason`; a `rejected` row always has a `reason`, and
-        a `support_session_expired` or `origin_rejected` rejection also names
-        the support session and its purpose.
+        a `support_session_expired`, `support_session_read_only` or
+        `origin_rejected` rejection also names the support session and its
+        purpose.
       if:
         properties:
           outcome:
@@ -546,7 +554,7 @@ components:
         if:
           properties:
             reason:
-              enum: [support_session_expired, origin_rejected]
+              enum: [support_session_expired, support_session_read_only, origin_rejected]
         then:
           properties:
             support_session_id:
@@ -569,7 +577,11 @@ components:
           enum: [succeeded, rejected]
         reason:
           type: string
-          enum: [support_session_required, support_session_expired, origin_rejected]
+          enum:
+            - support_session_required
+            - support_session_expired
+            - support_session_read_only
+            - origin_rejected
           description: On `rejected` rows only.
         support_session_id:
           type: [string, "null"]
@@ -637,8 +649,9 @@ components:
     TenantNotFound:
       description: >
         not_found (404), non-disclosing: identical for a tenant that does not
-        exist and one that cannot be entered (deleted or otherwise unavailable)
-        (FR-ISO-4).
+        exist, a deleted tenant and one the caller may not enter (FR-ISO-4).
+        A suspended tenant is not refused here: it opens a read-only support
+        session (owner decision 2026-10-12, RT-414 comment 11737).
       content:
         application/json:
           schema:
@@ -647,7 +660,8 @@ components:
       description: >
         Cross-cutting refusal on every `TenantContextGuard` route for a platform
         admin in a non-member tenant (403): `support_session_required`,
-        `support_session_expired`, or `origin_rejected` (an unsafe method
+        `support_session_expired`, `support_session_read_only` (an unsafe
+        method on a suspended tenant), or `origin_rejected` (an unsafe method
         admitted by a support session with a failing `Origin`). Written as one
         `platform.cross_tenant.accessed` row with `outcome: rejected`.
       content:

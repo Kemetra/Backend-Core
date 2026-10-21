@@ -45,14 +45,24 @@ export function resolveRequestId(inbound: string | string[] | undefined): string
 export class RequestIdInterceptor implements NestInterceptor {
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const http = context.switchToHttp();
-    const request = http.getRequest<Request>();
-    const response = http.getResponse<Response>();
-
-    const requestId = resolveRequestId(request.headers[REQUEST_ID_HEADER]);
-
-    request.requestId = requestId;
-    response.setHeader("X-Request-Id", requestId);
-
+    assignRequestId(http.getRequest<Request>(), http.getResponse<Response>());
     return next.handle();
   }
+}
+
+/**
+ * Assign the request id once per request and echo it as `X-Request-Id`.
+ * Guards run before this interceptor; one that must record the id (RT-414's
+ * support-session audit rows, the RT-619 429) calls this first, and the
+ * interceptor then keeps the id it assigned, so the audit row, the response
+ * header and `error.request_id` carry the same value.
+ */
+export function assignRequestId(
+  request: Pick<Request, "headers"> & { requestId?: string },
+  response: Pick<Response, "setHeader">,
+): string {
+  const requestId = request.requestId ?? resolveRequestId(request.headers[REQUEST_ID_HEADER]);
+  request.requestId = requestId;
+  response.setHeader("X-Request-Id", requestId);
+  return requestId;
 }

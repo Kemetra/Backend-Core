@@ -230,6 +230,7 @@ describe("data-pulse-migrate CLI", () => {
     "0059_posting_status_pending_created_tenant_idx",
     "0060_posting_status_pending_created_store_idx",
     "0061_posting_status_legacy_posted_idx",
+    "0062_platform_support_sessions",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -473,16 +474,31 @@ describe("data-pulse-migrate CLI", () => {
   }
 
   /**
-   * After one `down` from head: 0061's legacy-posted index is gone, while
-   * 0057-0060's freshness indexes, 0056's event-record and settings tables,
+   * 0062_platform_support_sessions (RT-414): [the table, its one platform-admin
+   * policy, its two guard triggers, its guard function].
+   */
+  async function countSupportSessionObjects(): Promise<[string, string, string, string]> {
+    return [
+      await countPublicTables(["platform_support_sessions"]),
+      await countPolicies(["platform_support_sessions"]),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_trigger
+        WHERE tgname IN ('platform_support_sessions_guard_row', 'platform_support_sessions_guard_truncate')`),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_proc
+        WHERE proname = 'platform_support_sessions_guard'`),
+    ];
+  }
+
+  /**
+   * After one `down` from head: 0062's support-session table is gone, while
+   * 0057-0061's freshness indexes, 0056's event-record and settings tables,
    * 0055's AI entitlement tables and functions, 0054's credit reversal
    * tables, approval-use ledger, trigger and FK-target indexes, 0051's
    * sale_responsibilities, 0050's policy tables and columns, 0048's
    * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES.slice(4))).toBe("0");
-    expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES.slice(0, 4))).toBe("4");
+    expect(await countSupportSessionObjects()).toEqual(["0", "0", "0", "0"]);
+    expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES)).toBe("5");
     expect(await countPositionEventObjects()).toEqual(["2", "5", "1"]);
     expect(await countAiEntitlementObjects()).toEqual(["7", "15", "4", "1"]);
     expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
@@ -551,6 +567,9 @@ describe("data-pulse-migrate CLI", () => {
     // 0057-0061's five posting-freshness indexes, valid after the runner's
     // CONCURRENTLY builds (RT-565 D7).
     expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES)).toBe("5");
+    // 0062's support-session table, its platform-admin policy, two guard
+    // triggers and guard function (RT-414).
+    expect(await countSupportSessionObjects()).toEqual(["1", "1", "2", "1"]);
   }
 
   /** The three tables created by 0054_sale_credit_reversals (RT-577). */
@@ -703,7 +722,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0061 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0062 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();

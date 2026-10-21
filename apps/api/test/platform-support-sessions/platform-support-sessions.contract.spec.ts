@@ -3,15 +3,17 @@
  *
  * RT-414 (RT-391 P0-a, owner decision D2): the platform support-session
  * contract. `[GATED]` contract, owner-approved 2026-10-12 with decisions 1–5
- * recorded on RT-414; the runtime ships after its separate migration gate.
+ * recorded on RT-414; the runtime ships with migration 0062 (1.2.0-draft).
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
- * app boot and no HTTP (the operations are contract-only). What this pins:
+ * app boot and no HTTP (the runtime's HTTP spec is
+ * platform-support-sessions.http.integration.spec.ts). What this pins:
  *
- *   1. Four operations (open, read current, renew, end), all contract-only,
- *      colliding with no other contract's operationIds.
- *   2. Human `cookieAuth` only; 403 is the non-platform-admin refusal; the
- *      unknown / unavailable tenant is one non-disclosing 404.
+ *   1. Four operations (open, read current, renew, end), implemented (no
+ *      contract-only marker), colliding with no other contract's operationIds.
+ *   2. Human `cookieAuth` only; 403 is the non-platform-admin refusal; an
+ *      unknown, deleted or forbidden tenant is one non-disclosing 404, and a
+ *      suspended tenant opens a read-only session (RT-414 comment 11737).
  *   3. Purpose is required and closed; ticket_ref is optional, bounded and
  *      cannot hold an email address or whitespace.
  *   4. The session projection is strict and server-owned (expiry, cap).
@@ -129,9 +131,9 @@ const activeSession = {
 };
 
 describe("platform-support-sessions — document and operations", () => {
-  it("is an OpenAPI 3.1 document at version 1.1.0-draft (RT-620)", () => {
+  it("is an OpenAPI 3.1 document at version 1.2.0-draft (RT-414 runtime)", () => {
     expect(doc.openapi).toBe("3.1.0");
-    expect(doc.info?.version).toBe("1.1.0-draft");
+    expect(doc.info?.version).toBe("1.2.0-draft");
   });
 
   it("declares exactly open, read-current, renew and end", () => {
@@ -142,11 +144,11 @@ describe("platform-support-sessions — document and operations", () => {
     expect(declared.sort()).toEqual(OPERATIONS.map(([p, m, id]) => `${m} ${p} ${id}`).sort());
   });
 
-  it("marks every operation contract-only with a runtime note", () => {
+  it("lifts the contract-only marker from every operation (the runtime ships)", () => {
     for (const [path, method] of OPERATIONS) {
       const o = op(path, method);
-      expect(o["x-runtime-status"]).toBe("contract-only");
-      expect(o["x-runtime-note"]?.trim().length).toBeGreaterThan(0);
+      expect(o["x-runtime-status"]).toBeUndefined();
+      expect(o["x-runtime-note"]).toBeUndefined();
     }
   });
 
@@ -179,9 +181,34 @@ describe("platform-support-sessions — auth and refusals", () => {
     }
   });
 
-  it("answers an unknown and an unavailable tenant with the same 404 on open", () => {
+  it("answers an unknown, a deleted and a forbidden tenant with the same 404 on open", () => {
     expect(op(BASE, "post").responses?.["404"]?.$ref).toBe("#/components/responses/TenantNotFound");
-    expect(doc.components?.responses?.["TenantNotFound"]?.description).toMatch(/identical/);
+    const notFound = doc.components?.responses?.["TenantNotFound"]?.description ?? "";
+    expect(notFound).toMatch(/identical/);
+    expect(notFound).toMatch(/deleted tenant/);
+    expect(notFound).not.toMatch(/otherwise unavailable/);
+    expect(notFound).toMatch(/suspended tenant is not refused here/);
+  });
+
+  it("opens a suspended tenant read-only and refuses break-glass there (comment 11737)", () => {
+    const text = doc.info?.description ?? "";
+    expect(text).toMatch(/\*\*suspended\*\* tenant opens a \*\*read-only\*\* support session/);
+    expect(text).toMatch(/Break-glass write access \(RT-391 P0-b\) is refused on a suspended/);
+    expect(doc.components?.responses?.["SupportSessionRefused"]?.description).toContain(
+      "support_session_read_only",
+    );
+    const v = validator("CrossTenantAccessAuditMetadata");
+    const readOnly = {
+      actor_kind: "platform_admin",
+      outcome: "rejected",
+      reason: "support_session_read_only",
+      support_session_id: SESSION_ID,
+      purpose: "customer_support",
+      method: "POST",
+      route: "/api/v1/stores",
+    };
+    expect(v(readOnly)).toBe(true);
+    expect(v({ ...readOnly, support_session_id: null, purpose: null })).toBe(false);
   });
 
   it("declares the cross-cutting refusal codes for tenant-scoped routes", () => {

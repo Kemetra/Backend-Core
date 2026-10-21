@@ -80,7 +80,11 @@ export class ContextController {
   ): Promise<ContextResponseBody> {
     const principal = request.principal;
     if (!principal) throw new UnauthorizedException("Unauthorized");
-    return this.contextService.switchTenant(principal, body.tenant_id);
+    return this.contextService.switchTenant(
+      principal,
+      body.tenant_id,
+      request.requestId ?? null,
+    );
   }
 
   @Auditable("context.switch.store")
@@ -92,7 +96,11 @@ export class ContextController {
   ): Promise<ContextResponseBody> {
     const principal = request.principal;
     if (!principal) throw new UnauthorizedException("Unauthorized");
-    return this.contextService.switchStore(principal, body.store_id);
+    return this.contextService.switchStore(
+      principal,
+      body.store_id,
+      request.requestId ?? null,
+    );
   }
 
   @Auditable("context.clear.store")

@@ -47,6 +47,7 @@ import type { Pool } from "pg";
 
 import type { PgTestEnv } from "../../_helpers/postgres-container";
 import { seedConsoleMember } from "../../_helpers/console-members";
+import { grantSupportSession } from "../../_helpers/support-session";
 import { STORE_A_X, STORE_A_Y, STORE_B_X, TENANT_A, TENANT_B } from "../../catalog/__support__/isolation-harness";
 import {
   registerTestSession,
@@ -359,6 +360,9 @@ async function seedPeople(admin: Pool): Promise<void> {
   );
   registerTestSession(SES_PLATFORM, USER_PLATFORM);
   registerTestSession(SES_PLATFORM_ACTIVE, USER_PLATFORM);
+  // RT-414: USER_PLATFORM is no member of TENANT_A, so it acts there through support sessions.
+  await grantSupportSession(admin, SES_PLATFORM, USER_PLATFORM, TENANT_A);
+  await grantSupportSession(admin, SES_PLATFORM_ACTIVE, USER_PLATFORM, TENANT_A);
 
   await admin.query(
     `INSERT INTO auth_tokens (id, token_hash, tenant_id, user_id, scope, expires_at)

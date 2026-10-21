@@ -74,6 +74,17 @@ class FakeMembershipRepository {
   findActiveMembershipCalls: Array<{ userId: string; tenantId: string }> = [];
   canAccessStoreCalls: CanAccessCall[] = [];
 
+  // RT-414: the platform admins in this spec are members (no support session).
+
+  hasLiveMembershipResult = true;
+
+  async hasLiveMembership(): Promise<boolean> {
+
+    return this.hasLiveMembershipResult;
+
+  }
+
+
   async isPlatformAdmin(userId: string): Promise<boolean> {
     this.isPlatformAdminCalls.push(userId);
     return this.isPlatformAdminResult;

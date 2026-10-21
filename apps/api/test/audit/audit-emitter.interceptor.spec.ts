@@ -58,6 +58,7 @@ const CONTEXT_RESPONSE: ContextResponseBody = {
   active_store: null,
   active_role_code: "tenant_admin",
   memberships: [],
+  support_session: null,
 };
 
 const CONTEXT_RESPONSE_WITH_STORE: ContextResponseBody = {
