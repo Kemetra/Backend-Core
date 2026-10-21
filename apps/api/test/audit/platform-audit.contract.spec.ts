@@ -258,6 +258,8 @@ describe("platform audit read: item projection and disclosure", () => {
     ["a null label", null],
     ["a server label with no @", "platform_support"],
     ["a mask of a one-character domain", "z***@x"],
+    ["a mask with an empty local part", "***@example.com"],
+    ["a mask whose first code point is an emoji", "\u{1F600}***@example.com"],
   ])("accepts %s in actor_label", (_name, label) => {
     expect(validator("PlatformAuditEvent")({ ...signinFailed, actor_label: label })).toBe(true);
   });
@@ -272,7 +274,7 @@ describe("platform audit read: item projection and disclosure", () => {
   it("states the masking rule, the no-IP rule and the untrusted-text rule", () => {
     const text = op().description ?? "";
     expect(text).toContain("The server MUST NOT return it whole");
-    expect(text).toContain("MUST be returned as its first character");
+    expect(text).toContain("MUST be returned as the first Unicode code");
     expect(text).toContain("`a***@example.com`");
     expect(text).toContain("no IP address");
     expect(text).toContain("untrusted text");

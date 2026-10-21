@@ -111,7 +111,9 @@ paths:
         The controller must NOT use `TenantContextGuard` (support-session
         enforcement matches that guard by name and would cover this route),
         must run the query under the platform-admin context with an explicit
-        `tenant_id IS NULL` predicate, and must not write an audit row.
+        `tenant_id IS NULL` predicate, must not write an audit row, and should
+        carry the same console rate-limit class as `listAuditEvents`
+        (`expensiveRead`, RT-619).
       security:
         - cookieAuth: []
       description: >
@@ -161,9 +163,10 @@ paths:
         **Disclosure (constitution XIV).** Sign-in rows store an email in
         `actor_label` (the account email on `ok`, the typed address on `failed`,
         including for an unknown account). The server MUST NOT return it
-        whole: a value containing `@` MUST be returned as its first character,
-        `***`, and everything from the last `@` (`a***@example.com`); any other
-        label (for example `platform_support`) is returned as stored. `actor_user_id`
+        whole: a value containing `@` MUST be returned as the first Unicode code
+        point before the last `@` (none, if that part is empty), `***`, and
+        everything from the last `@` (`a***@example.com`); any other label (for
+        example `platform_support`) is returned as stored. `actor_user_id`
         is returned as stored. Audit rows store no IP address, password, token
         or request body, so none is returned. `actor_label` and `metadata` are
         untrusted text: a client must escape them, never render them as markup.
@@ -326,12 +329,12 @@ components:
         actor_label:
           description: >
             Masked per the operation's **Disclosure** rule: a value with `@` is
-            its first character, `***` and the text from the last `@`; any
+            its first code point, `***` and the text from the last `@`; any
             other label is as stored. Untrusted text.
           oneOf:
             - type: "null"
             - type: string
-              pattern: "^[^@]\\*\\*\\*@[^@]+$"
+              pattern: "^[^@]?\\*\\*\\*@[^@]+$"
             - type: string
               pattern: "^[^@]*$"
         tenant_id:
