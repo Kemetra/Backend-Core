@@ -105,6 +105,8 @@ describe("T465 — signal presence: every worker metric is in ALLOWED_METRIC_LAB
       "erpnext_posting_reversal_deferred_dead_letter_total",
       // RT-457: sale re-drive sweep, by reason.
       "sale_redrive_total",
+      // RT-427: sale effects skipped instead of stalling the sale.
+      "inventory_sale_effect_skipped_total",
     ];
     expect([...WORKER_METRIC_NAMES].sort()).toEqual([...expected].sort());
   });

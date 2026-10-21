@@ -233,6 +233,15 @@ export const ALLOWED_METRIC_LABELS: Readonly<Record<string, readonly string[]>> 
   // sale) lives in the sweep's structured log, NOT a metric label.
   sale_redrive_total: ["reason"],
 
+  // ---- Sale / void / return Inventory Effects — RT-427 (owner decision 2) ----
+  // Increments once per business line whose effect could not be written
+  // exactly and was skipped instead of stalling the sale: `event_type` is the
+  // closed set {sale, sale_void, sale_return}, `reason` the closed set
+  // {unit_mismatch, quantity_precision, tracked_product}. Emitted by the
+  // worker (sale) and the API (void, return). The (tenant, sale, line) lives
+  // in the `inventory.sale_effect.skipped` warn log, NOT metric labels.
+  inventory_sale_effect_skipped_total: ["event_type", "reason"],
+
   // ---- Connector boundary lifecycle — 018-POLISH (spec §FR-022a) ----
   // Increments on every connector credential/registration lifecycle action
   // (register / issue / rotate / revoke / disable) — operational visibility for

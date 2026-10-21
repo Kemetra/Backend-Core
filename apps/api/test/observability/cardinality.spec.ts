@@ -214,6 +214,8 @@ describe("Drift contract: every signal in the catalogue is represented", () => {
     "erpnext_posting_reversal_deferred_dead_letter_total",
     // Sale re-drive sweep — RT-457. `reason` (closed set).
     "sale_redrive_total",
+    // Skipped sale / void / return effects — RT-427. `event_type`, `reason` (closed sets).
+    "inventory_sale_effect_skipped_total",
     // Connector boundary lifecycle — 018-POLISH (spec §FR-022a). Unlabeled.
     "connector_lifecycle_total",
     // Connector health — 020-POLISH (spec FR-018). Unlabeled.

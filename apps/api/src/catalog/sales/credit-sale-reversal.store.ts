@@ -10,9 +10,12 @@
  * lock; the projection is always re-read from the stored rows, so a replay is
  * byte-identical.
  */
-import { emit, OUTBOX_EVENT_TYPES } from "@data-pulse-2/db";
+import { emit, OUTBOX_EVENT_TYPES, writeReturnEffects, writeVoidEffects } from "@data-pulse-2/db";
 import { newId } from "@data-pulse-2/shared";
 import type { PoolClient } from "pg";
+
+import { resolveReturnLandingStatus } from "../../inventory/position-events/position-events.service";
+import type { SaleEffectsReport } from "../../inventory/sale-effects/sale-effects-report";
 
 import { CreditReturnApprovalRefusedError, type Allocation } from "./credit-sale-reversal.checks";
 import type { CreditSaleReversalRequestDto } from "./dto/credit-sale-reversal-request.dto";
@@ -75,6 +78,8 @@ export interface CreditReversalWrite {
   readonly body: CreditSaleReversalRequestDto;
   readonly allocation: Allocation;
   readonly priced: ReadonlyArray<PricedLine>;
+  /** RT-427: collects skipped reversal effects for the after-commit report. */
+  readonly effects: SaleEffectsReport;
 }
 
 /** Record the reversal and its posting work item; returns the reversal id. */
@@ -118,6 +123,7 @@ export async function writeCreditReversal(client: PoolClient, w: CreditReversalW
   );
   await insertRefundTenders(client, w, reversalId);
   if (approval !== undefined) await consumeReturnApproval(client, w.tenantId, approval.approvalId);
+  await writeReversalEffects(client, w, link);
   await emit(client, {
     eventType: OUTBOX_EVENT_TYPES.ERPNEXT_POSTING_REQUESTED,
     tenantId: w.tenantId,
@@ -126,6 +132,24 @@ export async function writeCreditReversal(client: PoolClient, w: CreditReversalW
     correlationId: null,
   });
   return reversalId;
+}
+
+/**
+ * RT-427: the reversal's Inventory Effects, in this transaction with its
+ * `erpnext.posting.requested` intent (DC-2). The credit reversal reuses the
+ * ordinary void / return row, so its effects are the ordinary ones.
+ */
+async function writeReversalEffects(client: PoolClient, w: CreditReversalWrite, link: string): Promise<void> {
+  const scope = { tenantId: w.tenantId, storeId: w.storeId, saleId: w.saleRef };
+  const outcome =
+    w.body.kind === "void"
+      ? await writeVoidEffects(client, { ...scope, voidId: link })
+      : await writeReturnEffects(client, {
+          ...scope,
+          returnId: link,
+          landingStatus: await resolveReturnLandingStatus(client, w.tenantId),
+        });
+  w.effects.add(outcome, { ...scope, eventRefId: link });
 }
 
 /** `void_id`, `return_id`: the link column of the reversal's kind. */

@@ -48,12 +48,23 @@
  * operations can alert on it. The final attempt is decided by the drainer's own
  * rule (`isFinalOutboxAttempt`).
  *
+ * Inventory Effects (RT-427, owner decision 1 option A): the sale / void /
+ * return transaction already wrote the event's effects as `not_posted`
+ * (awaiting this intent). A FRESH insert links them to the new posting row in
+ * this same transaction: `pending`, or `rejected` with the category when the
+ * creation verdict is `permanently_rejected`. A re-delivery inserts nothing
+ * and links nothing; a refund has no effects.
+ *
  * Payload shape: IDs + provenance only (sale_id / store_id / kind / source_ref_id)
  * — NO money / PII. The ENVELOPE tenant_id is authoritative (a tampered payload
  * tenant must not redirect the write).
  */
 import { z } from "zod";
-import { lockPostingFeedSequence, runWithTenantContext } from "@data-pulse-2/db";
+import {
+  linkEffectsToPostingIntent,
+  lockPostingFeedSequence,
+  runWithTenantContext,
+} from "@data-pulse-2/db";
 import {
   createLogger,
   newId,
@@ -212,6 +223,16 @@ export class PostingRequestedConsumer
         // same transaction, so a later retire / re-point of a map can neither
         // strand nor retarget it. A re-delivery no-op inserted nothing.
         const intentId = inserted.rows[0]?.id;
+        if (intentId !== undefined) {
+          // RT-427: the event's effects now have their intent (same transaction).
+          await linkEffectsToPostingIntent(client, {
+            tenantId,
+            kind,
+            sourceRefId: source_ref_id,
+            postingStatusId: intentId,
+            verdict,
+          });
+        }
         if (intentId !== undefined && verdict.status === "pending") {
           await this.freezeResolution(client, {
             tenantId,

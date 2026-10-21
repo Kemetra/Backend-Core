@@ -162,6 +162,9 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     // inventory settings.
     "inventory_position_events",
     "tenant_inventory_settings",
+    // RT-427 (0063): the Inventory Anchors taken at sale-effects activation.
+    "inventory_anchors",
+    "inventory_anchor_lines",
     // RT-414 (0062): platform support sessions (platform-admin RLS only).
     "platform_support_sessions",
     "audit_events",
@@ -248,6 +251,14 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   ["tenant_inventory_settings", "SELECT"],
   ["tenant_inventory_settings", "INSERT"],
   ["tenant_inventory_settings", "UPDATE"],
+  // RT-427 (0063): sale-effects activation writes the Inventory Anchor of
+  // every store and the comparison reads it (API and worker share this role).
+  // Append-only (no UPDATE / DELETE policy); never UPDATE, DELETE or TRUNCATE.
+  // Apply with docs/operations/sql/inventory-anchors-domain-grants.sql.
+  ["inventory_anchors", "SELECT"],
+  ["inventory_anchors", "INSERT"],
+  ["inventory_anchor_lines", "SELECT"],
+  ["inventory_anchor_lines", "INSERT"],
   // RT-539 (0047): every reprint authorized or recorded writes one row, and
   // the next server copy number reads them. Append-only (no UPDATE / DELETE
   // policy); never UPDATE, DELETE or TRUNCATE.

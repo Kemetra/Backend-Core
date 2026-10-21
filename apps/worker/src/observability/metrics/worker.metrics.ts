@@ -39,6 +39,7 @@
  *
  * Constitution §VII / FR-B-003 / FR-B-006 / FR-B-012.
  */
+import type { SaleEffectEvent, SkippedEffectReason } from "@data-pulse-2/db";
 import type { Queue } from "bullmq";
 import type { Pool } from "pg";
 
@@ -225,6 +226,9 @@ assertMetricLabels("erpnext_posting_reversal_deferred_dead_letter_total", []);
 
 // Sale re-drive sweep — RT-457. `reason` is a closed three-value set.
 assertMetricLabels("sale_redrive_total", ["reason"]);
+
+// Skipped sale effects — RT-427. `event_type` and `reason` are closed sets.
+assertMetricLabels("inventory_sale_effect_skipped_total", ["event_type", "reason"]);
 
 // ---------------------------------------------------------------------------
 // Instruments
@@ -414,6 +418,21 @@ const _saleRedrive: Counter = meter.createCounter("sale_redrive_total", {
     "sale_post_intent / reversal_intent (a missing erpnext.posting.requested " +
     "event was re-emitted). The tenant and sale are in the sweep log, never a label.",
 });
+
+// Skipped sale effects — RT-427 (owner decision 2). Emitted by
+// SaleProcessingProcessor once per sale line whose Inventory Effect could not
+// be written exactly (the sale itself is never stalled).
+const _inventorySaleEffectSkipped: Counter = meter.createCounter(
+  "inventory_sale_effect_skipped_total",
+  {
+    description:
+      "Sale / void / return lines whose Inventory Effect was skipped instead of " +
+      "stalling the sale (RT-427): reason unit_mismatch (not the product's " +
+      "established stocking unit), quantity_precision (more than 4 decimals) or " +
+      "tracked_product (needs a tracking identity, RT-451). The tenant, sale and " +
+      "line are in the inventory.sale_effect.skipped warn log, never labels.",
+  },
+);
 
 // ERPNext posting reversal dead-letter — RT-207. Emitted by
 // PostingRequestedConsumer on the final outbox attempt of a reversal that is
@@ -653,6 +672,18 @@ export type SaleRedriveReason = (typeof SALE_REDRIVE_REASONS)[number];
  */
 export function recordSaleRedrive(reason: SaleRedriveReason, count: number): void {
   if (count > 0) _saleRedrive.add(count, { reason });
+}
+
+/**
+ * Add one to inventory_sale_effect_skipped_total{event_type, reason} per
+ * skipped line (RT-427). Emission site: SaleProcessingProcessor after its
+ * transaction commits. A SIGNAL: never alters the sale.
+ */
+export function recordInventorySaleEffectSkipped(
+  eventType: SaleEffectEvent,
+  reason: SkippedEffectReason,
+): void {
+  _inventorySaleEffectSkipped.add(1, { event_type: eventType, reason });
 }
 
 /** Closed `outcome` label set for erpnext_stock_reconciliation_sweep_total. */
@@ -1108,6 +1139,9 @@ export const WORKER_METRIC_NAMES = [
   "erpnext_posting_reversal_deferred_dead_letter_total",
   // RT-457: sale re-drive sweep, emitted by SaleRedriveProcessor.
   "sale_redrive_total",
+  // RT-427: sale effects skipped by owner decision 2, emitted by
+  // SaleProcessingProcessor.
+  "inventory_sale_effect_skipped_total",
 ] as const satisfies readonly string[];
 
 export type WorkerMetricName = (typeof WORKER_METRIC_NAMES)[number];

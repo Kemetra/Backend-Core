@@ -21,6 +21,8 @@
  *
  * Constitution §VII / FR-B-001 / FR-B-006 / FR-B-012.
  */
+import type { SaleEffectEvent, SkippedEffectReason } from "@data-pulse-2/db";
+
 import type { ConsoleRateLimitClass } from "../../console-rate-limit/console-rate-limit.config";
 import {
   assertMetricLabels,
@@ -145,6 +147,8 @@ assertMetricLabels("idempotency_token_mismatch_total", []);
 assertMetricLabels("catalog_duplicate_alias_conflict_total", []);
 // Inventory domain — 009-SIGNAL-NEGBAL (plan §3.3, FR-024). UNLABELED.
 assertMetricLabels("inventory_negative_balance_total", []);
+// Inventory domain — RT-427 skipped void / return effects. Closed sets.
+assertMetricLabels("inventory_sale_effect_skipped_total", ["event_type", "reason"]);
 // Catalog domain — 010-US1-SNAPSHOT (read-down R6, FR-070). UNLABELED — no
 // product/price/PII in labels; the excluded product is on the reconciliation
 // backlog, not the metric.
@@ -263,6 +267,14 @@ const _inventoryNegativeBalance: Counter = meter.createCounter(
   {
     description:
       "Outbound movements (manual outbound / transfer_out / sale-linked backfill) that drove a (tenant, store, product) on-hand below zero under the allow-and-flag policy (009 FR-024). Unlabeled — the affected key is high-cardinality / PII-adjacent and lives on the movement + audit rows, not metric labels.",
+  },
+);
+
+const _inventorySaleEffectSkipped: Counter = meter.createCounter(
+  "inventory_sale_effect_skipped_total",
+  {
+    description:
+      "Void / return lines whose Inventory Effect was skipped instead of failing the reversal (RT-427 owner decision 2): reason unit_mismatch, quantity_precision or tracked_product. The worker emits the same counter for sale lines. The tenant, sale and line are in the inventory.sale_effect.skipped warn log, never labels.",
   },
 );
 
@@ -566,6 +578,15 @@ export function recordInventoryNegativeBalance(): void {
 }
 
 /**
+ * Increment inventory_sale_effect_skipped_total{event_type, reason} (RT-427).
+ * Emission site: `SaleEffectsReport.flush`, after the void / return commits.
+ * A SIGNAL: never alters the reversal.
+ */
+export function recordInventorySaleEffectSkipped(eventType: SaleEffectEvent, reason: SkippedEffectReason): void {
+  _inventorySaleEffectSkipped.add(1, { event_type: eventType, reason });
+}
+
+/**
  * Increment catalog_unpriced_issue_rate (010 R6 / FR-070).
  * Emission site: ReadDownService snapshot/delta resolution, once per product
  * excluded from the sellable stream for a PRICE-related reason (missing price /
@@ -731,6 +752,8 @@ export type CatalogMetricName = (typeof CATALOG_METRIC_NAMES)[number];
  */
 export const INVENTORY_METRIC_NAMES = [
   "inventory_negative_balance_total",
+  // RT-427: void / return effects skipped by owner decision 2.
+  "inventory_sale_effect_skipped_total",
 ] as const satisfies readonly string[];
 
 export type InventoryMetricName = (typeof INVENTORY_METRIC_NAMES)[number];

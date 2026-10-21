@@ -31,11 +31,12 @@
  * (mirrors UnknownItemsService's optional enqueuer).
  */
 import { Inject, Injectable } from "@nestjs/common";
-import { runWithTenantContext, emit, OUTBOX_EVENT_TYPES } from "@data-pulse-2/db";
+import { runWithTenantContext, emit, OUTBOX_EVENT_TYPES, writeVoidEffects } from "@data-pulse-2/db";
 import { newId } from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../../auth/auth.module";
+import { SaleEffectsReport } from "../../inventory/sale-effects/sale-effects-report";
 import type {
   CaptureSaleReceiptDto,
   CaptureSaleRequestDto,
@@ -571,7 +572,9 @@ export class SalesService {
   async recordVoid(input: RecordVoidInput): Promise<TerminalEventResult> {
     const { tenantId, storeId, actorUserId, saleRef, body } = input;
     const payloadHash = sha256CanonicalHex(body);
-    return runWithTenantContext(
+    // RT-427: skipped void effects are reported after COMMIT only.
+    const effects = new SaleEffectsReport();
+    const result = await runWithTenantContext(
       this.pool,
       { tenantId, isPlatformAdmin: false },
       async (client): Promise<TerminalEventResult> => {
@@ -648,6 +651,12 @@ export class SalesService {
 
         const row = inserted.rows[0]!;
 
+        // RT-427 (DC-2 / DC-6): the void's compensating Inventory Effects, in
+        // this transaction with its intent below. A no-op while the tenant's
+        // sale effects are OFF and the sale has none.
+        const scope = { tenantId, storeId, saleId: saleRef };
+        effects.add(await writeVoidEffects(client, { ...scope, voidId: row.id }), { ...scope, eventRefId: row.id });
+
         // 015 posting trigger (reversal): a void terminal event just landed.
         // Emit `erpnext.posting.requested` IN-TRANSACTION, atomic with the
         // sale_voids insert, so the void becomes eligible for a REVERSING ERPNext
@@ -682,6 +691,8 @@ export class SalesService {
         };
       },
     );
+    effects.flush();
+    return result;
   }
 
   /**
