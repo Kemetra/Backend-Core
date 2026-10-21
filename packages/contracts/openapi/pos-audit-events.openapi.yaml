@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Audit Events API
-  version: "1.0.0-draft"
+  version: "1.1.0-draft"
   description: >
     POS-Pulse 004 Backend Wave 2 audit-event sync surface. One endpoint —
     `POST /api/pos/v1/audit-events` — accepts batches of locally-emitted
@@ -29,6 +29,19 @@ info:
 
     Cross-cutting conventions live in
     `specs/001-foundation-auth-tenant-store/contracts/README.md`.
+
+
+    RT-740 (1.1.0-draft; [GATED] owner authorization Jira RT-740 comment
+    13207, 2026-10-21; RT-699 doc 28 DEP-2, RT-608): the append-only
+    catalogue gains `cart.discount.manager_authorized`, the event the till
+    writes for every manual line discount. Additive: one new enum value and
+    its payload rule. Events of the other categories are unchanged. Its
+    payload has a closed key set (see `payload`); an unknown key, a
+    `reason_code` outside the closed list or a malformed magnitude is
+    rejected with category `schema_violation`. The ingest does not yet
+    persist `approving_supervisor_id` for any category (only `payload` is
+    stored as metadata), so the backend copy of this event does not yet
+    record who approved the discount (a follow-up; the till keeps it).
 servers:
   - url: https://api.example.com
 paths:
@@ -237,6 +250,7 @@ components:
             - operator.session.takeover
             - cashier.pin.reset
             - cashier.pin.unlock
+            - cart.discount.manager_authorized
           description: >
             Discriminates the event type. The catalogue is append-only
             (FR-026); unknown values are rejected with category
@@ -283,6 +297,31 @@ components:
               operator.session.takeover: { superseded_session_id, prior_terminal_reference }
               cashier.pin.reset:  { target_cashier_id, terminal_id }
               cashier.pin.unlock: { target_cashier_id, terminal_id }
+              cart.discount.manager_authorized: { cart_id, cart_line_id,
+                                    placeholder_id, approval_id?, reason_code?,
+                                    kind?, value?, amount_minor?, approver_role? }
+
+
+            `cart.discount.manager_authorized` (RT-740 DEP-2): the key set
+            is CLOSED, and any other key is rejected with `schema_violation`.
+            `cart_id`, `cart_line_id` and `placeholder_id` are required ids;
+            every id is 1–128 characters of `[A-Za-z0-9_:.-]` (no spaces,
+            nothing outside ASCII). `approval_id` is the
+            consumed `cart.discount.manual` approval, present on the cashier
+            path. `reason_code` is one of `promotion`,
+            `loyal_or_contract_customer`, `near_expiry_or_damaged`,
+            `price_correction` (the `sales.yaml` `CaptureSaleLineDiscount`
+            list), and is never free text. `kind` is `percent` or `amount`.
+            `value` is an integer: a whole percent 1–100 for `percent`, or
+            the amount off in minor units (at least 1) for `amount`, equal to
+            `amount_minor` when both are present; a `value` without `kind` is
+            refused.
+            `amount_minor` is the computed discount in minor units, an
+            integer of at least 0. `approver_role` is `manager` or `admin`.
+            The magnitude fields and `approver_role` are optional, because
+            events written before they existed (RT-608) do not carry them.
+            The requester is `acting_operator_id`, and the approver is
+            `approving_supervisor_id`.
     # -------------------------------------------------------------------
     # Response
     # -------------------------------------------------------------------

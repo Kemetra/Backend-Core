@@ -30,6 +30,7 @@ import type { Pool, PoolClient } from "pg";
 
 import { lockDeviceLifecycle } from "../devices/device-lifecycle-lock";
 import { DeviceRepository } from "../pos-operators/device.repository";
+import { isDiscountAuthorizedPayload } from "./discount-audit-payload";
 import {
   hasForbiddenField,
   POS_AUDIT_ACTION_CATEGORIES,
@@ -66,6 +67,26 @@ export const LEGACY_SHIFT_OPEN_SQL = `
     FROM devices d
    WHERE d.id = $5::uuid AND d.tenant_id = $2::uuid AND d.revoked_at IS NULL
   ON CONFLICT (shift_id) DO NOTHING`;
+
+/**
+ * The per-event `schema_violation` checks: the closed action catalogue, the
+ * forbidden payload keys (FR-027 / PR-1) and the per-category payload rules.
+ */
+function isSchemaViolation(event: AuditEventItemInput): boolean {
+  if (!ACTION_CATEGORY_SET.has(event.action_category)) return true;
+  if (hasForbiddenField(event.payload)) return true;
+  // shift.open: payload.shift_id must be a valid UUID string.
+  if (event.action_category === "shift.open") {
+    const payloadShiftId = (event.payload as Record<string, unknown>)["shift_id"];
+    return typeof payloadShiftId !== "string" || !UUID_RE.test(payloadShiftId);
+  }
+  // RT-740 DEP-2: a manual-discount event carries a closed key set and a
+  // reason code from the closed list, never free text.
+  if (event.action_category === "cart.discount.manager_authorized") {
+    return !isDiscountAuthorizedPayload(event.payload);
+  }
+  return false;
+}
 
 @Injectable()
 export class PosAuditEventsService {
@@ -126,25 +147,9 @@ export class PosAuditEventsService {
     duplicates: string[],
     rejected: RejectedEvent[],
   ): Promise<void> {
-    // action_category: closed-set check.
-    if (!ACTION_CATEGORY_SET.has(event.action_category)) {
+    if (isSchemaViolation(event)) {
       rejected.push({ event_id: event.event_id, category: "schema_violation" });
       return;
-    }
-
-    // Payload forbidden-field check (FR-027 / PR-1).
-    if (hasForbiddenField(event.payload)) {
-      rejected.push({ event_id: event.event_id, category: "schema_violation" });
-      return;
-    }
-
-    // shift.open: payload.shift_id must be a valid UUID string.
-    if (event.action_category === "shift.open") {
-      const payloadShiftId = (event.payload as Record<string, unknown>)["shift_id"];
-      if (typeof payloadShiftId !== "string" || !UUID_RE.test(payloadShiftId)) {
-        rejected.push({ event_id: event.event_id, category: "schema_violation" });
-        return;
-      }
     }
 
     // Tenant/branch scope check.

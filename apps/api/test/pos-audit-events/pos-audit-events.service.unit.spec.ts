@@ -457,3 +457,52 @@ describe("syncBatch — valid non-shift.open action categories", () => {
     });
   }
 });
+
+// ===========================================================================
+// RT-740 DEP-2 — cart.discount.manager_authorized
+// ===========================================================================
+
+describe("syncBatch — RT-740 cart.discount.manager_authorized", () => {
+  const discountPayload = {
+    cart_id: "cart-1",
+    cart_line_id: "line-1",
+    placeholder_id: "pos-pulse:0195b200-0000-7000-8000-000000000740",
+    reason_code: "promotion",
+    kind: "percent",
+    value: 10,
+    amount_minor: 900,
+  };
+
+  it("DA1: a well-formed discount event is accepted and its payload stored as metadata", async () => {
+    const insert = jest.fn().mockResolvedValue({ rows: [{ id: "aaaaaaaa-0000-4000-8000-000000000001" }] });
+    (runWithTenantContext as jest.Mock).mockImplementation(
+      async (_pool: unknown, _ctx: unknown, fn: (client: { query: jest.Mock }) => Promise<unknown>) =>
+        fn({ query: insert }),
+    );
+    insert.mockResolvedValueOnce({ rows: [{ id: "user-1" }] });
+
+    const evt = makeEvent({
+      action_category: "cart.discount.manager_authorized",
+      approving_supervisor_id: "user_clerk_manager",
+      payload: discountPayload,
+    });
+    const result = await service.syncBatch(makeBody([evt]), "req-id");
+
+    expect(result).toMatchObject({ accepted: [evt.event_id], rejected: [] });
+    const auditInsert = insert.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO audit_events"));
+    expect(auditInsert?.[1]?.[6]).toBe("cart.discount.manager_authorized");
+    expect(JSON.parse(auditInsert?.[1]?.[10] as string)).toEqual(discountPayload);
+  });
+
+  it.each([
+    ["a free-text reason", { ...discountPayload, reason_code: "my neighbour" }],
+    ["a reason note", { ...discountPayload, reason_note: "regular customer" }],
+    ["a missing placeholder_id", { cart_id: "cart-1", cart_line_id: "line-1" }],
+  ])("DA2: %s → schema_violation, nothing persisted", async (_name, payload) => {
+    const evt = makeEvent({ action_category: "cart.discount.manager_authorized", payload });
+    const result = await service.syncBatch(makeBody([evt]), "req-id");
+
+    expect(result).toMatchObject({ accepted: [], rejected: [{ event_id: evt.event_id, category: "schema_violation" }] });
+    expect(runWithTenantContext).not.toHaveBeenCalled();
+  });
+});
