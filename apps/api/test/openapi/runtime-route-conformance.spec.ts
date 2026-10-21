@@ -66,6 +66,8 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "consoleGetTenantLogo",
       "consolePreviewTenantLogo",
       "consolePutTenantLogo",
+      // RT-431: platform-scoped audit read; the runtime ships in the RT-431 runtime change.
+      "listPlatformAuditEvents",
       // RT-490 (RT-271 F-1): refund execution and return reads; the runtime ships in F-2.
       "listSaleReturns",
       // RT-492 (RT-114 MA-BC1): approver-eligibility contract; the runtime ships in MA-BC2.
