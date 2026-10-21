@@ -281,6 +281,56 @@ describe("erpnext-reconciliation/reconciliation.yaml — projections (READ-NOT-M
 });
 
 // ---------------------------------------------------------------------------
+// RT-410 — the backlog `reason` is the scrubbed rejection message (AD-POSTING-001)
+// ---------------------------------------------------------------------------
+
+describe("reconciliation.yaml — RT-410 PostingBacklogItem.reason", () => {
+  const item = (): LooseSchema => looseSchema("PostingBacklogItem");
+  const reasonDescription = (): string => String(item().properties?.["reason"]?.["description"] ?? "");
+
+  it("stays an optional, nullable string bounded to 1000 characters", () => {
+    const reason = item().properties?.["reason"];
+    expect(reason?.["type"]).toEqual(["string", "null"]);
+    expect(reason?.["maxLength"]).toBe(1000);
+    expect(item().required).not.toContain("reason");
+  });
+  it("states the source, the classification and the retention window", () => {
+    const text = reasonDescription();
+    expect(text).toContain("RejectionReason.message");
+    expect(text).toContain("PII-suspect");
+    expect(text).toContain("NOT a money field");
+    expect(text).toContain("permanently_rejected");
+    expect(text).toContain("dp2_token");
+  });
+  it("states the handling and rendering rules", () => {
+    const text = reasonDescription();
+    expect(text).toContain("plain text, never as HTML");
+    expect(text).toMatch(/never writes it to a log/);
+    expect(text).toContain("Sentry or Datadog");
+  });
+  it("documents the `other` category without closing the set", () => {
+    const category = item().properties?.["rejectionCategory"];
+    expect(String(category?.["description"])).toContain("`other`");
+    expect(category?.["enum"]).toBeUndefined();
+  });
+  it("validates a message, a null and rejects a message over 1000 characters", () => {
+    const validate = validatorFor("PostingBacklogItem");
+    const base = {
+      workItemRef: "0a000000-0000-7000-8000-000004100001",
+      kind: "sale_post",
+      rejectionCategory: "validation",
+      sourceSystem: "pos",
+      externalId: "sale-1",
+      deadLetteredAt: "2026-10-21T10:00:00.000Z",
+      reconciliationDocumentRef: null,
+    };
+    expect(validate({ ...base, reason: "NameError: name 'flt' is not defined" })).toBe(true);
+    expect(validate({ ...base, reason: null })).toBe(true);
+    expect(validate({ ...base, reason: "x".repeat(1001) })).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // RT-177 — ERPNext negative on-hand read contract (RT-51 §C, D3)
 // ---------------------------------------------------------------------------
 
