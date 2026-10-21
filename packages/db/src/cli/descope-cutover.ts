@@ -206,7 +206,11 @@ export function parseDescopeCutoverArgs(
   if (command === "rollback") return { kind: "rollback", userId, dryRun };
   const descopeSubject = flags.values.get("descope-subject");
   if (descopeSubject === undefined) throw new Error("--descope-subject <id> is required");
-  return { kind: "apply", userId, descopeSubject, issuer: descopeIssuerFromEnv(env),
+  return {
+    kind: "apply",
+    userId,
+    descopeSubject,
+    issuer: descopeIssuerFromEnv(env),
     clerkIssuer: clerkIssuerFromEnv(env),
     dryRun,
   };
@@ -316,11 +320,6 @@ async function assertSubjectUnlinked(
   if (r.rows.length > 0) throw new CutoverRefusedError(guard.refusal);
 }
 
-/**
- * Users created after the 0025 backfill (bootstrap-pilot, later user creation)
- * carry clerk_user_id but no link row. Record it as a DISABLED clerk link so it
- * is rollback's source, exactly like a link apply disabled.
- */
 /** A clerk link apply creates for a user that never had one. */
 interface NewClerkLink {
   readonly claim: SubjectClaim;
@@ -328,6 +327,11 @@ interface NewClerkLink {
   readonly email: string | null;
 }
 
+/**
+ * Users created after the 0025 backfill (bootstrap-pilot, later user creation)
+ * carry clerk_user_id but no link row. Record it as a DISABLED clerk link so it
+ * is rollback's source, exactly like a link apply disabled.
+ */
 async function insertDisabledClerkLink(client: ClientBase, link: NewClerkLink): Promise<void> {
   const r = await client.query(
     `INSERT INTO external_identity_links (provider_key, issuer, subject, user_id, email, status, disabled_at)
