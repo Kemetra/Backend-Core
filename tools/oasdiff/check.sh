@@ -21,9 +21,26 @@ set -euo pipefail
 BASE_REF="${1:?usage: tools/oasdiff/check.sh <base-ref>}"
 OASDIFF="${OASDIFF:-oasdiff}"
 
-ROOT="$(git rev-parse --show-toplevel)"
+# ROOT is the Backend-Core project root, located from this script. It is the Git
+# root in the standalone repo but services/backend-core/ in the monorepo (RT-801),
+# so paths inside <base-ref>'s tree carry PREFIX ("" standalone).
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+PREFIX="$(git -C "$ROOT" rev-parse --show-prefix)"
 CFG="$ROOT/tools/oasdiff"
 CONTRACTS="packages/contracts/openapi"
+
+has_yaml() { [[ -n "$(find "$1" -name '*.yaml' -print -quit 2>/dev/null)" ]]; }
+
+# Fail closed: a bad ref or a missing head contract set must never read as
+# "nothing to compare".
+if ! git -C "$ROOT" rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null; then
+  echo "::error::base ref '$BASE_REF' is not a commit in $ROOT" >&2
+  exit 1
+fi
+if ! has_yaml "$ROOT/$CONTRACTS"; then
+  echo "::error::no contracts at $ROOT/$CONTRACTS" >&2
+  exit 1
+fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -34,18 +51,24 @@ if command -v cygpath >/dev/null 2>&1; then
   CFG="$ROOT/tools/oasdiff"
 fi
 
-mkdir -p "$WORK/base"
-if ! git -C "$ROOT" cat-file -e "$BASE_REF:$CONTRACTS" 2>/dev/null; then
-  echo "No contracts at $BASE_REF; nothing to compare."
+mkdir -p "$WORK/base/$CONTRACTS"
+if ! git -C "$ROOT" cat-file -e "$BASE_REF:$PREFIX$CONTRACTS" 2>/dev/null; then
+  echo "No contracts at $BASE_REF ($PREFIX$CONTRACTS); nothing to compare."
   exit 0
 fi
-git -C "$ROOT" archive "$BASE_REF" -- "$CONTRACTS" | tar -x -C "$WORK/base"
+# From the Git root: run in a subdirectory, `git archive` keeps only that subdirectory.
+git -C "$ROOT/$(git -C "$ROOT" rev-parse --show-cdup)" archive "$BASE_REF:$PREFIX$CONTRACTS" |
+  tar -x -C "$WORK/base/$CONTRACTS"
+if ! has_yaml "$WORK/base/$CONTRACTS"; then
+  echo "::error::no contract files extracted from $BASE_REF:$PREFIX$CONTRACTS" >&2
+  exit 1
+fi
 
 # Keep only real entries: drop comments and blank lines. A blank pattern would
 # make the `grep -f` below match everything.
 entries() { grep -vE '^[[:space:]]*(#|$)' || true; }
 
-git -C "$ROOT" show "$BASE_REF:tools/oasdiff/breaking-ignore.txt" 2>/dev/null \
+git -C "$ROOT" show "$BASE_REF:${PREFIX}tools/oasdiff/breaking-ignore.txt" 2>/dev/null \
   | entries >"$WORK/base-ignore.txt" || true
 entries <"$CFG/breaking-ignore.txt" >"$WORK/head-ignore.txt"
 
