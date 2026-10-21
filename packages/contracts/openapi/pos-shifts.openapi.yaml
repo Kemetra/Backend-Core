@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Shifts API
-  version: "1.3.0-draft"
+  version: "1.4.0-draft"
   description: >
     POS-Pulse 004 Backend shift-lifecycle surface. Wave 4.1b (stuck-shift
     discovery).
@@ -159,6 +159,30 @@ info:
     has a non-zero return sent without `allocationRef` (a till that
     predates F-5), so a close that claims either could never pass; F-3
     defines that cutover. This version does not decide it.
+
+
+    RT-742 (1.4.0-draft; [GATED] owner authorization 2026-10-21; RT-554
+    follow-up, owner decision 2026-10-19): strictly additive. A NEW operation,
+    `forceCloseShift`, lets a manager clear a stuck shift from ANY terminal of
+    the same tenant and store, which `closeShift` cannot (it resolves
+    `shift_id` only on the caller's own device). It is a separate fact, not a
+    cash-up: the manager is on another terminal and has neither that drawer's
+    totals nor the POS-authoritative cash-up, and the server never computes or
+    rewrites one (Constitution §III), so the shift is closed as NOT COUNTED
+    (`cashCount: not_counted`), with no totals, no variance and no
+    `ShiftClose`. `GET /shifts/stuck`, `closeShift` (its body, its
+    device-scoped 404 and the normal close) and every existing schema are
+    unchanged. The only edits to existing operations are description text:
+    a new 409 `error.code`, `shift_force_closed`, answers a later `closeShift`
+    or `openShift` replay for a shift a manager closed this way; a later NEW
+    `recordCashMovement` keeps 409 `shift_closed` (see `forceCloseShift`, Late
+    facts). A not-counted close is excluded from every variance flag and from
+    the R-9 cash-refund cross-check, and is never a counted zero (see
+    `forceCloseShift`, Not counted). The runtime, and the storage for the new
+    fact, are a separate ticket and a separate [GATED] change; `forceCloseShift` has no runtime route yet. The Console
+    read side (`shift-closes.openapi.yaml`) lists recorded cash-ups only, so
+    a force-closed shift is not listed there; surfacing it is a separate
+    ticket.
 servers:
   - url: https://api.example.com
 tags:
@@ -179,6 +203,13 @@ paths:
 
         Only managers and admins may call this endpoint; store_staff
         (cashier) callers receive a generic 401.
+
+
+        RT-742: a listed `shift_id` is all a manager needs to clear the shift
+        with `forceCloseShift`, from any terminal of the store; the list adds
+        no field for it (that close takes no totals). One eligible shift this
+        list does not show is the caller's own (see `forceCloseShift`,
+        Eligibility).
       operationId: posShiftsGetStuck
       tags: [pos-shifts]
       security:
@@ -236,7 +267,18 @@ paths:
         shift with a different `shiftId`, the answer is 409
         `shift_already_open` and nothing is recorded. Re-sending the same open
         (same `shiftId`, same payload) is a replay and returns the shift's
-        current projection, even after it has been closed.
+        current projection, even after it has been closed. One exception
+        (RT-742): a shift a manager closed with `forceCloseShift` has no
+        `ShiftClose` to project, so the same open re-delivered under ANOTHER
+        `Idempotency-Key` is 409 `shift_force_closed` and nothing is
+        recorded; the device is free to open a new shift. The same open under
+        the SAME `Idempotency-Key` is answered by the shared
+        `IdempotencyInterceptor` with the stored open response and status
+        (RT-82 K4, within the replay window) before the handler runs, so it
+        is not re-evaluated and cannot carry `shift_force_closed`: the POS
+        learns of the force close from its next movement (409
+        `shift_closed`) or close (409 `shift_force_closed`), never from an
+        open replay.
 
 
         **Scope of `shiftId`** (as for `recordCashMovement` and `closeShift`).
@@ -387,7 +429,8 @@ paths:
         corrected with an opposite movement.
 
 
-        The shift must be open: a NEW movement on a closed shift is 409
+        The shift must be open: a NEW movement on a closed shift, including
+        one a manager closed with `forceCloseShift` (RT-742), is 409
         `shift_closed`. Re-sending a movement that is already recorded (same
         `movementId`, same payload) is a replay, even after the close. The
         replay resolves `movementId` only on the path `shift_id`: a
@@ -561,7 +604,11 @@ paths:
         not close (a stuck shift) and requires `forcedReason`. Forced close is
         manager-envelope only: it is accepted on the `operatorAuthorization`
         path only, and a forced close sent with the `device` scheme is the
-        generic 403 `refused`.
+        generic 403 `refused`. This close is for the terminal that holds the
+        drawer's cash-up. A stuck shift opened on ANOTHER terminal is 404
+        `shift_not_found` here, as for any shift outside this device; a
+        manager clears it with `forceCloseShift` (RT-742), which records no
+        cash-up.
 
 
         **Variance approval.** `varianceApprovedByUserId` is the manager who
@@ -591,8 +638,12 @@ paths:
 
         Re-sending the same close (same payload) is a replay. A different
         close for a shift that is already closed is 409
-        `shift_payload_conflict`. A shift that does not resolve to this device
-        is the non-disclosing 404 `shift_not_found`.
+        `shift_payload_conflict`. A shift of this device that a manager closed
+        with `forceCloseShift` (RT-742) takes no close: it is 409
+        `shift_force_closed` and nothing is recorded, whatever the payload. A
+        shift that does not resolve to this device, force-closed or not, is
+        the non-disclosing 404 `shift_not_found`; the new code never reaches
+        another device.
       parameters:
         - $ref: "#/components/parameters/PosBuildCommit"
         - $ref: "#/components/parameters/PosAppVersion"
@@ -694,6 +745,205 @@ paths:
           $ref: "#/components/responses/CloseShiftConflict"
         "422":
           $ref: "#/components/responses/CloseShiftUnprocessable"
+        "425":
+          $ref: "#/components/responses/IdempotencyInProgress"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+  /api/pos/v1/shifts/{shift_id}/forced-close:
+    post:
+      summary: Force-close a stuck shift of this store from any terminal, as not counted.
+      operationId: forceCloseShift
+      x-idempotency: required
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-742 contract (RT-554 follow-up). The runtime, and the storage for
+        the force-closed fact, ship in a separate ticket on its own [GATED]
+        migration.
+      tags: [pos-shifts]
+      security:
+        - operatorAuthorization: []
+      description: >
+        A manager clears a STUCK shift from any terminal of the same tenant
+        and store, without the drawer's cash-up. Terminal B can close a shift
+        opened on terminal A; `closeShift` cannot (it resolves `shift_id` only
+        on the caller's own device, and needs the cash-up totals only the
+        opening terminal holds). RT-554 owner decision, 2026-10-19.
+
+
+        **Authentication.** The `operatorAuthorization` envelope only; the
+        `device` scheme is not accepted (a device token is the generic 401).
+        The envelope operator is the actor; the body carries no user id. The
+        envelope's live re-check on every request (membership, device, store
+        access, expiry and role: the `operatorAuthorization` scheme) is the
+        generic 401. The role rule is the manager and admin surface of
+        `GET /shifts/stuck`: only `owner`, `tenant_admin` and `store_manager`
+        pass, so a `store_staff` operator, an operator demoted since sign-in,
+        and a manager whose store access was removed are all the generic 401.
+        The operation has no 403: no failure reaches it past that check.
+        Tenant and store come only from the envelope, never the request
+        (Constitution §II, §XII).
+
+
+        **Scope.** `shift_id` resolves to a shift of the envelope's tenant and
+        store, opened on ANY device of that store, including the caller's own.
+        A legacy shift (no cash-up facts; `GET /shifts/stuck` lists it) is
+        eligible too, so a stuck legacy shift no longer blocks the store.
+        Another store, another tenant and an unknown id are the same
+        non-disclosing 404 `shift_not_found`.
+
+
+        **Eligibility** (its own predicate, evaluated at the call). The shift
+        is open, was opened longer ago than the staleness threshold, and its
+        opening cashier has no active `pos_operator` session on the store
+        other than the caller's own envelope session. Otherwise 409
+        `shift_not_stuck`: a manager cannot close a live drawer from another
+        terminal. This is the `GET /shifts/stuck` predicate with ONE
+        difference: that list counts every active session, the caller's
+        included, so it hides a shift whose opening cashier is the manager
+        now signed in on another terminal (their fresh session makes the
+        drawer look live), while this operation does not. That shift is
+        eligible here but not listed: `GET /shifts/stuck` is unchanged and
+        does not surface it, so the manager supplies its `shift_id` (their
+        own shift). Widening the list is a separate owner decision. A shift
+        already closed with a cash-up is 409 `shift_closed`.
+
+
+        **What it records.** One immutable fact: the closing manager (the
+        envelope operator), the server clock as `closedAt`, the terminal the
+        request came from, the terminal that opened the shift, and
+        `forcedReason`. It records NO cash-up: `cashCount` is `not_counted`,
+        and there is no `countedCash`, `expectedCash`, `variance` or other
+        total. The server never computes or rewrites a POS cash-up
+        (Constitution §III), and the manager's terminal does not hold it.
+        This is not a `ShiftClose`: it is never returned by `closeShift`,
+        `openShift` or the console reads of recorded cash-ups. When the drawer
+        was counted, close the shift on the terminal that holds it with
+        `closeShift`, `closeKind: forced`, which records the count.
+
+
+        **Effect.** The shift is no longer open: `GET /shifts/stuck` stops
+        listing it, the store timezone change is no longer refused for it
+        (409 `STORE_HAS_OPEN_SHIFT`, RT-544), and its terminal may open a new
+        shift. Nothing already recorded for it is edited or deleted: its
+        movements, and the sales and refund executions of its terminal, stay
+        as recorded. A refund execution whose `evidence.shiftRef` is this
+        shift is claimed by no close.
+
+
+        **Not counted** (normative). The recorded fact is not a counted zero:
+        it has no `countedCash`, `expectedCash`, `variance`, total or
+        `saleCount` at all, never `"0.00"`, so no reader can mistake it for a
+        drawer that balanced. It is EXCLUDED from every variance flag (the
+        RT-384 `approvalRequiredByPolicy`, `approvalMissing` and
+        `approverCheck`, which exist only on a `ShiftClose`) and from the
+        console reads of recorded cash-ups. It is also outside the R-9 cash
+        refund cross-check (`closeShift`, Refund cross-check): no close exists
+        for the shift, so no return is claimed, `cashRefundsTotal` is not
+        checked, and a cash refund execution whose `evidence.shiftRef` is this
+        shift stays settled by its execution alone and is claimed by no close.
+
+
+        **Late facts** (POS-visible, normative for the POS). The opening
+        terminal does not know yet. For this shift every later `closeShift`
+        from the device that holds it (any payload) and every `openShift`
+        re-delivery under another `Idempotency-Key` is 409
+        `shift_force_closed`; nothing is recorded. Any other device still gets
+        the non-disclosing 404 `shift_not_found` on `closeShift`, as for any
+        shift outside its device, so the code is no oracle for another
+        terminal. An `openShift` re-delivered under the SAME key gets the
+        stored open response (the shared interceptor answers it before the
+        handler), not this code. A later NEW
+        `recordCashMovement` keeps the existing 409 `shift_closed` (a
+        movement recorded BEFORE the force close still replays as `200`). The
+        POS treats `shift_force_closed` as final for that shift, not as a
+        transient or a payload conflict (`shift_payload_conflict`): it stops
+        sending that shift's facts and shows that a manager closed it. A POS
+        change to do so is a separate ticket.
+
+
+        **Idempotency.** `Idempotency-Key` is REQUIRED, scoped to the verified
+        actor as on every shift write. The natural key is `shift_id` with the
+        payload hash of `forcedReason`, never the actor: the same force close
+        sent again under another key, even by another manager, is a `200`
+        replay of the recorded fact. A different `forcedReason` for a shift
+        already force-closed is 409 `shift_force_closed`.
+
+
+        **Order.** Authentication, including the live manager/admin check
+        (401), then scope (404 `shift_not_found`), then the
+        natural-key replay (`200`) or, for a different `forcedReason`, 409
+        `shift_force_closed`, then 409 `shift_closed`, then the stuck rule
+        (409 `shift_not_stuck`). A same-key replay is answered by the shared
+        `IdempotencyInterceptor` before the handler, so before this order and
+        its scope check. The interceptor partitions a replay by tenant, route,
+        `shift_id`, actor and key, NOT by store: the same actor repeating the
+        same key and body from the envelope of another store of the same
+        tenant gets that actor's OWN stored response, not the 404. This is the
+        one stated exception to the store-scoped 404; it discloses nothing the
+        actor was not already given, and every first request is scope-checked.
+        A replay of a recorded force close is never answered
+        `shift_not_stuck`.
+
+
+        **Audit.** One audit event records the closing manager, the terminal
+        the request came from, the terminal that opened the shift and the
+        shift. The reason is stored with the fact and never logged.
+      parameters:
+        - $ref: "#/components/parameters/StoreShiftId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForceCloseShiftRequest"
+            examples:
+              forced:
+                summary: A manager on terminal B clears a shift stuck on terminal A.
+                value:
+                  forcedReason: Cashier left without closing; shift opened on till A
+      responses:
+        "200":
+          description: >
+            Replay. Either the same `Idempotency-Key` again (the stored
+            response with its stored status, RT-82 K4) or the same force
+            close re-delivered under another key (`200` with the recorded
+            projection). Both carry `Idempotent-Replayed: true`.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForceClosedShift"
+              examples:
+                forced:
+                  $ref: "#/components/examples/ForceClosedShiftExample"
+        "201":
+          description: >
+            Shift force-closed for the first time. A retry with the same
+            `Idempotency-Key` replays this stored `201` with
+            `Idempotent-Replayed: true`.
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForceClosedShift"
+              examples:
+                forced:
+                  $ref: "#/components/examples/ForceClosedShiftExample"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/ShiftNotFoundInStore"
+        "409":
+          $ref: "#/components/responses/ForceCloseShiftConflict"
         "425":
           $ref: "#/components/responses/IdempotencyInProgress"
         "429":
@@ -1575,6 +1825,130 @@ components:
           description: When the server recorded the movement (server clock).
 
     # -----------------------------------------------------------------------
+    # RT-742: manager forced close of a stuck shift from any terminal of the
+    # store, recorded as NOT COUNTED. A separate fact: neither a request nor a
+    # response here is a `CloseShiftRequest` or a `ShiftClose`.
+    # -----------------------------------------------------------------------
+    ForceCloseShiftRequest:
+      type: object
+      additionalProperties: false
+      required: [forcedReason]
+      description: >
+        RT-742. The only input is the reason. The actor is the envelope
+        operator, the time is the server clock, and tenant, store and device
+        come from the credential; the body carries none of them and no cash-up
+        total (a force close records none).
+      properties:
+        forcedReason:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: >
+            Why the manager closed the shift from another terminal. 1 to 200
+            characters. No PII. Never logged. Part of the natural-key payload
+            hash.
+    ForcedCloseRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - closedByUserId
+        - closedAt
+        - closedFromTerminalLabel
+        - openedOnTerminalLabel
+        - forcedReason
+        - cashCount
+      description: >
+        The recorded force close. No cash-up is recorded, so no counted cash,
+        expected cash, variance or other total exists on it. No internal id
+        (tenant, store, device) is returned; terminals are named by their
+        human-readable label, as on `GET /shifts/stuck`.
+      properties:
+        closedByUserId:
+          type: string
+          format: uuid
+          description: The `users.id` of the closing manager (the envelope operator).
+        closedAt:
+          type: string
+          format: date-time
+          description: When the server recorded the force close (server clock).
+        closedFromTerminalLabel:
+          type: [string, "null"]
+          description: >
+            Label of the terminal the force-close request came from; `null`
+            when that terminal has no label (a device label is optional).
+        openedOnTerminalLabel:
+          type: [string, "null"]
+          description: >
+            Label of the terminal that opened the shift (the stuck list's
+            `terminal_label`); `null` when it has no label. The same terminal
+            as above when the manager closed it from the terminal that opened
+            it.
+        forcedReason:
+          type: string
+          minLength: 1
+          maxLength: 200
+        cashCount:
+          type: string
+          const: not_counted
+          description: >
+            Always `not_counted`: the drawer was not counted by this close,
+            and the server derives no figure for it.
+    ForceClosedShift:
+      type: object
+      additionalProperties: false
+      required:
+        - shiftId
+        - status
+        - currencyCode
+        - openingFloat
+        - openedAt
+        - openingUserId
+        - receivedAt
+        - forcedClose
+      description: >
+        RT-742. A shift closed by a manager as not counted. It is NOT a
+        `Shift`: `status` is `force_closed`, never `closed`, and it carries
+        `forcedClose` where a closed `Shift` carries a `close` (a `ShiftClose`
+        cash-up). Internal ids (tenant, store, device) are never returned.
+        A LEGACY shift (opened before the cash-up facts, through the
+        audit-ingest `shift.open` event) is eligible and closes the same way:
+        it has no currency, no opening float and no server receipt, so
+        `currencyCode`, `openingFloat` and `receivedAt` are `null` for it
+        (always present, never omitted); they are non-null for a cash-up
+        shift.
+      properties:
+        shiftId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          const: force_closed
+        currencyCode:
+          anyOf:
+            - $ref: "#/components/schemas/CurrencyCode"
+            - type: "null"
+          description: The shift's currency; `null` for a legacy shift.
+        openingFloat:
+          anyOf:
+            - $ref: "#/components/schemas/NonNegativeDecimalAmount"
+            - type: "null"
+          description: The recorded opening float; `null` for a legacy shift.
+        openedAt:
+          type: string
+          format: date-time
+        openingUserId:
+          type: string
+          format: uuid
+        receivedAt:
+          type: [string, "null"]
+          format: date-time
+          description: >
+            When the server recorded the open (server clock); `null` for a
+            legacy shift.
+        forcedClose:
+          $ref: "#/components/schemas/ForcedCloseRecord"
+
+    # -----------------------------------------------------------------------
     # RT-17 cash-up: canonical error envelope (pos-sales/sales.yaml `Error`).
     # The legacy `Error` above stays as it is for GET /shifts/stuck.
     # -----------------------------------------------------------------------
@@ -1700,6 +2074,18 @@ components:
         The client-generated `shiftId` given to `openShift`. Resolves only to a
         shift of the caller's tenant, store and device; anything else is the
         non-disclosing 404 `shift_not_found`.
+    StoreShiftId:
+      name: shift_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        RT-742. The `shiftId` of the shift to force-close. Resolves to a shift
+        of the envelope's tenant and store opened on ANY device of that store
+        (the `shift_id` that `GET /shifts/stuck` lists); anything else is the
+        non-disclosing 404 `shift_not_found`.
 
   headers:
     DeviceTokenRotateAfter:
@@ -1788,6 +2174,23 @@ components:
             - "0192f5a2-3b4c-7d8e-9f01-23456789ab03"
           varianceApprovedByUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abce"
           receivedAt: "2026-10-05T16:00:03Z"
+    ForceClosedShiftExample:
+      summary: A shift opened on till A, force-closed by a manager on till B.
+      value:
+        shiftId: "0192f5a2-3b4c-7d8e-9f01-23456789ab01"
+        status: force_closed
+        currencyCode: EGP
+        openingFloat: "500.00"
+        openedAt: "2026-10-05T08:00:00Z"
+        openingUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abcd"
+        receivedAt: "2026-10-05T08:00:02Z"
+        forcedClose:
+          closedByUserId: "0190f5a2-3b4c-7d8e-9f01-23456789abce"
+          closedAt: "2026-10-06T09:10:00Z"
+          closedFromTerminalLabel: till-B
+          openedOnTerminalLabel: till-A
+          forcedReason: Cashier left without closing; shift opened on till A
+          cashCount: not_counted
     CashMovementPayOut:
       summary: A recorded pay-out.
       value:
@@ -1862,7 +2265,10 @@ components:
         different payload); `shift_payload_conflict` (this `shiftId` is
         already recorded with a different payload); `shift_already_open`
         (this device already has an open shift with another `shiftId`; close
-        it first). Deterministic; nothing is recorded.
+        it first); `shift_force_closed` (RT-742: this `shiftId` is a shift a
+        manager closed with `forceCloseShift`, re-delivered under another
+        `Idempotency-Key`; final for that shift).
+        Deterministic; nothing is recorded.
       content:
         application/json:
           schema:
@@ -1874,7 +2280,8 @@ components:
         different payload); `shift_payload_conflict` (this `movementId` is
         already recorded with a different payload or on another shift);
         `shift_closed` (the shift is closed, so a new movement cannot be
-        added). Deterministic; nothing is recorded.
+        added; this includes a shift a manager closed with `forceCloseShift`,
+        RT-742). Deterministic; nothing is recorded.
       content:
         application/json:
           schema:
@@ -1884,8 +2291,38 @@ components:
         409 on `closeShift`. `error.code` is one of:
         `idempotency_key_conflict` (the same `Idempotency-Key` reused with a
         different payload); `shift_payload_conflict` (the shift is already
-        closed with a different close; a shift closes once). Deterministic;
-        nothing is recorded.
+        closed with a different close; a shift closes once);
+        `shift_force_closed` (RT-742: a manager closed this device's shift
+        with `forceCloseShift`, so it takes no close; final for that shift,
+        the POS dead-letters the close as already closed by a manager; a shift
+        of another device is 404 `shift_not_found`, never this code).
+        Deterministic; nothing is recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    ShiftNotFoundInStore:
+      description: >
+        404 `shift_not_found` on `forceCloseShift`: `shift_id` does not
+        resolve to a shift of the envelope's tenant and store. Any device of
+        the store qualifies. Non-disclosing: identical for an unknown id and
+        for a shift of another store or another tenant (Constitution §II,
+        §XII).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    ForceCloseShiftConflict:
+      description: >
+        409 on `forceCloseShift`. `error.code` is one of:
+        `idempotency_key_conflict` (the same `Idempotency-Key` reused with a
+        different payload); `shift_not_stuck` (the shift is open but is not
+        stuck now: it is younger than the staleness threshold, or its opening
+        cashier has an active `pos_operator` session on the store other than
+        the caller's own);
+        `shift_closed` (the shift is already closed with a cash-up);
+        `shift_force_closed` (the shift is already force-closed with a
+        different `forcedReason`). Deterministic; nothing is recorded.
       content:
         application/json:
           schema:
