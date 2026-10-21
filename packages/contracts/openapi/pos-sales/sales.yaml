@@ -1682,6 +1682,27 @@ components:
       type: object
       additionalProperties: false
       required: [kind, value, amount, reasonCode, authoritySource, approverRole]
+      # The `value` rule depends on `kind` (the server's 400 rules, stated here
+      # so contract validators agree with the endpoint).
+      allOf:
+        - if:
+            properties:
+              kind:
+                const: percent
+            required: [kind]
+          then:
+            properties:
+              value:
+                pattern: '^(100|[1-9][0-9]?)$'
+        - if:
+            properties:
+              kind:
+                const: amount
+            required: [kind]
+          then:
+            properties:
+              value:
+                $ref: "#/components/schemas/PositiveDecimalAmount"
       description: >
         RT-740 (RT-699 doc 28 option C-A): the line's one manual discount
         (OD-28-5: per line only; OD-28-6: at most one per line). Absent means the

@@ -2174,6 +2174,21 @@ describe("pos-sales/sales.yaml — RT-740 per-line manual discount", () => {
     expect(validate({ ...line, discount: { ...discount, amount: "-1" } })).toBe(false);
   });
 
+  it("encodes the kind-specific value rules the DTO enforces (if/then on kind)", () => {
+    const validate = lineValidator();
+    const withValue = (kind: string, value: string) => ({ ...line, discount: { ...discount, kind, value } });
+    for (const value of ["1", "10", "99", "100"]) expect({ value, ok: validate(withValue("percent", value)) }).toEqual({ value, ok: true });
+    for (const value of ["0", "101", "1.5", "010", "10.0"]) {
+      expect({ value, ok: validate(withValue("percent", value)) }).toEqual({ value, ok: false });
+      expect({ value, dto: CaptureSaleLineDiscountSchema.safeParse({ ...discount, value }).success }).toEqual({ value, dto: false });
+    }
+    for (const value of ["0.01", "5", "5.0000"]) expect({ value, ok: validate(withValue("amount", value)) }).toEqual({ value, ok: true });
+    for (const value of ["0", "0.00"]) {
+      expect({ value, ok: validate(withValue("amount", value)) }).toEqual({ value, ok: false });
+      expect({ value, dto: CaptureSaleLineDiscountSchema.safeParse({ ...discount, kind: "amount", value }).success }).toEqual({ value, dto: false });
+    }
+  });
+
   it("states the net invariant, the percent rule, the zero-total path and the partial-return limit", () => {
     expect(described(schema("CaptureSaleLine"))).toContain(
       "`lineAmount = unitPrice × quantity − discount.amount` exactly",
