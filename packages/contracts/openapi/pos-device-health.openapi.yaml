@@ -898,6 +898,35 @@ components:
             properties:
               lastSeenSource:
                 type: string
+        # Never `ok` on missing data: an unknown version, channel or policy
+        # minimum makes the verdict `unknown`.
+        - if:
+            properties:
+              appVersion:
+                type: "null"
+            required: [appVersion]
+          then:
+            properties:
+              compliance:
+                const: unknown
+        - if:
+            properties:
+              updateChannel:
+                type: "null"
+            required: [updateChannel]
+          then:
+            properties:
+              compliance:
+                const: unknown
+        - if:
+            properties:
+              minSupportedVersion:
+                type: "null"
+            required: [minSupportedVersion]
+          then:
+            properties:
+              compliance:
+                const: unknown
       description: >
         One device's health. Identity, label and trust state come from the
         device row; the self-reported fields are the last STORED heartbeat

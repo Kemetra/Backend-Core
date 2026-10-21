@@ -347,6 +347,16 @@ describe("pos device health contract — console row (D-4, D-5)", () => {
     expect(contract.accepts("DeviceHealthView", { ...SEEN, liveness: "unknown" })).toBe(false);
   });
 
+  it.each(["appVersion", "updateChannel", "minSupportedVersion"])(
+    "is never ok or below_minimum with a heartbeat but a null %s",
+    (key) => {
+      const missing = { ...SEEN, [key]: null, minSupportedGraceUntil: key === "minSupportedVersion" ? null : AT };
+      expect(contract.accepts("DeviceHealthView", { ...missing, compliance: "unknown" })).toBe(true);
+      expect(contract.accepts("DeviceHealthView", { ...missing, compliance: "ok" })).toBe(false);
+      expect(contract.accepts("DeviceHealthView", { ...missing, compliance: "below_minimum" })).toBe(false);
+    },
+  );
+
   it("labels the last seen with its source, null exactly when it is null", () => {
     expect(contract.accepts("DeviceHealthView", { ...SEEN, lastSeenSource: "activity" })).toBe(true);
     expect(contract.accepts("DeviceHealthView", { ...SEEN, lastSeenSource: null })).toBe(false);
