@@ -5,7 +5,11 @@
  * it says whether to hint and at which stage (15 / 10 / 3 days left).
  * `applyRotationHint` writes the two response headers.
  */
+import { of, throwError, lastValueFrom } from "rxjs";
+import type { CallHandler, ExecutionContext } from "@nestjs/common";
+
 import {
+  DeviceRotationHintInterceptor,
   ROTATE_AFTER_HEADER,
   ROTATE_STAGE_HEADER,
   ROTATION_HINT_LEAD_MS,
@@ -76,5 +80,55 @@ describe("applyRotationHint (RT-639)", () => {
   it("uses the contract's header names", () => {
     expect(ROTATE_AFTER_HEADER).toBe("X-Device-Token-Rotate-After");
     expect(ROTATE_STAGE_HEADER).toBe("X-Device-Token-Rotate-Stage");
+  });
+});
+
+describe("DeviceRotationHintInterceptor (RT-639)", () => {
+  /** The interceptor reads the real clock, unlike the pure functions above. */
+  const realExpiringIn = (ms: number): Date => new Date(Date.now() + ms);
+  const makeCtx = (expiry: Date | undefined) => {
+    const headers: Record<string, string> = {};
+    const ctx = {
+      switchToHttp: () => ({
+        getRequest: () => ({ deviceRotationExpiry: expiry }),
+        getResponse: () => ({ setHeader: (k: string, v: string) => void (headers[k] = v) }),
+      }),
+    } as unknown as ExecutionContext;
+    return { ctx, headers };
+  };
+  const ok: CallHandler = { handle: () => of("body") };
+  const failing: CallHandler = { handle: () => throwError(() => new Error("handler failed")) };
+
+  it("sets the headers once the handler succeeded", async () => {
+    const { ctx, headers } = makeCtx(realExpiringIn(2 * DAY));
+
+    await expect(lastValueFrom(new DeviceRotationHintInterceptor().intercept(ctx, ok))).resolves.toBe("body");
+
+    expect(headers[ROTATE_STAGE_HEADER]).toBe("urgent");
+    expect(headers[ROTATE_AFTER_HEADER]).toBeDefined();
+  });
+
+  it("sets nothing while the handler has not answered, and nothing when it fails", async () => {
+    const { ctx, headers } = makeCtx(realExpiringIn(2 * DAY));
+
+    await expect(lastValueFrom(new DeviceRotationHintInterceptor().intercept(ctx, failing))).rejects.toThrow("handler failed");
+
+    expect(headers).toEqual({});
+  });
+
+  it("sets nothing when the guard recorded no expiry (not a device-token request)", async () => {
+    const { ctx, headers } = makeCtx(undefined);
+
+    await lastValueFrom(new DeviceRotationHintInterceptor().intercept(ctx, ok));
+
+    expect(headers).toEqual({});
+  });
+
+  it("sets nothing while more than 15 days remain", async () => {
+    const { ctx, headers } = makeCtx(realExpiringIn(60 * DAY));
+
+    await lastValueFrom(new DeviceRotationHintInterceptor().intercept(ctx, ok));
+
+    expect(headers).toEqual({});
   });
 });

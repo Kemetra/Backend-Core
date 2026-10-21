@@ -152,28 +152,28 @@ info:
         `expires_at`).
 
     The server keeps no per-device state, so it cannot say "once": it sends
-    the stage on every response while it holds, and the terminal shows each
-    stage the first time it sees it. The headers are optional and additive;
-    they carry an instant and a stage only, never token material. They are
-    sent on the routes that authenticate with the `device` token alone (the
-    catalogue read-down, the cashier admissions, the shift cash-up writes,
-    the sale history, the cash variance policy, and `captureSale` on its
-    device path), and only after a successful authentication: a refused
-    token (401) gets neither. Once the device is authenticated they ride
-    every response of that request, including a 304 and a later 4xx or 5xx
-    (for example 403 `refused` or 409). The operations document them on
-    their 2xx and 304 responses; the error responses are shared components
-    that also serve the 401, so the rule is stated here once. They are
-    optional everywhere: a client reads them from whichever response
-    carries them and never depends on one being absent. A request that
-    presents the previous token (the 10-minute rotation overlap, after a
-    lost rotation response) is treated as expiring when the overlap closes,
-    since that token stops working then and the device's own `expires_at`
-    was just reset: it gets `urgent`, and `X-Device-Token-Rotate-After` is
-    already past. The terminal should retry the rotation at once. `posRotateTerminalToken`
-    does not carry them (its 200 already holds the new `rotate_after`), nor
-    do the routes that authenticate with an operator credential. They do
-    not replace the first start rule below.
+    the stage on every successful response while it holds, and the terminal
+    shows each stage the first time it sees it. The headers are optional and
+    additive; they carry an instant and a stage only, never token material.
+    They are sent on the routes that authenticate with the `device` token
+    alone (the catalogue read-down, the cashier admissions, the shift
+    cash-up writes, the sale history, the cash variance policy, and
+    `captureSale` on its device path), only on a successful response (the
+    2xx, and the 304 of a conditional GET, both of which the operations
+    document), and never on an error response: a refused token (401) gets
+    neither, and neither does a request the route or a later guard
+    refuses (for example 403 `refused`, 409 or 425). They are also absent on
+    an idempotent replay answered before the route runs. A client reads them
+    from whichever response carries them and never depends on one being
+    absent. A request that presents the previous token (the 10-minute
+    rotation overlap, after a lost rotation response) is treated as expiring
+    when the overlap closes, since that token stops working then and the
+    device's own `expires_at` was just reset: it gets `urgent`, and
+    `X-Device-Token-Rotate-After` is already past. The terminal should retry
+    the rotation at once. `posRotateTerminalToken` does not carry them (its
+    200 already holds the new `rotate_after`), nor do the routes that
+    authenticate with an operator credential. They do not replace the first
+    start rule below.
 
 
     **Overlap (10 minutes).** The previous token keeps authenticating for

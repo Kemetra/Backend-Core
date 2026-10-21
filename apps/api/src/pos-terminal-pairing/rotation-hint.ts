@@ -13,12 +13,26 @@
  *                                 or already past `expires_at`).
  *
  * The server keeps no per-device state, so it cannot say "once". It sends the
- * stage on every response while it holds; the terminal shows each stage the
- * first time it sees it. More than 15 days left: no header. Pure: the clock
- * is a parameter.
+ * stage on every successful response while it holds; the terminal shows each
+ * stage the first time it sees it. More than 15 days left: no header. The
+ * computation is pure: the clock is a parameter.
+ *
+ * Only a SUCCESSFUL response carries them (the 2xx, and the 304 of a conditional
+ * GET). `PosDeviceAuthGuard` records the expiry on the request;
+ * `DeviceRotationHintInterceptor` (installed by `@DeviceBearer()`) writes the
+ * headers once the handler has answered, so a response to a failed request, or
+ * to one a later guard refused, carries none.
  *
  * Only an instant and a stage travel; never token material.
  */
+import {
+  Injectable,
+  type CallHandler,
+  type ExecutionContext,
+  type NestInterceptor,
+} from "@nestjs/common";
+import type { Observable } from "rxjs";
+import { tap } from "rxjs/operators";
 
 const DAY_MS = 86_400_000;
 
@@ -60,4 +74,26 @@ export function applyRotationHint(
   if (hint === null) return;
   res.setHeader(ROTATE_AFTER_HEADER, hint.rotateAfter.toISOString());
   res.setHeader(ROTATE_STAGE_HEADER, hint.stage);
+}
+
+/** What `PosDeviceAuthGuard` leaves on the request for the interceptor. */
+export interface RotationHintRequest {
+  /** When the presented credential stops working; unset when the request used no device token. */
+  deviceRotationExpiry?: Date;
+}
+
+/** Writes the hint headers after the handler has answered; a failing handler writes none. */
+@Injectable()
+export class DeviceRotationHintInterceptor implements NestInterceptor {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
+    const http = context.switchToHttp();
+    return next.handle().pipe(
+      tap(() => {
+        const expiry = http.getRequest<RotationHintRequest>().deviceRotationExpiry;
+        if (expiry !== undefined) {
+          applyRotationHint(http.getResponse<{ setHeader: (k: string, v: string) => void }>(), expiry);
+        }
+      }),
+    );
+  }
 }

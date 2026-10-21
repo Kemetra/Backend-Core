@@ -366,70 +366,45 @@ describe("PosDeviceAuthGuard — RT-213 tenant status", () => {
 // ===========================================================================
 
 describe("PosDeviceAuthGuard — rotate-soon hint (RT-639)", () => {
+  // The guard only records which expiry the hint is computed from; the
+  // DeviceRotationHintInterceptor writes the headers after a successful handler,
+  // so an error response never carries them (rotation-hint.http.spec.ts).
   const DAY = 86_400_000;
   const expiresIn = (days: number): Date => new Date(Date.now() + days * DAY);
 
-  it("RH1: more than 15 days left → no hint headers", async () => {
+  it("RH1: records the device's expiry on the request and sets no header itself", async () => {
     const { guard, devices } = buildGuard();
-    devices.findActiveByAttestationWithExpiry.mockResolvedValue(makeDevice({ expiresAt: expiresIn(60) }));
+    const expiresAt = expiresIn(7);
+    devices.findActiveByAttestationWithExpiry.mockResolvedValue(makeDevice({ expiresAt }));
+    const req = makeRequest({ authorization: "Bearer t" });
     const res = makeRes();
 
-    await guard.canActivate(makeCtx(makeRequest({ authorization: "Bearer t" }), res));
+    await guard.canActivate(makeCtx(req, res));
 
+    expect(req.deviceRotationExpiry).toEqual(expiresAt);
     expect(res.headers).toEqual({});
   });
 
-  it.each([
-    [12, "notice"],
-    [7, "warning"],
-    [2, "urgent"],
-  ])("RH2: %s days left → Rotate-After + Rotate-Stage=%s", async (days, stage) => {
-    const { guard, devices } = buildGuard();
-    const expiresAt = expiresIn(days);
-    devices.findActiveByAttestationWithExpiry.mockResolvedValue(makeDevice({ expiresAt }));
-    const res = makeRes();
-
-    const ok = await guard.canActivate(makeCtx(makeRequest({ authorization: "Bearer t" }), res));
-
-    expect(ok).toBe(true);
-    expect(res.headers["X-Device-Token-Rotate-After"]).toBe(new Date(expiresAt.getTime() - 15 * DAY).toISOString());
-    expect(res.headers["X-Device-Token-Rotate-Stage"]).toBe(stage);
-  });
-
-  it("RH3: carries no token material (only an instant and a stage)", async () => {
-    const { guard, devices } = buildGuard();
-    devices.findActiveByAttestationWithExpiry.mockResolvedValue(makeDevice({ expiresAt: expiresIn(2) }));
-    const res = makeRes();
-
-    await guard.canActivate(makeCtx(makeRequest({ authorization: "Bearer secret-device-token" }), res));
-
-    expect(Object.keys(res.headers).sort()).toEqual(["X-Device-Token-Rotate-After", "X-Device-Token-Rotate-Stage"]);
-    expect(JSON.stringify(res.headers)).not.toContain("secret-device-token");
-  });
-
-  it("RH5: the previous token (rotation overlap) is treated as expiring when the overlap closes: urgent", async () => {
+  it("RH2: the previous token (rotation overlap) records when the overlap closes instead", async () => {
     const { guard, devices } = buildGuard();
     const overlapEnds = new Date(Date.now() + 6 * 60_000);
     devices.findActiveByAttestationWithExpiry.mockResolvedValue(
       makeDevice({ expiresAt: expiresIn(90), presentedPreviousUntil: overlapEnds } as Partial<DeviceRow>),
     );
-    const res = makeRes();
+    const req = makeRequest({ authorization: "Bearer old-token" });
 
-    await guard.canActivate(makeCtx(makeRequest({ authorization: "Bearer old-token" }), res));
+    await guard.canActivate(makeCtx(req));
 
-    expect(res.headers["X-Device-Token-Rotate-Stage"]).toBe("urgent");
-    expect(res.headers["X-Device-Token-Rotate-After"]).toBe(new Date(overlapEnds.getTime() - 15 * DAY).toISOString());
+    expect(req.deviceRotationExpiry).toEqual(overlapEnds);
   });
 
-  it("RH4: a refused token (401) gets no hint", async () => {
+  it("RH3: a refused token (401) records nothing", async () => {
     const { guard, devices } = buildGuard();
     devices.findActiveByAttestationWithExpiry.mockResolvedValue(null);
-    const res = makeRes();
+    const req = makeRequest({ authorization: "Bearer unknown" });
 
-    await expect(
-      guard.canActivate(makeCtx(makeRequest({ authorization: "Bearer unknown" }), res)),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(UnauthorizedException);
 
-    expect(res.headers).toEqual({});
+    expect(req.deviceRotationExpiry).toBeUndefined();
   });
 });

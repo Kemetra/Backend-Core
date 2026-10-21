@@ -75,9 +75,11 @@
  *
  * Rotate-soon hint (RT-639)
  * -------------------------
- * A successful resolution also sets `X-Device-Token-Rotate-After` and
- * `X-Device-Token-Rotate-Stage` on the response once the credential has 15
- * days or less left (`rotation-hint.ts`). A refused token gets neither.
+ * A successful resolution records when the presented credential stops working
+ * (`request.deviceRotationExpiry`). `@DeviceBearer()` installs the interceptor
+ * that turns it into `X-Device-Token-Rotate-After` / `-Stage` on a SUCCESSFUL
+ * response, once the credential has 15 days or less left (`rotation-hint.ts`).
+ * A refused token records nothing and an error response carries neither header.
  *
  * Do NOT register it globally, and do NOT use it on operator routes
  * (`/api/pos/v1/operators/*`) or on any route that needs a person's
@@ -94,7 +96,6 @@ import {
 } from "@nestjs/common";
 
 import { DeviceRepository } from "../pos-operators/device.repository";
-import { applyRotationHint } from "../pos-terminal-pairing/rotation-hint";
 import type { Principal } from "./auth.guard";
 import type { ResolvedContext, TenantContextRequest } from "../context/types";
 
@@ -142,15 +143,13 @@ export class PosDeviceAuthGuard implements CanActivate {
     // RT-113 cashier admissions: admission ownership, the idempotency scope,
     // the takeover rate limit). Never taken from the request.
     request.posDeviceId = device.id;
-    // RT-639: once the credential has 15 days or less left, tell the terminal
-    // to rotate (instant and stage only; never token material). A request that
-    // presented the PREVIOUS token (rotation overlap, after a lost rotation
-    // response) is treated as expiring when the overlap closes: the device's own
-    // `expires_at` was just reset, but that token stops working then.
-    applyRotationHint(
-      execCtx.switchToHttp().getResponse<{ setHeader: (k: string, v: string) => void }>(),
-      device.presentedPreviousUntil ?? device.expiresAt,
-    );
+    // RT-639: record which expiry the rotate-soon hint is computed from; the
+    // DeviceRotationHintInterceptor writes the headers once the handler has
+    // answered, so a failed request carries none. A request that presented the
+    // PREVIOUS token (rotation overlap, after a lost rotation response) is treated
+    // as expiring when the overlap closes: the device's own `expires_at` was just
+    // reset, but that token stops working then.
+    request.deviceRotationExpiry = device.presentedPreviousUntil ?? device.expiresAt;
     return true;
   }
 }

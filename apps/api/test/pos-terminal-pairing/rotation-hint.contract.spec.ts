@@ -50,9 +50,8 @@ function operation(doc: Doc, operationId: string): Operation {
 }
 
 /**
- * Every response the guard's headers can ride: the 2xx, and the 304 of a
- * conditional GET (the guard sets them before the controller turns the answer
- * into a 304: `posGetCashVariancePolicy`).
+ * Every response the hint headers can ride: the 2xx, and the 304 of a
+ * conditional GET (`posGetCashVariancePolicy`). Error responses carry none.
  */
 const successResponses = (op: Operation) =>
   Object.entries(op.responses ?? {}).filter(([status]) => status.startsWith("2") || status === "304");
@@ -102,12 +101,12 @@ describe("rotate-soon hint headers in the contracts (RT-639)", () => {
     expect(text).not.toContain("deferred to RT-370");
   });
 
-  it("the pairing contract says they ride every response after a successful authentication, errors included", () => {
+  it("the pairing contract says they ride successful responses only, never an error response", () => {
     const text = readFileSync(resolve(OPENAPI_DIR, "pos-terminal-pairing.openapi.yaml"), "utf8");
-    // The per-operation responses are shared `$ref` components that also serve the 401 and routes
-    // that send no hint, so the rule is stated once here instead of on every error response.
-    expect(text).toContain("every response of that request");
-    expect(text).toContain("never depends on one being absent");
+    // The error responses are shared `$ref` components that also serve the 401 and routes that send no
+    // hint, so the contract documents the headers on the 2xx and the 304 only, and says errors carry none.
+    expect(text).toContain("only on a successful response");
+    expect(text).toContain("never on an error response");
   });
 
   it("the pairing contract says a previous-token request is treated as expiring when the overlap closes", () => {

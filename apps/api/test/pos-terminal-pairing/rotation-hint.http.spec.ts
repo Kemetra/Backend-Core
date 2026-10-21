@@ -1,10 +1,10 @@
 /**
  * RT-639 — the rotate-soon hint reaches the HTTP response.
  *
- * Docker-free: a real `PosDeviceAuthGuard` on probe routes inside a Nest app,
- * over a fake `DeviceRepository`. Proves the guard's `setHeader` survives to the
- * wire on a success, on a handler error (through the global exception filter),
- * and that a refused token gets no hint.
+ * Docker-free: a real `PosDeviceAuthGuard` on `@DeviceBearer()` probe routes
+ * inside a Nest app, over a fake `DeviceRepository`. Proves the hint reaches the
+ * wire on a success, and not on a handler error (through the global exception
+ * filter) nor for a refused token.
  */
 import "reflect-metadata";
 
@@ -13,12 +13,14 @@ import { Test } from "@nestjs/testing";
 import request from "supertest";
 
 import { PosDeviceAuthGuard } from "../../src/auth/pos-device-auth.guard";
+import { DeviceBearer } from "../../src/auth/route-auth";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
 import { DeviceRepository } from "../../src/pos-operators/device.repository";
 
 const DAY = 86_400_000;
 
 @Controller("probe")
+@DeviceBearer()
 @UseGuards(PosDeviceAuthGuard)
 class ProbeController {
   @Get("ok")
@@ -104,12 +106,13 @@ describe("rotate-soon hint on the wire (RT-639)", () => {
     }
   });
 
-  it("the hint also rides a handler error response", async () => {
+  it("an error response carries no hint, even when the token is about to lapse", async () => {
     expiresInDays = 2;
     const res = await call("/probe/conflict");
 
     expect(res.status).toBe(409);
-    expect(res.headers["x-device-token-rotate-stage"]).toBe("urgent");
+    expect(res.headers["x-device-token-rotate-after"]).toBeUndefined();
+    expect(res.headers["x-device-token-rotate-stage"]).toBeUndefined();
   });
 
   it("a refused token gets 401 and no hint", async () => {
