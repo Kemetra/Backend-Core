@@ -144,8 +144,8 @@ paths:
         not be sold here: retired or inactive, not in the store's sellable
         catalogue, or a `serial` product, which stays fail-closed); then
         `profile_mismatch` (the product's Tracking Profile does not allow lot
-        selling, that is `mode` `none`, or the identity's kind does not match
-        the profile); then `unknown_identity` (no identity with this id or
+        selling, that is `mode` `none`: a product-level check, made before the
+        identity is looked up); then `unknown_identity` (no identity with this id or
         code exists in the tenant); then `wrong_product` (the identity belongs
         to another product of the tenant); then `recalled` (an active
         `recall_hold`); then `held` (an active `quality_hold`); then
@@ -162,8 +162,12 @@ paths:
         identity or the result.
 
         Cashier claim. With the `device` scheme `operatorUserId` is REQUIRED,
-        and with `operatorAuthorization` it MUST be absent (an envelope request
-        that carries it is the generic 401). The server accepts the claim only
+        and with `operatorAuthorization` it MUST be absent. As on `captureSale`,
+        the presence of `operatorUserId` selects the device path and its
+        absence selects the envelope path, so a wrong-path request is the
+        generic 401, never a 400: an envelope request that carries it, and a
+        device token sent without it (the device token never proves an operator
+        alone, so without the claim it is read as an envelope and fails). The server accepts the claim only
         if a cashier admission of this device and store for that user is live
         at the server's current time and the cashier is still eligible, the
         same rules as `captureSale`'s `operatorUserId` without the back-dating
@@ -231,10 +235,15 @@ paths:
         still be refused there, because a hold or recall can land in between.
 
         Order and rank. When the FEFO policy is `suggest`, `fefoRank` is
-        1-based over the returned lots and rank 1 is the lot the TLV would
+        1-based over the returned lots and the array is in rank order. The
+        full ordering key is: lots with a positive `sellablePosition` first;
+        then all others (a position of zero or below, or null, counts as not
+        positive, so before positions are live every lot is in this group);
+        within each group by `expiryDate` ascending, a lot without one last;
+        then by `code` ascending. Rank 1 is therefore the lot the TLV would
         suggest: the earliest-expiring lot with a positive sellable position,
         ties to the lowest `code`; if no position is positive, the earliest
-        non-expired lot. The array is in rank order. When the policy is `off`,
+        non-expired lot. When the policy is `off`,
         `fefoRank` is null on every lot and the array is ordered by `expiryDate`
         (a lot without one last), then `code`. A product that is not
         batch-tracked has no lots: the answer is a 200 with an empty `lots`.
@@ -535,7 +544,7 @@ components:
             `expired`: its expiry is before the store's business date.
             `held`: an active quality hold. `recalled`: an active recall hold.
             `profile_mismatch`: the product's Tracking Profile does not allow
-            lot selling, or the identity's kind does not match it.
+            lot selling (`mode` `none`), a product-level check.
             `not_sellable`: the product is retired, inactive, outside the
             store's sellable catalogue, or a `serial` product. The set is
             closed in this version.
@@ -662,9 +671,9 @@ components:
     ValidationFailure:
       description: >
         `validation_error` (400): malformed body or parameter, an unknown key
-        (strict boundary), a body-supplied server-owned field, an
-        `operatorUserId` rule broken on the wrong path, or a malformed
-        `identity`. Deterministic; no validation record is created.
+        (strict boundary), a body-supplied server-owned field, or a malformed
+        `identity`. A wrong-path `operatorUserId` is never a 400: it is the
+        generic 401. Deterministic; no validation record is created.
       content:
         application/json:
           schema:
@@ -673,8 +682,9 @@ components:
       description: >
         Generic refusal (401). The body does not distinguish an invalid
         envelope, an invalid, missing or revoked device token, a missing
-        tenant or store binding, or an envelope request that carries
-        `operatorUserId`. The TLV is unavailable.
+        tenant or store binding, an envelope request that carries
+        `operatorUserId`, or a device token sent without `operatorUserId`. The
+        TLV is unavailable.
       content:
         application/json:
           schema:

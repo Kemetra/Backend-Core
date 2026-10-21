@@ -201,6 +201,8 @@ describe("pos-sales/tracked-lines.yaml — RT-450 TLV and lot lookup", () => {
     expect(text).toContain("`recalled` (an active `recall_hold`); then `held` (an active `quality_hold`)");
     expect(text).toContain("a refusal is a business answer, not an HTTP error, and it is recorded like an acceptance");
     expect(text).toContain("the identity record's expiry governs");
+    expect(text).toContain("a product-level check, made before the identity is looked up");
+    expect(text).toContain("so a wrong-path request is the generic 401, never a 400");
     expect(infoOf(doc)).toContain("A lot is sellable through its `expiryDate`, inclusive");
     expect(infoOf(doc)).toContain("The till's clock is never used");
     expect(infoOf(doc)).toContain("its `validationId` is never a valid `validationId` for a sale line");
@@ -239,7 +241,9 @@ describe("pos-sales/tracked-lines.yaml — RT-450 TLV and lot lookup", () => {
 
   it("describes the lookup order, the advisory position and the non-disclosing 404", () => {
     const lookup = flat(lots.description as string);
-    expect(lookup).toContain("rank 1 is the lot the TLV would suggest");
+    expect(lookup).toContain("Rank 1 is therefore the lot the TLV would suggest");
+    expect(lookup).toContain("The full ordering key is: lots with a positive `sellablePosition` first");
+    expect(lookup).toContain("a position of zero or below, or null, counts as not positive");
     expect(lookup).toContain("never a reason to refuse a sale");
     expect(lookup).toContain("a non-disclosing 404");
   });
