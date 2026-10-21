@@ -22,6 +22,7 @@ import Ajv, { type ValidateFunction } from "ajv";
 import addFormats from "ajv-formats";
 
 import { loadOpenApiContracts } from "../../src/openapi/loader";
+import { CONTRACTS_DIR, contractRoutes } from "../_helpers/openapi-routes";
 
 const CONTRACT_ID = "audit.openapi";
 const OPERATION_ID = "listPlatformAuditEvents";
@@ -57,24 +58,13 @@ interface OpenApiDocument {
 }
 
 let doc: OpenApiDocument;
-let otherOperationIds: Set<string>;
 const ajv = new Ajv({ strict: false, allErrors: true });
 addFormats(ajv);
 
 beforeAll(() => {
-  const contracts = loadOpenApiContracts();
-  const found = contracts.find((c) => c.id === CONTRACT_ID);
-  if (!found) throw new Error(`${CONTRACT_ID} not found in packages/contracts/openapi/`);
+  const found = loadOpenApiContracts().find((c) => c.id === CONTRACT_ID);
+  if (!found) throw new Error(`${CONTRACT_ID} is not loaded`);
   doc = found.document as OpenApiDocument;
-  otherOperationIds = new Set<string>();
-  for (const c of contracts) {
-    if (c.id === CONTRACT_ID) continue;
-    for (const item of Object.values((c.document as OpenApiDocument).paths ?? {})) {
-      for (const o of Object.values(item)) {
-        if (typeof o?.operationId === "string") otherOperationIds.add(o.operationId);
-      }
-    }
-  }
   ajv.addSchema(doc as object, CONTRACT_ID);
 });
 
@@ -149,8 +139,9 @@ describe("platform audit read: document and operation", () => {
     ]);
   });
 
-  it("collides with no other contract's operationId", () => {
-    expect(otherOperationIds.has(OPERATION_ID)).toBe(false);
+  it("is the only declaration of its operationId across every contract", () => {
+    const ids = contractRoutes(CONTRACTS_DIR).map((route) => route.operation.operationId);
+    expect(ids.filter((id) => id === OPERATION_ID)).toHaveLength(1);
   });
 
   it("is contract-only and says where the runtime and the guard rule live", () => {
