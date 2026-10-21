@@ -225,12 +225,20 @@ info:
         `X-POS-App-Version` and `X-POS-Contract-Pin` are recorded with a valid
         commit when they are valid and are otherwise recorded as null; without
         a valid commit they are ignored. Nothing is ever defaulted or guessed.
-      - **Self-reported, bounded, no PII.** Each value is a closed pattern
-        (a commit, a semantic version): no free text, no hostname, machine id,
-        user, path, token or other identifier, and no new destination. The
-        server stores the three values and the server-clock time it stored
-        them (`reportedAt`), never a terminal time. A request refused at
-        authentication (401) records nothing.
+      - **Bounded, strict character set.** `X-POS-Build-Commit` and
+        `X-POS-Contract-Pin` are exactly 40 characters of `[0-9a-f]`.
+        `X-POS-App-Version` is at most 32 characters of `[0-9A-Za-z.-]` in
+        the semantic-version form, with no build metadata. A value that is
+        longer, uses another character, does not match its form or is repeated
+        is treated as missing: it is never truncated, normalised or repaired.
+      - **No PII, no secret, never logged raw.** The values carry no user,
+        cashier, hostname, machine id, path, token or other identifier and no
+        free text, and there is no new destination. Backend-Core never logs a
+        raw value and never uses one as a metric label (a commit is an
+        unbounded label); logs and metrics carry only the outcome (recorded or
+        unknown). The server stores the three values and the server-clock time
+        it stored them (`reportedAt`), never a terminal time. A request refused
+        at authentication (401) records nothing.
       - **Not `lastSeenAt`, not trust.** The request is an authenticated
         request, so it feeds the activity writer (RT-370) exactly as any
         other; nothing about `lastSeenAt` or `lastSeenSource` changes. The
@@ -242,14 +250,20 @@ info:
         window, so `reportedAt` is the server clock of the last store, not of
         the last request. A failure to store is counted and swallowed: it
         never reaches the response.
-      - **The heartbeat is not pre-empted.** The AD-DEVICE-001 heartbeat
-        (RT-327) may report the same values, and its `app_version` is the same
-        value and bound as `X-POS-App-Version`. This rule does not fix the
-        heartbeat's wire shape, and the heartbeat's policy and compliance
-        reply is not part of it.
+      - **The heartbeat stays canonical.** The AD-DEVICE-001 D-1 heartbeat
+        (RT-327) remains the canonical reporting channel. Its body fields
+        `app_version` and `update_channel` keep the names and formats
+        AD-DEVICE-001 D-1 gives them, and `app_version` is the same value and
+        bound as `X-POS-App-Version` (a semantic version, at most 32
+        characters, no build metadata), so RT-327 can absorb these headers
+        without a breaking change. This rule does not fix the heartbeat's wire
+        shape, and the heartbeat's policy and compliance reply is not part of
+        it.
 
-    The console reads are `console-device-builds.openapi.yaml`
-    (`consoleListDeviceBuilds`, `consoleGetFleetBaseline`). The POS change
+    The console reads are the optional, nullable `buildIdentity` key of
+    `DeviceSummary` / `DeviceDetail` (`devices.openapi.yaml`) and
+    `consoleGetFleetBaseline` (`console-device-builds.openapi.yaml`). The POS
+    change
     that sends the headers is a separate change, coordinated through the
     contracts PIN: this contract lands first and the POS sends them after it
     repins.

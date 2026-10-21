@@ -248,8 +248,8 @@ components:
         maxLength: 40
         pattern: "^[0-9a-f]{40}$"
       description: >
-        RT-719. The POS git commit the running build was made from: the
-        full 40-character lower-case hex SHA-1. Optional. A request that
+        RT-719. The POS git commit the running build was made from: exactly
+        40 characters of `[0-9a-f]` (the full SHA-1). Optional. A request that
         sends no valid commit records the device's build as unknown; it is
         never refused or slowed for it. Recorded only from a request to this
         operation that authenticates with the device token. See "Build identity report
@@ -264,8 +264,8 @@ components:
         maxLength: 32
         pattern: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
       description: >
-        RT-719. The POS semantic version, at most 32 characters, without
-        build metadata. Optional: send it only when the build has a release
+        RT-719. The POS semantic version: at most 32 characters of
+        `[0-9A-Za-z.-]`, without build metadata. Optional: send it only when the build has a release
         version (POS has no signed release yet). Ignored without a valid
         `X-POS-Build-Commit`. See "Build identity report (RT-719)" in
         `pos-terminal-pairing.openapi.yaml`.
@@ -280,8 +280,8 @@ components:
         pattern: "^[0-9a-f]{40}$"
       description: >
         RT-719. The Backend-Core commit in the build's
-        `contracts/backend-core/PIN` (the `commit` line): 40 lower-case hex
-        characters. Optional. Ignored without a valid `X-POS-Build-Commit`.
+        `contracts/backend-core/PIN` (the `commit` line): exactly 40
+        characters of `[0-9a-f]`. Optional. Ignored without a valid `X-POS-Build-Commit`.
         See "Build identity report (RT-719)" in
         `pos-terminal-pairing.openapi.yaml`.
     BranchId:

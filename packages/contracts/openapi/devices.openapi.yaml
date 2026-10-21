@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — Console Device Registry API
-  version: "1.4.0-draft"
+  version: "1.5.0-draft"
   description: >
     Jira RT-365 (RT-287 F2; RT-138 L3 / DL-2), RT-366 (RT-287 F3), RT-367
     (RT-287 F4; RT-138 L1 / L5 / DL-3) and RT-368 (RT-287 F5; D-Q2): the
@@ -460,6 +460,25 @@ info:
     **1.4.0-draft (RT-620, additive).** Every cookieAuth operation may
     return 429 `rate_limited` (`TooManyRequests`, with `Retry-After`)
     from the console rate limit (RT-574, RT-619). No other wire change.
+
+
+    **1.5.0-draft (RT-719, additive).** `DeviceSummary` and `DeviceDetail` gain
+    one OPTIONAL, nullable key, `buildIdentity`: the POS build the terminal
+    last reported (`buildCommit`, `appVersion`, `contractPinCommit` and the
+    server-clock `reportedAt`), or `null` when it has never reported one. It
+    is the one exception to "every key is always present": both projections
+    are closed and served today, so a required key would fail the served
+    runtime's responses until the RT-719 runtime ships. A client reads an
+    absent key and `null` the same way, as unknown, and never renders unknown
+    as a build, as "current" or as "latest". The key is self-reported, an
+    inventory signal only: it never changes trust state, `lastSeenAt` or
+    `lastSeenSource`, and it carries no PII, no secret and no free text (every
+    value is a bounded pattern). How a terminal reports it, and the fleet
+    baseline RT-713 reads (`consoleGetFleetBaseline`, contract-only), are in
+    `pos-terminal-pairing.openapi.yaml` ("Build identity report (RT-719)") and
+    `console-device-builds.openapi.yaml`. Until the RT-719 runtime ships, the
+    served operations do not send the key. No operation changes, no existing
+    key changes.
 
 servers:
   - url: https://api.example.com
@@ -973,9 +992,9 @@ components:
         - $ref: "#/components/schemas/TrustStateConsistency"
         - $ref: "#/components/schemas/LastSeenConsistency"
       description: >
-        One device, as listed. Every key is always present; a value that is
-        not recorded is `null`. No tenant id, token hash, previous token or
-        rotation window.
+        One device, as listed. Every key is always present, except the
+        optional `buildIdentity` (RT-719); a value that is not recorded is
+        `null`. No tenant id, token hash, previous token or rotation window.
       properties:
         deviceId:
           type: string
@@ -1065,6 +1084,15 @@ components:
             The open custody exception: the id of the open shift still on this
             revoked device (see "Custody exception" above). `null` when there
             is none, and always `null` on an active device.
+        buildIdentity:
+          description: >
+            RT-719. The POS build the terminal last reported, or `null` when it
+            has never reported one (unknown, never a default build). OPTIONAL:
+            absent until the RT-719 runtime ships, and an absent key means the
+            same as `null`. Self-reported; not a trust signal; not `lastSeenAt`.
+          oneOf:
+            - $ref: "#/components/schemas/DeviceBuildIdentity"
+            - type: "null"
 
     DeviceDetail:
       type: object
@@ -1160,6 +1188,10 @@ components:
         custodyExceptionShiftId:
           type: [string, "null"]
           format: uuid
+        buildIdentity:
+          oneOf:
+            - $ref: "#/components/schemas/DeviceBuildIdentity"
+            - type: "null"
         revokeNote:
           description: >
             The note recorded with the revoke; `null` when none. Returned to
@@ -1237,6 +1269,52 @@ components:
         properties:
           lastSeenSource:
             type: string
+
+    GitCommit:
+      type: string
+      minLength: 40
+      maxLength: 40
+      pattern: '^[0-9a-f]{40}$'
+      description: A full git commit SHA-1, 40 lower-case hexadecimal characters. Never abbreviated.
+    AppVersion:
+      type: string
+      minLength: 5
+      maxLength: 32
+      pattern: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+      description: >
+        A semantic version without build metadata, at most 32 characters
+        (`1.4.0`, `1.4.0-rc.1`).
+    DeviceBuildIdentity:
+      type: object
+      additionalProperties: false
+      required: [buildCommit, appVersion, contractPinCommit, reportedAt]
+      description: >
+        The build identity a terminal last reported (RT-719). A value the
+        terminal did not send is `null`, never a default. Self-reported; an
+        inventory signal only.
+      properties:
+        buildCommit:
+          $ref: "#/components/schemas/GitCommit"
+        appVersion:
+          description: >
+            The POS semantic version; `null` while the build has none (POS has
+            no signed release yet) or the terminal did not send one.
+          oneOf:
+            - $ref: "#/components/schemas/AppVersion"
+            - type: "null"
+        contractPinCommit:
+          description: >
+            The Backend-Core commit in the build's `contracts/backend-core/PIN`;
+            `null` when the terminal did not send it.
+          oneOf:
+            - $ref: "#/components/schemas/GitCommit"
+            - type: "null"
+        reportedAt:
+          type: string
+          format: date-time
+          description: >
+            The server clock when Backend-Core last stored this identity. Never
+            a terminal clock; not `lastSeenAt`.
 
     DevicePage:
       type: object

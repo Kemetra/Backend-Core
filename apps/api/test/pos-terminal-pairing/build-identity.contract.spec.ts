@@ -144,11 +144,15 @@ describe("POS build identity headers in the contracts (RT-719)", () => {
       ["unknown is never a default", /without a valid `X-POS-Build-Commit` records the device's build as\s+unknown/],
       ["other device-token routes neither record nor clear it", /leaves the stored identity unchanged: it can\s+neither record nor clear it/],
       ["an older build is never shown as the newer one it replaced", /never\s+be shown as the newer build it replaced/],
-      ["no PII and no new destination", /no free text, no hostname, machine id,\s+user, path, token or other identifier, and no new destination/],
+      ["a strict character set and bound per header", /exactly 40 characters of `\[0-9a-f\]`/],
+      ["a bad value is treated as missing, never repaired", /is treated as missing: it is never truncated, normalised or repaired/],
+      ["no PII, no secret, never logged raw, never a metric label", /never logs a\s+raw value and never uses one as a metric label/],
       ["the server clock, not a terminal time", /never a terminal time/],
       ["not lastSeenAt and not a trust signal", /nothing about `lastSeenAt` or `lastSeenSource` changes/],
       ["a failed store never reaches the response", /A failure to store is counted and swallowed/],
-      ["the RT-327 heartbeat is not pre-empted", /does not fix the\s+heartbeat's wire shape/],
+      ["the heartbeat stays the canonical channel", /remains the canonical reporting channel/],
+      ["the heartbeat reuses the same names and formats", /`app_version` and `update_channel` keep the names and formats/],
+      ["the RT-327 heartbeat is not pre-empted", /does not fix the heartbeat's wire\s+shape/],
       ["the POS change is separate, through the PIN", /coordinated through the\s+contracts PIN/],
     ])("says: %s", (_rule, pattern) => {
       expect(text).toMatch(pattern);

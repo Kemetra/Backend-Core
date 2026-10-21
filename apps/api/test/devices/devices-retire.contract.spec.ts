@@ -173,8 +173,8 @@ describe("devices retire contract — result and 409", () => {
 // 3. Documented rules
 // ===========================================================================
 describe("devices retire contract — rules", () => {
-  it("is 1.4.0-draft and maps the retire verdict one-to-one onto the outcome", () => {
-    expect((contract.document["info"] as JsonObject)["version"]).toBe("1.4.0-draft");
+  it("is 1.5.0-draft (RT-719 build identity key) and maps the retire verdict one-to-one onto the outcome", () => {
+    expect((contract.document["info"] as JsonObject)["version"]).toBe("1.5.0-draft");
     expect(info()).toMatch(/For `consoleRetireDevice`:\s+`allowed` → 200 `retired`; `blocked` → 409/);
     expect(info()).toMatch(/`no_change` → 200\s+`already_retired`/);
   });

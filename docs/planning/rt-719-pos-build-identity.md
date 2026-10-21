@@ -24,14 +24,16 @@ or version, so the baseline is a manual owner-attested inventory in Jira (RT-709
 
 | Piece | Where | Shape |
 | --- | --- | --- |
-| Report | optional request headers `X-POS-Build-Commit`, `X-POS-App-Version`, `X-POS-Contract-Pin` on the 13 operations behind `PosDeviceAuthGuard` (the RT-639 set) | commit: 40 lower-case hex; version: semver, at most 32, no build metadata; pin: 40 lower-case hex |
+| Report | optional request headers `X-POS-Build-Commit`, `X-POS-App-Version`, `X-POS-Contract-Pin` on the 13 operations behind `PosDeviceAuthGuard` (the RT-639 set) | commit and pin: exactly 40 characters of `[0-9a-f]`; version: semver, at most 32 characters of `[0-9A-Za-z.-]`, no build metadata |
 | Rules | `pos-terminal-pairing.openapi.yaml` 1.3.0-draft, "Build identity report (RT-719)" | stated once; no new operation |
-| Read, per device | `consoleListDeviceBuilds` (`console-device-builds.openapi.yaml` 1.0.0-draft, contract-only) | one row per device: `buildIdentity` or an explicit `null` |
-| Read, baseline | `consoleGetFleetBaseline` (same file, contract-only) | distinct builds on the active devices in scope, a device count each, and `unknownDeviceCount` |
+| Read, per device | optional, nullable `buildIdentity` on `DeviceSummary` / `DeviceDetail` (`devices.openapi.yaml` 1.5.0-draft) | `{ buildCommit, appVersion, contractPinCommit, reportedAt }` or `null`; an absent key means `null` |
+| Read, baseline | `consoleGetFleetBaseline` (`console-device-builds.openapi.yaml` 1.0.0-draft, contract-only) | distinct builds on the active devices in scope, a device count each, and `unknownDeviceCount` |
 
-`DeviceSummary` and `DeviceDetail` are **not** changed: both are closed projections whose every key is always present
-(`devices.contract.spec.ts` pins it) and both operations are served, so a required key would fail the served runtime
-and an optional one would break the rule. The Devices page joins the new rows by `deviceId`.
+`buildIdentity` is the one key that is not "always present" on the two closed device projections: both operations are
+served today, so a required key would fail the served runtime's responses until the RT-719 runtime ships. A client reads
+an absent key and `null` identically, as unknown. `devices.contract.spec.ts` keeps its "requires every key" rule with
+that single named exception. There is no separate per-device list operation: the owner approved the key on the
+projections plus the one baseline read (RT-719, 2026-10-21).
 
 The baseline entries map one to one onto RT-709 §C.1 `fleet_baseline.installed`: `kind: release` with `posVersion`
 when a version is known, else `kind: build` with `buildId` (the POS commit). `generatedAt` is the `captured_at`.
@@ -51,7 +53,7 @@ cross-check and not the join key; the join key is `buildId` (or `posVersion`).
 | New egress? | None. Stored in Backend-Core's own database only. |
 | Terminal time trusted? | No. `reportedAt` is the server clock. |
 | Trust signal? | No. Self-reported; it never changes trust, rotation, an expiry, a grant or any refusal. It can be wrong or false; it is an inventory signal. |
-| Cross-tenant read? | No. Both reads are tenant and store scoped (RLS plus the store predicate; store scope has no database backstop). |
+| Cross-tenant read? | No. The reads are tenant and store scoped (RLS plus the store predicate; store scope has no database backstop). |
 
 ## 4. Compatibility
 
@@ -65,11 +67,11 @@ cross-check and not the join key; the join key is `buildId` (or `posVersion`).
   after the next write window (up to 5 minutes); `lastSeenAt` and `lastSeenSource` are unchanged.
 - **RT-639 rotate-soon headers.** Same 13 operations, response side; this is the request side. Neither touches the
   other. `posRotateTerminalToken` and `posPairTerminal` carry neither set.
-- **RT-327 / AD-DEVICE-001 heartbeat.** Not pre-empted. The heartbeat's `app_version` is the same value, bound and
-  name as `X-POS-App-Version`, so it can carry the three values later. This change fixes nothing about the heartbeat's
-  body, its `device_health` table, its policy or its compliance reply. The two do not conflict: the headers are the
-  per-request inventory signal; the heartbeat is the liveness-and-update-state channel. If the owner prefers one
-  channel, RT-327 can absorb the three values and this rule can be retired in a later additive contract.
+- **RT-327 / AD-DEVICE-001 heartbeat.** The D-1 heartbeat stays the canonical reporting channel (owner decision,
+  2026-10-21). Its body fields `app_version` and `update_channel` keep the names and formats D-1 gives them, and
+  `app_version` is the same value and bound as `X-POS-App-Version`, so RT-327 can absorb these headers without a breaking
+  change. This change fixes nothing about the heartbeat's body, its `device_health` table, its policy or its compliance
+  reply.
 - **oasdiff.** Additive only: new optional request header parameters on existing operations, a new contract file,
   two new contract-only operations. No request body is touched, so the request-body-combinator pitfall does not apply.
 
@@ -110,10 +112,10 @@ Also a CHECK that `app_version` and `contract_pin_commit` are `NULL` when `build
    set or clear it.** `deviceActivity.record` is also reached by the rotate guard (`recordActivity`) and by the
    operator-context resolver, which carry no headers by contract; those callers must keep passing no identity and
    leave the stored columns untouched (a separate statement or a `COALESCE`-free variant, not the unknown path).
-3. `consoleListDeviceBuilds` and `consoleGetFleetBaseline`, `cookieAuth`, roles `owner` / `tenant_admin` /
-   `store_manager`, store scope as the devices reads; baseline from one snapshot over the active devices; audited
-   `devices.builds_listed` and `devices.fleet_baseline_read`; rate-limit classes `cheapRead` and `expensiveRead`
-   (the ratchet already lists them).
+3. `buildIdentity` on the device projections, and `consoleGetFleetBaseline`: `cookieAuth`, roles `owner` /
+   `tenant_admin` / `store_manager`, store scope as the devices reads; baseline from one snapshot over the active
+   devices; audited `devices.fleet_baseline_read`; rate-limit class `expensiveRead` (the ratchet already lists it).
+   Logs and metrics carry only the outcome (recorded or unknown), never a raw value and never a value as a label.
 4. Tests: header parsing (valid, repeated, upper-case, short, version with build metadata), the throttled write, RLS
    and role tests for the reads (tenant A cannot see tenant B; `store_manager` out-of-scope store is the non-disclosing
    404; `store_staff` 404), an old-POS fixture without headers still accepted on each of the 13 routes, and the baseline
@@ -126,16 +128,31 @@ POS sends the three headers on every device-token request after it repins this c
 the build commit and the PIN `commit` line are both available at build time). That change belongs to `Kemetra/POS` and
 is coordinated through the contracts PIN; it is not started here.
 
-## 8. Decisions for the owner
+## 8. Decisions
 
-1. **Reporting channel.** Optional headers on the existing device routes (this proposal) or a dedicated report
-   operation. The headers add no operation and ride the activity writer; a dedicated operation is a smaller contract
-   diff but a second device-to-Backend-Core channel beside RT-327's heartbeat.
-2. **Baseline scope.** Tenant and store scoped under the existing cookie guards (this proposal). A platform-wide,
-   cross-tenant baseline is a new authorization surface and is not proposed; RT-713 would read per-tenant output.
-3. **Storage.** Columns on `devices` (recommended) or a separate table, and whether to home it in RT-327's
-   `device_health` once that exists.
-4. **Missing means unknown.** A request to one of the 13 documented operations without a valid commit clears the
-   stored identity at the next write window, so a rolled-back older build is never shown as the newer one. This
-   requires the terminal to send the headers on every request to those operations. Other device-token routes (the
-   rotation, operator paths) neither record nor clear it.
+Settled by the owner on 2026-10-21 (recorded on RT-719):
+
+1. **Reporting channel:** optional request headers on the `PosDeviceAuthGuard` routes, plus the nullable `buildIdentity`
+   read on `DeviceSummary` / `DeviceDetail` and the one tenant- and store-scoped contract-only console GET. The D-1
+   heartbeat (RT-327) stays the canonical channel and reuses the same names and formats.
+2. **Baseline scope:** tenant and store scoped under the existing cookie guards. No cross-tenant or platform baseline.
+
+Still open for the migration approval:
+
+3. **Storage:** columns on `devices` (recommended) or a separate table, and whether to home it in RT-327's `device_health`
+   once that exists.
+4. **Missing means unknown:** a request to one of the 13 documented operations without a valid commit clears the stored
+   identity at the next write window, so a rolled-back older build is never shown as the newer one. This requires the
+   terminal to send the headers on every request to those operations. Other device-token routes (the rotation, operator
+   paths) neither record nor clear it.
+
+## 9. Consumer impact (listed, not changed here)
+
+- **POS** (`Kemetra/POS`): its `contracts/backend-core/PIN` moves, because `pos-terminal-pairing.openapi.yaml`,
+  `catalog/read-down.yaml`, `pos-sales/sales.yaml`, `pos-sales/sale-history.yaml`, `pos-shifts.openapi.yaml` and
+  `pos-cashier-admissions.openapi.yaml` change (all vendored today; `cash-variance-policy.openapi.yaml` also changes and
+  is not in the PIN yet). POS must repin to see the headers and then send them; no POS change is made here.
+- **Admin-Console:** `buildIdentity` is optional on the device projections and `consoleGetFleetBaseline` is contract-only;
+  nothing can break, and nothing is served yet.
+- **RT-713:** reads `consoleGetFleetBaseline` as `fleet_baseline.source` once the runtime ships; until then the manual
+  owner-attested inventory stays the source.

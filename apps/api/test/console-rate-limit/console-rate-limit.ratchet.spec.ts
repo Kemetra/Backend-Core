@@ -177,7 +177,6 @@ const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
   // RT-719: the baseline is an aggregate over every active device in scope.
   consoleGetFleetBaseline: "expensiveRead",
   consoleGetTenantLogo: "cheapRead",
-  consoleListDeviceBuilds: "cheapRead",
   consolePreviewTenantLogo: "jobOrPreview",
   consolePutTenantLogo: "jobOrPreview",
 };

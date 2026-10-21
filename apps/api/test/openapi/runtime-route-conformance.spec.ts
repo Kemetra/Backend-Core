@@ -63,10 +63,9 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "backfillSaleLinkedMovements",
       // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
       "consoleDeleteTenantLogo",
-      // RT-719: POS build identity reads (fleet baseline for RT-713); the runtime and migration are separate approvals.
+      // RT-719: POS fleet build baseline (for RT-713); the runtime and migration are separate approvals.
       "consoleGetFleetBaseline",
       "consoleGetTenantLogo",
-      "consoleListDeviceBuilds",
       "consolePreviewTenantLogo",
       "consolePutTenantLogo",
       // RT-490 (RT-271 F-1): refund execution and return reads; the runtime ships in F-2.
