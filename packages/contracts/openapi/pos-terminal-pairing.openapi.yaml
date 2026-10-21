@@ -138,8 +138,42 @@ info:
         codes are not touched.
 
     The 200 also carries the hint `rotate_after = expires_at - 15 days`
-    (RT-138 L4: rotate when fewer than 15 days remain). A server hint on
-    the other device routes is deferred to RT-370.
+    (RT-138 L4: rotate when fewer than 15 days remain).
+
+
+    **Rotate-soon hint on the other device routes (RT-639).** A response to
+    a device-token call carries two headers once the credential has 15 days
+    or less left, and none before:
+
+      - `X-Device-Token-Rotate-After`: the ISO-8601 instant
+        `expires_at - 15 days`, the same instant as `rotate_after` above;
+      - `X-Device-Token-Rotate-Stage`: `notice` (15 days or less left),
+        `warning` (10 or less), `urgent` (3 or less, or already past
+        `expires_at`).
+
+    The server keeps no per-device state, so it cannot say "once": it sends
+    the stage on every successful response while it holds, and the terminal
+    shows each stage the first time it sees it. The headers are optional and
+    additive; they carry an instant and a stage only, never token material.
+    They are sent on the routes that authenticate with the `device` token
+    alone (the catalogue read-down, the cashier admissions, the shift
+    cash-up writes, the sale history, the cash variance policy, and
+    `captureSale` on its device path), only on a successful response (the
+    2xx, and the 304 of a conditional GET, both of which the operations
+    document), and never on an error response: a refused token (401) gets
+    neither, and neither does a request the route or a later guard
+    refuses (for example 403 `refused`, 409 or 425). They are also absent on
+    an idempotent replay answered before the route runs. A client reads them
+    from whichever response carries them and never depends on one being
+    absent. A request that presents the previous token (the 10-minute
+    rotation overlap, after a lost rotation response) is treated as expiring
+    when the overlap closes, since that token stops working then and the
+    device's own `expires_at` was just reset: it gets `urgent`, and
+    `X-Device-Token-Rotate-After` is already past. The terminal should retry
+    the rotation at once. `posRotateTerminalToken` does not carry them (its
+    200 already holds the new `rotate_after`), nor do the routes that
+    authenticate with an operator credential. They do not replace the first
+    start rule below.
 
 
     **Overlap (10 minutes).** The previous token keeps authenticating for

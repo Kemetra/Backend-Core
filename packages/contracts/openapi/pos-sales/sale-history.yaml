@@ -86,6 +86,11 @@ paths:
       responses:
         "200":
           description: One page of the caller's visible sales.
+          headers:
+            X-Device-Token-Rotate-After:
+              $ref: "#/components/headers/DeviceTokenRotateAfter"
+            X-Device-Token-Rotate-Stage:
+              $ref: "#/components/headers/DeviceTokenRotateStage"
           content:
             application/json:
               schema:
@@ -125,6 +130,11 @@ paths:
       responses:
         "200":
           description: The detail projection.
+          headers:
+            X-Device-Token-Rotate-After:
+              $ref: "#/components/headers/DeviceTokenRotateAfter"
+            X-Device-Token-Rotate-Stage:
+              $ref: "#/components/headers/DeviceTokenRotateStage"
           content:
             application/json:
               schema:
@@ -211,6 +221,10 @@ paths:
             `Idempotent-Replayed: true` (RT-82 K4); nothing is recorded twice.
             There is no provenance-replay `200` on this operation.
           headers:
+            X-Device-Token-Rotate-After:
+              $ref: "#/components/headers/DeviceTokenRotateAfter"
+            X-Device-Token-Rotate-Stage:
+              $ref: "#/components/headers/DeviceTokenRotateStage"
             Idempotent-Replayed:
               $ref: "#/components/headers/IdempotentReplayed"
           content:
@@ -385,6 +399,29 @@ components:
         recorded once.
 
   headers:
+    DeviceTokenRotateAfter:
+      description: >
+        RT-639. Present only when this device credential has 15 days or less
+        left: the ISO-8601 instant `expires_at - 15 days` (the same instant as
+        `rotate_after` in the `posRotateTerminalToken` response). The terminal
+        rotates at or after it. Absent while more than 15 days remain. Never
+        carries token material. See `pos-terminal-pairing.openapi.yaml`,
+        "Credential rotation".
+      required: false
+      schema:
+        type: string
+        format: date-time
+    DeviceTokenRotateStage:
+      description: >
+        RT-639. Sent with `X-Device-Token-Rotate-After`: `notice` (15 days or
+        less left), `warning` (10 or less), `urgent` (3 or less, or already
+        past `expires_at`). The server keeps no per-device state, so it sends
+        the stage on every response while it holds; the terminal shows each
+        stage the first time it sees it.
+      required: false
+      schema:
+        type: string
+        enum: [notice, warning, urgent]
     IdempotentReplayed:
       description: >
         Present and `true` on every idempotent-replay response. Clients detect
