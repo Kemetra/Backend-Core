@@ -7,6 +7,20 @@ This project follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- RT-570 `[GATED]`, owner authorization 2026-10-21 (RT-417 F2): contract-only POS
+  payer lookup for the till, new `pos-payers.openapi.yaml` 1.0.0-draft with
+  `posListChargeablePayers` (`GET /api/pos/v1/payer-accounts`, operator envelope
+  only, `x-runtime-status: contract-only`). Returns the active payers of the
+  envelope's store scope (store-scoped to this store or tenant-wide), each with
+  `payerRef`, `displayName`, `category`, `erpCustomerLinked` and a server
+  `chargeable` decision that is exactly the capture payer predicate (not a credit
+  limit or balance: ERPNext owns those). Owner / tenant_admin / store_manager
+  only, else 403 `sale_responsibility_role_refused`; other-store, other-tenant
+  and suspended payers are absent; no `externalRef`, store, status or credit
+  data on the wire; keyset by `payerRef`, no free-text search in v1. v1 defines no
+  offline freshness rule (option A forbids offline credit). Decision record
+  `docs/planning/rt-570-pos-payer-lookup.md`. No runtime, migration, Connector or
+  POS change.
 - RT-427 on `[GATED]` migration `0063_inventory_effects_activation` (owner-approved
   2026-10-21: migration as proposed, decisions 1–6 as recommended). Sale, void
   and return Inventory Effects are written in the same transaction as their
@@ -27,6 +41,21 @@ This project follows [Semantic Versioning](https://semver.org/).
   read-only anchor + effects vs latest Bin comparison. The dead
   `InventoryBackfillProcessor` is deleted. Deploy: run
   `docs/operations/sql/inventory-anchors-domain-grants.sql` in step 2.
+- RT-431 `[GATED]`, contract-only (decisions D1 to D5 confirmed 2026-10-21,
+  recorded on RT-431): `audit.openapi.yaml`
+  1.3.0-draft adds `listPlatformAuditEvents` (`GET /api/v1/platform/audit/events`,
+  `x-runtime-status: contract-only`), a platform-admin-only read of the
+  platform-scoped audit rows (`tenant_id` null: `auth.signin.ok`,
+  `auth.signin.failed` and the RT-414 unresolvable-path-tenant
+  `platform.cross_tenant.accessed` rows) that `listAuditEvents` never returns.
+  `cookieAuth` only; a non-platform-admin, tenant owners included, gets 403. It
+  is not tenant-scoped, so RT-414 support-session enforcement does not cover it
+  and it needs no support session. Filters: `action`, `kind`, `actor_user_id`,
+  `from`, `to`, `cursor`, `limit` (no `tenant_id` / `store_id`), with the
+  `listAuditEvents` keyset order (RT-211). New `PlatformAuditEvent` is strict
+  with `tenant_id` always null; an email-shaped `actor_label` is returned masked
+  (`a***@example.com`). The read is not itself audited. `listAuditEvents` and
+  `AuditEvent` are unchanged. No runtime, migration or Console change.
 - Phase 1 workspace setup: `pnpm-workspace.yaml`, `tsconfig.base.json`,
   `.eslintrc.cjs`, `.prettierrc`, `.nvmrc`, root `package.json`,
   `docker-compose.dev.yml`, Constitution-Check PR template.
