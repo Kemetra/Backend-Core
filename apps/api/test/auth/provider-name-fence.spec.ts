@@ -19,7 +19,7 @@
  * Negative self-tests prove the scanner fails on a new occurrence and on a
  * stale allow-list entry.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
 const REPO_ROOT = join(__dirname, "..", "..", "..", "..");
@@ -70,22 +70,35 @@ const LEFTOVERS: readonly AllowEntry[] = [
 
 const ALLOW_LIST: readonly AllowEntry[] = [...ADAPTER_FILES, ...LEFTOVERS];
 
-function walk(dir: string): string[] {
-  return readdirSync(dir)
-    .filter((entry) => entry !== "node_modules" && entry !== "dist")
-    .flatMap((entry) => {
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) return walk(full);
-      return full.endsWith(".ts") && !full.endsWith(".d.ts") ? [full] : [];
-    });
+const SKIPPED_DIRS = new Set(["node_modules", "dist"]);
+
+/** Every non-declaration `.ts` file under `dir`, found breadth-first. */
+function typescriptFilesUnder(dir: string): string[] {
+  const found: string[] = [];
+  const pending = [dir];
+  for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const full = join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (!SKIPPED_DIRS.has(entry.name)) pending.push(full);
+      } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) {
+        found.push(full);
+      }
+    }
+  }
+  return found;
 }
 
+/** `apps/<app>/src` and `packages/<pkg>/src` directories that exist. */
 function sourceRoots(): string[] {
-  return ["apps", "packages"].flatMap((group) =>
-    readdirSync(join(REPO_ROOT, group))
-      .map((name) => join(REPO_ROOT, group, name, "src"))
-      .filter((src) => existsSync(src) && statSync(src).isDirectory()),
-  );
+  const roots: string[] = [];
+  for (const group of ["apps", "packages"]) {
+    for (const member of readdirSync(join(REPO_ROOT, group), { withFileTypes: true })) {
+      const src = join(REPO_ROOT, group, member.name, "src");
+      if (member.isDirectory() && existsSync(src)) roots.push(src);
+    }
+  }
+  return roots;
 }
 
 function repoRelative(path: string): string {
@@ -94,7 +107,7 @@ function repoRelative(path: string): string {
 
 function readSources(): SourceFile[] {
   return sourceRoots()
-    .flatMap(walk)
+    .flatMap(typescriptFilesUnder)
     .map((path) => ({ path: repoRelative(path), text: readFileSync(path, "utf8") }));
 }
 
