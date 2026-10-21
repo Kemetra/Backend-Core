@@ -267,9 +267,16 @@ paths:
         (same `shiftId`, same payload) is a replay and returns the shift's
         current projection, even after it has been closed. One exception
         (RT-742): a shift a manager closed with `forceCloseShift` has no
-        `ShiftClose` to project, so the same re-delivery is 409
-        `shift_force_closed` and nothing is recorded; the device is free to
-        open a new shift.
+        `ShiftClose` to project, so the same open re-delivered under ANOTHER
+        `Idempotency-Key` is 409 `shift_force_closed` and nothing is
+        recorded; the device is free to open a new shift. The same open under
+        the SAME `Idempotency-Key` is answered by the shared
+        `IdempotencyInterceptor` with the stored open response and status
+        (RT-82 K4, within the replay window) before the handler runs, so it
+        is not re-evaluated and cannot carry `shift_force_closed`: the POS
+        learns of the force close from its next movement (409
+        `shift_closed`) or close (409 `shift_force_closed`), never from an
+        open replay.
 
 
         **Scope of `shiftId`** (as for `recordCashMovement` and `closeShift`).
@@ -623,11 +630,12 @@ paths:
 
         Re-sending the same close (same payload) is a replay. A different
         close for a shift that is already closed is 409
-        `shift_payload_conflict`. A shift a manager closed with
-        `forceCloseShift` (RT-742) takes no close, from any device: it is 409
+        `shift_payload_conflict`. A shift of this device that a manager closed
+        with `forceCloseShift` (RT-742) takes no close: it is 409
         `shift_force_closed` and nothing is recorded, whatever the payload. A
-        shift that does not resolve to this device is the non-disclosing 404
-        `shift_not_found`.
+        shift that does not resolve to this device, force-closed or not, is
+        the non-disclosing 404 `shift_not_found`; the new code never reaches
+        another device.
       parameters:
         - $ref: "#/components/parameters/ShiftId"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -814,8 +822,14 @@ paths:
 
         **Late facts** (POS-visible, normative for the POS). The opening
         terminal does not know yet. For this shift every later `closeShift`
-        (any device, any payload) and `openShift` replay is 409
-        `shift_force_closed`; nothing is recorded. A later NEW
+        from the device that holds it (any payload) and every `openShift`
+        re-delivery under another `Idempotency-Key` is 409
+        `shift_force_closed`; nothing is recorded. Any other device still gets
+        the non-disclosing 404 `shift_not_found` on `closeShift`, as for any
+        shift outside its device, so the code is no oracle for another
+        terminal. An `openShift` re-delivered under the SAME key gets the
+        stored open response (the shared interceptor answers it before the
+        handler), not this code. A later NEW
         `recordCashMovement` keeps the existing 409 `shift_closed` (a
         movement recorded BEFORE the force close still replays as `200`). The
         POS treats `shift_force_closed` as final for that shift, not as a
@@ -830,6 +844,15 @@ paths:
         sent again under another key, even by another manager, is a `200`
         replay of the recorded fact. A different `forcedReason` for a shift
         already force-closed is 409 `shift_force_closed`.
+
+
+        **Order.** Authentication (401), then the live manager/admin check
+        (403 `refused`), then scope (404 `shift_not_found`), then the
+        natural-key replay (`200`) or, for a different `forcedReason`, 409
+        `shift_force_closed`, then 409 `shift_closed`, then the stuck rule
+        (409 `shift_not_stuck`). A same-key replay is answered by the shared
+        `IdempotencyInterceptor` before the handler. A replay of a recorded
+        force close is never answered `shift_not_stuck`.
 
 
         **Audit.** One audit event records the closing manager, the terminal
@@ -2150,7 +2173,8 @@ components:
         already recorded with a different payload); `shift_already_open`
         (this device already has an open shift with another `shiftId`; close
         it first); `shift_force_closed` (RT-742: this `shiftId` is a shift a
-        manager closed with `forceCloseShift`; final for that shift).
+        manager closed with `forceCloseShift`, re-delivered under another
+        `Idempotency-Key`; final for that shift).
         Deterministic; nothing is recorded.
       content:
         application/json:
@@ -2175,10 +2199,11 @@ components:
         `idempotency_key_conflict` (the same `Idempotency-Key` reused with a
         different payload); `shift_payload_conflict` (the shift is already
         closed with a different close; a shift closes once);
-        `shift_force_closed` (RT-742: a manager closed the shift with
-        `forceCloseShift`, so it takes no close from any device; final for
-        that shift, the POS dead-letters the close as already closed by a
-        manager). Deterministic; nothing is recorded.
+        `shift_force_closed` (RT-742: a manager closed this device's shift
+        with `forceCloseShift`, so it takes no close; final for that shift,
+        the POS dead-letters the close as already closed by a manager; a shift
+        of another device is 404 `shift_not_found`, never this code).
+        Deterministic; nothing is recorded.
       content:
         application/json:
           schema:
