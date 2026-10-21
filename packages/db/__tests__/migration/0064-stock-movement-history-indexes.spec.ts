@@ -30,27 +30,36 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
-import { sqlStatements, withTenant } from "../_helpers/migration-sql";
+import {
+  expectSingleConcurrentStatement,
+  indexState as readIndexState,
+  migrationPath,
+} from "../_helpers/concurrent-index-migration";
+import { withTenant } from "../_helpers/migration-sql";
 
 const DRIZZLE_DIR = resolve(__dirname, "..", "..", "drizzle");
 const FIRST_NAME = "0064_stock_movements_store_occurred_idx.sql";
 
-/** The two RT-735 migrations, their index and its expected definition. */
-const MIGRATIONS = [
-  {
-    id: "0064_stock_movements_store_occurred_idx",
-    index: "idx_stock_movements_tenant_store_occurred",
-    def: "(tenant_id, store_id, occurred_at DESC, id DESC)",
-  },
-  {
-    id: "0065_stock_movements_store_product_occurred_idx",
-    index: "idx_stock_movements_tenant_store_product_occurred",
-    def: "(tenant_id, store_id, tenant_product_ref, occurred_at DESC, id DESC)",
-  },
+/** The two RT-735 migrations: [id, index name, expected definition]. */
+const MIGRATION_ROWS = [
+  [
+    "0064_stock_movements_store_occurred_idx",
+    "idx_stock_movements_tenant_store_occurred",
+    "(tenant_id, store_id, occurred_at DESC, id DESC)",
+  ],
+  [
+    "0065_stock_movements_store_product_occurred_idx",
+    "idx_stock_movements_tenant_store_product_occurred",
+    "(tenant_id, store_id, tenant_product_ref, occurred_at DESC, id DESC)",
+  ],
 ] as const;
+const MIGRATIONS = MIGRATION_ROWS.map(([id, index, def]) => ({ id, index, def }));
 
-const up = (id: string): string => resolve(DRIZZLE_DIR, `${id}.sql`);
-const down = (id: string): string => resolve(DRIZZLE_DIR, `${id}.down.sql`);
+const STORE_INDEX = MIGRATION_ROWS[0][1];
+const PRODUCT_INDEX = MIGRATION_ROWS[1][1];
+
+const up = (id: string): string => migrationPath(id, "up");
+const down = (id: string): string => migrationPath(id, "down");
 
 const TENANT = "0a000000-0000-7000-8000-000000735001";
 const TENANT_2 = "0a000000-0000-7000-8000-000000735002";
@@ -159,15 +168,7 @@ async function keysetAfter(
   });
 }
 
-async function indexState(name: string): Promise<{ valid: boolean; def: string } | null> {
-  const r = await pg().admin.query<{ valid: boolean; def: string }>(
-    `SELECT i.indisvalid AS valid, pg_get_indexdef(i.indexrelid) AS def
-       FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
-      WHERE c.relname = $1`,
-    [name],
-  );
-  return r.rows[0] ?? null;
-}
+const indexState = (name: string) => readIndexState(pg().admin, name);
 
 async function countMovements(): Promise<string> {
   const r = await pg().admin.query<{ n: string }>(`SELECT count(*)::text AS n FROM stock_movements`);
@@ -180,9 +181,9 @@ async function countMovements(): Promise<string> {
  * picks by cost, so either is correct as long as there is no Sort.
  */
 const SCOPES = [
-  { scope: "all", migration: MIGRATIONS[0], served: [MIGRATIONS[0].index] },
-  { scope: "product", migration: MIGRATIONS[1], served: [MIGRATIONS[1].index] },
-  { scope: "adhoc", migration: MIGRATIONS[1], served: [MIGRATIONS[0].index, MIGRATIONS[1].index] },
+  { scope: "all", index: STORE_INDEX, served: [STORE_INDEX] },
+  { scope: "product", index: PRODUCT_INDEX, served: [PRODUCT_INDEX] },
+  { scope: "adhoc", index: PRODUCT_INDEX, served: [STORE_INDEX, PRODUCT_INDEX] },
 ] as const;
 
 /** Pages (first and keyset) read BEFORE the build, to compare with after. */
@@ -248,12 +249,7 @@ describe("0064-0065 - single CONCURRENTLY statements", () => {
   it.each(MIGRATIONS.map((m) => [m.id]))(
     "%s up and down are one statement with no transaction control",
     (id) => {
-      for (const path of [up(id), down(id)]) {
-        const statements = sqlStatements(path);
-        expect(statements).toHaveLength(1);
-        expect(statements[0]).toMatch(/\bCONCURRENTLY\b/);
-        expect(statements[0]).not.toMatch(/\b(BEGIN|COMMIT)\b/i);
-      }
+      [up(id), down(id)].forEach(expectSingleConcurrentStatement);
     },
   );
 });
@@ -270,7 +266,7 @@ describe("0064-0065 - the two RT-735 indexes", () => {
     },
   );
 
-  it.each(SCOPES.map((s) => [s.scope, s.migration.index]))(
+  it.each(SCOPES.map((s) => [s.scope, s.index]))(
     "before the build the %s list needs a Sort and cannot use %s",
     (scope, index) => {
       if (skip()) return;
