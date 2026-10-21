@@ -145,18 +145,20 @@ info:
     13211, 2026-10-21; RT-271 R-9, ratified in RT-271 comment 11886): REFUND
     CROSS-CHECK ON CLOSE. From the F-3 runtime, `closeShift` requires a
     settled cash refund execution (`pos-sales/sales.yaml`
-    `recordRefundExecution`, 1.13.0-draft) in this shift for every
-    `cashRefundReturnRefs` entry, and `cashRefundsTotal` equal to the sum of
-    those executions, else 422 `refund_ref_unsettled` or
+    `recordRefundExecution`, 1.13.0-draft) in this shift for every claimed
+    non-zero `recordReturn` return, and `cashRefundsTotal` equal to the sum
+    of those executions plus the claimed credit-sale returns' cash refund
+    tenders, else 422 `refund_ref_unsettled` or
     `cash_refunds_total_mismatch` (see `closeShift`). No request, projection,
     status or `required` list changes; the change adds two `error.code`
     values to the existing 422 and is NOT additive in behaviour once F-3
     enforces it. ROLLOUT ORDER: the F-2 runtime records executions; the POS
     reports them (F-5) and holds a shift's close until that shift's
     executions are acknowledged; F-3 enforces the rule only after that. Until F-3 the close behaves as in 1.2.0-draft. OPEN for F-3:
-    a return paid out before the POS reported executions has none, so a
-    close that claims it could never pass; F-3 defines that cutover. This
-    version does not decide it.
+    a return paid out before the POS reported executions has none, and so
+    has a non-zero return sent without `allocationRef` (a till that
+    predates F-5), so a close that claims either could never pass; F-3
+    defines that cutover. This version does not decide it.
 servers:
   - url: https://api.example.com
 tags:
@@ -517,10 +519,12 @@ paths:
         so it is not checked against them, and its cash refund counts at its
         recorded refund tenders, as before RT-490. So, after the
         refund-reference checks above:
-        1. every claimed `recordReturn` return must have at least one settled
-           cash execution whose `evidence.shiftRef` is this shift's
-           `shiftId`, else 422 `refund_ref_unsettled` (one answer for every
-           such ref, naming none);
+        1. every claimed `recordReturn` return with a non-zero
+           `returnTotal` must have at least one settled cash execution whose
+           `evidence.shiftRef` is this shift's `shiftId`, else 422
+           `refund_ref_unsettled` (one answer for every such ref, naming
+           none). A zero-total return owes nothing, has no execution and is
+           exempt;
         2. `cashRefundsTotal` must equal, in exact decimal, the sum of the
            amounts of the settled cash executions of the claimed
            `recordReturn` returns whose `evidence.shiftRef` is this shift,

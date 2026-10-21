@@ -85,10 +85,11 @@ info:
     Reversal settlement (RT-10 D6): a `void` refunds by mirroring the original
     sale's tenders (`sale.tenders` on the reversal work item), and a `return`
     ALWAYS pays out its `reversalOf.refundTenders`, even when the original
-    sale is tender-unknown. A return's refund tenders are its refund
-    allocations (how the refund is to be paid) until the settle-before-post
-    flag of RT-490 (below) is on; from then on they are its settled cash
-    executions, the cash that actually left the drawer. Both are non-negative MAGNITUDES that the Connector negates
+    sale is tender-unknown. A return emitted at acceptance carries its refund
+    allocations (how the refund is to be paid); a return emitted at
+    settlement under the settle-before-post flag of RT-490 (below, rule (1))
+    carries its settled cash executions, the cash that actually left the
+    drawer. Both are non-negative MAGNITUDES that the Connector negates
     on the reversing document, exactly as it negates `returnLines`. Only a
     `void` of a tender-unknown sale (no tenders to mirror) stays an outstanding
     credit note, as today.
@@ -111,8 +112,9 @@ info:
     (RT-78) as well as returns (RT-16) — whatever the original sale's tenders.
     Offered earlier, it would post an outstanding credit note (terminal)
     although the refund is paid in cash. Both fields are OPTIONAL and additive.
-    From RT-490 a `return` is further held until its refund obligation is
-    settled (see RT-490 below).
+    From RT-490 a `return` under its rule (1) (accepted with the
+    settle-before-post flag on, with `allocationRef`, non-zero total) is
+    further held until its refund obligation is settled (see RT-490 below).
 
     SALE PROJECTION IS A CURATED SUBSET (by design): this contract's `Sale`
     mirrors 008's `Sale` minus request-only / advisory fields the connector does

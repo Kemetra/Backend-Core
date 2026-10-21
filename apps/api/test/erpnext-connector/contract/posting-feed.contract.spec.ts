@@ -941,7 +941,7 @@ describe("erpnext-connector/posting-feed.yaml — RT-490 settle before post (1.9
 
   it("no longer says a return's refund tenders record cash that left the drawer at acceptance", () => {
     expect(info()).not.toContain("because they record cash that actually left the drawer");
-    expect(info()).toContain("A return's refund tenders are its refund allocations (how the refund is to be paid) until the settle-before-post flag of RT-490 (below) is on");
+    expect(info()).toContain("A return emitted at acceptance carries its refund allocations (how the refund is to be paid); a return emitted at settlement under the settle-before-post flag of RT-490 (below, rule (1)) carries its settled cash executions");
   });
 
   it("offers a return only once settled, projects refundTenders from settled cash executions, exactly once", () => {

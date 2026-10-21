@@ -348,7 +348,8 @@ info:
     R-4; 422 `refund_execution_exceeds_allocation`), and new
     `readReturnByProvenance` and `listSaleReturns` read recorded returns with
     their derived settlement (R-8, for RT-196). The legacy `recordRefund` is
-    gated off (R-11). The return's ERP posting moves to settlement (R-7, see
+    gated off (R-11). Behind a deploy flag, the ERP posting of a return that
+    can be settled through executions moves to settlement (R-7, see
     `erpnext-connector/posting-feed.yaml` 1.9.0-draft), and shift close
     cross-checks the claimed cash refunds against settled executions (R-9, see
     `pos-shifts.openapi.yaml` 1.3.0-draft). The change is additive in SHAPE:
@@ -2252,8 +2253,10 @@ components:
         in the sale's currency: the part of the return's refund that is owed,
         by which instrument and against which original tender. It says how
         the refund is to be paid; it is NOT a payout fact. The payout is a
-        separate refund execution (`recordRefundExecution`), and only settled
-        executions affect the drawer and the ERP refund (R-7, R-9). An
+        separate refund execution (`recordRefundExecution`). For a return
+        whose allocations carry `allocationRef`, only settled executions
+        affect the drawer count at close (R-9) and, once the R-7 flag is on,
+        the ERP refund. An
         allocation without `allocationRef` (every allocation recorded before
         RT-490, and any sent without one) stays valid and is accepted, but no
         execution can name it, so its return's settlement is not tracked.
@@ -2938,7 +2941,8 @@ components:
         settlement:
           description: >
             The return's refund obligation; null when it is not tracked (a
-            return whose allocations carry no `allocationRef`).
+            return with a non-zero `returnTotal` whose allocations carry no
+            `allocationRef`). A zero-total return is `settled`.
           anyOf:
             - $ref: "#/components/schemas/RefundSettlement"
             - type: "null"
