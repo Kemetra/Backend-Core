@@ -234,6 +234,7 @@ describe("data-pulse-migrate CLI", () => {
     "0063_inventory_effects_activation",
     "0064_stock_movements_store_occurred_idx",
     "0065_stock_movements_store_product_occurred_idx",
+    "0066_reconciliation_pending_aware_classes",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -513,17 +514,32 @@ describe("data-pulse-migrate CLI", () => {
   }
 
   /**
-   * After one `down` from head: 0065's per-product stock-movement history
-   * index is gone, while 0064's store history index, 0063's anchor tables and
-   * activation columns, 0062's support-session table, 0057-0061's freshness indexes, 0056's event-record and settings tables,
+   * 0066_reconciliation_pending_aware_classes (RT-428): how many result-class
+   * CHECKs admit the pending-aware classes ("1" when applied, "0" after down).
+   */
+  function countPendingAwareClassCheck(): Promise<string> {
+    return queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
+      WHERE conname = 'erpnext_reconciliation_result_class_valid'
+        AND pg_get_constraintdef(oid) LIKE '%uom_mismatch%' AND convalidated`);
+  }
+
+  /**
+   * After one `down` from head: 0066's pending-aware result classes are gone
+   * (the 0020 CHECK is back), while 0064-0065's stock-movement history
+   * indexes, 0063's anchor tables and activation columns, 0062's
+   * support-session table, 0057-0061's freshness indexes, 0056's event-record and settings tables,
    * 0055's AI entitlement tables and functions, 0054's credit reversal
    * tables, approval-use ledger, trigger and FK-target indexes, 0051's
    * sale_responsibilities, 0050's policy tables and columns, 0048's
    * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("1");
-    expect(await countValidIndexes([STOCK_MOVEMENT_HISTORY_INDEXES[0]])).toBe("1");
+    expect(await countPendingAwareClassCheck()).toBe("0");
+    expect(
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
+        WHERE conname = 'erpnext_reconciliation_result_class_valid'`),
+    ).toBe("1");
+    expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("2");
     expect(await countAnchorObjects()).toEqual(["2", "4", "2"]);
     expect(await countSupportSessionObjects()).toEqual(["1", "1", "2", "1"]);
     expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES)).toBe("5");
@@ -604,6 +620,8 @@ describe("data-pulse-migrate CLI", () => {
     // 0064-0065's two stock-movement history indexes, valid after the runner's
     // CONCURRENTLY builds (RT-735).
     expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("2");
+    // 0066's widened, validated result-class CHECK (RT-428).
+    expect(await countPendingAwareClassCheck()).toBe("1");
   }
 
   /** The three tables created by 0054_sale_credit_reversals (RT-577). */
@@ -756,7 +774,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0065 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0066 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();

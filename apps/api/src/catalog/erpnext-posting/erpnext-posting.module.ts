@@ -12,7 +12,7 @@
  *
  * Authentication is the **machine** `connectorBearer` scheme (opaque-revocable,
  * tenant-scoped) per the 012 contract — NOT the human `cookieAuth`/`DashboardAuthGuard`
- * (013/014) and NOT the POS `clerkJwt`/device scheme (010). The connector-auth
+ * (013/014) and NOT the POS operator-identity/device scheme (010). The connector-auth
  * guard + the feed/ack routes land in 015-US1-FEED / 015-US2-ACK; this slice ships
  * the empty, registered module (no routes yet) so the DI graph + build stay green.
  *

@@ -127,13 +127,28 @@ describe("POS build identity headers in the contracts (RT-719)", () => {
     expect(documented.size).toBe(13);
   });
 
+  it("does not document them on the RT-327 heartbeat (hinted, but not a reporting operation)", () => {
+    const health = load("pos-device-health.openapi.yaml");
+    const refs = refsOf(operation(health, "posReportDeviceHeartbeat"));
+    for (const ref of buildRefs) expect(refs).not.toContain(ref);
+    for (const component of Object.keys(HEADERS)) expect(parametersOf(health)[component]).toBeUndefined();
+  });
+
   describe("the pairing contract states the report rules once", () => {
     const pairing = load("pos-terminal-pairing.openapi.yaml");
     const text = pairing.info.description;
 
-    it("is 1.3.0-draft and says it adds no operation", () => {
-      expect(pairing.info.version).toBe("1.3.0-draft");
+    it("is 1.4.0-draft, and both RT-719 and RT-327 postures say they add no operation", () => {
+      expect(pairing.info.version).toBe("1.4.0-draft");
       expect(text).toMatch(/`1\.3\.0-draft` is additive and adds no operation/);
+      expect(text).toMatch(/`1\.4\.0-draft` is additive and adds no operation/);
+    });
+
+    it("names the thirteen reporting operations explicitly, not by reference to the hinted set", () => {
+      const reporting = Object.values(REPORTING_OPERATIONS).flat();
+      for (const operationId of reporting) expect(text).toContain(`\`${operationId}\``);
+      expect(text).toMatch(/exactly these\s+thirteen operations/);
+      expect(text).toMatch(/carrying the\s+rotate-soon hint does not make an operation a reporting one/);
     });
 
     it.each([

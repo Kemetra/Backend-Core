@@ -60,7 +60,7 @@ import { AuthController } from "./auth.controller";
 import { AuthGuard } from "./auth.guard";
 import { DashboardAuthGuard } from "./dashboard-auth.guard";
 import { PosOperatorAuthGuard } from "./pos-operator-auth.guard";
-import { clerkIdentityProviderFactory } from "./clerk-identity-provider.adapter";
+import { identityProviderFactory } from "./identity-provider.factory";
 import {
   OPERATOR_CONTEXT_RESOLVER,
   PgOperatorContextResolver,
@@ -266,7 +266,7 @@ export class AlwaysAllowRedis implements RedisLike {
       useFactory: (pool: Pool, lookupPool: Pool): PgOperatorContextResolver =>
         new PgOperatorContextResolver(
           pool,
-          clerkIdentityProviderFactory(lookupPool),
+          identityProviderFactory(lookupPool),
           new DeviceRepository(lookupPool, pool),
           undefined,
           lookupPool,

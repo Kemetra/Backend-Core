@@ -2,7 +2,7 @@
  * PosOperatorsService.signOut — unit spec (no Postgres, no Clerk network).
  *
  * Mirrors the PR-5 sign-in unit-spec style: mocks every dependency
- * (pg.Pool, ClerkVerifier, DeviceRepository, Logger) so each refusal
+ * (pg.Pool, OperatorTokenVerifier, DeviceRepository, Logger) so each refusal
  * branch can be exercised without standing up a container.
  *
  * Sign-out has no body-side device attestation and no `X-Device-Token`
@@ -22,7 +22,7 @@ import type { Pool } from "pg";
 
 import { PosOperatorsService } from "../../src/pos-operators/pos-operators.service";
 import { DeviceRepository } from "../../src/pos-operators/device.repository";
-import type { ClerkVerifier } from "../../src/pos-operators/clerk-verifier";
+import type { OperatorTokenVerifier } from "../../src/auth/operator-token-verifier";
 
 interface MockPool {
   query: jest.Mock;
@@ -32,11 +32,11 @@ function makePool(): MockPool {
   return { query: jest.fn() };
 }
 
-function makeVerifier(sub: string | Error = "user_test_sub"): ClerkVerifier {
+function makeVerifier(sub: string | Error = "user_test_sub"): OperatorTokenVerifier {
   return {
     verify: jest.fn(async () => {
       if (sub instanceof Error) throw sub;
-      return { sub };
+      return { providerKey: "clerk", sub };
     }),
   };
 }

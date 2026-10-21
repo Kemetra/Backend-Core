@@ -3,7 +3,7 @@
  *
  * Docker-free unit coverage for the ONLY v1 IdentityProviderPort implementation.
  * Proves:
- *   - verifyIdentityToken DELEGATES to the ClerkVerifier and maps Clerk { sub }
+ *   - verifyIdentityToken DELEGATES to the OperatorTokenVerifier and maps Clerk { sub }
  *     to a provider-NEUTRAL VerifiedSubject (providerKey/issuer/subject) — no
  *     Clerk-typed claim leaks;
  *   - a verifier throw propagates (the resolver collapses it to a refusal);
@@ -25,18 +25,18 @@ import {
   DEFAULT_CLERK_ISSUER,
   clerkIssuer,
 } from "../../src/auth/clerk-identity-provider.adapter";
-import type { ClerkVerifier } from "../../src/pos-operators/clerk-verifier";
+import type { OperatorTokenVerifier } from "../../src/auth/operator-token-verifier";
 
 const SUB = "user_clerk_sub_abc";
 const USER_ID = "0a000000-0000-7000-8000-00000000aa01";
 
-function fakeVerifier(verify?: () => Promise<{ sub: string }>): ClerkVerifier {
-  return { verify: verify ?? (async () => ({ sub: SUB })) };
+function fakeVerifier(verify?: () => Promise<{ providerKey: string; sub: string }>): OperatorTokenVerifier {
+  return { verify: verify ?? (async () => ({ providerKey: "clerk", sub: SUB })) };
 }
 
 describe("ClerkIdentityProviderAdapter — verifyIdentityToken (neutral mapping)", () => {
   it("delegates to the verifier and returns a provider-neutral subject", async () => {
-    const verify = jest.fn(async () => ({ sub: SUB }));
+    const verify = jest.fn(async () => ({ providerKey: "clerk", sub: SUB }));
     const adapter = new ClerkIdentityProviderAdapter(
       fakeVerifier(verify),
       {} as unknown as Pool,

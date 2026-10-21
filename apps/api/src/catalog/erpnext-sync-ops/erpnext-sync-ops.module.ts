@@ -16,7 +16,7 @@
  *
  * Authentication is the **human** `cookieAuth` / `DashboardAuthGuard` scheme (the
  * 007/013/014/017 dashboard convention) — NOT the machine `connectorBearer`
- * (012/015), NOT the `dashboard_api` bearer, NOT the POS `clerkJwt` device scheme.
+ * (012/015), NOT the `dashboard_api` bearer, NOT the POS operator-identity device scheme.
  * A machine credential MUST be rejected. `RolesGuard` + `@Roles` gate the surface
  * (default deny). The console is a sibling SPA repo (Retail-Tower-Console)
  * consuming this contract; 025 exposes only reads.

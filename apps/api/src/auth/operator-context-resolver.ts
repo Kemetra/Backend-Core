@@ -1,14 +1,14 @@
 /**
  * operator-context-resolver.ts — 008 Option Y.
  *
- * Reusable POS-operator identity + eligibility resolution. Given a Clerk JWT
- * and a device-token attestation, it runs the SAME derivation the operator
+ * Reusable POS-operator identity + eligibility resolution. Given an operator
+ * identity token and a device-token attestation, it runs the SAME derivation the operator
  * sign-in pipeline uses and returns a `ResolvedContext` scoped from the device
  * row + membership — or a typed refusal.
  *
  * This is the shared trust core for the POS sale-sync surface (Option Y,
  * owner-ratified 2026-06-10): the sale endpoints authenticate exactly like
- * `POST /api/pos/v1/operators/sign-in` — Clerk JWT in `Authorization` +
+ * `POST /api/pos/v1/operators/sign-in` — identity token in `Authorization` +
  * device attestation in the body — instead of requiring a server-internal
  * `pos_operator` bearer that sign-in never issues to clients.
  *
@@ -16,12 +16,12 @@
  *   1. Verify the provider token at the trust boundary via
  *      `IdentityProviderPort.verifyIdentityToken` → a provider-NEUTRAL verified
  *      subject `{ providerKey, issuer, subject }` (029 D3 / PI-3). The concrete
- *      Clerk verification stays behind the adapter — this resolver never reads a
- *      Clerk-typed claim.
+ *      provider verification stays behind the adapter — this resolver never
+ *      reads a provider-typed claim.
  *   2. Resolve the local user by JOINing the provider-neutral subject onto the
- *      `external_identity_links` ACTIVE link (NOT `users.clerk_user_id = sub` —
- *      029 D3 / G-3); reject if there is no active link (`user_unmapped`) or the
- *      user is soft-deleted (`user_disabled`).
+ *      `external_identity_links` ACTIVE link (`findUserByActiveLink`, the one
+ *      shared lookup; 029 D3 / G-3); reject if there is no active link
+ *      (`user_unmapped`) or the user is soft-deleted (`user_disabled`).
  *   3. Resolve the device by attestation hash (active rows only: not revoked,
  *      tenant active — RT-213); the device row carries the canonical
  *      `(tenant_id, store_id)`.
@@ -36,17 +36,16 @@
  * logged server-side by the caller and collapsed to a generic 401 at the
  * boundary (no factor disclosure).
  *
- * The provider token and device attestation are never logged, persisted, or
+ * The identity token and device attestation are never logged, persisted, or
  * returned (FR-POS-AUTH-10 / ADR D3).
  *
  * 029 D3 NOTE: this resolver is the sale-sync identity trust core. It was
- * re-pointed (PI-3) from the direct Clerk verifier + `WHERE clerk_user_id = $1`
+ * re-pointed (PI-3) from the direct provider verifier + a bridge-column lookup
  * to the provider-neutral `IdentityProviderPort` + an `external_identity_links`
  * join. The operator/sale-sync CREDENTIAL (the Option Y envelope) and the
  * membership/store/eligibility logic are UNCHANGED — D3 re-anchors only "who the
- * human is" (N-2). The sign-in service path (`pos-operators.service.ts`) is a
- * SEPARATE slice and still joins `clerk_user_id`; after backfill both resolve the
- * same user.
+ * human is" (N-2). The sign-in service path (`pos-operators.service.ts`) shares
+ * the same lookup (RT-796), so both resolve the same user.
  */
 import { Injectable } from "@nestjs/common";
 import type { Pool } from "pg";
@@ -55,6 +54,7 @@ import { runWithTenantContext } from "@data-pulse-2/db";
 
 import { DeviceRepository } from "../pos-operators/device.repository";
 import type { ResolvedContext } from "../context/types";
+import { findUserByActiveLink } from "./identity-link-lookup";
 import type { IdentityProviderPort } from "./identity-provider.port";
 
 /**
@@ -65,7 +65,7 @@ import type { IdentityProviderPort } from "./identity-provider.port";
 const ELIGIBLE_INTERNAL_ROLES = new Set(["owner", "tenant_admin", "store_manager"]);
 
 export type ResolveOperatorRefusalReason =
-  | "clerk_jwt_invalid"
+  | "identity_token_invalid"
   | "user_unmapped"
   | "user_disabled"
   | "device_invalid"
@@ -118,11 +118,6 @@ export interface OperatorReverifier {
 /** DI token for the resolver. */
 export const OPERATOR_CONTEXT_RESOLVER = "OPERATOR_CONTEXT_RESOLVER";
 
-interface UserLookupRow {
-  id: string;
-  deleted_at: Date | null;
-}
-
 interface MembershipLookupRow {
   id: string;
   store_access_kind: "all" | "specific";
@@ -160,12 +155,12 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
         { err: err instanceof Error ? err.message : String(err) },
         "operator-context-resolver: identity token verification failed",
       );
-      return { kind: "refused", reason: "clerk_jwt_invalid" };
+      return { kind: "refused", reason: "identity_token_invalid" };
     }
 
     // 2. Map the provider-neutral verified subject → local user via the ACTIVE
-    //    external_identity_links row (NOT clerk_user_id — 029 D3 / G-3).
-    const userRow = await this.findUserByExternalIdentity(verified.providerKey, verified.subject);
+    //    external_identity_links row (029 D3 / G-3).
+    const userRow = await findUserByActiveLink(this.lookupPool, verified);
     if (!userRow) return { kind: "refused", reason: "user_unmapped" };
     if (userRow.deleted_at !== null) return { kind: "refused", reason: "user_disabled" };
 
@@ -206,37 +201,6 @@ export class PgOperatorContextResolver implements OperatorContextResolver {
     // a token principal carries the device id as `tokenId` — mirrors the
     // read-down device principal).
     return { kind: "ok", context, deviceId: deviceRow.id };
-  }
-
-  /**
-   * Resolve the local user by JOINing the provider-neutral verified subject onto
-   * the ACTIVE external_identity_links row (029 D3 / G-3). The join keys on
-   * (provider_key, subject) for the active link — NOT issuer: v1 has a single
-   * issuer, and keying on issuer would couple the runtime path to the
-   * backfill-vs-adapter issuer-string contract (a mismatch would fail-close every
-   * operator). issuer is stored + unique on the link for forward-compat
-   * (multi-issuer dual-link), not used as the runtime join key.
-   *
-   * This is the PI-3 re-point: the resolver no longer reads `users.clerk_user_id`
-   * as the join key. A verified subject with no ACTIVE link returns null → the
-   * caller refuses `user_unmapped` (the same fail-closed, non-enumerating
-   * refusal mig 0001 ADR D4 mandates).
-   */
-  private async findUserByExternalIdentity(
-    providerKey: string,
-    subject: string,
-  ): Promise<UserLookupRow | null> {
-    const r = await this.lookupPool.query<UserLookupRow>(
-      `SELECT u.id, u.deleted_at
-         FROM external_identity_links l
-         JOIN users u ON u.id = l.user_id
-        WHERE l.provider_key = $1
-          AND l.subject = $2
-          AND l.status = 'active'
-        LIMIT 1`,
-      [providerKey, subject],
-    );
-    return r.rows[0] ?? null;
   }
 
   private async findActiveMembership(

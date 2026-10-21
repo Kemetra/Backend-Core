@@ -138,9 +138,9 @@ function build(opts: {
 }
 
 describe("PgOperatorContextResolver — refusals (security branches)", () => {
-  it("token verify throws → clerk_jwt_invalid", async () => {
+  it("token verify throws → identity_token_invalid", async () => {
     const r = build({ verify: async () => { throw new Error("bad jwt"); } });
-    expect(await r.resolve("jwt", "att")).toEqual({ kind: "refused", reason: "clerk_jwt_invalid" });
+    expect(await r.resolve("jwt", "att")).toEqual({ kind: "refused", reason: "identity_token_invalid" });
   });
 
   it("no ACTIVE external_identity_links row for subject → user_unmapped", async () => {

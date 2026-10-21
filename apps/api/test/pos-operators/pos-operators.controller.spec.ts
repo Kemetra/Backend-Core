@@ -23,6 +23,7 @@
  *   - Response does not contain `clerk_session_token` or any internal
  *     bearer token material.
  */
+import { linkClerkUsers } from "../_helpers/identity-links";
 import "reflect-metadata";
 
 import { INestApplication } from "@nestjs/common";
@@ -34,9 +35,9 @@ import { Pool } from "pg";
 import request from "supertest";
 
 import {
-  CLERK_VERIFIER,
-  type ClerkVerifier,
-} from "../../src/pos-operators/clerk-verifier";
+  OPERATOR_TOKEN_VERIFIER,
+  type OperatorTokenVerifier,
+} from "../../src/auth/operator-token-verifier";
 import { PosOperatorsModule } from "../../src/pos-operators/pos-operators.module";
 import { AUTH_LOOKUP_POOL, PG_POOL } from "../../src/auth/auth.module";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
@@ -99,12 +100,12 @@ const DEVICE_B_ATTESTATION = "device-b-attestation-token-pr5";
 const DEVICE_REVOKED_ATTESTATION = "device-revoked-attestation-pr5";
 
 // Map raw JWT strings the test sends → Clerk subject the verifier returns.
-class StubClerkVerifier implements ClerkVerifier {
+class StubClerkVerifier implements OperatorTokenVerifier {
   constructor(private readonly map: Map<string, string>) {}
-  async verify(rawJwt: string): Promise<{ sub: string }> {
+  async verify(rawJwt: string): Promise<{ providerKey: string; sub: string }> {
     const sub = this.map.get(rawJwt);
     if (!sub) throw new Error("StubClerkVerifier: unknown jwt");
-    return { sub };
+    return { providerKey: "clerk", sub };
   }
 }
 
@@ -178,11 +179,13 @@ beforeAll(async () => {
         SPECIFIC_USER_ID, SPECIFIC_CLERK_SUB,
       ],
     );
+    await linkClerkUsers(pool);
     await pool.query(
       `INSERT INTO users (id, email, display_name, clerk_user_id, deleted_at)
          VALUES ($1, 'deleted@pr5.example', 'Deleted', $2, now())`,
       [DELETED_USER_ID, DELETED_CLERK_SUB],
     );
+    await linkClerkUsers(pool);
 
     // ---- memberships ----
     // Historical soft-deleted grant for the same tenant/user. Security-sensitive
@@ -228,6 +231,7 @@ beforeAll(async () => {
       `INSERT INTO users (id, email, display_name, clerk_user_id) VALUES ($1, 'mgr-b@tenantb.example', 'Manager B', $2)`,
       [TENANT_B_USER_ID, TENANT_B_CLERK_SUB],
     );
+    await linkClerkUsers(pool);
     await pool.query(
       `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES ($1, $2, $3, $4, 'all')`,
       [TENANT_B_MEMBERSHIP_ID, TENANT_ID_B, TENANT_B_USER_ID, TENANT_B_ROLE_ID],
@@ -238,6 +242,7 @@ beforeAll(async () => {
       `INSERT INTO users (id, email, display_name, clerk_user_id) VALUES ($1, 'revoked@pr5.example', 'Revoked User', $2)`,
       [REVOKED_MBR_USER_ID, REVOKED_MBR_CLERK_SUB],
     );
+    await linkClerkUsers(pool);
     await pool.query(
       `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind, revoked_at)
          VALUES ($1, $2, $3, $4, 'all', now())`,
@@ -279,7 +284,7 @@ beforeAll(async () => {
       .useValue(env.app)
       .overrideProvider(AUTH_LOOKUP_POOL)
       .useValue(pool)
-      .overrideProvider(CLERK_VERIFIER)
+      .overrideProvider(OPERATOR_TOKEN_VERIFIER)
       .useValue(new StubClerkVerifier(verifierMap))
       .compile();
 

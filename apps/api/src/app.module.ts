@@ -32,6 +32,7 @@ import { ContextModule } from "./context/context.module";
 import { InventoryModule } from "./inventory/inventory.module";
 import { MembershipsModule } from "./memberships/memberships.module";
 import { OutboxAdminModule } from "./outbox/admin.module";
+import { PosApproversModule } from "./pos-approvers/pos-approvers.module";
 import { PosAuditEventsModule } from "./pos-audit-events/pos-audit-events.module";
 import { CashierAdmissionsModule } from "./pos-cashier-admissions/cashier-admissions.module";
 import { PosOperatorsModule } from "./pos-operators/pos-operators.module";
@@ -232,13 +233,14 @@ class ApiDbMigrationStatusGaugeRegistrar implements OnModuleInit, OnModuleDestro
  *   - `OutboxAdminModule`   — outbox dead-letter triage (T591, 1C-C1)
  *   - `PosOperatorsModule`  — POS operator sign-in (Wave 1, PR-5)
  *   - `CashierAdmissionsModule` — POS cashier admissions (RT-113 BC2)
+ *   - `PosApproversModule` — POS approver eligibility (RT-788, RT-114 MA-BC2)
  *   - `PosAuditEventsModule`— POS audit-event batch sync (Wave 2, PR-6)
  *
  * Cross-cutting interceptors, the global filter, and the global Zod
  * pipe are registered in `main.ts`.
  */
 @Module({
-  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, PlatformSupportSessionsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, CashierAdmissionsModule, PosAuditEventsModule, PosShiftsModule, ShiftClosesModule, CashVariancePolicyModule, AiEntitlementsModule, ConsoleSalesModule, ConsoleCatalogModule, DevicesModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, TrackingProfileModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, PayerAccountsModule, ConnectorModule, ConnectorHealthModule, PairingModule, DeviceRotationModule, HealthModule, ConsoleTelemetryModule, ConsoleRateLimitModule],
+  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, PlatformSupportSessionsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, CashierAdmissionsModule, PosApproversModule, PosAuditEventsModule, PosShiftsModule, ShiftClosesModule, CashVariancePolicyModule, AiEntitlementsModule, ConsoleSalesModule, ConsoleCatalogModule, DevicesModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, TrackingProfileModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, PayerAccountsModule, ConnectorModule, ConnectorHealthModule, PairingModule, DeviceRotationModule, HealthModule, ConsoleTelemetryModule, ConsoleRateLimitModule],
   controllers: [],
   providers: [
     ApiDbPoolGaugeRegistrar,

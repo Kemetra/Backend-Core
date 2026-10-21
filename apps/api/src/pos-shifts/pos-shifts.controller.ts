@@ -7,14 +7,14 @@ import {
   UseGuards,
 } from "@nestjs/common";
 
-import { ClerkBearerGuard } from "../auth/clerk-bearer.guard";
-import { ClerkBearer, requirePosBearer, type CredentialRequest } from "../auth/route-auth";
+import { OperatorBearerGuard } from "../auth/operator-bearer.guard";
+import { OperatorBearer, requirePosBearer, type CredentialRequest } from "../auth/route-auth";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { PosShiftsService } from "./pos-shifts.service";
 import { StuckShiftsQuerySchema } from "./dto";
 
-@ClerkBearer()
-@UseGuards(ClerkBearerGuard)
+@OperatorBearer()
+@UseGuards(OperatorBearerGuard)
 @Controller("api/pos/v1/shifts")
 export class PosShiftsController {
   constructor(private readonly posShiftsService: PosShiftsService) {}

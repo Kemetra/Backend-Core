@@ -2,5 +2,4 @@
 # packages/contracts/openapi/audit.openapi.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
 
 listAuditEvents: expensiveRead
-# RT-431: platform-scoped audit read, same cost as the tenant audit list.
 listPlatformAuditEvents: expensiveRead

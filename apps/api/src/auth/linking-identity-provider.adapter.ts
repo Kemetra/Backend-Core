@@ -3,7 +3,7 @@
  *
  * The provider-independent half of `IdentityProviderPort`: the
  * `external_identity_links` upsert and the lifecycle seams that are not wired
- * yet. Each concrete adapter (Clerk, Descope — RT-791) only implements
+ * yet. Each concrete adapter (one per provider, RT-791) only implements
  * `verifyIdentityToken`, so the link semantics stay identical across providers.
  */
 import type { Pool } from "pg";

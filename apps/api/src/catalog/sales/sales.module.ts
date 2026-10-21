@@ -44,7 +44,7 @@ import {
   IDENTITY_PROVIDER_PORT,
   type IdentityProviderPort,
 } from "../../auth/identity-provider.port";
-import { clerkIdentityProviderFactory } from "../../auth/clerk-identity-provider.adapter";
+import { identityProviderFactory } from "../../auth/identity-provider.factory";
 import { PosDeviceAuthGuard } from "../../auth/pos-device-auth.guard";
 import { PosOperatorEnvelopeSaleGuard } from "../../auth/pos-operator-envelope-sale.guard";
 import { PosWriteRateLimitGuard } from "../../auth/pos-write-rate-limit.guard";
@@ -56,6 +56,7 @@ import {
   type OperatorAttributionVerifier,
 } from "./operator-attribution";
 import { SaleCaptureAuthGuard } from "./sale-capture-auth.guard";
+import { CashierEligibilityRepository } from "../../pos-cashier-admissions/cashier-eligibility";
 import { PgCashierAdmissionSelector } from "./history/sale-history-admission";
 import { PgSaleHistoryRefusalAudit } from "./history/sale-history.audit";
 import {
@@ -74,8 +75,8 @@ import { PosPayersService } from "./payers/pos-payers.service";
  * 008 Option Y wiring (its PosOperatorSaleAuthGuard is retired; 031 replaced
  * it with PosOperatorEnvelopeSaleGuard below), 029 D3 re-pointed:
  * PgOperatorContextResolver which now verifies the token via the
- * provider-neutral IdentityProviderPort (v1 Clerk adapter, constructed against
- * the shared PG_POOL; `@clerk/backend` stays contained behind the adapter) and
+ * provider-neutral IdentityProviderPort (the configured provider's adapter,
+ * constructed against the shared PG_POOL; the provider SDK stays contained behind the adapter) and
  * resolves the operator via the external_identity_links join. The guard
  * publishes req.context, so TenantContextGuard is not needed on the write routes.
  */
@@ -95,7 +96,7 @@ import { PosPayersService } from "./payers/pos-payers.service";
     {
       provide: IDENTITY_PROVIDER_PORT,
       useFactory: (pool: Pool): IdentityProviderPort =>
-        clerkIdentityProviderFactory(pool),
+        identityProviderFactory(pool),
       inject: [AUTH_LOOKUP_POOL],
     },
     {
@@ -140,8 +141,9 @@ import { PosPayersService } from "./payers/pos-payers.service";
     PosDeviceAuthGuard,
     {
       provide: OPERATOR_ATTRIBUTION_VERIFIER,
-      useFactory: (pool: Pool): OperatorAttributionVerifier => new PgOperatorAttributionVerifier(pool),
-      inject: [PG_POOL],
+      useFactory: (pool: Pool, lookupPool: Pool): OperatorAttributionVerifier =>
+        new PgOperatorAttributionVerifier(pool, new CashierEligibilityRepository(lookupPool)),
+      inject: [PG_POOL, AUTH_LOOKUP_POOL],
     },
     // Class-referenced on captureSale, so reflection-instantiated from the
     // tokens above (no factory), like PosWriteRateLimitGuard below.
@@ -153,8 +155,9 @@ import { PosPayersService } from "./payers/pos-payers.service";
     // reflection-instantiated from these tokens.
     {
       provide: CASHIER_ADMISSION_SELECTOR,
-      useFactory: (pool: Pool): CashierAdmissionSelector => new PgCashierAdmissionSelector(pool),
-      inject: [PG_POOL],
+      useFactory: (pool: Pool, lookupPool: Pool): CashierAdmissionSelector =>
+        new PgCashierAdmissionSelector(pool, new CashierEligibilityRepository(lookupPool)),
+      inject: [PG_POOL, AUTH_LOOKUP_POOL],
     },
     {
       provide: SALE_HISTORY_REFUSAL_AUDIT,

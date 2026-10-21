@@ -15,6 +15,7 @@
  *
  * Locally without Docker this suite skips when MIGRATION_TEST_ALLOW_SKIP=1.
  */
+import { linkClerkUsers } from "../_helpers/identity-links";
 import "reflect-metadata";
 
 import { randomUUID } from "node:crypto";
@@ -39,9 +40,9 @@ import { ZodValidationPipe } from "../../src/common/zod-validation.pipe";
 import { SalesModule } from "../../src/catalog/sales/sales.module";
 import { UnknownItemsModule } from "../../src/catalog/unknown-items/unknown-items.module";
 import {
-  CLERK_VERIFIER,
-  type ClerkVerifier,
-} from "../../src/pos-operators/clerk-verifier";
+  OPERATOR_TOKEN_VERIFIER,
+  type OperatorTokenVerifier,
+} from "../../src/auth/operator-token-verifier";
 import { PosOperatorsModule } from "../../src/pos-operators/pos-operators.module";
 import {
   applyAllUpAndCreateAppRole,
@@ -66,10 +67,10 @@ const DEVICE_ID = "0e000000-0000-4000-8000-00000130ee01";
 const DEVICE_ATTESTATION = "device-attestation-rt137";
 const OPERATOR_JWT = "jwt-rt137-operator";
 
-class StubClerkVerifier implements ClerkVerifier {
-  async verify(rawJwt: string): Promise<{ sub: string }> {
+class StubClerkVerifier implements OperatorTokenVerifier {
+  async verify(rawJwt: string): Promise<{ providerKey: string; sub: string }> {
     if (rawJwt !== OPERATOR_JWT) throw new Error("StubClerkVerifier: unknown jwt");
-    return { sub: OPERATOR_CLERK_SUB };
+    return { providerKey: "clerk", sub: OPERATOR_CLERK_SUB };
   }
 }
 
@@ -206,6 +207,7 @@ beforeAll(async () => {
        VALUES ($1, 'operator@rt137.example', 'RT-137 Operator', $2)`,
     [OPERATOR_USER_ID, OPERATOR_CLERK_SUB],
   );
+  await linkClerkUsers(admin);
   // 'specific' access with an explicit grant, so store access is revocable.
   await admin.query(
     `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind)
@@ -231,7 +233,7 @@ beforeAll(async () => {
     .useValue(env.app)
     .overrideProvider(AUTH_LOOKUP_POOL)
     .useValue(env.admin)
-    .overrideProvider(CLERK_VERIFIER)
+    .overrideProvider(OPERATOR_TOKEN_VERIFIER)
     .useValue(new StubClerkVerifier())
     .overrideProvider(AUDIT_JOB_ENQUEUER)
     .useValue(audit)

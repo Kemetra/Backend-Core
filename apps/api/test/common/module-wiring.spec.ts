@@ -13,7 +13,7 @@
  * Redis or a DB connection fall back to their safe no-op paths:
  *   - EMAIL_JOB_ENQUEUER  → NoOpEmailJobEnqueuer  (REDIS_URL absent)
  *   - AUDIT_JOB_ENQUEUER  → NoOpAuditJobEnqueuer  (REDIS_URL absent)
- *   - CLERK_VERIFIER      → fail-closed verifier   (CLERK_SECRET_KEY absent)
+ *   - OPERATOR_TOKEN_VERIFIER → fail-closed verifier   (CLERK_SECRET_KEY absent)
  */
 import "reflect-metadata";
 

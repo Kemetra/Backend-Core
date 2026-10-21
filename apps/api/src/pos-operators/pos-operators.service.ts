@@ -4,9 +4,11 @@
  * Wave 1 pipeline (every step on failure → typed `refused` result, mapped at
  * the controller boundary to the same generic 401 envelope; ADR D10):
  *
- *   1. Verify the Clerk JWT (signature, iss, aud, exp, nbf, iat).
- *   2. Resolve the local user by `users.clerk_user_id = sub`.
- *      Reject if missing, soft-deleted, or the column is unset (no JIT).
+ *   1. Verify the operator identity token (signature, iss, aud, exp, nbf, iat)
+ *      through the `OperatorTokenVerifier` seam.
+ *   2. Resolve the local user through the ACTIVE `external_identity_links` row
+ *      for the verified `{ providerKey, sub }`. Reject if there is no active
+ *      link, or the user is soft-deleted (no JIT).
  *   3. Resolve the device by `device_token_attestation` (hash lookup),
  *      filter out revoked rows. The device row carries the canonical
  *      `(tenant_id, store_id)` scope.
@@ -28,10 +30,10 @@
  *      value that is **never** returned to the POS client (ADR D8 final
  *      paragraph).
  *
- * Wave 3 endpoints gate via Clerk JWT only (no device attestation on GET
- * endpoints). Takeover confirm re-uses the device attestation body field.
+ * Wave 3 endpoints gate via the identity token only (no device attestation on
+ * GET endpoints). Takeover confirm re-uses the device attestation body field.
  *
- * No log line, audit row, or error message ever contains the Clerk JWT,
+ * No log line, audit row, or error message ever contains the identity token,
  * the device token attestation, the user's password hash, or any internal
  * secret (FR-POS-AUTH-10, FR-POS-AUTH-8).
  */
@@ -42,7 +44,12 @@ import { generateRawToken, hashToken } from "@data-pulse-2/auth";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool, PoolClient } from "pg";
 
-import type { ClerkVerifier } from "./clerk-verifier";
+import {
+  activeLinkSubjects,
+  findUserByActiveLink,
+  type LinkedUserRow,
+} from "../auth/identity-link-lookup";
+import type { OperatorTokenClaims, OperatorTokenVerifier } from "../auth/operator-token-verifier";
 import { DeviceRepository } from "./device.repository";
 import type {
   PosActiveSessionQueryInput,
@@ -102,7 +109,7 @@ type DeviceRow = NonNullable<Awaited<ReturnType<DeviceRepository["findActiveByAt
 
 /** Successful device-scoped operator authorization (pipeline steps 2–5). */
 interface DeviceOperatorAuthz {
-  userRow: UserLookupRow;
+  userRow: LinkedUserRow;
   deviceRow: DeviceRow;
   membership: MembershipLookupRow;
   posRole: PosOperatorRole;
@@ -129,7 +136,7 @@ export type SignOutResult =
  * change.
  */
 export type SignOutRefusalReason =
-  | "clerk_jwt_invalid"
+  | "identity_token_invalid"
   | "user_unmapped"
   | "user_disabled"
   | "session_unknown"
@@ -144,7 +151,7 @@ export type RosterResult =
   | { kind: "refused"; reason: RosterRefusalReason };
 
 export type RosterRefusalReason =
-  | "clerk_jwt_invalid"
+  | "identity_token_invalid"
   | "user_unmapped"
   | "user_disabled"
   | "membership_missing"
@@ -158,7 +165,7 @@ export type TakeoverConfirmResult =
   | { kind: "refused"; reason: TakeoverRefusalReason };
 
 export type TakeoverRefusalReason =
-  | "clerk_jwt_invalid"
+  | "identity_token_invalid"
   | "user_unmapped"
   | "user_disabled"
   | "device_invalid"
@@ -175,7 +182,7 @@ export type ActiveSessionResult =
   | { kind: "refused"; reason: ActiveSessionRefusalReason };
 
 export type ActiveSessionRefusalReason =
-  | "clerk_jwt_invalid"
+  | "identity_token_invalid"
   | "user_unmapped"
   | "user_disabled"
   | "membership_missing"
@@ -189,7 +196,7 @@ export type ActiveSessionRefusalReason =
  * contract change.
  */
 export type SignInRefusalReason =
-  | "clerk_jwt_invalid"
+  | "identity_token_invalid"
   | "user_unmapped"
   | "user_disabled"
   | "device_invalid"
@@ -203,7 +210,7 @@ export type SignInRefusalReason =
 export class PosOperatorsService {
   constructor(
     private readonly pool: Pool,
-    private readonly clerkVerifier: ClerkVerifier,
+    private readonly operatorTokenVerifier: OperatorTokenVerifier,
     private readonly deviceRepository: DeviceRepository,
     private readonly logger: Logger,
     private readonly lookupPool: Pool = pool,
@@ -223,7 +230,7 @@ export class PosOperatorsService {
     const result = await this.runPipeline(rawJwt, body);
     if (result.kind === "refused") {
       // Server-side cause record — keyed by request_id, never returned
-      // to the client. The Clerk JWT and the device attestation are
+      // to the client. The identity token and the device attestation are
       // intentionally excluded from this log line (FR-POS-AUTH-10,
       // FR-POS-AUTH-2).
       this.logger.warn(
@@ -255,9 +262,9 @@ export class PosOperatorsService {
   ): Promise<PosOperatorSignOutResponseBody | { kind: "refused" }> {
     const result = await this.runSignOutPipeline(rawJwt, body);
     if (result.kind === "refused") {
-      // Server-side cause record — keyed by request_id. The Clerk JWT
+      // Server-side cause record — keyed by request_id. The identity token
       // is intentionally excluded (FR-POS-AUTH-10). The session_id is
-      // intentionally NOT logged at WARN level on Clerk-JWT failure, so
+      // intentionally NOT logged at WARN level on token failure, so
       // a probing client can't correlate guesses against server logs.
       this.logger.warn(
         { request_id: requestId, refusal: result.reason },
@@ -352,13 +359,13 @@ export class PosOperatorsService {
    * step's refusal reason is logged server-side keyed by request_id (ADR D10).
    */
   private async authorizeOperatorOnDevice(
-    sub: string,
+    claims: OperatorTokenClaims,
     deviceTokenAttestation: string,
   ): Promise<
     { kind: "refused"; reason: DeviceAuthzRefusalReason } | ({ kind: "ok" } & DeviceOperatorAuthz)
   > {
-    // 2. Map Clerk subject → local user.
-    const userRow = await this.findUserByClerkSubject(sub);
+    // 2. Map the verified identity → local user through the ACTIVE link.
+    const userRow = await this.findUserByIdentity(claims);
     if (!userRow) return { kind: "refused", reason: "user_unmapped" };
     if (userRow.deleted_at !== null) {
       return { kind: "refused", reason: "user_disabled" };
@@ -402,16 +409,16 @@ export class PosOperatorsService {
     rawJwt: string,
     body: PosOperatorSignInInput,
   ): Promise<SignInResult> {
-    // 1. Clerk JWT verification.
+    // 1. Identity token verification.
     let claims;
     try {
-      claims = await this.clerkVerifier.verify(rawJwt);
+      claims = await this.operatorTokenVerifier.verify(rawJwt);
     } catch {
-      return { kind: "refused", reason: "clerk_jwt_invalid" };
+      return { kind: "refused", reason: "identity_token_invalid" };
     }
 
     // 2–5. Shared device-scoped authorization.
-    const authz = await this.authorizeOperatorOnDevice(claims.sub, body.device_token_attestation);
+    const authz = await this.authorizeOperatorOnDevice(claims, body.device_token_attestation);
     if (authz.kind === "refused") return authz;
     const { userRow, deviceRow, posRole } = authz;
 
@@ -439,9 +446,10 @@ export class PosOperatorsService {
     return {
       kind: "signed_in",
       operator: {
-        id: userRow.clerk_user_id ?? "",
+        id: userRow.operator_id,
         // 033: provider-neutral identity key (users.id), surfaced alongside the
-        // clerk_user_id bridge. Already loaded on userRow; no new query.
+        // operator id (the subject of the user's active identity link).
+        // Already loaded on userRow; no new query.
         user_id: userRow.id,
         display_name: userRow.display_name ?? userRow.email,
         role: posRole,
@@ -463,12 +471,12 @@ export class PosOperatorsService {
   ): Promise<RosterResult> {
     let claims;
     try {
-      claims = await this.clerkVerifier.verify(rawJwt);
+      claims = await this.operatorTokenVerifier.verify(rawJwt);
     } catch {
-      return { kind: "refused", reason: "clerk_jwt_invalid" };
+      return { kind: "refused", reason: "identity_token_invalid" };
     }
 
-    const userRow = await this.findUserByClerkSubject(claims.sub);
+    const userRow = await this.findUserByIdentity(claims);
     if (!userRow) return { kind: "refused", reason: "user_unmapped" };
     if (userRow.deleted_at !== null) return { kind: "refused", reason: "user_disabled" };
 
@@ -504,9 +512,9 @@ export class PosOperatorsService {
   ): Promise<TakeoverConfirmResult> {
     let claims;
     try {
-      claims = await this.clerkVerifier.verify(rawJwt);
+      claims = await this.operatorTokenVerifier.verify(rawJwt);
     } catch {
-      return { kind: "refused", reason: "clerk_jwt_invalid" };
+      return { kind: "refused", reason: "identity_token_invalid" };
     }
 
     // JWT sub must match the operator_id in the body (prevents identity substitution).
@@ -514,7 +522,7 @@ export class PosOperatorsService {
       return { kind: "refused", reason: "operator_id_mismatch" };
     }
 
-    const authz = await this.authorizeOperatorOnDevice(claims.sub, body.device_token_attestation);
+    const authz = await this.authorizeOperatorOnDevice(claims, body.device_token_attestation);
     if (authz.kind === "refused") return authz;
     const { deviceRow } = authz;
 
@@ -564,7 +572,7 @@ export class PosOperatorsService {
     return {
       kind: "signed_in",
       operator: {
-        id: userRow.clerk_user_id ?? "",
+        id: userRow.operator_id,
         // 033: provider-neutral identity key (users.id). Present even on an
         // idempotent replay (envelope is null here, but user_id is identity,
         // not a hash-once secret) — SC-033-2 path 4.
@@ -653,9 +661,10 @@ export class PosOperatorsService {
     return {
       kind: "signed_in",
       operator: {
-        id: userRow.clerk_user_id ?? "",
+        id: userRow.operator_id,
         // 033: provider-neutral identity key (users.id), surfaced alongside the
-        // clerk_user_id bridge. Already loaded on userRow; no new query.
+        // operator id (the subject of the user's active identity link).
+        // Already loaded on userRow; no new query.
         user_id: userRow.id,
         display_name: userRow.display_name ?? userRow.email,
         role: posRole,
@@ -676,13 +685,13 @@ export class PosOperatorsService {
   ): Promise<ActiveSessionResult> {
     let claims;
     try {
-      claims = await this.clerkVerifier.verify(rawJwt);
+      claims = await this.operatorTokenVerifier.verify(rawJwt);
     } catch {
-      return { kind: "refused", reason: "clerk_jwt_invalid" };
+      return { kind: "refused", reason: "identity_token_invalid" };
     }
 
     // Gate the requester: they must be a valid, non-deleted user.
-    const requesterRow = await this.findUserByClerkSubject(claims.sub);
+    const requesterRow = await this.findUserByIdentity(claims);
     if (!requesterRow) return { kind: "refused", reason: "user_unmapped" };
     if (requesterRow.deleted_at !== null) return { kind: "refused", reason: "user_disabled" };
 
@@ -706,7 +715,12 @@ export class PosOperatorsService {
     }
 
     // Resolve the target operator AFTER branch authorization succeeds (minimum disclosure).
-    const targetRow = await this.findUserByClerkSubject(query.operator_id);
+    // The wire id is a subject of the REQUESTER's provider (the token that just
+    // verified), looked up on the active link.
+    const targetRow = await this.findUserByIdentity({
+      providerKey: claims.providerKey,
+      sub: query.operator_id,
+    });
     if (targetRow?.deleted_at !== null) {
       // Non-existent or disabled target → "none" (minimum disclosure, not 401).
       return { kind: "none" };
@@ -729,15 +743,12 @@ export class PosOperatorsService {
   // Each query has a single caller in this service.
   // -----------------------------------------------------------------------
 
-  private async findUserByClerkSubject(sub: string): Promise<UserLookupRow | null> {
-    const r = await this.lookupPool.query<UserLookupRow>(
-      `SELECT id, email, display_name, clerk_user_id, deleted_at
-         FROM users
-        WHERE clerk_user_id = $1
-        LIMIT 1`,
-      [sub],
-    );
-    return r.rows[0] ?? null;
+  /** The user whose ACTIVE identity link is the verified `{ providerKey, sub }`. */
+  private findUserByIdentity(claims: OperatorTokenClaims): Promise<LinkedUserRow | null> {
+    return findUserByActiveLink(this.lookupPool, {
+      providerKey: claims.providerKey,
+      subject: claims.sub,
+    });
   }
 
   private async findActiveMembership(
@@ -828,16 +839,16 @@ export class PosOperatorsService {
     rawJwt: string,
     body: PosOperatorSignOutInput,
   ): Promise<SignOutResult> {
-    // 1. Clerk JWT verification.
+    // 1. Identity token verification.
     let claims;
     try {
-      claims = await this.clerkVerifier.verify(rawJwt);
+      claims = await this.operatorTokenVerifier.verify(rawJwt);
     } catch {
-      return { kind: "refused", reason: "clerk_jwt_invalid" };
+      return { kind: "refused", reason: "identity_token_invalid" };
     }
 
-    // 2. Map Clerk subject → local user.
-    const userRow = await this.findUserByClerkSubject(claims.sub);
+    // 2. Map the verified identity → local user through the ACTIVE link.
+    const userRow = await this.findUserByIdentity(claims);
     if (!userRow) return { kind: "refused", reason: "user_unmapped" };
     if (userRow.deleted_at !== null) {
       return { kind: "refused", reason: "user_disabled" };
@@ -904,56 +915,60 @@ export class PosOperatorsService {
   }
 
   /**
-   * Returns all cashiers (store_staff role) for a branch.
-   * `store_staff` maps to the POS `cashier` role (FR-015 role-visibility matrix).
+   * Returns the cashiers (store_staff role) of a branch that have an ACTIVE
+   * identity link. `store_staff` maps to the POS `cashier` role (FR-015
+   * role-visibility matrix); the roster `id` is the subject of the user's
+   * active link — the same wire id sign-in returns as `operator.id`.
+   *
+   * The links are read on the lookup pool, not the tenant-scoped domain client:
+   * `external_identity_links` is tenant-agnostic and the lookup role is the one
+   * documented to read it.
    */
-  private findCashiersByStore(
+  private async findCashiersByStore(
     storeId: string,
     tenantId: string,
   ): Promise<
     Array<{ id: string; user_id: string; display_name: string; role: "cashier" }>
   > {
-    return runWithTenantContext(
+    const members = await runWithTenantContext(
       this.pool,
       { tenantId, isPlatformAdmin: false },
       async (client) => {
-        const r = await client.query<{
-          id: string;
-          clerk_user_id: string;
-          display_name: string;
-        }>(
-      // 034: also project u.id (the provider-neutral users.id, §16) so the
-      // roster entry can carry user_id alongside the clerk_user_id bridge.
-      // u.id is already the JOIN key — no new join, no new query.
-      `SELECT u.id, u.clerk_user_id, u.display_name
-         FROM memberships m
-         JOIN roles r ON r.id = m.role_id
-         JOIN users u ON u.id = m.user_id
-        WHERE m.tenant_id = $1
-          AND r.code = 'store_staff'
-          AND m.revoked_at IS NULL
-          AND m.deleted_at IS NULL
-          AND u.deleted_at IS NULL
-          AND u.clerk_user_id IS NOT NULL
-          AND u.display_name IS NOT NULL
-          AND (
-            m.store_access_kind = 'all'
-            OR EXISTS (
-              SELECT 1 FROM store_access sa
-               WHERE sa.membership_id = m.id AND sa.store_id = $2
-            )
-          )
-        ORDER BY u.display_name`,
+        // 034: u.id (the provider-neutral users.id, §16) rides on every entry.
+        const r = await client.query<{ id: string; display_name: string }>(
+          `SELECT u.id, u.display_name
+             FROM memberships m
+             JOIN roles r ON r.id = m.role_id
+             JOIN users u ON u.id = m.user_id
+            WHERE m.tenant_id = $1
+              AND r.code = 'store_staff'
+              AND m.revoked_at IS NULL
+              AND m.deleted_at IS NULL
+              AND u.deleted_at IS NULL
+              AND u.display_name IS NOT NULL
+              AND (
+                m.store_access_kind = 'all'
+                OR EXISTS (
+                  SELECT 1 FROM store_access sa
+                   WHERE sa.membership_id = m.id AND sa.store_id = $2
+                )
+              )
+            ORDER BY u.display_name`,
           [tenantId, storeId],
         );
-        return r.rows.map((row) => ({
-          id: row.clerk_user_id,
-          user_id: row.id,
-          display_name: row.display_name,
-          role: "cashier" as const,
-        }));
+        return r.rows;
       },
     );
+    const subjects = await activeLinkSubjects(
+      this.lookupPool,
+      members.map((row) => row.id),
+    );
+    return members.flatMap((row) => {
+      const operatorId = subjects.get(row.id);
+      return operatorId === undefined
+        ? []
+        : [{ id: operatorId, user_id: row.id, display_name: row.display_name, role: "cashier" as const }];
+    });
   }
 
   /**
@@ -1167,14 +1182,6 @@ export class PosOperatorsService {
     if (!row) throw new Error("PosOperatorsService.issueOperatorSessionRow: insert returned no row");
     return { id: row.id, issuedAt: row.issued_at, envelope: opaqueRaw };
   }
-}
-
-interface UserLookupRow {
-  id: string;
-  email: string;
-  display_name: string | null;
-  clerk_user_id: string | null;
-  deleted_at: Date | null;
 }
 
 interface MembershipLookupRow {

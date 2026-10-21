@@ -6,7 +6,7 @@
  * boundary: above it everything is provider-neutral; below it the Clerk-concrete
  * verification stays contained.
  *
- *   - `verifyIdentityToken` DELEGATES to the existing `ClerkVerifier` (whose
+ *   - `verifyIdentityToken` DELEGATES to the existing `OperatorTokenVerifier` (whose
  *     production impl calls `packages/auth`'s `verifyToken`, keeping the
  *     `@clerk/backend` dependency contained in `packages/auth` — E-3). It maps
  *     the Clerk `{ sub }` to a provider-NEUTRAL `VerifiedSubject`
@@ -32,15 +32,12 @@
 import { Injectable } from "@nestjs/common";
 import type { Pool } from "pg";
 
-import type { ClerkVerifier } from "../pos-operators/clerk-verifier";
-import { clerkVerifierFactory } from "../pos-operators/clerk-verifier";
-import { descopeIdentityProviderFactory } from "./descope-identity-provider.adapter";
-import { identityProviderKind } from "./identity-provider-kind";
+import { CLERK_PROVIDER_KEY, clerkVerifierFactory } from "../pos-operators/clerk-verifier";
 import type { IdentityProviderPort, VerifiedSubject } from "./identity-provider.port";
 import { LinkingIdentityProviderAdapter } from "./linking-identity-provider.adapter";
+import type { OperatorTokenVerifier } from "./operator-token-verifier";
 
-/** The v1 provider discriminator. */
-export const CLERK_PROVIDER_KEY = "clerk";
+export { CLERK_PROVIDER_KEY };
 
 /**
  * The single configured Clerk issuer — the SOURCE OF TRUTH shared with the 0025
@@ -57,7 +54,7 @@ export function clerkIssuer(): string {
 @Injectable()
 export class ClerkIdentityProviderAdapter extends LinkingIdentityProviderAdapter {
   constructor(
-    private readonly verifier: ClerkVerifier,
+    private readonly verifier: OperatorTokenVerifier,
     pool: Pool,
     private readonly issuer: string = clerkIssuer(),
   ) {
@@ -89,12 +86,9 @@ export { IDENTITY_PROVIDER_PORT } from "./identity-provider.port";
  * shortcut) is preserved verbatim — the adapter adds the neutral mapping + link
  * write on top, never a new credential path.
  *
- * RT-791: the single provider switch for every module that builds an identity
- * adapter. `IDENTITY_PROVIDER=descope` returns the Descope adapter (its own
- * fail-closed config check); unset keeps Clerk; an unknown value throws.
+ * The Clerk case of the provider switch in `identity-provider.factory.ts`.
  */
 export function clerkIdentityProviderFactory(pool: Pool): IdentityProviderPort {
-  if (identityProviderKind() === "descope") return descopeIdentityProviderFactory(pool);
-  const verifier: ClerkVerifier = clerkVerifierFactory();
+  const verifier: OperatorTokenVerifier = clerkVerifierFactory();
   return new ClerkIdentityProviderAdapter(verifier, pool, clerkIssuer());
 }

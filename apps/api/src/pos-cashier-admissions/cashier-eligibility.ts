@@ -12,17 +12,22 @@
  *   - the store is active (not soft-deleted, `is_active`);
  *   - the user can access the store (`store_access_kind = 'all'`, or a
  *     `store_access` row for it);
- *   - the user has a provider subject and a display name (the roster's
- *     `operator_id` / `display_name` are required on the wire).
+ *   - the user has an ACTIVE identity link and a display name (the roster's
+ *     `operator_id` — the link's subject — and `display_name` are required on
+ *     the wire).
  *
  * These are the existing predicates of `PosOperatorsService` (membership /
  * store access / the store_staff roster query) applied to the device's scope.
- * Both queries run on the caller's tenant-scoped client, under RLS. The
+ * The membership queries run on the caller's tenant-scoped client, under RLS.
+ * The identity links are tenant-agnostic and are read through `linkReader`
+ * (production: the auth-lookup pool, the role documented to read
+ * `external_identity_links`); without one the caller's client reads them. The
  * roster and the admission check share one predicate set so the roster is
  * exactly the admissible set.
  */
 import type { PoolClient } from "pg";
 
+import { activeLinkSubjects, type LinkQueryable } from "../auth/identity-link-lookup";
 import type { RosterEntry } from "./dto";
 import type { DeviceScope } from "./device-scope";
 
@@ -85,7 +90,6 @@ const ACTIVE_MEMBERSHIP_SQL = `m.tenant_id = $1 AND m.revoked_at IS NULL AND m.d
 const ELIGIBILITY_SQL = `
   SELECT u.deleted_at IS NOT NULL                AS user_deleted,
          u.display_name                          AS display_name,
-         u.clerk_user_id                         AS operator_id,
          r.code = '${CASHIER_ROLE_CODE}'         AS role_eligible,
          ${STORE_ACTIVE_SQL}                     AS store_active,
          ${STORE_ACCESSIBLE_SQL}                 AS store_accessible
@@ -97,14 +101,13 @@ const ELIGIBILITY_SQL = `
    LIMIT 1`;
 
 const ROSTER_SQL = `
-  SELECT u.id AS user_id, u.clerk_user_id AS operator_id, u.display_name AS display_name
+  SELECT u.id AS user_id, u.display_name AS display_name
     FROM memberships m
     JOIN roles r ON r.id = m.role_id
     JOIN users u ON u.id = m.user_id
    WHERE ${ACTIVE_MEMBERSHIP_SQL}
      AND r.code = '${CASHIER_ROLE_CODE}'
      AND u.deleted_at IS NULL
-     AND u.clerk_user_id IS NOT NULL
      AND u.display_name IS NOT NULL
      AND ${STORE_ACTIVE_SQL}
      AND ${STORE_ACCESSIBLE_SQL}
@@ -115,18 +118,36 @@ export interface CashierEligibilityReader {
   roster(client: PoolClient, scope: DeviceScope): Promise<RosterEntry[]>;
 }
 
+type MembershipFacts = Omit<EligibilityRow, "operator_id">;
+
 export class CashierEligibilityRepository implements CashierEligibilityReader {
+  constructor(
+    /** Reads `external_identity_links`; the caller's own client when omitted. */
+    private readonly linkReader?: LinkQueryable,
+  ) {}
+
   async check(client: PoolClient, scope: DeviceScope, userId: string): Promise<Eligibility> {
-    const r = await client.query<EligibilityRow>(ELIGIBILITY_SQL, [scope.tenantId, scope.storeId, userId]);
-    return classifyEligibility(r.rows[0]);
+    const r = await client.query<MembershipFacts>(ELIGIBILITY_SQL, [scope.tenantId, scope.storeId, userId]);
+    const facts = r.rows[0];
+    if (!facts) return classifyEligibility(undefined);
+    const subjects = await activeLinkSubjects(this.linkReader ?? client, [userId]);
+    return classifyEligibility({ ...facts, operator_id: subjects.get(userId) ?? null });
   }
 
   async roster(client: PoolClient, scope: DeviceScope): Promise<RosterEntry[]> {
-    const r = await client.query<RosterEntry>(ROSTER_SQL, [scope.tenantId, scope.storeId]);
-    return r.rows.map((row) => ({
-      user_id: row.user_id,
-      operator_id: row.operator_id,
-      display_name: row.display_name,
-    }));
+    const r = await client.query<{ user_id: string; display_name: string }>(ROSTER_SQL, [
+      scope.tenantId,
+      scope.storeId,
+    ]);
+    const subjects = await activeLinkSubjects(
+      this.linkReader ?? client,
+      r.rows.map((row) => row.user_id),
+    );
+    return r.rows.flatMap((row) => {
+      const operatorId = subjects.get(row.user_id);
+      return operatorId === undefined
+        ? []
+        : [{ user_id: row.user_id, operator_id: operatorId, display_name: row.display_name }];
+    });
   }
 }

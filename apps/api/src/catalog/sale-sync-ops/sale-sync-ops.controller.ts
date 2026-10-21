@@ -12,7 +12,7 @@
  *   POST /sales/{saleRef}/repair          consoleRepairSaleSync       (T020)
  *
  * Authenticated by the HUMAN `cookieAuth` → `DashboardAuthGuard` (NOT the POS
- * `clerkJwt` device scheme, NOT a machine bearer). `TenantContextGuard`
+ * operator-identity device scheme, NOT a machine bearer). `TenantContextGuard`
  * publishes `request.context`; `RolesGuard` + `@Roles` gate the surface
  * (default deny → 404). `tenant_id` resolves server-side from `request.context`,
  * never the query/body (§XII). Every response is a `toBody` projection (no raw

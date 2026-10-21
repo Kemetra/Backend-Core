@@ -663,12 +663,12 @@ describe("GET /api/v1/audit/events — contract conformance (T300)", () => {
 // pos-audit-events.openapi.yaml defines named component schemas for ALL
 // response statuses (200, 400, 401). All three are tested here.
 //
-// The Clerk JWT is optional for this endpoint; the fake ClerkVerifier is
+// The Clerk JWT is optional for this endpoint; the fake OperatorTokenVerifier is
 // wired but never called in the happy-path tests (no Authorization header).
 
 import { PosAuditEventsController } from "../src/pos-audit-events/pos-audit-events.controller";
 import { PosAuditEventsService } from "../src/pos-audit-events/pos-audit-events.service";
-import { CLERK_VERIFIER, type ClerkVerifier } from "../src/pos-operators/clerk-verifier";
+import { OPERATOR_TOKEN_VERIFIER, type OperatorTokenVerifier } from "../src/auth/operator-token-verifier";
 import type {
   PosAuditEventsSyncInput,
   PosAuditEventsSyncResponseBody,
@@ -718,10 +718,10 @@ class FakePosAuditEventsService {
   }
 }
 
-/** Fake ClerkVerifier — always succeeds (JWT optional on this endpoint). */
-class PosAuditFakeClerkVerifier implements ClerkVerifier {
-  async verify(_rawJwt: string): Promise<{ sub: string }> {
-    return { sub: "user_fake_clerk_sub" };
+/** Fake OperatorTokenVerifier — always succeeds (JWT optional on this endpoint). */
+class PosAuditFakeClerkVerifier implements OperatorTokenVerifier {
+  async verify(_rawJwt: string): Promise<{ providerKey: string; sub: string }> {
+    return { providerKey: "clerk", sub: "user_fake_clerk_sub" };
   }
 }
 
@@ -741,7 +741,7 @@ beforeAll(async () => {
     controllers: [PosAuditEventsController],
     providers: [
       { provide: PosAuditEventsService, useValue: fakePosAuditService },
-      { provide: CLERK_VERIFIER, useValue: new PosAuditFakeClerkVerifier() },
+      { provide: OPERATOR_TOKEN_VERIFIER, useValue: new PosAuditFakeClerkVerifier() },
     ],
   }).compile();
 

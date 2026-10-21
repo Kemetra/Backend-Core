@@ -11,10 +11,10 @@ info:
     capability model (RT-284 comment 11887, P-A and P-F).
 
 
-    **Posture.** `1.0.0-draft`, contract-only: the operation carries
-    `x-runtime-status: contract-only` until the MA-BC2 runtime ships. `[GATED]`
-    contract; the owner approves the wire shape at PR time. No persistence,
-    migration or dependency change is needed or implied.
+    **Posture.** `1.0.0-draft`. The MA-BC2 runtime shipped in RT-788, which
+    removed the `x-runtime-status: contract-only` marker. `[GATED]` contract;
+    the owner approves the wire shape at PR time. No persistence, migration or
+    dependency change is needed or implied.
 
 
     **Why this surface exists.** The terminal verifies a manager's approval PIN
@@ -134,11 +134,6 @@ paths:
         more than 50 ids, a duplicate id, a malformed UUID or an unknown field
         is a `400` and nothing is evaluated.
       operationId: posCheckApproverEligibility
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-492 (MA-BC1) contract PR; the controller and the eligibility read
-        ship in MA-BC2. No migration is needed: the read uses the existing
-        users, memberships, roles and store_access tables.
       tags: [pos-approvers]
       security:
         - device: []
