@@ -59,8 +59,10 @@
  * tenant (`runWithTenantContext({ tenantId: null, isPlatformAdmin: true })`)
  * and the explicit `tenant_id IS NULL` predicate, which replaces the tenant
  * predicate on both the list and the cursor anchor (`scopePredicate`). The
- * same `(tenant_id, occurred_at DESC)` btree serves it: `tenant_id IS NULL`
- * is an Index Cond (RT-431 EXPLAIN evidence).
+ * `(tenant_id, occurred_at DESC)` btree serves the `tenant_id IS NULL`
+ * predicate, not the `(occurred_at, id)` keyset order: each page top-N
+ * sorts the whole null-tenant bucket, as the tenant list does per tenant
+ * (RT-431 EXPLAIN evidence). An ordered index is separate migration work.
  */
 import { Inject, Injectable, Optional } from "@nestjs/common";
 import type { Pool, PoolClient } from "pg";

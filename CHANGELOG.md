@@ -109,9 +109,13 @@ This project follows [Semantic Versioning](https://semver.org/).
   shared scope predicate). `actor_label` is masked (D5); there is no
   self-audit; the console rate-limit class is `expensiveRead`. EXPLAIN
   (ANALYZE) as `app_test` shows that the existing
-  `audit_events_tenant_time_idx` serves `tenant_id IS NULL` as an Index Cond
-  with the same plan as the tenant list, so there is no migration. The
-  `x-runtime-status` marker and note are removed from `audit.openapi.yaml`.
+  `audit_events_tenant_time_idx` serves the `tenant_id IS NULL` predicate,
+  but not the keyset order. It has no `id` column, so every page top-N sorts
+  the whole null-tenant bucket (about 1 ms at 4k rows, 58 to 81 ms at 400k,
+  where the planner picks a parallel seq scan). That is the same ordering
+  design as `listAuditEvents`. An ordered index is separate `[GATED]`
+  migration work, and no migration is in this change. The `x-runtime-status`
+  marker and note are removed from `audit.openapi.yaml`.
 - Phase 1 workspace setup: `pnpm-workspace.yaml`, `tsconfig.base.json`,
   `.eslintrc.cjs`, `.prettierrc`, `.nvmrc`, root `package.json`,
   `docker-compose.dev.yml`, Constitution-Check PR template.
