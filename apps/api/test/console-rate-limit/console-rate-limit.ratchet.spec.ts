@@ -109,6 +109,7 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
   listErpnextNegativeOnHandStores: "expensiveRead",
   listMembers: "cheapRead",
   listOutboxDeadLetters: "expensiveRead",
+  listPlatformAuditEvents: "expensiveRead",
   listPostingBacklog: "expensiveRead",
   listProductReconciliationBacklog: "expensiveRead",
   listProductReconciliationRuns: "cheapRead",
@@ -183,8 +184,6 @@ const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
   consoleListDeviceHealth: "cheapRead",
   consolePreviewTenantLogo: "jobOrPreview",
   consolePutTenantLogo: "jobOrPreview",
-  // RT-431: platform-scoped audit read, same cost as the tenant audit list.
-  listPlatformAuditEvents: "expensiveRead",
   // RT-327: the platform POS version policy (three rows) and its audited change.
   platformGetPosVersionPolicy: "cheapRead",
   platformSetPosVersionPolicy: "write",

@@ -51,11 +51,23 @@
  * `occurred_at < cursorTs + 1ms` bound keeps the
  * `(tenant_id, occurred_at DESC)` index range scan. The cursor wire format
  * is unchanged.
+ *
+ * Platform scope (RT-431)
+ * -----------------------
+ * `listPlatformPage` serves `listPlatformAuditEvents`: rows stored with
+ * `tenant_id` NULL only. It runs under the platform-admin context with no
+ * tenant (`runWithTenantContext({ tenantId: null, isPlatformAdmin: true })`)
+ * and the explicit `tenant_id IS NULL` predicate, which replaces the tenant
+ * predicate on both the list and the cursor anchor (`scopePredicate`). The
+ * `(tenant_id, occurred_at DESC)` btree serves the `tenant_id IS NULL`
+ * predicate, not the `(occurred_at, id)` keyset order: each page top-N
+ * sorts the whole null-tenant bucket, as the tenant list does per tenant
+ * (RT-431 EXPLAIN evidence). An ordered index is separate migration work.
  */
 import { Inject, Injectable, Optional } from "@nestjs/common";
 import type { Pool, PoolClient } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { and, desc, eq, gte, inArray, lte, notInArray, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte, notInArray, sql, type SQL } from "drizzle-orm";
 import { alias, type BuildAliasTable } from "drizzle-orm/pg-core";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import { auditEvents } from "@data-pulse-2/db/schema";
@@ -105,6 +117,29 @@ export interface AuditRepository {
 /** DI token so the service depends on the interface, not the class. */
 export const AUDIT_REPOSITORY = "AUDIT_REPOSITORY";
 
+/** RT-431: a platform-scoped row (`tenant_id` NULL). */
+export interface PlatformAuditEventRecord extends Omit<AuditEventRecord, "tenantId"> {
+  readonly tenantId: null;
+}
+
+/** RT-431: the `listPlatformAuditEvents` filters; no tenant and no store. */
+export type PlatformListPageInput = Omit<ListPageInput, "tenantId" | "isPlatformAdmin" | "storeId">;
+
+export interface PlatformAuditRepository {
+  /** Read a page of platform-scoped (`tenant_id` NULL) audit events. */
+  listPlatformPage(input: PlatformListPageInput): Promise<PlatformAuditEventRecord[]>;
+}
+
+/** DI token for the platform-scope read (bound to the same Drizzle class). */
+export const PLATFORM_AUDIT_REPOSITORY = "PLATFORM_AUDIT_REPOSITORY";
+
+/** Which rows a page may contain: one tenant's, or the platform-scoped ones. */
+type AuditScope =
+  | { readonly kind: "tenant"; readonly tenantId: string }
+  | { readonly kind: "platform" };
+
+type AuditEventRow = typeof auditEvents.$inferSelect;
+
 /**
  * Indirection seam: production passes the real `runWithTenantContext`;
  * tests can swap a passthrough that fabricates a `PoolClient` shape.
@@ -117,7 +152,7 @@ type TenantTxRunner = <T>(
 ) => Promise<T>;
 
 @Injectable()
-export class DrizzleAuditRepository implements AuditRepository {
+export class DrizzleAuditRepository implements AuditRepository, PlatformAuditRepository {
   private readonly tx: TenantTxRunner;
 
   constructor(
@@ -135,20 +170,33 @@ export class DrizzleAuditRepository implements AuditRepository {
   }
 
   async listPage(input: ListPageInput): Promise<AuditEventRecord[]> {
-    return this.tx(
+    const rows = await this.tx(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: input.isPlatformAdmin },
-      async (client) => this.runQuery(input, client),
+      async (client) => this.runQuery(input, { kind: "tenant", tenantId: input.tenantId }, client),
     );
+    // tenantId column is nullable, but the explicit predicate guarantees
+    // a non-null value here; coerce defensively for the type system.
+    return rows.map((row) => ({ ...toRecord(row), tenantId: row.tenantId ?? input.tenantId }));
+  }
+
+  async listPlatformPage(input: PlatformListPageInput): Promise<PlatformAuditEventRecord[]> {
+    const rows = await this.tx(
+      this.pool,
+      { tenantId: null, isPlatformAdmin: true },
+      async (client) => this.runQuery(input, { kind: "platform" }, client),
+    );
+    return rows.map((row) => ({ ...toRecord(row), tenantId: null }));
   }
 
   private async runQuery(
-    input: ListPageInput,
+    input: PlatformListPageInput & { readonly storeId?: string | undefined },
+    scope: AuditScope,
     client: PoolClient,
-  ): Promise<AuditEventRecord[]> {
+  ): Promise<AuditEventRow[]> {
     const db = drizzle(client);
 
-    const predicates = filterPredicates(auditEvents, input);
+    const predicates = filterPredicates(auditEvents, input, scope);
 
     if (input.cursor !== null) {
       // Row-tuple keyset: (occurred_at, id) < (anchorTs, cursor.id), with an
@@ -165,7 +213,7 @@ export class DrizzleAuditRepository implements AuditRepository {
         .where(
           and(
             eq(anchor.id, cursorId),
-            ...filterPredicates(anchor, input),
+            ...filterPredicates(anchor, input, scope),
             sql`${anchor.occurredAt} >= ${cursorTs}::timestamptz`,
             sql`${anchor.occurredAt} < ${cursorTs}::timestamptz + interval '1 millisecond'`,
           ),
@@ -186,23 +234,24 @@ export class DrizzleAuditRepository implements AuditRepository {
       .where(and(...predicates))
       .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
       .limit(input.limit);
-
-    return rows.map((row) => ({
-      id: row.id,
-      occurredAt: row.occurredAt,
-      actorUserId: row.actorUserId,
-      actorLabel: row.actorLabel,
-      // tenantId column is nullable, but the explicit predicate guarantees
-      // a non-null value here; coerce defensively for the type system.
-      tenantId: row.tenantId ?? input.tenantId,
-      storeId: row.storeId,
-      action: row.action,
-      targetType: row.targetType,
-      targetId: row.targetId,
-      requestId: row.requestId,
-      metadata: (row.metadata ?? {}) as Record<string, unknown>,
-    }));
+    return rows;
   }
+}
+
+/** The row's fields other than `tenantId`, which each scope sets itself. */
+function toRecord(row: AuditEventRow): Omit<AuditEventRecord, "tenantId"> {
+  return {
+    id: row.id,
+    occurredAt: row.occurredAt,
+    actorUserId: row.actorUserId,
+    actorLabel: row.actorLabel,
+    storeId: row.storeId,
+    action: row.action,
+    targetType: row.targetType,
+    targetId: row.targetId,
+    requestId: row.requestId,
+    metadata: (row.metadata ?? {}) as Record<string, unknown>,
+  };
 }
 
 const ANCHOR_ALIAS = "anchor";
@@ -215,12 +264,10 @@ type AnchorTable = BuildAliasTable<typeof auditEvents, typeof ANCHOR_ALIAS>;
  */
 function filterPredicates(
   table: typeof auditEvents | AnchorTable,
-  input: ListPageInput,
+  input: PlatformListPageInput & { readonly storeId?: string | undefined },
+  scope: AuditScope,
 ): SQL[] {
-  const predicates: SQL[] = [
-    // Defence-in-depth tenant scope (closes the platform-admin RLS hole).
-    eq(table.tenantId, input.tenantId),
-  ];
+  const predicates: SQL[] = [scopePredicate(table, scope)];
   if (input.action !== undefined) {
     // Literal prefix match (RT-567 F2b): `\`, `%` and `_` in the value are
     // escaped, so `action=%` matches only codes that start with `%`. Drizzle
@@ -248,6 +295,14 @@ function filterPredicates(
     predicates.push(lte(table.occurredAt, input.to));
   }
   return predicates;
+}
+
+/**
+ * Defence-in-depth scope (closes the platform-admin RLS hole): one tenant's
+ * rows, or (RT-431) only the rows that name no tenant.
+ */
+function scopePredicate(table: typeof auditEvents | AnchorTable, scope: AuditScope): SQL {
+  return scope.kind === "tenant" ? eq(table.tenantId, scope.tenantId) : isNull(table.tenantId);
 }
 
 /** Escape `LIKE` metacharacters so `value` matches literally (ESCAPE '\'). */

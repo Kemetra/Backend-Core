@@ -73,8 +73,6 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       "consolePutTenantLogo",
       // RT-742 (RT-554 follow-up): manager forced close from any terminal; the runtime ships in its own ticket.
       "forceCloseShift",
-      // RT-431: platform-scoped audit read; the runtime ships in the RT-431 runtime change.
-      "listPlatformAuditEvents",
       // RT-490 (RT-271 F-1): refund execution and return reads; the runtime ships in F-2.
       "listSaleReturns",
       // RT-327 step 1: platform POS version policy read and change.

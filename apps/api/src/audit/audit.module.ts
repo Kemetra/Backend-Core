@@ -18,6 +18,11 @@
  * repository's `PG_POOL` injection resolve through normal NestJS module
  * imports — same pattern as `StoresModule` / `MembershipsModule`.
  *
+ * RT-431 adds `PlatformAuditController` (`GET /api/v1/platform/audit/events`)
+ * and `PlatformAuditService`; `PLATFORM_AUDIT_REPOSITORY` is the same
+ * `DrizzleAuditRepository` instance (`useExisting`). `PlatformAdminGuard`
+ * reads `MembershipRepository` from `ContextModule`.
+ *
  * `audit.module.spec.ts` overrides `PG_POOL` (and the other AuthModule
  * boot-time providers) before `.compile()` so its standalone
  * AuditModule build still works with no `DATABASE_URL` set.
@@ -58,8 +63,12 @@ import {
 import {
   AUDIT_REPOSITORY,
   DrizzleAuditRepository,
+  PLATFORM_AUDIT_REPOSITORY,
 } from "./audit.repository";
 import { AuditService } from "./audit.service";
+import { PlatformAdminGuard } from "./platform-admin.guard";
+import { PlatformAuditController } from "./platform-audit.controller";
+import { PlatformAuditService } from "./platform-audit.service";
 import { ROOT_LOGGER } from "../common/logging.interceptor";
 import type { Logger } from "@data-pulse-2/shared";
 
@@ -77,6 +86,11 @@ const auditRepositoryProvider: Provider = {
   useClass: DrizzleAuditRepository,
 };
 
+const platformAuditRepositoryProvider: Provider = {
+  provide: PLATFORM_AUDIT_REPOSITORY,
+  useExisting: AUDIT_REPOSITORY,
+};
+
 @Module({
   // Import order matters: `OutboxAuditEnqueuerModule` is listed AFTER
   // `AuditEnqueuerModule` so Nest's last-import-wins semantics give the
@@ -92,11 +106,14 @@ const auditRepositoryProvider: Provider = {
     AuthModule,
     ContextModule,
   ],
-  controllers: [AuditController],
+  controllers: [AuditController, PlatformAuditController],
   providers: [
     auditInterceptorProvider,
     auditRepositoryProvider,
+    platformAuditRepositoryProvider,
     AuditService,
+    PlatformAuditService,
+    PlatformAdminGuard,
     RolesGuard,
   ],
   // Re-export both enqueuer modules so downstream consumers of
