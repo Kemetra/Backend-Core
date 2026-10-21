@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.13.0-draft"
+  version: "1.14.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -381,6 +381,47 @@ info:
     (see `RefundTender`). The legacy refund gate (F-4) is independent of
     this order.
 
+    RT-740 (1.14.0-draft; [GATED] owner authorization Jira RT-740 comment
+    13207, 2026-10-21; RT-699 DEP-1 / OD-28-12 option C-A; owner decisions
+    RT-699 comment 12975): PER-LINE MANUAL DISCOUNT. `CaptureSaleLine` gains
+    an OPTIONAL `discount` (`CaptureSaleLineDiscount`: `kind`, `value`,
+    `amount`, `reasonCode`, `authoritySource`, `approverRole`, and an optional
+    `approverUserId`). A discounted line's `lineAmount` is its NET, and the
+    RT-105 invariant becomes `lineAmount = unitPrice × quantity −
+    discount.amount` when `discount` is present; without it the invariant is
+    unchanged. `posTotal` = Σ `lineAmount` still holds, so in Backend-Core
+    `readSale`, the sale history, returns and credit reversals all work from
+    the net with no change to their shape. A zero-total sale (every line discounted 100%) is
+    accepted. Additive: no field, pattern or `required` list of an existing
+    schema changes, and a body without `discount` hashes exactly as before.
+    In this version the `discount` object is validated and is part of the
+    sale's payload hash and of the `Idempotency-Key` fingerprint (the same key
+    re-sent with a changed `discount` is 409 `idempotency_key_conflict`), but
+    it is NOT stored and NOT returned: `SaleLine` is unchanged, and neither
+    `readSale`, the sale history and detail (`sale-history.yaml`) nor the
+    reprint echoes it. Only the net `lineAmount` is stored. Like the other
+    line fields, it is not compared on a provenance replay (same
+    `sourceSystem` + `externalId` under another key), which returns the
+    stored sale. The stored net `lineAmount` is the sale fact, and the discount
+    amount is `unitPrice × quantity − lineAmount`. The till's
+    `cart.discount.manager_authorized` audit event (`pos-audit-events`
+    1.1.0-draft) records the kind and reason, but it cannot be joined to the
+    sale line from Backend-Core today, and its approver is not persisted. ROLLOUT ORDER: the server accepts
+    `discount` from the RT-740 deploy. Until then the strict capture DTO rejects
+    the unknown field (400). The POS MUST NOT send `discount` until BOTH RT-740
+    is deployed AND the ERPNext-Connector posts discounted lines (RT-699 DEP-3,
+    OD-28-13); until then the POS holds discounted sales (RT-699 doc 28
+    DEP-1). The reason: the posting feed carries `unitPrice`, `quantity` and the
+    net `lineAmount` as it always has, so a discounted line is the first feed
+    line since RT-105 whose `lineAmount` is not `unitPrice × quantity`. The
+    Connector today posts `rate` = `unitPrice` with no discount field, checks
+    the ERPNext amount against `lineAmount` exactly, and refuses a return line
+    whose amount is not `unitPrice × q`. It would therefore reject such a sale,
+    and any return of it, as a validation failure: fail closed, never a wrong
+    ledger entry, but unposted. The server does not hold these sales off the
+    feed in this version, and because `discount` is not stored, it can tell a
+    discounted line only by `lineAmount ≠ unitPrice × quantity`.
+
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
     appears on the wire. Timestamps are RFC 3339 / `date-time` in UTC (FR-021).
@@ -456,7 +497,9 @@ paths:
 
         Line pricing (RT-105): every line must satisfy the `CaptureSaleLine`
         price invariant, else 422 `sale_line_pricing_invalid`; nothing is
-        recorded. The coverage rule (tender-only or combined) is checked first,
+        recorded. A line with a manual `discount` (RT-740) satisfies it with
+        its net: `lineAmount = unitPrice × quantity − discount.amount`, and the
+        discount's own arithmetic must hold (see `CaptureSaleLineDiscount`). The coverage rule (tender-only or combined) is checked first,
         so a body that breaks both answers `sale_tender_mismatch` (or, with
         `responsibilities`, `sale_responsibility_mismatch`). The invariant applies to a first capture
         only: a replay of a sale captured before RT-105 is never re-checked, and
@@ -2023,6 +2066,13 @@ components:
         is a whole number (`"2.000000"` is whole; fractional quantities, such
         as weighed goods, are not accepted yet). A line that breaks any of them
         is 422 `sale_line_pricing_invalid`.
+
+        Manual discount (RT-740): when `discount` is present, `lineAmount` is
+        the line's NET and the price condition becomes `lineAmount = unitPrice
+        × quantity − discount.amount` exactly; the minor-unit and whole-quantity
+        conditions are unchanged, and `discount.amount` must fit the minor unit
+        too. Without `discount` the condition is `lineAmount = unitPrice ×
+        quantity`, exactly as before.
       properties:
         lineName:
           type: string
@@ -2053,6 +2103,149 @@ components:
           type: string
           format: uuid
           description: Optional lineage to a tenant product (FR-003). Never the live source of values.
+        discount:
+          $ref: "#/components/schemas/CaptureSaleLineDiscount"
+    CaptureSaleLineDiscount:
+      type: object
+      additionalProperties: false
+      required: [kind, value, amount, reasonCode, authoritySource, approverRole]
+      # The `value` rule depends on `kind` (the server's 400 rules, stated here
+      # so contract validators agree with the endpoint).
+      allOf:
+        - if:
+            properties:
+              kind:
+                const: percent
+            required: [kind]
+          then:
+            properties:
+              value:
+                pattern: '^(100|[1-9][0-9]?)$'
+        - if:
+            properties:
+              kind:
+                const: amount
+            required: [kind]
+          then:
+            properties:
+              value:
+                $ref: "#/components/schemas/PositiveDecimalAmount"
+      description: >
+        RT-740 (RT-699 doc 28 option C-A): the line's one manual discount
+        (OD-28-5: per line only; OD-28-6: at most one per line). Absent means the
+        line is not discounted. A line's gross is `unitPrice × quantity`, and
+        its `lineAmount` is gross − `amount` (the net). Every rule below is
+        checked in exact decimal. A malformed object (an unknown key, a `value`
+        that does not fit its `kind`, a value outside an enum) is 400
+        `validation_error`. Arithmetic that does not hold is 422
+        `sale_line_pricing_invalid`, and nothing is recorded.
+
+
+        `kind` `percent` (OD-28-2): `value` is a whole percent from `1` to
+        `100`, and `amount` is the line gross × `value` / 100, rounded half up
+        to the line currency's ISO-4217 minor unit (OD-28-3: computed once per
+        line, on the line gross, never per unit). `100` makes a free line
+        (OD-28-4), and a percent so small that it rounds to `0` gives an
+        `amount` of `0`. `kind` `amount`: `value` is the money taken off the
+        line, and `amount` equals it numerically. In both kinds `amount` is at
+        most the line gross, because the net `lineAmount` is never negative.
+
+
+        Zero total (owner decision, RT-699 comment 12975): a sale whose every
+        line is discounted 100% has `posTotal` `0` and is accepted. Without
+        `tenders` it is a tender-unknown sale, as before (RT-10 D8). With
+        `tenders`, the list holds one `cash` entry of amount `0`, so the
+        tenders still sum to `posTotal`. A free line is returned like any
+        other line: its `returnTotal` is `0`, and the return sends one `cash`
+        refund tender of amount `0`, because an empty `refundTenders` list is
+        400 (`recordReturn` is unchanged).
+
+
+        Storage (this version): the object is validated and hashed into the
+        sale's payload hash and the `Idempotency-Key` fingerprint, but it is
+        not stored, so it does not round-trip: `SaleLine` (`readSale`,
+        `captureSale`), the sale history and detail and the reprint do not
+        return it. Only the net `lineAmount` is stored. The discount amount
+        can be derived as `unitPrice × quantity − lineAmount`, but its kind,
+        reason and approver are not kept on the sale. The till's
+        `cart.discount.manager_authorized` audit event records the kind and
+        reason, but Backend-Core cannot join it to the sale line today
+        (`lineRef` is server-generated and the event names the till's cart
+        line), and the ingest does not persist the event's approver.
+
+
+        Returns: `readSale`, the sale history and returns use the net
+        `lineAmount`, so a full return of a discounted line refunds exactly its
+        net. A partial return is priced on the net by the cumulative-difference
+        rule (`recordReturn`). When the net does not divide evenly by
+        `quantity`, a partial return can price to more fractional digits than
+        the currency's minor unit: a net of 2.99 over 3 units returns one unit
+        as 0.9967. The RT-105 promise that every return prices to exactly
+        `unitPrice × q` holds only for a line without `discount`.
+
+
+        Personal data: `reasonCode` is a code from a closed list, never free
+        text. No field here is a PIN, a credential, a name or customer data.
+      properties:
+        kind:
+          type: string
+          enum: [percent, amount]
+          description: OD-28-1 (both kinds; one discount per line).
+        value:
+          type: string
+          pattern: '^[0-9]{1,15}(\.[0-9]{1,4})?$'
+          description: >
+            For `percent`: a whole percent, `1` to `100`, with no leading zero
+            and no fraction (`^(100|[1-9][0-9]?)$`). For `amount`: a positive
+            exact-decimal amount in the line currency, equal to `amount`.
+        amount:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+          description: >
+            The money taken off the line, in the line currency, as an
+            exact-decimal string like every other money field here (not an
+            integer of minor units). It fits the currency's minor unit.
+            `lineAmount = unitPrice × quantity − amount`.
+        reasonCode:
+          type: string
+          enum:
+            - promotion
+            - loyal_or_contract_customer
+            - near_expiry_or_damaged
+            - price_correction
+          description: >
+            OD-28-9 (closed list, required on both paths): `promotion` (عرض
+            ترويجي), `loyal_or_contract_customer` (عميل دائم / تعاقد),
+            `near_expiry_or_damaged` (قرب انتهاء / عبوة تالفة),
+            `price_correction` (تصحيح سعر). A code only, never free text.
+        authoritySource:
+          type: string
+          enum: [cashier_approval, manager_session]
+          description: >
+            How the discount was authorized on the till (RT-608 / RT-114):
+            `cashier_approval` means a cashier's add consumed a manager
+            approval, and `manager_session` means a manager or admin session
+            applied it directly (D2). A client claim: the server does not check
+            it against the operator envelope or the device path, and does not
+            store it.
+        approverRole:
+          type: string
+          enum: [manager, admin]
+          description: >
+            The approver's POS operator role (the `PosOperatorSummary.role`
+            vocabulary). On the till every manual discount is authorized by a
+            manager or an admin (RT-608). A client claim: the server does not
+            verify or store it.
+        approverUserId:
+          type: string
+          format: uuid
+          description: >
+            Optional. The approver's `users.id`, the provider-neutral user
+            identity that RT-224 uses for `operatorUserId`. It is never a Clerk
+            subject, a PIN or a credential. This is a provenance claim only: it
+            is hashed with the sale, but it is not verified, not stored and
+            never used for authorization or attribution. The sale's
+            attribution stays the authenticated operator (or, on the `device`
+            path, the RT-224 cashier).
 
     # -----------------------------------------------------------------------
     # Terminal-event requests (void / refund) — strict
@@ -3406,7 +3599,9 @@ components:
         422 on `captureSale`. `error.code` is one of: `sale_tender_mismatch`
         (RT-10 D1) — the capture's `tenders` amounts do not sum to `posTotal`
         exactly; `sale_line_pricing_invalid` (RT-105) — a line breaks the
-        `CaptureSaleLine` price invariant;
+        `CaptureSaleLine` price invariant (with a RT-740 `discount`: the net
+        condition, or the discount's own arithmetic in
+        `CaptureSaleLineDiscount`);
         `sale_responsibility_mismatch` (RT-417) — `responsibilities` is
         present and `sum(tenders) + sum(responsibilities)` does not equal
         `posTotal` exactly; `sale_responsibility_payer_invalid` (RT-417) — a
