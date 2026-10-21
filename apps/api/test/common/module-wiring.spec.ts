@@ -139,3 +139,40 @@ describe("module wiring — LOG_LEVEL set (covers ?? left branch)", () => {
     await moduleRef.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 3. RT-791 — IDENTITY_PROVIDER=descope: the same modules compile with the
+//    Descope verifier/adapter selected (no network: the JWKS is fetched lazily).
+// ---------------------------------------------------------------------------
+
+describe("module wiring — IDENTITY_PROVIDER=descope (RT-791)", () => {
+  const saved: Record<string, string | undefined> = {};
+  const KEYS = ["IDENTITY_PROVIDER", "DESCOPE_PROJECT_ID"];
+
+  beforeAll(() => {
+    for (const k of KEYS) saved[k] = process.env[k];
+    process.env["IDENTITY_PROVIDER"] = "descope";
+    process.env["DESCOPE_PROJECT_ID"] = "P2wiringTest0001";
+  });
+
+  afterAll(() => {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it.each([
+    ["PosShiftsModule", PosShiftsModule],
+    ["PosAuditEventsModule", PosAuditEventsModule],
+    ["PosOperatorsModule", PosOperatorsModule],
+  ])("%s compiles with the Descope provider selected", async (_name, mod) => {
+    const moduleRef = await Test.createTestingModule({ imports: [mod] })
+      .overrideProvider(PG_POOL)
+      .useValue(fakePool)
+      .compile();
+
+    expect(moduleRef).toBeDefined();
+    await moduleRef.close();
+  });
+});
