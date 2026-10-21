@@ -688,9 +688,10 @@ components:
       description: >
         Generic refusal (401). The body does not distinguish an invalid
         envelope, an invalid, missing or revoked device token, a missing
-        tenant or store binding, an envelope request that carries
-        `operatorUserId`, or a device token sent without `operatorUserId`. The
-        TLV is unavailable.
+        tenant or store binding, or, on `posValidateTrackedLine` only, an
+        envelope request that carries `operatorUserId` or a device token sent
+        without it. On `posListTrackedLots` the device token alone is valid and
+        names no operator. The TLV is unavailable.
       content:
         application/json:
           schema:

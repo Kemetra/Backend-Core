@@ -145,6 +145,9 @@ describe("pos-sales/tracked-lines.yaml — RT-450 TLV and lot lookup", () => {
     expect(tlv.parameters).toBeUndefined();
     expect(infoOf(doc)).toContain("takes NO `Idempotency-Key`, on purpose");
     expect(infoOf(doc)).toContain("a retry is a new validation");
+    const unauthorized = flat(doc.components.responses["Unauthorized"]?.description as string);
+    expect(unauthorized).toContain("on `posValidateTrackedLine` only");
+    expect(unauthorized).toContain("On `posListTrackedLots` the device token alone is valid and names no operator");
   });
 
   it("states that only a 200 means the TLV succeeded and that every other outcome means unavailable", () => {
