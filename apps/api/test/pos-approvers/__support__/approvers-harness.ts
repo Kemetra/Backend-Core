@@ -23,13 +23,6 @@ import { bootDeviceModuleApp, startPgEnvOrSkip } from "../../_helpers/device-mod
 import { stopPgEnv, type PgTestEnv } from "../../_helpers/postgres-container";
 import { schemaChecker } from "../../_helpers/scoped-http-harness";
 
-/** A UUID: a user, tenant, store, role, membership, device or request id. */
-export type Uuid = string;
-/** A 4-hex-digit fixture suffix, e.g. "0001". */
-type FixtureSuffix = string;
-/** The spec name a skip warning is reported under. */
-type SuiteLabel = string;
-
 // ---------------------------------------------------------------------------
 // Fixture identifiers (hex-only suffixes; UUID v4 shape)
 // ---------------------------------------------------------------------------
@@ -41,7 +34,7 @@ export const STORE_B1 = "07880000-0000-4000-8000-0000000b5001";
 
 type RoleCode = "owner" | "tenant_admin" | "store_manager" | "store_staff";
 
-const ROLES_A: Readonly<Record<RoleCode, Uuid>> = {
+const ROLES_A: Readonly<Record<RoleCode, string>> = {
   owner: "07880000-0000-4000-8000-0000000a7001",
   tenant_admin: "07880000-0000-4000-8000-0000000a7002",
   store_manager: "07880000-0000-4000-8000-0000000a7003",
@@ -50,11 +43,11 @@ const ROLES_A: Readonly<Record<RoleCode, Uuid>> = {
 const ROLE_B_MANAGER = "07880000-0000-4000-8000-0000000b7003";
 
 export interface FixtureUser {
-  readonly id: Uuid;
-  readonly membership: Uuid;
+  readonly id: string;
+  readonly membership: string;
 }
 
-function user(suffix: FixtureSuffix): FixtureUser {
+function user(suffix: string): FixtureUser {
   return {
     id: `07880000-0000-4000-8000-0000000c${suffix}`,
     membership: `07880000-0000-4000-8000-0000000d${suffix}`,
@@ -85,11 +78,11 @@ export const MUTABLE = user("000a");
 export const MANAGER_B = user("000b");
 
 export interface FixtureDevice {
-  readonly id: Uuid;
+  readonly id: string;
   readonly token: string;
 }
 
-function device(n: FixtureSuffix): FixtureDevice {
+function device(n: string): FixtureDevice {
   return { id: `07880000-0000-4000-8000-0000000e${n}`, token: `rt788-device-token-${n}-aaaaaaaaaaaaaaaa` };
 }
 
@@ -123,7 +116,7 @@ export function skipped(): boolean {
   return true;
 }
 
-export async function startHarness(label: SuiteLabel): Promise<void> {
+export async function startHarness(label: string): Promise<void> {
   const env = await startPgEnvOrSkip(label);
   if (env === null) return;
   const admin = new Pool({ connectionString: env.adminUri });
@@ -160,8 +153,8 @@ export async function removeMutableStoreAccess(): Promise<void> {
 // ---------------------------------------------------------------------------
 interface MemberSeed {
   readonly user: FixtureUser;
-  readonly tenantId: Uuid;
-  readonly roleId: Uuid;
+  readonly tenantId: string;
+  readonly roleId: string;
   readonly access: "all" | "specific";
 }
 
@@ -194,10 +187,12 @@ async function seed(admin: Pool): Promise<void> {
     [MEMBERSHIP_DELETED, "store_manager", "all"],
     [MUTABLE, "store_manager", "specific"],
   ];
-  for (const [u, role, access] of tenantA) {
-    await seedMember(admin, { user: u, tenantId: TENANT_A, roleId: ROLES_A[role], access });
-  }
-  await seedMember(admin, { user: MANAGER_B, tenantId: TENANT_B, roleId: ROLE_B_MANAGER, access: "all" });
+  await Promise.all([
+    ...tenantA.map(([u, role, access]) =>
+      seedMember(admin, { user: u, tenantId: TENANT_A, roleId: ROLES_A[role], access }),
+    ),
+    seedMember(admin, { user: MANAGER_B, tenantId: TENANT_B, roleId: ROLE_B_MANAGER, access: "all" }),
+  ]);
   await admin.query("UPDATE users SET deleted_at = now() WHERE id = $1", [DELETED.id]);
   await admin.query("UPDATE memberships SET revoked_at = now() WHERE id = $1", [REVOKED.membership]);
   await admin.query("UPDATE memberships SET deleted_at = now() WHERE id = $1", [MEMBERSHIP_DELETED.membership]);
@@ -206,18 +201,20 @@ async function seed(admin: Pool): Promise<void> {
        ($1, $4, $6), ($2, $5, $6), ($3, $4, $6)`,
     [MANAGER_A1.membership, MANAGER_A2.membership, MUTABLE.membership, STORE_A1, STORE_A2, TENANT_A],
   );
-  const devices: Array<[FixtureDevice, Uuid, Uuid]> = [
+  const devices: Array<[FixtureDevice, string, string]> = [
     [DEV_A1, TENANT_A, STORE_A1],
     [DEV_A2, TENANT_A, STORE_A2],
     [DEV_B1, TENANT_B, STORE_B1],
     [DEV_REVOKED, TENANT_A, STORE_A1],
   ];
-  for (const [d, tenant, store] of devices) {
-    await admin.query(
-      `INSERT INTO devices (id, tenant_id, store_id, label, token_hash) VALUES ($1, $2, $3, 'till', $4)`,
-      [d.id, tenant, store, hashToken(d.token)],
-    );
-  }
+  await Promise.all(
+    devices.map(([d, tenant, store]) =>
+      admin.query(
+        `INSERT INTO devices (id, tenant_id, store_id, label, token_hash) VALUES ($1, $2, $3, 'till', $4)`,
+        [d.id, tenant, store, hashToken(d.token)],
+      ),
+    ),
+  );
   await admin.query("UPDATE devices SET revoked_at = now() WHERE id = $1", [DEV_REVOKED.id]);
 }
 
@@ -241,7 +238,7 @@ export function http(): ReturnType<typeof request> {
   return request(h().app.getHttpServer());
 }
 
-export function checkAs(d: FixtureDevice, body: unknown, requestId: Uuid = randomUUID()) {
+export function checkAs(d: FixtureDevice, body: unknown, requestId: string = randomUUID()) {
   return http()
     .post(ELIGIBILITY)
     .set("authorization", `Bearer ${d.token}`)
@@ -261,7 +258,7 @@ export function results(res: { status: number; body: unknown; headers: Record<st
 }
 
 /** Eligibility of each id, as one device sees it. */
-export async function eligibilityOf(d: FixtureDevice, userIds: readonly Uuid[]): Promise<boolean[]> {
+export async function eligibilityOf(d: FixtureDevice, userIds: readonly string[]): Promise<boolean[]> {
   const res = await checkAs(d, { user_ids: userIds });
   return results(res).map((r) => r.eligible);
 }
@@ -269,7 +266,7 @@ export async function eligibilityOf(d: FixtureDevice, userIds: readonly Uuid[]):
 // ---------------------------------------------------------------------------
 // DB probes (admin pool: superuser, bypasses RLS)
 // ---------------------------------------------------------------------------
-export async function auditCountFor(requestId: Uuid): Promise<number> {
+export async function auditCountFor(requestId: string): Promise<number> {
   const r = await h().admin.query<{ n: string }>(
     "SELECT count(*)::text AS n FROM audit_events WHERE request_id = $1",
     [requestId],
