@@ -333,6 +333,17 @@ describe("RedactingSpanExporter - db.connection_string (RT-762)", () => {
     expect(redactSpanAttributes(httpSpan)).toEqual(httpSpan);
   });
 
+  it("recognises DB spans under stable semconv (db.system.name)", () => {
+    expect(
+      redactSpanAttributes({
+        "db.system.name": "postgresql",
+        "db.namespace": "dp2_prod",
+        "server.address": "db.internal.example",
+        "server.port": 5432,
+      }),
+    ).toEqual({ "db.system.name": "postgresql" });
+  });
+
   it("drops db.connection_string in redactSpanAttributes", () => {
     expect(
       redactSpanAttributes({ "db.connection_string": DSN, "db.system": "postgresql" }),

@@ -112,7 +112,7 @@ export function redactUrlValue(value: string): string {
  */
 export function redactSpanAttributes(attributes: Attributes): Attributes {
   const out: Attributes = {};
-  const isDbSpan = "db.system" in attributes;
+  const isDbSpan = "db.system" in attributes || "db.system.name" in attributes;
   for (const [key, value] of Object.entries(attributes)) {
     if (isDroppedAttribute(key, isDbSpan)) continue;
     out[key] =
