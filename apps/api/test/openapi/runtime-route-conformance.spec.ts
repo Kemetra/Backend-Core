@@ -78,8 +78,6 @@ describe("OpenAPI operations map to registered Nest routes", () => {
       // RT-327 step 1: platform POS version policy read and change.
       "platformGetPosVersionPolicy",
       "platformSetPosVersionPolicy",
-      // RT-492 (RT-114 MA-BC1): approver-eligibility contract; the runtime ships in MA-BC2.
-      "posCheckApproverEligibility",
       "posGetTenantBranding",
       // RT-450 (RT-50 F3): tracked line validation and lot lookup; the runtime ships in RT-451.
       "posListTrackedLots",

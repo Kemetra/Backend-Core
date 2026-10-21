@@ -66,7 +66,7 @@ async function setUp(state: HarnessState, options: ScopedHttpHarnessOptions): Pr
 }
 
 /** A validator for `components.schemas[name]` of the contract `contractId`. */
-function schemaChecker(contractId: string): (name: string, body: unknown) => void {
+export function schemaChecker(contractId: string): (name: string, body: unknown) => void {
   const ajv = new Ajv({ strict: false, allErrors: true });
   addFormats(ajv);
   const contract = loadOpenApiContracts().find((c) => c.id === contractId);
