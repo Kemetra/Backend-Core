@@ -367,7 +367,9 @@ components:
       oneOf:
         - required: [identityId]
           not:
-            required: [expiryDate]
+            anyOf:
+              - required: [code]
+              - required: [expiryDate]
         - required: [code]
           not:
             required: [identityId]
