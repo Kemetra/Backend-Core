@@ -25,8 +25,15 @@
  *
  * Idempotent: re-running a command already in its target state writes nothing
  * and reports zero counts. Any other unexpected state (no active Clerk link, a
- * Descope subject linked to (under any issuer) or held by another user) is REFUSED with a code and nothing is written. `--dry-run` runs the same
- * transaction and rolls it back.
+ * Descope subject linked to — under any issuer — or held by another user) is
+ * REFUSED with a code and nothing is written. `--dry-run` runs the same
+ * transaction and rolls it back. Arguments are parsed strictly: an unknown,
+ * duplicate or valueless flag (e.g. a mistyped `--dryrun`) is rejected, never
+ * treated as a live run.
+ *
+ * Before running: drain the operator's POS offline audit queue. Audit ingestion
+ * resolves `acting_operator_id` through `users.clerk_user_id`, so events queued
+ * under the previous provider id are rejected after the flip (RT-791 known gap).
  *
  * Issuer: `DESCOPE_JWT_ISSUER` when set, else `https://api.descope.com/<DESCOPE_PROJECT_ID>`
  * — the same derivation as the API's Descope adapter (apps/api cannot be imported
@@ -49,6 +56,8 @@ const PROJECT_ID_RE = /^[A-Za-z0-9]{1,64}$/;
 const DESCOPE_API_BASE = "https://api.descope.com";
 const CLERK = "clerk";
 const DESCOPE = "descope";
+const USAGE =
+  "usage: descope-cutover apply --user <uuid> --descope-subject <id> [--dry-run] | rollback --user <uuid> [--dry-run]";
 
 export type DescopeCutoverCommand =
   | {
@@ -60,6 +69,8 @@ export type DescopeCutoverCommand =
     }
   | { readonly kind: "rollback"; readonly userId: string; readonly dryRun: boolean };
 
+type ApplyCommand = Extract<DescopeCutoverCommand, { kind: "apply" }>;
+
 export interface CutoverResult {
   readonly command: "apply" | "rollback";
   readonly dryRun: boolean;
@@ -69,6 +80,8 @@ export interface CutoverResult {
   readonly linksActivated: number;
 }
 
+type CutoverCounts = Omit<CutoverResult, "command" | "dryRun">;
+
 /** A refused cutover: nothing was written. `code` is safe to print. */
 export class CutoverRefusedError extends Error {
   constructor(readonly code: string) {
@@ -76,9 +89,64 @@ export class CutoverRefusedError extends Error {
   }
 }
 
-function flag(argv: readonly string[], name: string): string | undefined {
-  const i = argv.indexOf(`--${name}`);
-  return i !== -1 && i + 1 < argv.length ? argv[i + 1] : undefined;
+// --- argument parsing (strict: unknown / duplicate / valueless flags refused) --
+
+interface FlagSpec {
+  readonly valued: readonly string[];
+  readonly switches: readonly string[];
+}
+
+const FLAG_SPECS: Readonly<Record<DescopeCutoverCommand["kind"], FlagSpec>> = {
+  apply: { valued: ["user", "descope-subject"], switches: ["dry-run"] },
+  rollback: { valued: ["user"], switches: ["dry-run"] },
+};
+
+interface ParsedFlags {
+  readonly values: ReadonlyMap<string, string>;
+  readonly switches: ReadonlySet<string>;
+}
+
+function flagName(arg: string): string {
+  // Never echo the argument itself: it may be an id typed in the wrong slot.
+  if (!arg.startsWith("--")) throw new Error(`unexpected positional argument; ${USAGE}`);
+  return arg.slice(2);
+}
+
+function addOnce<T>(seen: Set<T>, name: T): void {
+  if (seen.has(name)) throw new Error(`--${String(name)} given more than once`);
+  seen.add(name);
+}
+
+/** Read `--flag value` / `--switch` pairs against the command's spec. */
+function readFlags(args: readonly string[], spec: FlagSpec): ParsedFlags {
+  const values = new Map<string, string>();
+  const switches = new Set<string>();
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i += 1) {
+    const name = flagName(args[i]!);
+    addOnce(seen, name);
+    if (spec.switches.includes(name)) {
+      switches.add(name);
+    } else if (spec.valued.includes(name)) {
+      values.set(name, requireValue(name, args[i + 1]));
+      i += 1;
+    } else {
+      throw new Error(`unknown flag; ${USAGE}`);
+    }
+  }
+  return { values, switches };
+}
+
+function requireValue(name: string, value: string | undefined): string {
+  const v = (value ?? "").trim();
+  if (v === "" || v.startsWith("--")) throw new Error(`--${name} requires a value`);
+  return v;
+}
+
+function requireUuid(flags: ParsedFlags): string {
+  const userId = flags.values.get("user");
+  if (userId === undefined || !UUID_RE.test(userId)) throw new Error("--user <uuid> is required");
+  return userId.toLowerCase();
 }
 
 /** The Descope issuer from env, matching the API adapter's derivation. */
@@ -92,33 +160,27 @@ export function descopeIssuerFromEnv(env: NodeJS.ProcessEnv): string {
   return `${DESCOPE_API_BASE}/${projectId}`;
 }
 
+function isCommandKind(value: string | undefined): value is DescopeCutoverCommand["kind"] {
+  return value === "apply" || value === "rollback";
+}
+
 /** Parse the command line; throws an Error naming the problem (never echoing values). */
 export function parseDescopeCutoverArgs(
   argv: readonly string[],
   env: NodeJS.ProcessEnv,
 ): DescopeCutoverCommand {
-  const [command] = argv;
-  if (command !== "apply" && command !== "rollback") {
-    throw new Error(
-      "usage: descope-cutover apply --user <uuid> --descope-subject <id> [--dry-run] | rollback --user <uuid> [--dry-run]",
-    );
-  }
-  const userId = flag(argv, "user");
-  if (userId === undefined || !UUID_RE.test(userId)) throw new Error("--user <uuid> is required");
-  const dryRun = argv.includes("--dry-run");
-  if (command === "rollback") return { kind: "rollback", userId: userId.toLowerCase(), dryRun };
-  const descopeSubject = (flag(argv, "descope-subject") ?? "").trim();
-  if (descopeSubject === "" || descopeSubject.startsWith("--")) {
-    throw new Error("--descope-subject <id> is required");
-  }
-  return {
-    kind: "apply",
-    userId: userId.toLowerCase(),
-    descopeSubject,
-    issuer: descopeIssuerFromEnv(env),
-    dryRun,
-  };
+  const [command, ...rest] = argv;
+  if (!isCommandKind(command)) throw new Error(USAGE);
+  const flags = readFlags(rest, FLAG_SPECS[command]);
+  const userId = requireUuid(flags);
+  const dryRun = flags.switches.has("dry-run");
+  if (command === "rollback") return { kind: "rollback", userId, dryRun };
+  const descopeSubject = flags.values.get("descope-subject");
+  if (descopeSubject === undefined) throw new Error("--descope-subject <id> is required");
+  return { kind: "apply", userId, descopeSubject, issuer: descopeIssuerFromEnv(env), dryRun };
 }
+
+// --- state ----------------------------------------------------------------
 
 interface UserRow {
   readonly id: string;
@@ -137,8 +199,24 @@ interface LinkRow {
 
 interface UserState {
   readonly user: UserRow;
+  /** Ordered most recently disabled first (active links last). */
   readonly links: readonly LinkRow[];
 }
+
+/** A subject the cutover is about to give to a user. */
+interface SubjectClaim {
+  readonly userId: string;
+  readonly subject: string;
+}
+
+interface LinkFilter {
+  readonly provider: string;
+  readonly status: "active" | "disabled";
+}
+
+const ACTIVE_CLERK: LinkFilter = { provider: CLERK, status: "active" };
+const DISABLED_CLERK: LinkFilter = { provider: CLERK, status: "disabled" };
+const ACTIVE_DESCOPE: LinkFilter = { provider: DESCOPE, status: "active" };
 
 async function lockUserState(client: ClientBase, userId: string): Promise<UserState> {
   const u = await client.query<UserRow>(
@@ -157,18 +235,23 @@ async function lockUserState(client: ClientBase, userId: string): Promise<UserSt
   return { user, links: l.rows };
 }
 
-function linksOf(state: UserState, provider: string, status: string): LinkRow[] {
-  return state.links.filter((l) => l.provider_key === provider && l.status === status);
+function linksOf(state: UserState, filter: LinkFilter): LinkRow[] {
+  return state.links.filter((l) => l.provider_key === filter.provider && l.status === filter.status);
 }
 
-async function assertSubjectFree(
-  client: ClientBase,
-  userId: string,
-  subject: string,
-): Promise<void> {
+/** The single active clerk link that matches the user's current wire id, else null. */
+function currentClerkLink(state: UserState): LinkRow | null {
+  const active = linksOf(state, ACTIVE_CLERK);
+  const link = active.length === 1 ? active[0]! : null;
+  return link?.subject === state.user.clerk_user_id ? link : null;
+}
+
+// --- writes -----------------------------------------------------------------
+
+async function assertSubjectFree(client: ClientBase, claim: SubjectClaim): Promise<void> {
   const r = await client.query("SELECT 1 FROM users WHERE clerk_user_id = $1 AND id <> $2", [
-    subject,
-    userId,
+    claim.subject,
+    claim.userId,
   ]);
   if (r.rows.length > 0) throw new CutoverRefusedError("subject_held_by_other_user");
 }
@@ -177,38 +260,39 @@ async function assertSubjectFree(
  * The resolver joins on (provider_key, subject) WITHOUT issuer, so a Descope
  * subject linked to another user under ANY issuer would make sign-in ambiguous.
  */
-async function assertDescopeSubjectUnlinked(
-  client: ClientBase,
-  userId: string,
-  subject: string,
-): Promise<void> {
+async function assertDescopeSubjectUnlinked(client: ClientBase, claim: SubjectClaim): Promise<void> {
   const r = await client.query(
     `SELECT 1 FROM external_identity_links
       WHERE provider_key = $1 AND subject = $2 AND user_id <> $3`,
-    [DESCOPE, subject, userId],
+    [DESCOPE, claim.subject, claim.userId],
   );
   if (r.rows.length > 0) throw new CutoverRefusedError("descope_subject_linked_to_other_user");
 }
 
-async function setLinkStatus(client: ClientBase, linkId: string, active: boolean): Promise<void> {
+async function disableLink(client: ClientBase, link: LinkRow): Promise<void> {
   await client.query(
-    active
-      ? "UPDATE external_identity_links SET status = 'active', disabled_at = NULL WHERE id = $1"
-      : "UPDATE external_identity_links SET status = 'disabled', disabled_at = now() WHERE id = $1",
-    [linkId],
+    "UPDATE external_identity_links SET status = 'disabled', disabled_at = now() WHERE id = $1",
+    [link.id],
   );
 }
 
-async function setClerkUserId(client: ClientBase, userId: string, subject: string): Promise<void> {
-  await client.query("UPDATE users SET clerk_user_id = $1 WHERE id = $2", [subject, userId]);
+async function activateLink(client: ClientBase, link: LinkRow): Promise<void> {
+  await client.query(
+    "UPDATE external_identity_links SET status = 'active', disabled_at = NULL WHERE id = $1",
+    [link.id],
+  );
 }
 
-const NO_CHANGE = { alreadyInTargetState: true, usersUpdated: 0, linksDisabled: 0, linksActivated: 0 };
-const FLIPPED = { alreadyInTargetState: false, usersUpdated: 1, linksDisabled: 1, linksActivated: 1 };
+async function setClerkUserId(client: ClientBase, claim: SubjectClaim): Promise<void> {
+  await client.query("UPDATE users SET clerk_user_id = $1 WHERE id = $2", [claim.subject, claim.userId]);
+}
+
+const NO_CHANGE: CutoverCounts = { alreadyInTargetState: true, usersUpdated: 0, linksDisabled: 0, linksActivated: 0 };
+const FLIPPED: CutoverCounts = { alreadyInTargetState: false, usersUpdated: 1, linksDisabled: 1, linksActivated: 1 };
 
 async function upsertActiveDescopeLink(
   client: ClientBase,
-  cmd: Extract<DescopeCutoverCommand, { kind: "apply" }>,
+  cmd: ApplyCommand,
   email: string | null,
 ): Promise<void> {
   const r = await client.query(
@@ -223,55 +307,57 @@ async function upsertActiveDescopeLink(
   if (r.rows.length !== 1) throw new CutoverRefusedError("descope_subject_linked_to_other_user");
 }
 
-async function applyCutover(
-  client: ClientBase,
-  cmd: Extract<DescopeCutoverCommand, { kind: "apply" }>,
-): Promise<Omit<CutoverResult, "command" | "dryRun">> {
+// --- commands -----------------------------------------------------------------
+
+/** true = already applied; throws on a descope state apply must not touch. */
+function alreadyApplied(state: UserState, cmd: ApplyCommand): boolean {
+  const active = linksOf(state, ACTIVE_DESCOPE);
+  if (active.length === 0) return false;
+  const same = active.some((l) => l.subject === cmd.descopeSubject && l.issuer === cmd.issuer);
+  if (same && state.user.clerk_user_id === cmd.descopeSubject) return true;
+  throw new CutoverRefusedError("inconsistent_descope_state");
+}
+
+async function applyCutover(client: ClientBase, cmd: ApplyCommand): Promise<CutoverCounts> {
   const state = await lockUserState(client, cmd.userId);
-  const activeDescope = linksOf(state, DESCOPE, "active");
-  if (activeDescope.length > 0) {
-    const done = activeDescope.some(
-      (l) => l.subject === cmd.descopeSubject && l.issuer === cmd.issuer,
-    );
-    if (done && state.user.clerk_user_id === cmd.descopeSubject) return NO_CHANGE;
-    throw new CutoverRefusedError("inconsistent_descope_state");
-  }
-  const activeClerk = linksOf(state, CLERK, "active");
-  if (activeClerk.length !== 1 || activeClerk[0]!.subject !== state.user.clerk_user_id) {
-    throw new CutoverRefusedError("no_matching_active_clerk_link");
-  }
-  await assertSubjectFree(client, cmd.userId, cmd.descopeSubject);
-  await assertDescopeSubjectUnlinked(client, cmd.userId, cmd.descopeSubject);
-  await setLinkStatus(client, activeClerk[0]!.id, false);
+  if (alreadyApplied(state, cmd)) return NO_CHANGE;
+  const clerkLink = currentClerkLink(state);
+  if (!clerkLink) throw new CutoverRefusedError("no_matching_active_clerk_link");
+  const claim: SubjectClaim = { userId: cmd.userId, subject: cmd.descopeSubject };
+  await assertSubjectFree(client, claim);
+  await assertDescopeSubjectUnlinked(client, claim);
+  await disableLink(client, clerkLink);
   await upsertActiveDescopeLink(client, cmd, state.user.email);
-  await setClerkUserId(client, cmd.userId, cmd.descopeSubject);
+  await setClerkUserId(client, claim);
   return FLIPPED;
 }
 
-async function rollbackCutover(
-  client: ClientBase,
-  userId: string,
-): Promise<Omit<CutoverResult, "command" | "dryRun">> {
-  const state = await lockUserState(client, userId);
-  const activeDescope = linksOf(state, DESCOPE, "active");
-  if (activeDescope.length === 0) {
-    const activeClerk = linksOf(state, CLERK, "active");
-    if (activeClerk.length === 1 && activeClerk[0]!.subject === state.user.clerk_user_id) {
-      return NO_CHANGE;
-    }
+/** The active descope link rollback reverses; null when already rolled back. */
+function descopeLinkToReverse(state: UserState): LinkRow | null {
+  const active = linksOf(state, ACTIVE_DESCOPE)[0];
+  if (!active) {
+    if (currentClerkLink(state)) return null;
     throw new CutoverRefusedError("no_active_descope_link");
   }
-  if (activeDescope[0]!.subject !== state.user.clerk_user_id) {
+  if (active.subject !== state.user.clerk_user_id) {
     throw new CutoverRefusedError("inconsistent_descope_state");
   }
-  // The most recently disabled clerk link is the one apply replaced (links are
-  // read ORDER BY disabled_at DESC); older disabled ones are earlier history.
-  const clerkLink = linksOf(state, CLERK, "disabled")[0];
+  return active;
+}
+
+async function rollbackCutover(client: ClientBase, userId: string): Promise<CutoverCounts> {
+  const state = await lockUserState(client, userId);
+  const descopeLink = descopeLinkToReverse(state);
+  if (!descopeLink) return NO_CHANGE;
+  // The most recently disabled clerk link is the one apply replaced; older
+  // disabled ones are earlier history.
+  const clerkLink = linksOf(state, DISABLED_CLERK)[0];
   if (!clerkLink) throw new CutoverRefusedError("no_disabled_clerk_link");
-  await assertSubjectFree(client, userId, clerkLink.subject);
-  await setLinkStatus(client, activeDescope[0]!.id, false);
-  await setLinkStatus(client, clerkLink.id, true);
-  await setClerkUserId(client, userId, clerkLink.subject);
+  const claim: SubjectClaim = { userId, subject: clerkLink.subject };
+  await assertSubjectFree(client, claim);
+  await disableLink(client, descopeLink);
+  await activateLink(client, clerkLink);
+  await setClerkUserId(client, claim);
   return FLIPPED;
 }
 

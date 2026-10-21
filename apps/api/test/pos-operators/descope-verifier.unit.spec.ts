@@ -238,23 +238,13 @@ describe("DescopeJwksVerifier — remote JWKS over HTTP (local server)", () => {
     await new Promise<void>((done) => server.close(() => done()));
   });
 
-  it("verifies against a fetched JWKS", async () => {
-    failing = false;
-    const verifier = new DescopeJwksVerifier({
-      issuer: ISSUER,
-      jwks: createRemoteJWKSet(new URL(baseUrl)),
-    });
-    await expect(verifier.verify(await token())).resolves.toEqual({ sub: SUB });
-  });
-
-  it("refuses when the JWKS fetch fails", async () => {
-    failing = true;
-    const verifier = new DescopeJwksVerifier({
-      issuer: ISSUER,
-      jwks: createRemoteJWKSet(new URL(baseUrl)),
-    });
-    await expect(verifier.verify(await token())).rejects.toThrow(
-      "descope verifier: token rejected",
-    );
+  // A fresh remote key set per case: jose caches a fetched JWKS.
+  it.each<[string, boolean, (p: Promise<unknown>) => Promise<unknown>]>([
+    ["verifies against a fetched JWKS", false, (p) => expect(p).resolves.toEqual({ sub: SUB })],
+    ["refuses when the JWKS fetch fails", true, (p) => expect(p).rejects.toThrow("descope verifier: token rejected")],
+  ])("%s", async (_label, fetchFails, check) => {
+    failing = fetchFails;
+    const verifier = new DescopeJwksVerifier({ issuer: ISSUER, jwks: createRemoteJWKSet(new URL(baseUrl)) });
+    await check(verifier.verify(await token()));
   });
 });

@@ -21,7 +21,13 @@
  * The raw token is never logged, persisted or returned (FR-POS-AUTH-10).
  */
 import { Injectable } from "@nestjs/common";
-import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
+import {
+  createRemoteJWKSet,
+  jwtVerify,
+  type JWTPayload,
+  type JWTVerifyGetKey,
+  type JWTVerifyOptions,
+} from "jose";
 
 import type { ClerkVerifiedClaims, ClerkVerifier } from "./clerk-verifier";
 
@@ -86,32 +92,42 @@ export interface DescopeVerifierOptions {
   readonly audience?: string;
 }
 
+function toVerifyOptions(options: DescopeVerifierOptions): JWTVerifyOptions {
+  return {
+    issuer: typeof options.issuer === "string" ? options.issuer : [...options.issuer],
+    algorithms: ALLOWED_ALGORITHMS,
+    clockTolerance: CLOCK_TOLERANCE_SECONDS,
+    requiredClaims: ["exp", "sub"],
+    ...(options.audience !== undefined ? { audience: options.audience } : {}),
+  };
+}
+
+/** The operator subject of a verified session JWT; refresh tokens and empty subjects refuse. */
+function sessionSubject(payload: JWTPayload): string {
+  if (payload["drn"] === REFRESH_TOKEN_DRN) throw rejected();
+  const sub: unknown = payload.sub;
+  if (typeof sub !== "string" || sub.length === 0) throw rejected();
+  return sub;
+}
+
 @Injectable()
 export class DescopeJwksVerifier implements ClerkVerifier {
-  constructor(private readonly options: DescopeVerifierOptions) {}
+  private readonly verifyOptions: JWTVerifyOptions;
+
+  constructor(private readonly options: DescopeVerifierOptions) {
+    this.verifyOptions = toVerifyOptions(options);
+  }
 
   async verify(rawJwt: string): Promise<ClerkVerifiedClaims> {
-    let sub: unknown;
-    let drn: unknown;
+    let payload: JWTPayload;
     try {
-      const { payload } = await jwtVerify(rawJwt, this.options.jwks, {
-        issuer: typeof this.options.issuer === "string" ? this.options.issuer : [...this.options.issuer],
-        algorithms: ALLOWED_ALGORITHMS,
-        clockTolerance: CLOCK_TOLERANCE_SECONDS,
-        requiredClaims: ["exp", "sub"],
-        ...(this.options.audience !== undefined ? { audience: this.options.audience } : {}),
-      });
-      sub = payload.sub;
-      drn = payload["drn"];
+      ({ payload } = await jwtVerify(rawJwt, this.options.jwks, this.verifyOptions));
     } catch (err) {
       // Deliberately drop the cause and message: they can carry the decoded
       // claims. Only jose's fixed error code survives (outage vs forgery triage).
       throw rejected(err);
     }
-    if (typeof sub !== "string" || sub.length === 0 || drn === REFRESH_TOKEN_DRN) {
-      throw rejected();
-    }
-    return { sub };
+    return { sub: sessionSubject(payload) };
   }
 }
 
@@ -127,8 +143,10 @@ export function descopeVerifierFactory(): ClerkVerifier {
       throw new Error("PosOperatorsModule: DESCOPE_PROJECT_ID is required in production");
     }
     return {
-      async verify(): Promise<ClerkVerifiedClaims> {
-        throw new Error("descope verifier: DESCOPE_PROJECT_ID not configured (fail closed)");
+      verify(): Promise<ClerkVerifiedClaims> {
+        return Promise.reject(
+          new Error("descope verifier: DESCOPE_PROJECT_ID not configured (fail closed)"),
+        );
       },
     };
   }

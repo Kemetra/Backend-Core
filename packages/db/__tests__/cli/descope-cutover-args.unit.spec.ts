@@ -33,6 +33,12 @@ describe("parseDescopeCutoverArgs", () => {
     ["a missing descope subject", ["apply", "--user", U], ENV, /--descope-subject/],
     ["a flag as descope subject", ["apply", "--user", U, "--descope-subject", "--dry-run"], ENV, /--descope-subject/],
     ["apply without project id or issuer", ["apply", "--user", U, "--descope-subject", "U2abc"], {}, /DESCOPE_PROJECT_ID/],
+    ["a mistyped --dryrun (never a live run)", ["apply", "--user", U, "--descope-subject", "U2abc", "--dryrun"], ENV, /unknown flag/],
+    ["a flag of the other command", ["rollback", "--user", U, "--descope-subject", "U2abc"], ENV, /unknown flag/],
+    ["a duplicate flag", ["rollback", "--user", U, "--user", U], ENV, /more than once/],
+    ["a duplicate --dry-run", ["rollback", "--user", U, "--dry-run", "--dry-run"], ENV, /more than once/],
+    ["a stray positional argument", ["rollback", "--user", U, "extra"], ENV, /positional/],
+    ["a single-dash flag", ["rollback", "--user", U, "-dry-run"], ENV, /positional/],
   ])("refuses %s", (_label, argv, env, message) => {
     expect(() => parseDescopeCutoverArgs(argv, env)).toThrow(message);
   });

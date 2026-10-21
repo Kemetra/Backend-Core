@@ -38,7 +38,7 @@ export async function startFakeDescopeProject(projectId: string): Promise<FakeDe
   return {
     issuer,
     verifier,
-    async mint(sub, opts = {}) {
+    mint(sub, opts = {}) {
       const now = Math.floor(Date.now() / 1000);
       return new SignJWT({ drn: "DS" })
         .setProtectedHeader({ alg: "RS256", kid })

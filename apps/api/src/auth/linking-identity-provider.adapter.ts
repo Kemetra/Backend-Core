@@ -56,27 +56,32 @@ export abstract class LinkingIdentityProviderAdapter implements IdentityProvider
   // These throw loudly so a premature D3 caller fails fast rather than no-op'ing
   // state. The downstream lifecycle specs (D8 / user-admin) implement them.
 
-  async getIdentityProfile(_subject: string): Promise<IdentityProfile | null> {
-    throw new Error("getIdentityProfile: not wired in D3 (lifecycle seam)");
+  getIdentityProfile(_subject: string): Promise<IdentityProfile | null> {
+    return notWired("getIdentityProfile");
   }
 
-  async createIdentity(_input: CreateIdentityInput): Promise<{ subject: string }> {
-    throw new Error("createIdentity: not wired in D3 (lifecycle seam)");
+  createIdentity(_input: CreateIdentityInput): Promise<{ subject: string }> {
+    return notWired("createIdentity");
   }
 
-  async inviteUser(_input: InviteUserInput): Promise<{ subject: string }> {
-    throw new Error("inviteUser: not wired in D3 (lifecycle seam)");
+  inviteUser(_input: InviteUserInput): Promise<{ subject: string }> {
+    return notWired("inviteUser");
   }
 
-  async disableIdentity(_userId: string): Promise<void> {
-    throw new Error("disableIdentity: not wired in D3 (lifecycle seam)");
+  disableIdentity(_userId: string): Promise<void> {
+    return notWired("disableIdentity");
   }
 
-  async enableIdentity(_userId: string): Promise<void> {
-    throw new Error("enableIdentity: not wired in D3 (lifecycle seam)");
+  enableIdentity(_userId: string): Promise<void> {
+    return notWired("enableIdentity");
   }
 
-  async sendPasswordReset(_email: string): Promise<void> {
-    throw new Error("sendPasswordReset: not wired in D3 (lifecycle seam)");
+  sendPasswordReset(_email: string): Promise<void> {
+    return notWired("sendPasswordReset");
   }
+}
+
+/** A rejected promise (never a synchronous throw) naming the unwired seam. */
+function notWired<T>(operation: string): Promise<T> {
+  return Promise.reject(new Error(`${operation}: not wired in D3 (lifecycle seam)`));
 }
