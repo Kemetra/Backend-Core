@@ -109,6 +109,7 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
   listErpnextNegativeOnHandStores: "expensiveRead",
   listMembers: "cheapRead",
   listOutboxDeadLetters: "expensiveRead",
+  listPlatformAuditEvents: "expensiveRead",
   listPostingBacklog: "expensiveRead",
   listProductReconciliationBacklog: "expensiveRead",
   listProductReconciliationRuns: "cheapRead",
@@ -179,8 +180,6 @@ const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
   consoleGetTenantLogo: "cheapRead",
   consolePreviewTenantLogo: "jobOrPreview",
   consolePutTenantLogo: "jobOrPreview",
-  // RT-431: platform-scoped audit read, same cost as the tenant audit list.
-  listPlatformAuditEvents: "expensiveRead",
 };
 
 describe("console rate-limit ratchet (RT-619 / RT-574 D1)", () => {

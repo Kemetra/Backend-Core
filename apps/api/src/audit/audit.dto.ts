@@ -34,3 +34,16 @@ export interface ListAuditEventsResponse {
   readonly items: readonly AuditEventDto[];
   readonly next_cursor: string | null;
 }
+
+/**
+ * RT-431 `PlatformAuditEvent`: a platform-scoped row. `tenant_id` is always
+ * null and `actor_label` is masked (`platform-audit.mask.ts`).
+ */
+export interface PlatformAuditEventDto extends Omit<AuditEventDto, "tenant_id"> {
+  readonly tenant_id: null;
+}
+
+export interface ListPlatformAuditEventsResponse {
+  readonly items: readonly PlatformAuditEventDto[];
+  readonly next_cursor: string | null;
+}
