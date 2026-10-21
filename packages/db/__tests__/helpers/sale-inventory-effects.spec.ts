@@ -262,7 +262,7 @@ describe("flag OFF", () => {
     const outcomes = await asTenant(A, async (c) => [
       await writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }),
       await writeVoidEffects(c, { tenantId: TENANT, storeId: STORE, saleId, voidId }),
-      await writeReturnEffects(c, { tenantId: TENANT, storeId: STORE, saleId, returnId, landingStatus: "sellable" }),
+      await writeReturnEffects(c, { tenantId: TENANT, storeId: STORE, saleId, returnId, resolveLandingStatus: async () => "sellable" }),
     ]);
     expect(outcomes.map((o) => [o.written.length, o.skipped.length])).toEqual([
       [0, 0],
@@ -407,7 +407,7 @@ describe("flag ON", () => {
     await asTenant(A, (c) => writeSaleLineEffects(c, { tenantId: TENANT, storeId: STORE, saleId }));
     const { returnId, lineIds: returnLines } = await seedReturn({ saleId }, [{ saleLineId: lineIds[0]!, quantity: "1.5" }]);
     const outcome = await asTenant(A, (c) =>
-      writeReturnEffects(c, { tenantId: TENANT, storeId: STORE, saleId, returnId, landingStatus: "return_inspection" }),
+      writeReturnEffects(c, { tenantId: TENANT, storeId: STORE, saleId, returnId, resolveLandingStatus: async () => "return_inspection" }),
     );
     expect(outcome.written).toHaveLength(1);
     expect(await effectsOf({ eventRefId: returnId })).toEqual([

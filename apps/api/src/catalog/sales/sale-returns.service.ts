@@ -134,8 +134,8 @@ export class SaleReturnsService {
         }
         await insertLinesAndTenders(client, input, returnId, lines);
         const scope = { tenantId, storeId: input.storeId, saleId: saleRef };
-        const landingStatus = await resolveReturnLandingStatus(client, tenantId);
-        effects.add(await writeReturnEffects(client, { ...scope, returnId, landingStatus }), {
+        const resolveLandingStatus = (c: PoolClient) => resolveReturnLandingStatus(c, tenantId);
+        effects.add(await writeReturnEffects(client, { ...scope, returnId, resolveLandingStatus }), {
           ...scope,
           eventRefId: returnId,
         });

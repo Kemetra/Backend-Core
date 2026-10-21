@@ -147,7 +147,7 @@ async function writeReversalEffects(client: PoolClient, w: CreditReversalWrite, 
       : await writeReturnEffects(client, {
           ...scope,
           returnId: link,
-          landingStatus: await resolveReturnLandingStatus(client, w.tenantId),
+          resolveLandingStatus: (c) => resolveReturnLandingStatus(c, w.tenantId),
         });
   w.effects.add(outcome, { ...scope, eventRefId: link });
 }

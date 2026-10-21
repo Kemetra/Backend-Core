@@ -425,8 +425,13 @@ export async function writeVoidEffects(client: Client, input: VoidEffectsInput):
 
 export interface ReturnEffectsInput extends SaleEffectsInput {
   readonly returnId: string;
-  /** The tenant's return landing status (RT-435 `resolveReturnLandingStatus`). */
-  readonly landingStatus: string;
+  /**
+   * Reads the tenant's return landing status (RT-435 `resolveReturnLandingStatus`).
+   * Called only after the SHARED settings lock is held, so a concurrent
+   * landing-policy change (EXCLUSIVE on the same key) is ordered before or
+   * after this return, never between the read and the effect write.
+   */
+  readonly resolveLandingStatus: (client: Client) => Promise<string>;
 }
 
 /**
@@ -437,6 +442,7 @@ export interface ReturnEffectsInput extends SaleEffectsInput {
 export async function writeReturnEffects(client: Client, input: ReturnEffectsInput): Promise<SaleEffectsOutcome> {
   const none: SaleEffectsOutcome = { event: "sale_return", written: [], skipped: [] };
   const active = await readSaleEffectsActivation(client, input.tenantId);
+  const landingStatus = await input.resolveLandingStatus(client);
   const header = await client.query<{ source_system: string; returned_at: Date; created_by: string }>(
     `SELECT source_system, returned_at, created_by FROM sale_returns WHERE id = $1 AND sale_id = $2`,
     [input.returnId, input.saleId],
@@ -459,7 +465,7 @@ export async function writeReturnEffects(client: Client, input: ReturnEffectsInp
       movementType: "inbound",
       compensatesEffectId: null,
       stockLocationId: null,
-      inventoryStatus: input.landingStatus,
+      inventoryStatus: landingStatus,
     }),
     1,
   );
