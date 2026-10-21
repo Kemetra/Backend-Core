@@ -9,7 +9,8 @@
  *
  *  - `RedactingSpanExporter` wraps the real exporter and rewrites URL
  *    attributes on every span (any instrumentation, old or new semconv) to
- *    scheme + host + path. `url.query` is dropped. The live span is not mutated.
+ *    scheme + host + path. `url.query`, `db.connection_string` and DB host/name/user
+ *    are dropped (RT-762). The live span is not mutated.
  *  - `isSentryIngestRequest` keeps Sentry's own envelope POSTs out of traces.
  *  - `createMetricsScrapeFilter` keeps Prometheus scrapes of the metrics
  *    listener out of traces.
@@ -28,6 +29,27 @@ const URL_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set(["http.url", "http.targe
 
 /** Attributes holding only the query string; removed outright. */
 const QUERY_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set(["url.query"]);
+
+/**
+ * Attributes removed outright. `db.connection_string` is set by the pg
+ * instrumentation and carries DB host, database name and sslmode (RT-762).
+ */
+const DROPPED_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set(["db.connection_string"]);
+
+/**
+ * Where the database lives and who connects (RT-762). Dropped only on spans
+ * that carry `db.system`, so HTTP spans keep their peer host. OBS-1 allows no
+ * `db.*` identity attributes; `db.system` and `db.operation` are kept.
+ */
+const DB_IDENTITY_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set([
+  "db.name",
+  "db.namespace",
+  "db.user",
+  "net.peer.name",
+  "net.peer.port",
+  "server.address",
+  "server.port",
+]);
 
 /**
  * Model prompt / completion content (RT-655, AD-AI-PROV-001 E-5). OTel GenAI
@@ -53,6 +75,14 @@ function isContentAttribute(key: string): boolean {
   return (
     CONTENT_ATTRIBUTE_KEYS.has(key) ||
     CONTENT_ATTRIBUTE_PREFIXES.some((prefix) => key.startsWith(prefix))
+  );
+}
+
+/** True for attributes removed from exported spans regardless of value. */
+function isDroppedAttribute(key: string, isDbSpan: boolean): boolean {
+  if (isDbSpan && DB_IDENTITY_ATTRIBUTE_KEYS.has(key)) return true;
+  return (
+    QUERY_ATTRIBUTE_KEYS.has(key) || DROPPED_ATTRIBUTE_KEYS.has(key) || isContentAttribute(key)
   );
 }
 
@@ -82,8 +112,9 @@ export function redactUrlValue(value: string): string {
  */
 export function redactSpanAttributes(attributes: Attributes): Attributes {
   const out: Attributes = {};
+  const isDbSpan = "db.system" in attributes || "db.system.name" in attributes;
   for (const [key, value] of Object.entries(attributes)) {
-    if (QUERY_ATTRIBUTE_KEYS.has(key) || isContentAttribute(key)) continue;
+    if (isDroppedAttribute(key, isDbSpan)) continue;
     out[key] =
       URL_ATTRIBUTE_KEYS.has(key) && typeof value === "string"
         ? redactUrlValue(value)

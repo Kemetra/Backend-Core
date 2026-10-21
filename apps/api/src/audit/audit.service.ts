@@ -74,20 +74,27 @@ export class AuditService {
       limit: fetchLimit,
     });
 
-    const hasMore = rows.length > input.limit;
-    const kept = hasMore ? rows.slice(0, input.limit) : rows;
-
-    let nextCursor: string | null = null;
-    if (hasMore && kept.length > 0) {
-      const last = kept.at(-1)!;
-      nextCursor = encodeCursor(last.occurredAt, last.id);
-    }
-
-    return {
-      items: kept.map(toDto),
-      next_cursor: nextCursor,
-    };
+    return toPage(rows, input.limit, toDto);
   }
+}
+
+/**
+ * Trim the extra `limit + 1` row, emit `next_cursor` from the LAST kept row
+ * when the page was full, and project each kept row. Shared with the RT-431
+ * platform-scope list (`platform-audit.service.ts`).
+ */
+export function toPage<R extends { readonly occurredAt: Date; readonly id: string }, D>(
+  rows: readonly R[],
+  limit: number,
+  project: (row: R) => D,
+): { readonly items: D[]; readonly next_cursor: string | null } {
+  const hasMore = rows.length > limit;
+  const kept = hasMore ? rows.slice(0, limit) : rows;
+  const last = kept.at(-1);
+  return {
+    items: kept.map(project),
+    next_cursor: hasMore && last ? encodeCursor(last.occurredAt, last.id) : null,
+  };
 }
 
 /** Project a repository record to the wire shape, with `kind` derived from `action`. */

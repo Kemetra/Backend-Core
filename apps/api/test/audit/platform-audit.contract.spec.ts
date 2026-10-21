@@ -2,13 +2,13 @@
  * apps/api/test/audit/platform-audit.contract.spec.ts
  *
  * RT-431: the platform-scope audit read contract (`listPlatformAuditEvents`,
- * `audit.openapi.yaml` 1.3.0-draft). `[GATED]` contract, contract-only: the
- * runtime ships in a later change.
+ * `audit.openapi.yaml` 1.3.0-draft). `[GATED]` contract; the runtime shipped
+ * in the RT-431 runtime change, which lifted the contract-only marker.
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
  * app boot and no HTTP. What this pins:
  *
- *   1. One new operation, contract-only, with a note; the tenant-scoped
+ *   1. One new operation, marker lifted (it has its runtime); the tenant-scoped
  *      `listAuditEvents` and `AuditEvent` are unchanged (additive version bump).
  *   2. Human `cookieAuth` only; 401 / 403 are stated; no 404.
  *   3. The closed filter set: no `tenant_id`, no `store_id`.
@@ -144,11 +144,10 @@ describe("platform audit read: document and operation", () => {
     expect(ids.filter((id) => id === OPERATION_ID)).toHaveLength(1);
   });
 
-  it("is contract-only and says where the runtime and the guard rule live", () => {
+  it("has its runtime: the contract-only marker and note are lifted", () => {
     const o = op();
-    expect(o["x-runtime-status"]).toBe("contract-only");
-    expect(o["x-runtime-note"]).toContain("TenantContextGuard");
-    expect(o["x-runtime-note"]).toContain("tenant_id IS NULL");
+    expect(o["x-runtime-status"]).toBeUndefined();
+    expect(o["x-runtime-note"]).toBeUndefined();
   });
 
   it("leaves the tenant-scoped list unchanged", () => {

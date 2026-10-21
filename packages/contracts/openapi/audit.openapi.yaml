@@ -102,18 +102,6 @@ paths:
     get:
       summary: Query platform-scoped audit events (platform admins only).
       operationId: listPlatformAuditEvents
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-431 contract PR; the controller and the null-tenant read ship in the
-        RT-431 runtime change. No migration is implied by the contract: the
-        existing `(tenant_id, occurred_at DESC)` btree also serves
-        `tenant_id IS NULL`; any index change is its own `[GATED]` decision.
-        The controller must NOT use `TenantContextGuard` (support-session
-        enforcement matches that guard by name and would cover this route),
-        must run the query under the platform-admin context with an explicit
-        `tenant_id IS NULL` predicate, must not write an audit row, and should
-        carry the same console rate-limit class as `listAuditEvents`
-        (`expensiveRead`, RT-619).
       security:
         - cookieAuth: []
       description: >

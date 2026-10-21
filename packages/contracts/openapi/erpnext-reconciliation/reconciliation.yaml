@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 — ERPNext Reconciliation & Repair API
-  version: "1.2.0-draft"
+  version: "1.3.0-draft"
   description: >
     Spec 017 (erpnext-reconciliation-and-repair) — the ERPNext arc's OPERATIONAL
     reconciliation surface (011→017): run → report → repair. The human
@@ -90,6 +90,13 @@ info:
     return 429 `rate_limited` (`TooManyRequests`, with `Retry-After`)
     from the console rate limit (RT-574, RT-619). No other wire change.
 
+    **1.3.0-draft (RT-410, AD-POSTING-001 D-1 to D-5, additive).**
+    `PostingBacklogItem.reason` is the Connector's scrubbed rejection
+    message, bounded to 1000 characters, with its classification,
+    retention and reader rules stated on the field.
+    `PostingBacklogItem.rejectionCategory` documents `other`. No new
+    operation, no new required field, no change to `posting-feed.yaml`.
+
 servers:
   - url: https://api.example.com
 
@@ -109,8 +116,8 @@ paths:
         A LIVE read-projection over the 015 `erpnext_posting_status` rows with
         `status = 'permanently_rejected'` for the session tenant (READ, never
         mirrored). Each item carries its rejection class, originating
-        sale/terminal-event reference, provenance, structured reason, and
-        dead-letter time. Cursor-paginated; filter by store + class. Scoped to the
+        sale/terminal-event reference, provenance, rejection message (`reason`,
+        RT-410), and dead-letter time. Cursor-paginated; filter by store + class. Scoped to the
         session tenant (RLS); cross-tenant rows are never disclosed.
       parameters:
         - $ref: "#/components/parameters/Cursor"
@@ -741,8 +748,9 @@ components:
           description: >
             The 015 rejection category (`unmapped_item` / `unmapped_store` /
             `unmapped_account` / `validation` / `closed_period` /
-            `retry_budget_exhausted` / RT-332 `reconciliation_required`). 015's
-            vocabulary, read in place.
+            `retry_budget_exhausted` / RT-332 `reconciliation_required` /
+            `other`, which the ack path already stores for an unclassified
+            Connector rejection). 015's vocabulary, read in place.
         saleRef:
           type: [string, "null"]
           format: uuid
@@ -753,7 +761,58 @@ components:
           type: string
         reason:
           type: [string, "null"]
-          description: Structured rejection detail (no credentials / sensitive ERPNext internals).
+          maxLength: 1000
+          description: >
+            RT-410 (1.3.0-draft, AD-POSTING-001 D-1 to D-5). The Connector's
+            rejection message for this dead-letter: the posting-feed
+            `RejectionReason.message` of the `permanently_rejected` or
+            `reconciliation_required` ack, as plain text, at most 1000
+            characters. The Connector scrubs it, and Backend-Core sanitises it
+            again before storing it: C0 and C1 control characters (except
+            space) are removed and the result is trimmed, and credential
+            values (`Bearer …`, and keys such as `token`, `password`, `passwd`,
+            `pwd`, `secret`, `api_key` and `authorization`, matched as the end
+            of an identifier, for example `dp2_token`) are replaced with
+            `[redacted]`, and the result is then cut to 1000 characters (a
+            replacement can lengthen the text). A message with nothing left
+            after sanitising is stored as null. Sanitising never causes an
+            ack to be rejected.
+
+
+            Content and classification: business data, PII-suspect free text
+            from an external system. It may embed sale values (item codes,
+            quantities, rates, totals, tender totals) and ERPNext names. It is
+            NOT a money field and must never be parsed. It is not
+            `rejectionCategory` and never repeats it; use `rejectionCategory`
+            to group or filter.
+
+
+            Retention: the message exists only while the row is
+            `permanently_rejected`. A repair that re-offers the row clears it,
+            and a later rejection stores a fresh one. A re-ack of the same
+            outcome is an O-3 echo and keeps the first stored message.
+
+
+            Null when: Backend-Core raised the dead-letter itself
+            (`retry_budget_exhausted`, the worker's `unmapped_item` /
+            `unmapped_store`); the RT-332 `reconciliation_required` was
+            recorded from a `posted` ack echoing a superseded
+            `resolutionVersion` (a `posted` ack carries no reason); the row
+            was dead-lettered before the RT-410
+            storage migration; or nothing was left after sanitising.
+
+
+            Handling: readable only through this tenant-scoped, cookieAuth
+            read model. Backend-Core never writes it to a log (length or hash
+            only), audit metadata, a metric label, Sentry or Datadog. A
+            consumer renders it as plain text, never as HTML, shows it only to
+            the roles that can read this backlog, and does not copy it into
+            exports or analytics.
+
+
+            Runtime transition: until the RT-410 storage and write path ship,
+            the server still returns the category text here. Consumers must
+            not depend on that, or on `reason` equalling `rejectionCategory`.
         deadLetteredAt:
           type: string
           format: date-time
