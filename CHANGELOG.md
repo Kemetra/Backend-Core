@@ -7,6 +7,31 @@ This project follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- RT-735 `[GATED]`, owner authorization 2026-10-21 (RT-735 comments 13234 and
+  13280; applying to the lab or a live database is not authorized): the two
+  indexes behind `listStockMovements` (RT-731). Migration 0064 builds
+  `idx_stock_movements_tenant_store_occurred` (tenant, store, occurred at DESC,
+  id DESC) and 0065 builds `idx_stock_movements_tenant_store_product_occurred`
+  (tenant, store, product, occurred at DESC, id DESC), each with `CREATE INDEX
+  CONCURRENTLY` as a single-statement file so the runner does not wrap it in a
+  transaction. Additive only; no runtime or contract change. On a 2M-row ledger
+  the first page of `scope=all` drops from a full scan and sort (about 1.2 s,
+  46k buffers) to 55 index buffers (0.1 ms); the per-product page loses its
+  sort of every product row.
+- RT-802 `[GATED: OpenAPI contract-only lift]`, owner authorization RT-802
+  comment 13276: runtime for `posListChargeablePayers`
+  (`GET /api/pos/v1/payer-accounts`, `pos-payers.openapi.yaml` 1.0.0-draft,
+  RT-570); the operation is no longer contract-only. Envelope only
+  (`PosOperatorEnvelopeSaleGuard`, then the per-device `posReadPayers` rate
+  limit). The operator's standing is re-checked live with capture's own check
+  (403 `sale_responsibility_role_refused`, capture's body) before the query is
+  validated (400). One keyset page (payerRef DESC, cursor bound to the tenant,
+  store and category, holding only the last id) of the active payers of the
+  envelope's store or tenant-wide; other-store, other-tenant and suspended
+  payers are absent. `chargeable` and capture's refusal 4 now share one SQL
+  predicate (`chargeablePayerSql` in `sale-responsibilities.ts`; capture's
+  behavior is unchanged). Minimum disclosure, `asOf`, `Cache-Control: no-store`,
+  no audit event. No migration, no grant change.
 - RT-450 `[GATED]`, owner authorization 2026-10-21 (RT-50 Gate 7 follow-up F3,
   rules G7-7 to G7-9, G7-11 and G7-13, owner decision RT-50 comment 11765):
   contract-only tracked selling, all additive. New

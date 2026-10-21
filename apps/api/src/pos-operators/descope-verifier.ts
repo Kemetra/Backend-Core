@@ -7,11 +7,13 @@
  *
  *   - signature: keys from `https://api.descope.com/<projectId>/.well-known/jwks.json`,
  *     algorithm allow-list `RS256` (no `none`, no HMAC, no EC);
- *   - `iss` pinned to `https://api.descope.com/<projectId>` or the bare
- *     `<projectId>` (older Descope projects), or exactly `DESCOPE_JWT_ISSUER`
- *     when set; the lab-minted token decides which;
+ *   - `iss` pinned to `https://api.descope.com/v1/apps/<projectId>` (what real
+ *     session JWTs carry — rt9 lab, 2026-10-21), also accepting the legacy forms
+ *     `https://api.descope.com/<projectId>` and the bare `<projectId>`; or
+ *     exactly `DESCOPE_JWT_ISSUER` when set;
  *   - `exp` required, small clock tolerance;
- *   - `aud` checked only when `DESCOPE_JWT_AUDIENCE` is set;
+ *   - `aud` must be the project id (Descope stamps it), or exactly
+ *     `DESCOPE_JWT_AUDIENCE` when set;
  *   - a token marked as a refresh token (`drn: "DSR"`) is refused — only the
  *     session JWT is an operator credential.
  *
@@ -50,9 +52,13 @@ function assertProjectId(projectId: string): string {
   return projectId;
 }
 
-/** The issuer Descope stamps on session JWTs for a project. */
+/**
+ * The CANONICAL issuer: what Descope stamps on session JWTs for a project. It
+ * is also the issuer recorded on `descope` identity links (the adapter and the
+ * cutover CLI — packages/db/src/cli/descope-cutover.ts — keep this in lockstep).
+ */
 export function descopeIssuer(projectId: string): string {
-  return `${DESCOPE_API_BASE}/${assertProjectId(projectId)}`;
+  return `${DESCOPE_API_BASE}/v1/apps/${assertProjectId(projectId)}`;
 }
 
 /** The project JWKS endpoint. */
@@ -60,20 +66,49 @@ export function descopeJwksUrl(projectId: string): string {
   return `${DESCOPE_API_BASE}/${assertProjectId(projectId)}/.well-known/jwks.json`;
 }
 
+const ISSUER_URL_RE = /^https:\/\/\S{1,500}$/;
+
+/**
+ * `DESCOPE_JWT_ISSUER`, validated (an https URL or a bare project id — the forms
+ * Descope uses), or null when unset. A malformed value fails at boot rather than
+ * silently changing which tokens are accepted. The cutover CLI applies the same rule.
+ */
+function issuerOverride(): string | null {
+  const override = (process.env["DESCOPE_JWT_ISSUER"] ?? "").trim();
+  if (override.length === 0) return null;
+  if (!ISSUER_URL_RE.test(override) && !PROJECT_ID_RE.test(override)) {
+    throw new Error("DESCOPE_JWT_ISSUER must be an https URL or a project id");
+  }
+  return override;
+}
+
 /** The configured issuer: `DESCOPE_JWT_ISSUER` when set, else derived from the project id. */
 export function configuredDescopeIssuer(projectId: string): string {
-  const override = (process.env["DESCOPE_JWT_ISSUER"] ?? "").trim();
-  return override.length > 0 ? override : descopeIssuer(projectId);
+  return issuerOverride() ?? descopeIssuer(projectId);
 }
 
 /**
- * The `iss` values the verifier accepts. Without an override, both forms Descope
- * is known to stamp for this project: the URL and the bare project id (older
- * projects). Either way the signature is checked against THIS project's JWKS.
+ * The `iss` values the verifier accepts. Without an override: the canonical
+ * form plus the legacy `https://api.descope.com/<projectId>` and bare
+ * `<projectId>` forms (accepted on verification, never written to links). Either way the signature is checked against THIS
+ * project's JWKS, so a listed form cannot admit another project's token.
  */
 export function acceptedDescopeIssuers(projectId: string): string[] {
-  const override = (process.env["DESCOPE_JWT_ISSUER"] ?? "").trim();
-  return override.length > 0 ? [override] : [descopeIssuer(projectId), projectId];
+  const override = issuerOverride();
+  if (override) return [override];
+  return [descopeIssuer(projectId), `${DESCOPE_API_BASE}/${projectId}`, projectId];
+}
+
+/**
+ * Issuer + audience the production verifier enforces (the JWKS is added by the
+ * factory). `aud` is `DESCOPE_JWT_AUDIENCE` when set, else the project id.
+ */
+export function descopeVerifierConfig(projectId: string): Pick<DescopeVerifierOptions, "issuer" | "audience"> {
+  const audienceOverride = (process.env["DESCOPE_JWT_AUDIENCE"] ?? "").trim();
+  return {
+    issuer: acceptedDescopeIssuers(projectId),
+    audience: audienceOverride.length > 0 ? audienceOverride : projectId,
+  };
 }
 
 /** jose error codes are fixed `ERR_*` identifiers — safe to log; messages and payloads are not. */
@@ -150,12 +185,10 @@ export function descopeVerifierFactory(): ClerkVerifier {
       },
     };
   }
-  const audience = (process.env["DESCOPE_JWT_AUDIENCE"] ?? "").trim();
   return new DescopeJwksVerifier({
-    issuer: acceptedDescopeIssuers(projectId),
+    ...descopeVerifierConfig(projectId),
     jwks: createRemoteJWKSet(new URL(descopeJwksUrl(projectId)), {
       timeoutDuration: JWKS_TIMEOUT_MS,
     }),
-    ...(audience.length > 0 ? { audience } : {}),
   });
 }

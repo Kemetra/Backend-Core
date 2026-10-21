@@ -262,6 +262,22 @@ export const stockMovements = pgTable(
       t.storeId,
       t.tenantProductRef,
     ),
+    // RT-735 (0064, 0065, each built CONCURRENTLY): listStockMovements, newest
+    // first in keyset order occurred_at DESC, id DESC (RT-731) - every movement
+    // of a store, and one product's movements.
+    index("idx_stock_movements_tenant_store_occurred").on(
+      t.tenantId,
+      t.storeId,
+      t.occurredAt.desc(),
+      t.id.desc(),
+    ),
+    index("idx_stock_movements_tenant_store_product_occurred").on(
+      t.tenantId,
+      t.storeId,
+      t.tenantProductRef,
+      t.occurredAt.desc(),
+      t.id.desc(),
+    ),
     index("idx_stock_movements_transfer_group")
       .on(t.transferGroupId)
       .where(sql`${t.transferGroupId} IS NOT NULL`),

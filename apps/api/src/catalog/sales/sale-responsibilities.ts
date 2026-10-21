@@ -140,10 +140,36 @@ export async function assertResponsibilityCoverage(
   if (r.rows[0]?.covers !== true) throw new SaleResponsibilityMismatchError();
 }
 
+/** The SQL placeholders (`$n`) a payer predicate binds the tenant and the store to. */
+export interface PayerPredicateParams {
+  readonly tenant: string;
+  readonly store: string;
+}
+
+/** A `payer_account` row with a non-blank ERPNext Customer link (`external_ref`). */
+export const PAYER_LINKED_SQL = "external_ref ~ '[^[:space:]]'";
+
 /**
- * Refusal 4: every payer is an active payer of this tenant (RLS, and matched
- * explicitly) scoped to this store or tenant-wide, with a non-blank ERPNext
- * Customer link. Store scope is not in RLS, so it is a predicate here.
+ * An active payer of this tenant (RLS, and matched explicitly) scoped to this
+ * store or tenant-wide. Store scope is not in RLS, so it is a predicate here.
+ */
+export function payerInScopeSql(p: PayerPredicateParams): string {
+  return `tenant_id = ${p.tenant} AND (store_id IS NULL OR store_id = ${p.store}) AND status = 'active'`;
+}
+
+/**
+ * RT-802: THE payer predicate, the one implementation `captureSale`'s
+ * refusal 4 and `posListChargeablePayers`' `chargeable` both evaluate, so the
+ * till's advisory read and the capture check cannot drift apart: in scope
+ * and linked.
+ */
+export function chargeablePayerSql(p: PayerPredicateParams): string {
+  return `${payerInScopeSql(p)} AND ${PAYER_LINKED_SQL}`;
+}
+
+/**
+ * Refusal 4: every payer passes `chargeablePayerSql` for the sale's tenant and
+ * store. The rows are locked FOR SHARE until the capture commits.
  */
 export async function assertResponsibilityPayersEligible(
   client: PoolClient,
@@ -154,10 +180,7 @@ export async function assertResponsibilityPayersEligible(
   const r = await client.query<{ id: string }>(
     `SELECT id::text AS id FROM payer_account
       WHERE id = ANY($1::uuid[])
-        AND tenant_id = $2
-        AND (store_id IS NULL OR store_id = $3)
-        AND status = 'active'
-        AND external_ref ~ '[^[:space:]]'
+        AND ${chargeablePayerSql({ tenant: "$2", store: "$3" })}
       FOR SHARE`,
     [payerIds, scope.tenantId, scope.storeId],
   );

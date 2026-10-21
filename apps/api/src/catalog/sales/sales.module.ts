@@ -67,6 +67,8 @@ import {
 } from "./history/sale-history-auth.guard";
 import { SaleHistoryController } from "./history/sale-history.controller";
 import { SaleHistoryService } from "./history/sale-history.service";
+import { PosPayersController } from "./payers/pos-payers.controller";
+import { PosPayersService } from "./payers/pos-payers.service";
 
 /**
  * 008 Option Y wiring (its PosOperatorSaleAuthGuard is retired; 031 replaced
@@ -82,9 +84,11 @@ import { SaleHistoryService } from "./history/sale-history.service";
   // RT-539: the POS sale history is its own controller (no new SalesController
   // dependency), reusing this module's envelope and device guard providers.
   // RT-577: the credit-sale reversal is its own controller too.
-  controllers: [SalesController, SaleHistoryController, CreditSaleReversalsController],
+  // RT-802: so is the till's payer lookup (the envelope guard below).
+  controllers: [SalesController, SaleHistoryController, CreditSaleReversalsController, PosPayersController],
   providers: [
     SalesService,
+    PosPayersService,
     SaleReturnsService,
     CreditSaleReversalService,
     SaleHistoryService,

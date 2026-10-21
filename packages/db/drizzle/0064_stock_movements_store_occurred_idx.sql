@@ -1,0 +1,60 @@
+-- 0064_stock_movements_store_occurred_idx.sql
+--
+-- Stock movement history read, index 1 of 2 (Jira RT-735; reader: RT-731,
+-- listStockMovements, PRs #854/#856). [GATED] migration, owner-authorized on
+-- RT-735 (comments 13234 and 13280, 2026-10-21). Applying it to the lab, a
+-- live database or any deploy is NOT authorized by those comments.
+--
+-- Serves listStockMovements with scope=all (every movement of one store, newest
+-- first, keyset on (occurred_at, id)): WHERE store_id = $1 [AND keyset] ORDER BY
+-- occurred_at DESC, id DESC LIMIT n under tenant RLS, with no Sort and no scan of
+-- the whole store. scope=adhoc (tenant_product_ref IS NULL) is read through
+-- either index with no Sort: this one filtering the NULL-product rows, or 0065
+-- on the NULL product; the planner picks by cost.
+-- Additive only: idx_stock_movements_tenant_store_product (0014) stays for the
+-- on-hand SUM. The two RT-735 indexes are two files (0064, 0065) because each
+-- is built CONCURRENTLY, which needs a file of its own (below).
+--
+-- ---------------------------------------------------------------------------
+-- WHY THIS FILE IS ONE STATEMENT - DO NOT ADD ANYTHING TO IT
+-- ---------------------------------------------------------------------------
+-- The runner (src/cli/migrate.ts) sends each file as ONE simple-protocol query.
+-- PostgreSQL runs a multi-statement query as one implicit transaction block,
+-- and CREATE INDEX CONCURRENTLY refuses to run inside a transaction block. A
+-- file holding exactly one statement is not wrapped, so the build runs
+-- concurrently with no runner change (the deploy step needs nothing new). Adding
+-- any other statement here (BEGIN, SET, COMMENT ON, a second index) makes this
+-- migration fail. The migration spec checks this. Same rule and recovery as
+-- 0048 (RT-538) and 0057-0061 (RT-565).
+--
+-- Lock impact: SHARE UPDATE EXCLUSIVE on stock_movements for the build.
+-- Movement writes (sales, receipts, counts, transfers), the on-hand SUM and
+-- every read continue throughout; only other DDL on the table and VACUUM wait.
+-- The ledger is the largest table; the build makes two passes over it, so it
+-- takes longer than a plain build but never blocks inventory traffic. No
+-- lock_timeout is needed and none can be set without a second statement.
+--
+-- No timeout. The build waits for every transaction older than it, in any
+-- table of the database, so one session left idle in transaction holds it (and
+-- the deploy's migrate step) indefinitely. Before deploying, check
+-- pg_stat_activity for long-open transactions. Run ONE `migrate up` at a time
+-- while 0064-0065 are pending (see 0048 for the deadlock this avoids).
+--
+-- No IF NOT EXISTS, on purpose: a failed build leaves an INVALID index with
+-- this name and the runner records nothing; a re-run must fail loudly rather
+-- than skip it. An invalid leftover is not used by queries but still costs
+-- every movement write until it is dropped. To recover:
+--   1. SELECT indisvalid FROM pg_index
+--        WHERE indexrelid = 'idx_stock_movements_tenant_store_occurred'::regclass;
+--   2. false (an invalid leftover): DROP INDEX CONCURRENTLY IF EXISTS
+--      idx_stock_movements_tenant_store_occurred; then re-run `migrate up`.
+--   3. true (the build finished but the runner died before recording it):
+--      either drop it as in step 2 and re-run, or record it by hand:
+--        INSERT INTO _drizzle_migrations (id) VALUES ('0064_stock_movements_store_occurred_idx');
+-- While 0064 is unrecorded, `migrate down` rolls back the migration before it,
+-- not 0064: drop a leftover index by hand first, as above.
+--
+-- No data changes. Reversible via 0064_stock_movements_store_occurred_idx.down.sql.
+
+CREATE INDEX CONCURRENTLY idx_stock_movements_tenant_store_occurred
+  ON stock_movements (tenant_id, store_id, occurred_at DESC, id DESC);

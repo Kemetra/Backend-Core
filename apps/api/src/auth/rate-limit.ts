@@ -104,6 +104,9 @@ export const POS_WRITE_RATE_LIMIT_BUCKETS = {
   // scan cannot be repeated without bound) and for the reprint record.
   posReadSaleHistory: { limit: 1200, windowMs: 60 * 60 * 1000 },
   posWriteSaleReprint: { limit: 120, windowMs: 60 * 60 * 1000 },
+  // RT-802: the till's payer lookup, read when a manager attaches payers to
+  // a credit sale (online, a few times per sale at most).
+  posReadPayers: { limit: 600, windowMs: 60 * 60 * 1000 },
   // RT-369: the device token rotation. A till rotates about once per 75 days
   // (plus a retry after a lost response), so this only bounds abuse by a
   // device that holds a live token.
