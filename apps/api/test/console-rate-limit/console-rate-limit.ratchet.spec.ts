@@ -174,13 +174,20 @@ const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
  */
 const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
   consoleDeleteTenantLogo: "write",
+  // RT-327: one device's health row, like consoleGetDevice.
+  consoleGetDeviceHealth: "cheapRead",
   // RT-719: the baseline is an aggregate over every active device in scope.
   consoleGetFleetBaseline: "expensiveRead",
   consoleGetTenantLogo: "cheapRead",
+  // RT-327: a keyset page of device health, like consoleListDevices.
+  consoleListDeviceHealth: "cheapRead",
   consolePreviewTenantLogo: "jobOrPreview",
   consolePutTenantLogo: "jobOrPreview",
   // RT-431: platform-scoped audit read, same cost as the tenant audit list.
   listPlatformAuditEvents: "expensiveRead",
+  // RT-327: the platform POS version policy (three rows) and its audited change.
+  platformGetPosVersionPolicy: "cheapRead",
+  platformSetPosVersionPolicy: "write",
 };
 
 describe("console rate-limit ratchet (RT-619 / RT-574 D1)", () => {
