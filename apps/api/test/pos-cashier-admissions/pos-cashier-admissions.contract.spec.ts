@@ -267,7 +267,8 @@ describe("pos-cashier-admissions — device security and scope", () => {
         expect(scopeNames).not.toContain(p.name);
       }
     }
-    expect(op(ROSTER).parameters ?? []).toEqual([]);
+    // RT-719: the roster takes only the optional build identity headers (named by $ref, no inline parameter).
+    expect((op(ROSTER).parameters ?? []).filter((p) => p.name !== undefined)).toEqual([]);
   });
 
   it("no request schema carries a scope field", () => {

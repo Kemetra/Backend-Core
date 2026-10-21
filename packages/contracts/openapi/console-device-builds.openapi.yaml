@@ -1,0 +1,630 @@
+openapi: 3.1.0
+info:
+  title: Data-Pulse-2 — Console Device Build Identity API
+  version: "1.0.0-draft"
+  description: >
+    Jira RT-719 (RT-709 decision O-8; fleet baseline for the RT-713 POS
+    compatibility matrix): which POS build each paired terminal is running,
+    as the terminal reported it. Two read-only operations over the build
+    identity a terminal reports on its device-token requests (the report
+    rules are in `pos-terminal-pairing.openapi.yaml`, "Build identity report
+    (RT-719)"):
+
+      1. `consoleListDeviceBuilds` — the devices report: one row per device
+         in scope with its reported build identity, or `null` when it has
+         never reported one.
+      2. `consoleGetFleetBaseline` — the fleet baseline: the distinct builds
+         installed on the active terminals in scope, with a device count each
+         and an explicit count of terminals whose build is unknown. This is
+         the evidence RT-713 reads as `fleet_baseline.source` (RT-709 §C.1).
+
+    Why a separate surface and not new keys on `DeviceSummary` /
+    `DeviceDetail` (`devices.openapi.yaml`): those projections are closed and
+    every key is always present, and both operations are served today. A
+    required key would fail the served runtime's responses and an optional one
+    would break the "every key always present" rule that
+    `devices.contract.spec.ts` pins. The Devices page joins these rows to its
+    list by `deviceId`.
+
+
+    **Posture.** `1.0.0-draft`, `x-runtime-status: contract-only` on both
+    operations: `[GATED]` contract-first (RT-719). The runtime, its migration
+    and the POS change that sends the identity are separate, separately
+    approved work. Nothing here changes the wire of any served operation: the
+    report is carried by optional request headers on existing routes
+    (additive; a terminal that sends none stays valid).
+
+
+    **Build identity.** Three self-reported values, every one a bounded
+    pattern, none free text:
+
+      - `buildCommit` — the POS git commit the running build was made from,
+        the full 40-character lower-case hex SHA-1. The identity anchor: with
+        no valid commit there is no identity (the row's `buildIdentity` is
+        `null`).
+      - `appVersion` — the POS semantic version (at most 32 characters, no
+        build metadata), or `null` while the build has none. POS has no
+        signed release yet, so a pre-release build has a commit and no
+        version. The same value, bound and name as `app_version` in the
+        AD-DEVICE-001 D-1 heartbeat (RT-327), so that contract can carry it
+        unchanged.
+      - `contractPinCommit` — the Backend-Core commit recorded as `commit` in
+        the build's `contracts/backend-core/PIN` (40-character hex SHA-1), or
+        `null` when the terminal did not send it. It identifies the contract
+        snapshot the build was made against; RT-713 resolves the snapshot
+        itself from the build's own PIN, so this value is a cross-check, not
+        the key.
+
+    `reportedAt` is the server clock when Backend-Core last stored the
+    identity, never a terminal clock. It is not `lastSeenAt` and does not
+    replace or alias it (`devices.openapi.yaml`, RT-370): a request that
+    carries the headers is an authenticated request, so it also feeds the
+    activity writer exactly as any other, and nothing about `lastSeenAt` or
+    `lastSeenSource` changes. When the AD-DEVICE-001 heartbeat (RT-327) ships,
+    it may report the same three values; this contract does not fix its wire
+    shape.
+
+    **Unknown is never a default.** A device that has not reported (an older
+    POS build, a terminal not yet upgraded) has `buildIdentity: null`. Unknown
+    is never rendered as a build, as "current" or as "latest", and in the
+    baseline it is counted in `unknownDeviceCount`, never folded into a
+    build. The value is a self-report: a terminal can be wrong or be lying,
+    so it is a fleet-inventory signal and never a security or trust signal,
+    and it never changes trust state, grants or blocks anything.
+
+    **No PII, no new egress.** Commits, a version and a timestamp. No user,
+    cashier, hostname, machine id, IP, path, token or free text is carried,
+    stored or returned. Nothing leaves Backend-Core.
+
+
+    **Auth and scope.** The HUMAN `cookieAuth` scheme (httpOnly
+    `dp2_session`) only, gated `SessionOnlyAdminGuard` → `TenantContextGuard`
+    → `RolesGuard`, exactly as `devices.openapi.yaml`: a machine bearer, a POS
+    `device` token or an operator envelope is 401. Roles: `owner`,
+    `tenant_admin`, `store_manager`. The tenant comes from the session, never
+    from the request (§II, §XII); the store scope is the operator-surface rule
+    of the devices surface (`operator-store-scope.ts`): `owner` and
+    `tenant_admin` see their membership's store authority, `store_manager` the
+    standard resolved store scope. A role outside the list, a device of
+    another tenant, a `store_id` outside the caller's scope and an absent
+    store are the same non-disclosing 404. There is no 403. The tenant
+    isolation of the stored identity is RLS (§II); the store scope has no
+    database backstop, so the store predicate is applied in the query. Both
+    operations are reads, so no `Origin` check applies.
+
+    **The baseline (what RT-713 reads).**
+
+      - Scope: the ACTIVE devices of the caller's tenant and store scope (or
+        the one `store_id`). A revoked or retired device can no longer
+        authenticate to Backend-Core, cannot sync and is not a compatibility
+        risk, so it is not counted; its last reported identity stays readable
+        on `consoleListDeviceBuilds`.
+      - `deviceCount` = `reportingDeviceCount` + `unknownDeviceCount`, and
+        `reportingDeviceCount` is the sum of `installed[].deviceCount`.
+      - `installed` holds one entry per distinct reported identity
+        (`buildCommit`, `appVersion`, `contractPinCommit`), ordered by
+        `buildId`, `posVersion`, `contractPinCommit` ascending. It is bounded
+        by the device count. Its `kind` and `buildId` / `posVersion` map one to
+        one onto the RT-709 §C.1 `fleet_baseline.installed` entries:
+        `kind: release` (an `appVersion` is known) with `pos_version`, else
+        `kind: build` with `build_id` = the POS commit.
+      - `generatedAt` is the server clock after the read's snapshot (the
+        RT-709 `captured_at`); `oldestReportedAt` and `latestReportedAt` bound
+        how fresh the entry's reports are, so RT-713 can apply its own
+        freshness rule. A device that stopped reporting still counts under its
+        last identity until it is revoked or retired.
+      - `unknownDeviceCount` greater than zero means the fleet is not fully
+        known. A consumer that needs a proven fleet must treat that as not
+        proven, never as zero builds.
+
+    **Ordering and paging (`consoleListDeviceBuilds`).** The same filters as
+    `consoleListDevices` (`store_id`, `trust_state`, a keyset `cursor` and
+    `page_size`), the same default (retired devices are not listed unless
+    `trust_state=retired`), ordered by `deviceId` ascending. Reuse a cursor
+    only with the same filters. A walk is not a snapshot: a device that
+    reports during a walk may show its older or newer identity.
+
+    **Audit.** One event per authorised 200, with the scope mode, the
+    `store_id` (null for all in scope), the filters and the row or entry
+    count, never a commit, version or any other value of the identity:
+    `devices.builds_listed` and `devices.fleet_baseline_read`. Refusals (400 /
+    401 / 404 / 429) are not audited.
+
+    **Error envelope.** The canonical `{ error: { code, message, request_id } }`
+    shape. 400 `validation_error` (a malformed or repeated query value, an
+    unknown query key, a `page_size` outside 1..200, or a cursor the server did
+    not issue), 401 unauthenticated, 404 non-disclosing not-found, 429
+    `rate_limited` (console rate limit; honour `Retry-After`), 500 internal.
+    Every 200 is `Cache-Control: no-store`.
+
+servers:
+  - url: https://api.example.com
+
+tags:
+  - name: device-builds
+    description: >
+      Console reads of the POS build identity each terminal reports (RT-719):
+      the per-device report and the fleet baseline.
+
+security:
+  - cookieAuth: []
+
+paths:
+  /api/v1/device-builds:
+    get:
+      summary: List devices with their reported POS build identity.
+      operationId: consoleListDeviceBuilds
+      x-audit-action: devices.builds_listed
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-719 contract. The runtime, its migration and the POS change that
+        sends the identity are separate, separately approved work.
+      tags: [device-builds]
+      description: >
+        The devices in the caller's tenant and store scope, each with the
+        build identity it last reported, or `null` when it has none (never
+        reported: unknown, not a default). Every filter is optional and they
+        combine with AND. With no `store_id`, every store in the caller's
+        scope is listed. With no `trust_state`, retired devices are not
+        listed. An empty page (`items: []`, `nextCursor: null`) is a 200.
+      parameters:
+        - $ref: "#/components/parameters/StoreIdQuery"
+        - $ref: "#/components/parameters/TrustStateQuery"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: A page of devices with their reported build identity.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceBuildPage"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+  /api/v1/device-builds/baseline:
+    get:
+      summary: The fleet baseline - the distinct POS builds installed on the active terminals in scope.
+      operationId: consoleGetFleetBaseline
+      x-audit-action: devices.fleet_baseline_read
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-719 contract. The runtime, its migration and the POS change that
+        sends the identity are separate, separately approved work.
+      tags: [device-builds]
+      description: >
+        The distinct POS builds installed on the ACTIVE devices of the
+        caller's tenant and store scope (or of the one `store_id`), with a
+        device count each, and the number of active devices whose build is
+        unknown. It is the evidence RT-713 reads as `fleet_baseline.source`
+        (RT-709 §C.1). Computed by the server from one database snapshot; a
+        client never derives it by summing list pages. A `store_id` outside
+        the caller's scope is the non-disclosing 404.
+      parameters:
+        - $ref: "#/components/parameters/StoreIdQuery"
+      responses:
+        "200":
+          description: The fleet baseline of the requested scope.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FleetBaseline"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: dp2_session
+      description: >
+        The human dashboard session cookie (httpOnly `dp2_session`), verified
+        by `SessionOnlyAdminGuard`. The only accepted credential on this
+        surface: a machine bearer, a POS `device` token or an
+        `operatorAuthorization` envelope is rejected (401). `RolesGuard` +
+        `@Roles("owner", "tenant_admin", "store_manager")` gate every route
+        (default deny → 404). 401 semantics are owned by 028 (G10).
+
+  headers:
+    CacheControlNoStore:
+      description: >
+        `no-store` on every 200: the body is the tenant's terminal inventory,
+        so no shared or browser cache keeps it.
+      schema:
+        type: string
+        const: no-store
+    ConsoleRetryAfter:
+      description: >
+        Whole seconds the caller should wait before retrying, sent on every
+        console 429 (RT-574 D5). Its own bound, 1 to 3600.
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 3600
+
+  parameters:
+    StoreIdQuery:
+      name: store_id
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: >
+        Only devices of this store. Validated against the caller's store
+        scope: a store outside it, or of another tenant, is the
+        non-disclosing 404. Omitted: every store in the caller's scope. A
+        malformed or repeated value is 400 `validation_error`.
+    TrustStateQuery:
+      name: trust_state
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/TrustState"
+      description: >
+        Only devices in this trust state, as on `consoleListDevices`. The
+        states are mutually exclusive: `revoked` excludes retired devices.
+        Omitted: `active` and `revoked` devices, never `retired` ones; pass
+        `retired` to list them.
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 512
+        pattern: "^[A-Za-z0-9_-]+$"
+      description: >
+        Opaque keyset cursor from a prior page's `nextCursor`. Do not decode
+        or construct it; omit it for the first page. Reuse it only with the
+        same filters. A value the server did not issue, or cannot decode, is
+        400 `validation_error`.
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+      description: Maximum items per page (bounded). The server MAY return fewer.
+
+  schemas:
+    TrustState:
+      type: string
+      enum: [active, revoked, retired]
+      description: >
+        The device's trust state, as `devices.openapi.yaml` `TrustState`:
+        derived from the row, mutually exclusive.
+    GitCommit:
+      type: string
+      minLength: 40
+      maxLength: 40
+      pattern: '^[0-9a-f]{40}$'
+      description: A full git commit SHA-1, 40 lower-case hexadecimal characters. Never abbreviated.
+    AppVersion:
+      type: string
+      minLength: 5
+      maxLength: 32
+      pattern: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+      description: >
+        A semantic version without build metadata, at most 32 characters
+        (`1.4.0`, `1.4.0-rc.1`).
+
+    DeviceBuildIdentity:
+      type: object
+      additionalProperties: false
+      required: [buildCommit, appVersion, contractPinCommit, reportedAt]
+      description: >
+        The build identity a terminal last reported (RT-719). A value the
+        terminal did not send is `null`, never a default. Self-reported; see
+        "Unknown is never a default".
+      properties:
+        buildCommit:
+          $ref: "#/components/schemas/GitCommit"
+        appVersion:
+          description: >
+            The POS semantic version; `null` while the build has none (POS
+            has no signed release yet) or the terminal did not send one.
+          oneOf:
+            - $ref: "#/components/schemas/AppVersion"
+            - type: "null"
+        contractPinCommit:
+          description: >
+            The Backend-Core commit in the build's `contracts/backend-core/PIN`;
+            `null` when the terminal did not send it.
+          oneOf:
+            - $ref: "#/components/schemas/GitCommit"
+            - type: "null"
+        reportedAt:
+          type: string
+          format: date-time
+          description: >
+            The server clock when Backend-Core last stored this identity.
+            Never a terminal clock; not `lastSeenAt`.
+
+    DeviceBuildRow:
+      type: object
+      additionalProperties: false
+      required: [deviceId, storeId, label, trustState, buildIdentity]
+      description: >
+        One device and its reported build identity. Every key is always
+        present; a build that was never reported is `buildIdentity: null`.
+      properties:
+        deviceId:
+          type: string
+          format: uuid
+        storeId:
+          type: string
+          format: uuid
+          description: The store the device is paired to. Never changes.
+        label:
+          type: [string, "null"]
+          description: The terminal label given at pairing; `null` when none.
+        trustState:
+          $ref: "#/components/schemas/TrustState"
+        buildIdentity:
+          description: >
+            The identity the device last reported; `null` when it has never
+            reported one (unknown, never a default build).
+          oneOf:
+            - $ref: "#/components/schemas/DeviceBuildIdentity"
+            - type: "null"
+
+    DeviceBuildPage:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      description: A keyset page of devices with their build identity, by `deviceId` ascending.
+      properties:
+        items:
+          type: array
+          # Mirrors the page_size maximum (200).
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/DeviceBuildRow"
+        nextCursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page; `null` on the last page.
+
+    FleetBuildKind:
+      type: string
+      enum: [release, build]
+      description: >
+        `release` when an `appVersion` is known, else `build`: the RT-709
+        §C.1 `fleet_baseline.installed` entry kinds.
+
+    FleetBuildEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - kind
+        - posVersion
+        - buildId
+        - contractPinCommit
+        - deviceCount
+        - oldestReportedAt
+        - latestReportedAt
+      allOf:
+        - if:
+            properties:
+              kind:
+                const: release
+            required: [kind]
+          then:
+            properties:
+              posVersion:
+                type: string
+          else:
+            properties:
+              posVersion:
+                type: "null"
+      description: >
+        One distinct reported build identity and how many active devices run
+        it. `kind` is `release` exactly when `posVersion` is present.
+      properties:
+        kind:
+          $ref: "#/components/schemas/FleetBuildKind"
+        posVersion:
+          description: >
+            The reported `appVersion`; `null` for `kind: build`.
+          oneOf:
+            - $ref: "#/components/schemas/AppVersion"
+            - type: "null"
+        buildId:
+          $ref: "#/components/schemas/GitCommit"
+        contractPinCommit:
+          description: The reported `contractPinCommit`; `null` when not reported.
+          oneOf:
+            - $ref: "#/components/schemas/GitCommit"
+            - type: "null"
+        deviceCount:
+          type: integer
+          minimum: 1
+          description: The active devices in scope whose last report is exactly this identity.
+        oldestReportedAt:
+          type: string
+          format: date-time
+          description: The oldest `reportedAt` among those devices (server clock).
+        latestReportedAt:
+          type: string
+          format: date-time
+          description: The latest `reportedAt` among those devices (server clock).
+
+    FleetBaseline:
+      type: object
+      additionalProperties: false
+      required:
+        - scope
+        - storeRef
+        - basis
+        - generatedAt
+        - deviceCount
+        - reportingDeviceCount
+        - unknownDeviceCount
+        - installed
+      description: >
+        The distinct POS builds installed on the active devices in scope, with
+        an explicit count of devices whose build is unknown. Read from one
+        database snapshot.
+      properties:
+        scope:
+          type: string
+          enum: [store, all_in_scope]
+          description: "`store` with `store_id`; `all_in_scope` without it."
+        storeRef:
+          type: [string, "null"]
+          format: uuid
+          description: "The `store_id` value (lower case) for `scope: store`; null otherwise."
+        basis:
+          type: string
+          const: terminal_reported
+          description: >
+            Always `terminal_reported`: the identities are what the terminals
+            said they run, not an attested inventory.
+        generatedAt:
+          type: string
+          format: date-time
+          description: >
+            The server clock after the read's snapshot (the RT-709
+            `captured_at`).
+        deviceCount:
+          type: integer
+          minimum: 0
+          description: The active devices in scope; `reportingDeviceCount` + `unknownDeviceCount`.
+        reportingDeviceCount:
+          type: integer
+          minimum: 0
+          description: The active devices in scope that have reported an identity; the sum of `installed[].deviceCount`.
+        unknownDeviceCount:
+          type: integer
+          minimum: 0
+          description: >
+            The active devices in scope that have never reported an identity.
+            Unknown, never zero builds: when it is above zero the fleet is not
+            fully known.
+        installed:
+          type: array
+          description: >
+            One entry per distinct reported identity, ordered by `buildId`,
+            `posVersion`, `contractPinCommit` ascending (nulls last). Empty
+            when no active device has reported.
+          items:
+            $ref: "#/components/schemas/FleetBuildEntry"
+
+    Error:
+      type: object
+      required: [error]
+      description: >
+        Canonical error envelope. Out-of-scope and cross-tenant refusals are
+        non-disclosing (§II, §XII): they never name the cause.
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+            message:
+              type: string
+              description: Human-readable summary. No sensitive data, no cause enumeration.
+            request_id:
+              type: string
+              format: uuid
+              description: Server-side correlation id; the cause is recorded server-side.
+
+  responses:
+    ValidationFailure:
+      description: >
+        validation_error (400): a malformed or repeated query value, an
+        unknown query key, a `page_size` outside 1..200, or a cursor the
+        server did not issue for this operation, tenant and filters. Checked
+        after the guards and before any database read.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >
+        Unauthenticated (401): a missing or invalid session cookie, or a
+        non-cookie credential without a valid session cookie.
+        Non-disclosing. Owned by 028 (G10).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >
+        not_found (404), non-disclosing: identical for a role outside
+        `owner` / `tenant_admin` / `store_manager` and a `store_id` outside
+        the caller's scope, of another tenant or absent.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SystemFailure:
+      description: >
+        system_failure (500): unexpected server error; the cause is recorded
+        server-side under `request_id`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: >
+        429 `rate_limited` (RT-574): the caller's per-user budget for this
+        class of operation is spent. The body is the canonical error
+        envelope with a non-disclosing message (no budget, class or window);
+        its `request_id` equals the `X-Request-Id` response header. Honour
+        `Retry-After`. A 429 is not a 401: it never means the session ended.
+        The console limit is server-configured and may not be enforced, so a
+        client must handle a 429 but must not expect one.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/ConsoleRetryAfter"
+        Cache-Control:
+          description: Always `no-store` on a 429.
+          required: true
+          schema:
+            type: string
+            enum: [no-store]
+        X-Request-Id:
+          description: >
+            The request id, equal to `error.request_id` in the body: the
+            inbound `X-Request-Id` when it is a well-formed UUID, otherwise a
+            server-minted one.
+          required: true
+          schema:
+            type: string
+            format: uuid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

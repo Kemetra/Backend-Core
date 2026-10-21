@@ -75,6 +75,9 @@ paths:
         the filters and the item count and no row ids. Rows are not audited
         individually.
       parameters:
+        - $ref: "#/components/parameters/PosBuildCommit"
+        - $ref: "#/components/parameters/PosAppVersion"
+        - $ref: "#/components/parameters/PosContractPin"
         - $ref: "#/components/parameters/CashierAdmission"
         - $ref: "#/components/parameters/BusinessDateFrom"
         - $ref: "#/components/parameters/BusinessDateTo"
@@ -125,6 +128,9 @@ paths:
         Audit (OD-534-7): one `sale_history.detail_read` event per authorized
         open, with the saleRef.
       parameters:
+        - $ref: "#/components/parameters/PosBuildCommit"
+        - $ref: "#/components/parameters/PosAppVersion"
+        - $ref: "#/components/parameters/PosContractPin"
         - $ref: "#/components/parameters/CashierAdmission"
         - $ref: "#/components/parameters/SaleRef"
       responses:
@@ -203,6 +209,9 @@ paths:
         a reprint changes no sale, return, void or payment fact and
         authorizes no payout.
       parameters:
+        - $ref: "#/components/parameters/PosBuildCommit"
+        - $ref: "#/components/parameters/PosAppVersion"
+        - $ref: "#/components/parameters/PosContractPin"
         - $ref: "#/components/parameters/CashierAdmission"
         - $ref: "#/components/parameters/SaleRef"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -271,6 +280,52 @@ components:
         the generic 403 `refused`.
 
   parameters:
+    PosBuildCommit:
+      name: X-POS-Build-Commit
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 40
+        maxLength: 40
+        pattern: "^[0-9a-f]{40}$"
+      description: >
+        RT-719. The POS git commit the running build was made from: the
+        full 40-character lower-case hex SHA-1. Optional. A request that
+        sends no valid commit records the device's build as unknown; it is
+        never refused or slowed for it. Recorded only from a request to this
+        operation that authenticates with the device token. See "Build identity report
+        (RT-719)" in `pos-terminal-pairing.openapi.yaml`.
+    PosAppVersion:
+      name: X-POS-App-Version
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 5
+        maxLength: 32
+        pattern: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+      description: >
+        RT-719. The POS semantic version, at most 32 characters, without
+        build metadata. Optional: send it only when the build has a release
+        version (POS has no signed release yet). Ignored without a valid
+        `X-POS-Build-Commit`. See "Build identity report (RT-719)" in
+        `pos-terminal-pairing.openapi.yaml`.
+    PosContractPin:
+      name: X-POS-Contract-Pin
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 40
+        maxLength: 40
+        pattern: "^[0-9a-f]{40}$"
+      description: >
+        RT-719. The Backend-Core commit in the build's
+        `contracts/backend-core/PIN` (the `commit` line): 40 lower-case hex
+        characters. Optional. Ignored without a valid `X-POS-Build-Commit`.
+        See "Build identity report (RT-719)" in
+        `pos-terminal-pairing.openapi.yaml`.
     CashierAdmission:
       name: X-Cashier-Admission
       in: header
