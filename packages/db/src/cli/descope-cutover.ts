@@ -42,9 +42,13 @@
  * resolves `acting_operator_id` through `users.clerk_user_id`, so events queued
  * under the previous provider id are rejected after the flip (RT-791 known gap).
  *
- * Issuer: `DESCOPE_JWT_ISSUER` when set, else `https://api.descope.com/<DESCOPE_PROJECT_ID>`
- * — the same derivation as the API's Descope adapter (apps/api cannot be imported
- * here; keep the two in lockstep). Only `apply` needs it.
+ * Issuer stored on the `descope` link: `DESCOPE_JWT_ISSUER` when set, else the
+ * canonical `https://api.descope.com/v1/apps/<DESCOPE_PROJECT_ID>` — the form real
+ * Descope session JWTs carry, and the API verifier's `descopeIssuer()` (apps/api
+ * cannot be imported here; a test pins the two in lockstep). The verifier also
+ * accepts the legacy forms, but links always record the canonical one. The
+ * resolver joins on (provider_key, subject), so the stored issuer never gates
+ * sign-in. Only `apply` needs it.
  *
  * Output is counts and codes only — never ids, subjects or emails. `users` and
  * `external_identity_links` are tenant-agnostic (no RLS), so no tenant GUC is set.
@@ -178,7 +182,7 @@ function requireUuid(flags: ParsedFlags): string {
   return userId.toLowerCase();
 }
 
-/** The Descope issuer from env, matching the API adapter's derivation. */
+/** The Descope link issuer from env: the API verifier's canonical (v1/apps) form. */
 export function descopeIssuerFromEnv(env: NodeJS.ProcessEnv): string {
   const override = (env["DESCOPE_JWT_ISSUER"] ?? "").trim();
   if (override.length > 0) return override;
@@ -186,7 +190,7 @@ export function descopeIssuerFromEnv(env: NodeJS.ProcessEnv): string {
   if (!PROJECT_ID_RE.test(projectId)) {
     throw new Error("DESCOPE_PROJECT_ID (alphanumeric) or DESCOPE_JWT_ISSUER is required for apply");
   }
-  return `${DESCOPE_API_BASE}/${projectId}`;
+  return `${DESCOPE_API_BASE}/v1/apps/${projectId}`;
 }
 
 function isCommandKind(value: string | undefined): value is DescopeCutoverCommand["kind"] {

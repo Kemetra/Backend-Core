@@ -16,6 +16,7 @@ import type { PoolClient } from "pg";
 import {
   CutoverRefusedError,
   DEFAULT_CLERK_ISSUER,
+  descopeIssuerFromEnv,
   runDescopeCutover,
   type DescopeCutoverCommand,
 } from "../../src/cli/descope-cutover";
@@ -480,5 +481,21 @@ describe("clerk issuer lockstep", () => {
       "utf8",
     );
     expect(adapter).toContain(`export const DEFAULT_CLERK_ISSUER = "${DEFAULT_CLERK_ISSUER}";`);
+  });
+});
+
+describe("descope issuer lockstep", () => {
+  it("the CLI derives the same canonical issuer as the API Descope verifier (v1/apps form)", () => {
+    // packages/db cannot import apps/api, so pin the verifier source text; the
+    // CLI side is asserted on behaviour.
+    const verifier = readFileSync(
+      resolve(__dirname, "..", "..", "..", "..", "apps", "api", "src", "pos-operators", "descope-verifier.ts"),
+      "utf8",
+    );
+    expect(verifier).toContain('export const DESCOPE_API_BASE = "https://api.descope.com";');
+    expect(verifier).toContain("return `${DESCOPE_API_BASE}/v1/apps/${assertProjectId(projectId)}`;");
+    expect(descopeIssuerFromEnv({ DESCOPE_PROJECT_ID: "P2lockstep01" })).toBe(
+      "https://api.descope.com/v1/apps/P2lockstep01",
+    );
   });
 });

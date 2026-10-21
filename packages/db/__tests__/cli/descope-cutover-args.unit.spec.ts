@@ -16,7 +16,7 @@ describe("parseDescopeCutoverArgs", () => {
       kind: "apply",
       userId: U.toLowerCase(),
       descopeSubject: "U2abc",
-      issuer: "https://api.descope.com/P2cutoverArgs01",
+      issuer: "https://api.descope.com/v1/apps/P2cutoverArgs01",
       clerkIssuer: "https://clerk.dp2.local",
       dryRun: false,
     });
