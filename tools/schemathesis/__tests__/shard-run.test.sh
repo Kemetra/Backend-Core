@@ -73,11 +73,12 @@ PYSUBSET
 )"
 
 fixture() { # <name> <run.sh to install>
-  local project="$TMP/$1" f
+  local name="$1" run_sh="${2:-}" project f
+  project="$TMP/$name"
   mkdir -p "$project/tools" "$project/packages/contracts/openapi"
   cp -R "$SRC/tools/schemathesis" "$project/tools/"
   rm -rf "$project/tools/schemathesis/__tests__"
-  if [[ -n "${2:-}" ]]; then cp "$2" "$project/tools/schemathesis/run.sh"; fi
+  if [[ -n "$run_sh" ]]; then cp "$run_sh" "$project/tools/schemathesis/run.sh"; fi
   while read -r f; do
     mkdir -p "$project/packages/contracts/openapi/$(dirname "$f")"
     cp "$SRC/packages/contracts/openapi/$f" "$project/packages/contracts/openapi/$f"
@@ -90,7 +91,12 @@ fixture() { # <name> <run.sh to install>
 }
 
 pass() { echo "ok    $1"; }
-fail() { echo "FAIL  $1"; [[ -z "${2:-}" ]] || sed 's/^/      | /' <<<"$2" | head -n 12; fails=$((fails + 1)); }
+fail() {
+  local message="$1" detail="${2:-}"
+  echo "FAIL  $message"
+  [[ -z "$detail" ]] || sed 's/^/      | /' <<<"$detail" | head -n 12
+  fails=$((fails + 1))
+}
 
 # expect <want 0|nonzero> <grep pattern over output+docker log> <name> -- <command...>
 expect() {
@@ -155,7 +161,11 @@ if [[ -n "$BASE_SH" ]]; then
   B="$(fixture base "$BASE_SH")"
   for mode in gate report; do
     for variant in plain crash fail; do
-      case "$variant" in crash) export FAKE_ST_CRASH=1 ;; fail) export FAKE_ST_FAIL="$owner_a" ;; esac
+      case "$variant" in
+        crash) export FAKE_ST_CRASH=1 ;;
+        fail) export FAKE_ST_FAIL="$owner_a" ;;
+        *) ;; # plain: the fake Schemathesis succeeds
+      esac
       for which in new base; do
         proj="$P"; [[ "$which" == base ]] && proj="$B"
         : >"$FAKE_DOCKER_LOG"

@@ -4,9 +4,11 @@ Usage: python3 tools/schemathesis/__tests__/shards.test.py
 Stdlib only. The `schemathesis` fan-in job in ci.yml runs it before it trusts the shards.
 The real-inventory case also needs PyYAML and is skipped without it.
 """
+import argparse
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import random
 import shutil
@@ -38,19 +40,22 @@ def write_inventory(path, rows):
     pathlib.Path(path).write_text("".join(" ".join([g, f, *ids]) + "\n" for g, f, ids in rows), encoding="utf-8")
 
 
-def make_ws(root, rows, shard_count, timings, sha=SHA, generated=7):
+GENERATED = 7
+
+
+def make_ws(root, rows, shard_count, timings):
     """Valid shard artifacts for `rows`, exactly as shard.sh collect would leave them."""
     plan_rows, _ = shards.plan(rows, shard_count, timings)
     plan_txt = "\n".join(shards.plan_lines(plan_rows)) + "\n"
     for i in range(shard_count):
         d = pathlib.Path(root) / f"{shards.ARTIFACT_PREFIX}{i}"
         d.mkdir(parents=True)
-        (d / "sha.txt").write_text(sha + "\n")
+        (d / "sha.txt").write_text(SHA + "\n")
         (d / "plan.txt").write_text(plan_txt)
         for mode in shards.MODES:
             (d / f"{mode}.rc").write_text("0\n")
             lines = [
-                f"{mode} {g} {f} 0 0 {generated} {','.join(ids)}" for s, g, f, ids in plan_rows if s == i
+                f"{mode} {g} {f} 0 0 {GENERATED} {','.join(ids)}" for s, g, f, ids in plan_rows if s == i
             ]
             (d / f"manifest-{mode}.txt").write_text("\n".join(lines) + "\n")
             (d / f"{mode}.md").write_text("")
@@ -182,12 +187,13 @@ class PlannerTests(TempCase):
 class FanInTests(TempCase):
     N = 4
 
-    def ws(self, **kw):
-        return make_ws(self.tmp / "ws", INVENTORY, self.N, TIMINGS, **kw)
+    def ws(self):
+        return make_ws(self.tmp / "ws", INVENTORY, self.N, TIMINGS)
 
     def problems(self, ws, **kw):
         kw.setdefault("job_result", "success")
-        problems, lines = shards.check(INVENTORY, self.N, TIMINGS, ws, SHA, **kw)
+        run_info = shards.RunInfo(str(ws), SHA, kw["job_result"])
+        problems, lines = shards.check(INVENTORY, self.N, TIMINGS, run_info)
         return problems, "\n".join(lines)
 
     def assertFails(self, ws, pattern, **kw):
@@ -216,7 +222,7 @@ class FanInTests(TempCase):
         self.assertFails(ws, "schemathesis-shard-2 is missing")
 
     def test_a_missing_download_directory_fails(self):
-        problems, _ = shards.check(INVENTORY, self.N, TIMINGS, self.tmp / "nothing", SHA, "success")
+        problems, _ = shards.check(INVENTORY, self.N, TIMINGS, shards.RunInfo(str(self.tmp / "nothing"), SHA, "success"))
         self.assertEqual(len([p for p in problems if "is missing" in p]), self.N)
 
     def test_unexpected_extra_shard_artifact(self):
@@ -327,7 +333,7 @@ class FanInTests(TempCase):
     def test_a_shard_run_for_a_different_n_is_rejected(self):
         three = self.tmp / "three"
         make_ws(three, INVENTORY, 3, TIMINGS)
-        problems, _ = shards.check(INVENTORY, 4, TIMINGS, three, SHA, "success")
+        problems, _ = shards.check(INVENTORY, 4, TIMINGS, shards.RunInfo(str(three), SHA, "success"))
         self.assertTrue(any("schemathesis-shard-3 is missing" in p for p in problems))
         self.assertTrue(any("different plan" in p for p in problems))
 
@@ -382,6 +388,30 @@ class CliTests(TempCase):
                                    "--ws", str(ws), "--sha", SHA)
         self.assertEqual(rc, 1)
         self.assertIn("empty inventory", err)
+
+
+class SafePathTests(TempCase):
+    def test_paths_inside_the_temp_area_or_the_checkout_are_accepted(self):
+        inside = self.tmp / "a" / "b.txt"
+        self.assertEqual(os.path.normcase(shards.safe_path(str(inside))), os.path.normcase(os.path.realpath(inside)))
+        self.assertTrue(shards.safe_path("relative/to/cwd.txt").startswith(os.path.normcase(os.path.realpath(os.getcwd()))))
+
+    def test_traversal_out_of_the_allowed_roots_is_rejected(self):
+        outside = [
+            os.path.abspath(os.sep),
+            str(pathlib.Path(tempfile.gettempdir()).parent),
+            str(self.tmp / ".." / ".." / ".."),
+            tempfile.gettempdir() + "-sibling",  # shares the prefix, is not inside
+        ]
+        for value in outside:
+            with self.assertRaises(argparse.ArgumentTypeError, msg=value):
+                shards.safe_path(value)
+
+    def test_the_cli_refuses_a_path_outside_the_allowed_roots(self):
+        err = io.StringIO()
+        with redirect_stderr(err), self.assertRaises(SystemExit):
+            shards.main(["select", os.path.abspath(os.sep), "0"])
+        self.assertIn("outside the working directory", err.getvalue())
 
 
 if __name__ == "__main__":

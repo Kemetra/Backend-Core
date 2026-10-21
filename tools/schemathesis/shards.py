@@ -29,9 +29,11 @@ import dataclasses
 import hashlib
 import json
 import math
+import os
 import pathlib
 import statistics
 import sys
+import tempfile
 from typing import Dict, List, NamedTuple, Optional, Set, Tuple
 
 GROUPS = ("owner", "platform")
@@ -191,6 +193,14 @@ def parse_manifest(text: str) -> Tuple[List[ManifestEntry], List[str]]:
     return entries, problems
 
 
+class RunInfo(NamedTuple):
+    """What the fan-in observed about this run: artifact directory, SHA, shard jobs' result."""
+
+    ws: str
+    sha: str
+    job_result: Optional[str] = None
+
+
 @dataclasses.dataclass
 class FanIn:
     """Everything one fan-in check reads and collects."""
@@ -228,24 +238,31 @@ def check_shard_header(fan: FanIn, i: int) -> None:
         fan.problems.append(f"shard {i} computed a different plan than the fan-in")
 
 
+def entry_problems(fan: FanIn, mode: str, entry: ManifestEntry) -> List[str]:
+    """What is wrong with one manifest line that belongs to `mode`."""
+    key = (entry.group, entry.file)
+    where = f"{entry.file} ({entry.group})"
+    found = []
+    if key in fan.want and entry.ids != tuple(sorted(fan.want[key])):
+        found.append(f"{where} ran operations that differ from the inventory")
+    if entry.errored:
+        return found + [f"Schemathesis could not run {where}"]
+    if entry.generated < 1:
+        found.append(f"{where} generated no test cases ({entry.generated})")
+    if mode == "gate" and entry.rc != 0:
+        found.append(f"unbaselined 5xx in {where}")
+    return found
+
+
 def check_entry(fan: FanIn, i: int, mode: str, entry: ManifestEntry) -> Optional[Unit]:
     """Record one manifest line; return the unit it ran, or None if it belongs to another mode."""
     if entry.mode != mode:
         fan.problems.append(f"shard {i} {mode}: manifest line for mode {entry.mode} ({entry.file})")
         return None
     key = (entry.group, entry.file)
-    where = f"{entry.file} ({entry.group})"
     fan.seen[mode].setdefault(key, []).append(i)
     fan.gen[mode][key] = (entry.generated, entry.rc)
-    if key in fan.want and entry.ids != tuple(sorted(fan.want[key])):
-        fan.problems.append(f"shard {i} {mode}: {where} ran operations that differ from the inventory")
-    if entry.errored:
-        fan.problems.append(f"shard {i} {mode}: Schemathesis could not run {where}")
-        return key
-    if entry.generated < 1:
-        fan.problems.append(f"shard {i} {mode}: {where} generated no test cases ({entry.generated})")
-    if mode == "gate" and entry.rc != 0:
-        fan.problems.append(f"shard {i} gate: unbaselined 5xx in {where}")
+    fan.problems.extend(f"shard {i} {mode}: {p}" for p in entry_problems(fan, mode, entry))
     return key
 
 
@@ -347,20 +364,20 @@ def findings_lines(fan: FanIn) -> List[str]:
     return lines
 
 
-def check(inventory, shards: int, timings, ws, sha: str, job_result: Optional[str] = None):
+def check(inventory, shards: int, timings, run_info: RunInfo):
     rows, load = plan(inventory, shards, timings)
     fan = FanIn(
         inventory=inventory,
         shards=shards,
-        ws=pathlib.Path(ws),
-        sha=sha,
+        ws=pathlib.Path(run_info.ws),
+        sha=run_info.sha,
         rows=rows,
         load=load,
         want={(r.group, r.file): r.ids for r in rows},
         expected_plan=plan_lines(rows),
     )
-    if job_result is not None and job_result != "success":
-        fan.problems.append(f"the shard jobs finished '{job_result}' (expected success)")
+    if run_info.job_result is not None and run_info.job_result != "success":
+        fan.problems.append(f"the shard jobs finished '{run_info.job_result}' (expected success)")
     check_artifact_dirs(fan)
     for i in range(shards):
         if fan.shard_dir(i).is_dir():
@@ -401,36 +418,50 @@ def compare(inventory, timings, counts: List[int], overhead: float) -> List[str]
     return lines
 
 
+def allowed_roots() -> List[str]:
+    """The directories this tool may read and write: the checkout it runs in and the temp area."""
+    candidates = [os.getcwd(), tempfile.gettempdir(), os.environ.get("RUNNER_TEMP", "")]
+    return [os.path.normcase(os.path.realpath(c)) for c in candidates if c]
+
+
+def safe_path(value: str) -> str:
+    """Canonicalize a path argument and reject one outside the allowed roots (RT-809, Sonar S8707)."""
+    resolved = os.path.normcase(os.path.realpath(value))
+    for root in allowed_roots():
+        if resolved == root or resolved.startswith(root.rstrip(os.sep) + os.sep):
+            return resolved
+    raise argparse.ArgumentTypeError(f"path {value!r} is outside the working directory and the temp area")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("plan")
-    s.add_argument("inventory")
+    s.add_argument("inventory", type=safe_path)
     s.add_argument("shards", type=int)
-    s.add_argument("timings")
+    s.add_argument("timings", type=safe_path)
     s = sub.add_parser("select")
-    s.add_argument("plan")
+    s.add_argument("plan", type=safe_path)
     s.add_argument("index", type=int)
     s = sub.add_parser("check")
-    s.add_argument("--inventory", required=True)
+    s.add_argument("--inventory", required=True, type=safe_path)
     s.add_argument("--shards", type=int, required=True)
-    s.add_argument("--timings", required=True)
-    s.add_argument("--ws", required=True)
+    s.add_argument("--timings", required=True, type=safe_path)
+    s.add_argument("--ws", required=True, type=safe_path)
     s.add_argument("--sha", required=True)
-    s.add_argument("--out")
+    s.add_argument("--out", type=safe_path)
     s.add_argument("--job-result")
     s = sub.add_parser("compare")
-    s.add_argument("inventory")
-    s.add_argument("timings")
+    s.add_argument("inventory", type=safe_path)
+    s.add_argument("timings", type=safe_path)
     s.add_argument("--overhead", type=float, default=DEFAULT_OVERHEAD_SECONDS)
     s.add_argument("counts", nargs="*", type=int)
     return p
 
 
 def run_check(args: argparse.Namespace) -> int:
-    problems, lines = check(
-        read_inventory(args.inventory), args.shards, read_timings(args.timings), args.ws, args.sha, args.job_result
-    )
+    run_info = RunInfo(args.ws, args.sha, args.job_result)
+    problems, lines = check(read_inventory(args.inventory), args.shards, read_timings(args.timings), run_info)
     if args.out:
         with open(args.out, "w", encoding="utf-8", newline="\n") as handle:
             handle.write("\n".join(lines) + "\n")
@@ -440,17 +471,28 @@ def run_check(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
-def run(args: argparse.Namespace) -> int:
-    if args.cmd == "plan":
-        rows, _ = plan(read_inventory(args.inventory), args.shards, read_timings(args.timings))
-        print("\n".join(plan_lines(rows)))
-    elif args.cmd == "select":
-        print("\n".join(select(pathlib.Path(args.plan).read_text(encoding="utf-8"), args.index)))
-    elif args.cmd == "compare":
-        print("\n".join(compare(read_inventory(args.inventory), read_timings(args.timings), args.counts or [1, 3, 4], args.overhead)))
-    else:
-        return run_check(args)
+def run_plan(args: argparse.Namespace) -> int:
+    rows, _ = plan(read_inventory(args.inventory), args.shards, read_timings(args.timings))
+    print("\n".join(plan_lines(rows)))
     return 0
+
+
+def run_select(args: argparse.Namespace) -> int:
+    print("\n".join(select(pathlib.Path(args.plan).read_text(encoding="utf-8"), args.index)))
+    return 0
+
+
+def run_compare(args: argparse.Namespace) -> int:
+    lines = compare(read_inventory(args.inventory), read_timings(args.timings), args.counts or [1, 3, 4], args.overhead)
+    print("\n".join(lines))
+    return 0
+
+
+COMMANDS = {"plan": run_plan, "select": run_select, "compare": run_compare, "check": run_check}
+
+
+def run(args: argparse.Namespace) -> int:
+    return COMMANDS[args.cmd](args)
 
 
 def main(argv: List[str]) -> int:
