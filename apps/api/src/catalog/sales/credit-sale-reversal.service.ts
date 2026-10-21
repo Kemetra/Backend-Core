@@ -21,6 +21,7 @@ import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../../auth/auth.module";
+import { SaleEffectsReport } from "../../inventory/sale-effects/sale-effects-report";
 import {
   allocate,
   assertCreditReturnApproval,
@@ -75,18 +76,22 @@ interface Scope {
 export class CreditSaleReversalService {
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
 
-  record(input: CreditSaleReversalInput): Promise<CreditSaleReversalResult> {
+  async record(input: CreditSaleReversalInput): Promise<CreditSaleReversalResult> {
     const payloadHash = sha256CanonicalHex(input.body);
-    return runWithTenantContext(
+    // RT-427: skipped reversal effects are reported after COMMIT only.
+    const effects = new SaleEffectsReport();
+    const result = await runWithTenantContext(
       this.pool,
       { tenantId: input.tenantId, isPlatformAdmin: false },
       async (client): Promise<CreditSaleReversalResult> => {
         const sale = await lockSaleForReversal(client, input.saleRef, input.storeId);
         const replayed = await replay(client, input, payloadHash);
         if (replayed !== null) return replayed;
-        return recordNew(client, input, sale, payloadHash);
+        return recordNew(client, input, sale, payloadHash, effects);
       },
     );
+    effects.flush();
+    return result;
   }
 }
 
@@ -139,6 +144,7 @@ async function recordNew(
   input: CreditSaleReversalInput,
   sale: LockedSale,
   payloadHash: string,
+  effects: SaleEffectsReport,
 ): Promise<CreditSaleReversalResult> {
   const { body, saleRef, actorUserId } = input;
   const scope: Scope = { tenantId: input.tenantId, storeId: input.storeId };
@@ -175,6 +181,7 @@ async function recordNew(
     body,
     allocation,
     priced,
+    effects,
   });
   const stored = await loadCreditReversal(client, reversalId);
   return { projection: stored.projection, created: true, audit: auditOf(stored) };

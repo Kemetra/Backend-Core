@@ -16,7 +16,8 @@
  *
  * `tenant_inventory_settings` holds the per-tenant return landing status
  * (Q6, 849): `sellable` (the default; no row reads as it) or
- * `return_inspection`.
+ * `return_inspection`. 0063 (RT-427) adds the sale-effects activation flag
+ * (`sale_effects_activated_at` / `_by`, NULL = OFF).
  *
  * RLS: ENABLE + FORCE on both. Events: SELECT + INSERT, NO UPDATE / DELETE
  * (append-only). Settings: SELECT + INSERT + UPDATE, NO DELETE. The composite
@@ -146,6 +147,10 @@ export const tenantInventorySettings = pgTable(
       .notNull()
       .references(() => tenants.id, { onDelete: "restrict" }),
     returnLandingStatus: text("return_landing_status").notNull().default("sellable"),
+    // 0063 (RT-427, Q4): sale / void / return effects are written for the
+    // tenant from this time on. NULL = OFF (the default); both or neither.
+    saleEffectsActivatedAt: timestamp("sale_effects_activated_at", { withTimezone: true }),
+    saleEffectsActivatedBy: uuid("sale_effects_activated_by"),
     updatedBy: uuid("updated_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -154,6 +159,10 @@ export const tenantInventorySettings = pgTable(
     check(
       "tenant_inventory_settings_return_landing_allowed",
       sql`${t.returnLandingStatus} IN ('sellable', 'return_inspection')`,
+    ),
+    check(
+      "tenant_inventory_settings_activation_pair",
+      sql`(${t.saleEffectsActivatedAt} IS NULL) = (${t.saleEffectsActivatedBy} IS NULL)`,
     ),
   ],
 );
