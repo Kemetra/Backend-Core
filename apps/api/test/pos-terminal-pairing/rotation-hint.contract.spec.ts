@@ -109,6 +109,12 @@ describe("rotate-soon hint headers in the contracts (RT-639)", () => {
     expect(text).toContain("every response of that request");
     expect(text).toContain("never depends on one being absent");
   });
+
+  it("the pairing contract says a previous-token request is treated as expiring when the overlap closes", () => {
+    const text = readFileSync(resolve(OPENAPI_DIR, "pos-terminal-pairing.openapi.yaml"), "utf8");
+    expect(text).toContain("presents the previous token");
+    expect(text).toContain("when the overlap closes");
+  });
 });
 
 describe("the conditional-GET 304 (RT-639)", () => {

@@ -143,8 +143,14 @@ export class PosDeviceAuthGuard implements CanActivate {
     // the takeover rate limit). Never taken from the request.
     request.posDeviceId = device.id;
     // RT-639: once the credential has 15 days or less left, tell the terminal
-    // to rotate (instant and stage only; never token material).
-    applyRotationHint(execCtx.switchToHttp().getResponse<{ setHeader: (k: string, v: string) => void }>(), device.expiresAt);
+    // to rotate (instant and stage only; never token material). A request that
+    // presented the PREVIOUS token (rotation overlap, after a lost rotation
+    // response) is treated as expiring when the overlap closes: the device's own
+    // `expires_at` was just reset, but that token stops working then.
+    applyRotationHint(
+      execCtx.switchToHttp().getResponse<{ setHeader: (k: string, v: string) => void }>(),
+      device.presentedPreviousUntil ?? device.expiresAt,
+    );
     return true;
   }
 }

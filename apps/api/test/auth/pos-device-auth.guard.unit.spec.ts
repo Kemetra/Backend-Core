@@ -262,6 +262,8 @@ function fakeLookupPool(): Pool {
               "2026-10-01T00:00:00.000Z",
               // expires_at: the guard's lookup selects it last (RT-639); far enough out for no hint.
               "2099-01-01T00:00:00.000Z",
+              // presentedPreviousUntil: null, the current token was presented.
+              null,
             ],
           ],
         };
@@ -403,6 +405,20 @@ describe("PosDeviceAuthGuard — rotate-soon hint (RT-639)", () => {
 
     expect(Object.keys(res.headers).sort()).toEqual(["X-Device-Token-Rotate-After", "X-Device-Token-Rotate-Stage"]);
     expect(JSON.stringify(res.headers)).not.toContain("secret-device-token");
+  });
+
+  it("RH5: the previous token (rotation overlap) is treated as expiring when the overlap closes: urgent", async () => {
+    const { guard, devices } = buildGuard();
+    const overlapEnds = new Date(Date.now() + 6 * 60_000);
+    devices.findActiveByAttestationWithExpiry.mockResolvedValue(
+      makeDevice({ expiresAt: expiresIn(90), presentedPreviousUntil: overlapEnds } as Partial<DeviceRow>),
+    );
+    const res = makeRes();
+
+    await guard.canActivate(makeCtx(makeRequest({ authorization: "Bearer old-token" }), res));
+
+    expect(res.headers["X-Device-Token-Rotate-Stage"]).toBe("urgent");
+    expect(res.headers["X-Device-Token-Rotate-After"]).toBe(new Date(overlapEnds.getTime() - 15 * DAY).toISOString());
   });
 
   it("RH4: a refused token (401) gets no hint", async () => {

@@ -34,6 +34,8 @@ class ProbeController {
 
 let app: INestApplication;
 let expiresInDays = 90;
+/** Set to simulate a request that presented the previous (rotation overlap) token. */
+let overlapEndsInMs: number | null = null;
 
 beforeAll(async () => {
   const devices = {
@@ -44,6 +46,7 @@ beforeAll(async () => {
             tenantId: "0a000000-0000-7000-8000-0000000ten01",
             storeId: "0a000000-0000-7000-8000-0000000sto01",
             expiresAt: new Date(Date.now() + expiresInDays * DAY),
+            presentedPreviousUntil: overlapEndsInMs === null ? null : new Date(Date.now() + overlapEndsInMs),
           }
         : null,
   };
@@ -86,6 +89,19 @@ describe("rotate-soon hint on the wire (RT-639)", () => {
     const rotateAfter = res.headers["x-device-token-rotate-after"] as string;
     expect(new Date(rotateAfter).toISOString()).toBe(rotateAfter);
     expect(new Date(rotateAfter).getTime()).toBeCloseTo(Date.now() + (days - 15) * DAY, -4);
+  });
+
+  it("a previous-token request gets urgent even though the device's expiry was just reset", async () => {
+    expiresInDays = 90;
+    overlapEndsInMs = 5 * 60_000;
+    try {
+      const res = await call("/probe/ok");
+
+      expect(res.status).toBe(200);
+      expect(res.headers["x-device-token-rotate-stage"]).toBe("urgent");
+    } finally {
+      overlapEndsInMs = null;
+    }
   });
 
   it("the hint also rides a handler error response", async () => {

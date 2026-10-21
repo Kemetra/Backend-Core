@@ -74,8 +74,7 @@ function db(client: Pool): DrizzleClient {
  * The row whose current token hash, or in-window previous hash (RT-369 overlap),
  * is `rawAttestation`'s.
  */
-function attestationMatch(rawAttestation: string): SQL {
-  const hash = hashToken(rawAttestation);
+function attestationMatch(hash: Buffer): SQL {
   return or(
     eq(devices.tokenHash, hash),
     and(eq(devices.previousTokenHash, hash), gt(devices.previousValidUntil, sql`now()`)),
@@ -104,8 +103,14 @@ const AUTH_DEVICE_COLUMNS = {
 /** A device as the auth lookup returns it. */
 export type AuthDeviceRow = Pick<DeviceRow, keyof typeof AUTH_DEVICE_COLUMNS>;
 
-/** RT-639: the auth lookup's device plus its credential expiry, for the rotate-soon hint. */
-export type AuthDeviceRowWithExpiry = AuthDeviceRow & Pick<DeviceRow, "expiresAt">;
+/**
+ * RT-639: the auth lookup's device plus what the rotate-soon hint needs.
+ * `presentedPreviousUntil` is when the rotation overlap closes if the request
+ * presented the PREVIOUS token (inside its window), else null: that token stops
+ * working then, whatever the device's fresh `expiresAt` says.
+ */
+export type AuthDeviceRowWithExpiry = AuthDeviceRow &
+  Pick<DeviceRow, "expiresAt"> & { readonly presentedPreviousUntil: Date | null };
 
 interface TenantStatusRow {
   status: string;
@@ -159,14 +164,15 @@ export class DeviceRepository {
    */
   async findActiveByAttestation(rawAttestation: string): Promise<AuthDeviceRow | null> {
     if (rawAttestation.length === 0) return null;
-    return this.findActive(attestationMatch(rawAttestation));
+    return this.findActive(attestationMatch(hashToken(rawAttestation)));
   }
 
   /**
    * RT-639 — `findActiveByAttestation` for the one caller that also needs the
    * credential's expiry: `PosDeviceAuthGuard`, for the rotate-soon hint. Same
    * match, same live predicate, same tenant gate and activity record; the only
-   * difference is `expires_at` in the select list, in the same single query.
+   * difference is `expires_at` and `presentedPreviousUntil` in the select list,
+   * in the same single query.
    * It is a separate method so every other device lookup keeps its select list
    * (see "Columns" above) and reads `expires_at` only when the expiry flag is on.
    */
@@ -174,10 +180,17 @@ export class DeviceRepository {
     rawAttestation: string,
   ): Promise<AuthDeviceRowWithExpiry | null> {
     if (rawAttestation.length === 0) return null;
+    const hash = hashToken(rawAttestation);
     const rows = await db(this.pool)
-      .select({ ...AUTH_DEVICE_COLUMNS, expiresAt: devices.expiresAt })
+      .select({
+        ...AUTH_DEVICE_COLUMNS,
+        expiresAt: devices.expiresAt,
+        presentedPreviousUntil: sql<Date | null>`case when ${eq(devices.previousTokenHash, hash)} then ${devices.previousValidUntil} end`.mapWith(
+          devices.previousValidUntil,
+        ),
+      })
       .from(devices)
-      .where(and(attestationMatch(rawAttestation), liveDevice()))
+      .where(and(attestationMatch(hash), liveDevice()))
       .limit(1);
     return this.admit(rows[0]);
   }

@@ -165,7 +165,12 @@ info:
     their 2xx and 304 responses; the error responses are shared components
     that also serve the 401, so the rule is stated here once. They are
     optional everywhere: a client reads them from whichever response
-    carries them and never depends on one being absent. `posRotateTerminalToken`
+    carries them and never depends on one being absent. A request that
+    presents the previous token (the 10-minute rotation overlap, after a
+    lost rotation response) is treated as expiring when the overlap closes,
+    since that token stops working then and the device's own `expires_at`
+    was just reset: it gets `urgent`, and `X-Device-Token-Rotate-After` is
+    already past. The terminal should retry the rotation at once. `posRotateTerminalToken`
     does not carry them (its 200 already holds the new `rotate_after`), nor
     do the routes that authenticate with an operator credential. They do
     not replace the first start rule below.

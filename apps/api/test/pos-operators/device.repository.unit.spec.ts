@@ -297,13 +297,16 @@ describe("DeviceRepository.findActiveByAttestationWithExpiry (RT-639)", () => {
   });
 
   /** Pre-tenant lookup pool answering with the select list plus `expires_at`. */
-  function expiryPool(found: boolean): { pool: Pool; query: jest.Mock } {
+  function expiryPool(
+    found: boolean,
+    presentedPreviousUntil: string | null = null,
+  ): { pool: Pool; query: jest.Mock } {
     const query = jest.fn(async (config: { rowMode?: string }) => {
       if (found && config && config.rowMode === "array") {
         return {
           rows: [
             [DEVICE_ID, TENANT_ID, STORE_ID, "Lane 1", Buffer.from("hash"), null,
-             "2026-10-01T00:00:00.000Z", "2026-10-01T00:00:00.000Z", EXPIRES],
+             "2026-10-01T00:00:00.000Z", "2026-10-01T00:00:00.000Z", EXPIRES, presentedPreviousUntil],
           ],
         };
       }
@@ -327,6 +330,24 @@ describe("DeviceRepository.findActiveByAttestationWithExpiry (RT-639)", () => {
     expect(row?.id).toBe(DEVICE_ID);
     expect(row?.tenantId).toBe(TENANT_ID);
     expect(row?.expiresAt).toEqual(new Date(EXPIRES));
+  });
+
+  it("a current-token match has no presentedPreviousUntil", async () => {
+    const repo = new DeviceRepository(expiryPool(true).pool, domainPool(ACTIVE).pool);
+    expect((await repo.findActiveByAttestationWithExpiry("device-token"))?.presentedPreviousUntil).toBeNull();
+  });
+
+  it("a previous-token match (rotation overlap) carries when the overlap closes", async () => {
+    const until = "2026-10-21T01:50:00.000Z";
+    const repo = new DeviceRepository(expiryPool(true, until).pool, domainPool(ACTIVE).pool);
+    const row = await repo.findActiveByAttestationWithExpiry("old-device-token");
+
+    expect(row?.presentedPreviousUntil).toEqual(new Date(until));
+  });
+
+  it("selects previous_valid_until only when the previous hash matched", async () => {
+    const [selectList] = (await lookupSql()).split(/\bfrom "devices"/i);
+    expect(selectList).toMatch(/case when "devices"\."previous_token_hash" = \$\d+ then (?:"devices"\.)?"previous_valid_until" end/i);
   });
 
   it("an empty attestation is null without querying the DB", async () => {
