@@ -183,49 +183,54 @@ async function seedAudit(e: PgTestEnv): Promise<void> {
   await row(T2, `${MS}300Z`, ACME, READ_CODE, ADMIN, null);
 }
 
-beforeAll(async () => {
+/** Start Postgres, migrate and seed; false when Docker is absent and skipping is allowed. */
+async function startDatabase(): Promise<boolean> {
   try {
     env = await startPgEnv();
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
-      // eslint-disable-next-line no-console
-      console.warn(`\n[platform-audit.http] Docker NOT AVAILABLE: ${msg}\n`);
-      dockerSkipped = true;
-      return;
-    }
-    throw new Error(`Container start failed: ${msg}`);
+    if (process.env["MIGRATION_TEST_ALLOW_SKIP"] !== "1") throw new Error(`Container start failed: ${msg}`);
+    // eslint-disable-next-line no-console
+    console.warn(`
+[platform-audit.http] Docker NOT AVAILABLE: ${msg}
+`);
+    return false;
   }
   await applyAllUpAndCreateAppRole(env);
   await seedPrincipals(env);
   await seedAudit(env);
+  return true;
+}
 
-  const moduleRef = await Test.createTestingModule({
+/** Production modules; only the pools, Redis, email and the async audit enqueuer are swapped. */
+async function bootApp(e: PgTestEnv): Promise<INestApplication> {
+  const overrides: ReadonlyArray<readonly [unknown, unknown]> = [
+    [PG_POOL, e.app],
+    [AUTH_LOOKUP_POOL, e.admin],
+    [REDIS_CLIENT, new AlwaysAllowRedis()],
+    [EMAIL_JOB_ENQUEUER, new NoOpEmailJobEnqueuer()],
+    [AUDIT_JOB_ENQUEUER, new NoOpAuditJobEnqueuer()],
+  ];
+  const builder = Test.createTestingModule({
     imports: [AuthModule, ContextModule, AuditModule, PlatformSupportSessionsModule],
-  })
-    .overrideProvider(PG_POOL)
-    .useValue(env.app)
-    .overrideProvider(AUTH_LOOKUP_POOL)
-    .useValue(env.admin)
-    .overrideProvider(REDIS_CLIENT)
-    .useValue(new AlwaysAllowRedis())
-    .overrideProvider(EMAIL_JOB_ENQUEUER)
-    .useValue(new NoOpEmailJobEnqueuer())
-    .overrideProvider(AUDIT_JOB_ENQUEUER)
-    .useValue(new NoOpAuditJobEnqueuer())
-    .compile();
-
-  app = moduleRef.createNestApplication({ bufferLogs: true, logger: false });
-  app.use(cookieParser());
-  const logger = createLogger({ service: "api-test", level: "silent" });
-  app.useGlobalInterceptors(
+  });
+  for (const [token, value] of overrides) builder.overrideProvider(token).useValue(value);
+  const nest = (await builder.compile()).createNestApplication({ bufferLogs: true, logger: false });
+  nest.use(cookieParser());
+  nest.useGlobalInterceptors(
     new RequestIdInterceptor(),
-    new LoggingInterceptor(logger),
+    new LoggingInterceptor(createLogger({ service: "api-test", level: "silent" })),
     new ContextInterceptor(),
   );
-  app.useGlobalFilters(new GlobalExceptionFilter());
-  app.useGlobalPipes(new ZodValidationPipe());
-  await app.init();
+  nest.useGlobalFilters(new GlobalExceptionFilter());
+  nest.useGlobalPipes(new ZodValidationPipe());
+  await nest.init();
+  return nest;
+}
+
+beforeAll(async () => {
+  dockerSkipped = !(await startDatabase());
+  if (!dockerSkipped) app = await bootApp(E());
 }, 240_000);
 
 afterAll(async () => {
