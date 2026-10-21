@@ -773,13 +773,15 @@ paths:
         **Authentication.** The `operatorAuthorization` envelope only; the
         `device` scheme is not accepted (a device token is the generic 401).
         The envelope operator is the actor; the body carries no user id. The
-        envelope's live re-check (membership, device, store access, expiry:
-        the `operatorAuthorization` scheme) is the generic 401, so a manager
-        whose store access was removed is a 401. A valid operator who does
-        not hold the manager or admin role of the tenant (the eligibility of
-        `GET /shifts/stuck`: `store_staff` is refused), re-checked live on
-        every request, is the generic 403 `refused`. Tenant and store come
-        only from the envelope, never the request (Constitution §II, §XII).
+        envelope's live re-check on every request (membership, device, store
+        access, expiry and role: the `operatorAuthorization` scheme) is the
+        generic 401. The role rule is the manager and admin surface of
+        `GET /shifts/stuck`: only `owner`, `tenant_admin` and `store_manager`
+        pass, so a `store_staff` operator, an operator demoted since sign-in,
+        and a manager whose store access was removed are all the generic 401.
+        The operation has no 403: no failure reaches it past that check.
+        Tenant and store come only from the envelope, never the request
+        (Constitution §II, §XII).
 
 
         **Scope.** `shift_id` resolves to a shift of the envelope's tenant and
@@ -790,8 +792,11 @@ paths:
 
         **Eligibility.** The shift must be stuck now, by the `GET /shifts/stuck`
         rule: open, opened longer ago than the staleness threshold, and its
-        opening cashier has no active `pos_operator` session on the store.
-        Otherwise 409 `shift_not_stuck`: a manager cannot close a live drawer
+        opening cashier has no active `pos_operator` session on the store,
+        NOT counting the caller's own envelope session (a manager who opened
+        the shift and signs in on another terminal to clear it holds a fresh
+        session of their own, which must not make their own abandoned drawer
+        live). Otherwise 409 `shift_not_stuck`: a manager cannot close a live drawer
         from another terminal. A shift already closed with a cash-up is 409
         `shift_closed`.
 
@@ -857,8 +862,8 @@ paths:
         already force-closed is 409 `shift_force_closed`.
 
 
-        **Order.** Authentication (401), then the live manager/admin check
-        (403 `refused`), then scope (404 `shift_not_found`), then the
+        **Order.** Authentication, including the live manager/admin check
+        (401), then scope (404 `shift_not_found`), then the
         natural-key replay (`200`) or, for a different `forcedReason`, 409
         `shift_force_closed`, then 409 `shift_closed`, then the stuck rule
         (409 `shift_not_stuck`). A same-key replay is answered by the shared
@@ -919,8 +924,6 @@ paths:
           $ref: "#/components/responses/ValidationFailure"
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/ForceCloseRefused"
         "404":
           $ref: "#/components/responses/ShiftNotFoundInStore"
         "409":
@@ -2268,18 +2271,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ApiError"
-    ForceCloseRefused:
-      description: >
-        Generic 403 `refused` on `forceCloseShift`: the envelope operator is
-        valid but does not hold the manager or admin role of the tenant
-        (re-checked live). One body for every cause, revealing neither
-        existence nor cause. A device token, and an envelope that fails its
-        live re-check (including a removed store access), are a 401, not
-        this.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/ApiError"
     ShiftNotFoundInStore:
       description: >
         404 `shift_not_found` on `forceCloseShift`: `shift_id` does not
@@ -2297,7 +2288,8 @@ components:
         `idempotency_key_conflict` (the same `Idempotency-Key` reused with a
         different payload); `shift_not_stuck` (the shift is open but is not
         stuck now: it is younger than the staleness threshold, or its opening
-        cashier has an active `pos_operator` session on the store);
+        cashier has an active `pos_operator` session on the store other than
+        the caller's own);
         `shift_closed` (the shift is already closed with a cash-up);
         `shift_force_closed` (the shift is already force-closed with a
         different `forcedReason`). Deterministic; nothing is recorded.

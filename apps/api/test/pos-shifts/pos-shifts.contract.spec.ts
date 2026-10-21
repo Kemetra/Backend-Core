@@ -1448,19 +1448,17 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
     expect(otherOperationIds.has("forceCloseShift")).toBe(false);
   });
 
-  it("accepts the manager envelope ONLY, manager / admin, re-checked live, by the stuck-list eligibility", () => {
+  it("accepts the manager envelope ONLY; the manager / admin role is the envelope's live re-check, so every failure is the 401 and there is no 403", () => {
     expect(op(FORCE_CLOSE).security).toEqual([{ operatorAuthorization: [] }]);
     expectAll(forceText(), [
       "The `operatorAuthorization` envelope only; the `device` scheme is not accepted (a device token is the generic 401)",
-      "the `operatorAuthorization` scheme) is the generic 401, so a manager whose store access was removed is a 401",
-      "A valid operator who does not hold the manager or admin role of the tenant",
-      "`store_staff` is refused",
-      "is the generic 403 `refused`",
+      "(membership, device, store access, expiry and role: the `operatorAuthorization` scheme) is the generic 401",
+      "only `owner`, `tenant_admin` and `store_manager` pass",
+      "a `store_staff` operator, an operator demoted since sign-in, and a manager whose store access was removed are all the generic 401",
+      "The operation has no 403",
     ]);
-    expectAll(describeOf("403"), [
-      "the envelope operator is valid but does not hold the manager or admin role of the tenant",
-      "including a removed store access), are a 401",
-    ]);
+    expect(op(FORCE_CLOSE).responses?.["403"]).toBeUndefined();
+    expect(doc.components?.responses?.["ForceCloseRefused"]).toBeUndefined();
   });
 
   it("is store-scoped: any device of the store, tenant and store from the envelope only, a non-disclosing 404", () => {
@@ -1487,7 +1485,7 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
   });
 
   it("declares exactly its documented statuses (no 422: there is no cash-up to be inconsistent)", () => {
-    expect(statusesOf(FORCE_CLOSE)).toEqual(["200", "201", "400", "401", "403", "404", "409", "425", "429", "500"]);
+    expect(statusesOf(FORCE_CLOSE)).toEqual(["200", "201", "400", "401", "404", "409", "425", "429", "500"]);
   });
 
   it("answers 200 / 201 with ForceClosedShift and Idempotent-Replayed only; every error is the canonical envelope", () => {
@@ -1497,7 +1495,7 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
         "Idempotent-Replayed": { $ref: "#/components/headers/IdempotentReplayed" },
       });
     }
-    const envelope = ["400", "401", "403", "404", "409", "429", "500"].map((status) => responseSchema(FORCE_CLOSE, status));
+    const envelope = ["400", "401", "404", "409", "429", "500"].map((status) => responseSchema(FORCE_CLOSE, status));
     expect(envelope).toEqual(envelope.map(() => ({ $ref: "#/components/schemas/ApiError" })));
     expect(op(FORCE_CLOSE).responses?.["425"]).toEqual({ $ref: "#/components/responses/IdempotencyInProgress" });
     expect(op(FORCE_CLOSE).responses?.["429"]).toEqual({ $ref: "#/components/responses/TooManyRequests" });
@@ -1508,11 +1506,13 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
       describeOf("409"),
       ["idempotency_key_conflict", "shift_not_stuck", "shift_closed", "shift_force_closed"].map((code) => `\`${code}\``),
     );
+    expectAll(describeOf("409"), ["has an active `pos_operator` session on the store other than the caller's own"]);
   });
 
   it("requires the shift to be stuck now, so a live drawer is never closed remotely", () => {
     expectAll(forceText(), [
-      "The shift must be stuck now, by the `GET /shifts/stuck` rule: open, opened longer ago than the staleness threshold, and its opening cashier has no active `pos_operator` session on the store",
+      "The shift must be stuck now, by the `GET /shifts/stuck` rule: open, opened longer ago than the staleness threshold, and its opening cashier has no active `pos_operator` session on the store, NOT counting the caller's own envelope session",
+      "a manager who opened the shift and signs in on another terminal to clear it holds a fresh session of their own, which must not make their own abandoned drawer live",
       "a manager cannot close a live drawer from another terminal",
     ]);
   });
@@ -1576,7 +1576,7 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
     expectAll(forceText(), [
       "The natural key is `shift_id` with the payload hash of `forcedReason`, never the actor",
       "A different `forcedReason` for a shift already force-closed is 409 `shift_force_closed`",
-      "**Order.** Authentication (401), then the live manager/admin check (403 `refused`), then scope (404 `shift_not_found`), then the natural-key replay (`200`) or, for a different `forcedReason`, 409 `shift_force_closed`, then 409 `shift_closed`, then the stuck rule (409 `shift_not_stuck`)",
+      "**Order.** Authentication, including the live manager/admin check (401), then scope (404 `shift_not_found`), then the natural-key replay (`200`) or, for a different `forcedReason`, 409 `shift_force_closed`, then 409 `shift_closed`, then the stuck rule (409 `shift_not_stuck`)",
       "A replay of a recorded force close is never answered `shift_not_stuck`",
       "One audit event records the closing manager, the terminal the request came from, the terminal that opened the shift and the shift",
       "The reason is stored with the fact and never logged",
