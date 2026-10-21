@@ -484,6 +484,7 @@ beforeAll(async () => {
   }
   await applyAllUpAndCreateAppRole(env);
   await seed(env);
+  await linkClerkUsers(env.admin);
 
   const moduleRef = await Test.createTestingModule({
     imports: [
@@ -555,7 +556,6 @@ async function seed(e: PgTestEnv): Promise<void> {
        ($3, 'control@rt213.example', 'Control', 'user_rt213_control')`,
     [MANAGER, CASHIER, CONTROL_CASHIER, MANAGER_SUB],
   );
-  await linkClerkUsers(a);
   await a.query(
     `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES
        ($1, $4, $5, $6, 'all'),

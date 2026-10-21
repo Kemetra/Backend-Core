@@ -102,27 +102,25 @@ function countMatches(text: string): number {
   return text.match(PROVIDER_NAME)?.length ?? 0;
 }
 
+/** The violation for one scanned file, or null when it is allowed. */
+function violationOf(path: string, count: number, entry: AllowEntry | undefined): string | null {
+  if (count === 0) return null;
+  if (!entry) return `${path}: ${count} provider-name occurrence(s) outside the allow-list`;
+  if (entry.max !== undefined && count > entry.max) {
+    return `${path}: ${count} occurrences exceed the ${entry.owner} cap of ${entry.max}`;
+  }
+  return null;
+}
+
 /** Violations of the fence: new occurrences, and allow-list entries gone stale. */
 function findViolations(files: readonly SourceFile[], allow: readonly AllowEntry[]): string[] {
   const allowed = new Map(allow.map((entry) => [entry.path, entry]));
   const counts = new Map(files.map((file) => [file.path, countMatches(file.text)]));
-  const violations: string[] = [];
-
-  for (const [path, count] of counts) {
-    if (count === 0) continue;
-    const entry = allowed.get(path);
-    if (!entry) {
-      violations.push(`${path}: ${count} provider-name occurrence(s) outside the allow-list`);
-    } else if (entry.max !== undefined && count > entry.max) {
-      violations.push(`${path}: ${count} occurrences exceed the ${entry.owner} cap of ${entry.max}`);
-    }
-  }
-  for (const entry of allow) {
-    if ((counts.get(entry.path) ?? 0) === 0) {
-      violations.push(`${entry.path}: stale allow-list entry (${entry.owner}); remove it`);
-    }
-  }
-  return violations;
+  const found = [...counts].map(([path, count]) => violationOf(path, count, allowed.get(path)));
+  const stale = allow
+    .filter((entry) => (counts.get(entry.path) ?? 0) === 0)
+    .map((entry) => `${entry.path}: stale allow-list entry (${entry.owner}); remove it`);
+  return [...found.filter((v): v is string => v !== null), ...stale];
 }
 
 describe("RT-796 provider-name fence", () => {

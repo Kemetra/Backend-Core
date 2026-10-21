@@ -66,26 +66,9 @@ export class PosShiftsService {
     branchId: string,
     requestId: string | null,
   ): Promise<StuckShiftsResult> {
-    // 1. Verify the identity token.
-    let claims: OperatorTokenClaims;
-    try {
-      claims = await this.operatorTokenVerifier.verify(rawJwt);
-    } catch {
-      this.logger.warn({ request_id: requestId }, "pos-shifts: identity token invalid");
-      return { kind: "refused" };
-    }
-
-    // 2. Resolve the verified identity → users.id through the ACTIVE link. The
-    // subject is never logged: it is a provider identifier of a person.
-    const user = await findUserByActiveLink(this.lookupPool, {
-      providerKey: claims.providerKey,
-      subject: claims.sub,
-    });
-    if (!user || user.deleted_at !== null) {
-      this.logger.warn({ request_id: requestId }, "pos-shifts: user unmapped");
-      return { kind: "refused" };
-    }
-    const userId = user.id;
+    // 1-2. Verify the identity token, then resolve it to a user.
+    const userId = await this.resolveOperatorUserId(rawJwt, requestId);
+    if (userId === null) return { kind: "refused" };
 
     // 3. Find an active membership on the requested branch. The verified
     // user and branch IDs constrain this bootstrap read before authorization.
@@ -172,5 +155,29 @@ export class PosShiftsService {
       }));
 
     return { kind: "ok", body: { kind: "ok", shifts: items } };
+  }
+
+  /**
+   * Verify the identity token and resolve the verified identity → users.id
+   * through the ACTIVE link; null (logged by request id) on any refusal. The
+   * subject is never logged: it is a provider identifier of a person.
+   */
+  private async resolveOperatorUserId(rawJwt: string, requestId: string | null): Promise<string | null> {
+    let claims: OperatorTokenClaims;
+    try {
+      claims = await this.operatorTokenVerifier.verify(rawJwt);
+    } catch {
+      this.logger.warn({ request_id: requestId }, "pos-shifts: identity token invalid");
+      return null;
+    }
+    const user = await findUserByActiveLink(this.lookupPool, {
+      providerKey: claims.providerKey,
+      subject: claims.sub,
+    });
+    if (!user || user.deleted_at !== null) {
+      this.logger.warn({ request_id: requestId }, "pos-shifts: user unmapped");
+      return null;
+    }
+    return user.id;
   }
 }

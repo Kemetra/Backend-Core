@@ -119,28 +119,33 @@ function skip(): boolean {
   return dockerSkipped;
 }
 
-async function seedUser(
-  userId: string,
-  email: string,
-  displayName: string,
-  clerkUserId: string | null,
-): Promise<void> {
+interface SeedUser {
+  readonly id: string;
+  readonly email: string;
+  readonly displayName: string;
+  readonly clerkUserId: string | null;
+}
+
+async function seedUser(user: SeedUser): Promise<void> {
   await admin!.query(
     `INSERT INTO users (id, email, display_name, clerk_user_id) VALUES ($1, $2, $3, $4)`,
-    [userId, email, displayName, clerkUserId],
+    [user.id, user.email, user.displayName, user.clerkUserId],
   );
 }
 
-async function seedLink(
-  userId: string,
-  providerKey: string,
-  subject: string,
-  status: "active" | "disabled" = "active",
-): Promise<void> {
+interface SeedLink {
+  readonly userId: string;
+  readonly providerKey: string;
+  readonly subject: string;
+  readonly status?: "active" | "disabled";
+}
+
+async function seedLink(link: SeedLink): Promise<void> {
+  const status = link.status ?? "active";
   await admin!.query(
     `INSERT INTO external_identity_links (provider_key, issuer, subject, user_id, status, disabled_at)
      VALUES ($1, $2, $3, $4, $5, CASE WHEN $5 = 'disabled' THEN now() ELSE NULL END)`,
-    [providerKey, `https://issuer.test/${providerKey}`, subject, userId, status],
+    [link.providerKey, `https://issuer.test/${link.providerKey}`, link.subject, link.userId, status],
   );
 }
 
@@ -200,37 +205,37 @@ beforeAll(async () => {
   );
 
   // Managers.
-  await seedUser(U_ADMIN, "admin@rt796.test", "Descope Admin", null);
-  await seedLink(U_ADMIN, "descope", SUB_ADMIN);
-  await seedUser(U_CLERK_ADMIN, "clerk-admin@rt796.test", "Clerk Admin", SUB_CLERK_ADMIN);
-  await seedLink(U_CLERK_ADMIN, "clerk", SUB_CLERK_ADMIN);
-  await seedUser(U_ACME_ADMIN, "acme-admin@rt796.test", "Acme Admin", null);
-  await seedLink(U_ACME_ADMIN, "acme", SUB_ACME_ADMIN);
-  await seedUser(U_GHOST_ADMIN, "ghost-admin@rt796.test", "Ghost Admin", SUB_GHOST_ADMIN);
-  await seedUser(U_CUT_ADMIN, "cut-admin@rt796.test", "Cutover Admin", SUB_CUT_ADMIN_NEW);
-  await seedLink(U_CUT_ADMIN, "clerk", SUB_CUT_ADMIN_OLD, "disabled");
-  await seedLink(U_CUT_ADMIN, "descope", SUB_CUT_ADMIN_NEW);
+  await seedUser({ id: U_ADMIN, email: "admin@rt796.test", displayName: "Descope Admin", clerkUserId: null });
+  await seedLink({ userId: U_ADMIN, providerKey: "descope", subject: SUB_ADMIN });
+  await seedUser({ id: U_CLERK_ADMIN, email: "clerk-admin@rt796.test", displayName: "Clerk Admin", clerkUserId: SUB_CLERK_ADMIN });
+  await seedLink({ userId: U_CLERK_ADMIN, providerKey: "clerk", subject: SUB_CLERK_ADMIN });
+  await seedUser({ id: U_ACME_ADMIN, email: "acme-admin@rt796.test", displayName: "Acme Admin", clerkUserId: null });
+  await seedLink({ userId: U_ACME_ADMIN, providerKey: "acme", subject: SUB_ACME_ADMIN });
+  await seedUser({ id: U_GHOST_ADMIN, email: "ghost-admin@rt796.test", displayName: "Ghost Admin", clerkUserId: SUB_GHOST_ADMIN });
+  await seedUser({ id: U_CUT_ADMIN, email: "cut-admin@rt796.test", displayName: "Cutover Admin", clerkUserId: SUB_CUT_ADMIN_NEW });
+  await seedLink({ userId: U_CUT_ADMIN, providerKey: "clerk", subject: SUB_CUT_ADMIN_OLD, status: "disabled" });
+  await seedLink({ userId: U_CUT_ADMIN, providerKey: "descope", subject: SUB_CUT_ADMIN_NEW });
   for (const [n, user] of [U_ADMIN, U_CLERK_ADMIN, U_ACME_ADMIN, U_GHOST_ADMIN, U_CUT_ADMIN].entries()) {
     await seedMembership(n, user, ROLE_ADMIN);
   }
 
   // Cashiers: alphabetical by display name so the roster order is pinned.
-  await seedUser(U_LEGACY, "legacy@rt796.test", "Alpha Legacy", SUB_LEGACY);
-  await seedLink(U_LEGACY, "clerk", SUB_LEGACY);
-  await seedUser(U_DESCOPE, "descope@rt796.test", "Beta Descope", null);
-  await seedLink(U_DESCOPE, "descope", SUB_DESCOPE);
+  await seedUser({ id: U_LEGACY, email: "legacy@rt796.test", displayName: "Alpha Legacy", clerkUserId: SUB_LEGACY });
+  await seedLink({ userId: U_LEGACY, providerKey: "clerk", subject: SUB_LEGACY });
+  await seedUser({ id: U_DESCOPE, email: "descope@rt796.test", displayName: "Beta Descope", clerkUserId: null });
+  await seedLink({ userId: U_DESCOPE, providerKey: "descope", subject: SUB_DESCOPE });
   // After an RT-791 apply: the Clerk link is disabled, the Descope link is active.
-  await seedUser(U_CUTOVER, "cutover@rt796.test", "Gamma Cutover", SUB_CUTOVER_NEW);
-  await seedLink(U_CUTOVER, "clerk", SUB_CUTOVER_OLD, "disabled");
-  await seedLink(U_CUTOVER, "descope", SUB_CUTOVER_NEW);
+  await seedUser({ id: U_CUTOVER, email: "cutover@rt796.test", displayName: "Gamma Cutover", clerkUserId: SUB_CUTOVER_NEW });
+  await seedLink({ userId: U_CUTOVER, providerKey: "clerk", subject: SUB_CUTOVER_OLD, status: "disabled" });
+  await seedLink({ userId: U_CUTOVER, providerKey: "descope", subject: SUB_CUTOVER_NEW });
   // A bridge-column value with no link at all.
-  await seedUser(U_GHOST, "ghost@rt796.test", "Delta Ghost", SUB_GHOST);
+  await seedUser({ id: U_GHOST, email: "ghost@rt796.test", displayName: "Delta Ghost", clerkUserId: SUB_GHOST });
   for (const [n, user] of [U_LEGACY, U_DESCOPE, U_CUTOVER, U_GHOST].entries()) {
     await seedMembership(10 + n, user, ROLE_STAFF);
   }
 
-  await seedUser(U_OTHER, "other@rt796.test", "Other Person", null);
-  await seedLink(U_OTHER, "clerk", SUB_OTHER);
+  await seedUser({ id: U_OTHER, email: "other@rt796.test", displayName: "Other Person", clerkUserId: null });
+  await seedLink({ userId: U_OTHER, providerKey: "clerk", subject: SUB_OTHER });
 
   const devices = new DeviceRepository(admin, env.app);
   operators = new PosOperatorsService(env.app, verifier, devices, logger, admin);
