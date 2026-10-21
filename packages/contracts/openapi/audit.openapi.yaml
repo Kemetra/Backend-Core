@@ -136,10 +136,11 @@ paths:
 
         **Support sessions (RT-414).** This operation is not tenant-scoped: it
         has no path tenant and does not use the active tenant, so support-session
-        enforcement does not cover it. It neither requires nor uses a support
-        session, an open or expired support session changes nothing about the
-        result, and it writes no `platform.cross_tenant.accessed` row. It is
-        the platform-scope read RT-414 named as a follow-up. A platform admin
+        enforcement does not cover it. The server MUST NOT require or use a
+        support session for it; an open or expired support session changes
+        nothing about the result. It MUST NOT write a
+        `platform.cross_tenant.accessed` row for the call. This is the
+        platform-scope read RT-414 named as a follow-up. A platform admin
         reads a tenant's own rows through `listAuditEvents` as before.
 
 
@@ -159,10 +160,10 @@ paths:
 
         **Disclosure (constitution XIV).** Sign-in rows store an email in
         `actor_label` (the account email on `ok`, the typed address on `failed`,
-        including for an unknown account). This operation never returns it
-        whole: a value containing `@` is returned as its first character, `***`,
-        and everything from the last `@` (`a***@example.com`); any other label
-        (for example `platform_support`) is returned as stored. `actor_user_id`
+        including for an unknown account). The server MUST NOT return it
+        whole: a value containing `@` MUST be returned as its first character,
+        `***`, and everything from the last `@` (`a***@example.com`); any other
+        label (for example `platform_support`) is returned as stored. `actor_user_id`
         is returned as stored. Audit rows store no IP address, password, token
         or request body, so none is returned. `actor_label` and `metadata` are
         untrusted text: a client must escape them, never render them as markup.

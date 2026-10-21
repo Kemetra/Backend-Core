@@ -27,8 +27,8 @@ This project follows [Semantic Versioning](https://semver.org/).
   read-only anchor + effects vs latest Bin comparison. The dead
   `InventoryBackfillProcessor` is deleted. Deploy: run
   `docs/operations/sql/inventory-anchors-domain-grants.sql` in step 2.
-- RT-431 `[GATED]`, contract-only (decisions 1-4 and the disclosure rule are
-  recommendations pending owner confirmation on RT-431): `audit.openapi.yaml`
+- RT-431 `[GATED]`, contract-only (decisions D1 to D5 confirmed 2026-10-21,
+  recorded on RT-431): `audit.openapi.yaml`
   1.3.0-draft adds `listPlatformAuditEvents` (`GET /api/v1/platform/audit/events`,
   `x-runtime-status: contract-only`), a platform-admin-only read of the
   platform-scoped audit rows (`tenant_id` null: `auth.signin.ok`,
