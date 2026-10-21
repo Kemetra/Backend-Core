@@ -1,7 +1,7 @@
 /**
  * Descope session-JWT verifier — RT-791 (RT-790 approach A).
  *
- * Same seam as the Clerk verifier (`ClerkVerifier.verify(jwt) -> { sub }`), so
+ * Same seam as the Clerk verifier (`OperatorTokenVerifier.verify(jwt) -> { providerKey, sub }`), so
  * every caller (sign-in, shifts, audit events, the identity adapter) is
  * unchanged. Verification uses `jose` against the Descope project JWKS:
  *
@@ -31,7 +31,10 @@ import {
   type JWTVerifyOptions,
 } from "jose";
 
-import type { ClerkVerifiedClaims, ClerkVerifier } from "./clerk-verifier";
+import type { OperatorTokenClaims, OperatorTokenVerifier } from "../auth/operator-token-verifier";
+
+/** The provider discriminator Descope-verified subjects carry. */
+export const DESCOPE_PROVIDER_KEY = "descope";
 
 export const DESCOPE_API_BASE = "https://api.descope.com";
 
@@ -146,14 +149,14 @@ function sessionSubject(payload: JWTPayload): string {
 }
 
 @Injectable()
-export class DescopeJwksVerifier implements ClerkVerifier {
+export class DescopeJwksVerifier implements OperatorTokenVerifier {
   private readonly verifyOptions: JWTVerifyOptions;
 
   constructor(private readonly options: DescopeVerifierOptions) {
     this.verifyOptions = toVerifyOptions(options);
   }
 
-  async verify(rawJwt: string): Promise<ClerkVerifiedClaims> {
+  async verify(rawJwt: string): Promise<OperatorTokenClaims> {
     let payload: JWTPayload;
     try {
       ({ payload } = await jwtVerify(rawJwt, this.options.jwks, this.verifyOptions));
@@ -162,7 +165,7 @@ export class DescopeJwksVerifier implements ClerkVerifier {
       // claims. Only jose's fixed error code survives (outage vs forgery triage).
       throw rejected(err);
     }
-    return { sub: sessionSubject(payload) };
+    return { providerKey: DESCOPE_PROVIDER_KEY, sub: sessionSubject(payload) };
   }
 }
 
@@ -171,14 +174,14 @@ export class DescopeJwksVerifier implements ClerkVerifier {
  * `DESCOPE_PROJECT_ID`; non-production boots without it but every verification
  * fails closed. Building the remote JWKS makes no request (fetched on first use).
  */
-export function descopeVerifierFactory(): ClerkVerifier {
+export function descopeVerifierFactory(): OperatorTokenVerifier {
   const projectId = (process.env["DESCOPE_PROJECT_ID"] ?? "").trim();
   if (projectId === "") {
     if (process.env["NODE_ENV"] === "production") {
       throw new Error("PosOperatorsModule: DESCOPE_PROJECT_ID is required in production");
     }
     return {
-      verify(): Promise<ClerkVerifiedClaims> {
+      verify(): Promise<OperatorTokenClaims> {
         return Promise.reject(
           new Error("descope verifier: DESCOPE_PROJECT_ID not configured (fail closed)"),
         );

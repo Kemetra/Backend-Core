@@ -35,6 +35,7 @@
  * The worker (`apps/worker/src/audit/`) is out of scope per the approved
  * slice boundaries. Worker-side persistence redaction is a separate concern.
  */
+import { linkClerkUsers } from "../_helpers/identity-links";
 import "reflect-metadata";
 
 import { hasForbiddenField } from "../../src/pos-audit-events/dto";
@@ -217,9 +218,9 @@ import { hashToken } from "@data-pulse-2/auth";
 import { createLogger } from "@data-pulse-2/shared";
 import cookieParser from "cookie-parser";
 import {
-  CLERK_VERIFIER,
-  type ClerkVerifier,
-} from "../../src/pos-operators/clerk-verifier";
+  OPERATOR_TOKEN_VERIFIER,
+  type OperatorTokenVerifier,
+} from "../../src/auth/operator-token-verifier";
 import { PosAuditEventsModule } from "../../src/pos-audit-events/pos-audit-events.module";
 import { PG_POOL } from "../../src/auth/auth.module";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
@@ -246,9 +247,9 @@ const FORBIDDEN_EVENT_ID = "0a000000-0000-7000-8000-000000ff6002";
 const ATTESTATION        = "redaction-spec-attestation-token-t236";
 
 // Stub Clerk verifier — accepts one known JWT, rejects everything else.
-class StubClerkVerifier implements ClerkVerifier {
-  async verify(_rawJwt: string): Promise<{ sub: string }> {
-    return { sub: OPERATOR_CLERK };
+class StubClerkVerifier implements OperatorTokenVerifier {
+  async verify(_rawJwt: string): Promise<{ providerKey: string; sub: string }> {
+    return { providerKey: "clerk", sub: OPERATOR_CLERK };
   }
 }
 
@@ -286,6 +287,7 @@ beforeAll(async () => {
       `INSERT INTO users (id, email, clerk_user_id) VALUES ($1, 'op@redact.example', $2)`,
       [OPERATOR_ID, OPERATOR_CLERK],
     );
+    await linkClerkUsers(pool);
     // Active membership required by the tenant-scoped actor lookup (CODX-POS-2).
     await pool.query(
       `INSERT INTO roles (id, tenant_id, code, name) VALUES ($1, $2, 'store_manager', 'Store Manager T236')`,
@@ -317,7 +319,7 @@ beforeAll(async () => {
     })
       .overrideProvider(PG_POOL)
       .useValue(pool)
-      .overrideProvider(CLERK_VERIFIER)
+      .overrideProvider(OPERATOR_TOKEN_VERIFIER)
       .useValue(new StubClerkVerifier())
       .compile();
 

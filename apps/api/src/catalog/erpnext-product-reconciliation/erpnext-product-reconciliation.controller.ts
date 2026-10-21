@@ -4,7 +4,7 @@
  * The human Tenant-Admin product-master reconciliation/repair surface
  * (packages/contracts/openapi/catalog/product-reconciliation.yaml). Authenticated
  * by the HUMAN `cookieAuth` → `DashboardAuthGuard` (the 007/013/014/017
- * convention), NOT the 012 `connectorBearer` machine scheme nor the POS `clerkJwt`
+ * convention), NOT the 012 `connectorBearer` machine scheme nor the POS operator-identity
  * device scheme (FR-019). `TenantContextGuard` publishes `request.context`;
  * `RolesGuard` + `@Roles` gate the surface (default deny → 404, §II/§XII).
  *

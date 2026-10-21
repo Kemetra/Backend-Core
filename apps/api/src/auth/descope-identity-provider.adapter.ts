@@ -3,7 +3,7 @@
  *
  * The Descope implementation of `IdentityProviderPort`, selected with
  * `IDENTITY_PROVIDER=descope`. `verifyIdentityToken` delegates to the Descope
- * JWKS verifier (same `ClerkVerifier` seam) and maps `{ sub }` to a
+ * JWKS verifier (same `OperatorTokenVerifier` seam) and maps `{ sub }` to a
  * provider-neutral subject `{ providerKey: 'descope', issuer, subject }`; the
  * resolver joins it onto the ACTIVE `external_identity_links` row exactly as it
  * does for Clerk. `linkExternalIdentity` and the not-wired lifecycle seams come
@@ -20,15 +20,16 @@
 import { Injectable } from "@nestjs/common";
 import type { Pool } from "pg";
 
-import type { ClerkVerifier } from "../pos-operators/clerk-verifier";
 import {
+  DESCOPE_PROVIDER_KEY,
   configuredDescopeIssuer,
   descopeVerifierFactory,
 } from "../pos-operators/descope-verifier";
 import type { VerifiedSubject } from "./identity-provider.port";
+import type { OperatorTokenVerifier } from "./operator-token-verifier";
 import { LinkingIdentityProviderAdapter } from "./linking-identity-provider.adapter";
 
-export const DESCOPE_PROVIDER_KEY = "descope";
+export { DESCOPE_PROVIDER_KEY };
 
 /** Placeholder issuer for a non-production boot without DESCOPE_PROJECT_ID (verifier fails closed). */
 const UNCONFIGURED_DESCOPE_ISSUER = "https://api.descope.com/unconfigured";
@@ -36,7 +37,7 @@ const UNCONFIGURED_DESCOPE_ISSUER = "https://api.descope.com/unconfigured";
 @Injectable()
 export class DescopeIdentityProviderAdapter extends LinkingIdentityProviderAdapter {
   constructor(
-    private readonly verifier: ClerkVerifier,
+    private readonly verifier: OperatorTokenVerifier,
     pool: Pool,
     readonly issuer: string,
   ) {

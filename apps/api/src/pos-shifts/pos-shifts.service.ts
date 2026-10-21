@@ -2,8 +2,8 @@
  * PosShiftsService — Wave 4.1b stuck-shift discovery.
  *
  * Auth pipeline:
- *   1. Verify Clerk JWT.
- *   2. Resolve Clerk subject → users.id.
+ *   1. Verify the operator identity token.
+ *   2. Resolve the verified identity → users.id through its ACTIVE identity link.
  *   3. Find active membership for caller on the requested branch.
  *   4. Confirm role is manager/admin (owner, tenant_admin, store_manager).
  *   5. Confirm branch access when store_access_kind = 'specific'.
@@ -22,7 +22,8 @@ import type { Logger } from "@data-pulse-2/shared";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool } from "pg";
 
-import type { ClerkVerifier } from "../pos-operators/clerk-verifier";
+import { findUserByActiveLink } from "../auth/identity-link-lookup";
+import type { OperatorTokenClaims, OperatorTokenVerifier } from "../auth/operator-token-verifier";
 import type { StuckShiftItem, StuckShiftsResponseBody } from "./dto";
 
 const ELIGIBLE_INTERNAL_ROLES = new Set([
@@ -53,9 +54,11 @@ export type StuckShiftsResult =
 export class PosShiftsService {
   constructor(
     private readonly pool: Pool,
-    private readonly clerkVerifier: ClerkVerifier,
+    private readonly operatorTokenVerifier: OperatorTokenVerifier,
     private readonly logger: Logger,
     private readonly stuckThresholdMinutes: number = 15,
+    /** Reads `external_identity_links`; the lookup role is the one documented to. */
+    private readonly lookupPool: Pool = pool,
   ) {}
 
   async getStuck(
@@ -63,25 +66,9 @@ export class PosShiftsService {
     branchId: string,
     requestId: string | null,
   ): Promise<StuckShiftsResult> {
-    // 1. Verify Clerk JWT.
-    let sub: string;
-    try {
-      ({ sub } = await this.clerkVerifier.verify(rawJwt));
-    } catch {
-      this.logger.warn({ request_id: requestId }, "pos-shifts: clerk jwt invalid");
-      return { kind: "refused" };
-    }
-
-    // 2. Resolve Clerk subject → users.id.
-    const userRow = await this.pool.query<{ id: string }>(
-      `SELECT id FROM users WHERE clerk_user_id = $1 AND deleted_at IS NULL LIMIT 1`,
-      [sub],
-    );
-    if (!userRow.rows[0]) {
-      this.logger.warn({ request_id: requestId, sub }, "pos-shifts: user unmapped");
-      return { kind: "refused" };
-    }
-    const userId = userRow.rows[0].id;
+    // 1-2. Verify the identity token, then resolve it to a user.
+    const userId = await this.resolveOperatorUserId(rawJwt, requestId);
+    if (userId === null) return { kind: "refused" };
 
     // 3. Find an active membership on the requested branch. The verified
     // user and branch IDs constrain this bootstrap read before authorization.
@@ -168,5 +155,29 @@ export class PosShiftsService {
       }));
 
     return { kind: "ok", body: { kind: "ok", shifts: items } };
+  }
+
+  /**
+   * Verify the identity token and resolve the verified identity → users.id
+   * through the ACTIVE link; null (logged by request id) on any refusal. The
+   * subject is never logged: it is a provider identifier of a person.
+   */
+  private async resolveOperatorUserId(rawJwt: string, requestId: string | null): Promise<string | null> {
+    let claims: OperatorTokenClaims;
+    try {
+      claims = await this.operatorTokenVerifier.verify(rawJwt);
+    } catch {
+      this.logger.warn({ request_id: requestId }, "pos-shifts: identity token invalid");
+      return null;
+    }
+    const user = await findUserByActiveLink(this.lookupPool, {
+      providerKey: claims.providerKey,
+      subject: claims.sub,
+    });
+    if (user?.deleted_at !== null) {
+      this.logger.warn({ request_id: requestId }, "pos-shifts: user unmapped");
+      return null;
+    }
+    return user.id;
   }
 }

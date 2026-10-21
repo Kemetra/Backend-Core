@@ -13,19 +13,19 @@ import {
   DESCOPE_PROVIDER_KEY,
   DescopeIdentityProviderAdapter,
 } from "../../src/auth/descope-identity-provider.adapter";
-import type { ClerkVerifier } from "../../src/pos-operators/clerk-verifier";
+import type { OperatorTokenVerifier } from "../../src/auth/operator-token-verifier";
 
 const SUB = "U2descopeAdapter01";
 const ISSUER = "https://api.descope.com/v1/apps/P2adapterTest";
 const USER_ID = "0a000000-0000-7000-8000-00000000ab01";
 
-function verifier(verify?: () => Promise<{ sub: string }>): ClerkVerifier {
-  return { verify: verify ?? (async () => ({ sub: SUB })) };
+function verifier(verify?: () => Promise<{ providerKey: string; sub: string }>): OperatorTokenVerifier {
+  return { verify: verify ?? (async () => ({ providerKey: "clerk", sub: SUB })) };
 }
 
 describe("DescopeIdentityProviderAdapter", () => {
   it("maps the verified sub to a neutral 'descope' subject with the configured issuer", async () => {
-    const verify = jest.fn(async () => ({ sub: SUB }));
+    const verify = jest.fn(async () => ({ providerKey: "clerk", sub: SUB }));
     const adapter = new DescopeIdentityProviderAdapter(verifier(verify), {} as unknown as Pool, ISSUER);
     await expect(adapter.verifyIdentityToken("raw.jwt")).resolves.toEqual({
       providerKey: DESCOPE_PROVIDER_KEY,

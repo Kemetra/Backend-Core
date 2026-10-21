@@ -93,13 +93,13 @@ describe("descopeIssuer / descopeJwksUrl", () => {
 });
 
 describe("DescopeJwksVerifier — accepts", () => {
-  it("returns only { sub } for a valid token", async () => {
-    await expect(localVerifier().verify(await token())).resolves.toEqual({ sub: SUB });
+  it("returns only { providerKey, sub } for a valid token", async () => {
+    await expect(localVerifier().verify(await token())).resolves.toEqual({ providerKey: "descope", sub: SUB });
   });
 
   it("checks aud when an audience is configured", async () => {
     const t = await token({ audience: PROJECT_ID });
-    await expect(localVerifier(PROJECT_ID).verify(t)).resolves.toEqual({ sub: SUB });
+    await expect(localVerifier(PROJECT_ID).verify(t)).resolves.toEqual({ providerKey: "descope", sub: SUB });
   });
 
   it("accepts every listed issuer form (v1/apps URL, legacy URL, bare project id)", async () => {
@@ -107,11 +107,11 @@ describe("DescopeJwksVerifier — accepts", () => {
       issuer: acceptedDescopeIssuers(PROJECT_ID),
       jwks: createLocalJWKSet({ keys: [publicJwk] }),
     });
-    await expect(verifier.verify(await token({ issuer: PROJECT_ID }))).resolves.toEqual({ sub: SUB });
+    await expect(verifier.verify(await token({ issuer: PROJECT_ID }))).resolves.toEqual({ providerKey: "descope", sub: SUB });
     await expect(
       verifier.verify(await token({ issuer: `https://api.descope.com/${PROJECT_ID}` })),
-    ).resolves.toEqual({ sub: SUB });
-    await expect(verifier.verify(await token())).resolves.toEqual({ sub: SUB });
+    ).resolves.toEqual({ providerKey: "descope", sub: SUB });
+    await expect(verifier.verify(await token())).resolves.toEqual({ providerKey: "descope", sub: SUB });
     await expect(verifier.verify(await token({ issuer: "P2other" }))).rejects.toThrow(
       "descope verifier: token rejected",
     );
@@ -133,7 +133,7 @@ describe("DescopeJwksVerifier — accepts", () => {
 
   it("ignores aud when no audience is configured", async () => {
     const t = await token({ audience: "anything" });
-    await expect(localVerifier().verify(t)).resolves.toEqual({ sub: SUB });
+    await expect(localVerifier().verify(t)).resolves.toEqual({ providerKey: "descope", sub: SUB });
   });
 });
 
@@ -249,7 +249,7 @@ describe("DescopeJwksVerifier — remote JWKS over HTTP (local server)", () => {
 
   // A fresh remote key set per case: jose caches a fetched JWKS.
   it.each<[string, boolean, (p: Promise<unknown>) => Promise<unknown>]>([
-    ["verifies against a fetched JWKS", false, (p) => expect(p).resolves.toEqual({ sub: SUB })],
+    ["verifies against a fetched JWKS", false, (p) => expect(p).resolves.toEqual({ providerKey: "descope", sub: SUB })],
     ["refuses when the JWKS fetch fails", true, (p) => expect(p).rejects.toThrow("descope verifier: token rejected")],
   ])("%s", async (_label, fetchFails, check) => {
     failing = fetchFails;
@@ -295,7 +295,7 @@ describe("descopeVerifierConfig — the real Descope session token shape", () =>
   }
 
   it("accepts the lab token shape with no env overrides", async () => {
-    await expect(configuredVerifier().verify(await realShapeToken())).resolves.toEqual({ sub: SUB });
+    await expect(configuredVerifier().verify(await realShapeToken())).resolves.toEqual({ providerKey: "descope", sub: SUB });
   });
 
   it("defaults the audience to the project id", () => {
@@ -317,6 +317,7 @@ describe("descopeVerifierConfig — the real Descope session token shape", () =>
     expect(descopeVerifierConfig(PROJECT_ID).audience).toBe("custom-aud");
     await expect(configuredVerifier().verify(await realShapeToken())).rejects.toThrow("token rejected");
     await expect(configuredVerifier().verify(await realShapeToken({ aud: "custom-aud" }))).resolves.toEqual({
+      providerKey: "descope",
       sub: SUB,
     });
   });

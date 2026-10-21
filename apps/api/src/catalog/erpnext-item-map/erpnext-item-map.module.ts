@@ -10,7 +10,7 @@
  * Authentication is the HUMAN Tenant-Admin cookie session
  * (`packages/contracts/openapi/catalog/erpnext-item-map.yaml` → `cookieAuth`,
  * the httpOnly `dp2_session`), resolved by `DashboardAuthGuard` — NOT the 012
- * `connectorBearer` machine scheme and NOT the POS `clerkJwt` device scheme.
+ * `connectorBearer` machine scheme and NOT the POS operator-identity device scheme.
  *
  * Imports mirror `reconciliation.module.ts` (the closest tenant-admin sibling):
  *   - `AuthModule`    — provides `PG_POOL` + `DashboardAuthGuard`.

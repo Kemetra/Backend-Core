@@ -10,7 +10,7 @@
  * POS-local override (DP3 / §13 item 3).
  *
  * Authentication is the HUMAN `cookieAuth` / `DashboardAuthGuard` scheme (the
- * 025 console convention) — NOT the POS `clerkJwt` device scheme, NOT a machine
+ * 025 console convention) — NOT the POS operator-identity device scheme, NOT a machine
  * bearer. `RolesGuard` + `@Roles` gate the surface (default deny).
  *
  * Imports:

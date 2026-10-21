@@ -13,7 +13,7 @@
  *
  * Authentication is the **human** `cookieAuth` / `DashboardAuthGuard` scheme
  * (the 007/013/014 dashboard convention) — NOT the machine `connectorBearer`
- * (015) and NOT the POS `clerkJwt` device scheme (010). 017 is human-operator-only
+ * (015) and NOT the POS operator-identity device scheme (010). 017 is human-operator-only
  * in v1 (FR-018): the connector never calls 017; a posting repair simply re-makes
  * a 015 work-item eligible and the connector re-posts via the existing feed/ack.
  * The controller / service / projection land in 017-US1-BACKLOG; the worker

@@ -4,7 +4,7 @@ import { type INestApplication } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import request from "supertest";
 
-import { CLERK_VERIFIER } from "../../src/pos-operators/clerk-verifier";
+import { OPERATOR_TOKEN_VERIFIER } from "../../src/auth/operator-token-verifier";
 import { PosAuditEventsService } from "../../src/pos-audit-events/pos-audit-events.service";
 import { PosAuditEventsController } from "../../src/pos-audit-events/pos-audit-events.controller";
 import { ZodValidationPipe } from "../../src/common/zod-validation.pipe";
@@ -46,7 +46,7 @@ beforeAll(async () => {
     controllers: [PosAuditEventsController],
     providers: [
       { provide: PosAuditEventsService, useValue: fakeService },
-      { provide: CLERK_VERIFIER, useValue: fakeClerkVerifier },
+      { provide: OPERATOR_TOKEN_VERIFIER, useValue: fakeClerkVerifier },
     ],
   }).compile();
 

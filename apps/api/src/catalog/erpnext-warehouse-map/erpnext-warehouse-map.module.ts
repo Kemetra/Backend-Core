@@ -12,7 +12,7 @@
  * Authentication is the HUMAN Tenant-Admin cookie session
  * (`packages/contracts/openapi/catalog/erpnext-warehouse-map.yaml` →
  * `cookieAuth`, the httpOnly `dp2_session`), resolved by `DashboardAuthGuard` —
- * NOT the 012 `connectorBearer` machine scheme and NOT the POS `clerkJwt` device
+ * NOT the 012 `connectorBearer` machine scheme and NOT the POS operator-identity device
  * scheme.
  *
  * Imports mirror `erpnext-item-map.module.ts` (the proven 013 sibling):

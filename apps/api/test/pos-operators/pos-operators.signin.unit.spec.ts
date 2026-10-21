@@ -19,7 +19,7 @@ import type { Pool } from "pg";
 
 import { PosOperatorsService } from "../../src/pos-operators/pos-operators.service";
 import { DeviceRepository } from "../../src/pos-operators/device.repository";
-import type { ClerkVerifier } from "../../src/pos-operators/clerk-verifier";
+import type { OperatorTokenVerifier } from "../../src/auth/operator-token-verifier";
 
 interface MockPool {
   query: jest.Mock;
@@ -38,8 +38,8 @@ function makePool(): MockPool {
   return { query: queryFn, connect: connectFn };
 }
 
-function makeVerifier(sub = "user_clerk_sub"): ClerkVerifier {
-  return { verify: jest.fn(async () => ({ sub })) };
+function makeVerifier(sub = "user_clerk_sub"): OperatorTokenVerifier {
+  return { verify: jest.fn(async () => ({ providerKey: "clerk", sub })) };
 }
 
 function makeDeviceRepo(

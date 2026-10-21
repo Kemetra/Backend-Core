@@ -30,6 +30,7 @@
  * NOTE: CI runs Testcontainers (ci.yml db-integration). Locally without
  * Docker this suite skips when MIGRATION_TEST_ALLOW_SKIP=1.
  */
+import { linkClerkUsers } from "../../../_helpers/identity-links";
 import "reflect-metadata";
 
 import { randomUUID } from "node:crypto";
@@ -52,7 +53,7 @@ import { GlobalExceptionFilter } from "../../../../src/common/exception.filter";
 import { RequestIdInterceptor } from "../../../../src/common/request-id.interceptor";
 import { ZodValidationPipe } from "../../../../src/common/zod-validation.pipe";
 import { CashierAdmissionsModule } from "../../../../src/pos-cashier-admissions/cashier-admissions.module";
-import { CLERK_VERIFIER, type ClerkVerifier } from "../../../../src/pos-operators/clerk-verifier";
+import { OPERATOR_TOKEN_VERIFIER, type OperatorTokenVerifier } from "../../../../src/auth/operator-token-verifier";
 import { PosOperatorsModule } from "../../../../src/pos-operators/pos-operators.module";
 import {
   applyAllUpAndCreateAppRole,
@@ -94,10 +95,10 @@ const HOUR = 3_600_000;
 const fromNow = (offsetMs: number): string => new Date(Date.now() + offsetMs).toISOString();
 const ZERO_HASH = "0".repeat(64);
 
-class StubClerkVerifier implements ClerkVerifier {
-  async verify(rawJwt: string): Promise<{ sub: string }> {
+class StubClerkVerifier implements OperatorTokenVerifier {
+  async verify(rawJwt: string): Promise<{ providerKey: string; sub: string }> {
     if (rawJwt !== MANAGER_JWT) throw new Error("StubClerkVerifier: unknown jwt");
-    return { sub: MANAGER_SUB };
+    return { providerKey: "clerk", sub: MANAGER_SUB };
   }
 }
 
@@ -424,6 +425,7 @@ beforeAll(async () => {
        ($4, 'cashierx@rt539.example', 'Other Cashier', 'user_clerk_rt539_cx')`,
     [CASHIER, CASHIER_2, MANAGER, CASHIER_OTHER, MANAGER_SUB],
   );
+  await linkClerkUsers(a);
   await a.query(
     `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES
        ($1, $5, $6, $9, 'all'), ($2, $5, $7, $9, 'all'), ($3, $5, $8, $10, 'specific'), ($4, $11, $12, $13, 'all')`,
@@ -456,7 +458,7 @@ beforeAll(async () => {
     .useValue(env.app)
     .overrideProvider(AUTH_LOOKUP_POOL)
     .useValue(env.admin)
-    .overrideProvider(CLERK_VERIFIER)
+    .overrideProvider(OPERATOR_TOKEN_VERIFIER)
     .useValue(new StubClerkVerifier())
     .overrideProvider(AUDIT_JOB_ENQUEUER)
     .useValue(audit)
