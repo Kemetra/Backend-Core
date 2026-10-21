@@ -1581,6 +1581,9 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
       "A different `forcedReason` for a shift already force-closed is 409 `shift_force_closed`",
       "**Order.** Authentication, including the live manager/admin check (401), then scope (404 `shift_not_found`), then the natural-key replay (`200`) or, for a different `forcedReason`, 409 `shift_force_closed`, then 409 `shift_closed`, then the stuck rule (409 `shift_not_stuck`)",
       "A replay of a recorded force close is never answered `shift_not_stuck`",
+      "partitions a replay by tenant, route, `shift_id`, actor and key, NOT by store",
+      "gets that actor's OWN stored response, not the 404",
+      "every first request is scope-checked",
       "One audit event records the closing manager, the terminal the request came from, the terminal that opened the shift and the shift",
       "The reason is stored with the fact and never logged",
     ]);

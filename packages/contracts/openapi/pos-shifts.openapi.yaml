@@ -876,8 +876,15 @@ paths:
         natural-key replay (`200`) or, for a different `forcedReason`, 409
         `shift_force_closed`, then 409 `shift_closed`, then the stuck rule
         (409 `shift_not_stuck`). A same-key replay is answered by the shared
-        `IdempotencyInterceptor` before the handler. A replay of a recorded
-        force close is never answered `shift_not_stuck`.
+        `IdempotencyInterceptor` before the handler, so before this order and
+        its scope check. The interceptor partitions a replay by tenant, route,
+        `shift_id`, actor and key, NOT by store: the same actor repeating the
+        same key and body from the envelope of another store of the same
+        tenant gets that actor's OWN stored response, not the 404. This is the
+        one stated exception to the store-scoped 404; it discloses nothing the
+        actor was not already given, and every first request is scope-checked.
+        A replay of a recorded force close is never answered
+        `shift_not_stuck`.
 
 
         **Audit.** One audit event records the closing manager, the terminal
