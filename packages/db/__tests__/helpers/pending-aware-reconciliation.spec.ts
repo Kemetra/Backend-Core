@@ -80,11 +80,11 @@ async function seedTenant(): Promise<Fixture> {
     await a.query<{ id: string }>(`SELECT id FROM stock_locations WHERE store_id = $1 AND kind = 'primary'`, [storeId])
   ).rows[0]!.id;
   const f = { tenantId, storeId, productId, warehouse, locationId };
-  await seedSnapshot(f, "10", new Date(Date.now() - 60_000).toISOString());
+  await seedSnapshot(f, { quantity: "10", readAt: new Date(Date.now() - 60_000).toISOString() });
   return f;
 }
 
-async function seedSnapshot(f: Fixture, quantity: string, readAt: string): Promise<void> {
+async function seedSnapshot(f: Fixture, { quantity, readAt }: { quantity: string; readAt: string }): Promise<void> {
   const runId = uuid();
   const report = {
     runRef: runId,
@@ -102,7 +102,7 @@ async function seedSnapshot(f: Fixture, quantity: string, readAt: string): Promi
 }
 
 /** A posting row for a fresh sale (the intent a sale effect links to). */
-async function seedPosting(f: Fixture, status: string): Promise<string> {
+async function seedPosting(f: Fixture, { posted }: { posted: boolean }): Promise<string> {
   const saleId = uuid();
   await pg().admin.query(
     `INSERT INTO sales (id, tenant_id, store_id, currency_code, pos_total, occurred_at, business_date,
@@ -116,7 +116,7 @@ async function seedPosting(f: Fixture, status: string): Promise<string> {
      VALUES ($1, $2, $3, 'sale_post', $3, 'pos', $4, $5, $6,
              CASE WHEN $6 = 'posted' THEN '{"name":"SINV"}' END, CASE WHEN $6 = 'posted' THEN now() END)
      RETURNING id`,
-    [f.tenantId, f.storeId, saleId, `x-${saleId}`, "0".repeat(64), status],
+    [f.tenantId, f.storeId, saleId, `x-${saleId}`, "0".repeat(64), posted ? "posted" : "pending"],
   );
   return r.rows[0]!.id;
 }
@@ -124,7 +124,13 @@ async function seedPosting(f: Fixture, status: string): Promise<string> {
 type EffectState = "pending" | "rejected" | "reconciliation_required" | "confirmed" | "not_posted" | "erp_neutral";
 
 /** One effect at the primary/sellable position, with its integration row. */
-async function seedEffect(f: Fixture, quantity: string, state: EffectState, confirmedAt?: string): Promise<void> {
+interface EffectSeed {
+  readonly quantity: string;
+  readonly state: EffectState;
+  readonly confirmedAt?: string;
+}
+
+async function seedEffect(f: Fixture, { quantity, state, confirmedAt }: EffectSeed): Promise<void> {
   const effectId = uuid();
   const sale = state !== "not_posted" && state !== "erp_neutral";
   await pg().admin.query(
@@ -144,7 +150,7 @@ async function seedEffect(f: Fixture, quantity: string, state: EffectState, conf
       f.locationId,
     ],
   );
-  const postingId = sale ? await seedPosting(f, state === "confirmed" ? "posted" : "pending") : null;
+  const postingId = sale ? await seedPosting(f, { posted: state === "confirmed" }) : null;
   await pg().admin.query(
     `INSERT INTO inventory_effect_integration (effect_id, tenant_id, state, posting_status_id, erp_document_ref, erp_confirmed_at)
      VALUES ($1, $2, $3, $4, CASE WHEN $3 IN ('confirmed', 'reconciliation_required') THEN '{"name":"SINV"}' END, $5)`,
@@ -159,7 +165,7 @@ function asTenant<T>(f: Fixture, work: (c: PoolClient) => Promise<T>): Promise<T
 async function activated(): Promise<Fixture> {
   const f = await seedTenant();
   // A pre-activation manual movement: absorbed by the anchor (RT-289 Q3).
-  await seedEffect(f, "4", "not_posted");
+  await seedEffect(f, { quantity: "4", state: "not_posted" });
   const outcome = await asTenant(f, (c) => activateSaleEffects(c, { tenantId: f.tenantId, actorId: ACTOR }));
   if (outcome.kind !== "activated") throw new Error(`not activated: ${JSON.stringify(outcome)}`);
   return f;
@@ -193,7 +199,7 @@ describe("readPendingAwarePositions — DC-7 terms", () => {
   it("a pending sale effect is a pending-ERP term", async () => {
     if (skip()) return;
     const f = await activated();
-    await seedEffect(f, "-2", "pending");
+    await seedEffect(f, { quantity: "-2", state: "pending" });
     expect(await positionOf(f)).toMatchObject({
       anchorQuantity: "10.000000",
       operationalPosition: "8.000000",
@@ -209,8 +215,8 @@ describe("readPendingAwarePositions — DC-7 terms", () => {
   it("a rejected and a reconciliation_required sale effect are pending-ERP terms", async () => {
     if (skip()) return;
     const f = await activated();
-    await seedEffect(f, "-3", "rejected");
-    await seedEffect(f, "-1", "reconciliation_required");
+    await seedEffect(f, { quantity: "-3", state: "rejected" });
+    await seedEffect(f, { quantity: "-1", state: "reconciliation_required" });
     expect(await positionOf(f)).toMatchObject({
       operationalPosition: "6.000000",
       pendingErp: "-4.0000",
@@ -221,7 +227,7 @@ describe("readPendingAwarePositions — DC-7 terms", () => {
   it("a not-posted manual adjustment after activation is a pending-Retail term", async () => {
     if (skip()) return;
     const f = await activated();
-    await seedEffect(f, "5", "not_posted");
+    await seedEffect(f, { quantity: "5", state: "not_posted" });
     expect(await positionOf(f)).toMatchObject({
       operationalPosition: "15.000000",
       pendingErp: "0",
@@ -234,8 +240,8 @@ describe("readPendingAwarePositions — DC-7 terms", () => {
     if (skip()) return;
     const f = await activated();
     const confirmedAt = new Date().toISOString();
-    await seedEffect(f, "-2", "confirmed", confirmedAt);
-    await seedEffect(f, "0", "erp_neutral");
+    await seedEffect(f, { quantity: "-2", state: "confirmed", confirmedAt });
+    await seedEffect(f, { quantity: "0", state: "erp_neutral" });
     const p = await positionOf(f);
     expect(p).toMatchObject({ operationalPosition: "8.000000", pendingErp: "0", pendingRetail: "0", expectedErpBook: "8.000000" });
     expect(new Date(p.latestErpConfirmedAt!).toISOString()).toBe(confirmedAt);
@@ -244,7 +250,7 @@ describe("readPendingAwarePositions — DC-7 terms", () => {
   it("a tenant without activated sale effects has no pending-aware position (legacy path)", async () => {
     if (skip()) return;
     const f = await seedTenant();
-    await seedEffect(f, "4", "not_posted");
+    await seedEffect(f, { quantity: "4", state: "not_posted" });
     expect(await asTenant(f, (c) => readPendingAwarePositions(c, f.storeId))).toEqual([]);
     expect(await asTenant(f, (c) => isStorePendingAware(c, f.storeId))).toBe(false);
   });
@@ -272,7 +278,7 @@ describe("buildCutoverEquivalenceReport — dual read (977, 980)", () => {
   it("shows the legacy raw SUM diverging while the pending-aware expected book matches the Bin", async () => {
     if (skip()) return;
     const f = await activated();
-    await seedEffect(f, "-2", "pending");
+    await seedEffect(f, { quantity: "-2", state: "pending" });
     const rows = await asTenant(f, (c) => buildCutoverEquivalenceReport(c));
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -291,11 +297,11 @@ describe("buildCutoverEquivalenceReport — dual read (977, 980)", () => {
   it("flags a Bin read before a confirmation as stale, and a true divergence as not equivalent", async () => {
     if (skip()) return;
     const f = await activated();
-    await seedEffect(f, "-2", "confirmed");
+    await seedEffect(f, { quantity: "-2", state: "confirmed" });
     const rows = await asTenant(f, (c) => buildCutoverEquivalenceReport(c));
     expect(rows[0]).toMatchObject({ pendingAwareDifference: "2.000000", equivalent: false, snapshotStale: true });
     // A newer snapshot that still disagrees is a divergence, not stale.
-    await seedSnapshot(f, "9", new Date(Date.now() + 60_000).toISOString());
+    await seedSnapshot(f, { quantity: "9", readAt: new Date(Date.now() + 60_000).toISOString() });
     const later = await asTenant(f, (c) => buildCutoverEquivalenceReport(c));
     expect(later[0]).toMatchObject({ pendingAwareDifference: "1.000000", equivalent: false, snapshotStale: false });
   });

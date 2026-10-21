@@ -75,18 +75,24 @@ export function parseInventoryEffectsArgs(argv: readonly string[]): InventoryEff
   );
 }
 
+/** A read-only report (`compare` or `equivalence`): read, roll back, print. */
+async function runReadOnly(
+  client: Client,
+  cmd: { readonly kind: "compare" | "equivalence"; readonly tenantId: string },
+): Promise<number> {
+  const rows = cmd.kind === "compare" ? await compareAnchorsToBin(client) : await buildCutoverEquivalenceReport(client);
+  await client.query("ROLLBACK");
+  console.log(JSON.stringify({ tenantId: cmd.tenantId, rows }, null, 2));
+  return 0;
+}
+
 /** Run one command in one tenant-scoped transaction; returns the exit code. */
 async function run(client: Client, cmd: InventoryEffectsCommand): Promise<number> {
   await client.query("BEGIN");
   try {
     await client.query(`SELECT set_config('app.current_tenant', $1, true)`, [cmd.tenantId]);
     await client.query(`SELECT set_config('app.is_platform_admin', 'false', true)`);
-    if (cmd.kind !== "activate") {
-      const rows = cmd.kind === "compare" ? await compareAnchorsToBin(client) : await buildCutoverEquivalenceReport(client);
-      await client.query("ROLLBACK");
-      console.log(JSON.stringify({ tenantId: cmd.tenantId, rows }, null, 2));
-      return 0;
-    }
+    if (cmd.kind !== "activate") return await runReadOnly(client, cmd);
     const outcome = await activateSaleEffects(client, { tenantId: cmd.tenantId, actorId: cmd.actorId });
     const commit = outcome.kind === "activated" && !cmd.dryRun;
     await client.query(commit ? "COMMIT" : "ROLLBACK");

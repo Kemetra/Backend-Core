@@ -52,10 +52,14 @@ export function classifyPendingAware(line: PendingAwareLine): PendingAwareClass 
   if (!line.hasConfirmedMap) return "unmapped_item";
   if (line.binQty === undefined) return "dp2_only";
   if (line.uomMismatch) return "uom_mismatch";
-  if (canonicalDecimal(line.expectedErpBook) === canonicalDecimal(line.binQty)) {
-    if (!isZero(line.pendingErp)) return "expected_pending_erp";
-    if (!isZero(line.pendingRetail)) return "expected_pending_retail";
-    return "match";
+  return compareExpectedBook(line, line.binQty);
+}
+
+/** The expected-book compare of a mapped line with a Bin entry in the same unit. */
+function compareExpectedBook(line: PendingAwareLine, binQty: string): PendingAwareClass {
+  if (canonicalDecimal(line.expectedErpBook) !== canonicalDecimal(binQty)) {
+    return line.snapshotStale ? "erp_snapshot_stale" : "quantity_divergence";
   }
-  return line.snapshotStale ? "erp_snapshot_stale" : "quantity_divergence";
+  if (!isZero(line.pendingErp)) return "expected_pending_erp";
+  return isZero(line.pendingRetail) ? "match" : "expected_pending_retail";
 }
