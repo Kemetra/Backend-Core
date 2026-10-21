@@ -38,9 +38,11 @@ This project follows [Semantic Versioning](https://semver.org/).
   `shift_not_stuck` otherwise). It records the shift as NOT COUNTED (`cashCount:
   not_counted`: closing manager, calling terminal, opening terminal, reason;
   no cash-up and no `ShiftClose`), because the manager's terminal does not hold
-  the drawer's totals and the server never computes a POS cash-up. A later
-  `closeShift`, `openShift` replay or new `recordCashMovement` for that shift is
-  the distinct 409 `shift_force_closed` (final for the POS). `closeShift`, the
+  the drawer's totals and the server never computes a POS cash-up. It is never a
+  counted zero and is excluded from every variance flag and from the R-9
+  cash-refund cross-check. A later `closeShift` or `openShift` replay for that
+  shift is the distinct 409 `shift_force_closed` (final for the POS); a later
+  new `recordCashMovement` keeps 409 `shift_closed`. `closeShift`, the
   stuck list and every existing schema are unchanged. No runtime, migration,
   Console or POS change: the runtime and its storage are a separate `[GATED]`
   ticket.

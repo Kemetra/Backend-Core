@@ -54,8 +54,9 @@
  * RT-742 (1.4.0-draft, `[GATED]`): one NEW contract-only operation,
  * `forceCloseShift`, a manager's store-scoped force close recorded as not
  * counted; `closeShift`, the stuck list and every existing schema are
- * unchanged, and the late facts of the opening terminal get the distinct 409
- * `shift_force_closed` (last describe block).
+ * unchanged, and the late close / open replay of the opening terminal get the
+ * distinct 409 `shift_force_closed` (a late movement keeps `shift_closed`);
+ * the last describe block.
  */
 import "reflect-metadata";
 
@@ -1526,17 +1527,38 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
     expect(text).toContain("Nothing already recorded for it is edited or deleted");
   });
 
-  it("states the late-facts rule: the distinct shift_force_closed, final for the POS, on close, open replay and movement", () => {
+  it("states the late-facts rule: shift_force_closed on a later close and open replay, final for the POS; a late movement keeps shift_closed", () => {
     const text = forceText();
-    expect(text).toContain("every later `closeShift` (any device, any payload), `openShift` replay and new `recordCashMovement` is 409 `shift_force_closed`");
-    expect(text).toContain("A movement recorded BEFORE the force close still replays as `200`");
-    expect(text).toContain("The POS treats `shift_force_closed` as final for that shift");
+    expect(text).toContain("every later `closeShift` (any device, any payload) and `openShift` replay is 409 `shift_force_closed`");
+    expect(text).toContain("A later NEW `recordCashMovement` keeps the existing 409 `shift_closed` (a movement recorded BEFORE the force close still replays as `200`)");
+    expect(text).toContain("The POS treats `shift_force_closed` as final for that shift, not as a transient or a payload conflict (`shift_payload_conflict`)");
     expect(flat(op(CLOSE).description)).toContain("A shift a manager closed with `forceCloseShift` (RT-742) takes no close, from any device: it is 409 `shift_force_closed`");
     expect(flat(op(OPEN).description)).toContain("the same re-delivery is 409 `shift_force_closed`");
-    expect(flat(op(MOVEMENT).description)).toContain("409 `shift_force_closed`");
-    for (const name of ["OpenShiftConflict", "CashMovementConflict", "CloseShiftConflict"]) {
+    expect(flat(op(MOVEMENT).description)).toContain("including one a manager closed with `forceCloseShift` (RT-742), is 409 `shift_closed`");
+    expect(flat(op(MOVEMENT).description)).not.toContain("shift_force_closed");
+    for (const name of ["OpenShiftConflict", "CloseShiftConflict"]) {
       expect(flat(doc.components?.responses?.[name]?.description)).toContain("`shift_force_closed`");
     }
+    expect(flat(doc.components?.responses?.["CashMovementConflict"]?.description)).not.toContain("shift_force_closed");
+    expect(flat(doc.components?.responses?.["CashMovementConflict"]?.description)).toContain("includes a shift a manager closed with `forceCloseShift`");
+  });
+
+  it("states normatively that a not-counted close is never a counted zero and is outside variance flags and the R-9 cross-check", () => {
+    const text = forceText();
+    expect(text).toContain("**Not counted** (normative). The recorded fact is not a counted zero: it has no `countedCash`, `expectedCash`, `variance`, total or `saleCount` at all, never `\"0.00\"`");
+    expect(text).toContain("EXCLUDED from every variance flag (the RT-384 `approvalRequiredByPolicy`, `approvalMissing` and `approverCheck`, which exist only on a `ShiftClose`)");
+    expect(text).toContain("It is also outside the R-9 cash refund cross-check (`closeShift`, Refund cross-check): no close exists for the shift, so no return is claimed, `cashRefundsTotal` is not checked");
+    expect(info()).toContain("A not-counted close is excluded from every variance flag and from the R-9 cash-refund cross-check, and is never a counted zero");
+    // Structurally: the projection carries none of the cash-up or variance-flag fields.
+    const fields = [
+      ...Object.keys(schema("ForcedCloseRecord").properties ?? {}),
+      ...Object.keys(schema("ForceClosedShift").properties ?? {}),
+    ];
+    expect(
+      fields.filter((f) =>
+        ["countedCash", "expectedCash", "variance", "saleCount", "cashRefundsTotal", "cashRefundReturnRefs", "approvalRequiredByPolicy", "approvalMissing", "approverCheck"].includes(f),
+      ),
+    ).toEqual([]);
   });
 
   it("states the natural key (shift + forcedReason, never the actor) and the audit event", () => {

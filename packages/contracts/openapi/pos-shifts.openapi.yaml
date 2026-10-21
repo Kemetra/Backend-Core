@@ -173,11 +173,13 @@ info:
     `ShiftClose`. `GET /shifts/stuck`, `closeShift` (its body, its
     device-scoped 404 and the normal close) and every existing schema are
     unchanged. The only edits to existing operations are description text:
-    a new 409 `error.code`, `shift_force_closed`, answers a later `openShift`
-    replay, `recordCashMovement` or `closeShift` for a shift a manager closed
-    this way (see `forceCloseShift`, Late facts). The runtime, and the
-    storage for the new fact, are a separate ticket and a separate
-    [GATED] change; `forceCloseShift` has no runtime route yet. The Console
+    a new 409 `error.code`, `shift_force_closed`, answers a later `closeShift`
+    or `openShift` replay for a shift a manager closed this way; a later NEW
+    `recordCashMovement` keeps 409 `shift_closed` (see `forceCloseShift`, Late
+    facts). A not-counted close is excluded from every variance flag and from
+    the R-9 cash-refund cross-check, and is never a counted zero (see
+    `forceCloseShift`, Not counted). The runtime, and the storage for the new
+    fact, are a separate ticket and a separate [GATED] change; `forceCloseShift` has no runtime route yet. The Console
     read side (`shift-closes.openapi.yaml`) lists recorded cash-ups only, so
     a force-closed shift is not listed there; surfacing it is a separate
     ticket.
@@ -415,9 +417,9 @@ paths:
         corrected with an opposite movement.
 
 
-        The shift must be open: a NEW movement on a closed shift is 409
-        `shift_closed`, and on a shift a manager closed with `forceCloseShift`
-        (RT-742) 409 `shift_force_closed`. Re-sending a movement that is already recorded (same
+        The shift must be open: a NEW movement on a closed shift, including
+        one a manager closed with `forceCloseShift` (RT-742), is 409
+        `shift_closed`. Re-sending a movement that is already recorded (same
         `movementId`, same payload) is a replay, even after the close. The
         replay resolves `movementId` only on the path `shift_id`: a
         `movementId` already recorded on any other shift (of this device or
@@ -797,15 +799,29 @@ paths:
         shift is claimed by no close.
 
 
+        **Not counted** (normative). The recorded fact is not a counted zero:
+        it has no `countedCash`, `expectedCash`, `variance`, total or
+        `saleCount` at all, never `"0.00"`, so no reader can mistake it for a
+        drawer that balanced. It is EXCLUDED from every variance flag (the
+        RT-384 `approvalRequiredByPolicy`, `approvalMissing` and
+        `approverCheck`, which exist only on a `ShiftClose`) and from the
+        console reads of recorded cash-ups. It is also outside the R-9 cash
+        refund cross-check (`closeShift`, Refund cross-check): no close exists
+        for the shift, so no return is claimed, `cashRefundsTotal` is not
+        checked, and a cash refund execution whose `evidence.shiftRef` is this
+        shift stays settled by its execution alone and is claimed by no close.
+
+
         **Late facts** (POS-visible, normative for the POS). The opening
         terminal does not know yet. For this shift every later `closeShift`
-        (any device, any payload), `openShift` replay and new
-        `recordCashMovement` is 409 `shift_force_closed`; nothing is recorded.
-        A movement recorded BEFORE the force close still replays as `200`. The
+        (any device, any payload) and `openShift` replay is 409
+        `shift_force_closed`; nothing is recorded. A later NEW
+        `recordCashMovement` keeps the existing 409 `shift_closed` (a
+        movement recorded BEFORE the force close still replays as `200`). The
         POS treats `shift_force_closed` as final for that shift, not as a
-        transient or a payload conflict: it stops sending that shift's facts
-        and shows that a manager closed it. A POS change to do so is a
-        separate ticket.
+        transient or a payload conflict (`shift_payload_conflict`): it stops
+        sending that shift's facts and shows that a manager closed it. A POS
+        change to do so is a separate ticket.
 
 
         **Idempotency.** `Idempotency-Key` is REQUIRED, scoped to the verified
@@ -2147,9 +2163,8 @@ components:
         different payload); `shift_payload_conflict` (this `movementId` is
         already recorded with a different payload or on another shift);
         `shift_closed` (the shift is closed, so a new movement cannot be
-        added); `shift_force_closed` (RT-742: a manager closed the shift with
-        `forceCloseShift`; final for that shift). Deterministic; nothing is
-        recorded.
+        added; this includes a shift a manager closed with `forceCloseShift`,
+        RT-742). Deterministic; nothing is recorded.
       content:
         application/json:
           schema:
