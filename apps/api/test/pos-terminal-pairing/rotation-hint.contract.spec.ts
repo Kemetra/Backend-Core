@@ -101,6 +101,14 @@ describe("rotate-soon hint headers in the contracts (RT-639)", () => {
     expect(text).toContain(ROTATE_STAGE_HEADER);
     expect(text).not.toContain("deferred to RT-370");
   });
+
+  it("the pairing contract says they ride every response after a successful authentication, errors included", () => {
+    const text = readFileSync(resolve(OPENAPI_DIR, "pos-terminal-pairing.openapi.yaml"), "utf8");
+    // The per-operation responses are shared `$ref` components that also serve the 401 and routes
+    // that send no hint, so the rule is stated once here instead of on every error response.
+    expect(text).toContain("every response of that request");
+    expect(text).toContain("never depends on one being absent");
+  });
 });
 
 describe("the conditional-GET 304 (RT-639)", () => {

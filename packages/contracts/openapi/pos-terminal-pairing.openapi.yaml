@@ -158,11 +158,17 @@ info:
     sent on the routes that authenticate with the `device` token alone (the
     catalogue read-down, the cashier admissions, the shift cash-up writes,
     the sale history, the cash variance policy, and `captureSale` on its
-    device path), and only on a successful authentication: a refused token
-    gets neither. `posRotateTerminalToken` does not carry them (its 200
-    already holds the new `rotate_after`), nor do the routes that
-    authenticate with an operator credential. They do not replace the first
-    start rule below.
+    device path), and only after a successful authentication: a refused
+    token (401) gets neither. Once the device is authenticated they ride
+    every response of that request, including a 304 and a later 4xx or 5xx
+    (for example 403 `refused` or 409). The operations document them on
+    their 2xx and 304 responses; the error responses are shared components
+    that also serve the 401, so the rule is stated here once. They are
+    optional everywhere: a client reads them from whichever response
+    carries them and never depends on one being absent. `posRotateTerminalToken`
+    does not carry them (its 200 already holds the new `rotate_after`), nor
+    do the routes that authenticate with an operator credential. They do
+    not replace the first start rule below.
 
 
     **Overlap (10 minutes).** The previous token keeps authenticating for
