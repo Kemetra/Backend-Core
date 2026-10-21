@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 POS Sales — Transaction Capture API
-  version: "1.12.0-draft"
+  version: "1.13.0-draft"
   description: >
     Spec 008 Sales / Transaction Capture contract surface. Defines the first
     sale fact the SaaS owns: an immutable `sales` header + frozen `sale_lines`
@@ -11,7 +11,7 @@ info:
     audit, and outbox. It does NOT re-invent ingestion. Tender (gate A.5) was
     deferred until RT-10; from RT-76 a sale carries its tender facts (below).
 
-    Six operations, all POS-facing (`/api/pos/v1/...`), authenticated via the
+    Nine operations, all POS-facing (`/api/pos/v1/...`), authenticated via the
     `operatorAuthorization` scheme — the opaque DP-2-issued operator-authorization
     ENVELOPE presented as `Authorization: Bearer <envelope>` (031 D1+D2). This
     REPLACES the prior 008 Option-Y auth (a genuine Clerk JWT +
@@ -37,17 +37,29 @@ info:
          event referencing a sale; stamp `refundedAt`; preserve the
          POS-reported refund amount verbatim; idempotent (FR-010/012/013/014).
          No tender fields (gate A.5). Not for new use — see `recordReturn`.
+         Gated off from the F-4 runtime (RT-271 R-11, RT-490): 404 unless
+         the deployment enables it.
       4. `readSale`     — the minimal authorized read to resolve a sale for
          void/return and duplicate-replay; object-level authz; cross-tenant /
          out-of-scope ids are non-disclosing 404s (FR-014/063/100/102).
       5. `recordReturn` — RT-72 (RT-14 D1–D5): a line-aware return naming
          `lines[{lineRef, quantity}]`; the server computes all money and
-         records the refund tender as a fact. Live from RT-73 behind the
+         records the refund allocation (RT-490: how the refund is to be
+         paid, not a payout). Live from RT-73 behind the
          `POS_RETURNS_ENABLED` deployment gate.
       6. `recordCreditSaleReversal` — RT-577: the Manager/Admin-only void or
          return of a sale with payer responsibilities, refunding only the
          collected share and turning the credit share into a receivable
          adjustment. Live from the RT-577 runtime (migration 0054).
+      7. `recordRefundExecution` — RT-490 (RT-271 R-3/R-4): record that one
+         refund allocation of a return was paid out (a settled cash
+         execution). Contract-only until the F-2 runtime.
+      8. `readReturnByProvenance` — RT-490 (R-8): the return recorded
+         against a sale under a given `(sourceSystem, externalId)`, with its
+         refund settlement. Contract-only until the F-2 runtime.
+      9. `listSaleReturns` — RT-490 (R-8): every return recorded against a
+         sale, with its refund settlement. Contract-only until the F-2
+         runtime.
 
     RT-72 versioning (additive): `recordReturn` is new; `SaleLine` gains
     `lineRef`, `returnedQuantity` and `returnableQuantity`, and `Sale` gains
@@ -319,6 +331,56 @@ info:
     `pos_sales.detail_read` audit event per authorized 200 (OD-534-7), with
     only the sale ref in its metadata.
 
+    RT-490 (1.13.0-draft; [GATED] owner authorization Jira RT-490 comment
+    13211, 2026-10-21; RT-271 F-1, decisions R-1 to R-12 ratified in RT-271
+    comments 11872 and 11886): REFUND ALLOCATION, REFUND EXECUTION AND RETURN
+    READS. Return acceptance, the refund obligation with its allocations, and
+    the refund execution become distinct facts (R-1). `RefundTender` is
+    re-described as a refund ALLOCATION (how the refund is to be paid, not a
+    payout fact) and gains three OPTIONAL fields, `allocationRef`,
+    `originalTenderRef` and `instrument` (`cash` only) (R-2, R-3).
+    `recordReturn` states the instrument rule and the cumulative
+    refundable-balance rule (R-5, R-6, R-12) with two new 422 codes,
+    `refund_instrument_not_allowed` and `refund_allocation_exceeds_tender`;
+    its 422 response is renamed `ReturnUnprocessable` (formerly
+    `ReturnTenderMismatch`, which carried `return_tender_mismatch` only). New
+    `recordRefundExecution` records that an allocation was paid out (R-3,
+    R-4; 422 `refund_execution_exceeds_allocation`), and new
+    `readReturnByProvenance` and `listSaleReturns` read recorded returns with
+    their derived settlement (R-8, for RT-196). The legacy `recordRefund` is
+    gated off (R-11). Behind a deploy flag, the ERP posting of a return that
+    can be settled through executions moves to settlement (R-7, see
+    `erpnext-connector/posting-feed.yaml` 1.9.0-draft), and shift close
+    cross-checks the claimed cash refunds against settled executions (R-9, see
+    `pos-shifts.openapi.yaml` 1.3.0-draft). The change is additive in SHAPE:
+    every new request field is optional, no existing field or `required` list
+    moves, and a return body without the new fields stays valid and is
+    accepted as before. It is NOT additive in BEHAVIOUR, from the F-2 runtime:
+    a return of a sale that carries a non-cash tender, and a return that
+    would allocate more than a tender's refundable balance, are refused
+    (422). The three new operations are contract-only (`x-runtime-status`)
+    until F-2.
+    ROLLOUT ORDER: (1) this contract; (2) the F-2 runtime with its own
+    [GATED] migration: the server accepts the allocation fields and serves
+    the three new operations. Until then the strict return DTO rejects the
+    new fields (400), so the POS MUST NOT send them before F-2 is deployed;
+    and because `SaleReturn` and `RefundTender` are `additionalProperties:
+    false`, a client that validates responses strictly must re-pin this
+    version BEFORE F-2 emits them (the RT-76 order). (3) F-5, the POS: it
+    sends `allocationRef` on every return and reports each settled cash
+    payout with `recordRefundExecution`; F-3 (the shift-close cross-check)
+    follows F-5. Posting on settlement (R-7) sits behind a deploy flag. While
+    the flag is off, a return posts at acceptance, as today. It is turned on
+    only once every till sends `allocationRef` and reports its executions
+    (F-5). A return sent without `allocationRef` cannot be settled through
+    executions, so it keeps the pre-RT-490 posting (at acceptance) whatever
+    the flag says, and is never silently dropped. The current POS already
+    refuses returns of non-all-cash sales locally and reads every 422 on a
+    return as `return_tender_mismatch`; it maps the two new codes in F-5.
+    Returns recorded through `recordCreditSaleReversal` are outside RT-490
+    (see `RefundTender`). The legacy refund gate (F-4) is independent of
+    this order.
+
     Money: every monetary field is an exact-decimal string (`numeric(19,4)` at
     rest) paired with an ISO-4217 `currency_code` (gate A.1/A.6). No float ever
     appears on the wire. Timestamps are RFC 3339 / `date-time` in UTC (FR-021).
@@ -330,8 +392,8 @@ info:
     forbidden, system-failure) under a single canonical `Error` envelope that
     matches `auth.openapi.yaml` / `outbox.openapi.yaml`.
 
-    Idempotency: `captureSale`, `recordVoid`, `recordRefund`, `recordReturn`
-    and `recordCreditSaleReversal` REQUIRE the `Idempotency-Key` header, reusing the existing `IdempotencyInterceptor`
+    Idempotency: `captureSale`, `recordVoid`, `recordRefund`, `recordReturn`,
+    `recordCreditSaleReversal` and `recordRefundExecution` REQUIRE the `Idempotency-Key` header, reusing the existing `IdempotencyInterceptor`
     (FR-051) — no new primitive. Identical retry replays the stored response;
     key-reuse with a different logical payload returns 409
     `idempotency_key_conflict` (FR-051, 005 FR-021c).
@@ -673,6 +735,11 @@ paths:
       operationId: recordRefund
       deprecated: true
       x-idempotency: required
+      x-runtime-note: >
+        Live and ungated until the F-4 runtime (RT-271 R-11). From F-4 it sits
+        behind a legacy-refund deployment gate, off by default (off → 404
+        `not_found`, nothing recorded). A later breaking contract version
+        removes the operation.
       tags: [pos-sales]
       security:
         - operatorAuthorization: []
@@ -682,6 +749,18 @@ paths:
         amount-only refund never reaches the posting feed as an amount, so
         since RT-71 the Connector rejects refund reversals instead of posting
         a full-value credit note.
+
+
+        GATED OFF (RT-271 R-11, RT-490): from the F-4 runtime the route
+        answers 404 `not_found` and records nothing, a provenance replay of
+        an earlier refund included, unless the deployment enables the legacy
+        refund gate. The gate is off by default, the same posture as
+        `POS_RETURNS_ENABLED` on `recordReturn`. An amount-only refund is not
+        capped by the return quantity caps, and it carries no refund
+        allocation, so it cannot be settled by a refund execution. A refund
+        already recorded counts against the cash pool of the
+        refundable-balance rule (R-5) for later returns of the sale. No POS calls it. A later breaking contract
+        version removes the operation; existing refund rows stay readable.
 
 
         Create a refund terminal event referencing the sale, stamping
@@ -761,15 +840,19 @@ paths:
         Live from RT-73 behind the `POS_RETURNS_ENABLED` deployment gate
         (default off → 404 `not_found`, nothing recorded). Enable it only once
         the Connector posts `reversalKind: return` (RT-16) AND settles returns
-        with their refund tenders (RT-78).
+        with their refund tenders (RT-78). The RT-490 allocation fields and
+        rules (R-5, R-6, R-12) apply from the F-2 runtime; until then the
+        strict DTO rejects the new fields (400).
       tags: [pos-sales]
       security:
         - operatorAuthorization: []
       description: >
         RT-14 D1. Return some or all of the quantity on one or more of a sale's
-        lines, and record how the refund was paid out. Replaces the amount-only
+        lines, and allocate how the refund is to be paid (RT-490). Replaces the amount-only
         `recordRefund` for new use. The original sale and its lines are NEVER
-        mutated; the return is a separate append-only record.
+        mutated; the return is a separate append-only record. Accepting the
+        return is not paying it: the payout is a separate refund execution
+        (`recordRefundExecution`, RT-271 R-1).
 
 
         DEPLOYMENT GATE (RT-73 AC4): the route is live but answers 404
@@ -806,12 +889,78 @@ paths:
         posting, not added on top.
 
 
-        Tender (D3): `refundTenders` records how the refund was paid out, as a
-        fact. The amounts MUST sum to the server-computed `returnTotal`, else
-        422 `return_tender_mismatch`. Cash only for the pilot; the `method`
-        enum stays cash-only under RT-10 D2. ERP settlement: the Connector pays
-        the return out with these refund tenders on the reversing invoice
-        (RT-10 D6).
+        Refund allocation (D3, reinterpreted by RT-271 R-2; RT-490):
+        `refundTenders` are the return's refund ALLOCATIONS: how the refund is
+        to be paid, by which instrument and against which original tender.
+        They are NOT a record that cash left the drawer. The POS pays out after
+        the return is confirmed and reports that payout separately, as a
+        refund execution (`recordRefundExecution`). The amounts MUST sum to
+        the server-computed `returnTotal`, else 422 `return_tender_mismatch`.
+        Cash only for the pilot; the `method` enum stays cash-only under RT-10
+        D2 and R-12.
+
+
+        Allocation rules (RT-490; R-5, R-6, R-12; normative from the F-2
+        runtime):
+
+        1. Fields. Either every allocation of the request carries an
+           `allocationRef` or none does; each `allocationRef` appears at most
+           once per request (it is unique within the return); and an
+           `originalTenderRef` must be the `tenderRef` of a tender line of
+           THIS sale. Otherwise 400 `validation_error`. These 400s are
+           checked with the line checks (400), before the 409 `over_return`.
+
+        2. Instrument (R-12, Sales & Returns 1057). Pilot returns are cash-only
+           and for all-cash sales only. A return of a sale that carries any
+           tender whose `method` is not `cash` is 422
+           `refund_instrument_not_allowed`. While that holds, an
+           `originalTenderRef` can only name a cash tender; the rule that it
+           names a tender of the allocation's instrument is stated now so it
+           survives the post-pilot instruments. Card, wallet, store-credit
+           and receivable-reduction refunds are post-pilot (R-10, R-12).
+
+        3. Refundable balance (R-5, 1055/1056), on a sale captured with
+           tenders. For a sale tender T, `refundable(T) = T.amount − Σ amount
+           of the allocations that reference T`, summed over every accepted
+           return of the sale, this one included. An allocation that
+           references T is accepted only if the result stays ≥ 0. An
+           allocation that references no tender is charged against the sale's
+           cash tenders together (a legacy tender is addressed by `(sale,
+           method)`, RT-264 D2): Σ of every cash allocation on the sale,
+           referenced or not, plus Σ of the sale's legacy `recordRefund`
+           amounts, stays ≤ Σ of the sale's cash tenders. The rule counts
+           ALLOCATED amounts, never settled ones, and every allocation
+           recorded before this version counts (it references no tender). It
+           is checked under the same `sales` row lock as the quantity cap, so
+           two concurrent returns can never over-allocate a tender.
+           Otherwise 422 `refund_allocation_exceeds_tender`.
+
+        4. Tender-unknown sale (R-6; a sale captured with no tenders,
+           `tender_count = 0`): rule 3 does not apply. A cash allocation with
+           no `originalTenderRef` is accepted, capped only by the per-line
+           quantity cap. An `originalTenderRef` on such a sale is 400 (rule
+           1).
+
+        The 422s are checked in the order `return_tender_mismatch`,
+        `refund_instrument_not_allowed`, `refund_allocation_exceeds_tender`
+        (see `ReturnUnprocessable`), after every 400 and 409. Until the F-2 runtime the server records
+        `method` and `amount` only, and its strict DTO rejects the three new
+        fields (400). No return pricing rule changes: the frozen-economics
+        pricing above and the per-line quantity cap are unchanged.
+
+
+        Refund obligation (R-1, R-4; from the F-2 runtime): an accepted return
+        owes its `returnTotal`. Its obligation is `open` until settled cash
+        executions are recorded against its allocations, `partially_settled`
+        while they sum to less than `returnTotal`, and `settled` once they sum
+        to it. The state is derived from the append-only acceptance,
+        allocation and execution facts and is never stored (RT-277). A return
+        whose `returnTotal` is 0 owes nothing and is settled at acceptance,
+        with or without `allocationRef`. Any other return whose allocations
+        carry no `allocationRef` cannot be settled through executions; its
+        settlement is not tracked (`settlement: null` on the reads), exactly
+        as for a return recorded before F-2. Disposition stays implicit in V1
+        (R-1): the ERPNext credit note restocks.
 
 
         Invariants (D2), enforced in the database under a row lock on the sale
@@ -838,14 +987,32 @@ paths:
         Idempotency: the `Idempotency-Key` header is REQUIRED and the return is
         deduped on its own `(tenant, sourceSystem, externalId)` provenance. The
         same provenance with the same payload replays (200); with a different
-        payload or against a different sale it is 409 `conflict`.
+        payload or against a different sale it is 409 `conflict`. The
+        allocation fields are part of that payload (R-3): re-sending a
+        recorded return with an `allocationRef`, `originalTenderRef` or
+        `instrument` added, removed or changed is 409 `conflict`. A return
+        recorded without them still replays (200) when it is re-sent without
+        them; a replay is never re-checked against the allocation rules. An
+        absent `instrument` means `cash` but hashes differently, so the POS
+        re-sends exactly the bytes it first sent (as it already does).
 
 
-        Posting: each return becomes a `reversal` work-item with
+        Posting: each return becomes ONE `reversal` work-item with
         `reversalKind: return` on the ERPNext posting feed
         (`erpnext-connector/posting-feed.yaml`). Backend-Core MUST NOT emit it
         before the Connector supports it (RT-16) and supports settlement
-        (RT-78).
+        (RT-78). Settle before post (R-7, from the F-2 runtime, behind a deploy
+        flag). Each return is emitted exactly once, at one of two moments:
+        (a) at acceptance, as before RT-490, when the flag is off at
+        acceptance, or when the return cannot be settled through executions
+        (its allocations carry no `allocationRef`), or when its `returnTotal`
+        is 0; (b) otherwise at settlement, in the transaction of the
+        execution that settles the obligation, with `refundTenders` projected
+        from the return's settled cash executions. A return that took path
+        (b) is emitted at its settlement whatever the flag says by then, so
+        turning the flag off again never strands it, and a return emitted at
+        acceptance is never emitted again. A return recorded through
+        `recordCreditSaleReversal` keeps its RT-577 posting unchanged.
       parameters:
         - $ref: "#/components/parameters/SaleRef"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -895,7 +1062,232 @@ paths:
         "409":
           $ref: "#/components/responses/ReversalConflict"
         "422":
-          $ref: "#/components/responses/ReturnTenderMismatch"
+          $ref: "#/components/responses/ReturnUnprocessable"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+    get:
+      summary: List the returns recorded against a sale, with their refund settlement.
+      operationId: listSaleReturns
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-490 (RT-271 F-1) contract. The runtime ships in F-2, on its own
+        [GATED] migration.
+      tags: [pos-sales]
+      security:
+        - operatorAuthorization: []
+      description: >
+        RT-271 R-8 (RT-490). Every return recorded against the sale through
+        `recordReturn`, oldest first (`recordedAt`, then `returnRef`), each
+        with its derived refund settlement (see `recordReturn`, Refund
+        obligation). Credit-sale reversals (`recordCreditSaleReversal`,
+        returns included, outside RT-490) and legacy refunds
+        (`recordRefund`) are not listed.
+        A sale with no return answers 200 with an empty `returns`. Not
+        paginated in this version.
+
+
+        Object-level authz as on `readSale`: a sale outside the caller's
+        resolved (tenant, store) scope is a non-disclosing 404, identical to
+        an unknown sale. The read is NOT behind `POS_RETURNS_ENABLED`: it reads
+        facts already recorded, and a gated 404 could not be told apart from
+        an unknown sale. It records nothing.
+      parameters:
+        - $ref: "#/components/parameters/SaleRef"
+      responses:
+        "200":
+          description: The sale's returns, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SaleReturnList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+  /api/pos/v1/sales/{saleRef}/returns/by-provenance:
+    get:
+      summary: Read the return recorded against a sale under a given provenance.
+      operationId: readReturnByProvenance
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-490 (RT-271 F-1) contract for RT-196. The runtime ships in F-2, on
+        its own [GATED] migration.
+      tags: [pos-sales]
+      security:
+        - operatorAuthorization: []
+      description: >
+        RT-271 R-8 (RT-490), for RT-196. The server-side truth for one return
+        the POS journaled: the return recorded against THIS sale whose
+        provenance is `(sourceSystem, externalId)`, with its derived refund
+        settlement. The `saleReturn` is the same projection `recordReturn`
+        answered with, so the POS can compare it with its journal row
+        (`externalId`, `saleRef`, `returnTotal`, `currencyCode`, `lines`).
+        Sales & Returns 1050 (an unknown return blocks a duplicate) stays a
+        POS rule in V1 (R-8); this read only reports what the server
+        recorded and never confirms, edits or clears anything.
+
+
+        404 `not_found` (non-disclosing, one body) when the sale does not
+        resolve in the caller's (tenant, store) scope, or when no return of
+        THIS sale recorded through `recordReturn` has that provenance. A
+        return with that provenance against another sale, and a credit-sale
+        reversal, are the same 404. A 404 is a point-in-time answer: a
+        request still in flight can be recorded after it, so it is not by
+        itself proof that the return was never recorded (RT-196 owns the
+        reconcile rule). Not behind `POS_RETURNS_ENABLED`, for the reason
+        given on `listSaleReturns`. It records nothing.
+      parameters:
+        - $ref: "#/components/parameters/SaleRef"
+        - $ref: "#/components/parameters/ReturnSourceSystem"
+        - $ref: "#/components/parameters/ReturnExternalId"
+      responses:
+        "200":
+          description: The recorded return and its refund settlement.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReturnRead"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/SystemFailure"
+  /api/pos/v1/sales/{saleRef}/returns/{returnRef}/executions:
+    post:
+      summary: Record that one refund allocation of a return was paid out.
+      operationId: recordRefundExecution
+      x-idempotency: required
+      x-runtime-status: contract-only
+      x-runtime-note: >
+        RT-490 (RT-271 F-1) contract. The runtime and its [GATED] migration
+        ship in F-2; the POS reports executions from F-5.
+      tags: [pos-sales]
+      security:
+        - operatorAuthorization: []
+      description: >
+        RT-271 R-1, R-3, R-4 (RT-490). Records a REFUND EXECUTION: the fact
+        that money was actually paid out for one allocation of an accepted
+        return (`RefundTender.allocationRef`). It is append-only and distinct
+        from the acceptance and from the allocation. A settled execution is
+        never rolled back or edited (Sales & Returns 1063): a receipt or
+        printing failure after it changes nothing. For the pilot the POS
+        reports only `settled` cash executions, after its payout reached
+        `paid_out` (a drawer kick that `opened`, or a manual attestation);
+        a confirmed but unpaid return reports nothing (R-4). The executions
+        drive the return's refund obligation (see `recordReturn`, Refund
+        obligation), its ERP posting (R-7) and the shift-close cross-check
+        (R-9, `pos-shifts.openapi.yaml` `closeShift`).
+
+
+        Checks, in this order:
+
+        1. The sale resolves in the caller's (tenant, store) scope and
+           `returnRef` is a return of THIS sale recorded through
+           `recordReturn`, else 404 `not_found` (non-disclosing, one body). A
+           return recorded through `recordCreditSaleReversal` is outside
+           RT-490: it carries no allocation an execution can name, so it is
+           this 404. Its posting and its shift-close count are unchanged
+           (see `pos-shifts.openapi.yaml` `closeShift`).
+
+        2. Provenance replay: the execution is deduped on its own `(tenant,
+           sourceSystem, externalId)` provenance. The same provenance with the
+           same payload on the same return replays (200, `Idempotent-Replayed:
+           true`). The same provenance with a different payload or against
+           another return, or an `executionRef` (unique within the tenant)
+           already recorded with another provenance or payload, is 409
+           `conflict` (R-3). A replay is never re-checked against the rules
+           below.
+
+        3. `allocationRef` names an allocation of THIS return, else 400
+           `validation_error` (a return recorded without `allocationRef` has
+           no allocation an execution can name). `evidence.paidAt` is at
+           most 120 s after the server clock, else 400 `validation_error`;
+           it is not compared with the return's `recordedAt` (an offline
+           payout is reported later). One shift per return (V1): every
+           execution of a return carries the same `evidence.shiftRef`, else
+           400 `validation_error`, because a return is claimed by one shift's
+           close only (R-9).
+
+        4. Under the `sales` row lock (the R-5 lock): the settled executions
+           of the allocation, this one included, sum to at most the
+           allocation's `amount`, else 422
+           `refund_execution_exceeds_allocation`.
+
+        The execution's instrument and currency are its allocation's (cash,
+        in the return's currency); the body carries neither. `evidence.shiftRef`
+        is recorded as reported and is not checked against a recorded shift
+        here, because that shift's open can still be on its way (the POS
+        drains each outbox in order); `closeShift` binds it (R-9).
+
+
+        Settle before post (R-7, see `recordReturn`, Posting): for a return
+        that was not emitted at acceptance, the execution whose amount
+        brings the return's settled total to its `returnTotal` emits the
+        return's `reversal` work item in its own transaction, exactly once,
+        whatever the deploy flag says at that moment; a return whose work
+        item was already emitted at acceptance is never emitted again.
+
+
+        Idempotency: the `Idempotency-Key` header is REQUIRED. The POS sends
+        the same bytes with the same key on every retry, so a crash between
+        the payout and the send still reports exactly once (F-5). The route
+        is NOT behind `POS_RETURNS_ENABLED`: it only settles a return already
+        accepted, and a gated 404 would strand a payout the drawer already
+        made.
+      parameters:
+        - $ref: "#/components/parameters/SaleRef"
+        - $ref: "#/components/parameters/ReturnRef"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordRefundExecutionRequest"
+      responses:
+        "200":
+          description: >
+            Provenance replay — this execution was already recorded with the
+            same provenance and payload, and no live replay entry exists for
+            this `Idempotency-Key` (a different key, or the same key after its
+            72h replay window). Returns the identical execution projection
+            with `Idempotent-Replayed: true`; no duplicate record. A
+            same-`Idempotency-Key` retry returns the stored `201` instead
+            (RT-82 K4).
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundExecution"
+        "201":
+          description: >
+            Execution recorded for the first time. A retry with the same
+            `Idempotency-Key` on the same return replays this stored `201`
+            with `Idempotent-Replayed: true` (RT-82 K4).
+          headers:
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefundExecution"
+        "400":
+          $ref: "#/components/responses/ValidationFailure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/RefundExecutionConflict"
+        "422":
+          $ref: "#/components/responses/RefundExecutionUnprocessable"
         "500":
           $ref: "#/components/responses/SystemFailure"
   /api/pos/v1/sales/{saleRef}/credit-reversals:
@@ -1210,6 +1602,41 @@ components:
         Stable server-issued sale reference returned by `captureSale`. Resolves
         only within the caller's (tenant, store) scope — out-of-scope refs are
         non-disclosing 404s (FR-063/102).
+    ReturnRef:
+      name: returnRef
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: >
+        RT-490. Stable server-issued return reference (`SaleReturn.returnRef`)
+        returned by `recordReturn`. Resolves only as a return of the path's
+        sale, within the caller's (tenant, store) scope; anything else is a
+        non-disclosing 404.
+    ReturnSourceSystem:
+      name: sourceSystem
+      in: query
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 100
+      description: >
+        RT-490. The `sourceSystem` the return was sent with
+        (`RecordReturnRequest.sourceSystem`), compared exactly.
+    ReturnExternalId:
+      name: externalId
+      in: query
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+      description: >
+        RT-490. The `externalId` the return was sent with
+        (`RecordReturnRequest.externalId`), compared exactly. A POS-side
+        return identifier, never PII.
 
   headers:
     DeviceTokenRotateAfter:
@@ -1787,8 +2214,13 @@ components:
           items:
             $ref: "#/components/schemas/RefundTender"
           description: >
-            How the refund was paid out (D3). The amounts MUST sum to the
+            The refund allocations: how the refund is to be paid (D3, RT-271
+            R-2), not a payout record. The amounts MUST sum to the
             server-computed `returnTotal`, else 422 `return_tender_mismatch`.
+            From the F-2 runtime the allocation rules of `recordReturn` apply:
+            `allocationRef` on every entry or on none, the instrument rule
+            (422 `refund_instrument_not_allowed`) and the refundable-balance
+            rule (422 `refund_allocation_exceeds_tender`).
         reason:
           type: string
           minLength: 1
@@ -1817,18 +2249,63 @@ components:
       additionalProperties: false
       required: [method, amount]
       description: >
-        One refund payout, recorded as a fact (RT-14 D3), in the sale's
-        currency. The Connector pays the return out with it on the reversing
-        invoice (RT-10 D6).
+        One refund ALLOCATION (RT-14 D3, reinterpreted by RT-271 R-2; RT-490),
+        in the sale's currency: the part of the return's refund that is owed,
+        by which instrument and against which original tender. It says how
+        the refund is to be paid; it is NOT a payout fact. The payout is a
+        separate refund execution (`recordRefundExecution`). For a return
+        whose allocations carry `allocationRef`, only settled executions
+        affect the drawer count at close (R-9) and, once the R-7 flag is on,
+        the ERP refund. An
+        allocation without `allocationRef` (every allocation recorded before
+        RT-490, and any sent without one) stays valid and is accepted, but no
+        execution can name it, so its return's settlement is not tracked.
+        The three RT-490 fields are accepted from the F-2 runtime (see
+        `recordReturn`, Allocation rules). Credit-sale returns are outside
+        RT-490. On `recordCreditSaleReversal`, whose credit `return` applies
+        this shape on top of `CreditReversalRefundTender`, the three fields
+        are not accepted: that schema does not declare them and is closed.
+        Its RT-577 refund semantics, its posting and its shift-close count
+        (its recorded refund tenders) are unchanged, and no refund execution
+        is recorded for it.
       properties:
         method:
           type: string
           enum: [cash]
           description: >
             Cash only (RT-14 D3). RT-10 D2 left refunds cash-only; a card
-            refund is not recorded here.
+            refund is not recorded here. The ERP payment method the refund
+            posts as.
         amount:
           $ref: "#/components/schemas/NonNegativeDecimalAmount"
+        allocationRef:
+          type: string
+          format: uuid
+          description: >
+            OPTIONAL (R-3) — the allocation's own stable identity, minted by
+            the POS (UUIDv7) when it creates the return and part of the
+            return's payload, so it never changes on a retry. Unique within
+            the return. A refund execution names its allocation by it. Absent
+            = a ref-less allocation that no execution can settle.
+        originalTenderRef:
+          type: string
+          format: uuid
+          description: >
+            OPTIONAL (R-2; Sales & Returns 1055/1057) — the `tenderRef` of
+            the sale tender line this allocation is refunded against; must be
+            a tender of this sale (else 400). Absent = the allocation is
+            charged against the sale's cash tenders together (a legacy tender
+            is addressed by `(sale, method)`, RT-264 D2), or, on a sale
+            captured with no tenders, against none (R-6). See `recordReturn`,
+            Allocation rules.
+        instrument:
+          type: string
+          enum: [cash]
+          description: >
+            OPTIONAL (R-2, R-10) — the refund instrument. Absent means `cash`.
+            `cash` only for the pilot (R-12); `card_external`, `store_credit`
+            and `receivable_reduction` are post-pilot and arrive in a later
+            version.
 
     CreditReversalRefundTender:
       type: object
@@ -2280,8 +2757,209 @@ components:
           minItems: 1
           items:
             $ref: "#/components/schemas/RefundTender"
+          description: >
+            The return's refund allocations as recorded (RT-490), not payouts.
+            From the F-2 runtime each entry carries the `allocationRef`,
+            `originalTenderRef` and `instrument` it was recorded with; an
+            allocation recorded without them carries none (never backfilled).
         reason:
           type: [string, "null"]
+    RecordRefundExecutionRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceSystem, externalId, executionRef, allocationRef, amount, outcome, evidence]
+      description: >
+        RT-490 (RT-271 R-3, R-4). One refund execution: the payout of one
+        allocation of the path's return (see `recordRefundExecution`). Strict:
+        the instrument, the currency, `recordedAt`, tenant, store and actor
+        resolve server-side and are rejected if body-supplied (FR-061). Auth:
+        the operator-authorization envelope in `Authorization: Bearer
+        <envelope>` (`operatorAuthorization`), re-verified live per request
+        (G-4).
+      properties:
+        sourceSystem:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Provenance + dedup key of the execution itself (FR-013).
+        externalId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: POS-side execution identifier; with `sourceSystem`, the execution's dedup key.
+        executionRef:
+          type: string
+          format: uuid
+          description: >
+            The execution's own stable identity, minted by the POS (UUIDv7)
+            when it records the payout, and part of the payload, so it never
+            changes on a retry (R-3).
+        allocationRef:
+          type: string
+          format: uuid
+          description: >
+            The allocation paid out: an `allocationRef` of THIS return's
+            `refundTenders`, else 400.
+        amount:
+          $ref: "#/components/schemas/PositiveDecimalAmount"
+          description: >
+            The amount paid out for the allocation, in the return's currency.
+            The allocation's settled executions sum to at most its `amount`,
+            else 422 `refund_execution_exceeds_allocation`. The pilot POS
+            pays an allocation out in one execution.
+        outcome:
+          type: string
+          enum: [settled]
+          description: >
+            R-4: the pilot reports `settled` executions only. The other
+            outcome events (`requested`, `failed`, `unknown`) are a later,
+            post-pilot version.
+        evidence:
+          $ref: "#/components/schemas/RefundExecutionEvidence"
+    RefundExecutionEvidence:
+      type: object
+      additionalProperties: false
+      required: [method, paidAt, shiftRef]
+      description: >
+        RT-490. The evidence that settles a cash execution (RT-271 §4, Sales &
+        Returns 1059): the drawer opened, or a manual attestation was given,
+        with the time and the shift whose drawer paid.
+      properties:
+        method:
+          type: string
+          enum: [drawer, manual]
+          description: >
+            `drawer` — the drawer kick reported `opened`. `manual` — a manual
+            payout attestation on the terminal (for example when the kick's
+            outcome was unknown). An unknown kick alone never settles.
+        paidAt:
+          type: string
+          format: date-time
+          description: >
+            When the cash was paid out (device clock). Recorded as reported;
+            at most 120 s after the server clock, else 400; no lower bound
+            (an offline payout is reported later).
+        shiftRef:
+          type: string
+          format: uuid
+          description: >
+            The `shiftId` (`pos-shifts.openapi.yaml`) of the shift whose
+            drawer paid the cash. Recorded as reported; every execution of
+            one return carries the same `shiftRef` (else 400); `closeShift`
+            checks it (R-9).
+    RefundExecution:
+      type: object
+      additionalProperties: false
+      required:
+        - executionRef
+        - returnRef
+        - saleRef
+        - allocationRef
+        - sourceSystem
+        - externalId
+        - instrument
+        - amount
+        - currencyCode
+        - outcome
+        - evidence
+        - recordedAt
+      description: >
+        RT-490. Wire projection of a recorded refund execution. A separate
+        append-only record; the return and its allocations are unchanged.
+        Carries no `tenant_id`, no `payload_hash`, no `created_by`.
+      properties:
+        executionRef:
+          type: string
+          format: uuid
+        returnRef:
+          type: string
+          format: uuid
+          description: The return whose allocation was paid out.
+        saleRef:
+          type: string
+          format: uuid
+          description: The sale the return is against.
+        allocationRef:
+          type: string
+          format: uuid
+        sourceSystem:
+          type: string
+        externalId:
+          type: string
+        instrument:
+          type: string
+          enum: [cash]
+          description: The allocation's instrument.
+        amount:
+          $ref: "#/components/schemas/PositiveDecimalAmount"
+        currencyCode:
+          $ref: "#/components/schemas/CurrencyCode"
+        outcome:
+          type: string
+          enum: [settled]
+        evidence:
+          $ref: "#/components/schemas/RefundExecutionEvidence"
+        recordedAt:
+          type: string
+          format: date-time
+          description: Server-clock stamp of the execution (never a client time).
+    RefundSettlement:
+      type: object
+      additionalProperties: false
+      required: [state, settledAmount, executions]
+      description: >
+        RT-490 (RT-271 R-1). The refund obligation of one return, derived from
+        its allocations and settled executions (never stored, RT-277); see
+        `recordReturn`, Refund obligation.
+      properties:
+        state:
+          type: string
+          enum: [open, partially_settled, settled]
+          description: >
+            `open` — nothing settled yet; `partially_settled` — the settled
+            executions sum to less than `returnTotal`; `settled` — they sum to
+            `returnTotal` (a return whose `returnTotal` is 0 is `settled` with
+            no execution).
+        settledAmount:
+          $ref: "#/components/schemas/NonNegativeDecimalAmount"
+          description: Σ amount of the return's settled executions.
+        executions:
+          type: array
+          items:
+            $ref: "#/components/schemas/RefundExecution"
+          description: The return's executions, oldest first (`recordedAt`, then `executionRef`).
+    ReturnRead:
+      type: object
+      additionalProperties: false
+      required: [saleReturn, settlement]
+      description: >
+        RT-490 (R-8). One recorded return with its refund settlement, on
+        `readReturnByProvenance` and `listSaleReturns`.
+      properties:
+        saleReturn:
+          $ref: "#/components/schemas/SaleReturn"
+        settlement:
+          description: >
+            The return's refund obligation; null when it is not tracked (a
+            return with a non-zero `returnTotal` whose allocations carry no
+            `allocationRef`). A zero-total return is `settled`.
+          anyOf:
+            - $ref: "#/components/schemas/RefundSettlement"
+            - type: "null"
+    SaleReturnList:
+      type: object
+      additionalProperties: false
+      required: [saleRef, returns]
+      description: RT-490 (R-8). The returns recorded against one sale (`listSaleReturns`).
+      properties:
+        saleRef:
+          type: string
+          format: uuid
+        returns:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReturnRead"
+          description: Oldest first (`recordedAt`, then `returnRef`); empty when the sale has no return.
     ReturnLine:
       type: object
       additionalProperties: false
@@ -2535,7 +3213,8 @@ components:
     NotFound:
       description: >
         FR-101 `not-found` — the sale ref does not resolve within the caller's
-        (tenant, store) scope. Non-disclosing: identical for cross-tenant,
+        (tenant, store) scope, or (RT-490) the return ref or return provenance
+        does not resolve as a return of that sale. Non-disclosing: identical for cross-tenant,
         out-of-scope, and genuinely-absent ids, with no existence leak via any
         response or error shape (FR-102, SI-004, §II/§XII).
       content:
@@ -2680,11 +3359,44 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
-    ReturnTenderMismatch:
+    ReturnUnprocessable:
       description: >
-        422 `return_tender_mismatch` (RT-14 D3) — the `refundTenders` amounts
-        do not sum to the server-computed `returnTotal`. Deterministic; nothing
-        is recorded.
+        422 on `recordReturn` (renamed from `ReturnTenderMismatch` in RT-490).
+        `error.code` is one of, in this order:
+        `return_tender_mismatch` (RT-14 D3) — the `refundTenders` amounts do
+        not sum to the server-computed `returnTotal`;
+        `refund_instrument_not_allowed` (RT-490, R-12; from the F-2 runtime) —
+        the sale carries a tender whose `method` is not `cash` (pilot returns
+        are cash-only, for all-cash sales only);
+        `refund_allocation_exceeds_tender` (RT-490, R-5; from the F-2
+        runtime) — the allocations would exceed a tender's refundable
+        balance, counted over every accepted return and legacy refund of the
+        sale (see `recordReturn`, Allocation rules).
+        Deterministic; nothing is recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RefundExecutionConflict:
+      description: >
+        409 on `recordRefundExecution` (RT-490). `error.code` is one of:
+        `idempotency_key_conflict` — the same `Idempotency-Key` reused with a
+        different payload; `conflict` — the execution's `(sourceSystem,
+        externalId)` provenance was already used with a different payload or
+        for another return, or its `executionRef` was already recorded with
+        another provenance or payload (R-3). Deterministic; nothing is
+        recorded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RefundExecutionUnprocessable:
+      description: >
+        422 `refund_execution_exceeds_allocation` on `recordRefundExecution`
+        (RT-490) — the allocation's settled executions, this one included,
+        would sum to more than the allocation's `amount`. Checked under the
+        `sales` row lock. Deterministic; nothing is recorded and the
+        obligation is unchanged.
       content:
         application/json:
           schema:
