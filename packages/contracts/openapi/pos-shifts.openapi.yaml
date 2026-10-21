@@ -764,11 +764,13 @@ paths:
         **Authentication.** The `operatorAuthorization` envelope only; the
         `device` scheme is not accepted (a device token is the generic 401).
         The envelope operator is the actor; the body carries no user id. The
-        operator must hold the manager or admin role of the tenant with
-        access to the store, re-checked live on every request (the eligibility
-        of `GET /shifts/stuck`: `store_staff` is refused), else the generic
-        403 `refused`. Tenant and store come only from the envelope, never the
-        request (Constitution §II, §XII).
+        envelope's live re-check (membership, device, store access, expiry:
+        the `operatorAuthorization` scheme) is the generic 401, so a manager
+        whose store access was removed is a 401. A valid operator who does
+        not hold the manager or admin role of the tenant (the eligibility of
+        `GET /shifts/stuck`: `store_staff` is refused), re-checked live on
+        every request, is the generic 403 `refused`. Tenant and store come
+        only from the envelope, never the request (Constitution §II, §XII).
 
 
         **Scope.** `shift_id` resolves to a shift of the envelope's tenant and
@@ -1842,14 +1844,17 @@ components:
           format: date-time
           description: When the server recorded the force close (server clock).
         closedFromTerminalLabel:
-          type: string
-          description: Label of the terminal the force-close request came from.
+          type: [string, "null"]
+          description: >
+            Label of the terminal the force-close request came from; `null`
+            when that terminal has no label (a device label is optional).
         openedOnTerminalLabel:
-          type: string
+          type: [string, "null"]
           description: >
             Label of the terminal that opened the shift (the stuck list's
-            `terminal_label`); the same terminal as above when the manager
-            closed it from the terminal that opened it.
+            `terminal_label`); `null` when it has no label. The same terminal
+            as above when the manager closed it from the terminal that opened
+            it.
         forcedReason:
           type: string
           minLength: 1
@@ -2210,10 +2215,12 @@ components:
             $ref: "#/components/schemas/ApiError"
     ForceCloseRefused:
       description: >
-        Generic 403 `refused` on `forceCloseShift`: the envelope operator does
-        not hold the manager or admin role of the tenant with access to the
-        store (re-checked live). One body for every cause, revealing neither
-        existence nor cause. A device token is a 401, not this.
+        Generic 403 `refused` on `forceCloseShift`: the envelope operator is
+        valid but does not hold the manager or admin role of the tenant
+        (re-checked live). One body for every cause, revealing neither
+        existence nor cause. A device token, and an envelope that fails its
+        live re-check (including a removed store access), are a 401, not
+        this.
       content:
         application/json:
           schema:

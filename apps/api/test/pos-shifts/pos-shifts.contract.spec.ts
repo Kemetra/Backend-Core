@@ -1452,11 +1452,15 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
     expect(op(FORCE_CLOSE).security).toEqual([{ operatorAuthorization: [] }]);
     expectAll(forceText(), [
       "The `operatorAuthorization` envelope only; the `device` scheme is not accepted (a device token is the generic 401)",
-      "The operator must hold the manager or admin role of the tenant with access to the store, re-checked live on every request",
+      "the `operatorAuthorization` scheme) is the generic 401, so a manager whose store access was removed is a 401",
+      "A valid operator who does not hold the manager or admin role of the tenant",
       "`store_staff` is refused",
-      "else the generic 403 `refused`",
+      "is the generic 403 `refused`",
     ]);
-    expectAll(describeOf("403"), ["does not hold the manager or admin role of the tenant with access to the store"]);
+    expectAll(describeOf("403"), [
+      "the envelope operator is valid but does not hold the manager or admin role of the tenant",
+      "including a removed store access), are a 401",
+    ]);
   });
 
   it("is store-scoped: any device of the store, tenant and store from the envelope only, a non-disclosing 404", () => {
@@ -1613,10 +1617,16 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
     const required = ["closedByUserId", "closedAt", "closedFromTerminalLabel", "openedOnTerminalLabel", "forcedReason", "cashCount"];
     assertStrictObject("ForcedCloseRecord", required, required);
     expect(prop("ForcedCloseRecord", "cashCount")).toMatchObject({ type: "string", const: "not_counted" });
+    // A device label is optional (devices.label is nullable): an unlabeled terminal is `null`, never a made-up value.
+    expect(prop("ForcedCloseRecord", "closedFromTerminalLabel").type).toEqual(["string", "null"]);
+    expect(prop("ForcedCloseRecord", "openedOnTerminalLabel").type).toEqual(["string", "null"]);
     const v = validator("ForcedCloseRecord");
     const record = FORCED_EXAMPLE()["forcedClose"] as Record<string, unknown>;
-    const bad = [{ cashCount: "counted" }, { countedCash: "100.00" }, { forcedReason: "" }].map((patch) => v({ ...record, ...patch }));
-    expect([v(record), ...bad]).toEqual([true, false, false, false]);
+    const bad = [{ cashCount: "counted" }, { countedCash: "100.00" }, { forcedReason: "" }, { openedOnTerminalLabel: undefined }].map((patch) =>
+      v({ ...record, ...patch }),
+    );
+    const unlabeled = v({ ...record, closedFromTerminalLabel: null, openedOnTerminalLabel: null });
+    expect([v(record), unlabeled, ...bad]).toEqual([true, true, false, false, false, false]);
   });
 
   it("the request and response examples validate against their schemas", () => {
