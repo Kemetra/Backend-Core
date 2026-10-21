@@ -149,25 +149,24 @@ async function seedLink(link: SeedLink): Promise<void> {
   );
 }
 
-async function seedMembership(n: number, userId: string, roleId: string): Promise<void> {
+async function seedMembership(n: number, grant: { userId: string; roleId: string }): Promise<void> {
   await admin!.query(
     `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind)
      VALUES ($1, $2, $3, $4, 'all')`,
-    [id(100 + n), TENANT_ID, userId, roleId],
+    [id(100 + n), TENANT_ID, grant.userId, grant.roleId],
   );
 }
 
 async function seedOperatorSession(
   n: number,
-  userId: string,
-  window: { issuedAt: string; expiresAt: string },
+  session: { userId: string; issuedAt: string; expiresAt: string },
 ): Promise<string> {
   const tokenId = id(200 + n);
   await admin!.query(
     `INSERT INTO auth_tokens
        (id, token_hash, tenant_id, user_id, device_id, store_id, scope, issued_at, expires_at)
      VALUES ($1, $2, $3, $4, $5, $6, 'pos_operator', $7, $8)`,
-    [tokenId, hashToken(`rt796-session-${n}`), TENANT_ID, userId, DEVICE_ID, STORE_ID, window.issuedAt, window.expiresAt],
+    [tokenId, hashToken(`rt796-session-${n}`), TENANT_ID, session.userId, DEVICE_ID, STORE_ID, session.issuedAt, session.expiresAt],
   );
   return tokenId;
 }
@@ -216,7 +215,7 @@ beforeAll(async () => {
   await seedLink({ userId: U_CUT_ADMIN, providerKey: "clerk", subject: SUB_CUT_ADMIN_OLD, status: "disabled" });
   await seedLink({ userId: U_CUT_ADMIN, providerKey: "descope", subject: SUB_CUT_ADMIN_NEW });
   for (const [n, user] of [U_ADMIN, U_CLERK_ADMIN, U_ACME_ADMIN, U_GHOST_ADMIN, U_CUT_ADMIN].entries()) {
-    await seedMembership(n, user, ROLE_ADMIN);
+    await seedMembership(n, { userId: user, roleId: ROLE_ADMIN });
   }
 
   // Cashiers: alphabetical by display name so the roster order is pinned.
@@ -231,7 +230,7 @@ beforeAll(async () => {
   // A bridge-column value with no link at all.
   await seedUser({ id: U_GHOST, email: "ghost@rt796.test", displayName: "Delta Ghost", clerkUserId: SUB_GHOST });
   for (const [n, user] of [U_LEGACY, U_DESCOPE, U_CUTOVER, U_GHOST].entries()) {
-    await seedMembership(10 + n, user, ROLE_STAFF);
+    await seedMembership(10 + n, { userId: user, roleId: ROLE_STAFF });
   }
 
   await seedUser({ id: U_OTHER, email: "other@rt796.test", displayName: "Other Person", clerkUserId: null });
@@ -326,7 +325,7 @@ describe("operator roster lists cashiers with an ACTIVE link", () => {
 describe("active-session resolves the target wire id through the active link", () => {
   it("a Descope-only cashier's wire id (the link subject) finds their live session", async () => {
     if (skip()) return;
-    await seedOperatorSession(1, U_DESCOPE, { issuedAt: "2020-01-01T00:00:00Z", expiresAt: "2999-01-01T00:00:00Z" });
+    await seedOperatorSession(1, { userId: U_DESCOPE, issuedAt: "2020-01-01T00:00:00Z", expiresAt: "2999-01-01T00:00:00Z" });
     const res = await operators.activeSession(
       "jwt-admin",
       { branch_id: STORE_ID, operator_id: SUB_DESCOPE },
@@ -337,7 +336,7 @@ describe("active-session resolves the target wire id through the active link", (
 
   it("a DISABLED link's subject names nobody: none, even though that user has a live session", async () => {
     if (skip()) return;
-    await seedOperatorSession(2, U_CUTOVER, { issuedAt: "2020-01-01T00:00:00Z", expiresAt: "2999-01-01T00:00:00Z" });
+    await seedOperatorSession(2, { userId: U_CUTOVER, issuedAt: "2020-01-01T00:00:00Z", expiresAt: "2999-01-01T00:00:00Z" });
     const stale = await operators.activeSession(
       "jwt-admin",
       { branch_id: STORE_ID, operator_id: SUB_CUTOVER_OLD },
@@ -463,7 +462,7 @@ describe("audit ingestion: acting_operator_id matches ANY link of the session's 
 
   it("a batch queued under the PREVIOUS provider id (disabled link) after an apply is accepted", async () => {
     if (skip()) return;
-    await seedOperatorSession(3, U_CUTOVER, WINDOW);
+    await seedOperatorSession(3, { userId: U_CUTOVER, ...WINDOW });
     const queued = event({ acting_operator_id: SUB_CUTOVER_OLD });
     expect(await sync([queued])).toEqual({ accepted: [queued.event_id], duplicates: [], rejected: [] });
     expect(await actorOf(queued.event_id)).toBe(U_CUTOVER);
@@ -471,14 +470,14 @@ describe("audit ingestion: acting_operator_id matches ANY link of the session's 
 
   it("the CURRENT (active) provider id of the same user is accepted too", async () => {
     if (skip()) return;
-    await seedOperatorSession(4, U_CUTOVER, WINDOW);
+    await seedOperatorSession(4, { userId: U_CUTOVER, ...WINDOW });
     const current = event({ acting_operator_id: SUB_CUTOVER_NEW });
     expect(await sync([current])).toMatchObject({ accepted: [current.event_id], rejected: [] });
   });
 
   it("a Descope-only operator's events are accepted (no clerk_user_id involved)", async () => {
     if (skip()) return;
-    await seedOperatorSession(5, U_DESCOPE, WINDOW);
+    await seedOperatorSession(5, { userId: U_DESCOPE, ...WINDOW });
     const ev = event({ acting_operator_id: SUB_DESCOPE });
     expect(await sync([ev])).toMatchObject({ accepted: [ev.event_id], rejected: [] });
     expect(await actorOf(ev.event_id)).toBe(U_DESCOPE);
@@ -486,7 +485,7 @@ describe("audit ingestion: acting_operator_id matches ANY link of the session's 
 
   it("an id never linked to the session's user is invalid_actor", async () => {
     if (skip()) return;
-    await seedOperatorSession(6, U_CUTOVER, WINDOW);
+    await seedOperatorSession(6, { userId: U_CUTOVER, ...WINDOW });
     const ev = event({ acting_operator_id: "user_never_linked_to_anybody" });
     expect(await sync([ev])).toEqual({
       accepted: [],
@@ -498,7 +497,7 @@ describe("audit ingestion: acting_operator_id matches ANY link of the session's 
 
   it("ANOTHER user's real, valid id does not authorize an event on this user's session", async () => {
     if (skip()) return;
-    await seedOperatorSession(7, U_CUTOVER, WINDOW);
+    await seedOperatorSession(7, { userId: U_CUTOVER, ...WINDOW });
     const ev = event({ acting_operator_id: SUB_OTHER });
     expect(await sync([ev])).toMatchObject({
       accepted: [],
@@ -508,7 +507,7 @@ describe("audit ingestion: acting_operator_id matches ANY link of the session's 
 
   it("the session-at-event-time join is still the authorization: no session in the window, no alias", async () => {
     if (skip()) return;
-    await seedOperatorSession(8, U_CUTOVER, WINDOW);
+    await seedOperatorSession(8, { userId: U_CUTOVER, ...WINDOW });
     const before = event({ acting_operator_id: SUB_CUTOVER_OLD, created_at: "2026-10-21T07:00:00.000Z" });
     const after = event({ acting_operator_id: SUB_CUTOVER_OLD, created_at: "2026-10-21T21:00:00.000Z" });
     expect(await sync([before, after])).toMatchObject({
@@ -522,15 +521,15 @@ describe("audit ingestion: acting_operator_id matches ANY link of the session's 
 
   it("a clerk_user_id with no link no longer authorizes events", async () => {
     if (skip()) return;
-    await seedOperatorSession(9, U_GHOST, WINDOW);
+    await seedOperatorSession(9, { userId: U_GHOST, ...WINDOW });
     const ev = event({ acting_operator_id: SUB_GHOST });
     expect(await sync([ev])).toMatchObject({ accepted: [], rejected: [{ category: "invalid_input" }] });
   });
 
   it("the alias is bound to the pinned session when the event names one", async () => {
     if (skip()) return;
-    const ghostSession = await seedOperatorSession(10, U_OTHER, WINDOW);
-    await seedOperatorSession(11, U_CUTOVER, WINDOW);
+    const ghostSession = await seedOperatorSession(10, { userId: U_OTHER, ...WINDOW });
+    await seedOperatorSession(11, { userId: U_CUTOVER, ...WINDOW });
     // U_CUTOVER's old id, but pinned to U_OTHER's session: the user bound to
     // THAT session has no such link.
     const ev = event({ acting_operator_id: SUB_CUTOVER_OLD, session_id: ghostSession });
