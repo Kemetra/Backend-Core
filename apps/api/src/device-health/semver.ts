@@ -28,74 +28,60 @@ export interface ParsedVersion {
   readonly prerelease: readonly string[];
 }
 
+const NUMERIC = /^\d+$/;
+
 function hasLeadingZeroNumber(identifier: string): boolean {
-  return identifier.length > 1 && identifier.startsWith("0") && /^\d+$/.test(identifier);
+  return identifier.length > 1 && identifier.startsWith("0") && NUMERIC.test(identifier);
 }
 
 /** The parsed version, or null when `value` is not a valid semantic version within the `AppVersion` bounds. */
 export function parseAppVersion(value: string): ParsedVersion | null {
-  if (value.length < APP_VERSION_MIN_LENGTH || value.length > APP_VERSION_MAX_LENGTH) return null;
-  const match = APP_VERSION_PATTERN.exec(value);
+  const match = value.length < APP_VERSION_MIN_LENGTH || value.length > APP_VERSION_MAX_LENGTH ? null : APP_VERSION_PATTERN.exec(value);
   if (match === null) return null;
   const [, major, minor, patch, pre] = match;
   const prerelease = pre === undefined ? [] : pre.slice(1).split(".");
   // SemVer forbids a leading zero in a numeric pre-release identifier. The wire
   // pattern (the contract's) is looser, so such a value is accepted on the wire
   // and is simply not a valid version here: compliance `unknown`, never ordered.
-  if (prerelease.some(hasLeadingZeroNumber)) return null;
-  return {
-    core: [major as string, minor as string, patch as string],
-    prerelease,
-  };
+  return prerelease.some(hasLeadingZeroNumber) ? null : { core: [major as string, minor as string, patch as string], prerelease };
 }
 
-const NUMERIC = /^\d+$/;
+/** -1, 0 or 1 for `a < b`, `a == b`, `a > b` (plain code-unit order, no locale). */
+function compareText(a: string, b: string): number {
+  return Number(a > b) - Number(a < b);
+}
 
+/** Digit strings compare as numbers of any width: by length once leading zeros are gone, then by text. */
 function compareDigits(a: string, b: string): number {
   const left = a.replace(/^0+(?=.)/, "");
   const right = b.replace(/^0+(?=.)/, "");
-  if (left.length !== right.length) return left.length < right.length ? -1 : 1;
-  if (left === right) return 0;
-  return left < right ? -1 : 1;
+  return Math.sign(left.length - right.length) || compareText(left, right);
 }
 
+/** Numeric identifiers rank below alphanumeric ones; two of a kind compare by value or text. */
 function compareIdentifiers(a: string, b: string): number {
   const aNumeric = NUMERIC.test(a);
   const bNumeric = NUMERIC.test(b);
-  if (aNumeric && bNumeric) return compareDigits(a, b);
-  if (aNumeric) return -1;
-  if (bNumeric) return 1;
-  if (a === b) return 0;
-  return a < b ? -1 : 1;
+  if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+  return aNumeric ? compareDigits(a, b) : compareText(a, b);
 }
 
-/** The first non-equal identifier pair, left to right over the shared length; 0 when none differs. */
-function firstIdentifierDifference(a: readonly string[], b: readonly string[]): number {
-  const shared = Math.min(a.length, b.length);
-  for (let i = 0; i < shared; i += 1) {
-    const order = compareIdentifiers(a[i] as string, b[i] as string);
-    if (order !== 0) return order;
-  }
-  return 0;
+/** The first non-equal pair of the shared length, left to right; 0 when none differs. */
+function firstDifference(a: readonly string[], b: readonly string[], compare: (x: string, y: string) => number): number {
+  return a.slice(0, b.length).map((part, i) => compare(part, b[i] as string)).find((order) => order !== 0) ?? 0;
 }
 
 function comparePrerelease(a: readonly string[], b: readonly string[]): number {
   // A release (no identifiers) ranks above any pre-release of it.
   if (a.length === 0 || b.length === 0) return Math.sign(b.length - a.length);
-  const byIdentifier = firstIdentifierDifference(a, b);
-  // A shorter list ranks below a longer one that starts the same way.
-  return byIdentifier === 0 ? Math.sign(a.length - b.length) : byIdentifier;
+  // Otherwise identifiers left to right, then a shorter list ranks below a longer one that starts the same way.
+  return firstDifference(a, b, compareIdentifiers) || Math.sign(a.length - b.length);
 }
 
 /** -1, 0 or 1: the semver precedence of `a` against `b`. */
 export function compareVersions(a: ParsedVersion, b: ParsedVersion): -1 | 0 | 1 {
-  for (let i = 0; i < 3; i += 1) {
-    const order = compareDigits(a.core[i] as string, b.core[i] as string);
-    if (order !== 0) return order < 0 ? -1 : 1;
-  }
-  const order = comparePrerelease(a.prerelease, b.prerelease);
-  if (order === 0) return 0;
-  return order < 0 ? -1 : 1;
+  const order = firstDifference(a.core, b.core, compareDigits) || comparePrerelease(a.prerelease, b.prerelease);
+  return Math.sign(order) as -1 | 0 | 1;
 }
 
 /** `min <= recommended <= latest` in semantic-version precedence. */
