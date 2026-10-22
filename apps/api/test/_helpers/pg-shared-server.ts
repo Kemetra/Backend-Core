@@ -40,12 +40,18 @@ export interface SharedServer {
   template: string;
 }
 
+function parsePort(raw: string | undefined): number | null {
+  const port = Number(raw);
+  return Number.isInteger(port) && port > 0 ? port : null;
+}
+
 /** The shared server published by globalSetup, or null outside it. */
 export function readSharedServer(): SharedServer | null {
   const host = process.env[SHARED_ENV.host];
-  const port = Number(process.env[SHARED_ENV.port]);
   const template = process.env[SHARED_ENV.template];
-  if (!host || !Number.isInteger(port) || port <= 0 || !template) return null;
+  const port = parsePort(process.env[SHARED_ENV.port]);
+  if (!host || !template) return null;
+  if (port === null) return null;
   return { host, port, template };
 }
 
@@ -109,11 +115,13 @@ export async function snapshotRoles(client: Client): Promise<string> {
        FROM pg_authid ORDER BY rolname`,
   );
   const members = await client.query(
-    `SELECT r.rolname AS role, m.rolname AS member
+    `SELECT r.rolname AS role, m.rolname AS member, g.rolname AS grantor,
+            am.admin_option, am.inherit_option, am.set_option
        FROM pg_auth_members am
        JOIN pg_authid r ON r.oid = am.roleid
        JOIN pg_authid m ON m.oid = am.member
-      ORDER BY 1, 2`,
+       JOIN pg_authid g ON g.oid = am.grantor
+      ORDER BY 1, 2, 3`,
   );
   // `ALTER ROLE … SET …` lives here, and would reach every clone's pools.
   const settings = await client.query(
