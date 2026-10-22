@@ -276,6 +276,14 @@ type GuardRateLimit = (
   policy: { limit: number; windowMs: number },
 ) => Promise<void>;
 
+/** The private 4-argument `guardRateLimit`; `res` only receives `Retry-After` (RT-623). */
+type GuardRateLimitWithRes = (
+  bucket: string,
+  identifier: string,
+  policy: { limit: number; windowMs: number },
+  res: { setHeader: (name: string, value: string) => void },
+) => Promise<void>;
+
 function buildController(): { controller: AuthController; rateLimiter: FakeRateLimiter; callGuard: GuardRateLimit } {
   const rateLimiter = new FakeRateLimiter();
   const controller = new AuthController(
@@ -284,9 +292,11 @@ function buildController(): { controller: AuthController; rateLimiter: FakeRateL
     {} as never,
     rateLimiter as unknown as RateLimiter,
   );
-  const callGuard = (
-    (controller as unknown as Record<string, unknown>)["guardRateLimit"] as GuardRateLimit
+  const guard = (
+    (controller as unknown as Record<string, unknown>)["guardRateLimit"] as GuardRateLimitWithRes
   ).bind(controller);
+  const callGuard: GuardRateLimit = (bucket, identifier, policy) =>
+    guard(bucket, identifier, policy, { setHeader: () => undefined });
   return { controller, rateLimiter, callGuard };
 }
 

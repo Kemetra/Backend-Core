@@ -107,6 +107,11 @@ class FakeMembershipRepository {
   async findStoreSummary(id: string, _tenantId: string): Promise<StoreSummary | null> {
     return this.storeSummaryById.get(id) ?? null;
   }
+  // RT-414: the platform admins in these specs are members (no support session).
+  hasLiveMembershipResult = true;
+  async hasLiveMembership(): Promise<boolean> {
+    return this.hasLiveMembershipResult;
+  }
   async findUserSummary(): Promise<typeof this.userSummary> {
     return this.userSummary;
   }

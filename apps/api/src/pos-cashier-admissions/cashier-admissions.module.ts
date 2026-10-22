@@ -65,17 +65,22 @@ function tenantTransaction(pool: Pool): TenantTransaction {
     PosDeviceAuthGuard,
     {
       provide: CashierAdmissionsService,
-      useFactory: (pool: Pool, limiter: RateLimiter, logger: Logger): CashierAdmissionsService =>
+      useFactory: (
+        pool: Pool,
+        limiter: RateLimiter,
+        logger: Logger,
+        lookupPool: Pool,
+      ): CashierAdmissionsService =>
         new CashierAdmissionsService({
           tx: tenantTransaction(pool),
           admissions: new CashierAdmissionsRepository(),
-          eligibility: new CashierEligibilityRepository(),
+          eligibility: new CashierEligibilityRepository(lookupPool),
           takeoverLimit: new TakeoverRateLimit(limiter, logger, { timeoutMs: readTakeoverLimiterTimeoutMs() }),
           audit: new AdmissionAuditRepository(),
           logger,
           policy: () => readCashierAdmissionPolicy(),
         }),
-      inject: [PG_POOL, RateLimiter, CASHIER_ADMISSIONS_LOGGER],
+      inject: [PG_POOL, RateLimiter, CASHIER_ADMISSIONS_LOGGER, AUTH_LOOKUP_POOL],
     },
   ],
 })

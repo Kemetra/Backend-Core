@@ -353,7 +353,7 @@ class MessageToken {
     return new MessageToken(`${this.text.slice(0, start)}${safe}${raw.slice(end)}`);
   }
 
-  /** Mask a JWT (Clerk session/operator token) and everything after it. */
+  /** Mask a JWT (identity-provider session/operator token) and everything after it. */
   private withoutJwt(): MessageToken {
     const at = this.text.indexOf("eyJ");
     if (at === -1 || this.text.slice(at).split(".").length < 3) return this;

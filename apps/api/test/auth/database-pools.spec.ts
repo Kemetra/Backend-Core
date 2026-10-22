@@ -60,9 +60,28 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   // the tenant inventory settings (upserted, no DELETE).
   "inventory_position_events:SELECT",
   "inventory_position_events:INSERT",
+  // RT-414 (0062): platform support sessions (opened, renewed, ended; never deleted).
+  "platform_support_sessions:SELECT",
+  "platform_support_sessions:INSERT",
+  "platform_support_sessions:UPDATE",
   "tenant_inventory_settings:SELECT",
   "tenant_inventory_settings:INSERT",
   "tenant_inventory_settings:UPDATE",
+  // RT-427 (0063): the Inventory Anchors (append-only).
+  "inventory_anchors:SELECT",
+  "inventory_anchors:INSERT",
+  "inventory_anchor_lines:SELECT",
+  "inventory_anchor_lines:INSERT",
+  // RT-327 (0068): POS device health (upserted) and the global version policy (no DELETE).
+  "device_health:SELECT",
+  "device_health:INSERT",
+  "device_health:UPDATE",
+  "pos_version_policy:SELECT",
+  "pos_version_policy:INSERT",
+  "pos_version_policy:UPDATE",
+  // RT-742 (0070): the manager's not-counted force close (append-only).
+  "shift_forced_closes:SELECT",
+  "shift_forced_closes:INSERT",
   // RT-539 (0047): the receipt reprint record (append-only).
   "sale_reprints:SELECT",
   "sale_reprints:INSERT",
@@ -81,6 +100,9 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "sale_credit_reversal_tenders:INSERT",
   "sale_approval_uses:SELECT",
   "sale_approval_uses:INSERT",
+  // RT-787 (0067): refund executions (append-only).
+  "refund_executions:SELECT",
+  "refund_executions:INSERT",
   // RT-387 (0050): the shift variance policy revisions (append-only; the
   // Console publishes and every resolution reads them) and the persisted
   // approver verdict of a close (append-only, written once after the commit).
@@ -316,11 +338,18 @@ describe("database pool boundary", () => {
       "erpnext_tracking_map",
       "inventory_position_events",
       "tenant_inventory_settings",
+      "inventory_anchors",
+      "inventory_anchor_lines",
+      "device_health",
+      "pos_version_policy",
+      "shift_forced_closes",
+      "platform_support_sessions",
       "sale_reprints",
       "sale_responsibilities",
       "sale_credit_reversals",
       "sale_credit_reversal_tenders",
       "sale_approval_uses",
+      "refund_executions",
       "cash_variance_policy_revisions",
       "shift_close_approver_checks",
     ]) {

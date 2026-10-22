@@ -12,7 +12,7 @@
  *
  * Authenticated by the HUMAN `cookieAuth` → `DashboardAuthGuard` (NOT the 012/015
  * `connectorBearer` machine scheme, NOT the `dashboard_api` bearer, NOT the POS
- * `clerkJwt` device scheme). `TenantContextGuard` publishes `request.context`;
+ * operator-identity device scheme). `TenantContextGuard` publishes `request.context`;
  * `RolesGuard` + `@Roles` gate the surface (default deny → 404). `tenant_id`
  * resolves server-side from `request.context`, never the query/body (§XII; strict
  * Zod DTOs reject smuggled fields with 400). Every response is a `toBody`

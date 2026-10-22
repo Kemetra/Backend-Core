@@ -2,7 +2,7 @@
  * PosOperatorsService — unit spec (no Postgres, no Clerk network).
  *
  * Mocks every dependency: the pg.Pool (so each pipeline step's SQL can
- * be programmed), the ClerkVerifier seam, the DeviceRepository, and the
+ * be programmed), the OperatorTokenVerifier seam, the DeviceRepository, and the
  * pino Logger. Goal is to cover the refusal taxonomy + happy paths
  * without standing up a container.
  *
@@ -15,7 +15,7 @@ import type { Pool } from "pg";
 
 import { PosOperatorsService } from "../../src/pos-operators/pos-operators.service";
 import { DeviceRepository } from "../../src/pos-operators/device.repository";
-import type { ClerkVerifier } from "../../src/pos-operators/clerk-verifier";
+import type { OperatorTokenVerifier } from "../../src/auth/operator-token-verifier";
 
 // -----------------------------------------------------------------------
 // Test helpers
@@ -39,11 +39,11 @@ function makePool(): MockPool {
   return { query, connect: jest.fn(async () => client) };
 }
 
-function makeVerifier(sub: string | Error = "user_test_sub"): ClerkVerifier {
+function makeVerifier(sub: string | Error = "user_test_sub"): OperatorTokenVerifier {
   return {
     verify: jest.fn(async () => {
       if (sub instanceof Error) throw sub;
-      return { sub };
+      return { providerKey: "clerk", sub };
     }),
   };
 }
@@ -106,7 +106,7 @@ const ACTIVE_DEVICE_ROW = {
 // -----------------------------------------------------------------------
 
 describe("PosOperatorsService.signIn", () => {
-  it("returns 'refused' (clerk_jwt_invalid) when the verifier throws", async () => {
+  it("returns 'refused' (identity_token_invalid) when the verifier throws", async () => {
     const pool = makePool();
     const verifier = makeVerifier(new Error("bad signature"));
     const devices = makeDeviceRepo();
@@ -149,7 +149,7 @@ describe("PosOperatorsService.signIn", () => {
           id: USER_ID,
           email: "u@example.com",
           display_name: null,
-          clerk_user_id: "user_test_sub",
+          operator_id: "user_test_sub",
           deleted_at: new Date(),
         },
       ],
@@ -173,7 +173,7 @@ describe("PosOperatorsService.signIn", () => {
           id: USER_ID,
           email: "u@example.com",
           display_name: null,
-          clerk_user_id: "user_test_sub",
+          operator_id: "user_test_sub",
           deleted_at: null,
         },
       ],
@@ -202,7 +202,7 @@ describe("PosOperatorsService.signIn", () => {
           id: USER_ID,
           email: "u@example.com",
           display_name: null,
-          clerk_user_id: "user_test_sub",
+          operator_id: "user_test_sub",
           deleted_at: null,
         },
       ],
@@ -228,7 +228,7 @@ describe("PosOperatorsService.signIn", () => {
           id: USER_ID,
           email: "u@example.com",
           display_name: null,
-          clerk_user_id: "user_test_sub",
+          operator_id: "user_test_sub",
           deleted_at: null,
         },
       ],
@@ -264,7 +264,7 @@ describe("PosOperatorsService.signIn", () => {
           id: USER_ID,
           email: "u@example.com",
           display_name: null,
-          clerk_user_id: "user_test_sub",
+          operator_id: "user_test_sub",
           deleted_at: null,
         },
       ],
@@ -302,7 +302,7 @@ describe("PosOperatorsService.signIn", () => {
           id: USER_ID,
           email: "u@example.com",
           display_name: "Manager One",
-          clerk_user_id: "user_test_sub",
+          operator_id: "user_test_sub",
           deleted_at: null,
         },
       ],
@@ -342,7 +342,7 @@ describe("PosOperatorsService.signIn", () => {
           id: USER_ID,
           email: "admin@tenant.example",
           display_name: "Tenant Admin",
-          clerk_user_id: "user_clerk_admin",
+          operator_id: "user_clerk_admin",
           deleted_at: null,
         },
       ],
@@ -402,7 +402,7 @@ describe("PosOperatorsService.signIn", () => {
           id: USER_ID,
           email: "m@example.com",
           display_name: "Mgr",
-          clerk_user_id: "user_clerk_mgr",
+          operator_id: "user_clerk_mgr",
           deleted_at: null,
         },
       ],

@@ -23,6 +23,7 @@
  *     `device_token_attestation`).
  *   - PR-5 sign-in remains unchanged.
  */
+import { linkClerkUsers } from "../_helpers/identity-links";
 import "reflect-metadata";
 
 import { INestApplication } from "@nestjs/common";
@@ -35,9 +36,9 @@ import { Pool } from "pg";
 import request from "supertest";
 
 import {
-  CLERK_VERIFIER,
-  type ClerkVerifier,
-} from "../../src/pos-operators/clerk-verifier";
+  OPERATOR_TOKEN_VERIFIER,
+  type OperatorTokenVerifier,
+} from "../../src/auth/operator-token-verifier";
 import { PosOperatorsModule } from "../../src/pos-operators/pos-operators.module";
 import { PG_POOL } from "../../src/auth/auth.module";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
@@ -75,12 +76,12 @@ const OTHER_MEMBERSHIP_ID = "0c000000-0000-4000-8000-00000000dd02";
 const DEVICE_ID = "0c000000-0000-4000-8000-00000000ee01";
 const DEVICE_ATTESTATION = "device-attestation-pr6";
 
-class StubClerkVerifier implements ClerkVerifier {
+class StubClerkVerifier implements OperatorTokenVerifier {
   constructor(private readonly map: Map<string, string>) {}
-  async verify(rawJwt: string): Promise<{ sub: string }> {
+  async verify(rawJwt: string): Promise<{ providerKey: string; sub: string }> {
     const sub = this.map.get(rawJwt);
     if (!sub) throw new Error("StubClerkVerifier: unknown jwt");
-    return { sub };
+    return { providerKey: "clerk", sub };
   }
 }
 
@@ -188,11 +189,13 @@ beforeAll(async () => {
         OTHER_USER_ID, OTHER_CLERK_SUB,
       ],
     );
+    await linkClerkUsers(pool);
     await pool.query(
       `INSERT INTO users (id, email, display_name, clerk_user_id, deleted_at)
          VALUES ($1, 'deleted@pr6.example', 'Deleted', $2, now())`,
       [DELETED_USER_ID, DELETED_CLERK_SUB],
     );
+    await linkClerkUsers(pool);
     await pool.query(
       `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES
          ($1, $2, $3, $4, 'all'),
@@ -220,7 +223,7 @@ beforeAll(async () => {
     })
       .overrideProvider(PG_POOL)
       .useValue(pool)
-      .overrideProvider(CLERK_VERIFIER)
+      .overrideProvider(OPERATOR_TOKEN_VERIFIER)
       .useValue(new StubClerkVerifier(verifierMap))
       .compile();
 

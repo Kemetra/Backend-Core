@@ -60,7 +60,7 @@ import { AuthController } from "./auth.controller";
 import { AuthGuard } from "./auth.guard";
 import { DashboardAuthGuard } from "./dashboard-auth.guard";
 import { PosOperatorAuthGuard } from "./pos-operator-auth.guard";
-import { clerkIdentityProviderFactory } from "./clerk-identity-provider.adapter";
+import { identityProviderFactory } from "./identity-provider.factory";
 import {
   OPERATOR_CONTEXT_RESOLVER,
   PgOperatorContextResolver,
@@ -78,6 +78,7 @@ import { IoredisIdempotencyAdapter } from "./ioredis-idempotency-adapter";
 import { RateLimiter, type RedisLike, type WindowHit } from "./rate-limit";
 import { SessionRepository } from "./session.repository";
 import { signInMembershipsReader } from "./signin-memberships";
+import { endSupportSessions } from "../platform-support-sessions/support-session.lifecycle";
 import { QUEUE_NAMES } from "@data-pulse-2/shared";
 
 /** Name of the BullMQ queue both the producer and the (future) worker bind to. */
@@ -265,7 +266,7 @@ export class AlwaysAllowRedis implements RedisLike {
       useFactory: (pool: Pool, lookupPool: Pool): PgOperatorContextResolver =>
         new PgOperatorContextResolver(
           pool,
-          clerkIdentityProviderFactory(lookupPool),
+          identityProviderFactory(lookupPool),
           new DeviceRepository(lookupPool, pool),
           undefined,
           lookupPool,
@@ -287,6 +288,9 @@ export class AlwaysAllowRedis implements RedisLike {
           auditEnqueuer,
           // RT-343: memberships are read on the domain pool, never the lookup pool.
           listMemberships: signInMembershipsReader(domainPool),
+          // RT-414: support sessions live on the domain pool (0062).
+          endSupportSessions: (owner, requestId) =>
+            endSupportSessions(domainPool, owner, "signed_out", requestId),
         }),
       inject: [
         AUTH_LOOKUP_POOL,

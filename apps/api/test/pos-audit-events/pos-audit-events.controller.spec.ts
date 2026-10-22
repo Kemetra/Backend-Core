@@ -21,6 +21,7 @@
  *       - acting_operator_id not mapped to a local user → invalid_input
  *   - Top-level 400: empty events array, missing device_token_attestation.
  */
+import { linkClerkUsers } from "../_helpers/identity-links";
 import "reflect-metadata";
 
 import { INestApplication } from "@nestjs/common";
@@ -32,9 +33,9 @@ import { Pool } from "pg";
 import request from "supertest";
 
 import {
-  CLERK_VERIFIER,
-  type ClerkVerifier,
-} from "../../src/pos-operators/clerk-verifier";
+  OPERATOR_TOKEN_VERIFIER,
+  type OperatorTokenVerifier,
+} from "../../src/auth/operator-token-verifier";
 import { PosAuditEventsModule } from "../../src/pos-audit-events/pos-audit-events.module";
 import { AUTH_LOOKUP_POOL, PG_POOL } from "../../src/auth/auth.module";
 import { GlobalExceptionFilter } from "../../src/common/exception.filter";
@@ -96,11 +97,11 @@ function makeShiftOpen(eventId: string) {
   };
 }
 
-class StubClerkVerifier implements ClerkVerifier {
+class StubClerkVerifier implements OperatorTokenVerifier {
   constructor(private readonly validTokens: Set<string>) {}
-  async verify(rawJwt: string): Promise<{ sub: string }> {
+  async verify(rawJwt: string): Promise<{ providerKey: string; sub: string }> {
     if (!this.validTokens.has(rawJwt)) throw new Error("StubClerkVerifier: unknown jwt");
-    return { sub: OPERATOR_CLERK_SUB };
+    return { providerKey: "clerk", sub: OPERATOR_CLERK_SUB };
   }
 }
 
@@ -151,6 +152,7 @@ beforeAll(async () => {
       `INSERT INTO users (id, email, display_name, clerk_user_id) VALUES ($1, 'op@ae.example', 'Operator AE', $2)`,
       [OPERATOR_USER_ID, OPERATOR_CLERK_SUB],
     );
+    await linkClerkUsers(pool);
 
     // Membership for the primary operator in TENANT_ID (required by the tenant-scoped actor lookup).
     const ROLE_ID = "0c000000-0000-4000-8000-00000000ff01";
@@ -169,12 +171,14 @@ beforeAll(async () => {
       `INSERT INTO users (id, email, display_name, clerk_user_id) VALUES ($1, 'op@ae-other.example', 'Operator Other Tenant', $2)`,
       [OPERATOR_OTHER_TENANT_USER_ID, OPERATOR_OTHER_TENANT_CLERK_SUB],
     );
+    await linkClerkUsers(pool);
 
     // User with a REVOKED membership in TENANT_ID.
     await pool.query(
       `INSERT INTO users (id, email, display_name, clerk_user_id) VALUES ($1, 'op-revoked@ae.example', 'Operator Revoked', $2)`,
       [OPERATOR_REVOKED_USER_ID, OPERATOR_REVOKED_CLERK_SUB],
     );
+    await linkClerkUsers(pool);
     await pool.query(
       `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind, revoked_at)
        VALUES ($1, $2, $3, $4, 'all', now())`,
@@ -215,7 +219,7 @@ beforeAll(async () => {
       .useValue(env.app)
       .overrideProvider(AUTH_LOOKUP_POOL)
       .useValue(pool)
-      .overrideProvider(CLERK_VERIFIER)
+      .overrideProvider(OPERATOR_TOKEN_VERIFIER)
       .useValue(new StubClerkVerifier(new Set(["jwt-valid"])))
       .compile();
 

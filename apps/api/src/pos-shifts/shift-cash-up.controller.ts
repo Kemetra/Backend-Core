@@ -6,6 +6,7 @@
  *   POST /api/pos/v1/shifts                            → openShift
  *   POST /api/pos/v1/shifts/{shift_id}/cash-movements  → recordCashMovement
  *   POST /api/pos/v1/shifts/{shift_id}/close           → closeShift (slice 2b-2)
+ *   POST /api/pos/v1/shifts/{shift_id}/forced-close    → forceCloseShift (RT-742, 1.4.0-draft)
  *
  * The captureSale device path, reused (RT-224): `@DeviceBearer()` +
  * `ShiftCashUpAuthGuard` (envelope OR device bearer with a verified
@@ -13,6 +14,14 @@
  * carries `RATE_LIMITED`), `@Idempotent("required")` (the existing
  * interceptor: identical retry → stored replay; same key, other body → 409
  * `idempotency_key_conflict`; in flight → 425) and `@Auditable`.
+ *
+ * forceCloseShift is the manager envelope ONLY (no `@DeviceBearer`, so the
+ * global FailClosedAuthGuard's opaque-token lookup refuses a device token
+ * with the generic 401), then PosOperatorEnvelopeSaleGuard's live re-check of
+ * membership, device, store access and the owner / tenant_admin /
+ * store_manager role (generic 401), the same rate limit, idempotency and
+ * audit. The audit metadata names the shift and both terminals, never the
+ * reason.
  *
  * Status: 201 for a first record; 200 with `Idempotent-Replayed: true` for a
  * natural-key replay under another key. Scope, actor and auth path come from
@@ -32,9 +41,10 @@ import {
 } from "@nestjs/common";
 import type { Response } from "express";
 
-import { Auditable } from "../audit/auditable.decorator";
+import { Auditable, annotateAudit } from "../audit/auditable.decorator";
 import { PosWriteRateLimitBucket } from "../auth/pos-write-rate-limit.decorator";
 import { PosWriteRateLimitGuard } from "../auth/pos-write-rate-limit.guard";
+import { PosOperatorEnvelopeSaleGuard } from "../auth/pos-operator-envelope-sale.guard";
 import { DeviceBearer } from "../auth/route-auth";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import type { TenantContextRequest } from "../context/types";
@@ -43,15 +53,22 @@ import { deviceScopeOf } from "../pos-cashier-admissions/device-scope";
 import { ShiftCashUpAuthGuard, ShiftFactRoute } from "./shift-cash-up-auth.guard";
 import {
   CloseShiftRequestSchema,
+  ForceCloseShiftRequestSchema,
   OpenShiftRequestSchema,
   RecordCashMovementRequestSchema,
   ShiftIdParamSchema,
   type CloseShiftRequestDto,
+  type ForceCloseShiftRequestDto,
   type OpenShiftRequestDto,
   type RecordCashMovementRequestDto,
 } from "./shift-cash-up.dto";
 import { toShiftHttpError } from "./shift-cash-up.errors";
 import type { CashMovementProjection, ShiftProjection } from "./shift-cash-up.projections";
+import {
+  ShiftForceCloseService,
+  type ForceCloseContext,
+  type ForceClosedShiftProjection,
+} from "./shift-force-close.service";
 import {
   ShiftCashUpService,
   type ShiftAuthPath,
@@ -79,6 +96,25 @@ export function shiftWriteContext(request: TenantContextRequest): ShiftWriteCont
   return { scope, actorUserId, path };
 }
 
+/**
+ * RT-742: what PosOperatorEnvelopeSaleGuard published for forceCloseShift.
+ * Only an envelope (`pos_operator`) principal with a full scope, its bound
+ * terminal and its own session reaches the service; anything else is the
+ * generic 401.
+ */
+export function forceCloseContext(request: TenantContextRequest): ForceCloseContext {
+  const { scope, actorUserId, path } = shiftWriteContext(request);
+  const tokenId = request.principal?.kind === "token" ? request.principal.tokenId : null;
+  if (path !== "envelope" || !tokenId) throw new UnauthorizedException("Unauthorized");
+  return {
+    tenantId: scope.tenantId,
+    storeId: scope.storeId,
+    actorUserId,
+    callerDeviceId: scope.deviceId,
+    callerTokenId: tokenId,
+  };
+}
+
 /** A forced close is manager-envelope only (contract "Forced close"). */
 function isForcedClose(body: Readonly<Record<string, unknown>>): boolean {
   return body["closeKind"] === "forced";
@@ -86,12 +122,20 @@ function isForcedClose(body: Readonly<Record<string, unknown>>): boolean {
 
 /** Run a write, answering 201 or a 200 replay, with refusals mapped to the contract. */
 async function respond<T>(res: Response, write: () => Promise<ShiftWriteResult<T>>): Promise<T> {
-  let result: ShiftWriteResult<T>;
+  return settle(res, await mapped(write));
+}
+
+/** The write's result, its refusals mapped to the contract. */
+async function mapped<R>(write: () => Promise<R>): Promise<R> {
   try {
-    result = await write();
+    return await write();
   } catch (err) {
     throw toShiftHttpError(err);
   }
+}
+
+/** 201 for a first record; 200 with `Idempotent-Replayed: true` for a replay. */
+function settle<T>(res: Response, result: ShiftWriteResult<T>): T {
   if (result.created) {
     res.status(HttpStatus.CREATED);
   } else {
@@ -103,7 +147,10 @@ async function respond<T>(res: Response, write: () => Promise<ShiftWriteResult<T
 
 @Controller("api/pos/v1/shifts")
 export class ShiftCashUpController {
-  constructor(private readonly shifts: ShiftCashUpService) {}
+  constructor(
+    private readonly shifts: ShiftCashUpService,
+    private readonly forceCloses: ShiftForceCloseService,
+  ) {}
 
   @Post()
   @DeviceBearer()
@@ -161,5 +208,22 @@ export class ShiftCashUpController {
     const ctx = shiftWriteContext(request);
     const { operatorUserId: _claim, ...fact } = body;
     return respond(res, () => this.shifts.closeShift(ctx, shiftId, fact));
+  }
+
+  @Post(":shift_id/forced-close")
+  @UseGuards(PosOperatorEnvelopeSaleGuard, PosWriteRateLimitGuard)
+  @PosWriteRateLimitBucket("posWriteShift")
+  @Idempotent("required")
+  @Auditable("shift.force_closed")
+  async forceCloseShift(
+    @Req() request: TenantContextRequest,
+    @Param("shift_id", new ZodValidationPipe(ShiftIdParamSchema)) shiftId: string,
+    @Body(new ZodValidationPipe(ForceCloseShiftRequestSchema)) body: ForceCloseShiftRequestDto,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<ForceClosedShiftProjection> {
+    const ctx = forceCloseContext(request);
+    const result = await mapped(() => this.forceCloses.forceClose(ctx, shiftId, body));
+    annotateAudit(request, { ...result.audit });
+    return settle(res, result);
   }
 }

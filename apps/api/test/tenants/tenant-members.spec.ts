@@ -62,6 +62,7 @@ import {
   stopPgEnv,
   type PgTestEnv,
 } from "../_helpers/postgres-container";
+import { enterTenantAsPlatformAdmin } from "../_helpers/support-session";
 
 // ---- Fake Redis (always-allow rate limiter) ----------------------------
 
@@ -477,10 +478,11 @@ describe("GET /tenants/:id/members — all access → accessible_store_ids: []",
 
 // ===== platform admin bypass ============================================
 
-describe("GET /tenants/:id/members — platform admin → 200", () => {
-  it("platform admin can list members of any tenant", async () => {
+describe("GET /tenants/:id/members — platform admin → 200 (RT-414: with a support session)", () => {
+  it("platform admin can list members of the tenant its support session is for", async () => {
     if (maybeSkip()) return;
     const cookie = await signIn(ALICE_EMAIL, ALICE_PASS);
+    await enterTenantAsPlatformAdmin(pool!, ALICE_ID, ACME_ID);
     const res = await http()
       .get(`/api/v1/tenants/${ACME_ID}/members`)
       .set("Cookie", cookie)
@@ -493,11 +495,23 @@ describe("GET /tenants/:id/members — platform admin → 200", () => {
   it("platform admin can list members of GLOBEX (which has no memberships)", async () => {
     if (maybeSkip()) return;
     const cookie = await signIn(ALICE_EMAIL, ALICE_PASS);
+    await enterTenantAsPlatformAdmin(pool!, ALICE_ID, GLOBEX_ID);
     const res = await http()
       .get(`/api/v1/tenants/${GLOBEX_ID}/members`)
       .set("Cookie", cookie)
       .expect(200);
 
     expect(res.body).toEqual([]);
+  });
+
+  it("without a support session for the path tenant → 403 support_session_required", async () => {
+    if (maybeSkip()) return;
+    const cookie = await signIn(ALICE_EMAIL, ALICE_PASS);
+    await enterTenantAsPlatformAdmin(pool!, ALICE_ID, ACME_ID);
+    const res = await http()
+      .get(`/api/v1/tenants/${GLOBEX_ID}/members`)
+      .set("Cookie", cookie)
+      .expect(403);
+    expect(res.body.error.code).toBe("support_session_required");
   });
 });

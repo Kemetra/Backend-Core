@@ -2,23 +2,31 @@
  * Route-auth markers for the fail-closed global guard (#615).
  *
  * A route with none of these markers must present a dashboard cookie or an
- * opaque bearer token. `@Public()` is the only opt-out. Clerk POS routes
+ * opaque bearer token. `@Public()` is the only opt-out. Operator-token POS routes
  * and device-attested audit ingestion declare their own credential instead
  * of becoming public.
  */
-import { SetMetadata, UnauthorizedException } from "@nestjs/common";
+import { SetMetadata, UnauthorizedException, UseInterceptors, applyDecorators } from "@nestjs/common";
 import type { Request } from "express";
 
+import { DeviceRotationHintInterceptor } from "../pos-terminal-pairing/rotation-hint";
+
 export const IS_PUBLIC_KEY = "dp2:public";
-export const CLERK_BEARER_KEY = "dp2:clerkBearer";
+export const OPERATOR_BEARER_KEY = "dp2:operatorBearer";
 export const DEVICE_ATTESTED_KEY = "dp2:deviceAttested";
 export const DEVICE_BEARER_KEY = "dp2:deviceBearer";
 
 export const Public = () => SetMetadata(IS_PUBLIC_KEY, true);
-export const ClerkBearer = () => SetMetadata(CLERK_BEARER_KEY, true);
+export const OperatorBearer = () => SetMetadata(OPERATOR_BEARER_KEY, true);
 export const DeviceAttested = () => SetMetadata(DEVICE_ATTESTED_KEY, true);
-/** Paired-terminal bearer. PosDeviceAuthGuard on the route does the lookup. */
-export const DeviceBearer = () => SetMetadata(DEVICE_BEARER_KEY, true);
+/**
+ * Paired-terminal bearer. PosDeviceAuthGuard on the route does the lookup.
+ * Also installs the rotate-soon hint interceptor (RT-639), which writes the hint
+ * headers after a successful handler; it does nothing on a route whose guard
+ * recorded no expiry (the rotation route's own guard).
+ */
+export const DeviceBearer = () =>
+  applyDecorators(SetMetadata(DEVICE_BEARER_KEY, true), UseInterceptors(DeviceRotationHintInterceptor));
 
 export type CredentialRequest = Request & {
   posBearer?: string;

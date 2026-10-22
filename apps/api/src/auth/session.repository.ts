@@ -226,6 +226,24 @@ export class SessionRepository {
   }
 
   /**
+   * RT-414: clear the active tenant and store ONLY while the active tenant
+   * is still `tenantId` (the support session just ended). A tenant switch
+   * that landed in between keeps its tenant. Returns false when nothing
+   * matched (revoked session or a different active tenant); the caller tells
+   * the two apart with `findActiveById`.
+   */
+  async clearActiveTenantIf(id: string, tenantId: string): Promise<boolean> {
+    const result = await this.db
+      .update(sessions)
+      .set({ activeTenantId: null, activeStoreId: null })
+      .where(
+        and(eq(sessions.id, id), isNull(sessions.revokedAt), eq(sessions.activeTenantId, tenantId)),
+      );
+    await this.cache.invalidate(id);
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /**
    * Server-initiated revocation (sign-out, admin revoke). Idempotent — a
    * second revoke on the same row is a no-op for the application but
    * fast-paths via `revoked_at IS NULL` so we don't overwrite a prior

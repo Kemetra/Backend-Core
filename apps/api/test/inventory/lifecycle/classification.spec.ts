@@ -40,6 +40,8 @@ import { getTableConfig } from 'drizzle-orm/pg-core';
 
 import {
   erpnextTrackingMap,
+  inventoryAnchorLines,
+  inventoryAnchors,
   inventoryEffectIntegration,
   inventoryPositionEvents,
   stockCounts,
@@ -178,9 +180,55 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
   },
   {
     // RT-435 (0056): the per-tenant return landing status and its actor.
+    // RT-427 (0063): the sale-effects activation time and its actor.
     name: 'tenant_inventory_settings',
     table: tenantInventorySettings,
-    columns: ['tenant_id', 'return_landing_status', 'updated_by', 'created_at', 'updated_at'],
+    columns: [
+      'tenant_id',
+      'return_landing_status',
+      'sale_effects_activated_at',
+      'sale_effects_activated_by',
+      'updated_by',
+      'created_at',
+      'updated_at',
+    ],
+  },
+  {
+    // RT-427 (0063): the Inventory Anchor — opaque ids, an ERP warehouse
+    // reference, timestamps and a coverage object of counts.
+    name: 'inventory_anchors',
+    table: inventoryAnchors,
+    columns: [
+      'id',
+      'tenant_id',
+      'store_id',
+      'stock_location_id',
+      'inventory_status',
+      'generation',
+      'source_run_id',
+      'snapshot_read_at',
+      'snapshot_recorded_at',
+      'erpnext_warehouse_ref',
+      'activated_at',
+      'coverage',
+      'created_by',
+      'created_at',
+    ],
+  },
+  {
+    // RT-427 (0063): one anchor line per product — an exact Bin quantity, its
+    // ERP stock UOM and Item reference.
+    name: 'inventory_anchor_lines',
+    table: inventoryAnchorLines,
+    columns: [
+      'id',
+      'anchor_id',
+      'tenant_id',
+      'tenant_product_ref',
+      'quantity',
+      'erp_stock_uom',
+      'erpnext_item_ref',
+    ],
   },
   {
     name: 'stock_counts',

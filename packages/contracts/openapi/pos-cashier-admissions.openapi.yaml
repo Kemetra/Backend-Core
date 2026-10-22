@@ -205,6 +205,10 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/PosCashierAdmissionRequest"
+      parameters:
+        - $ref: "#/components/parameters/PosBuildCommit"
+        - $ref: "#/components/parameters/PosAppVersion"
+        - $ref: "#/components/parameters/PosContractPin"
       responses:
         "200":
           description: >
@@ -212,6 +216,11 @@ paths:
             signal. The body is a tagged union on `kind`. Clients MUST switch
             on `kind` and MUST NOT assume any other field until the variant is
             confirmed.
+          headers:
+            X-Device-Token-Rotate-After:
+              $ref: "#/components/headers/DeviceTokenRotateAfter"
+            X-Device-Token-Rotate-Stage:
+              $ref: "#/components/headers/DeviceTokenRotateStage"
           content:
             application/json:
               schema:
@@ -280,6 +289,9 @@ paths:
       security:
         - device: []
       parameters:
+        - $ref: "#/components/parameters/PosBuildCommit"
+        - $ref: "#/components/parameters/PosAppVersion"
+        - $ref: "#/components/parameters/PosContractPin"
         - name: admission_id
           in: path
           required: true
@@ -299,6 +311,11 @@ paths:
         "200":
           description: >
             The admission is not live on this device (any of the cases above).
+          headers:
+            X-Device-Token-Rotate-After:
+              $ref: "#/components/headers/DeviceTokenRotateAfter"
+            X-Device-Token-Rotate-Stage:
+              $ref: "#/components/headers/DeviceTokenRotateStage"
           content:
             application/json:
               schema:
@@ -331,9 +348,18 @@ paths:
       tags: [pos-cashier-admissions]
       security:
         - device: []
+      parameters:
+        - $ref: "#/components/parameters/PosBuildCommit"
+        - $ref: "#/components/parameters/PosAppVersion"
+        - $ref: "#/components/parameters/PosContractPin"
       responses:
         "200":
           description: The cashiers of the device's store. May be empty.
+          headers:
+            X-Device-Token-Rotate-After:
+              $ref: "#/components/headers/DeviceTokenRotateAfter"
+            X-Device-Token-Rotate-Stage:
+              $ref: "#/components/headers/DeviceTokenRotateStage"
           content:
             application/json:
               schema:
@@ -341,6 +367,77 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 components:
+  parameters:
+    PosBuildCommit:
+      name: X-POS-Build-Commit
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 40
+        maxLength: 40
+        pattern: "^[0-9a-f]{40}$"
+      description: >
+        RT-719. The POS git commit the running build was made from: exactly
+        40 characters of `[0-9a-f]` (the full SHA-1). Optional. A request that
+        sends no valid commit records the device's build as unknown; it is
+        never refused or slowed for it. Recorded only from a request to this
+        operation that authenticates with the device token. See "Build identity report
+        (RT-719)" in `pos-terminal-pairing.openapi.yaml`.
+    PosAppVersion:
+      name: X-POS-App-Version
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 5
+        maxLength: 32
+        pattern: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+      description: >
+        RT-719. The POS semantic version: at most 32 characters of
+        `[0-9A-Za-z.-]`, without build metadata. Optional: send it only when the build has a release
+        version (POS has no signed release yet). Ignored without a valid
+        `X-POS-Build-Commit`. See "Build identity report (RT-719)" in
+        `pos-terminal-pairing.openapi.yaml`.
+    PosContractPin:
+      name: X-POS-Contract-Pin
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 40
+        maxLength: 40
+        pattern: "^[0-9a-f]{40}$"
+      description: >
+        RT-719. The Backend-Core commit in the build's
+        `contracts/backend-core/PIN` (the `commit` line): exactly 40
+        characters of `[0-9a-f]`. Optional. Ignored without a valid `X-POS-Build-Commit`.
+        See "Build identity report (RT-719)" in
+        `pos-terminal-pairing.openapi.yaml`.
+  headers:
+    DeviceTokenRotateAfter:
+      description: >
+        RT-639. Present only when this device credential has 15 days or less
+        left: the ISO-8601 instant `expires_at - 15 days` (the same instant as
+        `rotate_after` in the `posRotateTerminalToken` response). The terminal
+        rotates at or after it. Absent while more than 15 days remain. Never
+        carries token material. See `pos-terminal-pairing.openapi.yaml`,
+        "Credential rotation".
+      required: false
+      schema:
+        type: string
+        format: date-time
+    DeviceTokenRotateStage:
+      description: >
+        RT-639. Sent with `X-Device-Token-Rotate-After`: `notice` (15 days or
+        less left), `warning` (10 or less), `urgent` (3 or less, or already
+        past `expires_at`). The server keeps no per-device state, so it sends
+        the stage on every response while it holds; the terminal shows each
+        stage the first time it sees it.
+      required: false
+      schema:
+        type: string
+        enum: [notice, warning, urgent]
   securitySchemes:
     # The same role-named POS device-credential scheme as catalog/read-down.yaml
     # (spec 030 / 028 DOC-1 / DOC-4): the paired terminal's opaque device token,

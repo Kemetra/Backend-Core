@@ -62,6 +62,7 @@ import {
   type PgTestEnv,
 } from "../_helpers/postgres-container";
 import { SAME_ORIGIN } from "../_helpers/same-origin";
+import { enterTenantAsPlatformAdmin } from "../_helpers/support-session";
 
 // ---- Fakes ---------------------------------------------------------------
 
@@ -264,6 +265,12 @@ async function signInWithTenant(
   tenantId: string,
 ): Promise<string> {
   const cookie = await signIn(email, password);
+  if (email === ALICE_EMAIL) {
+    // RT-414: ALICE is a platform admin with no membership; she enters a
+    // tenant through a support session, not `POST /context/tenant`.
+    await enterTenantAsPlatformAdmin(pool!, ALICE_ID, tenantId);
+    return cookie;
+  }
   await http()
     .post("/api/v1/context/tenant")
     .set("Cookie", cookie)

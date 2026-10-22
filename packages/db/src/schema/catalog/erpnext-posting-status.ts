@@ -168,6 +168,25 @@ export const erpnextPostingStatus = pgTable(
       t.sourceSystem,
       t.externalId,
     ),
+    // RT-565 D7 (0057-0061, each built CONCURRENTLY): the console posting
+    // freshness read. A tenant-first and a store-first index for the last
+    // posting and for the oldest pending intent, plus the fixed-size set of
+    // pre-0042 posted rows (posted_at NULL) for the unknown-vs-none probe.
+    index("idx_erpnext_posting_status_posted_at_tenant")
+      .on(t.tenantId, t.postedAt.desc())
+      .where(sql`${t.postedAt} IS NOT NULL`),
+    index("idx_erpnext_posting_status_posted_at_store")
+      .on(t.tenantId, t.storeId, t.postedAt.desc())
+      .where(sql`${t.postedAt} IS NOT NULL`),
+    index("idx_erpnext_posting_status_pending_created_tenant")
+      .on(t.tenantId, t.createdAt)
+      .where(sql`${t.status} = 'pending'`),
+    index("idx_erpnext_posting_status_pending_created_store")
+      .on(t.tenantId, t.storeId, t.createdAt)
+      .where(sql`${t.status} = 'pending'`),
+    index("idx_erpnext_posting_status_legacy_posted")
+      .on(t.tenantId, t.storeId)
+      .where(sql`${t.status} = 'posted' AND ${t.postedAt} IS NULL`),
   ],
 );
 

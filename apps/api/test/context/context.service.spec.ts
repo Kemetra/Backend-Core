@@ -108,6 +108,17 @@ class FakeMembershipRepository {
     kind: StoreAccessKind;
   }> = [];
 
+  // RT-414: the platform admins in this spec are members (no support session).
+
+  hasLiveMembershipResult = true;
+
+  async hasLiveMembership(): Promise<boolean> {
+
+    return this.hasLiveMembershipResult;
+
+  }
+
+
   async isPlatformAdmin(userId: string): Promise<boolean> {
     this.isPlatformAdminCalls.push(userId);
     return this.isPlatformAdminResult;
@@ -356,13 +367,23 @@ describe("ContextService.switchTenant", () => {
     expect(sessions.updates).toHaveLength(0);
   });
 
-  it("succeeds for a platform admin without a membership (FR-TEN-6)", async () => {
+  it("succeeds for a member platform admin, skipping the role lookup (FR-TEN-6)", async () => {
     memberships.isPlatformAdminResult = true;
     memberships.membershipResult = null;
     // tenantSummaryById has TENANT_ID set in beforeEach
     await service.switchTenant(SESSION_PRINCIPAL, TENANT_ID);
     expect(sessions.updates).toHaveLength(1);
     expect(memberships.findActiveMembershipCalls).toHaveLength(0);
+  });
+
+  it("refuses a NON-member platform admin with 403 support_session_required (RT-414)", async () => {
+    memberships.isPlatformAdminResult = true;
+    memberships.hasLiveMembershipResult = false;
+    await expect(service.switchTenant(SESSION_PRINCIPAL, TENANT_ID)).rejects.toMatchObject({
+      status: 403,
+      response: { code: "support_session_required" },
+    });
+    expect(sessions.updates).toHaveLength(0);
   });
 
   it("throws 404 when the platform admin requests a non-existent tenant", async () => {

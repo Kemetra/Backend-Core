@@ -26,15 +26,22 @@
 import {
   CanActivate,
   ExecutionContext,
+  ForbiddenException,
+  Inject,
   Injectable,
+  Optional,
   UnauthorizedException,
 } from "@nestjs/common";
 import type { Request } from "express";
+import type { Pool } from "pg";
 import type { AuthTokenRow, BearerAuthScope, SessionRow } from "@data-pulse-2/db/schema";
 import { SessionRepository } from "./session.repository";
 import { AuthTokenRepository } from "./auth-token.repository";
 import { recordAuthFailure } from "../observability/metrics/api.metrics";
-import { assertTrustedOrigin, isUnsafeMethod } from "./origin-check";
+import { ORIGIN_REJECTED, checkRequestOrigin, isUnsafeMethod } from "./origin-check";
+import { PG_POOL } from "./database-pools";
+import { assignRequestId } from "../common/request-id.interceptor";
+import { auditSupportSessionOriginRefusal } from "../platform-support-sessions/support-session.origin-audit";
 
 export const SESSION_COOKIE_NAME = "dp2_session";
 const BEARER_PREFIX = "bearer ";
@@ -105,6 +112,17 @@ export type AuthedRequest = Request & {
 
 @Injectable()
 export class AuthGuard implements CanActivate {
+  /**
+   * RT-414: the domain pool, used only to write the
+   * `platform.cross_tenant.accessed` row when an RT-430 `Origin` refusal hits
+   * a support-session-covered route. Property-injected so no subclass
+   * constructor changes; absent (manual construction), the refusal is unchanged
+   * and no row is written.
+   */
+  @Optional()
+  @Inject(PG_POOL)
+  protected readonly supportSessionAuditPool?: Pool;
+
   constructor(
     // `protected` (not private) so subclasses (ConnectorAuthGuard) can reuse the
     // injected AuthTokenRepository for connector-credential resolution (018-US4).
@@ -121,7 +139,7 @@ export class AuthGuard implements CanActivate {
       // trusted Origin (CSRF). Checked before the lookup, so a forged request
       // never slides the idle window and its refusal is the same whether or
       // not the cookie is live.
-      if (isUnsafeMethod(request.method)) assertTrustedOrigin(request);
+      await this.assertCookieOrigin(context, request, sessionCredential);
       const session = await this.sessions.findActiveByCredential(sessionCredential);
       if (!session) {
         // T470 — observability: emit auth_failure_total{cause="bad_token"}.
@@ -167,6 +185,49 @@ export class AuthGuard implements CanActivate {
     // header shorter than "bearer ", wrong prefix, empty-after-trim).
     recordAuthFailure({ cause: "missing" });
     throw unauthorized();
+  }
+
+  /** RT-430: an unsafe cookie request needs a trusted `Origin`. */
+  private async assertCookieOrigin(
+    context: ExecutionContext,
+    request: AuthedRequest,
+    credential: string,
+  ): Promise<void> {
+    if (!isUnsafeMethod(request.method)) return;
+    if (checkRequestOrigin(request) === "trusted") return;
+    throw await this.originRefusal(context, request, credential);
+  }
+
+  /**
+   * The RT-430 refusal of an untrusted `Origin`, or, on a route RT-414 covers
+   * for a platform admin in a non-member tenant, the refusal the
+   * support-session check produces, with its `platform.cross_tenant.accessed`
+   * row written. Reads the session without sliding its idle window.
+   */
+  private async originRefusal(
+    context: ExecutionContext,
+    request: AuthedRequest,
+    credential: string,
+  ): Promise<ForbiddenException> {
+    const plain = new ForbiddenException({
+      code: ORIGIN_REJECTED,
+      message: "Request origin is not allowed",
+    });
+    const pool = this.supportSessionAuditPool;
+    if (!pool) return plain;
+    const session = await this.sessions.findActiveByCredential(credential);
+    if (!session) return plain;
+    const refusal = await auditSupportSessionOriginRefusal(pool, {
+      execCtx: context,
+      authSessionId: session.id,
+      userId: session.userId,
+      activeTenantId: session.activeTenantId,
+      method: request.method,
+      params: (request.params ?? {}) as Record<string, string | undefined>,
+      body: request.body as unknown,
+      requestId: assignRequestId(request, context.switchToHttp().getResponse()),
+    });
+    return refusal ?? plain;
   }
 }
 

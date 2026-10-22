@@ -233,6 +233,15 @@ export const ALLOWED_METRIC_LABELS: Readonly<Record<string, readonly string[]>> 
   // sale) lives in the sweep's structured log, NOT a metric label.
   sale_redrive_total: ["reason"],
 
+  // ---- Sale / void / return Inventory Effects — RT-427 (owner decision 2) ----
+  // Increments once per business line whose effect could not be written
+  // exactly and was skipped instead of stalling the sale: `event_type` is the
+  // closed set {sale, sale_void, sale_return}, `reason` the closed set
+  // {unit_mismatch, quantity_precision, tracked_product}. Emitted by the
+  // worker (sale) and the API (void, return). The (tenant, sale, line) lives
+  // in the `inventory.sale_effect.skipped` warn log, NOT metric labels.
+  inventory_sale_effect_skipped_total: ["event_type", "reason"],
+
   // ---- Connector boundary lifecycle — 018-POLISH (spec §FR-022a) ----
   // Increments on every connector credential/registration lifecycle action
   // (register / issue / rotate / revoke / disable) — operational visibility for
@@ -250,6 +259,15 @@ export const ALLOWED_METRIC_LABELS: Readonly<Record<string, readonly string[]>> 
   // per-instance/tenant/secret label would be a cardinality + §XIV hazard (the
   // 009/010/015/017/018 domain-keyed-not-attribute-keyed precedent).
   connector_heartbeat_total: [],
+
+  // ---- POS device heartbeat — RT-327 (AD-DEVICE-001 D-1) ----
+  // Increments once per POS heartbeat that reaches the store step: `outcome`
+  // is the closed set {stored, throttled, refused}. `stored` wrote the device's
+  // row, `throttled` fell inside the 60-second window and wrote nothing,
+  // `refused` is a store that failed (counted and swallowed: the terminal still
+  // gets its 200). NEVER a version, channel, device or tenant label: those are
+  // on `device_health` and are a cardinality + §XIV hazard.
+  pos_device_heartbeat_total: ["outcome"],
 
   // ---- ERPNext product-master reconciliation/repair — 021-POLISH (spec §VII) ----
   // Increments on every operator repair action recorded by 021 (a backlog-item

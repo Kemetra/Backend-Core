@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Audit API
-  version: "1.2.0-draft"
+  version: "1.3.0-draft"
   description: >
     Read-only access to audit events for the active tenant.
     Tenant-admin or platform-admin scope. Per spec FR-AUDIT-1/2/3.
@@ -10,6 +10,14 @@ info:
     **1.2.0-draft (RT-620, additive).** Every cookieAuth operation may
     return 429 `rate_limited` (`TooManyRequests`, with `Retry-After`)
     from the console rate limit (RT-574, RT-619). No other wire change.
+
+
+    **1.3.0-draft (RT-431, additive, contract-only).** Adds
+    `listPlatformAuditEvents`: a platform-admin read of the platform-scoped
+    audit rows (`tenant_id` null), which `listAuditEvents` never returns. It is
+    a new operation with its own schemas; `listAuditEvents` and `AuditEvent`
+    are unchanged. The runtime ships in a later change (`x-runtime-status:
+    contract-only`).
 servers:
   - url: https://api.example.com
 paths:
@@ -90,7 +98,163 @@ paths:
           description: Insufficient role.
         "429":
           $ref: "#/components/responses/TooManyRequests"
+  /api/v1/platform/audit/events:
+    get:
+      summary: Query platform-scoped audit events (platform admins only).
+      operationId: listPlatformAuditEvents
+      security:
+        - cookieAuth: []
+      description: >
+        Platform-scoped audit rows: those stored with `tenant_id` null because
+        they name no tenant. Today these are `auth.signin.ok`,
+        `auth.signin.failed`, and `platform.cross_tenant.accessed` rows for a
+        path tenant that is malformed or does not exist (RT-414), plus any
+        other action written while no tenant is active. Tenant-scoped rows are
+        never returned, by any filter: this is not a cross-tenant view (RT-431
+        decision 1). It is an operator view, not a compliance export
+        (decision 2).
+
+
+        **Who may call it.** Only a platform admin: the session user's
+        `users.is_platform_admin`, server-authenticated (RT-132 D6), over the
+        `dp2_session` cookie. A bearer token, POS device token or operator
+        envelope is 401. Every other signed-in user, including a tenant
+        `owner`, gets 403 `forbidden`; the route exists, so there is no 404.
+        A 401 here never means "no active tenant": a platform admin with no
+        active tenant gets 200.
+
+
+        **Support sessions (RT-414).** This operation is not tenant-scoped: it
+        has no path tenant and does not use the active tenant, so support-session
+        enforcement does not cover it. The server MUST NOT require or use a
+        support session for it; an open or expired support session changes
+        nothing about the result. It MUST NOT write a
+        `platform.cross_tenant.accessed` row for the call. This is the
+        platform-scope read RT-414 named as a follow-up. A platform admin
+        reads a tenant's own rows through `listAuditEvents` as before.
+
+
+        **Order and paging.** Newest first: `occurred_at` descending, then `id`
+        descending, with the same microsecond-exact keyset as `listAuditEvents`
+        (RT-211). `next_cursor` is stable under concurrent inserts and is
+        valid only for this operation with the same filters (including `kind`).
+        `from` and `to` are inclusive bounds on `occurred_at`.
+
+
+        **Filters.** All combine with AND. The set is closed: `action` (literal
+        prefix), `kind` (RT-687), `actor_user_id`, `from`, `to`, `cursor` and
+        `limit`. There is no `tenant_id` and no `store_id`; any other query
+        parameter is a 400 `validation_error`. Every platform-scoped action
+        today is classed `change`, so `kind=read` returns an empty page.
+
+
+        **Disclosure (constitution XIV).** Sign-in rows store an email in
+        `actor_label` (the account email on `ok`, the typed address on `failed`,
+        including for an unknown account). The server MUST NOT return it
+        whole: a value containing `@` MUST be returned as the first Unicode code
+        point before the last `@` (none, if that part is empty), `***`, and
+        everything from the last `@` (`a***@example.com`); any other label (for
+        example `platform_support`) is returned as stored. `actor_user_id`
+        is returned as stored. Audit rows store no IP address, password, token
+        or request body, so none is returned. `actor_label` and `metadata` are
+        untrusted text: a client must escape them, never render them as markup.
+        The call is not itself audited (decision 3, as for `listAuditEvents`).
+      parameters:
+        - $ref: "#/components/parameters/PlatformAuditAction"
+        - $ref: "#/components/parameters/PlatformAuditKind"
+        - $ref: "#/components/parameters/PlatformAuditActor"
+        - $ref: "#/components/parameters/PlatformAuditFrom"
+        - $ref: "#/components/parameters/PlatformAuditTo"
+        - $ref: "#/components/parameters/PlatformAuditCursor"
+        - $ref: "#/components/parameters/PlatformAuditLimit"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlatformAuditEventList"
+        "400":
+          description: >
+            `validation_error`: a query parameter is invalid or unknown (for
+            example `tenant_id` or `store_id`, an unknown `kind`, a malformed
+            `cursor`, an out-of-range `limit`, a non-UUID id, or a malformed
+            date-time).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: >
+            Unauthenticated: a missing or invalid session cookie, or a
+            non-cookie credential.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            `forbidden`: the session user is not a platform admin (a tenant
+            `owner` included).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: dp2_session
+      description: >
+        The human dashboard session cookie (httpOnly, `SameSite=Lax`
+        `dp2_session`). Platform authority comes only from the session user's
+        `users.is_platform_admin` (RT-132 D6).
+  parameters:
+    PlatformAuditAction:
+      in: query
+      name: action
+      schema: { type: string, minLength: 1 }
+      description: >
+        Literal action-code prefix (for example `auth.signin.`); `%`, `_` and
+        a backslash match themselves.
+    PlatformAuditKind:
+      in: query
+      name: kind
+      schema: { type: string, enum: [read, change] }
+      description: >
+        Only events of this action kind, as for `listAuditEvents`. Omitted: all
+        platform-scoped events.
+    PlatformAuditActor:
+      in: query
+      name: actor_user_id
+      schema: { type: string, format: uuid }
+      description: >
+        Only events of this actor. An anonymous failed sign-in has no actor
+        and never matches.
+    PlatformAuditFrom:
+      in: query
+      name: from
+      schema: { type: string, format: date-time }
+      description: Inclusive lower bound on `occurred_at`.
+    PlatformAuditTo:
+      in: query
+      name: to
+      schema: { type: string, format: date-time }
+      description: Inclusive upper bound on `occurred_at`.
+    PlatformAuditCursor:
+      in: query
+      name: cursor
+      schema: { type: string, minLength: 1 }
+      description: >
+        Opaque `next_cursor` of a prior page of this operation. Do not
+        construct or decode it; a malformed value is a 400 `validation_error`.
+    PlatformAuditLimit:
+      in: query
+      name: limit
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
   schemas:
     AuditEvent:
       type: object
@@ -115,6 +279,74 @@ components:
         metadata:
           type: object
           additionalProperties: true
+    PlatformAuditEventList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlatformAuditEvent"
+        next_cursor:
+          type: [string, "null"]
+          description: Null on the last page.
+    PlatformAuditEvent:
+      type: object
+      additionalProperties: false
+      description: >
+        The `AuditEvent` projection for a platform-scoped row. `tenant_id` is
+        always null here, so a row that names a tenant fails this schema.
+      required:
+        - id
+        - occurred_at
+        - actor_user_id
+        - actor_label
+        - tenant_id
+        - store_id
+        - action
+        - kind
+        - target_type
+        - target_id
+        - request_id
+        - metadata
+      properties:
+        id: { type: string, format: uuid }
+        occurred_at: { type: string, format: date-time }
+        actor_user_id: { type: [string, "null"], format: uuid }
+        actor_label:
+          description: >
+            Masked per the operation's **Disclosure** rule: a value with `@` is
+            its first code point, `***` and the text from the last `@`; any
+            other label is as stored. Untrusted text.
+          oneOf:
+            - type: "null"
+            - type: string
+              pattern: "^[^@]?\\*\\*\\*@[^@]+$"
+            - type: string
+              pattern: "^[^@]*$"
+        tenant_id:
+          type: "null"
+          description: Always null, because tenant-scoped rows are never returned.
+        store_id: { type: [string, "null"], format: uuid }
+        action: { type: string }
+        kind:
+          type: string
+          enum: [read, change]
+          description: >
+            Derived by the server from `action`, as on `AuditEvent`; an
+            unclassified action is `change`.
+        target_type: { type: [string, "null"] }
+        target_id: { type: [string, "null"], format: uuid }
+        request_id: { type: [string, "null"], format: uuid }
+        metadata:
+          type: object
+          additionalProperties: true
+          description: >
+            Stored as written. Platform-scoped writers store an allowlist only
+            (`{}` for sign-in rows; the route template, method, outcome and
+            reason for `platform.cross_tenant.accessed`, never the concrete
+            path, an email, a token or a body). Untrusted text.
     Error:
       description: The canonical error envelope (code, message, request_id).
       type: object

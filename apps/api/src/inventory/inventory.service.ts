@@ -1350,12 +1350,12 @@ export class InventoryService {
    * never reads `processed_at`, never subscribes to `sale.captured`, and never
    * mutates the 008 sale fact — the sale ids are recorded by value as provenance.
    *
-   * CROSS-PACKAGE SYNC POINT: the off-request worker
-   * `apps/worker/src/inventory/backfill.processor.ts` (T064) MIRRORS this
-   * INSERT + ON CONFLICT + audit per sale line — apps must not import each
-   * other, so the write is duplicated there. Keep the two in sync: any change
-   * to the provenance-dedup write semantics MUST be applied to BOTH. A future
-   * `packages/inventory` extraction would consolidate them.
+   * RT-427: the worker backfill processor (T064) that mirrored this write was
+   * deleted — it could never backfill (it read `processed_at IS NULL` while the
+   * sale worker sets it), and RT-289 DC-2 / DC-8 retire any async sale
+   * backfill. Sale, void and return effects are now written in the intent's
+   * transaction by `@data-pulse-2/db` `writeSaleLineEffects` and siblings.
+   * This method has no production caller.
    */
   async backfillSaleLinkedOutbound(
     input: BackfillSaleLinkedOutboundInput,

@@ -261,6 +261,7 @@ const pendingLockRow = (): Record<string, unknown> => ({
 const activeProductRow = (): Record<string, unknown> => ({
   id: PRODUCT_A_ACTIVE,
   retired_at: null,
+  is_active: true,
 });
 
 function buildMockClient(): { client: PoolClient; rolledBack: () => boolean } {

@@ -30,6 +30,7 @@ import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
 import { RolesGuard } from "../auth/roles.guard";
 import { ContextModule } from "../context/context.module";
+import { PathTenantSupportSessionGuard } from "../platform-support-sessions/path-tenant-support-session.guard";
 import { TenantsController } from "./tenants.controller";
 import { TenantsRepository } from "./tenants.repository";
 import { TenantsService } from "./tenants.service";
@@ -37,7 +38,7 @@ import { TenantsService } from "./tenants.service";
 @Module({
   imports: [AuthModule, ContextModule],
   controllers: [TenantsController],
-  providers: [TenantsRepository, TenantsService, RolesGuard],
+  providers: [TenantsRepository, TenantsService, RolesGuard, PathTenantSupportSessionGuard],
   exports: [TenantsService, TenantsRepository],
 })
 export class TenantsModule {}

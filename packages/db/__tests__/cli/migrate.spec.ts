@@ -225,6 +225,19 @@ describe("data-pulse-migrate CLI", () => {
     "0054_sale_credit_reversals",
     "0055_ai_entitlements_usage",
     "0056_inventory_position_events",
+    "0057_posting_status_posted_at_tenant_idx",
+    "0058_posting_status_posted_at_store_idx",
+    "0059_posting_status_pending_created_tenant_idx",
+    "0060_posting_status_pending_created_store_idx",
+    "0061_posting_status_legacy_posted_idx",
+    "0062_platform_support_sessions",
+    "0063_inventory_effects_activation",
+    "0064_stock_movements_store_occurred_idx",
+    "0065_stock_movements_store_product_occurred_idx",
+    "0066_reconciliation_pending_aware_classes",
+    "0067_refund_executions",
+    "0068_pos_device_health",
+    "0070_shift_forced_closes",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -447,15 +460,145 @@ describe("data-pulse-migrate CLI", () => {
     ];
   }
 
+  /** The five posting-freshness indexes of 0057-0061 (RT-565 D7), in migration order. */
+  const POSTING_FRESHNESS_INDEXES = [
+    "idx_erpnext_posting_status_posted_at_tenant",
+    "idx_erpnext_posting_status_posted_at_store",
+    "idx_erpnext_posting_status_pending_created_tenant",
+    "idx_erpnext_posting_status_pending_created_store",
+    "idx_erpnext_posting_status_legacy_posted",
+  ] as const;
+
   /**
-   * After one `down` from head: 0056's event-record and settings tables are
-   * gone, while 0055's AI entitlement tables and functions, 0054's credit
-   * reversal tables, approval-use ledger, trigger and FK-target indexes, 0051's
+   * 0057-0061 (RT-565): how many of `names` exist AND are valid. Each is built
+   * CONCURRENTLY by the runner, so a valid index also proves its single-statement
+   * file ran outside a transaction block.
+   */
+  function countValidIndexes(names: readonly string[]): Promise<string> {
+    return queryCount(`SELECT COUNT(*)::text AS count FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      WHERE c.relname = ANY(ARRAY[${names.map((n) => `'${n}'`).join(", ")}]) AND i.indisvalid`);
+  }
+
+  /** The two stock-movement history indexes of 0064-0065 (RT-735), in migration order. */
+  const STOCK_MOVEMENT_HISTORY_INDEXES = [
+    "idx_stock_movements_tenant_store_occurred",
+    "idx_stock_movements_tenant_store_product_occurred",
+  ] as const;
+
+  /**
+   * 0062_platform_support_sessions (RT-414): [the table, its one platform-admin
+   * policy, its two guard triggers, its guard function].
+   */
+  async function countSupportSessionObjects(): Promise<[string, string, string, string]> {
+    return [
+      await countPublicTables(["platform_support_sessions"]),
+      await countPolicies(["platform_support_sessions"]),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_trigger
+        WHERE tgname IN ('platform_support_sessions_guard_row', 'platform_support_sessions_guard_truncate')`),
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_proc
+        WHERE proname = 'platform_support_sessions_guard'`),
+    ];
+  }
+
+  /** The two tables created by 0063_inventory_effects_activation (RT-427). */
+  const ANCHOR_TABLES = ["inventory_anchors", "inventory_anchor_lines"];
+
+  /**
+   * 0063_inventory_effects_activation (RT-427): [its two tables, their
+   * SELECT + INSERT policies, the two activation columns on
+   * tenant_inventory_settings].
+   */
+  async function countAnchorObjects(): Promise<[string, string, string]> {
+    const columns =
+      Number(await countPublicColumn("tenant_inventory_settings", "sale_effects_activated_at")) +
+      Number(await countPublicColumn("tenant_inventory_settings", "sale_effects_activated_by"));
+    return [await countPublicTables(ANCHOR_TABLES), await countPolicies(ANCHOR_TABLES), String(columns)];
+  }
+
+  /**
+   * 0066_reconciliation_pending_aware_classes (RT-428): how many result-class
+   * CHECKs admit the pending-aware classes ("1" when applied, "0" after down).
+   */
+  function countPendingAwareClassCheck(): Promise<string> {
+    return queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
+      WHERE conname = 'erpnext_reconciliation_result_class_valid'
+        AND pg_get_constraintdef(oid) LIKE '%uom_mismatch%' AND convalidated`);
+  }
+
+  /**
+   * 0067_refund_executions (RT-787): [the refund_executions table, its SELECT +
+   * INSERT policies, the three allocation columns on sale_return_tenders plus
+   * sale_returns.posting_deferred, the original-tender trigger].
+   */
+  async function countRefundExecutionObjects(): Promise<[string, string, string, string]> {
+    const columns =
+      Number(await countPublicColumn("sale_return_tenders", "allocation_ref")) +
+      Number(await countPublicColumn("sale_return_tenders", "original_tender_ref")) +
+      Number(await countPublicColumn("sale_return_tenders", "instrument")) +
+      Number(await countPublicColumn("sale_returns", "posting_deferred"));
+    const trigger = await queryCount(`SELECT COUNT(*)::text AS count FROM pg_trigger
+      WHERE tgname = 'sale_return_tenders_original_tender_check'`);
+    return [
+      await countPublicTables(["refund_executions"]),
+      await countPolicies(["refund_executions"]),
+      String(columns),
+      trigger,
+    ];
+  }
+
+  /**
+   * 0068_pos_device_health (RT-327): [its two tables, their SELECT + INSERT +
+   * UPDATE policies] ("0" and "0" after down).
+   */
+  async function countPosDeviceHealthObjects(): Promise<[string, string]> {
+    const tables = ["device_health", "pos_version_policy"];
+    return [await countPublicTables(tables), await countPolicies(tables)];
+  }
+
+  /**
+   * 0070_shift_forced_closes (RT-742): [the force-close table, its SELECT +
+   * INSERT policies, its two composite FK targets on shifts and devices].
+   */
+  async function countShiftForcedCloseObjects(): Promise<[string, string, string]> {
+    const targets = await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
+      WHERE conname IN ('uq_shifts_force_close_target', 'uq_devices_tenant_store_target')`);
+    return [
+      await countPublicTables(["shift_forced_closes"]),
+      await countPolicies(["shift_forced_closes"]),
+      targets,
+    ];
+  }
+
+  /**
+   * After one `down` from head: 0070's force-close table and its two UNIQUE
+   * targets are gone, while 0068's device health and version policy tables,
+   * 0067's refund executions, allocation columns,
+   * posting_deferred and original-tender trigger, 0066's
+   * pending-aware result classes, 0064-0065's stock-movement history
+   * indexes, 0063's anchor tables and activation columns, 0062's
+   * support-session table, 0057-0061's freshness indexes, 0056's event-record and settings tables,
+   * 0055's AI entitlement tables and functions, 0054's credit reversal
+   * tables, approval-use ledger, trigger and FK-target indexes, 0051's
    * sale_responsibilities, 0050's policy tables and columns, 0048's
    * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countPositionEventObjects()).toEqual(["0", "0", "0"]);
+    expect(await countShiftForcedCloseObjects()).toEqual(["0", "0", "0"]);
+    await expectShiftCashUpApplied();
+    // 0068's two tables (RT-327) stay.
+    expect(await countPosDeviceHealthObjects()).toEqual(["2", "6"]);
+    expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
+    expect(await countPendingAwareClassCheck()).toBe("1");
+    expect(
+      await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
+        WHERE conname = 'erpnext_reconciliation_result_class_valid'`),
+    ).toBe("1");
+    expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("2");
+    expect(await countAnchorObjects()).toEqual(["2", "4", "2"]);
+    expect(await countSupportSessionObjects()).toEqual(["1", "1", "2", "1"]);
+    expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES)).toBe("5");
+    expect(await countPositionEventObjects()).toEqual(["2", "5", "1"]);
     expect(await countAiEntitlementObjects()).toEqual(["7", "15", "4", "1"]);
     expect(await countSaleCreditReversalObjects()).toEqual(["3", "6", "1", "2"]);
     expect(await countSaleResponsibilityObjects()).toEqual(["1", "2", "1", "1", "0"]);
@@ -520,6 +663,28 @@ describe("data-pulse-migrate CLI", () => {
     // 0056's event records (SELECT + INSERT) and tenant inventory settings
     // (SELECT + INSERT + UPDATE) with its updated_at trigger (RT-435).
     expect(await countPositionEventObjects()).toEqual(["2", "5", "1"]);
+    // 0057-0061's five posting-freshness indexes, valid after the runner's
+    // CONCURRENTLY builds (RT-565 D7).
+    expect(await countValidIndexes(POSTING_FRESHNESS_INDEXES)).toBe("5");
+    // 0062's support-session table, its platform-admin policy, two guard
+    // triggers and guard function (RT-414).
+    expect(await countSupportSessionObjects()).toEqual(["1", "1", "2", "1"]);
+    // 0063's anchor tables (SELECT + INSERT policies each) and the two
+    // activation columns on tenant_inventory_settings (RT-427).
+    expect(await countAnchorObjects()).toEqual(["2", "4", "2"]);
+    // 0064-0065's two stock-movement history indexes, valid after the runner's
+    // CONCURRENTLY builds (RT-735).
+    expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("2");
+    // 0066's widened, validated result-class CHECK (RT-428).
+    expect(await countPendingAwareClassCheck()).toBe("1");
+    // 0067's refund_executions (SELECT + INSERT policies), the four allocation
+    // / posting columns and the original-tender trigger (RT-787).
+    expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
+    // 0068's device health and version policy tables, three policies each (RT-327).
+    expect(await countPosDeviceHealthObjects()).toEqual(["2", "6"]);
+    // 0070's force-close table (SELECT + INSERT policies) and its two
+    // composite FK targets on shifts and devices (RT-742).
+    expect(await countShiftForcedCloseObjects()).toEqual(["1", "2", "2"]);
   }
 
   /** The three tables created by 0054_sale_credit_reversals (RT-577). */
@@ -672,7 +837,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0056 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0070 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();

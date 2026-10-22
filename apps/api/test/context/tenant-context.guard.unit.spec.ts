@@ -100,6 +100,7 @@ function makeGuard(opts: {
   canAccessStore?: jest.Mock;
   listGrantedStoreIds?: jest.Mock;
   isTenantActive?: jest.Mock;
+  hasLiveMembership?: jest.Mock;
 } = {}) {
   const fakeSessions = {
     findActiveById: opts.sessionFindActive ?? jest.fn().mockResolvedValue(null),
@@ -110,6 +111,8 @@ function makeGuard(opts: {
     canAccessStore:        opts.canAccessStore         ?? jest.fn().mockResolvedValue(false),
     listGrantedStoreIds:   opts.listGrantedStoreIds    ?? jest.fn().mockResolvedValue([]),
     isTenantActive:        opts.isTenantActive         ?? jest.fn().mockResolvedValue(true),
+    // RT-414: platform admins here are members unless a test says otherwise.
+    hasLiveMembership:     opts.hasLiveMembership      ?? jest.fn().mockResolvedValue(true),
   };
   const guard = new TenantContextGuard(
     fakeSessions as unknown as SessionRepository,
@@ -353,6 +356,29 @@ describe("TCG11 — platform admin: no store", () => {
       storeAccess: { kind: "all" },
     });
     expect(findActiveMembership).not.toHaveBeenCalled();
+    expect(canAccessStore).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TCG11b — RT-414: a NON-member platform admin needs a support session; with
+// no pool the guard cannot check one, so it fails closed.
+// ---------------------------------------------------------------------------
+
+describe("TCG11b — RT-414: non-member platform admin without a pool", () => {
+  it("refuses with 403 support_session_required and never validates the store", async () => {
+    const canAccessStore = jest.fn().mockResolvedValue(true);
+    const { guard } = makeGuard({
+      sessionFindActive: jest.fn().mockResolvedValue(makeSession({ activeStoreId: STORE_ID })),
+      isPlatformAdmin:   jest.fn().mockResolvedValue(true),
+      hasLiveMembership: jest.fn().mockResolvedValue(false),
+      canAccessStore,
+    });
+
+    await expect(guard.resolve(sessionPrincipal())).rejects.toMatchObject({
+      status: 403,
+      response: { code: "support_session_required" },
+    });
     expect(canAccessStore).not.toHaveBeenCalled();
   });
 });

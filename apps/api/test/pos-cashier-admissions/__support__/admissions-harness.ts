@@ -12,6 +12,7 @@
  *   - Response bodies are checked against the merged OpenAPI contract with
  *     AJV (the same loader the contract spec uses).
  */
+import { linkClerkUsers } from "../../_helpers/identity-links";
 import "reflect-metadata";
 
 import { randomUUID } from "node:crypto";
@@ -331,6 +332,7 @@ async function seedMember(admin: Pool, m: MemberSeed): Promise<void> {
     `INSERT INTO users (id, email, display_name, clerk_user_id) VALUES ($1, $2, $3, $4)`,
     [u.id, `${u.id}@rt113.example`, u.name, u.clerk],
   );
+  await linkClerkUsers(admin);
   await admin.query(
     `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES ($1, $2, $3, $4, $5)`,
     [u.membership, m.tenantId, u.id, m.roleId, m.access],

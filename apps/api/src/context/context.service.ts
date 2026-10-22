@@ -34,6 +34,14 @@
  *   - Platform-admin sessions bypass the per-tenant membership check
  *     (FR-TEN-6). `active_role_code` is `null` for platform admins
  *     unless they happen to have a normal membership too.
+ *   - RT-414: a platform admin enters a tenant they are NOT a member of
+ *     only through `openSupportSession`. `switchTenant` refuses that case
+ *     with 403 `support_session_required`, and ends any live support
+ *     session of the auth session (`tenant_switched`) before switching.
+ *     `switchStore` for a non-member platform admin goes through
+ *     `SupportSessionGate` (one `platform.cross_tenant.accessed` row).
+ *     `support_session` on the response is the caller's live support
+ *     session for the active tenant, or null.
  *
  * What this service does NOT do
  * -----------------------------
@@ -61,6 +69,18 @@ import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Principal } from "../auth/auth.guard";
 import { PG_POOL } from "../auth/auth.module";
 import { SessionRepository } from "../auth/session.repository";
+import {
+  SupportSessionGate,
+  supportSessionRefusal,
+} from "../platform-support-sessions/support-session.gate";
+import {
+  endSupportSessions,
+  readLiveSupportSession,
+} from "../platform-support-sessions/support-session.lifecycle";
+import {
+  toSupportSessionSummary,
+  type SupportSessionSummaryBody,
+} from "../platform-support-sessions/support-session.store";
 import {
   MembershipRepository,
   type MembershipSummary,
@@ -91,7 +111,13 @@ export interface ContextResponseBody {
     readonly store_access_kind: MembershipSummary["storeAccessKind"];
     readonly accessible_store_ids: readonly string[];
   }>;
+  /** RT-414: the caller's live support session for the active tenant, or null. */
+  readonly support_session: SupportSessionSummaryBody | null;
 }
+
+const SWITCH_STORE_ROUTE = "/api/v1/context/store";
+
+type SessionPrincipal = Extract<Principal, { kind: "session" }>;
 
 @Injectable()
 export class ContextService {
@@ -123,6 +149,7 @@ export class ContextService {
   async switchTenant(
     principal: Principal,
     tenantId: string,
+    requestId: string | null = null,
   ): Promise<ContextResponseBody> {
     if (principal.kind !== "session") {
       throw tokenCannotSwitch();
@@ -144,18 +171,10 @@ export class ContextService {
         if (!membership) throw notFound();
       });
     } else {
-      // Platform admin: still must verify the tenant exists. Otherwise
-      // a typo'd UUID would silently set the active tenant to a
-      // non-existent one and downstream queries would mysteriously
-      // return zero rows.
-      await this.withBootstrapCtx(async (client) => {
-        const tenantSummary = await this.memberships.findTenantSummary(
-          tenantId,
-          client,
-        );
-        if (!tenantSummary) throw notFound();
-      });
+      await this.assertPlatformAdminMayEnter(principal, tenantId);
     }
+
+    await this.endSupportSessionOnSwitch(principal, requestId);
 
     const updated = await this.sessions.updateActiveContext(
       principal.sessionId,
@@ -163,7 +182,7 @@ export class ContextService {
     );
     if (!updated) throw unauthorized();
 
-    return this.buildResponse(principal.userId, tenantId, null);
+    return this.buildResponse(principal.userId, tenantId, null, null);
   }
 
   // ----- SWITCH STORE ----------------------------------------------
@@ -171,6 +190,7 @@ export class ContextService {
   async switchStore(
     principal: Principal,
     storeId: string,
+    requestId: string | null = null,
   ): Promise<ContextResponseBody> {
     if (principal.kind !== "session") {
       throw tokenCannotSwitch();
@@ -208,6 +228,7 @@ export class ContextService {
         if (!allowed) throw notFound();
       });
     } else {
+      await this.admitPlatformAdminStoreSwitch(principal, tenantId, requestId);
       // Platform admin: only the store-belongs-to-tenant check
       // applies. The 'all' branch of canAccessStore does exactly
       // that; the synthetic membershipId is unused for kind='all'.
@@ -229,7 +250,7 @@ export class ContextService {
     );
     if (!updated) throw unauthorized();
 
-    return this.buildResponse(principal.userId, tenantId, storeId);
+    return this.buildResponse(principal.userId, tenantId, storeId, principal.sessionId);
   }
 
   // ----- CLEAR STORE ------------------------------------------------
@@ -252,10 +273,72 @@ export class ContextService {
     );
     if (!updated) throw unauthorized();
 
-    return this.buildResponse(principal.userId, session.activeTenantId, null);
+    return this.buildResponse(
+      principal.userId,
+      session.activeTenantId,
+      null,
+      principal.sessionId,
+    );
   }
 
   // ----- INTERNALS --------------------------------------------------
+
+  /**
+   * Platform admin switching tenant: the tenant must exist (a typo'd UUID
+   * would otherwise set a non-existent active tenant), and — RT-414 — the
+   * admin must be a member: a non-member enters only through a support
+   * session.
+   */
+  private async assertPlatformAdminMayEnter(
+    principal: SessionPrincipal,
+    tenantId: string,
+  ): Promise<void> {
+    await this.withBootstrapCtx(async (client) => {
+      const tenantSummary = await this.memberships.findTenantSummary(tenantId, client);
+      if (!tenantSummary) throw notFound();
+      const member = await this.memberships.hasLiveMembership(principal.userId, tenantId, client);
+      if (!member) throw supportSessionRefusal("support_session_required");
+    });
+  }
+
+  /** RT-414: a tenant switch ends any live support session of this auth session. */
+  private async endSupportSessionOnSwitch(
+    principal: SessionPrincipal,
+    requestId: string | null,
+  ): Promise<void> {
+    if (!this.pool) return;
+    await endSupportSessions(
+      this.pool,
+      { authSessionId: principal.sessionId },
+      "tenant_switched",
+      requestId,
+    );
+  }
+
+  /**
+   * RT-414: `switchActiveStore` is a covered route. A non-member platform
+   * admin needs an active support session for the active tenant; it stays
+   * admitted on a suspended tenant (navigation, not a tenant write).
+   */
+  private async admitPlatformAdminStoreSwitch(
+    principal: SessionPrincipal,
+    tenantId: string,
+    requestId: string | null,
+  ): Promise<void> {
+    const member = await this.withBootstrapCtx((client) =>
+      this.memberships.hasLiveMembership(principal.userId, tenantId, client),
+    );
+    if (member) return;
+    if (!this.pool) throw supportSessionRefusal("support_session_required");
+    await new SupportSessionGate(this.pool).enforce(tenantId, {
+      authSessionId: principal.sessionId,
+      userId: principal.userId,
+      method: "POST",
+      route: SWITCH_STORE_ROUTE,
+      requestId,
+      readOnlyExempt: true,
+    });
+  }
 
   private async getActiveContextForSession(
     principal: Extract<Principal, { kind: "session" }>,
@@ -266,6 +349,7 @@ export class ContextService {
       principal.userId,
       session.activeTenantId,
       session.activeStoreId,
+      principal.sessionId,
     );
   }
 
@@ -296,15 +380,18 @@ export class ContextService {
         active_store: null,
         active_role_code: null,
         memberships: [],
+        support_session: null,
       };
     }
-    return this.buildResponse(userId, principal.tenantId, null);
+    return this.buildResponse(userId, principal.tenantId, null, null);
   }
 
   private async buildResponse(
     userId: string,
     activeTenantId: string | null,
     activeStoreId: string | null,
+    /** The auth session whose support session to report; null for none. */
+    authSessionId: string | null,
   ): Promise<ContextResponseBody> {
     // `findUserSummary` queries only `users` (no RLS) — safe on plain
     // pool, run in parallel with the RLS-gated `listForUser`.
@@ -336,6 +423,11 @@ export class ContextService {
       ? summaries.find((m) => m.tenantId === activeTenantId)
       : undefined;
 
+    const supportSession =
+      user.isPlatformAdmin && authSessionId !== null && activeTenantId !== null
+        ? await this.supportSessionFor({ authSessionId, activeTenantId })
+        : null;
+
     return {
       user: {
         id: user.id,
@@ -353,7 +445,18 @@ export class ContextService {
         store_access_kind: m.storeAccessKind,
         accessible_store_ids: m.accessibleStoreIds,
       })),
+      support_session: supportSession,
     };
+  }
+
+  private async supportSessionFor(scope: {
+    readonly authSessionId: string;
+    readonly activeTenantId: string;
+  }): Promise<SupportSessionSummaryBody | null> {
+    if (!this.pool) return null;
+    const live = await readLiveSupportSession(this.pool, scope.authSessionId);
+    if (live?.tenantId !== scope.activeTenantId) return null;
+    return toSupportSessionSummary(live);
   }
 
   /**

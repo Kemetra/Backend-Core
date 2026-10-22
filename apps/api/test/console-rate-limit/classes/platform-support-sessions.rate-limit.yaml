@@ -1,0 +1,7 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/platform-support-sessions.openapi.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+endSupportSession: incidentControl
+getCurrentSupportSession: cheapRead
+openSupportSession: onboarding
+renewSupportSession: write

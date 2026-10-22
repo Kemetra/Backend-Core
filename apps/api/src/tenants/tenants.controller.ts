@@ -70,6 +70,7 @@ import {
   RolesFromParam,
 } from "../auth/roles.decorator";
 import { RolesGuard } from "../auth/roles.guard";
+import { PathTenantSupportSessionGuard } from "../platform-support-sessions/path-tenant-support-session.guard";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import {
   TenantCreateSchema,
@@ -181,7 +182,8 @@ export class TenantsController {
   }
 
   @Get(":id/members")
-  @UseGuards(RolesGuard)
+  // RT-414: a non-member platform admin needs a support session for {id}.
+  @UseGuards(PathTenantSupportSessionGuard, RolesGuard)
   @RolesFromParam("id", "owner", "tenant_admin")
   async listMembers(
     @Req() request: AuthedRequest,
@@ -205,7 +207,8 @@ export class TenantsController {
   }
 
   @Patch(":id")
-  @UseGuards(RolesGuard)
+  // RT-414: a non-member platform admin needs a support session for {id}.
+  @UseGuards(PathTenantSupportSessionGuard, RolesGuard)
   @RolesFromParam("id", "owner", "tenant_admin")
   async update(
     @Req() request: AuthedRequest,

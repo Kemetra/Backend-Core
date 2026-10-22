@@ -29,14 +29,16 @@ const dockerOutboxSuites = includeDbBackedTests
      "/sales/idempotent-processing\\.spec\\.ts$",
      // DP-008-LIVELOOP Slice 2 end-to-end (capture → drain → consume → process).
      "/sales/dp-008-liveloop\\.e2e\\.spec\\.ts$",
-     // 009-US4 inventory-backfill Testcontainers suite (F-04/F-05).
-     "/inventory/backfill-processor\\.spec\\.ts$",
      // 015-US1-FEED posting-requested consumer (resolve eligibility + insert).
      "/erpnext-posting/posting-requested-consumer\\.spec\\.ts$",
      // 017-US3 reconciliation-run processor (009 on-hand vs ERPNext-Bin compare).
      "/erpnext-reconciliation/reconciliation-run\\.spec\\.ts$",
+     // RT-428 pending-aware 017 run (activated vs legacy tenant).
+     "/erpnext-reconciliation/pending-aware-run\\.spec\\.ts$",
      // RT-457 sale re-drive sweep against real Postgres.
-     "/sales/sale-redrive\\.integration\\.spec\\.ts$"];
+     "/sales/sale-redrive\\.integration\\.spec\\.ts$",
+     // RT-427 sale effects written with the intent and linked by the consumer.
+     "/sales/sale-effects\\.integration\\.spec\\.ts$"];
 
 /** @type {import('jest').Config} */
 module.exports = {

@@ -12,7 +12,7 @@
  *
  * Authentication is the HUMAN `cookieAuth` / `DashboardAuthGuard` scheme (the
  * 007/013/014/017 dashboard convention) — NOT the machine `connectorBearer` and
- * NOT the POS `clerkJwt` device scheme (FR-019): the connector never calls 021.
+ * NOT the POS operator-identity device scheme (FR-019): the connector never calls 021.
  *
  * Imports:
  *   - `AuthModule`           — provides `PG_POOL` + the `DashboardAuthGuard`.

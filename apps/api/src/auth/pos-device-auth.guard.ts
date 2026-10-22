@@ -22,7 +22,8 @@
  *    same transport `AuthGuard` uses; the backend has no `X-Terminal-Token`
  *    seam — POS sends the device token in the Authorization header for this
  *    read-only surface).
- * 2. Resolves it via `DeviceRepository.findActiveByAttestation` — a stateless
+ * 2. Resolves it via `DeviceRepository.findActiveByAttestationWithExpiry` (the
+ *    `findActiveByAttestation` lookup plus `expires_at`, RT-639) — a stateless
  *    SHA-256 hash → UNIQUE-index probe on `devices.token_hash`, returning the
  *    store-bound `DeviceRow` iff `revoked_at IS NULL` AND the device's tenant
  *    is active (`status = 'active'`, `deleted_at IS NULL`; RT-213). It is the
@@ -72,6 +73,14 @@
  * writes (`openShift`, `recordCashMovement`): `ShiftCashUpAuthGuard`, with
  * the same envelope guard, this guard and the same attribution verifier.
  *
+ * Rotate-soon hint (RT-639)
+ * -------------------------
+ * A successful resolution records when the presented credential stops working
+ * (`request.deviceRotationExpiry`). `@DeviceBearer()` installs the interceptor
+ * that turns it into `X-Device-Token-Rotate-After` / `-Stage` on a SUCCESSFUL
+ * response, once the credential has 15 days or less left (`rotation-hint.ts`).
+ * A refused token records nothing and an error response carries neither header.
+ *
  * Do NOT register it globally, and do NOT use it on operator routes
  * (`/api/pos/v1/operators/*`) or on any route that needs a person's
  * credential: it proves only which paired terminal is calling. Any other use
@@ -102,7 +111,7 @@ export class PosDeviceAuthGuard implements CanActivate {
     const rawToken = readBearerToken(request);
     if (rawToken === null) throw unauthorized();
 
-    const device = await this.devices.findActiveByAttestation(rawToken);
+    const device = await this.devices.findActiveByAttestationWithExpiry(rawToken);
     if (!device) throw unauthorized();
 
     // Publish a device PRINCIPAL (mirrors the `pos`-scope token principal
@@ -134,6 +143,13 @@ export class PosDeviceAuthGuard implements CanActivate {
     // RT-113 cashier admissions: admission ownership, the idempotency scope,
     // the takeover rate limit). Never taken from the request.
     request.posDeviceId = device.id;
+    // RT-639: record which expiry the rotate-soon hint is computed from; the
+    // DeviceRotationHintInterceptor writes the headers once the handler has
+    // answered, so a failed request carries none. A request that presented the
+    // PREVIOUS token (rotation overlap, after a lost rotation response) is treated
+    // as expiring when the overlap closes: the device's own `expires_at` was just
+    // reset, but that token stops working then.
+    request.deviceRotationExpiry = device.presentedPreviousUntil ?? device.expiresAt;
     return true;
   }
 }

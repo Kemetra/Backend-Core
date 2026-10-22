@@ -1,5 +1,6 @@
 /**
- * Clerk JWT verifier — narrow seam over `@clerk/backend`.
+ * Clerk JWT verifier — the Clerk adapter of the operator-token seam
+ * (`OperatorTokenVerifier`), a narrow wrapper over `@clerk/backend`.
  *
  * Wave 1 verifies the Clerk JWT at the API edge against Clerk's JWKS
  * (signature, `iss`, `aud`, `exp`, `nbf`, `iat`). Fail closed on JWKS
@@ -14,26 +15,10 @@
 import { Injectable } from "@nestjs/common";
 import { verifyToken } from "@data-pulse-2/auth";
 
-/**
- * Minimum surface POS-Pulse needs from a verified Clerk JWT.
- *   - `sub` is the stable Clerk subject (matches `users.clerk_user_id`).
- */
-export interface ClerkVerifiedClaims {
-  sub: string;
-}
+import type { OperatorTokenClaims, OperatorTokenVerifier } from "../auth/operator-token-verifier";
 
-/**
- * Verifier seam. Implementations MUST throw on any verification failure
- * (signature, audience, issuer, expiry, JWKS fetch error). The thrown
- * error is caught at the controller boundary and rendered as the
- * generic 401 envelope — the cause is never returned to the client.
- */
-export interface ClerkVerifier {
-  verify(rawJwt: string): Promise<ClerkVerifiedClaims>;
-}
-
-/** DI token for test override. */
-export const CLERK_VERIFIER = "CLERK_VERIFIER";
+/** The provider discriminator Clerk-verified subjects carry. */
+export const CLERK_PROVIDER_KEY = "clerk";
 
 /**
  * Production implementation. Reads its configuration from the
@@ -47,14 +32,14 @@ export const CLERK_VERIFIER = "CLERK_VERIFIER";
  *     (optional).
  */
 @Injectable()
-export class ClerkBackendVerifier implements ClerkVerifier {
+export class ClerkBackendVerifier implements OperatorTokenVerifier {
   constructor(
     private readonly secretKey: string,
     private readonly audience?: string,
     private readonly authorizedParties?: string[],
   ) {}
 
-  async verify(rawJwt: string): Promise<ClerkVerifiedClaims> {
+  async verify(rawJwt: string): Promise<OperatorTokenClaims> {
     const payload = await verifyToken(rawJwt, {
       secretKey: this.secretKey,
       ...(this.audience !== undefined ? { audience: this.audience } : {}),
@@ -65,16 +50,17 @@ export class ClerkBackendVerifier implements ClerkVerifier {
     if (typeof payload.sub !== "string" || payload.sub.length === 0) {
       throw new Error("clerk verifier: payload missing sub");
     }
-    return { sub: payload.sub };
+    return { providerKey: CLERK_PROVIDER_KEY, sub: payload.sub };
   }
 }
 
 /**
- * Factory used by the module wiring. `NODE_ENV=production` requires a
- * real `CLERK_SECRET_KEY`; non-production allows boot without one but
- * verification will fail closed at request time (no allow-list shortcut).
+ * Clerk factory. `NODE_ENV=production` requires a real `CLERK_SECRET_KEY`;
+ * non-production allows boot without one but verification will fail closed at
+ * request time (no allow-list shortcut). Which provider's factory runs is
+ * decided in one place: `auth/identity-provider.factory.ts`.
  */
-export function clerkVerifierFactory(): ClerkVerifier {
+export function clerkVerifierFactory(): OperatorTokenVerifier {
   const secret = process.env["CLERK_SECRET_KEY"];
   if (!secret) {
     if (process.env["NODE_ENV"] === "production") {
@@ -86,7 +72,7 @@ export function clerkVerifierFactory(): ClerkVerifier {
     // the dev / CI machine bootable without a real Clerk secret while
     // ensuring no request can succeed without one.
     return {
-      async verify(): Promise<ClerkVerifiedClaims> {
+      async verify(): Promise<OperatorTokenClaims> {
         throw new Error(
           "clerk verifier: CLERK_SECRET_KEY not configured (fail closed)",
         );

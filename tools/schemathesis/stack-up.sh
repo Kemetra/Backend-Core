@@ -8,8 +8,18 @@
 set -euo pipefail
 export MSYS_NO_PATHCONV=1 # Git Bash only; no effect on Linux
 
-ROOT="$(git rev-parse --show-toplevel)"
-HERE="$ROOT/tools/schemathesis"
+# The Backend-Core project root, located from this script: the Git root when
+# standalone, services/backend-core/ in the monorepo (RT-801).
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT="$(cd "$HERE/../.." && pwd -P)"
+# Git Bash: docker.exe needs C:/... paths, and MSYS_NO_PATHCONV stops the conversion.
+if command -v cygpath >/dev/null 2>&1; then
+  HERE="$(cygpath -m "$HERE")"
+  ROOT="$(cygpath -m "$ROOT")"
+fi
+for f in "$ROOT/Dockerfile" "$HERE/compose.yml" "$HERE/pg-init/01-roles.sh"; do
+  [[ -f "$f" ]] || { echo "stack-up: missing $f (wrong project root?)" >&2; exit 1; }
+done
 export FUZZ_PROJECT="${FUZZ_PROJECT:-api-fuzz}"
 export API_PORT="${API_PORT:-23000}"
 export API_IMAGE="${API_IMAGE:-api-fuzz-api:local}"
@@ -132,7 +142,7 @@ for _ in $(seq 1 90); do
 done
 [[ "$code" == "400" ]] || { echo "API did not become ready" >&2; compose logs api | tail -50 >&2; exit 1; }
 
-# Sign in as <email>, switch to the seeded tenant, write the cookie to <file>.
+# Sign in as <email>, enter the seeded tenant, write the cookie to <file>.
 mint_session() {
   local email="$1" file="$2" signin cookie code
   signin=$(curl -s -D - -o - -X POST "$base/api/v1/auth/signin" -H 'content-type: application/json' \
@@ -143,13 +153,21 @@ mint_session() {
   printf '%s' "$cookie" >"$file"
   # RT-430: a cookie-authenticated POST needs a trusted Origin. The stack runs
   # with NODE_ENV=production, so the API's own origin is https://<Host>.
-  code=$(http_status -X POST "$base/api/v1/context/tenant" -H "Cookie: dp2_session=$cookie" \
+  # RT-414: the platform admin has no membership, so it enters the tenant
+  # through a support session (201); the owner switches tenant (200).
+  local path='/api/v1/context/tenant' body="{\"tenant_id\":\"$tenant\"}" want=200
+  if [[ "${3:-}" == "support" ]]; then
+    path='/api/v1/platform/support-sessions'
+    body="{\"tenant_id\":\"$tenant\",\"purpose\":\"customer_support\"}"
+    want=201
+  fi
+  code=$(http_status -X POST "$base$path" -H "Cookie: dp2_session=$cookie" \
     -H "Origin: https://127.0.0.1:$API_PORT" \
-    -H 'content-type: application/json' -d "{\"tenant_id\":\"$tenant\"}")
-  [[ "$code" == "200" ]] || { echo "switching $email to the seeded tenant failed ($code)" >&2; exit 1; }
+    -H 'content-type: application/json' -d "$body")
+  [[ "$code" == "$want" ]] || { echo "entering the seeded tenant as $email failed ($code)" >&2; exit 1; }
 }
 
 echo "Signing in"
 mint_session fuzz-owner@example.invalid "$FUZZ_OUT/cookie-owner"
-mint_session fuzz-platform@example.invalid "$FUZZ_OUT/cookie-platform"
+mint_session fuzz-platform@example.invalid "$FUZZ_OUT/cookie-platform" support
 echo "Stack ready: $base"

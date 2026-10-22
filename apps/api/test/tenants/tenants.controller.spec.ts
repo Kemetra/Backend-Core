@@ -63,6 +63,7 @@ import {
   type PgTestEnv,
 } from "../_helpers/postgres-container";
 import { SAME_ORIGIN } from "../_helpers/same-origin";
+import { enterTenantAsPlatformAdmin } from "../_helpers/support-session";
 
 // ---- Fakes ---------------------------------------------------------------
 
@@ -465,9 +466,10 @@ describe("PATCH /api/v1/tenants/:id", () => {
       .expect(404);
   });
 
-  it("platform admin: 200", async () => {
+  it("platform admin: 200 (RT-414: with a support session for the tenant)", async () => {
     if (maybeSkip()) return;
     const cookie = await signIn(ALICE_EMAIL, ALICE_PASSWORD);
+    await enterTenantAsPlatformAdmin(pool!, ALICE_ID, GLOBEX_ID);
     const res = await http()
       .patch(`/api/v1/tenants/${GLOBEX_ID}`)
       .set("Cookie", cookie)

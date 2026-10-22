@@ -12,22 +12,37 @@
  *      cumulative-difference rule round4(A×(c+q)/Q) − round4(A×c/Q) (option
  *      (a), RT-73 comment 10406), rejecting unknown lines, a fractional q on a
  *      line sold in a whole quantity (RT-105) and over-returns;
+ *      RT-787 (RT-490 rule 1): an `originalTenderRef` must be a tender of the
+ *      sale, a 400 checked before the line checks' 409 `over_return`;
  *   5. D3: the refund tenders must sum (numerically) to the computed total;
+ *      then RT-787 rules 2 and 3 (R-12 instrument, R-5 refundable balance);
  *   6. insert the return (per-sale `return_seq`, own business date — RT-63
- *      P2), its lines (with the frozen cumulative quantity) and tenders;
- *   7. emit `erpnext.posting.requested` (kind reversal, source_ref_id = the
- *      return) in the same transaction.
+ *      P2), its lines (with the frozen cumulative quantity) and its refund
+ *      allocations (RT-271 R-2);
+ *   7. RT-427: write the return's Inventory Effects (a no-op while the
+ *      tenant's sale effects are OFF), landing in the tenant's return landing
+ *      status;
+ *   8. emit `erpnext.posting.requested` (kind reversal, source_ref_id = the
+ *      return) in the same transaction, unless the return is deferred to its
+ *      settlement (RT-787, R-7): the settle-before-post flag is on, its
+ *      allocations carry `allocationRef` and its total is not 0. A deferred
+ *      return is emitted by the execution that settles it
+ *      (`RefundExecutionsService`).
  * The response is always re-read from the stored rows, so a replay is
  * byte-identical to the original response.
  */
 import { Inject, Injectable } from "@nestjs/common";
-import { emit, OUTBOX_EVENT_TYPES, runWithTenantContext } from "@data-pulse-2/db";
+import { emit, OUTBOX_EVENT_TYPES, runWithTenantContext, writeReturnEffects } from "@data-pulse-2/db";
 import { newId } from "@data-pulse-2/shared";
 import type { Pool, PoolClient } from "pg";
 
 import { PG_POOL } from "../../auth/auth.module";
+import { resolveReturnLandingStatus } from "../../inventory/position-events/position-events.service";
+import { SaleEffectsReport } from "../../inventory/sale-effects/sale-effects-report";
 import type { RecordReturnRequestDto } from "./dto/record-return-request.dto";
 import { sha256CanonicalHex } from "./payload-hash";
+import { assertAllocationRules, assertOriginalTendersOfSale } from "./refund-allocation";
+import { isRefundSettleBeforePostEnabled } from "./refund-gates";
 import { TerminalEventProvenanceConflictError } from "./sale-errors";
 import {
   assertNotCreditSale,
@@ -69,8 +84,17 @@ export interface SaleReturnProjection {
   readonly currencyCode: string;
   readonly returnTotal: string;
   readonly lines: ReadonlyArray<ReturnLineProjection>;
-  readonly refundTenders: ReadonlyArray<{ readonly method: string; readonly amount: string }>;
+  readonly refundTenders: ReadonlyArray<RefundAllocationProjection>;
   readonly reason: string | null;
+}
+
+/** One refund allocation (contract `RefundTender`); the RT-490 fields only when recorded. */
+export interface RefundAllocationProjection {
+  readonly method: string;
+  readonly amount: string;
+  readonly allocationRef?: string;
+  readonly originalTenderRef?: string;
+  readonly instrument?: string;
 }
 
 export interface SaleReturnResult {
@@ -94,7 +118,9 @@ export class SaleReturnsService {
   async recordReturn(input: RecordReturnInput): Promise<SaleReturnResult> {
     const { tenantId, saleRef, body } = input;
     const payloadHash = sha256CanonicalHex(body);
-    return runWithTenantContext(
+    // RT-427: skipped return effects are reported after COMMIT only.
+    const effects = new SaleEffectsReport();
+    const result = await runWithTenantContext(
       this.pool,
       { tenantId, isPlatformAdmin: false },
       async (client): Promise<SaleReturnResult> => {
@@ -106,17 +132,9 @@ export class SaleReturnsService {
           return replay(client, existing, saleRef, payloadHash);
         }
 
-        // RT-577: a credit sale is refused for every operator, before
-        // exclusivity and the line and tender checks.
-        assertNotCreditSale(sale);
-
-        if ((await readReversalState(client, saleRef)).voided) {
-          throw new SaleAlreadyReversedError();
-        }
-        const lines = await priceReturnLines(client, saleRef, body.lines);
-        const total = await totalMatchingTenders(client, lines, body.refundTenders);
-
-        const returnId = await insertReturn(client, { input, sale, total, payloadHash });
+        const { lines, total } = await admitReturn(client, { sale, saleRef, body });
+        const postingDeferred = isPostingDeferred(body, total);
+        const returnId = await insertReturn(client, { input, sale, total, payloadHash, postingDeferred });
         if (!returnId) {
           // The same provenance was recorded concurrently against another sale.
           const winner = await findReturnByProvenance(client, tenantId, body);
@@ -126,22 +144,76 @@ export class SaleReturnsService {
           return replay(client, winner, saleRef, payloadHash);
         }
         await insertLinesAndTenders(client, input, returnId, lines);
-        await emit(client, {
-          eventType: OUTBOX_EVENT_TYPES.ERPNEXT_POSTING_REQUESTED,
-          tenantId,
-          storeId: input.storeId,
-          payload: {
-            sale_id: saleRef,
-            store_id: input.storeId,
-            kind: "reversal",
-            source_ref_id: returnId,
-          },
-          correlationId: null,
+        const scope = { tenantId, storeId: input.storeId, saleId: saleRef };
+        const resolveLandingStatus = (c: PoolClient) => resolveReturnLandingStatus(c, tenantId);
+        effects.add(await writeReturnEffects(client, { ...scope, returnId, resolveLandingStatus }), {
+          ...scope,
+          eventRefId: returnId,
         });
+        if (!postingDeferred) {
+          await emitReturnPosting(client, { tenantId, storeId: input.storeId, saleRef, returnId });
+        }
         return { projection: await loadSaleReturn(client, returnId), created: true };
       },
     );
+    effects.flush();
+    return result;
   }
+}
+
+/**
+ * Every refusal of a new return, in the contract's order (nothing is written
+ * yet): RT-577 credit sale (403), D2 voided (409), RT-490 rule 1 tender refs
+ * and the line checks (400, then 409 over_return), D3 (422), then RT-490
+ * rules 2 and 3 (422). Returns the priced lines and the return total.
+ */
+async function admitReturn(
+  client: PoolClient,
+  args: { sale: LockedSale; saleRef: string; body: RecordReturnRequestDto },
+): Promise<{ lines: PricedLine[]; total: string }> {
+  const { sale, saleRef, body } = args;
+  // RT-577: a credit sale is refused for every operator, before exclusivity
+  // and the line and tender checks.
+  assertNotCreditSale(sale);
+  if ((await readReversalState(client, saleRef)).voided) {
+    throw new SaleAlreadyReversedError();
+  }
+  await assertOriginalTendersOfSale(client, saleRef, body.refundTenders);
+  const lines = await priceReturnLines(client, saleRef, body.lines);
+  const total = await totalMatchingTenders(client, lines, body.refundTenders);
+  await assertAllocationRules(client, saleRef, body.refundTenders);
+  return { lines, total };
+}
+
+/**
+ * R-7 (RT-787): the return waits for its settlement when the flag is on at
+ * acceptance, its allocations carry `allocationRef` (rule 1: all or none) and
+ * it owes something. Decided once and stored, so a later flag flip never
+ * strands it or emits it twice.
+ */
+function isPostingDeferred(body: RecordReturnRequestDto, total: string): boolean {
+  if (!isRefundSettleBeforePostEnabled()) return false;
+  if (body.refundTenders[0]?.allocationRef === undefined) return false;
+  return /[1-9]/.test(total);
+}
+
+/** The return's `reversal` posting intent, the event every reversal path emits. */
+export async function emitReturnPosting(
+  client: PoolClient,
+  ref: { tenantId: string; storeId: string; saleRef: string; returnId: string },
+): Promise<void> {
+  await emit(client, {
+    eventType: OUTBOX_EVENT_TYPES.ERPNEXT_POSTING_REQUESTED,
+    tenantId: ref.tenantId,
+    storeId: ref.storeId,
+    payload: {
+      sale_id: ref.saleRef,
+      store_id: ref.storeId,
+      kind: "reversal",
+      source_ref_id: ref.returnId,
+    },
+    correlationId: null,
+  });
 }
 
 interface ReturnProvenanceRow {
@@ -265,22 +337,23 @@ interface NewReturnHeader {
   readonly sale: LockedSale;
   readonly total: string;
   readonly payloadHash: string;
+  readonly postingDeferred: boolean;
 }
 
 /** Insert the header; null when the provenance already exists (a race). */
 async function insertReturn(
   client: PoolClient,
-  { input, sale, total, payloadHash }: NewReturnHeader,
+  { input, sale, total, payloadHash, postingDeferred }: NewReturnHeader,
 ): Promise<string | null> {
   const r = await client.query<{ id: string }>(
     `INSERT INTO sale_returns
        (id, sale_id, tenant_id, store_id, return_seq, business_date,
         currency_code, return_total, reason, source_system, external_id,
-        payload_hash, created_by)
+        payload_hash, created_by, posting_deferred)
      VALUES ($1, $2, $3, $4,
              (SELECT COALESCE(MAX(return_seq), 0) + 1 FROM sale_returns WHERE sale_id = $2),
              (now() AT TIME ZONE $5)::date,
-             $6, $7::numeric, $8, $9, $10, $11, $12)
+             $6, $7::numeric, $8, $9, $10, $11, $12, $13)
      ON CONFLICT (tenant_id, source_system, external_id) DO NOTHING
      RETURNING id`,
     [
@@ -296,6 +369,7 @@ async function insertReturn(
       input.body.externalId,
       payloadHash,
       input.actorUserId,
+      postingDeferred,
     ],
   );
   return r.rows[0]?.id ?? null;
@@ -320,9 +394,11 @@ async function insertLinesAndTenders(
   for (const [ordinal, t] of input.body.refundTenders.entries()) {
     await client.query(
       `INSERT INTO sale_return_tenders
-         (id, return_id, tenant_id, store_id, ordinal, method, amount)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::numeric)`,
-      [newId(), returnId, input.tenantId, input.storeId, ordinal, t.method, t.amount],
+         (id, return_id, tenant_id, store_id, ordinal, method, amount,
+          allocation_ref, original_tender_ref, instrument)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::numeric, $8, $9, $10)`,
+      [newId(), returnId, input.tenantId, input.storeId, ordinal, t.method, t.amount,
+        t.allocationRef ?? null, t.originalTenderRef ?? null, t.instrument ?? null],
     );
   }
 }
@@ -363,11 +439,6 @@ export async function loadSaleReturn(client: PoolClient, returnId: string): Prom
       WHERE rl.return_id = $1 ORDER BY rl.sale_line_id`,
     [returnId],
   );
-  const tenders = await client.query<{ method: string; amount: string }>(
-    `SELECT method, amount::text AS amount FROM sale_return_tenders
-      WHERE return_id = $1 ORDER BY ordinal`,
-    [returnId],
-  );
   return {
     returnRef: returnId,
     saleRef: h.sale_id,
@@ -385,7 +456,34 @@ export async function loadSaleReturn(client: PoolClient, returnId: string): Prom
       returnedQuantity: l.returned,
       returnableQuantity: l.returnable,
     })),
-    refundTenders: tenders.rows.map((t) => ({ method: t.method, amount: t.amount })),
+    refundTenders: await loadRefundAllocations(client, returnId),
     reason: h.reason,
   };
+}
+
+/** The return's refund allocations in request order; the RT-490 fields only when recorded (never null). */
+async function loadRefundAllocations(
+  client: PoolClient,
+  returnId: string,
+): Promise<RefundAllocationProjection[]> {
+  const r = await client.query<{
+    method: string;
+    amount: string;
+    allocation_ref: string | null;
+    original_tender_ref: string | null;
+    instrument: string | null;
+  }>(
+    `SELECT method, amount::text AS amount, allocation_ref::text AS allocation_ref,
+            original_tender_ref::text AS original_tender_ref, instrument
+       FROM sale_return_tenders
+      WHERE return_id = $1 ORDER BY ordinal`,
+    [returnId],
+  );
+  return r.rows.map((t) => ({
+    method: t.method,
+    amount: t.amount,
+    ...(t.allocation_ref === null ? {} : { allocationRef: t.allocation_ref }),
+    ...(t.original_tender_ref === null ? {} : { originalTenderRef: t.original_tender_ref }),
+    ...(t.instrument === null ? {} : { instrument: t.instrument }),
+  }));
 }

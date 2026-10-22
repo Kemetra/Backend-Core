@@ -200,7 +200,8 @@ only after the Track C first slice (P7) ships.
 consumes, taken from the shared `QUEUE_NAMES`: `email`, `audit`,
 `audit-retention`, `sale-processing`, `outbox-retention`,
 `erpnext-stock-reconciliation-sweep` (RT-179),
-`cashier-admission-replay-purge` (RT-209), `sale-redrive` (RT-457). The three delivery
+`cashier-admission-replay-purge` (RT-209), `sale-redrive` (RT-457),
+`ai-usage-reservation-sweep` (RT-664). The three delivery
 counters also carry `outbox-drainer`, which is the outbox drainer's own
 retries and dead-letters. The drainer is not a BullMQ queue, so it has no lag.
 Before RT-125, the drainer reported as `audit-fanout`, which is a job name,
@@ -226,6 +227,7 @@ none of which is a consumed queue.
 | `outbox_drain_duration_seconds` | histogram | `event_type` | FR-C-001 / Track C |
 | `erpnext_posting_reversal_deferred_dead_letter_total` | counter | none — one increment when an `erpnext.posting.requested` reversal dead-letters while still awaiting its sale's `sale_post` row (the RT-173 deferral ran out of attempts). The tenant, sale and outbox event id are fields of the `posting.reversal.dead_lettered` error log, never labels. The deferral itself counts in `queue_failed_total` as `error_class="ReversalAwaitingSalePostError"` | RT-207 |
 | `sale_redrive_total` | counter | `reason` (`sale_processing` / `sale_post_intent` / `reversal_intent`) — added per tick with the number of items the scheduled sale re-drive sweep recovered: a sale left unprocessed inside the age window (`SALE_REDRIVE_MIN_AGE_MS`, default 15 min, to `SALE_REDRIVE_MAX_AGE_MS`, default 7 days) was processed, or a `sale_post` / `reversal` `erpnext.posting.requested` event that dead-lettered with no posting row was re-emitted (at most until 3 of its events have dead-lettered). Any value above zero means a hop of the sale pipeline lost work. The tenant and sale are in the sweep log, never labels | RT-457 |
+| `inventory_sale_effect_skipped_total` | counter | `event_type` (`sale` / `sale_void` / `sale_return`), `reason` (`unit_mismatch` / `quantity_precision` / `tracked_product`) — one increment per business line whose Inventory Effect was skipped instead of stalling the sale or reversal (RT-427 owner decision 2): the line's unit is not the product's established stocking unit, its quantity needs more than 4 decimals, or the product is batch / serial tracked (RT-451). Emitted by the worker (sale) and the API (void, return) after the transaction commits. Any value above zero means operational stock diverges from the sales by those lines. The tenant, sale and line are fields of the `inventory.sale_effect.skipped` warn log, never labels | RT-427 |
 
 ### Notes
 - `queue` and `job_name` are intentionally bounded by the platform — new

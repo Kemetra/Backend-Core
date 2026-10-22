@@ -27,6 +27,7 @@ jest.mock("../../src/observability/metrics/api.metrics", () => {
   return { ...actual, recordShiftCloseApproverUnverified: jest.fn() };
 });
 
+import { linkClerkUsers } from "../_helpers/identity-links";
 import { randomUUID } from "node:crypto";
 
 import { recordShiftCloseApproverUnverified } from "../../src/observability/metrics/api.metrics";
@@ -400,6 +401,7 @@ describe("closeShift — the approver's standing is checked at ingest, never ref
       `INSERT INTO users (id, email, display_name, clerk_user_id) VALUES ($1, 'admin@rt17-s2b.example', 'admin', 'user_clerk_rt17_s2b_admin')`,
       [ADMIN.id],
     );
+    await linkClerkUsers(admin());
     await admin().query(
       `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES ($1, $2, $3, $4, 'all')`,
       [ADMIN.membership, MANAGER.tenant, ADMIN.id, ROLE_A_ADMIN],

@@ -27,7 +27,8 @@
  *
  * Plus: the sign-in membership list drops the tenant; an active tenant is
  * unaffected (session and token); a platform admin can still enter a
- * suspended or pending tenant and reactivate it through PATCH /tenants/:id
+ * suspended or pending tenant (through an RT-414 support session, read-only
+ * on a suspended tenant) and reactivate it through PATCH /tenants/:id
  * (D-a), after which the member's existing session and token are re-admitted
  * (the refusal is the live tenant state, not a cached verdict).
  *
@@ -75,6 +76,7 @@ import {
   type PgTestEnv,
 } from "../_helpers/postgres-container";
 import { SAME_ORIGIN } from "../_helpers/same-origin";
+import { enterTenantAsPlatformAdmin } from "../_helpers/support-session";
 
 class AlwaysAllowRedis implements RedisLike {
   async incrWindow(): Promise<{ count: number; ttlMs: number }> { return { count: 1, ttlMs: -1 }; }
@@ -549,14 +551,24 @@ describe("RT-669 D-b — reactivation is platform-admin-only", () => {
 describe.each(INACTIVE_STATES.filter((s) => s.label !== "soft-deleted"))(
   "RT-669 D-a — $label tenant: platform admin enters and reactivates",
   (state) => {
-    it("admin switches in, reads and writes, sets status active → the member's session and token are re-admitted", async () => {
+    it("admin enters through a support session, reads, sets status active → the member's session and token are re-admitted", async () => {
       if (skip()) return;
       await setTenant(state);
       const admin = (await signIn(ADMIN)).cookie;
-      await switchTenant(admin, SUBJECT).expect(200);
+      // RT-414: a non-member platform admin enters only through a support session.
+      await switchTenant(admin, SUBJECT).expect(403);
+      await enterTenantAsPlatformAdmin(E().admin, ADMIN, SUBJECT);
       await asSession(http().get("/api/v1/stores"), admin, randomUUID()).expect(200);
       await asSession(http().get(`/api/v1/tenants/${SUBJECT}`), admin, randomUUID()).expect(200);
       await asSession(http().get(`/api/v1/tenants/${SUBJECT}/members`), admin, randomUUID()).expect(200);
+
+      // RT-414 (comment 11737): a suspended tenant's support session is read-only.
+      if (state.label === "suspended") {
+        const write = await asSession(http().post("/api/v1/stores"), admin, randomUUID())
+          .send({ code: "RO", name: "Read only" })
+          .expect(403);
+        expect(write.body.error.code).toBe("support_session_read_only");
+      }
 
       // Still refused for the member until the admin reactivates.
       await asSession(http().get("/api/v1/stores"), ownerSession, randomUUID()).expect(404);

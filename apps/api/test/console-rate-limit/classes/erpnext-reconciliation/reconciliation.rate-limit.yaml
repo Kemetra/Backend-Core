@@ -1,0 +1,12 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/erpnext-reconciliation/reconciliation.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+getReconciliationRun: cheapRead
+listErpnextNegativeOnHand: expensiveRead
+listErpnextNegativeOnHandStores: expensiveRead
+listPostingBacklog: expensiveRead
+listReconciliationResults: expensiveRead
+repairPosting: write
+repairStockMismatch: write
+reResolvePosting: write
+triggerReconciliationRun: jobOrPreview

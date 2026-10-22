@@ -282,3 +282,111 @@ describe("DeviceRepository — activity write (RT-370)", () => {
     expect(touched(domain.queries)).toBe(1);
   });
 });
+
+// ===========================================================================
+// RT-639 — the lookup the rotate-soon hint reads
+// ===========================================================================
+
+describe("DeviceRepository.findActiveByAttestationWithExpiry (RT-639)", () => {
+  const FLAG = "DEVICE_TOKEN_EXPIRY_ENFORCED";
+  const EXPIRES = "2027-01-09T00:00:00.000Z";
+  const saved = process.env[FLAG];
+  afterEach(() => {
+    if (saved === undefined) delete process.env[FLAG];
+    else process.env[FLAG] = saved;
+  });
+
+  /** Pre-tenant lookup pool answering with the select list plus `expires_at`. */
+  function expiryPool(
+    found: boolean,
+    presentedPreviousUntil: string | null = null,
+  ): { pool: Pool; query: jest.Mock } {
+    const query = jest.fn(async (config: { rowMode?: string }) => {
+      if (found && config && config.rowMode === "array") {
+        return {
+          rows: [
+            [DEVICE_ID, TENANT_ID, STORE_ID, "Lane 1", Buffer.from("hash"), null,
+             "2026-10-01T00:00:00.000Z", "2026-10-01T00:00:00.000Z", EXPIRES, presentedPreviousUntil],
+          ],
+        };
+      }
+      return { rows: [] };
+    });
+    return { pool: { query } as unknown as Pool, query };
+  }
+
+  async function lookupSql(): Promise<string> {
+    const { pool, query } = expiryPool(false);
+    await new DeviceRepository(pool, pool).findActiveByAttestationWithExpiry("raw-token");
+    return (query.mock.calls as Array<[{ text?: string } | string]>)
+      .map(([config]) => (typeof config === "string" ? config : (config.text ?? "")))
+      .join("\n");
+  }
+
+  it("returns the device with its expiry when the tenant is active", async () => {
+    const repo = new DeviceRepository(expiryPool(true).pool, domainPool(ACTIVE).pool);
+    const row = await repo.findActiveByAttestationWithExpiry("device-token");
+
+    expect(row?.id).toBe(DEVICE_ID);
+    expect(row?.tenantId).toBe(TENANT_ID);
+    expect(row?.expiresAt).toEqual(new Date(EXPIRES));
+  });
+
+  it("a current-token match has no presentedPreviousUntil", async () => {
+    const repo = new DeviceRepository(expiryPool(true).pool, domainPool(ACTIVE).pool);
+    expect((await repo.findActiveByAttestationWithExpiry("device-token"))?.presentedPreviousUntil).toBeNull();
+  });
+
+  it("a previous-token match (rotation overlap) carries when the overlap closes", async () => {
+    const until = "2026-10-21T01:50:00.000Z";
+    const repo = new DeviceRepository(expiryPool(true, until).pool, domainPool(ACTIVE).pool);
+    const row = await repo.findActiveByAttestationWithExpiry("old-device-token");
+
+    expect(row?.presentedPreviousUntil).toEqual(new Date(until));
+  });
+
+  it("selects previous_valid_until only when the previous hash matched", async () => {
+    const [selectList] = (await lookupSql()).split(/\bfrom "devices"/i);
+    expect(selectList).toMatch(/case when "devices"\."previous_token_hash" = \$\d+ then (?:"devices"\.)?"previous_valid_until" end/i);
+  });
+
+  it("an empty attestation is null without querying the DB", async () => {
+    const { pool, query } = expiryPool(true);
+    expect(await new DeviceRepository(pool, pool).findActiveByAttestationWithExpiry("")).toBeNull();
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["suspended", SUSPENDED],
+    ["soft-deleted", DELETED],
+    ["not visible", null],
+  ])("a %s tenant → null (as if revoked)", async (_label, tenant) => {
+    const repo = new DeviceRepository(expiryPool(true).pool, domainPool(tenant).pool);
+    expect(await repo.findActiveByAttestationWithExpiry("device-token")).toBeNull();
+  });
+
+  it("no active device → null without reading the tenant", async () => {
+    const domain = domainPool(ACTIVE);
+    const repo = new DeviceRepository(expiryPool(false).pool, domain.pool);
+    expect(await repo.findActiveByAttestationWithExpiry("device-token")).toBeNull();
+    expect(domain.connect).not.toHaveBeenCalled();
+  });
+
+  it("selects expires_at, in the same single query as the device", async () => {
+    const sql = await lookupSql();
+    const [selectList] = sql.split(/\bfrom "devices"/i);
+    expect(selectList).toMatch(/"expires_at"/);
+  });
+
+  it("flag off → expires_at is selected but never filtered on", async () => {
+    delete process.env[FLAG];
+    const [, rest] = (await lookupSql()).split(/\bfrom "devices"/i);
+    expect(rest).not.toMatch(/expires_at/);
+  });
+
+  it("flag on → expires_at > now() (database clock) is required, as on every device lookup", async () => {
+    process.env[FLAG] = "true";
+    const [, rest] = (await lookupSql()).split(/\bfrom "devices"/i);
+    expect(rest).toMatch(/"devices"\."expires_at" > now\(\)/);
+  });
+});

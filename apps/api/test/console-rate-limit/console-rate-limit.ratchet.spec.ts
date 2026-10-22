@@ -3,19 +3,24 @@
  * AC6, AC9).
  *
  * Sweeps the real AppModule (no DB, no Redis) and every OpenAPI contract:
- *   - every runtime operation that declares `cookieAuth` appears in the
- *     snapshot below with its resolved class. A new cookieAuth operation that
- *     is not in the snapshot fails here, so its author must classify it (the
- *     runtime still falls back to the verb default, so a missed snapshot never
- *     leaves a route unlimited). A changed class is a deliberate snapshot edit;
+ *   - every operation that declares `cookieAuth` is classified in its
+ *     contract's class file, `classes/<contract>.rate-limit.yaml` (RT-805: one
+ *     file per contract, so parallel PRs never edit a shared list). A new
+ *     cookieAuth operation that is not classified fails here, so its author
+ *     must classify it (the runtime still falls back to the verb default, so a
+ *     missed entry never leaves a route unlimited). A changed class is a
+ *     deliberate class-file edit;
+ *   - a runtime operation resolves to its declared class; a contract-only one
+ *     (`x-runtime-status: contract-only`) carries its INTENDED class (RT-574
+ *     D3) and the spec breaks when it gains a route while still marked. When
+ *     its runtime ships, only the marker goes; the class entry stays;
+ *   - no entry is stale, duplicated or of an unknown class (negative cases in
+ *     console-rate-limit.ratchet-rules.spec.ts);
  *   - the shared exemption list matches the runtime exactly;
- *   - the contract-only cookieAuth operations are listed with their INTENDED
- *     class (RT-574 D3), and the spec breaks when one gains a runtime route,
- *     forcing it into the snapshot;
  *   - the guard is registered immediately after FailClosedAuthGuard in
  *     AppModule's providers.
  *
- * The snapshot starts from the RT-574 D3 class lists (owner O2/O4).
+ * The classes start from the RT-574 D3 class lists (owner O2/O4).
  */
 import "reflect-metadata";
 
@@ -25,159 +30,28 @@ import { APP_GUARD } from "@nestjs/core";
 import { AppModule } from "../../src/app.module";
 import { FailClosedAuthGuard } from "../../src/auth/fail-closed-auth.guard";
 import { resolveConsoleRateLimitClass } from "../../src/console-rate-limit/console-rate-limit.classify";
-import type { ConsoleRateLimitClass } from "../../src/console-rate-limit/console-rate-limit.config";
+import { CONSOLE_RATE_LIMIT_BUDGETS } from "../../src/console-rate-limit/console-rate-limit.config";
 import {
   CONSOLE_RATE_LIMIT_EXEMPTIONS,
   CONSOLE_RATE_LIMIT_EXEMPT_OPERATION_IDS,
 } from "../../src/console-rate-limit/console-rate-limit.exemptions";
 import { ConsoleRateLimitGuard } from "../../src/console-rate-limit/console-rate-limit.guard";
+import { loadClassFiles, ratchetViolations } from "../_helpers/console-rate-limit-classes";
 import { appControllers, bootDbLessApp, type DbLessApp } from "../_helpers/db-less-app";
 import {
   contractRouteKey,
   contractRoutes,
   controllerRoutes,
   usesScheme,
+  type ContractRoute,
   type ControllerRoute,
 } from "../_helpers/openapi-routes";
 
-/** operationId → resolved class, for every runtime cookieAuth operation. */
-const SNAPSHOT: Record<string, ConsoleRateLimitClass> = {
-  clearActiveStore: "write",
-  consoleAddProductIdentifier: "write",
-  consoleCancelPairingCode: "incidentControl",
-  consoleCreateCatalogProduct: "write",
-  consoleCreatePayerAccount: "write",
-  consoleGetCatalogProduct: "cheapRead",
-  consoleGetDevice: "cheapRead",
-  consoleGetDeviceImpact: "expensiveRead",
-  consoleGetSale: "cheapRead",
-  // RT-649: an aggregate over up to 31 business days of every store in scope.
-  consoleGetSalesSummary: "expensiveRead",
-  consoleGetSaleAuditTimeline: "expensiveRead",
-  consoleGetSaleSyncStatus: "cheapRead",
-  consoleGetShiftClose: "cheapRead",
-  consoleGetStoreCashVariancePolicy: "cheapRead",
-  consoleGetSyncOpsSummary: "expensiveRead",
-  consoleGetTenantCashVariancePolicy: "cheapRead",
-  consoleIssuePairingCode: "onboarding",
-  consoleListCatalogCategories: "cheapRead",
-  consoleListCatalogProducts: "expensiveRead",
-  consoleListDevices: "cheapRead",
-  consoleListNeedsRepair: "expensiveRead",
-  consoleListPairingCodes: "cheapRead",
-  consoleListPayerAccounts: "cheapRead",
-  consoleListPostingBacklog: "expensiveRead",
-  consoleListReconciliationRuns: "cheapRead",
-  consoleListSales: "expensiveRead",
-  consoleListShiftCloses: "expensiveRead",
-  consoleListStoreCashVariancePolicyRevisions: "cheapRead",
-  consoleListTenantCashVariancePolicyRevisions: "cheapRead",
-  consolePublishStoreCashVariancePolicyOverride: "write",
-  consolePublishTenantCashVariancePolicy: "write",
-  consoleRepairSaleSync: "write",
-  consoleRetireCatalogProduct: "write",
-  consoleRetireDevice: "incidentControl",
-  consoleRetireProductIdentifier: "write",
-  consoleRetireStoreOverride: "write",
-  consoleRevokeDevice: "incidentControl",
-  consoleUpdateCatalogProduct: "write",
-  consoleUpdatePayerAccount: "write",
-  consoleUpsertStoreOverride: "write",
-  createInvitation: "onboarding",
-  createRelocation: "write",
-  createStatusMove: "write",
-  createStockMovement: "write",
-  createStockTransfer: "write",
-  createStore: "write",
-  createTenant: "onboarding",
-  getActiveContext: "cheapRead",
-  getConnectorHealth: "cheapRead",
-  getOnHand: "cheapRead",
-  getOutboxDeadLetter: "cheapRead",
-  getProductReconciliationRunResults: "expensiveRead",
-  getReconciliationRun: "cheapRead",
-  getReturnLandingPolicy: "cheapRead",
-  listAuditEvents: "expensiveRead",
-  listConnectorHealth: "cheapRead",
-  listErpnextNegativeOnHand: "expensiveRead",
-  listErpnextNegativeOnHandStores: "expensiveRead",
-  listMembers: "cheapRead",
-  listOutboxDeadLetters: "expensiveRead",
-  listPostingBacklog: "expensiveRead",
-  listProductReconciliationBacklog: "expensiveRead",
-  listProductReconciliationRuns: "cheapRead",
-  listReconciliationResults: "expensiveRead",
-  listStockLocations: "cheapRead",
-  listStockMovements: "expensiveRead",
-  listStores: "cheapRead",
-  listTenants: "cheapRead",
-  listTrackingIdentities: "cheapRead",
-  previewStoreTimezoneChange: "jobOrPreview",
-  readStore: "cheapRead",
-  readTenant: "cheapRead",
-  recordStockCount: "write",
-  refreshSession: "exempt",
-  repairPosting: "write",
-  repairProductMapping: "write",
-  repairStockMismatch: "write",
-  requestEmailVerification: "exempt",
-  reResolvePosting: "write",
-  revokeMembership: "incidentControl",
-  setReturnLandingPolicy: "write",
-  signOut: "exempt",
-  softDeleteStore: "write",
-  softDeleteTenant: "write",
-  switchActiveStore: "write",
-  switchActiveTenant: "write",
-  tenantAdminBulkDismissUnknownItems: "jobOrPreview",
-  tenantAdminConfirmErpnextItemMapping: "write",
-  tenantAdminCreateProductFromUnknownItem: "write",
-  tenantAdminDisableConnectorInstance: "incidentControl",
-  tenantAdminDismissUnknownItem: "write",
-  tenantAdminGetTrackingProfile: "cheapRead",
-  tenantAdminInspectUnknownItem: "cheapRead",
-  tenantAdminIssueConnectorCredential: "onboarding",
-  tenantAdminLinkUnknownItem: "write",
-  tenantAdminListConnectorInstances: "cheapRead",
-  tenantAdminListErpnextItemMappings: "cheapRead",
-  tenantAdminListErpnextWarehouseMappings: "cheapRead",
-  tenantAdminListUnknownItems: "expensiveRead",
-  tenantAdminRegisterConnectorInstance: "onboarding",
-  tenantAdminReopenUnknownItem: "write",
-  tenantAdminRetireErpnextItemMapping: "write",
-  tenantAdminRetireErpnextWarehouseMapping: "write",
-  tenantAdminRevokeConnectorCredential: "incidentControl",
-  tenantAdminRotateConnectorCredential: "incidentControl",
-  tenantAdminSetErpnextWarehouseMapping: "write",
-  tenantAdminSetTrackingProfile: "write",
-  tenantAdminSuggestErpnextItemMapping: "write",
-  triggerProductReconciliationRun: "jobOrPreview",
-  triggerReconciliationRun: "jobOrPreview",
-  updateMembership: "write",
-  updateStore: "write",
-  updateTenant: "write",
-};
+const VALID_CLASSES: ReadonlySet<string> = new Set([...Object.keys(CONSOLE_RATE_LIMIT_BUDGETS), "exempt"]);
 
-/**
- * cookieAuth operations with no runtime yet (x-runtime-status contract-only),
- * with the class RT-574 D3 intends for them. When one ships, this spec fails
- * until it moves into SNAPSHOT (and the handler carries @ConsoleRateLimit for
- * a non-default class).
- */
-const CONTRACT_ONLY_INTENT: Record<string, ConsoleRateLimitClass> = {
-  consoleDeleteTenantLogo: "write",
-  // RT-662: one tenant's entitlement snapshot, no aggregate.
-  consoleGetTenantAiEntitlements: "cheapRead",
-  consoleGetTenantLogo: "cheapRead",
-  consolePreviewTenantLogo: "jobOrPreview",
-  // RT-662: the owner's idempotent per-feature opt-out write.
-  consolePutTenantAiFeatureOptOut: "write",
-  consolePutTenantLogo: "jobOrPreview",
-  endSupportSession: "incidentControl",
-  getCurrentSupportSession: "cheapRead",
-  openSupportSession: "onboarding",
-  renewSupportSession: "write",
-};
+/** operationId → declared class, across every class file. */
+const declaredClasses = (): Record<string, string> =>
+  Object.assign({}, ...loadClassFiles().map((f) => f.classes)) as Record<string, string>;
 
 describe("console rate-limit ratchet (RT-619 / RT-574 D1)", () => {
   let booted: DbLessApp;
@@ -196,44 +70,30 @@ describe("console rate-limit ratchet (RT-619 / RT-574 D1)", () => {
   });
 
   const cookieOps = () => contractRoutes().filter((r) => usesScheme(r, "cookieAuth"));
+  const isRuntime = (op: ContractRoute) => op.operation["x-runtime-status"] !== "contract-only";
 
-  it("every runtime cookieAuth operation resolves to its snapshot class", () => {
-    const actual: Record<string, ConsoleRateLimitClass> = {};
-    const unmatched: string[] = [];
-    for (const op of cookieOps()) {
-      if (op.operation["x-runtime-status"] === "contract-only") continue;
-      const route = byKey.get(contractRouteKey(op));
-      if (!route) {
-        unmatched.push(`${op.operation.operationId}: ${contractRouteKey(op)}`);
-        continue;
-      }
-      actual[op.operation.operationId!] = resolveConsoleRateLimitClass(
-        route.controller,
-        route.handler as (...args: unknown[]) => unknown,
-      );
-    }
-    expect(unmatched).toEqual([]);
-    expect(actual).toEqual(SNAPSHOT);
+  it("every cookieAuth operation is classified in its contract's class file and the runtime agrees", () => {
+    const violations = ratchetViolations({
+      cookieOps: cookieOps(),
+      classFiles: loadClassFiles(),
+      validClasses: VALID_CLASSES,
+      resolveRuntime: (op) => {
+        const route = byKey.get(contractRouteKey(op));
+        return route && resolveConsoleRateLimitClass(route.controller, route.handler as (...args: unknown[]) => unknown);
+      },
+    });
+    expect(violations).toEqual([]);
   });
 
   it("the sweep is not vacuous", () => {
-    expect(Object.keys(SNAPSHOT).length).toBeGreaterThanOrEqual(98);
-  });
-
-  it("contract-only cookieAuth operations are still runtime-less and carry an intended class", () => {
-    const contractOnly = cookieOps().filter((op) => op.operation["x-runtime-status"] === "contract-only");
-    expect(contractOnly.map((op) => op.operation.operationId).sort()).toEqual(Object.keys(CONTRACT_ONLY_INTENT).sort());
-    for (const op of contractOnly) {
-      expect({ op: op.operation.operationId, routed: byKey.has(contractRouteKey(op)) }).toEqual({
-        op: op.operation.operationId,
-        routed: false,
-      });
-    }
+    expect(cookieOps().filter(isRuntime).length).toBeGreaterThanOrEqual(98);
+    expect(Object.keys(declaredClasses())).toHaveLength(cookieOps().length);
   });
 
   it("the shared exemption list is exactly the operations resolving to exempt", () => {
-    const exempt = Object.entries(SNAPSHOT)
-      .filter(([, cls]) => cls === "exempt")
+    const runtimeIds = new Set(cookieOps().filter(isRuntime).map((op) => op.operation.operationId!));
+    const exempt = Object.entries(declaredClasses())
+      .filter(([id, cls]) => cls === "exempt" && runtimeIds.has(id))
       .map(([id]) => id)
       .sort();
     expect(exempt).toEqual([...CONSOLE_RATE_LIMIT_EXEMPT_OPERATION_IDS].sort());

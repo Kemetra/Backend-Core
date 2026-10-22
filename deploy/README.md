@@ -121,7 +121,17 @@ op run --env-file=deploy/grants.env -- sh -c \
    psql -X -v domain_role="$DOMAIN_DB_ROLE" \
         -f docs/operations/sql/sale-credit-reversals-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/inventory-position-events-domain-grants.sql'
+        -f docs/operations/sql/inventory-position-events-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
+        -f docs/operations/sql/platform-support-sessions-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
+        -f docs/operations/sql/inventory-anchors-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
+        -f docs/operations/sql/refund-executions-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
+        -f docs/operations/sql/pos-device-health-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
+        -f docs/operations/sql/shift-forced-closes-domain-grants.sql'
 
 # 3. Start everything (migrate re-runs as a no-op, then api/worker start).
 op run --env-file=deploy/prod.env -- \
@@ -147,6 +157,14 @@ without the env loader any command fails with
 `required variable ... is missing a value`. The `migrate` service runs
 `migrate up` against `<managed-db>` and must exit 0 before `api`/`worker` start
 (compose `service_completed_successfully` gate).
+
+**Owner-gated, not part of step 2:** the AI entitlement grants
+(`ai-entitlements-domain-grants.sql`, RT-664, for the tables of migration 0055).
+They are not part of the routine release or of its bundle. Run them only when
+the owner has approved it for that environment; the command and its scope are
+in [`docs/operations/database-roles.md`](../docs/operations/database-roles.md).
+Without them the API still boots: the AI entitlement routes answer 503 and AI
+runs fail closed.
 
 Step 2 must run between the migration and the app start. The API boot check
 verifies the domain role's cashier-admissions table grants (RT-212), its
@@ -396,7 +414,12 @@ op run --env-file=deploy/grants.env -- sh -c \
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/sale-responsibilities-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/shift-variance-policy-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/sale-credit-reversals-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/inventory-position-events-domain-grants.sql'
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/inventory-position-events-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/platform-support-sessions-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/inventory-anchors-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/refund-executions-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/pos-device-health-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/shift-forced-closes-domain-grants.sql'
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d --build
 op run --env-file=deploy/grants.env -- sh -c \
   'psql -X -f docs/operations/sql/erpnext-posting-resolution-catchup.sql &&

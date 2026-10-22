@@ -37,9 +37,20 @@
  *                                  row).
  *
  * Platform admins (`users.is_platform_admin = true`) bypass the
- * membership check (FR-TEN-6); they may have an active tenant set
+ * membership-role check (FR-TEN-6); they may have an active tenant set
  * without a membership row. Store-access validation still applies if
  * `activeStoreId` is set, falling back to the `'all'` branch.
+ *
+ * Support sessions (RT-414)
+ * -------------------------
+ * A platform admin with NO live membership in the active tenant (whatever
+ * the tenant's status) is admitted only through an `active` support session
+ * for exactly that tenant (`SupportSessionGate`): otherwise 403
+ * `support_session_required` / `support_session_expired` /
+ * `support_session_read_only` (a suspended tenant). Each such request writes
+ * one `platform.cross_tenant.accessed` row. A platform admin who IS a member
+ * resolves exactly as before. Without a pool (unit tests) the non-member case
+ * fails closed with `support_session_required`.
  *
  * Token principals
  * ----------------
@@ -93,13 +104,31 @@ import {
   recordCrossTenantRejection,
   recordTenantContextFailure,
 } from "../observability/metrics/api.metrics";
+import { assignRequestId } from "../common/request-id.interceptor";
 import { recordDbRlsContextFailure } from "../observability/metrics/db.metrics";
+import { routeTemplate } from "../platform-support-sessions/support-session.coverage";
+import {
+  SupportSessionGate,
+  supportSessionRefusal,
+} from "../platform-support-sessions/support-session.gate";
 import { MembershipRepository } from "./membership.repository";
 import type {
   ResolvedContext,
   StoreAccess,
   TenantContextRequest,
 } from "./types";
+
+/** The request facts the RT-414 audit row records (never the concrete path). */
+export interface RequestAccess {
+  readonly method: string;
+  readonly route: string;
+  /** Assigns the request id on first use (only a support-session row needs it). */
+  readonly requestId: () => string | null;
+}
+
+export { routeTemplate };
+
+const UNKNOWN_ACCESS: RequestAccess = { method: "GET", route: "unknown", requestId: () => null };
 
 @Injectable()
 export class TenantContextGuard implements CanActivate {
@@ -128,7 +157,11 @@ export class TenantContextGuard implements CanActivate {
     if (!principal) throw unauthorized();
 
     try {
-      const resolved = await this.resolve(principal);
+      const resolved = await this.resolve(principal, {
+        method: request.method ?? "GET",
+        route: routeTemplate(execCtx),
+        requestId: () => assignRequestId(request, execCtx.switchToHttp().getResponse()),
+      });
       request.context = resolved;
       return true;
     } catch (err) {
@@ -151,11 +184,14 @@ export class TenantContextGuard implements CanActivate {
    * call it directly without going through the Nest `ExecutionContext`
    * shim.
    */
-  async resolve(principal: Principal): Promise<ResolvedContext> {
+  async resolve(
+    principal: Principal,
+    access: RequestAccess = UNKNOWN_ACCESS,
+  ): Promise<ResolvedContext> {
     if (principal.kind === "token") {
       return this.resolveToken(principal);
     }
-    return this.resolveSession(principal);
+    return this.resolveSession(principal, access);
   }
 
   private async resolveToken(
@@ -188,6 +224,7 @@ export class TenantContextGuard implements CanActivate {
 
   private async resolveSession(
     principal: Extract<Principal, { kind: "session" }>,
+    access: RequestAccess,
   ): Promise<ResolvedContext> {
     const session = await this.sessions.findActiveById(principal.sessionId);
     // AuthGuard already validated the session; treat a now-missing/expired
@@ -245,22 +282,8 @@ export class TenantContextGuard implements CanActivate {
           };
         }
       });
-    } else if (storeId !== null) {
-      // Platform admin with an active store: only validate the store
-      // belongs to the active tenant (no membership/access policy
-      // applies to platform admins). The repo's 'all' branch does
-      // exactly that check; we pass a synthetic membershipId because
-      // 'all' never references it.
-      await this.withBootstrapCtx(async (client) => {
-        const ok = await this.memberships.canAccessStore(
-          "00000000-0000-0000-0000-000000000000",
-          tenantId,
-          storeId,
-          "all",
-          client,
-        );
-        if (!ok) throw notFound();
-      });
+    } else {
+      await this.admitPlatformAdmin(principal, tenantId, storeId, access);
     }
 
     return {
@@ -271,6 +294,53 @@ export class TenantContextGuard implements CanActivate {
       source: "session",
       storeAccess,
     };
+  }
+
+  /**
+   * Platform admin: RT-414 first (a member passes as before; a non-member
+   * needs an active support session for `tenantId`, and the gate records the
+   * request), then, with an active store, only the store-belongs-to-tenant
+   * check (no membership/access policy applies to platform admins). The
+   * repo's 'all' branch does exactly that check; the synthetic membershipId
+   * is never referenced by 'all'.
+   */
+  private async admitPlatformAdmin(
+    principal: Extract<Principal, { kind: "session" }>,
+    tenantId: string,
+    storeId: string | null,
+    access: RequestAccess,
+  ): Promise<void> {
+    let member = false;
+    await this.withBootstrapCtx(async (client) => {
+      member = await this.memberships.hasLiveMembership(principal.userId, tenantId, client);
+    });
+    if (!member) await this.enforceSupportSession(principal, tenantId, access);
+    if (storeId === null) return;
+    await this.withBootstrapCtx(async (client) => {
+      const ok = await this.memberships.canAccessStore(
+        "00000000-0000-0000-0000-000000000000",
+        tenantId,
+        storeId,
+        "all",
+        client,
+      );
+      if (!ok) throw notFound();
+    });
+  }
+
+  private async enforceSupportSession(
+    principal: Extract<Principal, { kind: "session" }>,
+    tenantId: string,
+    access: RequestAccess,
+  ): Promise<void> {
+    if (!this.pool) throw supportSessionRefusal("support_session_required");
+    await new SupportSessionGate(this.pool).enforce(tenantId, {
+      authSessionId: principal.sessionId,
+      userId: principal.userId,
+      method: access.method,
+      route: access.route,
+      requestId: access.requestId(),
+    });
   }
 
   /**
@@ -321,32 +391,6 @@ export class TenantContextGuard implements CanActivate {
       }
       throw err;
     }
-  }
-}
-
-/**
- * Extract the route template from an ExecutionContext using NestJS
- * decorator metadata. Returns the controller + handler path in the form
- * `/api/v1/tenants/:id/members`, or `"unknown"` when metadata is absent
- * (e.g., in unit tests with stub controllers).
- *
- * Uses `route` template (not rendered URL) per signals.md §6: rendered
- * paths carry tenant/store IDs which are forbidden as metric labels
- * (FR-B-006). The template `/:id` is safe; the value `/:uuid` is not.
- */
-function routeTemplate(execCtx: ExecutionContext): string {
-  try {
-    // `reflect-metadata` is loaded by NestJS at bootstrap; Reflect.getMetadata
-    // is available in all NestJS guard/interceptor call sites.
-    const controllerPath =
-      (Reflect.getMetadata("path", execCtx.getClass()) as string | undefined) ?? "";
-    const handlerPath =
-      (Reflect.getMetadata("path", execCtx.getHandler()) as string | undefined) ?? "";
-    const joined = `/${controllerPath}/${handlerPath}`.replace(/\/+/g, "/");
-    // Trim trailing slash so "/api/v1/tenants/" becomes "/api/v1/tenants".
-    return joined.replace(/\/$/, "") || "unknown";
-  } catch {
-    return "unknown";
   }
 }
 

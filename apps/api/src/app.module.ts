@@ -29,9 +29,11 @@ import { SalesModule } from "./catalog/sales/sales.module";
 import { SaleSyncOpsModule } from "./catalog/sale-sync-ops/sale-sync-ops.module";
 import { UnknownItemsModule } from "./catalog/unknown-items/unknown-items.module";
 import { ContextModule } from "./context/context.module";
+import { DeviceHealthModule } from "./device-health/device-health.module";
 import { InventoryModule } from "./inventory/inventory.module";
 import { MembershipsModule } from "./memberships/memberships.module";
 import { OutboxAdminModule } from "./outbox/admin.module";
+import { PosApproversModule } from "./pos-approvers/pos-approvers.module";
 import { PosAuditEventsModule } from "./pos-audit-events/pos-audit-events.module";
 import { CashierAdmissionsModule } from "./pos-cashier-admissions/cashier-admissions.module";
 import { PosOperatorsModule } from "./pos-operators/pos-operators.module";
@@ -39,6 +41,7 @@ import { PosShiftsModule } from "./pos-shifts/pos-shifts.module";
 import { SettlementModule } from "./settlement/settlement.module";
 import { PayerAccountsModule } from "./settlement/payer-accounts.module";
 import { ShiftClosesModule } from "./shift-closes/shift-closes.module";
+import { AiEntitlementsModule } from "./ai-entitlements/ai-entitlements.module";
 import { CashVariancePolicyModule } from "./cash-variance-policy/cash-variance-policy.module";
 import { ConsoleSalesModule } from "./console-sales/console-sales.module";
 import { ConsoleCatalogModule } from "./catalog/console-catalog/console-catalog.module";
@@ -46,6 +49,7 @@ import { ConsoleTelemetryModule } from "./console-telemetry/console-telemetry.mo
 import { DevicesModule } from "./devices/devices.module";
 import { StoresModule } from "./stores/stores.module";
 import { TenantsModule } from "./tenants/tenants.module";
+import { PlatformSupportSessionsModule } from "./platform-support-sessions/platform-support-sessions.module";
 import {
   registerDbPoolGauges,
   registerDbMigrationStatusGauge,
@@ -230,13 +234,16 @@ class ApiDbMigrationStatusGaugeRegistrar implements OnModuleInit, OnModuleDestro
  *   - `OutboxAdminModule`   — outbox dead-letter triage (T591, 1C-C1)
  *   - `PosOperatorsModule`  — POS operator sign-in (Wave 1, PR-5)
  *   - `CashierAdmissionsModule` — POS cashier admissions (RT-113 BC2)
+ *   - `PosApproversModule` — POS approver eligibility (RT-788, RT-114 MA-BC2)
+ *   - `DeviceHealthModule` — POS device heartbeat, device health reads and the
+ *                             platform version policy (RT-327)
  *   - `PosAuditEventsModule`— POS audit-event batch sync (Wave 2, PR-6)
  *
  * Cross-cutting interceptors, the global filter, and the global Zod
  * pipe are registered in `main.ts`.
  */
 @Module({
-  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, CashierAdmissionsModule, PosAuditEventsModule, PosShiftsModule, ShiftClosesModule, CashVariancePolicyModule, ConsoleSalesModule, ConsoleCatalogModule, DevicesModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, TrackingProfileModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, PayerAccountsModule, ConnectorModule, ConnectorHealthModule, PairingModule, DeviceRotationModule, HealthModule, ConsoleTelemetryModule, ConsoleRateLimitModule],
+  imports: [RootLoggerModule, AuditModule, AuthModule, ContextModule, TenantsModule, PlatformSupportSessionsModule, StoresModule, MembershipsModule, OutboxAdminModule, PosOperatorsModule, CashierAdmissionsModule, PosApproversModule, DeviceHealthModule, PosAuditEventsModule, PosShiftsModule, ShiftClosesModule, CashVariancePolicyModule, AiEntitlementsModule, ConsoleSalesModule, ConsoleCatalogModule, DevicesModule, UnknownItemsModule, ReconciliationModule, SalesModule, InventoryModule, ReadDownModule, ErpnextItemMapModule, ErpnextWarehouseMapModule, TrackingProfileModule, ErpnextPostingModule, ErpnextReconciliationModule, ErpnextProductReconciliationModule, ErpnextBinViewModule, ErpnextSyncOpsModule, SaleSyncOpsModule, SettlementModule, PayerAccountsModule, ConnectorModule, ConnectorHealthModule, PairingModule, DeviceRotationModule, HealthModule, ConsoleTelemetryModule, ConsoleRateLimitModule],
   controllers: [],
   providers: [
     ApiDbPoolGaugeRegistrar,

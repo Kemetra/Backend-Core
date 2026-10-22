@@ -54,8 +54,11 @@ export function reportVerdictUnwritten(logger: Pick<Logger, "warn"> | undefined,
   }
 }
 
-/** The roles that may approve a variance: the POS manager / admin set. */
-const APPROVER_ROLE_CODES: ReadonlySet<string> = new Set(["owner", "tenant_admin", "store_manager"]);
+/**
+ * The roles that may approve a variance: the POS manager / admin set. The
+ * RT-788 approver-eligibility read uses the same set.
+ */
+export const APPROVER_ROLE_CODES: ReadonlySet<string> = new Set(["owner", "tenant_admin", "store_manager"]);
 
 /**
  * Why `standing` does not verify the approver, or null when it does. An

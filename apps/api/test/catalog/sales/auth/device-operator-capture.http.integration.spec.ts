@@ -36,6 +36,7 @@
  * NOTE: CI runs Testcontainers (ci.yml db-integration). Locally without
  * Docker this suite skips when MIGRATION_TEST_ALLOW_SKIP=1.
  */
+import { linkClerkUsers } from "../../../_helpers/identity-links";
 import "reflect-metadata";
 
 import { randomUUID } from "node:crypto";
@@ -65,7 +66,7 @@ import { GlobalExceptionFilter } from "../../../../src/common/exception.filter";
 import { RequestIdInterceptor } from "../../../../src/common/request-id.interceptor";
 import { ZodValidationPipe } from "../../../../src/common/zod-validation.pipe";
 import { CashierAdmissionsModule } from "../../../../src/pos-cashier-admissions/cashier-admissions.module";
-import { CLERK_VERIFIER, type ClerkVerifier } from "../../../../src/pos-operators/clerk-verifier";
+import { OPERATOR_TOKEN_VERIFIER, type OperatorTokenVerifier } from "../../../../src/auth/operator-token-verifier";
 import { PosOperatorsModule } from "../../../../src/pos-operators/pos-operators.module";
 import {
   applyAllUpAndCreateAppRole,
@@ -117,10 +118,10 @@ const at = (offsetMs: number): string => new Date(T0 + offsetMs).toISOString();
 /** An instant relative to the real clock (the caps compare against the server's now()). */
 const fromNow = (offsetMs: number): string => new Date(Date.now() + offsetMs).toISOString();
 
-class StubClerkVerifier implements ClerkVerifier {
-  async verify(rawJwt: string): Promise<{ sub: string }> {
+class StubClerkVerifier implements OperatorTokenVerifier {
+  async verify(rawJwt: string): Promise<{ providerKey: string; sub: string }> {
     if (rawJwt !== MANAGER_JWT) throw new Error("StubClerkVerifier: unknown jwt");
-    return { sub: MANAGER_SUB };
+    return { providerKey: "clerk", sub: MANAGER_SUB };
   }
 }
 
@@ -330,6 +331,7 @@ beforeAll(async () => {
        ($4, 'cashierx@rt224.example',  'Other Cashier', 'user_clerk_rt224_cx')`,
     [CASHIER, CASHIER_2, MANAGER, CASHIER_OTHER, MANAGER_SUB],
   );
+  await linkClerkUsers(a);
   // CASHIER: 'specific' access to STORE only (so store access is revocable).
   // CASHIER_2: 'all' stores. MANAGER: 'specific' access to STORE.
   await a.query(
@@ -371,7 +373,7 @@ beforeAll(async () => {
     .useValue(env.app)
     .overrideProvider(AUTH_LOOKUP_POOL)
     .useValue(env.admin)
-    .overrideProvider(CLERK_VERIFIER)
+    .overrideProvider(OPERATOR_TOKEN_VERIFIER)
     .useValue(new StubClerkVerifier())
     .overrideProvider(AUDIT_JOB_ENQUEUER)
     .useValue(audit)
@@ -435,6 +437,39 @@ describe("RT-224 — a covering admission authorizes the cashier's sale", () => 
     expect(captured[0]?.actor_user_id).toBe(CASHIER);
     expect(captured[0]?.tenant_id).toBe(TENANT);
     expect(captured[0]?.store_id).toBe(STORE);
+  });
+
+  // RT-742 (pos-shifts forceCloseShift, Effect): a sale carries no shift
+  // reference and captureSale reads no shift, so a sale the terminal captures
+  // after a manager force-closed its shift is recorded as usual (201), and the
+  // not-counted force close is left as it was.
+  it("a sale captured after a manager force-closed the terminal's shift → 201; the force close is untouched", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    const shiftId = randomUUID();
+    await E().admin.query(
+      `INSERT INTO shifts (shift_id, tenant_id, store_id, opening_cashier_user_id, opening_device_id, opened_at)
+       VALUES ($1, $2, $3, $4, $5, $6::timestamptz)`,
+      [shiftId, TENANT, STORE, CASHIER, DEVICE, at(0)],
+    );
+    await E().admin.query(
+      `INSERT INTO shift_forced_closes
+         (shift_id, tenant_id, store_id, opening_device_id, closed_from_device_id, closed_by_user_id,
+          forced_reason, payload_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, 'Cashier left without closing', decode(repeat('ab', 32), 'hex'))`,
+      [shiftId, TENANT, STORE, DEVICE, DEVICE_2, MANAGER],
+    );
+    await E().admin.query(`UPDATE shifts SET lifecycle_state = 'closed_forced' WHERE shift_id = $1`, [shiftId]);
+
+    const res = await cashierSale({ occurredAt: at(2 * HOUR) });
+    expect(res.status).toBe(201);
+    expect((await saleRow(res.body.saleRef as string)).device_id).toBe(DEVICE);
+    const shift = await E().admin.query(
+      `SELECT s.lifecycle_state, (SELECT count(*)::int FROM shift_forced_closes f WHERE f.shift_id = s.shift_id) AS forced
+         FROM shifts s WHERE s.shift_id = $1`,
+      [shiftId],
+    );
+    expect(shift.rows[0]).toEqual({ lifecycle_state: "closed_forced", forced: 1 });
   });
 
   it("the attribution is kept out of payload_hash: the hash is the sale facts only", async () => {

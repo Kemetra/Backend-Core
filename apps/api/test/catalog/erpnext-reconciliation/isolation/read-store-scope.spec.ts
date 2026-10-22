@@ -21,19 +21,11 @@
  */
 import "reflect-metadata";
 
-import type { INestApplication } from "@nestjs/common";
 import request from "supertest";
 
 import { ErpnextReconciliationModule } from "../../../../src/catalog/erpnext-reconciliation/erpnext-reconciliation.module";
-import {
-  applyAllUpAndCreateAppRole,
-  startPgEnv,
-  stopPgEnv,
-  type PgTestEnv,
-} from "../../../_helpers/postgres-container";
 import { STORE_A_X, STORE_A_Y, STORE_B_X } from "../../__support__/isolation-harness";
 import {
-  bootScopedApp,
   countDeadletters,
   DL_DEL,
   DL_X1,
@@ -51,7 +43,7 @@ import {
   SES_OWNER_ALL_ACTIVE,
   SES_OWNER_SPEC,
   SPECIFIC_SESSIONS,
-  seedReadStoreScope,
+  useScopedApp,
 } from "../__support__/read-store-scope";
 import { RESULT_A, RUN_B } from "../__support__/seed-reconciliation";
 
@@ -60,44 +52,12 @@ const BACKLOG = `${BASE}/postings/backlog`;
 const run = (id: string): string => `${BASE}/runs/${id}`;
 const results = (id: string): string => `${BASE}/runs/${id}/results`;
 
-let env: PgTestEnv | null = null;
-let dockerSkipped = false;
-let app: INestApplication | null = null;
+const scoped = useScopedApp("RT-192 read-store-scope", ErpnextReconciliationModule);
 
-beforeAll(async () => {
-  try {
-    env = await startPgEnv();
-    await applyAllUpAndCreateAppRole(env);
-    await seedReadStoreScope(env);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
-      dockerSkipped = true;
-      // eslint-disable-next-line no-console
-      console.warn(`\n[RT-192 read-store-scope] Docker NOT AVAILABLE: ${msg}\n`);
-      return;
-    }
-    throw new Error(`Container start failed: ${msg}`);
-  }
-  app = await bootScopedApp(env, ErpnextReconciliationModule);
-}, 180_000);
-
-afterAll(async () => {
-  if (app) await app.close();
-  if (env) await stopPgEnv(env);
-}, 60_000);
-
-function skip(): boolean {
-  if (dockerSkipped) {
-    // eslint-disable-next-line no-console
-    console.warn("[RT-192 read-store-scope] skipping — Docker unavailable");
-    return true;
-  }
-  return false;
-}
+const skip = (): boolean => scoped.skip();
 
 function get(path: string, session: string, query: Record<string, string | number> = {}) {
-  return request(app!.getHttpServer()).get(path).set("x-test-session", session).query(query);
+  return request(scoped.app().getHttpServer()).get(path).set("x-test-session", session).query(query);
 }
 
 /** Walk the backlog to its end at `limit` per page; the work-item refs in order. */
@@ -154,7 +114,7 @@ describe("RT-192 listPostingBacklog — membership store scope", () => {
     if (skip()) return;
     const refs = await walkBacklog(session, 2);
     expect(refs).toEqual(expect.arrayContaining([DL_X1, DL_Y1, DL_X2, DL_Y2, DL_X3, DL_DEL]));
-    expect(refs).toHaveLength(await countDeadletters(env!.admin, null));
+    expect(refs).toHaveLength(await countDeadletters(scoped.env().admin, null));
   });
 
   it("an all-membership owner filters to a non-active store", async () => {

@@ -60,4 +60,6 @@ export type TenantContextRequest = AuthedRequest & {
   context?: ResolvedContext;
   /** Server-resolved device binding for POS operator write requests. */
   posDeviceId?: string;
+  /** RT-639: when the presented device credential stops working, for the rotate-soon hint. */
+  deviceRotationExpiry?: Date;
 };

@@ -499,6 +499,10 @@ Exactly one recommended next action.
 Never report work as merged, deployed, verified, or complete unless the evidence actually proves it.
 <!-- RT-OPERATING-INSTRUCTIONS END -->
 
+## RT Jira Issues - Operating System Contract
+
+Before creating, modifying, or reviewing any RT Jira issue, read and apply section 4A of the Retail Tower Project Operating System in Confluence. Do not proceed with issue changes that violate this contract.
+
 # Data-Pulse-2 — Agent Context
 
 Multi-tenant SaaS rebuild for Data Pulse. The legacy `Data-Pulse` repo is reference only — never copy without re-spec'ing here.
@@ -610,3 +614,4 @@ See [docs/agent-os/standing-rules.md](docs/agent-os/standing-rules.md) for repo 
 - Forbidden paths require `[GATED]` approval: `package.json`, `pnpm-lock.yaml`, SQL migrations, `packages/contracts/openapi/**`, `.github/**`.
 - Untracked `bin/` and `externals/` are not part of any Jira issue's scope — leave them alone.
 - Stop conditions named in the Jira issue mean stop and report. Do not silently expand scope.
+- RT-805 (no shared lines across parallel PRs): never edit `CHANGELOG.md`. Add `changelog.d/RT-<n>-<slug>.md` instead (format in `changelog.d/README.md`; check with `node tools/changelog/assemble.cjs`). A contract-only operation is registered only by its `x-runtime-status: contract-only` + `x-runtime-note` markers; there is no hand-kept list in the conformance spec. A `cookieAuth` operation's console rate-limit class goes in its contract's own `apps/api/test/console-rate-limit/classes/<contract>.rate-limit.yaml` (no shared SNAPSHOT/INTENT list); a runtime lift drops only the marker. See CONTRIBUTING.md.

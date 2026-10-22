@@ -253,8 +253,9 @@ describe("erpnext-reconciliation/reconciliation.yaml — projections (READ-NOT-M
   it("ReconciliationResult.mismatchClass is 014's vocabulary ONLY (no 015 posting categories)", () => {
     const cls = schema("ReconciliationResult")?.properties?.["mismatchClass"]?.enum ?? [];
     expect(cls.sort()).toEqual([
-      "dp2_only", "erpnext_only", "match", "negative_balance_flagged",
-      "quantity_divergence", "unmapped_item", "unmapped_store",
+      "dp2_only", "erp_snapshot_stale", "erpnext_only", "expected_pending_erp",
+      "expected_pending_retail", "match", "negative_balance_flagged",
+      "quantity_divergence", "unmapped_item", "unmapped_store", "uom_mismatch",
     ]);
     // The 015 posting categories must NOT leak into the 017 result class.
     for (const posting of ["validation", "closed_period", "unmapped_account", "retry_budget_exhausted"]) {
@@ -277,6 +278,58 @@ describe("erpnext-reconciliation/reconciliation.yaml — projections (READ-NOT-M
     for (const name of ["PostingBacklogItem", "ReconciliationRun", "ReconciliationResult", "RecordedRepair", "PostingBacklogPage", "ReconciliationResultPage"]) {
       expect(schema(name)?.additionalProperties).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RT-410 — the backlog `reason` is the scrubbed rejection message (AD-POSTING-001)
+// ---------------------------------------------------------------------------
+
+describe("reconciliation.yaml — RT-410 PostingBacklogItem.reason", () => {
+  const item = (): LooseSchema => looseSchema("PostingBacklogItem");
+  const reasonDescription = (): string => String(item().properties?.["reason"]?.["description"] ?? "");
+
+  it("stays an optional, nullable string bounded to 1000 characters", () => {
+    const reason = item().properties?.["reason"];
+    expect(reason?.["type"]).toEqual(["string", "null"]);
+    expect(reason?.["maxLength"]).toBe(1000);
+    expect(item().required).not.toContain("reason");
+  });
+  it("states the source, the classification and the retention window", () => {
+    const text = reasonDescription();
+    expect(text).toContain("RejectionReason.message");
+    expect(text).toContain("PII-suspect");
+    expect(text).toContain("NOT a money field");
+    expect(text).toContain("permanently_rejected");
+    expect(text).toContain("dp2_token");
+    expect(text).toContain("cut to 1000 characters");
+    expect(text).toContain("superseded");
+  });
+  it("states the handling and rendering rules", () => {
+    const text = reasonDescription();
+    expect(text).toContain("plain text, never as HTML");
+    expect(text).toMatch(/never writes it to a log/);
+    expect(text).toContain("Sentry or Datadog");
+  });
+  it("documents the `other` category without closing the set", () => {
+    const category = item().properties?.["rejectionCategory"];
+    expect(String(category?.["description"])).toContain("`other`");
+    expect(category?.["enum"]).toBeUndefined();
+  });
+  it("validates a message, a null and rejects a message over 1000 characters", () => {
+    const validate = validatorFor("PostingBacklogItem");
+    const base = {
+      workItemRef: "0a000000-0000-7000-8000-000004100001",
+      kind: "sale_post",
+      rejectionCategory: "validation",
+      sourceSystem: "pos",
+      externalId: "sale-1",
+      deadLetteredAt: "2026-10-21T10:00:00.000Z",
+      reconciliationDocumentRef: null,
+    };
+    expect(validate({ ...base, reason: "NameError: name 'flt' is not defined" })).toBe(true);
+    expect(validate({ ...base, reason: null })).toBe(true);
+    expect(validate({ ...base, reason: "x".repeat(1001) })).toBe(false);
   });
 });
 
@@ -514,6 +567,15 @@ describe("reconciliation.yaml — RT-177 description-only edits (D3)", () => {
     expect(description).toContain("negative_balance_flagged");
     expect(description).toContain("009");
     expect(description).toMatch(/NOT an ERPNext Bin signal/);
+  });
+
+  it("RT-428: the pending-aware classes are described with the DC-7 expected ERP book, and stay explanatory", () => {
+    const description = String(looseSchema("ReconciliationResult").properties?.["mismatchClass"]?.["description"]);
+    for (const cls of ["expected_pending_erp", "expected_pending_retail", "erp_snapshot_stale", "uom_mismatch"]) {
+      expect(description).toContain(cls);
+    }
+    expect(description).toContain("expected ERP book");
+    expect(description).toMatch(/never a quantity divergence/);
   });
 
   it("the run summary is no longer described as counts only", () => {

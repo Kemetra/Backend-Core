@@ -52,6 +52,7 @@ const SAMPLE_RESPONSE: ContextResponseBody = {
   active_store: null,
   active_role_code: "tenant_admin",
   memberships: [],
+  support_session: null,
 };
 
 class FakeContextService {

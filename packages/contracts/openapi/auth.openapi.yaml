@@ -47,7 +47,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "429":
-          description: Rate-limited.
+          description: >
+            Rate-limited (RT-623). `Retry-After` gives the whole seconds until
+            the limiting bucket resets, 1 to 3600.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/PublicAuthRetryAfter"
           content:
             application/json:
               schema:
@@ -115,6 +120,17 @@ paths:
       responses:
         "202":
           description: Accepted; email may or may not be sent depending on whether the address is registered.
+        "429":
+          description: >
+            Rate-limited per client IP (RT-623). `Retry-After` gives the whole
+            seconds until the bucket resets, 1 to 3600.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/PublicAuthRetryAfter"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/auth/password-reset/confirm:
     post:
       summary: Confirm a password reset using the token from the email.
@@ -142,6 +158,17 @@ paths:
           description: Password updated. All existing sessions for the user are revoked.
         "400":
           description: Invalid or expired token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: >
+            Rate-limited per client IP (RT-623). `Retry-After` gives the whole
+            seconds until the bucket resets, 1 to 3600.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/PublicAuthRetryAfter"
           content:
             application/json:
               schema:
@@ -193,6 +220,17 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 components:
+  headers:
+    PublicAuthRetryAfter:
+      description: >
+        Whole seconds the caller should wait before retrying, sent on every
+        public-auth 429 (RT-623). Rounded up from the bucket's remaining
+        window and clamped to 1 to 3600.
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 3600
   securitySchemes:
     cookieAuth:
       type: apiKey

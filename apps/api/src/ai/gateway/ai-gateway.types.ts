@@ -3,9 +3,10 @@
  *
  * The gateway sits ABOVE `ModelProviderPort` and is provider-agnostic. Every
  * collaborator it needs is a small port so later tickets replace one at a time
- * without touching the gateway: RT-664 replaces the deny-all entitlement stub,
- * RT-663 supplies the budget/usage ledger, RT-647 supplies the evidence-pack
- * builder, RT-657 adds a vendor adapter and an allowlisted route.
+ * without touching the gateway: RT-664 binds the real entitlement port (the
+ * `ai-entitlements` check, reserve and settle on the RT-663 usage ledger),
+ * RT-647 supplies the evidence-pack builder, RT-657 adds a vendor adapter and
+ * an allowlisted route.
  */
 import type { ResolvedContext } from "../../context/types";
 import type { AiFeatureDefinition } from "./ai-feature";
@@ -62,6 +63,7 @@ export type AiFallbackReason = (typeof AI_FALLBACK_REASONS)[number];
 
 export type AiEntitlementDenyReason = Extract<
   AiFallbackReason,
+  | "not_authorized"
   | "tenant_inactive"
   | "not_entitled"
   | "trial_expired"
@@ -105,6 +107,12 @@ export interface AiRunScope {
   readonly correlationId: string;
   /** Feature-specific, already-validated parameters for the evidence builder. */
   readonly params?: Readonly<Record<string, unknown>>;
+  /**
+   * The request's `Idempotency-Key` (RT-664, D-3): the usage reservation is
+   * unique per (tenant, feature, key), so a retry is counted once. A run
+   * without one cannot reserve and fails closed (`entitlement_unavailable`).
+   */
+  readonly idempotencyKey?: string;
 }
 
 export interface AiPolicyInput {
@@ -118,13 +126,82 @@ export type AiEntitlementDecision =
   | { readonly allowed: true }
   | { readonly allowed: false; readonly reason: AiEntitlementDenyReason };
 
+export type AiReserveDenyReason = AiEntitlementDenyReason | "quota_exhausted";
+
+export interface AiReserveInput extends AiPolicyInput {
+  /** The caller's context: the port re-checks layers 1-6 inside the reservation transaction. */
+  readonly ctx: ResolvedContext;
+  readonly idempotencyKey: string;
+  /** v1 customer meters count requests (D-3): always 1. */
+  readonly units: number;
+  readonly correlationId: string;
+}
+
 /**
- * Entitlement port (AD-AI-ENT-001 layer 6). RT-664 supplies the real
- * `ai-entitlements` implementation; until then the module binds a deny-all stub.
+ * A reservation (layer 7, Option A). Only the call that took it may run the
+ * request it pays for: `runnable: false` is a replay of the key (another call
+ * holds, or already settled, the reservation), which must not reach the
+ * provider, so concurrent same-key calls make one provider call.
+ */
+export type AiReservation =
+  | { readonly allowed: true; readonly reservationId: string; readonly entitlementVersion: number; readonly runnable: boolean }
+  | { readonly allowed: false; readonly reason: AiReserveDenyReason };
+
+/** The usage ledger's terminal outcomes (0055). Only `ok` is charged (D-8). */
+export const AI_USAGE_OUTCOMES = [
+  "ok",
+  "provider_refused",
+  "output_truncated",
+  "output_invalid",
+  "provider_unavailable",
+  "input_rejected",
+  "not_attempted",
+] as const;
+export type AiUsageOutcome = (typeof AI_USAGE_OUTCOMES)[number];
+
+/** Run metadata for the ledger's terminal row (AI-09). Never prompt or completion text. */
+export interface AiRunTelemetry {
+  readonly requestId?: string;
+  readonly routeKey?: string;
+  readonly promptTemplateId?: string;
+  readonly promptTemplateVersion?: string;
+  readonly outputSchemaId?: string;
+  readonly providerKey?: string;
+  readonly modelId?: string;
+  readonly evidenceRefIds?: readonly string[];
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly cachedInputTokens?: number;
+  readonly tokenCountSource?: "reported" | "estimated";
+  readonly providerRequestId?: string;
+}
+
+export interface AiUsageSettlement {
+  readonly tenantId: string;
+  readonly reservationId: string;
+  readonly outcome: AiUsageOutcome;
+  readonly telemetry: AiRunTelemetry;
+}
+
+/**
+ * Entitlement port (AD-AI-ENT-001 layers 1, 6 and the quota of layer 7),
+ * bound to the `ai-entitlements` module (RT-664).
+ *
+ *   check   — layers 1 and 6, read-only, before the budget pre-check;
+ *   reserve — re-checks layers 1 and 6 and reserves the units (Option A),
+ *             after the kill switch and the budget pre-check, before any
+ *             evidence is read or request built;
+ *   settle  — commits (`ok`) or releases (anything else) the reservation
+ *             after the run; a failed settle is left to the TTL sweeper.
+ *
  * A throw is treated as `entitlement_unavailable` (fail closed).
  */
 export interface AiEntitlementPort {
   check(input: AiPolicyInput): Promise<AiEntitlementDecision>;
+  reserve(input: AiReserveInput): Promise<AiReservation>;
+  settle(settlement: AiUsageSettlement): Promise<void>;
+  /** The sweeper's TTL: every allowlisted route's timeout must be shorter. */
+  readonly reservationTtlMs: number;
 }
 
 export type AiBudgetDecision =
@@ -132,9 +209,11 @@ export type AiBudgetDecision =
   | { readonly allowed: false; readonly reason: AiBudgetDenyReason };
 
 /**
- * Budget pre-check port (AD-AI-ENT-001 layer 7). Check only: the reserve /
- * commit ledger and usage rows belong to RT-663, which owns the one AI usage
- * store (D-6); this skeleton writes no usage rows. A throw fails closed.
+ * Budget pre-check port (AD-AI-ENT-001 layer 7): the internal spend cap and
+ * the platform free-credit pool, checked before the quota reservation. It
+ * writes nothing; the quota itself is the entitlement port's `reserve`. No
+ * spend cap or credit pool is sized yet (RT-645), so the default fails
+ * closed. A throw fails closed.
  */
 export interface AiBudgetPort {
   check(input: AiPolicyInput & { readonly routeKey: string }): Promise<AiBudgetDecision>;

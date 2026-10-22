@@ -35,6 +35,8 @@ jest.mock("@data-pulse-2/db", () => ({
     fn: (c: { query: jest.Mock }) => unknown,
   ) => fn({ query: clientQuery }),
   OUTBOX_EVENT_TYPES: { SALE_CAPTURED: "sale.captured" },
+  // RT-427: the sales controller imports the position-event rules, which read this at load.
+  INVENTORY_STATUSES: jest.requireActual("@data-pulse-2/db").INVENTORY_STATUSES,
   emit: async (
     client: { query: jest.Mock },
     input: { eventType: string; payload: Record<string, unknown> },
@@ -477,6 +479,14 @@ describe("SalesService — readSaleProjection branches (unit)", () => {
 });
 
 describe("SalesController — guard + status branches (unit)", () => {
+  // RT-787 (RT-271 R-11): the legacy refund route is gated off by default.
+  beforeAll(() => {
+    process.env["POS_LEGACY_REFUND_ENABLED"] = "true";
+  });
+  afterAll(() => {
+    delete process.env["POS_LEGACY_REFUND_ENABLED"];
+  });
+
   // The 2nd ctor arg (SaleReturnsService) is not exercised by these branches;
   // it is passed as `undefined` explicitly, exactly as the prior 1-arg calls did.
   function makeRes(): { status: jest.Mock; setHeader: jest.Mock } {

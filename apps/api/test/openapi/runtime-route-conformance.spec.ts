@@ -3,6 +3,7 @@ import "reflect-metadata";
 import { type INestApplication } from "@nestjs/common";
 
 import { bootDbLessApp, type DbLessApp } from "../_helpers/db-less-app";
+import { conformanceViolations } from "../_helpers/openapi-conformance";
 import { CONTRACTS_DIR, contractRoutes, normalizePath } from "../_helpers/openapi-routes";
 
 type ExpressLayer = {
@@ -38,50 +39,13 @@ describe("OpenAPI operations map to registered Nest routes", () => {
     await booted.close();
   });
 
+  // RT-805: the contract-only set comes from the `x-runtime-status` markers
+  // (with their `x-runtime-note`), not from a hand-kept list here, so adding
+  // or lifting an operation touches only its own contract. The rules and
+  // their negative cases live in runtime-route-conformance.rules.spec.ts.
   it("has a real registered method/path for every production operationId", () => {
-    const runtimeRoutes = registeredRoutes(app);
-    const missing: string[] = [];
-    const explicitContractOnly: string[] = [];
-    const operationIds = new Set<string>();
-
-    for (const { path, method, operation } of contractRoutes(CONTRACTS_DIR)) {
-      const operationId = operation.operationId!;
-      expect(operationIds.has(operationId)).toBe(false);
-      operationIds.add(operationId);
-      if (operation["x-runtime-status"] === "contract-only") {
-        expect(operation["x-runtime-note"]?.trim().length).toBeGreaterThan(0);
-        explicitContractOnly.push(operationId);
-        continue;
-      }
-      expect(operation["x-runtime-status"]).toBeUndefined();
-      const route = `${method.toUpperCase()} ${normalizePath(path)}`;
-      if (!runtimeRoutes.has(route)) missing.push(`${operationId}: ${route}`);
-    }
-
-    expect(explicitContractOnly.sort()).toEqual([
-      "acceptInvitation",
-      "backfillSaleLinkedMovements",
-      // RT-473 S1: tenant-branding contract; the runtime ships in RT-473 S2.
-      "consoleDeleteTenantLogo",
-      // RT-662: AI entitlements read contract; the runtime ships in RT-664.
-      "consoleGetTenantAiEntitlements",
-      "consoleGetTenantLogo",
-      "consolePreviewTenantLogo",
-      // RT-662: owner AI opt-out write contract; the runtime ships in RT-664.
-      "consolePutTenantAiFeatureOptOut",
-      "consolePutTenantLogo",
-      // RT-414: platform support-session contract; the runtime ships after owner approval.
-      "endSupportSession",
-      "getCurrentSupportSession",
-      "openSupportSession",
-      // RT-492 (RT-114 MA-BC1): approver-eligibility contract; the runtime ships in MA-BC2.
-      "posCheckApproverEligibility",
-      "posGetTenantBranding",
-      "posRedeemVoucher",
-      "posReverseVoucher",
-      "posValidateVoucher",
-      "renewSupportSession",
-    ]);
-    expect(missing).toEqual([]);
+    const contracts = contractRoutes(CONTRACTS_DIR);
+    expect(contracts.length).toBeGreaterThanOrEqual(150);
+    expect(conformanceViolations(contracts, registeredRoutes(app))).toEqual([]);
   });
 });

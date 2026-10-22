@@ -129,6 +129,34 @@ export interface StoreSummary {
 }
 
 /** RT-669: the tenant is active (`status = 'active'`) and not soft-deleted. */
+/**
+ * RT-414: THE live-membership rule — not revoked, not deleted, WHATEVER the
+ * tenant's status. It alone decides whether a platform admin is a member (no
+ * support session needed); every caller (TenantContextGuard, ContextService,
+ * the support-session gate and `openSupportSession`) uses this function, so
+ * the rule cannot drift between routes. Unlike `findActiveMembership` it
+ * ignores RT-669's tenant-status rule, so a member platform admin of a
+ * suspended tenant keeps today's resolution.
+ */
+export async function hasLiveMembership(
+  db: NodePgDatabase,
+  member: { readonly userId: string; readonly tenantId: string },
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: memberships.id })
+    .from(memberships)
+    .where(
+      and(
+        eq(memberships.userId, member.userId),
+        eq(memberships.tenantId, member.tenantId),
+        isNull(memberships.revokedAt),
+        isNull(memberships.deletedAt),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
 function tenantIsActive(): SQL | undefined {
   return and(eq(tenants.status, "active"), isNull(tenants.deletedAt));
 }
@@ -208,6 +236,15 @@ export class MembershipRepository {
       membershipId: row.membershipId,
       storeAccessKind: row.storeAccessKind as StoreAccessKind,
     };
+  }
+
+  /** RT-414: the shared live-membership rule (see `hasLiveMembership` above). */
+  async hasLiveMembership(
+    userId: string,
+    tenantId: string,
+    client?: PoolClient,
+  ): Promise<boolean> {
+    return hasLiveMembership(client ? drizzle(client) : this.db, { userId, tenantId });
   }
 
   /**

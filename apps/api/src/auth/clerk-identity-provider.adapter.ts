@@ -1,11 +1,12 @@
 /**
  * clerk-identity-provider.adapter.ts — 029 DP-2 Provider-Neutral Identity Link.
  *
- * The ONLY v1 implementation of `IdentityProviderPort` (N-6). It is the seam
+ * The default implementation of `IdentityProviderPort` (N-6; RT-791 adds the
+ * Descope adapter behind the same port, selected by IDENTITY_PROVIDER). It is the seam
  * boundary: above it everything is provider-neutral; below it the Clerk-concrete
  * verification stays contained.
  *
- *   - `verifyIdentityToken` DELEGATES to the existing `ClerkVerifier` (whose
+ *   - `verifyIdentityToken` DELEGATES to the existing `OperatorTokenVerifier` (whose
  *     production impl calls `packages/auth`'s `verifyToken`, keeping the
  *     `@clerk/backend` dependency contained in `packages/auth` — E-3). It maps
  *     the Clerk `{ sub }` to a provider-NEUTRAL `VerifiedSubject`
@@ -31,19 +32,12 @@
 import { Injectable } from "@nestjs/common";
 import type { Pool } from "pg";
 
-import type { ClerkVerifier } from "../pos-operators/clerk-verifier";
-import { clerkVerifierFactory } from "../pos-operators/clerk-verifier";
-import type {
-  CreateIdentityInput,
-  IdentityProfile,
-  IdentityProviderPort,
-  InviteUserInput,
-  LinkExternalIdentityInput,
-  VerifiedSubject,
-} from "./identity-provider.port";
+import { CLERK_PROVIDER_KEY, clerkVerifierFactory } from "../pos-operators/clerk-verifier";
+import type { IdentityProviderPort, VerifiedSubject } from "./identity-provider.port";
+import { LinkingIdentityProviderAdapter } from "./linking-identity-provider.adapter";
+import type { OperatorTokenVerifier } from "./operator-token-verifier";
 
-/** The v1 provider discriminator. */
-export const CLERK_PROVIDER_KEY = "clerk";
+export { CLERK_PROVIDER_KEY };
 
 /**
  * The single configured Clerk issuer — the SOURCE OF TRUTH shared with the 0025
@@ -58,12 +52,14 @@ export function clerkIssuer(): string {
 }
 
 @Injectable()
-export class ClerkIdentityProviderAdapter implements IdentityProviderPort {
+export class ClerkIdentityProviderAdapter extends LinkingIdentityProviderAdapter {
   constructor(
-    private readonly verifier: ClerkVerifier,
-    private readonly pool: Pool,
+    private readonly verifier: OperatorTokenVerifier,
+    pool: Pool,
     private readonly issuer: string = clerkIssuer(),
-  ) {}
+  ) {
+    super(pool);
+  }
 
   async verifyIdentityToken(rawToken: string): Promise<VerifiedSubject> {
     // Delegate verification to the contained Clerk seam (E-3). The verifier
@@ -77,63 +73,8 @@ export class ClerkIdentityProviderAdapter implements IdentityProviderPort {
     };
   }
 
-  async linkExternalIdentity(
-    input: LinkExternalIdentityInput,
-  ): Promise<{ id: string }> {
-    const r = await this.pool.query<{ id: string }>(
-      `INSERT INTO external_identity_links
-         (provider_key, issuer, subject, user_id, email, status)
-       VALUES ($1, $2, $3, $4, $5, 'active')
-       ON CONFLICT (provider_key, issuer, subject) DO UPDATE
-         SET email = EXCLUDED.email,
-             last_verified_at = now(),
-             -- RE-ACTIVATE on re-link: a previously disabled link must become
-             -- usable again, else the method returns success while the resolver's
-             -- active-link join still refuses the user (HIGH-2). status + disabled_at
-             -- are flipped together to satisfy the disabled_at_consistent CHECK.
-             status = 'active',
-             disabled_at = NULL
-       RETURNING id`,
-      [
-        input.providerKey,
-        input.issuer,
-        input.subject,
-        input.userId,
-        input.email ?? null,
-      ],
-    );
-    const id = r.rows[0]?.id;
-    if (!id) throw new Error("linkExternalIdentity: insert returned no id");
-    return { id };
-  }
-
-  // --- defined seams, not wired live in D3 (T5) ------------------------------
-  // These throw loudly so a premature D3 caller fails fast rather than no-op'ing
-  // state. The downstream lifecycle specs (D8 / user-admin) implement them.
-
-  async getIdentityProfile(_subject: string): Promise<IdentityProfile | null> {
-    throw new Error("getIdentityProfile: not wired in D3 (lifecycle seam)");
-  }
-
-  async createIdentity(_input: CreateIdentityInput): Promise<{ subject: string }> {
-    throw new Error("createIdentity: not wired in D3 (lifecycle seam)");
-  }
-
-  async inviteUser(_input: InviteUserInput): Promise<{ subject: string }> {
-    throw new Error("inviteUser: not wired in D3 (lifecycle seam)");
-  }
-
-  async disableIdentity(_userId: string): Promise<void> {
-    throw new Error("disableIdentity: not wired in D3 (lifecycle seam)");
-  }
-
-  async enableIdentity(_userId: string): Promise<void> {
-    throw new Error("enableIdentity: not wired in D3 (lifecycle seam)");
-  }
-
-  async sendPasswordReset(_email: string): Promise<void> {
-    throw new Error("sendPasswordReset: not wired in D3 (lifecycle seam)");
-  }
+  // linkExternalIdentity + the not-wired lifecycle seams live on the shared
+  // LinkingIdentityProviderAdapter base (identical for every provider).
 }
 
 /** DI token re-export convenience (the canonical token is on the port file). */
@@ -144,10 +85,10 @@ export { IDENTITY_PROVIDER_PORT } from "./identity-provider.port";
  * fail-closed posture (CLERK_SECRET_KEY required in production; no allow-list
  * shortcut) is preserved verbatim — the adapter adds the neutral mapping + link
  * write on top, never a new credential path.
+ *
+ * The Clerk case of the provider switch in `identity-provider.factory.ts`.
  */
-export function clerkIdentityProviderFactory(
-  pool: Pool,
-): ClerkIdentityProviderAdapter {
-  const verifier: ClerkVerifier = clerkVerifierFactory();
+export function clerkIdentityProviderFactory(pool: Pool): IdentityProviderPort {
+  const verifier: OperatorTokenVerifier = clerkVerifierFactory();
   return new ClerkIdentityProviderAdapter(verifier, pool, clerkIssuer());
 }

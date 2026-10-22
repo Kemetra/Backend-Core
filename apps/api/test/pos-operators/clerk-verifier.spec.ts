@@ -243,14 +243,14 @@ describe("ClerkBackendVerifier.verify", () => {
     verifier = new ClerkBackendVerifier("sk_test_fake");
   });
 
-  it("B1 — returns { sub } when verifyToken resolves with a valid string sub", async () => {
+  it("B1 — returns { providerKey, sub } when verifyToken resolves with a valid string sub", async () => {
     mockVerifyToken.mockResolvedValueOnce({ sub: "user_clerk_123" } as Awaited<
       ReturnType<typeof verifyToken>
     >);
 
     const result = await verifier.verify("valid.jwt.token");
 
-    expect(result).toEqual({ sub: "user_clerk_123" });
+    expect(result).toEqual({ providerKey: "clerk", sub: "user_clerk_123" });
   });
 
   it("B1 — passes the raw JWT to verifyToken unchanged", async () => {

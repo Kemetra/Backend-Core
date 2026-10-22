@@ -48,7 +48,7 @@ const SESSION_ID = "0a000000-0000-7000-8000-0000000ses01";
 // ---------------------------------------------------------------------------
 
 const makeFakeDevices = () => ({
-  findActiveByAttestation: jest.fn<Promise<DeviceRow | null>, [string]>(),
+  findActiveByAttestationWithExpiry: jest.fn<Promise<DeviceRow | null>, [string]>(),
 });
 
 function buildGuard() {
@@ -64,6 +64,7 @@ function makeDevice(overrides: Partial<DeviceRow> = {}): DeviceRow {
     storeId: STORE_ID,
     label: "Lane 1",
     revokedAt: null,
+    expiresAt: new Date(Date.now() + 90 * 86_400_000),
     ...overrides,
   } as unknown as DeviceRow;
 }
@@ -72,12 +73,19 @@ function makeDevice(overrides: Partial<DeviceRow> = {}): DeviceRow {
 // ExecutionContext / request helpers
 // ---------------------------------------------------------------------------
 
-function makeCtx(req: object): ExecutionContext {
+function makeCtx(req: object, res: object = makeRes()): ExecutionContext {
   return {
     switchToHttp: () => ({
       getRequest: <T>() => req as unknown as T,
+      getResponse: <T>() => res as unknown as T,
     }),
   } as unknown as ExecutionContext;
+}
+
+/** A response that records the headers set on it (RT-639). */
+function makeRes(): { headers: Record<string, string>; setHeader: (k: string, v: string) => void } {
+  const headers: Record<string, string> = {};
+  return { headers, setHeader: (k, v) => void (headers[k] = v) };
 }
 
 function makeRequest(opts: { cookie?: string; authorization?: string }): TenantContextRequest {
@@ -101,14 +109,14 @@ function makeRequest(opts: { cookie?: string; authorization?: string }): TenantC
 describe("PosDeviceAuthGuard — valid device pairing token", () => {
   it("PDG1: active device row → returns true and publishes (tenant, store) onto req.context", async () => {
     const { guard, devices } = buildGuard();
-    devices.findActiveByAttestation.mockResolvedValue(makeDevice());
+    devices.findActiveByAttestationWithExpiry.mockResolvedValue(makeDevice());
 
     const req = makeRequest({ authorization: "Bearer device-pairing-token" });
     const result = await guard.canActivate(makeCtx(req));
 
     expect(result).toBe(true);
     // The raw token (sans "Bearer ") is what gets hashed + looked up.
-    expect(devices.findActiveByAttestation).toHaveBeenCalledWith("device-pairing-token");
+    expect(devices.findActiveByAttestationWithExpiry).toHaveBeenCalledWith("device-pairing-token");
     expect(req.context).toEqual({
       userId: null,
       tenantId: TENANT_ID,
@@ -130,7 +138,7 @@ describe("PosDeviceAuthGuard — valid device pairing token", () => {
 
   it("PDG1b (RT-113 BC2): publishes the authenticated device id as req.posDeviceId", async () => {
     const { guard, devices } = buildGuard();
-    devices.findActiveByAttestation.mockResolvedValue(makeDevice());
+    devices.findActiveByAttestationWithExpiry.mockResolvedValue(makeDevice());
 
     const req = makeRequest({ authorization: "Bearer device-pairing-token" });
     await guard.canActivate(makeCtx(req));
@@ -140,7 +148,7 @@ describe("PosDeviceAuthGuard — valid device pairing token", () => {
 
   it("PDG1c: a refused credential publishes no device binding", async () => {
     const { guard, devices } = buildGuard();
-    devices.findActiveByAttestation.mockResolvedValue(null);
+    devices.findActiveByAttestationWithExpiry.mockResolvedValue(null);
 
     const req = makeRequest({ authorization: "Bearer revoked-token" });
     await expect(guard.canActivate(makeCtx(req))).rejects.toThrow();
@@ -161,7 +169,7 @@ describe("PosDeviceAuthGuard — missing credential", () => {
     await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
-    expect(devices.findActiveByAttestation).not.toHaveBeenCalled();
+    expect(devices.findActiveByAttestationWithExpiry).not.toHaveBeenCalled();
   });
 });
 
@@ -177,7 +185,7 @@ describe("PosDeviceAuthGuard — malformed header", () => {
     await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
-    expect(devices.findActiveByAttestation).not.toHaveBeenCalled();
+    expect(devices.findActiveByAttestationWithExpiry).not.toHaveBeenCalled();
   });
 });
 
@@ -186,9 +194,9 @@ describe("PosDeviceAuthGuard — malformed header", () => {
 // ===========================================================================
 
 describe("PosDeviceAuthGuard — unknown / revoked device token", () => {
-  it("PDG4: findActiveByAttestation returns null → UnauthorizedException; no context published", async () => {
+  it("PDG4: findActiveByAttestationWithExpiry returns null → UnauthorizedException; no context published", async () => {
     const { guard, devices } = buildGuard();
-    devices.findActiveByAttestation.mockResolvedValue(null);
+    devices.findActiveByAttestationWithExpiry.mockResolvedValue(null);
 
     const req = makeRequest({ authorization: "Bearer revoked-or-unknown" });
     await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(
@@ -210,7 +218,7 @@ describe("PosDeviceAuthGuard — dashboard cookie rejected", () => {
     await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
-    expect(devices.findActiveByAttestation).not.toHaveBeenCalled();
+    expect(devices.findActiveByAttestationWithExpiry).not.toHaveBeenCalled();
   });
 });
 
@@ -252,6 +260,10 @@ function fakeLookupPool(): Pool {
               null,
               "2026-10-01T00:00:00.000Z",
               "2026-10-01T00:00:00.000Z",
+              // expires_at: the guard's lookup selects it last (RT-639); far enough out for no hint.
+              "2099-01-01T00:00:00.000Z",
+              // presentedPreviousUntil: null, the current token was presented.
+              null,
             ],
           ],
         };
@@ -295,7 +307,7 @@ function guardOver(tenantRow: TenantRowFake | null): {
 /** What a revoked device gets today: the guard's generic 401. */
 async function revokedDeviceRefusal(): Promise<unknown> {
   const { guard, devices } = buildGuard();
-  devices.findActiveByAttestation.mockResolvedValue(null);
+  devices.findActiveByAttestationWithExpiry.mockResolvedValue(null);
   try {
     await guard.canActivate(makeCtx(makeRequest({ authorization: "Bearer revoked" })));
   } catch (err) {
@@ -346,5 +358,53 @@ describe("PosDeviceAuthGuard — RT-213 tenant status", () => {
     expect(req.context).toBeUndefined();
     expect(req.principal).toBeUndefined();
     expect(req.posDeviceId).toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// RT-639 — the "rotate soon" hint on a device-authenticated response
+// ===========================================================================
+
+describe("PosDeviceAuthGuard — rotate-soon hint (RT-639)", () => {
+  // The guard only records which expiry the hint is computed from; the
+  // DeviceRotationHintInterceptor writes the headers after a successful handler,
+  // so an error response never carries them (rotation-hint.http.spec.ts).
+  const DAY = 86_400_000;
+  const expiresIn = (days: number): Date => new Date(Date.now() + days * DAY);
+
+  it("RH1: records the device's expiry on the request and sets no header itself", async () => {
+    const { guard, devices } = buildGuard();
+    const expiresAt = expiresIn(7);
+    devices.findActiveByAttestationWithExpiry.mockResolvedValue(makeDevice({ expiresAt }));
+    const req = makeRequest({ authorization: "Bearer t" });
+    const res = makeRes();
+
+    await guard.canActivate(makeCtx(req, res));
+
+    expect(req.deviceRotationExpiry).toEqual(expiresAt);
+    expect(res.headers).toEqual({});
+  });
+
+  it("RH2: the previous token (rotation overlap) records when the overlap closes instead", async () => {
+    const { guard, devices } = buildGuard();
+    const overlapEnds = new Date(Date.now() + 6 * 60_000);
+    devices.findActiveByAttestationWithExpiry.mockResolvedValue(
+      makeDevice({ expiresAt: expiresIn(90), presentedPreviousUntil: overlapEnds } as Partial<DeviceRow>),
+    );
+    const req = makeRequest({ authorization: "Bearer old-token" });
+
+    await guard.canActivate(makeCtx(req));
+
+    expect(req.deviceRotationExpiry).toEqual(overlapEnds);
+  });
+
+  it("RH3: a refused token (401) records nothing", async () => {
+    const { guard, devices } = buildGuard();
+    devices.findActiveByAttestationWithExpiry.mockResolvedValue(null);
+    const req = makeRequest({ authorization: "Bearer unknown" });
+
+    await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(req.deviceRotationExpiry).toBeUndefined();
   });
 });

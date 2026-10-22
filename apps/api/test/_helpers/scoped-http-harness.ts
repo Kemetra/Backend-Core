@@ -23,6 +23,7 @@ export interface ScopedHttpHarness {
   skipped(): boolean;
   get(path: string, session: string | null, query?: Record<string, string | number>): request.Test;
   post(path: string, session: string | null, body: object): request.Test;
+  put(path: string, session: string | null, body: object): request.Test;
   del(path: string, session: string | null): request.Test;
   /** Throws with the AJV errors when `body` does not match `components.schemas[name]`. */
   conforms(name: string, body: unknown): void;
@@ -65,7 +66,7 @@ async function setUp(state: HarnessState, options: ScopedHttpHarnessOptions): Pr
 }
 
 /** A validator for `components.schemas[name]` of the contract `contractId`. */
-function schemaChecker(contractId: string): (name: string, body: unknown) => void {
+export function schemaChecker(contractId: string): (name: string, body: unknown) => void {
   const ajv = new Ajv({ strict: false, allErrors: true });
   addFormats(ajv);
   const contract = loadOpenApiContracts().find((c) => c.id === contractId);
@@ -111,6 +112,7 @@ export function scopedHttpHarness(options: ScopedHttpHarnessOptions): ScopedHttp
     skipped,
     get: (path, session, query = {}) => asSession(request(server()).get(path).query(query), session),
     post: (path, session, body) => asSession(request(server()).post(path).send(body), session),
+    put: (path, session, body) => asSession(request(server()).put(path).send(body), session),
     del: (path, session) => asSession(request(server()).delete(path), session),
     conforms,
   };

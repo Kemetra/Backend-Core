@@ -13,6 +13,8 @@ export type ShiftCashUpFailure =
   | "shift_payload_conflict"
   | "shift_already_open"
   | "shift_closed"
+  | "shift_force_closed"
+  | "shift_not_stuck"
   | "shift_cashup_inconsistent"
   | "currency_mismatch"
   | "refund_ref_invalid";
@@ -35,6 +37,15 @@ const RESPONSES: Readonly<Record<ShiftCashUpFailure, { status: HttpStatus; messa
   shift_closed: {
     status: HttpStatus.CONFLICT,
     message: "the shift is closed; a new cash movement cannot be added",
+  },
+  // RT-742: a manager closed the shift with forceCloseShift; final for that shift.
+  shift_force_closed: {
+    status: HttpStatus.CONFLICT,
+    message: "a manager closed this shift as not counted",
+  },
+  shift_not_stuck: {
+    status: HttpStatus.CONFLICT,
+    message: "the shift is not stuck; close it from the terminal that holds it",
   },
   shift_cashup_inconsistent: {
     status: HttpStatus.UNPROCESSABLE_ENTITY,

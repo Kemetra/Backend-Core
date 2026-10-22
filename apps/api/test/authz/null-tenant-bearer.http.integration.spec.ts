@@ -59,6 +59,7 @@ import {
   type PgTestEnv,
 } from "../_helpers/postgres-container";
 import { SAME_ORIGIN } from "../_helpers/same-origin";
+import { enterTenantAsPlatformAdmin } from "../_helpers/support-session";
 
 class AlwaysAllowRedis implements RedisLike {
   async incrWindow(): Promise<{ count: number; ttlMs: number }> { return { count: 1, ttlMs: -1 }; }
@@ -217,12 +218,8 @@ async function signInWithTenant(tenantId: string): Promise<string> {
   const setCookie = res.headers["set-cookie"];
   const list = Array.isArray(setCookie) ? setCookie : setCookie ? [setCookie] : [];
   const cookie = list.find((c: string) => c.startsWith("dp2_session="))!.split(";")[0]!;
-  await http()
-    .post("/api/v1/context/tenant")
-    .set("Cookie", cookie)
-    .set(SAME_ORIGIN)
-    .send({ tenant_id: tenantId })
-    .expect(200);
+  // RT-414: a non-member platform admin enters through a support session.
+  await enterTenantAsPlatformAdmin(admin!, ALICE_ID, tenantId);
   return cookie;
 }
 

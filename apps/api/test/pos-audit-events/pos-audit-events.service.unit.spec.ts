@@ -49,6 +49,7 @@ const fakeDevice = {
 };
 
 let mockPool: { query: jest.Mock };
+let mockLookupPool: { query: jest.Mock };
 let fakeDeviceRepo: { findActiveByAttestation: jest.MockedFunction<DeviceRepository["findActiveByAttestation"]> };
 let mockLogger: { warn: jest.MockedFunction<() => void>; info: jest.MockedFunction<() => void> };
 let service: PosAuditEventsService;
@@ -57,6 +58,7 @@ beforeEach(() => {
   jest.clearAllMocks();
 
   mockPool      = { query: jest.fn() };
+  mockLookupPool = { query: jest.fn() };
   fakeDeviceRepo = { findActiveByAttestation: jest.fn().mockResolvedValue(fakeDevice) };
   mockLogger    = { warn: jest.fn(), info: jest.fn() };
 
@@ -64,6 +66,7 @@ beforeEach(() => {
     mockPool as unknown as Pool,
     fakeDeviceRepo as unknown as DeviceRepository,
     mockLogger as unknown as Logger,
+    mockLookupPool as unknown as Pool,
   );
 
   (runWithTenantContext as jest.Mock).mockImplementation(
@@ -74,6 +77,8 @@ beforeEach(() => {
   );
 
   mockPool.query.mockResolvedValue({ rows: [{ id: "actor-user-id" }] });
+  // identity links of the session users (RT-796): the lookup pool answers them.
+  mockLookupPool.query.mockResolvedValue({ rows: [{ user_id: "actor-user-id" }] });
 });
 
 // ===========================================================================
@@ -209,7 +214,7 @@ describe("syncBatch — actor resolution", () => {
         const query = jest.fn(async (sql: string) => {
           if (String(sql).includes("FROM auth_tokens token")) {
             actorSql = String(sql);
-            return { rows: [{ id: "user-1" }] };
+            return { rows: [{ user_id: "user-1" }] };
           }
           return { rows: [{ id: makeEvent().event_id }] };
         });
@@ -219,10 +224,52 @@ describe("syncBatch — actor resolution", () => {
 
     const result = await service.syncBatch(makeBody(), null);
     expect(result).toMatchObject({ accepted: [makeEvent().event_id] });
-    expect(actorSql).toContain("token.device_id = $4");
-    expect(actorSql).toContain("token.store_id = $3");
-    expect(actorSql).toContain("token.issued_at <= $6::timestamptz");
-    expect(actorSql).toContain("token.revoked_at IS NULL OR token.revoked_at >= $6::timestamptz");
+    expect(actorSql).toContain("token.device_id = $3");
+    expect(actorSql).toContain("token.store_id = $2");
+    expect(actorSql).toContain("token.issued_at <= $5::timestamptz");
+    expect(actorSql).toContain("token.revoked_at IS NULL OR token.revoked_at >= $5::timestamptz");
+    expect(actorSql).toContain("$4::uuid IS NULL OR token.id = $4::uuid");
+  });
+
+  it("AR3: the acting id is matched against ANY link of the session users, on the lookup pool", async () => {
+    (runWithTenantContext as jest.Mock).mockImplementation(
+      async (_pool: unknown, _ctx: unknown, fn: (client: { query: jest.Mock }) => Promise<unknown>) => {
+        const query = jest.fn(async (sql: string) =>
+          String(sql).includes("FROM auth_tokens token")
+            ? { rows: [{ user_id: "user-1" }, { user_id: "user-2" }] }
+            : { rows: [{ id: makeEvent().event_id }] },
+        );
+        return fn({ query });
+      },
+    );
+
+    await service.syncBatch(makeBody(), null);
+
+    const [sql, params] = mockLookupPool.query.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain("FROM external_identity_links");
+    // any status, any provider: no status or provider_key predicate.
+    expect(sql).not.toMatch(/status|provider_key/);
+    expect(params).toEqual(["user_clerk_test", ["user-1", "user-2"]]);
+    expect(mockPool.query).not.toHaveBeenCalled();
+  });
+
+  it("AR4: no session user holds a link with that subject → invalid_input, nothing inserted", async () => {
+    mockLookupPool.query.mockResolvedValue({ rows: [] });
+    const inserts: string[] = [];
+    (runWithTenantContext as jest.Mock).mockImplementation(
+      async (_pool: unknown, _ctx: unknown, fn: (client: { query: jest.Mock }) => Promise<unknown>) => {
+        const query = jest.fn(async (sql: string) => {
+          if (String(sql).includes("INSERT INTO audit_events")) inserts.push(String(sql));
+          return { rows: [{ user_id: "user-1" }] };
+        });
+        return fn({ query });
+      },
+    );
+
+    const result = await service.syncBatch(makeBody(), null);
+
+    expect(result).toMatchObject({ accepted: [], rejected: [{ category: "invalid_input" }] });
+    expect(inserts).toEqual([]);
   });
 });
 
@@ -456,4 +503,53 @@ describe("syncBatch — valid non-shift.open action categories", () => {
       });
     });
   }
+});
+
+// ===========================================================================
+// RT-740 DEP-2 — cart.discount.manager_authorized
+// ===========================================================================
+
+describe("syncBatch — RT-740 cart.discount.manager_authorized", () => {
+  const discountPayload = {
+    cart_id: "cart-1",
+    cart_line_id: "line-1",
+    placeholder_id: "pos-pulse:0195b200-0000-7000-8000-000000000740",
+    reason_code: "promotion",
+    kind: "percent",
+    value: 10,
+    amount_minor: 900,
+  };
+
+  it("DA1: a well-formed discount event is accepted and its payload stored as metadata", async () => {
+    const insert = jest.fn().mockResolvedValue({ rows: [{ id: "aaaaaaaa-0000-4000-8000-000000000001" }] });
+    (runWithTenantContext as jest.Mock).mockImplementation(
+      async (_pool: unknown, _ctx: unknown, fn: (client: { query: jest.Mock }) => Promise<unknown>) =>
+        fn({ query: insert }),
+    );
+    insert.mockResolvedValueOnce({ rows: [{ id: "user-1" }] });
+
+    const evt = makeEvent({
+      action_category: "cart.discount.manager_authorized",
+      approving_supervisor_id: "user_clerk_manager",
+      payload: discountPayload,
+    });
+    const result = await service.syncBatch(makeBody([evt]), "req-id");
+
+    expect(result).toMatchObject({ accepted: [evt.event_id], rejected: [] });
+    const auditInsert = insert.mock.calls.find(([sql]) => String(sql).includes("INSERT INTO audit_events"));
+    expect(auditInsert?.[1]?.[6]).toBe("cart.discount.manager_authorized");
+    expect(JSON.parse(auditInsert?.[1]?.[10] as string)).toEqual(discountPayload);
+  });
+
+  it.each([
+    ["a free-text reason", { ...discountPayload, reason_code: "my neighbour" }],
+    ["a reason note", { ...discountPayload, reason_note: "regular customer" }],
+    ["a missing placeholder_id", { cart_id: "cart-1", cart_line_id: "line-1" }],
+  ])("DA2: %s → schema_violation, nothing persisted", async (_name, payload) => {
+    const evt = makeEvent({ action_category: "cart.discount.manager_authorized", payload });
+    const result = await service.syncBatch(makeBody([evt]), "req-id");
+
+    expect(result).toMatchObject({ accepted: [], rejected: [{ event_id: evt.event_id, category: "schema_violation" }] });
+    expect(runWithTenantContext).not.toHaveBeenCalled();
+  });
 });

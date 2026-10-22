@@ -1,0 +1,5 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/console-sales.openapi.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+consoleGetSale: cheapRead
+consoleListSales: expensiveRead

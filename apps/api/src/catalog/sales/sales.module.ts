@@ -35,6 +35,8 @@ import { SalesService } from "./sales.service";
 import { SaleReturnsService } from "./sale-returns.service";
 import { CreditSaleReversalService } from "./credit-sale-reversal.service";
 import { CreditSaleReversalsController } from "./credit-sale-reversals.controller";
+import { RefundExecutionsController } from "./refund-executions.controller";
+import { RefundExecutionsService } from "./refund-executions.service";
 import { DeviceRepository } from "../../pos-operators/device.repository";
 import {
   OPERATOR_CONTEXT_RESOLVER,
@@ -44,7 +46,7 @@ import {
   IDENTITY_PROVIDER_PORT,
   type IdentityProviderPort,
 } from "../../auth/identity-provider.port";
-import { clerkIdentityProviderFactory } from "../../auth/clerk-identity-provider.adapter";
+import { identityProviderFactory } from "../../auth/identity-provider.factory";
 import { PosDeviceAuthGuard } from "../../auth/pos-device-auth.guard";
 import { PosOperatorEnvelopeSaleGuard } from "../../auth/pos-operator-envelope-sale.guard";
 import { PosWriteRateLimitGuard } from "../../auth/pos-write-rate-limit.guard";
@@ -56,6 +58,7 @@ import {
   type OperatorAttributionVerifier,
 } from "./operator-attribution";
 import { SaleCaptureAuthGuard } from "./sale-capture-auth.guard";
+import { CashierEligibilityRepository } from "../../pos-cashier-admissions/cashier-eligibility";
 import { PgCashierAdmissionSelector } from "./history/sale-history-admission";
 import { PgSaleHistoryRefusalAudit } from "./history/sale-history.audit";
 import {
@@ -67,13 +70,15 @@ import {
 } from "./history/sale-history-auth.guard";
 import { SaleHistoryController } from "./history/sale-history.controller";
 import { SaleHistoryService } from "./history/sale-history.service";
+import { PosPayersController } from "./payers/pos-payers.controller";
+import { PosPayersService } from "./payers/pos-payers.service";
 
 /**
  * 008 Option Y wiring (its PosOperatorSaleAuthGuard is retired; 031 replaced
  * it with PosOperatorEnvelopeSaleGuard below), 029 D3 re-pointed:
  * PgOperatorContextResolver which now verifies the token via the
- * provider-neutral IdentityProviderPort (v1 Clerk adapter, constructed against
- * the shared PG_POOL; `@clerk/backend` stays contained behind the adapter) and
+ * provider-neutral IdentityProviderPort (the configured provider's adapter,
+ * constructed against the shared PG_POOL; the provider SDK stays contained behind the adapter) and
  * resolves the operator via the external_identity_links join. The guard
  * publishes req.context, so TenantContextGuard is not needed on the write routes.
  */
@@ -82,16 +87,26 @@ import { SaleHistoryService } from "./history/sale-history.service";
   // RT-539: the POS sale history is its own controller (no new SalesController
   // dependency), reusing this module's envelope and device guard providers.
   // RT-577: the credit-sale reversal is its own controller too.
-  controllers: [SalesController, SaleHistoryController, CreditSaleReversalsController],
+  // RT-802: so is the till's payer lookup (the envelope guard below).
+  // RT-787: the return reads and refund executions are their own controller.
+  controllers: [
+    SalesController,
+    SaleHistoryController,
+    CreditSaleReversalsController,
+    PosPayersController,
+    RefundExecutionsController,
+  ],
   providers: [
     SalesService,
+    PosPayersService,
     SaleReturnsService,
     CreditSaleReversalService,
+    RefundExecutionsService,
     SaleHistoryService,
     {
       provide: IDENTITY_PROVIDER_PORT,
       useFactory: (pool: Pool): IdentityProviderPort =>
-        clerkIdentityProviderFactory(pool),
+        identityProviderFactory(pool),
       inject: [AUTH_LOOKUP_POOL],
     },
     {
@@ -136,8 +151,9 @@ import { SaleHistoryService } from "./history/sale-history.service";
     PosDeviceAuthGuard,
     {
       provide: OPERATOR_ATTRIBUTION_VERIFIER,
-      useFactory: (pool: Pool): OperatorAttributionVerifier => new PgOperatorAttributionVerifier(pool),
-      inject: [PG_POOL],
+      useFactory: (pool: Pool, lookupPool: Pool): OperatorAttributionVerifier =>
+        new PgOperatorAttributionVerifier(pool, new CashierEligibilityRepository(lookupPool)),
+      inject: [PG_POOL, AUTH_LOOKUP_POOL],
     },
     // Class-referenced on captureSale, so reflection-instantiated from the
     // tokens above (no factory), like PosWriteRateLimitGuard below.
@@ -149,8 +165,9 @@ import { SaleHistoryService } from "./history/sale-history.service";
     // reflection-instantiated from these tokens.
     {
       provide: CASHIER_ADMISSION_SELECTOR,
-      useFactory: (pool: Pool): CashierAdmissionSelector => new PgCashierAdmissionSelector(pool),
-      inject: [PG_POOL],
+      useFactory: (pool: Pool, lookupPool: Pool): CashierAdmissionSelector =>
+        new PgCashierAdmissionSelector(pool, new CashierEligibilityRepository(lookupPool)),
+      inject: [PG_POOL, AUTH_LOOKUP_POOL],
     },
     {
       provide: SALE_HISTORY_REFUSAL_AUDIT,

@@ -21,6 +21,8 @@ export const POS_AUDIT_ACTION_CATEGORIES = [
   "operator.session.takeover",
   "cashier.pin.reset",
   "cashier.pin.unlock",
+  // RT-740 DEP-2 (RT-608): a manager-authorized manual line discount.
+  "cart.discount.manager_authorized",
 ] as const satisfies readonly string[];
 
 export type PosAuditActionCategory = (typeof POS_AUDIT_ACTION_CATEGORIES)[number];

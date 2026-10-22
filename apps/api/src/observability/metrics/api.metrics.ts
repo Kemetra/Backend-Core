@@ -21,6 +21,8 @@
  *
  * Constitution §VII / FR-B-001 / FR-B-006 / FR-B-012.
  */
+import type { SaleEffectEvent, SkippedEffectReason } from "@data-pulse-2/db";
+
 import type { ConsoleRateLimitClass } from "../../console-rate-limit/console-rate-limit.config";
 import {
   assertMetricLabels,
@@ -145,6 +147,8 @@ assertMetricLabels("idempotency_token_mismatch_total", []);
 assertMetricLabels("catalog_duplicate_alias_conflict_total", []);
 // Inventory domain — 009-SIGNAL-NEGBAL (plan §3.3, FR-024). UNLABELED.
 assertMetricLabels("inventory_negative_balance_total", []);
+// Inventory domain — RT-427 skipped void / return effects. Closed sets.
+assertMetricLabels("inventory_sale_effect_skipped_total", ["event_type", "reason"]);
 // Catalog domain — 010-US1-SNAPSHOT (read-down R6, FR-070). UNLABELED — no
 // product/price/PII in labels; the excluded product is on the reconciliation
 // backlog, not the metric.
@@ -163,6 +167,9 @@ assertMetricLabels("connector_lifecycle_total", []);
 // Connector health — 020-POLISH (spec FR-018). UNLABELED — the (tenant,
 // instance) lives on connector_health + connector_registration, not labels.
 assertMetricLabels("connector_heartbeat_total", []);
+// POS device heartbeat — RT-327 (AD-DEVICE-001 D-1). `outcome` is a closed set;
+// the device, tenant, version and channel live on device_health, never here.
+assertMetricLabels("pos_device_heartbeat_total", ["outcome"]);
 // ERPNext product-master reconciliation/repair — 021-POLISH (spec §VII). UNLABELED
 // — the (tenant, product, item, outcome) lives on the
 // erpnext_product_reconciliation_repair_attempt / _result rows + audit_events.
@@ -266,6 +273,14 @@ const _inventoryNegativeBalance: Counter = meter.createCounter(
   },
 );
 
+const _inventorySaleEffectSkipped: Counter = meter.createCounter(
+  "inventory_sale_effect_skipped_total",
+  {
+    description:
+      "Void / return lines whose Inventory Effect was skipped instead of failing the reversal (RT-427 owner decision 2): reason unit_mismatch, quantity_precision or tracked_product. The worker emits the same counter for sale lines. The tenant, sale and line are in the inventory.sale_effect.skipped warn log, never labels.",
+  },
+);
+
 const _catalogUnpricedIssue: Counter = meter.createCounter(
   "catalog_unpriced_issue_rate",
   {
@@ -297,6 +312,11 @@ const _connectorLifecycle: Counter = meter.createCounter(
       "Connector credential/registration lifecycle actions (register / issue / rotate / revoke / disable) — operational visibility for the 018 pilot boundary. Unlabeled — the (tenant, instance, credential, actor) lives on connector_registration / auth_tokens + audit_events, not metric labels.",
   },
 );
+
+const _posDeviceHeartbeat: Counter = meter.createCounter("pos_device_heartbeat_total", {
+  description:
+    "POS device heartbeats by outcome (RT-327, AD-DEVICE-001 D-1): stored, throttled (inside the 60-second window, nothing written) or refused (a store that failed and was swallowed). The device, tenant, version and channel are on device_health, never labels.",
+});
 
 const _connectorHeartbeat: Counter = meter.createCounter(
   "connector_heartbeat_total",
@@ -566,6 +586,15 @@ export function recordInventoryNegativeBalance(): void {
 }
 
 /**
+ * Increment inventory_sale_effect_skipped_total{event_type, reason} (RT-427).
+ * Emission site: `SaleEffectsReport.flush`, after the void / return commits.
+ * A SIGNAL: never alters the reversal.
+ */
+export function recordInventorySaleEffectSkipped(eventType: SaleEffectEvent, reason: SkippedEffectReason): void {
+  _inventorySaleEffectSkipped.add(1, { event_type: eventType, reason });
+}
+
+/**
  * Increment catalog_unpriced_issue_rate (010 R6 / FR-070).
  * Emission site: ReadDownService snapshot/delta resolution, once per product
  * excluded from the sellable stream for a PRICE-related reason (missing price /
@@ -622,6 +651,18 @@ export function recordConnectorLifecycle(): void {
  */
 export function recordConnectorHeartbeat(): void {
   _connectorHeartbeat.add(1);
+}
+
+/** The closed outcomes of `pos_device_heartbeat_total` (RT-327). */
+export type PosDeviceHeartbeatOutcome = "stored" | "throttled" | "refused";
+
+/**
+ * Increment pos_device_heartbeat_total{outcome} (RT-327). Emission site:
+ * `DeviceHeartbeatService.report`, once per heartbeat that reaches the store
+ * step. A SIGNAL: emission MUST NOT alter the reply.
+ */
+export function recordPosDeviceHeartbeat(outcome: PosDeviceHeartbeatOutcome): void {
+  _posDeviceHeartbeat.add(1, { outcome });
 }
 
 /**
@@ -731,6 +772,8 @@ export type CatalogMetricName = (typeof CATALOG_METRIC_NAMES)[number];
  */
 export const INVENTORY_METRIC_NAMES = [
   "inventory_negative_balance_total",
+  // RT-427: void / return effects skipped by owner decision 2.
+  "inventory_sale_effect_skipped_total",
 ] as const satisfies readonly string[];
 
 export type InventoryMetricName = (typeof INVENTORY_METRIC_NAMES)[number];

@@ -24,6 +24,7 @@ import "reflect-metadata";
 import { getTableConfig } from "drizzle-orm/pg-core";
 
 import {
+  refundExecutions,
   saleApprovalUses,
   saleCreditReversals,
   saleCreditReversalTenders,
@@ -93,6 +94,8 @@ const ALL_TABLES: ReadonlyArray<{ name: string; table: unknown }> = [
   { name: "sale_credit_reversals", table: saleCreditReversals },
   { name: "sale_credit_reversal_tenders", table: saleCreditReversalTenders },
   { name: "sale_approval_uses", table: saleApprovalUses },
+  // RT-787 (0067): refund executions.
+  { name: "refund_executions", table: refundExecutions },
 ];
 
 describe("sales schema shape — sales (header)", () => {
@@ -381,6 +384,8 @@ describe("sales schema shape — load-bearing negatives", () => {
       sale_tenders: ["tender_ref"],
       // RT-577 D8: the sale tender a credit void's refund mirrors (a UUID).
       sale_credit_reversal_tenders: ["tender_ref"],
+      // RT-787: the sale tender a refund allocation is charged against (a UUID).
+      sale_return_tenders: ["original_tender_ref"],
     };
     for (const { name, table } of ALL_TABLES) {
       const offending = [...columns(table).keys()].filter(

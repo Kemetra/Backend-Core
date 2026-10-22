@@ -1,0 +1,6 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/settlement/settlement.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+consoleCreatePayerAccount: write
+consoleListPayerAccounts: cheapRead
+consoleUpdatePayerAccount: write

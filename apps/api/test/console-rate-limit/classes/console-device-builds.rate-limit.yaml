@@ -1,0 +1,5 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/console-device-builds.openapi.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+# RT-719: the baseline is an aggregate over every active device in scope.
+consoleGetFleetBaseline: expensiveRead

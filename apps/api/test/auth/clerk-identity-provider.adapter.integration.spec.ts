@@ -19,7 +19,7 @@ import "reflect-metadata";
 import { Pool } from "pg";
 
 import { ClerkIdentityProviderAdapter } from "../../src/auth/clerk-identity-provider.adapter";
-import type { ClerkVerifier } from "../../src/pos-operators/clerk-verifier";
+import type { OperatorTokenVerifier } from "../../src/auth/operator-token-verifier";
 import {
   applyAllUpAndCreateAppRole,
   startPgEnv,
@@ -31,8 +31,8 @@ const ISSUER = "https://clerk.dp2.local";
 const USER_ID = "0e9a0000-0000-7000-8000-00000000ad01";
 const SUB = "user_clerk_relink_001";
 
-function fakeVerifier(): ClerkVerifier {
-  return { verify: async () => ({ sub: SUB }) };
+function fakeVerifier(): OperatorTokenVerifier {
+  return { verify: async () => ({ providerKey: "clerk", sub: SUB }) };
 }
 
 let env: PgTestEnv | null = null;
