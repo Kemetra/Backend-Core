@@ -101,7 +101,7 @@ describe("ErpnextPostingService.pullPostings — RT-325 numeric sequence order",
 async function resetPending(): Promise<void> {
   await env!.admin.query(
     `UPDATE erpnext_posting_status
-        SET status = 'pending', retry_count = 0, document_ref = NULL, rejection_category = NULL
+        SET rejection_message = NULL, status = 'pending', retry_count = 0, document_ref = NULL, rejection_category = NULL
       WHERE id = ANY($1::uuid[])`,
     [[POST_A_PENDING, POST_A_REVERSAL]],
   );

@@ -408,10 +408,11 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("1");
     expect(await countPolicies(STOCK_LOCATION_TABLES)).toBe("2");
     expect(await countStockLocationTriggers()).toBe("2");
-    // 0045's tracking identities and edge map (SELECT + INSERT policies each),
-    // the Tracking Profile columns and the two guard triggers (RT-448).
+    // 0045's tracking identities and edge map (SELECT + INSERT policies each,
+    // plus 0072's UPDATE policy on tracking_identities, RT-449), the Tracking
+    // Profile columns and the two guard triggers (RT-448).
     await expectTrackingFoundationApplied();
-    expect(await countPolicies(TRACKING_TABLES)).toBe("4");
+    expect(await countPolicies(TRACKING_TABLES)).toBe("5");
     await expectFrom0046Applied();
   });
 

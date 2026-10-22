@@ -318,6 +318,26 @@ describe("RT-325 — backlog pages in numeric sequence order", () => {
   });
 });
 
+describe("RT-410 — the backlog reason is the stored Connector message, never the category", () => {
+  it("returns the stored message for that row and null for a dead-letter with none", async () => {
+    if (skip()) return;
+    const message = "RepresentationMismatch: representation: rate 12.50 != 12.5";
+    await env!.admin.query(`UPDATE erpnext_posting_status SET rejection_message = $2 WHERE id = $1`, [
+      POSTING_DEADLETTER_A,
+      message,
+    ]);
+    const page = await http().get(BASE).query({ limit: 500 }).expect(200);
+    const items = page.body.items as Array<{ workItemRef: string; reason: unknown; rejectionCategory: string }>;
+    expect(items.find((i) => i.workItemRef === POSTING_DEADLETTER_A)?.reason).toBe(message);
+    for (const other of items.filter((i) => i.workItemRef !== POSTING_DEADLETTER_A)) {
+      expect(other.reason).toBeNull();
+    }
+    await env!.admin.query(`UPDATE erpnext_posting_status SET rejection_message = NULL WHERE id = $1`, [
+      POSTING_DEADLETTER_A,
+    ]);
+  });
+});
+
 describe("RT-332 — the backlog shows a reconciliation dead-letter's existing document", () => {
   it("exposes reconciliationDocumentRef for that row and null for the others", async () => {
     if (skip()) return;

@@ -36,7 +36,7 @@ import {
 } from "@nestjs/common";
 
 import { PosDeviceAuthGuard } from "../auth/pos-device-auth.guard";
-import { DeviceBearer } from "../auth/route-auth";
+import { DeviceBearer, ReportsBuildIdentity } from "../auth/route-auth";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import type { TenantContextRequest } from "../context/types";
 import { CashierAdmissionsService, type AdmitOutcome } from "./cashier-admissions.service";
@@ -80,6 +80,7 @@ export class CashierAdmissionsController {
 
   @Post()
   @HttpCode(HttpStatus.OK)
+  @ReportsBuildIdentity()
   async admit(
     @Req() request: TenantContextRequest,
     @Body(new ZodValidationPipe(AdmissionRequestSchema)) body: AdmissionRequestInput,
@@ -90,6 +91,7 @@ export class CashierAdmissionsController {
 
   @Post(":admission_id/end")
   @HttpCode(HttpStatus.OK)
+  @ReportsBuildIdentity()
   async end(
     @Req() request: TenantContextRequest,
     @Param("admission_id", new ZodValidationPipe(AdmissionIdSchema)) admissionId: string,
@@ -100,6 +102,7 @@ export class CashierAdmissionsController {
   }
 
   @Get("roster")
+  @ReportsBuildIdentity()
   async roster(@Req() request: TenantContextRequest): Promise<RosterBody> {
     return this.service.roster(deviceScopeOf(request));
   }

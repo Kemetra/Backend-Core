@@ -89,7 +89,7 @@ async function grantAppRole(pgEnv: PgTestEnv): Promise<void> {
 
 beforeAll(async () => {
   try {
-    env = await startPgEnv();
+    env = await startPgEnv({ isolated: true }); // RT-815 §3.4: cluster-wide state
     await applyMigrations(env, (n) => n.localeCompare(GRAIN_MIGRATION) < 0);
     await grantAppRole(env);
     await seedCatalogIsolationFixture(env);

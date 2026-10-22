@@ -207,7 +207,7 @@ function sessionCtx(tenantId: string): ResolvedContext {
 async function resetPending(opts: { retryCount?: number; version?: number | null } = {}): Promise<void> {
   await env!.admin.query(
     `UPDATE erpnext_posting_status
-        SET status = 'pending', document_ref = NULL, posted_at = NULL, rejection_category = NULL,
+        SET rejection_message = NULL, status = 'pending', document_ref = NULL, posted_at = NULL, rejection_category = NULL,
             reconciliation_document_ref = NULL, retry_count = $2, current_resolution_version = $3
       WHERE id = $1`,
     [POST_A_PENDING, opts.retryCount ?? 0, opts.version ?? null],

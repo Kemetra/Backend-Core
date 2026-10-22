@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Data-Pulse-2 Inventory — Stock Movement Ledger API
-  version: "1.6.0-draft"
+  version: "1.7.0-draft"
   description: >
     Spec 009 Inventory & Stock Movement Ledger contract surface. Defines the
     Inventory source-of-truth domain the SaaS owns: an append-only
@@ -28,7 +28,7 @@ info:
     `store_id`; body-supplied tenant / store / actor / derived-balance fields
     are NEVER accepted (Constitution §III/§XII, FR-052).
 
-    Twelve operations:
+    Eighteen operations:
 
       1. `createStockMovement` — append an inbound / outbound / adjustment
          movement (write-off = a reason-coded outbound). Exact-decimal quantity
@@ -65,6 +65,12 @@ info:
          same status, as one event with two effects (RT-435).
      11. `getReturnLandingPolicy` / 12. `setReturnLandingPolicy` — the
          tenant's return landing status (RT-435).
+     13. `placeQualityHold` / 14. `releaseTrackingHold` /
+         15. `getTrackingHold` — a hold on a tracking identity (RT-449).
+     16. `createInventoryRecall` / 17. `getInventoryRecall` — a recall of
+         listed identities of one product (RT-449).
+     18. `correctTrackingIdentityExpiry` — the governed expiry correction of
+         an identity, with history (RT-449).
 
     Quantity: every quantity is an exact-decimal STRING (`numeric(p,s)` at
     rest); no float appears on the wire. There is NO money / tender / payment
@@ -153,6 +159,33 @@ info:
     nothing. `getReturnLandingPolicy` / `setReturnLandingPolicy` read and set
     where a tenant's return effects land (`sellable`, the default, or
     `return_inspection`).
+
+
+    **1.7.0-draft (RT-449, additive; owner-approved RT-50 Gate 7 G7-2 / G7-6
+    / G7-7 and RT-449 rulings H1–H8, comment 13434).** Tracking holds, recall
+    and the Inventory Safety Revision. A Tracking Hold is a record on a
+    tracking identity: `quality_hold` (`placeQualityHold`) or `recall_hold`
+    (one per identity listed by `createInventoryRecall`, a Recall safety
+    Business Event; the product is never retired). An active hold blocks
+    selling the identity; once the identity has positions, placing a hold
+    moves its positive `sellable` and `return_inspection` positions into the
+    hold's status as RT-435 status moves (`erp_neutral` effect pairs carrying
+    the identity; negative positions are never moved). `releaseTrackingHold`
+    ends a hold once: a released quality hold returns its quantity to
+    `sellable` (to `recall_hold` when the identity has ever been under a
+    recall hold); releasing a recall hold moves nothing, that stock leaves
+    only through the Gate 8 disposition. `correctTrackingIdentityExpiry`
+    corrects an identity's `expiryDate`, keeping every correction (old, new,
+    reason, actor) as history; a required expiry is never cleared. Every placement, release, recall, expiry correction and
+    tracking-profile change steps the tenant's monotonic Inventory Safety
+    Revision exactly once, in its own transaction; each command answers the
+    `safetyRevision` it produced. All of them are tenant-level operations (a
+    hold reaches the identity at every store): owner or tenant_admin place a
+    quality hold, create a recall and correct an expiry; only the owner
+    releases a hold (965). A store_manager is refused. Replays of the same
+    command return the recorded result and write nothing. No identity exists
+    until the ERP-born identity import (RT-451 / F6), so these operations have
+    nothing to act on before then.
 
 servers:
   - url: https://api.datapulse.example
@@ -627,6 +660,225 @@ paths:
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "5XX": { $ref: "#/components/responses/SystemFailure" }
 
+  /api/inventory/v1/tracking-holds:
+    post:
+      operationId: placeQualityHold
+      tags: [inventory]
+      summary: Place a quality hold on a tracking identity.
+      description: >
+        RT-449 (RT-50 G7-6, decisions 739, 740, 965): a `quality_hold` record
+        on a tracking identity of the tenant. The identity's positive
+        `sellable` and `return_inspection` positions, at every location of
+        every store, move into `quality_hold` as RT-435 status moves (reason
+        `quality_hold`, `erp_neutral` effect pairs carrying the identity);
+        negative and zero positions are not moved. Steps the tenant's
+        Inventory Safety Revision once. At most one active quality hold per
+        identity (409 `hold_already_active`). An identity of another tenant
+        is a non-disclosing 404. Owner or tenant_admin (H1, H2). Idempotent
+        via the `Idempotency-Key` header; nothing is written on a refusal.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlaceQualityHoldCommand"
+      responses:
+        "201":
+          description: Quality hold placed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackingHoldResult"
+        "400": { $ref: "#/components/responses/ValidationFailure" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ForbiddenOrOriginRejected" }
+        "404": { $ref: "#/components/responses/NotFoundOrCrossTenant" }
+        "409": { $ref: "#/components/responses/SafetyConflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "5XX": { $ref: "#/components/responses/SystemFailure" }
+
+  /api/inventory/v1/tracking-holds/{holdId}:
+    get:
+      operationId: getTrackingHold
+      tags: [inventory]
+      summary: Read one tracking hold.
+      description: >
+        RT-449: a quality or recall hold of the tenant. Another tenant's hold
+        is a non-disclosing 404. Owner or tenant_admin.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/HoldIdPath"
+      responses:
+        "200":
+          description: The hold.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackingHold"
+        "400": { $ref: "#/components/responses/ValidationFailure" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ForbiddenOrOriginRejected" }
+        "404": { $ref: "#/components/responses/NotFoundOrCrossTenant" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "5XX": { $ref: "#/components/responses/SystemFailure" }
+
+  /api/inventory/v1/tracking-holds/{holdId}/release:
+    post:
+      operationId: releaseTrackingHold
+      tags: [inventory]
+      summary: Release a tracking hold.
+      description: >
+        RT-449 (RT-50 G7-6; rulings H3, H4): ends a hold. A released quality
+        hold returns the identity's positive `quality_hold` positions to
+        `sellable` (reason `hold_release`), or to `recall_hold` (reason
+        `recall`) when the identity has ever been under a recall hold, active
+        or released, so a recalled lot's stock leaves only through Gate 8.
+        Releasing a recall hold moves nothing: that stock leaves only through
+        the Gate 8 disposition (RT-293). Steps the Inventory Safety Revision
+        once. A released hold is final: releasing it again answers the
+        recorded release and writes nothing. Another tenant's hold is a
+        non-disclosing 404. Owner only (965, H1).
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/HoldIdPath"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReleaseTrackingHoldCommand"
+      responses:
+        "200":
+          description: The released hold.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackingHoldResult"
+        "400": { $ref: "#/components/responses/ValidationFailure" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ForbiddenOrOriginRejected" }
+        "404": { $ref: "#/components/responses/NotFoundOrCrossTenant" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "5XX": { $ref: "#/components/responses/SystemFailure" }
+
+  /api/inventory/v1/recalls:
+    post:
+      operationId: createInventoryRecall
+      tags: [inventory]
+      summary: Recall listed tracking identities of one product.
+      description: >
+        RT-449 (RT-50 G7-6, decisions 860–863): a Recall, an Inventory safety
+        Business Event (reason code, external reference such as an authority
+        notice, product, listed identities, `effectiveAt`). It creates one
+        `recall_hold` per listed identity and moves each identity's positive
+        `sellable` and `return_inspection` positions into `recall_hold`
+        (reason `recall`, `erp_neutral` effect pairs) — all under ONE
+        Inventory Safety Revision step. The product is never retired (861).
+        Duplicate identities and a future `effectiveAt` are a 400; a product
+        or identity that is not of this tenant and product is a
+        non-disclosing 404; an identity already under an active recall hold
+        is a 409 `hold_already_active`. Owner or tenant_admin (H1, H2).
+        Idempotent via the `Idempotency-Key` header; nothing is written on a
+        refusal.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInventoryRecallCommand"
+      responses:
+        "201":
+          description: Recall recorded with its holds.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryRecallResult"
+        "400": { $ref: "#/components/responses/ValidationFailure" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ForbiddenOrOriginRejected" }
+        "404": { $ref: "#/components/responses/NotFoundOrCrossTenant" }
+        "409": { $ref: "#/components/responses/SafetyConflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "5XX": { $ref: "#/components/responses/SystemFailure" }
+
+  /api/inventory/v1/recalls/{recallId}:
+    get:
+      operationId: getInventoryRecall
+      tags: [inventory]
+      summary: Read one recall with its holds.
+      description: >
+        RT-449: a recall of the tenant and its holds (released or not).
+        Another tenant's recall is a non-disclosing 404. Owner or
+        tenant_admin.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/RecallIdPath"
+      responses:
+        "200":
+          description: The recall.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryRecall"
+        "400": { $ref: "#/components/responses/ValidationFailure" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ForbiddenOrOriginRejected" }
+        "404": { $ref: "#/components/responses/NotFoundOrCrossTenant" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "5XX": { $ref: "#/components/responses/SystemFailure" }
+
+  /api/inventory/v1/tracking-identities/{identityId}/expiry-corrections:
+    post:
+      operationId: correctTrackingIdentityExpiry
+      tags: [inventory]
+      summary: Correct a tracking identity's expiry date, with history.
+      description: >
+        RT-449 (RT-50 G7-2, ruling H7): the governed correction of an
+        identity's `expiryDate`. Null clears an optional expiry; when the
+        product's tracking profile requires an expiry, clearing it is a 400. Every correction is kept as
+        history (old date, new date, reason, actor) and steps the Inventory
+        Safety Revision once; the expiry never changes without it. The current
+        date again is a 409 `expiry_unchanged`; a date before the identity's
+        manufacture date is a 400. Another tenant's identity is a
+        non-disclosing 404. Owner or tenant_admin. Idempotent via the
+        `Idempotency-Key` header; nothing is written on a refusal.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdentityIdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CorrectTrackingIdentityExpiryCommand"
+      responses:
+        "201":
+          description: Expiry corrected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackingIdentityExpiryCorrectionResult"
+        "400": { $ref: "#/components/responses/ValidationFailure" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ForbiddenOrOriginRejected" }
+        "404": { $ref: "#/components/responses/NotFoundOrCrossTenant" }
+        "409": { $ref: "#/components/responses/SafetyConflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "5XX": { $ref: "#/components/responses/SystemFailure" }
+
   /api/inventory/v1/admin/sale-linked-backfill:
     post:
       operationId: backfillSaleLinkedMovements
@@ -718,6 +970,24 @@ components:
       in: path
       required: true
       description: Tenant Catalog product; resolved inside the caller's tenant only.
+      schema: { type: string, format: uuid }
+    HoldIdPath:
+      name: holdId
+      in: path
+      required: true
+      description: A tracking hold; resolved inside the caller's tenant only.
+      schema: { type: string, format: uuid }
+    RecallIdPath:
+      name: recallId
+      in: path
+      required: true
+      description: A recall; resolved inside the caller's tenant only.
+      schema: { type: string, format: uuid }
+    IdentityIdPath:
+      name: identityId
+      in: path
+      required: true
+      description: A tracking identity; resolved inside the caller's tenant only.
       schema: { type: string, format: uuid }
 
   schemas:
@@ -1079,6 +1349,191 @@ components:
       properties:
         returnLandingStatus:
           $ref: "#/components/schemas/ReturnLandingStatus"
+    SafetyReasonCode:
+      type: string
+      pattern: "^[a-z][a-z0-9_]{0,63}$"
+      description: >
+        RT-449: a machine reason code of a hold, recall or expiry correction,
+        lower snake case (e.g. `supplier_notice`, `authority_notice`,
+        `label_misprint`).
+    SafetyNote:
+      type: string
+      maxLength: 500
+      description: Operator note (no PII).
+    SafetyRevision:
+      type: integer
+      format: int64
+      minimum: 1
+      description: >
+        RT-449 (G7-7): the tenant's monotonic Inventory Safety Revision this
+        command produced (a replay answers the recorded one).
+    PlaceQualityHoldCommand:
+      type: object
+      additionalProperties: false
+      required: [trackingIdentityId, reasonCode]
+      description: Strict command. Tenant and actor are resolved server-side.
+      properties:
+        trackingIdentityId: { type: string, format: uuid }
+        reasonCode:
+          $ref: "#/components/schemas/SafetyReasonCode"
+        note:
+          $ref: "#/components/schemas/SafetyNote"
+    ReleaseTrackingHoldCommand:
+      type: object
+      additionalProperties: false
+      properties:
+        note:
+          $ref: "#/components/schemas/SafetyNote"
+    TrackingHold:
+      type: object
+      additionalProperties: false
+      required:
+        [id, trackingIdentityId, tenantProductRef, kind, reasonCode, note, recallId, placedBy, placedAt,
+         releasedBy, releasedAt, releaseNote, active]
+      description: >
+        RT-449 (G7-6): a quality or recall hold on a tracking identity. An
+        active hold blocks selling the identity.
+      properties:
+        id: { type: string, format: uuid }
+        trackingIdentityId: { type: string, format: uuid }
+        tenantProductRef: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [quality_hold, recall_hold]
+        reasonCode:
+          $ref: "#/components/schemas/SafetyReasonCode"
+        note: { type: [string, "null"] }
+        recallId:
+          type: [string, "null"]
+          format: uuid
+          description: The recall that placed a recall hold; null for a quality hold.
+        placedBy:
+          type: string
+          format: uuid
+          description: The placing principal's user id (an internal actor reference, not PII).
+        placedAt: { type: string, format: date-time }
+        releasedBy: { type: [string, "null"], format: uuid }
+        releasedAt: { type: [string, "null"], format: date-time }
+        releaseNote: { type: [string, "null"] }
+        active:
+          type: boolean
+          description: True until the hold is released.
+    TrackingHoldResult:
+      type: object
+      additionalProperties: false
+      required: [hold, safetyRevision]
+      properties:
+        hold:
+          $ref: "#/components/schemas/TrackingHold"
+        safetyRevision:
+          $ref: "#/components/schemas/SafetyRevision"
+    CreateInventoryRecallCommand:
+      type: object
+      additionalProperties: false
+      required: [tenantProductRef, trackingIdentityIds, reasonCode, reference]
+      description: Strict command. Tenant and actor are resolved server-side.
+      properties:
+        tenantProductRef: { type: string, format: uuid }
+        trackingIdentityIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          description: Identities of `tenantProductRef` to recall.
+          items: { type: string, format: uuid }
+        reasonCode:
+          $ref: "#/components/schemas/SafetyReasonCode"
+        reference:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: The external reference, e.g. an authority notice number.
+        note:
+          $ref: "#/components/schemas/SafetyNote"
+        effectiveAt:
+          type: string
+          format: date-time
+          description: When the recall takes effect; defaults to now and is never in the future.
+    InventoryRecall:
+      type: object
+      additionalProperties: false
+      required: [id, tenantProductRef, reasonCode, reference, note, effectiveAt, createdBy, createdAt, holds]
+      description: >
+        RT-449 (G7-6, 860): a Recall and the recall hold it placed on each
+        listed identity.
+      properties:
+        id: { type: string, format: uuid }
+        tenantProductRef: { type: string, format: uuid }
+        reasonCode:
+          $ref: "#/components/schemas/SafetyReasonCode"
+        reference: { type: string }
+        note: { type: [string, "null"] }
+        effectiveAt: { type: string, format: date-time }
+        createdBy:
+          type: string
+          format: uuid
+          description: The acting principal's user id (an internal actor reference, not PII).
+        createdAt: { type: string, format: date-time }
+        holds:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/TrackingHold"
+    InventoryRecallResult:
+      type: object
+      additionalProperties: false
+      required: [recall, safetyRevision]
+      properties:
+        recall:
+          $ref: "#/components/schemas/InventoryRecall"
+        safetyRevision:
+          $ref: "#/components/schemas/SafetyRevision"
+    CorrectTrackingIdentityExpiryCommand:
+      type: object
+      additionalProperties: false
+      required: [expiryDate, reasonCode]
+      description: Strict command. Tenant and actor are resolved server-side.
+      properties:
+        expiryDate:
+          type: [string, "null"]
+          format: date
+          description: >
+            The corrected expiry date. Null clears it, unless the product's
+            tracking profile requires an expiry (then a 400).
+        reasonCode:
+          $ref: "#/components/schemas/SafetyReasonCode"
+        note:
+          $ref: "#/components/schemas/SafetyNote"
+    TrackingIdentityExpiryCorrection:
+      type: object
+      additionalProperties: false
+      required:
+        [id, trackingIdentityId, tenantProductRef, oldExpiryDate, newExpiryDate, reasonCode, note, createdBy,
+         createdAt]
+      description: "RT-449 (G7-2): one entry of an identity's expiry history."
+      properties:
+        id: { type: string, format: uuid }
+        trackingIdentityId: { type: string, format: uuid }
+        tenantProductRef: { type: string, format: uuid }
+        oldExpiryDate: { type: [string, "null"], format: date }
+        newExpiryDate: { type: [string, "null"], format: date }
+        reasonCode:
+          $ref: "#/components/schemas/SafetyReasonCode"
+        note: { type: [string, "null"] }
+        createdBy:
+          type: string
+          format: uuid
+          description: The acting principal's user id (an internal actor reference, not PII).
+        createdAt: { type: string, format: date-time }
+    TrackingIdentityExpiryCorrectionResult:
+      type: object
+      additionalProperties: false
+      required: [correction, safetyRevision]
+      properties:
+        correction:
+          $ref: "#/components/schemas/TrackingIdentityExpiryCorrection"
+        safetyRevision:
+          $ref: "#/components/schemas/SafetyRevision"
     StockMovementList:
       type: object
       required: [items]
@@ -1361,6 +1816,17 @@ components:
         the Gate 8 transfer intent (never under the V1 profile).
         `tracking_identity_required`: the product is tracked, and tracked moves
         are not supported yet. Nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    SafetyConflict:
+      description: >
+        409 — RT-449. `hold_already_active`: the identity (or a listed one)
+        already has an active hold of that kind. `expiry_unchanged`: the
+        identity already has that expiry date. `idempotency_key_conflict`: the
+        `Idempotency-Key` was already used for a different command. Nothing is
+        written.
       content:
         application/json:
           schema:

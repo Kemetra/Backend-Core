@@ -48,7 +48,7 @@ import { PosOperatorAuthGuard } from "../../auth/pos-operator-auth.guard";
 import { PosOperatorEnvelopeSaleGuard } from "../../auth/pos-operator-envelope-sale.guard";
 import { PosWriteRateLimitGuard } from "../../auth/pos-write-rate-limit.guard";
 import { PosWriteRateLimitBucket } from "../../auth/pos-write-rate-limit.decorator";
-import { DeviceBearer } from "../../auth/route-auth";
+import { DeviceBearer, ReportsBuildIdentity } from "../../auth/route-auth";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe";
 import { TenantContextGuard } from "../../context/tenant-context.guard";
 import type { TenantContextRequest } from "../../context/types";
@@ -274,6 +274,7 @@ export class SalesController {
   @PosWriteRateLimitBucket("posWriteSale")
   @Idempotent("required")
   @Auditable("sale.captured")
+  @ReportsBuildIdentity()
   async captureSale(
     @Req() request: TenantContextRequest,
     // RT-77: the schema is chosen per request by POS_SALE_TENDERS_ENABLED

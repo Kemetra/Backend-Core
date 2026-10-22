@@ -205,9 +205,31 @@ export interface DeviceReadRow {
   readonly retire_reason: string | null;
   readonly replaces_device_id: string | null;
   readonly replaced_by_device_id: string | null;
+  /**
+   * The build identity the terminal last reported (0073, RT-719): every column
+   * null until a report. Optional only so a fixture that predates it still
+   * reads as unknown; the SQL always selects them.
+   */
+  readonly reported_build_commit?: string | null;
+  readonly reported_app_version?: string | null;
+  readonly reported_contract_pin?: string | null;
+  readonly build_reported_at?: Date | null;
   /** The most recently opened open shift on the device, or null. */
   readonly open_shift_id: string | null;
   readonly rank: number;
+}
+
+/**
+ * `DeviceBuildIdentity` (RT-719): the POS build a terminal last reported. A
+ * value the terminal did not send is null, never a default. Self-reported: an
+ * inventory signal only, never trust, and not `lastSeenAt`.
+ */
+export interface DeviceBuildIdentity {
+  readonly buildCommit: string;
+  readonly appVersion: string | null;
+  readonly contractPinCommit: string | null;
+  /** The server clock when the identity was last stored. */
+  readonly reportedAt: string;
 }
 
 export interface DeviceSummary {
@@ -227,6 +249,8 @@ export interface DeviceSummary {
   readonly replacesDeviceId: string | null;
   readonly replacedByDeviceId: string | null;
   readonly custodyExceptionShiftId: string | null;
+  /** The reported build, or null when the terminal never reported one (unknown, never a build). */
+  readonly buildIdentity: DeviceBuildIdentity | null;
 }
 
 export interface DeviceDetail extends DeviceSummary {
@@ -259,6 +283,19 @@ function trustStateOf(row: DeviceReadRow): TrustState {
   return row.revoked_at !== null ? "revoked" : "active";
 }
 
+/** The identity a row holds, or null: no commit means unknown, whatever the other columns say. */
+function buildIdentityOf(row: DeviceReadRow): DeviceBuildIdentity | null {
+  const commit = row.reported_build_commit ?? null;
+  const reportedAt = row.build_reported_at ?? null;
+  if (commit === null || reportedAt === null) return null;
+  return {
+    buildCommit: commit,
+    appVersion: row.reported_app_version ?? null,
+    contractPinCommit: row.reported_contract_pin ?? null,
+    reportedAt: reportedAt.toISOString(),
+  };
+}
+
 export function toDeviceSummary(row: DeviceReadRow): DeviceSummary {
   return {
     deviceId: row.id,
@@ -278,6 +315,7 @@ export function toDeviceSummary(row: DeviceReadRow): DeviceSummary {
     replacedByDeviceId: row.replaced_by_device_id,
     // An open shift on a live till is normal; only a revoked one is an exception.
     custodyExceptionShiftId: row.revoked_at === null ? null : row.open_shift_id,
+    buildIdentity: buildIdentityOf(row),
   };
 }
 

@@ -439,6 +439,39 @@ describe("RT-224 — a covering admission authorizes the cashier's sale", () => 
     expect(captured[0]?.store_id).toBe(STORE);
   });
 
+  // RT-742 (pos-shifts forceCloseShift, Effect): a sale carries no shift
+  // reference and captureSale reads no shift, so a sale the terminal captures
+  // after a manager force-closed its shift is recorded as usual (201), and the
+  // not-counted force close is left as it was.
+  it("a sale captured after a manager force-closed the terminal's shift → 201; the force close is untouched", async () => {
+    if (skip()) return;
+    await liveAdmission();
+    const shiftId = randomUUID();
+    await E().admin.query(
+      `INSERT INTO shifts (shift_id, tenant_id, store_id, opening_cashier_user_id, opening_device_id, opened_at)
+       VALUES ($1, $2, $3, $4, $5, $6::timestamptz)`,
+      [shiftId, TENANT, STORE, CASHIER, DEVICE, at(0)],
+    );
+    await E().admin.query(
+      `INSERT INTO shift_forced_closes
+         (shift_id, tenant_id, store_id, opening_device_id, closed_from_device_id, closed_by_user_id,
+          forced_reason, payload_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, 'Cashier left without closing', decode(repeat('ab', 32), 'hex'))`,
+      [shiftId, TENANT, STORE, DEVICE, DEVICE_2, MANAGER],
+    );
+    await E().admin.query(`UPDATE shifts SET lifecycle_state = 'closed_forced' WHERE shift_id = $1`, [shiftId]);
+
+    const res = await cashierSale({ occurredAt: at(2 * HOUR) });
+    expect(res.status).toBe(201);
+    expect((await saleRow(res.body.saleRef as string)).device_id).toBe(DEVICE);
+    const shift = await E().admin.query(
+      `SELECT s.lifecycle_state, (SELECT count(*)::int FROM shift_forced_closes f WHERE f.shift_id = s.shift_id) AS forced
+         FROM shifts s WHERE s.shift_id = $1`,
+      [shiftId],
+    );
+    expect(shift.rows[0]).toEqual({ lifecycle_state: "closed_forced", forced: 1 });
+  });
+
   it("the attribution is kept out of payload_hash: the hash is the sale facts only", async () => {
     if (skip()) return;
     await liveAdmission();

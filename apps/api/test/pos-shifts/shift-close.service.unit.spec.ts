@@ -260,6 +260,31 @@ describe("closeShift — a close that did not apply (ShiftCloseNotAppliedError)"
   });
 });
 
+describe("closeShift — a shift a manager force-closed (RT-742, Late facts)", () => {
+  /** `closed_forced` with a `shift_forced_closes` row and no `shift_closes` row. */
+  const FORCE_CLOSED: CashUpShiftRow = { ...shiftRow("closed_forced"), notCounted: true };
+
+  it.each<[string, Attempt, UserState]>([
+    ["the same close the POS queued", {}, {}],
+    ["a precision breach", { fact: { countedCash: "2750.001", variance: "-4.999" } }, {}],
+    ["an inconsistent cash-up", { fact: { variance: "-5.01" } }, {}],
+    ["a forced close on the envelope path", { ctx: ENVELOPE, fact: { closeKind: "forced", forcedReason: "left" } }, {}],
+    ["an envelope closer who is not a store user", { ctx: ENVELOPE }, { storeUser: false }],
+  ])("%s → shift_force_closed, recording nothing", async (_label, attempt, users) => {
+    const { service, repo } = harness({ shifts: [FORCE_CLOSED] }, users);
+    expect(await outcomeOf(service, attempt)).toBe("shift_force_closed");
+    expect([repo.findClose.mock.calls.length, repo.insertClose.mock.calls.length]).toEqual([0, 0]);
+  });
+
+  it("a close that loses the race to a force close (the shift was open under the lock) → shift_force_closed", async () => {
+    const state: RepoState = {
+      shifts: [shiftRow("open"), FORCE_CLOSED],
+      insertError: Object.assign(new Error("shift is not open"), { code: "55000" }),
+    };
+    expect(await outcomeOf(harness(state).service)).toBe("shift_force_closed");
+  });
+});
+
 describe("closeShift — a transaction conflict on the refund claims is retried once (PR #714 round 1, Codex P2)", () => {
   /** A Postgres error with this SQLSTATE. */
   const pgError = (code: string): Error => Object.assign(new Error(`pg ${code}`), { code });

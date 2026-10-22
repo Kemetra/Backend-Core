@@ -18,6 +18,11 @@ export interface PostingBacklogItem {
   readonly saleRef: string | null;
   readonly sourceSystem: string;
   readonly externalId: string;
+  /**
+   * RT-410: the Connector's sanitised rejection message (contract 1.3.0-draft);
+   * null when Backend-Core raised the dead-letter, the row predates 0071, or
+   * nothing was left after sanitising. Plain text, PII-suspect: never logged.
+   */
   readonly reason: string | null;
   /** When the posting became permanently_rejected (the 015 row's updated_at). */
   readonly deadLetteredAt: string;
@@ -38,13 +43,15 @@ export interface PostingDeadletterRow {
   readonly external_id: string;
   readonly updated_at: Date;
   readonly reconciliation_document_ref: string | null;
+  /** RT-410 (0071): the stored message; only ever set on a dead-letter. */
+  readonly rejection_message: string | null;
 }
 
 /**
  * Project a 015 permanently_rejected row into the operator backlog wire shape.
- * `reason` is derived from the rejection_category (the 015 row carries no free-text
- * reason column; the structured reason was supplied at ack time and the category
- * is the durable, non-PII summary). NO money/amount is surfaced.
+ * RT-410: `reason` is the stored Connector message (`rejection_message`), null
+ * when there is none; it never repeats the category. NO money/amount is
+ * surfaced.
  */
 export function toBacklogItem(row: PostingDeadletterRow): PostingBacklogItem {
   return {
@@ -54,7 +61,7 @@ export function toBacklogItem(row: PostingDeadletterRow): PostingBacklogItem {
     saleRef: row.sale_id,
     sourceSystem: row.source_system,
     externalId: row.external_id,
-    reason: row.rejection_category,
+    reason: row.rejection_message,
     deadLetteredAt: row.updated_at.toISOString(),
     reconciliationDocumentRef: parseEvidence(row.reconciliation_document_ref),
   };

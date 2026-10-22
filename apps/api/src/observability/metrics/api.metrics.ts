@@ -167,6 +167,12 @@ assertMetricLabels("connector_lifecycle_total", []);
 // Connector health — 020-POLISH (spec FR-018). UNLABELED — the (tenant,
 // instance) lives on connector_health + connector_registration, not labels.
 assertMetricLabels("connector_heartbeat_total", []);
+// POS device heartbeat — RT-327 (AD-DEVICE-001 D-1). `outcome` is a closed set;
+// the device, tenant, version and channel live on device_health, never here.
+assertMetricLabels("pos_device_heartbeat_total", ["outcome"]);
+// POS build identity report — RT-719. `outcome` is a closed set; the device,
+// tenant, commit, version and pin live on devices, never here.
+assertMetricLabels("pos_build_identity_report_total", ["outcome"]);
 // ERPNext product-master reconciliation/repair — 021-POLISH (spec §VII). UNLABELED
 // — the (tenant, product, item, outcome) lives on the
 // erpnext_product_reconciliation_repair_attempt / _result rows + audit_events.
@@ -309,6 +315,16 @@ const _connectorLifecycle: Counter = meter.createCounter(
       "Connector credential/registration lifecycle actions (register / issue / rotate / revoke / disable) — operational visibility for the 018 pilot boundary. Unlabeled — the (tenant, instance, credential, actor) lives on connector_registration / auth_tokens + audit_events, not metric labels.",
   },
 );
+
+const _posDeviceHeartbeat: Counter = meter.createCounter("pos_device_heartbeat_total", {
+  description:
+    "POS device heartbeats by outcome (RT-327, AD-DEVICE-001 D-1): stored, throttled (inside the 60-second window, nothing written) or refused (a store that failed and was swallowed). The device, tenant, version and channel are on device_health, never labels.",
+});
+
+const _posBuildIdentityReport: Counter = meter.createCounter("pos_build_identity_report_total", {
+  description:
+    "POS build identity reports by outcome (RT-719): recorded (a valid commit was stored), unknown (a report without a valid commit cleared the identity) or failed (the store failed and was swallowed). A write inside the throttle window is not an outcome. Never a commit, version, pin, device or tenant label.",
+});
 
 const _connectorHeartbeat: Counter = meter.createCounter(
   "connector_heartbeat_total",
@@ -643,6 +659,30 @@ export function recordConnectorLifecycle(): void {
  */
 export function recordConnectorHeartbeat(): void {
   _connectorHeartbeat.add(1);
+}
+
+/** The closed outcomes of `pos_build_identity_report_total` (RT-719). */
+export type PosBuildIdentityReportOutcome = "recorded" | "unknown" | "failed";
+
+/**
+ * Increment pos_build_identity_report_total{outcome} (RT-719). Emission site:
+ * the device activity write of a reporting request. A SIGNAL: never alters the
+ * request.
+ */
+export function recordPosBuildIdentityReport(outcome: PosBuildIdentityReportOutcome): void {
+  _posBuildIdentityReport.add(1, { outcome });
+}
+
+/** The closed outcomes of `pos_device_heartbeat_total` (RT-327). */
+export type PosDeviceHeartbeatOutcome = "stored" | "throttled" | "refused";
+
+/**
+ * Increment pos_device_heartbeat_total{outcome} (RT-327). Emission site:
+ * `DeviceHeartbeatService.report`, once per heartbeat that reaches the store
+ * step. A SIGNAL: emission MUST NOT alter the reply.
+ */
+export function recordPosDeviceHeartbeat(outcome: PosDeviceHeartbeatOutcome): void {
+  _posDeviceHeartbeat.add(1, { outcome });
 }
 
 /**

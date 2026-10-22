@@ -161,6 +161,29 @@ describe("017-US2 §1 — repair re-offers a resolvable dead-letter", () => {
   });
 });
 
+describe("RT-410 — a repair re-offer clears the stored rejection message", () => {
+  it("eligible_again leaves the row pending with no message (it exists only while dead-lettered)", async () => {
+    if (skip) return;
+    await resetDeadletter(5);
+    await env!.admin.query(
+      `UPDATE erpnext_posting_status SET rejection_message = 'NameError: name ''flt'' is not defined' WHERE id = $1`,
+      [POSTING_DEADLETTER_A],
+    );
+    const res = await svc().repairPosting({
+      tenantId: TENANT_A,
+      context: sessionCtx(TENANT_A),
+      actorUserId: ACTOR_A,
+      workItemRef: POSTING_DEADLETTER_A,
+    });
+    expect(res.repair.outcome).toBe("eligible_again");
+    const r = await env!.admin.query<{ status: string; message: string | null }>(
+      `SELECT status, rejection_message AS message FROM erpnext_posting_status WHERE id = $1`,
+      [POSTING_DEADLETTER_A],
+    );
+    expect(r.rows[0]).toEqual({ status: "pending", message: null });
+  });
+});
+
 describe("RT-456 — repair takes the tenant posting-feed lock before re-heading", () => {
   it("waits while another transaction holds the lock, then re-offers", async () => {
     if (skip) return;
@@ -236,7 +259,7 @@ describe("017-US2 §3 — repair of an already-posted row (O-3 echo)", () => {
   it("is a no_op_echo returning the stored document_ref (no re-transition)", async () => {
     if (skip) return;
     await env!.admin.query(
-      `UPDATE erpnext_posting_status SET status='posted', document_ref='ACC-SINV-017', retry_count=0
+      `UPDATE erpnext_posting_status SET rejection_message = NULL, status='posted', document_ref='ACC-SINV-017', retry_count=0
         WHERE id=$1`,
       [POSTING_DEADLETTER_A],
     );
@@ -257,7 +280,7 @@ describe("017-US2 §4 — repair of an in-flight pending row", () => {
   it("is a no_op_echo with NO second re-head", async () => {
     if (skip) return;
     await env!.admin.query(
-      `UPDATE erpnext_posting_status SET status='pending', document_ref=NULL, posted_at=NULL, retry_count=0
+      `UPDATE erpnext_posting_status SET rejection_message = NULL, status='pending', document_ref=NULL, posted_at=NULL, retry_count=0
         WHERE id=$1`,
       [POSTING_DEADLETTER_A],
     );

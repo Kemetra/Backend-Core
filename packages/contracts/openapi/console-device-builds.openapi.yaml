@@ -24,12 +24,13 @@ info:
     unknown.
 
 
-    **Posture.** `1.0.0-draft`, `x-runtime-status: contract-only` on the
-    operation: `[GATED]` contract-first (RT-719). The runtime, its migration
-    and the POS change that sends the identity are separate, separately
-    approved work. Nothing here changes the wire of any served operation: the
-    report is carried by optional request headers on existing routes
-    (additive; a terminal that sends none stays valid).
+    **Posture.** `1.0.0-draft`, `[GATED]` contract-first (RT-719). The
+    contract merged with the operation `x-runtime-status: contract-only`; the
+    runtime and its migration (`0073`) ship in RT-719 step 2 and remove the
+    marker (RT-719 comment 13394). The POS change that sends the identity is
+    separate, separately approved work. Nothing here changes the wire of any
+    other served operation: the report is carried by optional request headers
+    on existing routes (additive; a terminal that sends none stays valid).
 
 
     **Build identity.** Three self-reported values, every one a bounded
@@ -145,10 +146,6 @@ paths:
       summary: The fleet baseline - the distinct POS builds installed on the active terminals in scope.
       operationId: consoleGetFleetBaseline
       x-audit-action: devices.fleet_baseline_read
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-719 contract. The runtime, its migration and the POS change that
-        sends the identity are separate, separately approved work.
       tags: [device-builds]
       description: >
         The distinct POS builds installed on the ACTIVE devices of the
