@@ -48,13 +48,13 @@ const pool = {
   connect: async () => ({ query: async () => ({ rows: [] }), release: () => undefined }),
 } as unknown as Pool;
 
-function shiftRow(payloadHash: Buffer): CashUpShiftRow {
+function shiftRow(payloadHash: Buffer, lifecycleState: CashUpShiftRow["lifecycleState"] = "open"): CashUpShiftRow {
   return {
     ...SCOPE,
     shiftId: FACT.shiftId,
     openingUserId: CASHIER,
     openedAt: new Date(FACT.openedAt),
-    lifecycleState: "open",
+    lifecycleState,
     currencyCode: "EGP",
     openingFloat: "500.0000",
     businessDate: "2026-10-05",
@@ -179,6 +179,31 @@ describe("ShiftCashUpService.openShift — envelope path: an exact replay before
   });
 });
 
+describe("ShiftCashUpService.openShift — a shift a manager force-closed (RT-742, Late facts)", () => {
+  /** The open's outcome when the recorded row of this scope is force-closed and holds `found`. */
+  async function openAgain(found: Exclude<ReRead, "nothing">, ctx: ShiftWriteContext = CTX): Promise<string> {
+    const row = await reReadRow(found);
+    const { repo, inserted } = fakeRepo([{ ...row!, lifecycleState: "closed_forced", notCounted: true }], { kind: "shift_id_taken" });
+    const answer = await new ShiftCashUpService(pool, repo).openShift(ctx, FACT).then(
+      (result) => (result.created ? "created" : "replay"),
+      (err: ShiftCashUpError) => err.failure,
+    );
+    expect(inserted).toEqual([]);
+    return answer;
+  }
+
+  it.each([
+    ["the same open re-delivered under another key", "same fact", "shift_force_closed"],
+    ["another payload for the same shiftId", "other payload", "shift_payload_conflict"],
+  ] as const)("%s → %s, recording nothing", async (_label, found, answer) => {
+    expect(await openAgain(found)).toBe(answer);
+  });
+
+  it("the same open on the envelope path → shift_force_closed (never a projection without its close)", async () => {
+    expect(await openAgain("same fact", { ...CTX, path: "envelope" })).toBe("shift_force_closed");
+  });
+});
+
 describe("toShiftHttpError — every refusal maps to its contract status and code", () => {
   it.each([
     ["validation_error", 400],
@@ -187,6 +212,8 @@ describe("toShiftHttpError — every refusal maps to its contract status and cod
     ["shift_payload_conflict", 409],
     ["shift_already_open", 409],
     ["shift_closed", 409],
+    ["shift_force_closed", 409],
+    ["shift_not_stuck", 409],
     ["shift_cashup_inconsistent", 422],
     ["currency_mismatch", 422],
     ["refund_ref_invalid", 422],

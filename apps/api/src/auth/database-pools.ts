@@ -171,6 +171,8 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     // POS version policy. With BYPASSRLS any grant would expose every tenant's rows.
     "device_health",
     "pos_version_policy",
+    // RT-742 (0070): a manager's not-counted force close of a shift.
+    "shift_forced_closes",
     // RT-414 (0062): platform support sessions (platform-admin RLS only).
     "platform_support_sessions",
     "audit_events",
@@ -276,6 +278,13 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   ["pos_version_policy", "SELECT"],
   ["pos_version_policy", "INSERT"],
   ["pos_version_policy", "UPDATE"],
+  // RT-742 (0070): forceCloseShift records a manager's not-counted force
+  // close, and closeShift / the cash-up open re-delivery read whether a shift
+  // was force-closed. Append-only (no UPDATE / DELETE policy); never UPDATE,
+  // DELETE or TRUNCATE. Apply with
+  // docs/operations/sql/shift-forced-closes-domain-grants.sql.
+  ["shift_forced_closes", "SELECT"],
+  ["shift_forced_closes", "INSERT"],
   // RT-539 (0047): every reprint authorized or recorded writes one row, and
   // the next server copy number reads them. Append-only (no UPDATE / DELETE
   // policy); never UPDATE, DELETE or TRUNCATE.

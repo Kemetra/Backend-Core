@@ -44,7 +44,8 @@ info:
     every operation (the 425 and the two `Idempotency-Key` 400 codes) and the
     `openShift` scoping rule; slice 2b-2 documents the replay order below and
     the variance approver's tenant rule. No request or projection shape
-    changed.
+    changed. `forceCloseShift` is implemented too, in the RT-742 runtime
+    step, on its own [GATED] migration.
 
 
     **Model** (10919). A shift is one drawer session on one terminal: at most
@@ -179,7 +180,8 @@ info:
     facts). A not-counted close is excluded from every variance flag and from
     the R-9 cash-refund cross-check, and is never a counted zero (see
     `forceCloseShift`, Not counted). The runtime, and the storage for the new
-    fact, are a separate ticket and a separate [GATED] change; `forceCloseShift` has no runtime route yet. The Console
+    fact, shipped in the RT-742 runtime step (a separate [GATED] change);
+    the operation carries no runtime-status marker. The Console
     read side (`shift-closes.openapi.yaml`) lists recorded cash-ups only, so
     a force-closed shift is not listed there; surfacing it is a separate
     ticket.
@@ -756,11 +758,6 @@ paths:
       summary: Force-close a stuck shift of this store from any terminal, as not counted.
       operationId: forceCloseShift
       x-idempotency: required
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-742 contract (RT-554 follow-up). The runtime, and the storage for
-        the force-closed fact, ship in a separate ticket on its own [GATED]
-        migration.
       tags: [pos-shifts]
       security:
         - operatorAuthorization: []
