@@ -712,8 +712,10 @@ export class SalesService {
       this.pool,
       { tenantId, isPlatformAdmin: false },
       async (client): Promise<TerminalEventResult> => {
+        // RT-787 (R-5): a legacy refund counts against the sale's cash pool, so
+        // it takes the same `sales` row lock as a return's allocation check.
         const sale = await client.query<{ id: string; responsibility_count: number }>(
-          `SELECT id, responsibility_count FROM sales WHERE id = $1 AND store_id = $2`,
+          `SELECT id, responsibility_count FROM sales WHERE id = $1 AND store_id = $2 FOR UPDATE`,
           [saleRef, storeId],
         );
         if (!sale.rows[0]) {

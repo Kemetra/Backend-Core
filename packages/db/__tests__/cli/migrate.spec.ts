@@ -235,6 +235,7 @@ describe("data-pulse-migrate CLI", () => {
     "0064_stock_movements_store_occurred_idx",
     "0065_stock_movements_store_product_occurred_idx",
     "0066_reconciliation_pending_aware_classes",
+    "0067_refund_executions",
     "0068_pos_device_health",
   ] as const;
 
@@ -525,6 +526,26 @@ describe("data-pulse-migrate CLI", () => {
   }
 
   /**
+   * 0067_refund_executions (RT-787): [the refund_executions table, its SELECT +
+   * INSERT policies, the three allocation columns on sale_return_tenders plus
+   * sale_returns.posting_deferred, the original-tender trigger].
+   */
+  async function countRefundExecutionObjects(): Promise<[string, string, string, string]> {
+    const columns =
+      Number(await countPublicColumn("sale_return_tenders", "allocation_ref")) +
+      Number(await countPublicColumn("sale_return_tenders", "original_tender_ref")) +
+      Number(await countPublicColumn("sale_return_tenders", "instrument")) +
+      Number(await countPublicColumn("sale_returns", "posting_deferred"));
+    const trigger = await queryCount(`SELECT COUNT(*)::text AS count FROM pg_trigger
+      WHERE tgname = 'sale_return_tenders_original_tender_check'`);
+    return [
+      await countPublicTables(["refund_executions"]),
+      await countPolicies(["refund_executions"]),
+      String(columns),
+      trigger,
+    ];
+  }
+
    * 0068_pos_device_health (RT-327): [its two tables, their SELECT + INSERT +
    * UPDATE policies] ("0" and "0" after down).
    */
@@ -535,7 +556,9 @@ describe("data-pulse-migrate CLI", () => {
 
   /**
    * After one `down` from head: 0068's device health and version policy tables
-   * are gone, while 0066's pending-aware result classes (the widened CHECK), 0064-0065's stock-movement history
+   * are gone, while 0067's refund executions, allocation columns,
+   * posting_deferred and original-tender trigger, 0066's
+   * pending-aware result classes, 0064-0065's stock-movement history
    * indexes, 0063's anchor tables and activation columns, 0062's
    * support-session table, 0057-0061's freshness indexes, 0056's event-record and settings tables,
    * 0055's AI entitlement tables and functions, 0054's credit reversal
@@ -544,8 +567,9 @@ describe("data-pulse-migrate CLI", () => {
    * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    // 0068's two tables (RT-327) are gone; 0066's pending-aware CHECK stays.
+    // 0068's two tables (RT-327) are gone; 0067's refund executions and 0066's pending-aware CHECK stay.
     expect(await countPosDeviceHealthObjects()).toEqual(["0", "0"]);
+    expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
     expect(await countPendingAwareClassCheck()).toBe("1");
     expect(
       await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
@@ -634,6 +658,9 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("2");
     // 0066's widened, validated result-class CHECK (RT-428).
     expect(await countPendingAwareClassCheck()).toBe("1");
+    // 0067's refund_executions (SELECT + INSERT policies), the four allocation
+    // / posting columns and the original-tender trigger (RT-787).
+    expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
     // 0068's device health and version policy tables, three policies each (RT-327).
     expect(await countPosDeviceHealthObjects()).toEqual(["2", "6"]);
   }

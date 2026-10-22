@@ -97,6 +97,9 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "sale_credit_reversal_tenders:INSERT",
   "sale_approval_uses:SELECT",
   "sale_approval_uses:INSERT",
+  // RT-787 (0067): refund executions (append-only).
+  "refund_executions:SELECT",
+  "refund_executions:INSERT",
   // RT-387 (0050): the shift variance policy revisions (append-only; the
   // Console publishes and every resolution reads them) and the persisted
   // approver verdict of a close (append-only, written once after the commit).
@@ -342,6 +345,7 @@ describe("database pool boundary", () => {
       "sale_credit_reversals",
       "sale_credit_reversal_tenders",
       "sale_approval_uses",
+      "refund_executions",
       "cash_variance_policy_revisions",
       "shift_close_approver_checks",
     ]) {
