@@ -45,7 +45,7 @@ import { Auditable, annotateAudit } from "../audit/auditable.decorator";
 import { PosWriteRateLimitBucket } from "../auth/pos-write-rate-limit.decorator";
 import { PosWriteRateLimitGuard } from "../auth/pos-write-rate-limit.guard";
 import { PosOperatorEnvelopeSaleGuard } from "../auth/pos-operator-envelope-sale.guard";
-import { DeviceBearer } from "../auth/route-auth";
+import { DeviceBearer, ReportsBuildIdentity } from "../auth/route-auth";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import type { TenantContextRequest } from "../context/types";
 import { Idempotent } from "../idempotency/idempotent.decorator";
@@ -159,6 +159,7 @@ export class ShiftCashUpController {
   @PosWriteRateLimitBucket("posWriteShift")
   @Idempotent("required")
   @Auditable("shift.opened")
+  @ReportsBuildIdentity()
   async openShift(
     @Req() request: TenantContextRequest,
     @Body(new ZodValidationPipe(OpenShiftRequestSchema)) body: OpenShiftRequestDto,
@@ -176,6 +177,7 @@ export class ShiftCashUpController {
   @PosWriteRateLimitBucket("posWriteShift")
   @Idempotent("required")
   @Auditable("shift.cash_movement.recorded")
+  @ReportsBuildIdentity()
   async recordCashMovement(
     @Req() request: TenantContextRequest,
     @Param("shift_id", new ZodValidationPipe(ShiftIdParamSchema)) shiftId: string,
@@ -199,6 +201,7 @@ export class ShiftCashUpController {
   @PosWriteRateLimitBucket("posWriteShift")
   @Idempotent("required")
   @Auditable("shift.closed")
+  @ReportsBuildIdentity()
   async closeShift(
     @Req() request: TenantContextRequest,
     @Param("shift_id", new ZodValidationPipe(ShiftIdParamSchema)) shiftId: string,

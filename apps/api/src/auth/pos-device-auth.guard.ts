@@ -81,6 +81,16 @@
  * response, once the credential has 15 days or less left (`rotation-hint.ts`).
  * A refused token records nothing and an error response carries neither header.
  *
+ * Build identity (RT-719)
+ * ------------------------
+ * On a route marked `@ReportsBuildIdentity()` (the thirteen reporting
+ * operations) the guard reads the optional `X-POS-*` headers
+ * (`build-identity.ts`) and hands the result, an identity or `null` for
+ * unknown, to the device lookup, which stores it with the activity write once
+ * the device is admitted. On any other route nothing is passed, so such a route
+ * can neither record nor clear it. A header is never a reason to refuse: the
+ * guard's only failures stay the generic 401.
+ *
  * Do NOT register it globally, and do NOT use it on operator routes
  * (`/api/pos/v1/operators/*`) or on any route that needs a person's
  * credential: it proves only which paired terminal is calling. Any other use
@@ -92,18 +102,25 @@ import {
   type CanActivate,
   type ExecutionContext,
   Injectable,
+  Optional,
   UnauthorizedException,
 } from "@nestjs/common";
+import { Reflector } from "@nestjs/core";
 
+import { parseBuildIdentityHeaders, type BuildIdentityReport } from "../pos-operators/build-identity";
 import { DeviceRepository } from "../pos-operators/device.repository";
 import type { Principal } from "./auth.guard";
+import { REPORTS_BUILD_IDENTITY_KEY } from "./route-auth";
 import type { ResolvedContext, TenantContextRequest } from "../context/types";
 
 const BEARER_PREFIX = "bearer ";
 
 @Injectable()
 export class PosDeviceAuthGuard implements CanActivate {
-  constructor(private readonly devices: DeviceRepository) {}
+  constructor(
+    private readonly devices: DeviceRepository,
+    @Optional() private readonly reflector: Reflector = new Reflector(),
+  ) {}
 
   async canActivate(execCtx: ExecutionContext): Promise<boolean> {
     const request = execCtx.switchToHttp().getRequest<TenantContextRequest>();
@@ -111,7 +128,7 @@ export class PosDeviceAuthGuard implements CanActivate {
     const rawToken = readBearerToken(request);
     if (rawToken === null) throw unauthorized();
 
-    const device = await this.devices.findActiveByAttestationWithExpiry(rawToken);
+    const device = await this.devices.findActiveByAttestationWithExpiry(rawToken, this.buildReportOf(execCtx, request));
     if (!device) throw unauthorized();
 
     // Publish a device PRINCIPAL (mirrors the `pos`-scope token principal
@@ -151,6 +168,15 @@ export class PosDeviceAuthGuard implements CanActivate {
     // reset, but that token stops working then.
     request.deviceRotationExpiry = device.presentedPreviousUntil ?? device.expiresAt;
     return true;
+  }
+
+  /** What the request says about the POS build on a reporting operation; `undefined` on any other route. */
+  private buildReportOf(execCtx: ExecutionContext, request: TenantContextRequest): BuildIdentityReport | undefined {
+    const reports = this.reflector.getAllAndOverride<boolean | undefined>(REPORTS_BUILD_IDENTITY_KEY, [
+      execCtx.getHandler(),
+      execCtx.getClass(),
+    ]);
+    return reports === true ? parseBuildIdentityHeaders(request.headers) : undefined;
   }
 }
 

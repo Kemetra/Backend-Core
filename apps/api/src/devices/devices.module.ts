@@ -20,6 +20,8 @@ import { AuditModule } from "../audit/audit.module";
 import { AuthModule } from "../auth/auth.module";
 import { ContextModule } from "../context/context.module";
 import { IdempotencyModule } from "../idempotency/idempotency.module";
+import { DeviceBuildsController } from "./device-builds.controller";
+import { DeviceBuildsService } from "./device-builds.service";
 import { DevicesController } from "./devices.controller";
 import { DevicesService } from "./devices.service";
 import { PairingCodesController } from "./pairing-codes.controller";
@@ -27,7 +29,7 @@ import { PairingCodesService } from "./pairing-codes.service";
 
 @Module({
   imports: [AuthModule, AuditModule, ContextModule, IdempotencyModule],
-  controllers: [DevicesController, PairingCodesController],
-  providers: [DevicesService, PairingCodesService],
+  controllers: [DevicesController, PairingCodesController, DeviceBuildsController],
+  providers: [DevicesService, PairingCodesService, DeviceBuildsService],
 })
 export class DevicesModule {}

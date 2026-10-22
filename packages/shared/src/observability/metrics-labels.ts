@@ -269,6 +269,15 @@ export const ALLOWED_METRIC_LABELS: Readonly<Record<string, readonly string[]>> 
   // on `device_health` and are a cardinality + §XIV hazard.
   pos_device_heartbeat_total: ["outcome"],
 
+  // ---- POS build identity report — RT-719 ----
+  // Increments once per build identity store that took effect on a reporting
+  // operation: `outcome` is the closed set {recorded, unknown, failed}.
+  // `recorded` stored a valid commit, `unknown` cleared the identity (no valid
+  // commit), `failed` is a store that failed (counted and swallowed). NEVER a
+  // commit, version, pin, device or tenant label: those are on `devices` and a
+  // cardinality + §XIV hazard.
+  pos_build_identity_report_total: ["outcome"],
+
   // ---- ERPNext product-master reconciliation/repair — 021-POLISH (spec §VII) ----
   // Increments on every operator repair action recorded by 021 (a backlog-item
   // confirm/suggest_confirm or a run-result re_point that drives 013's lifecycle)

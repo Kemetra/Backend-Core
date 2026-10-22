@@ -26,6 +26,8 @@ import "reflect-metadata";
 
 import { UnauthorizedException } from "@nestjs/common";
 import type { ExecutionContext } from "@nestjs/common";
+import { ReportsBuildIdentity } from "../../src/auth/route-auth";
+import type { BuildIdentityReport } from "../../src/pos-operators/build-identity";
 import type { DeviceRow } from "@data-pulse-2/db/schema";
 import type { Pool } from "pg";
 
@@ -48,7 +50,7 @@ const SESSION_ID = "0a000000-0000-7000-8000-0000000ses01";
 // ---------------------------------------------------------------------------
 
 const makeFakeDevices = () => ({
-  findActiveByAttestationWithExpiry: jest.fn<Promise<DeviceRow | null>, [string]>(),
+  findActiveByAttestationWithExpiry: jest.fn<Promise<DeviceRow | null>, [string, BuildIdentityReport?]>(),
 });
 
 function buildGuard() {
@@ -73,12 +75,26 @@ function makeDevice(overrides: Partial<DeviceRow> = {}): DeviceRow {
 // ExecutionContext / request helpers
 // ---------------------------------------------------------------------------
 
-function makeCtx(req: object, res: object = makeRes()): ExecutionContext {
+/** A route handler, and one marked as a build identity reporting operation (RT-719). */
+class ProbeRoutes {
+  plain(): void {}
+
+  @ReportsBuildIdentity()
+  reporting(): void {}
+}
+
+function makeCtx(
+  req: object,
+  res: object = makeRes(),
+  handler: () => void = ProbeRoutes.prototype.plain,
+): ExecutionContext {
   return {
     switchToHttp: () => ({
       getRequest: <T>() => req as unknown as T,
       getResponse: <T>() => res as unknown as T,
     }),
+    getHandler: () => handler,
+    getClass: () => ProbeRoutes,
   } as unknown as ExecutionContext;
 }
 
@@ -116,7 +132,7 @@ describe("PosDeviceAuthGuard — valid device pairing token", () => {
 
     expect(result).toBe(true);
     // The raw token (sans "Bearer ") is what gets hashed + looked up.
-    expect(devices.findActiveByAttestationWithExpiry).toHaveBeenCalledWith("device-pairing-token");
+    expect(devices.findActiveByAttestationWithExpiry).toHaveBeenCalledWith("device-pairing-token", undefined);
     expect(req.context).toEqual({
       userId: null,
       tenantId: TENANT_ID,
@@ -406,5 +422,59 @@ describe("PosDeviceAuthGuard — rotate-soon hint (RT-639)", () => {
     await expect(guard.canActivate(makeCtx(req))).rejects.toBeInstanceOf(UnauthorizedException);
 
     expect(req.deviceRotationExpiry).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RT-719 — the build identity report
+// ---------------------------------------------------------------------------
+describe("PosDeviceAuthGuard — the build identity report (RT-719)", () => {
+  const COMMIT = "0123456789abcdef0123456789abcdef01234567";
+
+  function reqWith(headers: Record<string, string>): TenantContextRequest {
+    const req = makeRequest({ authorization: "Bearer device-pairing-token" });
+    Object.assign(req.headers, headers);
+    return req;
+  }
+
+  it("BI1: on a reporting operation, hands the identity the headers carry to the lookup", async () => {
+    const { guard, devices } = buildGuard();
+    devices.findActiveByAttestationWithExpiry.mockResolvedValue(makeDevice());
+    const req = reqWith({ "x-pos-build-commit": COMMIT, "x-pos-app-version": "1.4.0" });
+
+    await guard.canActivate(makeCtx(req, makeRes(), ProbeRoutes.prototype.reporting));
+
+    expect(devices.findActiveByAttestationWithExpiry).toHaveBeenCalledWith("device-pairing-token", {
+      commit: COMMIT,
+      appVersion: "1.4.0",
+      contractPin: null,
+    });
+  });
+
+  it("BI2: on a reporting operation without a valid commit, reports unknown (null), never undefined", async () => {
+    const { guard, devices } = buildGuard();
+    devices.findActiveByAttestationWithExpiry.mockResolvedValue(makeDevice());
+
+    await guard.canActivate(makeCtx(reqWith({}), makeRes(), ProbeRoutes.prototype.reporting));
+    await guard.canActivate(makeCtx(reqWith({ "x-pos-build-commit": "nope" }), makeRes(), ProbeRoutes.prototype.reporting));
+
+    expect(devices.findActiveByAttestationWithExpiry.mock.calls.map(([, build]) => build)).toEqual([null, null]);
+  });
+
+  it("BI3: on any other route, passes nothing, so it can neither record nor clear the identity", async () => {
+    const { guard, devices } = buildGuard();
+    devices.findActiveByAttestationWithExpiry.mockResolvedValue(makeDevice());
+
+    await guard.canActivate(makeCtx(reqWith({ "x-pos-build-commit": COMMIT })));
+
+    expect(devices.findActiveByAttestationWithExpiry.mock.calls[0]?.[1]).toBeUndefined();
+  });
+
+  it("BI4: a header is never a reason to refuse: only the generic 401 of a refused token remains", async () => {
+    const { guard, devices } = buildGuard();
+    devices.findActiveByAttestationWithExpiry.mockResolvedValue(makeDevice());
+    const odd = reqWith({ "x-pos-build-commit": "\u00e9".repeat(300), "x-pos-app-version": "x", "x-pos-contract-pin": "," });
+
+    await expect(guard.canActivate(makeCtx(odd, makeRes(), ProbeRoutes.prototype.reporting))).resolves.toBe(true);
   });
 });

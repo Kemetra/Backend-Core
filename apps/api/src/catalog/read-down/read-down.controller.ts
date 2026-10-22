@@ -37,7 +37,7 @@ import {
 
 import { annotateAudit, Auditable } from "../../audit/auditable.decorator";
 import { PosDeviceAuthGuard } from "../../auth/pos-device-auth.guard";
-import { DeviceBearer } from "../../auth/route-auth";
+import { DeviceBearer, ReportsBuildIdentity } from "../../auth/route-auth";
 import { ZodValidationPipe } from "../../common/zod-validation.pipe";
 import type { TenantContextRequest } from "../../context/types";
 import {
@@ -68,6 +68,7 @@ export class ReadDownController {
   @DeviceBearer()
   @UseGuards(PosDeviceAuthGuard)
   @Auditable("catalog.snapshot.read")
+  @ReportsBuildIdentity()
   async getSnapshot(
     @Req() request: TenantContextRequest,
     @Query("branch_id", new ZodValidationPipe(BranchIdSchema))
@@ -112,6 +113,7 @@ export class ReadDownController {
   @DeviceBearer()
   @UseGuards(PosDeviceAuthGuard)
   @Auditable("catalog.deltas.read")
+  @ReportsBuildIdentity()
   async getDeltas(
     @Req() request: TenantContextRequest,
     @Query("since", new ZodValidationPipe(SinceSchema)) since: string,

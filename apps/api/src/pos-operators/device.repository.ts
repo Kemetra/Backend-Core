@@ -61,6 +61,7 @@ import { and, eq, gt, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Pool } from "pg";
 
 import type { RotationDeviceState } from "../pos-terminal-pairing/rotation-decision";
+import type { BuildIdentityReport } from "./build-identity";
 import { deviceActivity, type ActiveDevice } from "./device-activity";
 import { isDeviceTokenExpiryEnforced } from "./device-token-expiry-gate";
 
@@ -175,9 +176,15 @@ export class DeviceRepository {
    * in the same single query.
    * It is a separate method so every other device lookup keeps its select list
    * (see "Columns" above) and reads `expires_at` only when the expiry flag is on.
+   *
+   * RT-719: `build` is what a reporting operation's request said about the POS
+   * build (an identity, or `null` for unknown); `undefined` for any other
+   * route, which then neither records nor clears the stored identity. It is
+   * handed to the same throttled activity write (see `device-activity.ts`).
    */
   async findActiveByAttestationWithExpiry(
     rawAttestation: string,
+    build?: BuildIdentityReport,
   ): Promise<AuthDeviceRowWithExpiry | null> {
     if (rawAttestation.length === 0) return null;
     const hash = hashToken(rawAttestation);
@@ -192,7 +199,7 @@ export class DeviceRepository {
       .from(devices)
       .where(and(attestationMatch(hash), liveDevice()))
       .limit(1);
-    return this.admit(rows[0]);
+    return this.admit(rows[0], build);
   }
 
   /**
@@ -245,8 +252,8 @@ export class DeviceRepository {
    * throws or waits). For a device route that resolves its device without
    * `findActive*`: the rotate guard, after `decideRotation` allows it.
    */
-  recordActivity(device: ActiveDevice): void {
-    deviceActivity.record(this.domainPool, device);
+  recordActivity(device: ActiveDevice, build?: BuildIdentityReport): void {
+    deviceActivity.record(this.domainPool, device, build);
   }
 
   private async findActive(match: SQL): Promise<AuthDeviceRow | null> {
@@ -259,10 +266,10 @@ export class DeviceRepository {
   }
 
   /** The tenant gate and the activity record every resolved device goes through. */
-  private async admit<T extends AuthDeviceRow>(device: T | undefined): Promise<T | null> {
+  private async admit<T extends AuthDeviceRow>(device: T | undefined, build?: BuildIdentityReport): Promise<T | null> {
     if (!device) return null;
     if (!(await this.tenantIsActive(device.tenantId))) return null;
-    this.recordActivity(device);
+    this.recordActivity(device, build);
     return device;
   }
 

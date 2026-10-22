@@ -61,6 +61,7 @@ export const DEVICE_COLUMNS = `
   ${EXPIRES_AT_KEY_SQL} AS expires_at_key,
   d.last_seen_at, d.revoked_at, d.revoked_by, d.revoke_reason, d.revoke_note,
   d.retired_at, d.retired_by, d.retire_reason,
+  d.reported_build_commit, d.reported_app_version, d.reported_contract_pin, d.build_reported_at,
   os.shift_id AS open_shift_id,
   (SELECT l.replaces_device_id FROM links l WHERE l.device_id = d.id
     ORDER BY l.used_at DESC NULLS LAST, l.id DESC LIMIT 1) AS replaces_device_id,
