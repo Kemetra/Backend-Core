@@ -1,0 +1,13 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/catalog/console-catalog.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+consoleAddProductIdentifier: write
+consoleCreateCatalogProduct: write
+consoleGetCatalogProduct: cheapRead
+consoleListCatalogCategories: cheapRead
+consoleListCatalogProducts: expensiveRead
+consoleRetireCatalogProduct: write
+consoleRetireProductIdentifier: write
+consoleRetireStoreOverride: write
+consoleUpdateCatalogProduct: write
+consoleUpsertStoreOverride: write

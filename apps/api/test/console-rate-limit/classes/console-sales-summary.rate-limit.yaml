@@ -1,0 +1,5 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/console-sales-summary.openapi.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+# RT-649: an aggregate over up to 31 business days of every store in scope.
+consoleGetSalesSummary: expensiveRead

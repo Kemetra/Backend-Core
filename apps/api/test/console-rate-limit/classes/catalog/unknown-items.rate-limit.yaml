@@ -1,0 +1,10 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/catalog/unknown-items.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+tenantAdminBulkDismissUnknownItems: jobOrPreview
+tenantAdminCreateProductFromUnknownItem: write
+tenantAdminDismissUnknownItem: write
+tenantAdminInspectUnknownItem: cheapRead
+tenantAdminLinkUnknownItem: write
+tenantAdminListUnknownItems: expensiveRead
+tenantAdminReopenUnknownItem: write

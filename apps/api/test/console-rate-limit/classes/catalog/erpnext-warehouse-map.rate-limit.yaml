@@ -1,0 +1,6 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/catalog/erpnext-warehouse-map.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+tenantAdminListErpnextWarehouseMappings: cheapRead
+tenantAdminRetireErpnextWarehouseMapping: write
+tenantAdminSetErpnextWarehouseMapping: write

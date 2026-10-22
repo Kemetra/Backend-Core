@@ -1,0 +1,7 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/sale-sync-ops/sale-sync-ops.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+consoleGetSaleAuditTimeline: expensiveRead
+consoleGetSaleSyncStatus: cheapRead
+consoleListNeedsRepair: expensiveRead
+consoleRepairSaleSync: write

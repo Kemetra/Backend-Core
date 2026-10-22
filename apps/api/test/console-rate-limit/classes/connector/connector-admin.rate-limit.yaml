@@ -1,0 +1,9 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/connector/connector-admin.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+tenantAdminDisableConnectorInstance: incidentControl
+tenantAdminIssueConnectorCredential: onboarding
+tenantAdminListConnectorInstances: cheapRead
+tenantAdminRegisterConnectorInstance: onboarding
+tenantAdminRevokeConnectorCredential: incidentControl
+tenantAdminRotateConnectorCredential: incidentControl

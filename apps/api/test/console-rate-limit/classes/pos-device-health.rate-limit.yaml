@@ -1,0 +1,10 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/pos-device-health.openapi.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+# RT-327: one device's health row, like consoleGetDevice.
+consoleGetDeviceHealth: cheapRead
+# RT-327: a keyset page of device health, like consoleListDevices.
+consoleListDeviceHealth: cheapRead
+# RT-327: the platform POS version policy (three rows) and its audited change.
+platformGetPosVersionPolicy: cheapRead
+platformSetPosVersionPolicy: write

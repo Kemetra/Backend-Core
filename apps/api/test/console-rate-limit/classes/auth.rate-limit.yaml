@@ -1,0 +1,6 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/auth.openapi.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+refreshSession: exempt
+requestEmailVerification: exempt
+signOut: exempt

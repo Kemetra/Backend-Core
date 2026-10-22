@@ -1,0 +1,9 @@
+# Console rate-limit class of each cookieAuth operation in
+# packages/contracts/openapi/cash-variance-policy.openapi.yaml (RT-805; checked by console-rate-limit.ratchet.spec.ts).
+
+consoleGetStoreCashVariancePolicy: cheapRead
+consoleGetTenantCashVariancePolicy: cheapRead
+consoleListStoreCashVariancePolicyRevisions: cheapRead
+consoleListTenantCashVariancePolicyRevisions: cheapRead
+consolePublishStoreCashVariancePolicyOverride: write
+consolePublishTenantCashVariancePolicy: write
