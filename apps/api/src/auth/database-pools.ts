@@ -128,6 +128,8 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     "sale_credit_reversals",
     "sale_credit_reversal_tenders",
     "sale_approval_uses",
+    // RT-787 (0067): refund executions.
+    "refund_executions",
     "receivable",
     "claim",
     "claim_receivables",
@@ -165,6 +167,12 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     // RT-427 (0063): the Inventory Anchors taken at sale-effects activation.
     "inventory_anchors",
     "inventory_anchor_lines",
+    // RT-327 (0068): per-device heartbeat health (tenant RLS) and the global
+    // POS version policy. With BYPASSRLS any grant would expose every tenant's rows.
+    "device_health",
+    "pos_version_policy",
+    // RT-742 (0070): a manager's not-counted force close of a shift.
+    "shift_forced_closes",
     // RT-414 (0062): platform support sessions (platform-admin RLS only).
     "platform_support_sessions",
     "audit_events",
@@ -259,6 +267,24 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   ["inventory_anchors", "INSERT"],
   ["inventory_anchor_lines", "SELECT"],
   ["inventory_anchor_lines", "INSERT"],
+  // RT-327 (0068): every POS heartbeat upserts its device's health row (last
+  // write wins) and the console reads it; the heartbeat and the console read
+  // the version policy and the platform change creates and replaces it. No
+  // DELETE policy on either; never DELETE or TRUNCATE. Apply with
+  // docs/operations/sql/pos-device-health-domain-grants.sql.
+  ["device_health", "SELECT"],
+  ["device_health", "INSERT"],
+  ["device_health", "UPDATE"],
+  ["pos_version_policy", "SELECT"],
+  ["pos_version_policy", "INSERT"],
+  ["pos_version_policy", "UPDATE"],
+  // RT-742 (0070): forceCloseShift records a manager's not-counted force
+  // close, and closeShift / the cash-up open re-delivery read whether a shift
+  // was force-closed. Append-only (no UPDATE / DELETE policy); never UPDATE,
+  // DELETE or TRUNCATE. Apply with
+  // docs/operations/sql/shift-forced-closes-domain-grants.sql.
+  ["shift_forced_closes", "SELECT"],
+  ["shift_forced_closes", "INSERT"],
   // RT-539 (0047): every reprint authorized or recorded writes one row, and
   // the next server copy number reads them. Append-only (no UPDATE / DELETE
   // policy); never UPDATE, DELETE or TRUNCATE.
@@ -288,6 +314,11 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   ["sale_credit_reversal_tenders", "INSERT"],
   ["sale_approval_uses", "SELECT"],
   ["sale_approval_uses", "INSERT"],
+  // RT-787 (0067): a refund execution is written once and read back by its
+  // replay, the return reads and the posting feed. Append-only (no UPDATE /
+  // DELETE policy); never UPDATE, DELETE or TRUNCATE.
+  ["refund_executions", "SELECT"],
+  ["refund_executions", "INSERT"],
   // RT-387 (0050): the Console publishes policy revisions and every resolution
   // (device read, Console reads, the open's accept-and-flag check) reads them;
   // a close's approver verdict is written once after the commit and read back

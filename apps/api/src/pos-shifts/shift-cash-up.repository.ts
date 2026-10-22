@@ -56,6 +56,12 @@ export interface CashUpShiftRow {
   readonly payloadHash: Buffer;
   /** RT-387: the policy frozen with the open and its flags; null (or absent) when the open carried none. */
   readonly frozenPolicy?: RecordedFrozenPolicy | null;
+  /**
+   * RT-742: true when a manager closed the shift with `forceCloseShift` (a
+   * `shift_forced_closes` row; the shift is `closed_forced` with no
+   * `shift_closes` row). Read by `findShift` only; absent elsewhere.
+   */
+  readonly notCounted?: boolean;
 }
 
 /** The ShiftOpened fact to record; scope comes from the `DeviceScope`. */
@@ -378,6 +384,24 @@ function toClose(row: CloseDbRow, refs: ReadonlyArray<string>, verdict: Approver
   };
 }
 
+/**
+ * RT-742: whether a manager's force close (`shift_forced_closes`) is what
+ * closed the `closed_forced` shift. A statement of its own, run AFTER the
+ * caller took the shift row lock: under READ COMMITTED a new statement takes a
+ * new snapshot, so it sees a force close committed while the caller waited on
+ * that lock (a subquery of the locking SELECT would not).
+ */
+export async function hasForcedClose(
+  client: PoolClient,
+  shift: { readonly shiftId: string; readonly tenantId: string },
+): Promise<boolean> {
+  const r = await client.query<{ forced: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM shift_forced_closes WHERE shift_id = $1 AND tenant_id = $2) AS forced`,
+    [shift.shiftId, shift.tenantId],
+  );
+  return r.rows[0]?.forced === true;
+}
+
 /** True for the one-open-per-device refusal (23505 on OPEN_DEVICE_INDEX). */
 export function isOpenDeviceConflict(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
@@ -404,7 +428,9 @@ export class ShiftCashUpRepository {
 
   /**
    * The cash-up shift `shiftId` of THIS tenant, store and device, or null.
-   * `forUpdate` takes the row lock that serialises a movement against a close.
+   * `forUpdate` takes the row lock that serialises a movement against a close
+   * (and against a manager's force close, RT-742, which takes the same lock).
+   * `notCounted` says whether that force close is what closed it.
    */
   async findShift(
     client: PoolClient,
@@ -424,7 +450,10 @@ export class ShiftCashUpRepository {
       [shiftId, scope.tenantId, scope.storeId, scope.deviceId],
     );
     const row = r.rows[0];
-    return row === undefined ? null : toShift(row);
+    if (row === undefined) return null;
+    const shift = toShift(row);
+    if (shift.lifecycleState !== "closed_forced") return shift;
+    return { ...shift, notCounted: await hasForcedClose(client, shift) };
   }
 
   /**

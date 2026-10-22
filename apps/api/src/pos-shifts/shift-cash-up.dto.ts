@@ -162,6 +162,13 @@ export const CloseShiftRequestSchema = z
     }
   });
 
+/**
+ * RT-742 `ForceCloseShiftRequest`: the reason only. The actor, the time and
+ * the scope come from the envelope and the server; a total, a user id or a
+ * scope field is an unknown key (400).
+ */
+export const ForceCloseShiftRequestSchema = z.object({ forcedReason: shortText }).strict();
+
 export type OpenShiftRequestDto = z.infer<typeof OpenShiftRequestSchema>;
 export type RecordCashMovementRequestDto = z.infer<typeof RecordCashMovementRequestSchema>;
 
@@ -170,5 +177,6 @@ export type OpenShiftFact = Omit<OpenShiftRequestDto, "operatorUserId">;
 /** The CashMovement fact: the body without the attribution claim. */
 export type CashMovementFact = Omit<RecordCashMovementRequestDto, "operatorUserId">;
 export type CloseShiftRequestDto = z.infer<typeof CloseShiftRequestSchema>;
+export type ForceCloseShiftRequestDto = z.infer<typeof ForceCloseShiftRequestSchema>;
 /** The ShiftClosed fact: the body without the attribution claim. */
 export type CloseShiftFact = Omit<CloseShiftRequestDto, "operatorUserId">;

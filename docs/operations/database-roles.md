@@ -145,6 +145,7 @@ Legitimate deployments never set a role option.
     `INSERT`, `UPDATE` (RT-418, migration 0051)
   - `cash_variance_policy_revisions`, `shift_close_approver_checks`: `SELECT`,
     `INSERT` (RT-387, migration 0050)
+  - `shift_forced_closes`: `SELECT`, `INSERT` (RT-742, migration 0070)
 
   A deploy that skips that grant step now fails to boot, and the error names
   each missing privilege and table, instead of starting healthy with those
@@ -411,6 +412,19 @@ table the domain role must use needs a matching grant step at deploy time.
   (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold no privilege on
   any of them (`AUTH_LOOKUP_FORBIDDEN_GRANTS`).
 
+- **Migration `0067_refund_executions` (RT-787).** Run
+  [`sql/refund-executions-domain-grants.sql`](sql/refund-executions-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT` and `INSERT` on
+  `refund_executions` (a refund execution writes it; its replay, the return
+  reads and the posting feed read it). Append-only: never grant `UPDATE`,
+  `DELETE` or `TRUNCATE`. The new allocation columns on
+  `sale_return_tenders` and `sale_returns.posting_deferred` are covered by
+  those tables' existing grants. Without the grant the API refuses to boot
+  (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold no privilege on
+  it (`AUTH_LOOKUP_FORBIDDEN_GRANTS`).
+
 - **Migration `0056_inventory_position_events` (RT-435).** Run
   [`sql/inventory-position-events-domain-grants.sql`](sql/inventory-position-events-domain-grants.sql)
   after `migrate up` and before the API starts, in the same step 2 of
@@ -453,6 +467,36 @@ table the domain role must use needs a matching grant step at deploy time.
   API refuses to boot (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must
   hold no privilege on either (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). 0063 needs no
   maintenance window: the tables are new and every tenant stays OFF.
+
+- **Migration `0068_pos_device_health` (RT-327).** Run
+  [`sql/pos-device-health-domain-grants.sql`](sql/pos-device-health-domain-grants.sql)
+  after `migrate up` and BEFORE the API image that needs it is rolled, in the
+  same step 2 of [`deploy/README.md`](../../deploy/README.md#deploy), with the
+  same `-v domain_role=<role>`. It grants the domain role `SELECT`, `INSERT`
+  and `UPDATE` on `device_health` (every POS heartbeat upserts its device's row
+  and the Console reads it) and on `pos_version_policy` (the heartbeat and the
+  Console read it, the platform change creates and replaces it). Neither has a
+  `DELETE` policy: never grant `DELETE` or `TRUNCATE`. Without the grants the
+  API refuses to boot (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must
+  hold no privilege on either (`AUTH_LOOKUP_FORBIDDEN_GRANTS`): it has
+  `BYPASSRLS`. 0068 needs no maintenance window: both tables are new. Its down
+  migration drops only these two tables and so discards the stored heartbeat
+  telemetry and the version policy.
+
+- **Migration `0070_shift_forced_closes` (RT-742).** Run
+  [`sql/shift-forced-closes-domain-grants.sql`](sql/shift-forced-closes-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT` and `INSERT` on
+  `shift_forced_closes`: `forceCloseShift` records a manager's not-counted
+  force close, and `closeShift` and the cash-up open re-delivery read whether
+  a shift was force-closed. Append-only: never grant `UPDATE`, `DELETE` or
+  `TRUNCATE`. The 0070 UNIQUEs on `shifts` and `devices` need no grant.
+  Without the grants the API refuses to boot (`DOMAIN_REQUIRED_GRANTS`). The
+  auth lookup role must hold no privilege on it
+  (`AUTH_LOOKUP_FORBIDDEN_GRANTS`). 0070 holds `shifts` and `devices` for its
+  two UNIQUE builds (well under a second at pilot volume); run it with no POS
+  sync in flight.
 
 - **Console device revoke (RT-365, on migration `0040_device_lifecycle`).** Run
   [`sql/device-lifecycle-domain-grants.sql`](sql/device-lifecycle-domain-grants.sql)

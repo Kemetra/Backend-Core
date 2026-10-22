@@ -37,8 +37,8 @@ info:
          event referencing a sale; stamp `refundedAt`; preserve the
          POS-reported refund amount verbatim; idempotent (FR-010/012/013/014).
          No tender fields (gate A.5). Not for new use — see `recordReturn`.
-         Gated off from the F-4 runtime (RT-271 R-11, RT-490): 404 unless
-         the deployment enables it.
+         Gated off since RT-787 (RT-271 R-11, RT-490): 404 unless the
+         deployment enables `POS_LEGACY_REFUND_ENABLED`.
       4. `readSale`     — the minimal authorized read to resolve a sale for
          void/return and duplicate-replay; object-level authz; cross-tenant /
          out-of-scope ids are non-disclosing 404s (FR-014/063/100/102).
@@ -358,8 +358,8 @@ info:
     accepted as before. It is NOT additive in BEHAVIOUR, from the F-2 runtime:
     a return of a sale that carries a non-cash tender, and a return that
     would allocate more than a tender's refundable balance, are refused
-    (422). The three new operations are contract-only (`x-runtime-status`)
-    until F-2.
+    (422). The three new operations are live from the F-2 runtime (RT-787,
+    migration 0067).
     ROLLOUT ORDER: (1) this contract; (2) the F-2 runtime with its own
     [GATED] migration: the server accepts the allocation fields and serves
     the three new operations. Until then the strict return DTO rejects the
@@ -870,8 +870,8 @@ paths:
       deprecated: true
       x-idempotency: required
       x-runtime-note: >
-        Live and ungated until the F-4 runtime (RT-271 R-11). From F-4 it sits
-        behind a legacy-refund deployment gate, off by default (off → 404
+        Since RT-787 (RT-271 R-11) it sits behind the legacy-refund deployment
+        gate `POS_LEGACY_REFUND_ENABLED`, off by default (off → 404
         `not_found`, nothing recorded). A later breaking contract version
         removes the operation.
       tags: [pos-sales]
@@ -885,7 +885,7 @@ paths:
         a full-value credit note.
 
 
-        GATED OFF (RT-271 R-11, RT-490): from the F-4 runtime the route
+        GATED OFF (RT-271 R-11, RT-490): since RT-787 the route
         answers 404 `not_found` and records nothing, a provenance replay of
         an earlier refund included, unless the deployment enables the legacy
         refund gate. The gate is off by default, the same posture as
@@ -1202,10 +1202,6 @@ paths:
     get:
       summary: List the returns recorded against a sale, with their refund settlement.
       operationId: listSaleReturns
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-490 (RT-271 F-1) contract. The runtime ships in F-2, on its own
-        [GATED] migration.
       tags: [pos-sales]
       security:
         - operatorAuthorization: []
@@ -1244,10 +1240,6 @@ paths:
     get:
       summary: Read the return recorded against a sale under a given provenance.
       operationId: readReturnByProvenance
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-490 (RT-271 F-1) contract for RT-196. The runtime ships in F-2, on
-        its own [GATED] migration.
       tags: [pos-sales]
       security:
         - operatorAuthorization: []
@@ -1296,10 +1288,6 @@ paths:
       summary: Record that one refund allocation of a return was paid out.
       operationId: recordRefundExecution
       x-idempotency: required
-      x-runtime-status: contract-only
-      x-runtime-note: >
-        RT-490 (RT-271 F-1) contract. The runtime and its [GATED] migration
-        ship in F-2; the POS reports executions from F-5.
       tags: [pos-sales]
       security:
         - operatorAuthorization: []
