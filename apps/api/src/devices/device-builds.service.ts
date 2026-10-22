@@ -62,7 +62,7 @@ export class DeviceBuildsService {
   ) {}
 
   /** The baseline of the caller's scope (or of the one `storeId`). A store out of scope → `DeviceStoreNotInScopeError`. */
-  async baseline(input: FleetBaselineInput): Promise<FleetBaseline> {
+  baseline(input: FleetBaselineInput): Promise<FleetBaseline> {
     return runWithTenantContext(this.pool, { tenantId: input.tenantId, isPlatformAdmin: false }, async (client) => {
       const { scope } = await resolveDeviceCaller(this.memberships, client, input);
       if (input.storeId !== undefined && !(await storeInCallerScope(client, { tenantId: input.tenantId, scope, storeId: input.storeId }))) {

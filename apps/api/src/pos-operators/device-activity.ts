@@ -109,7 +109,6 @@ function errorCode(err: unknown): string {
   return err instanceof Error ? err.name : "unknown";
 }
 
-/** Write the touch (and the build report, when there is one); the number of rows it changed (0: not due). */
 /** Count a build identity store that took effect (a write inside the window changed no row and is no outcome). */
 function countBuildReport(build: BuildIdentityReport | undefined, changed: number): void {
   if (build !== undefined && changed > 0) recordPosBuildIdentityReport(build === null ? "unknown" : "recorded");
@@ -120,7 +119,8 @@ function countBuildReportFailure(build: BuildIdentityReport | undefined): void {
   if (build !== undefined) recordPosBuildIdentityReport("failed");
 }
 
-async function touchLastSeen(pool: Pool, device: ActiveDevice, build: BuildIdentityReport | undefined): Promise<number> {
+/** Write the touch (and the build report, when there is one); the number of rows it changed (0: not due). */
+function touchLastSeen(pool: Pool, device: ActiveDevice, build: BuildIdentityReport | undefined): Promise<number> {
   return runWithTenantContext(pool, { tenantId: device.tenantId, isPlatformAdmin: false }, async (client) => {
     // Give up rather than wait: a timeout is an error, logged and dropped.
     await client.query("SET LOCAL lock_timeout = '1s'");
