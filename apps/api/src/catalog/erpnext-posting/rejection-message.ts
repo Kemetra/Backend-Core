@@ -38,7 +38,7 @@ const CONTROL_CHARS = /[\u0000-\u001F\u0080-\u009F]/gu;
 const KEY = String.raw`(token|password|passwd|pwd|secret|api[_-]?key|authorization)(["']?\s*[:=]\s*)`;
 
 /** A key's quoted value, up to its closing quote, spaces included (PR #905 review). */
-const QUOTED_VALUE = new RegExp(String.raw`${KEY}("[^"]*"?|'[^']*'?)`, "gi");
+const QUOTED_VALUE = new RegExp(`${KEY}("[^"]*"?|'[^']*'?)`, "gi");
 
 /**
  * A key's bare value: an optional auth-scheme word (`Bearer`, `Basic`,
