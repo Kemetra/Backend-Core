@@ -220,6 +220,8 @@ describe("Drift contract: every signal in the catalogue is represented", () => {
     "connector_lifecycle_total",
     // Connector health — 020-POLISH (spec FR-018). Unlabeled.
     "connector_heartbeat_total",
+    // POS device heartbeat — RT-327. `outcome` (closed set).
+    "pos_device_heartbeat_total",
     // ERPNext product-master reconciliation/repair — 021-POLISH (spec §VII). Unlabeled.
     "erpnext_product_reconciliation_total",
     // Settlement & receivables domain — 035 T034 (spec section 7). Unlabeled.

@@ -54,5 +54,7 @@ export * from "./inventory/tracking-identities";
 export * from "./inventory/position-events";
 export * from "./inventory/anchors";
 export * from "./connector-health";
+export * from "./device-health";
+export * from "./pos-version-policy";
 export * from "./ai-entitlements";
 export * from "./platform-support-sessions";
