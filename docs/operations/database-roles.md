@@ -146,6 +146,10 @@ Legitimate deployments never set a role option.
   - `cash_variance_policy_revisions`, `shift_close_approver_checks`: `SELECT`,
     `INSERT` (RT-387, migration 0050)
 
+  This list is historical and no longer extended (RT-812). The full required
+  set is assembled from the grants fragments in
+  [`apps/api/src/auth/grants/`](../../apps/api/src/auth/grants/), and each
+  fragment requires exactly the `GRANT`s of its deploy script (a test checks).
   A deploy that skips that grant step now fails to boot, and the error names
   each missing privilege and table, instead of starting healthy with those
   routes returning 500.
@@ -209,6 +213,25 @@ tenant/domain services.
 
 Runtime grants are provisioned outside migrations, so a migration that adds a
 table the domain role must use needs a matching grant step at deploy time.
+
+**From RT-812, a new grant step adds only its own files** (no section here, no
+README or bundle edit; see `CONTRIBUTING.md`):
+
+- `docs/operations/sql/<slug>-domain-grants.sql`, carrying the line
+  `-- deploy: every-release`. Its header documents the tables, the privileges
+  and why, and what must never be granted. That header is the documentation
+  for the grant step; the per-migration sections below are frozen history.
+  `deploy/apply-domain-grants.sh` (step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy)) applies every marked
+  script in name order, and `deploy/apply-domain-grants.sh --list` prints the
+  current set. `release-bundle.sh` ships the same set.
+- `apps/api/src/auth/grants/<slug>.grants.ts`, naming the script. Its
+  `domainRequired` must equal the script's `GRANT`s, so the API refuses to boot
+  without them. It also lists the new tables in `lookupForbidden`, or in
+  `lookupAllowed` with a written reason.
+
+A script without the marker, such as the owner-gated
+`ai-entitlements-domain-grants.sql`, is never run by step 2.
 
 - **Migration `0035_cashier_admissions` (RT-113 BC2).** Run
   [`sql/cashier-admissions-domain-grants.sql`](sql/cashier-admissions-domain-grants.sql)

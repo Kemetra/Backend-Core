@@ -15,13 +15,14 @@
  *       - dashboard_api / pos rows reject "both populated" (XOR preserved).
  *       - dashboard_api / pos rows reject "neither populated" (XOR preserved).
  *   - auth_tokens.device_id FK → devices(id) is in place.
- *   - UP → DOWN → UP cycle (0001 only) leaves a working schema.
+ *   - UP → DOWN → UP cycle of 0001 (every later migration rolled back first
+ *     and re-applied after) leaves a working schema.
  *
  * If Docker is unavailable, every assertion fails loudly with a clear
  * "Container start failed" reason. Set MIGRATION_TEST_ALLOW_SKIP=1 to skip
  * locally without Docker (matches migration.spec.ts behaviour).
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   applyAllUpAndCreateAppRole,
@@ -36,18 +37,29 @@ const DOWN_0001_PATH = resolve(
   DRIZZLE_DIR,
   "0001_pos_operator_identity.down.sql",
 );
-const UP_0002_PATH = resolve(DRIZZLE_DIR, "0002_shifts.sql");
-const DOWN_0002_PATH = resolve(DRIZZLE_DIR, "0002_shifts.down.sql");
-const UP_0033_PATH = resolve(DRIZZLE_DIR, "0033_sale_tenders.sql");
-const DOWN_0033_PATH = resolve(DRIZZLE_DIR, "0033_sale_tenders.down.sql");
-const UP_0035_PATH = resolve(DRIZZLE_DIR, "0035_cashier_admissions.sql");
-const DOWN_0035_PATH = resolve(DRIZZLE_DIR, "0035_cashier_admissions.down.sql");
-const UP_0036_PATH = resolve(DRIZZLE_DIR, "0036_shift_cash_up.sql");
-const DOWN_0036_PATH = resolve(DRIZZLE_DIR, "0036_shift_cash_up.down.sql");
-const UP_0047_PATH = resolve(DRIZZLE_DIR, "0047_sale_history_capture.sql");
-const DOWN_0047_PATH = resolve(DRIZZLE_DIR, "0047_sale_history_capture.down.sql");
-const UP_0050_PATH = resolve(DRIZZLE_DIR, "0050_shift_variance_policy.sql");
-const DOWN_0050_PATH = resolve(DRIZZLE_DIR, "0050_shift_variance_policy.down.sql");
+/**
+ * RT-812: every migration above 0001, in the runner's (lexical) order. The
+ * cycle below rolls all of them back before 0001 and re-applies them after,
+ * so a later migration that depends on 0001's objects needs no edit here.
+ */
+const ABOVE_0001 = readdirSync(DRIZZLE_DIR)
+  .filter((n) => /^\d{4}_.+\.sql$/.test(n) && !n.endsWith(".down.sql"))
+  .map((n) => n.replace(/\.sql$/, ""))
+  .filter((id) => id > "0001_pos_operator_identity")
+  .sort();
+
+const migrationSql = (id: string, kind: "up" | "down"): string =>
+  readFileSync(resolve(DRIZZLE_DIR, kind === "up" ? `${id}.sql` : `${id}.down.sql`), "utf8");
+
+/** Roll back every migration above 0001, newest first, as the runner's downs would. */
+async function rollBackAbove0001(pg: PgTestEnv): Promise<void> {
+  for (const id of [...ABOVE_0001].reverse()) await pg.admin.query(migrationSql(id, "down"));
+}
+
+/** Re-apply every migration above 0001, oldest first. */
+async function reapplyAbove0001(pg: PgTestEnv): Promise<void> {
+  for (const id of ABOVE_0001) await pg.admin.query(migrationSql(id, "up"));
+}
 
 let env: PgTestEnv | null = null;
 let dockerSkipReason = "";
@@ -449,35 +461,13 @@ describe("0001_pos_operator_identity migration", () => {
   // ---------------------------------------------------------------------------
   it("0001 UP → DOWN → UP cycle leaves a working schema", async () => {
     if (!env) throw new Error("env not initialized");
-    const down0002Sql = readFileSync(DOWN_0002_PATH, "utf8");
-    const up0002Sql = readFileSync(UP_0002_PATH, "utf8");
-    const down0033Sql = readFileSync(DOWN_0033_PATH, "utf8");
-    const up0033Sql = readFileSync(UP_0033_PATH, "utf8");
-    const down0035Sql = readFileSync(DOWN_0035_PATH, "utf8");
-    const up0035Sql = readFileSync(UP_0035_PATH, "utf8");
-    const down0036Sql = readFileSync(DOWN_0036_PATH, "utf8");
-    const up0036Sql = readFileSync(UP_0036_PATH, "utf8");
-    const down0047Sql = readFileSync(DOWN_0047_PATH, "utf8");
-    const up0047Sql = readFileSync(UP_0047_PATH, "utf8");
-    const down0050Sql = readFileSync(DOWN_0050_PATH, "utf8");
-    const up0050Sql = readFileSync(UP_0050_PATH, "utf8");
     const downSql = readFileSync(DOWN_0001_PATH, "utf8");
     const upSql = readFileSync(UP_0001_PATH, "utf8");
 
-    // 0002_shifts depends on devices (FK opening_device_id → devices.id ON DELETE RESTRICT).
-    // Drop 0002 first so 0001 DOWN can remove devices without a FK violation.
-    // 0033_sale_tenders likewise (sales.device_id → devices.id, RT-77), and
-    // 0035_cashier_admissions (device_id → devices.id, RT-113 BC2), and
-    // 0036_shift_cash_up (its fact tables reference devices and shifts, RT-17),
-    // and 0047_sale_history_capture (sale_reprints.device_id → devices.id, RT-538).
-    // 0050_shift_variance_policy goes first: its verdict table references
-    // shift_closes and its functions replace 0036's (RT-385).
-    await env.admin.query(down0050Sql);
-    await env.admin.query(down0047Sql);
-    await env.admin.query(down0036Sql);
-    await env.admin.query(down0035Sql);
-    await env.admin.query(down0033Sql);
-    await env.admin.query(down0002Sql);
+    // Every later migration may depend on 0001's devices (0002 shifts, 0033
+    // sale_tenders, 0035 admissions, 0036 cash-up, 0047 reprints, ...), so roll
+    // them all back first, newest first, exactly as the runner's downs would.
+    await rollBackAbove0001(env);
 
     // Roll back 0001 only. After this, devices is gone, clerk_user_id is gone,
     // and auth_tokens has its original XOR CHECK back.
@@ -511,13 +501,8 @@ describe("0001_pos_operator_identity migration", () => {
     `);
     expect(reDevices.rows[0]?.count).toBe("1");
 
-    // Restore 0002, 0033, 0035, 0036, 0047 and 0050 so subsequent tests in this suite have the full schema.
-    await env.admin.query(up0002Sql);
-    await env.admin.query(up0033Sql);
-    await env.admin.query(up0035Sql);
-    await env.admin.query(up0036Sql);
-    await env.admin.query(up0047Sql);
-    await env.admin.query(up0050Sql);
+    // Re-apply every later migration, oldest first, so the suite ends with the full schema.
+    await reapplyAbove0001(env);
 
     // After re-UP, the scope-aware CHECK is back and the original XOR is gone.
     const reCheck = await env.admin.query<{ conname: string }>(`

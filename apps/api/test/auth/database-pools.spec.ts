@@ -6,6 +6,7 @@ import {
   authLookupPoolFactory,
   verifyDatabasePoolBoundary,
 } from "../../src/auth/database-pools";
+import { routineGrantScripts, scriptGrants } from "../_helpers/domain-grant-scripts";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -14,101 +15,12 @@ afterEach(() => {
 });
 
 /**
- * RT-212: the domain role's required grants, written out here rather than
- * imported so the test states the expected set independently of the code.
+ * RT-212: the domain role's required grants, read from the routine deploy
+ * scripts (RT-812) rather than imported, so the test states the expected set
+ * independently of the code: dropping a fragment entry the scripts still grant
+ * fails, and so does a script grant the boot check does not verify.
  */
-const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
-  "cashier_admissions:SELECT",
-  "cashier_admissions:INSERT",
-  "cashier_admissions:UPDATE",
-  "cashier_admission_requests:SELECT",
-  "cashier_admission_requests:INSERT",
-  "cashier_admission_requests:UPDATE",
-  "cashier_admission_requests:DELETE",
-  // RT-213: device auth reads the device's tenant status on the domain role
-  // (inside the tenant's RLS context). Without this grant every till would be
-  // refused at once, so a missing grant must fail boot instead.
-  "tenants:SELECT",
-  // RT-343: sign-in reads the user's memberships (joined to roles) on this role.
-  "memberships:SELECT",
-  "roles:SELECT",
-  // RT-17 (0036): the shift cash-up writes. UPDATE on shifts: the close moves
-  // it to closed and the 0036 triggers take FOR SHARE / FOR UPDATE row locks.
-  "shifts:SELECT",
-  "shifts:INSERT",
-  "shifts:UPDATE",
-  "shift_closes:SELECT",
-  "shift_closes:INSERT",
-  "shift_cash_movements:SELECT",
-  "shift_cash_movements:INSERT",
-  "shift_refund_claims:SELECT",
-  "shift_refund_claims:INSERT",
-  // RT-330 (0037): the frozen posting resolution (append-only).
-  "erpnext_posting_resolution:SELECT",
-  "erpnext_posting_resolution:INSERT",
-  // RT-425 (0042): the per-effect inventory integration state (mutable, no DELETE).
-  "inventory_effect_integration:SELECT",
-  "inventory_effect_integration:INSERT",
-  "inventory_effect_integration:UPDATE",
-  // RT-432 (0044): stock locations (read by every inventory path; INSERT by the
-  // store trigger). Identity is immutable: no UPDATE / DELETE.
-  "stock_locations:SELECT",
-  "stock_locations:INSERT",
-  // RT-448 (0045): tracking identities (read by the identity list). Read-only.
-  "tracking_identities:SELECT",
-  // RT-435 (0056): status-move / relocation event records (append-only) and
-  // the tenant inventory settings (upserted, no DELETE).
-  "inventory_position_events:SELECT",
-  "inventory_position_events:INSERT",
-  // RT-414 (0062): platform support sessions (opened, renewed, ended; never deleted).
-  "platform_support_sessions:SELECT",
-  "platform_support_sessions:INSERT",
-  "platform_support_sessions:UPDATE",
-  "tenant_inventory_settings:SELECT",
-  "tenant_inventory_settings:INSERT",
-  "tenant_inventory_settings:UPDATE",
-  // RT-427 (0063): the Inventory Anchors (append-only).
-  "inventory_anchors:SELECT",
-  "inventory_anchors:INSERT",
-  "inventory_anchor_lines:SELECT",
-  "inventory_anchor_lines:INSERT",
-  // RT-539 (0047): the receipt reprint record (append-only).
-  "sale_reprints:SELECT",
-  "sale_reprints:INSERT",
-  // RT-418 (0051): payer responsibilities (append-only), and the payer rows the
-  // Console routes create and a credit capture locks FOR SHARE (needs UPDATE).
-  "sale_responsibilities:SELECT",
-  "sale_responsibilities:INSERT",
-  "payer_account:SELECT",
-  "payer_account:INSERT",
-  "payer_account:UPDATE",
-  // RT-577 (0054): credit-sale reversals and their refund tenders (append-only),
-  // and the shared approval-use ledger a credit return writes (append-only).
-  "sale_credit_reversals:SELECT",
-  "sale_credit_reversals:INSERT",
-  "sale_credit_reversal_tenders:SELECT",
-  "sale_credit_reversal_tenders:INSERT",
-  "sale_approval_uses:SELECT",
-  "sale_approval_uses:INSERT",
-  // RT-787 (0067): refund executions (append-only).
-  "refund_executions:SELECT",
-  "refund_executions:INSERT",
-  // RT-387 (0050): the shift variance policy revisions (append-only; the
-  // Console publishes and every resolution reads them) and the persisted
-  // approver verdict of a close (append-only, written once after the commit).
-  "cash_variance_policy_revisions:SELECT",
-  "cash_variance_policy_revisions:INSERT",
-  "shift_close_approver_checks:SELECT",
-  "shift_close_approver_checks:INSERT",
-  // RT-365: the Console revoke locks the device row FOR UPDATE and sets the
-  // revoke fields (FOR UPDATE needs the UPDATE privilege).
-  "devices:UPDATE",
-  // RT-367: the Console pairing codes INSERT (issue), SELECT (list, cancel,
-  // the one-replacement check) and UPDATE (cancel; the redemption's burn).
-  "pairing_codes:SELECT",
-  "pairing_codes:INSERT",
-  "pairing_codes:UPDATE",
-]);
+const DOMAIN_GRANTS: ReadonlySet<string> = new Set(routineGrantScripts().flatMap((s) => scriptGrants(s)));
 
 const LOOKUP_GRANTS: ReadonlySet<string> = new Set(
   AUTH_LOOKUP_REQUIRED_GRANTS.map(([t, p]) => `${t}:${p}`),

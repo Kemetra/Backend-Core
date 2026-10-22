@@ -91,43 +91,14 @@ op run --env-file=deploy/prod.env -- \
   docker compose -f docker-compose.prod.yml run --rm --build migrate
 
 # 2. Domain-role grants for tables added by migrations. Runtime grants are not
-#    part of migrations (docs/operations/database-roles.md). The scripts are
-#    idempotent; run them on every deploy. Each one exits non-zero on failure,
-#    so stop here if one does. psql takes the migration-owner connection from
-#    the PG* variables in deploy/grants.env, never from a command-line URL.
-op run --env-file=deploy/grants.env -- sh -c \
-  'psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/cashier-admissions-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/shift-cash-up-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/erpnext-posting-resolution-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/inventory-effect-integration-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/stock-locations-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/tracking-foundation-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/signin-memberships-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/sale-reprints-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/device-lifecycle-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/sale-responsibilities-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/shift-variance-policy-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/sale-credit-reversals-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/inventory-position-events-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/platform-support-sessions-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/inventory-anchors-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" \
-        -f docs/operations/sql/refund-executions-domain-grants.sql'
+#    part of migrations (docs/operations/database-roles.md). The script applies
+#    every routine docs/operations/sql/*-domain-grants.sql (the ones marked
+#    `-- deploy: every-release`) in name order. They are idempotent; run
+#    them on every deploy. It stops at the first failure and exits non-zero, so
+#    stop here if it does. psql takes the migration-owner connection from the
+#    PG* variables in deploy/grants.env, never from a command-line URL.
+#    Changed in RT-812: this used to be one psql -f line per script.
+op run --env-file=deploy/grants.env -- deploy/apply-domain-grants.sh
 
 # 3. Start everything (migrate re-runs as a no-op, then api/worker start).
 op run --env-file=deploy/prod.env -- \

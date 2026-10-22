@@ -3,6 +3,7 @@ export * from "./errors/envelope";
 export * from "./logger/pino";
 export * from "./observability/otel";
 export * from "./observability/metrics-labels";
+export * from "./fragments/load-fragment-dir";
 export * from "./observability/correlation";
 export * from "./observability/meter";
 export * from "./observability/sentry";

@@ -9,8 +9,9 @@
 -- never as a URL argument, and pass the environment's DATABASE_URL role name:
 --   psql -X -v domain_role=<role> \
 --        -f docs/operations/sql/inventory-anchors-domain-grants.sql
--- deploy/README.md runs this in step 2 of every release, after
--- platform-support-sessions-domain-grants.sql.
+-- deploy/apply-domain-grants.sh runs this in step 2 of every release
+-- (deploy/README.md), selected by the marker on the next line (RT-812):
+-- deploy: every-release
 --
 -- The script stops on the first error and exits non-zero (ON_ERROR_STOP), and
 -- also exits non-zero if the verification below finds a missing grant, so
