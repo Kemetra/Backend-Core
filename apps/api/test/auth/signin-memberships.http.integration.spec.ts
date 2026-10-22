@@ -131,7 +131,7 @@ async function seed(admin: Pool): Promise<void> {
 
 beforeAll(async () => {
   try {
-    env = await startPgEnv();
+    env = await startPgEnv({ isolated: true }); // RT-815 §3.4: cluster-wide state
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {

@@ -36,7 +36,7 @@ let dockerSkipped = false;
 
 beforeAll(async () => {
   try {
-    env = await startPgEnv();
+    env = await startPgEnv({ isolated: true }); // RT-815 §3.4: cluster-wide state
     await applyAllUpAndCreateAppRole(env);
     await env.admin.query(`
       CREATE ROLE ${LOOKUP_ROLE} LOGIN PASSWORD '${LOOKUP_PASSWORD}' BYPASSRLS;
@@ -47,11 +47,7 @@ beforeAll(async () => {
       GRANT UPDATE ON users TO ${LOOKUP_ROLE};
     `);
 
-    const host = env.container.getHost();
-    const port = env.container.getMappedPort(5432);
-    lookup = new Pool({
-      connectionString: `postgres://${LOOKUP_ROLE}:${LOOKUP_PASSWORD}@${host}:${port}/test`,
-    });
+    lookup = new Pool({ connectionString: env.uriFor(LOOKUP_ROLE, LOOKUP_PASSWORD) });
 
     await env.admin.query(
       `INSERT INTO tenants (id, slug, name) VALUES
