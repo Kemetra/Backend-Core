@@ -11,8 +11,8 @@
  *   - Backend-Core-raised dead-letters (retry budget exhausted) and a
  *     reconciliation from a superseded `posted` ack (no reason) store null;
  *   - a reconciliation upgrade of an earlier rejection stores the fresh
- *     message; a message with nothing left after sanitising is null and the
- *     ack is still accepted;
+ *     message (with the first two cases, one table); a message with nothing
+ *     left after sanitising is null and the ack is still accepted;
  *   - the CHECKs refuse a message on a row that is not dead-lettered, and an
  *     empty or over-long one;
  *   - no audit row carries the message (G4).
@@ -107,23 +107,30 @@ const reconciliation = (message: string): AckOutcomeInput => ({
   reason: { category: "validation", message },
 });
 
-describe("RT-410 — the message is stored with the dead-letter, sanitised", () => {
-  it("permanently_rejected stores the sanitised message", async () => {
-    if (skip) return;
-    await resetPending();
-    await svc().ackOutcome(rejected(FIRST));
-    expect(await stored()).toEqual({ status: "permanently_rejected", category: "validation", message: FIRST_STORED });
-  });
+type StoredRow = Awaited<ReturnType<typeof stored>>;
 
-  it("reconciliation_required stores the sanitised message", async () => {
+describe("RT-410 — the message is stored with the dead-letter, sanitised", () => {
+  it.each<[string, () => AckOutcomeInput[], StoredRow]>([
+    [
+      "permanently_rejected stores the sanitised message",
+      () => [rejected(FIRST)],
+      { status: "permanently_rejected", category: "validation", message: FIRST_STORED },
+    ],
+    [
+      "reconciliation_required stores the sanitised message",
+      () => [reconciliation(FIRST)],
+      { status: "permanently_rejected", category: "reconciliation_required", message: FIRST_STORED },
+    ],
+    [
+      "a reconciliation upgrade of an earlier rejection stores the fresh message",
+      () => [rejected(FIRST), reconciliation(SECOND)],
+      { status: "permanently_rejected", category: "reconciliation_required", message: SECOND },
+    ],
+  ])("%s", async (_label, acks, expected) => {
     if (skip) return;
     await resetPending();
-    await svc().ackOutcome(reconciliation(FIRST));
-    expect(await stored()).toEqual({
-      status: "permanently_rejected",
-      category: "reconciliation_required",
-      message: FIRST_STORED,
-    });
+    for (const ack of acks()) await svc().ackOutcome(ack);
+    expect(await stored()).toEqual(expected);
   });
 
   it("a message with nothing left after sanitising is null, and the ack is still recorded", async () => {
@@ -164,17 +171,6 @@ describe("RT-410 — retention (G5)", () => {
     expect(await stored()).toEqual(before);
   });
 
-  it("a reconciliation upgrade of an earlier rejection stores the fresh message", async () => {
-    if (skip) return;
-    await resetPending();
-    await svc().ackOutcome(rejected(FIRST));
-    await svc().ackOutcome(reconciliation(SECOND));
-    expect(await stored()).toEqual({
-      status: "permanently_rejected",
-      category: "reconciliation_required",
-      message: SECOND,
-    });
-  });
 });
 
 describe("RT-410 — dead-letters with no Connector message are null", () => {
