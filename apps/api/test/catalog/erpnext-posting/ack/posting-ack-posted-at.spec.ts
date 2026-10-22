@@ -104,7 +104,7 @@ describe("RT-425 — erpnext_posting_status.posted_at (ERP confirmation time)", 
     await expect(
       env!.admin.query(
         `UPDATE erpnext_posting_status
-            SET status = 'pending', document_ref = NULL
+            SET rejection_message = NULL, status = 'pending', document_ref = NULL
           WHERE id = $1`,
         [POST_A_PENDING],
       ),

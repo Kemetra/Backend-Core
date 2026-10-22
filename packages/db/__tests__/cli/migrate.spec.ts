@@ -237,6 +237,8 @@ describe("data-pulse-migrate CLI", () => {
     "0066_reconciliation_pending_aware_classes",
     "0067_refund_executions",
     "0068_pos_device_health",
+    "0070_shift_forced_closes",
+    "0071_erpnext_posting_rejection_message",
     "0072_inventory_safety",
   ] as const;
 
@@ -566,6 +568,31 @@ describe("data-pulse-migrate CLI", () => {
   }
 
   /**
+   * 0070_shift_forced_closes (RT-742): [the force-close table, its SELECT +
+   * INSERT policies, its two composite FK targets on shifts and devices].
+   */
+  async function countShiftForcedCloseObjects(): Promise<[string, string, string]> {
+    const targets = await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
+      WHERE conname IN ('uq_shifts_force_close_target', 'uq_devices_tenant_store_target')`);
+    return [
+      await countPublicTables(["shift_forced_closes"]),
+      await countPolicies(["shift_forced_closes"]),
+      targets,
+    ];
+  }
+
+  /**
+   * 0071_erpnext_posting_rejection_message (RT-410): [the rejection_message
+   * column, its two validated CHECKs].
+   */
+  async function countRejectionMessageObjects(): Promise<[string, string]> {
+    const checks = await queryCount(`SELECT COUNT(*)::text AS count FROM pg_constraint
+      WHERE conname IN ('erpnext_posting_status_rejection_message_length',
+                        'erpnext_posting_status_rejection_message_when_rejected') AND convalidated`);
+    return [await countPublicColumn("erpnext_posting_status", "rejection_message"), checks];
+  }
+
+  /**
    * 0072_inventory_safety (RT-449): [its five tables, their policies
    * (revisions and holds SELECT + INSERT + UPDATE, the other three SELECT +
    * INSERT), tenant_inventory_settings.safety_ttl_seconds, the
@@ -582,8 +609,10 @@ describe("data-pulse-migrate CLI", () => {
 
   /**
    * After one `down` from head: 0072's safety tables, TTL column and
-   * tracking_identities UPDATE policy are gone, while 0068's device health
-   * and version policy tables, 0067's refund executions, allocation columns,
+   * tracking_identities UPDATE policy are gone, while 0071's rejection_message
+   * column and its CHECKs, 0070's force-close table and its two UNIQUE targets,
+   * 0068's device health and version policy tables,
+   * 0067's refund executions, allocation columns,
    * posting_deferred and original-tender trigger, 0066's
    * pending-aware result classes, 0064-0065's stock-movement history
    * indexes, 0063's anchor tables and activation columns, 0062's
@@ -594,9 +623,15 @@ describe("data-pulse-migrate CLI", () => {
    * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    // 0072's safety objects (RT-449) are gone; 0068's two tables, 0067's refund
-    // executions and 0066's pending-aware CHECK stay.
+    // 0072's safety objects (RT-449) are gone.
     expect(await countInventorySafetyObjects()).toEqual(["0", "0", "0", "2"]);
+    // 0071's rejection_message column and its two validated CHECKs (RT-410) stay.
+    expect(await countRejectionMessageObjects()).toEqual(["1", "2"]);
+    // 0070's force-close table and its two UNIQUE targets (RT-742) stay.
+    expect(await countShiftForcedCloseObjects()).toEqual(["1", "2", "2"]);
+    await expectShiftCashUpApplied();
+    // 0068's two tables (RT-327), 0067's refund executions and 0066's
+    // pending-aware CHECK stay.
     expect(await countPosDeviceHealthObjects()).toEqual(["2", "6"]);
     expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
     expect(await countPendingAwareClassCheck()).toBe("1");
@@ -692,6 +727,11 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
     // 0068's device health and version policy tables, three policies each (RT-327).
     expect(await countPosDeviceHealthObjects()).toEqual(["2", "6"]);
+    // 0070's force-close table (SELECT + INSERT policies) and its two
+    // composite FK targets on shifts and devices (RT-742).
+    expect(await countShiftForcedCloseObjects()).toEqual(["1", "2", "2"]);
+    // 0071's rejection_message column and its two validated CHECKs (RT-410).
+    expect(await countRejectionMessageObjects()).toEqual(["1", "2"]);
     // 0072's five safety tables (12 policies), the Safety TTL column and the
     // tracking_identities UPDATE policy (RT-449).
     expect(await countInventorySafetyObjects()).toEqual(["5", "12", "1", "3"]);

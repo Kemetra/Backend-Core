@@ -311,6 +311,12 @@ describe("reconciliation.yaml — RT-410 PostingBacklogItem.reason", () => {
     expect(text).toMatch(/never writes it to a log/);
     expect(text).toContain("Sentry or Datadog");
   });
+  it("states that the RT-410 runtime shipped and never returns the category text", () => {
+    const text = reasonDescription();
+    expect(text).toContain("the RT-410 storage (migration 0071) and write path have shipped");
+    expect(text).toContain("never the category text");
+    expect(text).not.toContain("still returns the category text");
+  });
   it("documents the `other` category without closing the set", () => {
     const category = item().properties?.["rejectionCategory"];
     expect(String(category?.["description"])).toContain("`other`");
