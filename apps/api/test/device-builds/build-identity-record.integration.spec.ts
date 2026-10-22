@@ -270,6 +270,22 @@ describe("RT-719 build identity: a route that does not report", () => {
     expect(await row(DEV_B.id)).toMatchObject({ reported_build_commit: null, build_reported_at: null });
     expect(metric).toHaveBeenCalledTimes(1);
   });
+
+  // The contract's "Throttled like the last-seen write": one window per device, shared by every
+  // device-token route, and the server MAY defer a changed identity to the next window. So a
+  // route that does not report (the RT-327 heartbeat) can win a window and defer an upgrade's
+  // first report; the identity is stale for that window, never lost, never cleared.
+  it("can win the window: a changed identity reported inside it is deferred to the next window", async () => {
+    if (skipped()) return;
+    await call("reporting", DEV_A, FULL);
+    await openWindow(DEV_A.id);
+    await call("plain", DEV_A);
+    await call("reporting", DEV_A, { "x-pos-build-commit": COMMIT_2 });
+    expect(await row(DEV_A.id)).toMatchObject({ reported_build_commit: COMMIT, reported_app_version: "1.4.0-rc.1" });
+    await openWindow(DEV_A.id);
+    await call("reporting", DEV_A, { "x-pos-build-commit": COMMIT_2 });
+    expect(await row(DEV_A.id)).toMatchObject({ reported_build_commit: COMMIT_2, reported_app_version: null });
+  });
 });
 
 describe("RT-719 build identity: a refused request records nothing", () => {
