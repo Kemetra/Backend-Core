@@ -7,9 +7,15 @@
 #   fast            : no Docker. Static checks + build all workspaces plus
 #                     Docker-free unit tests for worker / shared / auth.
 #                     Medium and High.
-#   db-integration  : Docker/Testcontainers. Real Postgres 16-alpine boots for
-#                     packages/db migration UP/DOWN cycles and apps/api RLS suites.
-#                     Medium and High.
+#   db-integration  : Docker/Testcontainers. The apps/api RLS / audit / auth
+#                     suites with the coverage gate (one shared Postgres, RT-815).
+#                     Medium and High. Keeps its name (and the historic "+ migrations"):
+#                     release gates read it by name.
+#   db-package      : Docker/Testcontainers. packages/db migration UP/DOWN cycles
+#                     and the worker outbox DB suites, in parallel with
+#                     db-integration (RT-816). Same gate as db-integration.
+#                     Release gates require it by name too (release-images.yml,
+#                     deploy/lab/verify-release.cjs).
 #   oasdiff         : OpenAPI breaking-change gate (RT-52). Every PR, any tier.
 #   schemathesis    : API fuzz over the cookieAuth surface (RT-59). PRs that are
 #                     High, or Medium outside apps/worker/. Nightly full run on
@@ -22,7 +28,8 @@
 #   - Job-level `if:` only, never workflow-level `paths:`. A skipped job still
 #     reports its check run, so the four required contexts always report.
 #   - The four required jobs keep their exact `name:` values: ruleset 24169937
-#     matches them by name, and release-images.yml reads fast + db-integration.
+#     matches them by name, and release-images.yml + deploy/lab/verify-release.cjs
+#     read fast + db-integration + db-package (RT-816).
 #   - Fail-open: a gated job is skipped ONLY when `changes` says 'false'. If
 #     `changes` fails or emits nothing, everything runs (and `ci` goes red).
 #
@@ -161,7 +168,7 @@ jobs:
         # The Testcontainers-backed outbox suites
         # (retry-budget / idempotent-consumer / tenant-context) are excluded
         # by default in apps/worker/jest.config.cjs. They run in the
-        # db-integration job below with WORKER_INCLUDE_DB_TESTS=1.
+        # db-package job below with WORKER_INCLUDE_DB_TESTS=1 (RT-816).
         run: pnpm --filter @data-pulse-2/worker test
 
       - name: Test @data-pulse-2/shared
@@ -181,6 +188,8 @@ jobs:
     # The now-retired self-hosted box this budget was tuned to was faster. 40
     # gives margin so a slow cold run reports a real verdict instead of being
     # cancelled mid-api-step (which wasted the already-green db + worker steps).
+    # RT-816: the db + worker steps now run in db-package; RT-815 cut the api
+    # step to ~4 min. The 40-min ceiling is kept until more runs are measured.
     timeout-minutes: 40
     steps:
       - name: Checkout
@@ -212,22 +221,8 @@ jobs:
       - name: Pre-pull postgres:16-alpine
         run: docker pull postgres:16-alpine
 
-      - name: Test @data-pulse-2/db (migrations + Testcontainers)
-        run: pnpm --filter @data-pulse-2/db test
-
-      - name: Test @data-pulse-2/worker (Testcontainers outbox suites)
-        # T561 / T562 / T563 — drainer-level retry budget, idempotent consumer,
-        # and tenant-context RLS proof. WORKER_INCLUDE_DB_TESTS=1 lifts the
-        # default `jest.config.cjs` exclusion of the three Testcontainers-
-        # backed outbox specs (which the fast job skips for lack of Docker).
-        # This step re-runs the full worker suite — the unit tier overlap
-        # with `fast` is a few seconds of duplicate work and is intentional:
-        # it keeps the CI yaml uniform and avoids a brittle regex inclusion
-        # filter on the CLI (regex escapes round-trip badly through pnpm /
-        # PowerShell / bash). The integration coverage is what matters here.
-        env:
-          WORKER_INCLUDE_DB_TESTS: "1"
-        run: pnpm --filter @data-pulse-2/worker test
+      # RT-816: the packages/db and worker DB suites run in the parallel
+      # `db-package` job, so they no longer wait in front of the api suite.
 
       - name: Test @data-pulse-2/api (RLS + audit + auth suites)
         # #618 G2 — coverage is collected and the Jest threshold gates this
@@ -284,6 +279,64 @@ jobs:
           disable_search: true
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # RT-816: split out of db-integration so these suites run in parallel with
+  # the api suite instead of in front of it. Same tier gate as db-integration.
+  # The name is a required check in release-images.yml and
+  # deploy/lab/verify-release.cjs; keep the three in step.
+  db-package:
+    name: db-package (packages/db migrations + worker DB suites)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.run_db != 'false' }}
+    runs-on: ubuntu-latest
+    # Measured on PR #909: db 193 s + worker 47 s, plus ~2 min install/build.
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable corepack and pin pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.0 --activate
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build workspaces required by db/worker tests
+        run: >-
+          pnpm
+          --filter @data-pulse-2/shared
+          --filter @data-pulse-2/auth
+          --filter @data-pulse-2/db
+          --filter @data-pulse-2/worker
+          run build
+
+      - name: Pre-pull postgres:16-alpine
+        run: docker pull postgres:16-alpine
+
+      - name: Test @data-pulse-2/db (migrations + Testcontainers)
+        run: pnpm --filter @data-pulse-2/db test
+
+      - name: Test @data-pulse-2/worker (Testcontainers outbox suites)
+        # T561 / T562 / T563 — drainer-level retry budget, idempotent consumer,
+        # and tenant-context RLS proof. WORKER_INCLUDE_DB_TESTS=1 lifts the
+        # default `jest.config.cjs` exclusion of the three Testcontainers-
+        # backed outbox specs (which the fast job skips for lack of Docker).
+        # This step re-runs the full worker suite — the unit tier overlap
+        # with `fast` is a few seconds of duplicate work and is intentional:
+        # it keeps the CI yaml uniform and avoids a brittle regex inclusion
+        # filter on the CLI (regex escapes round-trip badly through pnpm /
+        # PowerShell / bash). The integration coverage is what matters here.
+        env:
+          WORKER_INCLUDE_DB_TESTS: "1"
+        run: pnpm --filter @data-pulse-2/worker test
 
   # Moved here from openapi-breaking.yml (RT-582) so `ci` can depend on it.
   # Compares packages/contracts/openapi/** at the PR merge-base with the PR
@@ -465,7 +518,7 @@ jobs:
   # cannot waive it; the other jobs are required unless `changes` said 'false'.
   ci:
     name: ci
-    needs: [changes, fast, db-integration, oasdiff, schemathesis]
+    needs: [changes, fast, db-integration, db-package, oasdiff, schemathesis]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -480,13 +533,14 @@ jobs:
           RUN_SCHEMATHESIS: ${{ needs.changes.outputs.run_schemathesis }}
           FAST: ${{ needs.fast.result }}
           DB: ${{ needs.db-integration.result }}
+          DB_PACKAGE: ${{ needs.db-package.result }}
           OASDIFF: ${{ needs.oasdiff.result }}
           SCHEMATHESIS: ${{ needs.schemathesis.result }}
         run: |
           set -u
           echo "event=$EVENT changes=$CHANGES tier=$TIER"
           echo "run_fast=$RUN_FAST run_db=$RUN_DB run_schemathesis=$RUN_SCHEMATHESIS"
-          echo "fast=$FAST db-integration=$DB oasdiff=$OASDIFF schemathesis=$SCHEMATHESIS"
+          echo "fast=$FAST db-integration=$DB db-package=$DB_PACKAGE oasdiff=$OASDIFF schemathesis=$SCHEMATHESIS"
           failed=0
           err() { echo "::error::$*"; failed=1; }
 
@@ -514,6 +568,7 @@ jobs:
           }
           check fast "$([ "$RUN_FAST" != "false" ] && echo true || echo false)" "$FAST"
           check db-integration "$([ "$RUN_DB" != "false" ] && echo true || echo false)" "$DB"
+          check db-package "$([ "$RUN_DB" != "false" ] && echo true || echo false)" "$DB_PACKAGE"
           check oasdiff "$pr" "$OASDIFF"
           check schemathesis "$want_schemathesis" "$SCHEMATHESIS"
           exit "$failed"

@@ -67,7 +67,7 @@ jobs:
           # The ci.yml jobs that run on a push to main. The ruleset also requires
           # the PR-only oasdiff and schemathesis checks; they do not exist on a
           # main commit, so they are enforced at merge time, not here.
-          REQUIRED_CHECKS: '["fast (build + Docker-free tests)","db-integration (Testcontainers + RLS + migrations)"]'
+          REQUIRED_CHECKS: '["fast (build + Docker-free tests)","db-integration (Testcontainers + RLS + migrations)","db-package (packages/db migrations + worker DB suites)"]'
         run: |
           set -euo pipefail
           fail() { echo "::error::$*"; exit 1; }
