@@ -636,3 +636,6 @@ describe("T595 PR-B-1: drainer outbox metric emission (dead-letter / drain-durat
     expect(r.rows[0]!.delivery_state).toBe("dead_lettered");
   });
 });
+
+// RT-816 fail-closed probe — do not merge
+it("RT-816 probe: worker DB failure must turn ci red", () => { expect(1).toBe(2); });
