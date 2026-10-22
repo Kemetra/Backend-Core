@@ -141,6 +141,11 @@ describe("changelog fragments (RT-805)", () => {
       expect(lib.unreleasedBlock(out)).toBe("\nSee changelog.d/.\n\n");
     });
 
+    it("release refuses while [Unreleased] still holds an entry, so nothing is dropped", () => {
+      const stray = "## [Unreleased]\n\n### Fixed\n- RT-8 written straight in.\n\n## [0.1.0]\n";
+      expect(() => lib.release(stray, fragments, "0.2.0", "2026-10-22")).toThrow(/--migrate/);
+    });
+
     it("release refuses an empty fragment set", () => {
       expect(() => lib.release("## [Unreleased]\n\n## [0.1.0]\n", [], "0.2.0", "2026-10-22")).toThrow(/no fragments/);
     });

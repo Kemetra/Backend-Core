@@ -122,7 +122,10 @@ function unreleasedBlock(text) {
 function release(text, fragments, version, date) {
   const changelog = lf(text);
   if (fragments.length === 0) throw new Error("no fragments in changelog.d to release");
-  const { end } = unreleasedBounds(changelog);
+  const { bodyStart, end } = unreleasedBounds(changelog);
+  if (splitSections(changelog.slice(bodyStart, end)).length > 0) {
+    throw new Error("CHANGELOG.md [Unreleased] still holds entries; run `node tools/changelog/assemble.cjs --migrate` first");
+  }
   const section = `## [${version}] — ${date}\n\n${renderSections(fragments)}\n`;
   return changelog.slice(0, end) + section + changelog.slice(end);
 }
