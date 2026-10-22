@@ -524,6 +524,34 @@ describe("verify-release: refusals", () => {
       expectRefused(/db-package .* is 'missing'/);
     });
 
+    it.each([
+      ["a trailing comment", "jobs:\n  db-package: # RT-816\n    name: y\n"],
+      ["a quoted key", 'jobs:\n  "db-package":\n    name: y\n'],
+      ["an anchor", "jobs:\n  db-package: &dbp\n    name: y\n"],
+      ["4-space indentation", "jobs:\n    db-package:\n        name: y\n"],
+    ])("requires db-package when the job key carries %s", (_label, ciYml) => {
+      put("source/.github/workflows/ci.yml", ciYml);
+      putJson("check-runs.json", green([fast, db]));
+      expectRefused(/db-package .* is 'missing'/);
+    });
+
+    it("requires db-package whenever the SHA has a db-package run, whatever ci.yml says", () => {
+      put("source/.github/workflows/ci.yml", PRE_SPLIT_CI);
+      putJson("check-runs.json", [
+        ...(green([fast, db]) as object[]),
+        { name: dbPackage, conclusion: "failure", slug: "github-actions", started_at: "2026-10-18T10:00:00Z" },
+      ]);
+      expectRefused(/db-package .* is 'failure'/);
+    });
+
+    it("fails closed when .github in the release source is not a real directory", () => {
+      rmSync(join(dir, "source/.github"), { recursive: true, force: true });
+      put("decoy/workflows/ci.yml", PRE_SPLIT_CI);
+      symlinkSync(join(dir, "decoy"), join(dir, "source/.github"));
+      putJson("check-runs.json", green([fast, db]));
+      expectRefused(/db-package .* is 'missing'/);
+    });
+
     it("does not require db-package for a release whose ci.yml predates it", () => {
       put("source/.github/workflows/ci.yml", PRE_SPLIT_CI);
       putJson("check-runs.json", green([fast, db]));

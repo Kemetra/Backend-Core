@@ -44,8 +44,10 @@ const REQUIRED_CHECKS = [...PRE_SPLIT_CHECKS, DB_PACKAGE_CHECK];
 // RT-816 split the packages/db + worker DB suites out of db-integration into a
 // db-package job. A release whose own ci.yml has no such job ran them inside
 // db-integration, so its two checks prove the same thing (equal strength).
-// `\r?`: a CRLF copy must not read as pre-split (that would drop a required check).
-const DB_PACKAGE_JOB_RE = /^ {2}db-package:[ \t]*\r?$/m;
+// Deliberately loose (any indent, quoted key, trailing comment or anchor, CRLF):
+// reading a post-split ci.yml as pre-split would drop a required check, while a
+// stray match only requires one more.
+const DB_PACKAGE_JOB_RE = /^[ \t]+["']?db-package["']?[ \t]*:/m;
 const RELEASE_CI_YML = path.join(".github", "workflows", "ci.yml");
 const REQUIRED_FILES = ["docker-compose.release.yml", "release.env"];
 // No evidence file is ever read past this size (the workflow caps the bundle the same way).
@@ -176,10 +178,24 @@ function checkCompare(cmp, sha, label = "release") {
  * The checks the release commit's own ci.yml (from `git archive <sha>`) runs.
  * Unreadable or missing evidence requires every check: never a pass.
  */
-function requiredChecksFor(sourceDir) {
+function requiredChecksFor(sourceDir, runs) {
+  // Any db-package run on the SHA means the job existed there: always judged.
+  if (Array.isArray(runs) && runs.some((r) => r?.name === DB_PACKAGE_CHECK)) return REQUIRED_CHECKS;
+  // Each directory on the way must be real: a symlinked `.github` is not the release's own file.
+  for (const dir of [".github", path.join(".github", "workflows")]) {
+    if (!isRealDir(path.join(sourceDir, dir))) return REQUIRED_CHECKS;
+  }
   const ci = readText(path.join(sourceDir, RELEASE_CI_YML));
   if (ci === null) return REQUIRED_CHECKS;
   return DB_PACKAGE_JOB_RE.test(ci) ? REQUIRED_CHECKS : PRE_SPLIT_CHECKS;
+}
+
+function isRealDir(dir) {
+  try {
+    return fs.lstatSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** The most recent github-actions run of each required check must be a success. */
@@ -193,6 +209,11 @@ function checkCiRuns(runs, required = REQUIRED_CHECKS) {
     const result = latest?.conclusion ?? "missing";
     return result === "success" ? [] : [`required check '${name}' is '${result}' on the release SHA`];
   });
+}
+
+/** checkCiRuns with the checks the release commit itself ran (RT-816). */
+function checkReleaseCiRuns(runs, sourceDir) {
+  return checkCiRuns(runs, requiredChecksFor(sourceDir, runs));
 }
 
 function parseSums(text, label) {
@@ -495,7 +516,7 @@ function verifyRelease(dir, ctx, sha) {
   const problems = [
     ...checkTagCommit(readText(path.join(dir, "tag-commit.txt")), sha, "release"),
     ...checkCompare(readJson(path.join(dir, "compare.json")), sha),
-    ...checkCiRuns(readJson(path.join(dir, "check-runs.json")), requiredChecksFor(path.join(dir, "source"))),
+    ...checkReleaseCiRuns(readJson(path.join(dir, "check-runs.json")), path.join(dir, "source")),
   ];
   const releaseDir = path.join(dir, "release");
   const outerSums = readText(path.join(releaseDir, "SHA256SUMS"));
