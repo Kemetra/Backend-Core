@@ -411,6 +411,7 @@ op run --env-file=deploy/grants.env -- sh -c \
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/shift-variance-policy-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/sale-credit-reversals-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/inventory-position-events-domain-grants.sql &&
+   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/platform-support-sessions-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/inventory-anchors-domain-grants.sql &&
    psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/pos-device-health-domain-grants.sql'
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d --build

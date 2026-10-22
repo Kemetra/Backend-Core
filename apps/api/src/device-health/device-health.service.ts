@@ -22,11 +22,12 @@
  *   - `liveness` and `compliance` filters match the derived values. The
  *     version comparison is in code, not SQL, so a filtered list reads keyset
  *     batches of devices (ordered by device id) and keeps the matches until a
- *     page and one more row are collected. A tenant's devices are few, and
- *     the scan stops as soon as the page is full.
+ *     page and one more row are collected, or until `maxScanned` devices have
+ *     been read: then the page is short and the cursor is at the last device
+ *     scanned (see `collect`).
  *   - Nothing is written, audited or locked.
  */
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Optional } from "@nestjs/common";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool, PoolClient } from "pg";
 
@@ -78,8 +79,17 @@ export interface ListDeviceHealthInput extends ScopedInput {
   readonly limit: number;
 }
 
-/** Devices read per statement when a derived filter makes the page a scan. */
-const SCAN_BATCH = 200;
+/** DI token of the derived-filter scan limits (a test passes small ones). */
+export const DEVICE_HEALTH_SCAN = "DEVICE_HEALTH_SCAN";
+
+export interface DeviceHealthScanLimits {
+  /** Devices read per statement when a derived filter makes the page a scan. */
+  readonly batchSize: number;
+  /** Devices one request may scan before it returns a cursor at the last one scanned. */
+  readonly maxScanned: number;
+}
+
+const DEFAULT_SCAN_LIMITS: DeviceHealthScanLimits = { batchSize: 200, maxScanned: 1000 };
 
 const TRUST_STATE_SQL = `CASE WHEN d.retired_at IS NOT NULL THEN 'retired'
                             WHEN d.revoked_at IS NOT NULL THEN 'revoked'
@@ -127,6 +137,7 @@ export class DeviceHealthService {
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(MembershipRepository) private readonly memberships: MembershipRepository,
+    @Optional() @Inject(DEVICE_HEALTH_SCAN) private readonly limits: DeviceHealthScanLimits = DEFAULT_SCAN_LIMITS,
   ) {}
 
   /** One page of device health by device id. A foreign cursor is a 400 before any read. */
@@ -136,15 +147,14 @@ export class DeviceHealthService {
       const { scope } = await resolveDeviceCaller(this.memberships, client, input);
       if (input.storeId !== undefined) await this.assertStoreInScope(client, input, scope, input.storeId);
       const now = new Date();
-      const rows = await this.collect({ client, input, scope, now }, after);
-      const page = rows.slice(0, input.limit);
+      const { matches, resumeAfter } = await this.collect({ client, input, scope, now }, after);
+      const page = matches.slice(0, input.limit);
       const last = page.at(-1);
+      // Another page follows when a match was left over, or when the scan stopped at its cap.
+      const cursorDevice = matches.length > input.limit && last !== undefined ? last.device_id : resumeAfter;
       return {
         items: page.map((row) => toDeviceHealthView(row, now)),
-        nextCursor:
-          rows.length > input.limit && last !== undefined
-            ? encodeDeviceHealthCursor({ tenantId: input.tenantId, deviceId: last.device_id })
-            : null,
+        nextCursor: cursorDevice === null ? null : encodeDeviceHealthCursor({ tenantId: input.tenantId, deviceId: cursorDevice }),
       };
     });
   }
@@ -162,21 +172,28 @@ export class DeviceHealthService {
 
   /**
    * Up to `limit + 1` rows after `after` that match every filter, in device id
-   * order (the extra row tells whether another page follows).
+   * order (the extra row tells whether another page follows). A derived filter
+   * scans at most `maxScanned` devices: past that, `resumeAfter` is the last
+   * device scanned, so the client resumes there without re-reading anything
+   * and a selective filter never reads a whole fleet in one request.
    */
-  private async collect(scan: ScanContext, after: string | null): Promise<DeviceHealthReadRow[]> {
+  private async collect(scan: ScanContext, after: string | null): Promise<{ matches: DeviceHealthReadRow[]; resumeAfter: string | null }> {
     const wanted = scan.input.limit + 1;
-    const batchSize = hasDerivedFilter(scan.input) ? SCAN_BATCH : wanted;
+    const scanning = hasDerivedFilter(scan.input);
     const matches: DeviceHealthReadRow[] = [];
     let cursor = after;
+    let scanned = 0;
     while (matches.length < wanted) {
-      const rows = await this.fetchBatch(scan, cursor, batchSize);
+      const size = scanning ? Math.min(this.limits.batchSize, this.limits.maxScanned - scanned) : wanted;
+      const rows = await this.fetchBatch(scan, cursor, size);
+      scanned += rows.length;
       const fresh = rows.filter((row) => matchesDerived(row, scan.input, scan.now));
       matches.push(...fresh.slice(0, wanted - matches.length));
       cursor = rows.at(-1)?.device_id ?? null;
-      if (rows.length < batchSize || cursor === null) break;
+      if (rows.length < size || cursor === null) break;
+      if (scanning && scanned >= this.limits.maxScanned && matches.length < wanted) return { matches, resumeAfter: cursor };
     }
-    return matches;
+    return { matches, resumeAfter: null };
   }
 
   private async fetchBatch(scan: ScanContext, after: string | null, size: number): Promise<DeviceHealthReadRow[]> {
