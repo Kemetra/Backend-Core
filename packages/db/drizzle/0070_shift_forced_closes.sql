@@ -63,16 +63,23 @@
 -- money. Retained with the shift it closes; never deleted (append-only).
 --
 -- Lock impact: ONE transaction; every lock is held until COMMIT.
---   - shifts: SHARE (UNIQUE build: shift writes wait, reads continue), then
---     SHARE ROW EXCLUSIVE (the new FK), then the guard function is replaced.
---     Every shift open, movement and close waits until COMMIT.
---   - devices: SHARE (UNIQUE build) and SHARE ROW EXCLUSIVE (the new FKs):
---     device writes (last-seen touch, revoke, rotation) wait until COMMIT;
---     device authentication reads continue.
+--   - shifts: ACCESS EXCLUSIVE (ALTER TABLE ... ADD CONSTRAINT ... UNIQUE);
+--     every read and write of shifts, including the stuck-shift list and
+--     every shift open, movement and close, waits until COMMIT.
+--   - devices: ACCESS EXCLUSIVE (the UNIQUE); every read and write of
+--     devices waits until COMMIT, device-token authentication included.
 --   - tenants, stores, users: SHARE ROW EXCLUSIVE for the new FKs; writes on
 --     them wait until COMMIT, reads continue.
--- At pilot volume the migration is expected to take well under a second; run
--- it with no POS sync in flight.
+-- lock_timeout = 2s, per lock request (the 0047 rule): if a lock cannot be
+-- taken in time (for example behind a long-running transaction on devices),
+-- the migration fails and rolls back instead of leaving a queued ACCESS
+-- EXCLUSIVE request that blocks all POS traffic behind it. Worst case before
+-- it gives up, POS traffic is blocked for about 2 x 2s (the queued request on
+-- shifts, then the one on devices while shifts is held). On failure,
+-- `migrate up` exits non-zero with nothing applied; the running release keeps
+-- serving; re-run it. At pilot volume the migration is expected to take well
+-- under a second once it has its locks; run it outside trading hours, with no
+-- POS sync in flight.
 -- Grants: none here. The domain role's SELECT + INSERT on shift_forced_closes
 -- is granted by docs/operations/sql/shift-forced-closes-domain-grants.sql,
 -- run after this migration and before the API starts (deploy/README.md step
@@ -81,6 +88,8 @@
 -- close is recorded).
 
 BEGIN;
+
+SET LOCAL lock_timeout = '2s';
 
 -- =============================================================================
 -- 1-2. The composite FK targets
