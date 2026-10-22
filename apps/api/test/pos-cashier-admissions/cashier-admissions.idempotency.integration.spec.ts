@@ -386,7 +386,7 @@ describe("concurrent same-device admissions with different keys", () => {
       const early = admitAs(DEV_A1, earlyBody).then((res) => res);
       for (let i = 0; i < 100; i += 1) {
         const r = await h().admin.query(
-          `SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'`,
+          `SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory' AND datname = current_database()`,
         );
         if (r.rows.length > 0) break;
         await new Promise((resolve) => setTimeout(resolve, 50));

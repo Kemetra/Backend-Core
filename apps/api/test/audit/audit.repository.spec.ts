@@ -96,11 +96,7 @@ beforeAll(async () => {
     // Create a non-superuser pool — the repository uses this in
     // production (where `app_role` cannot bypass RLS). Tests must
     // verify the policy on the same role posture.
-    const host = env.container.getHost();
-    const port = env.container.getMappedPort(5432);
-    appPool = new Pool({
-      connectionString: `postgres://${APP_ROLE_NAME}:${APP_ROLE_PASSWORD}@${host}:${port}/test`,
-    });
+    appPool = new Pool({ connectionString: env.uriFor(APP_ROLE_NAME, APP_ROLE_PASSWORD) });
 
     // Seed users referenced by audit rows.
     await env.admin.query(

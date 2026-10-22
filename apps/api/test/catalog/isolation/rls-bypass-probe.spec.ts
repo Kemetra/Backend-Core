@@ -865,11 +865,7 @@ describe("T343 — cross-suite: direct runtime-role pool with no GUC is fail-clo
 
   beforeAll(async () => {
     if (dockerSkipped || !env) return;
-    const host = env.container.getHost();
-    const port = env.container.getMappedPort(5432);
-    noGucPool = new Pool({
-      connectionString: `postgres://${APP_ROLE_NAME}:${APP_ROLE_PASSWORD}@${host}:${port}/test`,
-    });
+    noGucPool = new Pool({ connectionString: env.uriFor(APP_ROLE_NAME, APP_ROLE_PASSWORD) });
   });
 
   afterAll(async () => {

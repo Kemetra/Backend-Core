@@ -563,7 +563,7 @@ const LOCK_WAIT_TIMEOUT_MS = 10_000;
 export async function waitForLockWaiters(count = 1): Promise<void> {
   const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const r = await admin().query<{ n: number }>(`SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted`);
+    const r = await admin().query<{ n: number }>(`SELECT count(*)::int AS n FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND a.datname = current_database()`);
     if ((r.rows[0]?.n ?? 0) >= count) return;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }

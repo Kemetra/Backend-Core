@@ -33,7 +33,7 @@ async function bootApp(databaseUrl: string): Promise<INestApplication> {
 
 beforeAll(async () => {
   try {
-    env = await startPgEnv();
+    env = await startPgEnv({ isolated: true }); // RT-815 §3.4: expects an un-migrated database
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {

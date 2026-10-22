@@ -22,6 +22,10 @@ module.exports = {
       },
     ],
   },
+  // RT-815: one shared Postgres per run; each spec file clones its own
+  // database from a migrated template (test/_helpers/postgres-container.ts).
+  globalSetup: "<rootDir>/test/_helpers/jest-global-setup.ts",
+  globalTeardown: "<rootDir>/test/_helpers/jest-global-teardown.ts",
   clearMocks: true,
   restoreMocks: true,
   testTimeout: 30000,

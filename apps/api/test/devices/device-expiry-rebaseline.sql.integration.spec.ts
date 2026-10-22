@@ -27,7 +27,7 @@ import {
   applyAllUpAndCreateAppRole,
   startPgEnv,
   stopPgEnv,
-  type PgTestEnv,
+  type IsolatedPgTestEnv,
 } from "../_helpers/postgres-container";
 
 const SCRIPT = readFileSync(
@@ -55,9 +55,9 @@ const LAPSED = id("000b");
 
 const DAY = 86_400_000;
 
-let env: PgTestEnv | null = null;
+let env: IsolatedPgTestEnv | null = null;
 let dockerSkipped = false;
-const E = (): PgTestEnv => {
+const E = (): IsolatedPgTestEnv => {
   if (!env) throw new Error("env not initialized");
   return env;
 };
@@ -87,7 +87,7 @@ async function dbNow(): Promise<{ now: number; today: number }> {
 
 beforeAll(async () => {
   try {
-    env = await startPgEnv();
+    env = await startPgEnv({ isolated: true }); // RT-815 §3.4: needs container.exec
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {

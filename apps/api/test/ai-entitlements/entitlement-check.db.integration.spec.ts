@@ -282,7 +282,7 @@ describe("layer 7 — reserve / commit / release", () => {
     const ny = new Pool({
       host: uri.hostname,
       port: Number(uri.port),
-      database: "test",
+      database: env!.database,
       user: "app_test",
       password: "app_test",
       options: "-c TimeZone=America/New_York",

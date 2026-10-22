@@ -754,7 +754,7 @@ describe("end generation guard (RT-219)", () => {
     async function waitUntilWaiting(n: number): Promise<void> {
       for (let i = 0; i < 100; i += 1) {
         const r = await h().admin.query(
-          `SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'`,
+          `SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory' AND datname = current_database()`,
         );
         if (r.rows.length >= n) return;
         await new Promise((resolve) => setTimeout(resolve, 50));
@@ -934,7 +934,7 @@ describe("time source after the cashier lock", () => {
   async function waitUntilBlocked(): Promise<void> {
     for (let i = 0; i < 100; i += 1) {
       const r = await h().admin.query(
-        `SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'`,
+        `SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory' AND datname = current_database()`,
       );
       if (r.rows.length > 0) return;
       await new Promise((resolve) => setTimeout(resolve, 50));
