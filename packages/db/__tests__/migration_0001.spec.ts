@@ -48,6 +48,8 @@ const UP_0047_PATH = resolve(DRIZZLE_DIR, "0047_sale_history_capture.sql");
 const DOWN_0047_PATH = resolve(DRIZZLE_DIR, "0047_sale_history_capture.down.sql");
 const UP_0050_PATH = resolve(DRIZZLE_DIR, "0050_shift_variance_policy.sql");
 const DOWN_0050_PATH = resolve(DRIZZLE_DIR, "0050_shift_variance_policy.down.sql");
+const UP_0070_PATH = resolve(DRIZZLE_DIR, "0070_shift_forced_closes.sql");
+const DOWN_0070_PATH = resolve(DRIZZLE_DIR, "0070_shift_forced_closes.down.sql");
 
 let env: PgTestEnv | null = null;
 let dockerSkipReason = "";
@@ -461,6 +463,8 @@ describe("0001_pos_operator_identity migration", () => {
     const up0047Sql = readFileSync(UP_0047_PATH, "utf8");
     const down0050Sql = readFileSync(DOWN_0050_PATH, "utf8");
     const up0050Sql = readFileSync(UP_0050_PATH, "utf8");
+    const down0070Sql = readFileSync(DOWN_0070_PATH, "utf8");
+    const up0070Sql = readFileSync(UP_0070_PATH, "utf8");
     const downSql = readFileSync(DOWN_0001_PATH, "utf8");
     const upSql = readFileSync(UP_0001_PATH, "utf8");
 
@@ -471,7 +475,10 @@ describe("0001_pos_operator_identity migration", () => {
     // 0036_shift_cash_up (its fact tables reference devices and shifts, RT-17),
     // and 0047_sale_history_capture (sale_reprints.device_id → devices.id, RT-538).
     // 0050_shift_variance_policy goes first: its verdict table references
-    // shift_closes and its functions replace 0036's (RT-385).
+    // shift_closes and its functions replace 0036's (RT-385), after
+    // 0070_shift_forced_closes, whose table references shifts and devices and
+    // whose triggers use 0036's append-only function (RT-742).
+    await env.admin.query(down0070Sql);
     await env.admin.query(down0050Sql);
     await env.admin.query(down0047Sql);
     await env.admin.query(down0036Sql);
@@ -518,6 +525,7 @@ describe("0001_pos_operator_identity migration", () => {
     await env.admin.query(up0036Sql);
     await env.admin.query(up0047Sql);
     await env.admin.query(up0050Sql);
+    await env.admin.query(up0070Sql);
 
     // After re-UP, the scope-aware CHECK is back and the original XOR is gone.
     const reCheck = await env.admin.query<{ conname: string }>(`
