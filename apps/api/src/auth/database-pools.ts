@@ -128,6 +128,8 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     "sale_credit_reversals",
     "sale_credit_reversal_tenders",
     "sale_approval_uses",
+    // RT-787 (0067): refund executions.
+    "refund_executions",
     "receivable",
     "claim",
     "claim_receivables",
@@ -297,6 +299,11 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   ["sale_credit_reversal_tenders", "INSERT"],
   ["sale_approval_uses", "SELECT"],
   ["sale_approval_uses", "INSERT"],
+  // RT-787 (0067): a refund execution is written once and read back by its
+  // replay, the return reads and the posting feed. Append-only (no UPDATE /
+  // DELETE policy); never UPDATE, DELETE or TRUNCATE.
+  ["refund_executions", "SELECT"],
+  ["refund_executions", "INSERT"],
   // RT-387 (0050): the Console publishes policy revisions and every resolution
   // (device read, Console reads, the open's accept-and-flag check) reads them;
   // a close's approver verdict is written once after the commit and read back

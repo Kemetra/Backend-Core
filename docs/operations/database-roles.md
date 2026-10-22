@@ -412,6 +412,19 @@ table the domain role must use needs a matching grant step at deploy time.
   (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold no privilege on
   any of them (`AUTH_LOOKUP_FORBIDDEN_GRANTS`).
 
+- **Migration `0067_refund_executions` (RT-787).** Run
+  [`sql/refund-executions-domain-grants.sql`](sql/refund-executions-domain-grants.sql)
+  after `migrate up` and before the API starts, in the same step 2 of
+  [`deploy/README.md`](../../deploy/README.md#deploy), with the same
+  `-v domain_role=<role>`. It grants the domain role `SELECT` and `INSERT` on
+  `refund_executions` (a refund execution writes it; its replay, the return
+  reads and the posting feed read it). Append-only: never grant `UPDATE`,
+  `DELETE` or `TRUNCATE`. The new allocation columns on
+  `sale_return_tenders` and `sale_returns.posting_deferred` are covered by
+  those tables' existing grants. Without the grant the API refuses to boot
+  (`DOMAIN_REQUIRED_GRANTS`). The auth lookup role must hold no privilege on
+  it (`AUTH_LOOKUP_FORBIDDEN_GRANTS`).
+
 - **Migration `0056_inventory_position_events` (RT-435).** Run
   [`sql/inventory-position-events-domain-grants.sql`](sql/inventory-position-events-domain-grants.sql)
   after `migrate up` and before the API starts, in the same step 2 of
