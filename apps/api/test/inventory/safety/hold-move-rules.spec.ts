@@ -24,16 +24,16 @@ describe('placementMoves (G7-6)', () => {
 });
 
 describe('releaseMoves', () => {
-  it('H3: a released quality hold returns quality_hold to sellable, reason hold_release', () => {
-    expect(releaseMoves('quality_hold', { recallActive: false })).toEqual({
+  it('H3: a released quality hold of a never-recalled identity returns quality_hold to sellable', () => {
+    expect(releaseMoves('quality_hold', { everRecalled: false })).toEqual({
       fromStatuses: ['quality_hold'],
       toStatus: 'sellable',
       reasonCode: 'hold_release',
     });
   });
 
-  it('H3 under an active recall: the quality_hold quantity goes to recall_hold, never sellable', () => {
-    expect(releaseMoves('quality_hold', { recallActive: true })).toEqual({
+  it('H3 for an identity ever recalled (ruling B): the quality_hold quantity goes to recall_hold, never sellable', () => {
+    expect(releaseMoves('quality_hold', { everRecalled: true })).toEqual({
       fromStatuses: ['quality_hold'],
       toStatus: 'recall_hold',
       reasonCode: 'recall',
@@ -41,7 +41,7 @@ describe('releaseMoves', () => {
   });
 
   it('H4: releasing a recall hold moves nothing (Gate 8 disposition owns that stock)', () => {
-    expect(releaseMoves('recall_hold', { recallActive: false })).toBeNull();
-    expect(releaseMoves('recall_hold', { recallActive: true })).toBeNull();
+    expect(releaseMoves('recall_hold', { everRecalled: false })).toBeNull();
+    expect(releaseMoves('recall_hold', { everRecalled: true })).toBeNull();
   });
 });

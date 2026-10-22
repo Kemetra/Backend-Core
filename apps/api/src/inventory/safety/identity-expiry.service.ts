@@ -77,6 +77,8 @@ interface IdentityRow {
   tenant_product_ref: string;
   expiry_date: string | null;
   manufactured_on: string | null;
+  /** The product's Tracking Profile requires an expiry (G7-1). */
+  expiry_required: boolean;
 }
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -140,8 +142,12 @@ export class IdentityExpiryService {
 
   private async lockIdentity(client: PoolClient, identityId: string): Promise<IdentityRow | undefined> {
     const r = await client.query<IdentityRow>(
-      `SELECT id, tenant_product_ref, expiry_date::text AS expiry_date, manufactured_on::text AS manufactured_on
-         FROM tracking_identities WHERE id = $1 FOR UPDATE`,
+      `SELECT i.id, i.tenant_product_ref, i.expiry_date::text AS expiry_date,
+              i.manufactured_on::text AS manufactured_on, p.expiry_required
+         FROM tracking_identities i
+         JOIN tenant_products p ON p.id = i.tenant_product_ref
+        WHERE i.id = $1
+          FOR UPDATE OF i`,
       [identityId],
     );
     return r.rows[0];
@@ -217,16 +223,28 @@ function assertSameCorrection(
   if (JSON.stringify(recordedCommand) !== JSON.stringify(requestedCommand)) throw idempotencyConflict();
 }
 
-/** The current expiry again is a 409; an expiry before manufacture a 400. */
+/**
+ * The current expiry again is a 409. A required expiry is never cleared
+ * (coordinator ruling on RT-449: a correction may change it, not remove it)
+ * and an expiry before manufacture is a 400.
+ */
 function assertCorrectable(identity: IdentityRow, expiryDate: string | null): void {
   if (identity.expiry_date === expiryDate) {
     throw new ConflictException({ code: 'expiry_unchanged', message: 'The identity already has this expiry date.' });
   }
-  const beforeManufacture = expiryDate !== null && identity.manufactured_on !== null
-    ? expiryDate < identity.manufactured_on
-    : false;
-  if (beforeManufacture) {
+  if (expiryDate === null) {
+    assertExpiryOptional(identity);
+    return;
+  }
+  if (identity.manufactured_on !== null && expiryDate < identity.manufactured_on) {
     throw new BadRequestException('expiryDate must not be before the identity was manufactured');
+  }
+}
+
+/** Clearing the expiry is refused when the product's tracking profile requires one. */
+function assertExpiryOptional(identity: IdentityRow): void {
+  if (identity.expiry_required) {
+    throw new BadRequestException("expiryDate is required: the product's tracking profile requires an expiry");
   }
 }
 

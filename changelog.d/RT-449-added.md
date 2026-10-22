@@ -9,10 +9,10 @@
   `return_inspection` positions into the hold's status as RT-435 status
   moves (`erp_neutral` effect pairs carrying the identity; negative positions
   are never moved). `releaseTrackingHold` (owner only) ends a hold once: a
-  quality hold's quantity returns to `sellable` (to `recall_hold` while a
-  recall is active on the identity); a recall hold's quantity stays for the
-  Gate 8 disposition. `correctTrackingIdentityExpiry` corrects an identity's
-  expiry with history; 0072's identity guard refuses any expiry change
+  quality hold's quantity returns to `sellable` (to `recall_hold` if the
+  identity was ever recalled); a recall hold's quantity stays for the Gate 8
+  disposition. `correctTrackingIdentityExpiry` corrects an identity's expiry
+  with history and never clears a required one; 0072's identity guard refuses any expiry change
   without its correction row, and now also freezes `manufactured_on`. Every
   placement, release, recall, expiry correction and tracking-profile change
   steps the tenant's monotonic Safety Revision exactly once, with one change

@@ -58,6 +58,7 @@ const PRODUCT_T = '0a000000-0000-7000-8000-000004490001';
 const PRODUCT_T2 = '0a000000-0000-7000-8000-000004490002';
 const PRODUCT_UNTRACKED = '0a000000-0000-7000-8000-000004490003';
 const PRODUCT_TB = '0b000000-0000-7000-8000-000004490001';
+const PRODUCT_EXPIRY_REQUIRED = '0a000000-0000-7000-8000-000004490004';
 const BACKROOM_A_X = '0a000000-0000-7000-8000-000004490b01';
 const IDENTITY_B = '0b000000-0000-7000-8000-000004490c01';
 
@@ -200,6 +201,11 @@ beforeAll(async () => {
          ($1, $5, 'Tracked', 'standard', $7, $7, 'batch'), ($2, $5, 'Tracked 2', 'standard', $7, $7, 'batch'),
          ($3, $5, 'Untracked', 'standard', $7, $7, 'none'), ($4, $6, 'Tracked B', 'standard', $7, $7, 'batch')`,
       [PRODUCT_T, PRODUCT_T2, PRODUCT_UNTRACKED, PRODUCT_TB, TENANT_A, TENANT_B, ACTOR_A],
+    );
+    await env.admin.query(
+      `INSERT INTO tenant_products (id, tenant_id, name, tax_category, created_by, updated_by, tracking_mode, expiry_required)
+       VALUES ($1, $2, 'Expiry required', 'standard', $3, $3, 'batch', true)`,
+      [PRODUCT_EXPIRY_REQUIRED, TENANT_A, ACTOR_A],
     );
     await env.admin.query(
       `INSERT INTO tracking_identities (id, tenant_id, tenant_product_ref, kind, code) VALUES ($1, $2, $3, 'batch', 'B-LOT')`,
@@ -410,6 +416,19 @@ describe('hold release', () => {
     ]);
   });
 
+  it('ruling B: quality hold, recall, release recall, release quality hold — the stock goes to recall_hold', async () => {
+    if (maybeSkip()) return;
+    const identity = await newIdentity();
+    await seedEffect({ identity, storeId: STORE_A_X, locationId: primaryAX, status: 'sellable', quantity: '4' });
+    const { hold } = await holds.placeQualityHold(placeInput(identity));
+    const { recall } = await recalls.createRecall(recallInput([identity]));
+    await holds.releaseHold({ tenantId: TENANT_A, userId: ACTOR_A, holdId: recall.holds[0]!.id, note: null });
+    await holds.releaseHold({ tenantId: TENANT_A, userId: ACTOR_A, holdId: hold.id, note: null });
+    expect(await positions(identity)).toEqual([
+      { store: STORE_A_X, location: primaryAX, status: 'recall_hold', qty: '4.0000' },
+    ]);
+  });
+
   it("H4: releasing a recall hold ends the record and moves no quantity", async () => {
     if (maybeSkip()) return;
     const identity = await newIdentity();
@@ -578,6 +597,14 @@ describe('identity expiry correction (G7-2)', () => {
   it("refuses another tenant's identity with a non-disclosing 404, writing nothing", async () => {
     if (maybeSkip()) return;
     await expectNoWrites(() => expiry.correctExpiry(correction(IDENTITY_B, { expiryDate: '2027-01-31' })), NotFoundException);
+  });
+
+  it('never clears a required expiry (400, writing nothing); it may still change it', async () => {
+    if (maybeSkip()) return;
+    const identity = await newIdentity(PRODUCT_EXPIRY_REQUIRED, { expiry: '2027-01-31' });
+    await expectNoWrites(() => expiry.correctExpiry(correction(identity, { expiryDate: null })), BadRequestException);
+    const changed = await expiry.correctExpiry(correction(identity, { expiryDate: '2027-02-28' }));
+    expect(changed.correction.newExpiryDate).toBe('2027-02-28');
   });
 });
 

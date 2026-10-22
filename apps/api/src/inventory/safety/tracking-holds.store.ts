@@ -48,6 +48,16 @@ export async function identitiesWithActiveHold(
   return r.rows.map((row) => row.tracking_identity_id);
 }
 
+/** True when the identity has any recall hold, active or released (ruling B). */
+export async function wasEverRecalled(client: PoolClient, identityId: string): Promise<boolean> {
+  const r = await client.query<{ recalled: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM tracking_holds
+                     WHERE tracking_identity_id = $1 AND kind = 'recall_hold') AS recalled`,
+    [identityId],
+  );
+  return r.rows[0]?.recalled === true;
+}
+
 export interface NewHold {
   readonly tenantId: string;
   readonly trackingIdentityId: string;

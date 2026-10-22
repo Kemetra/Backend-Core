@@ -10,8 +10,10 @@
  *   - placement: `sellable` and `return_inspection` move into the hold's
  *     status (G7-6). Negative and zero positions are never moved.
  *   - quality-hold release (H3): `quality_hold` returns to `sellable` — or,
- *     while the identity is also under an active recall hold, to
- *     `recall_hold`, so recalled stock is never put back on sale.
+ *     when the identity has EVER been under a recall hold (active or
+ *     released; coordinator ruling B on RT-449), to `recall_hold`, so stock
+ *     of a recalled lot leaves only through the Gate 8 disposition, whatever
+ *     the order of the releases.
  *   - recall-hold release (H4): nothing moves; that stock leaves only through
  *     the Gate 8 disposition (RT-293).
  */
@@ -33,13 +35,13 @@ export function placementMoves(kind: TrackingHoldKind): HoldMoves {
     : { fromStatuses: PLACEMENT_SOURCES, toStatus: 'recall_hold', reasonCode: 'recall' };
 }
 
-/** H3 / H4: what releasing a hold of `kind` moves; null when nothing does. */
+/** H3 / H4 / ruling B: what releasing a hold of `kind` moves; null when nothing does. */
 export function releaseMoves(
   kind: TrackingHoldKind,
-  identity: { readonly recallActive: boolean },
+  identity: { readonly everRecalled: boolean },
 ): HoldMoves | null {
   if (kind === 'recall_hold') return null;
-  return identity.recallActive
+  return identity.everRecalled
     ? { fromStatuses: ['quality_hold'], toStatus: 'recall_hold', reasonCode: 'recall' }
     : { fromStatuses: ['quality_hold'], toStatus: 'sellable', reasonCode: 'hold_release' };
 }

@@ -172,11 +172,11 @@ info:
     hold's status as RT-435 status moves (`erp_neutral` effect pairs carrying
     the identity; negative positions are never moved). `releaseTrackingHold`
     ends a hold once: a released quality hold returns its quantity to
-    `sellable` (to `recall_hold` while the identity is also under an active
-    recall); releasing a recall hold moves nothing, that stock leaves only
-    through the Gate 8 disposition. `correctTrackingIdentityExpiry` corrects
-    an identity's `expiryDate`, keeping every correction (old, new, reason,
-    actor) as history. Every placement, release, recall, expiry correction and
+    `sellable` (to `recall_hold` when the identity has ever been under a
+    recall hold); releasing a recall hold moves nothing, that stock leaves
+    only through the Gate 8 disposition. `correctTrackingIdentityExpiry`
+    corrects an identity's `expiryDate`, keeping every correction (old, new,
+    reason, actor) as history; a required expiry is never cleared. Every placement, release, recall, expiry correction and
     tracking-profile change steps the tenant's monotonic Inventory Safety
     Revision exactly once, in its own transaction; each command answers the
     `safetyRevision` it produced. All of them are tenant-level operations (a
@@ -736,7 +736,8 @@ paths:
         RT-449 (RT-50 G7-6; rulings H3, H4): ends a hold. A released quality
         hold returns the identity's positive `quality_hold` positions to
         `sellable` (reason `hold_release`), or to `recall_hold` (reason
-        `recall`) while the identity is also under an active recall hold.
+        `recall`) when the identity has ever been under a recall hold, active
+        or released, so a recalled lot's stock leaves only through Gate 8.
         Releasing a recall hold moves nothing: that stock leaves only through
         the Gate 8 disposition (RT-293). Steps the Inventory Safety Revision
         once. A released hold is final: releasing it again answers the
@@ -844,7 +845,8 @@ paths:
       summary: Correct a tracking identity's expiry date, with history.
       description: >
         RT-449 (RT-50 G7-2, ruling H7): the governed correction of an
-        identity's `expiryDate` (null clears it). Every correction is kept as
+        identity's `expiryDate`. Null clears an optional expiry; when the
+        product's tracking profile requires an expiry, clearing it is a 400. Every correction is kept as
         history (old date, new date, reason, actor) and steps the Inventory
         Safety Revision once; the expiry never changes without it. The current
         date again is a 409 `expiry_unchanged`; a date before the identity's
@@ -1495,7 +1497,9 @@ components:
         expiryDate:
           type: [string, "null"]
           format: date
-          description: The corrected expiry date; null clears it.
+          description: >
+            The corrected expiry date. Null clears it, unless the product's
+            tracking profile requires an expiry (then a 400).
         reasonCode:
           $ref: "#/components/schemas/SafetyReasonCode"
         note:

@@ -53,6 +53,7 @@ import {
   identitiesWithActiveHold,
   insertHold,
   lockIdentities,
+  wasEverRecalled,
   type LockedIdentity,
 } from './tracking-holds.store';
 
@@ -155,9 +156,8 @@ export class TrackingHoldsService {
         trackingIdentityId: hold.tracking_identity_id,
         createdBy: input.userId,
       });
-      const recallActive =
-        (await identitiesWithActiveHold(client, [hold.tracking_identity_id], 'recall_hold')).length > 0;
-      const moves = releaseMoves(hold.kind, { recallActive });
+      const everRecalled = await wasEverRecalled(client, hold.tracking_identity_id);
+      const moves = releaseMoves(hold.kind, { everRecalled });
       const positionEventIds = moves
         ? await moveHeldPositions(client, {
             tenantId: input.tenantId,
