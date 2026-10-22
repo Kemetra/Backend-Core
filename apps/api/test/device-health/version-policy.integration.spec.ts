@@ -273,7 +273,9 @@ describe("RT-327 version policy: the change", () => {
   it("accepts equal versions and a grace instant already in the past", async () => {
     if (h.skipped()) return;
     const past = { ...BODY, latestVersion: "1.4.0", recommendedVersion: "1.4.0", minSupportedGraceUntil: "2020-01-01T00:00:00.000Z" };
-    await h.put(channelPath("stable"), PLATFORM_ADMIN.session, past).expect(200);
+    const res = await h.put(channelPath("stable"), PLATFORM_ADMIN.session, past);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ policy: { latestVersion: "1.4.0", minSupportedGraceUntil: "2020-01-01T00:00:00.000Z" } });
   });
 
   it("refuses a bad channel, a bad body, an unknown or missing key with 400 and writes nothing", async () => {

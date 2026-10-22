@@ -150,7 +150,7 @@ export class PosVersionPolicyService {
 
   /** Every channel, in the order `lab`, `canary`, `stable`, each with its policy or null. */
   async list(): Promise<{ items: PosVersionPolicyEntryBody[] }> {
-    return runWithTenantContext(this.pool, PLATFORM, async (client) => {
+    return await runWithTenantContext(this.pool, PLATFORM, async (client) => {
       const res = await client.query<PolicyDbRow>(`SELECT ${COLUMNS} FROM pos_version_policy`);
       const byChannel = new Map(res.rows.map((row) => [row.channel, toBody(row)] as const));
       return { items: UPDATE_CHANNELS.map((channel) => ({ channel, policy: byChannel.get(channel) ?? null })) };
@@ -160,7 +160,7 @@ export class PosVersionPolicyService {
   /** Replace one channel's policy (compare-and-set); an effective change is audited. */
   async set(input: SetPosVersionPolicyInput): Promise<PosVersionPolicyEntryBody> {
     assertOrder(input.change);
-    return runWithTenantContext(this.pool, PLATFORM, async (client) => {
+    return await runWithTenantContext(this.pool, PLATFORM, async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [`pos_version_policy:${input.channel}`]);
       const stored = await this.readChannel(client, input.channel);
       if (stored !== null && sameValues(stored, input.change)) return { channel: input.channel, policy: stored };

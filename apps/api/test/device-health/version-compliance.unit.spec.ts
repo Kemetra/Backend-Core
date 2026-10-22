@@ -24,6 +24,7 @@ describe("parseAppVersion", () => {
   it.each([
     "",
     "1.4",
+    "1a4a0",
     "1.4.0.1",
     "01.4.0",
     "1.04.0",

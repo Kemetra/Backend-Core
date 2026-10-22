@@ -101,7 +101,7 @@ export class DeviceHeartbeatService {
   ) {}
 
   async report(scope: DeviceScope, report: HeartbeatReport): Promise<HeartbeatAckBody> {
-    return runWithTenantContext(this.pool, { tenantId: scope.tenantId, isPlatformAdmin: false }, async (client) => {
+    return await runWithTenantContext(this.pool, { tenantId: scope.tenantId, isPlatformAdmin: false }, async (client) => {
       const channel = report.update_channel ?? null;
       const policy = channel === null ? null : await this.readPolicy(client, channel);
       const outcome = await this.store(client, scope, report);

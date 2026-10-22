@@ -14,8 +14,12 @@
 
 export const APP_VERSION_MIN_LENGTH = 5;
 export const APP_VERSION_MAX_LENGTH = 32;
-export const APP_VERSION_PATTERN =
-  /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
+// Built from its parts (the contract's `AppVersion` pattern, character for character).
+const CORE_NUMBER = String.raw`(?:0|[1-9]\d*)`;
+const PRERELEASE_IDENTIFIER = "[0-9A-Za-z-]+";
+export const APP_VERSION_PATTERN = new RegExp(
+  `^(${CORE_NUMBER})\\.(${CORE_NUMBER})\\.(${CORE_NUMBER})(-${PRERELEASE_IDENTIFIER}(?:\\.${PRERELEASE_IDENTIFIER})*)?$`,
+);
 
 export interface ParsedVersion {
   /** `[major, minor, patch]` as digit strings with no leading zero. */
@@ -36,7 +40,7 @@ export function parseAppVersion(value: string): ParsedVersion | null {
   };
 }
 
-const NUMERIC = /^[0-9]+$/;
+const NUMERIC = /^\d+$/;
 
 function compareDigits(a: string, b: string): number {
   const left = a.replace(/^0+(?=.)/, "");

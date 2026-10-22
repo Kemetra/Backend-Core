@@ -99,9 +99,11 @@ async function seedMember(admin: Pool, m: MemberSeed): Promise<void> {
     `INSERT INTO memberships (id, tenant_id, user_id, role_id, store_access_kind) VALUES ($1, $2, $3, $4, $5)`,
     [m.membership, m.tenantId, m.user.id, m.roleId, m.access],
   );
-  for (const store of m.stores) {
-    await admin.query(`INSERT INTO store_access (membership_id, store_id, tenant_id) VALUES ($1, $2, $3)`, [m.membership, store, m.tenantId]);
-  }
+  await Promise.all(
+    m.stores.map((store) =>
+      admin.query(`INSERT INTO store_access (membership_id, store_id, tenant_id) VALUES ($1, $2, $3)`, [m.membership, store, m.tenantId]),
+    ),
+  );
   await seedSession(admin, m.user, m.tenantId);
 }
 
@@ -133,15 +135,17 @@ async function seedDevices(admin: Pool): Promise<void> {
     [DEV_REVOKED, TENANT_A, STORE_A1, "till revoked"],
     [DEV_RETIRED, TENANT_A, STORE_A1, "till retired"],
   ];
-  for (const [d, tenant, store, label] of rows) {
-    await admin.query(`INSERT INTO devices (id, tenant_id, store_id, label, token_hash) VALUES ($1, $2, $3, $4, $5)`, [
-      d.id,
-      tenant,
-      store,
-      label,
-      hashToken(d.token),
-    ]);
-  }
+  await Promise.all(
+    rows.map(([d, tenant, store, label]) =>
+      admin.query(`INSERT INTO devices (id, tenant_id, store_id, label, token_hash) VALUES ($1, $2, $3, $4, $5)`, [
+        d.id,
+        tenant,
+        store,
+        label,
+        hashToken(d.token),
+      ]),
+    ),
+  );
   await admin.query(`UPDATE devices SET revoked_at = now() WHERE id = $1`, [DEV_REVOKED.id]);
   await admin.query(`UPDATE devices SET revoked_at = now(), retired_at = now(), retire_reason = 'decommissioned' WHERE id = $1`, [DEV_RETIRED.id]);
 }

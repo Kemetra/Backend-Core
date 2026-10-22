@@ -326,7 +326,9 @@ describe("RT-327 device health reads: paging and validation", () => {
   it("refuses a cursor issued for another tenant", async () => {
     if (h.skipped()) return;
     const foreign = Buffer.from(JSON.stringify({ k: "device_health", t: "03270000-0000-4000-8000-0b0100000001", d: DEV_A1A.id })).toString("base64url");
-    await h.get(LIST, OWNER_A.session, { cursor: foreign }).expect(400);
+    const res = await h.get(LIST, OWNER_A.session, { cursor: foreign });
+    expect(res.status).toBe(400);
+    expect((res.body as { error: { code: string } }).error.code).toBe("validation_error");
   });
 });
 
