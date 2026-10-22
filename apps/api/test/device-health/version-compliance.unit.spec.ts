@@ -14,7 +14,7 @@ function cmp(a: string, b: string): number {
 }
 
 describe("parseAppVersion", () => {
-  it.each(["1.4.0", "0.0.0", "10.20.30", "1.4.0-rc.1", "1.4.0-alpha", "1.4.0-0.3.7", "1.4.0-x-y-z.--"])(
+  it.each(["1.4.0", "0.0.0", "10.20.30", "1.4.0-rc.1", "1.4.0-alpha", "1.4.0-0.3.7", "1.4.0-x-y-z.--", "1.0.0-0a", "1.0.0-a01", "1.0.0-0"])(
     "accepts %s",
     (value) => {
       expect(parseAppVersion(value)).not.toBeNull();
@@ -33,6 +33,8 @@ describe("parseAppVersion", () => {
     "1.4.0+build.5",
     "1.4.0-",
     "1.4.0-rc..1",
+    "1.0.0-01",
+    "1.0.0-rc.01",
     "1.4.0 ",
     "1.4.0-é",
     `1.4.0-${"a".repeat(30)}`,
@@ -121,5 +123,7 @@ describe("deriveCompliance", () => {
     expect(deriveCompliance({ ...base, appVersion: "banana" })).toBe("unknown");
     expect(deriveCompliance({ ...base, appVersion: "1.4.0+build.5" })).toBe("unknown");
     expect(deriveCompliance({ ...base, minSupportedVersion: "garbage" })).toBe("unknown");
+    // SemVer forbids leading zeros in a numeric pre-release identifier.
+    expect(deriveCompliance({ ...base, appVersion: "1.4.1-01" })).toBe("unknown");
   });
 });

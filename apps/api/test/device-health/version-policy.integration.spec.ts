@@ -257,6 +257,8 @@ describe("RT-327 version policy: the change", () => {
       { ...BODY, minSupportedVersion: "1.5.0", recommendedVersion: "1.4.0" },
       { ...BODY, recommendedVersion: "1.6.0", latestVersion: "1.5.0" },
       { ...BODY, minSupportedVersion: "2.0.0" },
+      // Not a valid semantic version (a leading zero in a numeric pre-release identifier).
+      { ...BODY, latestVersion: "1.5.0-01" },
       // A pre-release is lower than its release.
       { ...BODY, minSupportedVersion: "1.4.0", recommendedVersion: "1.4.0-rc.1", latestVersion: "1.4.0" },
     ];

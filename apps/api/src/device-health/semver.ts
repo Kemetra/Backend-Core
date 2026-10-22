@@ -28,15 +28,24 @@ export interface ParsedVersion {
   readonly prerelease: readonly string[];
 }
 
-/** The parsed version, or null when `value` is not a valid `AppVersion`. */
+function hasLeadingZeroNumber(identifier: string): boolean {
+  return identifier.length > 1 && identifier.startsWith("0") && /^\d+$/.test(identifier);
+}
+
+/** The parsed version, or null when `value` is not a valid semantic version within the `AppVersion` bounds. */
 export function parseAppVersion(value: string): ParsedVersion | null {
   if (value.length < APP_VERSION_MIN_LENGTH || value.length > APP_VERSION_MAX_LENGTH) return null;
   const match = APP_VERSION_PATTERN.exec(value);
   if (match === null) return null;
   const [, major, minor, patch, pre] = match;
+  const prerelease = pre === undefined ? [] : pre.slice(1).split(".");
+  // SemVer forbids a leading zero in a numeric pre-release identifier. The wire
+  // pattern (the contract's) is looser, so such a value is accepted on the wire
+  // and is simply not a valid version here: compliance `unknown`, never ordered.
+  if (prerelease.some(hasLeadingZeroNumber)) return null;
   return {
     core: [major as string, minor as string, patch as string],
-    prerelease: pre === undefined ? [] : pre.slice(1).split("."),
+    prerelease,
   };
 }
 
