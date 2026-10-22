@@ -164,6 +164,13 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     // inventory settings.
     "inventory_position_events",
     "tenant_inventory_settings",
+    // RT-449 (0072): the Inventory Safety Revision, its change log, recalls,
+    // tracking holds and the identity expiry correction history.
+    "tenant_inventory_safety_revisions",
+    "inventory_safety_changes",
+    "inventory_recalls",
+    "tracking_holds",
+    "tracking_identity_expiry_corrections",
     // RT-427 (0063): the Inventory Anchors taken at sale-effects activation.
     "inventory_anchors",
     "inventory_anchor_lines",
@@ -253,6 +260,26 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   ["tenant_inventory_settings", "SELECT"],
   ["tenant_inventory_settings", "INSERT"],
   ["tenant_inventory_settings", "UPDATE"],
+  // RT-449 (0072): every safety command steps the tenant's revision (upsert)
+  // and appends one change; recalls and expiry corrections are append-only;
+  // a hold is released by UPDATE (a trigger lets only the release be set,
+  // once). The expiry correction UPDATEs tracking_identities (0072's guard
+  // lets only expiry_date change, and only with its correction row). No
+  // DELETE policy on any of them; never DELETE or TRUNCATE. Apply with
+  // docs/operations/sql/inventory-safety-domain-grants.sql.
+  ["tenant_inventory_safety_revisions", "SELECT"],
+  ["tenant_inventory_safety_revisions", "INSERT"],
+  ["tenant_inventory_safety_revisions", "UPDATE"],
+  ["inventory_safety_changes", "SELECT"],
+  ["inventory_safety_changes", "INSERT"],
+  ["inventory_recalls", "SELECT"],
+  ["inventory_recalls", "INSERT"],
+  ["tracking_holds", "SELECT"],
+  ["tracking_holds", "INSERT"],
+  ["tracking_holds", "UPDATE"],
+  ["tracking_identity_expiry_corrections", "SELECT"],
+  ["tracking_identity_expiry_corrections", "INSERT"],
+  ["tracking_identities", "UPDATE"],
   // RT-427 (0063): sale-effects activation writes the Inventory Anchor of
   // every store and the comparison reads it (API and worker share this role).
   // Append-only (no UPDATE / DELETE policy); never UPDATE, DELETE or TRUNCATE.

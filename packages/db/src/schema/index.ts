@@ -54,6 +54,7 @@ export * from "./inventory/stock-locations";
 export * from "./inventory/tracking-identities";
 export * from "./inventory/position-events";
 export * from "./inventory/anchors";
+export * from "./inventory/safety";
 export * from "./connector-health";
 export * from "./ai-entitlements";
 export * from "./platform-support-sessions";

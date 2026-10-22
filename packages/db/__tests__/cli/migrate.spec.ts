@@ -236,6 +236,7 @@ describe("data-pulse-migrate CLI", () => {
     "0065_stock_movements_store_product_occurred_idx",
     "0066_reconciliation_pending_aware_classes",
     "0067_refund_executions",
+    "0072_inventory_safety",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -545,9 +546,35 @@ describe("data-pulse-migrate CLI", () => {
     ];
   }
 
+  /** The five tables created by 0072_inventory_safety (RT-449). */
+  const SAFETY_TABLES = [
+    "tenant_inventory_safety_revisions",
+    "inventory_safety_changes",
+    "inventory_recalls",
+    "tracking_holds",
+    "tracking_identity_expiry_corrections",
+  ];
+
   /**
-   * After one `down` from head: 0067's refund executions, allocation columns,
-   * posting_deferred and original-tender trigger are gone, while 0066's
+   * 0072_inventory_safety (RT-449): [its five tables, their policies
+   * (revisions and holds SELECT + INSERT + UPDATE, the other three SELECT +
+   * INSERT), tenant_inventory_settings.safety_ttl_seconds, the
+   * tracking_identities policies (0045's SELECT + INSERT, plus 0072's UPDATE)].
+   */
+  async function countInventorySafetyObjects(): Promise<[string, string, string, string]> {
+    return [
+      await countPublicTables(SAFETY_TABLES),
+      await countPolicies(SAFETY_TABLES),
+      await countPublicColumn("tenant_inventory_settings", "safety_ttl_seconds"),
+      await countPolicies(["tracking_identities"]),
+    ];
+  }
+
+  /**
+   * After one `down` from head: 0072's safety tables, TTL column and
+   * tracking_identities UPDATE policy are gone, while 0067's refund
+   * executions, allocation columns, posting_deferred and original-tender
+   * trigger, 0066's
    * pending-aware result classes, 0064-0065's stock-movement history
    * indexes, 0063's anchor tables and activation columns, 0062's
    * support-session table, 0057-0061's freshness indexes, 0056's event-record and settings tables,
@@ -557,7 +584,8 @@ describe("data-pulse-migrate CLI", () => {
    * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    expect(await countRefundExecutionObjects()).toEqual(["0", "0", "0", "0"]);
+    expect(await countInventorySafetyObjects()).toEqual(["0", "0", "0", "2"]);
+    expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
     expect(await countPendingAwareClassCheck()).toBe("1");
     expect(await countValidIndexes(STOCK_MOVEMENT_HISTORY_INDEXES)).toBe("2");
     expect(await countAnchorObjects()).toEqual(["2", "4", "2"]);
@@ -645,6 +673,9 @@ describe("data-pulse-migrate CLI", () => {
     // 0067's refund_executions (SELECT + INSERT policies), the four allocation
     // / posting columns and the original-tender trigger (RT-787).
     expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
+    // 0072's five safety tables (12 policies), the Safety TTL column and the
+    // tracking_identities UPDATE policy (RT-449).
+    expect(await countInventorySafetyObjects()).toEqual(["5", "12", "1", "3"]);
   }
 
   /** The three tables created by 0054_sale_credit_reversals (RT-577). */
@@ -755,10 +786,11 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countPublicTables(STOCK_LOCATION_TABLES)).toBe("1");
     expect(await countPolicies(STOCK_LOCATION_TABLES)).toBe("2");
     expect(await countStockLocationTriggers()).toBe("2");
-    // 0045's tracking identities and edge map (SELECT + INSERT policies each),
-    // the Tracking Profile columns and the two guard triggers (RT-448).
+    // 0045's tracking identities and edge map (SELECT + INSERT policies each,
+    // plus 0072's UPDATE policy on tracking_identities, RT-449), the Tracking
+    // Profile columns and the two guard triggers (RT-448).
     await expectTrackingFoundationApplied();
-    expect(await countPolicies(TRACKING_TABLES)).toBe("4");
+    expect(await countPolicies(TRACKING_TABLES)).toBe("5");
     await expectFrom0046Applied();
   });
 
@@ -797,7 +829,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0067 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0072 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
