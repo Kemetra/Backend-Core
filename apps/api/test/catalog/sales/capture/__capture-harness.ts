@@ -78,6 +78,8 @@ import { SalesService } from "../../../../src/catalog/sales/sales.service";
 import { SaleReturnsService } from "../../../../src/catalog/sales/sale-returns.service";
 import { CreditSaleReversalService } from "../../../../src/catalog/sales/credit-sale-reversal.service";
 import { CreditSaleReversalsController } from "../../../../src/catalog/sales/credit-sale-reversals.controller";
+import { RefundExecutionsController } from "../../../../src/catalog/sales/refund-executions.controller";
+import { RefundExecutionsService } from "../../../../src/catalog/sales/refund-executions.service";
 import {
   approvedVoidBody,
   seedVoidApprovers,
@@ -189,6 +191,10 @@ export interface HarnessHandle {
 export async function startCaptureHarness(
   opts: { auditEnqueuer?: AuditJobEnqueuer } = {},
 ): Promise<HarnessHandle> {
+  // RT-787 (RT-271 R-11): the legacy refund route is gated off by default.
+  // The capture specs exercise it as a live route; the gate's own specs
+  // (refund-gate, refund-flag-defaults, refund-allocation) switch it off.
+  process.env["POS_LEGACY_REFUND_ENABLED"] = "true";
   let env: PgTestEnv;
   try {
     env = await startPgEnv();
@@ -245,6 +251,8 @@ export async function startCaptureHarness(
       SaleReturnsService,
       // RT-577: the credit-sale reversal route (its own controller).
       CreditSaleReversalService,
+      // RT-787: the return reads and refund executions (their own controller).
+      RefundExecutionsService,
       { provide: IDEMPOTENCY_KEY_STORE, useValue: idempStore },
       { provide: INFLIGHT_REDIS, useValue: fakeRedis },
       { provide: InProgressMarker, useValue: fakeMarker },
@@ -279,7 +287,7 @@ export async function startCaptureHarness(
     // below. The guard's real envelope auth + live reverify is covered by its
     // own specs.
     const moduleRef = await Test.createTestingModule({
-      controllers: [SalesController, CreditSaleReversalsController],
+      controllers: [SalesController, CreditSaleReversalsController, RefundExecutionsController],
       providers,
     })
       // Write routes (capture/void/refund) use PosOperatorEnvelopeSaleGuard
@@ -336,6 +344,7 @@ export async function startCaptureHarness(
 }
 
 export async function stopCaptureHarness(h: HarnessHandle): Promise<void> {
+  delete process.env["POS_LEGACY_REFUND_ENABLED"];
   if (h.harness) {
     await h.harness.app.close();
     await stopPgEnv(h.harness.env);

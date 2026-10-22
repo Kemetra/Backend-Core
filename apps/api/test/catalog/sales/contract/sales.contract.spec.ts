@@ -2221,13 +2221,11 @@ describe("pos-sales/sales.yaml — RT-490 refund allocation, execution and retur
       expect(described(schema("RefundTender"))).toContain("On `recordCreditSaleReversal`");
     });
 
-    it("the contract is ahead of the return DTO by exactly the three RT-490 fields until F-2", () => {
+    it("the return DTO accepts exactly the contract's RefundTender fields since F-2 (RT-787)", () => {
       const contractProps = Object.keys(schema("RefundTender")?.properties ?? {});
       const dtoProps = Object.keys((RefundTenderSchema as unknown as { shape: Record<string, unknown> }).shape);
-      expect(contractProps.filter((p) => !dtoProps.includes(p)).sort()).toEqual(
-        ["allocationRef", "instrument", "originalTenderRef"],
-      );
-      expect(dtoProps.filter((p) => !contractProps.includes(p))).toEqual([]);
+      const byName = (a: string, b: string): number => a.localeCompare(b);
+      expect([...dtoProps].sort(byName)).toEqual([...contractProps].sort(byName));
     });
   });
 
@@ -2290,11 +2288,14 @@ describe("pos-sales/sales.yaml — RT-490 refund allocation, execution and retur
   });
 
   describe("the three new operations", () => {
-    it("are contract-only with a runtime note until F-2", () => {
+    it("are implemented since the F-2 runtime (RT-787): no contract-only marker or runtime note", () => {
       for (const id of NEW_OPS) {
         const op = findOp(id) as (OperationObject & Record<string, unknown>) | undefined;
-        expect({ id, status: op?.["x-runtime-status"] }).toEqual({ id, status: "contract-only" });
-        expect(flat(op?.["x-runtime-note"])).toContain("F-2");
+        expect({ id, status: op?.["x-runtime-status"], note: op?.["x-runtime-note"] }).toEqual({
+          id,
+          status: undefined,
+          note: undefined,
+        });
       }
     });
 
@@ -2410,12 +2411,14 @@ describe("pos-sales/sales.yaml — RT-490 refund allocation, execution and retur
     });
   });
 
-  it("R-11: the legacy recordRefund is documented as gated off (404) from F-4, then removed", () => {
+  it("R-11: the legacy recordRefund is documented as gated off (404) since RT-787, then removed", () => {
     const op = findOp("recordRefund") as (OperationObject & Record<string, unknown>) | undefined;
     expect(op?.deprecated).toBe(true);
     expect(op?.["x-runtime-status"]).toBeUndefined();
     expect(flat(op?.["x-runtime-note"])).toContain("off → 404 `not_found`");
-    expect(opText("recordRefund")).toContain("GATED OFF (RT-271 R-11, RT-490): from the F-4 runtime the route answers 404 `not_found`");
+    expect(opText("recordRefund")).toContain("GATED OFF (RT-271 R-11, RT-490): since RT-787 the route answers 404 `not_found`");
+    expect(flat(op?.["x-runtime-note"])).toContain("`POS_LEGACY_REFUND_ENABLED`");
+    expect(flat(op?.["x-runtime-note"])).not.toContain("F-4");
     expect(opText("recordRefund")).toContain("A later breaking contract version removes the operation");
   });
 });

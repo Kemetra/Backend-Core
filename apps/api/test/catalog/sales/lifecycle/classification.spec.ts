@@ -37,6 +37,7 @@ import * as path from "node:path";
 import { getTableConfig } from "drizzle-orm/pg-core";
 
 import {
+  refundExecutions,
   saleApprovalUses,
   saleCreditReversals,
   saleCreditReversalTenders,
@@ -201,6 +202,8 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
       "payload_hash",
       "created_by",
       "created_at",
+      // RT-787 (0067, R-7): a boolean posting mark, no data.
+      "posting_deferred",
     ],
   },
   {
@@ -221,7 +224,51 @@ const BUSINESS_CLASS_COLUMNS: ReadonlyArray<{
   {
     name: "sale_return_tenders",
     table: saleReturnTenders,
-    columns: ["id", "return_id", "tenant_id", "store_id", "ordinal", "method", "amount"],
+    columns: [
+      "id",
+      "return_id",
+      "tenant_id",
+      "store_id",
+      "ordinal",
+      "method",
+      "amount",
+      // RT-787 (0067) — reviewed under SI-012: the RT-490 allocation fields.
+      // `allocation_ref` and `original_tender_ref` are POS-minted opaque UUIDs
+      // (the latter a sale tender line's `tender_ref`); `instrument` is
+      // CHECK-constrained to 'cash'. No card, account or customer data.
+      "allocation_ref",
+      "original_tender_ref",
+      "instrument",
+    ],
+  },
+  // RT-787 (0067) — reviewed under SI-012: a settled cash refund execution.
+  // Ids, an amount, the evidence method ('drawer' / 'manual'), the
+  // device-reported payout time, the shift id and provenance. No card,
+  // account or customer data.
+  {
+    name: "refund_executions",
+    table: refundExecutions,
+    columns: [
+      "id",
+      "execution_ref",
+      "return_id",
+      "allocation_id",
+      "sale_id",
+      "tenant_id",
+      "store_id",
+      "allocation_ref",
+      "amount",
+      "outcome",
+      "evidence_method",
+      "paid_at",
+      "shift_ref",
+      "source_system",
+      "external_id",
+      "payload_hash",
+      "created_by",
+      "settles_return",
+      "recorded_at",
+    ],
   },
   // RT-77 (0033) — re-reviewed under SI-012 for the first non-cash method,
   // `card_external`. Method + amount are sale facts; `reference` is the card
@@ -346,6 +393,8 @@ const REVIEWED_PAYMENT_NAMED_COLUMNS: Readonly<Record<string, readonly string[]>
   sale_tenders: ["tender_ref"],
   // RT-577 D8: the sale tender line a credit void's refund mirrors (a UUID).
   sale_credit_reversal_tenders: ["tender_ref"],
+  // RT-787: the sale tender line a refund allocation is charged against (a UUID).
+  sale_return_tenders: ["original_tender_ref"],
 };
 
 /**

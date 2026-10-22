@@ -6,6 +6,7 @@ import {
   captureBody,
   DEVICE_USER_ID,
   idempKey,
+  refundBody,
   STORE_A_X,
   TENANT_A,
   type HarnessHandle,
@@ -133,18 +134,195 @@ export async function seedPreRuleReturn(
   );
 }
 
+/** POST `body` to `path` with an Idempotency-Key derived from `key`. */
+function postWithKey(h: HarnessHandle, path: string, body: Record<string, unknown>, key: string) {
+  return h.harness!.http().post(path).set("Idempotency-Key", idempKey(key)).send(body);
+}
+
 /** POST a return. */
-export function postReturn(
+export function postReturn(h: HarnessHandle, saleRef: string, body: Record<string, unknown>, key: string) {
+  return postWithKey(h, `/api/pos/v1/sales/${saleRef}/returns`, body, key);
+}
+
+/** RT-787: turn the R-7 settle-before-post deploy flag on (read per request). */
+export function enableSettleBeforePost(): void {
+  process.env["POS_REFUND_SETTLE_BEFORE_POST_ENABLED"] = "true";
+}
+
+/** RT-787: turn the R-7 settle-before-post deploy flag off (its default). */
+export function disableSettleBeforePost(): void {
+  delete process.env["POS_REFUND_SETTLE_BEFORE_POST_ENABLED"];
+}
+
+/** RT-787: turn the R-11 legacy `recordRefund` gate on (read per request). */
+export function enableLegacyRefund(): void {
+  process.env["POS_LEGACY_REFUND_ENABLED"] = "true";
+}
+
+/** RT-787: turn the R-11 legacy `recordRefund` gate off (its default). */
+export function disableLegacyRefund(): void {
+  delete process.env["POS_LEGACY_REFUND_ENABLED"];
+}
+
+export interface CaptureTender {
+  readonly method: "cash" | "card_external";
+  readonly amount: string;
+  readonly tenderRef?: string;
+  readonly reference?: string;
+}
+
+/**
+ * RT-787: capture a one-line sale (quantity Q × unit) paid with `tenders`,
+ * through the real capture route with the RT-77 / RT-360 tender gates on for
+ * the call only.
+ */
+export async function captureWithTenders(
   h: HarnessHandle,
-  saleRef: string,
-  body: Record<string, unknown>,
-  key: string,
+  opts: { externalId: string; quantity: string; lineAmount: string; tenders: ReadonlyArray<CaptureTender> },
+): Promise<OneLineSale> {
+  process.env["POS_SALE_TENDERS_ENABLED"] = "true";
+  process.env["POS_SALE_TENDERS_SAME_METHOD_ENABLED"] = "true";
+  try {
+    const res = await h
+      .harness!.http()
+      .post("/api/pos/v1/sales")
+      .set("Idempotency-Key", idempKey(`capt${opts.externalId.toLowerCase()}`))
+      .send(
+        captureBody({
+          externalId: opts.externalId,
+          posTotal: opts.lineAmount,
+          lines: [
+            {
+              lineName: "Widget",
+              unitPrice: exactUnitPrice(opts.lineAmount, opts.quantity),
+              currencyCode: "USD",
+              quantity: opts.quantity,
+              lineAmount: opts.lineAmount,
+              unit: "ea",
+            },
+          ],
+          tenders: opts.tenders,
+        }),
+      );
+    if (res.status !== 201) {
+      throw new Error(`capture failed: ${res.status} ${JSON.stringify(res.body)}`);
+    }
+    return { saleRef: res.body.saleRef, lineRef: res.body.lines[0].lineRef };
+  } finally {
+    delete process.env["POS_SALE_TENDERS_ENABLED"];
+    delete process.env["POS_SALE_TENDERS_SAME_METHOD_ENABLED"];
+  }
+}
+
+/** RT-787: a sale of 2 × 5.0000 paid by one cash tender of 10.0000. */
+export function captureCashSale(h: HarnessHandle, externalId: string): Promise<OneLineSale> {
+  return captureWithTenders(h, {
+    externalId,
+    quantity: "2",
+    lineAmount: "10.0000",
+    tenders: [{ method: "cash", amount: "10.0000" }],
+  });
+}
+
+/** RT-787: POST a legacy amount-only refund (`recordRefund`) of `amount`. */
+export function postLegacyRefund(h: HarnessHandle, saleRef: string, externalId: string, amount: string) {
+  return postWithKey(
+    h,
+    `/api/pos/v1/sales/${saleRef}/refund`,
+    refundBody({ externalId, posRefundAmount: amount }),
+    externalId.replace(/[^a-z0-9]/gi, ""),
+  );
+}
+
+/** RT-787: return `quantity` of the sale's line as ONE allocation of `amount` carrying an allocationRef. */
+export function postReturnWithRef(
+  h: HarnessHandle,
+  sale: OneLineSale,
+  line: { quantity: string; amount: string },
+  tag: string,
 ) {
-  return h
-    .harness!.http()
-    .post(`/api/pos/v1/sales/${saleRef}/returns`)
-    .set("Idempotency-Key", idempKey(key))
-    .send(body);
+  const body = allocatedReturnBody(`${tag}-r`, [{ lineRef: sale.lineRef, quantity: line.quantity }], [
+    { amount: line.amount, allocationRef: uuidFor(`${tag}-a`) },
+  ]);
+  return postReturn(h, sale.saleRef, body, tag.replace(/[^a-z0-9]/gi, ""));
+}
+
+/** One RT-490 refund allocation of a return body. */
+export interface Allocation {
+  readonly amount: string;
+  readonly allocationRef?: string;
+  readonly originalTenderRef?: string;
+  readonly instrument?: "cash";
+}
+
+/** A recordReturn body whose refund tenders are the given RT-490 allocations. */
+export function allocatedReturnBody(
+  externalId: string,
+  lines: ReadonlyArray<{ lineRef: string; quantity: string }>,
+  allocations: ReadonlyArray<Allocation>,
+): Record<string, unknown> {
+  return {
+    sourceSystem: "pos-1",
+    externalId,
+    lines,
+    refundTenders: allocations.map((a) => ({ method: "cash", ...a })),
+  };
+}
+
+/** A recordRefundExecution body (RT-490) settling `allocationRef` with `amount`. */
+export function executionBody(
+  externalId: string,
+  allocationRef: string,
+  amount: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    sourceSystem: "pos-1",
+    externalId,
+    executionRef: uuidFor(`exec:${externalId}`),
+    allocationRef,
+    amount,
+    outcome: "settled",
+    evidence: { method: "drawer", paidAt: new Date(Date.now() - 60_000).toISOString(), shiftRef: SHIFT_REF },
+    ...overrides,
+  };
+}
+
+/** The shift whose drawer pays the executions in these specs (recorded as reported). */
+export const SHIFT_REF = "0d000000-0000-7000-8000-0000000051f1";
+
+/** A deterministic uuid-shaped value from a seed (test refs only). */
+export function uuidFor(seed: string): string {
+  let a = 0x811c9dc5;
+  let b = 0x01000193;
+  for (const ch of seed) {
+    const code = ch.codePointAt(0) ?? 0;
+    a = Math.imul(a ^ code, 0x01000193) >>> 0;
+    b = Math.imul(b ^ code, 0x85ebca6b) >>> 0;
+  }
+  const hex = (a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0")).repeat(2);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-7${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** The return a refund execution is posted against. */
+export interface ReturnTarget {
+  readonly saleRef: string;
+  readonly returnRef: string;
+}
+
+/** POST a refund execution. */
+export function postExecution(h: HarnessHandle, target: ReturnTarget, body: Record<string, unknown>, key: string) {
+  return postWithKey(h, `/api/pos/v1/sales/${target.saleRef}/returns/${target.returnRef}/executions`, body, key);
+}
+
+/** The `erpnext.posting.requested` reversal events emitted for a return. */
+export async function postingEventsFor(h: HarnessHandle, returnRef: string): Promise<number> {
+  const r = await h.harness!.env.admin.query(
+    `SELECT 1 FROM outbox_events
+      WHERE event_type = 'erpnext.posting.requested' AND payload->>'source_ref_id' = $1`,
+    [returnRef],
+  );
+  return r.rowCount ?? 0;
 }
 
 /** Remove every row the return specs create (children first). */
@@ -152,6 +330,10 @@ export async function cleanReturnsFixtures(h: HarnessHandle): Promise<void> {
   if (!h.harness) return;
   const q = (sql: string) => h.harness!.env.admin.query(sql);
   const sales = "SELECT id FROM sales WHERE source_system = 'pos-1'";
+  // RT-787 (0067): executions reference the return and its allocation.
+  await q(`DELETE FROM refund_executions WHERE return_id IN
+           (SELECT id FROM sale_returns WHERE sale_id IN (${sales}))`);
+  await q(`DELETE FROM sale_refunds WHERE sale_id IN (${sales})`);
   await q(`DELETE FROM sale_return_tenders WHERE return_id IN
            (SELECT id FROM sale_returns WHERE sale_id IN (${sales}))`);
   await q(`DELETE FROM sale_return_lines WHERE return_id IN

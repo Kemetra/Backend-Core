@@ -53,6 +53,9 @@ const LIVE_READ_CODES = [
   "pairing_codes.listed",
   // RT-548 / RT-689: the POS readSale.
   "pos_sales.detail_read",
+  // RT-787: the POS return reads (RT-490 R-8).
+  "pos_sales.return_read",
+  "pos_sales.returns_listed",
   "sale_history.detail_read",
   "sale_history.listed",
   "sale_sync_ops.audit_timeline.read",

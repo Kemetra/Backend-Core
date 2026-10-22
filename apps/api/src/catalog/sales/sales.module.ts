@@ -35,6 +35,8 @@ import { SalesService } from "./sales.service";
 import { SaleReturnsService } from "./sale-returns.service";
 import { CreditSaleReversalService } from "./credit-sale-reversal.service";
 import { CreditSaleReversalsController } from "./credit-sale-reversals.controller";
+import { RefundExecutionsController } from "./refund-executions.controller";
+import { RefundExecutionsService } from "./refund-executions.service";
 import { DeviceRepository } from "../../pos-operators/device.repository";
 import {
   OPERATOR_CONTEXT_RESOLVER,
@@ -86,12 +88,20 @@ import { PosPayersService } from "./payers/pos-payers.service";
   // dependency), reusing this module's envelope and device guard providers.
   // RT-577: the credit-sale reversal is its own controller too.
   // RT-802: so is the till's payer lookup (the envelope guard below).
-  controllers: [SalesController, SaleHistoryController, CreditSaleReversalsController, PosPayersController],
+  // RT-787: the return reads and refund executions are their own controller.
+  controllers: [
+    SalesController,
+    SaleHistoryController,
+    CreditSaleReversalsController,
+    PosPayersController,
+    RefundExecutionsController,
+  ],
   providers: [
     SalesService,
     PosPayersService,
     SaleReturnsService,
     CreditSaleReversalService,
+    RefundExecutionsService,
     SaleHistoryService,
     {
       provide: IDENTITY_PROVIDER_PORT,

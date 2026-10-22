@@ -13,12 +13,18 @@
  *   - `sale_return_lines`: one row per returned sale line;
  *     `returned_quantity_after` freezes the cumulative quantity so a replay
  *     echoes the identical returnability snapshot.
- *   - `sale_return_tenders`: payout method + amount, in request order.
+ *   - `sale_return_tenders`: the refund ALLOCATION (RT-271 R-2; RT-787 /
+ *     0067): method + amount in request order, plus the optional
+ *     `allocation_ref` (unique within the return), `original_tender_ref`
+ *     (pinned to a tender of the same sale by a trigger) and `instrument`.
+ *   - `sale_returns.posting_deferred` (0067, R-7): posted by the execution
+ *     that settles it, not at acceptance.
  *
  * Children carry a composite FK to `sale_returns (id, tenant_id, store_id)`.
  */
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   char,
   check,
   date,
@@ -65,6 +71,8 @@ export const saleReturns = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    // RT-787 (0067, R-7): deferred to its settlement at acceptance.
+    postingDeferred: boolean("posting_deferred").notNull().default(false),
   },
   (t) => [
     check("sale_returns_return_seq_positive", sql`${t.returnSeq} > 0`),
@@ -148,11 +156,24 @@ export const saleReturnTenders = pgTable(
     ordinal: integer("ordinal").notNull(),
     method: text("method").notNull(),
     amount: numeric("amount", { precision: 19, scale: 4 }).notNull(),
+    // RT-787 (0067): the RT-490 allocation fields; NULL on an allocation
+    // recorded without them (never backfilled).
+    allocationRef: uuid("allocation_ref"),
+    originalTenderRef: uuid("original_tender_ref"),
+    instrument: text("instrument"),
   },
   (t) => [
     check("sale_return_tenders_ordinal_non_negative", sql`${t.ordinal} >= 0`),
     check("sale_return_tenders_method_valid", sql`${t.method} IN ('cash')`),
     check("sale_return_tenders_amount_non_negative", sql`${t.amount} >= 0`),
+    check(
+      "sale_return_tenders_instrument_valid",
+      sql`${t.instrument} IS NULL OR ${t.instrument} IN ('cash')`,
+    ),
+    uniqueIndex("uq_sale_return_tenders_return_allocation")
+      .on(t.returnId, t.allocationRef)
+      .where(sql`${t.allocationRef} IS NOT NULL`),
+    uniqueIndex("uq_sale_return_tenders_id_return_allocation").on(t.id, t.returnId, t.allocationRef),
     unique("uq_sale_return_tenders_return_ordinal").on(t.returnId, t.ordinal),
     index("idx_sale_return_tenders_tenant_store").on(t.tenantId, t.storeId),
     foreignKey({
