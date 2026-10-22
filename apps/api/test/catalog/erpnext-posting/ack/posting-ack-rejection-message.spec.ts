@@ -20,24 +20,14 @@
  * Docker policy mirrors posting-ack.spec: HARD failure unless MIGRATION_TEST_ALLOW_SKIP=1.
  */
 import {
-  applyAllUpAndCreateAppRole,
-  startPgEnv,
-  stopPgEnv,
-  type PgTestEnv,
-} from "../../../_helpers/postgres-container";
-import {
   ErpnextPostingService,
   POSTING_RETRY_BUDGET,
   type AckOutcomeInput,
 } from "../../../../src/catalog/erpnext-posting/erpnext-posting.service";
-import {
-  POSTING_STATUS_FIXTURE_IDS,
-  POST_A_PENDING,
-  seedPostingStatusFixture,
-} from "../__support__/seed-posting-status";
+import { usePostingStatusEnv } from "../__support__/posting-status-env";
+import { POSTING_STATUS_FIXTURE_IDS, POST_A_PENDING } from "../__support__/seed-posting-status";
 
-let env: PgTestEnv | null = null;
-let skip = false;
+const pg = usePostingStatusEnv("posting-ack-rejection-message.spec");
 
 const TENANT_A = POSTING_STATUS_FIXTURE_IDS.tenantA;
 const DOC = { doctype: "Sales Invoice", name: "ACC-SINV-A-0410" };
@@ -46,34 +36,13 @@ const FIRST = `RepresentationMismatch: representation: rate 12.50 != 12.5 (${MAR
 const FIRST_STORED = `RepresentationMismatch: representation: rate 12.50 != 12.5 (${MARKER}) dp2_token=[redacted]`;
 const SECOND = "NameError: name 'flt' is not defined";
 
-beforeAll(async () => {
-  try {
-    env = await startPgEnv();
-    await applyAllUpAndCreateAppRole(env);
-    await seedPostingStatusFixture(env);
-  } catch (err) {
-    if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
-      skip = true;
-      // eslint-disable-next-line no-console
-      console.warn(`[posting-ack-rejection-message.spec] Docker unavailable: ${String(err)}`);
-      return;
-    }
-    throw err;
-  }
-}, 180_000);
-
-afterAll(async () => {
-  if (env) await stopPgEnv(env);
-}, 60_000);
-
 function svc(): ErpnextPostingService {
-  if (!env) throw new Error("Docker unavailable");
-  return new ErpnextPostingService(env.app);
+  return new ErpnextPostingService(pg.env().app);
 }
 
 /** Put the row back to pending at frozen version `version`, with no message. */
 async function resetPending(version: number | null = 1, retryCount = 0): Promise<void> {
-  await env!.admin.query(
+  await pg.env().admin.query(
     `UPDATE erpnext_posting_status
         SET status = 'pending', document_ref = NULL, posted_at = NULL, rejection_category = NULL,
             reconciliation_document_ref = NULL, rejection_message = NULL, retry_count = $3,
@@ -84,7 +53,7 @@ async function resetPending(version: number | null = 1, retryCount = 0): Promise
 }
 
 async function stored(): Promise<{ status: string; category: string | null; message: string | null }> {
-  const r = await env!.admin.query<{ status: string; category: string | null; message: string | null }>(
+  const r = await pg.env().admin.query<{ status: string; category: string | null; message: string | null }>(
     `SELECT status, rejection_category AS category, rejection_message AS message
        FROM erpnext_posting_status WHERE id = $1`,
     [POST_A_PENDING],
@@ -127,14 +96,14 @@ describe("RT-410 — the message is stored with the dead-letter, sanitised", () 
       { status: "permanently_rejected", category: "reconciliation_required", message: SECOND },
     ],
   ])("%s", async (_label, acks, expected) => {
-    if (skip) return;
+    if (pg.skipped()) return;
     await resetPending();
     for (const ack of acks()) await svc().ackOutcome(ack);
     expect(await stored()).toEqual(expected);
   });
 
   it("a message with nothing left after sanitising is null, and the ack is still recorded", async () => {
-    if (skip) return;
+    if (pg.skipped()) return;
     await resetPending();
     const rec = await svc().ackOutcome(rejected("\u0000\u0007\n   ", "other"));
     expect(rec.outcome.outcome).toBe("permanently_rejected");
@@ -144,7 +113,7 @@ describe("RT-410 — the message is stored with the dead-letter, sanitised", () 
 
 describe("RT-410 — retention (G5)", () => {
   it("a re-ack of the same outcome with another message is an O-3 echo and keeps the first", async () => {
-    if (skip) return;
+    if (pg.skipped()) return;
     await resetPending();
     await svc().ackOutcome(rejected(FIRST));
     const again = await svc().ackOutcome(rejected(SECOND));
@@ -153,7 +122,7 @@ describe("RT-410 — retention (G5)", () => {
   });
 
   it("a repeated reconciliation_required ack keeps the first message", async () => {
-    if (skip) return;
+    if (pg.skipped()) return;
     await resetPending();
     await svc().ackOutcome(reconciliation(FIRST));
     const again = await svc().ackOutcome(reconciliation(SECOND));
@@ -162,7 +131,7 @@ describe("RT-410 — retention (G5)", () => {
   });
 
   it("an RT-333 ack from a superseded resolution version changes nothing", async () => {
-    if (skip) return;
+    if (pg.skipped()) return;
     await resetPending(2);
     await svc().ackOutcome(rejected(FIRST));
     const before = await stored();
@@ -175,14 +144,14 @@ describe("RT-410 — retention (G5)", () => {
 
 describe("RT-410 — dead-letters with no Connector message are null", () => {
   it("the retry budget exhausted by Backend-Core", async () => {
-    if (skip) return;
+    if (pg.skipped()) return;
     await resetPending(1, POSTING_RETRY_BUDGET);
     await svc().ackOutcome({ tenantId: TENANT_A, workItemRef: POST_A_PENDING, outcome: "failed_transient" });
     expect(await stored()).toEqual({ status: "permanently_rejected", category: "retry_budget_exhausted", message: null });
   });
 
   it("a reconciliation recorded from a superseded posted ack (a posted ack carries no reason)", async () => {
-    if (skip) return;
+    if (pg.skipped()) return;
     await resetPending(2);
     await svc().ackOutcome({
       tenantId: TENANT_A,
@@ -199,7 +168,7 @@ describe("RT-410 — the database CHECKs (migration 0071)", () => {
   /** The SQLSTATE `sql` fails with, or null. */
   async function codeOf(sql: string, params: unknown[]): Promise<string | null> {
     try {
-      await env!.admin.query(sql, params);
+      await pg.env().admin.query(sql, params);
       return null;
     } catch (err: unknown) {
       return (err as { code?: string }).code ?? String(err);
@@ -207,7 +176,7 @@ describe("RT-410 — the database CHECKs (migration 0071)", () => {
   }
 
   it("refuses a message on a row that is not dead-lettered", async () => {
-    if (skip) return;
+    if (pg.skipped()) return;
     await resetPending();
     expect(
       await codeOf(`UPDATE erpnext_posting_status SET rejection_message = 'x' WHERE id = $1`, [POST_A_PENDING]),
@@ -218,7 +187,7 @@ describe("RT-410 — the database CHECKs (migration 0071)", () => {
     ["an empty message", ""],
     ["a message over 1000 characters", "x".repeat(1001)],
   ])("refuses %s on a dead-letter", async (_label, message) => {
-    if (skip) return;
+    if (pg.skipped()) return;
     await resetPending();
     await svc().ackOutcome(rejected(FIRST));
     expect(
@@ -229,10 +198,10 @@ describe("RT-410 — the database CHECKs (migration 0071)", () => {
 
 describe("RT-410 — the message is never audited (G4)", () => {
   it("no audit_events row carries it", async () => {
-    if (skip) return;
+    if (pg.skipped()) return;
     await resetPending();
     await svc().ackOutcome(rejected(FIRST));
-    const r = await env!.admin.query<{ n: number }>(
+    const r = await pg.env().admin.query<{ n: number }>(
       `SELECT count(*)::int AS n FROM audit_events WHERE metadata::text LIKE $1`,
       [`%${MARKER}%`],
     );

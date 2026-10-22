@@ -11,12 +11,12 @@
  *     characters;
  *   - down drops the column and the CHECKs, and round-trips with up.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { ensureAppRole, startPgEnv, stopPgEnv, type PgTestEnv } from "../_helpers/postgres-container";
+import { DRIZZLE_DIR, startEnvBefore } from "../_helpers/migration-before";
+import { stopPgEnv, type PgTestEnv } from "../_helpers/postgres-container";
 
-const DRIZZLE_DIR = resolve(__dirname, "..", "..", "drizzle");
 const UP_NAME = "0071_erpnext_posting_rejection_message.sql";
 const UP_SQL = (): string => readFileSync(resolve(DRIZZLE_DIR, UP_NAME), "utf8");
 const DOWN_SQL = (): string =>
@@ -97,22 +97,8 @@ async function hasColumn(): Promise<boolean> {
 }
 
 beforeAll(async () => {
-  try {
-    env = await startPgEnv();
-  } catch (err: unknown) {
-    if (process.env["MIGRATION_TEST_ALLOW_SKIP"] === "1") {
-      // eslint-disable-next-line no-console
-      console.warn(`\n[0071 spec] Docker NOT AVAILABLE — skipping: ${String(err)}\n`);
-      return;
-    }
-    throw err;
-  }
-  const files = readdirSync(DRIZZLE_DIR)
-    .filter((n) => /^\d{4}_.+\.sql$/.test(n) && !n.endsWith(".down.sql"))
-    .filter((n) => n.localeCompare(UP_NAME) < 0)
-    .sort();
-  for (const name of files) await env.admin.query(readFileSync(resolve(DRIZZLE_DIR, name), "utf8"));
-  await ensureAppRole(env);
+  env = await startEnvBefore(UP_NAME, "0071 spec");
+  if (env === null) return;
   const a = env.admin;
   await a.query(`INSERT INTO tenants (id, slug, name) VALUES ($1, 'rt410-mig', 'T')`, [TENANT]);
   await a.query(`INSERT INTO stores (id, tenant_id, code, name) VALUES ($1, $2, 'S', 'S')`, [STORE, TENANT]);
