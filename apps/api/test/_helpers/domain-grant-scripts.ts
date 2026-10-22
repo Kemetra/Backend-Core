@@ -28,11 +28,21 @@ export function routineGrantScripts(dir = SQL_DIR): string[] {
     .sort();
 }
 
-/** "table:PRIVILEGE" for each privilege a script GRANTs to the domain role. */
+/**
+ * "table:PRIVILEGE" for each privilege a script GRANTs to the domain role.
+ * Fails closed: a GRANT statement in any other shape (lowercase, `ON TABLE`, a
+ * schema prefix, another grantee) throws instead of being
+ * skipped, so no grant deploy applies can escape the comparison.
+ */
 export function scriptGrants(script: string, dir = SQL_DIR): string[] {
   const sql = read(resolve(dir, script));
+  const statements = sql.match(/^\s*GRANT\b[^;]*;?/gim) ?? [];
+  const parsed = [...sql.matchAll(/^\s*GRANT\s+([A-Z, ]+?)\s+ON\s+([a-z0-9_, ]+?)\s+TO\s+:"domain_role"\s*;/gm)];
+  if (statements.length !== parsed.length) {
+    throw new Error(`${script}: ${statements.length - parsed.length} GRANT statement(s) the grant oracle cannot parse`);
+  }
   const grants: string[] = [];
-  for (const m of sql.matchAll(/^\s*GRANT\s+([A-Z, ]+?)\s+ON\s+([a-z0-9_, ]+?)\s+TO\s+:"domain_role"\s*;/gm)) {
+  for (const m of parsed) {
     for (const table of m[2]!.split(",").map((t) => t.trim())) {
       for (const privilege of m[1]!.split(",").map((p) => p.trim())) grants.push(`${table}:${privilege}`);
     }

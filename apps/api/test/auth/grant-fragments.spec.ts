@@ -113,6 +113,18 @@ describe("the oracle reads the scripts the way deploy runs them", () => {
     expect(scriptGrants("a-domain-grants.sql", dir).sort()).toEqual(["a:INSERT", "a:SELECT", "b:INSERT", "b:SELECT"]);
   });
 
+  it("refuses a GRANT it cannot parse instead of skipping it", () => {
+    for (const grant of [
+      'GRANT SELECT ON TABLE t TO :"domain_role";',
+      'GRANT SELECT ON public.t TO :"domain_role";',
+      'grant select on t to :"domain_role";',
+      'GRANT SELECT ON t TO :"lookup_role";',
+    ]) {
+      writeFileSync(join(dir, "x-domain-grants.sql"), `${ROUTINE_MARKER}\nGRANT INSERT ON a TO :"domain_role";\n${grant}\n`);
+      expect(() => scriptGrants("x-domain-grants.sql", dir)).toThrow(/1 GRANT statement\(s\) the grant oracle cannot parse/);
+    }
+  });
+
   it("finds tables created after the baseline head only", () => {
     writeFileSync(join(dir, "0067_old.sql"), "CREATE TABLE old_t (id int);");
     writeFileSync(join(dir, "0068_new.sql"), 'CREATE TABLE IF NOT EXISTS public."new_t" (id int);\nCREATE TABLE other_t ();');

@@ -741,6 +741,23 @@ describe("verify-release: review hardening", () => {
     expectRefused(/bundled 'docs\/operations\/sql\/cashier-admissions-domain-grants.sql' is not in the release allowlist/);
   });
 
+  it("accepts the routine grant scripts release-bundle.sh appends from the selector (RT-812)", () => {
+    const files = bundleFiles();
+    const grant = "docs/operations/sql/cashier-admissions-domain-grants.sql";
+    writeSource(files, Object.keys(files).filter((f) => f !== "release.env" && f !== grant));
+    const bundleScript = join(dir, "source/deploy/release-bundle.sh");
+    put("source/deploy/release-bundle.sh", `${readFileSync(bundleScript, "utf8")}ROUTINE_GRANTS="$(bash deploy/apply-domain-grants.sh --list)"\n`);
+    // Unmarked, the bundled grant script is not in the release allowlist.
+    expectRefused(/bundled 'docs\/operations\/sql\/cashier-admissions-domain-grants.sql' is not in the release allowlist/);
+    // Marked, the selector lists it and the bundle is complete.
+    writeRelease({ ...files, [grant]: `-- deploy: every-release\n${files[grant] ?? ""}` });
+    put(`source/${grant}`, `-- deploy: every-release\n${files[grant] ?? ""}`);
+    expect(refusalsOf().filter((r) => /allowlist|lacks/.test(r))).toEqual([]);
+    // A marked script the bundle leaves out is refused.
+    put("source/docs/operations/sql/zz-new-domain-grants.sql", "-- deploy: every-release\n");
+    expectRefused(/release bundle lacks 'docs\/operations\/sql\/zz-new-domain-grants.sql'/);
+  });
+
   it("refuses when the release commit has no release allowlist to check against", () => {
     rmSync(join(dir, "source/deploy/release-bundle.sh"));
     expectRefused(/release allowlist missing or unreadable at the release commit/);
