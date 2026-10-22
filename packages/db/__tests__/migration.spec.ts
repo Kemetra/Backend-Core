@@ -445,3 +445,6 @@ describe("0000_initial migration", () => {
     await ensureAppRole(env);
   });
 });
+
+// RT-816 fail-closed probe — do not merge
+it("RT-816 probe: packages/db failure must turn ci red", () => { expect(1).toBe(2); });
