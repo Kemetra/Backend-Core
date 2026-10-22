@@ -11,7 +11,8 @@
  *
  * A cash-up row is guarded by a trigger (`shifts_cash_up_guard`): it is
  * inserted open, moves open → closed / closed_forced once, only with its
- * `shift_closes` row, and is never deleted. An open legacy row may be
+ * `shift_closes` row (or, 0070 RT-742, `closed_forced` with its
+ * `shift_forced_closes` row: a manager's not-counted force close), and is never deleted. An open legacy row may be
  * ADOPTED once (legacy → cash_up, setting only the cash-up columns). Policies, CHECKs and triggers live in the SQL migrations.
  */
 import {
@@ -171,6 +172,8 @@ export const shifts = pgTable(
       t.currencyCode,
       t.openingFloat,
     ),
+    // 0070 (RT-742): the force-close FK target; legacy rows included.
+    unique("uq_shifts_force_close_target").on(t.shiftId, t.tenantId, t.storeId, t.openingDeviceId),
     uniqueIndex("uq_shifts_cash_up_open_device")
       .on(t.tenantId, t.openingDeviceId)
       .where(sql`${t.source} = 'cash_up' AND ${t.lifecycleState} = 'open'`),

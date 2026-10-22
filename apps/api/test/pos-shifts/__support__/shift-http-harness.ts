@@ -67,7 +67,7 @@ export const TENANT_B = "0e170000-0000-4000-8000-0000000b0001";
 export const STORE_A1 = "0e170000-0000-4000-8000-0000000a5001";
 export const STORE_A2 = "0e170000-0000-4000-8000-0000000a5002";
 export const STORE_B1 = "0e170000-0000-4000-8000-0000000b5001";
-const ROLE_A_STAFF = "0e170000-0000-4000-8000-0000000a7001";
+export const ROLE_A_STAFF = "0e170000-0000-4000-8000-0000000a7001";
 const ROLE_A_MANAGER = "0e170000-0000-4000-8000-0000000a7002";
 const ROLE_B_STAFF = "0e170000-0000-4000-8000-0000000b7001";
 
@@ -124,6 +124,7 @@ const MANAGER_JWT = "jwt-rt17-s2b-manager";
 export const OPEN_PATH = "/api/pos/v1/shifts";
 export const movementPath = (shiftId: string): string => `/api/pos/v1/shifts/${shiftId}/cash-movements`;
 export const closePath = (shiftId: string): string => `/api/pos/v1/shifts/${shiftId}/close`;
+export const forcedClosePath = (shiftId: string): string => `/api/pos/v1/shifts/${shiftId}/forced-close`;
 
 /** An instant `minutesAgo` minutes before now (inside every seeded admission window). */
 export const minutesAgo = (minutes: number): string => new Date(Date.now() - minutes * 60_000).toISOString();
@@ -350,16 +351,24 @@ export async function stopHarness(): Promise<void> {
 /**
  * Between tests: every open cash-up shift is closed (a cash-up shift can
  * never be deleted, and a device holds one open shift at most), legacy rows
- * are removed, envelopes are revoked, revoked memberships are restored, the
- * limiter allows and forgets, and the audit spy and the log capture are
- * emptied.
+ * are removed (except a force-closed one, which its append-only RT-742 fact
+ * pins; it is no longer open, so it never counts), envelopes are revoked,
+ * revoked memberships are restored, the manager's role and store access are
+ * restored (RT-742 demotes and removes them), the limiter allows and
+ * forgets, and the audit spy and the log capture are emptied.
  */
 export async function resetState(): Promise<void> {
   if (!harness) return;
   await closeOpenShifts();
-  await admin().query(`DELETE FROM shifts WHERE source = 'legacy'`);
+  await admin().query(`DELETE FROM shifts s WHERE s.source = 'legacy'
+       AND NOT EXISTS (SELECT 1 FROM shift_forced_closes f WHERE f.shift_id = s.shift_id)`);
   await admin().query(`DELETE FROM auth_tokens WHERE scope = 'pos_operator'`);
   await admin().query(`UPDATE memberships SET revoked_at = NULL WHERE revoked_at IS NOT NULL`);
+  await admin().query(`UPDATE memberships SET role_id = $2 WHERE id = $1`, [MANAGER.membership, ROLE_A_MANAGER]);
+  await admin().query(
+    `INSERT INTO store_access (membership_id, store_id, tenant_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+    [MANAGER.membership, STORE_A1, TENANT_A],
+  );
   harness.limiter.denyKey = null;
   harness.limiter.calls.length = 0;
   harness.audit.payloads.length = 0;
@@ -512,6 +521,26 @@ export async function seedReturn(seed: ReturnSeed): Promise<string> {
   return returnId;
 }
 
+/** RT-742: a legacy (audit-ingest) open shift on `d`, opened `minutes` ago by `user`; returns its id. */
+export async function seedLegacyShift(d: FixtureDevice, spec: { user?: string; minutes?: number } = {}): Promise<string> {
+  const shiftId = randomUUID();
+  await admin().query(
+    `INSERT INTO shifts (shift_id, tenant_id, store_id, opening_cashier_user_id, opening_device_id, opened_at)
+     VALUES ($1, $2, $3, $4, $5, now() - make_interval(mins => $6::int))`,
+    [shiftId, d.tenant, d.store, spec.user ?? CASHIER.id, d.id, spec.minutes ?? 60],
+  );
+  return shiftId;
+}
+
+/** RT-742: a live `pos_operator` session of `user` on `d`'s store (another terminal's sign-in). */
+export async function seedOperatorSession(user: FixtureUser, d: FixtureDevice): Promise<void> {
+  await admin().query(
+    `INSERT INTO auth_tokens (id, token_hash, tenant_id, user_id, device_id, store_id, scope, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, 'pos_operator', now() + interval '1 hour')`,
+    [randomUUID(), hashToken(`rt742-session-${randomUUID()}`), d.tenant, user.id, d.id, d.store],
+  );
+}
+
 /**
  * Holds the shift's row lock on an admin connection (another transaction in
  * flight), so the next close of that shift waits. `release` rolls back.
@@ -557,7 +586,7 @@ function contractAjv(): Ajv {
   return ajv;
 }
 
-export type ContractSchema = "Shift" | "CashMovement" | "ApiError" | "IdempotencyInProgressBody";
+export type ContractSchema = "Shift" | "CashMovement" | "ApiError" | "IdempotencyInProgressBody" | "ForceClosedShift";
 
 /** The body satisfies the named contract schema. */
 export function expectSchema(schema: ContractSchema, body: unknown): void {

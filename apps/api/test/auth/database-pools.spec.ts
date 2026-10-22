@@ -72,6 +72,9 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "inventory_anchors:INSERT",
   "inventory_anchor_lines:SELECT",
   "inventory_anchor_lines:INSERT",
+  // RT-742 (0070): the manager's not-counted force close (append-only).
+  "shift_forced_closes:SELECT",
+  "shift_forced_closes:INSERT",
   // RT-539 (0047): the receipt reprint record (append-only).
   "sale_reprints:SELECT",
   "sale_reprints:INSERT",
@@ -327,6 +330,7 @@ describe("database pool boundary", () => {
       "tenant_inventory_settings",
       "inventory_anchors",
       "inventory_anchor_lines",
+      "shift_forced_closes",
       "platform_support_sessions",
       "sale_reprints",
       "sale_responsibilities",
