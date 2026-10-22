@@ -22,6 +22,12 @@
  *
  * Every call runs inside one `runWithTenantContext` transaction, so RLS hides
  * other tenants' products: a cross-tenant id is a non-disclosing `not_found`.
+ *
+ * Safety Revision (RT-449, G7-7): a profile that actually changes steps the
+ * tenant's Inventory Safety Revision once (`tracking_profile_changed`) in the
+ * same transaction. The setter takes the tenant's safety lock BEFORE locking
+ * the product row, the order every safety command uses, so it never deadlocks
+ * with one.
  * The happy-path audit subject (`catalog.tracking_profile.set`) is emitted by
  * the controller's `@Auditable` decorator.
  */
@@ -33,6 +39,11 @@ import type { Logger } from "@data-pulse-2/shared";
 
 import { PG_POOL } from "../../auth/auth.module";
 import { ROOT_LOGGER } from "../../common/logging.interceptor";
+import {
+  bumpSafetyRevision,
+  lockTenantSafety,
+  recordSafetyChange,
+} from "../../inventory/safety/safety-revision";
 import type { TrackingProfileRow } from "./tracking-profile.dto";
 
 export type GetTrackingProfileResult =
@@ -115,6 +126,7 @@ export class TrackingProfileService {
     client: PoolClient,
     input: SetTrackingProfileInput,
   ): Promise<SetTrackingProfileResult> {
+    await lockTenantSafety(client, input.tenantId);
     const current = await client.query<ProfileDbRow>(
       `SELECT id, tracking_mode, expiry_required FROM tenant_products
         WHERE id = $1 FOR UPDATE`,
@@ -138,6 +150,13 @@ export class TrackingProfileService {
         RETURNING id, tracking_mode, expiry_required`,
       [input.productId, input.trackingMode, input.expiryRequired, input.actorUserId],
     );
+    await recordSafetyChange(client, {
+      tenantId: input.tenantId,
+      revision: await bumpSafetyRevision(client, input.tenantId),
+      kind: "tracking_profile_changed",
+      tenantProductRef: input.productId,
+      createdBy: input.actorUserId,
+    });
     this.logger?.info(
       {
         tenant_id: input.tenantId,

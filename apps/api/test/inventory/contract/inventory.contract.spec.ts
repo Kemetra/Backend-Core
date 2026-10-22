@@ -41,7 +41,13 @@ import "reflect-metadata";
 
 import { resolve } from "node:path";
 
-import { INVENTORY_REASON_CODES, INVENTORY_STATUSES, RETURN_LANDING_STATUSES } from "@data-pulse-2/db";
+import {
+  INVENTORY_REASON_CODES,
+  INVENTORY_STATUSES,
+  RETURN_LANDING_STATUSES,
+  SAFETY_REASON_CODE_PATTERN,
+  TRACKING_HOLD_KINDS,
+} from "@data-pulse-2/db";
 
 import { loadOpenApiContracts } from "../../../src/openapi/loader";
 
@@ -65,6 +71,13 @@ const OPERATION_IDS = [
   "createRelocation",
   "getReturnLandingPolicy",
   "setReturnLandingPolicy",
+  // RT-449: tracking holds, recall and the identity expiry correction.
+  "placeQualityHold",
+  "getTrackingHold",
+  "releaseTrackingHold",
+  "createInventoryRecall",
+  "getInventoryRecall",
+  "correctTrackingIdentityExpiry",
 ] as const;
 
 // Operator-surface ops use cookieAuth; the backfill is platform/admin.
@@ -80,6 +93,12 @@ const OPERATOR_OPERATION_IDS = [
   "createRelocation",
   "getReturnLandingPolicy",
   "setReturnLandingPolicy",
+  "placeQualityHold",
+  "getTrackingHold",
+  "releaseTrackingHold",
+  "createInventoryRecall",
+  "getInventoryRecall",
+  "correctTrackingIdentityExpiry",
 ];
 const ADMIN_OPERATION_IDS = ["backfillSaleLinkedMovements"];
 
@@ -91,7 +110,12 @@ const WRITE_OPERATION_IDS = [
   "backfillSaleLinkedMovements",
   "createStatusMove",
   "createRelocation",
+  "placeQualityHold",
+  "createInventoryRecall",
+  "correctTrackingIdentityExpiry",
 ];
+// releaseTrackingHold is naturally idempotent (a released hold is final; a
+// second release writes nothing), so it carries no Idempotency-Key.
 // setReturnLandingPolicy is a PUT of the whole value: repeating it is
 // naturally idempotent, so it carries no Idempotency-Key (and is in neither list).
 const READ_OPERATION_IDS = [
@@ -100,6 +124,9 @@ const READ_OPERATION_IDS = [
   "listStockLocations",
   "listTrackingIdentities",
   "getReturnLandingPolicy",
+  "getTrackingHold",
+  "getInventoryRecall",
+  "releaseTrackingHold",
 ];
 
 const MOVEMENTS_PATH = "/api/inventory/v1/stores/{storeId}/movements";
@@ -112,6 +139,12 @@ const TRACKING_IDENTITIES_PATH = "/api/inventory/v1/products/{productId}/trackin
 const STATUS_MOVES_PATH = "/api/inventory/v1/stores/{storeId}/status-moves";
 const RELOCATIONS_PATH = "/api/inventory/v1/stores/{storeId}/relocations";
 const RETURN_LANDING_PATH = "/api/inventory/v1/settings/return-landing";
+const HOLDS_PATH = "/api/inventory/v1/tracking-holds";
+const HOLD_PATH = "/api/inventory/v1/tracking-holds/{holdId}";
+const HOLD_RELEASE_PATH = "/api/inventory/v1/tracking-holds/{holdId}/release";
+const RECALLS_PATH = "/api/inventory/v1/recalls";
+const RECALL_PATH = "/api/inventory/v1/recalls/{recallId}";
+const EXPIRY_CORRECTIONS_PATH = "/api/inventory/v1/tracking-identities/{identityId}/expiry-corrections";
 
 // Field-name substrings forbidden anywhere in the contract (§XIV — no PII /
 // money / payment / tender on the inventory ledger in v1).
@@ -284,7 +317,7 @@ describe("inventory/inventory.yaml — loadability", () => {
 // 2. Operations present, uniquely named, correctly secured
 // ===========================================================================
 describe("inventory/inventory.yaml — operations", () => {
-  it("declares exactly the six 009 operationIds, RT-432's listStockLocations, RT-448's listTrackingIdentities and RT-435's four", () => {
+  it("declares exactly the six 009 operationIds, RT-432's listStockLocations, RT-448's listTrackingIdentities, RT-435's four and RT-449's six", () => {
     const ids = inventoryOperations()
       .map((o) => o.op.operationId)
       .filter((id): id is string => typeof id === "string")
@@ -323,6 +356,17 @@ describe("inventory/inventory.yaml — operations", () => {
     expect(inventoryDoc.paths?.[RETURN_LANDING_PATH]?.["put"]?.operationId).toBe(
       "setReturnLandingPolicy",
     );
+  });
+
+  it.each([
+    [HOLDS_PATH, "post", "placeQualityHold"],
+    [HOLD_PATH, "get", "getTrackingHold"],
+    [HOLD_RELEASE_PATH, "post", "releaseTrackingHold"],
+    [RECALLS_PATH, "post", "createInventoryRecall"],
+    [RECALL_PATH, "get", "getInventoryRecall"],
+    [EXPIRY_CORRECTIONS_PATH, "post", "correctTrackingIdentityExpiry"],
+  ])("RT-449: maps %s %s to %s", (path, method, operationId) => {
+    expect(inventoryDoc.paths?.[path]?.[method]?.operationId).toBe(operationId);
   });
 
   it("does NOT collide with or rename any shipped top-level operationId", () => {
@@ -435,6 +479,10 @@ describe("inventory/inventory.yaml — projections + envelope", () => {
       "CreateStatusMoveCommand",
       "CreateRelocationCommand",
       "SetReturnLandingPolicyCommand",
+      "PlaceQualityHoldCommand",
+      "ReleaseTrackingHoldCommand",
+      "CreateInventoryRecallCommand",
+      "CorrectTrackingIdentityExpiryCommand",
     ];
     for (const name of commandSchemas) {
       const schema = inventoryDoc.components?.schemas?.[name];
@@ -698,5 +746,56 @@ describe("inventory/inventory.yaml — RT-435 position events", () => {
     expect(findOp("createStatusMove")?.responses?.["409"]).toEqual({
       $ref: "#/components/responses/PositionEventConflict",
     });
+  });
+});
+
+// ===========================================================================
+// RT-449 — tracking holds, recall and the Inventory Safety Revision
+// ===========================================================================
+describe("inventory/inventory.yaml — RT-449 holds, recall and safety revision", () => {
+  type Prop = { type?: unknown; enum?: unknown[]; format?: string; maxItems?: number; minItems?: number; uniqueItems?: boolean; $ref?: string };
+  const schema = (name: string): { properties?: Record<string, Prop>; required?: string[]; pattern?: string } =>
+    (inventoryDoc.components?.schemas?.[name] ?? {}) as {
+      properties?: Record<string, Prop>;
+      required?: string[];
+      pattern?: string;
+    };
+
+  it("bounds reason codes to the 0072 machine-code shape, matching the db pattern", () => {
+    expect(schema("SafetyReasonCode").pattern).toBe(SAFETY_REASON_CODE_PATTERN.source);
+  });
+
+  it("answers every command with the Safety Revision it produced", () => {
+    for (const name of ["TrackingHoldResult", "InventoryRecallResult", "TrackingIdentityExpiryCorrectionResult"]) {
+      expect(schema(name).required).toContain("safetyRevision");
+      expect(schema(name).properties?.["safetyRevision"]?.$ref).toBe("#/components/schemas/SafetyRevision");
+    }
+  });
+
+  it("projects a hold with its typed kind, recall and release", () => {
+    const hold = schema("TrackingHold");
+    expect(hold.properties?.["kind"]?.enum).toEqual([...TRACKING_HOLD_KINDS]);
+    expect(hold.required).toEqual(expect.arrayContaining(["recallId", "releasedAt", "active"]));
+  });
+
+  it("bounds a recall to 1-100 distinct identities", () => {
+    const ids = schema("CreateInventoryRecallCommand").properties?.["trackingIdentityIds"];
+    expect(ids).toMatchObject({ minItems: 1, maxItems: 100, uniqueItems: true });
+  });
+
+  it("takes the expiry correction as a required, nullable date", () => {
+    const cmd = schema("CorrectTrackingIdentityExpiryCommand");
+    expect(cmd.required).toContain("expiryDate");
+    expect(cmd.properties?.["expiryDate"]).toMatchObject({ type: ["string", "null"], format: "date" });
+  });
+
+  it("documents the 409 conflict codes of a safety command", () => {
+    const conflict = inventoryDoc.components?.responses?.["SafetyConflict"] as { description?: string } | undefined;
+    for (const code of ["hold_already_active", "expiry_unchanged", "idempotency_key_conflict"]) {
+      expect(conflict?.description).toContain(code);
+    }
+    for (const id of ["placeQualityHold", "createInventoryRecall", "correctTrackingIdentityExpiry"]) {
+      expect(findOp(id)?.responses?.["409"]).toEqual({ $ref: "#/components/responses/SafetyConflict" });
+    }
   });
 });

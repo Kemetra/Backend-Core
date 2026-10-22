@@ -217,7 +217,7 @@ describe("RT-565 §2 — pending count and oldest pending (D2)", () => {
     if (skip()) return;
     const r = await scoped.env().admin.query<{ id: string }>(
       `UPDATE erpnext_posting_status
-          SET status = 'pending', rejection_category = NULL, updated_at = now(),
+          SET rejection_message = NULL, status = 'pending', rejection_category = NULL, updated_at = now(),
               created_at = now() - interval '1 day'
         WHERE id = (SELECT id FROM erpnext_posting_status
                      WHERE tenant_id = $1 AND store_id = $2 AND status = 'permanently_rejected'
@@ -358,7 +358,7 @@ describe("RT-565 §5 — one statement, one snapshot, asOf after it (D6)", () =>
           // Concurrent writers commit between BEGIN and the freshness statement.
           await scoped.env().admin.query(
             `UPDATE erpnext_posting_status
-                SET status = 'posted', document_ref = 'SINV-rt565', posted_at = now(), updated_at = now()
+                SET rejection_message = NULL, status = 'posted', document_ref = 'SINV-rt565', posted_at = now(), updated_at = now()
               WHERE id = $1`,
             [posted],
           );

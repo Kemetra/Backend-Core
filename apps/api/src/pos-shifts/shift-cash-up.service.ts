@@ -317,6 +317,7 @@ export class ShiftCashUpService {
   private async closeInTenant(client: PoolClient, request: CloseRequest): Promise<ShiftWriteResult<ShiftProjection>> {
     const { ctx, fact } = request;
     const shift = await this.lockShift(client, { scope: ctx.scope, shiftId: request.shiftId });
+    refuseForceClosed(shift);
     if (!closeFitsCurrency({ totals: fact, currencyCode: shift.currencyCode })) {
       throw new ShiftCashUpError("validation_error");
     }
@@ -362,6 +363,7 @@ export class ShiftCashUpService {
     hash: Buffer,
   ): Promise<ShiftWriteResult<ShiftProjection>> {
     if (!shift.payloadHash.equals(hash)) throw new ShiftCashUpError("shift_payload_conflict");
+    refuseForceClosed(shift);
     const close = shift.lifecycleState === "open" ? null : await this.repo.findClose(client, shift);
     return { created: false, projection: toShiftProjection(shift, close) };
   }
@@ -416,6 +418,7 @@ export class ShiftCashUpService {
     const { ctx, shiftId, fact } = raced.request;
     const shift = await this.repo.findShift(client, ctx.scope, shiftId);
     if (shift === null || shift.lifecycleState === "open") throw raced.err;
+    refuseForceClosed(shift);
     const replay = await this.replayClose(client, { shift, hash: closeHash(shift, fact) });
     if (replay === null) throw new ShiftCashUpError("shift_payload_conflict");
     return replay;
@@ -472,6 +475,15 @@ export class ShiftCashUpService {
     if (recorded === null) throw new ShiftCashUpError("shift_payload_conflict");
     return { created: true, projection: toCashMovementProjection(recorded) };
   }
+}
+
+/**
+ * RT-742 (Late facts): a shift a manager closed with `forceCloseShift` takes
+ * no close and answers no open re-delivery, whatever the payload: 409
+ * `shift_force_closed`, final for the POS. It has no `ShiftClose` to project.
+ */
+function refuseForceClosed(shift: CashUpShiftRow): void {
+  if (shift.notCounted === true) throw new ShiftCashUpError("shift_force_closed");
 }
 
 /** An open the insert refused: where it was, its id and its payload hash. */

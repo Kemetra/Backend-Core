@@ -30,6 +30,7 @@ import { sql } from "drizzle-orm";
 import {
   check,
   index,
+  integer,
   numeric,
   pgTable,
   text,
@@ -151,6 +152,9 @@ export const tenantInventorySettings = pgTable(
     // tenant from this time on. NULL = OFF (the default); both or neither.
     saleEffectsActivatedAt: timestamp("sale_effects_activated_at", { withTimezone: true }),
     saleEffectsActivatedBy: uuid("sale_effects_activated_by"),
+    // 0072 (RT-449, Q8 / H8): the POS Safety TTL in seconds. NULL = the
+    // 900-second default; configurable downwards only (60–900).
+    safetyTtlSeconds: integer("safety_ttl_seconds"),
     updatedBy: uuid("updated_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -163,6 +167,10 @@ export const tenantInventorySettings = pgTable(
     check(
       "tenant_inventory_settings_activation_pair",
       sql`(${t.saleEffectsActivatedAt} IS NULL) = (${t.saleEffectsActivatedBy} IS NULL)`,
+    ),
+    check(
+      "tenant_inventory_settings_safety_ttl_range",
+      sql`${t.safetyTtlSeconds} IS NULL OR ${t.safetyTtlSeconds} BETWEEN 60 AND 900`,
     ),
   ],
 );

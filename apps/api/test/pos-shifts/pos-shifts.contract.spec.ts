@@ -517,6 +517,7 @@ describe("pos-shifts — cash-up operations", () => {
   it("the info runtime-status note says all three cash-up operations are implemented", () => {
     const info = (doc.info?.description ?? "").replace(/\s+/g, " ");
     expect(info).toContain("`openShift`, `recordCashMovement` and `closeShift` are implemented");
+    expect(info).toContain("`forceCloseShift` is implemented too, in the RT-742 runtime step");
     expect(info).not.toContain("contract-only");
   });
 
@@ -1431,20 +1432,20 @@ describe("pos-shifts — RT-742 manager forced close from any terminal (1.4.0-dr
   const SCOPE_NAMES = ["tenant_id", "store_id", "branch_id", "device_id", "terminal_id"];
   const CASH_UP_FIELDS = ["countedCash", "expectedCash", "variance", "saleCount", "cashSalesTotal", "cashRefundsTotal"];
 
-  it("carries an RT-742 note: [GATED], strictly additive, not counted, no runtime yet", () => {
+  it("carries an RT-742 note: [GATED], strictly additive, not counted, runtime shipped", () => {
     expectAll(info(), [
       "RT-742 (1.4.0-draft; [GATED] owner authorization 2026-10-21; RT-554 follow-up, owner decision 2026-10-19): strictly additive",
       "`cashCount: not_counted`",
       "no totals, no variance and no `ShiftClose`",
-      "`forceCloseShift` has no runtime route yet",
+      "shipped in the RT-742 runtime step (a separate [GATED] change); the operation carries no runtime-status marker",
       "lists recorded cash-ups only, so a force-closed shift is not listed there",
     ]);
   });
 
-  it("declares forceCloseShift at its path, contract-only, tagged pos-shifts, with no operationId collision", () => {
+  it("declares forceCloseShift at its path, with a runtime (no contract-only marker), tagged pos-shifts, with no operationId collision", () => {
     const o = op(FORCE_CLOSE);
-    expect([o.operationId, o["x-runtime-status"], o.tags]).toEqual(["forceCloseShift", "contract-only", ["pos-shifts"]]);
-    expect(o["x-runtime-note"]).toContain("RT-742");
+    expect([o.operationId, o["x-runtime-status"], o.tags]).toEqual(["forceCloseShift", undefined, ["pos-shifts"]]);
+    expect(o["x-runtime-note"]).toBeUndefined();
     expect(otherOperationIds.has("forceCloseShift")).toBe(false);
   });
 

@@ -27,7 +27,7 @@
  * `device-builds.service.ts`).
  */
 import { sql } from "drizzle-orm";
-import { customType, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { customType, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
 import { stores } from "./stores";
 import { tenants } from "./tenants";
 
@@ -63,7 +63,11 @@ export const devices = pgTable("devices", {
   retiredAt: timestamp("retired_at", { withTimezone: true }),
   retiredBy: uuid("retired_by"),
   retireReason: text("retire_reason"),
-});
+}, (t) => [
+  // 0070 (RT-742): the composite FK target pinning a force close's calling
+  // terminal to its tenant and store.
+  unique("uq_devices_tenant_store_target").on(t.id, t.tenantId, t.storeId),
+]);
 
 export type DeviceRow = typeof devices.$inferSelect;
 export type NewDeviceRow = typeof devices.$inferInsert;

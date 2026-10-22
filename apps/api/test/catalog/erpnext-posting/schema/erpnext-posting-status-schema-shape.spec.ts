@@ -120,6 +120,11 @@ describe("posting-status schema shape — erpnext_posting_status", () => {
     expect(cols.get("rejection_category")?.notNull).toBe(false);
   });
 
+  it("RT-410 (0071): rejection_message is a NULLABLE text column (set only on permanently_rejected)", () => {
+    const c = cols.get("rejection_message");
+    expect([c?.notNull, c?.columnType]).toEqual([false, "PgText"]);
+  });
+
   it("retry_count is a NOT NULL integer with a default", () => {
     const c = cols.get("retry_count");
     expect(c?.notNull).toBe(true);

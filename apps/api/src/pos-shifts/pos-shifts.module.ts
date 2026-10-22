@@ -6,6 +6,8 @@
  *     `recordCashMovement` and `closeShift` (ShiftCashUpController), with the
  *     captureSale credential model (RT-224): the operator envelope OR the
  *     device bearer plus a verified `operatorUserId`.
+ *   - RT-742: `forceCloseShift` (ShiftCashUpController), the manager
+ *     envelope only, through ShiftForceCloseService.
  *
  * Cash-up guard wiring mirrors SalesModule / SettlementModule: the envelope
  * path is PosOperatorEnvelopeSaleGuard (live operator re-check through the
@@ -44,6 +46,7 @@ import { PosShiftsService } from "./pos-shifts.service";
 import { ShiftCashUpAuthGuard } from "./shift-cash-up-auth.guard";
 import { ShiftCashUpController } from "./shift-cash-up.controller";
 import { ShiftCashUpService } from "./shift-cash-up.service";
+import { ShiftForceCloseService } from "./shift-force-close.service";
 
 export const POS_SHIFTS_LOGGER = "POS_SHIFTS_LOGGER";
 
@@ -77,6 +80,12 @@ export const POS_SHIFTS_LOGGER = "POS_SHIFTS_LOGGER";
       useFactory: (pool: Pool, logger: Logger): ShiftCashUpService =>
         new ShiftCashUpService(pool, undefined, undefined, logger),
       inject: [PG_POOL, POS_SHIFTS_LOGGER],
+    },
+    // RT-742: the manager's not-counted force close.
+    {
+      provide: ShiftForceCloseService,
+      useFactory: (pool: Pool): ShiftForceCloseService => new ShiftForceCloseService(pool),
+      inject: [PG_POOL],
     },
     {
       provide: IDENTITY_PROVIDER_PORT,
