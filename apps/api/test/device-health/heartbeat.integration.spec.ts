@@ -31,7 +31,10 @@ import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool } from "pg";
 import type request from "supertest";
 
+import type { Logger } from "@data-pulse-2/shared";
+
 import { DeviceHealthModule } from "../../src/device-health/device-health.module";
+import { DeviceHeartbeatService } from "../../src/device-health/heartbeat.service";
 import { POS_CONTRACT_REVISION } from "../../src/device-health/pos-contract-revision";
 import { recordPosDeviceHeartbeat } from "../../src/observability/metrics/api.metrics";
 import { scopedHttpHarness } from "../_helpers/scoped-http-harness";
@@ -43,6 +46,7 @@ import {
   DEV_RETIRED,
   DEV_REVOKED,
   OWNER_A,
+  STORE_A1,
   TENANT_A,
   TENANT_B,
   seedDeviceHealthFixture,
@@ -112,15 +116,18 @@ beforeEach(async () => {
 describe("RT-327 heartbeat: authentication (the guard is the only identity)", () => {
   it("refuses a missing, unknown, revoked or non-device credential with the generic 401 and stores nothing", async () => {
     if (h.skipped()) return;
-    const cases: request.Test[] = [
-      h.post(PATH, null, {}),
-      h.post(PATH, null, {}).set("authorization", "Bearer not-a-device-token-aaaaaaaaaaaaaaaaaa"),
-      beat(DEV_REVOKED),
-      beat(DEV_RETIRED),
-      h.post(PATH, OWNER_A.session, {}),
-      h.post(PATH, null, {}).set("authorization", `Basic ${DEV_A1A.token}`),
+    // One request at a time: supertest closes the (shared, not yet listening) server
+    // when a request ends, which resets requests still in flight (ECONNRESET in CI).
+    const cases: Array<() => request.Test> = [
+      () => h.post(PATH, null, {}),
+      () => h.post(PATH, null, {}).set("authorization", "Bearer not-a-device-token-aaaaaaaaaaaaaaaaaa"),
+      () => beat(DEV_REVOKED),
+      () => beat(DEV_RETIRED),
+      () => h.post(PATH, OWNER_A.session, {}),
+      () => h.post(PATH, null, {}).set("authorization", `Basic ${DEV_A1A.token}`),
     ];
-    for (const res of await Promise.all(cases)) {
+    for (const send of cases) {
+      const res = await send();
       expect(res.status).toBe(401);
       h.conforms("Error", res.body);
     }
@@ -238,8 +245,12 @@ describe("RT-327 heartbeat: storage, throttle and last-write-wins", () => {
 
   it("converges concurrent beats of one device to one stored beat", async () => {
     if (h.skipped()) return;
-    const results = await Promise.all(Array.from({ length: 6 }, (_, i) => beat(DEV_A1A, { app_version: `1.4.${i}` })));
-    for (const res of results) expect(res.status).toBe(200);
+    // The service, not HTTP: parallel supertest requests share one server and reset each other.
+    const silent = { warn: () => undefined, info: () => undefined, error: () => undefined, debug: () => undefined } as unknown as Logger;
+    const service = new DeviceHeartbeatService(h.env().app, silent);
+    const scope = { deviceId: DEV_A1A.id, tenantId: TENANT_A, storeId: STORE_A1 };
+    const acks = await Promise.all(Array.from({ length: 6 }, (_, i) => service.report(scope, { app_version: `1.4.${i}` })));
+    for (const ack of acks) h.conforms("HeartbeatAck", ack);
     expect(await rows(h.env().admin, DEV_A1A.id)).toHaveLength(1);
     expect(outcomes().filter((o) => o === "stored")).toHaveLength(1);
     expect(outcomes().filter((o) => o === "throttled")).toHaveLength(5);

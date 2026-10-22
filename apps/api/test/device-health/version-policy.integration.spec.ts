@@ -29,7 +29,9 @@ import "reflect-metadata";
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Pool } from "pg";
 
+import type { PosVersionPolicyChange } from "../../src/device-health/dto";
 import { DeviceHealthModule } from "../../src/device-health/device-health.module";
+import { PolicyRevisionConflictError, PosVersionPolicyService } from "../../src/device-health/version-policy.service";
 import { scopedHttpHarness } from "../_helpers/scoped-http-harness";
 import {
   DEV_A1A,
@@ -311,14 +313,25 @@ describe("RT-327 version policy: the change", () => {
     expect(await storedRevision(h.env().admin, "canary")).toBeNull();
   });
 
-  it("serializes concurrent creates of one channel: one wins, the other is 409, one audit row", async () => {
+  /** Two changes at once through the service (parallel supertest requests share one server and reset each other). */
+  async function race(first: PosVersionPolicyChange, second: PosVersionPolicyChange): Promise<PromiseSettledResult<unknown>[]> {
+    const service = new PosVersionPolicyService(h.env().app);
+    const change = (body: PosVersionPolicyChange) =>
+      service.set({ channel: "stable", change: body, actorUserId: PLATFORM_ADMIN.id, requestId: null });
+    return Promise.allSettled([change(first), change(second)]);
+  }
+
+  function expectOneWinsOneConflicts(results: PromiseSettledResult<unknown>[]): void {
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const lost = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(lost).toHaveLength(1);
+    expect(lost[0]?.reason).toBeInstanceOf(PolicyRevisionConflictError);
+  }
+
+  it("serializes concurrent creates of one channel: one wins, the other is a conflict, one audit row", async () => {
     if (h.skipped()) return;
     const admin = h.env().admin;
-    const [a, b] = await Promise.all([
-      h.put(channelPath("stable"), PLATFORM_ADMIN.session, BODY),
-      h.put(channelPath("stable"), PLATFORM_ADMIN.session, { ...BODY, latestVersion: "1.9.0" }),
-    ]);
-    expect([a.status, b.status].sort((x, y) => x - y)).toEqual([200, 409]);
+    expectOneWinsOneConflicts(await race(BODY, { ...BODY, latestVersion: "1.9.0" }));
     expect(await storedRevision(admin, "stable")).toBe(1);
     expect(await audits(admin)).toHaveLength(1);
   });
@@ -327,11 +340,9 @@ describe("RT-327 version policy: the change", () => {
     if (h.skipped()) return;
     const admin = h.env().admin;
     await h.put(channelPath("stable"), PLATFORM_ADMIN.session, BODY).expect(200);
-    const [a, b] = await Promise.all([
-      h.put(channelPath("stable"), PLATFORM_ADMIN.session, { ...BODY, minSupportedVersion: "1.4.1", expectedRevision: 1 }),
-      h.put(channelPath("stable"), PLATFORM_ADMIN.session, { ...BODY, minSupportedVersion: "1.4.2", expectedRevision: 1 }),
-    ]);
-    expect([a.status, b.status].sort((x, y) => x - y)).toEqual([200, 409]);
+    expectOneWinsOneConflicts(
+      await race({ ...BODY, minSupportedVersion: "1.4.1", expectedRevision: 1 }, { ...BODY, minSupportedVersion: "1.4.2", expectedRevision: 1 }),
+    );
     expect(await storedRevision(admin, "stable")).toBe(2);
     expect(await audits(admin)).toHaveLength(2);
   });
