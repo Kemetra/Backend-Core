@@ -20,24 +20,23 @@ import {
   startCaptureHarness,
   stopCaptureHarness,
   resetHarness,
-  idempKey,
-  refundBody,
   STORE_A_X,
   TENANT_A,
   DEVICE_USER_ID,
   type HarnessHandle,
 } from "../capture/__capture-harness";
 import {
-  allocatedReturnBody,
+  captureCashSale,
   captureOneLine,
   captureWithTenders,
   cleanReturnsFixtures,
   disableReturns,
   enableReturns,
   postingEventsFor,
+  postLegacyRefund,
   postReturn,
+  postReturnWithRef,
   returnBody,
-  uuidFor,
 } from "./__returns-support";
 
 const h: HarnessHandle = { harness: null, dockerSkipped: false };
@@ -85,12 +84,7 @@ describe("RT-787 defaults — unchanged", () => {
     if (skip()) return;
     const tag = tendered ? "cash" : "unknown";
     const s = tendered
-      ? await captureWithTenders(h, {
-          externalId: `def-${tag}`,
-          quantity: "2",
-          lineAmount: "10.0000",
-          tenders: [{ method: "cash", amount: "10.0000" }],
-        })
+      ? await captureCashSale(h, `def-${tag}`)
       : await captureOneLine(h, { externalId: `def-${tag}`, quantity: "2", lineAmount: "10.0000" });
     const res = await postReturn(
       h,
@@ -107,14 +101,7 @@ describe("RT-787 defaults — unchanged", () => {
   it("R-7 is off: a return with allocationRef still posts at acceptance", async () => {
     if (skip()) return;
     const s = await captureOneLine(h, { externalId: "def-ref", quantity: "1", lineAmount: "5.0000" });
-    const res = await postReturn(
-      h,
-      s.saleRef,
-      allocatedReturnBody("def-ref-r", [{ lineRef: s.lineRef, quantity: "1" }], [
-        { amount: "5.0000", allocationRef: uuidFor("def-ref") },
-      ]),
-      "defref",
-    );
+    const res = await postReturnWithRef(h, s, { quantity: "1", amount: "5.0000" }, "def-ref");
     expect(res.status).toBe(201);
     expect(await postingEventsFor(h, res.body.returnRef)).toBe(1);
   });
@@ -124,11 +111,7 @@ describe("RT-787 defaults — behaviour changes (contract-normative)", () => {
   it("R-11: recordRefund answers 404 not_found and records nothing", async () => {
     if (skip()) return;
     const s = await captureOneLine(h, { externalId: "def-refund", quantity: "1", lineAmount: "5.0000" });
-    const res = await h
-      .harness!.http()
-      .post(`/api/pos/v1/sales/${s.saleRef}/refund`)
-      .set("Idempotency-Key", idempKey("defrefund"))
-      .send(refundBody({ externalId: "def-refund-rf", posRefundAmount: "1.0000" }));
+    const res = await postLegacyRefund(h, s.saleRef, "def-refund-rf", "1.0000");
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("not_found");
     const rows = await h.harness!.env.admin.query("SELECT 1 FROM sale_refunds WHERE sale_id = $1", [s.saleRef]);
@@ -158,12 +141,7 @@ describe("RT-787 defaults — behaviour changes (contract-normative)", () => {
 
   it("R-5: a return past the cash pool left by an earlier legacy refund → 422 refund_allocation_exceeds_tender", async () => {
     if (skip()) return;
-    const s = await captureWithTenders(h, {
-      externalId: "def-pool",
-      quantity: "2",
-      lineAmount: "10.0000",
-      tenders: [{ method: "cash", amount: "10.0000" }],
-    });
+    const s = await captureCashSale(h, "def-pool");
     // A legacy refund recorded before the gate (the route is 404 at defaults).
     await h.harness!.env.admin.query(
       `INSERT INTO sale_refunds (sale_id, tenant_id, store_id, pos_refund_amount, currency_code,

@@ -6,6 +6,7 @@ import {
   captureBody,
   DEVICE_USER_ID,
   idempKey,
+  refundBody,
   STORE_A_X,
   TENANT_A,
   type HarnessHandle,
@@ -143,16 +144,24 @@ export function postReturn(h: HarnessHandle, saleRef: string, body: Record<strin
   return postWithKey(h, `/api/pos/v1/sales/${saleRef}/returns`, body, key);
 }
 
-/** RT-787: turn the R-7 settle-before-post deploy flag on or off (read per request). */
-export function setSettleBeforePost(on: boolean): void {
-  if (on) process.env["POS_REFUND_SETTLE_BEFORE_POST_ENABLED"] = "true";
-  else delete process.env["POS_REFUND_SETTLE_BEFORE_POST_ENABLED"];
+/** RT-787: turn the R-7 settle-before-post deploy flag on (read per request). */
+export function enableSettleBeforePost(): void {
+  process.env["POS_REFUND_SETTLE_BEFORE_POST_ENABLED"] = "true";
 }
 
-/** RT-787: turn the R-11 legacy `recordRefund` gate on or off (read per request). */
-export function setLegacyRefund(on: boolean): void {
-  if (on) process.env["POS_LEGACY_REFUND_ENABLED"] = "true";
-  else delete process.env["POS_LEGACY_REFUND_ENABLED"];
+/** RT-787: turn the R-7 settle-before-post deploy flag off (its default). */
+export function disableSettleBeforePost(): void {
+  delete process.env["POS_REFUND_SETTLE_BEFORE_POST_ENABLED"];
+}
+
+/** RT-787: turn the R-11 legacy `recordRefund` gate on (read per request). */
+export function enableLegacyRefund(): void {
+  process.env["POS_LEGACY_REFUND_ENABLED"] = "true";
+}
+
+/** RT-787: turn the R-11 legacy `recordRefund` gate off (its default). */
+export function disableLegacyRefund(): void {
+  delete process.env["POS_LEGACY_REFUND_ENABLED"];
 }
 
 export interface CaptureTender {
@@ -205,6 +214,39 @@ export async function captureWithTenders(
   }
 }
 
+/** RT-787: a sale of 2 × 5.0000 paid by one cash tender of 10.0000. */
+export function captureCashSale(h: HarnessHandle, externalId: string): Promise<OneLineSale> {
+  return captureWithTenders(h, {
+    externalId,
+    quantity: "2",
+    lineAmount: "10.0000",
+    tenders: [{ method: "cash", amount: "10.0000" }],
+  });
+}
+
+/** RT-787: POST a legacy amount-only refund (`recordRefund`) of `amount`. */
+export function postLegacyRefund(h: HarnessHandle, saleRef: string, externalId: string, amount: string) {
+  return postWithKey(
+    h,
+    `/api/pos/v1/sales/${saleRef}/refund`,
+    refundBody({ externalId, posRefundAmount: amount }),
+    externalId.replace(/[^a-z0-9]/gi, ""),
+  );
+}
+
+/** RT-787: return `quantity` of the sale's line as ONE allocation of `amount` carrying an allocationRef. */
+export function postReturnWithRef(
+  h: HarnessHandle,
+  sale: OneLineSale,
+  line: { quantity: string; amount: string },
+  tag: string,
+) {
+  const body = allocatedReturnBody(`${tag}-r`, [{ lineRef: sale.lineRef, quantity: line.quantity }], [
+    { amount: line.amount, allocationRef: uuidFor(`${tag}-a`) },
+  ]);
+  return postReturn(h, sale.saleRef, body, tag.replace(/[^a-z0-9]/gi, ""));
+}
+
 /** One RT-490 refund allocation of a return body. */
 export interface Allocation {
   readonly amount: string;
@@ -254,8 +296,9 @@ export function uuidFor(seed: string): string {
   let a = 0x811c9dc5;
   let b = 0x01000193;
   for (const ch of seed) {
-    a = Math.imul(a ^ ch.charCodeAt(0), 0x01000193) >>> 0;
-    b = Math.imul(b ^ ch.charCodeAt(0), 0x85ebca6b) >>> 0;
+    const code = ch.codePointAt(0) ?? 0;
+    a = Math.imul(a ^ code, 0x01000193) >>> 0;
+    b = Math.imul(b ^ code, 0x85ebca6b) >>> 0;
   }
   const hex = (a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0")).repeat(2);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-7${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;

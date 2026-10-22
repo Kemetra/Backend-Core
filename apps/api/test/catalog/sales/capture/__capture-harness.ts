@@ -191,6 +191,10 @@ export interface HarnessHandle {
 export async function startCaptureHarness(
   opts: { auditEnqueuer?: AuditJobEnqueuer } = {},
 ): Promise<HarnessHandle> {
+  // RT-787 (RT-271 R-11): the legacy refund route is gated off by default.
+  // The capture specs exercise it as a live route; the gate's own specs
+  // (refund-gate, refund-flag-defaults, refund-allocation) switch it off.
+  process.env["POS_LEGACY_REFUND_ENABLED"] = "true";
   let env: PgTestEnv;
   try {
     env = await startPgEnv();
@@ -340,6 +344,7 @@ export async function startCaptureHarness(
 }
 
 export async function stopCaptureHarness(h: HarnessHandle): Promise<void> {
+  delete process.env["POS_LEGACY_REFUND_ENABLED"];
   if (h.harness) {
     await h.harness.app.close();
     await stopPgEnv(h.harness.env);

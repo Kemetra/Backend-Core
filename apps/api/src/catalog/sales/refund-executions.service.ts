@@ -98,7 +98,7 @@ interface Allocation {
 export class RefundExecutionsService {
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
 
-  async recordExecution(input: RecordExecutionInput): Promise<RefundExecutionResult> {
+  recordExecution(input: RecordExecutionInput): Promise<RefundExecutionResult> {
     const { tenantId, storeId, saleRef, body } = input;
     const payloadHash = sha256CanonicalHex(body);
     return runWithTenantContext(this.pool, { tenantId, isPlatformAdmin: false }, async (client) => {
@@ -128,17 +128,16 @@ export class RefundExecutionsService {
   }
 
   /** `listSaleReturns`: every `recordReturn` return of the sale, oldest first. */
-  async listSaleReturns(scope: Scope): Promise<ReturnReadProjection[]> {
+  listSaleReturns(scope: Scope): Promise<ReturnReadProjection[]> {
     return this.read(scope, async (client) => {
       const ids = await listOrdinaryReturnIds(client, scope.saleRef);
-      const reads: ReturnReadProjection[] = [];
-      for (const id of ids) reads.push(await loadReturnRead(client, id));
-      return reads;
+      // One client: pg runs the queries in order; the result keeps the id order.
+      return Promise.all(ids.map((id) => loadReturnRead(client, id)));
     });
   }
 
   /** `readReturnByProvenance`: null when no `recordReturn` return of THIS sale has it. */
-  async readReturnByProvenance(
+  readReturnByProvenance(
     scope: Scope,
     provenance: ReturnProvenanceQueryDto,
   ): Promise<ReturnReadProjection | null> {
@@ -149,7 +148,7 @@ export class RefundExecutionsService {
   }
 
   /** Resolve the sale in the caller's (tenant via RLS, store via predicate) scope, then read. */
-  private async read<T>(scope: Scope, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  private read<T>(scope: Scope, fn: (client: PoolClient) => Promise<T>): Promise<T> {
     return runWithTenantContext(this.pool, { tenantId: scope.tenantId, isPlatformAdmin: false }, async (client) => {
       const sale = await client.query(`SELECT 1 FROM sales WHERE id = $1 AND store_id = $2`, [
         scope.saleRef,

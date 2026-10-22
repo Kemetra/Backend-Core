@@ -34,7 +34,8 @@ import {
   postExecution,
   postReturn,
   returnBody,
-  setSettleBeforePost,
+  disableSettleBeforePost,
+  enableSettleBeforePost,
   uuidFor,
 } from "../../sales/terminal/__returns-support";
 
@@ -152,7 +153,7 @@ describe("RT-73 — reversal work-items from real rows", () => {
 
   it("RT-787 (R-7): a return settled through executions projects one refund tender per settled execution, in execution order", async () => {
     if (skip()) return;
-    setSettleBeforePost(true);
+    enableSettleBeforePost();
     try {
       const sale = await captureMapped("bw-settled");
       const a1 = uuidFor("bw-settled-a1");
@@ -185,7 +186,7 @@ describe("RT-73 — reversal work-items from real rows", () => {
       });
       expect(await project(sale.saleRef, ret.body.returnRef)).toEqual(item);
     } finally {
-      setSettleBeforePost(false);
+      disableSettleBeforePost();
     }
   });
 

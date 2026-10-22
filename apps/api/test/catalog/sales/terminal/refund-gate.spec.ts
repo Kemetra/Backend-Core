@@ -12,7 +12,7 @@ import {
   refundBody,
   type HarnessHandle,
 } from "../capture/__capture-harness";
-import { captureOneLine, cleanReturnsFixtures, setLegacyRefund } from "./__returns-support";
+import { captureOneLine, cleanReturnsFixtures, disableLegacyRefund, enableLegacyRefund } from "./__returns-support";
 
 const h: HarnessHandle = { harness: null, dockerSkipped: false };
 
@@ -20,12 +20,12 @@ beforeAll(async () => {
   Object.assign(h, await startCaptureHarness());
 }, 180_000);
 afterAll(async () => {
-  setLegacyRefund(false);
+  disableLegacyRefund();
   await stopCaptureHarness(h);
 }, 60_000);
 beforeEach(() => {
   resetHarness(h);
-  setLegacyRefund(false);
+  disableLegacyRefund();
 });
 afterEach(async () => {
   await cleanReturnsFixtures(h);
@@ -59,9 +59,9 @@ describe("RT-787 R-11 — legacy recordRefund gate", () => {
   it("on → recorded; off again → a provenance replay of it is 404 too", async () => {
     if (skip()) return;
     const s = await captureOneLine(h, { externalId: "gate-on", quantity: "1", lineAmount: "5.0000" });
-    setLegacyRefund(true);
+    enableLegacyRefund();
     expect((await postRefund(s.saleRef, "gateon1")).status).toBe(201);
-    setLegacyRefund(false);
+    disableLegacyRefund();
     const replay = await postRefund(s.saleRef, "gateon2");
     expect(replay.status).toBe(404);
     expect(await refundsOf(s.saleRef)).toBe(1);

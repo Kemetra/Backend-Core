@@ -20,11 +20,20 @@
  *     (also as a NON-superuser owner under FORCE RLS), and round-trips
  *     up / down / up, also as a NON-superuser owner.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import type { PoolClient } from "pg";
 
+import {
+  applyMigrationsBefore,
+  asApp,
+  asMigrationOwner,
+  errorCode,
+  inRolledBackTx,
+  runSqlFile,
+  type MigrationOwner,
+} from "../_helpers/migration-spec";
 import { ensureAppRole, startPgEnv, stopPgEnv, type PgTestEnv } from "../_helpers/postgres-container";
 
 const DRIZZLE_DIR = resolve(__dirname, "..", "..", "drizzle");
@@ -55,17 +64,6 @@ let env: PgTestEnv | null = null;
 function pg(): PgTestEnv {
   if (!env) throw new Error("env not initialized");
   return env;
-}
-
-async function applyBefore0067(pgEnv: PgTestEnv): Promise<void> {
-  const files = readdirSync(DRIZZLE_DIR)
-    .filter((n) => /^\d{4}_.+\.sql$/.test(n) && !n.endsWith(".down.sql"))
-    .filter((n) => n.localeCompare(UP_NAME) < 0)
-    .sort();
-  for (const name of files) {
-    await pgEnv.admin.query(readFileSync(resolve(DRIZZLE_DIR, name), "utf8"));
-  }
-  await ensureAppRole(pgEnv);
 }
 
 /** A sale's (tenant, store) scope. */
@@ -179,35 +177,14 @@ function executionParams(row: ExecutionRow): unknown[] {
   ];
 }
 
-/** Run `fn` on one superuser connection in a transaction that is always rolled back. */
-async function inRolledBackTx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await pg().admin.connect();
-  try {
-    await client.query("BEGIN");
-    return await fn(client);
-  } finally {
-    await client.query("ROLLBACK");
-    client.release();
-  }
-}
-
-async function errorCode(fn: () => Promise<unknown>): Promise<string | null> {
-  try {
-    await fn();
-    return null;
-  } catch (err) {
-    return (err as { code?: string }).code ?? "unknown";
-  }
-}
-
 /** Insert one allocation (rolled back); its error code, or null. */
 async function tryAllocation(row: AllocationRow): Promise<string | null> {
-  return inRolledBackTx((c) => errorCode(() => c.query(ALLOCATION_SQL, allocationParams(row))));
+  return inRolledBackTx(pg().admin, (c) => errorCode(() => c.query(ALLOCATION_SQL, allocationParams(row))));
 }
 
 /** Insert the default allocation, then `rows` executions in order (rolled back); the last error code, or null. */
 async function tryExecutions(...rows: ExecutionRow[]): Promise<string | null> {
-  return inRolledBackTx(async (c) => {
+  return inRolledBackTx(pg().admin, async (c) => {
     await c.query(ALLOCATION_SQL, allocationParams({}));
     let code: string | null = null;
     for (const row of rows) code = await errorCode(() => c.query(EXECUTION_SQL, executionParams(row)));
@@ -215,16 +192,15 @@ async function tryExecutions(...rows: ExecutionRow[]): Promise<string | null> {
   });
 }
 
-/** Runs `fn` as the non-superuser app role with `app.current_tenant` set to `guc`, then rolls back. */
-async function asApp<T>(guc: string | null, fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await pg().app.connect();
+/** Record the default allocation and one execution, run `fn`, then delete both. */
+async function withExecution(fn: () => Promise<void>): Promise<void> {
+  await pg().admin.query(ALLOCATION_SQL, allocationParams({}));
+  await pg().admin.query(EXECUTION_SQL, executionParams({}));
   try {
-    await client.query("BEGIN");
-    if (guc !== null) await client.query("SELECT set_config('app.current_tenant', $1, true)", [guc]);
-    return await fn(client);
+    await fn();
   } finally {
-    await client.query("ROLLBACK");
-    client.release();
+    await pg().admin.query(`DELETE FROM refund_executions WHERE return_id = $1`, [RETURN_NEW]);
+    await pg().admin.query(`DELETE FROM sale_return_tenders WHERE id = $1`, [ALLOC_ROW]);
   }
 }
 
@@ -265,7 +241,7 @@ beforeAll(async () => {
     }
     throw err;
   }
-  await applyBefore0067(env);
+  await applyMigrationsBefore(env, DRIZZLE_DIR, UP_NAME);
   await env.admin.query(
     `INSERT INTO tenants (id, name, slug) VALUES ($1, 'RT-787 tenant', 'rt787-a'), ($2, 'RT-787 tenant B', 'rt787-b')`,
     [TENANT, TENANT_B],
@@ -332,14 +308,14 @@ describe("0067 sale_return_tenders allocation constraints", () => {
 
   it("refuses the same allocation_ref twice in one return (23505), not across returns", async () => {
     if (skip()) return;
-    const sameReturn = await inRolledBackTx(async (c) => {
+    const sameReturn = await inRolledBackTx(pg().admin, async (c) => {
       await c.query(ALLOCATION_SQL, allocationParams({}));
       return errorCode(() =>
         c.query(ALLOCATION_SQL, allocationParams({ id: "0a000000-0000-7000-8000-000000078742", ordinal: 1 })),
       );
     });
     expect(sameReturn).toBe("23505");
-    const otherReturn = await inRolledBackTx(async (c) => {
+    const otherReturn = await inRolledBackTx(pg().admin, async (c) => {
       await c.query(ALLOCATION_SQL, allocationParams({}));
       return errorCode(() =>
         c.query(
@@ -409,72 +385,42 @@ describe("0067 RLS", () => {
 
   it("fails closed on an unset or empty tenant GUC, and is tenant-scoped", async () => {
     if (skip()) return;
-    await pg().admin.query(ALLOCATION_SQL, allocationParams({}));
-    await pg().admin.query(EXECUTION_SQL, executionParams({}));
-    try {
+    await withExecution(async () => {
       const read = (c: PoolClient) => c.query<{ n: number }>(`SELECT count(*)::int AS n FROM refund_executions`);
-      expect((await asApp(null, read)).rows[0]).toEqual({ n: 0 });
-      expect((await asApp("", read)).rows[0]).toEqual({ n: 0 });
-      expect((await asApp(TENANT_B, read)).rows[0]).toEqual({ n: 0 });
-      expect((await asApp(TENANT, read)).rows[0]).toEqual({ n: 1 });
-    } finally {
-      await pg().admin.query(`DELETE FROM refund_executions WHERE return_id = $1`, [RETURN_NEW]);
-      await pg().admin.query(`DELETE FROM sale_return_tenders WHERE id = $1`, [ALLOC_ROW]);
-    }
+      const counts = [];
+      for (const guc of [null, "", TENANT_B, TENANT]) counts.push((await asApp(pg(), guc, read)).rows[0]?.n);
+      expect(counts).toEqual([0, 0, 0, 1]);
+    });
   });
 
   it("refuses an app-role insert for another tenant (WITH CHECK, 42501), and app-role UPDATE / DELETE touch nothing", async () => {
     if (skip()) return;
-    await pg().admin.query(ALLOCATION_SQL, allocationParams({}));
-    await pg().admin.query(EXECUTION_SQL, executionParams({}));
-    try {
-      const code = await asApp(TENANT_B, (c) =>
-        errorCode(() => c.query(EXECUTION_SQL, executionParams({ externalId: "exec-b" }))),
-      );
-      expect(code).toBe("42501");
-      const changed = await asApp(TENANT, async (c) => {
-        const u = await errorCode(() => c.query(`UPDATE refund_executions SET amount = 1`));
-        return u;
-      });
+    await withExecution(async () => {
+      const insertB = (c: PoolClient) => errorCode(() => c.query(EXECUTION_SQL, executionParams({ externalId: "exec-b" })));
+      expect(await asApp(pg(), TENANT_B, insertB)).toBe("42501");
+      const update = (c: PoolClient) => errorCode(() => c.query(`UPDATE refund_executions SET amount = 1`));
       // No UPDATE grant / policy: refused or zero rows, never a change.
-      expect(["42501", null]).toContain(changed);
+      expect(["42501", null]).toContain(await asApp(pg(), TENANT, update));
       const r = await pg().admin.query<{ amount: string }>(`SELECT amount::text AS amount FROM refund_executions`);
       expect(r.rows).toEqual([{ amount: "4.0000" }]);
-    } finally {
-      await pg().admin.query(`DELETE FROM refund_executions WHERE return_id = $1`, [RETURN_NEW]);
-      await pg().admin.query(`DELETE FROM sale_return_tenders WHERE id = $1`, [ALLOC_ROW]);
-    }
+    });
   });
 });
 
 describe("0067 down", () => {
-  async function runDown(role: string | null): Promise<string | null> {
-    const client = await pg().admin.connect();
-    try {
-      if (role !== null) await client.query(`SET ROLE ${role}`);
-      return await errorCode(() => client.query(readFileSync(DOWN_PATH, "utf8")));
-    } finally {
-      await client.query("ROLLBACK").catch(() => undefined);
-      await client.query("RESET ROLE").catch(() => undefined);
-      client.release();
-    }
-  }
+  const runDown = (role: string | null = null) => runSqlFile(pg(), DOWN_PATH, role);
 
-  async function withExecution(fn: () => Promise<void>): Promise<void> {
-    await pg().admin.query(ALLOCATION_SQL, allocationParams({}));
-    await pg().admin.query(EXECUTION_SQL, executionParams({}));
-    try {
-      await fn();
-    } finally {
-      await pg().admin.query(`DELETE FROM refund_executions WHERE return_id = $1`, [RETURN_NEW]);
-      await pg().admin.query(`DELETE FROM sale_return_tenders WHERE id = $1`, [ALLOC_ROW]);
-    }
-  }
+  /** A NOSUPERUSER, NOBYPASSRLS owner of the tables 0067 touches, like the production owner. */
+  const OWNER: MigrationOwner = {
+    role: "rt787_migration_owner",
+    tables: ["tenants", "stores", "sales", "sale_tenders", "sale_returns", "sale_return_tenders", "refund_executions"],
+    functions: ["sale_return_tenders_original_tender_check()"],
+  };
 
   it("refuses loudly while executions exist, and changes nothing", async () => {
     if (skip()) return;
     await withExecution(async () => {
-      expect(await runDown(null)).toBe("P0001");
+      expect(await runDown()).toBe("P0001");
       expect(await schemaState()).toEqual(UP_STATE);
     });
   });
@@ -483,72 +429,34 @@ describe("0067 down", () => {
     if (skip()) return;
     await pg().admin.query(`UPDATE sale_returns SET posting_deferred = true WHERE id = $1`, [RETURN_OTHER]);
     try {
-      expect(await runDown(null)).toBe("P0001");
+      expect(await runDown()).toBe("P0001");
       expect(await schemaState()).toEqual(UP_STATE);
     } finally {
       await pg().admin.query(`UPDATE sale_returns SET posting_deferred = false WHERE id = $1`, [RETURN_OTHER]);
     }
   });
 
-  const MIGRATION_OWNER = "rt787_migration_owner";
-  const OWNED_TABLES = ["tenants", "stores", "sales", "sale_tenders", "sale_returns", "sale_return_tenders", "refund_executions"];
-
-  async function quietly(statements: readonly string[]): Promise<void> {
-    for (const sql of statements) await pg().admin.query(sql).catch(() => undefined);
-  }
-
-  /** A NOSUPERUSER, NOBYPASSRLS role that owns the tables 0067 touches, like the production owner. */
-  async function becomeOwner(): Promise<string> {
-    const superuser = (await pg().admin.query<{ u: string }>(`SELECT current_user AS u`)).rows[0]!.u;
-    await pg().admin.query(`CREATE ROLE ${MIGRATION_OWNER} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
-    await pg().admin.query(`GRANT USAGE, CREATE ON SCHEMA public TO ${MIGRATION_OWNER}`);
-    for (const table of OWNED_TABLES) {
-      await pg().admin.query(`ALTER TABLE IF EXISTS ${table} OWNER TO ${MIGRATION_OWNER}`);
-    }
-    await quietly([`ALTER FUNCTION sale_return_tenders_original_tender_check() OWNER TO ${MIGRATION_OWNER}`]);
-    return superuser;
-  }
-
-  async function restoreOwner(superuser: string): Promise<void> {
-    await quietly([
-      ...OWNED_TABLES.map((table) => `ALTER TABLE IF EXISTS ${table} OWNER TO ${superuser}`),
-      `ALTER FUNCTION sale_return_tenders_original_tender_check() OWNER TO ${superuser}`,
-      `REVOKE ALL ON SCHEMA public FROM ${MIGRATION_OWNER}`,
-      `DROP ROLE ${MIGRATION_OWNER}`,
-    ]);
-  }
-
   // The production migration owner is NOT a superuser (database-roles.md), so
   // FORCE ROW LEVEL SECURITY applies to it: a guard that reads without a
   // tenant GUC sees no rows and would drop every execution.
   it("refuses as a NON-superuser owner under FORCE RLS, and drops nothing", async () => {
     if (skip()) return;
-    await withExecution(async () => {
-      const superuser = await becomeOwner();
-      try {
-        expect(await runDown(MIGRATION_OWNER)).toBe("P0001");
+    await withExecution(() =>
+      asMigrationOwner(pg(), OWNER, async () => {
+        expect(await runDown(OWNER.role)).toBe("P0001");
         expect(await schemaState()).toEqual(UP_STATE);
-      } finally {
-        await restoreOwner(superuser);
-      }
-    });
+      }),
+    );
   });
 
   it("round-trips up / down / up as a NON-superuser owner", async () => {
     if (skip()) return;
-    const superuser = await becomeOwner();
-    const client = await pg().admin.connect();
-    try {
-      await client.query(`SET ROLE ${MIGRATION_OWNER}`);
-      await client.query(readFileSync(DOWN_PATH, "utf8"));
+    await asMigrationOwner(pg(), OWNER, async () => {
+      expect(await runDown(OWNER.role)).toBeNull();
       expect(await schemaState()).toEqual(DOWN_STATE);
-      await client.query(readFileSync(UP_PATH, "utf8"));
+      expect(await runSqlFile(pg(), UP_PATH, OWNER.role)).toBeNull();
       expect(await schemaState()).toEqual(UP_STATE);
-    } finally {
-      await client.query("RESET ROLE").catch(() => undefined);
-      client.release();
-      await restoreOwner(superuser);
-    }
+    });
     await ensureAppRole(pg());
   });
 });

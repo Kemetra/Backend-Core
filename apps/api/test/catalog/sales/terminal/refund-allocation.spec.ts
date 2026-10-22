@@ -20,22 +20,25 @@ import {
   startCaptureHarness,
   stopCaptureHarness,
   resetHarness,
-  idempKey,
-  refundBody,
   type HarnessHandle,
 } from "../capture/__capture-harness";
 import {
   allocatedReturnBody,
+  captureCashSale,
   captureOneLine,
   captureWithTenders,
+  postLegacyRefund,
+  postReturnWithRef,
   cleanReturnsFixtures,
   disableReturns,
   enableReturns,
   postingEventsFor,
   postReturn,
   returnBody,
-  setLegacyRefund,
-  setSettleBeforePost,
+  disableLegacyRefund,
+  enableLegacyRefund,
+  disableSettleBeforePost,
+  enableSettleBeforePost,
   uuidFor,
 } from "./__returns-support";
 
@@ -46,15 +49,15 @@ beforeAll(async () => {
 }, 180_000);
 afterAll(async () => {
   disableReturns();
-  setSettleBeforePost(false);
-  setLegacyRefund(false);
+  disableSettleBeforePost();
+  disableLegacyRefund();
   await stopCaptureHarness(h);
 }, 60_000);
 beforeEach(() => {
   resetHarness(h);
   enableReturns();
-  setSettleBeforePost(false);
-  setLegacyRefund(false);
+  disableSettleBeforePost();
+  disableLegacyRefund();
 });
 afterEach(async () => {
   await cleanReturnsFixtures(h);
@@ -269,19 +272,9 @@ describe("RT-787 rule 3 — refundable balance (R-5)", () => {
 
   it("legacy recordRefund amounts count against the cash pool", async () => {
     if (skip()) return;
-    const s = await captureWithTenders(h, {
-      externalId: "bal-legacy",
-      quantity: "2",
-      lineAmount: "10.0000",
-      tenders: [{ method: "cash", amount: "10.0000" }],
-    });
-    setLegacyRefund(true);
-    const refund = await h
-      .harness!.http()
-      .post(`/api/pos/v1/sales/${s.saleRef}/refund`)
-      .set("Idempotency-Key", idempKey("ballegacyrf"))
-      .send(refundBody({ externalId: "bal-legacy-rf", posRefundAmount: "4.0000" }));
-    expect(refund.status).toBe(201);
+    const s = await captureCashSale(h, "bal-legacy");
+    enableLegacyRefund();
+    expect((await postLegacyRefund(h, s.saleRef, "bal-legacy-rf", "4.0000")).status).toBe(201);
     const res = await postReturn(
       h,
       s.saleRef,
@@ -301,19 +294,9 @@ describe("RT-787 rule 3 — refundable balance (R-5)", () => {
 
   it("two concurrent returns cannot over-allocate the cash pool: exactly one is refused", async () => {
     if (skip()) return;
-    const s = await captureWithTenders(h, {
-      externalId: "bal-conc",
-      quantity: "2",
-      lineAmount: "10.0000",
-      tenders: [{ method: "cash", amount: "10.0000" }],
-    });
-    setLegacyRefund(true);
-    const refund = await h
-      .harness!.http()
-      .post(`/api/pos/v1/sales/${s.saleRef}/refund`)
-      .set("Idempotency-Key", idempKey("balconcrf"))
-      .send(refundBody({ externalId: "bal-conc-rf", posRefundAmount: "5.0000" }));
-    expect(refund.status).toBe(201);
+    const s = await captureCashSale(h, "bal-conc");
+    enableLegacyRefund();
+    expect((await postLegacyRefund(h, s.saleRef, "bal-conc-rf", "5.0000")).status).toBe(201);
     const results = await Promise.all(
       [0, 1].map((i) =>
         postReturn(
@@ -333,21 +316,12 @@ describe("RT-787 rule 3 — refundable balance (R-5)", () => {
 describe("RT-787 rule 3 — a legacy refund racing a return (both under the sales lock)", () => {
   it("cannot over-allocate the cash pool: whichever commits second sees the first", async () => {
     if (skip()) return;
-    const s = await captureWithTenders(h, {
-      externalId: "bal-race",
-      quantity: "2",
-      lineAmount: "10.0000",
-      tenders: [{ method: "cash", amount: "10.0000" }],
-    });
-    setLegacyRefund(true);
+    const s = await captureCashSale(h, "bal-race");
+    enableLegacyRefund();
     // The return takes the whole pool; a concurrent refund of 1 races it.
     const [ret, refund] = await Promise.all([
       postReturn(h, s.saleRef, returnBody("bal-race-r", [{ lineRef: s.lineRef, quantity: "2" }], "10.0000"), "balrace"),
-      h
-        .harness!.http()
-        .post(`/api/pos/v1/sales/${s.saleRef}/refund`)
-        .set("Idempotency-Key", idempKey("balracerf"))
-        .send(refundBody({ externalId: "bal-race-rf", posRefundAmount: "1.0000" })),
+      postLegacyRefund(h, s.saleRef, "bal-race-rf", "1.0000"),
     ]);
     // The legacy refund is not capped by the rule (it only counts against it),
     // so it always records. Refund first → the return sees it and is refused;
@@ -365,14 +339,7 @@ describe("RT-787 rule 4 — tender-unknown sale (R-6)", () => {
   it("a ref-less cash allocation is capped by the line cap only", async () => {
     if (skip()) return;
     const s = await captureOneLine(h, { externalId: "unknown-cap", quantity: "2", lineAmount: "10.0000" });
-    const res = await postReturn(
-      h,
-      s.saleRef,
-      allocatedReturnBody("unknown-cap-r", [{ lineRef: s.lineRef, quantity: "2" }], [
-        { amount: "10.0000", allocationRef: uuidFor("unknown-cap-a") },
-      ]),
-      "unkcap",
-    );
+    const res = await postReturnWithRef(h, s, { quantity: "2", amount: "10.0000" }, "unknown-cap");
     expect(res.status).toBe(201);
   });
 });
@@ -402,7 +369,7 @@ describe("RT-787 R-3 — the allocation fields are part of the replayed payload"
 describe("RT-787 R-7 — the emit moment is decided at acceptance", () => {
   it("flag on + allocationRef + non-zero total: not emitted at acceptance", async () => {
     if (skip()) return;
-    setSettleBeforePost(true);
+    enableSettleBeforePost();
     const s = await captureOneLine(h, { externalId: "r7-deferred", quantity: "1", lineAmount: "5.0000" });
     const res = await postReturn(
       h,
@@ -421,7 +388,8 @@ describe("RT-787 R-7 — the emit moment is decided at acceptance", () => {
     ["the allocations carry no allocationRef", true, false],
   ])("emitted at acceptance when %s", async (_name, flag, withRef) => {
     if (skip()) return;
-    setSettleBeforePost(flag);
+    if (flag) enableSettleBeforePost();
+    else disableSettleBeforePost();
     const s = await captureOneLine(h, { externalId: `r7-now-${String(flag)}`, quantity: "1", lineAmount: "5.0000" });
     const res = await postReturn(
       h,

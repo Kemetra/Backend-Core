@@ -69,8 +69,6 @@ const SALE_TABLES = [
 ] as const;
 
 beforeAll(async () => {
-  // RT-787 (RT-271 R-11): the legacy refund route is gated off by default.
-  process.env["POS_LEGACY_REFUND_ENABLED"] = "true";
   try {
     env = await startPgEnv();
     await applyAllUpAndCreateAppRole(env);
@@ -89,7 +87,6 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
-  delete process.env["POS_LEGACY_REFUND_ENABLED"];
   if (env) await stopPgEnv(env);
 }, 60_000);
 

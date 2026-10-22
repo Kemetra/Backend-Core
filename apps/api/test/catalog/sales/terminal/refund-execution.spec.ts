@@ -32,7 +32,8 @@ import {
   postExecution,
   postingEventsFor,
   postReturn,
-  setSettleBeforePost,
+  disableSettleBeforePost,
+  enableSettleBeforePost,
   uuidFor,
 } from "./__returns-support";
 
@@ -43,13 +44,13 @@ beforeAll(async () => {
 }, 180_000);
 afterAll(async () => {
   disableReturns();
-  setSettleBeforePost(false);
+  disableSettleBeforePost();
   await stopCaptureHarness(h);
 }, 60_000);
 beforeEach(() => {
   resetHarness(h);
   enableReturns();
-  setSettleBeforePost(false);
+  disableSettleBeforePost();
 });
 afterEach(async () => {
   await cleanReturnsFixtures(h);
@@ -269,12 +270,12 @@ describe("RT-787 recordRefundExecution — 400 / 404 / 422, nothing recorded", (
 describe("RT-787 R-7 — settle before post", () => {
   it("a deferred return is emitted exactly once, by the settling execution, even after the flag is off", async () => {
     if (skip()) return;
-    setSettleBeforePost(true);
+    enableSettleBeforePost();
     const r = await allocatedReturn("settle");
     expect(await postingEventsFor(h, r.returnRef)).toBe(0);
     await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("ex-settle-e1", r.a1, "6.0000"), "exsettle1");
     expect(await postingEventsFor(h, r.returnRef)).toBe(0);
-    setSettleBeforePost(false);
+    disableSettleBeforePost();
     const last = executionBody("ex-settle-e2", r.a2, "4.0000");
     expect((await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, last, "exsettle2")).status).toBe(201);
     expect(await postingEventsFor(h, r.returnRef)).toBe(1);
@@ -285,7 +286,7 @@ describe("RT-787 R-7 — settle before post", () => {
 
   it("two concurrent final executions of a deferred return: one posting, one settling row", async () => {
     if (skip()) return;
-    setSettleBeforePost(true);
+    enableSettleBeforePost();
     const r = await allocatedReturn("race");
     const results = await Promise.all([
       postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("ex-race-e1", r.a1, "6.0000"), "exrace1"),
@@ -304,7 +305,7 @@ describe("RT-787 R-7 — settle before post", () => {
     if (skip()) return;
     const r = await allocatedReturn("early");
     expect(await postingEventsFor(h, r.returnRef)).toBe(1);
-    setSettleBeforePost(true);
+    enableSettleBeforePost();
     await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("ex-early-e1", r.a1, "6.0000"), "exearly1");
     await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("ex-early-e2", r.a2, "4.0000"), "exearly2");
     expect(await postingEventsFor(h, r.returnRef)).toBe(1);
