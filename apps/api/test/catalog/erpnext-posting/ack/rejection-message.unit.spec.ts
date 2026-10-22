@@ -60,8 +60,32 @@ describe("sanitizeRejectionMessage — credential values are redacted", () => {
     expect(sanitizeRejectionMessage(message)).toBe(expected);
   });
 
+  // PR #905 review (gitar): any auth scheme takes its credential with it, and
+  // a quoted value is redacted up to its closing quote.
+  it.each([
+    ["a Frappe API key:secret header", "Authorization: token 1a2b3c:9f8e7d", "Authorization: [redacted]"],
+    ["a Basic header", "Authorization: Basic dXNlcjpwYXNz", "Authorization: [redacted]"],
+    ["a Digest header", "authorization=Digest abc123", "authorization=[redacted]"],
+    ["a double-quoted value with spaces", 'password="hunter two" then', 'password="[redacted]" then'],
+    ["a single-quoted value with spaces", "secret: 'a b c' x", "secret: '[redacted]' x"],
+    ["an unterminated quoted value", 'api_key="k 1 2', 'api_key="[redacted]'],
+    ["a standalone Frappe token", "call failed: token 1a2b3c:9f8e7d (retry)", "call failed: token [redacted] (retry)"],
+    ["a standalone Basic credential", "sent Basic dXNlcjpwYXNz= upstream", "sent Basic [redacted] upstream"],
+  ])("%s", (_label, message, expected) => {
+    expect(sanitizeRejectionMessage(message)).toBe(expected);
+  });
+
+  it.each([
+    ["the word token in prose", "token expired for item ITEM-1"],
+    ["the word Basic in prose", "Basic validation failed on Sales Invoice"],
+  ])("%s is not a credential", (_label, message) => {
+    expect(sanitizeRejectionMessage(message)).toBe(message);
+  });
+
   it("is idempotent: sanitising a stored message changes nothing", () => {
-    const once = sanitizeRejectionMessage("x dp2_token=abc Authorization: Bearer q");
+    const once = sanitizeRejectionMessage(
+      'x dp2_token=abc Authorization: Bearer q password="a b" token k:s Basic dXNlcjpwYXNz',
+    );
     expect(sanitizeRejectionMessage(once)).toBe(once);
   });
 });

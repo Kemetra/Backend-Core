@@ -10,7 +10,9 @@
  *      result is trimmed;
  *   2. credential values become `[redacted]`: a value after a key that ENDS an
  *      identifier (`token`, `password`, `passwd`, `pwd`, `secret`, `api_key`,
- *      `authorization`, e.g. `dp2_token=…`), and a `Bearer …` token;
+ *      `authorization`, e.g. `dp2_token=…`, whatever its auth scheme, and a
+ *      quoted value whole), and a standalone `Bearer …`, `token key:secret`
+ *      or `Basic …` credential;
  *   3. the result is cut to 1000 characters (code points, as `char_length`
  *      counts them), AFTER redaction, since a replacement can lengthen it;
  *   4. nothing left → null.
@@ -30,25 +32,42 @@ const REDACTED = "[redacted]";
 const CONTROL_CHARS = /[\u0000-\u001F\u0080-\u009F]/gu;
 
 /**
- * A credential key ending an identifier, its separator (an optional quote,
- * `:` or `=`, an optional quote) and its value (an optional `Bearer ` and the
- * token up to a delimiter). An already-redacted value is left as it is, so
- * sanitising is idempotent.
+ * A credential key ending an identifier, its separator (an optional closing
+ * quote of the key, `:` or `=`) and its value: a quoted value up to its
+ * closing quote (spaces included), or an optional auth-scheme word (`Bearer`,
+ * `Basic`, `token` as in Frappe's `token key:secret`, `Digest`) with the
+ * credential up to a delimiter (PR #905 review). An already-redacted value is
+ * left as it is, so sanitising is idempotent.
  */
 const KEY_VALUE =
-  /([A-Za-z0-9_-]*?(?:token|password|passwd|pwd|secret|api[_-]?key|authorization))(["']?\s*[:=]\s*["']?)(?!\[redacted\])((?:bearer\s+)?[^\s"',;&}\]]+)/gi;
+  /([A-Za-z0-9_-]*?(?:token|password|passwd|pwd|secret|api[_-]?key|authorization))(["']?\s*[:=]\s*)(?!["']?\[redacted\])("[^"]*"?|'[^']*'?|(?:(?:bearer|basic|token|digest)\s+)?[^\s"',;&}\]]+)/gi;
 
-/** A standalone `Bearer <token>` (RFC 6750 b64token characters). */
-const BEARER = /\b(bearer)\s+[A-Za-z0-9\-._~+/]+=*/gi;
+/**
+ * A standalone auth scheme and its credential, outside any key: `Bearer
+ * <b64token>` (RFC 6750), Frappe's `token <key>:<secret>`, and `Basic
+ * <base64>` (at least 8 characters with a digit, `+`, `/` or `=`, so prose
+ * such as "Basic validation" is left alone).
+ */
+const SCHEME_CREDENTIALS = [
+  /\b(bearer)\s+[A-Za-z0-9\-._~+/]+=*/gi,
+  /\b(token)\s+[\w.-]+:[\w.-]+/gi,
+  /\b(basic)\s+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{8,}={0,2}/gi,
+];
+
+/** The key and separator kept, the value replaced; a quoted value keeps its quotes. */
+function redactKeyValue(_match: string, key: string, separator: string, value: string): string {
+  const quote = value.startsWith('"') || value.startsWith("'") ? value[0]! : "";
+  const closing = quote !== "" && value.length > 1 && value.endsWith(quote) ? quote : "";
+  return `${key}${separator}${quote}${REDACTED}${closing}`;
+}
 
 /** The message as Backend-Core stores it, or null when nothing is left. */
 export function sanitizeRejectionMessage(message: string | null | undefined): string | null {
   if (typeof message !== "string") return null;
-  const redacted = message
-    .replace(CONTROL_CHARS, "")
-    .trim()
-    .replace(KEY_VALUE, (_match, key: string, separator: string) => `${key}${separator}${REDACTED}`)
-    .replace(BEARER, (_match, bearer: string) => `${bearer} ${REDACTED}`);
+  const redacted = SCHEME_CREDENTIALS.reduce(
+    (text, scheme) => text.replace(scheme, (_match, word: string) => `${word} ${REDACTED}`),
+    message.replace(CONTROL_CHARS, "").trim().replace(KEY_VALUE, redactKeyValue),
+  );
   const bounded = Array.from(redacted).slice(0, REJECTION_MESSAGE_MAX).join("");
   return bounded.length === 0 ? null : bounded;
 }
