@@ -502,6 +502,49 @@ describe("verify-release: refusals", () => {
     expectRefused(/db-package .* is 'missing'/);
   });
 
+  // RT-816: db-package exists only from the commit that split it out of
+  // db-integration. Before that, db-integration itself ran the packages/db and
+  // worker DB suites, so a release is judged by its own ci.yml (equal strength).
+  describe("db-package follows the release commit's own ci.yml", () => {
+    const [fast, db, dbPackage] = helper.REQUIRED_CHECKS;
+    const green = (names: (string | undefined)[]): unknown[] =>
+      names.map((name) => ({ name, conclusion: "success", slug: "github-actions", started_at: "2026-10-18T10:00:00Z" }));
+    const SPLIT_CI = "jobs:\n  db-integration:\n    name: x\n  db-package:\n    name: y\n";
+    const PRE_SPLIT_CI = "# db-package is not a job here\njobs:\n  db-integration:\n    name: x\n";
+
+    it("requires db-package when the release's ci.yml defines the job", () => {
+      put("source/.github/workflows/ci.yml", SPLIT_CI);
+      putJson("check-runs.json", green([fast, db]));
+      expectRefused(/db-package .* is 'missing'/);
+    });
+
+    it("requires db-package from a CRLF copy of a post-split ci.yml", () => {
+      put("source/.github/workflows/ci.yml", SPLIT_CI.replace(/\n/g, "\r\n"));
+      putJson("check-runs.json", green([fast, db]));
+      expectRefused(/db-package .* is 'missing'/);
+    });
+
+    it("does not require db-package for a release whose ci.yml predates it", () => {
+      put("source/.github/workflows/ci.yml", PRE_SPLIT_CI);
+      putJson("check-runs.json", green([fast, db]));
+      expect(refusalsOf()).toEqual([]);
+    });
+
+    it("still requires db-integration for a pre-split release", () => {
+      put("source/.github/workflows/ci.yml", PRE_SPLIT_CI);
+      putJson("check-runs.json", green([fast]));
+      expectRefused(/db-integration .* is 'missing'/);
+    });
+
+    it("fails closed: an unreadable ci.yml requires all three checks", () => {
+      rmSync(join(dir, "source/.github"), { recursive: true, force: true });
+      putJson("check-runs.json", green([fast, db]));
+      expectRefused(/db-package .* is 'missing'/);
+      putJson("check-runs.json", green([fast, db, dbPackage]));
+      expect(refusalsOf()).toEqual([]);
+    });
+  });
+
   it("refuses a missing, tampered or padded release SHA256SUMS", () => {
     rmSync(join(dir, "release/SHA256SUMS"));
     expectRefused(/release SHA256SUMS missing/);

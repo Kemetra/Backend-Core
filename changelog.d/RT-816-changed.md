@@ -7,4 +7,8 @@
   it like `db-integration`. Both release gates (`release-images.yml`
   `REQUIRED_CHECKS` and `deploy/lab/verify-release.cjs`) now also require it,
   so a `main` commit with failing migration tests still cannot be released.
-  `db-integration` keeps its name for the ruleset.
+  `verify-release.cjs` requires `db-package` only when the release commit's own
+  `ci.yml` defines that job (before RT-816 `db-integration` ran those suites,
+  so older releases stay verifiable at equal strength); an unreadable `ci.yml`
+  requires all three. `db-integration` keeps its name, which the release
+  gates read.
