@@ -9,7 +9,8 @@
 #                     Medium and High.
 #   db-integration  : Docker/Testcontainers. The apps/api RLS / audit / auth
 #                     suites with the coverage gate (one shared Postgres, RT-815).
-#                     Medium and High. Keeps its name: the ruleset requires it.
+#                     Medium and High. Keeps its name (and the historic "+ migrations"):
+#                     release gates read it by name.
 #   db-package      : Docker/Testcontainers. packages/db migration UP/DOWN cycles
 #                     and the worker outbox DB suites, in parallel with
 #                     db-integration (RT-816). Same gate as db-integration.
@@ -27,7 +28,8 @@
 #   - Job-level `if:` only, never workflow-level `paths:`. A skipped job still
 #     reports its check run, so the four required contexts always report.
 #   - The four required jobs keep their exact `name:` values: ruleset 24169937
-#     matches them by name, and release-images.yml reads fast + db-integration.
+#     matches them by name, and release-images.yml + deploy/lab/verify-release.cjs
+#     read fast + db-integration + db-package (RT-816).
 #   - Fail-open: a gated job is skipped ONLY when `changes` says 'false'. If
 #     `changes` fails or emits nothing, everything runs (and `ci` goes red).
 #
@@ -166,7 +168,7 @@ jobs:
         # The Testcontainers-backed outbox suites
         # (retry-budget / idempotent-consumer / tenant-context) are excluded
         # by default in apps/worker/jest.config.cjs. They run in the
-        # db-integration job below with WORKER_INCLUDE_DB_TESTS=1.
+        # db-package job below with WORKER_INCLUDE_DB_TESTS=1 (RT-816).
         run: pnpm --filter @data-pulse-2/worker test
 
       - name: Test @data-pulse-2/shared
@@ -186,6 +188,8 @@ jobs:
     # The now-retired self-hosted box this budget was tuned to was faster. 40
     # gives margin so a slow cold run reports a real verdict instead of being
     # cancelled mid-api-step (which wasted the already-green db + worker steps).
+    # RT-816: the db + worker steps now run in db-package; RT-815 cut the api
+    # step to ~4 min. The 40-min ceiling is kept until more runs are measured.
     timeout-minutes: 40
     steps:
       - name: Checkout
