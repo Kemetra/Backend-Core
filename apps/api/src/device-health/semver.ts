@@ -18,7 +18,7 @@ export const APP_VERSION_MAX_LENGTH = 32;
 const CORE_NUMBER = String.raw`(?:0|[1-9]\d*)`;
 const PRERELEASE_IDENTIFIER = "[0-9A-Za-z-]+";
 export const APP_VERSION_PATTERN = new RegExp(
-  `^(${CORE_NUMBER})\\.(${CORE_NUMBER})\\.(${CORE_NUMBER})(-${PRERELEASE_IDENTIFIER}(?:\\.${PRERELEASE_IDENTIFIER})*)?$`,
+  String.raw`^(${CORE_NUMBER})\.(${CORE_NUMBER})\.(${CORE_NUMBER})(-${PRERELEASE_IDENTIFIER}(?:\.${PRERELEASE_IDENTIFIER})*)?$`,
 );
 
 export interface ParsedVersion {

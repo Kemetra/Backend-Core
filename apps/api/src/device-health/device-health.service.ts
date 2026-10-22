@@ -179,21 +179,29 @@ export class DeviceHealthService {
    */
   private async collect(scan: ScanContext, after: string | null): Promise<{ matches: DeviceHealthReadRow[]; resumeAfter: string | null }> {
     const wanted = scan.input.limit + 1;
-    const scanning = hasDerivedFilter(scan.input);
+    if (!hasDerivedFilter(scan.input)) return { matches: await this.fetchBatch(scan, after, wanted), resumeAfter: null };
+    return this.collectScanned(scan, after, wanted);
+  }
+
+  /** The derived-filter path of `collect`: batches until `wanted` matches, the end, or `maxScanned`. */
+  private async collectScanned(
+    scan: ScanContext,
+    after: string | null,
+    wanted: number,
+  ): Promise<{ matches: DeviceHealthReadRow[]; resumeAfter: string | null }> {
+    const { batchSize, maxScanned } = this.limits;
     const matches: DeviceHealthReadRow[] = [];
     let cursor = after;
     let scanned = 0;
-    while (matches.length < wanted) {
-      const size = scanning ? Math.min(this.limits.batchSize, this.limits.maxScanned - scanned) : wanted;
+    while (matches.length < wanted && scanned < maxScanned) {
+      const size = Math.min(batchSize, maxScanned - scanned);
       const rows = await this.fetchBatch(scan, cursor, size);
       scanned += rows.length;
-      const fresh = rows.filter((row) => matchesDerived(row, scan.input, scan.now));
-      matches.push(...fresh.slice(0, wanted - matches.length));
+      matches.push(...rows.filter((row) => matchesDerived(row, scan.input, scan.now)).slice(0, wanted - matches.length));
       cursor = rows.at(-1)?.device_id ?? null;
-      if (rows.length < size || cursor === null) break;
-      if (scanning && scanned >= this.limits.maxScanned && matches.length < wanted) return { matches, resumeAfter: cursor };
+      if (rows.length < size) return { matches, resumeAfter: null };
     }
-    return { matches, resumeAfter: null };
+    return { matches, resumeAfter: matches.length < wanted ? cursor : null };
   }
 
   private async fetchBatch(scan: ScanContext, after: string | null, size: number): Promise<DeviceHealthReadRow[]> {
