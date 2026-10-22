@@ -358,7 +358,7 @@ describe("forceCloseShift — concurrency on the shift row lock", () => {
       [409, "shift_force_closed", 201, null],
     ]).toContainEqual(outcome);
     const state = await stateOf(shiftId);
-    expect(state.cashUp !== state.forced).toBe(true);
+    expect(state.cashUp).not.toBe(state.forced);
   });
 
   it("two managers' identical force closes: one 201, one 200 replay", async () => {
