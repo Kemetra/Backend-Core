@@ -71,6 +71,8 @@ describe("sanitizeRejectionMessage — credential values are redacted", () => {
     ["an unterminated quoted value", 'api_key="k 1 2', 'api_key="[redacted]'],
     ["a standalone Frappe token", "call failed: token 1a2b3c:9f8e7d (retry)", "call failed: token [redacted] (retry)"],
     ["a standalone Basic credential", "sent Basic dXNlcjpwYXNz= upstream", "sent Basic [redacted] upstream"],
+    // PR #905 review (gitar): letters-only, unpadded Base64 (`user:pass`).
+    ["a letters-only, unpadded Basic credential", "sent Basic dXNlcjpwYXNz upstream", "sent Basic [redacted] upstream"],
   ])("%s", (_label, message, expected) => {
     expect(sanitizeRejectionMessage(message)).toBe(expected);
   });
@@ -78,6 +80,7 @@ describe("sanitizeRejectionMessage — credential values are redacted", () => {
   it.each([
     ["the word token in prose", "token expired for item ITEM-1"],
     ["the word Basic in prose", "Basic validation failed on Sales Invoice"],
+    ["a capitalised word after Basic", "Basic Rate of item ITEM-1 is missing"],
   ])("%s is not a credential", (_label, message) => {
     expect(sanitizeRejectionMessage(message)).toBe(message);
   });
@@ -86,6 +89,7 @@ describe("sanitizeRejectionMessage — credential values are redacted", () => {
     const once = sanitizeRejectionMessage(
       'x dp2_token=abc Authorization: Bearer q password="a b" token k:s Basic dXNlcjpwYXNz',
     );
+    expect(once).not.toContain("dXNlcjpwYXNz");
     expect(sanitizeRejectionMessage(once)).toBe(once);
   });
 });

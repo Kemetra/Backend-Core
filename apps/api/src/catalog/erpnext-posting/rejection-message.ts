@@ -45,13 +45,15 @@ const KEY_VALUE =
 /**
  * A standalone auth scheme and its credential, outside any key: `Bearer
  * <b64token>` (RFC 6750), Frappe's `token <key>:<secret>`, and `Basic
- * <base64>` (at least 8 characters with a digit, `+`, `/` or `=`, so prose
- * such as "Basic validation" is left alone).
+ * <base64>` (at least 8 characters with a digit, `+`, `/`, `=` or a
+ * lower-to-upper case change, as in `dXNlcjpwYXNz`; prose such as "Basic
+ * validation" or "Basic Rate" is left alone). The scheme word matches any
+ * case; the credential's case test must not, hence the inline `[a-z][A-Z]`.
  */
 const SCHEME_CREDENTIALS = [
   /\b(bearer)\s+[A-Za-z0-9\-._~+/]+=*/gi,
   /\b(token)\s+[\w.-]+:[\w.-]+/gi,
-  /\b(basic)\s+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{8,}={0,2}/gi,
+  /\b([Bb][Aa][Ss][Ii][Cc])\s+(?=[A-Za-z0-9+/]*(?:[0-9+/=]|[a-z][A-Z]))[A-Za-z0-9+/]{8,}={0,2}/g,
 ];
 
 /** The key and separator kept, the value replaced; a quoted value keeps its quotes. */
