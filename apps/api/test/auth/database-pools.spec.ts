@@ -88,6 +88,13 @@ const DOMAIN_GRANTS: ReadonlySet<string> = new Set([
   "inventory_anchors:INSERT",
   "inventory_anchor_lines:SELECT",
   "inventory_anchor_lines:INSERT",
+  // RT-327 (0068): POS device health (upserted) and the global version policy (no DELETE).
+  "device_health:SELECT",
+  "device_health:INSERT",
+  "device_health:UPDATE",
+  "pos_version_policy:SELECT",
+  "pos_version_policy:INSERT",
+  "pos_version_policy:UPDATE",
   // RT-539 (0047): the receipt reprint record (append-only).
   "sale_reprints:SELECT",
   "sale_reprints:INSERT",
@@ -351,6 +358,8 @@ describe("database pool boundary", () => {
       "tracking_identity_expiry_corrections",
       "inventory_anchors",
       "inventory_anchor_lines",
+      "device_health",
+      "pos_version_policy",
       "platform_support_sessions",
       "sale_reprints",
       "sale_responsibilities",

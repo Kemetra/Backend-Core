@@ -149,6 +149,8 @@ describe("route auth markers are enforced at the route (RT-129 / A9)", () => {
       "CashierAdmissionsController.admit",
       "CashierAdmissionsController.end",
       "CashierAdmissionsController.roster",
+      // RT-327: the POS device heartbeat (device bearer only).
+      "DeviceHeartbeatController.heartbeat",
       // RT-788 (RT-114 MA-BC2): the approver-eligibility read (device bearer only).
       "PosApproversController.checkEligibility",
       "ReadDownController.getDeltas",

@@ -174,6 +174,10 @@ export const AUTH_LOOKUP_FORBIDDEN_GRANTS: ReadonlyArray<readonly [string, strin
     // RT-427 (0063): the Inventory Anchors taken at sale-effects activation.
     "inventory_anchors",
     "inventory_anchor_lines",
+    // RT-327 (0068): per-device heartbeat health (tenant RLS) and the global
+    // POS version policy. With BYPASSRLS any grant would expose every tenant's rows.
+    "device_health",
+    "pos_version_policy",
     // RT-414 (0062): platform support sessions (platform-admin RLS only).
     "platform_support_sessions",
     "audit_events",
@@ -288,6 +292,17 @@ export const DOMAIN_REQUIRED_GRANTS: ReadonlyArray<readonly [string, string]> = 
   ["inventory_anchors", "INSERT"],
   ["inventory_anchor_lines", "SELECT"],
   ["inventory_anchor_lines", "INSERT"],
+  // RT-327 (0068): every POS heartbeat upserts its device's health row (last
+  // write wins) and the console reads it; the heartbeat and the console read
+  // the version policy and the platform change creates and replaces it. No
+  // DELETE policy on either; never DELETE or TRUNCATE. Apply with
+  // docs/operations/sql/pos-device-health-domain-grants.sql.
+  ["device_health", "SELECT"],
+  ["device_health", "INSERT"],
+  ["device_health", "UPDATE"],
+  ["pos_version_policy", "SELECT"],
+  ["pos_version_policy", "INSERT"],
+  ["pos_version_policy", "UPDATE"],
   // RT-539 (0047): every reprint authorized or recorded writes one row, and
   // the next server copy number reads them. Append-only (no UPDATE / DELETE
   // policy); never UPDATE, DELETE or TRUNCATE.
