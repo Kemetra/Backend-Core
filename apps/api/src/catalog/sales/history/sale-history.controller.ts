@@ -40,7 +40,7 @@ import {
 import { annotateAudit, Auditable } from "../../../audit/auditable.decorator";
 import { PosWriteRateLimitBucket } from "../../../auth/pos-write-rate-limit.decorator";
 import { PosWriteRateLimitGuard } from "../../../auth/pos-write-rate-limit.guard";
-import { DeviceBearer } from "../../../auth/route-auth";
+import { DeviceBearer, ReportsBuildIdentity } from "../../../auth/route-auth";
 import { ZodValidationPipe } from "../../../common/zod-validation.pipe";
 import type { TenantContextRequest } from "../../../context/types";
 import { Idempotent } from "../../../idempotency/idempotent.decorator";
@@ -176,6 +176,7 @@ export class SaleHistoryController {
   @UseGuards(SaleHistoryAuthGuard, PosWriteRateLimitGuard)
   @PosWriteRateLimitBucket("posReadSaleHistory")
   @Auditable("sale_history.listed")
+  @ReportsBuildIdentity()
   async listSaleHistory(
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(SaleHistoryListQuerySchema)) query: SaleHistoryListQuery,
@@ -206,6 +207,7 @@ export class SaleHistoryController {
   @UseGuards(SaleHistoryAuthGuard, PosWriteRateLimitGuard)
   @PosWriteRateLimitBucket("posReadSaleHistory")
   @Auditable("sale_history.detail_read")
+  @ReportsBuildIdentity()
   async readSaleHistoryDetail(
     @Req() request: TenantContextRequest,
     @Param("saleRef") rawSaleRef: string,
@@ -232,6 +234,7 @@ export class SaleHistoryController {
   @SaleReprintRoute()
   @Idempotent("required")
   @HttpCode(HttpStatus.CREATED)
+  @ReportsBuildIdentity()
   async recordSaleReprint(
     @Req() request: TenantContextRequest,
     @Param("saleRef") rawSaleRef: string,

@@ -3,14 +3,15 @@
  *
  * RT-719 (RT-709 O-8; fleet baseline for the RT-713 POS compatibility matrix):
  * `console-device-builds.openapi.yaml` and the optional `buildIdentity` key of
- * `devices.openapi.yaml`. `[GATED]` contract-first; the baseline is
- * `x-runtime-status: contract-only` until the runtime, its migration and the
- * POS change ship as separate, separately approved work.
+ * `devices.openapi.yaml`. `[GATED]` contract-first: the baseline merged
+ * `x-runtime-status: contract-only`; the runtime and migration `0073` (RT-719
+ * step 2) removed the marker, which this spec pins as absent. The POS change
+ * that sends the identity is separate work.
  *
  * Structural / load-only, plus AJV fixtures against the contract schemas. No
  * app boot and no HTTP. Pinned here:
  *
- *   1. The operation: one GET, contract-only with a note, an audit action, no
+ *   1. The operation: one GET, implemented (no marker), an audit action, no
  *      write and no operationId collision.
  *   2. Auth and refusals: `cookieAuth` only, 404 (never 403), no tenant from
  *      the request, one optional `store_id` filter.
@@ -82,11 +83,11 @@ describe("console device builds contract — operation", () => {
     expect(declared).toEqual([`get ${BASELINE_PATH}`]);
   });
 
-  it("is consoleGetFleetBaseline: contract-only, noted, audited, with no foreign collision", () => {
+  it("is consoleGetFleetBaseline: implemented (no contract-only marker), audited, with no foreign collision", () => {
     const operation = contract.operation("get", BASELINE_PATH);
     expect(operation["operationId"]).toBe("consoleGetFleetBaseline");
-    expect(operation["x-runtime-status"]).toBe("contract-only");
-    expect(String(operation["x-runtime-note"]).trim().length).toBeGreaterThan(0);
+    expect(operation["x-runtime-status"]).toBeUndefined();
+    expect(operation["x-runtime-note"]).toBeUndefined();
     expect(operation["x-audit-action"]).toBe("devices.fleet_baseline_read");
     expect(operation["requestBody"]).toBeUndefined();
     expect(contract.foreignOperationIds.has("consoleGetFleetBaseline")).toBe(false);
@@ -306,8 +307,9 @@ describe("console device builds contract — documented rules", () => {
     expect(info()).toMatch(/store scope has no\s+database backstop/);
   });
 
-  it("names the posture: contract-only, with the runtime, migration and POS change separate", () => {
-    expect(info()).toMatch(/`x-runtime-status: contract-only` on the\s+operation/);
-    expect(info()).toMatch(/separate, separately\s+approved work/);
+  it("names the posture: the runtime and migration shipped and removed the marker, the POS change is separate", () => {
+    expect(info()).toMatch(/merged with the operation\s+`x-runtime-status: contract-only`/);
+    expect(info()).toMatch(/migration \(`0073`\) ship in RT-719 step 2/);
+    expect(info()).toMatch(/POS change that sends the identity is\s+separate, separately approved work/);
   });
 });

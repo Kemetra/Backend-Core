@@ -467,18 +467,18 @@ info:
     last reported (`buildCommit`, `appVersion`, `contractPinCommit` and the
     server-clock `reportedAt`), or `null` when it has never reported one. It
     is the one exception to "every key is always present": both projections
-    are closed and served today, so a required key would fail the served
-    runtime's responses until the RT-719 runtime ships. A client reads an
+    were closed and served before the RT-719 runtime, so a required key would
+    have failed their responses until it shipped. A client reads an
     absent key and `null` the same way, as unknown, and never renders unknown
     as a build, as "current" or as "latest". The key is self-reported, an
     inventory signal only: it never changes trust state, `lastSeenAt` or
     `lastSeenSource`, and it carries no PII, no secret and no free text (every
     value is a bounded pattern). How a terminal reports it, and the fleet
-    baseline RT-713 reads (`consoleGetFleetBaseline`, contract-only), are in
+    baseline RT-713 reads (`consoleGetFleetBaseline`), are in
     `pos-terminal-pairing.openapi.yaml` ("Build identity report (RT-719)") and
-    `console-device-builds.openapi.yaml`. Until the RT-719 runtime ships, the
-    served operations do not send the key. No operation changes, no existing
-    key changes.
+    `console-device-builds.openapi.yaml`. Since the RT-719 runtime the served
+    projections send the key (`null` until a terminal reports). No operation
+    changes, no existing key changes.
 
 servers:
   - url: https://api.example.com
@@ -1088,8 +1088,8 @@ components:
           description: >
             RT-719. The POS build the terminal last reported, or `null` when it
             has never reported one (unknown, never a default build). OPTIONAL:
-            absent until the RT-719 runtime ships, and an absent key means the
-            same as `null`. Self-reported; not a trust signal; not `lastSeenAt`.
+            sent since the RT-719 runtime, and an absent key means the same as
+            `null`. Self-reported; not a trust signal; not `lastSeenAt`.
           oneOf:
             - $ref: "#/components/schemas/DeviceBuildIdentity"
             - type: "null"

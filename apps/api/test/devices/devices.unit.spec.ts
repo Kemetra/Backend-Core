@@ -151,6 +151,50 @@ describe("device projections", () => {
       replacesDeviceId: null,
       replacedByDeviceId: null,
       custodyExceptionShiftId: null,
+      buildIdentity: null,
+    });
+  });
+
+  describe("buildIdentity (RT-719)", () => {
+    const COMMIT = "0123456789abcdef0123456789abcdef01234567";
+    const PIN = "fedcba9876543210fedcba9876543210fedcba98";
+    const REPORTED = new Date("2026-10-22T09:30:00.000Z");
+
+    it("is null for a device that never reported, and never a default build", () => {
+      expect(toDeviceSummary(ACTIVE_ROW).buildIdentity).toBeNull();
+      expect(toDeviceSummary({ ...ACTIVE_ROW, reported_build_commit: null, build_reported_at: null }).buildIdentity).toBeNull();
+    });
+
+    it("projects the reported identity with its server-clock time, nulls kept as null", () => {
+      const full = toDeviceSummary({
+        ...ACTIVE_ROW,
+        reported_build_commit: COMMIT,
+        reported_app_version: "1.4.0-rc.1",
+        reported_contract_pin: PIN,
+        build_reported_at: REPORTED,
+      });
+      expect(full.buildIdentity).toEqual({ buildCommit: COMMIT, appVersion: "1.4.0-rc.1", contractPinCommit: PIN, reportedAt: "2026-10-22T09:30:00.000Z" });
+      const commitOnly = toDeviceSummary({ ...ACTIVE_ROW, reported_build_commit: COMMIT, build_reported_at: REPORTED });
+      expect(commitOnly.buildIdentity).toEqual({ buildCommit: COMMIT, appVersion: null, contractPinCommit: null, reportedAt: "2026-10-22T09:30:00.000Z" });
+    });
+
+    it("is unknown without a commit, whatever the other columns say", () => {
+      expect(toDeviceSummary({ ...ACTIVE_ROW, reported_app_version: "1.4.0", reported_contract_pin: PIN, build_reported_at: REPORTED }).buildIdentity).toBeNull();
+    });
+
+    it("stays readable on a revoked device and on the detail, and never changes trust or last seen", () => {
+      const revoked: DeviceReadRow = {
+        ...ACTIVE_ROW,
+        revoked_at: new Date("2026-10-16T10:00:00.000Z"),
+        revoke_reason: "stolen",
+        reported_build_commit: COMMIT,
+        build_reported_at: REPORTED,
+      };
+      const summary = toDeviceSummary(revoked);
+      expect(summary.buildIdentity?.buildCommit).toBe(COMMIT);
+      expect(summary.trustState).toBe("revoked");
+      expect([summary.lastSeenAt, summary.lastSeenSource]).toEqual([null, null]);
+      expect(toDeviceDetail(revoked).buildIdentity).toEqual(summary.buildIdentity);
     });
   });
 

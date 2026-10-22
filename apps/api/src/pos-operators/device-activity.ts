@@ -43,12 +43,27 @@
  *
  * This is the activity signal only (RT-287 D-Q6): the AD-DEVICE-001
  * heartbeat (`device_health.last_seen_at`, RT-327) is a separate source.
+ *
+ * Build identity (RT-719)
+ * -----------------------
+ * A reporting operation (`@ReportsBuildIdentity()`) passes what its request
+ * said about the POS build (`record`'s third argument: an identity, or `null`
+ * for unknown). That report rides the SAME throttled write as `last_seen_at`,
+ * so it is stored at most once per window per device and may show up to one
+ * window late; an unknown report CLEARS the stored identity (unknown is never
+ * kept from an older build). A request that is not a reporting one passes
+ * `undefined` and the write is the plain touch: it can neither record nor
+ * clear the identity. A failure to store is counted (`failed`) and swallowed
+ * with the rest of this write. The metric carries only the outcome, never a
+ * commit or a version.
  */
 import { runWithTenantContext } from "@data-pulse-2/db";
 import type { Logger } from "@data-pulse-2/shared";
 import type { Pool } from "pg";
 
 import { createApiLogger } from "../common/api-logger";
+import { recordPosBuildIdentityReport } from "../observability/metrics/api.metrics";
+import type { BuildIdentityReport } from "./build-identity";
 
 /** At most one `last_seen_at` write per device per 5 minutes (RT-138 L7). */
 export const DEVICE_ACTIVITY_INTERVAL_MS = 5 * 60_000;
@@ -63,12 +78,24 @@ export interface ActiveDevice {
   readonly tenantId: string;
 }
 
-const TOUCH_SQL = `UPDATE devices SET last_seen_at = now()
-  WHERE id IN (
+/** The throttled, skip-locked row pick both writes share: $1 device, $2 tenant, $3 window in seconds. */
+const DUE_DEVICE = `id IN (
     SELECT id FROM devices
      WHERE id = $1::uuid AND tenant_id = $2::uuid AND revoked_at IS NULL
        AND (last_seen_at IS NULL OR last_seen_at < now() - make_interval(secs => $3))
      FOR NO KEY UPDATE SKIP LOCKED)`;
+
+const TOUCH_SQL = `UPDATE devices SET last_seen_at = now() WHERE ${DUE_DEVICE}`;
+
+/**
+ * The same write for a reporting request (RT-719): $4 commit, $5 version, $6 pin,
+ * each NULL when unknown. `build_reported_at` is the server clock when a commit
+ * is stored and NULL otherwise (the 0073 CHECK ties the four together).
+ */
+const REPORT_SQL = `UPDATE devices SET last_seen_at = now(),
+       reported_build_commit = $4::text, reported_app_version = $5::text, reported_contract_pin = $6::text,
+       build_reported_at = CASE WHEN $4::text IS NULL THEN NULL ELSE now() END
+  WHERE ${DUE_DEVICE}`;
 
 let logger: Logger | null = null;
 function log(): Logger {
@@ -82,12 +109,28 @@ function errorCode(err: unknown): string {
   return err instanceof Error ? err.name : "unknown";
 }
 
-async function touchLastSeen(pool: Pool, device: ActiveDevice): Promise<void> {
-  await runWithTenantContext(pool, { tenantId: device.tenantId, isPlatformAdmin: false }, async (client) => {
+/** Write the touch (and the build report, when there is one); the number of rows it changed (0: not due). */
+/** Count a build identity store that took effect (a write inside the window changed no row and is no outcome). */
+function countBuildReport(build: BuildIdentityReport | undefined, changed: number): void {
+  if (build !== undefined && changed > 0) recordPosBuildIdentityReport(build === null ? "unknown" : "recorded");
+}
+
+/** Count a build identity store that failed; a write that was not a report is not counted. */
+function countBuildReportFailure(build: BuildIdentityReport | undefined): void {
+  if (build !== undefined) recordPosBuildIdentityReport("failed");
+}
+
+async function touchLastSeen(pool: Pool, device: ActiveDevice, build: BuildIdentityReport | undefined): Promise<number> {
+  return runWithTenantContext(pool, { tenantId: device.tenantId, isPlatformAdmin: false }, async (client) => {
     // Give up rather than wait: a timeout is an error, logged and dropped.
     await client.query("SET LOCAL lock_timeout = '1s'");
     await client.query("SET LOCAL statement_timeout = '2s'");
-    await client.query(TOUCH_SQL, [device.id, device.tenantId, DEVICE_ACTIVITY_INTERVAL_MS / 1000]);
+    const window = DEVICE_ACTIVITY_INTERVAL_MS / 1000;
+    const res =
+      build === undefined
+        ? await client.query(TOUCH_SQL, [device.id, device.tenantId, window])
+        : await client.query(REPORT_SQL, [device.id, device.tenantId, window, build?.commit ?? null, build?.appVersion ?? null, build?.contractPin ?? null]);
+    return res.rowCount ?? 0;
   });
 }
 
@@ -99,8 +142,12 @@ export class DeviceActivityRecorder {
 
   constructor(private readonly clock: () => number = Date.now) {}
 
-  /** Record that `device` authenticated now. Never throws, never blocks the caller. */
-  record(pool: Pool, device: ActiveDevice): void {
+  /**
+   * Record that `device` authenticated now. `build` is what a reporting
+   * request said about the POS build (an identity, or `null` for unknown) and
+   * `undefined` for any other request. Never throws, never blocks the caller.
+   */
+  record(pool: Pool, device: ActiveDevice, build?: BuildIdentityReport): void {
     const now = this.clock();
     const last = this.lastAttemptMs.get(device.id);
     if (last !== undefined && now - last < DEVICE_ACTIVITY_INTERVAL_MS) return;
@@ -111,8 +158,10 @@ export class DeviceActivityRecorder {
     this.mark(device.id, now);
 
     const write: Promise<void> = Promise.resolve()
-      .then(() => touchLastSeen(pool, device))
+      .then(() => touchLastSeen(pool, device, build))
+      .then((changed) => countBuildReport(build, changed))
       .catch((err: unknown) => {
+        countBuildReportFailure(build);
         log().warn({ device_id: device.id, err_code: errorCode(err) }, "device activity: last_seen_at write failed");
       })
       .finally(() => {

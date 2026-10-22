@@ -28,7 +28,7 @@ import type { Response } from "express";
 
 import { annotateAudit, Auditable } from "../audit/auditable.decorator";
 import { PosDeviceAuthGuard } from "../auth/pos-device-auth.guard";
-import { DeviceBearer } from "../auth/route-auth";
+import { DeviceBearer, ReportsBuildIdentity } from "../auth/route-auth";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import type { TenantContextRequest } from "../context/types";
 import { policyEtag, type DevicePolicyBody } from "./policy.projections";
@@ -45,6 +45,7 @@ export class CashVariancePolicyDeviceController {
   @DeviceBearer()
   @UseGuards(PosDeviceAuthGuard)
   @Auditable("cash_variance_policy.device_read")
+  @ReportsBuildIdentity()
   async read(
     @Req() request: TenantContextRequest,
     @Query(new ZodValidationPipe(DeviceReadQuerySchema)) _query: Record<string, never>,

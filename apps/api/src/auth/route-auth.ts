@@ -15,6 +15,7 @@ export const IS_PUBLIC_KEY = "dp2:public";
 export const OPERATOR_BEARER_KEY = "dp2:operatorBearer";
 export const DEVICE_ATTESTED_KEY = "dp2:deviceAttested";
 export const DEVICE_BEARER_KEY = "dp2:deviceBearer";
+export const REPORTS_BUILD_IDENTITY_KEY = "dp2:reportsBuildIdentity";
 
 export const Public = () => SetMetadata(IS_PUBLIC_KEY, true);
 export const OperatorBearer = () => SetMetadata(OPERATOR_BEARER_KEY, true);
@@ -27,6 +28,16 @@ export const DeviceAttested = () => SetMetadata(DEVICE_ATTESTED_KEY, true);
  */
 export const DeviceBearer = () =>
   applyDecorators(SetMetadata(DEVICE_BEARER_KEY, true), UseInterceptors(DeviceRotationHintInterceptor));
+
+/**
+ * RT-719: the route is one of the thirteen build identity REPORTING operations
+ * (`pos-terminal-pairing.openapi.yaml`, "Build identity report"). Its
+ * device-token request carries the optional `X-POS-*` headers, which
+ * `PosDeviceAuthGuard` reads and passes to the activity write. A device-token
+ * route without this marker neither records nor clears the identity.
+ * `build-identity-markers.spec.ts` pins the exact set.
+ */
+export const ReportsBuildIdentity = () => SetMetadata(REPORTS_BUILD_IDENTITY_KEY, true);
 
 export type CredentialRequest = Request & {
   posBearer?: string;

@@ -41,6 +41,8 @@ const LIVE_READ_CODES = [
   "console_sales.listed",
   // RT-649: the console sales summary.
   "console_sales.summary_read",
+  // RT-719: the fleet baseline read.
+  "devices.fleet_baseline_read",
   "devices.impact_read",
   "devices.listed",
   "devices.read",

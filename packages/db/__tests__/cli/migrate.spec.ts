@@ -237,6 +237,7 @@ describe("data-pulse-migrate CLI", () => {
     "0066_reconciliation_pending_aware_classes",
     "0067_refund_executions",
     "0068_pos_device_health",
+    "0073_device_build_identity",
   ] as const;
 
   const LATEST_MIGRATION = EXPECTED_MIGRATIONS[EXPECTED_MIGRATIONS.length - 1]!;
@@ -556,8 +557,18 @@ describe("data-pulse-migrate CLI", () => {
   }
 
   /**
-   * After one `down` from head: 0068's device health and version policy tables
-   * are gone, while 0067's refund executions, allocation columns,
+   * 0073_device_build_identity (RT-719): how many of its four devices columns
+   * exist ("4" when applied, "0" after down).
+   */
+  async function countBuildIdentityColumns(): Promise<string> {
+    const columns = ["reported_build_commit", "reported_app_version", "reported_contract_pin", "build_reported_at"];
+    const counts = await Promise.all(columns.map((column) => countPublicColumn("devices", column)));
+    return String(counts.reduce((sum, n) => sum + Number(n), 0));
+  }
+
+  /**
+   * After one `down` from head: 0073's four build identity columns are gone,
+   * while 0068's device health and version policy tables, 0067's refund executions, allocation columns,
    * posting_deferred and original-tender trigger, 0066's
    * pending-aware result classes, 0064-0065's stock-movement history
    * indexes, 0063's anchor tables and activation columns, 0062's
@@ -568,8 +579,9 @@ describe("data-pulse-migrate CLI", () => {
    * store/business-date index and everything older survive.
    */
   async function expectOnlyLatestRolledBack(): Promise<void> {
-    // 0068's two tables (RT-327) are gone; 0067's refund executions and 0066's pending-aware CHECK stay.
-    expect(await countPosDeviceHealthObjects()).toEqual(["0", "0"]);
+    // 0073's four devices columns (RT-719) are gone; 0068's tables, 0067's refund executions and 0066's pending-aware CHECK stay.
+    expect(await countBuildIdentityColumns()).toBe("0");
+    expect(await countPosDeviceHealthObjects()).toEqual(["2", "6"]);
     expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
     expect(await countPendingAwareClassCheck()).toBe("1");
     expect(
@@ -664,6 +676,8 @@ describe("data-pulse-migrate CLI", () => {
     expect(await countRefundExecutionObjects()).toEqual(["1", "2", "4", "1"]);
     // 0068's device health and version policy tables, three policies each (RT-327).
     expect(await countPosDeviceHealthObjects()).toEqual(["2", "6"]);
+    // 0073's four nullable build identity columns on devices (RT-719).
+    expect(await countBuildIdentityColumns()).toBe("4");
   }
 
   /** The three tables created by 0054_sale_credit_reversals (RT-577). */
@@ -816,7 +830,7 @@ describe("data-pulse-migrate CLI", () => {
 
       await expectOnlyLatestRolledBack();
 
-      // Sanity: everything older SURVIVES the 0068 rollback (down reverses
+      // Sanity: everything older SURVIVES the 0073 rollback (down reverses
       // only the latest migration) —
       // 0036's cash-up fact tables, shifts cash-up columns and guard triggers (RT-17);
       await expectShiftCashUpApplied();
