@@ -546,6 +546,7 @@ describe("data-pulse-migrate CLI", () => {
     ];
   }
 
+  /**
    * 0068_pos_device_health (RT-327): [its two tables, their SELECT + INSERT +
    * UPDATE policies] ("0" and "0" after down).
    */
