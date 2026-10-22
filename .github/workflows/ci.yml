@@ -13,7 +13,8 @@
 #   oasdiff         : OpenAPI breaking-change gate (RT-52). Every PR, any tier.
 #   schemathesis    : API fuzz over the cookieAuth surface (RT-59). PRs that are
 #                     High, or Medium outside apps/worker/. Nightly full run on
-#                     main: api-fuzz.yml.
+#                     main: api-fuzz.yml. Four parallel schemathesis-shard jobs
+#                     (RT-809), then this required check as their fail-closed fan-in.
 #   ci              : always-reporting aggregate. Fails when a job the tier
 #                     requires failed, was cancelled or was skipped.
 #
@@ -324,10 +325,11 @@ jobs:
           echo "Comparing against merge-base $base"
           bash tools/oasdiff/check.sh "$base"
 
-  # Moved here from api-fuzz.yml (RT-582) so `ci` can depend on it.
-  # Boots an ephemeral Backend-Core stack (fresh Postgres + Redis, documented DB
-  # roles, throwaway owner session, no worker), then runs Schemathesis over every
-  # cookieAuth operation in packages/contracts/openapi:
+  # Moved here from api-fuzz.yml (RT-582) so `ci` can depend on it; sharded 4 ways
+  # by RT-809. Every shard boots its own ephemeral Backend-Core stack on its own
+  # runner (fresh Postgres + Redis, documented DB roles, throwaway owner and
+  # platform sessions, no worker), then runs Schemathesis over its share of the
+  # cookieAuth contract files in packages/contracts/openapi:
   #
   #   - gate:   not_a_server_error. Fails on any 5xx that is not in
   #             tools/schemathesis/5xx-baseline.json.
@@ -336,32 +338,68 @@ jobs:
   #
   # Either step fails if Schemathesis could not run (schema, network or tool
   # error). @PlatformAdminOnly operations run with a platform-admin session.
-  # PR-only; main gets the nightly full run in api-fuzz.yml. Everything it
-  # creates is local to the runner; see tools/schemathesis/README.md.
-  schemathesis:
-    name: schemathesis (cookieAuth surface)
+  # PR-only; main gets the nightly full run in api-fuzz.yml, which stays single
+  # node and serial. Everything a shard creates is local to its runner; see
+  # tools/schemathesis/README.md. The plan is computed from ops.py at this SHA
+  # (tools/schemathesis/shards.py): the shards partition the files and the
+  # fan-in below proves they ran every file exactly once.
+  #
+  # To change the shard count, change the matrix and SHARD_TOTAL in BOTH jobs
+  # together; tools/schemathesis/__tests__/ci-wiring.test.py fails if they differ.
+  schemathesis-shard:
+    name: schemathesis shard ${{ matrix.shard }}
     needs: changes
     if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.run_schemathesis != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      # Every shard reports, so a failed one does not hide the others' evidence.
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     env:
       # The scripts write to $RUNNER_TEMP/api-fuzz (the runner context is not
       # available in job-level env, so the path is not set here).
       FUZZ_PROJECT: api-fuzz
+      SHARD_TOTAL: "4"
+      SHARD_INDEX: ${{ matrix.shard }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Plan this shard's contract files
+        run: bash tools/schemathesis/shard.sh plan
+
       - name: Start ephemeral stack
+        timeout-minutes: 10
         run: bash tools/schemathesis/stack-up.sh
 
       - name: "Gate: no 5xx (not_a_server_error)"
-        run: bash tools/schemathesis/run.sh gate
+        timeout-minutes: 20
+        run: bash tools/schemathesis/shard.sh run gate
 
       # Findings never fail this step; it fails only if Schemathesis could not run.
       - name: "Report (non-gating findings): positive_data_acceptance"
         if: always()
-        run: bash tools/schemathesis/run.sh report
+        timeout-minutes: 15
+        run: bash tools/schemathesis/shard.sh run report
+
+      # Plan, manifests, exit codes, SHA and findings only: no raw logs (their
+      # curl reproductions carry the session cookie) and nothing if a credential
+      # shows up in them. Runs before the teardown removes $RUNNER_TEMP/api-fuzz.
+      - name: Collect shard evidence
+        if: always()
+        run: bash tools/schemathesis/shard.sh collect
+
+      - name: Upload shard evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: schemathesis-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/st-shard/artifact
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
 
       - name: Tear down
         if: always()
@@ -373,6 +411,53 @@ jobs:
             docker compose -p "$FUZZ_PROJECT" -f tools/schemathesis/compose.yml down -v
           fi
           rm -rf "$out"
+
+  # Fail-closed fan-in under the ORIGINAL job id and name: the required check
+  # context `schemathesis (cookieAuth surface)` (ruleset 24169937 and any old
+  # per-job contexts) and the `ci` aggregate below keep working unchanged. The
+  # `if:` is the pre-RT-809 expression, so a Low-tier or worker-only PR still
+  # skips it, and it still runs (and fails) when `changes` breaks. It fails unless
+  # all shard jobs succeeded and the shards' artifacts prove that every
+  # (group, contract file, operationIds) of the inventory regenerated here ran
+  # exactly once in gate and in report, at this SHA, with no unbaselined 5xx.
+  schemathesis:
+    name: schemathesis (cookieAuth surface)
+    needs: [changes, schemathesis-shard]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.run_schemathesis != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SHARD_TOTAL: "4"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Self-test the shard planner and fan-in
+        run: python3 tools/schemathesis/__tests__/shards.test.py
+
+      # A failed or missing download is not a verdict: the fan-in below fails on
+      # any shard artifact that is absent, so this step may not decide anything.
+      - name: Download shard evidence
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: schemathesis-shard-*
+          path: ${{ runner.temp }}/st-shard/downloaded
+
+      - name: Fan-in (coverage + gate)
+        env:
+          SHARDS_RESULT: ${{ needs.schemathesis-shard.result }}
+        run: bash tools/schemathesis/shard.sh fanin
+
+      - name: Upload merged report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: schemathesis-merged
+          path: ${{ runner.temp }}/st-shard/merged/schemathesis-merged.md
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: true
 
   # Always-reporting aggregate (RT-582), modelled on Kemetra/POS ci.yml. RT-583
   # makes `ci` the only required check, so its name must not change.
