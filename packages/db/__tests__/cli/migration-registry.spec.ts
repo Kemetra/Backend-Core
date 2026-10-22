@@ -72,6 +72,14 @@ describe("resolveMigrations", () => {
     );
   });
 
+  it("fails on a new migration in a baseline numbering gap without a probe", () => {
+    const gapped = [entries[0]!, { id: "0000_gap" }, entries[1]!, entries[2]!];
+    const baselineIds = new Set(["0000_a", BASE]);
+    expect(() => resolveMigrations(files("0000_a", "0000_gap", BASE, "0002_c"), gapped, BASE, baselineIds)).toThrow(
+      /after the baseline needs a probe.*0000_gap/,
+    );
+  });
+
   it("fails on a probe that cannot bite (same reading applied and rolled back)", () => {
     const flat = [entries[0]!, entries[1]!, { id: "0002_c", probe: probe("1", "1") }];
     expect(() => resolveMigrations(files("0000_a", BASE, "0002_c"), flat, BASE)).toThrow(/same applied and rolled back.*0002_c/);

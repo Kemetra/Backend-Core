@@ -64,6 +64,7 @@ describe("buildGrantRegistry", () => {
     ["a forbidden entry with an unknown privilege", fragment("x", { ...empty, lookupForbidden: [["a", "SELECT, OWN"]] })],
     ["a script outside the routine naming", fragment("x", { ...empty, deployScripts: ["../a.sql"] })],
     ["an allowed table with no reason", fragment("x", { ...empty, lookupAllowed: [{ table: "a", reason: " " }] })],
+    ["a domain grant naming two privileges", fragment("x", { ...empty, domainRequired: [["a", "SELECT, INSERT"]] })],
   ])("refuses a fragment with %s", (_label, bad) => {
     expect(() => buildGrantRegistry([fragment("baseline", empty), bad])).toThrow(/grants fragment x/);
   });

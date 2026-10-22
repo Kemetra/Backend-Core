@@ -279,6 +279,8 @@ describe("release bundle", () => {
     expect(readme).toContain("op run --env-file=deploy/grants.env -- deploy/apply-domain-grants.sh\n");
     expect(readme).toContain("Changed in RT-812");
     expect(readmeDeploySql().filter((f) => f.endsWith("-domain-grants.sql"))).toEqual([]);
+    // Nor does any other block (the Operations redeploy recipe included).
+    expect(readme.match(/docs\/operations\/sql\/[a-z0-9-]+-domain-grants\.sql/g) ?? []).toEqual([]);
   });
 
   it("only ships files that exist in the repo", () => {

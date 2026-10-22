@@ -60,11 +60,20 @@ function checkFiles(ids: readonly string[], ups: ReadonlySet<string>, downs: Rea
   failIfAny(".down.sql without an up file", [...downs].filter((id) => !ups.has(id)));
 }
 
-/** The probes by id; every migration after the baseline needs one that bites. */
-function collectProbes(entries: readonly MigrationEntry[], baselineHead: string): Map<string, MigrationProbe> {
+/**
+ * The probes by id; every migration after the baseline needs one that bites.
+ * "After the baseline" is any id above its head and, when the baseline's ids
+ * are given, any id it does not hold (a new migration in a numbering gap).
+ */
+function collectProbes(
+  entries: readonly MigrationEntry[],
+  baselineHead: string,
+  baselineIds?: ReadonlySet<string>,
+): Map<string, MigrationProbe> {
+  const isNew = (id: string): boolean => id > baselineHead || (baselineIds !== undefined && !baselineIds.has(id));
   failIfAny(
     "a migration after the baseline needs a probe",
-    entries.filter((e) => !e.probe && e.id > baselineHead).map((e) => e.id),
+    entries.filter((e) => !e.probe && isNew(e.id)).map((e) => e.id),
   );
   const probed = entries.filter((e): e is Required<MigrationEntry> => e.probe !== undefined);
   failIfAny(
@@ -77,17 +86,19 @@ function collectProbes(entries: readonly MigrationEntry[], baselineHead: string)
 /**
  * Check the drizzle file names against the registry and return the chain.
  * Pure: `files` is a directory listing, `entries` the registry, `baselineHead`
- * the last migration the frozen baseline covers.
+ * the last migration the frozen baseline covers and `baselineIds` every id it
+ * holds.
  */
 export function resolveMigrations(
   files: readonly string[],
   entries: readonly MigrationEntry[],
   baselineHead: string,
+  baselineIds?: ReadonlySet<string>,
 ): ResolvedMigrations {
   const { ups, downs } = migrationFiles(files);
   const ids = entries.map((e) => e.id);
   checkFiles(ids, ups, downs);
-  const probes = collectProbes(entries, baselineHead);
+  const probes = collectProbes(entries, baselineHead, baselineIds);
   const ordered = [...ids].sort();
   const head = ordered[ordered.length - 1];
   if (head === undefined) fail("no migrations", []);
@@ -148,6 +159,10 @@ export function loadMigrationRegistry(dir = REGISTRY_DIR): MigrationEntry[] {
 /** The chain the runner will apply, checked against the drizzle directory. */
 export function resolveMigrationRegistry(): ResolvedMigrations {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { BASELINE_HEAD } = require(resolve(REGISTRY_DIR, "baseline.ts")) as { BASELINE_HEAD: string };
-  return resolveMigrations(readdirSync(DRIZZLE_DIR), loadMigrationRegistry(), BASELINE_HEAD);
+  const { BASELINE_HEAD, BASELINE_MIGRATIONS } = require(resolve(REGISTRY_DIR, "baseline.ts")) as {
+    BASELINE_HEAD: string;
+    BASELINE_MIGRATIONS: MigrationEntry[];
+  };
+  const baselineIds = new Set(BASELINE_MIGRATIONS.map((e) => e.id));
+  return resolveMigrations(readdirSync(DRIZZLE_DIR), loadMigrationRegistry(), BASELINE_HEAD, baselineIds);
 }

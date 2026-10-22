@@ -63,6 +63,17 @@ class FragmentValidator {
     }
   }
 
+  /**
+   * A domainRequired entry names exactly one privilege: has_table_privilege
+   * reads "SELECT, INSERT" as "any of them", so a list would check fewer grants.
+   */
+  domainGrant(entry: unknown): void {
+    this.pair(entry);
+    if ((entry as readonly [string, string])[1].includes(",")) {
+      this.fail(`${JSON.stringify(entry)}: a domain grant names exactly one privilege`);
+    }
+  }
+
   /** A lookupAllowed entry: a table and a non-blank written reason. */
   allowed(entry: unknown): void {
     const { table, reason } = (entry ?? {}) as { table?: unknown; reason?: unknown };
@@ -79,7 +90,7 @@ function validateFragment({ name, exports }: LoadedFragment): GrantFragment {
   if (typeof grants !== "object" || grants === null) check.fail("must export GRANTS");
   const raw = grants as Record<string, unknown>;
   check.list(raw, "deployScripts").forEach((script) => check.script(script));
-  check.list(raw, "domainRequired").forEach((entry) => check.pair(entry));
+  check.list(raw, "domainRequired").forEach((entry) => check.domainGrant(entry));
   check.list(raw, "lookupForbidden").forEach((entry) => check.pair(entry));
   check.list(raw, "lookupAllowed").forEach((entry) => check.allowed(entry));
   return grants as GrantFragment;

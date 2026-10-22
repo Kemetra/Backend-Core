@@ -368,22 +368,7 @@ op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml l
 # (1. migrate, 2. grants, 3. up, 4. catch-up). A bare `up` skips the grant step.
 git pull
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml run --rm --build migrate
-op run --env-file=deploy/grants.env -- sh -c \
-  'psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/cashier-admissions-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/shift-cash-up-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/erpnext-posting-resolution-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/inventory-effect-integration-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/stock-locations-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/tracking-foundation-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/signin-memberships-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/sale-reprints-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/device-lifecycle-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/sale-responsibilities-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/shift-variance-policy-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/sale-credit-reversals-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/inventory-position-events-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/inventory-anchors-domain-grants.sql &&
-   psql -X -v domain_role="$DOMAIN_DB_ROLE" -f docs/operations/sql/refund-executions-domain-grants.sql'
+op run --env-file=deploy/grants.env -- deploy/apply-domain-grants.sh
 op run --env-file=deploy/prod.env -- docker compose -f docker-compose.prod.yml up -d --build
 op run --env-file=deploy/grants.env -- sh -c \
   'psql -X -f docs/operations/sql/erpnext-posting-resolution-catchup.sql &&

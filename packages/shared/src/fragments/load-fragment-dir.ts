@@ -84,7 +84,9 @@ export function loadFragmentDir(dir: string, suffix: string, callerFile: string)
   if (!names.includes(BASELINE)) {
     throw new Error(`fragment directory ${dir} has no ${BASELINE}${suffix}${layout.ext}`);
   }
-  const ordered = [BASELINE, ...names.filter((n) => n !== BASELINE).sort()];
+  // Code-unit order, never localeCompare: the load order must not depend on the host locale.
+  const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+  const ordered = [BASELINE, ...names.filter((n) => n !== BASELINE).sort(byCodeUnit)];
   return ordered.map((name) => ({
     name,
     // A non-literal require is the point: the directory is the registry.
