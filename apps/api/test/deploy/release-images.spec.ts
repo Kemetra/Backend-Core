@@ -88,6 +88,7 @@ describe("release-images workflow", () => {
     expect(JSON.parse(env)).toEqual([
       "fast (build + Docker-free tests)",
       "db-integration (Testcontainers + RLS + migrations)",
+      "db-package (packages/db migrations + worker DB suites)",
     ]);
     expect(script).toContain('"missing"');
     expect(script).toContain('[ "$RESULT" = "success" ]');

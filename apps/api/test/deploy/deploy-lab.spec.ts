@@ -498,6 +498,8 @@ describe("verify-release: refusals", () => {
     ]);
     expect(refusalsOf()).toContain(`required check '${fast ?? ""}' is 'failure' on the release SHA`);
     expectRefused(/db-integration .* is 'missing'/);
+    // RT-816: the packages/db + worker DB suites are their own required check.
+    expectRefused(/db-package .* is 'missing'/);
   });
 
   it("refuses a missing, tampered or padded release SHA256SUMS", () => {

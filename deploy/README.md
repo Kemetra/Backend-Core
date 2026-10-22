@@ -357,7 +357,7 @@ fails, if any of these checks fails:
 - its commit is reachable from `main` (`compare` status `ahead` or `identical`);
 - the tarball holds only regular files and directories under one top-level
   directory, with nothing unlisted (checked before and after unpacking);
-- the latest `fast` and `db-integration` runs on that commit succeeded;
+- the latest `fast`, `db-integration` and `db-package` runs on that commit succeeded;
 - both levels of `SHA256SUMS` match, and every bundled file except the
   generated `release.env` is byte-for-byte the file at the release commit;
 - the manifest is published and has registry digests for that commit;

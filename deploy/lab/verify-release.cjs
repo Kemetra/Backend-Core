@@ -41,6 +41,7 @@ const LAB_TARGETS = ["lab-01"];
 const REQUIRED_CHECKS = [
   "fast (build + Docker-free tests)",
   "db-integration (Testcontainers + RLS + migrations)",
+  "db-package (packages/db migrations + worker DB suites)",
 ];
 const REQUIRED_FILES = ["docker-compose.release.yml", "release.env"];
 // No evidence file is ever read past this size (the workflow caps the bundle the same way).
