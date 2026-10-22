@@ -66,6 +66,28 @@ describe("HeartbeatReportSchema", () => {
   });
 });
 
+describe("instants PostgreSQL cannot represent (a 400, never a 500 or a swallowed store)", () => {
+  const UNREPRESENTABLE = ["0000-01-01T00:00:00Z", "2026-10-21T10:00:00+16:00", "2026-10-21T10:00:00-15:60", "2026-10-21T10:00:00+99:00"];
+  const REPRESENTABLE = ["0001-01-01T00:00:00Z", "2026-10-21T10:00:00.123456+15:59", "2026-10-21T10:00:00-15:59", "9999-12-31T23:59:59Z"];
+  const change = (minSupportedGraceUntil: string) => ({
+    latestVersion: "1.5.0",
+    recommendedVersion: "1.4.2",
+    minSupportedVersion: "1.4.0",
+    minSupportedGraceUntil,
+    expectedRevision: null,
+  });
+
+  it.each(UNREPRESENTABLE)("refuses %s", (instant) => {
+    expect(HeartbeatReportSchema.safeParse({ source_clock_at: instant }).success).toBe(false);
+    expect(PosVersionPolicyChangeSchema.safeParse(change(instant)).success).toBe(false);
+  });
+
+  it.each(REPRESENTABLE)("accepts %s", (instant) => {
+    expect(HeartbeatReportSchema.safeParse({ source_clock_at: instant }).success).toBe(true);
+    expect(PosVersionPolicyChangeSchema.safeParse(change(instant)).success).toBe(true);
+  });
+});
+
 describe("ChannelParamSchema", () => {
   it("accepts the three channels and nothing else", () => {
     for (const channel of ["lab", "canary", "stable"]) expect(ChannelParamSchema.safeParse(channel).success).toBe(true);

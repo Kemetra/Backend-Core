@@ -41,7 +41,23 @@ const AppVersionSchema = z
   .max(APP_VERSION_MAX_LENGTH)
   .regex(APP_VERSION_PATTERN, "must be a semantic version without build metadata");
 
-const InstantSchema = z.string().datetime({ offset: true });
+/**
+ * An RFC 3339 instant (`Z` or `±HH:MM`) PostgreSQL can represent: no year 0000
+ * and an offset within ±15:59. Anything else would fail the `::timestamptz`
+ * cast (a 500 on the policy change, a swallowed store on the heartbeat), so it
+ * is a 400 here.
+ */
+const RFC3339_RE = /^(\d{4})-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+const InstantSchema = z
+  .string()
+  .datetime({ offset: true })
+  .refine((value) => {
+    const m = RFC3339_RE.exec(value);
+    if (m === null || Number(m[1]) === 0) return false;
+    if (m[2] === undefined) return true;
+    const minutes = Number(m[3]);
+    return minutes <= 59 && Number(m[2]) * 60 + minutes <= 15 * 60 + 59;
+  }, "must be an RFC 3339 date-time with an offset between -15:59 and +15:59");
 
 export const HeartbeatReportSchema = z
   .object({
