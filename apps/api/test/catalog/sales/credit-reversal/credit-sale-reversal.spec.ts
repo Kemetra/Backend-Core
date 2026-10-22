@@ -819,7 +819,7 @@ describe("RT-787 — a credit sale stays outside RT-490 refund executions (RT-57
     const returnRef = await creditReturnRef(sale);
     const before = await executionsAndPostings(sale);
     // Even naming an allocation id cannot pay out uncollected credit.
-    const res = await postExecution(h, sale.saleRef, returnRef, executionBody("rt787-credit-e1", uuidFor("credit"), "1"), "rt787cx");
+    const res = await postExecution(h, { saleRef: sale.saleRef, returnRef: returnRef }, executionBody("rt787-credit-e1", uuidFor("credit"), "1"), "rt787cx");
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("not_found");
     expect(await executionsAndPostings(sale)).toEqual(before);

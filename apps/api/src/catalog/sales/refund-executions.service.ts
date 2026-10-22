@@ -190,10 +190,10 @@ async function findPriorExecution(client: PoolClient, identity: ExecutionIdentit
     [tenantId, body.sourceSystem, body.externalId, body.executionRef],
   );
   if (r.rows.length === 0) return null;
-  const [stored] = r.rows;
-  if (r.rows.length > 1 || !stored || !isSameExecution(stored, identity)) {
-    throw new TerminalEventProvenanceConflictError();
-  }
+  // Two rows: the provenance and the executionRef name different executions.
+  if (r.rows.length !== 1) throw new TerminalEventProvenanceConflictError();
+  const stored = r.rows[0]!;
+  if (!isSameExecution(stored, identity)) throw new TerminalEventProvenanceConflictError();
   return stored.id;
 }
 

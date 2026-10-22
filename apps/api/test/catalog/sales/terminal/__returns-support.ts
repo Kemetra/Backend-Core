@@ -133,18 +133,14 @@ export async function seedPreRuleReturn(
   );
 }
 
+/** POST `body` to `path` with an Idempotency-Key derived from `key`. */
+function postWithKey(h: HarnessHandle, path: string, body: Record<string, unknown>, key: string) {
+  return h.harness!.http().post(path).set("Idempotency-Key", idempKey(key)).send(body);
+}
+
 /** POST a return. */
-export function postReturn(
-  h: HarnessHandle,
-  saleRef: string,
-  body: Record<string, unknown>,
-  key: string,
-) {
-  return h
-    .harness!.http()
-    .post(`/api/pos/v1/sales/${saleRef}/returns`)
-    .set("Idempotency-Key", idempKey(key))
-    .send(body);
+export function postReturn(h: HarnessHandle, saleRef: string, body: Record<string, unknown>, key: string) {
+  return postWithKey(h, `/api/pos/v1/sales/${saleRef}/returns`, body, key);
 }
 
 /** RT-787: turn the R-7 settle-before-post deploy flag on or off (read per request). */
@@ -265,19 +261,15 @@ export function uuidFor(seed: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-7${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+/** The return a refund execution is posted against. */
+export interface ReturnTarget {
+  readonly saleRef: string;
+  readonly returnRef: string;
+}
+
 /** POST a refund execution. */
-export function postExecution(
-  h: HarnessHandle,
-  saleRef: string,
-  returnRef: string,
-  body: Record<string, unknown>,
-  key: string,
-) {
-  return h
-    .harness!.http()
-    .post(`/api/pos/v1/sales/${saleRef}/returns/${returnRef}/executions`)
-    .set("Idempotency-Key", idempKey(key))
-    .send(body);
+export function postExecution(h: HarnessHandle, target: ReturnTarget, body: Record<string, unknown>, key: string) {
+  return postWithKey(h, `/api/pos/v1/sales/${target.saleRef}/returns/${target.returnRef}/executions`, body, key);
 }
 
 /** The `erpnext.posting.requested` reversal events emitted for a return. */

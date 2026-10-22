@@ -522,19 +522,18 @@ async function loadSaleResponsibilities(
  * its settled cash executions sum to its total, so its tenders are those executions, one
  * `{method: cash, amount}` entry each, in execution order (`recordedAt`, then `executionRef`).
  */
+const SETTLED_EXECUTIONS_SQL = `SELECT 'cash'::text AS method, amount::text AS amount
+   FROM refund_executions WHERE return_id = $1 ORDER BY recorded_at, execution_ref`;
+const RECORDED_ALLOCATIONS_SQL = `SELECT method, amount::text AS amount
+   FROM sale_return_tenders WHERE return_id = $1 ORDER BY ordinal`;
+
 async function loadRefundTenders(
   client: PoolClient,
   returnId: string,
   settledOnly: boolean,
 ): Promise<RefundWorkTender[]> {
-  const rt = await client.query<{ method: "cash"; amount: string }>(
-    settledOnly
-      ? `SELECT 'cash'::text AS method, amount::text AS amount
-           FROM refund_executions WHERE return_id = $1 ORDER BY recorded_at, execution_ref`
-      : `SELECT method, amount::text AS amount
-           FROM sale_return_tenders WHERE return_id = $1 ORDER BY ordinal`,
-    [returnId],
-  );
+  const source = settledOnly ? SETTLED_EXECUTIONS_SQL : RECORDED_ALLOCATIONS_SQL;
+  const rt = await client.query<{ method: "cash"; amount: string }>(source, [returnId]);
   if (rt.rows.length === 0) throw new ReturnTendersNotVisibleError(returnId);
   return rt.rows.map((t) => ({ method: t.method, amount: t.amount }));
 }

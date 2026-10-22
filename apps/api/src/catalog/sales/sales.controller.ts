@@ -172,6 +172,24 @@ function toResponsibilityHttpError(err: unknown): unknown {
 const SALE_REF_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** RT-787: the RT-490 allocation refusals of `recordReturn` (`ReturnUnprocessable`, rule 1's 400). */
+const ALLOCATION_REFUSALS: ReadonlyArray<readonly [new () => Error, 400 | 422, string]> = [
+  [RefundAllocationTenderInvalidError, 400, "validation_error"],
+  [RefundInstrumentNotAllowedError, 422, "refund_instrument_not_allowed"],
+  [RefundAllocationExceedsTenderError, 422, "refund_allocation_exceeds_tender"],
+];
+
+/** Map a `recordReturn` service error: the allocation refusals, then every reversal error. */
+function toReturnHttpError(err: unknown): unknown {
+  for (const [type, status, code] of ALLOCATION_REFUSALS) {
+    if (err instanceof type) {
+      const body = { code, message: err.message };
+      return status === 400 ? new BadRequestException(body) : new UnprocessableEntityException(body);
+    }
+  }
+  return toReversalHttpError(err);
+}
+
 /**
  * Map a void / return service error to its contract response. Every code is
  * passed explicitly: the filter's status fallback has no 422 case.
@@ -224,15 +242,6 @@ export function toReversalHttpError(err: unknown): unknown {
   }
   if (err instanceof ReturnLineInvalidError) {
     return new BadRequestException({ code: "validation_error", message: "lineRef is not a line of this sale" });
-  }
-  if (err instanceof RefundAllocationTenderInvalidError) {
-    return new BadRequestException({ code: "validation_error", message: err.message });
-  }
-  if (err instanceof RefundInstrumentNotAllowedError) {
-    return new UnprocessableEntityException({ code: "refund_instrument_not_allowed", message: err.message });
-  }
-  if (err instanceof RefundAllocationExceedsTenderError) {
-    return new UnprocessableEntityException({ code: "refund_allocation_exceeds_tender", message: err.message });
   }
   if (err instanceof ReturnQuantityNotWholeError) {
     return new BadRequestException({
@@ -463,7 +472,7 @@ export class SalesController {
       }
       return result.projection;
     } catch (err) {
-      throw toReversalHttpError(err);
+      throw toReturnHttpError(err);
     }
   }
 

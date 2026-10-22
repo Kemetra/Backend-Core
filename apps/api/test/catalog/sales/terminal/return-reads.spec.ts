@@ -96,10 +96,7 @@ describe("RT-787 listSaleReturns", () => {
     expect(before.body.returns[1].saleReturn).toEqual(tracked.body);
     expect(before.body.returns[1].settlement).toEqual({ state: "open", settledAmount: "0.0000", executions: [] });
 
-    const e1 = await postExecution(
-      h,
-      s.saleRef,
-      tracked.body.returnRef,
+    const e1 = await postExecution(h, { saleRef: s.saleRef, returnRef: tracked.body.returnRef },
       executionBody("rd-list-e1", a1, "6.0000"),
       "rdliste1",
     );
@@ -110,10 +107,7 @@ describe("RT-787 listSaleReturns", () => {
       executions: [e1.body],
     });
 
-    const e2 = await postExecution(
-      h,
-      s.saleRef,
-      tracked.body.returnRef,
+    const e2 = await postExecution(h, { saleRef: s.saleRef, returnRef: tracked.body.returnRef },
       executionBody("rd-list-e2", a2, "4.0000"),
       "rdliste2",
     );

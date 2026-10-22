@@ -92,7 +92,7 @@ describe("RT-787 recordRefundExecution — happy path and replay", () => {
     if (skip()) return;
     const r = await allocatedReturn("happy");
     const body = executionBody("ex-happy-e1", r.a1, "6.0000");
-    const res = await postExecution(h, r.saleRef, r.returnRef, body, "exhappy");
+    const res = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, body, "exhappy");
     expect(res.status).toBe(201);
     expect(res.body).toEqual({
       executionRef: body["executionRef"],
@@ -114,8 +114,8 @@ describe("RT-787 recordRefundExecution — happy path and replay", () => {
     if (skip()) return;
     const r = await allocatedReturn("replay");
     const body = executionBody("ex-replay-e1", r.a1, "6.0000");
-    const first = await postExecution(h, r.saleRef, r.returnRef, body, "exreplay1");
-    const again = await postExecution(h, r.saleRef, r.returnRef, body, "exreplay2");
+    const first = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, body, "exreplay1");
+    const again = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, body, "exreplay2");
     expect(again.status).toBe(200);
     expect(again.headers["idempotent-replayed"]).toBe("true");
     expect(again.body).toEqual(first.body);
@@ -126,7 +126,7 @@ describe("RT-787 recordRefundExecution — happy path and replay", () => {
     if (skip()) return;
     const r = await allocatedReturn("ungated");
     disableReturns();
-    const res = await postExecution(h, r.saleRef, r.returnRef, executionBody("ex-ungated-e1", r.a1, "6.0000"), "exung");
+    const res = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("ex-ungated-e1", r.a1, "6.0000"), "exung");
     expect(res.status).toBe(201);
   });
 });
@@ -136,8 +136,8 @@ describe("RT-787 recordRefundExecution — 409 conflicts (R-3)", () => {
     if (skip()) return;
     const r = await allocatedReturn("chg");
     const body = executionBody("ex-chg-e1", r.a1, "3.0000");
-    expect((await postExecution(h, r.saleRef, r.returnRef, body, "exchg1")).status).toBe(201);
-    const res = await postExecution(h, r.saleRef, r.returnRef, { ...body, amount: "2.0000" }, "exchg2");
+    expect((await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, body, "exchg1")).status).toBe(201);
+    const res = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, { ...body, amount: "2.0000" }, "exchg2");
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe("conflict");
     expect(await executionsOf(r.returnRef)).toBe(1);
@@ -147,11 +147,8 @@ describe("RT-787 recordRefundExecution — 409 conflicts (R-3)", () => {
     if (skip()) return;
     const r = await allocatedReturn("eref");
     const body = executionBody("ex-eref-e1", r.a1, "3.0000");
-    expect((await postExecution(h, r.saleRef, r.returnRef, body, "exeref1")).status).toBe(201);
-    const res = await postExecution(
-      h,
-      r.saleRef,
-      r.returnRef,
+    expect((await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, body, "exeref1")).status).toBe(201);
+    const res = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef },
       { ...body, externalId: "ex-eref-e2" },
       "exeref2",
     );
@@ -164,8 +161,8 @@ describe("RT-787 recordRefundExecution — 409 conflicts (R-3)", () => {
     const r1 = await allocatedReturn("other1");
     const r2 = await allocatedReturn("other2");
     const body = executionBody("ex-other-e1", r1.a1, "6.0000");
-    expect((await postExecution(h, r1.saleRef, r1.returnRef, body, "exother1")).status).toBe(201);
-    const res = await postExecution(h, r2.saleRef, r2.returnRef, { ...body, allocationRef: r2.a1 }, "exother2");
+    expect((await postExecution(h, { saleRef: r1.saleRef, returnRef: r1.returnRef }, body, "exother1")).status).toBe(201);
+    const res = await postExecution(h, { saleRef: r2.saleRef, returnRef: r2.returnRef }, { ...body, allocationRef: r2.a1 }, "exother2");
     expect(res.status).toBe(409);
     expect(await executionsOf(r2.returnRef)).toBe(0);
   });
@@ -175,10 +172,7 @@ describe("RT-787 recordRefundExecution — 400 / 404 / 422, nothing recorded", (
   it("an allocationRef that is not an allocation of this return → 400", async () => {
     if (skip()) return;
     const r = await allocatedReturn("noalloc");
-    const res = await postExecution(
-      h,
-      r.saleRef,
-      r.returnRef,
+    const res = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef },
       executionBody("ex-noalloc-e1", uuidFor("nope"), "1.0000"),
       "exnoalloc",
     );
@@ -192,18 +186,12 @@ describe("RT-787 recordRefundExecution — 400 / 404 / 422, nothing recorded", (
     const r = await allocatedReturn("future");
     const late = executionBody("ex-future-e1", r.a1, "6.0000");
     const evidence = late["evidence"] as Record<string, unknown>;
-    const tooLate = await postExecution(
-      h,
-      r.saleRef,
-      r.returnRef,
+    const tooLate = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef },
       { ...late, evidence: { ...evidence, paidAt: new Date(Date.now() + 10 * 60_000).toISOString() } },
       "exfuture1",
     );
     expect(tooLate.status).toBe(400);
-    const ok = await postExecution(
-      h,
-      r.saleRef,
-      r.returnRef,
+    const ok = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef },
       { ...late, externalId: "ex-future-e2", executionRef: uuidFor("future-e2"),
         evidence: { ...evidence, paidAt: new Date(Date.now() + 30_000).toISOString() } },
       "exfuture2",
@@ -215,10 +203,7 @@ describe("RT-787 recordRefundExecution — 400 / 404 / 422, nothing recorded", (
     if (skip()) return;
     const r = await allocatedReturn("year0");
     const body = executionBody("ex-year0-e1", r.a1, "6.0000");
-    const res = await postExecution(
-      h,
-      r.saleRef,
-      r.returnRef,
+    const res = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef },
       { ...body, evidence: { ...(body["evidence"] as object), paidAt: "0000-01-01T00:00:00Z" } },
       "exyear0",
     );
@@ -230,13 +215,10 @@ describe("RT-787 recordRefundExecution — 400 / 404 / 422, nothing recorded", (
     if (skip()) return;
     const r = await allocatedReturn("shift");
     expect(
-      (await postExecution(h, r.saleRef, r.returnRef, executionBody("ex-shift-e1", r.a1, "6.0000"), "exshift1")).status,
+      (await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("ex-shift-e1", r.a1, "6.0000"), "exshift1")).status,
     ).toBe(201);
     const second = executionBody("ex-shift-e2", r.a2, "4.0000");
-    const res = await postExecution(
-      h,
-      r.saleRef,
-      r.returnRef,
+    const res = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef },
       { ...second, evidence: { ...(second["evidence"] as object), shiftRef: uuidFor("other-shift") } },
       "exshift2",
     );
@@ -248,9 +230,9 @@ describe("RT-787 recordRefundExecution — 400 / 404 / 422, nothing recorded", (
     if (skip()) return;
     const r = await allocatedReturn("over");
     expect(
-      (await postExecution(h, r.saleRef, r.returnRef, executionBody("ex-over-e1", r.a2, "3.0000"), "exover1")).status,
+      (await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("ex-over-e1", r.a2, "3.0000"), "exover1")).status,
     ).toBe(201);
-    const res = await postExecution(h, r.saleRef, r.returnRef, executionBody("ex-over-e2", r.a2, "1.0001"), "exover2");
+    const res = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("ex-over-e2", r.a2, "1.0001"), "exover2");
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe("refund_execution_exceeds_allocation");
     expect(await executionsOf(r.returnRef)).toBe(1);
@@ -261,7 +243,7 @@ describe("RT-787 recordRefundExecution — 400 / 404 / 422, nothing recorded", (
     const r = await allocatedReturn("conc");
     const results = await Promise.all(
       [0, 1].map((i) =>
-        postExecution(h, r.saleRef, r.returnRef, executionBody(`ex-conc-e${i}`, r.a1, "4.0000"), `exconc${i}`),
+        postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody(`ex-conc-e${i}`, r.a1, "4.0000"), `exconc${i}`),
       ),
     );
     expect(results.map((x) => x.status).sort()).toEqual([201, 422]);
@@ -272,10 +254,10 @@ describe("RT-787 recordRefundExecution — 400 / 404 / 422, nothing recorded", (
     if (skip()) return;
     const r = await allocatedReturn("404");
     const body = executionBody("ex-404-e1", r.a1, "6.0000");
-    const unknown = await postExecution(h, r.saleRef, uuidFor("no-return"), body, "ex4041");
-    const malformed = await postExecution(h, r.saleRef, "not-a-uuid", body, "ex4042");
+    const unknown = await postExecution(h, { saleRef: r.saleRef, returnRef: uuidFor("no-return") }, body, "ex4041");
+    const malformed = await postExecution(h, { saleRef: r.saleRef, returnRef: "not-a-uuid" }, body, "ex4042");
     h.harness!.contextGuard.storeId = STORE_A_Y;
-    const otherStore = await postExecution(h, r.saleRef, r.returnRef, body, "ex4043");
+    const otherStore = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, body, "ex4043");
     for (const res of [unknown, malformed, otherStore]) {
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe("not_found");
@@ -290,14 +272,14 @@ describe("RT-787 R-7 — settle before post", () => {
     setSettleBeforePost(true);
     const r = await allocatedReturn("settle");
     expect(await postingEventsFor(h, r.returnRef)).toBe(0);
-    await postExecution(h, r.saleRef, r.returnRef, executionBody("ex-settle-e1", r.a1, "6.0000"), "exsettle1");
+    await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("ex-settle-e1", r.a1, "6.0000"), "exsettle1");
     expect(await postingEventsFor(h, r.returnRef)).toBe(0);
     setSettleBeforePost(false);
     const last = executionBody("ex-settle-e2", r.a2, "4.0000");
-    expect((await postExecution(h, r.saleRef, r.returnRef, last, "exsettle2")).status).toBe(201);
+    expect((await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, last, "exsettle2")).status).toBe(201);
     expect(await postingEventsFor(h, r.returnRef)).toBe(1);
     // A replay of the settling execution emits nothing more.
-    expect((await postExecution(h, r.saleRef, r.returnRef, last, "exsettle3")).status).toBe(200);
+    expect((await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, last, "exsettle3")).status).toBe(200);
     expect(await postingEventsFor(h, r.returnRef)).toBe(1);
   });
 
@@ -306,8 +288,8 @@ describe("RT-787 R-7 — settle before post", () => {
     setSettleBeforePost(true);
     const r = await allocatedReturn("race");
     const results = await Promise.all([
-      postExecution(h, r.saleRef, r.returnRef, executionBody("ex-race-e1", r.a1, "6.0000"), "exrace1"),
-      postExecution(h, r.saleRef, r.returnRef, executionBody("ex-race-e2", r.a2, "4.0000"), "exrace2"),
+      postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("ex-race-e1", r.a1, "6.0000"), "exrace1"),
+      postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("ex-race-e2", r.a2, "4.0000"), "exrace2"),
     ]);
     expect(results.map((x) => x.status)).toEqual([201, 201]);
     expect(await postingEventsFor(h, r.returnRef)).toBe(1);
@@ -323,8 +305,8 @@ describe("RT-787 R-7 — settle before post", () => {
     const r = await allocatedReturn("early");
     expect(await postingEventsFor(h, r.returnRef)).toBe(1);
     setSettleBeforePost(true);
-    await postExecution(h, r.saleRef, r.returnRef, executionBody("ex-early-e1", r.a1, "6.0000"), "exearly1");
-    await postExecution(h, r.saleRef, r.returnRef, executionBody("ex-early-e2", r.a2, "4.0000"), "exearly2");
+    await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("ex-early-e1", r.a1, "6.0000"), "exearly1");
+    await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("ex-early-e2", r.a2, "4.0000"), "exearly2");
     expect(await postingEventsFor(h, r.returnRef)).toBe(1);
   });
 });

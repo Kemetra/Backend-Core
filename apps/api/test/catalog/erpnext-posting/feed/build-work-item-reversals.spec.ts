@@ -168,10 +168,7 @@ describe("RT-73 — reversal work-items from real rows", () => {
       );
       expect(ret.status).toBe(201);
       for (const [i, [ref, amount]] of ([[a2, "4.0000"], [a1, "2.0000"], [a1, "3.0000"]] as const).entries()) {
-        const res = await postExecution(
-          h,
-          sale.saleRef,
-          ret.body.returnRef,
+        const res = await postExecution(h, { saleRef: sale.saleRef, returnRef: ret.body.returnRef },
           executionBody(`bw-settled-e${i}`, ref, amount),
           `bwsettlede${i}`,
         );

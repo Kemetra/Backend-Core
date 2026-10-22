@@ -68,26 +68,35 @@ async function applyBefore0067(pgEnv: PgTestEnv): Promise<void> {
   await ensureAppRole(pgEnv);
 }
 
-async function insertSale(id: string, tenantId: string, storeId: string): Promise<void> {
+/** A sale's (tenant, store) scope. */
+interface Scope {
+  readonly tenantId: string;
+  readonly storeId: string;
+}
+
+const SCOPE_A: Scope = { tenantId: TENANT, storeId: STORE };
+const SCOPE_B: Scope = { tenantId: TENANT_B, storeId: STORE_B };
+
+async function insertSale(id: string, scope: Scope): Promise<void> {
   await pg().admin.query(
     `INSERT INTO sales
        (id, tenant_id, store_id, currency_code, pos_total, occurred_at,
         business_date, source_system, external_id, payload_hash, created_by)
      VALUES ($1, $2, $3, 'EGP', 10, '2026-10-22T10:00:00Z', '2026-10-22',
              'pos-1', $5, $4, $6)`,
-    [id, tenantId, storeId, "c".repeat(64), `sale-${id}`, ACTOR],
+    [id, scope.tenantId, scope.storeId, "c".repeat(64), `sale-${id}`, ACTOR],
   );
 }
 
-async function insertTender(saleId: string, tenantId: string, storeId: string, tenderRef: string): Promise<void> {
+async function insertTender(sale: { id: string; tenderRef: string }, scope: Scope): Promise<void> {
   await pg().admin.query(
     `INSERT INTO sale_tenders (sale_id, tenant_id, store_id, method, amount, currency_code, tender_ref)
      VALUES ($1, $2, $3, 'cash', 10, 'EGP', $4)`,
-    [saleId, tenantId, storeId, tenderRef],
+    [sale.id, scope.tenantId, scope.storeId, sale.tenderRef],
   );
 }
 
-async function insertReturn(id: string, saleId: string, tenantId: string, storeId: string): Promise<void> {
+async function insertReturn(ret: { id: string; saleId: string }, scope: Scope): Promise<void> {
   await pg().admin.query(
     `INSERT INTO sale_returns
        (id, sale_id, tenant_id, store_id, return_seq, business_date, currency_code, return_total,
@@ -95,7 +104,7 @@ async function insertReturn(id: string, saleId: string, tenantId: string, storeI
      VALUES ($1, $2, $3, $4,
              (SELECT COALESCE(MAX(return_seq), 0) + 1 FROM sale_returns WHERE sale_id = $2),
              '2026-10-22', 'EGP', 10, 'pos-1', $5, $6, $7)`,
-    [id, saleId, tenantId, storeId, `ret-${id}`, "f".repeat(64), ACTOR],
+    [ret.id, ret.saleId, scope.tenantId, scope.storeId, `ret-${ret.id}`, "f".repeat(64), ACTOR],
   );
 }
 
@@ -265,14 +274,14 @@ beforeAll(async () => {
     `INSERT INTO stores (id, tenant_id, code, name) VALUES ($1, $3, 'rt787-x', 'X'), ($2, $4, 'rt787-b', 'B')`,
     [STORE, STORE_B, TENANT, TENANT_B],
   );
-  await insertSale(SALE, TENANT, STORE);
-  await insertSale(SALE_OTHER, TENANT, STORE);
-  await insertSale(SALE_B, TENANT_B, STORE_B);
-  await insertTender(SALE, TENANT, STORE, TENDER_REF);
-  await insertTender(SALE_OTHER, TENANT, STORE, TENDER_REF_OTHER);
-  await insertTender(SALE_B, TENANT_B, STORE_B, TENDER_REF_B);
+  await insertSale(SALE, SCOPE_A);
+  await insertSale(SALE_OTHER, SCOPE_A);
+  await insertSale(SALE_B, SCOPE_B);
+  await insertTender({ id: SALE, tenderRef: TENDER_REF }, SCOPE_A);
+  await insertTender({ id: SALE_OTHER, tenderRef: TENDER_REF_OTHER }, SCOPE_A);
+  await insertTender({ id: SALE_B, tenderRef: TENDER_REF_B }, SCOPE_B);
   // A pre-0067 return with its (ref-less) tender: the upgrade path.
-  await insertReturn(RETURN_OLD, SALE, TENANT, STORE);
+  await insertReturn({ id: RETURN_OLD, saleId: SALE }, SCOPE_A);
   await env.admin.query(
     `INSERT INTO sale_return_tenders (return_id, tenant_id, store_id, ordinal, method, amount)
      VALUES ($1, $2, $3, 0, 'cash', 10)`,
@@ -280,8 +289,8 @@ beforeAll(async () => {
   );
   await env.admin.query(readFileSync(UP_PATH, "utf8"));
   await ensureAppRole(env);
-  await insertReturn(RETURN_NEW, SALE, TENANT, STORE);
-  await insertReturn(RETURN_OTHER, SALE_OTHER, TENANT, STORE);
+  await insertReturn({ id: RETURN_NEW, saleId: SALE }, SCOPE_A);
+  await insertReturn({ id: RETURN_OTHER, saleId: SALE_OTHER }, SCOPE_A);
 }, 240_000);
 
 afterAll(async () => {

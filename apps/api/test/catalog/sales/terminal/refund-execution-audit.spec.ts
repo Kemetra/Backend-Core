@@ -64,7 +64,7 @@ describe("RT-787 recordRefundExecution — audit", () => {
   it("a recorded execution emits one sale.refund_executed event with identifiers only", async () => {
     if (skip()) return;
     const r = await allocated("ok");
-    const res = await postExecution(h, r.saleRef, r.returnRef, executionBody("aud-ok-e1", r.a1, "5.0000"), "audok");
+    const res = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, executionBody("aud-ok-e1", r.a1, "5.0000"), "audok");
     expect(res.status).toBe(201);
     expect(executed()).toHaveLength(1);
     expect(executed()[0]!.metadata).toEqual({
@@ -80,7 +80,7 @@ describe("RT-787 recordRefundExecution — audit", () => {
   ])("a %s refusal emits no audit event and writes nothing", async (_name, body, status) => {
     if (skip()) return;
     const r = await allocated(`ref${status}`);
-    const res = await postExecution(h, r.saleRef, r.returnRef, body(r.a1), `audref${status}`);
+    const res = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, body(r.a1), `audref${status}`);
     expect(res.status).toBe(status);
     expect(executed()).toHaveLength(0);
     const rows = await h.harness!.env.admin.query("SELECT 1 FROM refund_executions WHERE return_id = $1", [r.returnRef]);
@@ -91,9 +91,9 @@ describe("RT-787 recordRefundExecution — audit", () => {
     if (skip()) return;
     const r = await allocated("409");
     const body = executionBody("aud-409", r.a1, "2.0000");
-    expect((await postExecution(h, r.saleRef, r.returnRef, body, "aud4091")).status).toBe(201);
+    expect((await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, body, "aud4091")).status).toBe(201);
     spy.reset();
-    const res = await postExecution(h, r.saleRef, r.returnRef, { ...body, amount: "3.0000" }, "aud4092");
+    const res = await postExecution(h, { saleRef: r.saleRef, returnRef: r.returnRef }, { ...body, amount: "3.0000" }, "aud4092");
     expect(res.status).toBe(409);
     expect(executed()).toHaveLength(0);
   });
